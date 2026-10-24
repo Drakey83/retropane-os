@@ -2994,9 +2994,10 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g5") => return boot_loader_glesfeat_g5(root),
         Ok("g6") => return boot_loader_glesfeat_g(root, 6),
         Ok("g7") => return boot_loader_glesfeat_g(root, 7),
+        Ok("g8") => return boot_loader_glesfeat_g(root, 8),
         Ok(other) => {
             return Err(format!(
-                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5, g6 or g7"
+                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5, g6, g7 or g8"
             ));
         }
         Err(_) => {}
@@ -3222,7 +3223,9 @@ fn boot_loader_glesfeat_g5(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 7 {
+    let (env, name, ours, after) = if test == 8 {
+        ("RP_GLESFEAT_G8", "G8", "G8 way 1 (", "G8 way 2 (")
+    } else if test == 7 {
         ("RP_GLESFEAT_G7", "G7", "G7 way 1 (", "G7 way 2 (")
     } else if test == 6 {
         ("RP_GLESFEAT_G6", "G6", "G6 way 1 (", "G6 way 2 (")
@@ -3240,7 +3243,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
     // the very picture way 1 draws directly.
     let frame = root.join("target/g7-synthetic-frame.bin");
-    let also = if test == 7 {
+    let also = if test == 7 || test == 8 {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
@@ -3277,7 +3280,23 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 7 {
+    let wants: &[&str] = if test == 8 {
+        &[
+            "test G8, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G8 way 1 (ours, the status read without a pause (as before)):",
+            "G8 way 2 (ours, the chip left alone, the status read once after):",
+            "G8 way 3 (ours, the status read once a millisecond):",
+            "G8 way 4 (Dell's frame, the chip left alone, the status read once after):",
+            "G8 way 5 (Dell's frame, the status read once a millisecond):",
+            "  Dell's own picture: none in this frame",
+            "G8: right at 74.75 / 1 of 20:",
+            "G8: right at 99.67 / 1 of 20:",
+            "G8: right at 133.25 / 1 of 20:",
+            "    display after the change: underrun ",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 7 {
         &[
             "test G7, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3464,6 +3483,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         6 => &[2],
         // The replays of our own scene: way 1's picture exactly.
         7 => &[2, 3],
+        // Every wait, and the replays of our own scene: one picture.
+        8 => &[2, 3, 4, 5],
         _ => &[],
     };
     if !same.is_empty() {

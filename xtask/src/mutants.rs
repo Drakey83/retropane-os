@@ -48,6 +48,17 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "glesfeat G8: the quiet wait shorter than a render",
+        file: "boot/glesfeat/src/main.rs",
+        from: "pub const QUIET_US: u32 = 60_000;",
+        to: "pub const QUIET_US: u32 = 10_000;",
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "the_quiet_wait_outlasts_every_render_seen",
+        ]),
+    },
+    Mutant {
         name: "glesfeat G7: a frame's parameter memory one page short",
         file: "boot/glesfeat/src/main.rs",
         from: "        pm_size: (last - first + 2) << 12,",

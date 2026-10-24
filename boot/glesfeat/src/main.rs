@@ -472,6 +472,36 @@ pub const G6_REF: usize = 0x00A3_0000;
 /// array `0xD10000`); the image checks the frame it carries against it.
 pub const G7_REF: usize = 0x00D3_0000;
 
+/// How a render (or the memory manager's set-up) is waited for (test G8,
+/// 2026-10-23: G7 found Dell's own frame wrong at divide 1 under our
+/// loader, where his driver, which never touches the chip while it
+/// renders, draws it right; ours read the status register in a tight loop
+/// the whole time).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Wait {
+    /// The status read again and again, as fast as the bus allows (ours,
+    /// every test before G8).
+    Tight,
+    /// Nothing read until [`QUIET_US`] have passed, then the status once
+    /// (Dell's way, near enough: his interrupt thread reads it once).
+    Quiet,
+    /// The status read once a millisecond.
+    EveryMs,
+}
+
+/// [`Wait::Quiet`]'s wait: past the slowest render seen (Dell's frame,
+/// 19.9 ms at 74.75 / 1; G3's quad at 12.6) with room to spare.
+pub const QUIET_US: u32 = 60_000;
+
+/// Test G8's ways: (Dell's frame, not ours; how the render is waited for).
+pub const G8_WAYS: [(bool, Wait); 5] = [
+    (false, Wait::Tight),
+    (false, Wait::Quiet),
+    (false, Wait::EveryMs),
+    (true, Wait::Quiet),
+    (true, Wait::EveryMs),
+];
+
 /// The MBX words a frame carries that the image never writes directly:
 /// the parameter memory manager's (`0x820`-`0x83C`), set up through
 /// [`rp_drv_mbx3d::pm_init_table`]'s sequence from the frame's
@@ -778,7 +808,8 @@ mod image {
         || TEST_G4
         || TEST_G5
         || TEST_G6
-        || TEST_G7;
+        || TEST_G7
+        || TEST_G8;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -800,6 +831,15 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g7`).
     const TEST_G7: bool = option_env!("RP_GLESFEAT_G7").is_some();
+    /// Test G8 instead of G (`RP_GLESFEAT_G8=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G8=1
+    /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g8`).
+    const TEST_G8: bool = option_env!("RP_GLESFEAT_G8").is_some();
+    const _: () = assert!(
+        !TEST_G8 || cfg!(rp_g7),
+        "test G8 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     #[cfg(rp_g7)]
     static FRAME_FILE: &[u8] = include_bytes!(env!("RP_GLESFEAT_G7_FRAME"));
     #[cfg(not(rp_g7))]
@@ -815,7 +855,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G7 {
+    const G_TITLE: &str = if TEST_G8 {
+        "RP-GLESFEAT TEST G8"
+    } else if TEST_G7 {
         "RP-GLESFEAT TEST G7"
     } else if TEST_G6 {
         "RP-GLESFEAT TEST G6"
@@ -830,7 +872,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G7 {
+    const G_NAME: &str = if TEST_G8 {
+        "G8"
+    } else if TEST_G7 {
         "G7"
     } else if TEST_G6 {
         "G6"
@@ -848,24 +892,24 @@ mod image {
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
-    const REF: usize = if TEST_G7 {
+    const REF: usize = if TEST_G7 || TEST_G8 {
         super::G7_REF
     } else if TEST_G6 {
         super::G6_REF
     } else {
         0x0080_0000
     };
-    const _: () = assert!(TEST_G6 || TEST_G7 || REF + STRIDE * H as usize <= TAIL);
+    const _: () = assert!(TEST_G6 || TEST_G7 || TEST_G8 || REF + STRIDE * H as usize <= TAIL);
     /// The label scanned out from the first moment: RGB565 (a 32-bit
     /// screen corrupts 32-bit renders: ADR-0023), after the target.
-    const LABEL: usize = if TEST_G6 || TEST_G7 {
+    const LABEL: usize = if TEST_G6 || TEST_G7 || TEST_G8 {
         super::G6_LABEL
     } else {
         0x0040_0000
     };
     const LABEL_STRIDE: usize = 480 * 2;
-    const _: () = assert!(TEST_G6 || TEST_G7 || TARGET + STRIDE * H as usize <= LABEL);
-    const _: () = assert!(TEST_G6 || TEST_G7 || LABEL + LABEL_STRIDE * H as usize <= PM);
+    const _: () = assert!(TEST_G6 || TEST_G7 || TEST_G8 || TARGET + STRIDE * H as usize <= LABEL);
+    const _: () = assert!(TEST_G6 || TEST_G7 || TEST_G8 || LABEL + LABEL_STRIDE * H as usize <= PM);
     /// The label's text: lines, the font's scale, colours (RGB565).
     const LABEL_LINES: usize = 16;
     const LABEL_SCALE: usize = 3;
@@ -889,6 +933,9 @@ mod image {
     fn set_lay(l: super::Layout) {
         LAY.with(|v| *v = l);
     }
+
+    /// How [`run`] waits (test G8; [`super::Wait::Tight`] otherwise).
+    static WAIT: rt::Global<super::Wait> = rt::Global::new(super::Wait::Tight);
 
     /// Test G7's frame, if the image carries one that parses.
     fn frame() -> Option<super::frame::Frame<'static>> {
@@ -926,10 +973,28 @@ mod image {
             e.regs.write32(MBX + off, v);
         }
         let mut set = false;
-        while us_since(t0) < limit_us {
-            if e.regs.read32(STATUS) & bit != 0 {
-                set = true;
-                break;
+        match WAIT.with(|w| *w) {
+            super::Wait::Tight => {
+                while us_since(t0) < limit_us {
+                    if e.regs.read32(STATUS) & bit != 0 {
+                        set = true;
+                        break;
+                    }
+                }
+            }
+            // G8: the chip left alone while it works, then read once.
+            super::Wait::Quiet => {
+                rt::delay_us(super::QUIET_US.min(limit_us));
+                set = e.regs.read32(STATUS) & bit != 0;
+            }
+            super::Wait::EveryMs => {
+                while us_since(t0) < limit_us {
+                    if e.regs.read32(STATUS) & bit != 0 {
+                        set = true;
+                        break;
+                    }
+                    rt::delay_us(1_000);
+                }
             }
         }
         e.regs.write32(CLEAR, bit);
@@ -1723,6 +1788,9 @@ mod image {
         /// Test G7: Dell's frame replayed word for word (with his NINTPW
         /// rule and clock order when true).
         Frame(bool),
+        /// Test G8: [`super::G8_WAYS`]'s way k (ours or Dell's frame, and
+        /// how the render is waited for).
+        G8(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -1784,6 +1852,11 @@ mod image {
                 Self::G6(_) => "Dell's places and state, through the TA",
                 Self::Frame(false) => "Dell's frame replayed",
                 Self::Frame(true) => "Dell's frame replayed, his NINTPW and clock order",
+                Self::G8(0) => "ours, the status read without a pause (as before)",
+                Self::G8(1) => "ours, the chip left alone, the status read once after",
+                Self::G8(2) => "ours, the status read once a millisecond",
+                Self::G8(3) => "Dell's frame, the chip left alone, the status read once after",
+                Self::G8(_) => "Dell's frame, the status read once a millisecond",
             }
         }
     }
@@ -2051,6 +2124,14 @@ mod image {
                 (out.ta && out.done, us_since(t0), out.list)
             }
             Way::Frame(_) => (replay(e, vram), us_since(t0), [m3::END; TA_LIST]),
+            Way::G8(k) => {
+                let done = if super::G8_WAYS[k as usize % super::G8_WAYS.len()].0 {
+                    replay(e, vram)
+                } else {
+                    draw_direct(e, vram, G5_OURS, words, true, &[])
+                };
+                (done, us_since(t0), [m3::END; TA_LIST])
+            }
             // G6: ours in the way's layout; ways 3 and 4 with Dell's whole
             // state (G5's items), way 4 through the TA as Dell's driver
             // sends it (his colour clear, then the quad as one strip).
@@ -2154,7 +2235,17 @@ mod image {
                 .as_ref()
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
+            Way::G8(k) if super::G8_WAYS[k as usize % super::G8_WAYS.len()].0 => frame()
+                .as_ref()
+                .and_then(super::frame_layout)
+                .unwrap_or(super::OURS_LAYOUT),
             _ => super::OURS_LAYOUT,
+        });
+        WAIT.with(|v| {
+            *v = match w {
+                Way::G8(k) => super::G8_WAYS[k as usize % super::G8_WAYS.len()].1,
+                _ => super::Wait::Tight,
+            }
         });
         log!("{G_NAME} way {} ({}):", step - 1, w.name());
         rt::check_in();
@@ -2189,8 +2280,8 @@ mod image {
         // G5: Dell's MBX words read back from the core after the render
         // (that they reached it; 0x6D0 and the TA's words read safely
         // under Windows Mobile, rp-wmprobe v3).
-        // G6 and G7: the layout's addresses as the core holds them.
-        if let Way::G6(_) | Way::Frame(_) = w {
+        // G6-G8: the layout's addresses as the core holds them.
+        if let Way::G6(_) | Way::Frame(_) | Way::G8(_) = w {
             let _ = write!(RunLog, "  layout read back after the render:");
             for off in [
                 0x608, 0x60C, 0x650, 0x65C, 0x660, 0x824, 0x828, 0x82C, 0x83C, 0x840, 0x844,
@@ -2218,7 +2309,12 @@ mod image {
         keep_reference(vram);
         // G7: the replay at Windows Mobile's clock against Dell's own
         // picture (his divide-1 render, right, hashed by g7-frame).
-        if let (Way::Frame(_), Some(f)) = (w, frame()) {
+        let replay_way = match w {
+            Way::Frame(_) => true,
+            Way::G8(k) => super::G8_WAYS[k as usize % super::G8_WAYS.len()].0,
+            _ => false,
+        };
+        if let (true, Some(f)) = (replay_way, frame()) {
             let h = picture_hash(vram, REF);
             if f.picture_words == 0 {
                 log!("  Dell's own picture: none in this frame (hash 0x{h:08x})");
@@ -3115,6 +3211,27 @@ mod image {
         e.regs.write32(ENABLE, enable0);
     }
 
+    /// Test G8's ways.
+    const G8_WAYS: [Way; 5] = [Way::G8(0), Way::G8(1), Way::G8(2), Way::G8(3), Way::G8(4)];
+
+    /// Test G8: the render waited for without touching the chip, or once a
+    /// millisecond, ours and Dell's frame (G7's lead).
+    fn test_g8(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G8: the render waited for without reading the chip (one read after {} ms) and with a read once a millisecond, ours and Dell's own frame, at 74.75, 99.67 and 133.25 MHz (render times include the wait)",
+            super::QUIET_US / 1000
+        );
+        if frame().as_ref().and_then(super::frame_layout).is_none() {
+            log!("G8: no frame, or one without its layout: nothing run");
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G8_WAYS);
+        WAIT.with(|v| *v = super::Wait::Tight);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -3147,7 +3264,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G7 {
+        let first = if TEST_G8 {
+            "STEP 1 OF 6"
+        } else if TEST_G7 {
             "STEP 1 OF 4"
         } else if TEST_G6 {
             "STEP 1 OF 5"
@@ -3209,7 +3328,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G7 {
+        if ready && TEST_G8 {
+            test_g8(&mut e, vram);
+        } else if ready && TEST_G7 {
             test_g7(&mut e, vram);
         } else if ready && TEST_G6 {
             test_g6(&mut e, vram);
@@ -4141,5 +4262,36 @@ mod g7_tests {
         assert_eq!(f.picture_words, 480 * 640 / 2);
         // Never the starts or the status.
         assert!(f.regs().all(|(o, _)| !frame::NEVER.contains(&o)));
+    }
+}
+
+/// Test G8's pure parts.
+#[cfg(test)]
+mod g8_tests {
+    use super::*;
+
+    #[test]
+    fn the_ways_cover_both_waits_for_both_scenes_and_the_control() {
+        assert_eq!(
+            G8_WAYS[0],
+            (false, Wait::Tight),
+            "the control first: ours as before"
+        );
+        for scene in [false, true] {
+            for w in [Wait::Quiet, Wait::EveryMs] {
+                assert!(G8_WAYS.contains(&(scene, w)), "{scene} {w:?}");
+            }
+        }
+        // Dell's frame is never polled tightly here: G7 did that.
+        assert!(!G8_WAYS.contains(&(true, Wait::Tight)));
+    }
+
+    #[test]
+    fn the_quiet_wait_outlasts_every_render_seen() {
+        // The slowest render measured at divide 1: Dell's frame, 19.94 ms
+        // at 74.75 / 1 (G7); at Windows Mobile's clock 19.62 ms. Twice that
+        // and still under the 200 ms every render is allowed.
+        assert!(QUIET_US >= 2 * 19_940);
+        assert!(QUIET_US < 200_000);
     }
 }
