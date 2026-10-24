@@ -134,6 +134,15 @@ screen quadruples the 3D core's share (~40 ms at Windows Mobile's clock,
 place of vertex lighting: roughly a quarter off the port's figures
 (estimate). 60 fps at full screen isn't expected on this hardware.
 
+**Since (run GC2J, 2026-10-24, 2700g.md "GC2J on the X51v"):** the
+highest divide-1 step soaked clean so far is **108.33 / 1** (20 minutes,
+no wrong render); 117.00 and 133.25 / 1 show rare single wrong pixels in
+one scene type. At 108.33 / 1 textured drawing gains ~1.56x (GC2S's
+bilinear kind, 12.7 against 19.9 ms), so the port's full-screen figure
+there is **~39 fps** (the 3D core ~26 ms), against ~45 at 133.25 / 1 and
+~35 at today's 149.50 / 2. Which step ships is the owner's ruling
+(ADR-0035; every X51v measured by the self-test).
+
 Separately from fps: loading (the owner's ~5 minutes under Windows Mobile;
 the target 15-30 s, DESIGN.md) gains from our faster storage path, and
 RetroPane leaves more of the 64 MB free than Windows Mobile (OS at most
