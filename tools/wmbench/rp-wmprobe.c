@@ -53,6 +53,9 @@
  * each held to his picture. These write the MBX core's registers and the
  * page table: the probe asks for a soft reset after either run anyway.
  *
+ * v8 (2026-10-24, test H1): then HaRET's hardware writes before its jump
+ * applied one at a time the same way (haret_steps).
+ *
  * Module 1, divide 1 under Dell's own driver. Intel's datasheet lists the
  * 2700G's graphics clock divider as 1, 2 or 4 (graphics clock 13-75 MHz),
  * and Dell's driver picks divide 1 itself when its CoreClock setting is at
@@ -410,6 +413,24 @@ static unsigned long w_renders(const char *tag, const char *which, const char *w
     return right;
 }
 
+/* w_renders without a line: the renders right of W1_RENDERS. */
+static unsigned long w_renders_quiet(volatile unsigned long *m, volatile unsigned long *t,
+                                     unsigned long words, const unsigned long *want)
+{
+    unsigned long i, k, right = 0;
+    for (k = 0; k < W1_RENDERS; k++) {
+        unsigned long wrong = 0;
+        for (i = 0; i < words; i++)
+            t[i] = 0x5A5A5A5AUL;
+        m[0x680 / 4] = 1;
+        Sleep(60);
+        for (i = 0; i < words; i++)
+            wrong += t[i] != want[i];
+        right += wrong == 0;
+    }
+    return right;
+}
+
 /* W2's registers put back after a step: Dell's interrupt enables, the
  * render block (its start aside) and the TA's (0x840-0x87C), as RetroPane's
  * G7 replay writes them; never the parameter memory manager's (0x820-0x83C,
@@ -508,6 +529,70 @@ static void w2(const char *tag, volatile unsigned long *m, volatile unsigned lon
     VirtualFree((void *)s, 0, MEM_RELEASE);
 }
 
+/* v8 (2026-10-24, test H1): HaRET's hardware writes before it jumps to
+ * RetroPane's loader (KevinOConnor/haret, src/linboot.cpp launchKernel,
+ * src/mach/arch-pxa.cpp and arch-pxa27x.cpp hardwareShutdown, the Axim
+ * X50/X51 entry: PXA27x), each applied under Windows Mobile to Dell's chip
+ * before W1's re-render, held to his picture: the USB client off (UDCCR 0),
+ * the USB host reset (UHCCOMS 1), the seven clocks off (CKEN bits 10, 11,
+ * 12, 13, 19, 23, 24: put back right after the renders, before any line is
+ * written, the card's clock among them), then every DMA channel stopped
+ * (DCSR NODESC | ENDINTR | STARTINTR | BUSERR, each awaited: last, it may
+ * stop Windows Mobile's own drivers; its result on the screen as well).
+ * Not applied: interrupts off and the MMU off (they end Windows Mobile). */
+static unsigned long w_status_right;
+
+static void w_show(const WCHAR *what);
+
+static void haret_steps(const char *tag, volatile unsigned long *m, volatile unsigned long *t,
+                        unsigned long words, const unsigned long *want)
+{
+    volatile unsigned long *udc = map_phys_rw(0x40600000UL, 0x1000);
+    volatile unsigned long *uhc = map_phys_rw(0x4C000000UL, 0x1000);
+    volatile unsigned long *clk = map_phys_rw(0x41300000UL, 0x1000);
+    volatile unsigned long *dma = map_phys_rw(0x40000000UL, 0x1000);
+    unsigned long cken, i, r;
+    WCHAR line[128];
+    if (!udc || !uhc || !clk || !dma) {
+        out("h1 %s: a block not mapped: not run", tag);
+        return;
+    }
+    out("h1 %s: HaRET's writes one at a time before the re-render (UDCCR 0x%08lx, UHCCOMS 0x%08lx, CKEN 0x%08lx)",
+        tag, udc[0], uhc[0x08 / 4], clk[0x04 / 4]);
+    udc[0] = 0;
+    w_renders(tag, "h1", "after UDCCR = 0 (the USB client off)", m, t, words, want);
+    uhc[0x08 / 4] = 1;
+    Sleep(1);
+    w_renders(tag, "h1", "after UHCCOMS = 1 (the USB host reset)", m, t, words, want);
+    /* The clocks off, the renders, the clocks back: no line written
+     * meanwhile (the card's clock is among them). */
+    cken = clk[0x04 / 4];
+    clk[0x04 / 4] = cken & ~(1UL << 10 | 1UL << 11 | 1UL << 12 | 1UL << 13 | 1UL << 19 | 1UL << 23 | 1UL << 24);
+    r = w_renders_quiet(m, t, words, want);
+    clk[0x04 / 4] = cken;
+    Sleep(10);
+    out("h1 %s: after CKEN = 0x%08lx (the seven clocks off), put back to 0x%08lx: %lu of %d renders equal to Dell's own picture",
+        tag, cken & ~(1UL << 10 | 1UL << 11 | 1UL << 12 | 1UL << 13 | 1UL << 19 | 1UL << 23 | 1UL << 24), cken, r,
+        W1_RENDERS);
+    out("h1 %s: next, every DMA channel stopped (it may stop Windows Mobile's drivers: the result is on the screen too)", tag);
+    for (i = 0; i < 32; i++)
+        dma[i] = 0x40000007UL;
+    for (i = 0; i < 32; i++) {
+        int timeout = 100000;
+        while ((dma[i] & 8) == 0 && timeout--)
+            ;
+    }
+    r = w_renders_quiet(m, t, words, want);
+    w_status_right = r;
+    _snwprintf(line, 128, L"HaRET's DMA stop: %lu of %d right (%hs). Soft-reset when done.", r, W1_RENDERS, tag);
+    w_show(line);
+    out("h1 %s: after every DMA channel stopped: %lu of %d renders equal to Dell's own picture", tag, r, W1_RENDERS);
+    VirtualFree((void *)dma, 0, MEM_RELEASE);
+    VirtualFree((void *)clk, 0, MEM_RELEASE);
+    VirtualFree((void *)uhc, 0, MEM_RELEASE);
+    VirtualFree((void *)udc, 0, MEM_RELEASE);
+}
+
 static void rerender(const char *tag)
 {
     volatile unsigned long *m, *t;
@@ -542,6 +627,7 @@ static void rerender(const char *tag)
         want[i] = t[i];
     w_renders(tag, "w1", "as Dell left it", m, t, words, want);
     w2(tag, m, t, words, want);
+    haret_steps(tag, m, t, words, want);
     /* His picture back, whatever the steps did. */
     for (i = 0; i < words; i++)
         t[i] = want[i];
@@ -1312,6 +1398,11 @@ static void status(const WCHAR *what)
     SystemIdleTimerReset();
 }
 
+static void w_show(const WCHAR *what)
+{
+    status(what);
+}
+
 static void say(const WCHAR *a, const WCHAR *b)
 {
     MessageBoxW(NULL, b, a, MB_OK | MB_TOPMOST);
@@ -1425,7 +1516,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (logf_ == INVALID_HANDLE_VALUE)
         return 1;
     SetFilePointer(logf_, 0, NULL, FILE_END);
-    out("rp-wmprobe v7 (Windows Mobile probe and baseline suite; the chip's registers, state and memory after Dell's draws; his frame again our way, then after our set-up steps), tick %lu",
+    out("rp-wmprobe v8 (Windows Mobile probe and baseline suite; the chip's registers, state and memory after Dell's draws; his frame again our way, after our set-up steps and after HaRET's writes), tick %lu",
         (unsigned long)GetTickCount());
 
     sys = map_phys(SYS_PHYS, 0x2000);
