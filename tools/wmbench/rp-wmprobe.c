@@ -47,6 +47,12 @@
  * writes to the chip besides Dell's own registry value: the target (put
  * back after) and the start register.
  *
+ * v7 (2026-10-24, test W2): then RetroPane's set-up steps applied to Dell's
+ * chip one at a time before the same re-render (w2: the 3D clock off and on;
+ * the parameter memory set up our way; the core reset our way and set up),
+ * each held to his picture. These write the MBX core's registers and the
+ * page table: the probe asks for a soft reset after either run anyway.
+ *
  * Module 1, divide 1 under Dell's own driver. Intel's datasheet lists the
  * 2700G's graphics clock divider as 1, 2 or 4 (graphics clock 13-75 MHz),
  * and Dell's driver picks divide 1 itself when its CoreClock setting is at
@@ -366,11 +372,146 @@ static void log_full(const char *tag)
  * render-done interrupt as for his own. */
 #define W1_RENDERS 20
 
+/* W1_RENDERS renders of the frame in place, each held word for word to
+ * Dell's picture `want`: the target blanked by the CPU, 0x680 written, the
+ * chip left alone 60 ms (as Dell's driver: his interrupt thread clears the
+ * status meanwhile). One summary line, `which` naming the test. */
+static unsigned long w_renders(const char *tag, const char *which, const char *what,
+                               volatile unsigned long *m, volatile unsigned long *t,
+                               unsigned long words, const unsigned long *want)
+{
+    unsigned long i, k, right = 0, wrong_total = 0, never = 0;
+    for (k = 0; k < W1_RENDERS; k++) {
+        unsigned long wrong = 0, unwritten = 0;
+        MSG msg;
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
+            DispatchMessageW(&msg);
+        SystemIdleTimerReset();
+        for (i = 0; i < words; i++)
+            t[i] = 0x5A5A5A5AUL;
+        m[0x680 / 4] = 1;
+        Sleep(60);
+        for (i = 0; i < words; i++) {
+            unsigned long v = t[i];
+            if (v != want[i]) {
+                if (wrong_total + wrong < 2)
+                    out("%s %s: %s: render %lu: word %lu (x %lu, y %lu) 0x%08lx, Dell's 0x%08lx", which,
+                        tag, what, k + 1, i, (i * 2) % 480, (i * 2) / 480, v, want[i]);
+                wrong++;
+                unwritten += v == 0x5A5A5A5AUL;
+            }
+        }
+        right += wrong == 0;
+        wrong_total += wrong;
+        never += unwritten;
+    }
+    out("%s %s: %s: %lu of %d renders equal to Dell's own picture; %lu wrong words in all (%lu never written)",
+        which, tag, what, right, W1_RENDERS, wrong_total, never);
+    return right;
+}
+
+/* W2's registers put back after a step: Dell's interrupt enables, the
+ * render block (its start aside) and the TA's (0x840-0x87C), as RetroPane's
+ * G7 replay writes them; never the parameter memory manager's (0x820-0x83C,
+ * set up by the step's own sequence) or a start. */
+static unsigned long w_saved[1024];
+
+static void w_save(volatile unsigned long *m)
+{
+    unsigned long off;
+    for (off = 0; off < 0x1000; off += 4)
+        w_saved[off / 4] = m[off / 4];
+}
+
+static void w_put_back(volatile unsigned long *m)
+{
+    unsigned long off;
+    m[0x130 / 4] = w_saved[0x130 / 4];
+    for (off = 0x600; off <= 0x6FC; off += 4)
+        if (off != 0x680)
+            m[off / 4] = w_saved[off / 4];
+    for (off = 0x840; off <= 0x87C; off += 4)
+        m[off / 4] = w_saved[off / 4];
+}
+
+/* RetroPane's parameter memory set-up (rp_drv_mbx3d::pm_init_table), with
+ * Dell's own values: his page table (0x824) cleared, 16 KiB, then 0x824,
+ * 0x828, 0x82C, 0x83C, 0x6D8 = 0x09000000 and 0x838 = 1. PM_READY isn't
+ * waited for (Dell's interrupt handler clears it: 0x130 holds bit 6): 50 ms,
+ * then the status logged. */
+static void w_pm_init(const char *tag, volatile unsigned long *m)
+{
+    unsigned long table = w_saved[0x824 / 4] & 0x01FFFFFCUL, k;
+    volatile unsigned long *pt = map_phys_rw(0x0C000000UL + table, 0x4000);
+    if (pt) {
+        for (k = 0; k < 0x4000 / 4; k++)
+            pt[k] = 0;
+        VirtualFree((void *)pt, 0, MEM_RELEASE);
+    } else
+        out("w2 %s: the page table at 0x%lx not mapped: not cleared", tag, table);
+    m[0x824 / 4] = w_saved[0x824 / 4];
+    m[0x828 / 4] = w_saved[0x828 / 4];
+    m[0x82C / 4] = w_saved[0x82C / 4];
+    m[0x83C / 4] = w_saved[0x83C / 4];
+    m[0x6D8 / 4] = 0x09000000UL;
+    m[0x838 / 4] = 1;
+    Sleep(50);
+    out("w2 %s: parameter memory set up our way (table 0x%lx, pages 0x%lx-0x%lx, base 0x%lx); status 0x%08lx",
+        tag, table, w_saved[0x828 / 4], w_saved[0x82C / 4], w_saved[0x83C / 4], m[0x12C / 4]);
+}
+
+/* W2 (2026-10-24): RetroPane's set-up steps applied to Dell's chip one at a
+ * time, in the loader's order, before W1's re-render, each held to his
+ * picture; the first that turns it wrong is the cause. 1: the 3D clock off
+ * then on (the loader finds Windows Mobile's off, MBXCLK 0x1, and turns it
+ * on); 2: the parameter memory set up our way, no reset; 3: the core reset
+ * our way (blit2d::reset_core: 0x080 = 0x111, 2 ms, 0x130's low half masked,
+ * 0x080 = 0, 2 ms, 0x134 = 0xFFFF), then step 2's set-up. Dell's registers
+ * put back after each. Step 3 resets the 2D engine too, under Windows
+ * Mobile's own drawing: last, every line logged before it. The loader's
+ * clock change is left out: G5's way on Dell's chip as found had none and
+ * was wrong. */
+static void w2(const char *tag, volatile unsigned long *m, volatile unsigned long *t,
+               unsigned long words, const unsigned long *want)
+{
+    volatile unsigned long *s = map_phys_rw(SYS_PHYS, 0x1000);
+    unsigned long clk;
+    if (!s) {
+        out("w2 %s: the system block not mapped: not run", tag);
+        return;
+    }
+    w_save(m);
+    clk = s[0x054 / 4];
+    out("w2 %s: step 1: the 3D clock off then on (MBXCLK 0x%lx -> 0x%lx -> 0x%lx), Dell's registers back",
+        tag, clk, clk & ~2UL, clk);
+    s[0x054 / 4] = clk & ~2UL;
+    Sleep(1);
+    s[0x054 / 4] = clk;
+    Sleep(1);
+    w_put_back(m);
+    w_renders(tag, "w2", "step 1, the 3D clock off and on", m, t, words, want);
+    out("w2 %s: step 2: the parameter memory set up our way, no reset", tag);
+    w_pm_init(tag, m);
+    w_put_back(m);
+    w_renders(tag, "w2", "step 2, our parameter memory set-up", m, t, words, want);
+    out("w2 %s: step 3: the core reset our way, then the set-up (the 2D engine is reset too: if the screen freezes now, soft-reset)",
+        tag);
+    m[0x080 / 4] = 0x111;
+    Sleep(2);
+    m[0x130 / 4] = m[0x130 / 4] & ~0xFFFFUL;
+    m[0x080 / 4] = 0;
+    Sleep(2);
+    m[0x134 / 4] = 0xFFFF;
+    w_pm_init(tag, m);
+    w_put_back(m);
+    w_renders(tag, "w2", "step 3, our core reset and set-up", m, t, words, want);
+    VirtualFree((void *)s, 0, MEM_RELEASE);
+}
+
 static void rerender(const char *tag)
 {
     volatile unsigned long *m, *t;
-    unsigned long target, words, i, k, bytes, *want;
-    unsigned long right = 0, wrong_total = 0, never = 0, best = 0xFFFFFFFFUL;
+    unsigned long target, words, i, bytes, *want;
     if (!mbx) {
         out("w1 %s: registers not mapped", tag);
         return;
@@ -399,38 +540,9 @@ static void rerender(const char *tag)
     }
     for (i = 0; i < words; i++)
         want[i] = t[i];
-    for (k = 0; k < W1_RENDERS; k++) {
-        unsigned long long t0;
-        unsigned long wrong = 0, unwritten = 0, us;
-        MSG msg;
-        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
-            DispatchMessageW(&msg);
-        SystemIdleTimerReset();
-        for (i = 0; i < words; i++)
-            t[i] = 0x5A5A5A5AUL;
-        t0 = ticks();
-        m[0x680 / 4] = 1;
-        /* The chip left alone while it renders, as Dell's driver does. */
-        Sleep(60);
-        us = us_since(t0);
-        if (us < best)
-            best = us;
-        for (i = 0; i < words; i++) {
-            unsigned long v = t[i];
-            if (v != want[i]) {
-                if (wrong < 2)
-                    out("w1 %s: render %lu: word %lu (x %lu, y %lu) 0x%08lx, Dell's 0x%08lx", tag, k + 1, i,
-                        (i * 2) % 480, (i * 2) / 480, v, want[i]);
-                wrong++;
-                unwritten += v == 0x5A5A5A5AUL;
-            }
-        }
-        right += wrong == 0;
-        wrong_total += wrong;
-        never += unwritten;
-    }
-    out("w1 %s: %lu of %d renders equal to Dell's own picture; %lu wrong words in all (%lu never written)",
-        tag, right, W1_RENDERS, wrong_total, never);
+    w_renders(tag, "w1", "as Dell left it", m, t, words, want);
+    w2(tag, m, t, words, want);
+    /* His picture back, whatever the steps did. */
     for (i = 0; i < words; i++)
         t[i] = want[i];
     free(want);
@@ -1313,7 +1425,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (logf_ == INVALID_HANDLE_VALUE)
         return 1;
     SetFilePointer(logf_, 0, NULL, FILE_END);
-    out("rp-wmprobe v6 (Windows Mobile probe and baseline suite; the chip's registers, state and memory after Dell's draws; his frame again our way), tick %lu",
+    out("rp-wmprobe v7 (Windows Mobile probe and baseline suite; the chip's registers, state and memory after Dell's draws; his frame again our way, then after our set-up steps), tick %lu",
         (unsigned long)GetTickCount());
 
     sys = map_phys(SYS_PHYS, 0x2000);
