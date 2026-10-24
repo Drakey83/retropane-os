@@ -1,4 +1,4 @@
-//! Run H (`RP_GPUBENCH_HARNESS`): the compositor harness, a benchmark only
+//! Run CH (`RP_GPUBENCH_HARNESS`): the compositor harness, a benchmark only
 //! (docs/design/compositor-harness.md; the gate's CPU T1, T3 and T4: the
 //! owner's vote 2026-10-21, option a). The frames of
 //! docs/design/workload-brief.md, drawn the way compositor.md and ADR-0034
@@ -98,7 +98,7 @@ impl Seq {
         let cpu: u64 = self.busy[..self.n].iter().map(|&b| u64::from(b)).sum();
         let all = (self.n as u64 * u64::from(budget)).max(1);
         log!(
-            "  H {name}: {} frames, work median {med} us worst {worst} us, {over} over {budget} us, {} late, CPU busy median {bmed} us worst {bworst} us ({}% of the frames' time){}",
+            "  CH {name}: {} frames, work median {med} us worst {worst} us, {over} over {budget} us, {} late, CPU busy median {bmed} us worst {bworst} us ({}% of the frames' time){}",
             self.n,
             self.late,
             cpu * 100 / all,
@@ -214,7 +214,7 @@ fn dma_pixels(dma: &mut rp_hal_pxa27x::dma::Dma, src: &[u8], dst: u32) -> (bool,
 /// The label text for step `k`.
 fn step_name(k: u32, what: &str) -> Name {
     let mut l = heapless_name();
-    let _ = write!(l, "H STEP {k} OF {STEPS}: {what}");
+    let _ = write!(l, "CH STEP {k} OF {STEPS}: {what}");
     l
 }
 
@@ -277,7 +277,7 @@ fn page_at(at: u32, row: u32) -> u32 {
 
 /// One of the routing table's rows (T4), logged as measured.
 fn route(kind: &str, unit: &str, us: u32, cpu: u32, ok: bool) {
-    log!("  H T4 {kind} | {unit} | {us} us | CPU {cpu} us | done {ok}");
+    log!("  CH T4 {kind} | {unit} | {us} us | CPU {cpu} us | done {ok}");
 }
 
 /// What the plane frames share.
@@ -290,7 +290,7 @@ struct Planes {
 #[inline(never)]
 pub(super) fn run(g: &mut Rig) {
     log!(
-        "H: the compositor harness (docs/design/compositor-harness.md): W1, W2, W4, W9, toast, volume, wake on the planes; W5, W6, W3 on the 3D core in turns and as a pipeline (T1); W7; the routing table (T4); clock as found: COREPLL {:08X} MBXCLK {:08X}",
+        "CH: the compositor harness (docs/design/compositor-harness.md): W1, W2, W4, W9, toast, volume, wake on the planes; W5, W6, W3 on the 3D core in turns and as a pipeline (T1); W7; the routing table (T4); clock as found: COREPLL {:08X} MBXCLK {:08X}",
         g.e.regs.read32(clock::COREPLL),
         g.e.regs.read32(MBXCLK)
     );
@@ -317,7 +317,7 @@ pub(super) fn run(g: &mut Rig) {
     let _ = g.pool.free(atlas, ROW_BYTES as u32);
     g.e.regs.write32(lreg::VSCADR, 0);
     three_d_frames(g, scratch);
-    log!("H: done");
+    log!("CH: done");
 }
 
 /// The new row's pixels (`ROW n` in the list's colours, `NEW` in red) as
@@ -356,7 +356,7 @@ fn plane_frames(g: &mut Rig, p: &Planes, dma: &mut rp_hal_pxa27x::dma::Dma, scra
     let t0 = rt::ticks();
     write_uyvy(g, p.page, 480, PAGE_ROWS, &list_rgb);
     log!(
-        "  H page drawn by the CPU (480 x 1280 UYVY): {} ms",
+        "  CH page drawn by the CPU (480 x 1280 UYVY): {} ms",
         us_since(t0) / 1000
     );
     let row = &mut scratch[..ROW_BYTES];
@@ -465,7 +465,7 @@ fn plane_frames(g: &mut Rig, p: &Planes, dma: &mut rp_hal_pxa27x::dma::Dma, scra
         let _ = write!(what, "W2 pan + a row by {way}");
         s.report(what.as_str(), FRAME_US);
         log!(
-            "  H W2 row by {way}: {rows} rows ({rows_ok} done), each {} us median ({}-{}), the CPU {} us median, {rows_late} late",
+            "  CH W2 row by {way}: {rows} rows ({rows_ok} done), each {} us median ({}-{}), the CPU {} us median, {rows_late} late",
             row_us.median(),
             row_us.min(),
             row_us.max(),
@@ -496,7 +496,7 @@ fn plane_frames(g: &mut Rig, p: &Planes, dma: &mut rp_hal_pxa27x::dma::Dma, scra
         let t0 = rt::ticks();
         let (ok, cpu, _) = submit_wait(g, &c[..n]);
         let us = us_since(t0);
-        log!("  H W2 re-base: a 2D copy of 480 x 640 within the page: {us} us, done {ok}");
+        log!("  CH W2 re-base: a 2D copy of 480 x 640 within the page: {us} us, done {ok}");
         route("a screen copy 480 x 640", "2D BY CPU", us, cpu, ok);
         // The page back as it was, for the rest.
         write_uyvy(g, p.page, 480, PAGE_ROWS, &list_rgb);
@@ -567,7 +567,7 @@ fn plane_frames(g: &mut Rig, p: &Planes, dma: &mut rp_hal_pxa27x::dma::Dma, scra
             ok_all &= ok;
         }
         log!(
-            "  H W4 tap by {way}: key lit in {} us median ({}-{}), shown (next frame event) {} us median, worst {}; the CPU {} us",
+            "  CH W4 tap by {way}: key lit in {} us median ({}-{}), shown (next frame event) {} us median, worst {}; the CPU {} us",
             tap.median(),
             tap.min(),
             tap.max(),
@@ -656,7 +656,7 @@ fn plane_frames(g: &mut Rig, p: &Planes, dma: &mut rp_hal_pxa27x::dma::Dma, scra
         0
     });
     s.report("wake fade (VBBASE a frame)", FRAME_US);
-    log!("  H plane steps done: {step} of {STEPS}");
+    log!("  CH plane steps done: {step} of {STEPS}");
 }
 
 // ---- the 3D frames ---------------------------------------------------------
@@ -843,7 +843,7 @@ fn sequence(
     for k in 0..n {
         let t0 = rt::ticks();
         let mut l1 = heapless_name();
-        let _ = write!(l1, "H STEP {} OF {STEPS}", label.0);
+        let _ = write!(l1, "CH STEP {} OF {STEPS}", label.0);
         let mut l2 = heapless_name();
         let _ = write!(l2, "{} {:02}", label.1, k % 100);
         if !pipeline {
@@ -883,7 +883,7 @@ fn sequence(
 fn report3(name: &str, q: &Seq3, budget: u32, n: u32) {
     q.s.report(name, budget);
     log!(
-        "  H {name}: render median {} us ({}-{}), the renderer's price median {} us; {n} frames shown in {} ms ({} fps x10); picture {:08X}",
+        "  CH {name}: render median {} us ({}-{}), the renderer's price median {} us; {n} frames shown in {} ms ({} fps x10); picture {:08X}",
         q.render.median(),
         q.render.min(),
         q.render.max(),
@@ -1004,7 +1004,7 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
         step += 1;
     }
     log!(
-        "  H W5 turns and pipeline end on the same picture: {}",
+        "  CH W5 turns and pipeline end on the same picture: {}",
         hashes[0] == hashes[1]
     );
     for slot in 1..=6 {
@@ -1049,7 +1049,7 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
         step += 1;
     }
     log!(
-        "  H W6 turns and pipeline end on the same picture: {}",
+        "  CH W6 turns and pipeline end on the same picture: {}",
         hashes[0] == hashes[1]
     );
     for slot in 1..=6 {
@@ -1133,7 +1133,7 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
     let (ok, cpu, _) = submit_wait(g, &c[..n]);
     let us = us_since(t0);
     let _ = sc.flip(g, 0, true);
-    log!("  H W7 rotation by the 2D engine (640 x 480 turned into 480 x 640): {us} us, done {ok}");
+    log!("  CH W7 rotation by the 2D engine (640 x 480 turned into 480 x 640): {us} us, done {ok}");
     route("a screen turned", "2D BY CPU", us, cpu, ok);
 
     for t in [c0, c1, c2, c3, sky, cl1, cl2, app, cap] {
@@ -1142,7 +1142,7 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
     let _ = r.release(&mut g.pool);
     let _ = g.pool.free(a, PIC);
     let _ = g.pool.free(b, PIC);
-    log!("  H 3D steps done: {step} of {STEPS}");
+    log!("  CH 3D steps done: {step} of {STEPS}");
 }
 
 /// A 640 x 480 RGB565 landscape picture at `at` (stride 1280): the list's

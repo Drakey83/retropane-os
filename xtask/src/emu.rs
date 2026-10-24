@@ -4378,7 +4378,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_ft = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER", "1"))?;
     let run_fi = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_IRQ_BITS", "1"))?;
     let run_fd = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_DMA_FEED", "1"))?;
-    let run_h = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_HARNESS", "1"))?;
+    let run_ch = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_HARNESS", "1"))?;
+    let run_lim = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LIMITS", "1"))?;
+    let run_fi2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_STATUS2", "1"))?;
     // Run GS (the clocks' soak) with 70 s a setting: one minute's line and
     // the closing line each.
     let run_gs = variant_image_with(
@@ -4477,7 +4479,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 48] = [
+    let runs: [GpubenchRun; 50] = [
         (
             "run A",
             &run_a,
@@ -4550,6 +4552,11 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  F6a full commands, batched",
                 "  F6b surfaces once",
                 "  F6c surfaces once",
+                "  F7 the word cache made once: 259 words",
+                "  F7 the line cache made once: 37 lines",
+                "  F7a a copy a word (cached words): 259 operations",
+                "  F7b a copy a line (cached lines): 37 operations",
+                "  F7c one copy (the cached screen): 1 operations",
             ],
             false,
             (0, 0, 0),
@@ -5135,23 +5142,59 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             true,
             (0, 0, 0),
         ),
+        // The status bits run FI left (P18): every phase is read and the
+        // memory given back; what the bits do is the device's.
+        (
+            "run FI2",
+            &run_fi2,
+            &[
+                "FI2: MINTSTAT, SINTSTAT",
+                "  FI2 idle 20 ms:",
+                "  FI2 a full 2D FIFO draining:",
+                "  FI2 2D: 420 words sent true, done true",
+                "  FI2 a 3D render:",
+                "FI2: done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        // The 3D core's limits (P14): every measurement finishes and the
+        // memory is given back; the times are the device's.
+        (
+            "run LIM",
+            &run_lim,
+            &[
+                "LIM: the 3D core's limits",
+                "  LIM 63 textured 64 x 64 quads:",
+                "  LIM 63 translucent full-screen layers:",
+                "  LIM 32 quads, a texture each:",
+                "  LIM a 1024 x 1024 texture over the screen",
+                "LIM: done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
         // The compositor harness (docs/design/compositor-harness.md): every
         // sequence runs, both 3D ways end on one picture, and everything is
         // given back; the emulator's times mean nothing (emulator.md).
         (
-            "run H",
-            &run_h,
+            "run CH",
+            &run_ch,
             &[
-                "H: the compositor harness",
-                "  H W1 pan (VSCADR a frame): 160 frames",
-                "  H W2 row by 2D BY DMA: 8 rows (8 done)",
-                "  H W2 row by DMA PIXELS: 8 rows (8 done)",
-                "  H W4 tap by 2D BY DMA:",
-                "  H plane steps done: 10 of 16",
-                "  H W5 turns and pipeline end on the same picture: true",
-                "  H W6 turns and pipeline end on the same picture: true",
-                "  H 3D steps done: 16 of 16",
-                "H: done",
+                "CH: the compositor harness",
+                "  CH W1 pan (VSCADR a frame): 160 frames",
+                "  CH W2 row by 2D BY DMA: 7 rows (7 done)",
+                "  CH W2 row by DMA PIXELS: 7 rows (7 done)",
+                "  CH W4 tap by 2D BY DMA:",
+                "  CH plane steps done: 10 of 16",
+                "  CH W5 turns and pipeline end on the same picture: true",
+                "  CH W6 turns and pipeline end on the same picture: true",
+                "  CH 3D steps done: 16 of 16",
+                "CH: done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
             ],
@@ -5687,6 +5730,19 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         // and F4's, F5's and F6a's pictures word for word F0's (F6b and F6c
         // ask whether the engine keeps its surfaces: the device answers;
         // here they need only to run).
+        // F7's three pictures (the gate's F6: fewer operations) must be F0's
+        // too, word for word.
+        if name == "run F"
+            && log
+                .lines()
+                .filter(|l| l.starts_with("  F7") && l.contains("words differing from F0: 0"))
+                .count()
+                < 3
+        {
+            return Err(format!(
+                "gpubench run F: an F7 picture differs from F0's:{log}"
+            ));
+        }
         if name == "run F" && log.matches("words differing from F0: 0").count() < 3 {
             return Err(format!(
                 "gpubench run F: F4, F5 or F6a differs from F0's picture:{log}"

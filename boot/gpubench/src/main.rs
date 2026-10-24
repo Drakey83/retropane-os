@@ -137,16 +137,26 @@ mod image {
         ($($t:tt)*) => {{ let _ = writeln!(KeptRunLog, $($t)*); }};
     }
 
-    /// Run H, the compositor harness (docs/design/compositor-harness.md).
+    /// Run CH, the compositor harness (docs/design/compositor-harness.md).
     #[path = "../harness.rs"]
     mod harness;
+    /// Run LIM, the 3D core's limits (the gate's P14).
+    #[path = "../limits.rs"]
+    mod limits;
+    /// Run FI2, the status bits run FI left (the gate's P18).
+    #[path = "../statusbits.rs"]
+    mod statusbits;
 
     /// Run B: the texture-word probes instead of run A.
     const PROBES: bool = option_env!("RP_GPUBENCH_PROBES").is_some();
     /// Run C: the video plane's repoint and pans (the owner watches).
     const PLANES: bool = option_env!("RP_GPUBENCH_PLANES").is_some();
-    /// Run H: the compositor harness (the gate's T1, T3, T4; unattended).
+    /// Run CH: the compositor harness (the gate's T1, T3, T4; unattended).
     const HARNESS: bool = option_env!("RP_GPUBENCH_HARNESS").is_some();
+    /// Run LIM: the 3D core's limits (the gate's P14; unattended).
+    const LIMITS: bool = option_env!("RP_GPUBENCH_LIMITS").is_some();
+    /// Run FI2: the status bits run FI left (the gate's P18; reads only).
+    const STATUS2: bool = option_env!("RP_GPUBENCH_STATUS2").is_some();
     /// Run D: the video plane's undocumented format codes (the owner
     /// watches).
     const VFMT: bool = option_env!("RP_GPUBENCH_VFMT").is_some();
@@ -6464,6 +6474,206 @@ mod image {
             }
             rt::check_in();
         }
+        fewer_ops(g, a565, px565);
+    }
+
+    /// Copies from the surface `src` into `dst` (both RGB565), each item
+    /// (source origin, destination rectangle), batched; (all queued and
+    /// done, words sent).
+    fn copies565(
+        g: &mut Rig,
+        dst: (usize, usize),
+        src: (usize, usize),
+        items: &mut dyn Iterator<Item = ((u16, u16), (u16, u16, u16, u16))>,
+    ) -> (bool, usize) {
+        let mut batch = [0u32; 320];
+        let (mut n, mut sent, mut ok) = (0usize, 0usize, true);
+        for (origin, rect) in items {
+            let (cw, len) = rp_image::need(
+                cmd::copy(Format::RGB565, dst, src, origin, rect, 0),
+                "a 2D rectangle",
+            );
+            batch[n..n + len].copy_from_slice(&cw[..len]);
+            n += len;
+            if n > batch.len() - 12 {
+                ok &= g.e.submit(&batch[..n]).is_ok();
+                sent += n;
+                n = 0;
+            }
+        }
+        if n > 0 {
+            ok &= g.e.submit(&batch[..n]).is_ok();
+            sent += n;
+        }
+        (ok, sent)
+    }
+
+    /// A 2D fill of `[x0, x1) x [y0, y1)` of the RGB565 surface `(at,
+    /// stride)` with 0, queued.
+    fn clear565(g: &mut Rig, (at, stride): (usize, usize), rect: (u16, u16, u16, u16)) -> bool {
+        let w = rp_image::need(
+            cmd::fill(Format::RGB565, at, stride, rect, 0),
+            "a 2D rectangle",
+        );
+        g.e.submit(&w).is_ok()
+    }
+
+    /// Run F's F7 (the gate's F6, 2026-10-24): fewer operations. F6 found
+    /// ~6 us of every 2D operation fixed on the engine, so the lever is
+    /// fewer of them: the screen of text drawn (a) one copy a word from a
+    /// cache of rendered words (a word: six glyphs, the line's last two),
+    /// (b) one copy a line from a cache of rendered lines, (c) one copy of
+    /// the whole cached screen (a repaint); each cache's one-off making
+    /// timed apart, each picture held word for word to F0's.
+    #[inline(never)]
+    fn fewer_ops(g: &mut Rig, a565: usize, px565: &[u8]) {
+        const WORD: u32 = 6;
+        const WORD_W: u16 = (WORD * 12) as u16;
+        const WC_STRIDE: usize = 2048;
+        const PER_BAND: u32 = 14;
+        let words_per_line = F_COLS.div_ceil(WORD);
+        let n_words = F_LINES * words_per_line;
+        let bands = n_words.div_ceil(PER_BAND);
+        let wc_bytes = (WC_STRIDE * 16 * bands as usize) as u32;
+        let lc_bytes = 960 * 16 * F_LINES;
+        let (Some(wc), Some(lc)) = (
+            g.pool.alloc(wc_bytes, 0x1000),
+            g.pool.alloc(lc_bytes, 0x1000),
+        ) else {
+            log!("  F7: no 2700G memory for the caches");
+            return;
+        };
+        let screen = (PIC16.at as usize, PIC16.stride as usize);
+        let atlas = (a565, 2304usize);
+        let differ = |g: &Rig| -> u32 {
+            let mut n = 0;
+            for (i, w) in px565.as_chunks::<4>().0.iter().enumerate() {
+                if g.mem.load(PIC16.at as usize + 4 * i) != Some(u32::from_le_bytes(*w)) {
+                    n += 1;
+                }
+            }
+            n
+        };
+        // Word i's place in the cache.
+        let place = |i: u32| {
+            (
+                ((i % PER_BAND) * u32::from(WORD_W)) as u16,
+                ((i / PER_BAND) * 16) as u16,
+            )
+        };
+        let glyphs = |w: u32| (F_COLS - w * WORD).min(WORD);
+
+        // The caches made (one-off): the word cache and the line cache,
+        // each cleared then drawn glyph by glyph from the coloured atlas.
+        let t0 = rt::ticks();
+        let mut ok = clear565(
+            g,
+            (wc as usize, WC_STRIDE),
+            (0, 0, 1024, (16 * bands) as u16),
+        );
+        let (k, sent) = copies565(
+            g,
+            (wc as usize, WC_STRIDE),
+            atlas,
+            &mut (0..n_words).flat_map(|i| {
+                let (l, w) = (i / words_per_line, i % words_per_line);
+                let (bx, by) = place(i);
+                (0..glyphs(w)).map(move |c| {
+                    let k = f_glyph(l, w * WORD + c) as u16;
+                    let x = bx + (c * 12) as u16;
+                    ((k * 12, 0), (x, by, x + 12, by + 16))
+                })
+            }),
+        );
+        ok &= k && g.e.finish(g.mem.0, 500_000).is_ok();
+        log!(
+            "  F7 the word cache made once: {n_words} words, {} us ({} bytes of commands), done {ok}",
+            us_since(t0),
+            4 * sent
+        );
+        let t0 = rt::ticks();
+        let mut ok = clear565(g, (lc as usize, 960), (0, 0, 480, (16 * F_LINES) as u16));
+        let (k, sent) = copies565(
+            g,
+            (lc as usize, 960),
+            atlas,
+            &mut (0..F_LINES).flat_map(|l| {
+                (0..F_COLS).map(move |c| {
+                    let k = f_glyph(l, c) as u16;
+                    let (x, y) = ((4 + c * 12) as u16, (l * 16) as u16);
+                    ((k * 12, 0), (x, y, x + 12, y + 16))
+                })
+            }),
+        );
+        ok &= k && g.e.finish(g.mem.0, 500_000).is_ok();
+        log!(
+            "  F7 the line cache made once: {F_LINES} lines, {} us ({} bytes of commands), done {ok}",
+            us_since(t0),
+            4 * sent
+        );
+        rt::check_in();
+
+        for way in 0..3u32 {
+            let t0 = rt::ticks();
+            let mut ok = clear565(g, screen, (0, 0, 480, 640));
+            let (k, sent, ops) = match way {
+                0 => {
+                    let (k, sent) = copies565(
+                        g,
+                        screen,
+                        (wc as usize, WC_STRIDE),
+                        &mut (0..n_words).map(|i| {
+                            let (l, w) = (i / words_per_line, i % words_per_line);
+                            let (x, y) = ((4 + w * WORD * 12) as u16, (8 + l * 16) as u16);
+                            let ww = (glyphs(w) * 12) as u16;
+                            (place(i), (x, y, x + ww, y + 16))
+                        }),
+                    );
+                    (k, sent, n_words)
+                }
+                1 => {
+                    let (k, sent) = copies565(
+                        g,
+                        screen,
+                        (lc as usize, 960),
+                        &mut (0..F_LINES).map(|l| {
+                            let y = (8 + l * 16) as u16;
+                            ((0, (l * 16) as u16), (0, y, 480, y + 16))
+                        }),
+                    );
+                    (k, sent, F_LINES)
+                }
+                _ => {
+                    let (k, sent) = copies565(
+                        g,
+                        screen,
+                        (lc as usize, 960),
+                        &mut core::iter::once(((0, 0), (0, 8, 480, (8 + 16 * F_LINES) as u16))),
+                    );
+                    (k, sent, 1)
+                }
+            };
+            let queued = us_since(t0);
+            ok &= k && g.e.finish(g.mem.0, 500_000).is_ok();
+            let us = us_since(t0);
+            let bad = differ(g);
+            let name = [
+                "F7a a copy a word (cached words)",
+                "F7b a copy a line (cached lines)",
+                "F7c one copy (the cached screen)",
+            ][way as usize];
+            log!(
+                "  {name}: {ops} operations after the fill, {us} us in all (the CPU queueing {queued}; finished {ok}); {} bytes over the bus; words differing from F0: {bad}",
+                4 * sent
+            );
+            if !ok {
+                g.e.reset(rt::delay_us);
+                log!("    the 2D engine was reset");
+            }
+            rt::check_in();
+        }
+        let _ = g.pool.free(wc, wc_bytes);
+        let _ = g.pool.free(lc, lc_bytes);
     }
 
     // ---- Run G: the clocks (docs/research/2700g-full-potential.md P1, P2) ----
@@ -9928,6 +10138,10 @@ mod image {
             probes(&mut g);
         } else if HARNESS {
             harness::run(&mut g);
+        } else if LIMITS {
+            limits::run(&mut g);
+        } else if STATUS2 {
+            statusbits::run(&mut g);
         } else if TARGETS2 {
             target_formats2(&mut g);
         } else if TARGETS_WATCH {
