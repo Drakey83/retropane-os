@@ -489,6 +489,11 @@ pub enum Wait {
     EveryMs,
 }
 
+/// Test G9: the system block's offsets that froze Windows Mobile when read
+/// there (`rp-wmgpu` v3-v6, docs/hw/2700g.md: MBX offsets read on the
+/// system block), never read by either side's whole-block dump.
+pub const SYS_FREEZE: [usize; 4] = [0x12C, 0x30C, 0x85C, 0xF00];
+
 /// [`Wait::Quiet`]'s wait: past the slowest render seen (Dell's frame,
 /// 19.9 ms at 74.75 / 1; G3's quad at 12.6) with room to spare.
 pub const QUIET_US: u32 = 60_000;
@@ -809,7 +814,8 @@ mod image {
         || TEST_G5
         || TEST_G6
         || TEST_G7
-        || TEST_G8;
+        || TEST_G8
+        || TEST_G9;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -836,6 +842,9 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g8`).
     const TEST_G8: bool = option_env!("RP_GLESFEAT_G8").is_some();
+    /// Test G9 instead of G (`RP_GLESFEAT_G9=1`; device build
+    /// `RP_GLESFEAT_G9=1 cargo xtask codegen-variant rp-glesfeat g9`).
+    const TEST_G9: bool = option_env!("RP_GLESFEAT_G9").is_some();
     const _: () = assert!(
         !TEST_G8 || cfg!(rp_g7),
         "test G8 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -855,7 +864,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G8 {
+    const G_TITLE: &str = if TEST_G9 {
+        "RP-GLESFEAT TEST G9"
+    } else if TEST_G8 {
         "RP-GLESFEAT TEST G8"
     } else if TEST_G7 {
         "RP-GLESFEAT TEST G7"
@@ -872,7 +883,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G8 {
+    const G_NAME: &str = if TEST_G9 {
+        "G9"
+    } else if TEST_G8 {
         "G8"
     } else if TEST_G7 {
         "G7"
@@ -3232,6 +3245,79 @@ mod image {
         e.regs.write32(ENABLE, enable0);
     }
 
+    /// Every word of the MBX core's block and of the system block below the
+    /// display ([`super::SYS_FREEZE`] aside), then the PXA27x's registers
+    /// of `diag`'s list: `rp-wmprobe` v5's lines exactly, for the diff.
+    /// Each line is written before the next read.
+    fn full(regs: &mut Mmio, tag: &str) {
+        log!("full {tag}: begins (MBX, SYS, PXA)");
+        for off in (0..0x1000).step_by(4) {
+            log!(
+                "full {tag}: MBX 0x{off:03x} 0x{:08x}",
+                regs.read32(MBX + off)
+            );
+        }
+        for off in (0..0x2000).step_by(4) {
+            if super::SYS_FREEZE.contains(&off) {
+                continue;
+            }
+            log!("full {tag}: SYS 0x{off:04x} 0x{:08x}", regs.read32(off));
+        }
+        let mut snap = [0u32; diag::COUNT];
+        diag::snapshot(&mut snap);
+        let addrs = diag::GROUPS.iter().flat_map(|g| g.1.iter().map(|r| r.addr));
+        for (addr, v) in addrs.zip(snap) {
+            log!("full {tag}: PXA 0x{addr:08x} 0x{v:08x}");
+        }
+        log!("full {tag}: ends");
+    }
+
+    /// Test G9: every register under the loader after our render, at
+    /// Windows Mobile's clock and at 74.75 / 1 (where it draws wrong), for
+    /// the diff with `rp-wmprobe` v5's after Dell's draws (right).
+    fn test_g9(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G9: every register of the 2700G's two blocks and the PXA27x's under the loader after our render, at Windows Mobile's clock and at 74.75 / 1"
+        );
+        rp_image::on_crash(put_back);
+        say(
+            vram,
+            &[G_TITLE, "STEP 2 OF 3", "WM CLOCK: READING EVERY REGISTER"],
+        );
+        let ready = clean(e, vram);
+        let (d, _, _) = draw(e, vram, Way::Direct(G5_OURS), 0);
+        keep_reference(vram);
+        log!("G9 at Windows Mobile's clock: memory manager ready {ready}, rendered {d}");
+        full(&mut e.regs, "loader div2");
+        say(
+            vram,
+            &[
+                G_TITLE,
+                "STEP 3 OF 3",
+                "74.75 MHZ / 1: READING EVERY REGISTER",
+            ],
+        );
+        if to_divide_1(&mut e.regs, Speed::ladder(super::G3_PLLS[0].0), false) {
+            let screen = display_check(&mut e.regs, "after the change");
+            let ready = clean(e, vram);
+            let (d, _, _) = draw(e, vram, Way::Direct(G5_OURS), 0);
+            let t = compare(vram, REF);
+            log!(
+                "G9 at 74.75 / 1: memory manager ready {ready}, rendered {d}, {} words off the reference (the screen on: {screen})",
+                t.wrong
+            );
+            full(&mut e.regs, "loader div1");
+            clock_back(&mut e.regs);
+            let _ = display_check(&mut e.regs, "back at Windows Mobile's clock");
+        } else {
+            log!("G9: the clock change was refused: no divide-1 reading");
+        }
+        say(
+            vram,
+            &[G_TITLE, "DONE: PRESS A BUTTON", "EVERY REGISTER READ"],
+        );
+    }
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -3264,7 +3350,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G8 {
+        let first = if TEST_G9 {
+            "STEP 1 OF 3"
+        } else if TEST_G8 {
             "STEP 1 OF 6"
         } else if TEST_G7 {
             "STEP 1 OF 4"
@@ -3328,7 +3416,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G8 {
+        if ready && TEST_G9 {
+            test_g9(&mut e, vram);
+        } else if ready && TEST_G8 {
             test_g8(&mut e, vram);
         } else if ready && TEST_G7 {
             test_g7(&mut e, vram);

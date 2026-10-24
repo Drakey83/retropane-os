@@ -37,6 +37,10 @@
  * (rp-wmprobe-div2-vram.bin in run 1, -div1- in run 2), Dell's frame in it,
  * for test G7 to replay (capture()).
  *
+ * v5 (2026-10-23): first every word of both 2700G register blocks and the
+ * PXA27x's clock, memory and GPIO registers (log_full), for test G9's diff
+ * with the loader's.
+ *
  * Module 1, divide 1 under Dell's own driver. Intel's datasheet lists the
  * 2700G's graphics clock divider as 1, 2 or 4 (graphics clock 13-75 MHz),
  * and Dell's driver picks divide 1 itself when its CoreClock setting is at
@@ -272,6 +276,59 @@ static void capture(const WCHAR *name)
     free(buf);
     out("capture: %s, %lu bytes of the 2700G's 16 MiB local memory in %lu ms%s", aname,
         (unsigned long)total, us_since(t0) / 1000, total == (16UL << 20) ? "" : ": INCOMPLETE");
+}
+
+/* v5 (2026-10-23, test G9): every word of the MBX core's block (0x000-
+ * 0xFFC) and of the system block below the display (0x000-0x1FFC, the four
+ * offsets that froze Windows Mobile when read there left out), then the
+ * PXA27x's clock, memory, PC Card, interrupt, power, PWM/LCD and GPIO
+ * registers (rp_hal_pxa27x::diag's list), after Dell's draws: the same
+ * lines `rp-glesfeat` G9 writes under the loader, to diff. Each value is
+ * written and flushed before the next read, so a read that freezes the
+ * device is the one after the last line. Reads only. */
+static const unsigned long sys_freeze[] = {0x12C, 0x30C, 0x85C, 0xF00};
+static const unsigned long pxa_regs[] = {
+    0x41300000, 0x41300004, 0x41300008, 0x4130000C,
+    0x48000000, 0x48000004, 0x48000008, 0x4800000C, 0x48000010, 0x48000014,
+    0x4800001C, 0x48000040, 0x48000058, 0x48000044, 0x48000048, 0x48000064,
+    0x48000028, 0x4800002C, 0x48000030, 0x48000034, 0x48000038, 0x4800003C,
+    0x40D00004, 0x40D00008, 0x40D00014, 0x40D00010, 0x40D000A0, 0x40D000A4, 0x40D000AC,
+    0x40F00030, 0x40F00004, 0x40F0001C, 0x40F0000C,
+    0x40B00000, 0x40B00004, 0x40B00008, 0x40C00000, 0x40C00004, 0x40C00008,
+    0x44000000, 0x4400000C, 0x58000000,
+    0x40E00000, 0x40E00004, 0x40E00008, 0x40E00100, 0x40E0000C, 0x40E00010,
+    0x40E00014, 0x40E0010C,
+    0x40E00054, 0x40E00058, 0x40E0005C, 0x40E00060, 0x40E00064, 0x40E00068,
+    0x40E0006C, 0x40E00070,
+};
+
+static void log_full(const char *tag)
+{
+    unsigned long off;
+    unsigned i, k;
+    if (!sys || !mbx) {
+        out("full %s: registers not mapped", tag);
+        return;
+    }
+    out("full %s: begins (MBX, SYS, PXA)", tag);
+    for (off = 0; off < 0x1000; off += 4)
+        out("full %s: MBX 0x%03lx 0x%08lx", tag, off, mbx[off / 4]);
+    for (off = 0; off < 0x2000; off += 4) {
+        int skip = 0;
+        for (k = 0; k < sizeof sys_freeze / sizeof sys_freeze[0]; k++)
+            skip |= off == sys_freeze[k];
+        if (skip)
+            continue;
+        out("full %s: SYS 0x%04lx 0x%08lx", tag, off, sys[off / 4]);
+    }
+    for (i = 0; i < sizeof pxa_regs / sizeof pxa_regs[0]; i++) {
+        volatile unsigned long *r = map_phys(pxa_regs[i] & ~0xFFFUL, 0x1000);
+        if (!r)
+            continue;
+        out("full %s: PXA 0x%08lx 0x%08lx", tag, pxa_regs[i], r[(pxa_regs[i] & 0xFFF) / 4]);
+        VirtualFree((void *)r, 0, MEM_RELEASE);
+    }
+    out("full %s: ends", tag);
 }
 
 /* ---- Dell's OpenGL ES (libGLES_CL, by name) ------------------------- */
@@ -1098,6 +1155,10 @@ static void divide1(void)
     status(run2 ? L"9 of 9: divide 1 under Dell's driver: reading the chip's state (run 2)"
                 : L"9 of 9: divide 1 under Dell's driver: reading the chip's state (run 1)");
     log_state(run2 ? "run 2 after" : "run 1 after");
+    /* v5: every word, for the diff with the loader's (test G9). */
+    status(run2 ? L"9 of 9: divide 1 under Dell's driver: reading every register (run 2)"
+                : L"9 of 9: divide 1 under Dell's driver: reading every register (run 1)");
+    log_full(run2 ? "wm div1" : "wm div2");
     /* v4: Dell's frame, with the context still open (nothing drawn since). */
     status(run2 ? L"9 of 9: divide 1 under Dell's driver: copying the chip's memory (run 2, about a minute)"
                 : L"9 of 9: divide 1 under Dell's driver: copying the chip's memory (run 1, about a minute)");
@@ -1141,7 +1202,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (logf_ == INVALID_HANDLE_VALUE)
         return 1;
     SetFilePointer(logf_, 0, NULL, FILE_END);
-    out("rp-wmprobe v4 (Windows Mobile probe and baseline suite; the chip's state and memory after Dell's draws), tick %lu",
+    out("rp-wmprobe v5 (Windows Mobile probe and baseline suite; the chip's registers, state and memory after Dell's draws), tick %lu",
         (unsigned long)GetTickCount());
 
     sys = map_phys(SYS_PHYS, 0x2000);

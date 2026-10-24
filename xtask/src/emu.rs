@@ -2995,9 +2995,10 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g6") => return boot_loader_glesfeat_g(root, 6),
         Ok("g7") => return boot_loader_glesfeat_g(root, 7),
         Ok("g8") => return boot_loader_glesfeat_g(root, 8),
+        Ok("g9") => return boot_loader_glesfeat_g9(root),
         Ok(other) => {
             return Err(format!(
-                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5, g6, g7 or g8"
+                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5, g6, g7, g8 or g9"
             ));
         }
         Err(_) => {}
@@ -3219,6 +3220,83 @@ fn boot_loader_glesfeat_g5(root: &Path) -> Result<(), String> {
             "glesfeat G5: {refs} references, {controls} right controls and {refused} refusals for {checks} checks:{log}"
         ));
     }
+    Ok(())
+}
+
+/// Test G9 (`RP_GLESFEAT_G9`): every register of the 2700G's two blocks and
+/// the PXA27x's, under the loader after our render at Windows Mobile's
+/// clock and at 74.75 / 1, for the diff with `rp-wmprobe` v5's. Held: both
+/// dumps whole (1,024 MBX words, 2,044 of the system block, every PXA
+/// register of `diag`'s list, each once), the renders drawn, the clock put
+/// back, the image back at the loader.
+fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
+    let loader = raw_image(root, "rp-loader")?;
+    let bin = variant_image_with(root, "rp-glesfeat", ("RP_GLESFEAT_G9", "1"), None)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.query("sendkey ret 200")?;
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "full loader div1: ends")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(900),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("glesfeat G9: never came back to the loader")?;
+    if crashed(log) || log.contains("did not return") {
+        return Err(format!("glesfeat G9: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "test G9, Gouraud at the cores' divide 1",
+        "G9 at Windows Mobile's clock: memory manager ready true, rendered true",
+        "G9 at 74.75 / 1: memory manager ready true, rendered true",
+        "RETROPANE-GLESFEAT: DONE",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("glesfeat G9: the run log has no `{want}`:{log}"));
+        }
+    }
+    let pxa = rp_hal_pxa27x::diag::COUNT;
+    for tag in ["loader div2", "loader div1"] {
+        let lines: Vec<&str> = log
+            .lines()
+            .filter(|l| l.starts_with(&format!("full {tag}: ")))
+            .collect();
+        let count = |what: &str| lines.iter().filter(|l| l.contains(what)).count();
+        let (mbx, sys, px) = (count(": MBX 0x"), count(": SYS 0x"), count(": PXA 0x"));
+        if mbx != 1024 || sys != 2044 || px != pxa || !lines.iter().any(|l| l.ends_with("ends")) {
+            return Err(format!(
+                "glesfeat G9: {tag}: {mbx} MBX, {sys} SYS and {px} PXA lines, want 1024, 2044 and {pxa}:{log}"
+            ));
+        }
+        for frozen in ["SYS 0x012c ", "SYS 0x030c ", "SYS 0x085c ", "SYS 0x0f00 "] {
+            if count(frozen) != 0 {
+                return Err(format!(
+                    "glesfeat G9: {tag} read {frozen}(it froze Windows Mobile):{log}"
+                ));
+            }
+        }
+    }
+    if !log.contains("read back: COREPLL 0xbb1 MBXCLK 0x6") {
+        return Err(format!(
+            "glesfeat G9: Windows Mobile's clock not read back:{log}"
+        ));
+    }
+    eprintln!("    glesfeat G9 OK: both dumps whole, back at the loader");
     Ok(())
 }
 
