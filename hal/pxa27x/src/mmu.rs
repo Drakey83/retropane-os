@@ -16,11 +16,6 @@ pub enum Memory {
     WriteCombine,
     /// Uncached, unbuffered: device registers, accessed exactly as written.
     Device,
-    /// Cached in the XScale's mini data cache, not the main one: the X bit
-    /// (bit 12, TEX[0]) with C 1, B 0 (Intel's XScale core developer's
-    /// manual, the X bit's table; unproven on the X51v until the CPU gate's
-    /// V1/C5 probe run). For streaming data that would evict hot data.
-    Mini,
 }
 
 /// One region of the map: `len` bytes (a multiple of 1 MiB) from `virt` to
@@ -43,13 +38,22 @@ const MIB: u32 = 1 << 20;
 /// and user, bring-up only), cache bits per `memory`.
 #[must_use]
 pub const fn section(phys: u32, memory: Memory) -> u32 {
-    let (c, b, x) = match memory {
-        Memory::Normal => (1, 1, 0),
-        Memory::WriteCombine => (0, 1, 0),
-        Memory::Device => (0, 0, 0),
-        Memory::Mini => (1, 0, 1),
+    let (c, b) = match memory {
+        Memory::Normal => (1, 1),
+        Memory::WriteCombine => (0, 1),
+        Memory::Device => (0, 0),
     };
-    (phys & 0xFFF0_0000) | (x << 12) | (0b11 << 10) | (c << 3) | (b << 2) | 0b10
+    (phys & 0xFFF0_0000) | (0b11 << 10) | (c << 3) | (b << 2) | 0b10
+}
+
+/// A section cached in the XScale's mini data cache, not the main one: the
+/// X bit (bit 12, TEX[0]) with C 1, B 0 (Intel's XScale core developer's
+/// manual, the X bit's table; unproven on the X51v until the CPU gate's
+/// V1/C5 probe run). Test windows only ([`Pages::MiniSections`]): no
+/// region of the OS's maps is mini-cached.
+#[must_use]
+pub const fn mini_section(phys: u32) -> u32 {
+    (phys & 0xFFF0_0000) | (1 << 12) | (0b11 << 10) | (1 << 3) | 0b10
 }
 
 /// Fills a 4096-entry first-level table: every listed region mapped, the rest
@@ -128,7 +132,7 @@ pub enum Pages {
     Large,
     /// 4 KiB small pages (the kernel's map).
     Small,
-    /// 1 MiB sections cached in the mini data cache ([`Memory::Mini`]).
+    /// 1 MiB sections cached in the mini data cache ([`mini_section`]).
     MiniSections,
 }
 
@@ -303,10 +307,9 @@ mod tests {
 
     #[test]
     fn a_mini_cached_section_sets_x_with_c_and_not_b() {
-        let d = section(0xA950_1234, Memory::Mini);
+        let d = mini_section(0xA950_1234);
         assert_eq!(d, 0xA950_0000 | (1 << 12) | (0b11 << 10) | (1 << 3) | 0b10);
-        // The other types leave the X bit clear (no section of ours moved
-        // into the mini cache by this change).
+        // The OS's memory types leave the X bit clear.
         for m in [Memory::Normal, Memory::WriteCombine, Memory::Device] {
             assert_eq!(section(0xA950_0000, m) & (1 << 12), 0, "{m:?}");
         }

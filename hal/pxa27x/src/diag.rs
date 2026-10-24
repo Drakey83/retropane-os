@@ -489,9 +489,7 @@ mod target {
                 crate::mmu::Pages::Sections => {
                     crate::mmu::section(phys + i * MIB, crate::mmu::Memory::Normal)
                 }
-                crate::mmu::Pages::MiniSections => {
-                    crate::mmu::section(phys + i * MIB, crate::mmu::Memory::Mini)
-                }
+                crate::mmu::Pages::MiniSections => crate::mmu::mini_section(phys + i * MIB),
                 _ => crate::mmu::coarse(l2_phys + i * 1024),
             };
             // SAFETY: entries for the window's unmapped MiBs (checked
