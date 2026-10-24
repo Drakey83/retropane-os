@@ -2531,6 +2531,44 @@ fn compress_k<const K: u32>(",
             "the_model_table_is_what_the_model_renders",
         ]),
     },
+    Mutant {
+        name: "the video scaler: driven past 2:1 down (gate P9)",
+        file: "drivers/mbx-display/src/layers.rs",
+        from: "src <= out * MAX_DOWN && out <= src * MAX_UP,",
+        to: "src <= out * 4 && out <= src * MAX_UP,",
+        check: Check::Host(&["-p", "rp-drv-mbx-display", "scale_edges"]),
+    },
+    Mutant {
+        name: "the video scaler: a scaled direction left bypassed (gate P9)",
+        file: "drivers/mbx-display/src/layers.rs",
+        from: "        if ow == w {
+            spoctrl |= SPOCTRL_H_BYPASS;",
+        to: "        if ow != 0 {
+            spoctrl |= SPOCTRL_H_BYPASS;",
+        check: Check::Host(&["-p", "rp-drv-mbx-display", "scaled_registers_follow_mbxfb"]),
+    },
+    Mutant {
+        name: "the refresh ladder walks from a PLL it can't put back (gate P17)",
+        file: "boot/refresh/src/lib.rs",
+        from: "    found == WM_DISPPLL || found == FAST_DISPPLL",
+        to: "    found != 0",
+        check: Check::Host(&[
+            "-p",
+            "rp-refresh",
+            "the_ladder_starts_only_from_a_value_it_can_put_back",
+        ]),
+    },
+    Mutant {
+        name: "the refresh ladder past the panel's rated pixel clock (gate P17)",
+        file: "boot/refresh/src/lib.rs",
+        from: "pll(31, 4, 2), pll(32, 4, 2)];",
+        to: "pll(31, 4, 2), pll(33, 4, 2)];",
+        check: Check::Host(&[
+            "-p",
+            "rp-refresh",
+            "the_ladder_stays_in_the_panels_range_and_the_plls",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
