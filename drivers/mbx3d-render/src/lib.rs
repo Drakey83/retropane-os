@@ -554,19 +554,65 @@ pub const fn predict_us(tiles: u32, quarters: u32) -> u32 {
 }
 
 /// What one quad adds to a tile's render time, in quarter-microseconds
-/// (run 2): opaque flat or Gouraud ~0.3-0.45 us (100 tiles under one quad
-/// 559 us; 325 tiles, 416 quads 1,888 us), textured ~1.1 us (285 quads
-/// 12,813 us), blended ~4.9 us, about a tile's worth (338 additive tiles
-/// 3,387 us; 378 alpha quads 14,342 us).
+/// (quality audit C20, refitted 2026-10-24): `texels16` is a textured
+/// quad's texels a pixel x 16 ([`texels16`]), `None` for flat or Gouraud.
+/// Measured on the X51v at Windows Mobile's clock into a 16-bit target
+/// (`rp-gpubench` run LIM, 2026-10-24): an opaque flat quad almost nothing
+/// (63 covering 2,016 tiles +37 us; `rp-mbx3d-api` run 2's small flat
+/// quads ~0.3-0.45 us: 0.25 the compromise); a textured one by how many
+/// texels a pixel it reads (a whole texture over the screen: 1.3, 2.1,
+/// 3.3, 5.3, 7.4 us more a tile at 0.13, 0.27, 0.53, 1.06, 2.13 texels a
+/// pixel; 63 textured 64 x 64 quads at 1:1 5.6 us a tile; run 2's 8x
+/// magnified 0.75); a translucent flat layer 5.18 us (8 to 32 layers);
+/// translucent and textured about 3.3 us more than textured (G2-G3: 8-9
+/// us at 1:1).
 #[must_use]
-pub const fn quad_cost(textured: bool, blended: bool) -> u32 {
-    if blended {
-        20
-    } else if textured {
-        4
-    } else {
-        2
+pub const fn quad_cost(texels16: Option<u32>, blended: bool) -> u32 {
+    let textured = match texels16 {
+        None => 0,
+        Some(r) if r < 3 => 5,
+        Some(r) if r < 6 => 8,
+        Some(r) if r < 12 => 13,
+        Some(r) if r < 24 => 21,
+        Some(r) if r < 48 => 30,
+        Some(_) => 38,
+    };
+    match (blended, texels16.is_some()) {
+        (false, false) => 1,
+        (false, true) => textured,
+        (true, false) => 21,
+        (true, true) => textured + 13,
     }
+}
+
+/// A draw's texels a pixel x 16 along its more-sampled axis, for
+/// [`quad_cost`]: `None` unless it is textured with a size.
+#[must_use]
+pub fn texels16(d: &Draw) -> Option<u32> {
+    let Paint::Texture { tex, uv, .. } = d.paint else {
+        return None;
+    };
+    let span = |f: &dyn Fn(usize) -> i64| {
+        let (lo, hi) = (0..4).fold((i64::MAX, i64::MIN), |(lo, hi), k| {
+            (lo.min(f(k)), hi.max(f(k)))
+        });
+        hi - lo
+    };
+    let side = i64::from(tex.side());
+    // Texels over UV_ONE, pixels over SUB, the ratio times 16.
+    let r = |axis: usize| {
+        let texels = span(&|k| i64::from(if axis == 0 { uv[k].0 } else { uv[k].1 })) * side;
+        let pixels = span(&|k| {
+            i64::from(if axis == 0 {
+                d.corners[k].x
+            } else {
+                d.corners[k].y
+            })
+        });
+        (pixels > 0).then(|| texels * 16 * i64::from(SUB) / (i64::from(UV_ONE) * pixels))
+    };
+    let (a, b) = (r(0)?, r(1)?);
+    u32::try_from(a.max(b)).ok()
 }
 
 /// Where things sit in the parameter memory, in bytes from its start (the
@@ -1167,7 +1213,7 @@ impl Renderer {
                     kind,
                     tiles,
                     hash: hash(&words[..n], tiles),
-                    cost: quad_cost(kind == Kind::Textured, d.blend.is_some()) as u8,
+                    cost: quad_cost(texels16(d), d.blend.is_some()).min(255) as u8,
                 };
                 if s.kind == old.kind && s.hash == old.hash {
                     return Ok(());

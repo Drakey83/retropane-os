@@ -275,7 +275,8 @@ impl Gpu {
                 // Time: every object but the tile's first (the
                 // background), each half a quad (run 2's fit).
                 if j > 0 {
-                    quads += quad_cost(o.tex.is_some(), o.tsp & m3::TSP_BLEND != 0);
+                    // 1:1 assumed: the model doesn't keep the quad's scale.
+                    quads += quad_cost(o.tex.is_some().then_some(16), o.tsp & m3::TSP_BLEND != 0);
                 }
             }
             // The target's format (`0x650`, version 26 and `rp-gpubench`

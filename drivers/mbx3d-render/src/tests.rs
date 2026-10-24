@@ -149,7 +149,10 @@ fn a_frame_after_the_first_costs_the_start_one_status_read_and_its_clear() {
     assert_eq!(g.px(108, 150), BLUE);
     assert_eq!(g.px(307, 150), BLUE);
     assert_eq!(g.px(308, 150), GREY);
-    assert!(s.predicted_us == predict_us(s.tiles, 2 * s.quads) && s.done_us >= s.predicted_us);
+    assert!(
+        s.predicted_us == predict_us(s.tiles, s.quads * quad_cost(None, false))
+            && s.done_us >= s.predicted_us
+    );
     assert_eq!(
         s.quads,
         26 * 13,
@@ -774,9 +777,11 @@ fn the_set_up_is_the_proven_sequence() {
 fn the_prediction_fits_run_2s_exact_times() {
     // rp-mbx3d-api run 2 (local/rp-mbx3d-api-run2.txt): tiles, flat,
     // textured and blended quads summed over the tiles, the exact time.
-    let flat = quad_cost(false, false);
-    let textured = quad_cost(true, false);
-    let blended = quad_cost(false, true);
+    let flat = quad_cost(None, false);
+    // Run 2's textured quads: 8 x 8 textures shown 8x (0.125 texels a
+    // pixel).
+    let textured = quad_cost(Some(2), false);
+    let blended = quad_cost(None, true);
     for (tiles, cost, exact) in [
         (1, flat, 15),
         (16, 0, 93),
@@ -791,11 +796,112 @@ fn the_prediction_fits_run_2s_exact_times() {
         (2400, 378 * blended, 14_342),
     ] {
         let p = predict_us(tiles, cost);
+        // 6%, or 25 us on the smallest frames (the start's own spread).
         assert!(
-            p.abs_diff(exact) * 100 <= exact * 6,
+            p.abs_diff(exact) * 100 <= exact * 6 || p.abs_diff(exact) <= 25,
             "{tiles} tiles: {p} vs {exact}"
         );
     }
+}
+
+#[test]
+fn the_prediction_fits_the_gates_limits_run() {
+    // rp-gpubench run LIM (X51v, 2026-10-24, local/rp-gpubench-runLIM.txt):
+    // a 16-bit target at Windows Mobile's clock, 2400 tiles, the median of
+    // 3 renders (quality audit C20).
+    let q = quad_cost;
+    for (what, cost, exact) in [
+        ("63 flat 64 x 64 quads", 2016 * q(None, false), 12_519),
+        (
+            "63 textured 64 x 64 quads, 1:1",
+            2016 * q(Some(16), false),
+            23_679,
+        ),
+        ("8 translucent layers", 8 * 2400 * q(None, true), 111_917),
+        ("32 translucent layers", 32 * 2400 * q(None, true), 410_218),
+        (
+            "a 64 texture over the screen",
+            2400 * q(Some(2), false),
+            15_637,
+        ),
+        (
+            "a 128 texture over the screen",
+            2400 * q(Some(4), false),
+            17_531,
+        ),
+        (
+            "a 256 texture over the screen",
+            2400 * q(Some(8), false),
+            20_343,
+        ),
+        (
+            "a 512 texture over the screen",
+            2400 * q(Some(17), false),
+            25_098,
+        ),
+        (
+            "a 1024 texture over the screen",
+            2400 * q(Some(34), false),
+            30_203,
+        ),
+    ] {
+        let p = predict_us(2400, cost);
+        assert!(
+            p.abs_diff(exact) * 100 <= exact * 6,
+            "{what}: {p} vs {exact}"
+        );
+    }
+}
+
+#[test]
+fn texels_a_pixel_follow_the_quads_size_and_its_textures_span() {
+    let t = Texture {
+        at: 0,
+        code: 4, // 128 texels a side
+        format: format::RGB565 as u8,
+        u_mode: address::CLAMP as u8,
+        v_mode: address::CLAMP as u8,
+        linear: false,
+        levels: 1,
+    };
+    let full = [(0, 0), (UV_ONE, 0), (UV_ONE, UV_ONE), (0, UV_ONE)];
+    let at = |w, h, uv| {
+        texels16(&Draw::rect(
+            0,
+            0,
+            w,
+            h,
+            Paint::Texture {
+                tex: t,
+                uv,
+                tint: 0xFFFF_FFFF,
+            },
+        ))
+    };
+    assert_eq!(at(128, 128, full), Some(16), "1:1");
+    assert_eq!(at(64, 64, full), Some(32), "shrunk 2:1");
+    assert_eq!(at(200, 260, full), Some(10), "W5's cards: 0.64");
+    assert_eq!(at(128, 64, full), Some(32), "the more-sampled axis");
+    let twice = [(0, 0), (2 * UV_ONE, 0), (2 * UV_ONE, UV_ONE), (0, UV_ONE)];
+    assert_eq!(at(128, 128, twice), Some(32), "wrapped twice across");
+    assert_eq!(at(0, 128, full), None, "no size");
+    assert_eq!(texels16(&Draw::rect(0, 0, 8, 8, Paint::Flat(0))), None);
+    // The table's edges: each band's first value, and the far end.
+    for (r, want) in [
+        (0, 5),
+        (2, 5),
+        (3, 8),
+        (6, 13),
+        (12, 21),
+        (24, 30),
+        (48, 38),
+        (u32::MAX, 38),
+    ] {
+        assert_eq!(quad_cost(Some(r), false), want, "{r}");
+        assert_eq!(quad_cost(Some(r), true), want + 13, "{r} translucent");
+    }
+    assert_eq!(quad_cost(None, false), 1);
+    assert_eq!(quad_cost(None, true), 21);
 }
 
 #[test]

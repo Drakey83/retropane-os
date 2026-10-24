@@ -2569,6 +2569,32 @@ fn compress_k<const K: u32>(",
             "the_ladder_stays_in_the_panels_range_and_the_plls",
         ]),
     },
+    Mutant {
+        name: "the 3D price: a textured quad back to run 2's 1 us at 1:1 (C20)",
+        file: "drivers/mbx3d-render/src/lib.rs",
+        from: "        Some(r) if r < 24 => 21,",
+        to: "        Some(r) if r < 24 => 4,",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx3d-render",
+            "--features",
+            "model",
+            "the_prediction_fits_the_gates_limits_run",
+        ]),
+    },
+    Mutant {
+        name: "the 3D price: texels a pixel read across one axis only (C20)",
+        file: "drivers/mbx3d-render/src/lib.rs",
+        from: "    u32::try_from(a.max(b)).ok()",
+        to: "    u32::try_from(a).ok()",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx3d-render",
+            "--features",
+            "model",
+            "texels_a_pixel_follow_the_quads_size_and_its_textures_span",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
