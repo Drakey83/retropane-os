@@ -33,6 +33,10 @@
  * block's reset, status, interrupt, render and tile-accelerator
  * registers), for test G5 to copy under RetroPane's loader.
  *
+ * v4 (2026-10-23): then the 2700G's whole 16 MiB local memory to the card
+ * (rp-wmprobe-div2-vram.bin in run 1, -div1- in run 2), Dell's frame in it,
+ * for test G7 to replay (capture()).
+ *
  * Module 1, divide 1 under Dell's own driver. Intel's datasheet lists the
  * 2700G's graphics clock divider as 1, 2 or 4 (graphics clock 13-75 MHz),
  * and Dell's driver picks divide 1 itself when its CoreClock setting is at
@@ -219,6 +223,55 @@ static void log_state(const char *when)
     for (off = 0x800; off <= 0x87C; off += 4)
         out("%s: MBX 0x%03lx 0x%08lx", when, off, mbx[off / 4]);
     out("%s: state end", when);
+}
+
+/* v4 (2026-10-23, test G7): the 2700G's whole 16 MiB local memory copied
+ * to the card right after Dell's draws, his frame still in it (objects,
+ * lists, region array, target), for the PC to take his frame out and G7 to
+ * replay it word for word under RetroPane's loader. Read-only and uncached,
+ * a 1 MiB slice at a time into RAM and then to the file (the card's driver
+ * never reads the chip's memory itself), as rp-wm3d copied DoomGLES's.
+ * The registers saying where his frame lies are in log_state's lines. */
+static void capture(const WCHAR *name)
+{
+    WCHAR path[MAX_PATH];
+    HANDLE f;
+    DWORD n = 0, total = 0;
+    unsigned long off;
+    unsigned long long t0 = ticks();
+    unsigned char *buf = (unsigned char *)malloc(1UL << 20);
+    char aname[64];
+    int k;
+    for (k = 0; name[k] && k < 63; k++)
+        aname[k] = (char)name[k];
+    aname[k] = 0;
+    if (!buf) {
+        out("capture: no 1 MiB of RAM: not captured");
+        return;
+    }
+    _snwprintf(path, MAX_PATH, L"%s\\%s", dir, name);
+    f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        out("capture: %s not created, error %lu", aname, (unsigned long)GetLastError());
+        free(buf);
+        return;
+    }
+    for (off = 0; off < (16UL << 20); off += 1UL << 20) {
+        volatile unsigned long *m = map_phys(0x0C000000UL + off, 1UL << 20);
+        unsigned long i;
+        if (!m)
+            break;
+        for (i = 0; i < (1UL << 20) / 4; i++)
+            ((unsigned long *)buf)[i] = m[i];
+        VirtualFree((void *)m, 0, MEM_RELEASE);
+        if (!WriteFile(f, buf, 1UL << 20, &n, NULL) || n != (1UL << 20))
+            break;
+        total += n;
+    }
+    CloseHandle(f);
+    free(buf);
+    out("capture: %s, %lu bytes of the 2700G's 16 MiB local memory in %lu ms%s", aname,
+        (unsigned long)total, us_since(t0) / 1000, total == (16UL << 20) ? "" : ": INCOMPLETE");
 }
 
 /* ---- Dell's OpenGL ES (libGLES_CL, by name) ------------------------- */
@@ -1045,6 +1098,10 @@ static void divide1(void)
     status(run2 ? L"9 of 9: divide 1 under Dell's driver: reading the chip's state (run 2)"
                 : L"9 of 9: divide 1 under Dell's driver: reading the chip's state (run 1)");
     log_state(run2 ? "run 2 after" : "run 1 after");
+    /* v4: Dell's frame, with the context still open (nothing drawn since). */
+    status(run2 ? L"9 of 9: divide 1 under Dell's driver: copying the chip's memory (run 2, about a minute)"
+                : L"9 of 9: divide 1 under Dell's driver: copying the chip's memory (run 1, about a minute)");
+    capture(run2 ? L"rp-wmprobe-div1-vram.bin" : L"rp-wmprobe-div2-vram.bin");
     gl_stop();
     if (!run2) {
         save(L"rp-wmprobe-ref.bin", first);
@@ -1084,7 +1141,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (logf_ == INVALID_HANDLE_VALUE)
         return 1;
     SetFilePointer(logf_, 0, NULL, FILE_END);
-    out("rp-wmprobe v3 (Windows Mobile probe and baseline suite; the chip's state after Dell's draws), tick %lu",
+    out("rp-wmprobe v4 (Windows Mobile probe and baseline suite; the chip's state and memory after Dell's draws), tick %lu",
         (unsigned long)GetTickCount());
 
     sys = map_phys(SYS_PHYS, 0x2000);
