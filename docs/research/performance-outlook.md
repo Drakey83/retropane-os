@@ -28,6 +28,16 @@ status from GC2I/GC2J:
 | 117.00 / 1 | 2.35x | 1.94x | 2.06x | 1.93x | 1 wrong pixel in 4,578 renders |
 | 133.25 / 1 | 2.67x | 2.12x | 2.22x | 2.07x | 1 wrong pixel in ~470 renders, one patch in one scene |
 
+- **Untested steps, extrapolated** (2026-10-24, not run at divide 1):
+  fitting each kind's GC2I times at 108.33 and 133.25 / 1 as a fixed part
+  plus a part that shrinks with the clock (the fit predicts 117.00 / 1
+  within 0.4 ms; Gouraud's fixed part is zero), **141.83 / 1** would give
+  Gouraud 2.85x, texturing 2.23x, blending 2.32x, the 32-bit scene 2.16x;
+  **149.50 / 1** 3.00x, 2.33x, 2.42x and 2.24x. Unknown whether either
+  draws right: the cores would run at about twice Intel's 75 MHz rating,
+  wrong pixels already appear at 117 and 133.25 / 1 (GC2J), and the local
+  memory's own ceiling lies between 149.50 (right at divide 2, GC2H) and
+  156 MHz (GC2H2).
 - **Shading scales with the cores' clock; texturing less**, because
   texels come from local memory, which runs on the system clock. The
   textured kinds were right at every divide-1 step even with their target
