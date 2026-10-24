@@ -508,6 +508,32 @@ pub const SYS_WORDS: [usize; 56] = [
     0x101C, 0x1020, 0x1024, 0x1028, 0x102C,
 ];
 
+/// Test G10: when the CPU touches the 2700G's memory around a render at
+/// the cores' divide 1 (G9, 2026-10-23: no register of the chip's differs
+/// from Dell's beyond those G5-G7 copied, yet his frame draws wrong under
+/// the loader; every check so far wrote the scene and read the picture
+/// through the CPU's bus with the chip at divide 1, and the wrong words are
+/// grey, one byte in all three channels).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum G10Mode {
+    /// Written, rendered and read at divide 1 (every test before G10).
+    AsBefore,
+    /// Written at Windows Mobile's clock, the clock changed for the render
+    /// alone, back before anything is read.
+    RenderOnly,
+    /// Written and rendered at divide 1, the clock put back before the
+    /// picture is read.
+    ReadAtWm,
+}
+
+/// Test G10's ways: (Dell's frame, not ours; the mode).
+pub const G10_WAYS: [(bool, G10Mode); 4] = [
+    (false, G10Mode::AsBefore),
+    (false, G10Mode::RenderOnly),
+    (true, G10Mode::RenderOnly),
+    (false, G10Mode::ReadAtWm),
+];
+
 /// [`Wait::Quiet`]'s wait: past the slowest render seen (Dell's frame,
 /// 19.9 ms at 74.75 / 1; G3's quad at 12.6) with room to spare.
 pub const QUIET_US: u32 = 60_000;
@@ -829,7 +855,8 @@ mod image {
         || TEST_G6
         || TEST_G7
         || TEST_G8
-        || TEST_G9;
+        || TEST_G9
+        || TEST_G10;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -859,6 +886,15 @@ mod image {
     /// Test G9 instead of G (`RP_GLESFEAT_G9=1`; device build
     /// `RP_GLESFEAT_G9=1 cargo xtask codegen-variant rp-glesfeat g9`).
     const TEST_G9: bool = option_env!("RP_GLESFEAT_G9").is_some();
+    /// Test G10 instead of G (`RP_GLESFEAT_G10=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G10=1
+    /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g10`).
+    const TEST_G10: bool = option_env!("RP_GLESFEAT_G10").is_some();
+    const _: () = assert!(
+        !TEST_G10 || cfg!(rp_g7),
+        "test G10 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G8 || cfg!(rp_g7),
         "test G8 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -878,7 +914,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G9 {
+    const G_TITLE: &str = if TEST_G10 {
+        "RP-GLESFEAT TEST G10"
+    } else if TEST_G9 {
         "RP-GLESFEAT TEST G9"
     } else if TEST_G8 {
         "RP-GLESFEAT TEST G8"
@@ -897,7 +935,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G9 {
+    const G_NAME: &str = if TEST_G10 {
+        "G10"
+    } else if TEST_G9 {
         "G9"
     } else if TEST_G8 {
         "G8"
@@ -919,24 +959,28 @@ mod image {
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
-    const REF: usize = if TEST_G7 || TEST_G8 {
+    const REF: usize = if TEST_G7 || TEST_G8 || TEST_G10 {
         super::G7_REF
     } else if TEST_G6 {
         super::G6_REF
     } else {
         0x0080_0000
     };
-    const _: () = assert!(TEST_G6 || TEST_G7 || TEST_G8 || REF + STRIDE * H as usize <= TAIL);
+    const _: () =
+        assert!(TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || REF + STRIDE * H as usize <= TAIL);
     /// The label scanned out from the first moment: RGB565 (a 32-bit
     /// screen corrupts 32-bit renders: ADR-0023), after the target.
-    const LABEL: usize = if TEST_G6 || TEST_G7 || TEST_G8 {
+    const LABEL: usize = if TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 {
         super::G6_LABEL
     } else {
         0x0040_0000
     };
     const LABEL_STRIDE: usize = 480 * 2;
-    const _: () = assert!(TEST_G6 || TEST_G7 || TEST_G8 || TARGET + STRIDE * H as usize <= LABEL);
-    const _: () = assert!(TEST_G6 || TEST_G7 || TEST_G8 || LABEL + LABEL_STRIDE * H as usize <= PM);
+    const _: () =
+        assert!(TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TARGET + STRIDE * H as usize <= LABEL);
+    const _: () = assert!(
+        TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || LABEL + LABEL_STRIDE * H as usize <= PM
+    );
     /// The label's text: lines, the font's scale, colours (RGB565).
     const LABEL_LINES: usize = 16;
     const LABEL_SCALE: usize = 3;
@@ -963,6 +1007,11 @@ mod image {
 
     /// How [`run`] waits (test G8; [`super::Wait::Tight`] otherwise).
     static WAIT: rt::Global<super::Wait> = rt::Global::new(super::Wait::Tight);
+
+    /// Test G10: the divide-1 setting a per-render way changes to (its core
+    /// PLL; 0 when none), and the clock changes made and those after which
+    /// the display wasn't sending.
+    static G10_PLL: rt::Global<(u32, u32, u32)> = rt::Global::new((0, 0, 0));
 
     /// Test G7's frame, if the image carries one that parses.
     fn frame() -> Option<super::frame::Frame<'static>> {
@@ -1818,6 +1867,8 @@ mod image {
         /// Test G8: [`super::G8_WAYS`]'s way k (ours or Dell's frame, and
         /// how the render is waited for).
         G8(u8),
+        /// Test G10: [`super::G10_WAYS`]'s way k.
+        G10(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -1884,6 +1935,16 @@ mod image {
                 Self::G8(2) => "ours, the status read once a millisecond",
                 Self::G8(3) => "Dell's frame, the chip left alone, the status read once after",
                 Self::G8(_) => "Dell's frame, the status read once a millisecond",
+                Self::G10(0) => "ours as before: written, rendered and read at divide 1",
+                Self::G10(1) => {
+                    "ours: written and read at Windows Mobile's clock, rendered at divide 1"
+                }
+                Self::G10(2) => {
+                    "Dell's frame: written and read at Windows Mobile's clock, rendered at divide 1"
+                }
+                Self::G10(_) => {
+                    "ours: written and rendered at divide 1, read at Windows Mobile's clock"
+                }
             }
         }
     }
@@ -2151,6 +2212,37 @@ mod image {
                 (out.ta && out.done, us_since(t0), out.list)
             }
             Way::Frame(_) => (replay(e, vram), us_since(t0), [m3::END; TA_LIST]),
+            Way::G10(k) => {
+                let (dell, mode) = super::G10_WAYS[k as usize % super::G10_WAYS.len()];
+                let pll = G10_PLL.with(|p| p.0);
+                let done = match (mode, pll) {
+                    (super::G10Mode::AsBefore, _) | (_, 0) => {
+                        if dell {
+                            replay(e, vram)
+                        } else {
+                            draw_direct(e, vram, G5_OURS, words, true, &[])
+                        }
+                    }
+                    (super::G10Mode::RenderOnly, pll) => {
+                        let (pairs, n) = if dell {
+                            prepare_frame(vram)
+                        } else {
+                            prepare_ours(vram)
+                        };
+                        g10_change(e, Some(pll));
+                        let done = start(e, vram, &pairs[..n]);
+                        g10_change(e, None);
+                        done
+                    }
+                    (super::G10Mode::ReadAtWm, pll) => {
+                        g10_change(e, Some(pll));
+                        let done = draw_direct(e, vram, G5_OURS, words, true, &[]);
+                        g10_change(e, None);
+                        done
+                    }
+                };
+                (done, us_since(t0), [m3::END; TA_LIST])
+            }
             Way::G8(k) => {
                 let done = if super::G8_WAYS[k as usize % super::G8_WAYS.len()].0 {
                     replay(e, vram)
@@ -2262,6 +2354,10 @@ mod image {
                 .as_ref()
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
+            Way::G10(k) if super::G10_WAYS[k as usize % super::G10_WAYS.len()].0 => frame()
+                .as_ref()
+                .and_then(super::frame_layout)
+                .unwrap_or(super::OURS_LAYOUT),
             Way::G8(k) if super::G8_WAYS[k as usize % super::G8_WAYS.len()].0 => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
@@ -2338,6 +2434,7 @@ mod image {
         // picture (his divide-1 render, right, hashed by g7-frame).
         let replay_way = match w {
             Way::Frame(_) => true,
+            Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
             Way::G8(k) => super::G8_WAYS[k as usize % super::G8_WAYS.len()].0,
             _ => false,
         };
@@ -2424,6 +2521,14 @@ mod image {
                 Speed::ladder(pll),
                 has(dell, DellItem::ClockOrder),
             );
+            // G10: the per-render ways start each render at Windows
+            // Mobile's clock and change it themselves.
+            if let (true, Way::G10(k)) = (s.clocked, w)
+                && super::G10_WAYS[k as usize % super::G10_WAYS.len()].1 != super::G10Mode::AsBefore
+            {
+                clock_back(&mut e.regs);
+                G10_PLL.with(|p| *p = (pll, 0, 0));
+            }
             if s.clocked && has(dell, DellItem::Nintpw) {
                 let v = super::nintpw(Speed::ladder(pll).khz());
                 e.regs.write32(super::NINTPW, v);
@@ -2465,6 +2570,13 @@ mod image {
                     }
                 }
                 s.tally.merge(&t);
+            }
+            let (g10, changes, dark) = G10_PLL.with(|p| core::mem::replace(p, (0, 0, 0)));
+            if g10 != 0 {
+                log!(
+                    "    {changes} clock changes around the renders, the display not sending after {dark}"
+                );
+                s.screen &= dark == 0;
             }
             s.screen &= display_check(&mut e.regs, "after the draws");
             clock_back(&mut e.regs);
@@ -3329,6 +3441,151 @@ mod image {
         );
     }
 
+    /// G10: to the divide-1 setting `pll` (or back to Windows Mobile's with
+    /// `None`) around one render, the display checked after each change
+    /// without a log line (ADR-0035 rule 8; the count is logged per
+    /// setting): the label plane set again if it isn't sending.
+    fn g10_change(e: &mut Engine<Mmio>, pll: Option<u32>) {
+        match pll {
+            Some(p) => {
+                let _ = to_divide_1(&mut e.regs, Speed::ladder(p), false);
+            }
+            None => clock_back(&mut e.regs),
+        }
+        let _ = rp_drv_mbx_display::ack_events(&mut e.regs, GFX_UNDERRUN);
+        rt::delay_us(FRAME_US);
+        let a = e.regs.read32(DSIG);
+        rt::delay_us(FRAME_US);
+        let sending = a != 0 && e.regs.read32(DSIG) != 0;
+        if !sending {
+            let _ = show(
+                &mut e.regs,
+                Plane {
+                    format: PixelFormat::Rgb565,
+                    width: W as u16,
+                    height: H as u16,
+                    offset: LABEL,
+                    stride: LABEL_STRIDE,
+                },
+            );
+        }
+        G10_PLL.with(|p| {
+            p.1 += 1;
+            p.2 += u32::from(!sending);
+        });
+    }
+
+    /// Our scene (as [`G5_OURS`] draws it: our giant flat black background,
+    /// GC2's two Gouraud triangles) written into local memory with the
+    /// target blanked; the start table to render it.
+    fn prepare_ours(vram: &mut [u8]) -> ([(usize, u32); 160], usize) {
+        blank(vram);
+        let bg = m3::triangle(
+            ISP_ALWAYS,
+            TSP_DELL,
+            &[(0.0, 0.0), (2048.0, 0.0), (0.0, 2048.0)].map(|(x, y)| Vertex {
+                x,
+                y,
+                z: 0.0,
+                rhw: 1.0,
+                argb: 0xFF00_0000,
+            }),
+        );
+        let tri = |t: [usize; 3]| {
+            m3::triangle(
+                ISP_ALWAYS,
+                TSP_SMOOTH,
+                &t.map(|k| Vertex {
+                    x: QUAD[k].0,
+                    y: QUAD[k].1,
+                    z: 0.0,
+                    rhw: 1.0,
+                    argb: QUAD[k].2,
+                }),
+            )
+        };
+        let (a, b) = (tri(TRIS[0]), tri(TRIS[1]));
+        let params = lay().pm;
+        let mut at = params + 64;
+        let mut list = [m3::END; 4];
+        for (k, w) in [&bg[..], &a[..], &b[..]].into_iter().enumerate() {
+            store(vram, at, w);
+            list[k] = STRIP | ((at - params) / 4) as u32;
+            at += 4 * w.len();
+        }
+        store(vram, params, &list);
+        regions(vram);
+        let (t, len) = table();
+        let mut pairs = [(0usize, 0u32); 160];
+        pairs[..len].copy_from_slice(&t[..len]);
+        (pairs, len)
+    }
+
+    /// Dell's frame (G7's) written into local memory with the target
+    /// blanked; his registers and the start to render it.
+    fn prepare_frame(vram: &mut [u8]) -> ([(usize, u32); 160], usize) {
+        blank(vram);
+        let mut pairs = [(0usize, 0u32); 160];
+        let Some(f) = frame() else {
+            return (pairs, 0);
+        };
+        for (addr, data) in f.segs() {
+            for (k, c) in data.chunks_exact(4).enumerate() {
+                let _ = store32_volatile(
+                    vram,
+                    addr + 4 * k,
+                    u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                );
+            }
+        }
+        cpu::drain_write_buffer();
+        let mut n = 0;
+        for (off, v) in f.regs() {
+            if super::PM_BLOCK.contains(&off) || n + 1 >= pairs.len() {
+                continue;
+            }
+            pairs[n] = (off, v);
+            n += 1;
+        }
+        pairs[n] = (m3::START, 1);
+        (pairs, n + 1)
+    }
+
+    /// The render started by `pairs` (the start last), waited for; a timeout
+    /// resets the core.
+    fn start(e: &mut Engine<Mmio>, vram: &mut [u8], pairs: &[(usize, u32)]) -> bool {
+        if pairs.is_empty() {
+            return false;
+        }
+        let done = run(e, pairs, RENDER_DONE, 200_000);
+        if !done {
+            e.reset(rt::delay_us);
+            let ok = pm_init(e, vram);
+            log!("  (timed out: core reset, memory manager ready again: {ok})");
+        }
+        done
+    }
+
+    /// Test G10's ways.
+    const G10_WAYS: [Way; 4] = [Way::G10(0), Way::G10(1), Way::G10(2), Way::G10(3)];
+
+    /// Test G10: the render alone at divide 1, the CPU's writes and reads of
+    /// the chip's memory at Windows Mobile's clock (G9's lead).
+    fn test_g10(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G10: the CPU's writes and reads of the 2700G's memory moved to Windows Mobile's clock, the render alone at divide 1, ours and Dell's frame, at 74.75, 99.67 and 133.25 MHz (render times include the clock changes)"
+        );
+        if frame().as_ref().and_then(super::frame_layout).is_none() {
+            log!("G10: no frame, or one without its layout: nothing run");
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G10_WAYS);
+        G10_PLL.with(|p| *p = (0, 0, 0));
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -3361,7 +3618,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G9 {
+        let first = if TEST_G10 {
+            "STEP 1 OF 5"
+        } else if TEST_G9 {
             "STEP 1 OF 3"
         } else if TEST_G8 {
             "STEP 1 OF 6"
@@ -3427,7 +3686,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G9 {
+        if ready && TEST_G10 {
+            test_g10(&mut e, vram);
+        } else if ready && TEST_G9 {
             test_g9(&mut e, vram);
         } else if ready && TEST_G8 {
             test_g8(&mut e, vram);
