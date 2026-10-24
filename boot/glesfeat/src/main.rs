@@ -504,6 +504,13 @@ pub const SILENT_SPINS: u32 = 12_000_000;
 /// the FFUART (bit 6), the USB host (bit 10) and bit 24.
 pub const LOADER_ONLY_CLOCKS: u32 = 1 << 6 | 1 << 10 | 1 << 24;
 
+/// Test G13's ways: (Dell's frame, not ours; the display at Windows
+/// Mobile's pixel clock, `DISPPLL` `0xEC5` (56.4 Hz), not the loader's
+/// `0xFC5` (60.3 Hz): G9's last 2700G difference outside the MBX block; the
+/// display's fetch shares local memory with the 3D core).
+pub const G13_WAYS: [(bool, bool); 4] =
+    [(false, false), (true, false), (false, true), (true, true)];
+
 /// Test G12's ways: (Dell's frame, not ours; the CPU silent while the
 /// chip renders; [`LOADER_ONLY_CLOCKS`] off during each render).
 pub const G12_WAYS: [(bool, bool, bool); 5] = [
@@ -900,7 +907,8 @@ mod image {
         || TEST_G9
         || TEST_G10
         || TEST_G11
-        || TEST_G12;
+        || TEST_G12
+        || TEST_G13;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -945,6 +953,15 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g12`).
     const TEST_G12: bool = option_env!("RP_GLESFEAT_G12").is_some();
+    /// Test G13 instead of G (`RP_GLESFEAT_G13=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G13=1
+    /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g13`).
+    const TEST_G13: bool = option_env!("RP_GLESFEAT_G13").is_some();
+    const _: () = assert!(
+        !TEST_G13 || cfg!(rp_g7),
+        "test G13 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G12 || cfg!(rp_g7),
         "test G12 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -976,7 +993,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G12 {
+    const G_TITLE: &str = if TEST_G13 {
+        "RP-GLESFEAT TEST G13"
+    } else if TEST_G12 {
         "RP-GLESFEAT TEST G12"
     } else if TEST_G11 {
         "RP-GLESFEAT TEST G11"
@@ -1001,7 +1020,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G12 {
+    const G_NAME: &str = if TEST_G13 {
+        "G13"
+    } else if TEST_G12 {
         "G12"
     } else if TEST_G11 {
         "G11"
@@ -1029,7 +1050,7 @@ mod image {
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
-    const REF: usize = if TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || TEST_G12 {
+    const REF: usize = if TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || TEST_G12 || TEST_G13 {
         super::G7_REF
     } else if TEST_G6 {
         super::G6_REF
@@ -1043,15 +1064,17 @@ mod image {
             || TEST_G10
             || TEST_G11
             || TEST_G12
+            || TEST_G13
             || REF + STRIDE * H as usize <= TAIL
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
     /// screen corrupts 32-bit renders: ADR-0023), after the target.
-    const LABEL: usize = if TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || TEST_G12 {
-        super::G6_LABEL
-    } else {
-        0x0040_0000
-    };
+    const LABEL: usize =
+        if TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || TEST_G12 || TEST_G13 {
+            super::G6_LABEL
+        } else {
+            0x0040_0000
+        };
     const LABEL_STRIDE: usize = 480 * 2;
     const _: () = assert!(
         TEST_G6
@@ -1060,6 +1083,7 @@ mod image {
             || TEST_G10
             || TEST_G11
             || TEST_G12
+            || TEST_G13
             || TARGET + STRIDE * H as usize <= LABEL
     );
     const _: () = assert!(
@@ -1069,6 +1093,7 @@ mod image {
             || TEST_G10
             || TEST_G11
             || TEST_G12
+            || TEST_G13
             || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
@@ -1994,6 +2019,8 @@ mod image {
         G11(u8),
         /// Test G12: [`super::G12_WAYS`]'s way k.
         G12(u8),
+        /// Test G13: [`super::G13_WAYS`]'s way k.
+        G13(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -2079,6 +2106,10 @@ mod image {
                 Self::G12(2) => "Dell's frame, the CPU silent while it renders",
                 Self::G12(3) => "Dell's frame, the loader-only clocks off while it renders",
                 Self::G12(_) => "Dell's frame, the CPU silent and the loader-only clocks off",
+                Self::G13(0) => "ours, the display at the loader's 60 Hz",
+                Self::G13(1) => "Dell's frame, the display at the loader's 60 Hz",
+                Self::G13(2) => "ours, the display at Windows Mobile's 56 Hz",
+                Self::G13(_) => "Dell's frame, the display at Windows Mobile's 56 Hz",
             }
         }
     }
@@ -2346,6 +2377,14 @@ mod image {
                 (out.ta && out.done, us_since(t0), out.list)
             }
             Way::Frame(_) => (replay(e, vram), us_since(t0), [m3::END; TA_LIST]),
+            Way::G13(k) => {
+                let done = if super::G13_WAYS[k as usize % super::G13_WAYS.len()].0 {
+                    replay(e, vram)
+                } else {
+                    draw_direct(e, vram, G5_OURS, words, true, &[])
+                };
+                (done, us_since(t0), [m3::END; TA_LIST])
+            }
             Way::G12(k) => {
                 let done = if super::G12_WAYS[k as usize % super::G12_WAYS.len()].0 {
                     replay(e, vram)
@@ -2504,6 +2543,10 @@ mod image {
                 .as_ref()
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
+            Way::G13(k) if super::G13_WAYS[k as usize % super::G13_WAYS.len()].0 => frame()
+                .as_ref()
+                .and_then(super::frame_layout)
+                .unwrap_or(super::OURS_LAYOUT),
             Way::G12(k) if super::G12_WAYS[k as usize % super::G12_WAYS.len()].0 => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
@@ -2522,6 +2565,16 @@ mod image {
                 .unwrap_or(super::OURS_LAYOUT),
             _ => super::OURS_LAYOUT,
         });
+        // G13: the display's pixel clock for this way, its lock awaited and
+        // the display checked (ADR-0035 rule 8 for any clock).
+        if let Way::G13(k) = w {
+            let want = if super::G13_WAYS[k as usize % super::G13_WAYS.len()].1 {
+                rp_drv_mbx_display::pll::WM
+            } else {
+                rp_drv_mbx_display::pll::SIXTY
+            };
+            set_display_pll(&mut e.regs, want);
+        }
         let g12 = match w {
             Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()],
             _ => (false, false, false),
@@ -2607,6 +2660,7 @@ mod image {
             Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
             Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].0,
             Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()].0,
+            Way::G13(k) => super::G13_WAYS[k as usize % super::G13_WAYS.len()].0,
             Way::G8(k) => super::G8_WAYS[k as usize % super::G8_WAYS.len()].0,
             _ => false,
         };
@@ -3832,6 +3886,49 @@ mod image {
         log!("G12: CKEN at the end 0x{:08x}", rt::clock_enables());
     }
 
+    /// The display's pixel clock set to `pll` (`DISPPLL`), its lock awaited
+    /// (`PLLSTAT` bit 0, bounded) and the display checked; logged.
+    fn set_display_pll(regs: &mut Mmio, pll: u32) {
+        let was = regs.read32(rp_drv_mbx_display::reg::DISPPLL);
+        if was != pll {
+            regs.write32(rp_drv_mbx_display::reg::DISPPLL, pll);
+            for _ in 0..10_000 {
+                if regs.read32(PLLSTAT) & 1 != 0 {
+                    break;
+                }
+            }
+        }
+        log!(
+            "    DISPPLL 0x{was:x} -> 0x{:x} (PLLSTAT 0x{:x})",
+            regs.read32(rp_drv_mbx_display::reg::DISPPLL),
+            regs.read32(PLLSTAT)
+        );
+        let _ = display_check(regs, "after the display clock");
+    }
+
+    /// Test G13's ways.
+    const G13_WAYS: [Way; 4] = [Way::G13(0), Way::G13(1), Way::G13(2), Way::G13(3)];
+
+    /// Test G13: the display at Windows Mobile's pixel clock (G12's lead),
+    /// Dell's frame and ours, against the loader's 60 Hz in the same run.
+    fn test_g13(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        let found = e.regs.read32(rp_drv_mbx_display::reg::DISPPLL);
+        log!(
+            "G13: the display at Windows Mobile's pixel clock (DISPPLL 0x{:x}) against the loader's (0x{:x}), Dell's frame and ours, at 74.75, 99.67 and 133.25 MHz; DISPPLL as found 0x{found:x}",
+            rp_drv_mbx_display::pll::WM,
+            rp_drv_mbx_display::pll::SIXTY
+        );
+        if frame().as_ref().and_then(super::frame_layout).is_none() {
+            log!("G13: no frame, or one without its layout: nothing run");
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G13_WAYS);
+        set_display_pll(&mut e.regs, found);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -3864,7 +3961,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G12 {
+        let first = if TEST_G13 {
+            "STEP 1 OF 5"
+        } else if TEST_G12 {
             "STEP 1 OF 6"
         } else if TEST_G11 {
             "STEP 1 OF 5"
@@ -3936,7 +4035,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G12 {
+        if ready && TEST_G13 {
+            test_g13(&mut e, vram);
+        } else if ready && TEST_G12 {
             test_g12(&mut e, vram);
         } else if ready && TEST_G11 {
             test_g11(&mut e, vram);

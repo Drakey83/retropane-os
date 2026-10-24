@@ -2999,8 +2999,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g10") => return boot_loader_glesfeat_g(root, 10),
         Ok("g11") => return boot_loader_glesfeat_g(root, 11),
         Ok("g12") => return boot_loader_glesfeat_g(root, 12),
+        Ok("g13") => return boot_loader_glesfeat_g(root, 13),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g12"));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g13"));
         }
         Err(_) => {}
     }
@@ -3304,7 +3305,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 12 {
+    let (env, name, ours, after) = if test == 13 {
+        ("RP_GLESFEAT_G13", "G13", "G13 way 1 (", "G13 way 2 (")
+    } else if test == 12 {
         ("RP_GLESFEAT_G12", "G12", "G12 way 1 (", "G12 way 2 (")
     } else if test == 11 {
         ("RP_GLESFEAT_G11", "G11", "G11 way 1 (", "G11 way 2 (")
@@ -3330,7 +3333,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
     // the very picture way 1 draws directly.
     let frame = root.join("target/g7-synthetic-frame.bin");
-    let also = if matches!(test, 7 | 8 | 10 | 11 | 12) {
+    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13) {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
@@ -3367,7 +3370,19 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 12 {
+    let wants: &[&str] = if test == 13 {
+        &[
+            "test G13, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G13 way 1 (ours, the display at the loader's 60 Hz):",
+            "G13 way 4 (Dell's frame, the display at Windows Mobile's 56 Hz):",
+            "    DISPPLL 0xfc5 -> 0xec5",
+            "    DISPPLL 0xec5 -> 0xfc5",
+            "G13: right at 74.75 / 1 of 20:",
+            "G13: right at 133.25 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 12 {
         &[
             "test G12, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3621,6 +3636,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         11 => &[2, 3, 4],
         // The replays of our own scene, silent or clocks off: one picture.
         12 => &[2, 3, 4, 5],
+        // Either display clock, ours or the replay of our scene: one picture.
+        13 => &[2, 3, 4],
         _ => &[],
     };
     if !same.is_empty() {
