@@ -1664,15 +1664,15 @@ mod image {
         // so a background never shows in the reference; its own picture
         // proves it drew (and ways whose backgrounds must look alike are
         // held to each other).
+        let mut bg_hash = None;
         if let (true, Way::Direct(f)) = (TEST_G3 || TEST_G4, w)
             && f.bg != Bg::Nothing
         {
             blank(vram);
             let done = draw_direct(e, vram, f, 0, false);
-            log!(
-                "  background alone: rendered {done}, hash 0x{:08x}",
-                picture_hash(vram, TARGET)
-            );
+            let h = picture_hash(vram, TARGET);
+            bg_hash = Some(h);
+            log!("  background alone: rendered {done}, hash 0x{h:08x}");
         }
         let (d1, us1, list) = draw(e, vram, w, 24);
         // G4: the start table's words Dell's way, read back from the core
@@ -1690,10 +1690,25 @@ mod image {
         // The reference's hash: ways that must draw the same picture (G2's
         // forms of one quad over one background) are held to each other,
         // not only each to itself.
-        log!("  reference hash 0x{:08x}", picture_hash(vram, REF));
+        let ref_hash = picture_hash(vram, REF);
+        log!("  reference hash 0x{ref_hash:08x}");
+        // The reference must hold the quad (G4, 2026-10-23: G2'"'"'s colourless
+        // clear drawn alone first left the next renders all white, and white
+        // against white read as "20 of 20 right"): not its background alone,
+        // and the quad'"'"'s black and white corners told apart.
+        let corner =
+            |x: u32, y: u32| load32_volatile(vram, REF + 4 * (y * W + x) as usize).unwrap_or(0);
+        let quad_shown = bg_hash != Some(ref_hash) && corner(2, 2) != corner(477, 2);
+        if !quad_shown {
+            log!(
+                "  the reference holds no quad (its background alone, or the corners 0x{:08x} and 0x{:08x} alike): not a reference",
+                corner(2, 2),
+                corner(477, 2)
+            );
+        }
         let (d2, us2, _) = draw(e, vram, w, 0);
         let again = compare(vram, REF);
-        r.repeatable = d1 && d2 && again.wrong == 0;
+        r.repeatable = d1 && d2 && again.wrong == 0 && quad_shown;
         r.us_wm = us1.min(us2);
         log!(
             "  reference at Windows Mobile's clock: memory manager ready {ready}, rendered {d1} then {d2}, the second {} words off the first; {} us",

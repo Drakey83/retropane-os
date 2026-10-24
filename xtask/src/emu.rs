@@ -3212,8 +3212,19 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         .count();
     let no_ta = log.matches("no repeatable reference").count();
     let ta_silent = log.matches("the TA never said done: no render").count();
+    // References the image refused for holding no quad (G4's colourless
+    // clear drawn alone first leaves the next renders white, on the X51v
+    // and in the fork alike): the guard working, not a fault. In G4 it is
+    // exactly way 2; nowhere else.
+    let no_quad = log.matches("the reference holds no quad").count();
+    let want_no_quad = usize::from(test == 4);
+    if no_quad != want_no_quad {
+        return Err(format!(
+            "glesfeat {name}: {no_quad} references refused for holding no quad, want {want_no_quad}:{log}"
+        ));
+    }
     // Each way that stopped for want of the TA: its two reference renders.
-    if no_ta * 2 != ta_silent {
+    if (no_ta - no_quad.min(no_ta)) * 2 != ta_silent {
         return Err(format!(
             "glesfeat {name}: {no_ta} references that didn't repeat, {ta_silent} renders the TA never finished:{log}"
         ));
@@ -3223,7 +3234,9 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     let controls = log
         .matches("control at Windows Mobile's clock after: right")
         .count();
-    if refs != drew {
+    // A refused no-quad reference still rendered twice alike: not a way
+    // that drew.
+    if refs - no_quad.min(refs) != drew {
         return Err(format!(
             "glesfeat {name}: {refs} repeatable references for {drew} ways that drew:{log}"
         ));
