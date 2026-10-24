@@ -4378,6 +4378,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_ft = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER", "1"))?;
     let run_fi = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_IRQ_BITS", "1"))?;
     let run_fd = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_DMA_FEED", "1"))?;
+    let run_h = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_HARNESS", "1"))?;
     // Run GS (the clocks' soak) with 70 s a setting: one minute's line and
     // the closing line each.
     let run_gs = variant_image_with(
@@ -4476,7 +4477,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 47] = [
+    let runs: [GpubenchRun; 48] = [
         (
             "run A",
             &run_a,
@@ -5129,6 +5130,29 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  FD 2 DMA: idle first true",
                 "the picture as the CPU's: true",
                 "FD: both ways drew the same",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        // The compositor harness (docs/design/compositor-harness.md): every
+        // sequence runs, both 3D ways end on one picture, and everything is
+        // given back; the emulator's times mean nothing (emulator.md).
+        (
+            "run H",
+            &run_h,
+            &[
+                "H: the compositor harness",
+                "  H W1 pan (VSCADR a frame): 160 frames",
+                "  H W2 row by 2D BY DMA: 8 rows (8 done)",
+                "  H W2 row by DMA PIXELS: 8 rows (8 done)",
+                "  H W4 tap by 2D BY DMA:",
+                "  H plane steps done: 10 of 16",
+                "  H W5 turns and pipeline end on the same picture: true",
+                "  H W6 turns and pipeline end on the same picture: true",
+                "  H 3D steps done: 16 of 16",
+                "H: done",
+                "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
             ],
             true,

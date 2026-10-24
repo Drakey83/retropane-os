@@ -137,10 +137,16 @@ mod image {
         ($($t:tt)*) => {{ let _ = writeln!(KeptRunLog, $($t)*); }};
     }
 
+    /// Run H, the compositor harness (docs/design/compositor-harness.md).
+    #[path = "../harness.rs"]
+    mod harness;
+
     /// Run B: the texture-word probes instead of run A.
     const PROBES: bool = option_env!("RP_GPUBENCH_PROBES").is_some();
     /// Run C: the video plane's repoint and pans (the owner watches).
     const PLANES: bool = option_env!("RP_GPUBENCH_PLANES").is_some();
+    /// Run H: the compositor harness (the gate's T1, T3, T4; unattended).
+    const HARNESS: bool = option_env!("RP_GPUBENCH_HARNESS").is_some();
     /// Run D: the video plane's undocumented format codes (the owner
     /// watches).
     const VFMT: bool = option_env!("RP_GPUBENCH_VFMT").is_some();
@@ -9920,6 +9926,8 @@ mod image {
         }
         if PROBES {
             probes(&mut g);
+        } else if HARNESS {
+            harness::run(&mut g);
         } else if TARGETS2 {
             target_formats2(&mut g);
         } else if TARGETS_WATCH {

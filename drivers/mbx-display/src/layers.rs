@@ -61,6 +61,7 @@ const SPOCTRL_V_BYPASS: u32 = 1 << 30;
 /// Windows Mobile: `0xC8030000`, probe 2026-10-11): meaning undocumented;
 /// the gate's P9 run 1 saw the video stream underrun (`DINTRS` bit 5)
 /// without it when scaling down.
+// inherited: C70, Windows Mobile (SPOCTRL 0xC8030000, probe 2026-10-11)
 const SPOCTRL_VS_UR_C: u32 = 1 << 27;
 /// Scaler pitch for 1:1 (source / output in 5.11 fixed point).
 const PITCH_1_TO_1: u32 = 1 << 11;
@@ -74,7 +75,9 @@ const SPOCTRL_VORDER: Field = Field::new(16, 2);
 const SPOCTRL_VPITCH: Field = Field::new(0, 16);
 /// `SHCTRL`'s first-phase offset (mbxfb sets `4 << 11` at start-up;
 /// Windows Mobile's `0x20000000` holds the same: probe 2026-10-11) and its
-/// horizontal pitch, 5.11 (`SHCTRL_HPITCH`, 15 bits).
+/// horizontal pitch, 5.11 (`SHCTRL_HPITCH`, 15 bits). The phase `4 << 11`
+/// written with it is copied:
+// inherited: C70, mbxfb and Windows Mobile (SHCTRL 0x20000000)
 const SHCTRL_HINITIAL: Field = Field::new(16, 16);
 const SHCTRL_HPITCH: Field = Field::new(0, 15);
 /// The largest ratios the scaler is driven at: 2:1 down (mbxfb has a
