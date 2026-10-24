@@ -137,6 +137,19 @@ resolution only with faster clocks; Quake and Hexen II near 60 at a
 reduced 3D resolution; Quake 2 uncertain; Quake 3, Half-Life and Turok
 30 at a reduced resolution, 60 unlikely on this hardware.
 
+**An option to measure when a port's renderer is designed (the owner,
+2026-10-24): draw with textures and blending instead of Gouraud
+shading.** Run GC2S (2700g.md) found textured, blended and a full 32-bit
+textured scene right at every divide-1 step to 133.25 MHz, where Gouraud
+shading is wrong at every step above 74.75: so a renderer that bakes its
+lighting into textures (lightmaps, pre-lit or palette-shaded textures, as
+the software Doom and Quake engines already do) may run the cores at up
+to 1.8-2.2x Windows Mobile's speed, against 1.4-1.5x with shading at
+today's 149.50 / 2. Results, not decisions: each port measures both ways
+on the X51v (the picture checked, the frame time logged), and the owner
+chooses; whether divide 1 above Intel's 75 MHz is used at all is ADR-0035's
+and the gate's P1/P2 ruling.
+
 Game data (WADs, PAKs) stays the user's own, except freely distributable
 shareware data. Each port is likely its own repository (as the Quake 3
 note says), measured against the stock-WM baseline (DESIGN.md §10).
