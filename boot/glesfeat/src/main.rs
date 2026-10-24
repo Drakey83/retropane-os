@@ -1014,6 +1014,53 @@ mod image {
         )
     }
 
+    /// The display's output signature (mbxfb's `DSIG`): 0 when nothing is
+    /// sent, and for an all-black picture (run N), which the label never is.
+    const DSIG: usize = 0x2184;
+    /// `DINTRS` bit 4: the graphics stream's underrun; set, the display
+    /// stops sending until it is cleared (run G4's dark display, 2700g.md).
+    const GFX_UNDERRUN: u32 = 1 << 4;
+    /// A frame at 60 Hz, rounded up.
+    const FRAME_US: u32 = 16_700;
+
+    /// The display after a clock change (quality audit C69): the underrun
+    /// flag cleared Dell's way (read, written back without it), then the
+    /// output signature two frames on and a frame after that. If nothing is
+    /// sent, the label plane is set again and read once more. Logged with
+    /// `when`; true if the display sends.
+    fn display_check(regs: &mut Mmio, when: &str) -> bool {
+        let s = rp_drv_mbx_display::ack_events(regs, GFX_UNDERRUN);
+        rt::delay_us(2 * FRAME_US);
+        let a = regs.read32(DSIG);
+        rt::delay_us(FRAME_US);
+        let b = regs.read32(DSIG);
+        let mut sending = a != 0 && b != 0;
+        let _ = write!(
+            RunLog,
+            "    display {when}: underrun {}, DSIG 0x{a:x} then 0x{b:x}",
+            s & GFX_UNDERRUN != 0
+        );
+        if !sending {
+            let _ = show(
+                regs,
+                Plane {
+                    format: PixelFormat::Rgb565,
+                    width: W as u16,
+                    height: H as u16,
+                    offset: LABEL,
+                    stride: LABEL_STRIDE,
+                },
+            );
+            let _ = rp_drv_mbx_display::ack_events(regs, GFX_UNDERRUN);
+            rt::delay_us(2 * FRAME_US);
+            let c = regs.read32(DSIG);
+            sending = c != 0;
+            let _ = write!(RunLog, "; the label plane set again: DSIG 0x{c:x}");
+        }
+        log!("; {}", if sending { "sending" } else { "NOT SENDING" });
+        sending
+    }
+
     /// Windows Mobile's clock and bus timing back, wherever test G left
     /// them (no state kept, so the crash path can call it): `rp-gpubench`'s
     /// `clock_restore`, which every clock run has used. The PLL is always
@@ -1499,6 +1546,9 @@ mod image {
         unsettled: u32,
         /// The fastest render at divide 1, microseconds.
         us: u32,
+        /// The display sent at every check of this setting (after the
+        /// change, after the draws, back at Windows Mobile's clock).
+        screen: bool,
         /// The control at Windows Mobile's clock after: equal.
         control: bool,
     }
@@ -1545,6 +1595,7 @@ mod image {
         say(vram, &[G_TITLE, head, name, "WM CLOCK: REFERENCE"]);
         log!("{G_NAME} way {} ({}):", step - 1, w.name());
         rt::check_in();
+        let _ = display_check(&mut e.regs, "before the reference");
         let ready = clean(e, vram);
         // G3: the background alone first. The quad covers the whole target,
         // so a background never shows in the reference; its own picture
@@ -1607,6 +1658,7 @@ mod image {
             }
             let ready = clean(e, vram);
             log!("  at {mhz} / 1: memory manager ready {ready}");
+            s.screen = display_check(&mut e.regs, "after the change");
             s.us = u32::MAX;
             for n in 1..=G_DRAWS {
                 rt::check_in();
@@ -1630,7 +1682,9 @@ mod image {
                 }
                 s.tally.merge(&t);
             }
+            s.screen &= display_check(&mut e.regs, "after the draws");
             clock_back(&mut e.regs);
+            s.screen &= display_check(&mut e.regs, "back at Windows Mobile's clock");
             clock_readback(&mut e.regs);
             let _ = clean(e, vram);
             let (done, _, _) = draw(e, vram, w, 0);
@@ -1661,10 +1715,15 @@ mod image {
                 }
             }
             log!(
-                "; fastest {} us (Windows Mobile's {} us); control at Windows Mobile's clock after: {}",
+                "; fastest {} us (Windows Mobile's {} us); control at Windows Mobile's clock after: {}; the screen on throughout: {}",
                 s.us,
                 r.us_wm,
-                if s.control { "right" } else { "WRONG" }
+                if s.control { "right" } else { "WRONG" },
+                if s.screen {
+                    "yes"
+                } else {
+                    "NO (a screen-off result)"
+                }
             );
         }
         (r, list)
@@ -1894,10 +1953,12 @@ mod image {
         rp_image::on_crash(put_back);
         let steps = G3_WAYS.len() as u32 + 1;
         let mut right = [[None; SETTINGS]; G3_WAYS.len()];
+        let mut dark = [[false; SETTINGS]; G3_WAYS.len()];
         for (k, &w) in G3_WAYS.iter().enumerate() {
             let (r, _) = way(e, vram, w, &super::G3_PLLS, k as u32 + 2, steps);
-            for (s, slot) in right[k].iter_mut().enumerate() {
-                *slot = r.right(s);
+            for s in 0..SETTINGS {
+                right[k][s] = r.right(s);
+                dark[k][s] = r.right(s).is_some() && !r.at[s].screen;
             }
         }
         for (s, (_, mhz)) in super::G3_PLLS.iter().enumerate() {
@@ -1905,7 +1966,8 @@ mod image {
             for (k, w) in G3_WAYS.iter().enumerate() {
                 match right[k][s] {
                     Some(n) => {
-                        let _ = write!(RunLog, " {} {n};", w.name());
+                        let off = if dark[k][s] { " (screen off)" } else { "" };
+                        let _ = write!(RunLog, " {} {n}{off};", w.name());
                     }
                     None => {
                         let _ = write!(RunLog, " {} not run;", w.name());
@@ -1915,15 +1977,26 @@ mod image {
             log!("");
         }
         let mut l = [[0u8; 32]; 8];
-        let mut lines: [&str; 11] = [""; 11];
+        let mut lines: [&str; 12] = [""; 12];
         lines[0] = G_TITLE;
         lines[1] = "DONE: PRESS A BUTTON";
         lines[2] = "RIGHT OF 20 AT 74/99/133";
+        lines[3] = "* = THE SCREEN WENT DARK";
         for (k, buf) in l.iter_mut().enumerate() {
             let n = |s: usize| right[k][s].map_or(-1, |v| v as i32);
-            lines[3 + k] = fmt(
+            let d = |s: usize| if dark[k][s] { "*" } else { "" };
+            lines[4 + k] = fmt(
                 buf,
-                format_args!("WAY {}: {} {} {}", k + 1, n(0), n(1), n(2)),
+                format_args!(
+                    "WAY {}: {}{} {}{} {}{}",
+                    k + 1,
+                    n(0),
+                    d(0),
+                    n(1),
+                    d(1),
+                    n(2),
+                    d(2)
+                ),
             );
         }
         say(vram, &lines);

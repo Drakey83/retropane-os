@@ -2983,6 +2983,18 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         eprintln!("    glesfeat: skipped (this emulator release doesn't model the MBX 3D core)");
         return Ok(());
     }
+    // One of tests G-G3 alone (`RP_EMU_GLESFEAT_ONLY=g3`), for checking a
+    // changed test before its device run without the half hour the others
+    // take; `cargo xtask ci` (before every push) runs them all.
+    match std::env::var("RP_EMU_GLESFEAT_ONLY").as_deref() {
+        Ok("g") => return boot_loader_glesfeat_g(root, 1),
+        Ok("g2") => return boot_loader_glesfeat_g(root, 2),
+        Ok("g3") => return boot_loader_glesfeat_g(root, 3),
+        Ok(other) => {
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g, g2 or g3"));
+        }
+        Err(_) => {}
+    }
     let loader = raw_image(root, "rp-loader")?;
     let bin = raw_image(root, "rp-glesfeat")?;
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
@@ -3122,6 +3134,9 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
             "G3: right at 74.75 / 1 of 20:",
             "G3: right at 99.67 / 1 of 20:",
             "G3: right at 133.25 / 1 of 20:",
+            "    display after the change: underrun ",
+            "    display back at Windows Mobile's clock: underrun ",
+            "; the screen on throughout: ",
             "RETROPANE-GLESFEAT: DONE",
         ]
     } else if test == 2 {
