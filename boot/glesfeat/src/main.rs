@@ -1096,6 +1096,13 @@ mod image {
     /// and the bus timing of the clock's tier (Dell's: the long one below
     /// 99 MHz). False if the PLL didn't lock or a memory-controller write
     /// never held (Windows Mobile's clock is then back).
+    ///
+    /// ADR-0035's rules this follows: 3, CL2 always (callers pass
+    /// `Speed::ladder`; G3's first run took Dell's CL3 and rendered nothing
+    /// at 133.25 MHz); 4, every memory-controller write read back and the
+    /// step failed if one never holds (`clock::set_speed`); 8, every change
+    /// followed by the underrun check and Dell's clear (the callers'
+    /// `display_check`, quality audit C69).
     fn to_divide_1<B: RegisterBus>(regs: &mut B, speed: Speed) -> bool {
         let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
         let clk = regs.read32(MBXCLK);
