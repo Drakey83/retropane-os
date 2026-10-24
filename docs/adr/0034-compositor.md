@@ -6,8 +6,8 @@
   below and in [docs/design/compositor.md](../design/compositor.md).
   **Amends ADR-0023** (C2: 16-bit opaque pictures) **and ADR-0030 G1**
   (C5: layers replace areas). Implements ADR-0022 point 3 as amended.
-  **Proposed amendment P (screen placement, 2026-10-24): awaiting the
-  owner's vote** (below).
+  **Amendment P (screen placement): accepted (owner, 2026-10-24): P1 A,
+  P2 yes, P3 measured per device in the self-test** (below).
 - **Date:** 2026-10-19
 
 ## In plain words
@@ -141,7 +141,31 @@ T1, T3, T4, ticked):
   right**, dropped if it tears; free scaling is then the app-opening
   animation's way (W3 missed its 250 ms by 105 ms in 3D).
 
-## Proposed amendment P: where the display may read while the 3D core draws (2026-10-24, awaiting the owner's vote)
+## Amendment P: where the display may read while the 3D core draws (accepted, owner, 2026-10-24)
+
+**The owner's votes (2026-10-24):**
+
+- **P1: A.** "It's the only option that's proven, doesn't flicker, doesn't
+  tear, and doesn't corrupt." B flickers at 60 fps; D corrupts; C is
+  unproven and might reintroduce the collision in a new form. A's costs
+  (up to a 5 ms copy, no panned page during 3D frames) are affordable, the
+  ~2 ms render speedup partly offsetting the copy.
+- **P2: yes**, C's test runs anyway: if the 3D core can draw straight into
+  the safe region, dropping a 5 ms copy from every 3D frame matters for
+  60 fps games. It doesn't block A: A now, C a later optimization if its
+  test passes.
+- **P3: measured per device in the self-test** (ADR-0035 rule 1). The
+  ~700 KiB comes from one X51v (the owner's); the any-Axim rule needs it on
+  every unit, and whether the region is on-die is still owed. The
+  self-test's measurement answers the size, the on-die question and the
+  X50v together. (The owner first said "a fixed constant for now", then
+  this: this stands.) **Until a device's self-test has measured it** (a
+  first boot, a fingerprint mismatch), the layout is the smallest proven:
+  the screen alone at `0x0` (600 KiB, harmless on this X51v up to
+  `0xAE000`), the video band off while the 3D core draws; a measured
+  region smaller than the screen is reported and the 3D core's renders
+  kept off while the display reads (G16's way) until resolved, never run
+  blind.
 
 ### In plain words
 
