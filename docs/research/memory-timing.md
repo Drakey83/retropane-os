@@ -78,7 +78,9 @@ time, each step checked (a full-screen flush verified word by word,
   not public, so only a measurement can tell.
 - **The real memory-speed wins are elsewhere** (alternatives below).
   RetroPane's SDRAM miss costs ~490 ns against WM's ~280 ns, and most of
-  that difference is TLB walks, not timings. Large mappings and page tables
+  that difference is TLB walks, not timings. *(2026-10-24: not like with like: the two chases
+  walk different patterns, and RetroPane's runs had no TLB misses at all;
+  CPU V7's `RP_PROBE_WMHOP` runs Windows Mobile's own programs.)* Large mappings and page tables
   in SRAM are worth more than any timing change, at no risk.
 - **Found on the way:** today Windows Mobile left the core at **624 MHz
   with `CCCR[A]` = 1** (memory clock 208 MHz). The manual's table 3-7 does

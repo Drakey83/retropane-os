@@ -321,7 +321,7 @@ at the same clock is due (item 67 sets 624 MHz ourselves).
 | `timer_read` | 1,769 ns (`QueryPerformanceCounter`) | 846 ns (OS timer) | RP 2.1x: no kernel call |
 | `memcpy_64k` | 606,503 / 736,116 ns (~89-108 MB/s) | 687,430 ns (~95 MB/s) | level; memory-bound, try iWMMXt and `pld` tuning (item 71) |
 | `memset_64k` | 179,200 / 172,466 ns | 173,953 ns | level |
-| `chase_sdram_256k` (per hop) | 291 / 275 ns | ~506 ns | **WM 1.8x**: SDRAM timings, memory clock or TLB misses (RP's 4 KiB pages); items 68, 78 |
+| `chase_sdram_256k` (per hop) | 291 / 275 ns | ~506 ns | **WM 1.8x, but not the same pattern (found 2026-10-24):** `rp-wmbench`'s chase walks 256 KiB in jumps of 4,099 of 8,192 lines (the halves alternate, creeping 192 bytes a pair: open SDRAM rows), RetroPane's suite 128 KiB in jumps of 5/8; `rp-probe` `RP_PROBE_WMHOP` runs Windows Mobile's exact programs to compare like with like (CPU V7); items 68, 78 |
 | `sha256_4k` | 441,573 / 481,029 ns (~8.5-9.3 MB/s) | not yet on the device | - |
 | `thread_switch` | 9.0 / 5.6 us (event ping-pong, per switch) | ~12.2 us | **WM 1.4-2.2x**: ADR-0010's target is < 2 us; items 67, 80 |
 | `sleep_lateness_max` | 1,100 / 1,052 us (1 ms tick) | ~17 us (tickless) | RP ~60x |

@@ -11916,7 +11916,8 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
     }
     eprintln!("    probe OK: {lines} report lines, all checksums valid, report on screen");
     probe_pages(root)?;
-    probe_mini(root)
+    probe_mini(root)?;
+    probe_wmhop(root)
 }
 
 /// The probe's `RP_PROBE_MINI` variant (the CPU gate's V1 and C5): the
@@ -11979,6 +11980,84 @@ fn probe_mini(root: &Path) -> Result<(), String> {
         ));
     }
     eprintln!("    probe mini OK: both windows mapped, every row reported");
+    Ok(())
+}
+
+/// The probe's `RP_PROBE_WMHOP` variant (the CPU gate's V7): Windows
+/// Mobile's hop programs (`suite::wm_hops`) in the 8 MiB window under each
+/// mapping. The emulator models no cache or TLB timing (emulator.md), so
+/// this checks the chains run under every mapping (no fault, no failed
+/// check) and every row is in the checksummed report.
+fn probe_wmhop(root: &Path) -> Result<(), String> {
+    let image = variant_image(root, "rp-probe", ("RP_PROBE_WMHOP", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    crate::sdkit::raw_binary(
+        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &loader,
+    )?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RPL OK sha256")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let output = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l.to_string())
+        .ok_or("probe wmhop: never came back to the loader")?;
+    for l in output
+        .lines()
+        .filter(|l| l.starts_with('P') && l.contains('|'))
+    {
+        check_report_line(l)?;
+        let text = l.split_once('|').map_or("", |(_, t)| t);
+        let mut words = text.split_whitespace();
+        if words.next() == Some("check") && words.nth(1) == Some("FAIL") {
+            return Err(format!("probe wmhop: a check failed: {}", text.trim()));
+        }
+    }
+    let named = |n: &str| {
+        output
+            .lines()
+            .filter_map(|l| l.split_once('|').map(|(_, t)| t))
+            .any(|t| t.split_whitespace().any(|w| w == n))
+    };
+    for map in ["sections", "64k", "4k", "4k_l2sram"] {
+        for n in [
+            format!("wm_chase_{map}"),
+            format!("wm_walk8m_{map}"),
+            format!("wm_walk256k_{map}"),
+            format!("wm_walk32k_{map}"),
+            format!("wm_walk8m_{map}_dtlb"),
+            format!("wm_chase_{map}_dcache"),
+        ] {
+            if !named(&n) {
+                return Err(format!(
+                    "probe wmhop: `{n}` missing:
+{output}"
+                ));
+            }
+        }
+    }
+    if crashed(&output) {
+        return Err(format!(
+            "probe wmhop: crashed:
+{output}"
+        ));
+    }
+    eprintln!(
+        "    probe wmhop OK: Windows Mobile's hop programs under all four mappings, every row reported"
+    );
     Ok(())
 }
 

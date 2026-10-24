@@ -34,9 +34,148 @@ pub const TLB_SPILL: u32 = 60;
 /// Bytes `layer` needs: a 480 x 640 ARGB8888 layer and a 64 x 64 glyph.
 pub const LAYER_WORK: usize = 480 * 640 * 4 + 64 * 64;
 
+/// Microsoft's C runtime `rand` (`seed * 214013 + 2531011`, bits
+/// 30-16), which `rp-wmprobe`'s walk calls after `srand(12345)` under
+/// Windows Mobile, so `wm_hops` walks the same order (assumed: coredll's
+/// `rand` is the desktop runtime's; the walk's statistics, not its exact
+/// order, are what's compared).
+pub struct MsRand(u32);
+
+impl MsRand {
+    /// After `srand(seed)`.
+    #[must_use]
+    pub const fn new(seed: u32) -> Self {
+        Self(seed)
+    }
+
+    /// The next value, 0-32767.
+    pub fn rand(&mut self) -> u32 {
+        self.0 = self.0.wrapping_mul(214_013).wrapping_add(2_531_011);
+        (self.0 >> 16) & 0x7FFF
+    }
+}
+
+/// `rp-wmprobe`'s `walk`: a chain through one word every `step` bytes of
+/// `buf[..bytes]`, in a random order (Fisher-Yates with [`MsRand`] seeded
+/// 12345, as Windows Mobile ran it). The order is built in each slot's
+/// second word, then the chain in its first. `None` if it doesn't fit.
+#[must_use]
+pub fn wm_walk_chain(buf: &mut [u8], bytes: usize, step: usize) -> Option<usize> {
+    if bytes > buf.len() || step < 8 || !step.is_multiple_of(4) || bytes / step < 2 {
+        return None;
+    }
+    let n = bytes / step;
+    let word = |i: usize, w: usize| i * step + w * 4;
+    let get = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let put = |b: &mut [u8], at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    for i in 0..n {
+        put(buf, word(i, 1), i as u32);
+    }
+    let mut rand = MsRand::new(12_345);
+    for i in (1..n).rev() {
+        let j = rand.rand() as usize % (i + 1);
+        let (a, b) = (get(buf, word(i, 1)), get(buf, word(j, 1)));
+        put(buf, word(i, 1), b);
+        put(buf, word(j, 1), a);
+    }
+    for i in 0..n {
+        let here = get(buf, word(i, 1)) as usize;
+        let next = get(buf, word((i + 1) % n, 1));
+        // The chain holds byte offsets / 4, as the walk's word indices.
+        put(buf, word(here, 0), next * (step / 4) as u32);
+    }
+    Some(get(buf, word(0, 1)) as usize * step / 4)
+}
+
+/// `rp-wmbench`'s `chase`: 8,192 lines of 32 bytes (256 KiB), line `i`
+/// pointing to line `(i + 4099) % 8192`: hops alternate between the two
+/// halves and creep 6 lines a pair (not `chase`'s pattern). Byte
+/// offsets / 4. `false` if `buf` is under 256 KiB.
+pub fn wm_chase_chain(buf: &mut [u8]) -> bool {
+    const LINES: usize = 8192;
+    if buf.len() < LINES * 32 {
+        return false;
+    }
+    for i in 0..LINES {
+        let next = (((i + 4099) % LINES) * 8) as u32;
+        buf[i * 32..i * 32 + 4].copy_from_slice(&next.to_le_bytes());
+    }
+    true
+}
+
+#[cfg(test)]
+mod wm_hop_tests {
+    use super::*;
+
+    fn word(b: &[u8], at: usize) -> usize {
+        u32::from_le_bytes([b[at * 4], b[at * 4 + 1], b[at * 4 + 2], b[at * 4 + 3]]) as usize
+    }
+
+    #[test]
+    fn ms_rand_is_the_c_runtimes() {
+        // srand(1); rand() x3 under Microsoft's runtime: 41, 18467, 6334.
+        let mut r = MsRand::new(1);
+        assert_eq!([r.rand(), r.rand(), r.rand()], [41, 18_467, 6_334]);
+    }
+
+    #[test]
+    fn the_walk_visits_every_slot_once_and_closes() {
+        for (bytes, step) in [(32 << 10, 32), (256 << 10, 32), (64 << 10, 4096)] {
+            let mut buf = vec![0u8; bytes];
+            let start = wm_walk_chain(&mut buf, bytes, step).unwrap();
+            let n = bytes / step;
+            let mut seen = vec![false; n];
+            let mut at = start;
+            for _ in 0..n {
+                assert_eq!(at % (step / 4), 0, "on a slot's first word");
+                let slot = at / (step / 4);
+                assert!(!seen[slot], "slot {slot} twice");
+                seen[slot] = true;
+                at = word(&buf, at);
+            }
+            assert!(seen.iter().all(|&v| v), "every slot");
+            assert_eq!(at, start, "one cycle");
+            // Random, not sequential: few hops to the next slot.
+            let mut near = 0;
+            let mut a = start;
+            for _ in 0..n {
+                let b = word(&buf, a);
+                near += usize::from(b / (step / 4) == a / (step / 4) + 1);
+                a = b;
+            }
+            assert!(near * 20 <= n, "{near} of {n} sequential");
+        }
+    }
+
+    #[test]
+    fn the_walk_refuses_what_doesnt_fit() {
+        let mut buf = vec![0u8; 4096];
+        assert!(wm_walk_chain(&mut buf, 8192, 32).is_none());
+        assert!(wm_walk_chain(&mut buf, 4096, 4).is_none());
+        assert!(wm_walk_chain(&mut buf, 4096, 30).is_none());
+        assert!(wm_walk_chain(&mut buf, 32, 32).is_none());
+        assert!(wm_walk_chain(&mut buf, 64, 32).is_some());
+    }
+
+    #[test]
+    fn the_chase_is_wmbenchs() {
+        let mut buf = vec![0u8; 256 << 10];
+        assert!(!wm_chase_chain(&mut buf[..(256 << 10) - 32]));
+        assert!(wm_chase_chain(&mut buf));
+        // Line 0 to 4099, then 4099 + 4099 - 8192 = 6: the halves alternate.
+        assert_eq!(word(&buf, 0), 4099 * 8);
+        assert_eq!(word(&buf, 4099 * 8), 6 * 8);
+        let mut at = 0;
+        for _ in 0..8192 {
+            at = word(&buf, at);
+        }
+        assert_eq!(at, 0, "one cycle through 8,192 lines");
+    }
+}
+
 #[cfg(target_os = "none")]
 mod target {
-    use super::{CHASE_HOPS, Sink, TLB_FIT, TLB_SPILL};
+    use super::{CHASE_HOPS, Sink, TLB_FIT, TLB_SPILL, wm_chase_chain, wm_walk_chain};
     use core::hint::black_box;
 
     use rp_drv_mbx_display::{Plane, fill_rect_rgb565, pattern};
@@ -1374,6 +1513,65 @@ mod target {
             }
         }
         r.check("pages_mapping", all_same, "");
+    }
+
+    /// The names [`wm_hops`] reports under one mapping.
+    pub struct WmHopNames {
+        /// `rp-wmbench`'s chase (256 KiB, jumps of 4,099 lines).
+        pub chase: &'static str,
+        /// The walk over 8 MiB, one word a 4 KiB page.
+        pub walk_8m: &'static str,
+        /// The walk over 256 KiB, one word a 32-byte line.
+        pub walk_256k: &'static str,
+        /// The walk over 32 KiB (the D-cache), a 32-byte line.
+        pub walk_32k: &'static str,
+        /// D-TLB misses in one pass of the 8 MiB walk.
+        pub walk_8m_dtlb: &'static str,
+        /// D-cache misses in one pass of the chase.
+        pub chase_dcache: &'static str,
+    }
+
+    /// The CPU gate's V7: Windows Mobile's two memory-hop programs
+    /// (`rp-wmbench` `chase`, `rp-wmprobe` `hop`) run as they ran there, on
+    /// `buf` (8 MiB for the page walk; the others need 256 KiB), each
+    /// [`CHASE_HOPS`] hops a run; then one counted pass. Results are a run's
+    /// ticks: ns a hop is the time / 4,096.
+    pub fn wm_hops(r: &mut Runner, names: &WmHopNames, buf: &mut [u8]) {
+        use rp_hal_pxa27x::pmu::{self, Event};
+        let hop_words = |buf: &[u8], at: &mut usize| {
+            for _ in 0..CHASE_HOPS {
+                let b = &buf[*at * 4..*at * 4 + 4];
+                *at = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+            }
+        };
+        if wm_chase_chain(buf) {
+            let mut at = 0usize;
+            r.run(names.chase, 16, &mut || hop_words(buf, &mut at));
+            let s = pmu::start([Event::DcacheMiss, Event::DtlbMiss, Event::Instruction]);
+            hop_words(buf, &mut at);
+            black_box(at);
+            r.count(names.chase_dcache, pmu::read(s).events[0]);
+        } else {
+            r.check(names.chase, false, "buffer too small");
+        }
+        for (name, bytes, step) in [
+            (names.walk_8m, 8 << 20, 4096),
+            (names.walk_256k, 256 << 10, 32),
+            (names.walk_32k, 32 << 10, 32),
+        ] {
+            let Some(start) = wm_walk_chain(buf, bytes, step) else {
+                r.check(name, false, "buffer too small");
+                continue;
+            };
+            let mut at = start;
+            r.run(name, 16, &mut || hop_words(buf, &mut at));
+            if bytes == 8 << 20 {
+                let s = pmu::start([Event::DtlbMiss, Event::DcacheMiss, Event::Instruction]);
+                hop_words(buf, &mut at);
+                black_box(at);
+                r.count(names.walk_8m_dtlb, pmu::read(s).events[0]);
+            }
+        }
     }
 
     /// Lines a [`far_chase`] hop moves: 4,128 bytes, so every hop lands on

@@ -42,6 +42,11 @@ pub const MARKER: &str = "RETROPANE-PROBE-DONE";
 /// page size and page-table placement, `suite::pages`) instead of the
 /// benchmark list; the ratchet's rows are untouched.
 pub const PAGES_ONLY: bool = option_env!("RP_PROBE_PAGES").is_some();
+/// `RP_PROBE_WMHOP`: the CPU gate's V7 alone: Windows Mobile's own memory
+/// hop programs (`rp-wmbench`'s chase, `rp-wmprobe`'s walks) run as they
+/// ran there, under each mapping (`suite::wm_hops`), so RetroPane and
+/// Windows Mobile are compared on the same pattern.
+pub const WMHOP_ONLY: bool = option_env!("RP_PROBE_WMHOP").is_some();
 /// `RP_PROBE_MINI`: the CPU gate's V1 and C5 alone: the mini data cache's
 /// size and whether streaming through it keeps a hot set in the main one
 /// (`suite::mini_cache`).
@@ -361,6 +366,8 @@ mod image {
                 mini(&mut r);
             } else if super::PAGES_ONLY {
                 pages(&mut r);
+            } else if super::WMHOP_ONLY {
+                wmhop(&mut r);
             } else {
                 suite::timer(&mut r);
                 suite::frames(&mut r);
@@ -675,6 +682,92 @@ mod image {
 
     /// Formats into a fixed line buffer (cut if too long).
     /// The snapshot value of the whitelisted register `name` (0 if absent).
+    /// [`super::WMHOP_ONLY`]: Windows Mobile's hop programs over an 8 MiB
+    /// window of the RAM pool mapped as sections, 64 KiB pages and 4 KiB
+    /// pages (tables in SDRAM, then in the internal SRAM).
+    fn wmhop(r: &mut suite::Runner) {
+        use rp_hal_pxa27x::mmu::Pages;
+        use suite::WmHopNames;
+        const WINDOW: usize = 8 << 20;
+        const fn names(m: usize) -> WmHopNames {
+            const N: [[&str; 6]; 4] = [
+                [
+                    "wm_chase_sections",
+                    "wm_walk8m_sections",
+                    "wm_walk256k_sections",
+                    "wm_walk32k_sections",
+                    "wm_walk8m_sections_dtlb",
+                    "wm_chase_sections_dcache",
+                ],
+                [
+                    "wm_chase_64k",
+                    "wm_walk8m_64k",
+                    "wm_walk256k_64k",
+                    "wm_walk32k_64k",
+                    "wm_walk8m_64k_dtlb",
+                    "wm_chase_64k_dcache",
+                ],
+                [
+                    "wm_chase_4k",
+                    "wm_walk8m_4k",
+                    "wm_walk256k_4k",
+                    "wm_walk32k_4k",
+                    "wm_walk8m_4k_dtlb",
+                    "wm_chase_4k_dcache",
+                ],
+                [
+                    "wm_chase_4k_l2sram",
+                    "wm_walk8m_4k_l2sram",
+                    "wm_walk256k_4k_l2sram",
+                    "wm_walk32k_4k_l2sram",
+                    "wm_walk8m_4k_l2sram_dtlb",
+                    "wm_chase_4k_l2sram_dcache",
+                ],
+            ];
+            WmHopNames {
+                chase: N[m][0],
+                walk_8m: N[m][1],
+                walk_256k: N[m][2],
+                walk_32k: N[m][3],
+                walk_8m_dtlb: N[m][4],
+                chase_dcache: N[m][5],
+            }
+        }
+        let Some(pool) = rp_hal_x51v::devices::take_ram_pool_bytes() else {
+            r.check("wmhop", false, "no RAM pool");
+            return;
+        };
+        let (backing, rest) = pool.split_at_mut(WINDOW);
+        let l2_sdram = &mut rest[..8 * 1024];
+        let mut sram = diag::take_sram();
+        let maps = [
+            (Pages::Sections, false),
+            (Pages::Large, false),
+            (Pages::Small, false),
+            (Pages::Small, true),
+        ];
+        for (m, (pages, in_sram)) in maps.into_iter().enumerate() {
+            let n = names(m);
+            let l2: &mut [u8] = if in_sram {
+                match sram.as_deref_mut() {
+                    Some(s) => &mut s[16 * 1024..24 * 1024],
+                    None => {
+                        r.check(n.chase, false, "no SRAM");
+                        continue;
+                    }
+                }
+            } else {
+                &mut *l2_sdram
+            };
+            let mapped = diag::with_window(0xC000_0000, backing, pages, l2, &mut |w| {
+                suite::wm_hops(r, &n, w);
+            });
+            if !mapped {
+                r.check(n.chase, false, "not mapped");
+            }
+        }
+    }
+
     /// [`super::PAGES_ONLY`]: the random hop over 8 MiB of the RAM pool by
     /// page size, the second-level tables in SDRAM, then in the internal
     /// SRAM, then with the first-level table moved into the SRAM too
