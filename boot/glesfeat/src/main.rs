@@ -230,13 +230,21 @@ pub fn dell_clear_draw(
 /// Test G3's settings, rising: the core PLL (13 MHz x M / (N x 2^P)) with
 /// the cores at divide 1: 74.75 MHz (Dell's `CoreClock` threshold, where
 /// Dell's driver draws right), 99.67 (Windows Mobile's system clock) and
-/// 133.25 (the aim; the memory right there, GC2). Each with the memory
-/// timing Dell's rule gives it.
+/// 133.25 (the aim; the memory right there, GC2). Each with the memory's
+/// timing from Dell's rule but its CAS latency [`G_LMTYPE`]'s.
 pub const G3_PLLS: [(u32, &str); 3] = [
     (23 << 7 | 4 << 4 | 1, "74.75"),
     (23 << 7 | 3 << 4 | 1, "99.67"),
     (41 << 7 | 4 << 4 | 1, "133.25"),
 ];
+
+/// The local memory's CAS latency at every divide-1 setting: CL2 (`LMTYPE`
+/// `0xAC8`), as GC2 and the soaks run, not Dell's CL3 above 100 MHz: run
+/// G1 drew no 3D picture at 108 MHz with CL3 where run 27 drew right at
+/// 133 MHz with CL2, and the warm and cold soaks ran 133.25 MHz CL2 with 0
+/// BAD. Test G3's first run took Dell's rule and no render finished at
+/// 133.25 / 1 (2026-10-23): the test's fault, not the chip's.
+pub const G_LMTYPE: u32 = 0xAC8;
 
 /// The GLES clear of a `width` x `height` target as the TA writes its
 /// object: one triangle covering the target twice over, z 1.0.
@@ -1648,7 +1656,7 @@ mod image {
             let mut line = [0u8; 32];
             let line = fmt(&mut line, format_args!("{mhz} MHZ / 1: SETTING"));
             say(vram, &[G_TITLE, head, name, line]);
-            s.clocked = to_divide_1(&mut e.regs, Speed::rated(pll));
+            s.clocked = to_divide_1(&mut e.regs, Speed::ladder(pll));
             clock_readback(&mut e.regs);
             if !s.clocked {
                 log!(
@@ -2542,8 +2550,20 @@ mod g3_tests {
         // timing (only the cores' divider differs from Windows Mobile).
         assert_eq!(Speed::rated(G3_PLLS[0].0), Speed::A75);
         assert_eq!(Speed::rated(G3_PLLS[1].0), Speed::WM);
-        // 133.25 with Dell's CL3 above 100 MHz.
-        assert_eq!(Speed::rated(G3_PLLS[2].0).lmtype, 0xEC8);
+        // CL2 at every setting, as GC2 and the soaks (Dell's rule would
+        // give CL3 at 133.25: no 3D picture in run G1 at 108 MHz, none
+        // rendered in G3's first run).
+        assert_eq!(G_LMTYPE, Speed::WM.lmtype);
+        assert_eq!(Speed::A75.lmtype, G_LMTYPE);
+        // What the image runs: the clock driver's ADR-0035 ladder.
+        for (pll, _) in G3_PLLS {
+            assert_eq!(Speed::ladder(pll).lmtype, G_LMTYPE);
+        }
+        assert_eq!(
+            Speed::rated(G3_PLLS[2].0).lmtype,
+            0xEC8,
+            "Dell's rule, which G3 overrides"
+        );
         assert!(
             G3_PLLS
                 .windows(2)

@@ -122,6 +122,19 @@ impl Speed {
         }
     }
 
+    /// The core PLL value `pll` as ADR-0035 sets it: [`Speed::rated`]'s
+    /// timings with CL2 at every clock (ADR-0035's "CL2 always": Dell's CL3
+    /// above 100 MHz drew no 3D picture, run G1, and `rp-glesfeat` G3's
+    /// first run took it by mistake and rendered nothing at 133.25 MHz).
+    /// What a clock step for 3D work uses; `rated` stays for experiments
+    /// that compare the two.
+    #[must_use]
+    pub const fn ladder(pll: u32) -> Self {
+        let mut s = Self::rated(pll);
+        s.lmtype = Self::WM.lmtype;
+        s
+    }
+
     /// The system clock in kHz (by mbxfb's formula).
     #[must_use]
     pub const fn khz(self) -> u32 {
@@ -403,6 +416,21 @@ impl Gate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ladder_runs_cl2_at_every_clock_with_dells_timings() {
+        // ADR-0035: CL2 always; the rest Dell's rule.
+        for pll in [0xBC1, 0xBB1, 41 << 7 | 4 << 4 | 1, 23 << 7 | 2 << 4 | 1] {
+            let (l, r) = (Speed::ladder(pll), Speed::rated(pll));
+            assert_eq!(l.lmtype, 0xAC8, "pll 0x{pll:x}");
+            assert_eq!((l.pll, l.lmtim, l.lmrefresh), (r.pll, r.lmtim, r.lmrefresh));
+        }
+        // Below 100 MHz the ladder is Dell's own; above it Dell's would be
+        // CL3, which the ladder never is.
+        assert_eq!(Speed::ladder(0xBB1), Speed::WM);
+        assert_eq!(Speed::ladder(0xBC1), Speed::A75);
+        assert_eq!(Speed::rated(41 << 7 | 4 << 4 | 1).lmtype, 0xEC8);
+    }
 
     #[test]
     fn the_divider_is_kept() {
