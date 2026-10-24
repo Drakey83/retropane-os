@@ -3000,8 +3000,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g11") => return boot_loader_glesfeat_g(root, 11),
         Ok("g12") => return boot_loader_glesfeat_g(root, 12),
         Ok("g13") => return boot_loader_glesfeat_g(root, 13),
+        Ok("g14") => return boot_loader_glesfeat_g(root, 14),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g13"));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g14"));
         }
         Err(_) => {}
     }
@@ -3305,7 +3306,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 13 {
+    let (env, name, ours, after) = if test == 14 {
+        ("RP_GLESFEAT_G14", "G14", "G14 way 2 (", "G14 way 3 (")
+    } else if test == 13 {
         ("RP_GLESFEAT_G13", "G13", "G13 way 1 (", "G13 way 2 (")
     } else if test == 12 {
         ("RP_GLESFEAT_G12", "G12", "G12 way 1 (", "G12 way 2 (")
@@ -3333,14 +3336,18 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
     // the very picture way 1 draws directly.
     let frame = root.join("target/g7-synthetic-frame.bin");
-    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13) {
+    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13 | 14) {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
     } else {
         None
     };
-    let bin = variant_image_with(root, "rp-glesfeat", (env, "1"), also)?;
+    // G14's first way runs on the chip as Dell's driver left it at boot;
+    // the emulator starts with every 2700G clock off, so its build runs
+    // the way whatever the start (`any-start`, never a device build).
+    let value = if test == 14 { "any-start" } else { "1" };
+    let bin = variant_image_with(root, "rp-glesfeat", (env, value), also)?;
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
@@ -3370,7 +3377,22 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 13 {
+    let wants: &[&str] = if test == 14 {
+        &[
+            "test G14, Gouraud at the cores' divide 1",
+            "G14 way 1 (Dell's frame at the clock his driver set at boot, no clock of ours changed):",
+            "  not at Dell's divide 1: run anyway (RP_GLESFEAT_G14=any-start, the emulator's build)",
+            "    display after the 3D clock on: ",
+            "  at Dell's clock, before ours: ",
+            "G14: right at Dell's own clock of 20: Dell's frame 20",
+            "parameter memory ready: true",
+            "G14 way 2 (ours, our places):",
+            "G14 way 3 (Dell's frame replayed):",
+            "G14: right at 74.75 / 1 of 20:",
+            "G14: right at 133.25 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 13 {
         &[
             "test G13, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3600,9 +3622,11 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
             "glesfeat {name}: {refs} repeatable references for {drew} ways that drew:{log}"
         ));
     }
-    // Each way that drew runs every setting: G3 three, G and G2 one.
+    // Each way that drew runs every setting: G3 three, G and G2 one;
+    // G14's first way none (it stays at the clock it found).
     let settings = if test >= 3 { 3 } else { 1 };
-    if drew == 0 || refused + controls != drew * settings {
+    let clocked = drew - usize::from(test == 14).min(drew);
+    if clocked == 0 || refused + controls != clocked * settings {
         return Err(format!(
             "glesfeat {name}: {drew} ways drew, {refused} refused the clock and {controls} came back right:{log}"
         ));
@@ -3638,6 +3662,9 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         12 => &[2, 3, 4, 5],
         // Either display clock, ours or the replay of our scene: one picture.
         13 => &[2, 3, 4],
+        // The replay of our scene at the clock found (way 1, the anchor),
+        // ours and the replay after our clock change: one picture.
+        14 => &[2, 3],
         _ => &[],
     };
     if !same.is_empty() {

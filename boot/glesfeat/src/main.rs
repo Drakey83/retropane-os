@@ -504,6 +504,16 @@ pub const SILENT_SPINS: u32 = 12_000_000;
 /// the FFUART (bit 6), the USB host (bit 10) and bit 24.
 pub const LOADER_ONLY_CLOCKS: u32 = 1 << 6 | 1 << 10 | 1 << 24;
 
+/// Whether the image started on the chip as Dell's driver sets it at boot
+/// when Windows Mobile has his `CoreClock` (`rp-wmprobe` run 1): the core
+/// PLL locked (`PLLSTAT` bit 2), the cores at divide 1 (`MBXCLK` bits 3-2
+/// zero) with a clock running (bits 1-0 not zero; `0x0`, every clock off,
+/// is the emulator's start, not Dell's chip). Tests G5 and G14.
+#[must_use]
+pub const fn dells_divide_1(mbxclk: u32, pllstat: u32) -> bool {
+    pllstat & 4 != 0 && mbxclk >> 2 & 3 == 0 && mbxclk & 3 != 0
+}
+
 /// Test G13's ways: (Dell's frame, not ours; the display at Windows
 /// Mobile's pixel clock, `DISPPLL` `0xEC5` (56.4 Hz), not the loader's
 /// `0xFC5` (60.3 Hz): G9's last 2700G difference outside the MBX block; the
@@ -908,7 +918,8 @@ mod image {
         || TEST_G10
         || TEST_G11
         || TEST_G12
-        || TEST_G13;
+        || TEST_G13
+        || TEST_G14;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -958,6 +969,24 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g13`).
     const TEST_G13: bool = option_env!("RP_GLESFEAT_G13").is_some();
+    /// Test G14 instead of G (`RP_GLESFEAT_G14=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G14=1
+    /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g14`).
+    const TEST_G14: bool = option_env!("RP_GLESFEAT_G14").is_some();
+    /// Test G14's first way run whatever clock the image starts at
+    /// (`RP_GLESFEAT_G14=any-start`): the emulator starts with every 2700G
+    /// clock off, never at Dell's divide 1, so its check builds this to
+    /// step through the way. Never in a device build: there the way runs
+    /// only on the chip as Dell's driver left it.
+    const G14_ANY_START: bool = match option_env!("RP_GLESFEAT_G14") {
+        Some(v) => matches!(v.as_bytes(), b"any-start"),
+        None => false,
+    };
+    const _: () = assert!(
+        !TEST_G14 || cfg!(rp_g7),
+        "test G14 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G13 || cfg!(rp_g7),
         "test G13 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -993,7 +1022,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G13 {
+    const G_TITLE: &str = if TEST_G14 {
+        "RP-GLESFEAT TEST G14"
+    } else if TEST_G13 {
         "RP-GLESFEAT TEST G13"
     } else if TEST_G12 {
         "RP-GLESFEAT TEST G12"
@@ -1020,7 +1051,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G13 {
+    const G_NAME: &str = if TEST_G14 {
+        "G14"
+    } else if TEST_G13 {
         "G13"
     } else if TEST_G12 {
         "G12"
@@ -1050,7 +1083,14 @@ mod image {
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
-    const REF: usize = if TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || TEST_G12 || TEST_G13 {
+    const REF: usize = if TEST_G7
+        || TEST_G8
+        || TEST_G10
+        || TEST_G11
+        || TEST_G12
+        || TEST_G13
+        || TEST_G14
+    {
         super::G7_REF
     } else if TEST_G6 {
         super::G6_REF
@@ -1065,12 +1105,21 @@ mod image {
             || TEST_G11
             || TEST_G12
             || TEST_G13
+            || TEST_G14
             || REF + STRIDE * H as usize <= TAIL
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
     /// screen corrupts 32-bit renders: ADR-0023), after the target.
     const LABEL: usize =
-        if TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || TEST_G12 || TEST_G13 {
+        if TEST_G6
+            || TEST_G7
+            || TEST_G8
+            || TEST_G10
+            || TEST_G11
+            || TEST_G12
+            || TEST_G13
+            || TEST_G14
+        {
             super::G6_LABEL
         } else {
             0x0040_0000
@@ -1084,6 +1133,7 @@ mod image {
             || TEST_G11
             || TEST_G12
             || TEST_G13
+            || TEST_G14
             || TARGET + STRIDE * H as usize <= LABEL
     );
     const _: () = assert!(
@@ -1094,6 +1144,7 @@ mod image {
             || TEST_G11
             || TEST_G12
             || TEST_G13
+            || TEST_G14
             || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
@@ -1134,6 +1185,14 @@ mod image {
 
     /// Test G11: the current way changes CS2's timing to Dell's at divide 1.
     static G11_CS2: rt::Global<bool> = rt::Global::new(false);
+
+    /// Ways a test ran before [`test_settings`]'s (G14's first, at Dell's
+    /// own clock): its ways and steps numbered after them.
+    static WAYS_BEFORE: rt::Global<u32> = rt::Global::new(0);
+
+    /// G14's first way for the summary: not run (`Some(None)`), or the
+    /// renders right of [`G_DRAWS`]; `None` in every other test.
+    static FIRST_WAY: rt::Global<Option<Option<u32>>> = rt::Global::new(None);
 
     /// Test G7's frame, if the image carries one that parses.
     fn frame() -> Option<super::frame::Frame<'static>> {
@@ -3133,11 +3192,12 @@ mod image {
     fn test_settings(e: &mut Engine<Mmio>, vram: &mut [u8], ways: &[Way]) {
         rp_image::on_crash(put_back);
         let ways = &ways[..ways.len().min(MAX_WAYS)];
-        let steps = ways.len() as u32 + 1;
+        let before = WAYS_BEFORE.with(|b| *b);
+        let steps = ways.len() as u32 + 1 + before;
         let mut right = [[None; SETTINGS]; MAX_WAYS];
         let mut dark = [[false; SETTINGS]; MAX_WAYS];
         for (k, &w) in ways.iter().enumerate() {
-            let (r, _) = way(e, vram, w, &super::G3_PLLS, k as u32 + 2, steps);
+            let (r, _) = way(e, vram, w, &super::G3_PLLS, k as u32 + 2 + before, steps);
             for s in 0..SETTINGS {
                 right[k][s] = r.right(s);
                 dark[k][s] = r.right(s).is_some() && !r.at[s].screen;
@@ -3159,19 +3219,32 @@ mod image {
             log!("");
         }
         let mut l = [[0u8; 32]; MAX_WAYS];
-        let mut lines: [&str; 4 + MAX_WAYS] = [""; 4 + MAX_WAYS];
+        let mut lines: [&str; 5 + MAX_WAYS] = [""; 5 + MAX_WAYS];
         lines[0] = G_TITLE;
         lines[1] = "DONE: PRESS A BUTTON";
         lines[2] = "RIGHT OF 20 AT 74/99/133";
         lines[3] = "* = THE SCREEN WENT DARK";
+        // G14: its first way's result (at Dell's own clock) above the rest.
+        let mut first = [0u8; 32];
+        let top = match FIRST_WAY.with(|f| *f) {
+            Some(Some(n)) => {
+                lines[4] = fmt(&mut first, format_args!("WAY 1: {n} AT DELL'S CLOCK"));
+                5
+            }
+            Some(None) => {
+                lines[4] = "WAY 1: NOT RUN";
+                5
+            }
+            None => 4,
+        };
         for (k, buf) in l.iter_mut().enumerate().take(ways.len()) {
             let n = |s: usize| right[k][s].map_or(-1, |v| v as i32);
             let d = |s: usize| if dark[k][s] { "*" } else { "" };
-            lines[4 + k] = fmt(
+            lines[top + k] = fmt(
                 buf,
                 format_args!(
                     "WAY {}: {}{} {}{} {}{}",
-                    k + 1,
+                    k as u32 + 1 + before,
                     n(0),
                     d(0),
                     n(1),
@@ -3181,7 +3254,7 @@ mod image {
                 ),
             );
         }
-        say(vram, &lines[..4 + ways.len()]);
+        say(vram, &lines[..top + ways.len()]);
     }
 
     /// Test G5's form: ours exactly (two Gouraud triangles over our giant
@@ -3532,25 +3605,25 @@ mod image {
     /// NINTPW rule and clock order.
     const G7_WAYS: [Way; 3] = [Way::G6(0), Way::Frame(false), Way::Frame(true)];
 
-    /// Test G7: Dell's own divide-1 frame replayed under the loader.
-    fn test_g7(e: &mut Engine<Mmio>, vram: &mut [u8]) {
-        log!(
-            "G7: Dell's own frame (his driver's region array, lists and objects as he left them after his divide-1 draws, rp-wmprobe v4) replayed word for word, at 74.75, 99.67 and 133.25 MHz, against ours"
-        );
+    /// The image's frame (test G7's, Dell's own) and its layout, if it
+    /// parses, has its layout's registers and lies over nothing of the
+    /// image's own; logged either way. Every test that replays it asks
+    /// first: the replay writes its pages over local memory.
+    fn usable_frame() -> Option<super::Layout> {
         let Some(f) = frame() else {
             log!(
-                "G7: the frame doesn't parse ({:?}): nothing run",
+                "{G_NAME}: the frame doesn't parse ({:?}): nothing run",
                 super::frame::parse(FRAME_FILE).err()
             );
-            return;
+            return None;
         };
         let Some(l) = super::frame_layout(&f) else {
-            log!("G7: the frame lacks its layout's registers: nothing run");
-            return;
+            log!("{G_NAME}: the frame lacks its layout's registers: nothing run");
+            return None;
         };
         let pages: usize = f.segs().map(|s| s.1.len()).sum();
         log!(
-            "G7: the frame: {} registers, {} bytes of local memory in {} segments; target 0x{:x} ({}), parameters 0x{:x} ({} KiB, table 0x{:x}), region array 0x{:x}",
+            "{G_NAME}: the frame: {} registers, {} bytes of local memory in {} segments; target 0x{:x} ({}), parameters 0x{:x} ({} KiB, table 0x{:x}), region array 0x{:x}",
             f.regs().count(),
             pages,
             f.segs().count(),
@@ -3575,9 +3648,20 @@ mod image {
                     .iter()
                     .any(|s| s.0 < from + bytes && from < s.0 + s.1);
             if hit {
-                log!("G7: the frame lies over {what} (0x{from:x}): nothing run");
-                return;
+                log!("{G_NAME}: the frame lies over {what} (0x{from:x}): nothing run");
+                return None;
             }
+        }
+        Some(l)
+    }
+
+    /// Test G7: Dell's own divide-1 frame replayed under the loader.
+    fn test_g7(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G7: Dell's own frame (his driver's region array, lists and objects as he left them after his divide-1 draws, rp-wmprobe v4) replayed word for word, at 74.75, 99.67 and 133.25 MHz, against ours"
+        );
+        if usable_frame().is_none() {
+            return;
         }
         let enable0 = e.regs.read32(ENABLE);
         test_settings(e, vram, &G7_WAYS);
@@ -3595,7 +3679,7 @@ mod image {
             "G8: the render waited for without reading the chip (one read after {} ms) and with a read once a millisecond, ours and Dell's own frame, at 74.75, 99.67 and 133.25 MHz (render times include the wait)",
             super::QUIET_US / 1000
         );
-        if frame().as_ref().and_then(super::frame_layout).is_none() {
+        if usable_frame().is_none() {
             log!("G8: no frame, or one without its layout: nothing run");
             return;
         }
@@ -3810,7 +3894,7 @@ mod image {
         log!(
             "G10: the CPU's writes and reads of the 2700G's memory moved to Windows Mobile's clock, the render alone at divide 1, ours and Dell's frame, at 74.75, 99.67 and 133.25 MHz (render times include the clock changes)"
         );
-        if frame().as_ref().and_then(super::frame_layout).is_none() {
+        if usable_frame().is_none() {
             log!("G10: no frame, or one without its layout: nothing run");
             return;
         }
@@ -3842,7 +3926,7 @@ mod image {
             );
             return;
         }
-        if frame().as_ref().and_then(super::frame_layout).is_none() {
+        if usable_frame().is_none() {
             log!("G11: no frame, or one without its layout: nothing run");
             return;
         }
@@ -3873,7 +3957,7 @@ mod image {
             rt::clock_enables(),
             super::LOADER_ONLY_CLOCKS
         );
-        if frame().as_ref().and_then(super::frame_layout).is_none() {
+        if usable_frame().is_none() {
             log!("G12: no frame, or one without its layout: nothing run");
             return;
         }
@@ -3918,13 +4002,158 @@ mod image {
             rp_drv_mbx_display::pll::WM,
             rp_drv_mbx_display::pll::SIXTY
         );
-        if frame().as_ref().and_then(super::frame_layout).is_none() {
+        if usable_frame().is_none() {
             log!("G13: no frame, or one without its layout: nothing run");
             return;
         }
         let enable0 = e.regs.read32(ENABLE);
         test_settings(e, vram, &G13_WAYS);
         set_display_pll(&mut e.regs, found);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
+    /// Test G14's first way (W3's lead): Dell's frame on the chip as his
+    /// driver set it at boot (Windows Mobile started with his `CoreClock`,
+    /// the loader after), no clock of ours changed: only the 3D clock on at
+    /// his divider (W2's step 1, harmless under Windows Mobile), our core
+    /// reset and memory manager (W2's step 3, the same). Two renders, then
+    /// [`G_DRAWS`] more, each held to his own picture (the frame's hash; to
+    /// the first render when the frame carries none, as the emulator's).
+    /// Every G7-G13 replay ran after our own clock change; G5's inherited
+    /// way drew our quad here, never his frame.
+    #[inline(never)]
+    fn dells_clock(e: &mut Engine<Mmio>, vram: &mut [u8], clk0: u32) {
+        WAYS_BEFORE.with(|b| *b = 1);
+        FIRST_WAY.with(|f| *f = Some(None));
+        let head = "STEP 2 OF 4";
+        let name = "WAY 1: AT DELL'S CLOCK";
+        say(vram, &[G_TITLE, head, name, "SETTING UP"]);
+        log!(
+            "{G_NAME} way 1 (Dell's frame at the clock his driver set at boot, no clock of ours changed):"
+        );
+        let pllstat = e.regs.read32(PLLSTAT);
+        clock_readback(&mut e.regs);
+        log!(
+            "    as found: MBXCLK 0x{clk0:x} PLLSTAT 0x{pllstat:x} NINTPW 0x{:x} DISPPLL 0x{:x}; MSC1 0x{:08x} CKEN 0x{:08x}",
+            e.regs.read32(super::NINTPW),
+            e.regs.read32(rp_drv_mbx_display::reg::DISPPLL),
+            diag::msc1(),
+            rt::clock_enables()
+        );
+        if !super::dells_divide_1(clk0, pllstat) {
+            if !G14_ANY_START {
+                log!(
+                    "  not at Dell's divide 1 (Windows Mobile booted without his CoreClock: rp-wmprobe's run 1 sets it, then a soft reset and the loader): not run"
+                );
+                return;
+            }
+            log!(
+                "  not at Dell's divide 1: run anyway (RP_GLESFEAT_G14=any-start, the emulator's build)"
+            );
+        }
+        let Some(l) = usable_frame() else {
+            return;
+        };
+        let Some(f) = frame() else {
+            return;
+        };
+        rp_image::on_crash(put_back);
+        let _ = display_check(&mut e.regs, "as found");
+        set_lay(l);
+        clock::restore(&mut e.regs, with_3d(clk0));
+        rt::delay_us(1_000);
+        let mut screen = display_check(&mut e.regs, "after the 3D clock on");
+        let _ = state_diff(&mut e.regs, "at Dell's clock, before ours");
+        let ready = clean(e, vram);
+        let (d1, us1, _) = draw(e, vram, Way::Frame(false), 0);
+        keep_reference(vram);
+        let h = picture_hash(vram, REF);
+        let his = f.picture_words != 0 && f.picture_words as usize == target_words();
+        if his {
+            log!(
+                "  against Dell's own picture: hash 0x{h:08x}, his 0x{:08x}: {}",
+                f.picture_hash,
+                if h == f.picture_hash {
+                    "the same"
+                } else {
+                    "DIFFERENT"
+                }
+            );
+        } else {
+            log!("  Dell's own picture: none in this frame (hash 0x{h:08x})");
+        }
+        log!("  reference hash 0x{h:08x}");
+        let (d2, us2, _) = draw(e, vram, Way::Frame(false), 0);
+        let again = compare(vram, REF);
+        log!(
+            "  reference at Dell's clock: memory manager ready {ready}, rendered {d1} then {d2}, the second {} words off the first; {} us",
+            again.wrong,
+            us1.min(us2)
+        );
+        let (mut right, mut unfinished, mut us) = (0u32, 0u32, u32::MAX);
+        let mut tally = Tally::default();
+        for n in 1..=G_DRAWS {
+            rt::check_in();
+            let mut line = [0u8; 32];
+            let line = fmt(&mut line, format_args!("DELL'S CLOCK: {n} OF {G_DRAWS}"));
+            say(vram, &[G_TITLE, head, name, line]);
+            let (done, t_us, _) = draw(e, vram, Way::Frame(false), 0);
+            us = us.min(t_us);
+            if !done {
+                unfinished += 1;
+                let _ = clean(e, vram);
+            }
+            let t = compare(vram, REF);
+            let ok = done
+                && if his {
+                    picture_hash(vram, lay().target) == f.picture_hash
+                } else {
+                    t.wrong == 0
+                };
+            right += u32::from(ok);
+            tally.merge(&t);
+        }
+        screen &= display_check(&mut e.regs, "after the draws");
+        let t = &tally;
+        log!(
+            "  at Dell's clock: {right} of {G_DRAWS} right (held to {}); {unfinished} unfinished; against the first render {} words differ ({} one step, {} never written, worst step {}); fastest {us} us; the screen on throughout: {}",
+            if his {
+                "his own picture"
+            } else {
+                "the first render"
+            },
+            t.wrong,
+            t.one_step,
+            t.unwritten,
+            t.max_step,
+            if screen {
+                "yes"
+            } else {
+                "NO (a screen-off result)"
+            }
+        );
+        log!("{G_NAME}: right at Dell's own clock of {G_DRAWS}: Dell's frame {right}");
+        FIRST_WAY.with(|f| *f = Some(Some(right)));
+        set_lay(super::OURS_LAYOUT);
+    }
+
+    /// Test G14's ways after its first: ours and Dell's frame, each after
+    /// our own clock change (G7's ways 1 and 2).
+    const G14_WAYS: [Way; 2] = [Way::G6(0), Way::Frame(false)];
+
+    /// Test G14: Dell's frame at the clock his driver set at boot
+    /// ([`dells_clock`], run before Windows Mobile's clock is set), then
+    /// ours and his frame after our own change to divide 1.
+    fn test_g14(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G14: Dell's frame at the clock his driver set at boot (way 1, before anything of ours changed it), then ours and Dell's frame after our own clock change, at 74.75, 99.67 and 133.25 MHz"
+        );
+        if usable_frame().is_none() {
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G14_WAYS);
         set_lay(super::OURS_LAYOUT);
         e.regs.write32(ENABLE, enable0);
     }
@@ -3961,7 +4190,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G13 {
+        let first = if TEST_G14 {
+            "STEP 1 OF 4"
+        } else if TEST_G13 {
             "STEP 1 OF 5"
         } else if TEST_G12 {
             "STEP 1 OF 6"
@@ -4004,15 +4235,20 @@ mod image {
         let mut inherited = None;
         if TEST_G5 && e.regs.read32(PLLSTAT) & 4 != 0 {
             // Divide 1 with a clock running, as Windows Mobile leaves it
-            // under Dell's CoreClock (`0x1`: 2D on, rp-wmprobe run 2); `0x0`
-            // (every clock off, the emulator's start) isn't Dell's chip.
-            if clk0 >> 2 & 3 == 0 && clk0 & 3 != 0 {
+            // under Dell's CoreClock (`0x1`: 2D on, rp-wmprobe run 2).
+            if super::dells_divide_1(clk0, e.regs.read32(PLLSTAT)) {
                 inherited = inherit(&mut e, vram, clk0);
             } else {
                 log!(
                     "G5: started with MBXCLK 0x{clk0:x} (not divide 1 with a clock running): no inherited way (Windows Mobile booted without Dell's CoreClock)"
                 );
             }
+        }
+        // G14: Dell's frame first on the chip as his driver set it at boot,
+        // no clock of ours changed; then Windows Mobile's clock back as for
+        // every G test, and our own clock change in the ways after.
+        if TEST_G14 {
+            dells_clock(&mut e, vram, clk0);
         }
         // Every G test: Windows Mobile's clock set here, not assumed. The
         // references are drawn at it; G6's first run (2026-10-23) found the
@@ -4035,7 +4271,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G13 {
+        if ready && TEST_G14 {
+            test_g14(&mut e, vram);
+        } else if ready && TEST_G13 {
             test_g13(&mut e, vram);
         } else if ready && TEST_G12 {
             test_g12(&mut e, vram);
@@ -5077,5 +5315,29 @@ mod g12_tests {
         assert!(slowest_ms <= 250, "{slowest_ms} ms");
         assert!(G12_WAYS.iter().filter(|w| w.0).count() == 4);
         assert_eq!(G12_WAYS[0], (false, false, false), "ours as before first");
+    }
+}
+
+/// Tests G5's and G14's start: Dell's divide 1 told from every other.
+#[cfg(test)]
+mod g14_tests {
+    use super::*;
+
+    #[test]
+    fn dells_divide_1_is_his_boot_clock_only() {
+        // As the image found the chip under Dell's CoreClock (G5,
+        // 2026-10-23: MBXCLK 0x1, the 2D clock on, the 3D off) and as his
+        // driver leaves it after drawing (rp-wmprobe: 0x2), the PLL locked.
+        assert!(dells_divide_1(0x1, 0x4));
+        assert!(dells_divide_1(0x2, 0x4));
+        assert!(dells_divide_1(0x3, 0x5));
+        // Windows Mobile's divide 2 (0x5, 0x6), the emulator's start (every
+        // clock off), and a PLL not locked: not his.
+        for (clk, pll) in [(0x5, 0x4), (0x6, 0x4), (0x0, 0x4), (0x2, 0x0), (0x1, 0x3)] {
+            assert!(!dells_divide_1(clk, pll), "MBXCLK 0x{clk:x} PLLSTAT 0x{pll:x}");
+        }
+        // Divide 4 or more (bits 3-2 not zero), a clock running: not divide 1.
+        assert!(!dells_divide_1(0x9, 0x4));
+        assert!(!dells_divide_1(0xE, 0x4));
     }
 }
