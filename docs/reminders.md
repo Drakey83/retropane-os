@@ -51,7 +51,7 @@ reply that parks it**, with a trigger saying when it must come back up.
 | R10 | Dell's GLES register writes traced (`tools/mmiotrace`, `rp-wmprobe`'s missing module) | Claude, 2026-10-23 | after:the combined run (R1-R4) | open |
 | R11 | Windows Mobile baselines: DoomGLES fps and boot time, a frame counter run by the owner (with Q3CE's settings tests, docs/research/quake3-on-the-x51v.md section 5) | Claude, 2026-10-13 | session | open |
 | R12 | C39: what each test image changes on the board, and whether a crash puts it back | the owner, 2026-10-21 | device-run | open |
-| R13 | The corner sweep at 117-133.25 / 1: also shift the whole scene a few pixels (tile seam or quad edge?), put one arm's target at `0x0` (option C's real address), reverse the tile order in one arm | Claude, 2026-10-24 | image:rp-gpubench | open |
+| R13 | The corner sweep at 117-133.25 / 1: also shift the whole scene a few pixels (tile seam or quad edge?), put one arm's target at `0x0` (option C's real address), reverse the tile order in one arm | Claude, 2026-10-24 | image:rp-gpubench | done ff0fb5d (GC2K: the shift) + 5207c0e (GC2L: `0x0` and the reversed tiles, at 117 and 133.25) |
 | R14 | P8 / T8 ticked or not from R1's result (2D and 3D overlapping: FT measured 9% shorter frames) | Claude, 2026-10-24 | after:R1 | open |
 | R15 | V5's rest: bit 27's meaning (C70) and the scaler coefficients' format, to compute a filter for shrinking (C73) | Claude, 2026-10-24 | image:rp-blend | open |
 | R16 | Dell's free 2x on the graphics plane (`GDRCTRL` pixel and line doubling, bits 31 and 29): tried on the X51v | Claude, 2026-10-24 | image:rp-blend; device-run | open |
