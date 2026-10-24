@@ -4816,6 +4816,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ("RP_GPUBENCH_GC2", "1"),
         Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
     )?;
+    let run_gc2s = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC2_SAFE", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft2f = variant_image_with(
         root,
@@ -4847,7 +4853,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 52] = [
+    let runs: [GpubenchRun; 53] = [
         (
             "run A",
             &run_a,
@@ -4988,6 +4994,19 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         (
             "run GC2",
             &run_gc2,
+            &[
+                "GC2: run GC by the owner's robustness rules",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2S: GC2 with its label at offset 0 (C71, G17-G19) and
+        // divide 1 to 133.25: runs to its end and returns (the pinned
+        // release refuses the clocks as for GC2).
+        (
+            "run GC2S",
+            &run_gc2s,
             &[
                 "GC2: run GC by the owner's robustness rules",
                 "RETROPANE-GPUBENCH: done",

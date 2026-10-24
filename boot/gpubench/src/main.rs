@@ -194,6 +194,7 @@ mod image {
     /// with its colours capped), twelve settings (dividers 1-4, a second
     /// PLL setting), rising then falling, controls interleaved. Unattended.
     const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some()
+        || GC2_SAFE
         || GC2_D
         || GC2_F
         || GC2_H
@@ -7639,10 +7640,19 @@ mod image {
     // SDRAM and the 16-bit scan-out all working, and stops at the first
     // BAD: a failure is the finding, never retried.
 
+    /// Run GC2S (`RP_GPUBENCH_GC2_SAFE`): GC2 with its label scanned out
+    /// from local memory offset 0, inside the region tests G17-G19 found
+    /// safe (a scan-out buffer ending by 0xAE000 doesn't disturb the 3D
+    /// core; one past it corrupts renders: quality audit C71), and divide 1
+    /// mapped to 133.25 MHz. Test-only: `rp-vram-map` is unchanged until
+    /// the owner rules the placement.
+    const GC2_SAFE: bool = option_env!("RP_GPUBENCH_GC2_SAFE").is_some();
+
     /// Run GS's label: the second screen picture as RGB565 (960-byte rows),
     /// scanned out at 16 bits through the whole soak (the shell's screen,
-    /// ADR-0023); the 3D and 2D work goes to [`SCREEN`], not shown.
-    const SOAK_LABEL: u32 = map::SCREENS[1].at;
+    /// ADR-0023); the 3D and 2D work goes to [`SCREEN`], not shown. GC2S
+    /// puts it at offset 0 (600 KiB, ending at 0x96000).
+    const SOAK_LABEL: u32 = if GC2_SAFE { 0 } else { map::SCREENS[1].at };
     /// Run GS's 2D copy of the rendered picture lands here (32-bit, not
     /// shown).
     const SOAK_COPY: u32 = map::BACKGROUND.at;
@@ -8372,8 +8382,26 @@ mod image {
         (gc2_step(41, 4, 0, 1), "133.25 / 1"),
     ];
 
+    /// GC2S's settings: the cores at divide 1 from Dell's 74.75 to the aim
+    /// (133.25), then today's overclock and its neighbours through divide 2
+    /// as the reference.
+    const GC2_S_STEPS: [(ClockStep, &str); 10] = [
+        (gc2_step(23, 4, 0, 1), "74.75 / 1"),
+        (gc2_step(32, 5, 0, 1), "83.20 / 1"),
+        (gc2_step(14, 2, 0, 1), "91.00 / 1"),
+        (gc2_step(23, 3, 0, 1), "99.67 / 1"),
+        (gc2_step(25, 3, 0, 1), "108.33 / 1"),
+        (gc2_step(27, 3, 0, 1), "117.00 / 1"),
+        (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+        (gc2_step(27, 3, 0, 2), "117.00 / 2"),
+        (gc2_step(41, 4, 0, 2), "133.25 / 2"),
+        (gc2_step(23, 2, 0, 2), "149.50 / 2"),
+    ];
+
     /// The settings this build runs (rule 8 for GC2), rising.
-    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_D {
+    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_SAFE {
+        &GC2_S_STEPS
+    } else if GC2_D {
         &GC2_D_STEPS
     } else if GC2M {
         &GC2M_STEPS
