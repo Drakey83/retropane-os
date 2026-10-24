@@ -786,6 +786,41 @@ const WAYS: [((bool, bool), [&str; 2], &str); 3] = [
 /// A kept picture's bytes: the rows above the caption.
 const KEPT: usize = 480 * 560 * 2;
 
+/// The scene `r` holds rendered whole 21 times into screen 0, the last 20
+/// each held to the first: how many renders and words differ, the first
+/// four (x, y, first, this) (quality audit C71).
+fn repeat_whole(g: &mut Rig, r: &mut Renderer, sc: &Screens, keep: &mut [u8], what: &str) {
+    r.invalidate_all();
+    let first_us = g.frame(r, sc.target(0));
+    keep_picture(g, sc.at[0], &mut keep[..KEPT]);
+    let (mut renders, mut words) = (0u32, 0u32);
+    let mut first = [(0u32, 0u32, 0u32, 0u32); 4];
+    let mut nf = 0usize;
+    for _ in 0..20 {
+        r.invalidate_all();
+        let _ = g.frame(r, sc.target(0));
+        let mut n = 0u32;
+        for (k, wd) in keep[..KEPT].chunks_exact(4).enumerate() {
+            let a = u32::from_le_bytes([wd[0], wd[1], wd[2], wd[3]]);
+            let b = g.mem.load(sc.at[0] as usize + 4 * k).unwrap_or(0xDEAD_BEEF);
+            if a != b {
+                n += 1;
+                if nf < first.len() {
+                    first[nf] = ((2 * k % 480) as u32, (2 * k / 480) as u32, a, b);
+                    nf += 1;
+                }
+            }
+        }
+        renders += u32::from(n > 0);
+        words += n;
+        rt::check_in();
+    }
+    log!(
+        "  CH C71 {what}: rendered whole 20 times ({first_us:?} us): {renders} renders differ from the first, {words} words in all {:?}",
+        &first[..nf]
+    );
+}
+
 /// The rows above the caption of the picture at `at`, read into `out`.
 fn keep_picture(g: &Rig, at: u32, out: &mut [u8]) {
     for (k, w) in out.chunks_exact_mut(4).enumerate() {
@@ -1175,6 +1210,35 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
             "  CH C71 the same picture read 20 times, no render between: {reads_differ} reads differ from the first, {rwords} words in all {:?}",
             &rfirst[..rf]
         );
+        // Which feature makes the edges vary: four cards at W5's last
+        // places (the caption gone), each kind 20 renders against its first.
+        for slot in 0..=6 {
+            g.set(&mut r, slot, None);
+        }
+        let _ = r.set_background(Some(0xFF20_2830));
+        let places = [(20, 40), (260, 40), (20, 340), (272, 320)];
+        let colours = [0xFFC0_4040u32, 0xFF40_C040, 0xFF40_40C0, 0xFFC0_C040];
+        for kind in 0..5u32 {
+            for (j, &(x, y)) in places.iter().enumerate() {
+                let t = cards[j];
+                let d = match kind {
+                    0 => Draw::rect(x, y, 200, 260, Paint::Flat(colours[j])),
+                    1 => textured(x, y, 128, 128, t, full_uv()),
+                    2 => textured(x, y, 200, 260, t, full_uv()),
+                    3 => textured(x, y, 200, 260, t.with_linear(true), full_uv()),
+                    _ => textured(x, y, 64, 64, t, full_uv()),
+                };
+                g.set(&mut r, 1 + j, Some(d));
+            }
+            let what = [
+                "flat cards 200 x 260",
+                "textured cards 1:1 (128 x 128)",
+                "textured cards 1.56x, point sampling",
+                "textured cards 1.56x, bilinear",
+                "textured cards shrunk 2:1 (64 x 64), point sampling",
+            ][kind as usize];
+            repeat_whole(g, &mut r, &sc, keep, what);
+        }
         for slot in 0..=6 {
             g.set(&mut r, slot, None);
         }
