@@ -2475,6 +2475,7 @@ pub fn boot_loader_blend_scale(root: &Path) -> Result<(), String> {
             x: out.2,
             y: out.3,
             taps: out.4,
+            ur_c: out.5,
         };
         let regs = v.registers_scaled(Layer::SOLO, false, scale);
         let want = |o: usize| regs.iter().find(|r| r.0 == o).map_or(0, |r| r.1);
@@ -2503,19 +2504,22 @@ pub fn boot_loader_blend_scale(root: &Path) -> Result<(), String> {
 
 /// A P9 step's source rectangle (x, y, w, h) and output (w, h, x, y, taps).
 type BlendSrc = (u16, u16, u16, u16);
-type BlendOut = (u16, u16, u16, u16, u8);
+type BlendOut = (u16, u16, u16, u16, u8, bool);
 
 /// `rp-blend`'s `SCALE_STEPS` as (source, output) tuples, kept in step with
 /// the image's table by the check above (a mismatch shows as a read-back
 /// difference).
-fn rp_blend_steps() -> [(BlendSrc, BlendOut); 6] {
+fn rp_blend_steps() -> [(BlendSrc, BlendOut); 9] {
     [
-        ((0, 0, 480, 640), (0, 0, 0, 0, 1)),
-        ((0, 0, 240, 320), (480, 640, 0, 0, 4)),
-        ((0, 0, 240, 320), (480, 640, 0, 0, 1)),
-        ((0, 0, 480, 640), (240, 320, 120, 160, 4)),
-        ((0, 0, 480, 640), (360, 480, 60, 80, 4)),
-        ((0, 400, 240, 240), (0, 0, 240, 320, 1)),
+        ((0, 0, 480, 640), (0, 0, 0, 0, 1, false)),
+        ((0, 0, 240, 320), (480, 640, 0, 0, 4, false)),
+        ((0, 0, 240, 320), (480, 640, 0, 0, 1, false)),
+        ((0, 0, 480, 640), (240, 320, 120, 160, 4, false)),
+        ((0, 0, 480, 640), (360, 480, 60, 80, 4, false)),
+        ((0, 400, 240, 240), (0, 0, 240, 320, 1, false)),
+        ((0, 0, 240, 320), (480, 640, 0, 0, 1, true)),
+        ((0, 0, 480, 640), (240, 320, 120, 160, 4, true)),
+        ((0, 0, 480, 640), (360, 480, 60, 80, 4, true)),
     ]
 }
 

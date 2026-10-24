@@ -61,45 +61,76 @@ pub struct ScaleStep {
     pub src: (u16, u16, u16, u16),
     /// The output size (0: the source's), place and vertical taps.
     pub out: (u16, u16, u16, u16, u8),
+    /// `SPOCTRL` bit 27 as Windows Mobile sets it (`layers::Scale::ur_c`).
+    pub ur_c: bool,
 }
 
 /// The steps, in order.
-pub const SCALE_STEPS: [ScaleStep; 6] = [
+pub const SCALE_STEPS: [ScaleStep; 9] = [
     ScaleStep {
         name: "1:1 FULL (CONTROL)",
         expect: "THE WALLPAPER, NORMAL",
         src: (0, 0, 480, 640),
         out: (0, 0, 0, 0, 1),
+        ur_c: false,
     },
     ScaleStep {
         name: "QUARTER UP 2X, 4 TAP",
         expect: "TOP LEFT SKY FILLS ALL",
         src: (0, 0, 240, 320),
         out: (480, 640, 0, 0, 4),
+        ur_c: false,
     },
     ScaleStep {
         name: "QUARTER UP 2X, 1 TAP",
         expect: "SAME, ROWS BLOCKIER?",
         src: (0, 0, 240, 320),
         out: (480, 640, 0, 0, 1),
+        ur_c: false,
     },
     ScaleStep {
         name: "HALF SIZE AT 120,160",
         expect: "SMALL, CENTRED, GREEN AROUND",
         src: (0, 0, 480, 640),
         out: (240, 320, 120, 160, 4),
+        ur_c: false,
     },
     ScaleStep {
         name: "3/4 SIZE AT 60,80",
         expect: "3/4 SIZE, GREEN BORDER",
         src: (0, 0, 480, 640),
         out: (360, 480, 60, 80, 4),
+        ur_c: false,
     },
     ScaleStep {
         name: "BARS 1:1 AT 240,320",
         expect: "BARS, BOTTOM RIGHT QUARTER",
         src: (0, 400, 240, 240),
         out: (0, 0, 240, 320, 1),
+        ur_c: false,
+    },
+    // Run 1 (2026-10-24): the video stream underran (DINTRS bit 5) on
+    // steps 3-5 and never on 2 or 6; Windows Mobile's bit 27 tried on each.
+    ScaleStep {
+        name: "UP 2X 1 TAP + WM BIT 27",
+        expect: "AS STEP 3",
+        src: (0, 0, 240, 320),
+        out: (480, 640, 0, 0, 1),
+        ur_c: true,
+    },
+    ScaleStep {
+        name: "HALF + WM BIT 27",
+        expect: "AS STEP 4",
+        src: (0, 0, 480, 640),
+        out: (240, 320, 120, 160, 4),
+        ur_c: true,
+    },
+    ScaleStep {
+        name: "3/4 + WM BIT 27",
+        expect: "AS STEP 5",
+        src: (0, 0, 480, 640),
+        out: (360, 480, 60, 80, 4),
+        ur_c: true,
     },
 ];
 
@@ -207,6 +238,7 @@ mod image {
                     x,
                     y,
                     taps,
+                    ur_c: step.ur_c,
                 },
             );
             d.set_graphics(

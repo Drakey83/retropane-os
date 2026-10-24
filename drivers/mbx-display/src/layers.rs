@@ -57,6 +57,11 @@ const HCCTRL_CUR_EN: Field = Field::bit(31);
 const VOVRCLK_EN: Field = Field::bit(0);
 const SPOCTRL_H_BYPASS: u32 = 1 << 31;
 const SPOCTRL_V_BYPASS: u32 = 1 << 30;
+/// `SPOCTRL` bit 27, mbxfb's `SPOCTRL_VS_UR_C` (cleared by mbxfb, set by
+/// Windows Mobile: `0xC8030000`, probe 2026-10-11): meaning undocumented;
+/// the gate's P9 run 1 saw the video stream underrun (`DINTRS` bit 5)
+/// without it when scaling down.
+const SPOCTRL_VS_UR_C: u32 = 1 << 27;
 /// Scaler pitch for 1:1 (source / output in 5.11 fixed point).
 const PITCH_1_TO_1: u32 = 1 << 11;
 /// `VSADR`'s screen position (mbxfb's `VSADR_XSTART`/`YSTART`; as the
@@ -93,6 +98,8 @@ pub struct Scale {
     pub y: u16,
     /// Vertical filter taps: 1, 2 or 4.
     pub taps: u8,
+    /// `SPOCTRL` bit 27 (`VS_UR_C`), as Windows Mobile sets it.
+    pub ur_c: bool,
 }
 
 impl Scale {
@@ -103,6 +110,7 @@ impl Scale {
         x: 0,
         y: 0,
         taps: 1,
+        ur_c: false,
     };
 }
 
@@ -334,6 +342,9 @@ impl VideoPlane {
         if oh == h {
             spoctrl |= SPOCTRL_V_BYPASS;
         }
+        if scale.ur_c {
+            spoctrl |= SPOCTRL_VS_UR_C;
+        }
         let shctrl = if ow == w {
             PITCH_1_TO_1
         } else {
@@ -522,6 +533,7 @@ mod tests {
             x: 0,
             y: 0,
             taps: 4,
+            ur_c: false,
         };
         let r = v.registers_scaled(Layer::SOLO, false, up);
         assert_eq!(VSCTRL_WIDTH.extract(r[2].1), 239, "VSCTRL keeps the source");
@@ -536,11 +548,17 @@ mod tests {
             x: 120,
             y: 160,
             taps: 1,
+            ur_c: false,
         };
         let r = v.registers_scaled(Layer::SOLO, false, down);
         assert_eq!(r[3], (reg::VSADR, (59 << 22) | (120 << 11) | 160));
         assert_eq!(r[5], (reg::SPOCTRL, 0x1000));
         assert_eq!(SHCTRL_HPITCH.extract(r[6].1), 0x1000);
+        // Windows Mobile's bit 27 on: only SPOCTRL changes.
+        let r2 = v.registers_scaled(Layer::SOLO, false, Scale { ur_c: true, ..down });
+        assert_eq!(r2[5], (reg::SPOCTRL, 0x1000 | (1 << 27)));
+        assert_eq!(r2[..5], r[..5]);
+        assert_eq!(r2[6..], r[6..]);
         // Horizontal only: the vertical bypassed, its pitch 1:1.
         let wide = Scale {
             out_w: 720,
