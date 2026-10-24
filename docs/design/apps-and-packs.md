@@ -149,6 +149,15 @@ today's 149.50 / 2. Results, not decisions: each port measures both ways
 on the X51v (the picture checked, the frame time logged), and the owner
 chooses; whether divide 1 above Intel's 75 MHz is used at all is ADR-0035's
 and the gate's P1/P2 ruling.
+**Since (run GC2I, 2026-10-24, 2700g.md "GC2I on the X51v"): Gouraud is
+right at divide 1 too, to 133.25 MHz, once the 3D core writes its picture
+inside the safe region** (every 16-bit kind 20 of 20 at every step; the
+32-bit kinds, too big for the region, still wrong). RGB565 Gouraud 2.0x
+Windows Mobile's speed at 99.67 / 1 (a 20-minute soak clean) and 2.67x at
+133.25 / 1 (not yet proven: one wrong pixel after 3 minutes). So shading
+stays available at divide 1 for a port that renders into the region
+(ADR-0034 amendment P: P1, the owner's), and texture lighting is one
+option among several, not the only way to divide 1's speed.
 
 Game data (WADs, PAKs) stays the user's own, except freely distributable
 shareware data. Each port is likely its own repository (as the Quake 3
