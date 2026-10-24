@@ -1394,8 +1394,7 @@ mod target {
         let mut at = 0usize;
         r.run(name, 8, &mut || {
             for _ in 0..CHASE_HOPS {
-                let b = &buf[at * 32..at * 32 + 4];
-                at = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+                at = rp_hal_pxa27x::diag::read_word(buf, at * 32) as usize;
             }
             black_box(at);
         });
@@ -1487,8 +1486,7 @@ mod target {
                     let s = pmu::start([Event::DtlbMiss, Event::DcacheMiss, Event::Instruction]);
                     let mut at = 0usize;
                     for _ in 0..CHASE_HOPS {
-                        let b = &w[at * 32..at * 32 + 4];
-                        at = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+                        at = rp_hal_pxa27x::diag::read_word(w, at * 32) as usize;
                     }
                     black_box(at);
                     misses = pmu::read(s).events[0];
@@ -1539,10 +1537,12 @@ mod target {
     pub fn wm_hops(r: &mut Runner, names: &WmHopNames, buf: &mut [u8]) {
         use rp_hal_pxa27x::pmu::{self, Event};
         let hop_words = |buf: &[u8], at: &mut usize| {
+            // The position in a register, as Windows Mobile's C loop keeps it.
+            let mut a = *at;
             for _ in 0..CHASE_HOPS {
-                let b = &buf[*at * 4..*at * 4 + 4];
-                *at = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+                a = rp_hal_pxa27x::diag::read_word(buf, a * 4) as usize;
             }
+            *at = a;
         };
         if wm_chase_chain(buf) {
             let mut at = 0usize;
@@ -1597,8 +1597,7 @@ mod target {
         }
         let hop = |buf: &[u8], at: &mut usize| {
             for _ in 0..CHASE_HOPS {
-                let b = &buf[*at * 32..*at * 32 + 4];
-                *at = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+                *at = rp_hal_pxa27x::diag::read_word(buf, *at * 32) as usize;
             }
             black_box(*at);
         };
@@ -1639,8 +1638,7 @@ mod target {
         }
         let hop = |w: &[u8], a: &mut usize| {
             for _ in 0..CHASE_HOPS {
-                let b = &w[*a..*a + 4];
-                *a = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+                *a = rp_hal_pxa27x::diag::read_word(w, *a) as usize;
             }
             black_box(*a);
         };
