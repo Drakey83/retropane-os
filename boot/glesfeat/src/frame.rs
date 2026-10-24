@@ -44,7 +44,7 @@ fn word(b: &[u8], i: usize) -> Option<u32> {
 /// # Errors
 /// What is wrong with it.
 pub fn parse(b: &[u8]) -> Result<Frame<'_>, &'static str> {
-    if b.len() % 4 != 0 {
+    if !b.len().is_multiple_of(4) {
         return Err("not whole words");
     }
     if word(b, 0) != Some(MAGIC) {
@@ -60,7 +60,7 @@ pub fn parse(b: &[u8]) -> Result<Frame<'_>, &'static str> {
     let regs = b.get(12..12 + 8 * nregs).ok_or("short")?;
     for k in 0..nregs {
         let off = word(regs, 2 * k).ok_or("short")? as usize;
-        if off >= 0x1000 || off % 4 != 0 || NEVER.contains(&off) {
+        if off >= 0x1000 || !off.is_multiple_of(4) || NEVER.contains(&off) {
             return Err("a register outside the MBX block, or one never written");
         }
     }
@@ -71,7 +71,7 @@ pub fn parse(b: &[u8]) -> Result<Frame<'_>, &'static str> {
     for _ in 0..nsegs {
         let addr = word(b, at).ok_or("short")? as usize;
         let words = word(b, at + 1).ok_or("short")? as usize;
-        if addr % 4 != 0 || words == 0 || addr + 4 * words > LOCAL {
+        if !addr.is_multiple_of(4) || words == 0 || addr + 4 * words > LOCAL {
             return Err("a segment outside local memory");
         }
         at += 2 + words;

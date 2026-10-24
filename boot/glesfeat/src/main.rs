@@ -5263,7 +5263,7 @@ mod g6_tests {
         );
         assert_eq!(OURS_LAYOUT.pm_table, 0x0070_0000);
         assert_eq!(OURS_LAYOUT.regions, 0x00D1_0000);
-        assert!(!OURS_LAYOUT.rgb565);
+        const { assert!(!OURS_LAYOUT.rgb565) };
         assert_eq!(G6_LAYOUTS[0], OURS_LAYOUT);
         // Ways 3 and 4 differ only in the flow.
         assert_eq!(G6_LAYOUTS[2], G6_LAYOUTS[3]);
@@ -5310,7 +5310,7 @@ mod g6_tests {
             (l.pm, l.pm_size, l.pm_table)
         );
         assert_eq!(DELL_PM_LAYOUT.regions, OURS_LAYOUT.regions);
-        assert!(!DELL_PM_LAYOUT.rgb565);
+        const { assert!(!DELL_PM_LAYOUT.rgb565) };
     }
 }
 
@@ -5387,7 +5387,7 @@ mod g7_tests {
                 }
             }
         }
-        assert!(G7_REF + 480 * 640 * 4 <= 16 << 20);
+        const { assert!(G7_REF + 480 * 640 * 4 <= 16 << 20) };
     }
 
     #[test]
@@ -5442,8 +5442,8 @@ mod g8_tests {
         // The slowest render measured at divide 1: Dell's frame, 19.94 ms
         // at 74.75 / 1 (G7); at Windows Mobile's clock 19.62 ms. Twice that
         // and still under the 200 ms every render is allowed.
-        assert!(QUIET_US >= 2 * 19_940);
-        assert!(QUIET_US < 200_000);
+        const { assert!(QUIET_US >= 2 * 19_940) };
+        const { assert!(QUIET_US < 200_000) };
     }
 }
 
