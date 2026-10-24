@@ -26,6 +26,33 @@ pub const FRAME_LINES: u32 = 645;
 /// The panel's pixel clock range, kHz (datasheet S: 38-41.7 ns).
 pub const PANEL_KHZ: (u32, u32) = (23_980, 26_316);
 
+/// The gate's P17 ladder (2026-10-24, unattended): every pixel clock the
+/// PLL makes with Windows Mobile's N 4 and P 2 inside the panel's rated
+/// range, plus Dell's own just under it, slowest first. Only M changes, so
+/// the PLL's internal frequency (13 MHz x M / N) stays within 94.25-104 MHz,
+/// the 94.25 and 100.75 already run (Dell's and the test's 60 Hz).
+pub const LADDER: [u32; 4] = [pll(29, 4, 2), pll(30, 4, 2), pll(31, 4, 2), pll(32, 4, 2)];
+/// The PLL's internal frequency the ladder stays under, kHz.
+pub const LADDER_VCO_MAX_KHZ: u32 = 104_000;
+
+/// Whether the ladder may run from the `DISPPLL` found: only from a value
+/// it knows how to put back (Windows Mobile's, or the loader's 60 Hz).
+#[must_use]
+pub const fn may_walk(found: u32) -> bool {
+    found == WM_DISPPLL || found == FAST_DISPPLL
+}
+
+/// The PLL's internal frequency (before the 2^P divide), kHz.
+#[must_use]
+pub const fn vco_khz(v: u32) -> Option<u32> {
+    let (m, n) = (v >> 7 & 0x3F, v >> 4 & 7);
+    if n == 0 || v & 1 == 0 {
+        None
+    } else {
+        Some(13_000 * m / n)
+    }
+}
+
 /// A `DISPPLL` value from its fields, enabled.
 #[must_use]
 pub const fn pll(m: u32, n: u32, p: u32) -> u32 {
@@ -83,6 +110,38 @@ mod tests {
         assert!((6000..6050).contains(&hz), "{hz}");
         // Only M changes.
         assert_eq!(FAST_DISPPLL & !(0x3F << 7), WM_DISPPLL & !(0x3F << 7));
+    }
+
+    #[test]
+    fn the_ladder_stays_in_the_panels_range_and_the_plls() {
+        assert_eq!(
+            LADDER[0], WM_DISPPLL,
+            "Dell's first, the one under the range"
+        );
+        assert!(LADDER.contains(&FAST_DISPPLL));
+        for (i, &v) in LADDER.iter().enumerate() {
+            let khz = pll_khz(v).unwrap();
+            assert!(khz <= PANEL_KHZ.1, "{v:03X}: {khz} kHz over the panel's");
+            assert!(i == 0 || khz >= PANEL_KHZ.0, "{v:03X}: {khz} kHz under");
+            assert!(vco_khz(v).unwrap() <= LADDER_VCO_MAX_KHZ, "{v:03X}");
+            assert_eq!(v & !(0x3F << 7), WM_DISPPLL & !(0x3F << 7), "only M");
+            if i > 0 {
+                assert!(khz > pll_khz(LADDER[i - 1]).unwrap(), "slowest first");
+            }
+        }
+        // The edge: M 33 would pass the panel's maximum.
+        assert!(pll_khz(pll(33, 4, 2)).unwrap() > PANEL_KHZ.1);
+    }
+
+    #[test]
+    fn the_ladder_starts_only_from_a_value_it_can_put_back() {
+        assert!(may_walk(WM_DISPPLL));
+        assert!(may_walk(FAST_DISPPLL));
+        assert!(!may_walk(0));
+        assert!(!may_walk(u32::MAX));
+        assert!(!may_walk(WM_DISPPLL & !1), "the same fields, disabled");
+        assert_eq!(vco_khz(0), None);
+        assert_eq!(vco_khz(WM_DISPPLL), Some(94_250));
     }
 
     #[test]

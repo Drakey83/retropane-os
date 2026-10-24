@@ -34,7 +34,9 @@ mod image {
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
-    use rp_refresh::{FAST_DISPPLL, WM_DISPPLL, measured_centi_hz, pll_khz};
+    use rp_refresh::{
+        FAST_DISPPLL, LADDER, WM_DISPPLL, centi_hz, may_walk, measured_centi_hz, pll_khz,
+    };
     use rp_vram_map::bench32::SCREENS;
 
     rp_image::entry!(main);
@@ -245,6 +247,66 @@ mod image {
             let took = rt::ticks().wrapping_sub(t0) / ms;
             (measured_centi_hz(frames, took), faults)
         };
+
+        // The gate's P17 ladder (`RP_REFRESH_LADDER`, unattended): every
+        // step of `rp_refresh::LADDER` measured three times, then the PLL
+        // put back as found and the image returns; no keypad needed.
+        if option_env!("RP_REFRESH_LADDER").is_some() {
+            if !may_walk(found) {
+                let _ = writeln!(RunLog, "ladder: DISPPLL {found:03X} unknown, not walked");
+            } else {
+                for (i, &v) in LADDER.iter().enumerate() {
+                    display.regs().write32(DISPPLL, v);
+                    let t0 = rt::ticks();
+                    while display.regs().read32(PLLSTAT) & DISP_LOCKED == 0
+                        && rt::ticks().wrapping_sub(t0) < 100 * ms
+                    {
+                        rt::delay_us(100);
+                    }
+                    let lock_us = rt::ticks().wrapping_sub(t0) * 1000 / ms;
+                    let locked = display.regs().read32(PLLSTAT) & DISP_LOCKED != 0;
+                    let mut l = Line::new();
+                    let _ = write!(l, "STEP {} OF {}", i + 1, LADDER.len());
+                    caption(fb, v != WM_DISPPLL, 0, 0);
+                    text(fb, 12, 210, 3, (255, 255, 255), l.as_str());
+                    let mut rates = [0u32; 3];
+                    let mut all_faults = 0;
+                    for r in &mut rates {
+                        let (centi, faults) = measure(&mut display, fb, &mut bar);
+                        *r = centi;
+                        all_faults |= faults;
+                    }
+                    caption(fb, v != WM_DISPPLL, rates[2], all_faults);
+                    text(fb, 12, 210, 3, (255, 255, 255), l.as_str());
+                    let _ = writeln!(
+                        RunLog,
+                        "ladder {}/{}: DISPPLL {v:03X} {:?} kHz (expect {} centi-Hz), locked {locked} after {lock_us} us: {} {} {} centi-Hz, faults {all_faults:08X}",
+                        i + 1,
+                        LADDER.len(),
+                        pll_khz(v),
+                        pll_khz(v).map_or(0, centi_hz),
+                        rates[0],
+                        rates[1],
+                        rates[2]
+                    );
+                }
+            }
+            display.regs().write32(DISPPLL, found);
+            let t0 = rt::ticks();
+            while display.regs().read32(PLLSTAT) & DISP_LOCKED == 0
+                && rt::ticks().wrapping_sub(t0) < 100 * ms
+            {
+                rt::delay_us(100);
+            }
+            before.restore(display.regs());
+            let _ = writeln!(
+                RunLog,
+                "done (ladder); DISPPLL back to {:03X}",
+                display.regs().read32(DISPPLL)
+            );
+            let _ = writeln!(RunLog, "{}", super::MARKER);
+            rp_image::finish()
+        }
 
         let mut fast = false;
         let (centi, faults) = measure(&mut display, fb, &mut bar);

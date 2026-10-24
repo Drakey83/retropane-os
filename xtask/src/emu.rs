@@ -1606,11 +1606,16 @@ pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
     crate::sdkit::raw_binary(&release.join("rp-refresh"), &image)?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let frame = rp_loadproto::frame(&payload);
+    // The gate's P17 ladder variant walks by itself: no keys.
+    let ladder = std::env::var_os("RP_REFRESH_LADDER").is_some();
     let check = || -> Result<(), String> {
         let key = |k: &str| -> Result<(), String> {
             crate::screen::Monitor::connect(monitor_port())?.query(&format!("sendkey {k} 200"))?;
             Ok(())
         };
+        if ladder {
+            return Ok(());
+        }
         // The first measurement (2 s), then a switch press and its 2 s.
         guest_hold(
             &mut crate::screen::Monitor::connect(monitor_port())?,
@@ -1644,6 +1649,9 @@ pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("refresh: no run log after the image returned")?;
+    if ladder {
+        return refresh_ladder_log(log);
+    }
     for want in ["no switch, measuring only", "done (Home)", "REFRESH-OK"] {
         if !log.contains(want) {
             return Err(format!("refresh: no {want:?} in the run log:{log}"));
@@ -1668,6 +1676,57 @@ pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
     eprintln!(
         "    refresh OK: no PLL switch without Windows Mobile's value; frames counted at {:?} centi-Hz (60 Hz, as the loader leaves it); Home put back and returned",
         rates
+    );
+    Ok(())
+}
+
+/// Judges `rp-refresh`'s P17 ladder log: every step of `rp_refresh::LADDER`
+/// measured three times within 1 Hz of the rate its pixel clock gives (the
+/// fork models the line time from `DISPPLL`, rp-v0.29.0), no fault bits,
+/// and the PLL put back as found (the loader's 60 Hz, `0xFC5`).
+fn refresh_ladder_log(log: &str) -> Result<(), String> {
+    let steps: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("ladder ") && l.contains("DISPPLL"))
+        .collect();
+    if steps.len() != 4 {
+        return Err(format!(
+            "refresh ladder: want 4 steps, got {}:{log}",
+            steps.len()
+        ));
+    }
+    for l in &steps {
+        let expect: u32 = l
+            .split("(expect ")
+            .nth(1)
+            .and_then(|r| r.split(' ').next()?.parse().ok())
+            .ok_or_else(|| format!("refresh ladder: no expected rate in {l:?}"))?;
+        let rates: Vec<u32> = l
+            .split("us: ")
+            .nth(1)
+            .map(|r| {
+                r.split(' ')
+                    .take(3)
+                    .filter_map(|n| n.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if rates.len() != 3 || rates.iter().any(|r| r.abs_diff(expect) > 100) {
+            return Err(format!(
+                "refresh ladder: want 3 rates within 1 Hz of {expect}, got {rates:?} in {l:?}"
+            ));
+        }
+        if !l.contains("locked true") || !l.ends_with("faults 00000000") {
+            return Err(format!("refresh ladder: unlocked or faults in {l:?}"));
+        }
+    }
+    for want in ["done (ladder); DISPPLL back to FC5", "REFRESH-OK"] {
+        if !log.contains(want) {
+            return Err(format!("refresh ladder: no {want:?} in the run log:{log}"));
+        }
+    }
+    eprintln!(
+        "    refresh ladder OK: 4 steps, each within 1 Hz of its pixel clock's rate, PLL put back"
     );
     Ok(())
 }
@@ -2354,6 +2413,112 @@ pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
 /// against the intended colours. Each screendump is matched against all
 /// the stages, so a slow host can't pass one stage off as another. Then
 /// it must be back at the loader with the wallpaper gone.
+/// `rp-blend`'s P9 scaler steps (`RP_BLEND_SCALE`, the gate's P9/V5): the
+/// emulator doesn't model the video plane's scaler (docs/hw/emulator.md),
+/// so this checks what it can: every step comes up, the scaler registers
+/// read back as `layers::VideoPlane::registers_scaled` wrote them for that
+/// step, the display put back and the image returned. Whether the picture
+/// is right is the owner's eye on the X51v.
+pub fn boot_loader_blend_scale(root: &Path) -> Result<(), String> {
+    use rp_drv_mbx_display::layers::{Layer, Scale, VideoFormat, VideoPlane, reg};
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = emu_dir(root)?;
+    let loader = dir.join("rp-loader.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    let bin = variant_image_with(
+        root,
+        "rp-blend",
+        ("RP_BLEND_SCALE", "1"),
+        Some(("RP_BLEND_SECONDS", "2")),
+    )?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RPL OK")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("blend P9: no run log after the image returned")?;
+    if crashed(log) {
+        return Err(format!("blend P9: crashed:{log}"));
+    }
+    let wall = VideoPlane::new(VideoFormat::Uyvy, 480, 640, 0x50_0000);
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("P9 scaler:"))
+        .collect();
+    if lines.len() != rp_blend_steps().len() {
+        return Err(format!(
+            "blend P9: want {} scaler lines, got {}:{log}",
+            rp_blend_steps().len(),
+            lines.len()
+        ));
+    }
+    for (line, (src, out)) in lines.iter().zip(rp_blend_steps()) {
+        let mut v = VideoPlane::new(VideoFormat::Uyvy, src.2, src.3, wall.offset);
+        v.stride = wall.stride;
+        let scale = Scale {
+            out_w: out.0,
+            out_h: out.1,
+            x: out.2,
+            y: out.3,
+            taps: out.4,
+        };
+        let regs = v.registers_scaled(Layer::SOLO, false, scale);
+        let want = |o: usize| regs.iter().find(|r| r.0 == o).map_or(0, |r| r.1);
+        let expect = format!(
+            "P9 scaler: VSADR {:08X} SSSIZE {:08X} SPOCTRL {:08X} SHCTRL {:08X}",
+            want(reg::VSADR),
+            want(reg::SSSIZE),
+            want(reg::SPOCTRL),
+            want(reg::SHCTRL)
+        );
+        if line.trim() != expect {
+            return Err(format!("blend P9: read back {line:?}, wrote {expect:?}"));
+        }
+    }
+    let steps = log.lines().filter(|l| l.starts_with("P9 step ")).count();
+    if steps != rp_blend_steps().len() || !log.contains("restored:") {
+        return Err(format!(
+            "blend P9: {steps} steps held, or nothing put back:{log}"
+        ));
+    }
+    eprintln!(
+        "    blend P9 OK: {steps} scaler steps up, each read back as written, put back (the picture: the X51v, watched)"
+    );
+    Ok(())
+}
+
+/// A P9 step's source rectangle (x, y, w, h) and output (w, h, x, y, taps).
+type BlendSrc = (u16, u16, u16, u16);
+type BlendOut = (u16, u16, u16, u16, u8);
+
+/// `rp-blend`'s `SCALE_STEPS` as (source, output) tuples, kept in step with
+/// the image's table by the check above (a mismatch shows as a read-back
+/// difference).
+fn rp_blend_steps() -> [(BlendSrc, BlendOut); 6] {
+    [
+        ((0, 0, 480, 640), (0, 0, 0, 0, 1)),
+        ((0, 0, 240, 320), (480, 640, 0, 0, 4)),
+        ((0, 0, 240, 320), (480, 640, 0, 0, 1)),
+        ((0, 0, 480, 640), (240, 320, 120, 160, 4)),
+        ((0, 0, 480, 640), (360, 480, 60, 80, 4)),
+        ((0, 400, 240, 240), (0, 0, 240, 320, 1)),
+    ]
+}
+
 pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
     use rp_drv_mbx_display::blendtest::{self, Stage};
     let release = root.join("target/armv5te-x51v-none-eabi/release");

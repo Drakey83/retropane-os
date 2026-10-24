@@ -417,11 +417,22 @@ impl<B: RegisterBus> Display<B> {
     /// its registers in [`VideoPlane::registers`](layers::VideoPlane::registers)'s
     /// order. The gamma bit follows the graphics plane's.
     pub fn show_video(&mut self, video: &layers::VideoPlane, layer: layers::Layer) {
+        self.show_video_scaled(video, layer, layers::Scale::NONE);
+    }
+
+    /// As [`Self::show_video`], through the scaler at `scale`'s size and
+    /// place ([`layers::VideoPlane::registers_scaled`]).
+    pub fn show_video_scaled(
+        &mut self,
+        video: &layers::VideoPlane,
+        layer: layers::Layer,
+        scale: layers::Scale,
+    ) {
         let gamma = self.regs.read_field(reg::GSCTRL, GSCTRL_GAMMA_EN) != 0;
         self.regs
             .modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
         layers::video_clock(&mut self.regs, true);
-        for (offset, value) in video.registers(layer, gamma) {
+        for (offset, value) in video.registers_scaled(layer, gamma, scale) {
             self.regs.write32(offset, value);
         }
     }

@@ -43,6 +43,66 @@ pub fn stage_seconds() -> u32 {
         .unwrap_or(STAGE_SECONDS)
 }
 
+/// The gate's P9/V5 run (`RP_BLEND_SCALE`, 2026-10-24): stage A's 4:2:2
+/// wallpaper shown through the video plane's scaler and placed, each step
+/// labelled with what should be seen and held [`stage_seconds`], the
+/// display's under/overrun bits counted over it (the unattended part);
+/// whether the picture is right is the owner's eye (the watched part).
+pub const SCALE: bool = option_env!("RP_BLEND_SCALE").is_some();
+
+/// One scaler step: its name, what to expect, the source (x, y, w, h)
+/// inside the 480 x 640 wallpaper, and the output (w, h, x, y, taps).
+pub struct ScaleStep {
+    /// Line 2 on screen.
+    pub name: &'static str,
+    /// Line 3 on screen: what the owner should see.
+    pub expect: &'static str,
+    /// The source rectangle in the wallpaper.
+    pub src: (u16, u16, u16, u16),
+    /// The output size (0: the source's), place and vertical taps.
+    pub out: (u16, u16, u16, u16, u8),
+}
+
+/// The steps, in order.
+pub const SCALE_STEPS: [ScaleStep; 6] = [
+    ScaleStep {
+        name: "1:1 FULL (CONTROL)",
+        expect: "THE WALLPAPER, NORMAL",
+        src: (0, 0, 480, 640),
+        out: (0, 0, 0, 0, 1),
+    },
+    ScaleStep {
+        name: "QUARTER UP 2X, 4 TAP",
+        expect: "TOP LEFT SKY FILLS ALL",
+        src: (0, 0, 240, 320),
+        out: (480, 640, 0, 0, 4),
+    },
+    ScaleStep {
+        name: "QUARTER UP 2X, 1 TAP",
+        expect: "SAME, ROWS BLOCKIER?",
+        src: (0, 0, 240, 320),
+        out: (480, 640, 0, 0, 1),
+    },
+    ScaleStep {
+        name: "HALF SIZE AT 120,160",
+        expect: "SMALL, CENTRED, GREEN AROUND",
+        src: (0, 0, 480, 640),
+        out: (240, 320, 120, 160, 4),
+    },
+    ScaleStep {
+        name: "3/4 SIZE AT 60,80",
+        expect: "3/4 SIZE, GREEN BORDER",
+        src: (0, 0, 480, 640),
+        out: (360, 480, 60, 80, 4),
+    },
+    ScaleStep {
+        name: "BARS 1:1 AT 240,320",
+        expect: "BARS, BOTTOM RIGHT QUARTER",
+        src: (0, 400, 240, 240),
+        out: (0, 0, 240, 320, 1),
+    },
+];
+
 #[cfg(target_os = "none")]
 mod image {
     use core::fmt::Write;
@@ -78,6 +138,131 @@ mod image {
         let _ = writeln!(RunLog);
     }
 
+    /// The label plane (ARGB4444, past stage F's): clear but a dark band
+    /// at the top with three lines of big text.
+    const LABEL_AT: usize = 0xB0_0000;
+    const LABEL_BAND: usize = 96;
+
+    fn label(vram: &mut [u8], lines: [&str; 3]) {
+        use rp_drv_mbx_display::font;
+        const W: usize = blendtest::W;
+        let mut row = [0u8; W * 2];
+        for y in 0..blendtest::H {
+            for x in 0..W {
+                let mut c: u16 = if y < LABEL_BAND { 0xF112 } else { 0 };
+                for (k, text) in lines.iter().enumerate() {
+                    let (scale, top) = if k == 0 {
+                        (3, 6)
+                    } else {
+                        (2, 36 + (k - 1) * 26)
+                    };
+                    let (cw, ch) = ((font::WIDTH + 1) * scale, font::HEIGHT * scale);
+                    if y < top || y >= top + ch || x < 8 {
+                        continue;
+                    }
+                    if let Some(g) = text.chars().nth((x - 8) / cw) {
+                        let (gx, gy) = ((x - 8) % cw / scale, (y - top) / scale);
+                        if gx < font::WIDTH
+                            && font::glyph(g)[gy] & (1 << (font::WIDTH - 1 - gx)) != 0
+                        {
+                            c = 0xFFFF;
+                        }
+                    }
+                }
+                row[x * 2..x * 2 + 2].copy_from_slice(&c.to_le_bytes());
+            }
+            let at = LABEL_AT + y * W * 2;
+            vram[at..at + W * 2].copy_from_slice(&row);
+        }
+    }
+
+    /// The P9 steps: the label plane over the scaled wallpaper, the
+    /// background dark green so the uncovered screen shows.
+    fn scale_steps<B: RegisterBus>(d: &mut Display<B>, vram: &mut [u8]) {
+        use rp_drv_mbx_display::layers::{Scale, VideoFormat, VideoPlane};
+        use rp_drv_mbx_display::{PixelFormat, Plane, ack_events, event};
+        let (_, wall) = Stage::A.planes();
+        d.regs().write32(layers::reg::BGCOLOR, 0x0000_6020);
+        let n = super::SCALE_STEPS.len();
+        for (i, step) in super::SCALE_STEPS.iter().enumerate() {
+            let mut head = [0u8; 32];
+            let mut l = Buf(&mut head, 0);
+            let _ = write!(l, "STEP {} OF {} (P9)", i + 1, n);
+            let len = l.1;
+            let head = core::str::from_utf8(&head[..len]).unwrap_or("STEP");
+            label(vram, [head, step.name, step.expect]);
+            // The source rectangle inside the wallpaper: UYVY, 2 bytes a
+            // pixel, every x here 0 so the start stays 16-byte aligned.
+            let (sx, sy, sw, sh) = step.src;
+            let mut src = VideoPlane::new(VideoFormat::Uyvy, sw, sh, wall.offset);
+            src.stride = wall.stride;
+            src.offset = wall.offset + usize::from(sy) * wall.stride + usize::from(sx) * 2;
+            let (out_w, out_h, x, y, taps) = step.out;
+            d.show_video_scaled(
+                &src,
+                blendtest::VIDEO,
+                Scale {
+                    out_w,
+                    out_h,
+                    x,
+                    y,
+                    taps,
+                },
+            );
+            d.set_graphics(
+                &Plane {
+                    format: PixelFormat::Argb4444,
+                    width: blendtest::W as u16,
+                    height: blendtest::H as u16,
+                    offset: LABEL_AT,
+                    stride: blendtest::W * 2,
+                },
+                blendtest::GRAPHICS,
+            );
+            record(d.regs(), step.name);
+            let _ = writeln!(
+                RunLog,
+                "P9 scaler: VSADR {:08X} SSSIZE {:08X} SPOCTRL {:08X} SHCTRL {:08X}",
+                d.regs().read32(layers::reg::VSADR),
+                d.regs().read32(layers::reg::SSSIZE),
+                d.regs().read32(layers::reg::SPOCTRL),
+                d.regs().read32(layers::reg::SHCTRL)
+            );
+            let _ = ack_events(d.regs(), event::UNDER_OVERRUN | event::VEVENT0);
+            let (mut frames, mut faults, mut fault_polls) = (0u32, 0u32, 0u32);
+            for _ in 0..super::stage_seconds() * 100 {
+                rt::delay_us(10_000);
+                let s = ack_events(d.regs(), event::UNDER_OVERRUN | event::VEVENT0);
+                frames += u32::from(s & event::VEVENT0 != 0);
+                if s & event::UNDER_OVERRUN != 0 {
+                    faults |= s & event::UNDER_OVERRUN;
+                    fault_polls += 1;
+                }
+                rt::check_in();
+            }
+            let _ = writeln!(
+                RunLog,
+                "P9 step {}/{n} {}: frame events in {frame_polls} polls of 10 ms: {frames}, under/overrun in {fault_polls} (bits {faults:08X})",
+                i + 1,
+                step.name,
+                frame_polls = super::stage_seconds() * 100,
+            );
+        }
+        d.hide_video();
+    }
+
+    /// A formatting buffer on the stack.
+    struct Buf<'a>(&'a mut [u8], usize);
+
+    impl Write for Buf<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let n = s.len().min(self.0.len() - self.1);
+            self.0[self.1..self.1 + n].copy_from_slice(&s.as_bytes()[..n]);
+            self.1 += n;
+            Ok(())
+        }
+    }
+
     fn main() -> ! {
         rt::init_mmu();
         let Some((regs, vram)) = rp_image::take_mbx() else {
@@ -107,6 +292,12 @@ mod image {
             // device number for docs/perf.md. OS timer: 3.25 ticks a microsecond.
             let us = rt::ticks().wrapping_sub(t) / 13 * 4;
             let _ = writeln!(RunLog, "draw {}: {us} us", stage.letter());
+        }
+        if super::SCALE {
+            scale_steps(&mut d, vram);
+            before.restore(d.regs());
+            record(d.regs(), "restored");
+            rp_image::finish()
         }
         for stage in Stage::ALL
             .into_iter()

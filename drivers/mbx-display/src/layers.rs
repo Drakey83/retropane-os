@@ -59,6 +59,52 @@ const SPOCTRL_H_BYPASS: u32 = 1 << 31;
 const SPOCTRL_V_BYPASS: u32 = 1 << 30;
 /// Scaler pitch for 1:1 (source / output in 5.11 fixed point).
 const PITCH_1_TO_1: u32 = 1 << 11;
+/// `VSADR`'s screen position (mbxfb's `VSADR_XSTART`/`YSTART`; as the
+/// plane's place on screen **assumed** until the gate's P9 run shows it).
+const VSADR_X: Field = Field::new(11, 11);
+const VSADR_Y: Field = Field::new(0, 11);
+/// `SPOCTRL`'s vertical filter taps (mbxfb `SPOCTRL_VORDER`: 0 one tap,
+/// 1 two, 3 four) and its vertical pitch, 5.11 (`SPOCTRL_VPITCH`).
+const SPOCTRL_VORDER: Field = Field::new(16, 2);
+const SPOCTRL_VPITCH: Field = Field::new(0, 16);
+/// `SHCTRL`'s first-phase offset (mbxfb sets `4 << 11` at start-up;
+/// Windows Mobile's `0x20000000` holds the same: probe 2026-10-11) and its
+/// horizontal pitch, 5.11 (`SHCTRL_HPITCH`, 15 bits).
+const SHCTRL_HINITIAL: Field = Field::new(16, 16);
+const SHCTRL_HPITCH: Field = Field::new(0, 15);
+/// The largest ratios the scaler is driven at: 2:1 down (mbxfb has a
+/// decimate bit for more, not used) and 8:1 up (the pitch then 0x100).
+const MAX_DOWN: u32 = 2;
+const MAX_UP: u32 = 8;
+
+/// The video plane's scaler and place on screen: the source picture
+/// (`VideoPlane`'s size) shown `out_w` x `out_h` with its top left at
+/// (`x`, `y`). An output size of 0 keeps the source's in that direction;
+/// [`Scale::NONE`] is 1:1 at the corner, the scaler bypassed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scale {
+    /// Width on screen, pixels (0: the source's).
+    pub out_w: u16,
+    /// Height on screen, pixels (0: the source's).
+    pub out_h: u16,
+    /// Left edge on screen.
+    pub x: u16,
+    /// Top edge on screen.
+    pub y: u16,
+    /// Vertical filter taps: 1, 2 or 4.
+    pub taps: u8,
+}
+
+impl Scale {
+    /// The source's own size at the top left.
+    pub const NONE: Self = Self {
+        out_w: 0,
+        out_h: 0,
+        x: 0,
+        y: 0,
+        taps: 1,
+    };
+}
 
 /// A layer slot: which plane covers which.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,6 +254,19 @@ impl VideoPlane {
     /// out of range for the hardware fields.
     #[must_use]
     pub fn registers(&self, layer: Layer, gamma: bool) -> [(usize, u32); 9] {
+        self.registers_scaled(layer, gamma, Scale::NONE)
+    }
+
+    /// As [`Self::registers`], shown through the scaler at `scale`'s size
+    /// and place (mbxfb's overlay set-up: the output size in `SSSIZE`, each
+    /// pitch source / output in 5.11, a direction bypassed when 1:1).
+    ///
+    /// # Panics
+    /// As [`Self::registers`]; also if the output or place leaves the
+    /// 11-bit fields, the ratio is past 2:1 down or 8:1 up, or `taps` isn't
+    /// 1, 2 or 4.
+    #[must_use]
+    pub fn registers_scaled(&self, layer: Layer, gamma: bool, scale: Scale) -> [(usize, u32); 9] {
         let w = u32::from(self.width);
         let h = u32::from(self.height);
         assert!(
@@ -240,6 +299,46 @@ impl VideoPlane {
                 )
             }
         };
+        let ow = if scale.out_w == 0 {
+            w
+        } else {
+            u32::from(scale.out_w)
+        };
+        let oh = if scale.out_h == 0 {
+            h
+        } else {
+            u32::from(scale.out_h)
+        };
+        let (x, y) = (u32::from(scale.x), u32::from(scale.y));
+        assert!(
+            ow <= 2048 && oh <= 2048 && x < 2048 && y < 2048,
+            "scaled size out of range"
+        );
+        for (src, out) in [(w, ow), (h, oh)] {
+            assert!(
+                src <= out * MAX_DOWN && out <= src * MAX_UP,
+                "scale ratio out of range"
+            );
+        }
+        let vorder = match scale.taps {
+            1 => 0,
+            2 => 1,
+            4 => 3,
+            _ => panic!("taps must be 1, 2 or 4"),
+        };
+        let pitch = |src: u32, out: u32| (src << 11) / out;
+        let mut spoctrl = SPOCTRL_VPITCH.insert(SPOCTRL_VORDER.insert(0, vorder), pitch(h, oh));
+        if ow == w {
+            spoctrl |= SPOCTRL_H_BYPASS;
+        }
+        if oh == h {
+            spoctrl |= SPOCTRL_V_BYPASS;
+        }
+        let shctrl = if ow == w {
+            PITCH_1_TO_1
+        } else {
+            SHCTRL_HPITCH.insert(SHCTRL_HINITIAL.insert(0, 4 << 11), pitch(w, ow))
+        };
         let vsctrl = VSCTRL_FMT.insert(0, fmt);
         let vsctrl = VSCTRL_CSC_EN.insert(vsctrl, 1);
         let vsctrl = VSCTRL_GAMMA_EN.insert(vsctrl, u32::from(gamma));
@@ -255,14 +354,14 @@ impl VideoPlane {
             (reg::VSCTRL, vsctrl),
             (
                 reg::VSADR,
-                VSADR_STRIDE.insert(0, (self.stride / 16 - 1) as u32),
+                VSADR_Y.insert(
+                    VSADR_X.insert(VSADR_STRIDE.insert(0, (self.stride / 16 - 1) as u32), x),
+                    y,
+                ),
             ),
-            (reg::SSSIZE, ((w - 1) << 16) | (h - 1)),
-            (
-                reg::SPOCTRL,
-                SPOCTRL_H_BYPASS | SPOCTRL_V_BYPASS | PITCH_1_TO_1,
-            ),
-            (reg::SHCTRL, PITCH_1_TO_1),
+            (reg::SSSIZE, ((ow - 1) << 16) | (oh - 1)),
+            (reg::SPOCTRL, spoctrl),
+            (reg::SHCTRL, shctrl),
             (reg::VBBASE, layer.bbase(0)),
             (reg::VSCADR, vscadr),
         ]
@@ -400,6 +499,113 @@ mod tests {
         assert_eq!(VSCTRL_FMT.extract(r[2].1), 0xC);
         assert_eq!(VSCTRL_GAMMA_EN.extract(r[2].1), 1);
         assert_eq!(VSADR_STRIDE.extract(r[3].1), 59);
+    }
+
+    #[test]
+    fn unscaled_registers_are_the_bypassed_one_to_one() {
+        let v = VideoPlane::new(VideoFormat::Uyvy, 480, 640, 0x40_0000);
+        let r = v.registers(Layer::SOLO, false);
+        assert_eq!(r[3], (reg::VSADR, 59 << 22));
+        assert_eq!(r[4], (reg::SSSIZE, (479 << 16) | 639));
+        assert_eq!(r[5], (reg::SPOCTRL, (1 << 31) | (1 << 30) | 0x800));
+        assert_eq!(r[6], (reg::SHCTRL, 0x800));
+        assert_eq!(r, v.registers_scaled(Layer::SOLO, false, Scale::NONE));
+    }
+
+    #[test]
+    fn scaled_registers_follow_mbxfb() {
+        // 240 x 320 up to the full screen: both pitches 1:2 (0x400).
+        let v = VideoPlane::new(VideoFormat::Uyvy, 240, 320, 0x40_0000);
+        let up = Scale {
+            out_w: 480,
+            out_h: 640,
+            x: 0,
+            y: 0,
+            taps: 4,
+        };
+        let r = v.registers_scaled(Layer::SOLO, false, up);
+        assert_eq!(VSCTRL_WIDTH.extract(r[2].1), 239, "VSCTRL keeps the source");
+        assert_eq!(r[4], (reg::SSSIZE, (479 << 16) | 639));
+        assert_eq!(r[5], (reg::SPOCTRL, (3 << 16) | 0x400));
+        assert_eq!(r[6], (reg::SHCTRL, (0x2000 << 16) | 0x400));
+        // 480 x 640 down to 240 x 320 at (120, 160): pitches 2:1 (0x1000).
+        let v = VideoPlane::new(VideoFormat::Uyvy, 480, 640, 0x40_0000);
+        let down = Scale {
+            out_w: 240,
+            out_h: 320,
+            x: 120,
+            y: 160,
+            taps: 1,
+        };
+        let r = v.registers_scaled(Layer::SOLO, false, down);
+        assert_eq!(r[3], (reg::VSADR, (59 << 22) | (120 << 11) | 160));
+        assert_eq!(r[5], (reg::SPOCTRL, 0x1000));
+        assert_eq!(SHCTRL_HPITCH.extract(r[6].1), 0x1000);
+        // Horizontal only: the vertical bypassed, its pitch 1:1.
+        let wide = Scale {
+            out_w: 720,
+            ..Scale::NONE
+        };
+        let r = v.registers_scaled(Layer::SOLO, false, wide);
+        assert_eq!(r[5].1, (1 << 30) | 0x800);
+        assert_eq!(SHCTRL_HPITCH.extract(r[6].1), (480 << 11) / 720);
+        // Vertical only: the horizontal bypassed and left 1:1.
+        let tall = Scale {
+            out_h: 960,
+            ..Scale::NONE
+        };
+        let r = v.registers_scaled(Layer::SOLO, false, tall);
+        assert_eq!(r[5].1, (1 << 31) | ((640 << 11) / 960));
+        assert_eq!(r[6].1, 0x800);
+        // Placement alone, 1:1: both bypassed, the place in VSADR.
+        let placed = Scale {
+            x: 2047,
+            y: 2047,
+            ..Scale::NONE
+        };
+        let r = v.registers_scaled(Layer::SOLO, false, placed);
+        assert_eq!(r[5].1 >> 30, 3);
+        assert_eq!(r[3].1 & 0x3F_FFFF, (2047 << 11) | 2047);
+    }
+
+    #[test]
+    fn scale_edges() {
+        let v = VideoPlane::new(VideoFormat::Uyvy, 480, 640, 0x40_0000);
+        let s = |out_w, out_h| Scale {
+            out_w,
+            out_h,
+            ..Scale::NONE
+        };
+        // Exactly 2:1 down and 8:1 up pass.
+        let _ = v.registers_scaled(Layer::SOLO, false, s(240, 320));
+        let small = VideoPlane::new(VideoFormat::Uyvy, 64, 64, 0x40_0000);
+        let r = small.registers_scaled(Layer::SOLO, false, s(512, 512));
+        assert_eq!(SHCTRL_HPITCH.extract(r[6].1), 0x100);
+        assert_eq!(SPOCTRL_VPITCH.extract(r[5].1), 0x100);
+        let bad = |p: VideoPlane, sc: Scale| {
+            std::panic::catch_unwind(move || p.registers_scaled(Layer::SOLO, false, sc)).is_err()
+        };
+        for sc in [s(239, 640), s(480, 319), s(2049, 640), s(480, 2049)] {
+            assert!(bad(v, sc), "{sc:?}");
+        }
+        assert!(bad(small, s(514, 64)));
+        assert!(bad(small, s(64, 514)));
+        for sc in [
+            Scale {
+                x: 2048,
+                ..Scale::NONE
+            },
+            Scale {
+                y: 2048,
+                ..Scale::NONE
+            },
+            Scale {
+                taps: 3,
+                ..Scale::NONE
+            },
+        ] {
+            assert!(bad(v, sc), "{sc:?}");
+        }
     }
 
     #[test]
