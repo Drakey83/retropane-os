@@ -5327,6 +5327,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  CH C71 the same scene rendered whole 20 times:",
                 "  CH C71 the same picture read 20 times, no render between: 0 reads differ",
                 "  CH C71 textured cards shrunk 2:1 (64 x 64), point sampling: rendered whole 20 times",
+                "  CH C71 flat cards 200 x 260, the display's fetch paused: rendered whole 20 times",
                 "  CH C71: done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",

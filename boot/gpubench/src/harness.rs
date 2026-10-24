@@ -789,16 +789,23 @@ const KEPT: usize = 480 * 560 * 2;
 /// The scene `r` holds rendered whole 21 times into screen 0, the last 20
 /// each held to the first: how many renders and words differ, the first
 /// four (x, y, first, this) (quality audit C71).
-fn repeat_whole(g: &mut Rig, r: &mut Renderer, sc: &Screens, keep: &mut [u8], what: &str) {
+fn repeat_whole(
+    g: &mut Rig,
+    r: &mut Renderer,
+    sc: &Screens,
+    keep: &mut [u8],
+    what: &str,
+    quiet: bool,
+) {
     r.invalidate_all();
-    let first_us = g.frame(r, sc.target(0));
+    let first_us = quiet_frame(g, r, sc.target(0), quiet);
     keep_picture(g, sc.at[0], &mut keep[..KEPT]);
     let (mut renders, mut words) = (0u32, 0u32);
     let mut first = [(0u32, 0u32, 0u32, 0u32); 4];
     let mut nf = 0usize;
     for _ in 0..20 {
         r.invalidate_all();
-        let _ = g.frame(r, sc.target(0));
+        let _ = quiet_frame(g, r, sc.target(0), quiet);
         let mut n = 0u32;
         for (k, wd) in keep[..KEPT].chunks_exact(4).enumerate() {
             let a = u32::from_le_bytes([wd[0], wd[1], wd[2], wd[3]]);
@@ -816,9 +823,27 @@ fn repeat_whole(g: &mut Rig, r: &mut Renderer, sc: &Screens, keep: &mut [u8], wh
         rt::check_in();
     }
     log!(
-        "  CH C71 {what}: rendered whole 20 times ({first_us:?} us): {renders} renders differ from the first, {words} words in all {:?}",
+        "  CH C71 {what}{}: rendered whole 20 times ({first_us:?} us): {renders} renders differ from the first, {words} words in all {:?}",
+        if quiet {
+            ", the display's fetch paused"
+        } else {
+            ""
+        },
         &first[..nf]
     );
+}
+
+/// One whole render; with `quiet`, the display's fetch paused around it
+/// (`graphics_stream`: test G16 found the scan-out's reads corrupting
+/// renders under the loader, quality audit C71).
+fn quiet_frame(g: &mut Rig, r: &mut Renderer, t: Target, quiet: bool) -> Option<u32> {
+    if !quiet {
+        return g.frame(r, t);
+    }
+    let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+    let us = g.frame(r, t);
+    rp_drv_mbx_display::graphics_stream(&mut g.e.regs, was);
+    us
 }
 
 /// The rows above the caption of the picture at `at`, read into `out`.
@@ -1237,7 +1262,9 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
                 "textured cards 1.56x, bilinear",
                 "textured cards shrunk 2:1 (64 x 64), point sampling",
             ][kind as usize];
-            repeat_whole(g, &mut r, &sc, keep, what);
+            for quiet in [false, true] {
+                repeat_whole(g, &mut r, &sc, keep, what, quiet);
+            }
         }
         for slot in 0..=6 {
             g.set(&mut r, slot, None);
