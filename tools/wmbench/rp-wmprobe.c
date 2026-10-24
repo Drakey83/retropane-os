@@ -41,6 +41,12 @@
  * PXA27x's clock, memory and GPIO registers (log_full), for test G9's diff
  * with the loader's.
  *
+ * v6 (2026-10-23, test W1): then Dell's frame rendered again in place the
+ * way RetroPane's loader starts a render (rerender: the target blanked, 0x680
+ * written, the chip left alone, the picture held to his). The probe's only
+ * writes to the chip besides Dell's own registry value: the target (put
+ * back after) and the start register.
+ *
  * Module 1, divide 1 under Dell's own driver. Intel's datasheet lists the
  * 2700G's graphics clock divider as 1, 2 or 4 (graphics clock 13-75 MHz),
  * and Dell's driver picks divide 1 itself when its CoreClock setting is at
@@ -136,6 +142,22 @@ static volatile unsigned long *map_phys(DWORD phys, DWORD size)
         return NULL;
     if (!VirtualCopy(v, (void *)(phys >> 8), size, PAGE_READONLY | PAGE_NOCACHE | PAGE_PHYSICAL)) {
         out("# map %08lx: VirtualCopy failed, error %lu", (unsigned long)phys,
+            (unsigned long)GetLastError());
+        VirtualFree(v, 0, MEM_RELEASE);
+        return NULL;
+    }
+    return (volatile unsigned long *)v;
+}
+
+/* v6: physical memory mapped read-write and uncached (the re-render's
+ * target and start register only). */
+static volatile unsigned long *map_phys_rw(DWORD phys, DWORD size)
+{
+    void *v = VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
+    if (!v)
+        return NULL;
+    if (!VirtualCopy(v, (void *)(phys >> 8), size, PAGE_READWRITE | PAGE_NOCACHE | PAGE_PHYSICAL)) {
+        out("# map rw %08lx: VirtualCopy failed, error %lu", (unsigned long)phys,
             (unsigned long)GetLastError());
         VirtualFree(v, 0, MEM_RELEASE);
         return NULL;
@@ -327,6 +349,93 @@ static void log_full(const char *tag)
         VirtualFree((void *)r, 0, MEM_RELEASE);
     }
     out("full %s: ends", tag);
+}
+
+/* v6 (2026-10-23, test W1): Dell's last frame rendered again in place,
+ * under Windows Mobile, the way RetroPane's loader starts a render: the 3D
+ * stage's start register (0x680) written with every other register and all
+ * of local memory exactly as Dell's driver left them after his draws (his
+ * region array, lists, objects, render table), nothing else written but the
+ * target blanked first. RetroPane's G7-G11 found Dell's frame, replayed
+ * word for word under the loader, wrong at divide 1 where his driver draws
+ * it right: if this re-render is right at divide 1 here, the cause is in
+ * what the loader's environment changes; if wrong here too, it is in how
+ * Dell's driver starts a render (the tile accelerator run before every
+ * one). The target is put back after (his picture), the context still open.
+ * Writes: the target and 0x680 only; Dell's interrupt thread sees the
+ * render-done interrupt as for his own. */
+#define W1_RENDERS 20
+
+static void rerender(const char *tag)
+{
+    volatile unsigned long *m, *t;
+    unsigned long target, words, i, k, bytes, *want;
+    unsigned long right = 0, wrong_total = 0, never = 0, best = 0xFFFFFFFFUL;
+    if (!mbx) {
+        out("w1 %s: registers not mapped", tag);
+        return;
+    }
+    target = mbx[0x65C / 4] & 0x01FFFFFCUL;
+    words = (((mbx[0x654 / 4] >> 16) + 1) * ((mbx[0x658 / 4] >> 16) + 1)) /
+            (mbx[0x650 / 4] == 1 ? 2 : 1);
+    bytes = (words * 4 + 0xFFFUL) & ~0xFFFUL;
+    out("w1 %s: Dell's frame again in place: target 0x%lx (%lu words), region array 0x%lx, parameters 0x%lx, 0x650 %lu",
+        tag, target, words, mbx[0x608 / 4], mbx[0x60C / 4], mbx[0x650 / 4]);
+    if (words == 0 || words > 480UL * 640UL || target + bytes > (16UL << 20)) {
+        out("w1 %s: the target's size or place is out of range: not run", tag);
+        return;
+    }
+    m = map_phys_rw(MBX_PHYS, 0x1000);
+    t = map_phys_rw(0x0C000000UL + target, bytes);
+    want = (unsigned long *)malloc(words * 4);
+    if (!m || !t || !want) {
+        out("w1 %s: no mapping or memory: not run", tag);
+        if (m)
+            VirtualFree((void *)m, 0, MEM_RELEASE);
+        if (t)
+            VirtualFree((void *)t, 0, MEM_RELEASE);
+        free(want);
+        return;
+    }
+    for (i = 0; i < words; i++)
+        want[i] = t[i];
+    for (k = 0; k < W1_RENDERS; k++) {
+        unsigned long long t0;
+        unsigned long wrong = 0, unwritten = 0, us;
+        MSG msg;
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
+            DispatchMessageW(&msg);
+        SystemIdleTimerReset();
+        for (i = 0; i < words; i++)
+            t[i] = 0x5A5A5A5AUL;
+        t0 = ticks();
+        m[0x680 / 4] = 1;
+        /* The chip left alone while it renders, as Dell's driver does. */
+        Sleep(60);
+        us = us_since(t0);
+        if (us < best)
+            best = us;
+        for (i = 0; i < words; i++) {
+            unsigned long v = t[i];
+            if (v != want[i]) {
+                if (wrong < 2)
+                    out("w1 %s: render %lu: word %lu (x %lu, y %lu) 0x%08lx, Dell's 0x%08lx", tag, k + 1, i,
+                        (i * 2) % 480, (i * 2) / 480, v, want[i]);
+                wrong++;
+                unwritten += v == 0x5A5A5A5AUL;
+            }
+        }
+        right += wrong == 0;
+        wrong_total += wrong;
+        never += unwritten;
+    }
+    out("w1 %s: %lu of %d renders equal to Dell's own picture; %lu wrong words in all (%lu never written)",
+        tag, right, W1_RENDERS, wrong_total, never);
+    for (i = 0; i < words; i++)
+        t[i] = want[i];
+    free(want);
+    VirtualFree((void *)t, 0, MEM_RELEASE);
+    VirtualFree((void *)m, 0, MEM_RELEASE);
 }
 
 /* ---- Dell's OpenGL ES (libGLES_CL, by name) ------------------------- */
@@ -1161,6 +1270,10 @@ static void divide1(void)
     status(run2 ? L"9 of 9: divide 1 under Dell's driver: copying the chip's memory (run 2, about a minute)"
                 : L"9 of 9: divide 1 under Dell's driver: copying the chip's memory (run 1, about a minute)");
     capture(run2 ? L"rp-wmprobe-div1-vram.bin" : L"rp-wmprobe-div2-vram.bin");
+    /* v6: his frame rendered again in place, RetroPane's way (test W1). */
+    status(run2 ? L"9 of 9: divide 1 under Dell's driver: his frame again, our way (run 2)"
+                : L"9 of 9: divide 1 under Dell's driver: his frame again, our way (run 1)");
+    rerender(run2 ? "wm div1" : "wm div2");
     gl_stop();
     if (!run2) {
         save(L"rp-wmprobe-ref.bin", first);
@@ -1200,7 +1313,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (logf_ == INVALID_HANDLE_VALUE)
         return 1;
     SetFilePointer(logf_, 0, NULL, FILE_END);
-    out("rp-wmprobe v5 (Windows Mobile probe and baseline suite; the chip's registers, state and memory after Dell's draws), tick %lu",
+    out("rp-wmprobe v6 (Windows Mobile probe and baseline suite; the chip's registers, state and memory after Dell's draws; his frame again our way), tick %lu",
         (unsigned long)GetTickCount());
 
     sys = map_phys(SYS_PHYS, 0x2000);
