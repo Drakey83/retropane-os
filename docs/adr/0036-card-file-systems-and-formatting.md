@@ -203,6 +203,20 @@ CF card's `RetroPane/`)?**
   way: loader commands raised from 32 to 64 bytes (`rp-loadproto`); the
   loader's budget 128 -> 156 KiB (test image, logged in `xtask/src/size.rs`).
   **Not yet proven on the X51v** (the owner's rule): roadmap step 6.
+- 2026-10-25, **proven on the X51v** (the owner present; loader from RAM,
+  the main cards untouched and checked after): the old SanDisk 1 GB CF
+  card, FAT16 as it came, opened by RetroPane for the first time (R26),
+  formatted FAT16 on the device (541 ms, 4 MiB aligned); the spare 4 GB SD
+  card formatted **exFAT** on the device (304 ms), the kit put on it, its
+  boot files guarded: Windows' delete of `haret.exe` refused on the card
+  (byte-identical after), Windows' photo written beside it; then FAT32
+  with the six kit files kept and read back (1,092 ms). `chkdsk` (Windows'
+  own checker) found no problems on either card after RetroPane's formats
+  and Windows' writes; both drive icons shown through `autorun.inf`.
+  Layouts and timings: docs/hw/sd.md, docs/hw/cf.md. Found: Explorer shows
+  a refused delete as done (R41, the owner's ruling A), the serial-only
+  fallback after a long run of card writes (R40), big `get`s failing at
+  50 s (R39).
 
 ## The four lenses
 

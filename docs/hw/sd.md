@@ -372,3 +372,30 @@ polled the same way gains 0.7% only, so it's the controller's own status
 reads during its transfer that hold it up. `pxa-mmc` pauses 200 spins;
 the poll limits (passes) are backstops, stretched in time only.
 
+## Card layouts and formatting on the device (2026-10-25)
+
+Read by `card layout` (rp_fat::survey, read-only), 2026-10-25, the owner's X51v:
+
+| Card | Partition | File system, formatter | Clusters | Data area starts | Aligned to |
+|---|---|---|---|---|---|
+| Owner's main SD (32 GB SDHC) | 0x0C at 8192 | FAT32, "MSWIN4.1", label X51V | 32 KiB | sector 24,576 | 4 MiB |
+| Spare SD "DELLAXIMX51" (4 GB SDHC), as found | 0x0C at 8192 | FAT32, "MSDOS5.0" | 4 KiB | sector 24,576 | 4 MiB |
+| Owner's 8 GB CF (boot folder `RetroPane/`) | 0x0B at **63** | FAT32, "MSDOS5.0" | 4 KiB | sector **32,831** | **512 B** (odd sector) |
+| Old SanDisk SDCFB-1024 (1 GB CF), as found | 0x06 at **63** | FAT16, "MSDOS5.0" | 16 KiB | sector **586** | **1 KiB** |
+
+Sector 63 is the 1990s cylinder-head-sector habit; with it, every cluster
+of the two CF cards straddles the card's flash pages. RetroPane's
+formatter (ADR-0036) on the same cards: the SanDisk FAT16 at sector 4096,
+data at 8192 (4 MiB); the spare SD exFAT data at 16,384 (8 MiB), FAT32 at
+24,576 (4 MiB).
+
+**Writes, 768 KB through the loader, the spare 4 GB card, one run each:**
+as found (FAT32, 4 KiB clusters) a new file 358-376 ms, a replacement
+551 ms (13-25 FAT reads to find space); RetroPane's exFAT (32 KiB) 349-460
+and 347 ms; RetroPane's FAT32 (32 KiB, aligned) 345-437 and 344 ms.
+Formats on the device: exFAT 304 ms, FAT32 with the six kit files kept
+(read into RAM, put back, read back) 1,092 ms. Windows 11 read the exFAT
+card (label, the `autorun.inf` icon), wrote a photo to it, and `chkdsk`
+found no problems on it; its delete of `haret.exe` was refused on the card
+(the file byte-identical after), while Explorer showed it gone (reminder
+R41: the owner's ruling A).
