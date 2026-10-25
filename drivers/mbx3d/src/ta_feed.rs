@@ -103,18 +103,41 @@ impl Clock {
     }
 }
 
-/// `draws` through the tile accelerator on `regs` (the 2700G register
-/// window): the done bit enabled, the start table, each draw into the TA
-/// window followed by a `1` into the end window (each window's offset
-/// counting on and wrapping at [`PORT_SIZE`], as Dell's driver counts), the
-/// scene's end, then the done bit polled for up to `limit_us` (ADR-0026 D3:
-/// no interrupt from the 3D core). Every word waits for room in the FIFO;
-/// room that doesn't come within `limit_us` ends the stream ([`Fed::stuck`]).
-/// [`clear`] first. The 2D engine idle meanwhile (ADR-0026 T8: one FIFO).
+/// One item of a TA stream: a word into the TA window, or the end of a
+/// primitive (a `1` into the end window).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Item {
+    /// A word into the TA window.
+    Word(u32),
+    /// The primitive ends: a `1` into the end window.
+    End,
+}
+
+/// `draws` as a stream: each draw's words, then [`Item::End`] (the form
+/// `rp-glesfeat`'s `through_ta` sent).
+pub fn draws<'a>(draws: &'a [&'a [u32]]) -> impl Iterator<Item = Item> + 'a {
+    draws.iter().flat_map(|d| {
+        d.iter()
+            .map(|&w| Item::Word(w))
+            .chain(core::iter::once(Item::End))
+    })
+}
+
+/// `stream` through the tile accelerator on `regs` (the 2700G register
+/// window): the done bit enabled, the start table, each word into the TA
+/// window and each [`Item::End`] as a `1` into the end window (each
+/// window's offset counting on and wrapping at [`PORT_SIZE`], as Dell's
+/// driver counts), the scene's end, then the done bit polled for up to
+/// `limit_us` (ADR-0026 D3: no interrupt from the 3D core). Every word
+/// waits for room in the FIFO; room that doesn't come within `limit_us`
+/// ends the stream ([`Fed::stuck`]). The stream may be built as it goes
+/// (an iterator over quads): the CPU's words go straight into the window,
+/// with no copy of the frame in memory. [`clear`] first. The 2D engine
+/// idle meanwhile (ADR-0026 T8: one FIFO).
 pub fn feed<B: RegisterBus>(
     regs: &mut B,
     l: &Layout,
-    draws: &[&[u32]],
+    stream: impl IntoIterator<Item = Item>,
     clock: Clock,
     limit_us: u32,
 ) -> Fed {
@@ -136,12 +159,13 @@ pub fn feed<B: RegisterBus>(
         fed: &mut fed,
     };
     let (mut at, mut ends) = (0usize, 0usize);
-    let sent = draws.iter().all(|d| {
-        d.iter().all(|&v| {
+    let sent = stream.into_iter().all(|item| match item {
+        Item::Word(v) => {
             let ok = sink.put(PORT + at, v);
             at = (at + 4) % PORT_SIZE;
             ok
-        }) && {
+        }
+        Item::End => {
             let ok = sink.put(END_PORT + ends, 1);
             ends = (ends + 4) % PORT_SIZE;
             ok

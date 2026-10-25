@@ -520,7 +520,7 @@ mod feed {
         let (a, b, c) = (quad(10.0), quad(100.0), quad(200.0));
         let draws: [&[u32]; 4] = [&clear, &a, &b, &c];
         let mut bus = idle(0x0000_0044);
-        let fed = ta::feed(&mut bus, &GLESFEAT, &draws, CLOCK, 200_000);
+        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&draws), CLOCK, 200_000);
         assert_eq!(bus.writes(), through_ta(&draws, 0x0000_0044));
         assert!(fed.done && fed.stuck.is_none());
         // 15 + 3 x 30 words, 4 end-window ones, the end word.
@@ -538,7 +538,7 @@ mod feed {
         let draw = [7u32; 20];
         let draws: Vec<&[u32]> = (0..100).map(|_| &draw[..]).collect();
         let mut bus = idle(0);
-        let fed = ta::feed(&mut bus, &GLESFEAT, &draws, CLOCK, 200_000);
+        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&draws), CLOCK, 200_000);
         assert!(fed.done);
         assert_eq!(fed.words, 2_000 + 100 + 1);
         let port: Vec<usize> = bus
@@ -569,7 +569,7 @@ mod feed {
         // 1,100 one-word draws: 1,100 end-window words pass 4 KiB.
         let draws: Vec<&[u32]> = (0..1_100).map(|_| &[5u32][..]).collect();
         let mut bus = idle(0);
-        assert!(ta::feed(&mut bus, &GLESFEAT, &draws, CLOCK, 200_000).done);
+        assert!(ta::feed(&mut bus, &GLESFEAT, ta::draws(&draws), CLOCK, 200_000).done);
         let ends: Vec<usize> = bus
             .writes()
             .iter()
@@ -588,7 +588,7 @@ mod feed {
         // Full (0x1FF, past the 0x1FE capacity), then 2 words free, then
         // empty.
         bus.script_reads(MBX + reg::STATUS, &[level(0x1FF), level(0x1FC), 0]);
-        let fed = ta::feed(&mut bus, &GLESFEAT, &[&draw], CLOCK, 200_000);
+        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&[&draw]), CLOCK, 200_000);
         assert!(fed.done);
         assert_eq!(fed.words, 8 + 1 + 1);
         assert_eq!(fed.level_max, 0x1FE);
@@ -621,7 +621,7 @@ mod feed {
     fn a_fifo_that_stays_full_ends_the_scene_without_hanging() {
         let mut bus = idle(0x10);
         bus.preset(MBX + reg::STATUS, level(0x1FE) | ta::DONE);
-        let fed = ta::feed(&mut bus, &GLESFEAT, &[&[1, 2, 3]], CLOCK, 50_000);
+        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&[&[1, 2, 3]]), CLOCK, 50_000);
         assert_eq!(fed.stuck, Some(level(0x1FE) | ta::DONE));
         assert!(!fed.done);
         assert_eq!(fed.words, 0);
@@ -646,10 +646,60 @@ mod feed {
     fn a_ta_that_never_says_done_is_reported_not_waited_on() {
         let mut bus = idle(0);
         bus.preset(MBX + reg::STATUS, 0);
-        let fed = ta::feed(&mut bus, &GLESFEAT, &[&[1]], CLOCK, 20_000);
+        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&[&[1]]), CLOCK, 20_000);
         assert!(!fed.done && fed.stuck.is_none());
         assert_eq!(fed.ta_us, 0);
         assert_eq!(fed.words, 3);
+    }
+
+    #[test]
+    fn a_quad_stream_goes_in_as_built() {
+        let state = ta::State {
+            tsp: ta::TSP_DELL_TEXTURED,
+            isp: ISP_ALWAYS,
+            tex: ta::dell_texture(0x00E0_0000),
+            clip: ta::clip(480, 640),
+        };
+        let q = ta::Quad {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 16.0,
+            y1: 16.0,
+            z: 0.5,
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            argb: 0xFFFF_FFFF,
+        };
+        let qs = [q; 40];
+        let stream = ta::quads(state, ta::Form::White, ta::Batching::Once, &qs);
+        let want: Vec<u32> = stream
+            .clone()
+            .filter_map(|i| match i {
+                ta::Item::Word(w) => Some(w),
+                ta::Item::End => None,
+            })
+            .collect();
+        let mut bus = idle(0);
+        let fed = ta::feed(&mut bus, &GLESFEAT, stream, CLOCK, 200_000);
+        assert!(fed.done);
+        assert_eq!(
+            fed.words as usize,
+            ta::items(ta::Form::White, ta::Batching::Once, 40) + 1
+        );
+        let port: Vec<u32> = bus
+            .writes()
+            .iter()
+            .filter(|w| (ta::PORT..ta::PORT + ta::PORT_SIZE).contains(&w.0))
+            .map(|w| w.1)
+            .collect();
+        assert_eq!(port[..port.len() - 1], want[..]);
+        assert_eq!(*port.last().unwrap(), END);
+        assert_eq!(
+            bus.writes().iter().filter(|w| w.0 >= ta::END_PORT).count(),
+            40
+        );
     }
 
     #[test]
@@ -678,5 +728,140 @@ mod feed {
         assert_eq!(vram[0x228], 0xAA);
         assert_eq!(vram[0x140], 0xAA);
         assert!(!ta::clear(&mut vram[..0x220], &small));
+    }
+}
+
+/// The quad streams (P4 step 2), word by word.
+mod quads {
+    extern crate std;
+
+    use std::vec::Vec;
+
+    use super::*;
+    use ta::{Batching, Form, Item};
+
+    const STATE: ta::State = ta::State {
+        tsp: ta::TSP_DELL_TEXTURED,
+        isp: ISP_ALWAYS,
+        tex: [0xA880_0000, 0x0E01_C000, 0xD688_6610],
+        clip: 0x2007_4027,
+    };
+
+    fn quad(x: f32, argb: u32) -> ta::Quad {
+        ta::Quad {
+            x0: x,
+            y0: 10.0,
+            x1: x + 16.0,
+            y1: 26.0,
+            z: 0.5,
+            u0: 0.0,
+            v0: 0.25,
+            u1: 1.0,
+            v1: 0.75,
+            argb,
+        }
+    }
+
+    fn words(s: &[Item]) -> Vec<u32> {
+        s.iter()
+            .filter_map(|i| match *i {
+                Item::Word(w) => Some(w),
+                Item::End => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_coloured_quad_is_the_proven_state_block_and_a_strip_of_four() {
+        let q = quad(100.0, 0xFF11_2233);
+        let s: Vec<Item> = ta::quads(STATE, Form::Coloured, Batching::PerQuad, &[q]).collect();
+        assert_eq!(s.len(), 8 + 1 + 4 * 7 + 1);
+        assert_eq!(*s.last().unwrap(), Item::End);
+        // The state block and strip word as textured_stream's (drawn on the
+        // X51v, rp-glesfeat L).
+        let tri = ta::textured_stream(
+            STATE.tsp,
+            STATE.isp,
+            STATE.tex,
+            STATE.clip,
+            &[tex::Vertex {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                rhw: 1.0,
+                argb: 0,
+                u: 0.0,
+                v: 0.0,
+            }; 3],
+        );
+        let w = words(&s);
+        assert_eq!(w[..9], tri[..9]);
+        // Corners top left, top right, bottom left, bottom right, each
+        // x, y, z, 1/w, colour, u, v.
+        let f = |v: f32| v.to_bits();
+        let corner = |x, y, u, v| [f(x), f(y), f(0.5), f(1.0), 0xFF11_2233, f(u), f(v)];
+        assert_eq!(w[9..16], corner(100.0, 10.0, 0.0, 0.25));
+        assert_eq!(w[16..23], corner(116.0, 10.0, 1.0, 0.25));
+        assert_eq!(w[23..30], corner(100.0, 26.0, 0.0, 0.75));
+        assert_eq!(w[30..37], corner(116.0, 26.0, 1.0, 0.75));
+    }
+
+    #[test]
+    fn the_white_form_leaves_out_only_the_colour_word() {
+        let q = quad(0.0, 0xDEAD_BEEF);
+        let c = words(&ta::quads(STATE, Form::Coloured, Batching::Once, &[q]).collect::<Vec<_>>());
+        let w = words(&ta::quads(STATE, Form::White, Batching::Once, &[q]).collect::<Vec<_>>());
+        assert_eq!(w.len(), 9 + 4 * 6);
+        assert!(!w.contains(&0xDEAD_BEEF));
+        assert_eq!(c[..9], w[..9]);
+        for k in 0..4 {
+            let (cv, wv) = (&c[9 + 7 * k..16 + 7 * k], &w[9 + 6 * k..15 + 6 * k]);
+            assert_eq!(cv[..4], wv[..4]);
+            assert_eq!(cv[5..], wv[4..]);
+        }
+    }
+
+    #[test]
+    fn batching_once_sends_one_state_block_and_a_strip_and_end_a_quad() {
+        let qs = [quad(0.0, 1), quad(20.0, 2), quad(40.0, 3)];
+        let once: Vec<Item> = ta::quads(STATE, Form::Coloured, Batching::Once, &qs).collect();
+        let per: Vec<Item> = ta::quads(STATE, Form::Coloured, Batching::PerQuad, &qs).collect();
+        assert_eq!(once.len(), 8 + 3 * 30);
+        assert_eq!(per.len(), 3 * 38);
+        let masks = |s: &[Item]| {
+            s.iter()
+                .filter(|&&i| i == Item::Word(ta::TEXTURED_MASK))
+                .count()
+        };
+        assert_eq!((masks(&once), masks(&per)), (1, 3));
+        let ends = |s: &[Item]| s.iter().filter(|&&i| i == Item::End).count();
+        assert_eq!((ends(&once), ends(&per)), (3, 3));
+        // Once: the second quad's strip word right after the first's end.
+        assert_eq!(once[8 + 29], Item::End);
+        assert_eq!(once[8 + 30], Item::Word(ta::STRIP));
+        // Per quad: each quad's items the one-quad stream's.
+        let one: Vec<Item> =
+            ta::quads(STATE, Form::Coloured, Batching::PerQuad, &qs[1..2]).collect();
+        assert_eq!(per[38..76], one[..]);
+    }
+
+    #[test]
+    fn the_counts_match_the_streams_and_the_iterators_length() {
+        let qs: Vec<ta::Quad> = (0..7).map(|k| quad(k as f32, 0)).collect();
+        for form in [Form::Coloured, Form::White] {
+            for b in [Batching::PerQuad, Batching::Once] {
+                for n in [0, 1, 7] {
+                    let mut it = ta::quads(STATE, form, b, &qs[..n]);
+                    assert_eq!(it.len(), ta::items(form, b, n));
+                    let _ = it.nth(4);
+                    assert_eq!(it.len(), ta::items(form, b, n).saturating_sub(5));
+                    assert_eq!(it.count(), ta::items(form, b, n).saturating_sub(5));
+                }
+            }
+        }
+        // Dell's frame of 5,000 quads: 38 words a quad (190,000 items);
+        // state once with the white vertex: 26 a quad.
+        assert_eq!(ta::items(Form::Coloured, Batching::PerQuad, 5_000), 190_000);
+        assert_eq!(ta::items(Form::White, Batching::Once, 5_000), 8 + 130_000);
     }
 }

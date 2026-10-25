@@ -125,6 +125,29 @@ Mobile's, 99.67 / 2, as decided for P4's first run).
    status reads between window writes are new there.
 2. **The streams:** textured quads as strips, state once per batch, the
    6-word vertex (no colour) as a second form; host-tested word by word.
+   **Built 2026-10-25:** `rp-mbx3d`'s `ta::quads` (`ta_quads.rs`), a
+   lazy iterator: each word is worked out when `ta::feed` asks for it, so
+   a frame goes from the quads (40 bytes each) straight into the TA window
+   with no 150-190 KiB copy built first (Dell's transform stage builds
+   vertices in a buffer and copies them; `ta::feed` now takes any stream
+   of words and primitive ends, `ta::draws` the slice form). Forms:
+   `Coloured` (Dell's 7 words), `White` (6, no colour); batching
+   `PerQuad` (Dell's: 38 words a quad, 190,000 for 5,000 quads) or
+   `Once` (state once: 26 words a quad with `White`, -32%). Host tests:
+   the state block and strip word equal the proven `textured_stream`'s,
+   the corners in G2's strip order, the white form only dropping the
+   colour, the counts, a 40-quad stream through the feed.
+   **Open (static reading, time-boxed 2026-10-25):** the GLES driver's
+   transform stage sizes a vertex on the CPU side (`0x02272064`: 16
+   bytes; +4 when context `+0x5E0` is set (the colour), +8 a texture
+   unit), and the state-word builder (`0x02267700`) shows no bit for it;
+   how the TA learns a vertex has no colour isn't read yet (the clear's
+   TSP `0x22206F80` gives 3-word vertices with the same mask, so the TSP
+   likely selects the fields). The run's `White` way carries the
+   candidate TSP and checks the picture (reminder R38). Also read there:
+   Dell's emitters jump back to the window's start rather than split a
+   vertex across its end; word stores don't care, but step 4's DMA pieces
+   must end at the window's end.
 3. **The CPU binner** (test-only): a quad's tiles from its bounding box
    (8 x 16 tiles), objects through `rp-mbx3d-render`'s encoder, a list per
    tile, the region array; host-tested against the model of the 3D core

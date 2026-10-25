@@ -1920,7 +1920,7 @@ mod image {
             now: rt::ticks,
             ticks_per_ms: rt::TICK_HZ / 1000,
         };
-        let fed = m3::ta::feed(&mut e.regs, &ta, draws, clock, 200_000);
+        let fed = m3::ta::feed(&mut e.regs, &ta, m3::ta::draws(draws), clock, 200_000);
         out.ta = fed.done;
         if let Some(s) = fed.stuck {
             log!("    the FIFO stayed full (status 0x{s:08x}): the stream cut short");

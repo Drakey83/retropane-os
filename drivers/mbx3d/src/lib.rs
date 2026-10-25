@@ -691,10 +691,14 @@ pub mod ta {
         ]
     }
 
-    pub use super::ta_feed::{Clock, Fed, Layout, clear, feed};
+    pub use super::ta_feed::{Clock, Fed, Item, Layout, clear, draws, feed};
+    pub use super::ta_quads::{
+        Batching, Form, Quad, Quads, STATE_WORDS, State, TEXTURED_MASK, items, quads,
+    };
 }
 
 mod ta_feed;
+mod ta_quads;
 
 #[cfg(test)]
 mod tests;
