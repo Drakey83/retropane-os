@@ -283,6 +283,17 @@ ways; the control with the reset and `0x85C` bit 7 off (R37). Every
 frame logs whether tile 0's list and its first object lie inside the
 parameter memory. `emu-tabench` passes it.
 
+**Run 3 on the X51v (2026-10-25): not the reset** (inside the parameter
+memory, still nothing drawn). **Run 4 built 2026-10-25** (the same
+variant; run 3's ways are in 98124f8e): under the control's conditions
+with a reset first, eight streams from `rp-glesfeat`'s right ones to ours:
+G2's (the clear and a full-screen Gouraud strip, z 1.0), the clear alone,
+M's textured triangle (no clear, z 1.0), one of our quads without and with
+the clear, 100 without and with it, and 100 at z 1.0 with it. Three
+frames each, the target filled with a sentinel by the CPU first, the
+first listed tile's first two objects and sampled pixels logged against
+what they should be.
+
 ## The choices for the owner
 
 **Q1. Where the TA code lives.**
