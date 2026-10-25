@@ -22,9 +22,8 @@
 //! the 16-bit port and again through each faster path; a path is used only
 //! if its bytes match, so a card or socket that doesn't alias the window
 //! keeps the 16-bit port. The socket's timing is the caller's to tune:
-//! [`CfCard::tune`] moves it to the card's own rated speed (its CIS) once a
-//! read at the new timing matches the same read at the old one (the
-//! owner's ruling A, reminder R7; [`timing`]).
+//! [`CfCard::tune`] finds the shortest timing the card reads right at and
+//! backs off 1.5x from it (the owner's ruling M, reminder R7; [`timing`]).
 //!
 //! Security (docs/security.md): everything the card says is checked before
 //! use (CIS walks are bounded, IDENTIFY fields validated, transfers kept
@@ -262,15 +261,12 @@ struct Cis {
 }
 
 /// The socket's common-memory timing register (`MCMEM` for the CF socket),
-/// for [`CfCard::tune`]: the driver reads and writes it, and learns the
-/// memory clock's cycle.
+/// for [`CfCard::tune`]: the driver reads and writes it.
 pub trait SocketTiming {
     /// The register as it is.
     fn read(&mut self) -> u32;
     /// Sets the register.
     fn write(&mut self, value: u32);
-    /// The memory clock's cycle, picoseconds.
-    fn clk_ps(&mut self) -> u32;
 }
 
 /// `MCMEM`'s timing fields (SET, ASST, HOLD: bits 19-0); the rest is kept.
@@ -279,28 +275,27 @@ const MCMEM_FIELDS: u32 = (1 << 20) - 1;
 /// What [`CfCard::tune`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tuned {
-    /// The card's own timing, proven by the read-back check.
+    /// The card's own timing: its measured limit with the margin, proven by
+    /// the read-back check.
     Applied {
         /// The register before.
         was: u32,
         /// The register now.
         now: u32,
-        /// The card's rated speed, ns.
-        rated_ns: u32,
-        /// The card is slower than the socket can wait for: its slowest.
+        /// The shortest timing the card read right at (the register).
+        limit: u32,
+        /// The margin reached past the socket's slowest field: clamped there.
         clamped: bool,
     },
-    /// The card's timing read differently from the old one: the old one is
-    /// back. `card_ok`: the card reads as before at it (else it's marked
-    /// dead, to be taken anew).
+    /// The card's timing with the margin read differently at the end: the
+    /// old timing is back. `card_ok`: the card reads as before at it (else
+    /// it's marked dead, to be taken anew).
     Refused {
         /// The register kept.
         was: u32,
         /// The timing tried.
         tried: u32,
-        /// The card's rated speed, ns.
-        rated_ns: u32,
-        /// The card reads as it did at the old timing.
+        /// The card reads as it did at the slowest timing.
         card_ok: bool,
     },
     /// Nothing changed, and why.
@@ -584,30 +579,59 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         self.rated_ns
     }
 
-    /// Moves the socket's common-memory timing to the card's own rated speed
-    /// ([`timing::for_card`]: the CF specification's minimums with a 1.5x
-    /// margin; faster than Windows Mobile's one table for a fast card,
-    /// slower for a slow one), kept only if the card reads the same at it:
-    /// IDENTIFY and its first, middle and last sectors, read at the old
-    /// timing, then twice at the new one, all alike. Otherwise the old
-    /// timing is put back and the card read again at it. The attribute
-    /// memory's timing (read a few hundred bytes per attach) is left alone.
+    /// Sets the socket's common-memory timing for this card (the owner's
+    /// ruling M): IDENTIFY and the first, middle and last sectors are read
+    /// at the socket's slowest timing (the truth), then at ever shorter
+    /// timings ([`timing::shorter`]: the strobe, the hold, the set-up, from
+    /// the timing the socket had, or from the slowest if the card misreads
+    /// there), each field until the first read that differs or fails; the
+    /// card is read again at the last right step before the next field
+    /// (a card that hung recovers there, or the search stops). The timing
+    /// used is that limit with the margin ([`timing::with_margin`]), kept
+    /// only if two more reads at it match; otherwise the old timing goes
+    /// back. Reads only, a few dozen 2 KiB reads at attach. The attribute
+    /// memory's timing is left alone.
     pub fn tune(&mut self, socket: &mut dyn SocketTiming) -> Tuned {
-        let Some(rated_ns) = self.rated_ns else {
-            return Tuned::Kept("the card's CIS gives no speed");
-        };
         if self.dead {
             return Tuned::Kept("the card isn't answering");
         }
         let was = socket.read();
-        let (t, clamped) = timing::for_card(rated_ns, socket.clk_ps());
-        let now = (was & !MCMEM_FIELDS) | t.mcmem();
-        if now == was {
-            return Tuned::Kept("already at the card's timing");
-        }
+        let high = was & !MCMEM_FIELDS;
+        socket.write(high | timing::Timing::SLOWEST.mcmem());
         let Ok(reference) = self.fingerprint() else {
-            return Tuned::Kept("the card couldn't be read at the timing it had");
+            self.put_back(socket, was, None);
+            return Tuned::Kept("the card couldn't be read at the socket's slowest timing");
         };
+        socket.write(was);
+        let mut limit = timing::Timing::from_mcmem(was);
+        if self.fingerprint() != Ok(reference) {
+            self.dead = false;
+            limit = timing::Timing::SLOWEST;
+        }
+        for field in timing::FIELDS {
+            while let Some(next) = timing::shorter(limit, field) {
+                socket.write(high | next.mcmem());
+                if self.fingerprint() == Ok(reference) {
+                    limit = next;
+                    continue;
+                }
+                // Back to the last right step: the card must read right
+                // there again before the search goes on.
+                socket.write(high | limit.mcmem());
+                self.dead = false;
+                if self.fingerprint() != Ok(reference) {
+                    let card_ok = self.put_back(socket, was, Some(reference));
+                    return Tuned::Refused {
+                        was,
+                        tried: high | next.mcmem(),
+                        card_ok,
+                    };
+                }
+                break;
+            }
+        }
+        let (t, clamped) = timing::with_margin(limit);
+        let now = high | t.mcmem();
         socket.write(now);
         let first = self.fingerprint();
         let second = self.fingerprint();
@@ -615,22 +639,37 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             return Tuned::Applied {
                 was,
                 now,
-                rated_ns,
+                limit: high | limit.mcmem(),
                 clamped,
             };
         }
-        socket.write(was);
-        // A wait that ran out at the new timing marked the card dead; at
-        // the old one it gets its chance again.
-        self.dead = false;
-        let card_ok = self.fingerprint() == Ok(reference);
-        self.dead = !card_ok;
+        let card_ok = self.put_back(socket, was, Some(reference));
         Tuned::Refused {
             was,
             tried: now,
-            rated_ns,
             card_ok,
         }
+    }
+
+    /// The old timing back, and whether the card reads as `reference` there
+    /// (a card that doesn't is marked dead; with no reference, it only has
+    /// to read). A wait that ran out at a shorter timing marked the card
+    /// dead; at the old one it gets its chance again.
+    fn put_back(
+        &mut self,
+        socket: &mut dyn SocketTiming,
+        was: u32,
+        reference: Option<u64>,
+    ) -> bool {
+        socket.write(was);
+        self.dead = false;
+        let read = self.fingerprint();
+        let ok = match reference {
+            Some(r) => read == Ok(r),
+            None => read.is_ok(),
+        };
+        self.dead = !ok;
+        ok
     }
 
     /// A 64-bit FNV-1a hash of IDENTIFY (through the 16-bit port) and the

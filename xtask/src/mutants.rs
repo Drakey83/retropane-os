@@ -350,18 +350,29 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
-        name: "CF tune: a timing the card misreads left in place (no put-back)",
+        name: "CF tune: the old timing not put back when the final check fails",
         file: "drivers/cf/src/lib.rs",
-        from: "        socket.write(was);\n        // A wait",
-        to: "        // A wait",
-        check: Check::Host(&["-p", "rp-drv-cf", "the_old_one_put_back"]),
+        from: "        socket.write(was);
+        self.dead = false;
+        let read",
+        to: "        self.dead = false;
+        let read",
+        check: Check::Host(&["-p", "rp-drv-cf", "the_final_check_refuses"]),
     },
     Mutant {
-        name: "CF tune: a card that hung at the new timing left dead at the old one",
+        name: "CF tune: a card that hung below its limit left dead (the search gives up)",
         file: "drivers/cf/src/lib.rs",
-        from: "        self.dead = false;\n        let card_ok",
-        to: "        let card_ok",
-        check: Check::Host(&["-p", "rp-drv-cf", "hangs_at_the_new_timing"]),
+        from: "                self.dead = false;
+                if self.fingerprint() != Ok(reference) {",
+        to: "                if self.fingerprint() != Ok(reference) {",
+        check: Check::Host(&["-p", "rp-drv-cf", "hangs_below_its_limit"]),
+    },
+    Mutant {
+        name: "CF tune: no margin over the measured limit",
+        file: "drivers/cf/src/timing.rs",
+        from: "pub const MARGIN_TENTHS: u32 = 15;",
+        to: "pub const MARGIN_TENTHS: u32 = 10;",
+        check: Check::Host(&["-p", "rp-drv-cf", "timing::tests"]),
     },
     Mutant {
         name: "CF timing: a slow card's speed code read as faster (250 ns as 200)",
@@ -369,13 +380,6 @@ pub const MUTANTS: &[Mutant] = &[
         from: "        1 => 250,",
         to: "        1 => 200,",
         check: Check::Host(&["-p", "rp-drv-cf", "every_speed_code_and_bad_input"]),
-    },
-    Mutant {
-        name: "CF timing: the data taken before the card's access time (the access check dropped)",
-        file: "drivers/cf/src/timing.rs",
-        from: "    if set + 2 + 3 * asst + 6 < access {",
-        to: "    if false {",
-        check: Check::Host(&["-p", "rp-drv-cf", "timing::tests"]),
     },
     Mutant {
         name: "V7: the Windows Mobile chase built with RetroPane's own jumps",

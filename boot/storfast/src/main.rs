@@ -6,14 +6,11 @@
 //!   picked; 4 MiB from LBA 0 by the 16-bit port, 32-bit window loads and
 //!   DMA from the window, each sector compared with the port's; 20 power
 //!   and reset cycles, each attach timed and 64 sectors compared.
-//! - **C4-C5, the card's own timing** (reminder R7, the owner's ruling A;
-//!   reads only): `CfCard::tune` to the card's CIS rating (the CF
-//!   specification's minimums with a 1.5x margin), each read path's speed
-//!   and every sector against the port's at Windows Mobile's timing; then,
-//!   for the record and never kept, the timing stepped shorter one field at
-//!   a time, 64 sectors three times a step, to the first that misreads (the
-//!   card's real margin). Windows Mobile's timing is put back at the end
-//!   and by the crash path.
+//! - **C4, the card's own timing** (reminder R7, the owner's ruling M;
+//!   reads only): `CfCard::tune` finds the shortest timing the card reads
+//!   right at and backs off 1.5x (timed), then each read path's speed and
+//!   every sector against the port's at Windows Mobile's timing. Windows
+//!   Mobile's timing is put back at the end and by the crash path.
 //! - **S1, SD reads by size** (item 1): every size class 2 blocks to 4 MiB
 //!   by DMA, each one DMA transfer and every byte checked; 1 MiB and 4 MiB
 //!   commands timed by DMA and by the FIFO.
@@ -435,6 +432,9 @@ mod image {
         fn write(&mut self, value: u32) {
             let _ = devices::set_cf_mem_timing(value);
         }
+    }
+
+    impl Socket {
         fn clk_ps(&mut self) -> u32 {
             // Rounded down: a cycle taken as shorter only lengthens the
             // timing computed from it.
@@ -465,7 +465,7 @@ mod image {
         (t, failed, bad)
     }
 
-    /// C4-C5: the card's own timing, then its real margin (reads only).
+    /// C4: the card's own timing, measured by `tune` (reads only).
     fn own_timing(cf: &mut Cf, buf: &mut [u8], reference: &[u8]) {
         let mut socket = Socket;
         let was = socket.read();
@@ -483,31 +483,35 @@ mod image {
             "C4 before, by {}: {before} KiB/s, {failed} failed, {bad} sectors differ",
             proven.name()
         );
-        let now = match cf.tune(&mut socket) {
+        let t0 = rt::ticks();
+        let tuned = cf.tune(&mut socket);
+        let tune_ms = ms(rt::ticks().wrapping_sub(t0));
+        let now = match tuned {
             Tuned::Applied {
                 was,
                 now,
-                rated_ns,
+                limit,
                 clamped,
             } => {
                 log!(
-                    "C4 tune: Applied, {was:#010x} -> {now:#010x} for {rated_ns} ns (clamped {clamped})"
+                    "C4 tune (measured, {tune_ms} ms): the card's limit {limit:#010x} ({} cycles, {} ns), with the margin {now:#010x} (clamped {clamped}); was {was:#010x}",
+                    Timing::from_mcmem(limit).cycle_cycles(),
+                    Timing::from_mcmem(limit).cycle_cycles() * clk_ps / 1000
                 );
                 now
             }
             Tuned::Refused {
                 was,
                 tried,
-                rated_ns,
                 card_ok,
             } => {
                 log!(
-                    "C4 tune: Refused, {tried:#010x} read differently for {rated_ns} ns; {was:#010x} kept, card reads as before {card_ok}"
+                    "C4 tune (measured, {tune_ms} ms): Refused, {tried:#010x} read differently; {was:#010x} kept, card reads as before {card_ok}"
                 );
                 return;
             }
             Tuned::Kept(why) => {
-                log!("C4 tune: Kept ({why})");
+                log!("C4 tune (measured, {tune_ms} ms): Kept ({why})");
                 return;
             }
         };
@@ -527,61 +531,6 @@ mod image {
             }
         }
         let _ = cf.set_read_path(proven);
-        margin(cf, &mut socket, now, buf, reference);
-        socket.write(now);
-    }
-
-    /// C5: from the tuned timing, each field shortened a step at a time
-    /// (strobe, then hold, then set-up), 64 sectors read three times a
-    /// step, to the first that misreads or fails: the card's real margin,
-    /// for the record (never kept: the ruling keeps the 1.5x margin).
-    fn margin(cf: &mut Cf, socket: &mut Socket, tuned: u32, buf: &mut [u8], reference: &[u8]) {
-        let high = tuned & !0xF_FFFF;
-        let mut t = Timing::from_mcmem(tuned);
-        let run = 64 * 512;
-        let fields: [fn(&mut Timing) -> bool; 3] = [
-            |t| t.asst.checked_sub(1).map(|v| t.asst = v).is_some(),
-            |t| t.hold.checked_sub(1).map(|v| t.hold = v).is_some(),
-            |t| t.set.checked_sub(1).map(|v| t.set = v).is_some(),
-        ];
-        let mut last_good = t;
-        'fields: for shorten in fields {
-            while shorten(&mut t) {
-                socket.write(high | t.mcmem());
-                let mut bad = 0;
-                let mut failed = 0;
-                for _ in 0..3 {
-                    let (_, f, b) = read_all(cf, &mut buf[..run], &reference[..run]);
-                    failed += f;
-                    bad += b;
-                }
-                let ns = t.cycle_cycles() * socket.clk_ps() / 1000;
-                log!(
-                    "C5 set {} strobe {} hold {}: {} cycles ({ns} ns), {failed} failed, {bad} sectors differ",
-                    t.set,
-                    t.asst,
-                    t.hold,
-                    t.cycle_cycles()
-                );
-                if failed + bad as u32 > 0 || cf.is_dead() {
-                    break 'fields;
-                }
-                last_good = t;
-            }
-            t = last_good;
-        }
-        socket.write(tuned);
-        if cf.is_dead() {
-            log!(
-                "C5 the card stopped answering at the step above (the loader takes it anew on return)"
-            );
-        }
-        log!(
-            "C5 shortest read right: {} cycles ({} ns) against the tuned {}",
-            last_good.cycle_cycles(),
-            last_good.cycle_cycles() * socket.clk_ps() / 1000,
-            Timing::from_mcmem(tuned).cycle_cycles()
-        );
     }
 
     // ---- SD -----------------------------------------------------------

@@ -59,6 +59,9 @@ struct Card {
     /// the card: its data reads come back wrong, or (`too_fast_hangs`) it
     /// stays busy.
     too_fast_below: u32,
+    /// The card misreads at exactly this timing (its fields, `MCMEM`'s
+    /// low 20 bits) and no other: a timing the search never passed.
+    garble_at: Option<u32>,
     too_fast_hangs: bool,
 }
 
@@ -132,6 +135,7 @@ impl Card {
             reset_at: None,
             mcmem: 0xA5A0_0000 | timing::Timing::WINDOWS_MOBILE.mcmem(),
             too_fast_below: 0,
+            garble_at: None,
             too_fast_hangs: false,
         }
     }
@@ -139,6 +143,7 @@ impl Card {
     /// The socket's timing is shorter than the card can follow.
     fn too_fast(&self) -> bool {
         timing::Timing::from_mcmem(self.mcmem).cycle_cycles() < self.too_fast_below
+            || self.garble_at == Some(self.mcmem & 0xF_FFFF)
     }
 
     /// A hardware reset: back to the power-on state (memory mode, idle).
@@ -938,9 +943,6 @@ impl SocketTiming for Socket {
         c.never_ready |= self.kills;
         self.writes.push(value);
     }
-    fn clk_ps(&mut self) -> u32 {
-        4808 // CLK_MEM at 208 MHz
-    }
 }
 
 fn socket(c: &Rc<RefCell<Card>>) -> Socket {
@@ -1005,125 +1007,155 @@ fn the_cis_rating_prefers_the_3v3_tuple() {
     assert_eq!(rated_card(Some(&two)).1.rated_ns(), Some(80));
     // A 3.3 V tuple with no speed leaves the 5 V one.
     assert_eq!(rated_card(Some(&[0x02, 0xD0])).1.rated_ns(), Some(250));
-    // No speed tuple at all: nothing to tune to, and nothing written.
+    // No speed tuple at all: no rating, and the card is still measured
+    // (ruling M doesn't need one).
     let (c, attr, common) = card_with_data();
     c.borrow_mut().cis = cis_for(0x04);
     c.borrow_mut().cis[0] = 0x00; // the DEVICE tuple's code turned to NULL
     c.borrow_mut().cis[2] = 0x00;
     let mut cf = init(&c, attr, common).ok().unwrap();
     assert_eq!(cf.rated_ns(), None);
-    let mut s = socket(&c);
-    assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
-    assert!(s.writes.is_empty());
+    assert!(matches!(cf.tune(&mut socket(&c)), Tuned::Applied { .. }));
     // An adopted card has no CIS read.
     let (_, attr, common) = card_with_data();
     assert_eq!(CfCard::adopt(attr, common, SECTORS).rated_ns(), None);
 }
 
-/// The owner's card: its own 80 ns timing (29 cycles, 1.87x Windows
-/// Mobile's 54), the register's other bits kept, the data the same.
-#[test]
-fn a_card_is_tuned_to_its_rating_when_it_reads_the_same() {
-    let (c, mut cf) = rated_card(Some(OC_80NS));
-    let was = c.borrow().mcmem;
+/// The search: from the timing the socket had, each field shortened to the
+/// card's limit, then the margin. A card that follows down to 20 cycles:
+/// the strobe to 0 (24), the hold to 4 (20), the set-up stays (19 fails).
+fn tuned(below: u32, hangs: bool) -> (Rc<RefCell<Card>>, CfCard<Attr, Common>, Socket, Tuned) {
+    let (c, cf) = rated_card(Some(OC_80NS));
+    c.borrow_mut().too_fast_below = below;
+    c.borrow_mut().too_fast_hangs = hangs;
+    let mut cf = cf;
     let mut s = socket(&c);
-    let now = 0xA5A0_0000 | timing::Timing::from_mcmem(0x0001_0282).mcmem();
-    assert_eq!(timing::Timing::from_mcmem(now).cycle_cycles(), 29);
+    let t = cf.tune(&mut s);
+    (c, cf, s, t)
+}
+
+fn cycles(reg: u32) -> u32 {
+    timing::Timing::from_mcmem(reg).cycle_cycles()
+}
+
+#[test]
+fn the_search_finds_the_cards_limit_and_backs_off_one_and_a_half_times() {
+    let (c, mut cf, s, t) = tuned(20, false);
+    let Tuned::Applied {
+        was,
+        now,
+        limit,
+        clamped,
+    } = t
+    else {
+        panic!("{t:?}");
+    };
+    assert_eq!(was, 0xA5A0_0000 | timing::Timing::WINDOWS_MOBILE.mcmem());
+    let lim = timing::Timing::from_mcmem(limit);
     assert_eq!(
-        cf.tune(&mut s),
-        Tuned::Applied {
-            was,
-            now,
-            rated_ns: 80,
-            clamped: false
+        lim,
+        timing::Timing {
+            set: 8,
+            asst: 0,
+            hold: 4
         }
     );
-    assert_eq!(s.writes, [now]);
+    assert_eq!(cycles(limit), 20);
+    assert_eq!(now & 0xF_FFFF, timing::with_margin(lim).0.mcmem());
+    assert_eq!(
+        (now >> 20, limit >> 20),
+        (0xA5A, 0xA5A),
+        "the other bits kept"
+    );
+    assert!(cycles(now) * 10 >= cycles(limit) * 15);
+    assert!(!clamped);
+    // The truth first: the slowest timing; the last write is the result.
+    assert_eq!(s.writes[0] & 0xF_FFFF, timing::Timing::SLOWEST.mcmem());
+    assert_eq!(s.writes.last(), Some(&now));
+    assert_eq!(c.borrow().mcmem, now);
+    assert!(!cf.is_dead());
     reads_right(&c, &mut cf);
-    // Tuned again: already there, nothing written.
-    assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
-    assert_eq!(s.writes, [now]);
 }
 
-/// A card slower than the socket can wait for gets the socket's slowest.
+/// A card that hangs when timed too fast (a wait runs out, which marks it
+/// dead) answers again at the last right step: the same limit, alive.
 #[test]
-fn a_card_slower_than_the_socket_gets_its_slowest() {
-    let (c, mut cf) = rated_card(Some(&[0x02, 0xD7, 0x0B])); // 1.0 us
-    let mut s = socket(&c);
-    let Tuned::Applied { now, clamped, .. } = cf.tune(&mut s) else {
-        panic!("not applied");
+fn a_card_that_hangs_below_its_limit_is_measured_the_same() {
+    let (c, mut cf, _, t) = tuned(20, true);
+    let Tuned::Applied { limit, .. } = t else {
+        panic!("{t:?}");
     };
-    assert!(clamped);
-    assert_eq!(now & 0xF_FFFF, timing::Timing::SLOWEST.mcmem());
-    assert_eq!(now >> 20, 0xA5A);
+    assert_eq!(cycles(limit), 20);
+    assert!(!cf.is_dead());
+    reads_right(&c, &mut cf);
 }
 
-/// A card that misreads at its rated timing: the old timing is put back
-/// and the card reads right at it.
+/// A card slower than Windows Mobile's timing (it misreads there): the
+/// search starts from the socket's slowest and the card gets more time.
 #[test]
-fn a_timing_the_card_misreads_is_refused_and_the_old_one_put_back() {
-    let (c, mut cf) = rated_card(Some(OC_80NS));
+fn a_card_slower_than_windows_mobiles_timing_gets_more_time() {
+    let (c, mut cf, _, t) = tuned(60, false);
+    let Tuned::Applied { now, limit, .. } = t else {
+        panic!("{t:?}");
+    };
+    assert_eq!(cycles(limit), 60);
+    assert!(cycles(now) >= 90);
+    assert!(cycles(now) > timing::Timing::WINDOWS_MOBILE.cycle_cycles());
+    reads_right(&c, &mut cf);
+}
+
+/// The final check fails (the card misreads at the margin's timing alone):
+/// the old timing goes back and the card reads right there.
+#[test]
+fn a_timing_the_final_check_refuses_is_put_back() {
+    let (c, cf) = rated_card(Some(OC_80NS));
+    let mut cf = cf;
+    let lim = timing::Timing {
+        set: 8,
+        asst: 0,
+        hold: 4,
+    };
+    c.borrow_mut().too_fast_below = 20;
+    c.borrow_mut().garble_at = Some(timing::with_margin(lim).0.mcmem());
     let was = c.borrow().mcmem;
-    c.borrow_mut().too_fast_below = 40;
     let mut s = socket(&c);
+    let t = cf.tune(&mut s);
     let Tuned::Refused {
-        was: kept,
-        tried,
-        card_ok,
-        ..
-    } = cf.tune(&mut s)
+        was: kept, card_ok, ..
+    } = t
     else {
-        panic!("not refused");
+        panic!("{t:?}");
     };
     assert_eq!((kept, card_ok), (was, true));
-    assert_eq!(s.writes, [tried, was]);
     assert_eq!(c.borrow().mcmem, was);
     assert!(!cf.is_dead());
     reads_right(&c, &mut cf);
 }
 
-/// A card that stops answering at its rated timing (a wait runs out, which
-/// marks it dead) answers again at the old one: it isn't left dead.
+/// A card that dies at the first change: the old timing back, the card
+/// dead (one timeout, then left for the loader to take anew), and a dead
+/// card isn't tuned again.
 #[test]
-fn a_card_that_hangs_at_the_new_timing_is_given_its_old_one_back() {
-    let (c, mut cf) = rated_card(Some(OC_80NS));
-    let was = c.borrow().mcmem;
-    c.borrow_mut().too_fast_below = 40;
-    c.borrow_mut().too_fast_hangs = true;
-    let mut s = socket(&c);
-    assert!(matches!(
-        cf.tune(&mut s),
-        Tuned::Refused { card_ok: true, .. }
-    ));
-    assert_eq!(c.borrow().mcmem, was);
-    assert!(!cf.is_dead());
-    reads_right(&c, &mut cf);
-}
-
-/// A card that dies during the check: the old timing back, the card dead
-/// (one timeout, then left for the loader to take anew).
-#[test]
-fn a_card_that_dies_during_the_check_is_left_dead_at_the_old_timing() {
+fn a_card_that_dies_is_left_dead_at_the_old_timing() {
     let (c, mut cf) = rated_card(Some(OC_80NS));
     let was = c.borrow().mcmem;
     let mut s = socket(&c);
     s.kills = true;
-    assert!(matches!(
-        cf.tune(&mut s),
-        Tuned::Refused { card_ok: false, .. }
-    ));
+    assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
     assert_eq!(c.borrow().mcmem, was);
     assert!(cf.is_dead());
-    // A dead card isn't tuned again.
     assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
 }
 
-/// A card that can't be read at the timing it has is never retimed.
+/// A card unreadable even at the slowest timing: nothing kept but the old
+/// timing.
 #[test]
-fn a_card_unreadable_before_is_not_retimed() {
+fn a_card_unreadable_at_the_slowest_keeps_the_old_timing() {
     let (c, mut cf) = rated_card(Some(OC_80NS));
     c.borrow_mut().never_ready = true;
+    let was = c.borrow().mcmem;
     let mut s = socket(&c);
     assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
-    assert!(s.writes.is_empty());
+    assert_eq!(c.borrow().mcmem, was);
+    assert_eq!(s.writes.last(), Some(&was));
 }
