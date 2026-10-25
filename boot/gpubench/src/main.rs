@@ -11979,7 +11979,10 @@ mod image {
             let px = |pic: &[u32], (x, y): (i32, i32)| gc2::pixel(self.f, pic, x, y);
             let (got, want) = (px(self.got, self.at), px(self.want, self.at));
             let (cx, cy) = gc2::in_tile(x, y);
-            write!(f, "({x},{y}) tile place ({cx},{cy}): got {got:x?} want {want:x?}")?;
+            write!(
+                f,
+                "({x},{y}) tile place ({cx},{cy}): got {got:x?} want {want:x?}"
+            )?;
             if let (Some(a), Some(b)) = (got, want) {
                 write!(f, " xor 0x{:x}", a ^ b)?;
             }
@@ -12012,7 +12015,13 @@ mod image {
     /// render: R30); whether it finished.
     fn poison_fill(g: &mut Rig, at: u32, c: u16) -> bool {
         let w = rp_image::need(
-            cmd::fill(Format::RGB565, at as usize, 960, (0, 0, 480, 640), u32::from(c)),
+            cmd::fill(
+                Format::RGB565,
+                at as usize,
+                960,
+                (0, 0, 480, 640),
+                u32::from(c),
+            ),
             "a 2D rectangle",
         );
         g.e.submit(&w).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok()
@@ -12128,7 +12137,9 @@ mod image {
             rt::check_in();
             match c {
                 Some(c) => {
-                    log!("  {name}: each render's target filled first with 0x{c:x} (in no reference)");
+                    log!(
+                        "  {name}: each render's target filled first with 0x{c:x} (in no reference)"
+                    );
                 }
                 None => log!("  {name}: every poison colour is in a reference: run without one"),
             }

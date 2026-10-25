@@ -1156,7 +1156,11 @@ fn gc2ad_soaks_every_kind_alternating_the_ring_and_one_full_layer_reversed() {
             .filter(|d| matches!(d.paint, Paint::Texture { .. }))
             .count();
         let (_, both) = fix_scene(b, 8, tex);
-        assert_eq!(both.iter().flatten().count(), 1 + 4 * rings + objects, "base {b}");
+        assert_eq!(
+            both.iter().flatten().count(),
+            1 + 4 * rings + objects,
+            "base {b}"
+        );
     }
     assert_eq!(
         FIXES[7],
@@ -1215,7 +1219,7 @@ fn suspects_read_the_right_pixels() {
     // Each 16-bit pixel holds its own index (low 16 bits).
     let n = (W * H) as usize;
     let pic16: std::vec::Vec<u32> = (0..n / 2)
-        .map(|i| (2 * i as u32 & 0xFFFF) | ((2 * i as u32 + 1) & 0xFFFF) << 16)
+        .map(|i| ((2 * i as u32) & 0xFFFF) | (((2 * i as u32 + 1) & 0xFFFF) << 16))
         .collect();
     let idx = |x: i32, y: i32| (y as u32 * W + x as u32) & 0xFFFF;
     for (x, y) in [(0, 0), (1, 0), (54, 415), (55, 415), (479, 639), (478, 639)] {
