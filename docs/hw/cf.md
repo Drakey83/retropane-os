@@ -195,9 +195,15 @@ Windows Mobile left on in an empty socket is left alone.
 `CfCard::tune` sets the socket's common-memory timing (`MCMEM1`) from the
 card's CIS rating with a 1.5x margin on the CF specification's minimums,
 kept only if the card reads the same at it (docs/research/storage-speed.md
-"The owner's decision"). Built and emulator-checked; not yet run on the
-X51v, and the loader doesn't call it yet (it will once `rp-storfast` C4-C5
-prove it on the owner's cards).
+"The owner's decision"). **Ruled M (the owner, 2026-10-24): measured, not
+rated:** the card's shortest right timing found by reads, then 1.5x it.
+**In the loader since 2026-10-24 (installed on the card):** every card is
+taken at Windows Mobile's timing, then measured at the next once-a-second
+pass (0.3 s after the attach at start-up; start-up still ready at 350 ms);
+reads use the card's own timing, writes Windows Mobile's (`write_at`);
+`cf` and `cf log` report it. On the X51v: the owner's 8 GB card and an old
+SanDisk SDCFB-1024 both limit 11 cycles, use 19 (Windows Mobile's 54), DMA
+reads 2.0x; re-measured on each insertion and swap.
 
 Not yet: the card's interrupt, I/O-mode cards (Wi-Fi, modem, Bluetooth
 CF cards).
