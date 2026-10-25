@@ -485,6 +485,23 @@ writes by DMA 1.6-2.2 MB/s, three soak rounds of 147 MB written and read back
 with 0 errors, the card swap and the lock switch right. Next: the loader
 calls `tune` at each attach (a loader change, its reinstall a watched step).
 
+**A second card, older and unmarked (2026-10-24, `rp-storfast` CF-only,
+`local/rp-storfast-oldcf.txt`): ~1 GB (2,001,888 sectors), its CIS rates 250
+ns (the CF specification's slowest class).** `tune` applied 86 cycles (the
+1.5x margin on 250 ns), every sector exact, but **DMA reads fell 5,817 ->
+3,983 KiB/s (0.68x)**: slower than Windows Mobile's table, which this card
+reads perfectly (54 cycles, 0 sectors differ). Its real margin: right to 26
+cycles (124 ns), wrong at 23 (3 commands failed, 192 sectors differ). So a
+card's 250 ns rating can be a floor class, not its speed (this card works at
+twice it). **For the owner (results, not decisions; ruling A as built takes
+the rating as the truth):** (A) as built: the rating with the margin, this
+card 0.68x; (A2) never slower than Windows Mobile's table unless the card
+fails the check there: this card stays 1.0x, a card that truly needs 250 ns
+still gets it (it would fail the check at the table); (M) measured at
+attach: the card's own limit found by reads (as C5 does, the fallback
+proven here: failed reads are caught), then 1.5x it: this card ~39 cycles
+(~1.3x Windows Mobile's), the 8 GB card ~26 (a little faster than its 29).
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the

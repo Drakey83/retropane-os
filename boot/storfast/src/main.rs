@@ -76,7 +76,9 @@ mod image {
     /// SD slot switches (docs/hw/sd.md) and the CF slot (docs/hw/cf.md).
     const SD_DETECT: u8 = 12;
     const SD_LOCK: u8 = 27;
-    const CF_DETECT: u8 = 13;
+    /// `RP_STORFAST_CF_ONLY`: the CF part alone (a card swapped in for a
+    /// quick check; the SD card isn't touched).
+    const CF_ONLY: bool = option_env!("RP_STORFAST_CF_ONLY").is_some();
     const CF_READY: u8 = 84;
 
     /// The test's folder and files: nothing outside them is written.
@@ -210,11 +212,18 @@ mod image {
         };
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
-        // The SD card first, for the quick-run file; its tests come last.
-        let card = sd_card(&mut gpio);
-        if gpio.read(CF_DETECT) {
-            log!("C0 no CF card (GPIO13 high): CF part skipped");
+        // The SD card first, for the quick-run file; its tests come last
+        // (the CF-only build skips them).
+        let card = if CF_ONLY { None } else { sd_card(&mut gpio) };
+        // The card is seen by the CPLD's bit, as the loader sees it: GPIO13
+        // sticks at "no card" after a swap (cf.md, 2026-10-16).
+        if !cpld.cf_present() {
+            log!("C0 no CF card (CPLD 0x04 bit 1): CF part skipped");
+            screen.say(format_args!("No CF card found."));
         } else {
+            screen.say(format_args!(
+                "CF card: reading it at each timing (about a minute)"
+            ));
             compact_flash(&mut gpio, &mut cpld, pool);
         }
         rt::check_in();
