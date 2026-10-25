@@ -42,7 +42,7 @@ mod image {
     #[path = "../isolate.rs"]
     mod isolate;
 
-    /// Run 4 instead of run 1 (`RP_TABENCH_ISOLATE=1`; device build
+    /// Run 6 instead of run 1 (`RP_TABENCH_ISOLATE=1`; device build
     /// `RP_TABENCH_ISOLATE=1 cargo xtask codegen-variant rp-tabench isolate`).
     const ISOLATE: bool = option_env!("RP_TABENCH_ISOLATE").is_some();
 
@@ -671,42 +671,17 @@ mod image {
         label(g.mem.0, &screen, [line, way.name()]);
     }
 
-    /// Run 4's label: "STEP n OF m" and the way.
+    /// Run 6's label: "STEP n OF m" and the way.
     fn step_line(g: &mut Rig, n: usize, m: usize, what: &str) {
         let mut buf = [0u8; 40];
         let len = {
             let mut l = Line(&mut buf, 0);
-            let _ = write!(l, "RUN 4, STEP {n} OF {m}:");
+            let _ = write!(l, "RUN 6, STEP {n} OF {m}:");
             l.1
         };
         let line = core::str::from_utf8(&buf[..len]).unwrap_or("STEP");
         let screen = g.screen;
         label(g.mem.0, &screen, [line, what]);
-    }
-
-    /// Ten pixels run 2 logs: the middles of the first five quads (on the
-    /// screen), then five fixed places.
-    fn isolate_samples(xy: &[u32]) -> [(u32, u32); 10] {
-        let mut s = [
-            (4, 4),
-            (240, 320),
-            (475, 4),
-            (4, 635),
-            (475, 635),
-            (4, 4),
-            (240, 320),
-            (475, 4),
-            (4, 635),
-            (475, 635),
-        ];
-        for (k, p) in xy[..5].iter().enumerate() {
-            let (x, y) = unpack(*p);
-            s[k] = (
-                (x + 8).clamp(0, W as i32 - 1) as u32,
-                (y + 8).clamp(0, H as i32 - 1) as u32,
-            );
-        }
-        s
     }
 
     /// The pool's pieces: binner scratch, the reference picture, the DMA
@@ -836,11 +811,13 @@ mod image {
             g.dma.is_some()
         );
         if ISOLATE {
-            log!("RUN 4 (audit C79): the TA stream bisected from rp-glesfeat's to ours");
-            let (right, all) = isolate::run4(&mut g);
+            log!(
+                "RUN 6 (audit C81): why TA scenes' renders hang, the memory manager's set-up and the waits"
+            );
+            let (right, all) = isolate::run6(&mut g);
             let (rh, th) = (g.render_hangs, g.ta_hangs);
             log!(
-                "{MARKER}: DONE - run 4: {right} of {all} TA frames right, {rh} renders past 2 s, {th} TA frames never done"
+                "{MARKER}: DONE - run 6: {right} of {all} TA frames like the binner's, {rh} renders past 2 s, {th} TA frames never done"
             );
             finish(g, screen, clk0);
         }

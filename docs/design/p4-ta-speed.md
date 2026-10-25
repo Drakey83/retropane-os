@@ -307,6 +307,18 @@ equal to the binner's), the speed table in `docs/hw/2700g.md` "P4", **45 of
 our lists at 100 / 1,000 / 5,000) is answered; ticking it is the owner's
 call.
 
+**The owner, 2026-10-25: P4 stays partial until the hangs are understood.**
+**Run 6 built 2026-10-25** (the isolate variant; audit C81): runs 2-5's
+hangs came where the memory manager was set up again before every frame
+(run 5: 45 of 150; run 4, once a way: 0 of 24). Run 6, under run 5's
+conditions, on its two most hang-prone scenes (100 quads of 16 x 16 as one
+list; 1,000 of 64 x 64 Dell's way), ten frames a way: the set-up once a
+way, every frame with a reset, every frame without one, every frame with
+1 ms before the feed, every frame with 1 ms before the render, once a way
+with 1 ms before the render. Each frame against the binner's picture; each
+hang logged with the core's status and the TA's region array beside a
+frame that drew. It waits for after tonight's soak (the owner), R40.
+
 
 ## The choices for the owner
 

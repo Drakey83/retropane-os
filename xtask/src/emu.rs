@@ -13515,7 +13515,7 @@ pub fn boot_loader_tabench(root: &Path) -> Result<(), String> {
     boot_loader_tabench_isolate(root)
 }
 
-/// Run 4 of rp-tabench (`RP_TABENCH_ISOLATE=1`, audit C79: the stream bisected): every way's
+/// Run 6 of rp-tabench (`RP_TABENCH_ISOLATE=1`, audit C81: the render hangs): every way's
 /// binner reference draws on the modelled 3D core; every TA frame times
 /// out (the fork has no TA) and the run moves on; it returns on a button.
 fn boot_loader_tabench_isolate(root: &Path) -> Result<(), String> {
@@ -13548,22 +13548,26 @@ fn boot_loader_tabench_isolate(root: &Path) -> Result<(), String> {
     let log = output
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
-        .ok_or("tabench run 4: never came back to the loader after the button press")?;
+        .ok_or("tabench run 6: never came back to the loader after the button press")?;
     if crashed(log) || log.contains("did not return") {
-        return Err(format!("tabench run 4: didn't return cleanly:{log}"));
+        return Err(format!("tabench run 6: didn't return cleanly:{log}"));
     }
-    let references = log
-        .matches("  the binner's reference: rendered in ")
+    let scenes = log
+        .lines()
+        .filter(|l| l.starts_with("SCENE ") && !l.ends_with("rendered in 0 us"))
         .count();
-    let ways = log.lines().filter(|l| l.starts_with("WAY ")).count();
-    let done = "RETROPANE-TABENCH: DONE - run 4: 0 of 24 TA frames right";
-    if ways != 8 || references != 1 || !log.contains(done) || log.contains("render past 2 s") {
+    let ways = log
+        .lines()
+        .filter(|l| l.contains(" like the binner's, ") && l.contains(" hung; "))
+        .count();
+    let done = "RETROPANE-TABENCH: DONE - run 6: 0 of 120 TA frames like the binner's";
+    if scenes != 2 || ways != 12 || !log.contains(done) || log.contains("HUNG") {
         return Err(format!(
-            "tabench run 4: {ways} ways, {references} references drawn (8 and 1 wanted, every TA frame timed out, no render past 2 s):{log}"
+            "tabench run 6: {scenes} scenes' references drawn, {ways} ways run (2 and 12 wanted, every TA frame timed out, no render hung):{log}"
         ));
     }
     eprintln!(
-        "    tabench run 4 OK: the binner's reference drew on the modelled 3D core; all 24 TA frames of the 8 ways timed out safely (the fork has no TA)"
+        "    tabench run 6 OK: both scenes' binner references drew on the modelled 3D core; all 120 TA frames of the 12 ways timed out safely (the fork has no TA)"
     );
     Ok(())
 }
