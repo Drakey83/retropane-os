@@ -42,7 +42,7 @@ mod image {
     #[path = "../isolate.rs"]
     mod isolate;
 
-    /// Run 2 instead of run 1 (`RP_TABENCH_ISOLATE=1`; device build
+    /// Run 3 instead of run 1 (`RP_TABENCH_ISOLATE=1`; device build
     /// `RP_TABENCH_ISOLATE=1 cargo xtask codegen-variant rp-tabench isolate`).
     const ISOLATE: bool = option_env!("RP_TABENCH_ISOLATE").is_some();
 
@@ -637,12 +637,12 @@ mod image {
         label(g.mem.0, &screen, [line, way.name()]);
     }
 
-    /// Run 2's label: "STEP n OF m" and the way.
+    /// Run 3's label: "STEP n OF m" and the way.
     fn step_line(g: &mut Rig, n: usize, m: usize, what: &str) {
         let mut buf = [0u8; 40];
         let len = {
             let mut l = Line(&mut buf, 0);
-            let _ = write!(l, "RUN 2, STEP {n} OF {m}:");
+            let _ = write!(l, "RUN 3, STEP {n} OF {m}:");
             l.1
         };
         let line = core::str::from_utf8(&buf[..len]).unwrap_or("STEP");
@@ -802,11 +802,11 @@ mod image {
             g.dma.is_some()
         );
         if ISOLATE {
-            log!("RUN 2 (audit C79): why run 1's TA scenes drew wrong, one change at a time");
+            log!("RUN 3 (audit C79): the core reset before the memory manager's set-up");
             let (right, all) = isolate::run(&mut g);
             let (rh, th) = (g.render_hangs, g.ta_hangs);
             log!(
-                "{MARKER}: DONE - run 2: {right} of {all} TA frames drawn like the binner, {rh} renders past 2 s, {th} TA frames never done"
+                "{MARKER}: DONE - run 3: {right} of {all} TA frames drawn like the binner, {rh} renders past 2 s, {th} TA frames never done"
             );
             finish(g, screen, clk0);
         }

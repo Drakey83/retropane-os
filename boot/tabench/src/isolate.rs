@@ -1,7 +1,12 @@
-//! Run 2 (`RP_TABENCH_ISOLATE=1`, audit C79): why run 1's TA scenes drew
-//! wrong. One scene, 100 textured quads of 16 x 16; each way starts from
-//! `rp-glesfeat`'s conditions (where TA scenes drew right: G, G2, M) and
-//! changes one thing toward run 1, or adds a wait. Each way: the CPU
+//! Run 3 (`RP_TABENCH_ISOLATE=1`, audit C79): run 2 (commit d7036ba3)
+//! found every way wrong, the control included, the TA's lists and objects
+//! outside the parameter memory it was set up with; both runs set the
+//! memory manager up again without a core reset, where our renderer and
+//! `rp-glesfeat` reset first. Run 3 tests that: the control with no reset
+//! (run 2's), with a core reset before the manager's set-up once, and
+//! before every frame; run 1's conditions both ways; the control with the
+//! reset and `0x85C` bit 7 off (R37). One scene, 100 textured quads of 16
+//! x 16. Each way: the CPU
 //! binner's picture of the same scene under the same conditions first (the
 //! reference: the binner draws right, run 1), then five TA frames, each
 //! counted word by word against it, the first's TA region array summed
@@ -82,89 +87,73 @@ struct Way {
     wait_us: u32,
     /// `0x85C`'s scene-end bit off for the body (audit C78, R37).
     bit7_off: bool,
+    /// A core reset before the manager's set-up: never (runs 1 and 2),
+    /// once for the way, or before every frame.
+    reset: Reset,
 }
 
-const WAYS: [Way; 9] = [
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reset {
+    Never,
+    Once,
+    EachFrame,
+}
+
+/// The control: `rp-glesfeat`'s conditions.
+const CONTROL: Way = Way {
+    name: "",
+    target32: true,
+    places: GLESFEAT,
+    pm_each: false,
+    tex64: false,
+    wait_us: 0,
+    bit7_off: false,
+    reset: Reset::Never,
+};
+
+/// Run 1's conditions.
+const RUN1_WAY: Way = Way {
+    name: "",
+    target32: false,
+    places: RUN1,
+    pm_each: true,
+    tex64: true,
+    wait_us: 0,
+    bit7_off: false,
+    reset: Reset::Never,
+};
+
+const WAYS: [Way; 6] = [
     Way {
-        name: "CONTROL: GLESFEAT'S",
-        target32: true,
-        places: GLESFEAT,
+        name: "CONTROL, NO RESET (RUN 2)",
+        ..CONTROL
+    },
+    Way {
+        name: "CONTROL, CORE RESET FIRST",
+        reset: Reset::Once,
+        ..CONTROL
+    },
+    Way {
+        name: "CONTROL, RESET EACH FRAME",
+        reset: Reset::EachFrame,
+        ..CONTROL
+    },
+    Way {
+        name: "RUN 1'S, CORE RESET FIRST",
+        reset: Reset::Once,
         pm_each: false,
-        tex64: false,
-        wait_us: 0,
-        bit7_off: false,
+        ..RUN1_WAY
     },
     Way {
-        name: "16-BIT TARGET",
-        target32: false,
-        places: GLESFEAT,
-        pm_each: false,
-        tex64: false,
-        wait_us: 0,
-        bit7_off: false,
+        name: "RUN 1'S, RESET EACH FRAME",
+        reset: Reset::EachFrame,
+        ..RUN1_WAY
     },
     Way {
-        name: "RUN 1'S MEMORY PLACES",
-        target32: true,
-        places: RUN1,
-        pm_each: false,
-        tex64: false,
-        wait_us: 0,
-        bit7_off: false,
-    },
-    Way {
-        name: "MANAGER SET UP EACH FRAME",
-        target32: true,
-        places: GLESFEAT,
-        pm_each: true,
-        tex64: false,
-        wait_us: 0,
-        bit7_off: false,
-    },
-    Way {
-        name: "64 X 64 TEXTURE",
-        target32: true,
-        places: GLESFEAT,
-        pm_each: false,
-        tex64: true,
-        wait_us: 0,
-        bit7_off: false,
-    },
-    Way {
-        name: "CONTROL + 1 MS WAIT",
-        target32: true,
-        places: GLESFEAT,
-        pm_each: false,
-        tex64: false,
-        wait_us: 1_000,
-        bit7_off: false,
-    },
-    Way {
-        name: "RUN 1 AS IT WAS",
-        target32: false,
-        places: RUN1,
-        pm_each: true,
-        tex64: true,
-        wait_us: 0,
-        bit7_off: false,
-    },
-    Way {
-        name: "RUN 1 + 1 MS WAIT",
-        target32: false,
-        places: RUN1,
-        pm_each: true,
-        tex64: true,
-        wait_us: 1_000,
-        bit7_off: false,
-    },
-    Way {
-        name: "CONTROL, 85C BIT 7 OFF",
-        target32: true,
-        places: GLESFEAT,
-        pm_each: false,
-        tex64: false,
-        wait_us: 0,
+        name: "CONTROL, RESET, BIT 7 OFF",
+        reset: Reset::Once,
         bit7_off: true,
+        ..CONTROL
     },
 ];
 
@@ -322,6 +311,19 @@ impl Rig {
     }
 }
 
+impl Rig {
+    /// Whether tile 0's list, and the object its first pointer names
+    /// (counted from the parameter memory, as the 3D stage reads it), lie
+    /// inside the parameter memory at `p`.
+    fn inside(&self, p: Places) -> (bool, bool) {
+        let range = p.pm..p.pm + p.pm_size;
+        let list = self.mem.load(p.ta_regions as usize + 4).unwrap_or(0) & m3::ADDR_MASK;
+        let w = self.mem.load(list as usize).unwrap_or(m3::END);
+        let obj = p.pm.wrapping_add(4 * (w & 0x001F_FFFF));
+        (range.contains(&list), w != m3::END && range.contains(&obj))
+    }
+}
+
 fn words_of(pic: Picture) -> usize {
     (pic.stride * u32::from(pic.h) / 4) as usize
 }
@@ -341,7 +343,7 @@ fn small_texture(mem: &mut super::Vram, buf: &mut [u32]) -> Option<Texture> {
     upload(&mut pool, mem, 0, format::RGB565, texels)
 }
 
-/// Run 2. Returns (TA frames drawn like the binner, TA frames in all).
+/// Run 3. Returns (TA frames drawn like the binner, TA frames in all).
 pub(super) fn run(g: &mut Rig) -> (u32, u32) {
     let Some(small) = small_texture(&mut g.mem, g.staging) else {
         log!("  no room for the 8 x 8 texture");
@@ -429,11 +431,17 @@ pub(super) fn run(g: &mut Rig) -> (u32, u32) {
             clip: ta::clip(W, H),
         };
         let clear = ta::clear_stream(W, H);
+        if way.reset != Reset::Never {
+            reset_core(&mut g.regs, rt::delay_us);
+        }
         let ready = g.pm_init_at(way.places);
         let mut line = [0u32; FRAMES];
         for (k, off) in line.iter_mut().enumerate() {
             rt::check_in();
-            if way.pm_each && k > 0 {
+            if way.reset == Reset::EachFrame && k > 0 {
+                reset_core(&mut g.regs, rt::delay_us);
+            }
+            if (way.pm_each || way.reset == Reset::EachFrame) && k > 0 {
                 let _ = g.pm_init_at(way.places);
             }
             let _ = ta::clear(g.mem.0, &ta_layout);
@@ -459,6 +467,11 @@ pub(super) fn run(g: &mut Rig) -> (u32, u32) {
             if k == 0 {
                 g.log_ta_tiles(way.places);
             }
+            let (list_in, obj_in) = g.inside(way.places);
+            log!(
+                "    frame {}: first list inside the parameter memory {list_in}, its first object {obj_in}",
+                k + 1
+            );
             rt::delay_us(way.wait_us);
             let r = g.render_at(&from_ta, target, way.places);
             if r == 0 {

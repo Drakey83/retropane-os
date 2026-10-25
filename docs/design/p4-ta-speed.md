@@ -272,6 +272,17 @@ its first listed tile's list and object words, ten pixels against the
 binner's. `emu-tabench` runs it after run 1: the nine references draw on
 the modelled 3D core, every TA frame times out safely.
 
+**Run 2 on the X51v (2026-10-25): every way wrong, the control too**
+(`docs/hw/2700g.md` "P4"): the TA's lists and objects lay outside the
+parameter memory it was set up with, likely because the manager was set
+up again without a core reset. **Run 3 built 2026-10-25** (the same
+variant, commit after d7036ba3; run 2's way list is in d7036ba3): six
+ways: the control with no reset (run 2's), with a core reset before the
+manager's set-up once and before every frame; run 1's conditions both
+ways; the control with the reset and `0x85C` bit 7 off (R37). Every
+frame logs whether tile 0's list and its first object lie inside the
+parameter memory. `emu-tabench` passes it.
+
 ## The choices for the owner
 
 **Q1. Where the TA code lives.**
