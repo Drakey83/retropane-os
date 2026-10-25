@@ -6539,6 +6539,20 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "gpubench {name}: G4a's rectangles should draw as on the device:{log}"
             ));
         }
+        // A part that couldn't get its memory logs and skips itself; on the
+        // emulator that is always the image's own sizing bug (GC2Q's part C
+        // ran nothing on the X51v, and this check passed it).
+        for short in [
+            "not enough SDRAM",
+            "the plan holds too many",
+            "no 2700G memory for",
+        ] {
+            if let Some(l) = log.lines().find(|l| l.contains(short)) {
+                return Err(format!(
+                    "gpubench {name}: a part ran short of memory and skipped itself ({l}):{log}"
+                ));
+            }
+        }
         eprintln!("    gpubench {name} OK: every stage ran and it returned to the loader");
     }
     if card_file(&sd, "other.txt")? != other {

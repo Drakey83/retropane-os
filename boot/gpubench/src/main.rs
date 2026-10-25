@@ -7898,6 +7898,11 @@ mod image {
     /// GC2K's worst at 133.25 / 1; part C, divide 1 above 133.25. Unattended.
     const GC2_WRITEOUT: bool = option_env!("RP_GPUBENCH_GC2_WRITEOUT").is_some();
 
+    /// GC2Q's part C alone (`RP_GPUBENCH_GC2Q_C_ONLY`, with
+    /// `RP_GPUBENCH_GC2_WRITEOUT`): the rerun after part C's sizing fix,
+    /// parts A and B already answered on the X51v (`gpubench-0093`).
+    const GC2Q_C_ONLY: bool = option_env!("RP_GPUBENCH_GC2Q_C_ONLY").is_some();
+
     /// Run GC2P (`RP_GPUBENCH_GC2_FAST`, the owner, 2026-10-24: GC2O stopped
     /// for taking hours, "always make the tests run as fast as possible"):
     /// GC2O's question in [`gc2::FAST_WAYS`] for [`gc2::FAST_ROUNDS`] rounds
@@ -9262,8 +9267,13 @@ mod image {
             used += gc2::words(k) as usize;
         }
         let largest = GC2_KINDS.map(gc2::words).max().unwrap_or(0) as usize;
-        // GC2K: its ways' references after the first read's buffer.
-        let patch = if GC2_FAST {
+        // The references a run's soaks keep after the first read's buffer
+        // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
+        // was left out and ran nothing on the X51v (the emulator check now
+        // fails a run that logs a shortage).
+        let patch = if GC2_WRITEOUT {
+            gc2::ABOVE_SCENES.len().max(gc2::CONFIRM_SCENES.len()) * gc2::words(gc2::FT2) as usize
+        } else if GC2_FAST {
             gc2::FAST_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_ORDER {
             gc2::ORDER_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -11195,7 +11205,7 @@ mod image {
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         let (first, rest) = first.split_at_mut(words);
         if rest.len() < n_scenes * words {
-            log!("  GC2O: not enough SDRAM for the references: nothing run");
+            log!("  {name}: not enough SDRAM for the references: nothing run");
             return;
         }
         let set = |g: &mut Rig, r: &mut Renderer, sc: usize, o: u8| {
@@ -12487,8 +12497,12 @@ mod image {
             together3(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if GC2 {
-            if GC2_WRITEOUT {
+            if GC2_WRITEOUT && !GC2Q_C_ONLY {
                 ft3_writeout(&mut g);
+            } else if GC2Q_C_ONLY {
+                log!(
+                    "GC2Q parts A and B: skipped (RP_GPUBENCH_GC2Q_C_ONLY: they ran on the X51v, gpubench-0093)"
+                );
             }
             content_map2(&mut g);
             if GC2_FAST {
