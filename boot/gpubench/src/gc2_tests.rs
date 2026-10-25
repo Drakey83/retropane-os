@@ -237,6 +237,50 @@ fn gc2l_sweeps_the_corner_over_rows_and_tiles_and_moves_the_target() {
 }
 
 #[test]
+fn gc2o_runs_every_scene_in_the_new_orders_and_the_first_ten_in_all_three() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    // The scenes: GC2K's worst, rows 597 and 598, the mirror, six kinds,
+    // the 32 sweep ways.
+    assert_eq!(ORDER_SCENES[0], Scene::Sweep(0));
+    assert_eq!(order_corner(ORDER_SCENES[1]).1, 597);
+    assert_eq!(order_corner(ORDER_SCENES[2]).1, 598);
+    assert!(
+        ORDER_SCENES[4..10]
+            .iter()
+            .all(|s| matches!(*s, Scene::Kind(k) if fits_inside(k)))
+    );
+    assert!((0..32).all(|j| ORDER_SCENES[10 + j] == Scene::Sweep(SWEEP_ROWS_AT + j)));
+    // The mirror: GC2K's worst left to right, its patch's corner on the
+    // right, off every seam.
+    assert_eq!(MIRRORED_QUAD.0 + MIRRORED_QUAD.2, 480 - SWEEP[0].quad.0);
+    assert_eq!(order_corner(Scene::Mirrored), (437, 605));
+    assert!(order_corner(Scene::Mirrored).0 % 8 != 0);
+    assert_ne!(
+        order_scene(Scene::Mirrored, t),
+        order_scene(Scene::Sweep(0), t)
+    );
+    // Every scene once in each of its orders, never twice.
+    for s in 0..42 {
+        let orders: std::vec::Vec<u8> = ORDER_WAYS
+            .iter()
+            .filter(|w| w.0 == s)
+            .map(|w| w.1)
+            .collect();
+        let want: &[u8] = if s < 10 {
+            &[ROWS, REVERSED, COLUMNS_REVERSED]
+        } else {
+            &[REVERSED, COLUMNS_REVERSED]
+        };
+        assert_eq!(orders, want, "scene {s}");
+    }
+}
+
+#[test]
 fn the_model_table_is_what_the_model_renders() {
     let got = model_hashes();
     if got != MODEL {

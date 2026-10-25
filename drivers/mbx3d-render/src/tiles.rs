@@ -140,6 +140,14 @@ impl Tiles {
         self.bits.iter().all(|&w| w == 0)
     }
 
+    /// The tile numbers in, a `cols`-wide grid of `rows` read row by row
+    /// from the top, each row from its right end.
+    pub fn iter_cols_rev(&self, cols: usize, rows: usize) -> impl Iterator<Item = usize> + '_ {
+        (0..rows)
+            .flat_map(move |y| (0..cols).rev().map(move |x| y * cols + x))
+            .filter(move |&k| self.has(k))
+    }
+
     /// The tile numbers in, descending (the reverse of [`Self::iter`]).
     pub fn iter_rev(&self) -> impl Iterator<Item = usize> + '_ {
         self.bits.iter().enumerate().rev().flat_map(|(i, &w)| {
@@ -190,6 +198,24 @@ mod tests {
         let mut all = Tiles::new();
         all.add_first(2400);
         assert!(all.iter_rev().eq((0..2400).rev()));
+    }
+
+    #[test]
+    fn columns_reversed_keeps_rows_top_down_and_reads_each_from_the_right() {
+        // A 60 x 40 grid: row 0 from tile 59 down to 0, then row 1 from 119.
+        let mut all = Tiles::new();
+        all.add_first(2400);
+        let order: [usize; 4] = [59, 58, 57, 56];
+        assert!(all.iter_cols_rev(60, 40).take(4).eq(order));
+        assert_eq!(all.iter_cols_rev(60, 40).nth(60), Some(119));
+        assert_eq!(all.iter_cols_rev(60, 40).last(), Some(2340));
+        assert_eq!(all.iter_cols_rev(60, 40).count(), 2400);
+        // Only the tiles in, each once.
+        let mut t = Tiles::new();
+        for k in [0, 59, 60, 61, 2399] {
+            t.bits[k / 32] |= 1 << (k % 32);
+        }
+        assert!(t.iter_cols_rev(60, 40).eq([59, 0, 61, 60, 2399]));
     }
 
     #[test]

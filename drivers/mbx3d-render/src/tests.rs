@@ -344,6 +344,12 @@ fn reversed_tiles_draw_the_same_picture_and_list_every_tile() {
     assert_eq!(words(&g), a);
     assert_eq!(rev.tiles, fwd.tiles);
     assert_eq!(rev.tiles, 60 * 40);
+    // Columns reversed (rows still from the top): the same again.
+    g.r.set_tile_order(TileOrder::ColumnsReversed);
+    g.r.invalidate_all();
+    let cols = g.frame();
+    assert_eq!(words(&g), a);
+    assert_eq!(cols.tiles, 60 * 40);
     // Back to row order: the same again.
     g.r.set_tiles_reversed(false);
     g.r.invalidate_all();

@@ -1038,10 +1038,23 @@ pub struct Renderer {
     irq: bool,
     /// `irq` changed since the enables were last written.
     irq_stale: bool,
-    /// The region array lists the tiles in reverse (the core draws them in
-    /// the array's order): a measurement's choice (`rp-gpubench` run GC2L),
-    /// row order otherwise.
-    reverse_tiles: bool,
+    /// The order the region array lists the tiles in (the core draws them
+    /// in the array's order): a measurement's choice (`rp-gpubench` runs
+    /// GC2L, GC2O), row order otherwise.
+    tile_order: TileOrder,
+}
+
+/// The order the tiles are listed for the core in (the picture is the same
+/// in each; when each tile is written differs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TileOrder {
+    /// Row by row from the top, each row from the left (the default).
+    #[default]
+    Rows,
+    /// The last tile first: row by row from the bottom, each from the right.
+    Reversed,
+    /// Row by row from the top, each row from the right.
+    ColumnsReversed,
 }
 
 impl Renderer {
@@ -1105,7 +1118,7 @@ impl Renderer {
             clock_policy: ClockPolicy::KeepAll,
             irq: false,
             irq_stale: false,
-            reverse_tiles: false,
+            tile_order: TileOrder::Rows,
         })
     }
 
@@ -1113,7 +1126,16 @@ impl Renderer {
     /// in row order (the default). The picture is the same either way; the
     /// order the core draws its tiles in is what changes.
     pub fn set_tiles_reversed(&mut self, on: bool) {
-        self.reverse_tiles = on;
+        self.set_tile_order(if on {
+            TileOrder::Reversed
+        } else {
+            TileOrder::Rows
+        });
+    }
+
+    /// The order the tiles are listed for the core in ([`TileOrder`]).
+    pub fn set_tile_order(&mut self, order: TileOrder) {
+        self.tile_order = order;
     }
 
     /// Gives the region array back to `pool`.
@@ -1556,15 +1578,21 @@ impl Renderer {
         let (mut nb, mut flushed, mut n, mut lists) = (0usize, 0u32, 0u32, 0u32);
         let (mut quads, mut cost) = (0, 0);
         let (mut row, mut row_mask) = (u32::MAX, 0u64);
-        let (mut fwd, mut rev) = if self.reverse_tiles {
-            (None, Some(todo.iter_rev()))
-        } else {
-            (Some(todo.iter()), None)
-        };
-        let mut next = || match (&mut fwd, &mut rev) {
-            (Some(f), _) => f.next(),
-            (_, Some(r)) => r.next(),
-            _ => None,
+        let (cols, rows) = (self.cols as usize, self.rows as usize);
+        let (mut fwd, mut rev, mut cols_rev) = (None, None, None);
+        match self.tile_order {
+            TileOrder::Rows => fwd = Some(todo.iter()),
+            TileOrder::Reversed => rev = Some(todo.iter_rev()),
+            TileOrder::ColumnsReversed => cols_rev = Some(todo.iter_cols_rev(cols, rows)),
+        }
+        let mut next = || {
+            if let Some(f) = &mut fwd {
+                f.next()
+            } else if let Some(r) = &mut rev {
+                r.next()
+            } else {
+                cols_rev.as_mut().and_then(Iterator::next)
+            }
         };
         while let Some(k) = next() {
             let (x, y) = (k as u32 % self.cols, k as u32 / self.cols);
