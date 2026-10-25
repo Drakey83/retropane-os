@@ -547,6 +547,7 @@ pub const CURED_BASE: [Scene; 7] = [
 /// drawn first under it (GC2K's patch at 133.25, 9 of 200 to 0). `None`
 /// when the scene has no free slot for the layer.
 #[must_use]
+#[inline(never)]
 pub fn cure((bg, slots): (u32, [Option<Draw>; 3])) -> Option<(u32, [Option<Draw>; 3])> {
     if slots[2].is_some() {
         return None;
@@ -932,6 +933,7 @@ pub const fn lmtim_with(base: u32, add: [u32; 5]) -> Option<u32> {
 
 /// Scene `s`'s background and slots.
 #[must_use]
+#[inline(never)]
 pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
     match s {
         Scene::Sweep(w) => sweep_scene(w, t),

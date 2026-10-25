@@ -149,8 +149,14 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "gpubench GC2Y: the cure without the hidden layer",
         file: "boot/gpubench/src/gc2.rs",
-        from: "        [Some(flat(HIDDEN_LAYER, false)), centre(slots[0]), centre(slots[1])],",
-        to: "        [centre(slots[0]), centre(slots[1]), None],",
+        from: "            Some(flat(HIDDEN_LAYER, false)),
+            centre(slots[0]),
+            centre(slots[1]),
+",
+        to: "            centre(slots[0]),
+            centre(slots[1]),
+            None,
+",
         check: Check::Host(&[
             "-p",
             "rp-gpubench",
