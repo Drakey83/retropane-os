@@ -1,12 +1,10 @@
 # ADR-0037: Files to the PC: MTP for Windows (and Linux), drives kept for every other computer
 
-- **Status:** Proposed (2026-10-25). The owner chose the direction ("do
-  your proposed fix", then ruling A: MTP built now, "the right way, not
-  the fast way", reminder R43). The concrete design below (2026-10-25,
-  after reading the MTP 1.1 specification and the USB Still Image Capture
-  Device Definition in full) waits for the owner's votes Q1-Q5 before any
-  building. Its first layer for the loader is built (ADR-0014 rule 3: the
-  PC's view of the boot files).
+- **Status:** Accepted (2026-10-25, the owner: "I vote the defaults for
+  Q1-Q5 (Q1 A, Q2 A, Q3 A, Q4 "Axim X51v", Q5 the PDA icon). Start
+  building steps 1-5; ask me before anything runs on the Axim"). Not yet
+  built; nothing works until proven on the X51v. Its first layer for the
+  loader is built (ADR-0014 rule 3: the PC's view of the boot files).
 - **Date:** 2026-10-25
 - Reminders: R43 (this project), R41 (Windows shows a refused delete as
   done), R21 (the internal flash as a drive), R36 (the PDA icon), ADR-0014
@@ -187,6 +185,14 @@ Each line: what the source says, then what it means here.
    computer as: Automatic / Portable device / Drive" overrides it in the
    OS proper (the loader: `cargo xtask drive mtp|msc|auto`). The wait is
    measured on Windows 11 and a Mac before it is fixed (not guessed).
+   **Iterated 2026-10-25 (rule 0, the owner asked whether the defaults
+   follow it):** a fixed wait is the slow, copied way. The device also
+   offers Microsoft OS 2.0 descriptors (a BOS descriptor, `bcdUSB`
+   0x0201), whose descriptor-set request only Windows sends; if the
+   first run shows Windows sends it on every connection (not only the
+   first), the device knows at enumeration that the PC is Windows and a
+   Mac's drive needs no wait at all. The session wait then stays only as
+   the safety net for hosts that send neither signal.
 5. **Boot files (Q2).** Default: listed, protection 0x0001 (read-only),
    Hidden 1, System 1. Delete, overwrite, rename or move of one is
    answered **Object_WriteProtected (0x200D) at once**, before any data
@@ -208,9 +214,10 @@ Each line: what the source says, then what it means here.
    a handle (store, the entry's directory cluster and slot, its first
    cluster), never reused within the session [MTP 3.4.1], kept across
    moves [MTP D.2.25]. **Its size comes from a survey of the owner's
-   cards** (`rp_fat::survey`, file and folder counts) times four, in
-   static memory, never on the loader's stack (at 73% of its line). A
-   full table answers Device_Busy and logs it, never a crash.
+   cards** (`rp_fat::survey`, file and folder counts) with the margin
+   set from those numbers and written down with them (no guessed
+   multiplier), in static memory, never on the loader's stack (at 73% of
+   its line). A full table answers Device_Busy and logs it, never a crash.
 8. **Persistent unique IDs** (128 bits, the same in every session):
    volume serial, the object's first cluster, its creation time to 10 ms,
    and the store number. Stable across renames and same-card moves (the
@@ -235,8 +242,10 @@ Each line: what the source says, then what it means here.
     GetPartialObject, DeleteObject, SendObjectInfo, SendObject,
     MoveObject, CopyObject, GetObjectPropsSupported, GetObjectPropDesc,
     GetObjectPropValue, SetObjectPropValue (name only), GetObjectPropList
-    (depth 0 and 1; deeper answers Specification_By_Depth_Unsupported, as
-    the specification allows), SetObjectPropList, SendObjectPropList,
+    (every depth, streamed: one pass counts, a second sends, so a whole
+    folder tree costs one round trip and no RAM beyond the handles;
+    Android stops at depth 1, which would have been a copy),
+    SetObjectPropList, SendObjectPropList,
     GetDevicePropDesc, GetDevicePropValue, SetDevicePropValue (the
     initiator's version string; the friendly name, Q4).
     **Not offered:** PowerDown, ResetDevice's power side, SelfTest,
@@ -300,13 +309,14 @@ Each line: what the source says, then what it means here.
 | Speed | MTP slower than mass storage (per-object round trips) | Same DMA path as our drive; folder listing in one round trip | Ratchet: MTP vs drive MB/s; list time for 1,000 files |
 | Moves on the card | Often copy + delete through the PC | MoveObject = one directory change (instant, no data copied); CopyObject on the device, no USB traffic | Emulator timing; X51v: move a 20 MB file |
 | Stale Explorer | Common (missed events) | Every device-side change and card swap pushed as an event | Emulator: `put` while browsing, card out and in |
+| Thumbnails | Android shows picture thumbnails in Explorer | **Behind Android for now** (GetThumb not offered until a picture decoder is in the storage service, R44): an open gap, not a choice to keep | R44 |
 | Macs | Need a separate app | Get the drive automatically (Q1) | Mac test (owner's or borrowed), else the emulator host without MTP |
 | Names | Device names may be illegal on the card | Legal-name pattern published; checked on the device too | Host tests (every FAT/exFAT forbidden character, 255-character names) |
 
 ## Votes for the owner
 
-Each built with the default **(default)**, so a different vote changes a
-constant, not the design.
+**Voted 2026-10-25: every default (Q1 A, Q2 A, Q3 A, Q4 "Axim X51v", Q5
+the PDA icon).** The alternatives are kept below as the record.
 
 - **Q1. How a computer gets MTP or a drive.**
   - **A (default): MTP first, the drive if no MTP session comes.** The MTP
