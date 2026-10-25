@@ -625,9 +625,12 @@ pub const BUDGETS: &[Budget] = &[
     // run FT2 and GC2's machinery in one image, 128,680 B measured.
     // Zeroed RAM 24 -> 32 KiB the same day: the stack 16 -> 24 KiB (runs
     // GC2H, GC2H2 and GC3 near 80% of 16), 28,408 B measured.
+    // Ratcheted 140 -> 170 KiB on 2026-10-24 (test image): runs GC2O-GC2Q
+    // (the tile orders, the one-pass check, the write-out search and the
+    // climb above 133.25 / 1); GC2Q's variant 152,952 B measured, + ~10%.
     Budget {
         image: "rp-gpubench",
-        max_load: 140 * 1024,
+        max_load: 170 * 1024,
         max_zero: 32 * 1024,
         device: OnDevice::Returns,
     },

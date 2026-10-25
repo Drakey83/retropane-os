@@ -318,6 +318,24 @@ fn gc2p_keeps_the_scenes_that_went_wrong_and_every_order_where_it_matters() {
 }
 
 #[test]
+fn gc2q_climbs_from_133_25_to_149_50_below_the_memorys_failure() {
+    let mhz: std::vec::Vec<u32> = ABOVE_PLL.iter().map(|&(m, n)| 13_000 * m / n).collect();
+    assert_eq!(mhz, [133_250, 139_750, 146_250, 149_500]);
+    // Rising, below GC2H2's 156 MHz, the highest GC2H's 149.50.
+    assert!(mhz.windows(2).all(|w| w[0] < w[1]));
+    assert!(mhz.iter().all(|&k| k < 156_000));
+    // Every 16-bit kind, once, in row order.
+    for k in RUN.filter(|&k| fits_inside(k)) {
+        assert!(ABOVE_SCENES.contains(&Scene::Kind(k)), "{}", KINDS[k].0);
+    }
+    assert_eq!(ABOVE_WAYS.len(), ABOVE_SCENES.len());
+    assert!(ABOVE_WAYS.iter().enumerate().all(|(i, w)| *w == (i, ROWS)));
+    // The confirmation: GC2K's worst, row order.
+    assert_eq!(order_corner(CONFIRM_SCENES[0]), (43, 605));
+    assert_eq!(CONFIRM_WAYS, [(0, ROWS)]);
+}
+
+#[test]
 fn the_model_table_is_what_the_model_renders() {
     let got = model_hashes();
     if got != MODEL {

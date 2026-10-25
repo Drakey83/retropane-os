@@ -623,6 +623,36 @@ pub const FAST_WAYS: [(usize, u8); 39] = {
 /// wrong expected in 150, so 0 of 150 in a new order means something.
 pub const FAST_ROUNDS: u32 = 150;
 
+/// Run GC2Q's climb above 133.25 MHz at divide 1 (the owner, 2026-10-24:
+/// "i really wanted to see what overclock higher then 133 would do"): the
+/// core PLL's (M, N) for 133.25 (the reference), 139.75, 146.25 and 149.50
+/// MHz (13 MHz x M / N), every one below 156 MHz, where the local memory
+/// failed (run GC2H2), 149.50 the highest it ran right (GC2H).
+pub const ABOVE_PLL: [(u32, u32); 4] = [(41, 4), (43, 4), (45, 4), (23, 2)];
+
+/// The climb's scenes: GC2's six 16-bit kinds, each in row order.
+pub const ABOVE_SCENES: [Scene; 6] = [
+    Scene::Kind(0),
+    Scene::Kind(1),
+    Scene::Kind(FT2),
+    Scene::Kind(5),
+    Scene::Kind(6),
+    Scene::Kind(7),
+];
+pub const ABOVE_WAYS: [(usize, u8); 6] = [
+    (0, ROWS),
+    (1, ROWS),
+    (2, ROWS),
+    (3, ROWS),
+    (4, ROWS),
+    (5, ROWS),
+];
+
+/// GC2Q's confirmation scene for a write-out setting the search finds:
+/// GC2K's worst in row order (about 1 render in 10 wrong at 133.25 / 1).
+pub const CONFIRM_SCENES: [Scene; 1] = [Scene::Sweep(0)];
+pub const CONFIRM_WAYS: [(usize, u8); 1] = [(0, ROWS)];
+
 /// Scene `s`'s background and slots.
 #[must_use]
 pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {

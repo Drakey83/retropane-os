@@ -48,6 +48,28 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "gpubench GC2Q: the climb up to the memory's failing 156 MHz",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const ABOVE_PLL: [(u32, u32); 4] = [(41, 4), (43, 4), (45, 4), (23, 2)];",
+        to: "pub const ABOVE_PLL: [(u32, u32); 4] = [(41, 4), (43, 4), (45, 4), (12, 1)];",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2q_climbs_from_133_25_to_149_50_below_the_memorys_failure",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2Q: FT2's kind left out of the climb",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    Scene::Kind(FT2),\n    Scene::Kind(5),",
+        to: "    Scene::Kind(0),\n    Scene::Kind(5),",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2q_climbs_from_133_25_to_149_50_below_the_memorys_failure",
+        ]),
+    },
+    Mutant {
         name: "hal-mem: the one-pass check misses the last word",
         file: "hal/mem/src/lib.rs",
         from: "        differ += u32::from(v != w);",
