@@ -1,8 +1,9 @@
 # P4: the tile accelerator against CPU-built lists (decided 2026-10-24)
 
 **Status: decided by the owner 2026-10-24 (Q1 A, Q2 A, Q3 the synthetic
-quads); not built: it waits for the divide-1 work to finish with
-`rp-glesfeat` (Q1).** The gate's P4 (phase 5):
+quads); the owner's go to build it now, 2026-10-25 (the divide-1 work
+moved to `rp-gpubench`, so moving the TA code out of `rp-glesfeat` no
+longer collides). Rule 0's design below, before any code.** The gate's P4 (phase 5):
 "the TA's speed against the CPU-built lists at 100 / 1,000 / 5,000 quads".
 ADR-0026 D1 already chose **both** (C): the interface on our CPU-built
 objects and lists, games on the tile accelerator. P4 measures where the
@@ -42,6 +43,83 @@ for each: the CPU's time building the frame, the TA's or the binner's
 time, the render time, the parameter memory used. A TA that hangs is
 recorded as such, and the run moves to the next way (C53: the TA counts
 stay as far as they got).
+
+## Rule 0: what Dell does, and the better ways this run measures (2026-10-25)
+
+**Dell's way (a finding):** the GLES driver's transform stage writes every
+vertex into the TA window with the CPU, word by word, 7 words a textured,
+coloured vertex (`TEX_VERTEX_WORDS`), a state block before each draw. The
+bus into the 2700G is measured at 30-33 MB/s for CPU stores and the PXA's
+DMA alike (2700g.md: a 600 KiB screen in 18.5 and 20.0 ms). A frame of
+5,000 textured quads as Dell feeds it (a strip of 4 vertices, 29 words a
+quad, plus state) is ~580 KB: **~17 ms of bus a frame, all of it CPU
+time**, before any binning or rendering: at 30 fps that's half the frame
+budget (the port-fps rule) gone to copying.
+
+**The ways measured beside it, each a lever Dell never pulled:**
+
+1. **Feed by DMA, the CPU free:** vertices built in SDRAM (or the PXA's
+   internal SRAM, as E1e staged textures) and moved by the DMA controller
+   in pieces no larger than the FIFO takes, the FIFO level (ADR-0026 T8:
+   shared with the 2D engine) checked between pieces. The CPU builds the
+   next batch meanwhile. Unknown: whether the TA window accepts DMA bursts
+   (it's a register window; 32-byte bursts reached local memory in BX).
+2. **Fewer words a vertex:** the state block's mask chooses the vertex
+   fields (`0x10000053` untextured, `0x10000057` textured with a colour);
+   a sprite tinted white needs no colour word, so 6 words instead of 7
+   (-14%); x and y as the only changing words across a strip of quads
+   that share z, 1/w is a further test of which fields the TA defaults.
+   Measured: the bytes a frame and the picture right.
+3. **State once per batch, not per draw** (ADR-0026 rule 3): one state
+   block for every quad sharing a texture, the strips back to back.
+4. **Our CPU binner where it wins** (ADR-0026 D1 C, rule 4): a static
+   scene's objects and lists are written once and reused (rule 1: only
+   changed tiles re-rendered), so its bus cost a frame can be ~0; the run
+   logs the first frame and a repeated frame separately, which the TA (a
+   fresh stream every frame) can't match.
+
+**Why ours should win:** at 5,000 quads the TA path's cost is the bus, not
+the binning; DMA takes it off the CPU entirely and the smaller format cuts
+it, so the CPU time a frame should fall from ~17 ms (Dell's) toward the
+time to build the vertex batch in SDRAM; the crossover against the CPU
+binner is then where the binner's per-tile writes outgrow the TA's
+stream, measured, not assumed. Each way's picture is checked against the
+reference: a faster feed that draws wrong is no win.
+
+**ADRs checked (ADR before code):** ADR-0026 rule 2 (the CPU sleeps while
+the GPU works: the run times the CPU's own work separately from the TA's
+and the render's); rule 3 (state once: way 3); rule 4 (both paths, each
+where it wins: this run finds where); rule 5 (one owner: a test image,
+under the loader, as every 3D test); D3 (no interrupt from the 3D core,
+T2: the TA's done bit is polled with a timeout, as `through_ta` does);
+T8 (one FIFO with the 2D engine: the 2D engine idle during the run, the
+level checked before each piece). ADR-0035 (the 3D clock: Windows
+Mobile's, 99.67 / 2, as decided for P4's first run).
+
+## The build, in order
+
+1. **Move the TA path into `rp-mbx3d`** (Q1 A): `through_ta`'s steps (the
+   buffers zeroed, the start table, the stream and end-window writes with
+   their offsets counting on, the scene end, the done poll, the region
+   array handed to the 3D stage) as a driver function taking the stream
+   as a slice of any length, sent in FIFO-sized pieces; `rp-glesfeat`
+   then calls it (one copy). Host-tested against `rp-glesfeat`'s proven
+   word sequence (the same writes for its four draws).
+2. **The streams:** textured quads as strips, state once per batch, the
+   6-word vertex (no colour) as a second form; host-tested word by word.
+3. **The CPU binner** (test-only): a quad's tiles from its bounding box
+   (8 x 16 tiles), objects through `rp-mbx3d-render`'s encoder, a list per
+   tile, the region array; host-tested against the model of the 3D core
+   (`rp-mbx3d-render::model`): its pictures equal the TA reference's.
+4. **`rp-tabench`:** at 99.67 / 2 into a 16-bit target, 100 / 1,000 /
+   5,000 quads of 16 x 16 and of 64 x 64, five frames each: the CPU
+   binner (first frame and a repeated frame), the TA fed by CPU stores
+   with 7-word vertices (Dell's), with 6-word vertices, and by DMA; CPU
+   time, TA time, render time, bytes, parameter memory, each picture
+   checked against the reference; a TA hang recorded and the run moved on
+   (Q2 A); the step on screen from the first moment; the log on the card.
+5. **Emulator check and mutants**, then the owner's go (attended for its
+   first minutes: a TA hang may need a reset).
 
 ## The choices for the owner
 
