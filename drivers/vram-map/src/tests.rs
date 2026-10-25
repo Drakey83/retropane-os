@@ -133,3 +133,22 @@ fn the_test_images_map_is_frozen() {
     );
     assert_eq!(bench32::SCREEN_BYTES, 480 * 640 * 4);
 }
+
+#[test]
+fn screen_0_alone_in_the_safe_region() {
+    // C71's class fix (ADR-0034 amendment P): screen 0 at 0x0 inside the
+    // safe region, the video band right after, nothing else below its end.
+    assert_eq!(SCREENS[0].at, 0);
+    assert!(SCREENS[0].end() <= SAFE_END);
+    assert_eq!(PLANES.at, SCREENS[0].end());
+    assert!(SAFE_END - SCREENS[0].end() >= 96 * 1024, "the video band's room");
+    assert!(safe_holds_only(&MAP, 2));
+    assert!(MAP[2..].iter().all(|g| g.at >= SAFE_END));
+    // The check at its edge: a region starting one word below the end is
+    // refused, one at the end accepted.
+    let edge = |at| [SCREENS[0], r("x", at, 4, 4)];
+    assert!(!safe_holds_only(&edge(SAFE_END - 4), 1));
+    assert!(safe_holds_only(&edge(SAFE_END), 1));
+    // G19's measured edge: harmless to 0xAE000, wrong from 0xB6000.
+    assert_eq!(SAFE_END, 0xAE000);
+}
