@@ -57,6 +57,12 @@ pub const SCALE: bool = option_env!("RP_BLEND_SCALE").is_some();
 /// back and the underrun bits are logged.
 pub const FILTER: bool = option_env!("RP_BLEND_FILTER").is_some();
 
+/// Run P9e (`RP_BLEND_FILTER2`, 2026-10-25, after P9d's photos): three
+/// shrink filters' strengths at 3/4 size on the stripes and on the
+/// wallpaper (`blendtest::FILTER2_STEPS`), for the owner's eye; then the
+/// default scale (bit 27) at half height. Watched.
+pub const FILTER2: bool = option_env!("RP_BLEND_FILTER2").is_some();
+
 /// One scaler step: its name, what to expect, the source (x, y, w, h)
 /// inside the 480 x 640 wallpaper, and the output (w, h, x, y, taps).
 pub struct ScaleStep {
@@ -295,16 +301,30 @@ mod image {
     /// through the scaler, the label plane over it, each step held
     /// [`super::stage_seconds`] with its under/overrun polls counted; the
     /// filter's fifteen registers read back and logged.
-    fn filter_steps<B: RegisterBus>(d: &mut Display<B>, vram: &mut [u8]) {
+    fn filter_steps<B: RegisterBus>(
+        d: &mut Display<B>,
+        vram: &mut [u8],
+        work: &mut [u8],
+        (steps, run): (&[blendtest::FilterStep], &str),
+    ) {
         use rp_drv_mbx_display::layers::{VideoFormat, VideoPlane};
         use rp_drv_mbx_display::{PixelFormat, Plane, ack_events, event};
-        blendtest::draw_filter_pattern(vram);
         d.regs().write32(layers::reg::BGCOLOR, 0x0000_6020);
-        let n = blendtest::FILTER_STEPS.len();
-        for (i, step) in blendtest::FILTER_STEPS.iter().enumerate() {
+        let n = steps.len();
+        // What sits at FILTER_AT: the pattern or stage A's wallpaper.
+        let mut shown_wallpaper = None;
+        for (i, step) in steps.iter().enumerate() {
+            if shown_wallpaper != Some(step.wallpaper) {
+                if step.wallpaper {
+                    blendtest::draw(Stage::A, vram, work);
+                } else {
+                    blendtest::draw_filter_pattern(vram);
+                }
+                shown_wallpaper = Some(step.wallpaper);
+            }
             let mut head = [0u8; 32];
             let mut l = Buf(&mut head, 0);
-            let _ = write!(l, "STEP {} OF {n} (P9D)", i + 1);
+            let _ = write!(l, "STEP {} OF {n} ({run})", i + 1);
             let len = l.1;
             let head = core::str::from_utf8(&head[..len]).unwrap_or("STEP");
             label(vram, [head, step.name, step.expect]);
@@ -412,8 +432,13 @@ mod image {
             let us = rt::ticks().wrapping_sub(t) / 13 * 4;
             let _ = writeln!(RunLog, "draw {}: {us} us", stage.letter());
         }
-        if super::FILTER {
-            filter_steps(&mut d, vram);
+        if super::FILTER || super::FILTER2 {
+            let plan = if super::FILTER2 {
+                (&blendtest::FILTER2_STEPS[..], "P9E")
+            } else {
+                (&blendtest::FILTER_STEPS[..], "P9D")
+            };
+            filter_steps(&mut d, vram, work, plan);
             before.restore(d.regs());
             record(d.regs(), "restored");
             rp_image::finish()

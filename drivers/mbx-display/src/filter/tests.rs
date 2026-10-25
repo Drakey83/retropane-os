@@ -76,6 +76,40 @@ fn fitted_shrinks_with_a_wider_kernel_and_enlarges_as_at_one_to_one() {
 }
 
 #[test]
+fn stretched_sets_sum_to_one_and_widen_with_the_stretch() {
+    // 4/3 is fitted's at 3/4 size; 2 is fitted's at half size.
+    assert_eq!(
+        Filter::stretched(4, 3),
+        Filter::fitted((480, 640), (360, 480))
+    );
+    assert_eq!(
+        Filter::stretched(2, 1),
+        Filter::fitted((480, 640), (240, 320))
+    );
+    let mut centre = i8::MAX;
+    for (num, den) in [(4, 3), (5, 3), (2, 1)] {
+        let f = Filter::stretched(num, den);
+        assert_eq!(phase_sums(&f.horizontal, 8), [ONE; 8], "{num}/{den}");
+        assert_eq!(phase_sums(&f.vertical, 4), [ONE; 8], "{num}/{den}");
+        // Wider: the centre weight falls as the stretch grows.
+        assert!(f.horizontal[H_LEN - 1] < centre, "{num}/{den}");
+        centre = f.horizontal[H_LEN - 1];
+    }
+}
+
+#[test]
+#[should_panic(expected = "shrinks past 2:1")]
+fn stretched_refuses_past_two() {
+    let _ = Filter::stretched(7, 3);
+}
+
+#[test]
+#[should_panic(expected = "a stretch under 1")]
+fn stretched_refuses_under_one() {
+    let _ = Filter::stretched(2, 3);
+}
+
+#[test]
 #[should_panic(expected = "shrinks past 2:1")]
 fn fitted_refuses_past_two_to_one() {
     let _ = Filter::fitted((480, 640), (239, 640));

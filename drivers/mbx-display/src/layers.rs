@@ -152,6 +152,8 @@ pub enum ScalerFilter {
     Fitted,
     /// A given set (P9d's proofs of the format).
     Given(Filter),
+    /// [`Filter::stretched`] by `num / den` (P9e's candidates).
+    Stretched(u8, u8),
 }
 
 impl Scale {
@@ -338,6 +340,26 @@ impl VideoPlane {
             )
             .words(),
             ScalerFilter::Given(f) => f.words(),
+            ScalerFilter::Stretched(n, d) => Filter::stretched(u32::from(n), u32::from(d)).words(),
+        }
+    }
+
+    /// The scale for showing this plane `out_w` x `out_h` at (`x`, `y`)
+    /// as the X51v showed right (P9d, 2026-10-25): four vertical taps, and
+    /// `SPOCTRL` bit 27 whenever the vertical scaler runs (without it a
+    /// vertical shrink tears the picture, step 10; the owner's ruling,
+    /// 2026-10-24: keep bit 27 where the look needs it); mbxfb's filter
+    /// until a fitted set is proven at every scale (C73).
+    #[must_use]
+    pub fn scale_to(&self, out_w: u16, out_h: u16, x: u16, y: u16) -> Scale {
+        Scale {
+            out_w,
+            out_h,
+            x,
+            y,
+            taps: 4,
+            ur_c: out_h != 0 && out_h != self.height,
+            filter: ScalerFilter::Mbxfb,
         }
     }
 
@@ -825,5 +847,24 @@ mod tests {
         for (i, &o) in TOUCHED.iter().enumerate() {
             assert_eq!(bus.value(o), 0x8000_0000 | i as u32);
         }
+    }
+
+    #[test]
+    fn scale_to_sets_bit_27_whenever_the_height_scales() {
+        let v = VideoPlane::new(VideoFormat::Uyvy, 480, 640, 0x40_0000);
+        // Height changed (down or up): bit 27 on, four taps.
+        for out_h in [320, 480, 639, 641, 1280] {
+            let s = v.scale_to(480, out_h, 0, 0);
+            assert!(s.ur_c && s.taps == 4, "{out_h}");
+        }
+        // Height kept (as is, or 0 = the source's): off, width alone.
+        for (out_w, out_h) in [(240, 640), (240, 0), (480, 640), (0, 0)] {
+            assert!(!v.scale_to(out_w, out_h, 0, 0).ur_c, "{out_w} {out_h}");
+        }
+        assert_eq!(v.scale_to(240, 320, 1, 2).filter, ScalerFilter::Mbxfb);
+        assert_eq!(
+            (v.scale_to(240, 320, 1, 2).x, v.scale_to(240, 320, 1, 2).y),
+            (1, 2)
+        );
     }
 }

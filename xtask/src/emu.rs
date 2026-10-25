@@ -43,9 +43,22 @@ const WSL_QEMU_DEFAULT: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
 /// that came back crashed (quality audit C38: one test for every check, so
 /// a new kind of crash line can't slip past some of them).
 fn crashed(log: &str) -> bool {
-    ["FAULT", "PANIC", "SETUP-FAIL", "[the image crashed"]
-        .iter()
-        .any(|m| log.contains(m))
+    CRASH_MARKS.iter().any(|m| log.contains(m))
+}
+
+/// What a crash leaves in a run log. Plain substrings: an image's own
+/// text must never hold one (P9e's label "DEFAULT" read as a crash,
+/// 2026-10-25; [`labels_hold_no_crash_mark`] checks the step tables).
+const CRASH_MARKS: [&str; 4] = ["FAULT", "PANIC", "SETUP-FAIL", "[the image crashed"];
+
+#[test]
+fn labels_hold_no_crash_mark() {
+    use rp_drv_mbx_display::blendtest::{FILTER_STEPS, FILTER2_STEPS};
+    for s in FILTER_STEPS.iter().chain(&FILTER2_STEPS) {
+        for text in [s.name, s.expect] {
+            assert!(!crashed(text), "{text:?} reads as a crash");
+        }
+    }
 }
 
 /// The WSL emulator binary: `RETROPANE_WSL_QEMU` (a fork branch built in
@@ -2507,7 +2520,19 @@ pub fn boot_loader_blend_scale(root: &Path) -> Result<(), String> {
 /// on the last step only; the display put back. The pictures are the
 /// owner's eye on the X51v.
 pub fn boot_loader_blend_filter(root: &Path) -> Result<(), String> {
-    use rp_drv_mbx_display::blendtest::{self, FILTER_STEPS, GDRCTRL_DOUBLE};
+    use rp_drv_mbx_display::blendtest::{FILTER_STEPS, FILTER2_STEPS};
+    blend_filter_run(root, "RP_BLEND_FILTER", &FILTER_STEPS, "P9d")?;
+    blend_filter_run(root, "RP_BLEND_FILTER2", &FILTER2_STEPS, "P9e")
+}
+
+/// One of [`boot_loader_blend_filter`]'s runs: `flag`'s image, `steps`.
+fn blend_filter_run(
+    root: &Path,
+    flag: &str,
+    steps: &[rp_drv_mbx_display::blendtest::FilterStep],
+    name: &str,
+) -> Result<(), String> {
+    use rp_drv_mbx_display::blendtest::{self, GDRCTRL_DOUBLE};
     use rp_drv_mbx_display::layers::{Layer, VideoFormat, VideoPlane, reg};
     let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
@@ -2516,7 +2541,7 @@ pub fn boot_loader_blend_filter(root: &Path) -> Result<(), String> {
     let bin = variant_image_with(
         root,
         "rp-blend",
-        ("RP_BLEND_FILTER", "1"),
+        (flag, "1"),
         Some(("RP_BLEND_SECONDS", "2")),
     )?;
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
@@ -2538,9 +2563,9 @@ pub fn boot_loader_blend_filter(root: &Path) -> Result<(), String> {
     let log = output
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
-        .ok_or("blend P9d: no run log after the image returned")?;
+        .ok_or_else(|| format!("blend {name}: no run log after the image returned"))?;
     if crashed(log) {
-        return Err(format!("blend P9d: crashed:{log}"));
+        return Err(format!("blend {name}: crashed:{log}"));
     }
     let scaler: Vec<&str> = log
         .lines()
@@ -2550,16 +2575,16 @@ pub fn boot_loader_blend_filter(root: &Path) -> Result<(), String> {
         .lines()
         .filter(|l| l.starts_with("P9d filter:"))
         .collect();
-    if scaler.len() != FILTER_STEPS.len() || filter.len() != FILTER_STEPS.len() {
+    if scaler.len() != steps.len() || filter.len() != steps.len() {
         return Err(format!(
-            "blend P9d: want {} scaler and filter lines, got {} and {}:{log}",
-            FILTER_STEPS.len(),
+            "blend {name}: want {} scaler and filter lines, got {} and {}:{log}",
+            steps.len(),
             scaler.len(),
             filter.len()
         ));
     }
     let mut filters_checked = 0;
-    for (i, step) in FILTER_STEPS.iter().enumerate() {
+    for (i, step) in steps.iter().enumerate() {
         let (_, _, w, h) = step.src;
         let mut v = VideoPlane::new(VideoFormat::Uyvy, w, h, blendtest::FILTER_AT);
         v.stride = blendtest::W * 2;
@@ -2574,7 +2599,7 @@ pub fn boot_loader_blend_filter(root: &Path) -> Result<(), String> {
         );
         if scaler[i].trim() != expect {
             return Err(format!(
-                "blend P9d step {}: read back {:?}, wrote {expect:?}",
+                "blend {name} step {}: read back {:?}, wrote {expect:?}",
                 i + 1,
                 scaler[i]
             ));
@@ -2583,11 +2608,11 @@ pub fn boot_loader_blend_filter(root: &Path) -> Result<(), String> {
             .trim()
             .strip_prefix("P9d filter:")
             .and_then(|l| l.split_once("; GDRCTRL "))
-            .ok_or_else(|| format!("blend P9d step {}: {:?}", i + 1, filter[i]))?;
+            .ok_or_else(|| format!("blend {name} step {}: {:?}", i + 1, filter[i]))?;
         let gdr = u32::from_str_radix(gdr.trim(), 16).map_err(|e| format!("{e}: {gdr}"))?;
         if (gdr & GDRCTRL_DOUBLE == GDRCTRL_DOUBLE) != step.double {
             return Err(format!(
-                "blend P9d step {}: GDRCTRL {gdr:08X}, doubling wanted {}",
+                "blend {name} step {}: GDRCTRL {gdr:08X}, doubling wanted {}",
                 i + 1,
                 step.double
             ));
@@ -2600,21 +2625,21 @@ pub fn boot_loader_blend_filter(root: &Path) -> Result<(), String> {
                 .collect();
             if words.split_whitespace().collect::<Vec<_>>() != want {
                 return Err(format!(
-                    "blend P9d step {}: filter read back {words:?}, wrote {want:?}",
+                    "blend {name} step {}: filter read back {words:?}, wrote {want:?}",
                     i + 1
                 ));
             }
             filters_checked += 1;
         }
     }
-    let steps = log.lines().filter(|l| l.starts_with("P9d step ")).count();
-    if steps != FILTER_STEPS.len() || !log.contains("restored:") {
+    let held = log.lines().filter(|l| l.starts_with("P9d step ")).count();
+    if held != steps.len() || !log.contains("restored:") {
         return Err(format!(
-            "blend P9d: {steps} steps held, or nothing put back:{log}"
+            "blend {name}: {held} steps held, or nothing put back:{log}"
         ));
     }
     eprintln!(
-        "    blend P9d OK: {steps} steps up, the scaler and {filters_checked} filters read back as computed, the doubling on the last step only, put back (the pictures: the X51v, watched)"
+        "    blend {name} OK: {held} steps up, the scaler and {filters_checked} filters read back as computed, the doubling only where set, put back (the pictures: the X51v, watched)"
     );
     Ok(())
 }

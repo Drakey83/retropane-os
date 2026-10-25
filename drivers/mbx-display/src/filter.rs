@@ -114,20 +114,38 @@ impl Filter {
     /// hold the stretched kernel; [`crate::layers`] refuses it too).
     #[must_use]
     pub fn fitted(src: (u32, u32), out: (u32, u32)) -> Self {
+        assert!(
+            src.0 > 0 && src.1 > 0 && out.0 > 0 && out.1 > 0,
+            "a size of 0"
+        );
+        let stretch = |s: u32, o: u32| if o < s { (s, o) } else { (1, 1) };
+        Self::built(stretch(src.0, out.0), stretch(src.1, out.1), out.1 < src.1)
+    }
+
+    /// For shrinking, the kernels stretched by `num / den` (1 to 2)
+    /// whatever the scale: horizontally the cubic, vertically the tent. A
+    /// wider stretch removes finer detail (no stripes) at some blur; P9e
+    /// shows the owner 4/3, 5/3 and 2 at 3/4 size, where
+    /// [`Self::fitted`]'s 4/3 left the one-pixel stripes visible (P9d).
+    ///
+    /// # Panics
+    /// If the stretch is under 1 or over 2 (the taps can't hold it).
+    #[must_use]
+    pub fn stretched(num: u32, den: u32) -> Self {
+        Self::built((num, den), (num, den), true)
+    }
+
+    /// Both half kernels from each direction's stretch (`num / den`).
+    fn built(h: (u32, u32), v: (u32, u32), v_tent: bool) -> Self {
         let mut f = Self {
             vertical: [0; V_LEN],
             horizontal: [0; H_LEN],
         };
-        let h = half(H_LEN - 1, src.0, out.0, Kernel::Keys);
+        let h = half(H_LEN - 1, h, Kernel::Keys);
         let v = half(
             V_LEN - 1,
-            src.1,
-            out.1,
-            if out.1 < src.1 {
-                Kernel::Tent
-            } else {
-                Kernel::Keys
-            },
+            v,
+            if v_tent { Kernel::Tent } else { Kernel::Keys },
         );
         for (d, s) in f.horizontal.iter_mut().zip(h) {
             *d = s;
@@ -197,14 +215,14 @@ fn shape(kernel: Kernel, t: i128, den: i128) -> i128 {
 /// out` when shrinking and scaled by `out / src` so it still sums to one;
 /// then each phase made to sum to exactly 64 (its weights scaled to 64 and
 /// rounded, the remainder put on its largest weight).
-fn half(n: usize, src: u32, out: u32, kernel: Kernel) -> [i8; H_LEN] {
-    assert!(src > 0 && out > 0, "a size of 0");
-    assert!(src <= 2 * out, "shrinks past 2:1");
-    let (num, den_s) = if out < src {
-        (i128::from(out), i128::from(src))
-    } else {
-        (1, 1)
-    };
+fn half(n: usize, (stretch_num, stretch_den): (u32, u32), kernel: Kernel) -> [i8; H_LEN] {
+    assert!(stretch_num <= 2 * stretch_den, "shrinks past 2:1");
+    assert!(
+        stretch_num >= stretch_den && stretch_den > 0,
+        "a stretch under 1"
+    );
+    // The kernel at x / stretch, scaled by 1 / stretch.
+    let (num, den_s) = (i128::from(stretch_den), i128::from(stretch_num));
     let den = 8 * den_s;
     // Each byte's weight, all over one common denominator, and its phase
     // class (distance in eighths mod 8, folded: phases p and 8 - p share

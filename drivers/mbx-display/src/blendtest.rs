@@ -552,6 +552,9 @@ pub struct FilterStep {
     pub scale: crate::layers::Scale,
     /// `GDRCTRL`'s doubling on (R16).
     pub double: bool,
+    /// The source is stage A's wallpaper (at [`FILTER_AT`] too, drawn
+    /// again over the pattern) instead of the stripe pattern.
+    pub wallpaper: bool,
 }
 
 const fn step(
@@ -576,6 +579,7 @@ const fn step(
             filter,
         },
         double: false,
+        wallpaper: false,
     }
 }
 
@@ -688,6 +692,91 @@ pub const FILTER_STEPS: [FilterStep; 11] = {
             Fitted,
         ),
         d,
+    ]
+};
+
+/// `s` on the wallpaper.
+const fn on_wallpaper(mut s: FilterStep) -> FilterStep {
+    s.wallpaper = true;
+    s
+}
+
+/// Run P9e's steps (2026-10-25, after P9d's photos: the fitted set right
+/// at half size, stripes left at 3/4): at 3/4 size the kernels stretched
+/// by 4/3 (P9d's), 5/3 and 2, on the stripe pattern (do stripes go?) and
+/// on the wallpaper (how soft?), with Linux's set on the wallpaper as the
+/// sharpness reference; then half height with `VideoPlane::scale_to`'s
+/// default (bit 27 set: clean, not torn).
+pub const FILTER2_STEPS: [FilterStep; 8] = {
+    use crate::layers::ScalerFilter::{Mbxfb, Stretched};
+    const FULL: (u16, u16, u16, u16) = (0, 0, W as u16, H as u16);
+    const THREE_Q: (u16, u16, u16, u16) = (360, 480, 60, 80);
+    let half_down = on_wallpaper(step(
+        "HALF HEIGHT, AUTO",
+        "CLEAN, NOT TORN",
+        FULL,
+        (480, 320, 0, 160),
+        true,
+        Mbxfb,
+    ));
+    [
+        step(
+            "STRIPES, BLUR 1 (WEAK)",
+            "STRIPES LEFT? (AS P9D)",
+            FULL,
+            THREE_Q,
+            true,
+            Stretched(4, 3),
+        ),
+        step(
+            "STRIPES, BLUR 2",
+            "STRIPES LEFT?",
+            FULL,
+            THREE_Q,
+            true,
+            Stretched(5, 3),
+        ),
+        step(
+            "STRIPES, BLUR 3 (STRONG)",
+            "STRIPES LEFT?",
+            FULL,
+            THREE_Q,
+            true,
+            Stretched(2, 1),
+        ),
+        on_wallpaper(step(
+            "PICTURE, LINUX FILTER",
+            "SHARPNESS REFERENCE",
+            FULL,
+            THREE_Q,
+            true,
+            Mbxfb,
+        )),
+        on_wallpaper(step(
+            "PICTURE, BLUR 1 (WEAK)",
+            "HOW SOFT?",
+            FULL,
+            THREE_Q,
+            true,
+            Stretched(4, 3),
+        )),
+        on_wallpaper(step(
+            "PICTURE, BLUR 2",
+            "HOW SOFT?",
+            FULL,
+            THREE_Q,
+            true,
+            Stretched(5, 3),
+        )),
+        on_wallpaper(step(
+            "PICTURE, BLUR 3 (STRONG)",
+            "HOW SOFT?",
+            FULL,
+            THREE_Q,
+            true,
+            Stretched(2, 1),
+        )),
+        half_down,
     ]
 };
 
@@ -885,5 +974,38 @@ mod tests {
         let off: std::vec::Vec<usize> = (0..11).filter(|&i| !FILTER_STEPS[i].scale.ur_c).collect();
         assert_eq!(off, [0, 8, 9, 10]);
         assert_eq!(GDRCTRL_DOUBLE, 0xA000_0000);
+    }
+
+    #[test]
+    fn p9e_compares_three_stretches_on_stripes_and_on_the_wallpaper() {
+        use crate::layers::ScalerFilter::{Mbxfb, Stretched};
+        let filters: std::vec::Vec<_> = FILTER2_STEPS.iter().map(|s| s.scale.filter).collect();
+        assert_eq!(
+            filters,
+            [
+                Stretched(4, 3),
+                Stretched(5, 3),
+                Stretched(2, 1),
+                Mbxfb,
+                Stretched(4, 3),
+                Stretched(5, 3),
+                Stretched(2, 1),
+                Mbxfb
+            ]
+        );
+        // Three on the pattern, then the wallpaper; all 3/4 but the last.
+        let wall: std::vec::Vec<bool> = FILTER2_STEPS.iter().map(|s| s.wallpaper).collect();
+        assert_eq!(wall, [false, false, false, true, true, true, true, true]);
+        for s in &FILTER2_STEPS[..7] {
+            assert_eq!((s.scale.out_w, s.scale.out_h), (360, 480));
+            assert!(s.scale.ur_c && !s.double);
+            assert!(s.name.len() <= 24 && s.expect.len() <= 24, "{}", s.name);
+            let mut v = VideoPlane::new(VideoFormat::Uyvy, 480, 640, FILTER_AT);
+            v.stride = W * 2;
+            let _ = v.registers_scaled(VIDEO, false, s.scale);
+        }
+        // The last step is scale_to's default for half height.
+        let v = VideoPlane::new(VideoFormat::Uyvy, 480, 640, FILTER_AT);
+        assert_eq!(FILTER2_STEPS[7].scale, v.scale_to(480, 320, 0, 160));
     }
 }
