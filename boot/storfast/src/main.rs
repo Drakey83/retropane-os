@@ -218,6 +218,12 @@ mod image {
             log!("no CPLD");
             return;
         };
+        // R8: the CPLD's bus as `take_cpld` set it (RetroPane's RDF 6:
+        // `MSC2` low half 0x7F6C; Windows Mobile's 0x7FFC).
+        log!(
+            "C0 MSC2 {:#010x} (the CPLD's bus, CS4 the low half)",
+            rp_hal_pxa27x::diag::msc2()
+        );
         // The CPLD doesn't read back: keep what the loader keeps on.
         cpld.set_backlight_enable(true);
         cpld.set_sd_power(true);
