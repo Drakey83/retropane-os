@@ -141,7 +141,9 @@ commands:
   put       write a file to the X51v's SD card over USB through the resident
             loader (ADR-0013): cargo xtask put <file> [name on the card]
   install   put the kit's loader, HaRET and scripts on the card the same way
-            (replaces the files already there; run cargo xtask sdkit first)
+            (replaces the files already there; run cargo xtask sdkit first);
+            `install cf` puts them in the CF card's RetroPane folder instead
+            (through the drive, each file read back and compared)
   drive     the SD card as a drive on the PC (ADR-0014): `drive rw` lets the
             PC write it, `drive ro` (the default at start) makes it read-only,
             `drive off`/`drive on` withdraws/offers the card (an empty reader
@@ -608,7 +610,11 @@ fn main() -> ExitCode {
             // loader on the card while reporting "up to date".
             cross()
                 .and_then(|()| sdkit::build(&workspace_root()))
-                .and_then(|()| usb::install(&workspace_root()))
+                .and_then(|()| match flag.as_str() {
+                    "" | "sd" => usb::install(&workspace_root()),
+                    "cf" => usb::install_cf(&workspace_root()),
+                    _ => Err("usage: cargo xtask install [sd|cf]".into()),
+                })
         }
         "symbols" => {
             let addrs: Vec<String> = args().skip(3).collect();

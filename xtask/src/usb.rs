@@ -12,7 +12,7 @@
 //! extra crates are needed; the script is passed base64-encoded (UTF-16LE,
 //! as `-EncodedCommand` expects) so no quoting can break it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Must match `rp_drv_pxa_udc::usb::{VENDOR_ID, PRODUCT_ID}`.
@@ -1075,6 +1075,93 @@ pub fn install(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The CF card's folder for HaRET and the loader (reminder R27): Windows
+/// Mobile starts `haret.exe` there, and HaRET boots `startup.txt` from its
+/// own folder.
+pub const CF_KIT_DIR: &str = "RetroPane";
+
+/// The kit's boot files for the CF card: [`KIT_FILES`] less the SD card's
+/// drive icon pair, from the same list, so the CF card can't get another
+/// file under a boot file's name (2026-10-24: a hand copy put rp-probe
+/// there as `retropane.bin`, and left `startup.txt` out).
+pub fn cf_kit_files() -> Vec<(&'static str, &'static str)> {
+    KIT_FILES
+        .iter()
+        .copied()
+        .filter(|(local, _)| !local.starts_with("cards/"))
+        .collect()
+}
+
+/// Puts the kit's boot files on the CF card, in [`CF_KIT_DIR`], through the
+/// loader's drive: the drive made writable, each file copied by Windows,
+/// the drive made read-only again (Windows re-reads it), then every file
+/// read back from the card and compared byte for byte with the kit's.
+pub fn install_cf(root: &Path) -> Result<(), String> {
+    let kit = root.join("target/sdkit");
+    let files = cf_kit_files();
+    for (local, _) in &files {
+        if !kit.join(local).exists() {
+            return Err(format!(
+                "{} is missing: run cargo xtask sdkit first",
+                kit.join(local).display()
+            ));
+        }
+    }
+    command(root, "drive rw")?;
+    let copied = cf_drive().and_then(|letter| {
+        let dir = PathBuf::from(format!("{letter}:\\{CF_KIT_DIR}"));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for (local, name) in &files {
+            std::fs::copy(kit.join(local), dir.join(name))
+                .map_err(|e| format!("{name} onto the CF card: {e}"))?;
+        }
+        Ok(())
+    });
+    // Read-only again whatever happened, so the PC can't write the card by
+    // accident; Windows re-reads it after the change.
+    command(root, "drive ro")?;
+    copied?;
+    let letter = cf_drive()?;
+    let dir = PathBuf::from(format!("{letter}:\\{CF_KIT_DIR}"));
+    for (local, name) in &files {
+        let want = std::fs::read(kit.join(local)).map_err(|e| e.to_string())?;
+        let got =
+            std::fs::read(dir.join(name)).map_err(|e| format!("{name} on the CF card: {e}"))?;
+        if got != want {
+            return Err(format!(
+                "{name} on the CF card differs from the kit's {local}"
+            ));
+        }
+        eprintln!(
+            "    {name}: {} bytes, read back from the card the same as {local}",
+            got.len()
+        );
+    }
+    eprintln!(
+        "    the CF card is up to date: in Windows Mobile, start haret.exe from the CF card's {CF_KIT_DIR} folder"
+    );
+    Ok(())
+}
+
+/// The CF card's drive letter (its volume label `X51V CF`), waited for up
+/// to 30 s: the drive goes away and comes back after a change.
+fn cf_drive() -> Result<char, String> {
+    let script = "(Get-Volume | Where-Object { $_.FileSystemLabel -eq 'X51V CF' } | Select-Object -First 1).DriveLetter";
+    for _ in 0..60 {
+        let out = powershell(script)?;
+        if let Some(c) = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .chars()
+            .next()
+            .filter(char::is_ascii_alphabetic)
+        {
+            return Ok(c);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    Err("the CF card's drive (label X51V CF) didn't appear in 30 s".into())
+}
+
 /// Runs the check.
 pub fn run() -> Result<(), String> {
     let out = powershell(&script())?;
@@ -1117,6 +1204,20 @@ fn stderr_note(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The CF card gets the loader under the loader's name, HaRET's two
+    /// scripts and HaRET, all from the SD list, never the kit's top-level
+    /// image (the probe) and never the SD card's drive icon.
+    #[test]
+    fn the_cf_kit_is_the_sd_kit_less_its_icon() {
+        let cf = cf_kit_files();
+        assert!(cf.contains(&("loader/retropane.bin", "retropane.bin")));
+        assert!(cf.contains(&("loader/startup.txt", "startup.txt")));
+        assert!(cf.contains(&("default.txt", "default.txt")));
+        assert!(cf.contains(&("haret.exe", "haret.exe")));
+        assert_eq!(cf.len(), 4);
+        assert!(cf.iter().all(|(local, _)| *local != "retropane.bin"));
+    }
 
     #[test]
     fn encodes_like_powershell_expects() {

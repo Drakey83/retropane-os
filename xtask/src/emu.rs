@@ -11686,6 +11686,16 @@ pub fn boot_loader_fallback(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut s = usb_connect(7)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 60)?;
+        // And it answers commands there (2026-10-24: on the X51v the
+        // fallback enumerated and opened, and no command got a reply).
+        s.write_all(&rp_loadproto::control_frame("handoff"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_line(&mut s, "RPL ", 20)?;
+        if !reply.contains("RPL OK handoff") {
+            return Err(format!(
+                "serial-only layout: no reply to a command: {reply:?}"
+            ));
+        }
         Ok(())
     };
     // A READY over USB from a host that refuses composites can only come
