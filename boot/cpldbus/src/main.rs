@@ -157,8 +157,12 @@ mod image {
     /// runs when `MSC2` started as Windows Mobile's).
     fn restore() {
         if diag::msc2() != WM_MSC2 {
-            let _ = diag::set_cs4_vlio(WM.rdf, WM.rdn, WM.rrr);
+            restore_wm();
         }
+    }
+
+    fn restore_wm() {
+        let _ = diag::set_cs4_vlio(WM.rdf, WM.rdn, WM.rrr);
     }
 
     /// Text for the owner, on screen when there is one, and in the log.
@@ -243,6 +247,12 @@ mod image {
         let Some(mut cpld) = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0) else {
             rp_image::crash(format_args!("no CPLD"))
         };
+        // RetroPane runs the CPLD at RDF 6 (`devices::CPLD_TIMING`, set by
+        // `take_cpld`): this test starts from Windows Mobile's timing, as it
+        // was measured against.
+        if Some(diag::msc2()) == msc2(Step { rdf: 6, ..WM }) {
+            restore_wm();
+        }
         let found = diag::msc2();
         let mem_khz = pxa_clocks::read().point().mem_khz();
         log!(

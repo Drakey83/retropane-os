@@ -5,6 +5,7 @@
 
 use core::ptr::NonNull;
 use rp_hal_pxa27x::devmap::va;
+use rp_hal_pxa27x::diag;
 
 use rp_hal_pxa27x::Mmio;
 
@@ -139,6 +140,32 @@ const CPLD_TABLE: usize = 0xA800_1320;
 /// The table's size in words (`rp_drv_cpld::handover::WORDS`).
 pub const CPLD_TABLE_WORDS: usize = 10;
 
+/// `MSC2` as Windows Mobile leaves it: CS4 (the CPLD) `0x7FFC`, the slowest
+/// VLIO timing the PXA27x has (probe 2026-10-11).
+// inherited: R8, Windows Mobile's MSC2 read by the probe (probe-2026-10-11.md)
+pub const CPLD_TIMING_WM: (u32, u32, u32) = (15, 15, 7);
+
+/// RetroPane's CS4 timing for the CPLD (the owner's ruling, 2026-10-24,
+/// reminder R8): `RDF` 6, `RDN` and `RRR` as Windows Mobile's. On the X51v
+/// (`rp-cpldbus`) a CPLD read takes 215 ns from `RDF` 6 down against 327 at
+/// Windows Mobile's 15 (1.52x), and no shorter `RDF`, `RDN` or `RRR` reads
+/// faster; reads and the backlight's writes were right to `RDF` 3, `RDN` 2,
+/// `RRR` 0, so this keeps the most margin for other X51vs at the full speed.
+pub const CPLD_TIMING: (u32, u32, u32) = (6, 15, 7);
+// Both timings are legal for CS4 as Windows Mobile sets it up (16-bit
+// VLIO), checked as the HAL is built.
+const _: () =
+    assert!(diag::cs4_vlio(0x7FF4_7FFC, CPLD_TIMING.0, CPLD_TIMING.1, CPLD_TIMING.2).is_some());
+const _: () = assert!(matches!(
+    diag::cs4_vlio(
+        0x7FF4_7FFC,
+        CPLD_TIMING_WM.0,
+        CPLD_TIMING_WM.1,
+        CPLD_TIMING_WM.2
+    ),
+    Some(0x7FF4_7FFC)
+));
+
 /// Hands out the board CPLD once: its register window and the shared table
 /// of what is latched in it (its registers don't read back; pass both to
 /// `rp_drv_cpld::handover::Table::adopt` and `Cpld::new`).
@@ -149,6 +176,14 @@ pub fn take_cpld() -> Option<(Mmio, &'static mut [u32; CPLD_TABLE_WORDS])> {
         return None;
     }
     let base = NonNull::new(va(region("cs4_cpld")?.base as usize) as *mut u32)?;
+    // The CPLD's bus at RetroPane's timing, from Windows Mobile's or ours
+    // only: anything else (a test that moved it) is left as found.
+    let m = diag::msc2();
+    let with = |(rdf, rdn, rrr)| diag::cs4_vlio(m, rdf, rdn, rrr);
+    if [with(CPLD_TIMING_WM), with(CPLD_TIMING)].contains(&Some(m)) {
+        let (rdf, rdn, rrr) = CPLD_TIMING;
+        let _ = diag::set_cs4_vlio(rdf, rdn, rrr);
+    }
     // SAFETY: CS4 holds the CPLD's 0x20-byte register window (docs/hw/cpld.md),
     // identity-mapped with the MMU off; the flag guarantees one owner.
     let regs = unsafe { Mmio::new(base, 0x20) };
