@@ -338,9 +338,14 @@ pub const BUDGETS: &[Budget] = &[
     // when the run comes back (or at the next start), and `ls`/`get` read the
     // CF card (`cf:`) for the half a program kept there; one copy of the file
     // systems for both cards. 121,224 B measured (Thumb).
+    // Raised 124 -> 128 KiB on 2026-10-25 (approved by the owner): the CF
+    // card's write timing (the owner's ruling A, R28: rule M for writes,
+    // measured once per card on its own test sectors and kept in
+    // rplog/cfwrite.txt), after the CF drive's guard and put (ruling A,
+    // ADR-0014); 128,222 B measured (Thumb).
     Budget {
         image: "rp-loader",
-        max_load: 124 * 1024,
+        max_load: 128 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Loader,
     },
@@ -675,7 +680,11 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 120 -> 148 KiB on 2026-10-24 (test image): C7, the CF
         // write test (rp-fat built a second time, for the CF card) and C8,
         // the CPLD interrupt reads (R28, R24); 133.8 KiB measured.
-        max_load: 148 * 1024,
+        // Ratcheted 148 -> 164 KiB on 2026-10-25 (test image): C9-C13, the
+        // CF write ladders, each write's phases timed, fresh sectors and the
+        // rewrite cost, the CFA erase commands, the rewrite cost by size
+        // (R28); 150.9 KiB measured.
+        max_load: 164 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

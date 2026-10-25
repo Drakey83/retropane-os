@@ -584,6 +584,21 @@ sectors as rarely as possible (the FAT's updates batched, the run log writing ea
 rather than a partial sector again for every line). To measure next: the rewrite cost by write size
 (1, 8 and 64 sectors), what the run log and the FAT actually pay.
 
+**The owner's ruling A (2026-10-25): rule M for writes, once per card.** Built:
+`CfCard::tune_writes` keeps the command and address at Windows Mobile's timing and shortens the
+data phase one field at a time (strobe, hold, set-up), none below the card's proven read timing
+(the data phase's DRQ polls are reads at it), each step written to fresh sectors of its own file
+(no step pays the rewrite cost) and read back at the slowest timing; the limit with the 1.5x
+margin, used only if shorter than Windows Mobile's and two more writes read back right. The loader
+runs it once per card, right at the attach before the PC can look at the card (so the PC's first
+look never sees "medium changed"), on `rplog/cfwrite.bin` (128 KiB, kept), and keeps the result in
+`rplog/cfwrite.txt`, a line a card: its identity (a hash of IDENTIFY's serial, model and size), the
+data timing, the limit, the model. A card already there writes nothing; its read timing is
+measured later as before. `cf` and the loader's log say `writes N cycles (limit L)` or `(kept)`.
+Emulator: `emu-cf` (measured at the first attach, kept after a re-insert). On the device: waiting
+for the owner's go; the 8 GB card's C11 limit (strobe 1, 27 cycles) suggests ~40 cycles with the
+margin, ~7 MB/s (an estimate).
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the

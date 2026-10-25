@@ -34,8 +34,10 @@
 //!   rewrites (ten fresh writes timed, at Windows Mobile's timing and at
 //!   strobe 1), whether a pause (0-1,000 ms) before a rewrite lets it erase
 //!   in the background, and the CFA erase commands (erase ahead, then
-//!   write without erase or normally), all read back; the files and folder
-//!   removed.
+//!   write without erase or normally), all read back; then **C13**: the
+//!   rewrite cost by size (1, 8 and 64 sectors written six times to the
+//!   same place) and a log's pattern (16 lines, two to a sector), all read
+//!   back; the files and folder removed.
 //!   Nothing else on the card is written.
 //! - **C8, the CPLD's interrupt line** (reminder R24, reads only): the
 //!   owner pulls the CF card and puts it back while GPIO13 and CPLD `0x00`,
@@ -660,6 +662,9 @@ mod image {
         if !cf.is_dead() {
             erase_test(cf, start, wm, slowest, data, back, work);
         }
+        if !cf.is_dead() {
+            size_test(cf, start, wm, slowest, data, back, work);
+        }
         cf.write_data_at(set_cf_timing, wm, wm, wm);
         remove_cf_file(cf, start, work);
     }
@@ -698,6 +703,96 @@ mod image {
         cf.write_data_at(set_cf_timing, wm, wm, wm);
         rt::check_in();
         (took, drq, ok)
+    }
+
+    /// C13's file: 256 sectors.
+    const SIZES_FILE: &str = "rp-cf-write/SIZES.BIN";
+
+    /// C13 (R28 after C12: a rewrite costs ~135 ms for 64 sectors, and
+    /// nothing on the card's side avoids it): what a rewrite costs by its
+    /// size, as the run log and the FAT pay it: 1, 8 and 64 sectors each
+    /// written six times in a row to the same place; then a log's pattern,
+    /// 16 lines two to a sector (each sector written twice, then the next);
+    /// each write timed, the last ones read back; the file removed.
+    fn size_test(
+        cf: &mut Cf,
+        start: u32,
+        wm: u32,
+        slowest: u32,
+        data: &mut [u8],
+        back: &mut [u8],
+        work: &mut [u8],
+    ) {
+        let wm_t = Timing::WINDOWS_MOBILE;
+        set_cf_timing(wm);
+        let base = {
+            let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+                log!("C13 mount failed: skipped");
+                return;
+            };
+            match vol.reserve(SIZES_FILE, 256 * BLOCK, work) {
+                Ok(r) => r.lba,
+                Err(e) => {
+                    log!("C13 reserve {SIZES_FILE}: {}: skipped", e.name());
+                    return;
+                }
+            }
+        };
+        let us = |t: u32| u64::from(t) * 1_000_000 / u64::from(rt::TICK_HZ);
+        let mut bad = 0;
+        // The last write at `lba` (`n` sectors, `seed`) read back.
+        let mut check = |cf: &mut Cf, lba: u32, n: usize, seed: u32| {
+            let back = &mut back[..n * BLOCK];
+            set_cf_timing(slowest);
+            back.fill(0);
+            bad += if cf.read_blocks(lba, back).is_ok() {
+                differs(back, seed, 0)
+            } else {
+                n as u32
+            };
+            set_cf_timing(wm);
+        };
+        for (k, n) in [1usize, 8, 64].into_iter().enumerate() {
+            let lba = base + k as u32 * 64;
+            let mut seed = 0;
+            for w in 1..=6u32 {
+                seed = 900 + 10 * k as u32 + w;
+                let (took, drq, ok) =
+                    timed_write(cf, lba, &mut data[..n * BLOCK], seed, wm, wm_t, false);
+                log!(
+                    "C13 {n} sectors, write {w} to the same place: {} us, the longest DRQ wait {} us, ok {ok}",
+                    us(took),
+                    us(drq)
+                );
+            }
+            check(cf, lba, n, seed);
+        }
+        // A log's pattern: a line written into its sector, the next line
+        // into the same sector again, then the next sector.
+        let mut total = 0u32;
+        let mut slowest_line = 0u32;
+        let mut slow = 0;
+        for line in 0..16u32 {
+            let lba = base + 192 + line / 2;
+            let seed = 950 + line;
+            let (took, _, _) = timed_write(cf, lba, &mut data[..BLOCK], seed, wm, wm_t, false);
+            total = total.wrapping_add(took);
+            slowest_line = slowest_line.max(took);
+            slow += u32::from(us(took) > 20_000);
+            if line % 2 == 1 {
+                check(cf, lba, 1, seed);
+            }
+        }
+        log!(
+            "C13 a log's pattern, 16 lines two to a sector: {} us in all, the slowest line {} us, {slow} lines over 20 ms",
+            us(total),
+            us(slowest_line)
+        );
+        log!("C13 read back at the slowest timing: {bad} sectors differ");
+        let removed = Volume::mount(&mut *cf, start)
+            .ok()
+            .is_some_and(|mut vol| vol.remove(SIZES_FILE).is_ok());
+        log!("C13 {SIZES_FILE} removed: {removed}");
     }
 
     /// C12's file: [`ERASE_REGIONS`] regions of [`CF_BLOCKS`].

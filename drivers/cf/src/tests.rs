@@ -1355,3 +1355,61 @@ fn the_cfa_erase_commands_work_or_are_refused_cleanly() {
         assert_eq!(cf.erase_sectors(30, 257), Err(BlockError::OutOfRange));
     }
 }
+
+/// Rule M for writes: from the command timing the data phase shortens
+/// field by field to the card's write limit (here 30 cycles), never below
+/// the read floor, and the limit with the margin is used once two more
+/// writes at it read back right; the test sectors hold the last pattern,
+/// other sectors are untouched; a card writing wrong at the command timing
+/// keeps it.
+#[test]
+fn writes_are_tuned_to_the_cards_own_limit_with_the_margin() {
+    let (c, mut cf, _, t) = tuned(20, false);
+    let Tuned::Applied {
+        was, now, limit, ..
+    } = t
+    else {
+        panic!("{t:?}");
+    };
+    c.borrow_mut().write_below = 30;
+    TIMED.with(|t| *t.borrow_mut() = Some(c.clone()));
+    let mut neighbour = [0u8; SECTOR];
+    cf.read_blocks(104, &mut neighbour).unwrap();
+    let mut buf = vec![0u8; 8 * SECTOR];
+    let mut back = vec![0u8; 8 * SECTOR];
+    let w = cf.tune_writes(set_mcmem, now, was, limit, 40, 64, &mut buf, &mut back);
+    let WriteTuned::Applied { limit: wl, now: wn } = w else {
+        panic!("{w:?}");
+    };
+    assert!(
+        cycles(wl) >= 30,
+        "the write limit is where the card writes right"
+    );
+    assert!(cycles(wn) * 10 >= cycles(wl) * 15, "the margin, 1.5x");
+    assert!(cycles(wn) < cycles(was), "shorter than the command timing");
+    let floor = timing::Timing::from_mcmem(limit);
+    let l = timing::Timing::from_mcmem(wl);
+    assert!(l.asst >= floor.asst && l.hold >= floor.hold && l.set >= floor.set);
+    assert_eq!(c.borrow().mcmem, now, "the read timing back");
+    // Writes now land right at the tuned timing, the neighbour untouched.
+    let block = [0x6Bu8; SECTOR];
+    cf.write_blocks(40, &block).unwrap();
+    let mut got = [0u8; SECTOR];
+    cf.read_blocks(40, &mut got).unwrap();
+    assert_eq!(got, block);
+    cf.read_blocks(104, &mut got).unwrap();
+    assert_eq!(got, neighbour, "nothing written past the area");
+    // A limit whose margin is no shorter than the command timing (40
+    // cycles: 60 with it, against 54) gains nothing: kept.
+    c.borrow_mut().write_below = 40;
+    let w = cf.tune_writes(set_mcmem, now, was, limit, 40, 64, &mut buf, &mut back);
+    assert_eq!(
+        w,
+        WriteTuned::Kept("no write timing with the margin shorter than the command's")
+    );
+    // A card wrong at the command timing keeps it.
+    c.borrow_mut().write_below = 1000;
+    let w = cf.tune_writes(set_mcmem, now, was, limit, 40, 64, &mut buf, &mut back);
+    assert_eq!(w, WriteTuned::Kept("writes wrong at the command timing"));
+    TIMED.with(|t| *t.borrow_mut() = None);
+}

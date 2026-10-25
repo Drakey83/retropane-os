@@ -8955,6 +8955,10 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
         "C12 CFA feature set: ",
         "C12 read back at the slowest timing: 0 of ",
         "C12 rp-cf-write/ERASE.BIN removed: true",
+        "C13 64 sectors, write 6 to the same place: ",
+        "C13 a log's pattern, 16 lines two to a sector: ",
+        "C13 read back at the slowest timing: 0 sectors differ",
+        "C13 rp-cf-write/SIZES.BIN removed: true",
         "C7 rp-cf-write removed from the CF card",
         "C8 done: ",
         "KiB): all right, one transfer each",
@@ -9150,7 +9154,14 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        if !reply.contains("; timing own, ") || !reply.contains("writes at Windows Mobile's") {
+        // Its write timing too (the owner's ruling A, R28): measured once,
+        // right at the attach (the card, a fresh image, is new to this
+        // loader), on fresh sectors of its own file, and kept in
+        // rplog/cfwrite.txt; "kept" once a later attach has read it there
+        // (only the search writes that line).
+        if !reply.contains("; timing own, ")
+            || !(reply.contains(" cycles (limit ") || reply.contains(" cycles (kept)"))
+        {
             return Err(format!("cf: the card's own timing not measured: {reply:?}"));
         }
         // The power sequence and the card's reset went through the CPLD,
@@ -9352,11 +9363,21 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                 l.contains("power off")
             })?;
             mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
-            let log = poll("re-inserted: never attached again", &|l| {
+            let log = match poll("re-inserted: never attached again", &|l| {
                 l.rsplit("power off")
                     .next()
                     .is_some_and(|a| a.contains("attached"))
-            })?;
+            }) {
+                Ok(l) => l,
+                // Why the attach failed: `cf` names the slot's last failure
+                // ("was ..."), then tries it once more itself (R33).
+                Err(e) => {
+                    s.write_all(&rp_loadproto::control_frame("cf"))
+                        .map_err(|e| e.to_string())?;
+                    let cf = usb_read_line(&mut s, "RPL ", 20).unwrap_or_default();
+                    return Err(format!("{e}; then cf: {cf:?}"));
+                }
+            };
             // Ordered events, no timing: a slot left powered would show
             // READY as soon as the card went back in, before the loader's
             // debounced attach (which powers it from off itself).
@@ -9369,6 +9390,23 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             let mut mbr = [0u8; 512];
             rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut mbr)
                 .map_err(|_| "CF re-inserted: sector 0 unreadable".to_string())?;
+            // The same card again: its write timing comes from
+            // rplog/cfwrite.txt, nothing measured or written (R28).
+            let mut reply = String::new();
+            for _ in 0..50 {
+                s.write_all(&rp_loadproto::control_frame("cf"))
+                    .map_err(|e| e.to_string())?;
+                reply = usb_read_line(&mut s, "RPL ", 20)?;
+                if reply.contains("; writes ") {
+                    break;
+                }
+                poll_pause(Duration::from_millis(200));
+            }
+            if !reply.contains(" cycles (kept)") {
+                return Err(format!(
+                    "CF re-inserted: its kept write timing not used: {reply:?}"
+                ));
+            }
         }
         Ok(())
     };

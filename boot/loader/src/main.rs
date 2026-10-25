@@ -1208,12 +1208,16 @@ mod image {
         /// off yet. Power Windows Mobile left on with no card in isn't
         /// switched off: the socket is touched only when a card is in.
         powered: bool,
-        /// One automatic retry left for this insertion: a card that failed
-        /// to attach or stopped answering is taken again once (a passing
-        /// hiccup no longer leaves the PC an empty drive until someone
-        /// re-inserts it); after that it waits for re-insertion or `cf`,
-        /// never a retry loop.
-        retry: bool,
+        /// Automatic retries done for this insertion: a card that failed to
+        /// attach or stopped answering is taken again up to
+        /// [`CF_RETRY_SECS`]'s count, spaced out (a passing hiccup, or a card
+        /// pulled and pushed back faster than the detect debounce sees, R33,
+        /// no longer leaves the PC an empty drive until someone re-inserts
+        /// it); after that it waits for re-insertion or `cf`, never a retry
+        /// loop.
+        retries: u8,
+        /// When the next retry may go (ticks).
+        retry_at: u32,
         /// The first PC reads of this unit (diagnostics, docs/hw/cf.md: the
         /// drive showed empty in Explorer): block, count, result, and the
         /// first four bytes read.
@@ -1227,6 +1231,9 @@ mod image {
         tune_pending: bool,
         /// What the measurement did, for `cf`.
         tuned: Option<rp_drv_cf::Tuned>,
+        /// The write timing: from `rplog/cfwrite.txt` (`limit` 0) or
+        /// measured ([`cf_write_tune`]).
+        wtuned: Option<rp_drv_cf::WriteTuned>,
     }
 
     /// The first CF slot events since start-up, timestamped (ms): READY
@@ -1283,7 +1290,8 @@ mod image {
                 return false;
             }
             self.inserted = now;
-            self.retry = now;
+            self.retries = 0;
+            self.retry_at = rt::ticks();
             self.changes = self.changes.saturating_add(1);
             if !now {
                 self.release("removed");
@@ -1430,6 +1438,7 @@ mod image {
         // card was tuned to (a slower card would misread its CIS at it).
         let _ = devices::set_cf_mem_timing(devices::CF_MEM_TIMING_WM);
         lun.tuned = None;
+        lun.wtuned = None;
         // Reads by DMA from the data window when it reads IDENTIFY as the
         // 16-bit port does (docs/research/storage-speed.md).
         let phys = Some(devices::cf_common_phys().unwrap_or(0));
@@ -1484,7 +1493,7 @@ mod image {
                     clamped,
                 } => write!(
                     f,
-                    "own, {} cycles a read (the card's limit {}, Windows Mobile's {}){}; writes at Windows Mobile's",
+                    "own, {} cycles a read (the card's limit {}, Windows Mobile's {}){}",
                     cycles(now),
                     cycles(limit),
                     cycles(was),
@@ -1495,6 +1504,28 @@ mod image {
                     "Windows Mobile's (the card's own failed its check; card reads right {card_ok})"
                 ),
                 rp_drv_cf::Tuned::Kept(why) => write!(f, "Windows Mobile's ({why})"),
+            }
+        }
+    }
+
+    /// What the write timing is, in words with its numbers.
+    struct WriteText(rp_drv_cf::WriteTuned);
+
+    impl core::fmt::Display for WriteText {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            use rp_drv_cf::timing::Timing;
+            let cycles = |v: u32| Timing::from_mcmem(v).cycle_cycles();
+            match self.0 {
+                rp_drv_cf::WriteTuned::Applied { limit: 0, now } => {
+                    write!(f, "{} cycles (kept)", cycles(now))
+                }
+                rp_drv_cf::WriteTuned::Applied { limit, now } => {
+                    write!(f, "{} cycles (limit {})", cycles(now), cycles(limit))
+                }
+                rp_drv_cf::WriteTuned::Refused { tried } => {
+                    write!(f, "Windows Mobile's ({} refused)", cycles(tried))
+                }
+                rp_drv_cf::WriteTuned::Kept(why) => write!(f, "Windows Mobile's ({why})"),
             }
         }
     }
@@ -1531,6 +1562,154 @@ mod image {
             lun.events.push(b'K');
         }
         lun.tuned = Some(tuned);
+    }
+
+    /// The waits before each automatic retry of a CF card that is in but
+    /// not attached (R33): one second, three, ten; then no more until it is
+    /// re-inserted or `cf` asks.
+    const CF_RETRY_SECS: [u32; 3] = [1, 3, 10];
+
+    /// The CF cards' write timings, one card a line (`identity data-timing
+    /// limit model`), measured once per card (the owner's ruling A, R28).
+    const CF_WRITE_FILE: &str = "rplog/cfwrite.txt";
+    /// The sectors the write search writes (its own file, kept for a later
+    /// search): 32 pieces, a fresh one each step.
+    const CF_WRITE_TEST: &str = "rplog/cfwrite.bin";
+    /// One step's sectors: 8 (4 KiB).
+    const CF_WRITE_BYTES: usize = 8 * 512;
+    /// The test file: 256 sectors (128 KiB).
+    const CF_WRITE_AREA: u32 = 256;
+
+    /// This card's line in [`CF_WRITE_FILE`] (read into `file`): its write
+    /// timing, and the file's length.
+    fn cf_known(lun: &mut CfLun, file: &mut [u8], work: &mut [u8]) -> (Option<u32>, usize) {
+        let id = match &lun.slot {
+            CfSlot::Card(c) => c.identity(),
+            _ => return (None, 0),
+        };
+        let mut len = 0;
+        let Ok(mut vol) = mount_cf(lun) else {
+            return (None, 0);
+        };
+        let _ = vol.read_back(CF_WRITE_FILE, work, &mut |c| {
+            let k = c.len().min(file.len() - len);
+            file[len..len + k].copy_from_slice(&c[..k]);
+            len += k;
+        });
+        let found = file[..len].split(|&b| b == b'\n').find_map(|l| {
+            let mut w = l.split(|&b| b == b' ');
+            (parse_hex(w.next()?)? == id).then_some(())?;
+            parse_hex(w.next()?)
+        });
+        (found, len)
+    }
+
+    /// Right after an attach: a card whose write timing isn't kept yet is
+    /// measured now, read and write timing both, before the PC can look at
+    /// it (a change after its first look would show it "medium changed",
+    /// the drive drawn empty: the attach check in `emu-cf`). A card already
+    /// kept writes nothing; its read timing is measured later, as before.
+    fn cf_attached(lun: &mut CfLun, scratch: &mut [u8]) {
+        if !matches!(lun.slot, CfSlot::Card(_)) {
+            return;
+        }
+        let (file, work) = scratch.split_at_mut(4096);
+        if cf_known(lun, file, work).0.is_none() && lun.tune_pending {
+            lun.tune_pending = false;
+            cf_tune(lun);
+            cf_write_tune(lun, scratch);
+        }
+    }
+
+    /// After [`cf_tune`] applied the card's read timing: its write timing
+    /// (rule M for writes, the owner's ruling A 2026-10-25), from
+    /// [`CF_WRITE_FILE`] if this card is there, else measured once
+    /// ([`rp_drv_cf::CfCard::tune_writes`] on [`CF_WRITE_TEST`]) and added
+    /// to it. `true` when the card's files changed (the PC must re-read
+    /// it). A card the file system can't open writes at Windows Mobile's
+    /// timing.
+    #[inline(never)]
+    fn cf_write_tune(lun: &mut CfLun, scratch: &mut [u8]) -> bool {
+        let Some(rp_drv_cf::Tuned::Applied {
+            now: read, limit, ..
+        }) = lun.tuned
+        else {
+            return false;
+        };
+        let wm = devices::CF_MEM_TIMING_WM;
+        let (file, rest) = scratch.split_at_mut(4096);
+        let (buf, rest) = rest.split_at_mut(CF_WRITE_BYTES);
+        let (back, work) = rest.split_at_mut(CF_WRITE_BYTES);
+        let id = match &lun.slot {
+            CfSlot::Card(c) => c.identity(),
+            _ => return false,
+        };
+        // The file's lines so far; this card's, if it's there.
+        let (found, len) = cf_known(lun, file, work);
+        if let Some(data) = found {
+            if let CfSlot::Card(c) = &mut lun.slot {
+                c.write_data_at(set_cf_timing, read, wm, data);
+            }
+            lun.wtuned = Some(rp_drv_cf::WriteTuned::Applied {
+                limit: 0,
+                now: data,
+            });
+            return false;
+        }
+        // Measured: on its own sectors, then the line added.
+        let lba = {
+            let Ok(mut vol) = mount_cf(lun) else {
+                return false;
+            };
+            match vol.reserve(CF_WRITE_TEST, CF_WRITE_AREA as usize * 512, work) {
+                Ok(r) => r.lba,
+                Err(_) => return false,
+            }
+        };
+        let CfSlot::Card(card) = &mut lun.slot else {
+            return true;
+        };
+        let w = card.tune_writes(
+            set_cf_timing,
+            read,
+            wm,
+            limit,
+            lba,
+            CF_WRITE_AREA,
+            buf,
+            back,
+        );
+        lun.wtuned = Some(w);
+        let (data, wlimit) = match w {
+            rp_drv_cf::WriteTuned::Applied { limit, now } => (now, limit),
+            _ => (wm, 0),
+        };
+        let mut line = Line::new();
+        let _ = write!(line, "{id:08x} {data:#010x} {wlimit:#010x} ");
+        if let CfSlot::Card(c) = &lun.slot {
+            for &b in c.model() {
+                let _ = line.write_char(if b == b' ' { '_' } else { char::from(b) });
+            }
+        }
+        let _ = line.write_str("\n");
+        let add = line.as_str().as_bytes();
+        if len + add.len() <= file.len() {
+            file[len..len + add.len()].copy_from_slice(add);
+            if let Ok(mut vol) = mount_cf(lun) {
+                let _ = vol.put(CF_WRITE_FILE, &file[..len + add.len()], work);
+            }
+        }
+        true
+    }
+
+    /// A hexadecimal number, with or without `0x`.
+    fn parse_hex(t: &[u8]) -> Option<u32> {
+        let t = t.strip_prefix(b"0x").unwrap_or(t);
+        if t.is_empty() || t.len() > 8 {
+            return None;
+        }
+        t.iter()
+            .try_fold(0u32, |v, &c| Some(v << 4 | char::from(c).to_digit(16)?))
     }
 
     /// Whether a CompactFlash card is in the slot: CPLD `0x04` bit 1, which
@@ -1619,6 +1798,9 @@ mod image {
             Some(t) => write!(out, "; timing {}", TunedText(t)),
             None => write!(out, "; timing Windows Mobile's (own not yet measured)"),
         };
+        if let Some(w) = lun.wtuned {
+            let _ = write!(out, "; writes {}", WriteText(w));
+        }
         // Diagnostics for the first device runs: the slot's state before
         // this command, detect changes seen, the task file after the read,
         // and sector 0's first 16 bytes and signature when it read.
@@ -2239,17 +2421,22 @@ mod image {
                 len: 0,
             },
             powered: false,
-            retry: cf_in,
+            retries: 0,
+            retry_at: 0,
             reads: [(0, 0, false, [0; 4]); 6],
             reads_len: 0,
             tune_pending: false,
             tuned: None,
+            wtuned: None,
         };
         cf.events.push(if cf.ready { b'1' } else { b'0' });
         if cf_in {
             cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
         }
         stages[2] = rt::since_start();
+        // A card new to this loader: its timings now, before the PC looks
+        // (after the attach's stage, which `emu-cf` times for a power cycle).
+        cf_attached(&mut cf, &mut fat_scratch[..SCRATCH]);
 
         let Some((mut regs, vram)) = devices::take_mbx() else {
             halt()
@@ -3046,6 +3233,7 @@ mod image {
                 // at once, as the SD card is, so it shows up next to it.
                 if cf.inserted {
                     cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
+                    cf_attached(&mut cf, &mut fat_scratch[..SCRATCH]);
                 }
                 msc.medium_changed(1);
                 let _ = writeln!(
@@ -3069,15 +3257,28 @@ mod image {
                 if let Some(t) = cf.tuned {
                     let _ = writeln!(log, "CF card timing: {}", TunedText(t));
                 }
+                if cf_write_tune(&mut cf, &mut fat_scratch[..SCRATCH]) {
+                    // Its files changed (the write timing found and kept):
+                    // the PC re-reads the card.
+                    msc.medium_changed(1);
+                }
+                if let Some(w) = cf.wtuned {
+                    let _ = writeln!(log, "CF card writes: {}", WriteText(w));
+                }
             }
             // A card that is in but not attached (failed, or dropped as
-            // dead) is taken again, once per insertion.
+            // dead) is taken again, a few times per insertion, spaced out.
             if rt::ticks().wrapping_sub(last) >= TICK_1S
                 && cf.inserted
                 && matches!(cf.slot, CfSlot::Idle(..))
-                && core::mem::take(&mut cf.retry)
+                && usize::from(cf.retries) < CF_RETRY_SECS.len()
+                && rt::ticks().wrapping_sub(cf.retry_at) < u32::MAX / 2
             {
+                cf.retry_at =
+                    rt::ticks().wrapping_add(CF_RETRY_SECS[usize::from(cf.retries)] * TICK_1S);
+                cf.retries += 1;
                 cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
+                cf_attached(&mut cf, &mut fat_scratch[..SCRATCH]);
                 msc.medium_changed(1);
                 let _ = writeln!(
                     log,

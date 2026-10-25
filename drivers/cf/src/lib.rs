@@ -260,6 +260,9 @@ pub struct CfCard<A, C, D = NoDma> {
     /// IDENTIFY words 83 and 86: the command sets supported and enabled
     /// (bit 2: the CFA feature set, [`CfCard::cfa`]).
     command_sets: (u16, u16),
+    /// A hash of the card's serial number, model and size (IDENTIFY words
+    /// 10-19, 27-46, 60-61): [`CfCard::identity`].
+    identity: u32,
 }
 
 /// The phases of a write, in order, for [`CfCard::write_blocks_marked`]
@@ -319,6 +322,27 @@ pub trait SocketTiming {
 
 /// `MCMEM`'s timing fields (SET, ASST, HOLD: bits 19-0); the rest is kept.
 const MCMEM_FIELDS: u32 = (1 << 20) - 1;
+
+/// What [`CfCard::tune_writes`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteTuned {
+    /// Writes' data phase at the card's write limit with the margin, proven
+    /// by two more writes read back right.
+    Applied {
+        /// The shortest data timing that wrote right.
+        limit: u32,
+        /// The data timing used: the limit with the margin.
+        now: u32,
+    },
+    /// The margin's timing didn't write right twice: writes stay at the
+    /// command timing.
+    Refused {
+        /// The timing that failed.
+        tried: u32,
+    },
+    /// Nothing changed, and why.
+    Kept(&'static str),
+}
 
 /// What [`CfCard::tune`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -441,6 +465,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             rated_ns: None,
             write_timing: None,
             command_sets: (0, 0),
+            identity: 0,
         }
     }
 
@@ -482,6 +507,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             rated_ns: self.rated_ns,
             write_timing: self.write_timing,
             command_sets: self.command_sets,
+            identity: self.identity,
         };
         card.try_dma();
         card
@@ -528,6 +554,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             rated_ns: cis.rated_ns,
             write_timing: None,
             command_sets: (0, 0),
+            identity: 0,
         };
         if let Err(e) = card.start(cis.config as usize, delay_us) {
             return Err((e, card.attr, card.common, card.dma));
@@ -599,6 +626,15 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         }
         self.sectors = sectors;
         self.command_sets = (id[83], id[86]);
+        // FNV-1a over the serial, model and size words.
+        self.identity = id[10..20]
+            .iter()
+            .chain(&id[27..47])
+            .chain(&id[60..62])
+            .flat_map(|w| w.to_le_bytes())
+            .fold(0x811C_9DC5u32, |h, b| {
+                (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+            });
         // Words 27-46: the model, two characters per word, first in the high byte.
         for (i, w) in id[27..47].iter().enumerate() {
             for (k, b) in w.to_be_bytes().into_iter().enumerate() {
@@ -727,6 +763,121 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         ok
     }
 
+    /// Sets the data phase of writes for this card (the owner's ruling A,
+    /// 2026-10-25: rule M for writes, R28): from `command` (the timing
+    /// writes are proven at, which the command and address keep), one field
+    /// at a time shorter ([`timing::shorter`]: the strobe, the hold, the
+    /// set-up), none below `floor` (the card's proven read timing: the DRQ
+    /// polls of the data phase are reads at it), each step a pattern written
+    /// to the next `buf`-sized piece of the `area` sectors from `lba` (the
+    /// caller's: they're overwritten; fresh sectors each step, so no step
+    /// pays the card's rewrite cost, ~135 ms, R28's C11, until the area
+    /// wraps) and read back at the socket's slowest into `back`; a
+    /// field stops at its first wrong write, and the card must write right
+    /// again at the last right step. The limit with the margin
+    /// ([`timing::with_margin`]) is used if it's shorter than `command` and
+    /// two more writes at it read back right; otherwise writes stay at
+    /// `command`. Reads go back to `read` after each write.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tune_writes(
+        &mut self,
+        set: fn(u32),
+        read: u32,
+        command: u32,
+        floor: u32,
+        lba: u32,
+        area: u32,
+        buf: &mut [u8],
+        back: &mut [u8],
+    ) -> WriteTuned {
+        if self.dead {
+            return WriteTuned::Kept("the card isn't answering");
+        }
+        let n = (buf.len() / SECTOR) as u32;
+        if n == 0 || !buf.len().is_multiple_of(SECTOR) || back.len() < buf.len() || area < n {
+            return WriteTuned::Kept("no test sectors");
+        }
+        let pieces = area / n;
+        let mut piece = 0u32;
+        let high = command & !MCMEM_FIELDS;
+        let slowest = high | timing::Timing::SLOWEST.mcmem();
+        let back = &mut back[..buf.len()];
+        let mut seed = 0x9E37_79B9u32;
+        // One write at `t`, read back at the slowest: right?
+        let mut right = |cf: &mut Self, t: timing::Timing| -> bool {
+            seed = seed.wrapping_mul(0x0101_0101).wrapping_add(0x3C6E_F372);
+            let mut x = seed | 1;
+            for b in buf.iter_mut() {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                *b = x as u8;
+            }
+            let at = lba + piece % pieces * n;
+            piece += 1;
+            cf.write_data_at(set, read, command, high | t.mcmem());
+            let wrote = cf.write_blocks(at, buf).is_ok();
+            set(slowest);
+            back.fill(!buf[0]);
+            let ok = wrote && cf.read_blocks(at, back).is_ok() && back == buf;
+            set(read);
+            ok
+        };
+        let start = timing::Timing::from_mcmem(command);
+        let floor = timing::Timing::from_mcmem(floor);
+        let field_of = |t: timing::Timing, f: timing::Field| match f {
+            timing::Field::Strobe => t.asst,
+            timing::Field::Hold => t.hold,
+            timing::Field::SetUp => t.set,
+        };
+        let outcome = 'search: {
+            if !right(self, start) {
+                break 'search WriteTuned::Kept("writes wrong at the command timing");
+            }
+            let mut limit = start;
+            for field in timing::FIELDS {
+                while let Some(next) = timing::shorter(limit, field)
+                    .filter(|n| field_of(*n, field) >= field_of(floor, field))
+                {
+                    if right(self, next) {
+                        limit = next;
+                        continue;
+                    }
+                    self.dead = false;
+                    if !right(self, limit) {
+                        break 'search WriteTuned::Refused {
+                            tried: high | next.mcmem(),
+                        };
+                    }
+                    break;
+                }
+            }
+            let (t, _) = timing::with_margin(limit);
+            if t.cycle_cycles() >= start.cycle_cycles() {
+                break 'search WriteTuned::Kept(
+                    "no write timing with the margin shorter than the command's",
+                );
+            }
+            if right(self, t) && right(self, t) {
+                WriteTuned::Applied {
+                    limit: high | limit.mcmem(),
+                    now: high | t.mcmem(),
+                }
+            } else {
+                WriteTuned::Refused {
+                    tried: high | t.mcmem(),
+                }
+            }
+        };
+        let data = match outcome {
+            WriteTuned::Applied { now, .. } => now,
+            _ => command,
+        };
+        self.dead = false;
+        self.write_data_at(set, read, command, data);
+        outcome
+    }
+
     /// Writes from now on at another socket timing than reads: `set`
     /// programs the register (`MCMEM` for the CF socket), `write` before
     /// each write and `read` after it. [`CfCard::tune`] measures reads only,
@@ -778,6 +929,14 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             mix(&sector.0);
         }
         Ok(hash)
+    }
+
+    /// This card's identity: a hash of its serial number, model and size
+    /// from IDENTIFY, the same each time it's attached (a write timing
+    /// measured once is kept under it).
+    #[must_use]
+    pub fn identity(&self) -> u32 {
+        self.identity
     }
 
     /// The card's model string (trailing spaces trimmed).
