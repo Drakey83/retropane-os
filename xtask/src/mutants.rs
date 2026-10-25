@@ -219,6 +219,30 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "gpubench GC2AC: the ring fixes draw no ring",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    if fx.ring {
+        for d in slots.iter().flatten() {",
+        to: "    if fx.ring && fx.busy {
+        for d in slots.iter().flatten() {",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2z_fixes_shift_only_what_they_name_and_layer_in_order",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2AC: the ring reaches half a tile, not the corner's tiles",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const RING_REACH: i32 = 16;",
+        to: "pub const RING_REACH: i32 = 4;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2ac_ring_covers_the_textured_edges_once_and_stays_hidden",
+        ]),
+    },
+    Mutant {
         name: "hal-mem: the one-pass check misses the last word",
         file: "hal/mem/src/lib.rs",
         from: "        differ += u32::from(v != w);",

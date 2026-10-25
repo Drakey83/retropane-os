@@ -793,8 +793,23 @@ fn gc2z_fixes_shift_only_what_they_name_and_layer_in_order() {
                 slots[..fx.hidden].iter().all(|&d| d == Some(hidden)),
                 "{f} {b}"
             );
+            // Then the ring round each textured object, if the fix has
+            // one.
+            let mut ringed = 0;
+            if fx.ring {
+                for o in own
+                    .iter()
+                    .filter(|o| matches!(o.paint, Paint::Texture { .. }))
+                {
+                    for band in ring(o) {
+                        assert_eq!(slots[fx.hidden + ringed], Some(band), "{f} {b}");
+                        ringed += 1;
+                    }
+                }
+            }
+            let at = fx.hidden + ringed;
             for (k, o) in own.iter().enumerate() {
-                let d = slots[fx.hidden + k].unwrap();
+                let d = slots[at + k].unwrap();
                 assert_eq!(d.corners, o.corners);
                 match (d.paint, o.paint) {
                     (Paint::Texture { tex, uv, .. }, Paint::Texture { uv: uv0, .. }) => {
@@ -814,7 +829,7 @@ fn gc2z_fixes_shift_only_what_they_name_and_layer_in_order() {
                     (p, p0) => assert_eq!(p, p0),
                 }
             }
-            let mut n = fx.hidden + own.len();
+            let mut n = at + own.len();
             if fx.busy {
                 let busy = Draw::rect(0, 0, W as i32, H as i32, Paint::Flat(BUSY_LAYER)).over();
                 assert_eq!(slots[n], Some(busy));
@@ -889,7 +904,8 @@ fn gc2aa_tries_the_free_cures_and_soaks_every_kind() {
             Fix {
                 tex: TexFix::ClampV,
                 hidden,
-                busy: false
+                busy: false,
+                ring: false
             }
         );
     }
@@ -962,4 +978,146 @@ fn gc2ab_ranks_the_hidden_layers_on_the_light_kinds_reversed() {
     assert_eq!(mhz, [152_750, 149_500]);
     assert!(mhz[0] < 156_000);
     assert_eq!(LASTPIX_ROUNDS, 800);
+}
+
+#[test]
+fn gc2ac_ring_covers_the_textured_edges_once_and_stays_hidden() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    // GC2K's worst's quad: (43, 45), 400 x 560.
+    let quad = Draw::rect(43, 45, 400, 560, Paint::Flat(0));
+    let px = |d: &Draw| {
+        let c = d.corners;
+        (
+            c[0].x / rp_mbx3d_render::SUB,
+            c[0].y / rp_mbx3d_render::SUB,
+            c[2].x / rp_mbx3d_render::SUB,
+            c[2].y / rp_mbx3d_render::SUB,
+        )
+    };
+    let bands = ring(&quad).map(|b| px(&b));
+    assert_eq!(
+        bands,
+        [
+            (27, 29, 459, 61),
+            (27, 589, 459, 621),
+            (27, 61, 59, 589),
+            (427, 61, 459, 589),
+        ]
+    );
+    for b in ring(&quad) {
+        assert_eq!(b.paint, Paint::Flat(HIDDEN_LAYER));
+        assert_eq!(b.blend, None);
+    }
+    // Every pixel within RING_REACH of an edge is covered exactly once,
+    // every other pixel not at all (edges and both directions: the
+    // quad's inside and outside, the corners).
+    let inside =
+        |p: (i32, i32, i32, i32), x: i32, y: i32| x >= p.0 && x < p.2 && y >= p.1 && y < p.3;
+    for y in 0..H as i32 {
+        for x in 0..W as i32 {
+            let near = |v: i32, edge: i32| (edge - RING_REACH..edge + RING_REACH).contains(&v);
+            let near_x = near(x, 43) || near(x, 443);
+            let near_y = near(y, 45) || near(y, 605);
+            let in_x = (43 - RING_REACH..443 + RING_REACH).contains(&x);
+            let in_y = (45 - RING_REACH..605 + RING_REACH).contains(&y);
+            let want = u32::from((near_x && in_y) || (near_y && in_x));
+            let got = bands.iter().filter(|&&b| inside(b, x, y)).count() as u32;
+            assert_eq!(got, want, "({x}, {y})");
+        }
+    }
+    // Clipped to the screen: a full-screen quad's ring lies inside it.
+    let full = Draw::rect(0, 0, W as i32, H as i32, Paint::Flat(0));
+    for b in ring(&full).map(|b| px(&b)) {
+        assert!(
+            b.0 >= 0 && b.1 >= 0 && b.2 <= W as i32 && b.3 <= H as i32,
+            "{b:?}"
+        );
+        assert!(b.0 < b.2 && b.1 < b.3, "{b:?}");
+    }
+    // The ring is hidden: GC2K's worst's Gouraud background (shifted
+    // (3, 5)) covers every band, so the scene's picture is the cure-less
+    // one's.
+    let (_, slots) = order_scene(Scene::Sweep(0), t);
+    let g = px(&slots[0].unwrap());
+    for b in bands {
+        assert!(
+            b.0 >= g.0 && b.1 >= g.1 && b.2 <= g.2 && b.3 <= g.3,
+            "{b:?}"
+        );
+    }
+    // Ring fixes: the clamped v shift, no busy layer, 0 and 1 full layers;
+    // every fixed scene still fits its slots.
+    assert_eq!(
+        FIXES[7],
+        Fix {
+            tex: TexFix::ClampV,
+            hidden: 0,
+            busy: false,
+            ring: true
+        }
+    );
+    assert_eq!(
+        FIXES[8],
+        Fix {
+            tex: TexFix::ClampV,
+            hidden: 1,
+            busy: false,
+            ring: true
+        }
+    );
+    assert!(FIXES[..7].iter().all(|f| !f.ring));
+    for (f, fx) in FIXES.iter().enumerate() {
+        for (b, &base) in FIX_BASE.iter().enumerate() {
+            let (_, own) = order_scene(base, t);
+            let tex = own
+                .iter()
+                .flatten()
+                .filter(|d| matches!(d.paint, Paint::Texture { .. }))
+                .count();
+            let need = fx.hidden
+                + usize::from(fx.ring) * 4 * tex
+                + own.iter().flatten().count()
+                + usize::from(fx.busy);
+            assert!(need <= SLOTS, "{f} {b}");
+        }
+    }
+}
+
+#[test]
+fn gc2ac_ranks_the_ring_against_the_full_layers_at_149_50() {
+    // GC2K's worst throughout: no cure, one full, the ring, the ring and
+    // one full, two full.
+    let want = [
+        (6, 0, false),
+        (2, 1, false),
+        (7, 0, true),
+        (8, 1, true),
+        (3, 2, false),
+    ];
+    for (s, (f, hidden, ring)) in RING_SCENES.iter().zip(want) {
+        assert_eq!(*s, Scene::Fix(1, f));
+        assert_eq!(FIX_BASE[1], Scene::Sweep(0));
+        assert_eq!((FIXES[f].hidden, FIXES[f].ring), (hidden, ring));
+        assert_eq!(FIXES[f].tex, TexFix::ClampV);
+        assert!(!FIXES[f].busy);
+    }
+    assert_eq!(
+        RING_WAYS,
+        [
+            (0, ROWS),
+            (1, ROWS),
+            (2, ROWS),
+            (3, ROWS),
+            (4, ROWS),
+            (1, REVERSED),
+            (3, REVERSED)
+        ]
+    );
+    assert_eq!(13_000 * RING_PLL.0 / RING_PLL.1, 149_500);
+    assert_eq!(RING_ROUNDS, 500);
 }

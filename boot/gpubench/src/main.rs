@@ -7916,7 +7916,13 @@ mod image {
         || GC2_CURED
         || GC2_FIX
         || GC2_FREE
-        || GC2_LASTPIX;
+        || GC2_LASTPIX
+        || GC2_RING;
+
+    /// Run GC2AC (`RP_GPUBENCH_GC2_RING`, see [`gc2::RING_SCENES`]): the
+    /// ring cure against one and two full hidden layers on GC2K's worst at
+    /// 149.50 / 1, each way's fastest render its cost. Unattended.
+    const GC2_RING: bool = option_env!("RP_GPUBENCH_GC2_RING").is_some();
 
     /// Run GC2AB (`RP_GPUBENCH_GC2_LASTPIX`, see [`gc2::LASTPIX_SCENES`]):
     /// the hidden layers ranked against the last-pixel fault at 152.75 / 1,
@@ -9246,7 +9252,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_LASTPIX {
+            if GC2_RING {
+                "the 16-bit kinds' targets inside the safe region (GC2AC: no map; the ring cure against one and two full hidden layers on GC2K's worst at 149.50 / 1),"
+            } else if GC2_LASTPIX {
                 "the 16-bit kinds' targets inside the safe region (GC2AB: no map; the hidden layers against the last-pixel fault, reversed, at 152.75 / 1 or 149.50 / 1),"
             } else if GC2_FREE {
                 "the 16-bit kinds' targets inside the safe region (GC2AA: no map; free corner cures on GC2K's worst at 139.75-149.50 / 1, then the winner soaked over every 16-bit kind),"
@@ -9390,7 +9398,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_LASTPIX {
+        let patch = if GC2_RING {
+            gc2::RING_SCENES.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_LASTPIX {
             gc2::LASTPIX_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_FREE {
             gc2::FREE_SOAK_SCENES[0].len() * gc2::words(gc2::FT2) as usize
@@ -9735,7 +9745,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_LASTPIX {
+                if GC2_RING {
+                    gc2_ring(g, &mut r, (tex, first, dsig));
+                } else if GC2_LASTPIX {
                     gc2_lastpix(g, &mut r, (tex, first, dsig));
                 } else if GC2_FREE {
                     gc2_free(g, &mut r, (tex, first, dsig));
@@ -11238,6 +11250,29 @@ mod image {
                 }
             }
         }
+    }
+
+    /// Run GC2AC (see [`GC2_RING`]): the seven ways at 149.50 / 1.
+    #[inline(never)]
+    fn gc2_ring(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let (m, n) = gc2::RING_PLL;
+        log!(
+            "  GC2AC: at 149.50 / 1, GC2K's worst: no cure, one full hidden layer, the ring, the ring and one full, two full, in rows; one full and the ring and one full reversed"
+        );
+        gc2_orders(
+            g,
+            r,
+            (tex, first, dsig),
+            &OrderPlan {
+                name: "GC2AC",
+                label: "GC2AC RING",
+                scenes: &gc2::RING_SCENES,
+                ways: &gc2::RING_WAYS,
+                step: (gc2_step(m, n, 0, 1), "149.50 / 1"),
+                secs: u32::MAX / 1_000_000,
+                rounds: gc2::RING_ROUNDS,
+            },
+        );
     }
 
     /// Run GC2AB (see [`GC2_LASTPIX`]): 152.75 / 1, or 149.50 / 1 when

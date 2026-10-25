@@ -550,17 +550,35 @@ pub enum TexFix {
 }
 
 /// One of run GC2Z's fixes: the texture shift, how many hidden opaque
-/// layers lie under the scene (GC2V's corner cure, one of them), and
-/// whether GC2U's busy layer is blended over it.
+/// layers lie under the scene (GC2V's corner cure, one of them), whether
+/// GC2U's busy layer is blended over it, and whether a hidden ring
+/// ([`ring`]) lies round every textured object (run GC2AC).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fix {
     pub tex: TexFix,
     pub hidden: usize,
     pub busy: bool,
+    pub ring: bool,
 }
 
 const fn fix(tex: TexFix, hidden: usize, busy: bool) -> Fix {
-    Fix { tex, hidden, busy }
+    Fix {
+        tex,
+        hidden,
+        busy,
+        ring: false,
+    }
+}
+
+/// Run GC2AC's fixes: the clamped v shift, `hidden` full hidden layers and
+/// the ring.
+const fn ring_fix(hidden: usize) -> Fix {
+    Fix {
+        tex: TexFix::ClampV,
+        hidden,
+        busy: false,
+        ring: true,
+    }
 }
 
 /// Run GC2Z's fixes (the owner, 2026-10-25: "Build the narrower texture fix
@@ -568,7 +586,7 @@ const fn fix(tex: TexFix, hidden: usize, busy: bool) -> Fix {
 /// narrower texture shifts with one hidden layer, then the clamped-v shift
 /// with two and four hidden layers, and with one and the busy layer (the
 /// cure that cleared GC2K's patch at 133.25, at 85% more render time).
-pub const FIXES: [Fix; 7] = [
+pub const FIXES: [Fix; 9] = [
     fix(TexFix::V, 1, false),
     fix(TexFix::ClampUv, 1, false),
     fix(TexFix::ClampV, 1, false),
@@ -578,6 +596,9 @@ pub const FIXES: [Fix; 7] = [
     // Run GC2AA: the clamped v shift with no hidden layer (the tile order
     // alone against GC2K's patch).
     fix(TexFix::ClampV, 0, false),
+    // Run GC2AC: the ring alone, and the ring over one full hidden layer.
+    ring_fix(0),
+    ring_fix(1),
 ];
 
 /// GC2Z's scenes to fix: FT2 and GC2K's worst (clamped textures), kinds 5
@@ -748,6 +769,35 @@ pub const LASTPIX_WAYS: [(usize, u8); 8] = [
 pub const LASTPIX_PLL: [(u32, u32); 2] = [(47, 4), (23, 2)];
 pub const LASTPIX_ROUNDS: u32 = 800;
 
+/// Run GC2AC (the owner, 2026-10-25: "build GC2AC, the ring cure for
+/// GC2K's rare corner pixel at 149.50 / 1"): GC2K's worst at 149.50 / 1,
+/// the clamped v shift throughout, with no cure, one full hidden layer
+/// (GC2AB's free one), the ring alone, the ring over one full layer, and
+/// two full layers (GC2AB: 16-20% dearer); all in rows (the order the
+/// patch shows most in, so the cures are told apart), then one full layer
+/// and the ring over it reversed (GC2AA's order). Each way's fastest
+/// render is the cure's cost.
+pub const RING_SCENES: [Scene; 5] = [
+    Scene::Fix(1, 6),
+    Scene::Fix(1, 2),
+    Scene::Fix(1, 7),
+    Scene::Fix(1, 8),
+    Scene::Fix(1, 3),
+];
+pub const RING_WAYS: [(usize, u8); 7] = [
+    (0, ROWS),
+    (1, ROWS),
+    (2, ROWS),
+    (3, ROWS),
+    (4, ROWS),
+    (1, REVERSED),
+    (3, REVERSED),
+];
+/// 13 MHz x 23 / 2 = 149.50, GC2AB's top; 500 rounds x 7 ways (3,500
+/// renders, about 7 minutes).
+pub const RING_PLL: (u32, u32) = (23, 2);
+pub const RING_ROUNDS: u32 = 500;
+
 /// `d`'s texture coordinates moved half a texel as `how` says (none for an
 /// untextured object, or a wrapping texture under the clamped-only fixes).
 #[must_use]
@@ -776,8 +826,46 @@ pub fn shift_texture(d: Draw, how: TexFix) -> Draw {
     }
 }
 
+/// How far a ring's bands reach each side of a textured object's edges:
+/// one tile across (tiles are 8 x 16) twice over, one tile row down.
+pub const RING_REACH: i32 = 16;
+
+/// Run GC2AC's ring round `d` (the owner, 2026-10-25, after GC2AB: one full
+/// hidden layer is free at 149.50 / 1 but a second costs 16-20%): four
+/// opaque [`HIDDEN_LAYER`] bands over the tiles along `d`'s bounding box's
+/// edges, [`RING_REACH`] pixels each side, inside the screen. GC2K's patch
+/// sits by the textured quad's corner, so the ring puts the extra object
+/// only in the tiles that need it, where a full layer puts one in every
+/// tile. The top and bottom bands span the whole width with the corners;
+/// the side bands stop where they start, so no tile gets two.
+#[must_use]
+pub fn ring(d: &Draw) -> [Draw; 4] {
+    use rp_mbx3d_render::SUB;
+    let span = |v: [i32; 4]| {
+        v.iter()
+            .fold((i32::MAX, i32::MIN), |(lo, hi), &a| (lo.min(a), hi.max(a)))
+    };
+    let (x0, x1) = span(d.corners.map(|p| p.x.div_euclid(SUB)));
+    let (y0, y1) = span(d.corners.map(|p| p.y.div_euclid(SUB)));
+    let (w, h) = (W as i32, H as i32);
+    let band = |l: i32, t: i32, r: i32, b: i32| {
+        let (l, t) = (l.clamp(0, w), t.clamp(0, h));
+        let (r, b) = (r.clamp(l, w), b.clamp(t, h));
+        Draw::rect(l, t, r - l, b - t, Paint::Flat(HIDDEN_LAYER))
+    };
+    let (l, r) = (x0 - RING_REACH, x1 + RING_REACH);
+    let (top, bottom) = (y0 + RING_REACH, y1 - RING_REACH);
+    [
+        band(l, y0 - RING_REACH, r, top),
+        band(l, bottom, r, y1 + RING_REACH),
+        band(l, top, x0 + RING_REACH, bottom),
+        band(x1 - RING_REACH, top, r, bottom),
+    ]
+}
+
 /// [`FIX_BASE`]'s scene `b` with fix `f`: the hidden layers first, the
-/// scene's own objects (textures shifted), then the busy layer.
+/// ring round every textured object, the scene's own objects (textures
+/// shifted), then the busy layer.
 #[must_use]
 pub fn fix_scene(b: usize, f: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     let fx = FIXES[f];
@@ -787,6 +875,16 @@ pub fn fix_scene(b: usize, f: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     for _ in 0..fx.hidden {
         out[n] = Some(flat(HIDDEN_LAYER, false));
         n += 1;
+    }
+    if fx.ring {
+        for d in slots.iter().flatten() {
+            if matches!(d.paint, Paint::Texture { .. }) {
+                for band in ring(d) {
+                    out[n] = Some(band);
+                    n += 1;
+                }
+            }
+        }
     }
     for d in slots.into_iter().flatten() {
         out[n] = Some(shift_texture(d, fx.tex));
