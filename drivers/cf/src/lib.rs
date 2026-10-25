@@ -250,9 +250,19 @@ pub struct CfCard<A, C, D = NoDma> {
     dead: bool,
     /// The common memory's speed its CIS rates, ns (`None`: no rating).
     rated_ns: Option<u32>,
-    /// Writes at another timing than reads ([`CfCard::write_at`]): how to
-    /// set the socket's register, the read timing, the write timing.
-    write_timing: Option<(fn(u32), u32, u32)>,
+    /// Writes at another timing than reads ([`CfCard::write_at`]).
+    write_timing: Option<WriteTiming>,
+}
+
+/// How [`CfCard::write_at`] times writes.
+#[derive(Clone, Copy)]
+struct WriteTiming {
+    /// Programs the socket's register.
+    set: fn(u32),
+    /// The register for reads (put back after each write).
+    read: u32,
+    /// The register for writes.
+    write: u32,
 }
 
 /// What the CIS walk found: the configuration registers' base, and the
@@ -684,7 +694,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
     /// so a tuned card writes at the timing it was proven to write at
     /// (Windows Mobile's) until a write test proves more.
     pub fn write_at(&mut self, set: fn(u32), read: u32, write: u32) {
-        self.write_timing = Some((set, read, write));
+        self.write_timing = Some(WriteTiming { set, read, write });
     }
 
     /// A 64-bit FNV-1a hash of IDENTIFY (through the 16-bit port) and the
@@ -979,12 +989,12 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
     }
 
     fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-        let Some((set, read, write)) = self.write_timing else {
+        let Some(t) = self.write_timing else {
             return self.write_sectors(lba, buf);
         };
-        set(write);
+        (t.set)(t.write);
         let done = self.write_sectors(lba, buf);
-        set(read);
+        (t.set)(t.read);
         done
     }
 }
