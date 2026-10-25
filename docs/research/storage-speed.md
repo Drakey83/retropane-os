@@ -550,6 +550,21 @@ writing sectors it hasn't written before, rounds alternated (C11), and the rewri
 own (a card property: how often a filesystem rewrites the same sectors, the FAT and directories,
 matters more than the timing for small writes).
 
+**C11, fresh sectors and the rewrite cost (2026-10-25, `local/rp-storfast-C11.txt`, image sha
+34453b33, the 8 GB card): faster write timing pays, 1.64x.** A 512 KiB file reserved (its sectors
+written once, as zeros), then twelve 64-sector regions written once each, the timings rotated, every
+sector right on read-back: **Windows Mobile's 5,745-5,794 KiB/s, strobe 9 6,051-6,056, strobe 1
+9,427-9,447** (the first region, at Windows Mobile's, 2,113 with one 9.7 ms DRQ wait: the card's
+first write of the run). The card's limit for writes is at least strobe 1 (27 cycles against 54);
+none was tried shorter. The rewrite cost: one region written again at once, 5,749 KiB/s the first
+time, then **226-229 KiB/s every time after (one ~135 ms DRQ wait each)**. A read at the slowest
+timing changes nothing (the fresh region after it: 5,793). Not explained: a fresh region at strobe 1
+right after the rewrites ran at 240 KiB/s (a 130 ms wait), while the one before it was fast; the card
+may be catching up on its own erasing after the rewrites. What it means: a write timing tuned per
+card can make writes ~1.6x faster; and a filesystem that writes the same sectors again soon after
+(the FAT, a directory, the run log's sector a line) pays ~135 ms for each such write on this card,
+far more than any timing gains.
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the
