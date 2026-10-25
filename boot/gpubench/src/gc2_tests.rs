@@ -648,7 +648,7 @@ fn gc2v_moves_one_thing_at_a_time_from_ft2() {
     if let Paint::Texture { uv, .. } = edge_scene(7, t).1[1].unwrap().paint {
         assert!(
             uv.iter()
-                .all(|&(_, v)| v == 0 + UV_ONE / 64 || v == UV_ONE + UV_ONE / 64)
+                .all(|&(_, v)| v == UV_ONE / 64 || v == UV_ONE + UV_ONE / 64)
         );
         assert_eq!(8 << t.t8888.code, 32);
     } else {
@@ -664,6 +664,8 @@ fn gc2v_moves_one_thing_at_a_time_from_ft2() {
             .enumerate()
             .all(|(i, w)| *w == (i, ROWS))
     );
+    // Every render was wrong at 146.25 in GC2U: ten tell.
+    assert_eq!(EDGE_ROUNDS, 10);
 }
 
 #[test]
