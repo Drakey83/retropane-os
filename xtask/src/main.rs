@@ -165,6 +165,8 @@ commands:
             checked end to end; never overwrites a local file
   rm        delete a file or empty folder on the card through the loader
             (crash-safe; the files the device boots from are refused)
+  card layout <sd|cf>: the card's partition, file system, clusters and
+            alignment, read-only (through `cargo xtask card`)
   format    `format <sd|cf> <auto|fat12|fat16|fat32|exfat>`: formats a card on
             the device; prints the plan unless --yes; boot files and icon kept
   cf        identify the CompactFlash card through the loader (read-only;

@@ -627,3 +627,46 @@ fn names_parse_both_ways() {
     }
     assert_eq!(Fs::parse("ntfs"), None);
 }
+
+#[test]
+fn a_survey_reads_back_every_layout_the_formatter_writes() {
+    for (total, fs) in [
+        (4 * MIB, Fs::Fat12),
+        (64 * MIB, Fs::Fat16),
+        (4096 * MIB, Fs::Fat32),
+        (64 * MIB, Fs::ExFat),
+    ] {
+        let (mut d, l) = format(total, &opts(Some(fs)));
+        let s = crate::survey::survey(&mut d).unwrap();
+        assert_eq!(s.fs, Some(fs));
+        assert_eq!(
+            (s.part_start, s.part_sectors),
+            (l.part_start, l.part_sectors)
+        );
+        assert_eq!(s.part_type, d.sector(0)[446 + 4]);
+        assert_eq!(s.cluster_bytes, l.cluster_bytes(), "{fs:?}");
+        assert_eq!(
+            (s.fat_offset, s.fat_sectors, s.fats),
+            (l.fat_offset, l.fat_sectors, l.fats)
+        );
+        assert_eq!(
+            (s.data_offset, s.clusters),
+            (l.data_offset, l.clusters),
+            "{fs:?}"
+        );
+        assert!(s.data_alignment() >= l.align, "{fs:?}");
+        if fs != Fs::ExFat {
+            assert_eq!(&s.label, b"RETROPANE  ");
+            assert_eq!(&s.oem, b"MSWIN4.1");
+        }
+    }
+    // No MBR: the boot sector at sector 0 ("superfloppy").
+    let (d, l) = format(64 * MIB, &opts(Some(Fs::Fat16)));
+    let mut flat = Sparse::new(d.total);
+    let boot = d.sector(l.part_start);
+    flat.write_blocks(0, &boot).unwrap();
+    let s = crate::survey::survey(&mut flat).unwrap();
+    assert_eq!((s.part_type, s.part_start, s.fs), (0, 0, Some(Fs::Fat16)));
+    // Nothing there: an error, no panic.
+    assert!(crate::survey::survey(&mut Sparse::new(4096)).is_err());
+}

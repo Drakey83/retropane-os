@@ -1008,6 +1008,72 @@ mod image {
         }
     }
 
+    /// `card layout <sd|cf>`: how the card is laid out (read-only, two
+    /// sectors): the partition, the file system and who formatted it, its
+    /// clusters, FATs and root, where the data area starts and how it lines
+    /// up with erase blocks (ADR-0036: to compare the makers', Windows' and
+    /// Windows Mobile's layouts with ours).
+    #[inline(never)]
+    fn card_layout(lun: &mut Lun, cf: &mut CfLun, args: &[u8], reply: &mut Line) {
+        let surveyed = match args.trim_ascii() {
+            b"sd" => match lun.card.as_mut() {
+                Some(sd) => rp_fat::survey::survey(&mut Fed::Sd(sd)),
+                None => {
+                    no_card(lun.init_error, reply);
+                    return;
+                }
+            },
+            b"cf" => match &mut cf.slot {
+                CfSlot::Card(c) if cf.inserted => rp_fat::survey::survey(&mut Fed::Cf(c)),
+                _ => {
+                    let _ = reply.write_str("RPL ERR no CF card\r\n");
+                    return;
+                }
+            },
+            _ => {
+                let _ = reply.write_str("RPL ERR usage: card layout <sd|cf>\r\n");
+                return;
+            }
+        };
+        let s = match surveyed {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = write!(reply, "RPL ERR layout: {}\r\n", e.name());
+                return;
+            }
+        };
+        let text = |b: &[u8]| -> [u8; 11] {
+            let mut out = [b'.'; 11];
+            for (o, &c) in out.iter_mut().zip(b) {
+                if (0x20..0x7F).contains(&c) {
+                    *o = c;
+                }
+            }
+            out
+        };
+        let oem = text(&s.oem);
+        let label = text(&s.label);
+        let _ = write!(
+            reply,
+            "RPL OK layout: partition type 0x{:02x} at sector {} ({} sectors); {} by '{}' label '{}', {} B clusters, {} clusters, FAT at +{} ({} x {} sectors), root {} entries, data at +{} (sector {}, aligned to {} KiB)\r\n",
+            s.part_type,
+            s.part_start,
+            s.part_sectors,
+            s.fs.map_or("unknown", mkfs::Fs::name),
+            core::str::from_utf8(&oem[..8]).unwrap_or("?"),
+            core::str::from_utf8(&label).unwrap_or("?"),
+            s.cluster_bytes,
+            s.clusters,
+            s.fat_offset,
+            s.fats,
+            s.fat_sectors,
+            s.root_entries,
+            s.data_offset,
+            s.part_start.wrapping_add(s.data_offset),
+            s.data_alignment() / 2,
+        );
+    }
+
     /// Most files a format keeps: the boot files, `autorun.inf` and the
     /// icon it names.
     const KEEP_MAX: usize = 7;
@@ -3354,6 +3420,14 @@ mod image {
                                 msc.medium_changed(1);
                             }
                             status.as_str()
+                        }
+                        Ok(c) if c.starts_with(b"card layout ") => {
+                            if msc.host_writing(now_ms()) {
+                                "RPL ERR card busy: the PC is writing\r\n"
+                            } else {
+                                card_layout(&mut lun, &mut cf, &c[12..], &mut status);
+                                status.as_str()
+                            }
                         }
                         Ok(c) if c.starts_with(b"format ") => {
                             // The arguments out of the frame buffer: the

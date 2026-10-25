@@ -2303,6 +2303,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "fat: a straddling FAT12 entry's low half not written",
+        file: "kernel/fat/src/lib.rs",
+        from: "self.fat_buf[SECTOR - 1] = w[0];",
+        to: "let _ = w[0];",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "fat12_entries_straddling_a_sector_keep_their_neighbours",
+        ]),
+    },
+    Mutant {
         name: "mm: a frame range added over frames already owned",
         file: "kernel/mm/src/frames.rs",
         from: "if (start..end).any(|f| self.owns(f)) {",

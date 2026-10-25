@@ -36,9 +36,6 @@ pub const REVIEWED: &[&str] = &[
     "rp-cftime: rp_cftime::image::run",
     "rp-storfast: rp_storfast::image::run",
     "rp-noise: rp_noise::image::main",
-    // Mounting the card once per save (2026-10-25): the FAT volume holds
-    // two FAT sectors since FAT12 (ADR-0036), its entries straddling them.
-    "rp-noise: rp_noise::image::mount",
     "rp-looks: rp_looks::image::read_photo",
     "rp-looks: rp_looks::image::main",
 ];

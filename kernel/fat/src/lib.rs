@@ -400,9 +400,11 @@ pub struct Volume<D> {
     clusters: u32,
     fsinfo_lba: Option<u32>,
     buf: [u8; SECTOR],
-    /// Write-back cache of FAT sectors from `fat_cached` (its index): one,
-    /// or two on FAT12, whose entries may straddle a sector boundary.
-    fat_buf: [u8; 2 * SECTOR],
+    /// Write-back cache of one FAT sector (`fat_cached` = its index). A
+    /// FAT12 entry straddling two sectors is read and written as its two
+    /// halves, one sector at a time (`fat_raw`, `fat_set`), so no FAT
+    /// width costs a second sector of RAM.
+    fat_buf: [u8; SECTOR],
     fat_cached: Option<u32>,
     fat_dirty: bool,
     /// Assembled long name of the entry being read.
@@ -686,7 +688,7 @@ impl<D: BlockDevice> Volume<D> {
             fsinfo_lba: (fat32 && fsinfo != 0 && fsinfo != 0xFFFF)
                 .then(|| base + u32::from(fsinfo)),
             buf,
-            fat_buf: [0; 2 * SECTOR],
+            fat_buf: [0; SECTOR],
             fat_cached: None,
             fat_dirty: false,
             lfn: [0; NAME_MAX],
@@ -767,36 +769,24 @@ impl<D: BlockDevice> Volume<D> {
 
     // --- FAT ---------------------------------------------------------------
 
-    /// FAT sectors the cache holds from `sector`: two on FAT12 (so an
-    /// entry straddling into the next sector is in the cache), else one.
-    fn fat_window(&self, sector: u32) -> u32 {
-        if self.kind == FatKind::Fat12 && sector + 1 < self.fat_sectors {
-            2
-        } else {
-            1
-        }
-    }
-
     fn fat_load(&mut self, sector: u32) -> Result<(), Error> {
         if self.fat_cached == Some(sector) {
             return Ok(());
         }
         self.fat_flush()?;
-        let n = self.fat_window(sector) as usize;
         self.dev
-            .read_blocks(self.fat_start + sector, &mut self.fat_buf[..n * SECTOR])?;
+            .read_blocks(self.fat_start + sector, &mut self.fat_buf)?;
         self.fat_cached = Some(sector);
         Ok(())
     }
 
-    /// Writes the cached FAT sectors to every FAT copy.
+    /// Writes the cached FAT sector to every FAT copy.
     fn fat_flush(&mut self) -> Result<(), Error> {
         if let (Some(sector), true) = (self.fat_cached, self.fat_dirty) {
-            let n = self.fat_window(sector) as usize;
             for copy in 0..self.fats {
                 self.dev.write_blocks(
                     self.fat_start + copy * self.fat_sectors + sector,
-                    &self.fat_buf[..n * SECTOR],
+                    &self.fat_buf,
                 )?;
             }
             self.fat_dirty = false;
@@ -804,36 +794,56 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
-    /// Caches the FAT sectors holding `cluster`'s entry; where the entry
-    /// starts in the cache.
-    fn fat_locate(&mut self, cluster: u32) -> Result<usize, Error> {
+    /// Where `cluster`'s entry starts: its FAT sector and the byte in it
+    /// (a FAT12 entry at byte 511 runs into the next sector).
+    fn fat_at(&self, cluster: u32) -> Result<(u32, usize), Error> {
         if !self.valid_cluster(cluster) {
             return Err(Error::Corrupt);
         }
         let off = self.kind.offset(cluster);
-        let sector = off / SECTOR as u32;
-        let within = (off % SECTOR as u32) as usize;
-        // Wholly in the second sector of a cached FAT12 pair: no reload.
-        if let Some(c) = self.fat_cached
-            && sector == c + 1
-            && self.fat_window(c) == 2
-            && within + self.kind.width() as usize <= SECTOR
-        {
-            return Ok(SECTOR + within);
+        Ok((off / SECTOR as u32, (off % SECTOR as u32) as usize))
+    }
+
+    /// `cluster`'s entry as stored (end marks not widened).
+    fn fat_raw(&mut self, cluster: u32) -> Result<u32, Error> {
+        let (sector, at) = self.fat_at(cluster)?;
+        let mut w = [0u8; 2];
+        if at + self.kind.width() as usize <= SECTOR {
+            self.fat_load(sector)?;
+            return Ok(entry_get(self.kind, &self.fat_buf, at, cluster));
         }
+        // Straddling (FAT12 only): its low byte ends this sector, its high
+        // byte starts the next.
         self.fat_load(sector)?;
-        Ok(within)
+        w[0] = self.fat_buf[SECTOR - 1];
+        self.fat_load(sector + 1)?;
+        w[1] = self.fat_buf[0];
+        Ok(entry_get(self.kind, &w, 0, cluster))
     }
 
     fn fat_get(&mut self, cluster: u32) -> Result<u32, Error> {
-        let o = self.fat_locate(cluster)?;
-        let raw = entry_get(self.kind, &self.fat_buf, o, cluster);
+        let raw = self.fat_raw(cluster)?;
         Ok(self.kind.widen(raw))
     }
 
     fn fat_set(&mut self, cluster: u32, value: u32) -> Result<(), Error> {
-        let o = self.fat_locate(cluster)?;
-        entry_put(self.kind, &mut self.fat_buf, o, cluster, value);
+        let (sector, at) = self.fat_at(cluster)?;
+        if at + self.kind.width() as usize <= SECTOR {
+            self.fat_load(sector)?;
+            entry_put(self.kind, &mut self.fat_buf, at, cluster, value);
+            self.fat_dirty = true;
+            return Ok(());
+        }
+        // Straddling: each half in its own sector, the bits around kept.
+        self.fat_load(sector)?;
+        let mut w = [self.fat_buf[SECTOR - 1], 0];
+        self.fat_load(sector + 1)?;
+        w[1] = self.fat_buf[0];
+        entry_put(self.kind, &mut w, 0, cluster, value);
+        self.fat_buf[0] = w[1];
+        self.fat_dirty = true;
+        self.fat_load(sector)?;
+        self.fat_buf[SECTOR - 1] = w[0];
         self.fat_dirty = true;
         Ok(())
     }
@@ -1807,6 +1817,7 @@ pub mod format;
 
 pub mod exfat;
 pub mod mkfs;
+pub mod survey;
 
 pub mod check;
 pub mod guard;

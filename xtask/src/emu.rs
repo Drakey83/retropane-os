@@ -9176,6 +9176,16 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
             return Err("the icon came back different after the format".into());
         }
         say(&mut s, "card check", "RPL OK check clean", 40)?;
+        // The layout as the loader reads it back, read-only.
+        let line = say(
+            &mut s,
+            "card layout sd",
+            "RPL OK layout: partition type 0x06",
+            20,
+        )?;
+        if !line.contains("FAT16 by 'MSWIN4.1' label 'X51V       ', 16384 B clusters") {
+            return Err(format!("card layout after the FAT16 format: {line:?}"));
+        }
         // exFAT once the boot files are formatted away; then a file put.
         say(
             &mut s,

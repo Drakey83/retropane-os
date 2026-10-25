@@ -33,9 +33,7 @@
 
 use rp_hal_api::BlockDevice;
 
-use crate::{
-    EOC_MIN, Error, FAT_MASK, FatKind, SECTOR, Volume, entry_first, entry_get, le16, le32,
-};
+use crate::{EOC_MIN, Error, FAT_MASK, FatKind, SECTOR, Volume, entry_first, le16, le32};
 
 /// Files and folders a guard can protect (the CF card's: its boot folder
 /// and the four files in it).
@@ -230,12 +228,6 @@ impl<D: BlockDevice> Volume<D> {
             t.copy_from_slice(&self.buf[PARTITIONS]);
         }
         Ok(t)
-    }
-
-    /// `cluster`'s FAT entry as stored (end marks not widened).
-    fn fat_raw(&mut self, cluster: u32) -> Result<u32, Error> {
-        let o = self.fat_locate(cluster)?;
-        Ok(entry_get(self.kind, &self.fat_buf, o, cluster))
     }
 
     /// The file `path` names, or else the folder.
