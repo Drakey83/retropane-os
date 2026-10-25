@@ -716,6 +716,38 @@ pub const FREE_SOAK_WAYS: [[(usize, u8); 7]; 3] = [
 ];
 pub const FREE_SOAK_MINUTES: u32 = 60;
 
+/// Run GC2AB (the owner, 2026-10-25: "Build the short last-pixel cure test
+/// at 149.50"): GC2AA's soak left one wrong pixel in 30,219 renders, the
+/// last pixel of a tile in kind 0 (plain Gouraud), too rare for 15 minutes
+/// to rank cures; so one clock step up, 152.75 / 1, where the race should
+/// be commoner, falling back to 149.50 if 152.75 doesn't run. All in
+/// reversed order (GC2AA's winner): kinds 0 and 1 with no hidden layer, one
+/// and two; GC2K's worst with one and two (the second layer's cost there).
+pub const LASTPIX_SCENES: [Scene; 8] = [
+    Scene::Fix(4, 6),
+    Scene::Fix(4, 2),
+    Scene::Fix(4, 3),
+    Scene::Fix(5, 6),
+    Scene::Fix(5, 2),
+    Scene::Fix(5, 3),
+    Scene::Fix(1, 2),
+    Scene::Fix(1, 3),
+];
+pub const LASTPIX_WAYS: [(usize, u8); 8] = [
+    (0, REVERSED),
+    (1, REVERSED),
+    (2, REVERSED),
+    (3, REVERSED),
+    (4, REVERSED),
+    (5, REVERSED),
+    (6, REVERSED),
+    (7, REVERSED),
+];
+/// The clock (13 MHz x 47 / 4 = 152.75) and the fallback (149.50), and the
+/// rounds: 800 x 8 ways, about 13 minutes.
+pub const LASTPIX_PLL: [(u32, u32); 2] = [(47, 4), (23, 2)];
+pub const LASTPIX_ROUNDS: u32 = 800;
+
 /// `d`'s texture coordinates moved half a texel as `how` says (none for an
 /// untextured object, or a wrapping texture under the clamped-only fixes).
 #[must_use]

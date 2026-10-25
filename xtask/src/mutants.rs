@@ -208,6 +208,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "gpubench GC2AB: the climb past the memory's failing 156 MHz",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const LASTPIX_PLL: [(u32, u32); 2] = [(47, 4), (23, 2)];",
+        to: "pub const LASTPIX_PLL: [(u32, u32); 2] = [(12, 1), (23, 2)];",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2ab_ranks_the_hidden_layers_on_the_light_kinds_reversed",
+        ]),
+    },
+    Mutant {
         name: "hal-mem: the one-pass check misses the last word",
         file: "hal/mem/src/lib.rs",
         from: "        differ += u32::from(v != w);",

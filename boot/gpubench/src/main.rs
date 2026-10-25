@@ -7915,7 +7915,13 @@ mod image {
         || GC2_EDGE
         || GC2_CURED
         || GC2_FIX
-        || GC2_FREE;
+        || GC2_FREE
+        || GC2_LASTPIX;
+
+    /// Run GC2AB (`RP_GPUBENCH_GC2_LASTPIX`, see [`gc2::LASTPIX_SCENES`]):
+    /// the hidden layers ranked against the last-pixel fault at 152.75 / 1,
+    /// at 149.50 / 1 if 152.75 doesn't run. Unattended.
+    const GC2_LASTPIX: bool = option_env!("RP_GPUBENCH_GC2_LASTPIX").is_some();
 
     /// Run GC2AA (`RP_GPUBENCH_GC2_FREE`, the owner after GC2Z, 2026-10-25:
     /// "Look for a corner fix that costs nothing at 139.75-149.50, then soak
@@ -9240,7 +9246,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_FREE {
+            if GC2_LASTPIX {
+                "the 16-bit kinds' targets inside the safe region (GC2AB: no map; the hidden layers against the last-pixel fault, reversed, at 152.75 / 1 or 149.50 / 1),"
+            } else if GC2_FREE {
                 "the 16-bit kinds' targets inside the safe region (GC2AA: no map; free corner cures on GC2K's worst at 139.75-149.50 / 1, then the winner soaked over every 16-bit kind),"
             } else if GC2_FIX {
                 "the 16-bit kinds' targets inside the safe region (GC2Z: no map; the narrower texture shifts at 143.00-149.50 / 1, then stronger corner cures at 139.75 / 1),"
@@ -9382,7 +9390,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_FREE {
+        let patch = if GC2_LASTPIX {
+            gc2::LASTPIX_SCENES.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_FREE {
             gc2::FREE_SOAK_SCENES[0].len() * gc2::words(gc2::FT2) as usize
         } else if GC2_FIX {
             gc2::FIX_TEX_SCENES.len().max(gc2::FIX_CORNER_SCENES.len())
@@ -9725,7 +9735,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_FREE {
+                if GC2_LASTPIX {
+                    gc2_lastpix(g, &mut r, (tex, first, dsig));
+                } else if GC2_FREE {
                     gc2_free(g, &mut r, (tex, first, dsig));
                 } else if GC2_FIX {
                     gc2_fix(g, &mut r, (tex, first, dsig));
@@ -11225,6 +11237,46 @@ mod image {
                     let _ = underrun_take(&mut g.e.regs);
                 }
             }
+        }
+    }
+
+    /// Run GC2AB (see [`GC2_LASTPIX`]): 152.75 / 1, or 149.50 / 1 when
+    /// 152.75 didn't run (its clock not taken or a render not held) or every
+    /// way was wrong in every round there (the memory failing, not the race).
+    #[inline(never)]
+    fn gc2_lastpix(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (tex, first, dsig): (gc2::Tex, &mut [u32], bool),
+    ) {
+        const NAMES: [&str; 2] = ["152.75 / 1", "149.50 / 1"];
+        const ALL: u128 = (1 << gc2::LASTPIX_WAYS.len()) - 1;
+        for (pi, &(m, n)) in gc2::LASTPIX_PLL.iter().enumerate() {
+            log!(
+                "  GC2AB: at {}, reversed: kinds 0 and 1 with 0, 1, 2 hidden layers; GC2K's worst with 1, 2",
+                NAMES[pi]
+            );
+            let wrong = gc2_orders(
+                g,
+                r,
+                (tex, &mut *first, dsig),
+                &OrderPlan {
+                    name: "GC2AB",
+                    label: "GC2AB LAST PIXEL",
+                    scenes: &gc2::LASTPIX_SCENES,
+                    ways: &gc2::LASTPIX_WAYS,
+                    step: (gc2_step(m, n, 0, 1), NAMES[pi]),
+                    secs: u32::MAX / 1_000_000,
+                    rounds: gc2::LASTPIX_ROUNDS,
+                },
+            );
+            if wrong & ALL != ALL {
+                return;
+            }
+            log!(
+                "  GC2AB: {} didn't run or every way went wrong there: falling back",
+                NAMES[pi]
+            );
         }
     }
 

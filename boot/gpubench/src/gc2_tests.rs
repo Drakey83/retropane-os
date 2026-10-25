@@ -927,3 +927,39 @@ fn gc2aa_tries_the_free_cures_and_soaks_every_kind() {
     assert_eq!([ROWS, REVERSED, COLUMNS_REVERSED], [0, 1, 2]);
     assert_eq!(FREE_SOAK_MINUTES, 60);
 }
+
+#[test]
+fn gc2ab_ranks_the_hidden_layers_on_the_light_kinds_reversed() {
+    // Kinds 0 and 1 with no hidden layer, one, two; GC2K's worst with one
+    // and two; every way reversed; the clamped v shift throughout.
+    let want = [
+        (Scene::Kind(0), 0),
+        (Scene::Kind(0), 1),
+        (Scene::Kind(0), 2),
+        (Scene::Kind(1), 0),
+        (Scene::Kind(1), 1),
+        (Scene::Kind(1), 2),
+        (Scene::Sweep(0), 1),
+        (Scene::Sweep(0), 2),
+    ];
+    for (s, (base, hidden)) in LASTPIX_SCENES.iter().zip(want) {
+        let Scene::Fix(b, f) = *s else {
+            panic!("a fix");
+        };
+        assert_eq!(FIX_BASE[b], base);
+        assert_eq!(FIXES[f].hidden, hidden);
+        assert_eq!(FIXES[f].tex, TexFix::ClampV);
+        assert!(!FIXES[f].busy);
+    }
+    assert!(
+        LASTPIX_WAYS
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, REVERSED))
+    );
+    let mhz: std::vec::Vec<u32> = LASTPIX_PLL.iter().map(|&(m, n)| 13_000 * m / n).collect();
+    // One step above 149.50, below GC2H2's failing 156; then 149.50.
+    assert_eq!(mhz, [152_750, 149_500]);
+    assert!(mhz[0] < 156_000);
+    assert_eq!(LASTPIX_ROUNDS, 800);
+}
