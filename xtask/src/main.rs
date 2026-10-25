@@ -143,9 +143,11 @@ commands:
   install   put the kit's loader, HaRET and scripts on the card the same way
             (replaces the files already there; run cargo xtask sdkit first);
             `install cf` puts them in the CF card's RetroPane folder instead
-            (through the drive, each file read back and compared)
-  drive     the SD card as a drive on the PC (ADR-0014): `drive rw` lets the
-            PC write it, `drive ro` (the default at start) makes it read-only,
+            (through the loader, as the PC may not change them; each file
+            read back and compared)
+  drive     the SD and CF cards as drives on the PC (ADR-0014): writable by
+            default except their boot files; `drive ro` makes them read-only,
+            `drive rw` writable again,
             `drive off`/`drive on` withdraws/offers the card (an empty reader
             to the PC), `drive status` reports counters and the last card error
   backlight the X51v's backlight through the loader: `backlight` reports

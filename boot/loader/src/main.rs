@@ -439,10 +439,25 @@ mod image {
     }
 
     impl Write for Line {
+        /// Text past the buffer is cut, but a line's end (`\r\n` or `\n`)
+        /// always fits: its last two bytes are kept for it. The PC reads a
+        /// reply to its end, so a cut one must still end (a long `cf log`
+        /// once lost its `\r\n` and the PC waited for it).
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            let n = s.len().min(self.buf.len() - self.len);
-            self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+            let (body, end) = match s.strip_suffix("\r\n") {
+                Some(b) => (b, "\r\n"),
+                None => s.strip_suffix('\n').map_or((s, ""), |b| (b, "\n")),
+            };
+            let room = (self.buf.len() - 2).saturating_sub(self.len);
+            let mut n = body.len().min(room);
+            while !body.is_char_boundary(n) {
+                n -= 1;
+            }
+            self.buf[self.len..self.len + n].copy_from_slice(&body.as_bytes()[..n]);
             self.len += n;
+            let k = end.len().min(self.buf.len() - self.len);
+            self.buf[self.len..self.len + k].copy_from_slice(&end.as_bytes()[..k]);
+            self.len += k;
             Ok(())
         }
     }
@@ -612,7 +627,16 @@ mod image {
 
     /// Writes a file frame to the card and checks it back; the reply line.
     #[inline(never)]
-    fn put_file(lun: &mut Lun, msc: &mut Msc<'_>, frame: Frame, dest: &mut [u8], reply: &mut Line) {
+    /// A name starting `cf:` goes onto the CF card (`cargo xtask install
+    /// cf`: its boot files, which the PC itself may not change).
+    fn put_file(
+        lun: &mut Lun,
+        cf: &mut CfLun,
+        msc: &mut Msc<'_>,
+        frame: Frame,
+        dest: &mut [u8],
+        reply: &mut Line,
+    ) {
         let (payload, scratch) = dest.split_at_mut(dest.len() - SCRATCH);
         if frame.len > payload.len() {
             let _ = reply.write_str(LoadError::TooBig.reply());
@@ -625,8 +649,12 @@ mod image {
                 return;
             }
         };
+        let (unit, name) = match name.strip_prefix("cf:") {
+            Some(rest) => (1, rest),
+            None => (0, name),
+        };
         // The lock switch is the owner's: nothing writes a locked card.
-        if lun.locked {
+        if unit == 0 && lun.locked {
             let _ = reply.write_str("RPL ERR card is write-protected (lock switch)\r\n");
             return;
         }
@@ -635,11 +663,15 @@ mod image {
             let _ = reply.write_str("RPL ERR card busy: the PC is writing\r\n");
             return;
         }
-        let Some(sd) = lun.card.as_mut() else {
+        let mounted = if unit == 1 {
+            mount_cf(cf)
+        } else if let Some(sd) = lun.card.as_mut() {
+            mount_any(sd)
+        } else {
             no_card(lun.init_error, reply);
             return;
         };
-        let mut vol = match mount_any(sd) {
+        let mut vol = match mounted {
             Ok(v) => v,
             Err(why) => {
                 let _ = write!(reply, "RPL ERR card: {why}\r\n");
@@ -647,7 +679,7 @@ mod image {
             }
         };
         // Whatever happens next, the PC must re-read the volume.
-        msc.medium_changed(0);
+        msc.medium_changed(unit);
         let t0 = rt::ticks();
         let reads0 = vol.device().reads();
         let written = match vol.put(name, contents, scratch) {
@@ -923,6 +955,15 @@ mod image {
     /// What boots the device from the card (HaRET, its scripts, this
     /// loader): `rm` won't take them, so a slip can't brick the card.
     const BOOT_FILES: [&str; 4] = ["retropane.bin", "haret.exe", "startup.txt", "default.txt"];
+    /// The CF card's: the same files in their folder (Windows Mobile starts
+    /// haret.exe there, reminder R27), and the folder itself.
+    const CF_BOOT_FILES: [&str; 5] = [
+        "RetroPane",
+        "RetroPane/retropane.bin",
+        "RetroPane/haret.exe",
+        "RetroPane/startup.txt",
+        "RetroPane/default.txt",
+    ];
 
     /// `rm <path>`: deletes a file or an empty folder (crash-safe), never a
     /// boot file, never on a locked card.
@@ -1141,14 +1182,21 @@ mod image {
     }
 
     /// The CompactFlash card as the drive's second unit (LUN 1): attached
-    /// when inserted (or by `cf`), read-only until `drive rw`, as the SD
-    /// card is.
+    /// when inserted (or by `cf`). Writable by the PC like the SD card
+    /// (ADR-0014, the owner's ruling A 2026-10-24), except what boots the
+    /// device from it: a [`Guard`] keeps [`CF_BOOT_FILES`]. When no guard
+    /// can be built (exFAT, FAT16, a boot file too fragmented) the card is
+    /// read-only; `cargo xtask drive ro` makes it read-only anyway.
     struct CfLun {
         slot: CfSlot,
         /// GPIO13 says a card is in (debounced over two polls).
         inserted: bool,
         seen: bool,
         writable: bool,
+        /// What the PC may not change, built from the card when it attached
+        /// and after anything the loader wrote; `None` with no card or when
+        /// it couldn't be built.
+        guard: Option<Guard>,
         /// Times the detect line settled to a new level (diagnostics: a
         /// line that flaps would look like the card coming and going).
         changes: u32,
@@ -1281,6 +1329,29 @@ mod image {
                 let (attr, common, dma) = card.into_parts();
                 self.slot = CfSlot::Idle(attr, common, dma, why);
             }
+            self.guard = None;
+        }
+
+        /// Rebuilds the guard from the card as it is now (attached, or after
+        /// anything the loader wrote); `true` when the PC's view of the
+        /// protection changed.
+        fn refresh_guard(&mut self) -> bool {
+            let was = self.read_only();
+            self.guard = None;
+            if let CfSlot::Card(card) = &mut self.slot
+                && self.inserted
+            {
+                let mut block = [0u8; rp_drv_cf::SECTOR];
+                if card.read_blocks(0, &mut block).is_ok() {
+                    let start = mbr_partitions(&block)
+                        .and_then(|p| p[0])
+                        .map_or(0, |p| p.start);
+                    self.guard = Volume::mount(Fed::Cf(card), start)
+                        .ok()
+                        .and_then(|mut v| v.guard(&CF_BOOT_FILES).ok());
+                }
+            }
+            was != self.read_only()
         }
     }
 
@@ -1300,7 +1371,7 @@ mod image {
             }
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-            if !self.writable {
+            if !self.writable || !self.guard.as_ref().is_some_and(|g| g.allows(lba, buf)) {
                 return Err(BlockError::ReadOnly);
             }
             match &mut self.slot {
@@ -1321,7 +1392,7 @@ mod image {
             self.inserted && matches!(self.slot, CfSlot::Card(_))
         }
         fn read_only(&self) -> bool {
-            !self.writable
+            !self.writable || self.guard.is_none()
         }
         fn product(&self) -> &[u8; 16] {
             b"CF card         "
@@ -1385,6 +1456,9 @@ mod image {
                 lun.events.push(b'A');
                 lun.tune_pending = true;
                 *slot = CfSlot::Card(card);
+                // Before the PC first asks: it sees the card's protection
+                // as it will stay.
+                lun.refresh_guard();
                 Some(seen)
             }
             Err((e, attr, common, dma)) => {
@@ -2156,7 +2230,8 @@ mod image {
             slot: CfSlot::Untried,
             inserted: cf_in,
             seen: cf_in,
-            writable: false,
+            writable: true,
+            guard: None,
             changes: 0,
             ready: gpio.read(CF_READY),
             events: CfEvents {
@@ -2460,8 +2535,13 @@ mod image {
                     }
                 );
             }
-            if core::mem::take(&mut guard_due) && lun.refresh_guard() {
-                msc.medium_changed(0);
+            if core::mem::take(&mut guard_due) {
+                if lun.refresh_guard() {
+                    msc.medium_changed(0);
+                }
+                if cf.refresh_guard() {
+                    msc.medium_changed(1);
+                }
             }
             msc.poll(
                 &mut Pipe(&mut udc, udc_dma.as_mut()),
@@ -2557,7 +2637,7 @@ mod image {
                         watchdog.feed(RUN_LIMIT);
                     }
                     let mut reply = Line::new();
-                    put_file(&mut lun, &mut msc, frame, dest, &mut reply);
+                    put_file(&mut lun, &mut cf, &mut msc, frame, dest, &mut reply);
                     send(&mut uart, &mut udc, reply.as_str());
                     let _ = writeln!(log, "{}", reply.as_str().trim_ascii_end());
                 }
@@ -2853,9 +2933,7 @@ mod image {
                             }
                         }
                         Ok(b"drive rw") | Ok(b"drive ro") => {
-                            // The SD card is writable (guarded) by default;
-                            // the CF card only after `drive rw` until it
-                            // stays attached (item 62).
+                            // Both cards are writable (guarded) by default.
                             lun.writable = f.command(dest) == Ok(b"drive rw");
                             cf.writable = lun.writable;
                             // The PC re-reads the media and their protection.

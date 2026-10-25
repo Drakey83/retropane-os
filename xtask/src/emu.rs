@@ -9193,20 +9193,10 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         if mbr[510..] != [0x55, 0xAA] {
             return Err("CF unit: sector 0 isn't the image's MBR".into());
         }
-        // Read-only until the owner says otherwise...
-        if rp_hal_api::BlockDevice::write_blocks(&mut bot, 30000, &via_drive).is_ok() {
-            return Err("CF unit: written while read-only".into());
-        }
-        let _ = bot.sense()?;
-        s.write_all(&rp_loadproto::control_frame("drive rw"))
-            .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL OK drive read-write", 10)?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while rp_hal_api::BlockDevice::write_blocks(&mut bot, 30000, &via_drive).is_err() {
-            let _ = bot.sense()?; // medium changed, once
-            if Instant::now() > deadline {
-                return Err("CF unit: write refused after drive rw".into());
-            }
+        // Writable by default, like the SD card (ADR-0014, the owner's
+        // ruling A 2026-10-24): a write outside the boot files lands.
+        if rp_hal_api::BlockDevice::write_blocks(&mut bot, 30000, &via_drive).is_err() {
+            return Err("CF unit: a write refused though the drive is writable".into());
         }
         let mut back = vec![0u8; via_drive.len()];
         rp_hal_api::BlockDevice::read_blocks(&mut bot, 30000, &mut back)
@@ -9214,16 +9204,117 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         if back != via_drive {
             return Err("CF unit: read-back differs".into());
         }
+        // `drive ro` locks it, `drive rw` opens it again (each a medium
+        // change the PC is told of, once).
+        let drive = |s: &mut std::net::TcpStream,
+                     bot: &mut Bot,
+                     cmd: &str,
+                     want: &str,
+                     writable: bool|
+         -> Result<(), String> {
+            s.write_all(&rp_loadproto::control_frame(cmd))
+                .map_err(|e| e.to_string())?;
+            usb_read_until(s, want, 10)?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match rp_hal_api::BlockDevice::write_blocks(bot, 30000, &via_drive) {
+                    Ok(()) if writable => return Ok(()),
+                    Err(rp_hal_api::BlockError::ReadOnly) if !writable => return Ok(()),
+                    _ => {}
+                }
+                if Instant::now() > deadline {
+                    return Err(format!(
+                        "CF unit: after {cmd}, writes not {}",
+                        if writable { "taken" } else { "refused" }
+                    ));
+                }
+                poll_pause(Duration::from_millis(100));
+            }
+        };
+        drive(
+            &mut s,
+            &mut bot,
+            "drive ro",
+            "RPL OK drive read-only",
+            false,
+        )?;
+        drive(
+            &mut s,
+            &mut bot,
+            "drive rw",
+            "RPL OK drive read-write",
+            true,
+        )?;
+        // A boot file on the CF card, put there through the loader (`install
+        // cf`'s path: `cf:` names), which the PC reads but can't change.
+        let boot = (0..9000u32)
+            .map(|i| (i * 13 % 251) as u8)
+            .collect::<Vec<u8>>();
+        // Refused while the PC wrote the card in the last 2 s (it just did):
+        // sent again once it has been quiet.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let put = loop {
+            s.write_all(&rp_loadproto::file_frame("cf:RetroPane/haret.exe", &boot))
+                .map_err(|e| e.to_string())?;
+            // Its reply: the first line past the idle loader's READY lines.
+            let mut put = String::new();
+            while !put.lines().any(|l| l.starts_with("RPL ")) {
+                put += &usb_read_until(&mut s, "\r\n", 30)?;
+            }
+            if !put.contains("card busy") || Instant::now() > deadline {
+                break put;
+            }
+            poll_pause(Duration::from_millis(500));
+        };
+        if !put.contains("RPL OK 9000 bytes") {
+            return Err(format!("CF unit: put cf:RetroPane/haret.exe: {put:?}"));
+        }
+        let start = u32::from_le_bytes([mbr[454], mbr[455], mbr[456], mbr[457]]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (first, on_drive) = loop {
+            // Once the PC has seen the medium change.
+            let seen = rp_fat::Volume::mount(&mut bot, start)
+                .ok()
+                .and_then(|mut vol| {
+                    let f = vol.find("RetroPane/haret.exe").ok()?;
+                    let mut got = Vec::new();
+                    vol.read_file(&f, &mut [0u8; 4096], |c| got.extend_from_slice(c))
+                        .ok()?;
+                    Some((vol.extent("RetroPane/haret.exe").ok()?.lba, got))
+                });
+            if let Some(x) = seen {
+                break x;
+            }
+            if Instant::now() > deadline {
+                return Err("CF unit: the put boot file never showed through the drive".into());
+            }
+            let _ = bot.sense();
+            poll_pause(Duration::from_millis(100));
+        };
+        if on_drive != boot {
+            return Err("CF unit: the put boot file reads back wrong through the drive".into());
+        }
+        if rp_hal_api::BlockDevice::write_blocks(&mut bot, first, &[0u8; 512])
+            != Err(rp_hal_api::BlockError::ReadOnly)
+        {
+            return Err("CF unit: the PC overwrote a CF boot file (RetroPane/haret.exe)".into());
+        }
         // Pulled out: the loader lets the card go and switches the slot
         // off; pushed back in, it is attached again from a power cycle.
         if device_has_runtime(&mut mon, "/machine/peripheral/cfslot", "pressed") {
             mon.query("qom-set /machine/peripheral/cfslot pressed true")?;
-            // The reply ends its event list with ",\r\n" (the idle loader's
-            // READY lines don't).
+            // The reply: the line starting `RPL OK cf:` among the idle
+            // loader's READY lines (a long one is cut, its end kept).
             let mut cf_log = || -> Result<String, String> {
                 s.write_all(&rp_loadproto::control_frame("cf log"))
                     .map_err(|e| e.to_string())?;
-                usb_read_until(&mut s, ",\r\n", 10)
+                let mut got = String::new();
+                loop {
+                    got += &usb_read_until(&mut s, "\r\n", 10)?;
+                    if let Some(line) = got.lines().find(|l| l.starts_with("RPL OK cf:")) {
+                        return Ok(line.to_string());
+                    }
+                }
             };
             // The loader notices on its detect poll (debounced, in emulated
             // seconds, slower than ours on a busy PC): poll, never a guess.
@@ -9284,7 +9375,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         return Err("CF: the drive's write isn't in the card image".into());
     }
     eprintln!(
-        "    CF card OK: attached on its own as Windows Mobile left the slot, before the drive is offered (ready at the PC's first question), powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
+        "    CF card OK: attached on its own as Windows Mobile left the slot, before the drive is offered (ready at the PC's first question), powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, written by default (refused after drive ro, written after drive rw), checked in the image; a boot file put through the loader (cf:RetroPane/haret.exe) read but not overwritten through the drive; pulled out: slot powered off, attached again on re-insert (no READY before)"
     );
     Ok(())
 }

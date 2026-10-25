@@ -12,7 +12,7 @@
 //! extra crates are needed; the script is passed base64-encoded (UTF-16LE,
 //! as `-EncodedCommand` expects) so no quoting can break it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 /// Must match `rp_drv_pxa_udc::usb::{VENDOR_ID, PRODUCT_ID}`.
@@ -1181,9 +1181,10 @@ pub fn cf_kit_files() -> Vec<(&'static str, &'static str)> {
 }
 
 /// Puts the kit's boot files on the CF card, in [`CF_KIT_DIR`], through the
-/// loader's drive: the drive made writable, each file copied by Windows,
-/// the drive made read-only again (Windows re-reads it), then every file
-/// read back from the card and compared byte for byte with the kit's.
+/// loader (`cf:` names: the PC itself may not change them, the guard keeps
+/// them, ADR-0014), each checked by its SHA-256 as the SD card's are, then
+/// every file read back through the loader and compared byte for byte with
+/// the kit's.
 pub fn install_cf(root: &Path) -> Result<(), String> {
     let kit = root.join("target/sdkit");
     let files = cf_kit_files();
@@ -1195,26 +1196,14 @@ pub fn install_cf(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    command(root, "drive rw")?;
-    let copied = cf_drive().and_then(|letter| {
-        let dir = PathBuf::from(format!("{letter}:\\{CF_KIT_DIR}"));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        for (local, name) in &files {
-            std::fs::copy(kit.join(local), dir.join(name))
-                .map_err(|e| format!("{name} onto the CF card: {e}"))?;
-        }
-        Ok(())
-    });
-    // Read-only again whatever happened, so the PC can't write the card by
-    // accident; Windows re-reads it after the change.
-    command(root, "drive ro")?;
-    copied?;
-    let letter = cf_drive()?;
-    let dir = PathBuf::from(format!("{letter}:\\{CF_KIT_DIR}"));
+    for (local, name) in &files {
+        let on_card = format!("cf:{CF_KIT_DIR}/{name}");
+        put(root, &kit.join(local).display().to_string(), Some(&on_card))?;
+    }
     for (local, name) in &files {
         let want = std::fs::read(kit.join(local)).map_err(|e| e.to_string())?;
-        let got =
-            std::fs::read(dir.join(name)).map_err(|e| format!("{name} on the CF card: {e}"))?;
+        let (lines, reply) = query(root, &format!("get cf:{CF_KIT_DIR}/{name}"))?;
+        let got = decode_file(&lines, &reply).map_err(|e| format!("{name} on the CF card: {e}"))?;
         if got != want {
             return Err(format!(
                 "{name} on the CF card differs from the kit's {local}"
@@ -1229,25 +1218,6 @@ pub fn install_cf(root: &Path) -> Result<(), String> {
         "    the CF card is up to date: in Windows Mobile, start haret.exe from the CF card's {CF_KIT_DIR} folder"
     );
     Ok(())
-}
-
-/// The CF card's drive letter (its volume label `X51V CF`), waited for up
-/// to 30 s: the drive goes away and comes back after a change.
-fn cf_drive() -> Result<char, String> {
-    let script = "(Get-Volume | Where-Object { $_.FileSystemLabel -eq 'X51V CF' } | Select-Object -First 1).DriveLetter";
-    for _ in 0..60 {
-        let out = powershell(script)?;
-        if let Some(c) = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .chars()
-            .next()
-            .filter(char::is_ascii_alphabetic)
-        {
-            return Ok(c);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    Err("the CF card's drive (label X51V CF) didn't appear in 30 s".into())
 }
 
 /// Runs the check.

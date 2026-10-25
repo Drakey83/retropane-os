@@ -311,3 +311,64 @@ fn a_write_wrapping_past_the_last_block_is_refused() {
     assert!(!g.allows(u32::MAX, &run));
     assert!(!g.allows(u32::MAX - 1, &[0u8; 3 * SECTOR]));
 }
+
+/// The CF card's boot files live in a folder: the folder can't be renamed
+/// (or so deleted), its boot files can't be changed, and everything else in
+/// it and on the card still changes.
+#[test]
+fn a_boot_folder_keeps_its_entry_and_its_files() {
+    const CF_BOOT: [&str; 5] = [
+        "RetroPane",
+        "RetroPane/retropane.bin",
+        "RetroPane/haret.exe",
+        "RetroPane/startup.txt",
+        "RetroPane/default.txt",
+    ];
+    let (mut v, _) = card(&[], 3000);
+    v.dev.guard = None;
+    let mut scratch = vec![0u8; 4096];
+    let loader = pattern(2500, 5);
+    v.put("RetroPane/retropane.bin", &loader, &mut scratch)
+        .unwrap();
+    v.put("RetroPane/haret.exe", &pattern(5000, 6), &mut scratch)
+        .unwrap();
+    v.put(
+        "RetroPane/startup.txt",
+        b"boot
+",
+        &mut scratch,
+    )
+    .unwrap();
+    let g = v.guard(&CF_BOOT).unwrap();
+    assert_eq!(
+        g.files(),
+        4,
+        "the folder and three files (default.txt absent)"
+    );
+    v.dev.guard = Some(g);
+    // What the folder holds otherwise changes, many files at once too (the
+    // folder's chain grows).
+    for i in 0..40 {
+        v.put(&format!("RetroPane/note{i}.txt"), b"x", &mut scratch)
+            .unwrap();
+    }
+    v.remove("RetroPane/note3.txt").unwrap();
+    v.put("elsewhere.txt", b"y", &mut scratch).unwrap();
+    assert_eq!(v.dev.refused, 0);
+    // The boot files: not replaced, not deleted.
+    assert!(
+        v.put("RetroPane/retropane.bin", b"z", &mut scratch)
+            .is_err()
+    );
+    assert!(v.remove("RetroPane/haret.exe").is_err());
+    // The folder: not renamed.
+    let f = v.find_file_or_folder("RetroPane").unwrap();
+    let mut s = sector(&v, f.entry_lba);
+    let o = usize::from(f.entry_index) * 32;
+    s[o..o + 8].copy_from_slice(b"RETROPAX");
+    assert_eq!(
+        raw_write(&mut v, f.entry_lba, &s),
+        Err(BlockError::ReadOnly)
+    );
+    assert_eq!(read(&mut v, "RetroPane/retropane.bin"), loader);
+}

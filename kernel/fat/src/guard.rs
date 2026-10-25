@@ -1,14 +1,16 @@
 //! A write guard for a FAT32 volume the PC writes over USB: everything is
 //! allowed except changing what boots the device. The PC writes sectors,
-//! not files, so the guard records, for each protected root file, the
-//! sectors and bytes that make it (its directory entry's name, attributes,
+//! not files, so the guard records, for each protected file (by path, in
+//! the root or in a folder), the sectors and bytes that make it (its directory entry's name, attributes,
 //! first cluster and size; its cluster chain in every FAT copy; its data
 //! clusters), plus the card's layout (the partition table and the boot
 //! sector's geometry), and refuses a write that would change any of them.
 //! Renaming the volume, new files and folders, other files' changes and
 //! deletes all pass; deleting, renaming, overwriting or moving a boot file,
 //! or formatting the card, is refused (Windows reports the disk as write
-//! protected).
+//! protected). A protected folder (the CF card's `RetroPane/`, which
+//! holds its boot files) keeps its entry: it can't be renamed, moved or
+//! deleted, while what it holds changes freely, its protected files apart.
 //!
 //! Security (docs/security.md): the guard is built from the card (hostile
 //! until checked: the chains are walked with the volume's bounds checks and
@@ -19,8 +21,9 @@ use rp_hal_api::BlockDevice;
 
 use crate::{EOC_MIN, Error, FAT_MASK, FAT_PER_SECTOR, SECTOR, Volume, le16, le32};
 
-/// Root files a guard can protect.
-const FILES: usize = 4;
+/// Files and folders a guard can protect (the CF card's: its boot folder
+/// and the four files in it).
+const FILES: usize = 5;
 /// Consecutive cluster runs per protected file (more: the guard can't be
 /// built, and the caller keeps the card read-only).
 const EXTENTS: usize = 8;
@@ -86,8 +89,9 @@ pub struct Guard {
 }
 
 impl<D: BlockDevice> Volume<D> {
-    /// A guard protecting the root files in `names` that exist (missing ones
-    /// are skipped). Fails, so the caller keeps the card read-only, when a
+    /// A guard protecting the files and folders in `names` (paths) that
+    /// exist (missing ones are skipped). A folder's entry is kept (its
+    /// name, attributes and first cluster), not its contents. Fails, so the caller keeps the card read-only, when a
     /// file is more fragmented than the guard can record or the FATs aren't
     /// mirrored (a PC then writes only the active one).
     #[inline(never)]
@@ -119,7 +123,7 @@ impl<D: BlockDevice> Volume<D> {
             g.partitions.copy_from_slice(&self.buf[PARTITIONS]);
         }
         for name in names.iter().take(FILES) {
-            let f = match self.find(name) {
+            let f = match self.find_file_or_folder(name) {
                 Ok(f) => f,
                 Err(Error::NotFound) => continue,
                 Err(e) => return Err(e),
@@ -135,7 +139,10 @@ impl<D: BlockDevice> Volume<D> {
             p.name_attr
                 .copy_from_slice(&self.buf[p.entry_offset..p.entry_offset + 12]);
             // The chain, as runs; every step bounded by the cluster count.
-            let mut c = Some(f.first_cluster).filter(|&c| c != 0);
+            // A folder's isn't recorded: the PC may add entries to it (its
+            // chain grows) and change the unprotected ones.
+            let folder = p.name_attr[11] & 0x10 != 0;
+            let mut c = Some(f.first_cluster).filter(|&c| c != 0 && !folder);
             let mut steps = 0u32;
             while let Some(cl) = c {
                 steps += 1;
@@ -159,8 +166,21 @@ impl<D: BlockDevice> Volume<D> {
     }
 }
 
+impl<D: BlockDevice> Volume<D> {
+    /// The file `path` names, or else the folder.
+    pub(crate) fn find_file_or_folder(&mut self, path: &str) -> Result<crate::File, Error> {
+        match self.find(path) {
+            Err(Error::NotFound) => {
+                let (dir, leaf) = self.parent_of(path)?;
+                self.find_entry(dir, leaf, true)
+            }
+            r => r,
+        }
+    }
+}
+
 impl Guard {
-    /// Root files protected.
+    /// Files and folders protected.
     #[must_use]
     pub fn files(&self) -> usize {
         self.count

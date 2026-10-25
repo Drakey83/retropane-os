@@ -202,7 +202,26 @@ model with a built-in host that enumerates like Windows.
   (exFAT, a boot file in more than 8 pieces, unmirrored FATs) the card is
   read-only, as before. `drive ro` still locks it; `drive rw` also makes
   the CF card writable (it stays read-only by default until it stays
-  attached, item 62). Device run: Windows wrote and deleted files; its
+  attached, item 62).
+- **The CF card writable too, its boot files guarded (2026-10-24, the
+  owner's ruling A):** "they are supposed to work like a modern drive,
+  read and write". Item 62's reason is gone (the CF card attaches and
+  stays attached since R7's timing work), so the CF drive is writable by
+  default like the SD drive, with its own guard: the folder `RetroPane/`
+  (its entry: not renamed, moved or deleted; what it holds otherwise
+  changes) and `retropane.bin`, `haret.exe`, `startup.txt` and
+  `default.txt` in it, which Windows Mobile boots from (reminder R27). The
+  guard is built when the card attaches (before the PC first asks) and
+  after anything the loader writes; when it can't be built the card is
+  read-only. `cargo xtask install cf` puts the boot files through the
+  loader (`put` with `cf:` names) instead of through Windows, then reads
+  each back through the loader. Rejected: B, writable with no guard (quick,
+  but Windows could delete the CF card's loader and the boot files would
+  no longer always be protected). Emulator: `emu-cf` writes the CF drive by
+  default, is refused after `drive ro` and written after `drive rw`, puts
+  `cf:RetroPane/haret.exe` through the loader and is refused overwriting
+  it through the drive. On the way, the loader's reply line keeps room for
+  its end (a long `cf log` lost its `\r\n`, and the PC waited for it). Device run: Windows wrote and deleted files; its
   delete of `default.txt` was refused on the card (Windows' cached view
   showed it gone until the drive was offered again, item 65); the boot
   files stayed identical to a backup.
