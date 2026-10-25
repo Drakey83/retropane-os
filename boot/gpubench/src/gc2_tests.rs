@@ -770,3 +770,107 @@ fn gc2y_cures_every_scene_with_both_of_gc2vs_cures() {
     assert_eq!(CURED_ROUNDS, [100, 30, 30, 30, 30]);
     assert_eq!(CURED_SOAK_MINUTES, 120);
 }
+
+#[test]
+fn gc2z_fixes_shift_only_what_they_name_and_layer_in_order() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    let half = |tex: Texture| UV_ONE / (2 * (8 << tex.code));
+    for (f, fx) in FIXES.iter().enumerate() {
+        for (b, &base) in FIX_BASE.iter().enumerate() {
+            let (bg0, slots0) = order_scene(base, t);
+            let (bg, slots) = order_scene_wide(Scene::Fix(b, f), t);
+            assert_eq!(bg, bg0);
+            let own: std::vec::Vec<Draw> = slots0.into_iter().flatten().collect();
+            // Hidden layers first, then the scene's objects, then the busy
+            // layer, then nothing.
+            let hidden = Draw::rect(0, 0, W as i32, H as i32, Paint::Flat(HIDDEN_LAYER));
+            assert!(
+                slots[..fx.hidden].iter().all(|&d| d == Some(hidden)),
+                "{f} {b}"
+            );
+            for (k, o) in own.iter().enumerate() {
+                let d = slots[fx.hidden + k].unwrap();
+                assert_eq!(d.corners, o.corners);
+                match (d.paint, o.paint) {
+                    (Paint::Texture { tex, uv, .. }, Paint::Texture { uv: uv0, .. }) => {
+                        let clamped = u32::from(tex.u_mode) == address::CLAMP
+                            && u32::from(tex.v_mode) == address::CLAMP;
+                        let moved = !matches!(fx.tex, TexFix::ClampUv | TexFix::ClampV) || clamped;
+                        let du = if moved && matches!(fx.tex, TexFix::ClampUv) {
+                            half(tex)
+                        } else {
+                            0
+                        };
+                        let dv = if moved { half(tex) } else { 0 };
+                        for (a, z) in uv.iter().zip(uv0) {
+                            assert_eq!(*a, (z.0 + du, z.1 + dv), "{f} {b}");
+                        }
+                    }
+                    (p, p0) => assert_eq!(p, p0),
+                }
+            }
+            let mut n = fx.hidden + own.len();
+            if fx.busy {
+                let busy = Draw::rect(0, 0, W as i32, H as i32, Paint::Flat(BUSY_LAYER)).over();
+                assert_eq!(slots[n], Some(busy));
+                n += 1;
+            }
+            assert!(slots[n..].iter().all(Option::is_none), "{f} {b}");
+            assert_eq!(order_corner(Scene::Fix(b, f)), order_corner(base));
+        }
+    }
+    // FT2's and GC2K's worst's textures are clamped, kinds 5 and 6's wrap:
+    // the clamped-only fixes leave 5 and 6 as they are.
+    for (b, &base) in FIX_BASE.iter().enumerate().skip(2) {
+        let (_, plain) = order_scene_wide(base, t);
+        let (_, fixed) = order_scene_wide(Scene::Fix(b, 2), t);
+        assert_eq!(fixed[1..], plain[..SLOTS - 1]);
+    }
+    // A plain scene widened: its three slots, then nothing.
+    let (bg, wide) = order_scene_wide(Scene::Sweep(0), t);
+    let (bg0, three) = order_scene(Scene::Sweep(0), t);
+    assert_eq!(bg, bg0);
+    assert_eq!(wide[..3], three);
+    assert!(wide[3..].iter().all(Option::is_none));
+    // The plan: part 1 every base with the three shifts; part 2 GC2K's worst
+    // with one, two, four hidden layers and one plus busy.
+    assert_eq!(
+        FIXES[..3]
+            .iter()
+            .map(|f| f.tex)
+            .collect::<std::vec::Vec<_>>(),
+        [TexFix::V, TexFix::ClampUv, TexFix::ClampV]
+    );
+    assert!(FIXES[..3].iter().all(|f| f.hidden == 1 && !f.busy));
+    assert_eq!(
+        FIX_TEX_SCENES,
+        core::array::from_fn(|i| Scene::Fix(i % 4, i / 4))
+    );
+    assert!(
+        FIX_TEX_WAYS
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, ROWS))
+    );
+    assert_eq!(
+        FIX_CORNER_SCENES.map(|s| match s {
+            Scene::Fix(1, f) => (FIXES[f].hidden, FIXES[f].busy),
+            _ => (0, false),
+        }),
+        [(1, false), (2, false), (4, false), (1, true)]
+    );
+    assert!(
+        FIX_CORNER_WAYS
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, ROWS))
+    );
+    let mhz: std::vec::Vec<u32> = FIX_TEX_PLL.iter().map(|&(m, n)| 13_000 * m / n).collect();
+    assert_eq!(mhz, [143_000, 146_250, 149_500]);
+    assert_eq!((FIX_TEX_ROUNDS, FIX_CORNER_ROUNDS), (30, 1000));
+}

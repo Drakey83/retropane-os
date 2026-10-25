@@ -5084,6 +5084,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2Y_SOAK_SECS", "20"),
         ],
     )?;
+    let run_gc2z = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_FIX", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5116,7 +5124,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 66] = [
+    let runs: [GpubenchRun; 67] = [
         (
             "run A",
             &run_a,
@@ -5366,6 +5374,20 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2Z: the narrower texture shifts and the stronger corner
+        // cures: every way's references held, the run returns.
+        (
+            "run GC2Z",
+            &run_gc2z,
+            &[
+                "GC2Z 1 149.50 / 1: 30 rounds (360 renders)",
+                "GC2Z 2 139.75 / 1: 1000 rounds (4000 renders)",
+                "GC2Z 2 139.75 / 1: controls at Windows Mobile's clock after: 4 of 4 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

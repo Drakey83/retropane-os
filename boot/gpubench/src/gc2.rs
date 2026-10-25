@@ -526,6 +526,175 @@ pub enum Scene {
     /// Run GC2Y's cured scenes: [`CURED_BASE`]'s scene with both of GC2V's
     /// cures (see [`cure`]).
     Cured(usize),
+    /// Run GC2Z's ways: [`FIX_BASE`]'s scene with [`FIXES`]' fix (see
+    /// [`fix_scene`]; only through [`order_scene_wide`]).
+    Fix(usize, usize),
+}
+
+/// The objects a scene holds through [`order_scene_wide`]: a scene's own
+/// three, up to four hidden layers under them and a busy layer over them
+/// (run GC2Z's stronger corner cures).
+pub const SLOTS: usize = 8;
+
+/// Where a fix moves texture coordinates by half a texel (to texel
+/// centres): GC2Y's u and v shift on every texture ([`cure`]) cured FT2's
+/// top row and broke kind 6's wrapping, repeated texture from 143.00.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TexFix {
+    /// v only, every texture (GC2V's, which cleared FT2's top row).
+    V,
+    /// u and v, clamped textures only (wrapping ones as they are).
+    ClampUv,
+    /// v only, clamped textures only.
+    ClampV,
+}
+
+/// One of run GC2Z's fixes: the texture shift, how many hidden opaque
+/// layers lie under the scene (GC2V's corner cure, one of them), and
+/// whether GC2U's busy layer is blended over it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fix {
+    pub tex: TexFix,
+    pub hidden: usize,
+    pub busy: bool,
+}
+
+const fn fix(tex: TexFix, hidden: usize, busy: bool) -> Fix {
+    Fix { tex, hidden, busy }
+}
+
+/// Run GC2Z's fixes (the owner, 2026-10-25: "Build the narrower texture fix
+/// and a stronger corner-patch fix, tested at 139.75-149.50"): the three
+/// narrower texture shifts with one hidden layer, then the clamped-v shift
+/// with two and four hidden layers, and with one and the busy layer (the
+/// cure that cleared GC2K's patch at 133.25, at 85% more render time).
+pub const FIXES: [Fix; 6] = [
+    fix(TexFix::V, 1, false),
+    fix(TexFix::ClampUv, 1, false),
+    fix(TexFix::ClampV, 1, false),
+    fix(TexFix::ClampV, 2, false),
+    fix(TexFix::ClampV, 4, false),
+    fix(TexFix::ClampV, 1, true),
+];
+
+/// GC2Z's scenes to fix: FT2 and GC2K's worst (clamped textures), kinds 5
+/// and 6 (wrapping, repeated textures: 6 broke under GC2Y's shift).
+pub const FIX_BASE: [Scene; 4] = [
+    Scene::Kind(FT2),
+    Scene::Sweep(0),
+    Scene::Kind(5),
+    Scene::Kind(6),
+];
+
+/// Part 1, the texture shifts at 143.00-149.50 / 1: every base scene with
+/// each of the first three fixes (12 ways).
+pub const FIX_TEX_SCENES: [Scene; 12] = [
+    Scene::Fix(0, 0),
+    Scene::Fix(1, 0),
+    Scene::Fix(2, 0),
+    Scene::Fix(3, 0),
+    Scene::Fix(0, 1),
+    Scene::Fix(1, 1),
+    Scene::Fix(2, 1),
+    Scene::Fix(3, 1),
+    Scene::Fix(0, 2),
+    Scene::Fix(1, 2),
+    Scene::Fix(2, 2),
+    Scene::Fix(3, 2),
+];
+pub const FIX_TEX_WAYS: [(usize, u8); 12] = [
+    (0, ROWS),
+    (1, ROWS),
+    (2, ROWS),
+    (3, ROWS),
+    (4, ROWS),
+    (5, ROWS),
+    (6, ROWS),
+    (7, ROWS),
+    (8, ROWS),
+    (9, ROWS),
+    (10, ROWS),
+    (11, ROWS),
+];
+/// Part 1's clocks (13 MHz x M / N): 143.00, 146.25, 149.50; 30 rounds each.
+pub const FIX_TEX_PLL: [(u32, u32); 3] = [(44, 4), (45, 4), (23, 2)];
+pub const FIX_TEX_ROUNDS: u32 = 30;
+
+/// Part 2, the corner at 139.75 / 1 (GC2Y's soak: 0.43% with one hidden
+/// layer): GC2K's worst with one, two and four hidden layers and with one
+/// and the busy layer.
+pub const FIX_CORNER_SCENES: [Scene; 4] = [
+    Scene::Fix(1, 2),
+    Scene::Fix(1, 3),
+    Scene::Fix(1, 4),
+    Scene::Fix(1, 5),
+];
+pub const FIX_CORNER_WAYS: [(usize, u8); 4] = [(0, ROWS), (1, ROWS), (2, ROWS), (3, ROWS)];
+/// 1,000 rounds a way: one hidden layer's 0.43% expects about 4.
+pub const FIX_CORNER_ROUNDS: u32 = 1000;
+
+/// `d`'s texture coordinates moved half a texel as `how` says (none for an
+/// untextured object, or a wrapping texture under the clamped-only fixes).
+#[must_use]
+pub fn shift_texture(d: Draw, how: TexFix) -> Draw {
+    let Paint::Texture { tex, uv, tint } = d.paint else {
+        return d;
+    };
+    let clamped =
+        u32::from(tex.u_mode) == address::CLAMP && u32::from(tex.v_mode) == address::CLAMP;
+    if matches!(how, TexFix::ClampUv | TexFix::ClampV) && !clamped {
+        return d;
+    }
+    let half = UV_ONE / (2 * (8 << tex.code));
+    let du = if matches!(how, TexFix::ClampUv) {
+        half
+    } else {
+        0
+    };
+    Draw {
+        paint: Paint::Texture {
+            tex,
+            uv: uv.map(|(u, v)| (u + du, v + half)),
+            tint,
+        },
+        ..d
+    }
+}
+
+/// [`FIX_BASE`]'s scene `b` with fix `f`: the hidden layers first, the
+/// scene's own objects (textures shifted), then the busy layer.
+#[must_use]
+pub fn fix_scene(b: usize, f: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let fx = FIXES[f];
+    let (bg, slots) = order_scene(FIX_BASE[b], t);
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    for _ in 0..fx.hidden {
+        out[n] = Some(flat(HIDDEN_LAYER, false));
+        n += 1;
+    }
+    for d in slots.into_iter().flatten() {
+        out[n] = Some(shift_texture(d, fx.tex));
+        n += 1;
+    }
+    if fx.busy {
+        out[n] = Some(flat(BUSY_LAYER, true));
+    }
+    (bg, out)
+}
+
+/// Scene `s` in [`SLOTS`] slots: [`order_scene`]'s three widened, or a
+/// GC2Z fix's.
+#[must_use]
+#[inline(never)]
+pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    if let Scene::Fix(b, f) = s {
+        return fix_scene(b, f, t);
+    }
+    let (bg, slots) = order_scene(s, t);
+    let mut out = [None; SLOTS];
+    out[..3].copy_from_slice(&slots);
+    (bg, out)
 }
 
 /// Run GC2Y's scenes to cure (the owner, 2026-10-25: "Build the
@@ -948,6 +1117,8 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
             (bg, slots)
         }
         Scene::Edge(w) => edge_scene(w, t),
+        // Fixes take more than three slots: [`order_scene_wide`] only.
+        Scene::Fix(..) => (BLACK, [None, None, None]),
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Cured(_) => (BLACK, [None, None, None]),
             base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
@@ -997,6 +1168,11 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         Scene::Hidden(false) => patch_corner(0),
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
+        Scene::Fix(b, _) => match FIX_BASE[b] {
+            Scene::Kind(FT2) => patch_corner(0),
+            Scene::Sweep(w) => SWEEP[w].corner(),
+            _ => (0, 0),
+        },
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Kind(FT2) => patch_corner(0),
             Scene::Sweep(w) => SWEEP[w].corner(),

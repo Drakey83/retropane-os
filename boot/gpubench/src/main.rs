@@ -7913,7 +7913,17 @@ mod image {
         || GC2_TIMING
         || GC2_TEXLOAD
         || GC2_EDGE
-        || GC2_CURED;
+        || GC2_CURED
+        || GC2_FIX;
+
+    /// Run GC2Z (`RP_GPUBENCH_GC2_FIX`, the owner after GC2Y, 2026-10-25:
+    /// "Build the narrower texture fix and a stronger corner-patch fix,
+    /// tested at 139.75-149.50"): part 1, FT2, GC2K's worst and kinds 5 and 6
+    /// with each narrower texture shift ([`gc2::FIXES`] 0-2) at 143.00,
+    /// 146.25 and 149.50 / 1; part 2, GC2K's worst at 139.75 / 1 with one,
+    /// two and four hidden layers and with one and the busy layer, 1,000
+    /// rounds each. Unattended.
+    const GC2_FIX: bool = option_env!("RP_GPUBENCH_GC2_FIX").is_some();
 
     /// Run GC2Y (`RP_GPUBENCH_GC2_CURED`, the owner after GC2V, 2026-10-25:
     /// "Build the combined-fix test: both cures together at 133.25-149.50,
@@ -9214,7 +9224,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_CURED {
+            if GC2_FIX {
+                "the 16-bit kinds' targets inside the safe region (GC2Z: no map; the narrower texture shifts at 143.00-149.50 / 1, then stronger corner cures at 139.75 / 1),"
+            } else if GC2_CURED {
                 "the 16-bit kinds' targets inside the safe region (GC2Y: no map; both of GC2V's cures on the six 16-bit kinds and GC2K's worst at 133.25-149.50 / 1, then a soak at the highest clean clock),"
             } else if GC2_EDGE {
                 "the 16-bit kinds' targets inside the safe region (GC2V: no map; FT2's quad edge isolated at 146.25 / 1, then GC2K's worst at 133.25 / 1 as is, with busy tiles and with a hidden layer),"
@@ -9352,7 +9364,10 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_CURED {
+        let patch = if GC2_FIX {
+            gc2::FIX_TEX_SCENES.len().max(gc2::FIX_CORNER_SCENES.len())
+                * gc2::words(gc2::FT2) as usize
+        } else if GC2_CURED {
             gc2::CURED_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_EDGE {
             gc2::EDGE_SCENES.len().max(gc2::HIDDEN_SCENES.len()) * gc2::words(gc2::FT2) as usize
@@ -9690,7 +9705,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_CURED {
+                if GC2_FIX {
+                    gc2_fix(g, &mut r, (tex, first, dsig));
+                } else if GC2_CURED {
                     gc2_cured(g, &mut r, (tex, first, dsig));
                 } else if GC2_EDGE {
                     gc2_edge(g, &mut r, (tex, first, dsig));
@@ -11189,6 +11206,50 @@ mod image {
         }
     }
 
+    /// Run GC2Z (see [`GC2_FIX`]).
+    #[inline(never)]
+    fn gc2_fix(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        const NAMES: [&str; 3] = ["143.00 / 1", "146.25 / 1", "149.50 / 1"];
+        for (pi, &(m, n)) in gc2::FIX_TEX_PLL.iter().enumerate() {
+            log!(
+                "  GC2Z 1: divide 1 at {}: FT2, GC2K's worst, kinds 5 and 6 with the v shift, the clamped u-and-v shift, the clamped v shift (one hidden layer each)",
+                NAMES[pi]
+            );
+            gc2_orders(
+                g,
+                r,
+                (tex, &mut *first, dsig),
+                &OrderPlan {
+                    name: "GC2Z 1",
+                    label: "GC2Z TEXTURE",
+                    scenes: &gc2::FIX_TEX_SCENES,
+                    ways: &gc2::FIX_TEX_WAYS,
+                    step: (gc2_step(m, n, 0, 1), NAMES[pi]),
+                    secs: u32::MAX / 1_000_000,
+                    rounds: gc2::FIX_TEX_ROUNDS,
+                },
+            );
+        }
+        log!(
+            "  GC2Z 2: GC2K's worst at 139.75 / 1 with one, two, four hidden layers, and one with the busy layer ({} rounds)",
+            gc2::FIX_CORNER_ROUNDS
+        );
+        gc2_orders(
+            g,
+            r,
+            (tex, &mut *first, dsig),
+            &OrderPlan {
+                name: "GC2Z 2",
+                label: "GC2Z CORNER",
+                scenes: &gc2::FIX_CORNER_SCENES,
+                ways: &gc2::FIX_CORNER_WAYS,
+                step: (gc2_step(43, 4, 0, 1), "139.75 / 1"),
+                secs: u32::MAX / 1_000_000,
+                rounds: gc2::FIX_CORNER_ROUNDS,
+            },
+        );
+    }
+
     /// GC2Y's clock names, in [`gc2::CURED_PLL`]'s order.
     const CURED_NAMES: [&str; 5] = [
         "133.25 / 1",
@@ -11637,7 +11698,7 @@ mod image {
         }
         let set = |g: &mut Rig, r: &mut Renderer, sc: usize, o: u8| {
             r.set_tile_order(tile_order(o));
-            let (bg, slots) = gc2::order_scene(scenes[sc], tex);
+            let (bg, slots) = gc2::order_scene_wide(scenes[sc], tex);
             let _ = r.set_background(Some(bg));
             for (n, d) in slots.into_iter().enumerate() {
                 g.set(r, n, d);

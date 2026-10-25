@@ -164,6 +164,28 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "gpubench GC2Z: the clamped-only shifts move wrapping textures too",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    if matches!(how, TexFix::ClampUv | TexFix::ClampV) && !clamped {",
+        to: "    if matches!(how, TexFix::ClampUv) && !clamped {",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2z_fixes_shift_only_what_they_name_and_layer_in_order",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2Z: one hidden layer whatever the fix asks",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    for _ in 0..fx.hidden {",
+        to: "    for _ in 0..fx.hidden.min(1) {",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2z_fixes_shift_only_what_they_name_and_layer_in_order",
+        ]),
+    },
+    Mutant {
         name: "hal-mem: the one-pass check misses the last word",
         file: "hal/mem/src/lib.rs",
         from: "        differ += u32::from(v != w);",
