@@ -2460,7 +2460,11 @@ pub const MUTANTS: &[Mutant] = &[
         file: "kernel/fat/src/lib.rs",
         from: "let fat32 = root_entries == 0 && fat16_size == 0;",
         to: "let fat32 = true;",
-        check: Check::Host(&["-p", "rp-fat", "every_format_mounts_writes_and_checks_clean"]),
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "every_format_mounts_writes_and_checks_clean",
+        ]),
     },
     Mutant {
         name: "fat: a new name ending in a dot taken (Windows can't open it)",
