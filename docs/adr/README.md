@@ -38,6 +38,6 @@ Every decision record, generated from the records themselves by `cargo xtask adr
 | [0032](0032-audio-service.md) | The audio service: one mixer, one owner of the codec | Accepted | 2026-10-18 |  |
 | [0033](0033-keyboards-mice-headsets.md) | Keyboards, mice and headsets over USB and Bluetooth | Accepted | 2026-10-18 |  |
 | [0034](0034-compositor.md) | The compositor: layers, frame modes and the frame budget | Accepted | 2026-10-19 | 1 |
-| [0035](0035-2700g-clocks.md) | The 2700G's clocks: past Dell's, through a self-test on every device | Accepted | 2026-10-22 |  |
+| [0035](0035-2700g-clocks.md) | The 2700G's clocks: past Dell's, through a self-test on every device | Accepted | 2026-10-22 | 1 |
 
 35 records: 33 accepted, 2 proposed, 0 superseded, 0 rejected.
