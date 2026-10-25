@@ -701,51 +701,45 @@ const fn on_wallpaper(mut s: FilterStep) -> FilterStep {
     s
 }
 
-/// Run P9e's steps (2026-10-25, after P9d's photos: the fitted set right
-/// at half size, stripes left at 3/4): at 3/4 size the kernels stretched
-/// by 4/3 (P9d's), 5/3 and 2, on the stripe pattern (do stripes go?) and
-/// on the wallpaper (how soft?), with Linux's set on the wallpaper as the
-/// sharpness reference; then half height with `VideoPlane::scale_to`'s
-/// default (bit 27 set: clean, not torn).
+/// Run P9e's steps (2026-10-25, after P9d's photos and the owner's rule
+/// 0: the fitted cubic right at half size, stripes left at 3/4): the
+/// tables computed for this hardware (`Filter::designed`) against P9d's
+/// cubic and against the strongest blur (stripes gone, soft), on the
+/// stripe pattern (do stripes go?) and on the wallpaper (as sharp as
+/// Linux's set?), at 3/4; the designed table at half size; then half
+/// height with `VideoPlane::scale_to`'s bit 27 (clean, not torn).
 pub const FILTER2_STEPS: [FilterStep; 8] = {
-    use crate::layers::ScalerFilter::{Mbxfb, Stretched};
+    use crate::layers::ScalerFilter::{Designed, Fitted, Mbxfb, Stretched};
     const FULL: (u16, u16, u16, u16) = (0, 0, W as u16, H as u16);
     const THREE_Q: (u16, u16, u16, u16) = (360, 480, 60, 80);
-    let half_down = on_wallpaper(step(
-        "HALF HEIGHT, AUTO",
-        "CLEAN, NOT TORN",
-        FULL,
-        (480, 320, 0, 160),
-        true,
-        Mbxfb,
-    ));
+    const HALF: (u16, u16, u16, u16) = (240, 320, 120, 160);
     [
         step(
-            "STRIPES, BLUR 1 (WEAK)",
-            "STRIPES LEFT? (AS P9D)",
+            "STRIPES 3/4, OLD FILTER",
+            "STRIPES (AS P9D STEP 5)",
             FULL,
             THREE_Q,
             true,
-            Stretched(4, 3),
+            Fitted,
         ),
         step(
-            "STRIPES, BLUR 2",
-            "STRIPES LEFT?",
-            FULL,
-            THREE_Q,
-            true,
-            Stretched(5, 3),
-        ),
-        step(
-            "STRIPES, BLUR 3 (STRONG)",
-            "STRIPES LEFT?",
+            "STRIPES 3/4, BIG BLUR",
+            "NO STRIPES, SOFT",
             FULL,
             THREE_Q,
             true,
             Stretched(2, 1),
         ),
+        step(
+            "STRIPES 3/4, DESIGNED",
+            "NO STRIPES?",
+            FULL,
+            THREE_Q,
+            true,
+            Designed,
+        ),
         on_wallpaper(step(
-            "PICTURE, LINUX FILTER",
+            "PICTURE 3/4, LINUX",
             "SHARPNESS REFERENCE",
             FULL,
             THREE_Q,
@@ -753,30 +747,37 @@ pub const FILTER2_STEPS: [FilterStep; 8] = {
             Mbxfb,
         )),
         on_wallpaper(step(
-            "PICTURE, BLUR 1 (WEAK)",
-            "HOW SOFT?",
-            FULL,
-            THREE_Q,
-            true,
-            Stretched(4, 3),
-        )),
-        on_wallpaper(step(
-            "PICTURE, BLUR 2",
-            "HOW SOFT?",
-            FULL,
-            THREE_Q,
-            true,
-            Stretched(5, 3),
-        )),
-        on_wallpaper(step(
-            "PICTURE, BLUR 3 (STRONG)",
-            "HOW SOFT?",
+            "PICTURE 3/4, BIG BLUR",
+            "SOFTER THAN LINUX",
             FULL,
             THREE_Q,
             true,
             Stretched(2, 1),
         )),
-        half_down,
+        on_wallpaper(step(
+            "PICTURE 3/4, DESIGNED",
+            "AS SHARP AS LINUX?",
+            FULL,
+            THREE_Q,
+            true,
+            Designed,
+        )),
+        step(
+            "STRIPES HALF, DESIGNED",
+            "EVEN GREY LIKE PATCH?",
+            FULL,
+            HALF,
+            true,
+            Designed,
+        ),
+        on_wallpaper(step(
+            "HALF HEIGHT, AUTO",
+            "CLEAN, NOT TORN",
+            FULL,
+            (480, 320, 0, 160),
+            true,
+            Mbxfb,
+        )),
     ]
 };
 
@@ -977,27 +978,42 @@ mod tests {
     }
 
     #[test]
-    fn p9e_compares_three_stretches_on_stripes_and_on_the_wallpaper() {
-        use crate::layers::ScalerFilter::{Mbxfb, Stretched};
+    fn p9e_puts_the_designed_filter_beside_the_old_one_and_the_big_blur() {
+        use crate::layers::ScalerFilter::{Designed, Fitted, Mbxfb, Stretched};
         let filters: std::vec::Vec<_> = FILTER2_STEPS.iter().map(|s| s.scale.filter).collect();
         assert_eq!(
             filters,
             [
-                Stretched(4, 3),
-                Stretched(5, 3),
+                Fitted,
                 Stretched(2, 1),
+                Designed,
                 Mbxfb,
-                Stretched(4, 3),
-                Stretched(5, 3),
                 Stretched(2, 1),
+                Designed,
+                Designed,
                 Mbxfb
             ]
         );
-        // Three on the pattern, then the wallpaper; all 3/4 but the last.
         let wall: std::vec::Vec<bool> = FILTER2_STEPS.iter().map(|s| s.wallpaper).collect();
-        assert_eq!(wall, [false, false, false, true, true, true, true, true]);
-        for s in &FILTER2_STEPS[..7] {
-            assert_eq!((s.scale.out_w, s.scale.out_h), (360, 480));
+        assert_eq!(wall, [false, false, false, true, true, true, false, true]);
+        let sizes: std::vec::Vec<(u16, u16)> = FILTER2_STEPS
+            .iter()
+            .map(|s| (s.scale.out_w, s.scale.out_h))
+            .collect();
+        assert_eq!(
+            sizes,
+            [
+                (360, 480),
+                (360, 480),
+                (360, 480),
+                (360, 480),
+                (360, 480),
+                (360, 480),
+                (240, 320),
+                (480, 320)
+            ]
+        );
+        for s in &FILTER2_STEPS {
             assert!(s.scale.ur_c && !s.double);
             assert!(s.name.len() <= 24 && s.expect.len() <= 24, "{}", s.name);
             let mut v = VideoPlane::new(VideoFormat::Uyvy, 480, 640, FILTER_AT);

@@ -145,3 +145,101 @@ fn the_proof_sets_are_what_they_say() {
     assert_eq!(w[14], (crate::layers::reg::HSCOEFF0 + 32, 0x40));
     assert!(w[1..5].iter().chain(&w[6..14]).all(|&(_, v)| v == 0));
 }
+
+/// One phase's taps of a half kernel, in tap order (as the hardware
+/// applies them: offsets `8 i - p` eighths).
+fn taps(half: &[i8], taps: i32, p: i32) -> std::vec::Vec<(i32, f64)> {
+    let n = half.len() as i32 - 1;
+    (-taps..=taps)
+        .map(|i| 8 * i - p)
+        .filter(|d| d.abs() <= n)
+        .map(|d| (i32::from(half[(n - d.abs()) as usize]), f64::from(d) / 8.0))
+        .collect()
+}
+
+/// The largest |response| over the phases at `f` cycles per source
+/// pixel, one being 1.
+fn worst(half: &[i8], t: i32, f: f64) -> f64 {
+    (0..8)
+        .map(|p| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (w, x) in taps(half, t, p) {
+                let a = 2.0 * core::f64::consts::PI * f * x;
+                re += f64::from(w) * a.cos();
+                im -= f64::from(w) * a.sin();
+            }
+            (re * re + im * im).sqrt() / 64.0
+        })
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn designed_tables_keep_their_exact_rules() {
+    use super::designed::DESIGNED;
+    for ((n, d), f) in DESIGNED {
+        // Every phase sums to one, both directions.
+        assert_eq!(phase_sums(&f.horizontal, 8), [ONE; 8], "{n}/{d}");
+        assert_eq!(phase_sums(&f.vertical, 4), [ONE; 8], "{n}/{d}");
+        // Down: one-pixel lines removed exactly (even and odd taps 32
+        // each, every phase).
+        for p in 0..8 {
+            let alt: i32 = taps(&f.vertical, 2, p)
+                .iter()
+                .enumerate()
+                .map(|(i, (w, _))| if i % 2 == 0 { *w } else { -*w })
+                .sum();
+            assert_eq!(alt, 0, "{n}/{d} phase {p}");
+        }
+    }
+    // Ratios rise, all shrinking, from 1/2.
+    assert_eq!(DESIGNED[0].0, (1, 2));
+    for w in DESIGNED.windows(2) {
+        let ((a, b), (c, d)) = (w[0].0, w[1].0);
+        assert!(u32::from(a) * u32::from(d) < u32::from(c) * u32::from(b));
+        assert!(c < d);
+    }
+}
+
+#[test]
+fn designed_beats_the_cubic_at_three_quarters() {
+    // P9d at 3/4: one-pixel stripes left by the cubic across (32-35% of
+    // them) and the tent down (39%). The designed tables, at the top of
+    // the band.
+    let cubic = Filter::fitted((480, 640), (360, 480));
+    let ours = Filter::designed((480, 640), (360, 480));
+    let top = |h: &[i8], t| worst(h, t, 0.45).max(worst(h, t, 0.5));
+    assert!(
+        top(&cubic.horizontal, 8) > 0.3,
+        "{}",
+        top(&cubic.horizontal, 8)
+    );
+    assert!(
+        top(&ours.horizontal, 8) < 0.05,
+        "{}",
+        top(&ours.horizontal, 8)
+    );
+    assert!(worst(&ours.vertical, 4, 0.5) < 0.01);
+    assert!(top(&ours.vertical, 4) < top(&cubic.vertical, 4));
+    // And keeps detail the smaller picture can show (0.6 of its limit):
+    // across as well as the cubic or better, down better than the tent.
+    let keep = |h: &[i8], t| worst(h, t, 0.6 * 0.375);
+    assert!(keep(&ours.horizontal, 8) >= keep(&cubic.horizontal, 8) - 0.02);
+    assert!(keep(&ours.vertical, 4) > keep(&cubic.vertical, 4));
+}
+
+#[test]
+fn designed_picks_never_filtering_less_than_the_scale_needs() {
+    use super::designed::DESIGNED;
+    // Exactly a designed ratio: that table; just under it: the one below.
+    let at = |o: u32| Filter::designed((480, 640), (o, 640)).horizontal;
+    assert_eq!(at(360), DESIGNED[5].1.horizontal); // 3/4
+    assert_eq!(at(359), DESIGNED[4].1.horizontal); // just under 3/4: 11/16
+    assert_eq!(at(240), DESIGNED[0].1.horizontal); // 1/2
+    assert_eq!(at(479), DESIGNED[8].1.horizontal); // just under 1: 15/16
+    // 1:1 and enlarging: mbxfb's half; each direction its own.
+    assert_eq!(at(480), Filter::MBXFB.horizontal);
+    assert_eq!(at(960), Filter::MBXFB.horizontal);
+    let mixed = Filter::designed((480, 640), (240, 1280));
+    assert_eq!(mixed.horizontal, DESIGNED[0].1.horizontal);
+    assert_eq!(mixed.vertical, Filter::MBXFB.vertical);
+}

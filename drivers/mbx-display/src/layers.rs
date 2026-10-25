@@ -154,6 +154,8 @@ pub enum ScalerFilter {
     Given(Filter),
     /// [`Filter::stretched`] by `num / den` (P9e's candidates).
     Stretched(u8, u8),
+    /// [`Filter::designed`] for this plane's scale (unproven until P9e).
+    Designed,
 }
 
 impl Scale {
@@ -341,6 +343,11 @@ impl VideoPlane {
             .words(),
             ScalerFilter::Given(f) => f.words(),
             ScalerFilter::Stretched(n, d) => Filter::stretched(u32::from(n), u32::from(d)).words(),
+            ScalerFilter::Designed => Filter::designed(
+                (u32::from(self.width), u32::from(self.height)),
+                (or(scale.out_w, self.width), or(scale.out_h, self.height)),
+            )
+            .words(),
         }
     }
 

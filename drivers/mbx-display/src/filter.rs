@@ -135,6 +135,38 @@ impl Filter {
         Self::built((num, den), (num, den), true)
     }
 
+    /// The tables computed for this hardware ([`designed::DESIGNED`],
+    /// `tools/scaler-filter/design.py`) for `src` shown at `out`: each
+    /// shrinking direction takes the table of the largest designed ratio
+    /// not above its own (never filtering less than its scale needs);
+    /// an enlarging or 1:1 direction keeps mbxfb's half (a near-ideal
+    /// interpolation, right on the X51v up 2x).
+    ///
+    /// # Panics
+    /// If a size is 0 or a direction shrinks past 2:1.
+    #[must_use]
+    pub fn designed(src: (u32, u32), out: (u32, u32)) -> Self {
+        assert!(
+            src.0 > 0 && src.1 > 0 && out.0 > 0 && out.1 > 0,
+            "a size of 0"
+        );
+        assert!(src.0 <= 2 * out.0 && src.1 <= 2 * out.1, "shrinks past 2:1");
+        let pick = |s: u32, o: u32| {
+            if o >= s {
+                return None;
+            }
+            designed::DESIGNED
+                .iter()
+                .rev()
+                .find(|((n, d), _)| u64::from(*n) * u64::from(s) <= u64::from(o) * u64::from(*d))
+                .map(|(_, f)| *f)
+        };
+        Self {
+            horizontal: pick(src.0, out.0).map_or(Self::MBXFB.horizontal, |f| f.horizontal),
+            vertical: pick(src.1, out.1).map_or(Self::MBXFB.vertical, |f| f.vertical),
+        }
+    }
+
     /// Both half kernels from each direction's stretch (`num / den`).
     fn built(h: (u32, u32), v: (u32, u32), v_tent: bool) -> Self {
         let mut f = Self {
@@ -275,6 +307,8 @@ fn half(n: usize, (stretch_num, stretch_den): (u32, u32), kernel: Kernel) -> [i8
     }
     out_b
 }
+
+pub mod designed;
 
 #[cfg(test)]
 mod tests;

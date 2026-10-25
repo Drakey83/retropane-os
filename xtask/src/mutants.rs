@@ -219,6 +219,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "scaler filter: the designed table picked from the wrong end (half size's for every scale)",
+        file: "drivers/mbx-display/src/filter.rs",
+        from: "            designed::DESIGNED\n                .iter()\n                .rev()",
+        to: "            designed::DESIGNED\n                .iter()",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "designed_picks_never_filtering_less_than_the_scale_needs",
+        ]),
+    },
+    Mutant {
         name: "mved: the YUY2 destination stride back in 4-byte units (the X51v's first run)",
         file: "drivers/mved/src/lib.rs",
         from: "    let dst_field = job.dst_stride / 8;",
