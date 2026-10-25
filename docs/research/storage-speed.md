@@ -502,6 +502,18 @@ attach: the card's own limit found by reads (as C5 does, the fallback
 proven here: failed reads are caught), then 1.5x it: this card ~39 cycles
 (~1.3x Windows Mobile's), the 8 GB card ~26 (a little faster than its 29).
 
+**Ruling M on the X51v (2026-10-24, `rp-storfast` CF-only, `local/rp-storfast-M1.txt`,
+`-M2.txt`): both cards' limit is the same, 11 cycles (set-up 0, strobe 1, hold 0;
+~52 ns): the strobe at 0 misreads (C5 above), the set-up and hold need none.
+With the margin both get 19 cycles (set-up 1, strobe 3, hold 1) against
+Windows Mobile's 54. DMA reads: the 8 GB card 5,880 -> 11,923 KiB/s (2.03x),
+the older 1 GB card (rated 250 ns) 5,817 -> 11,653 KiB/s (2.00x); the 16-bit
+port 1.26x, 32-bit loads 1.42x; every sector of 4 MiB exact, three passes a
+path; the search took 138 and 663 ms. Two cards meeting one limit hint it
+may be the socket's, not the cards' (a third card would tell). The margin on
+the set-up and hold is one step each (they measured zero): the 1.5x rule
+can't scale nothing. Next: the loader tunes each card at attach.
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the
