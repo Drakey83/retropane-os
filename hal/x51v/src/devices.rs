@@ -256,14 +256,22 @@ fn cf_timing_reg() -> Option<*mut u32> {
 
 /// The CompactFlash socket's common memory (the task file) for the card log
 /// (`crate::cardlog`), only while this program hasn't taken them
-/// ([`take_cf`]), with the socket enabled and timed as the loader left it
-/// (nothing is written to the memory controller). Like
+/// ([`take_cf`]), with the socket enabled as the loader left it and its
+/// common-memory timing set to Windows Mobile's each call (the timing CF
+/// writes are proven at; the loader may have tuned reads faster). Like
 /// `rt::mmc_if_untaken`: no owner exists, each use is one sector write.
 pub(crate) fn cf_if_untaken() -> Option<Mmio> {
     // SAFETY: a plain read of the flag; single core.
     if unsafe { core::ptr::addr_of!(CF_TAKEN).read() } {
         return None;
     }
+    // The card log writes at Windows Mobile's timing, the one CF writes
+    // are proven at, whatever the loader tuned the card's reads to
+    // (CfCard::write_at; reminder R7).
+    let mc = va(region("memory_ctrl")?.base as usize) as *mut u32;
+    // SAFETY: `MCMEM1`, the CF socket's own timing; no owner exists in this
+    // program (the flag above), single core.
+    unsafe { mc.byte_add(MCMEM1).write_volatile(CF_MEM_TIMING_WM) };
     let base = va(region("pcmcia1_cf")?.base as usize);
     let common = NonNull::new((base + CF_COMMON) as *mut u32)?;
     // SAFETY: as in `take_cf` (its common memory window); the flag

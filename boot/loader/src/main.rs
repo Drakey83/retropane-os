@@ -1143,6 +1143,14 @@ mod image {
         /// first four bytes read.
         reads: [(u32, u16, bool, [u8; 4]); 6],
         reads_len: usize,
+        /// The attached card's own timing is still to be measured (the
+        /// owner's ruling M, reminder R7): done at the main loop's next
+        /// once-a-second pass with no drive command in progress (within a
+        /// second of the attach), so the attach and start-up stay as fast as
+        /// they were; until then the card runs at Windows Mobile's timing.
+        tune_pending: bool,
+        /// What the measurement did, for `cf`.
+        tuned: Option<rp_drv_cf::Tuned>,
     }
 
     /// The first CF slot events since start-up, timestamped (ms): READY
@@ -1166,6 +1174,9 @@ mod image {
                     b'0' => "ready 0",
                     b'1' => "ready 1",
                     b'A' => "attached",
+                    b'W' => "warm (reset only)",
+                    b'T' => "own timing",
+                    b'K' => "timing kept",
                     b'O' => "power off",
                     _ => "dead",
                 };
@@ -1316,6 +1327,10 @@ mod image {
             CfSlot::Unavailable => return None,
         };
         let mut delay = |us| rt::delay_us(us);
+        // Every card is taken at Windows Mobile's timing, whatever the last
+        // card was tuned to (a slower card would misread its CIS at it).
+        let _ = devices::set_cf_mem_timing(devices::CF_MEM_TIMING_WM);
+        lun.tuned = None;
         // Reads by DMA from the data window when it reads IDENTIFY as the
         // 16-bit port does (docs/research/storage-speed.md).
         let phys = Some(devices::cf_common_phys().unwrap_or(0));
@@ -1340,6 +1355,7 @@ mod image {
         match taken {
             Ok((card, seen)) => {
                 lun.events.push(b'A');
+                lun.tune_pending = true;
                 *slot = CfSlot::Card(card);
                 Some(seen)
             }
@@ -1348,6 +1364,71 @@ mod image {
                 None
             }
         }
+    }
+
+    /// What `CfCard::tune` did, in words with its numbers (memory-clock
+    /// cycles a read).
+    struct TunedText(rp_drv_cf::Tuned);
+
+    impl core::fmt::Display for TunedText {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            use rp_drv_cf::timing::Timing;
+            let cycles = |v: u32| Timing::from_mcmem(v).cycle_cycles();
+            match self.0 {
+                rp_drv_cf::Tuned::Applied {
+                    was,
+                    now,
+                    limit,
+                    clamped,
+                } => write!(
+                    f,
+                    "own, {} cycles a read (the card's limit {}, Windows Mobile's {}){}; writes at Windows Mobile's",
+                    cycles(now),
+                    cycles(limit),
+                    cycles(was),
+                    if clamped { ", clamped" } else { "" }
+                ),
+                rp_drv_cf::Tuned::Refused { card_ok, .. } => write!(
+                    f,
+                    "Windows Mobile's (the card's own failed its check; card reads right {card_ok})"
+                ),
+                rp_drv_cf::Tuned::Kept(why) => write!(f, "Windows Mobile's ({why})"),
+            }
+        }
+    }
+
+    /// The socket's common-memory timing register, for `CfCard::tune`.
+    struct CfSocket;
+
+    impl rp_drv_cf::SocketTiming for CfSocket {
+        fn read(&mut self) -> u32 {
+            devices::cf_mem_timing().unwrap_or(devices::CF_MEM_TIMING_WM)
+        }
+        fn write(&mut self, value: u32) {
+            let _ = devices::set_cf_mem_timing(value);
+        }
+    }
+
+    fn set_cf_timing(value: u32) {
+        let _ = devices::set_cf_mem_timing(value);
+    }
+
+    /// Measures the attached card's own timing (`CfCard::tune`, reads only)
+    /// and uses it for reads; writes stay at Windows Mobile's timing, the
+    /// one they are proven at (`CfCard::write_at`).
+    #[inline(never)]
+    fn cf_tune(lun: &mut CfLun) {
+        let CfSlot::Card(card) = &mut lun.slot else {
+            return;
+        };
+        let tuned = card.tune(&mut CfSocket);
+        if let rp_drv_cf::Tuned::Applied { now, .. } = tuned {
+            card.write_at(set_cf_timing, now, devices::CF_MEM_TIMING_WM);
+            lun.events.push(b'T');
+        } else {
+            lun.events.push(b'K');
+        }
+        lun.tuned = Some(tuned);
     }
 
     /// Whether a CompactFlash card is in the slot: CPLD `0x04` bit 1, which
@@ -1432,6 +1513,10 @@ mod image {
         for &b in card.model().iter().take(40) {
             let _ = out.write_char(char::from(b));
         }
+        let _ = match lun.tuned {
+            Some(t) => write!(out, "; timing {}", TunedText(t)),
+            None => write!(out, "; timing Windows Mobile's (own not yet measured)"),
+        };
         // Diagnostics for the first device runs: the slot's state before
         // this command, detect changes seen, the task file after the read,
         // and sector 0's first 16 bytes and signature when it read.
@@ -2053,6 +2138,8 @@ mod image {
             retry: cf_in,
             reads: [(0, 0, false, [0; 4]); 6],
             reads_len: 0,
+            tune_pending: false,
+            tuned: None,
         };
         cf.events.push(if cf.ready { b'1' } else { b'0' });
         if cf_in {
@@ -2828,6 +2915,17 @@ mod image {
                         _ => "in: socket unavailable",
                     }
                 );
+            }
+            // The attached card's own timing, measured at the next
+            // once-a-second pass with no drive command in progress.
+            if rt::ticks().wrapping_sub(last) >= TICK_1S
+                && !msc.busy()
+                && core::mem::take(&mut cf.tune_pending)
+            {
+                cf_tune(&mut cf);
+                if let Some(t) = cf.tuned {
+                    let _ = writeln!(log, "CF card timing: {}", TunedText(t));
+                }
             }
             // A card that is in but not attached (failed, or dropped as
             // dead) is taken again, once per insertion.

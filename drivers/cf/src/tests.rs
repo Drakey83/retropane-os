@@ -62,6 +62,9 @@ struct Card {
     /// The card misreads at exactly this timing (its fields, `MCMEM`'s
     /// low 20 bits) and no other: a timing the search never passed.
     garble_at: Option<u32>,
+    /// Writes need a longer cycle than this (a card slower to write than to
+    /// read): shorter ones store wrong data.
+    write_below: u32,
     too_fast_hangs: bool,
 }
 
@@ -136,6 +139,7 @@ impl Card {
             mcmem: 0xA5A0_0000 | timing::Timing::WINDOWS_MOBILE.mcmem(),
             too_fast_below: 0,
             garble_at: None,
+            write_below: 0,
             too_fast_hangs: false,
         }
     }
@@ -266,9 +270,13 @@ impl Card {
         w
     }
 
-    fn write_data(&mut self, w: u16) {
+    fn write_data(&mut self, mut w: u16) {
         if self.phase != Phase::WriteIn {
             return;
+        }
+        // Not the read's 0x0101, which would cancel it on reading back.
+        if timing::Timing::from_mcmem(self.mcmem).cycle_cycles() < self.write_below {
+            w ^= 0x0202;
         }
         self.buf[self.pos..self.pos + 2].copy_from_slice(&w.to_le_bytes());
         self.pos += 2;
@@ -1158,4 +1166,43 @@ fn a_card_unreadable_at_the_slowest_keeps_the_old_timing() {
     assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
     assert_eq!(c.borrow().mcmem, was);
     assert_eq!(s.writes.last(), Some(&was));
+}
+
+thread_local! {
+    /// The card [`set_mcmem`] times (a `fn(u32)` can't capture it).
+    static TIMED: RefCell<Option<Rc<RefCell<Card>>>> = const { RefCell::new(None) };
+}
+
+fn set_mcmem(v: u32) {
+    TIMED.with(|t| {
+        if let Some(c) = t.borrow().as_ref() {
+            c.borrow_mut().mcmem = v;
+        }
+    });
+}
+
+/// A tuned card writes at the timing writes were proven at: without
+/// `write_at` the simulated card (wrong when timed too fast, writes too)
+/// stores garbage at the read timing; with it, every block lands, and the
+/// read timing is back after each write.
+#[test]
+fn a_tuned_card_writes_at_the_write_timing() {
+    let (c, mut cf, _, t) = tuned(20, false);
+    // Reads right from 20 cycles (tuned to 30), writes only from 40.
+    c.borrow_mut().write_below = 40;
+    let Tuned::Applied { was, now, .. } = t else {
+        panic!("{t:?}");
+    };
+    let block = [0x5Au8; SECTOR];
+    let mut back = [0u8; SECTOR];
+    cf.write_blocks(7, &block).unwrap();
+    cf.read_blocks(7, &mut back).unwrap();
+    assert_ne!(back, block, "the sim must garble writes at the read timing");
+    TIMED.with(|t| *t.borrow_mut() = Some(c.clone()));
+    cf.write_at(set_mcmem, now, was);
+    cf.write_blocks(9, &block).unwrap();
+    assert_eq!(c.borrow().mcmem, now, "the read timing back after a write");
+    cf.read_blocks(9, &mut back).unwrap();
+    assert_eq!(back, block);
+    TIMED.with(|t| *t.borrow_mut() = None);
 }

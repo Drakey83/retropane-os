@@ -42,10 +42,18 @@ pub(crate) const TARGET_SPEC: &str = "targets/armv5te-x51v-none-eabi.json";
 /// elsewhere and read from `target` is a stale image, measured and run
 /// without a word (2026-10-24: `emu-storfast` ran an old `rp-storfast`).
 pub(crate) fn arm_release(root: &Path) -> PathBuf {
-    let base = std::env::var_os("CARGO_TARGET_DIR")
+    target_dir(root).join("armv5te-x51v-none-eabi/release")
+}
+
+/// Cargo's build folder: `CARGO_TARGET_DIR` when it is set (relative to the
+/// workspace, as cargo takes it), else the workspace's `target`. Every
+/// path to a build cargo made without `--target-dir` starts here (the Thumb
+/// images were copied from `target` too: `emu-cf` ran an old loader,
+/// 2026-10-24).
+pub(crate) fn target_dir(root: &Path) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
         .filter(|d| !d.is_empty())
-        .map_or_else(|| root.join("target"), |d| root.join(d));
-    base.join("armv5te-x51v-none-eabi/release")
+        .map_or_else(|| root.join("target"), |d| root.join(d))
 }
 /// The Thumb variant of the target (ADR-0015: cold code as Thumb).
 const THUMB_TARGET_SPEC: &str = "targets/thumbv5te-x51v-none-eabi.json";
@@ -1248,8 +1256,8 @@ fn cross() -> Result {
             "-p",
             image,
         ])?;
-        let from = workspace_root()
-            .join("target/thumbv5te-x51v-none-eabi/release")
+        let from = target_dir(&workspace_root())
+            .join("thumbv5te-x51v-none-eabi/release")
             .join(image);
         let to = crate::arm_release(&workspace_root()).join(image);
         std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
@@ -1312,14 +1320,17 @@ mod tests {
     /// folder under `target` itself; every path comes from `arm_release`.
     #[test]
     fn image_paths_come_from_arm_release() {
-        let folder = ["target/", "armv5te-x51v-none-eabi/release"].concat();
+        let folders = [
+            ["target/", "armv5te-x51v-none-eabi"].concat(),
+            ["target/", "thumbv5te-x51v-none-eabi"].concat(),
+        ];
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut found = Vec::new();
         for entry in std::fs::read_dir(&src).unwrap() {
             let path = entry.unwrap().path();
             let text = std::fs::read_to_string(&path).unwrap();
             for (n, line) in text.lines().enumerate() {
-                if line.contains(&folder) {
+                if folders.iter().any(|f| line.contains(f.as_str())) {
                     found.push(format!("{}:{}", path.display(), n + 1));
                 }
             }

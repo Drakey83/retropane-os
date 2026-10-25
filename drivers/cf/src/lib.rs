@@ -250,6 +250,9 @@ pub struct CfCard<A, C, D = NoDma> {
     dead: bool,
     /// The common memory's speed its CIS rates, ns (`None`: no rating).
     rated_ns: Option<u32>,
+    /// Writes at another timing than reads ([`CfCard::write_at`]): how to
+    /// set the socket's register, the read timing, the write timing.
+    write_timing: Option<(fn(u32), u32, u32)>,
 }
 
 /// What the CIS walk found: the configuration registers' base, and the
@@ -391,6 +394,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             last_error: 0,
             dead: false,
             rated_ns: None,
+            write_timing: None,
         }
     }
 
@@ -430,6 +434,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             last_error: self.last_error,
             dead: self.dead,
             rated_ns: self.rated_ns,
+            write_timing: self.write_timing,
         };
         card.try_dma();
         card
@@ -474,6 +479,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             last_error: 0,
             dead: false,
             rated_ns: cis.rated_ns,
+            write_timing: None,
         };
         if let Err(e) = card.start(cis.config as usize, delay_us) {
             return Err((e, card.attr, card.common, card.dma));
@@ -670,6 +676,15 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         };
         self.dead = !ok;
         ok
+    }
+
+    /// Writes from now on at another socket timing than reads: `set`
+    /// programs the register (`MCMEM` for the CF socket), `write` before
+    /// each write and `read` after it. [`CfCard::tune`] measures reads only,
+    /// so a tuned card writes at the timing it was proven to write at
+    /// (Windows Mobile's) until a write test proves more.
+    pub fn write_at(&mut self, set: fn(u32), read: u32, write: u32) {
+        self.write_timing = Some((set, read, write));
     }
 
     /// A 64-bit FNV-1a hash of IDENTIFY (through the 16-bit port) and the
@@ -964,6 +979,19 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
     }
 
     fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+        let Some((set, read, write)) = self.write_timing else {
+            return self.write_sectors(lba, buf);
+        };
+        set(write);
+        let done = self.write_sectors(lba, buf);
+        set(read);
+        done
+    }
+}
+
+impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDma> CfCard<A, C, D> {
+    /// [`BlockDevice::write_blocks`] at whatever timing the socket has.
+    fn write_sectors(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
         self.range(lba, buf.len())?;
         if self.dead {
             return Err(BlockError::Device);

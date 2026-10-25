@@ -884,9 +884,12 @@ pub const BUDGETS: &[Budget] = &[
     // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
     // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
     // writes and the sync); 35.3 KiB measured, + ~10%.
+    // Ratcheted 40 -> 44 KiB on 2026-10-24 (test image): the card log sets
+    // the CF socket to Windows Mobile's timing before each write (R7);
+    // 40.1 KiB measured.
     Budget {
         image: "rp-display-cal",
-        max_load: 40 * 1024,
+        max_load: 44 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
