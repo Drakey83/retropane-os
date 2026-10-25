@@ -145,6 +145,26 @@ value (the candidates are the offsets with no shadow slot: `0x00`,
 `0x04`-`0x06`, `0x0A`-`0x0E`), and whether `0x14` is a board ID (the owner's
 X50v would read a different one). Reminder R24 holds the checks.
 
+**Checked on the X51v (2026-10-24, `rp-storfast` C8, `local/rp-storfast-C7C8.txt`; the
+owner pulled the CF card and pushed it back, twice; reads only, every millisecond):**
+
+| When | GPIO13 | `0x00` | `0x04` |
+|---|---|---|---|
+| Start (card in) | 0 | `0x00c8` | `0x00a0` |
+| Pull begins | 0 | `0x00c8` | `0x00a4` (bit 2 set) |
+| 14 ms later | **1** | **`0x00ca`** (bit 1 set) | `0x00a6` (bit 1 set: no card) |
+| Push: card seated | 1 | `0x00ca` | `0x00a4` (bit 1 clear: card) |
+| 640 ms later | 1 | `0x00ca` | `0x00a0` (bit 2 clear) |
+| Second pull and push | 1 | `0x00ca` | the same two-step pattern |
+
+What it shows (results; the acknowledge still to find): `0x04` bits 1 and 2 are two card-detect
+contacts that make and break at different moments (the CF connector's CD1 and CD2, a likely
+reading); `0x00` bit 1 is a **latched** "card changed" flag and **GPIO13 follows it and stays
+high** after the card is back: HTC's EGPIO latched interrupt, and the October "sticky GPIO13"
+explained. `0x06` and `0x14` never changed. `0x00` read `0x00c8` here against `0x0048` at the
+October hand-over (bit 7: another latched flag?). Next (R24 step 1): which write Dell's kernel
+makes to clear the latch.
+
 ## Sequences
 
 **LCD type detection:** set `0x1E` bit 3 → wait ~1 ms → read `0x1E & 3` →

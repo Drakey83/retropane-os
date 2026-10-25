@@ -514,6 +514,13 @@ may be the socket's, not the cards' (a third card would tell). The margin on
 the set-up and hold is one step each (they measured zero): the 1.5x rule
 can't scale nothing. Next: the loader tunes each card at attach.
 
+**CF writes (2026-10-24, `rp-storfast` C7, R28):** with the command and address at Windows
+Mobile's timing and only the data words faster, the 8 GB card's data was right at every strobe
+down to 0 (10 cycles), 64 sectors read back exact each time. Speed: 4,637 KiB/s with Windows
+Mobile's timing throughout, but **240 KiB/s with the timing switched around each sector's data**:
+switching `MCMEM1` costs ~1 ms (inferred; to measure), which swamps the gain. To try: one switch
+per command.
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the
