@@ -535,6 +535,21 @@ the data words, `finish`) at Windows Mobile's and at strobe 9, and a write with 
 rewritten to its own value (a write that changes nothing) to split "a write to the register"
 from "a different value".
 
+**C10, each phase timed (2026-10-25, `local/rp-storfast-C10.txt`, image sha 14037a68): the
+slowness is the card rewriting the same sectors, not the timing.** At Windows Mobile's data
+timing too, the C10 writes ran at 231-232 KiB/s: of each 64-sector write's ~138 ms, the command
+took 3-5 us, each switch 1 us, the finish 210 us, and **one DRQ wait ~132 ms** (the card asking
+for the first sector). C7's first write, to the file's newly allocated sectors, ran at 4,699
+KiB/s; every later write rewrote those same 64 sectors, and each waited ~132 ms first (a flash
+card erasing before it rewrites). C7 and C9 always wrote Windows Mobile's round first: their
+"20x slower at any faster timing" was "a rewrite is 20x slower", and the reading above (the data
+phase's value) is withdrawn. What the timing does change, from C10's data words for 64 sectors:
+5,041 us at Windows Mobile's, 4,808 at strobe 9, **2,961 at strobe 1 (41% less)**; for a write to
+fresh sectors that is very roughly 4,700 to 6,500 KiB/s (an estimate). To measure: each timing
+writing sectors it hasn't written before, rounds alternated (C11), and the rewrite cost on its
+own (a card property: how often a filesystem rewrites the same sectors, the FAT and directories,
+matters more than the timing for small writes).
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the
