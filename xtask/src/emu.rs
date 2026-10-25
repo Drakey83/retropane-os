@@ -9068,10 +9068,17 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         // Within a second of the attach the loader measures the card's own
         // timing (ruling M, R7): the emulator's card reads right at every
         // timing (timing isn't modelled), so it must be applied.
-        std::thread::sleep(Duration::from_millis(2_500));
-        s.write_all(&rp_loadproto::control_frame("cf"))
-            .map_err(|e| e.to_string())?;
-        let reply = usb_read_line(&mut s, "RPL ", 20)?;
+        // Asked again every 200 ms (no fixed wait), for up to 10 s.
+        let mut reply = String::new();
+        for _ in 0..50 {
+            s.write_all(&rp_loadproto::control_frame("cf"))
+                .map_err(|e| e.to_string())?;
+            reply = usb_read_line(&mut s, "RPL ", 20)?;
+            if reply.contains("; timing own, ") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
         if !reply.contains("; timing own, ") || !reply.contains("writes at Windows Mobile's") {
             return Err(format!("cf: the card's own timing not measured: {reply:?}"));
         }
