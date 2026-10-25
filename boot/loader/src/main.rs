@@ -3046,6 +3046,14 @@ mod image {
                                 None => "RPL ERR limit: 1 to 30 seconds\r\n",
                             }
                         }
+                        // The loader's deepest stack so far (the CF card's
+                        // timing searches at the attach once overflowed it:
+                        // quality audit C79; emu-cf checks the headroom).
+                        Ok(b"loader stack") => {
+                            let (deep, size) = rt::stack_used();
+                            let _ = write!(status, "RPL OK stack {deep} of {size}\r\n");
+                            status.as_str()
+                        }
                         Ok(b"card check") => {
                             if msc.host_writing(now_ms()) {
                                 "RPL ERR card busy: the PC is writing\r\n"

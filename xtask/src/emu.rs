@@ -9159,6 +9159,32 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         // loader), on fresh sectors of its own file, and kept in
         // rplog/cfwrite.txt; "kept" once a later attach has read it there
         // (only the search writes that line).
+        // The loader's stack after the attach's timing searches, its
+        // deepest work: under 75% (16 KiB overflowed once into .bss and
+        // stopped the loader on the X51v, quality audit C79).
+        s.write_all(&rp_loadproto::control_frame("loader stack"))
+            .map_err(|e| e.to_string())?;
+        let stack_reply = usb_read_line(&mut s, "RPL ", 20)?;
+        let stack = stack_reply
+            .split("RPL OK stack ")
+            .nth(1)
+            .and_then(|t| {
+                let mut n = t.split(" of ");
+                let used: u32 = n.next()?.trim().parse().ok()?;
+                let size: u32 = n.next()?.trim().parse().ok()?;
+                Some((used, size))
+            })
+            .ok_or_else(|| format!("loader stack: {stack_reply:?}"))?;
+        eprintln!(
+            "    loader stack after the CF attach: {} of {} bytes",
+            stack.0, stack.1
+        );
+        if stack.0 * 4 > stack.1 * 3 {
+            return Err(format!(
+                "the loader's stack is {} of {} bytes after the CF attach (over 75%)",
+                stack.0, stack.1
+            ));
+        }
         if !reply.contains("; timing own, ")
             || !(reply.contains(" cycles (limit ") || reply.contains(" cycles (kept)"))
         {

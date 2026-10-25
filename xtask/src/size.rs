@@ -346,7 +346,11 @@ pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-loader",
         max_load: 128 * 1024,
-        max_zero: 20 * 1024,
+        // Zeroed RAM 20 -> 36 KiB on 2026-10-25 (approved by the owner):
+        // the loader's stack 16 -> 32 KiB, after the CF card's timing
+        // searches at the attach overflowed 16 (17,376 B deepest; quality
+        // audit C79); 36,656 B measured, the stack in its own 1 MiB home.
+        max_zero: 36 * 1024,
         device: OnDevice::Loader,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.
