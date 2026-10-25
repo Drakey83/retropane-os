@@ -9433,6 +9433,45 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                     "CF re-inserted: its kept write timing not used: {reply:?}"
                 ));
             }
+            // A quick swap (R33, on the X51v 0.12 s): out and back in a
+            // fraction of a second, nothing reading the card meanwhile. The
+            // loader must see it from the detect alone (read every 50 ms)
+            // and attach the card again; once a second missed it, and the
+            // card came back only when a later read failed.
+            // `cf log` (reads only: `cf` would attach the card itself):
+            // the slot's events, "attached" each time the loader took it.
+            let mut attached = || -> Result<(usize, String), String> {
+                s.write_all(&rp_loadproto::control_frame("cf log"))
+                    .map_err(|e| e.to_string())?;
+                let mut got = String::new();
+                loop {
+                    got += &usb_read_until(
+                        &mut s, "
+", 10,
+                    )?;
+                    if let Some(l) = got.lines().find(|l| l.starts_with("RPL OK cf:")) {
+                        let events = l.split("; reads").next().unwrap_or(l).to_string();
+                        return Ok((events.matches("attached").count(), events));
+                    }
+                }
+            };
+            let (before, _) = attached()?;
+            mon.query("qom-set /machine/peripheral/cfslot pressed true")?;
+            poll_pause(Duration::from_millis(150));
+            mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let (now, events) = attached()?;
+                if now > before {
+                    break;
+                }
+                if Instant::now() > deadline {
+                    return Err(format!(
+                        "CF quick swap: not seen by the detect and attached again: {events:?}"
+                    ));
+                }
+                poll_pause(Duration::from_millis(250));
+            }
         }
         Ok(())
     };

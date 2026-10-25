@@ -168,6 +168,8 @@ commands:
   cf        identify the CompactFlash card through the loader (read-only;
             then it is the drive's second unit); `cf log`: READY changes,
             attach and drop times; `cf soft`: no hardware reset (diagnostics)
+  stack     the loader's deepest stack use so far, of its size (quality
+            audit C79: the CF attach's timing searches overflowed it once)
   log       the last image's run log again, from the loader (for a log
             lost on the way back; `load` asks for it by itself)
   cardlog   `cardlog [image] [number]`: a run's log kept on the cards as
@@ -474,6 +476,10 @@ fn main() -> ExitCode {
             };
             eprintln!("==> {cmd}");
             usb::command(&workspace_root(), cmd)
+        }
+        "stack" => {
+            eprintln!("==> loader stack");
+            usb::command(&workspace_root(), "loader stack")
         }
         "log" => {
             eprintln!("==> log");

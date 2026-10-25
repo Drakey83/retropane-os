@@ -421,15 +421,20 @@ mod image {
     }
 
     /// A reply line built on the stack.
+    /// One reply line. 512 bytes: `cf`'s reply (the card, both timings,
+    /// the slot's diagnostics) outgrew 256 and lost its detect count
+    /// (2026-10-25).
     struct Line {
-        buf: [u8; 256],
+        buf: [u8; LINE],
         len: usize,
     }
+
+    const LINE: usize = 512;
 
     impl Line {
         const fn new() -> Self {
             Self {
-                buf: [0; 256],
+                buf: [0; LINE],
                 len: 0,
             }
         }
@@ -1239,7 +1244,9 @@ mod image {
     /// The first CF slot events since start-up, timestamped (ms): READY
     /// rising or falling, the card attached, the card dropped as dead.
     struct CfEvents {
-        at: [(u32, u8); 12],
+        /// 24: a pull, a re-insert and a quick swap all fit (12 filled up
+        /// before the quick swap's, 2026-10-25).
+        at: [(u32, u8); 24],
         len: usize,
     }
 
@@ -1279,9 +1286,10 @@ mod image {
             }
         }
 
-        /// Follows the card's presence ([`cf_card_in`]); `true` when the
-        /// card came or went (the caller attaches a card that came, and tells
-        /// the PC).
+        /// Follows the card's presence ([`cf_card_in`]), read every
+        /// [`CF_DETECT_TICKS`] and acted on when two readings in a row agree;
+        /// `true` when the card came or went (the caller attaches a card that
+        /// came, and tells the PC).
         fn poll_detect(&mut self, gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) -> bool {
             let now = cf_card_in(gpio, cpld);
             let stable = now == self.seen;
@@ -1563,6 +1571,13 @@ mod image {
         }
         lun.tuned = Some(tuned);
     }
+
+    /// How often the CF slot's detect is read: 50 ms, so a card pulled and
+    /// pushed back in a fraction of a second is seen within ~100 ms (two
+    /// agreeing readings). Once a second missed a 0.12 s swap on the X51v
+    /// and the card came back only 17 s later, when a read failed (R33,
+    /// 2026-10-25; the owner's option A). One CPLD register read.
+    const CF_DETECT_TICKS: u32 = TICK_1S / 20;
 
     /// The waits before each automatic retry of a CF card that is in but
     /// not attached (R33): one second, three, ten; then no more until it is
@@ -2417,7 +2432,7 @@ mod image {
             changes: 0,
             ready: gpio.read(CF_READY),
             events: CfEvents {
-                at: [(0, 0); 12],
+                at: [(0, 0); 24],
                 len: 0,
             },
             powered: false,
@@ -2554,6 +2569,8 @@ mod image {
         // frame can't swallow the next one, and the PC hears how far it got.
         let mut last_byte = rt::ticks();
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
+        // The CF slot's detect, read every [`CF_DETECT_TICKS`].
+        let mut cf_detect_at = rt::ticks();
         // Idling: after QUIET of nothing happening the loop sleeps until the
         // next 1 ms tick instead of spinning (battery and heat), so traffic
         // runs at full speed and a waiting loader is mostly asleep.
@@ -3235,8 +3252,11 @@ mod image {
                     if on { "on" } else { "off" }
                 );
             }
-            if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio, cpld.as_mut())
-            {
+            let detect_due = rt::ticks().wrapping_sub(cf_detect_at) >= CF_DETECT_TICKS;
+            if detect_due {
+                cf_detect_at = rt::ticks();
+            }
+            if detect_due && cf.poll_detect(&mut gpio, cpld.as_mut()) {
                 // A card that goes in (or was in at start-up) is attached
                 // at once, as the SD card is, so it shows up next to it.
                 if cf.inserted {
