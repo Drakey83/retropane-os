@@ -24,6 +24,9 @@ struct Card {
     identify: [u16; 256],
     write_cache: bool,
     supports_cache_off: bool,
+    /// The CFA feature set: ERASE SECTORS and WRITE WITHOUT ERASE taken
+    /// (refused, aborted, without it).
+    cfa: bool,
     /// Faults.
     error_at: Option<u32>,
     never_ready: bool,
@@ -121,6 +124,7 @@ impl Card {
             identify,
             write_cache: true,
             supports_cache_off: true,
+            cfa: false,
             error_at: None,
             never_ready: false,
             busy_reads: 0,
@@ -223,7 +227,17 @@ impl Card {
                 self.left = 1;
                 self.phase = Phase::ReadOut;
             }
-            CMD_READ_SECTORS | CMD_WRITE_SECTORS => {
+            CMD_CFA_ERASE_SECTORS if self.cfa => {
+                if self.lba + self.left > SECTORS {
+                    self.fail(0x10);
+                    return;
+                }
+                let o = self.lba as usize * SECTOR;
+                self.disk[o..o + self.left as usize * SECTOR].fill(0xFF);
+            }
+            CMD_READ_SECTORS | CMD_WRITE_SECTORS | CMD_CFA_WRITE_WITHOUT_ERASE
+                if cmd != CMD_CFA_WRITE_WITHOUT_ERASE || self.cfa =>
+            {
                 if self.lba + self.left > SECTORS {
                     self.fail(0x10); // ID not found
                     return;
@@ -1291,4 +1305,53 @@ fn a_marked_write_reports_each_phase_in_order() {
     cf.read_blocks(20, &mut back).unwrap();
     assert_eq!(back, block);
     TIMED.with(|t| *t.borrow_mut() = None);
+}
+
+/// The CFA feature set as IDENTIFY words 83 and 86 claim it (word 86
+/// counted only when word 83's signature says the words are valid); a card
+/// with it
+/// erases sectors ahead and writes them without erase (the data lands, the
+/// read timing back after); a card without it refuses both with an error,
+/// and stays usable (a refusal isn't a dead card).
+#[test]
+fn the_cfa_erase_commands_work_or_are_refused_cleanly() {
+    // Word 86's bit without word 83's signature counts for nothing.
+    let (c, attr, common) = card();
+    c.borrow_mut().identify[86] = 1 << 2;
+    let Ok(cf) = init(&c, attr, common) else {
+        panic!("init");
+    };
+    assert_eq!(cf.cfa(), (false, false));
+    for cfa in [true, false] {
+        let (c, attr, common) = card();
+        c.borrow_mut().cfa = cfa;
+        if cfa {
+            c.borrow_mut().identify[83] = 0x4000 | 1 << 2;
+            c.borrow_mut().identify[86] = 1 << 2;
+        }
+        let Ok(mut cf) = init(&c, attr, common) else {
+            panic!("init");
+        };
+        assert_eq!(cf.cfa(), (cfa, cfa));
+        let block = [0xA5u8; 2 * SECTOR];
+        let erased = cf.erase_sectors(30, 2);
+        let written = cf.write_without_erase_marked(30, &block, &mut |_| {});
+        let mut back = [0u8; 2 * SECTOR];
+        if cfa {
+            erased.unwrap();
+            written.unwrap();
+            cf.read_blocks(30, &mut back).unwrap();
+            assert_eq!(back, block);
+        } else {
+            assert_eq!(erased, Err(BlockError::Device));
+            assert_eq!(written, Err(BlockError::Device));
+            assert_eq!(cf.last_error() & 0x04, 0x04, "aborted");
+            assert!(!cf.is_dead());
+            cf.write_blocks(30, &block).unwrap();
+            cf.read_blocks(30, &mut back).unwrap();
+            assert_eq!(back, block);
+        }
+        assert_eq!(cf.erase_sectors(30, 0), Err(BlockError::OutOfRange));
+        assert_eq!(cf.erase_sectors(30, 257), Err(BlockError::OutOfRange));
+    }
 }

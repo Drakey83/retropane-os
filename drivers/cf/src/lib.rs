@@ -70,6 +70,11 @@ const HEAD_LBA: u8 = 0xE0;
 
 const CMD_READ_SECTORS: u8 = 0x20;
 const CMD_WRITE_SECTORS: u8 = 0x30;
+/// CFA ERASE SECTORS (CF specification 6.2.1.4): sectors pre-erased, so a
+/// later write needn't erase them first.
+const CMD_CFA_ERASE_SECTORS: u8 = 0xC0;
+/// CFA WRITE SECTORS WITHOUT ERASE: a write to sectors erased before.
+const CMD_CFA_WRITE_WITHOUT_ERASE: u8 = 0x38;
 const CMD_IDENTIFY: u8 = 0xEC;
 const CMD_SET_FEATURES: u8 = 0xEF;
 const FEATURE_WRITE_CACHE_OFF: u8 = 0x82;
@@ -252,6 +257,9 @@ pub struct CfCard<A, C, D = NoDma> {
     rated_ns: Option<u32>,
     /// Writes at another timing than reads ([`CfCard::write_at`]).
     write_timing: Option<WriteTiming>,
+    /// IDENTIFY words 83 and 86: the command sets supported and enabled
+    /// (bit 2: the CFA feature set, [`CfCard::cfa`]).
+    command_sets: (u16, u16),
 }
 
 /// The phases of a write, in order, for [`CfCard::write_blocks_marked`]
@@ -432,6 +440,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             dead: false,
             rated_ns: None,
             write_timing: None,
+            command_sets: (0, 0),
         }
     }
 
@@ -472,6 +481,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             dead: self.dead,
             rated_ns: self.rated_ns,
             write_timing: self.write_timing,
+            command_sets: self.command_sets,
         };
         card.try_dma();
         card
@@ -517,6 +527,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             dead: false,
             rated_ns: cis.rated_ns,
             write_timing: None,
+            command_sets: (0, 0),
         };
         if let Err(e) = card.start(cis.config as usize, delay_us) {
             return Err((e, card.attr, card.common, card.dma));
@@ -587,6 +598,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             return Err(CfError::BadIdentify);
         }
         self.sectors = sectors;
+        self.command_sets = (id[83], id[86]);
         // Words 27-46: the model, two characters per word, first in the high byte.
         for (i, w) in id[27..47].iter().enumerate() {
             for (k, b) in w.to_be_bytes().into_iter().enumerate() {
@@ -777,6 +789,53 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             .rposition(|&b| b != b' ')
             .map_or(0, |i| i + 1);
         &self.model[..end]
+    }
+
+    /// The CFA feature set (pre-erase, write without erase), from IDENTIFY:
+    /// (supported, enabled). A card's word is its claim: the commands are
+    /// tried, and a card that refuses one reports an error (R28's C12).
+    #[must_use]
+    pub fn cfa(&self) -> (bool, bool) {
+        // Word 83's bits 15-14 (01b) say words 82-87 are valid.
+        let (supported, enabled) = self.command_sets;
+        let valid = supported & 0xC000 == 0x4000;
+        (
+            valid && supported & (1 << 2) != 0,
+            valid && enabled & (1 << 2) != 0,
+        )
+    }
+
+    /// CFA ERASE SECTORS: `count` sectors from `lba` (1-256) erased ahead of
+    /// a write without erase. The card's error register on a refusal (a
+    /// card without the CFA feature set aborts it).
+    pub fn erase_sectors(&mut self, lba: u32, count: u32) -> Result<(), BlockError> {
+        if !(1..=256).contains(&count) {
+            return Err(BlockError::OutOfRange);
+        }
+        self.range(lba, count as usize * SECTOR)?;
+        if self.dead {
+            return Err(BlockError::Device);
+        }
+        let set = self.write_timing.map(|t| (t.set)(t.command));
+        let done = self
+            .command(CMD_CFA_ERASE_SECTORS, lba, count as u8)
+            .and_then(|()| self.finish(WRITE_SPIN_LIMIT).map(|_| ()));
+        if let (Some(()), Some(t)) = (set, self.write_timing) {
+            (t.set)(t.read);
+        }
+        done.map_err(|e| self.failed(e))
+    }
+
+    /// [`CfCard::write_blocks_marked`] with CFA WRITE SECTORS WITHOUT ERASE:
+    /// for sectors [`CfCard::erase_sectors`] erased (written otherwise,
+    /// their data is undefined: the caller reads them back).
+    pub fn write_without_erase_marked(
+        &mut self,
+        lba: u32,
+        buf: &[u8],
+        mark: &mut dyn FnMut(WritePhase),
+    ) -> Result<(), BlockError> {
+        self.write_with(CMD_CFA_WRITE_WITHOUT_ERASE, lba, buf, mark)
     }
 
     /// Whether the card accepted turning its write cache off.
@@ -1046,11 +1105,23 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         buf: &[u8],
         mark: &mut dyn FnMut(WritePhase),
     ) -> Result<(), BlockError> {
+        self.write_with(CMD_WRITE_SECTORS, lba, buf, mark)
+    }
+
+    /// A write with `cmd` (WRITE SECTORS, or the CFA write without erase),
+    /// at the write timing.
+    fn write_with(
+        &mut self,
+        cmd: u8,
+        lba: u32,
+        buf: &[u8],
+        mark: &mut dyn FnMut(WritePhase),
+    ) -> Result<(), BlockError> {
         let Some(t) = self.write_timing else {
-            return self.write_sectors(lba, buf, mark);
+            return self.write_sectors(cmd, lba, buf, mark);
         };
         (t.set)(t.command);
-        let done = self.write_sectors(lba, buf, mark);
+        let done = self.write_sectors(cmd, lba, buf, mark);
         (t.set)(t.read);
         done
     }
@@ -1060,6 +1131,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
     /// [`BlockDevice::write_blocks`] at whatever timing the socket has.
     fn write_sectors(
         &mut self,
+        cmd: u8,
         lba: u32,
         buf: &[u8],
         mark: &mut dyn FnMut(WritePhase),
@@ -1071,8 +1143,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         for (i, run) in buf.chunks(256 * SECTOR).enumerate() {
             let at = lba + (i * 256) as u32;
             let count = (run.len() / SECTOR) as u8;
-            self.command(CMD_WRITE_SECTORS, at, count)
-                .map_err(|e| self.failed(e))?;
+            self.command(cmd, at, count).map_err(|e| self.failed(e))?;
             mark(WritePhase::Command);
             // The data phase at the data timing, switched once a command:
             // `MCMEM` takes ~1 ms to change on the X51v (2026-10-24: a switch

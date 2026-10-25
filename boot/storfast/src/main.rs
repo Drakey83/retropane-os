@@ -29,8 +29,13 @@
 //!   **C11**: a 512 KiB file reserved beside it, twelve regions written
 //!   once each with the timings rotated, one region rewritten six times
 //!   (the card's rewrite cost), a fresh region after a read at the slowest
-//!   timing and one at strobe 1 after the rewrites, all read back; the
-//!   files and folder removed.
+//!   timing and one at strobe 1 after the rewrites, all read back; then
+//!   **C12**: a 1 MiB file: how long the card stays slow after six
+//!   rewrites (ten fresh writes timed, at Windows Mobile's timing and at
+//!   strobe 1), whether a pause (0-1,000 ms) before a rewrite lets it erase
+//!   in the background, and the CFA erase commands (erase ahead, then
+//!   write without erase or normally), all read back; the files and folder
+//!   removed.
 //!   Nothing else on the card is written.
 //! - **C8, the CPLD's interrupt line** (reminder R24, reads only): the
 //!   owner pulls the CF card and puts it back while GPIO13 and CPLD `0x00`,
@@ -652,8 +657,272 @@ mod image {
         if !cf.is_dead() {
             fresh_test(cf, start, wm, slowest, data, back, work);
         }
+        if !cf.is_dead() {
+            erase_test(cf, start, wm, slowest, data, back, work);
+        }
         cf.write_data_at(set_cf_timing, wm, wm, wm);
         remove_cf_file(cf, start, work);
+    }
+
+    /// One write of `data` (filled with `seed`'s pattern) to `lba`, its data
+    /// phase at `t` (the command at `wm`), by WRITE SECTORS or the CFA
+    /// write without erase: (ticks, the longest DRQ wait, written).
+    fn timed_write(
+        cf: &mut Cf,
+        lba: u32,
+        data: &mut [u8],
+        seed: u32,
+        wm: u32,
+        t: Timing,
+        without_erase: bool,
+    ) -> (u32, u32, bool) {
+        fill(data, seed, 0);
+        cf.write_data_at(set_cf_timing, wm, wm, (wm & !0xF_FFFF) | t.mcmem());
+        let mut drq = 0u32;
+        let t0 = rt::ticks();
+        let mut last = t0;
+        let mut mark = |p| {
+            let now = rt::ticks();
+            if p == WritePhase::Drq {
+                drq = drq.max(now.wrapping_sub(last));
+            }
+            last = now;
+        };
+        let ok = if without_erase {
+            cf.write_without_erase_marked(lba, data, &mut mark)
+        } else {
+            cf.write_blocks_marked(lba, data, &mut mark)
+        }
+        .is_ok();
+        let took = rt::ticks().wrapping_sub(t0);
+        cf.write_data_at(set_cf_timing, wm, wm, wm);
+        rt::check_in();
+        (took, drq, ok)
+    }
+
+    /// C12's file: [`ERASE_REGIONS`] regions of [`CF_BLOCKS`].
+    const ERASE_FILE: &str = "rp-cf-write/ERASE.BIN";
+    const ERASE_REGIONS: u32 = 32;
+
+    /// C12 (R28 after C11: rewrites cost ~135 ms each from the second on,
+    /// and a fresh write right after the rewrites was slow too): (1) how
+    /// long the card stays slow after six rewrites, ten fresh regions in a
+    /// row timed, at Windows Mobile's timing and again at strobe 1; (2)
+    /// whether idle time lets it erase in the background: a region written,
+    /// rewritten, then after a pause (0 to 1,000 ms) rewritten again,
+    /// timed; (3) the CFA feature set the card claims, and its erase
+    /// commands tried: sectors erased ahead, then written without erase,
+    /// and erased then written normally, against a plain rewrite. Every
+    /// region read back at the slowest timing; the file removed.
+    fn erase_test(
+        cf: &mut Cf,
+        start: u32,
+        wm: u32,
+        slowest: u32,
+        data: &mut [u8],
+        back: &mut [u8],
+        work: &mut [u8],
+    ) {
+        let wm_t = Timing::WINDOWS_MOBILE;
+        let fast = Timing { asst: 1, ..wm_t };
+        set_cf_timing(wm);
+        let base = {
+            let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+                log!("C12 mount failed: skipped");
+                return;
+            };
+            match vol.reserve(
+                ERASE_FILE,
+                (ERASE_REGIONS * CF_BLOCKS) as usize * BLOCK,
+                work,
+            ) {
+                Ok(r) => r.lba,
+                Err(e) => {
+                    log!("C12 reserve {ERASE_FILE}: {}: skipped", e.name());
+                    return;
+                }
+            }
+        };
+        log!(
+            "C12 {ERASE_FILE}: LBA {base}, {} sectors, contiguous",
+            ERASE_REGIONS * CF_BLOCKS
+        );
+        let len = CF_BLOCKS as usize * BLOCK;
+        let us = |t: u32| u64::from(t) * 1_000_000 / u64::from(rt::TICK_HZ);
+        let mut seeds = [0u32; ERASE_REGIONS as usize];
+        let mut seed = 800u32;
+        // Writes region `r`, logs it; its speed.
+        let mut write = |cf: &mut Cf,
+                         seeds: &mut [u32],
+                         r: u32,
+                         t: Timing,
+                         without_erase: bool,
+                         what: core::fmt::Arguments<'_>| {
+            seed += 1;
+            let (took, drq, ok) =
+                timed_write(cf, base + r * CF_BLOCKS, data, seed, wm, t, without_erase);
+            if ok {
+                seeds[r as usize] = seed;
+            }
+            log!(
+                "C12 {what}: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+                kib_s(len, took),
+                us(drq)
+            );
+            kib_s(len, took)
+        };
+        // (1) Recovery after rewrites, at each timing.
+        for (pass, (label, t)) in [("Windows Mobile's", wm_t), ("strobe 1", fast)]
+            .into_iter()
+            .enumerate()
+        {
+            let r0 = pass as u32 * 11;
+            for n in 1..=6 {
+                write(
+                    cf,
+                    &mut seeds,
+                    r0,
+                    wm_t,
+                    false,
+                    format_args!("recovery at {label}: rewrite {n} of region {r0}"),
+                );
+            }
+            let mut slow = 0;
+            for k in 1..=10 {
+                let r = r0 + k;
+                let kib = write(
+                    cf,
+                    &mut seeds,
+                    r,
+                    t,
+                    false,
+                    format_args!("recovery at {label}: fresh {k} (region {r})"),
+                );
+                slow += u32::from(kib < 1000);
+            }
+            log!(
+                "C12 recovery at {label}: {slow} of 10 fresh writes after six rewrites under 1,000 KiB/s"
+            );
+        }
+        // (2) Idle time before a second rewrite.
+        for (k, ms) in [0u32, 10, 50, 100, 200, 500, 1000].into_iter().enumerate() {
+            let r = 22 + k as u32;
+            write(
+                cf,
+                &mut seeds,
+                r,
+                wm_t,
+                false,
+                format_args!("idle {ms} ms: region {r} written"),
+            );
+            write(
+                cf,
+                &mut seeds,
+                r,
+                wm_t,
+                false,
+                format_args!("idle {ms} ms: region {r} rewritten"),
+            );
+            rt::delay_us(ms * 1000);
+            write(
+                cf,
+                &mut seeds,
+                r,
+                wm_t,
+                false,
+                format_args!("idle {ms} ms: region {r} rewritten again after the pause"),
+            );
+        }
+        // (3) The CFA erase commands.
+        let (supported, enabled) = cf.cfa();
+        log!(
+            "C12 CFA feature set: supported {supported}, enabled {enabled} (IDENTIFY words 83, 86)"
+        );
+        for (k, without) in [(29u32, true), (30, false)] {
+            write(
+                cf,
+                &mut seeds,
+                k,
+                wm_t,
+                false,
+                format_args!("erase: region {k} written"),
+            );
+            write(
+                cf,
+                &mut seeds,
+                k,
+                wm_t,
+                false,
+                format_args!("erase: region {k} rewritten"),
+            );
+            write(
+                cf,
+                &mut seeds,
+                k,
+                wm_t,
+                false,
+                format_args!("erase: region {k} rewritten again (the slow case)"),
+            );
+            set_cf_timing(wm);
+            let t0 = rt::ticks();
+            let erased = cf.erase_sectors(base + k * CF_BLOCKS, CF_BLOCKS);
+            let took = rt::ticks().wrapping_sub(t0);
+            match erased {
+                Ok(()) => log!("C12 erase: region {k} erased ahead in {} us", us(took)),
+                Err(_) => log!(
+                    "C12 erase: region {k}: ERASE SECTORS refused (error {:#04x}) after {} us",
+                    cf.last_error(),
+                    us(took)
+                ),
+            }
+            seeds[k as usize] = 0;
+            let what = if without {
+                "written without erase"
+            } else {
+                "written normally"
+            };
+            write(
+                cf,
+                &mut seeds,
+                k,
+                wm_t,
+                without,
+                format_args!("erase: region {k} {what} after the erase"),
+            );
+            if without && erased.is_ok() {
+                write(
+                    cf,
+                    &mut seeds,
+                    k,
+                    fast,
+                    false,
+                    format_args!("erase: region {k} rewritten at strobe 1 after"),
+                );
+            }
+            if cf.is_dead() {
+                break;
+            }
+        }
+        // Every region as last written, read at the slowest timing.
+        let mut bad = 0;
+        let mut checked = 0;
+        set_cf_timing(slowest);
+        for (r, &seed) in seeds.iter().enumerate().filter(|(_, s)| **s != 0) {
+            let back = &mut back[..len];
+            back.fill(0);
+            bad += if cf.read_blocks(base + r as u32 * CF_BLOCKS, back).is_ok() {
+                differs(back, seed, 0)
+            } else {
+                CF_BLOCKS
+            };
+            checked += CF_BLOCKS;
+        }
+        set_cf_timing(wm);
+        log!("C12 read back at the slowest timing: {bad} of {checked} sectors differ");
+        let removed = Volume::mount(&mut *cf, start)
+            .ok()
+            .is_some_and(|mut vol| vol.remove(ERASE_FILE).is_ok());
+        log!("C12 {ERASE_FILE} removed: {removed}");
     }
 
     /// C11's file, beside C7's: [`FRESH_REGIONS`] regions of [`CF_BLOCKS`].
@@ -681,7 +950,6 @@ mod image {
         back: &mut [u8],
         work: &mut [u8],
     ) {
-        let high = wm & !0xF_FFFF;
         let wm_t = Timing::WINDOWS_MOBILE;
         let timings = [
             ("Windows Mobile's", wm_t),
@@ -713,25 +981,8 @@ mod image {
         let us = |t: u32| u64::from(t) * 1_000_000 / u64::from(rt::TICK_HZ);
         // One write of region `r` with seed `seed` at `t`: (ticks, the
         // longest DRQ wait, written).
-        let mut write = |cf: &mut Cf, r: u32, t: Timing, seed: u32| -> (u32, u32, bool) {
-            fill(data, seed, 0);
-            cf.write_data_at(set_cf_timing, wm, wm, high | t.mcmem());
-            let mut drq = 0u32;
-            let t0 = rt::ticks();
-            let mut last = t0;
-            let ok = cf
-                .write_blocks_marked(base + r * CF_BLOCKS, data, &mut |p| {
-                    let now = rt::ticks();
-                    if p == WritePhase::Drq {
-                        drq = drq.max(now.wrapping_sub(last));
-                    }
-                    last = now;
-                })
-                .is_ok();
-            let took = rt::ticks().wrapping_sub(t0);
-            cf.write_data_at(set_cf_timing, wm, wm, wm);
-            rt::check_in();
-            (took, drq, ok)
+        let mut write = |cf: &mut Cf, r: u32, t: Timing, seed: u32| {
+            timed_write(cf, base + r * CF_BLOCKS, data, seed, wm, t, false)
         };
         let len = CF_BLOCKS as usize * BLOCK;
         // Each region's seed, for the read-back (0: not written by C11).
