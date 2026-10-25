@@ -61,8 +61,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "gpubench GC2Q: FT2's kind left out of the climb",
         file: "boot/gpubench/src/gc2.rs",
-        from: "    Scene::Kind(FT2),\n    Scene::Kind(5),",
-        to: "    Scene::Kind(0),\n    Scene::Kind(5),",
+        from: "pub const ABOVE_SCENES: [Scene; 6] = [\n    Scene::Kind(0),\n    Scene::Kind(1),\n    Scene::Kind(FT2),",
+        to: "pub const ABOVE_SCENES: [Scene; 6] = [\n    Scene::Kind(0),\n    Scene::Kind(1),\n    Scene::Kind(0),",
         check: Check::Host(&[
             "-p",
             "rp-gpubench",
@@ -188,8 +188,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "gpubench GC2AA: the no-layer way given a hidden layer",
         file: "boot/gpubench/src/gc2.rs",
-        from: "    fix(TexFix::ClampV, 0, false),\n];",
-        to: "    fix(TexFix::ClampV, 1, false),\n];",
+        from: "    fix(TexFix::ClampV, 0, false),\n    // Run GC2AC",
+        to: "    fix(TexFix::ClampV, 1, false),\n    // Run GC2AC",
         check: Check::Host(&[
             "-p",
             "rp-gpubench",
@@ -3414,10 +3414,21 @@ pub fn run(root: &Path, emu: bool) -> Result<(), String> {
 fn every_mutant_still_matches_the_code_once() {
     // A refactor that moves the text makes the mutant stale: caught here, in
     // ordinary `cargo test`, not only when someone runs the mutants.
+    // Every stale one named at once (2026-10-25: a push found three, one
+    // run each).
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let stale: Vec<String> = MUTANTS
+        .iter()
+        .filter_map(|m| {
+            let text = std::fs::read_to_string(root.join(m.file)).unwrap();
+            match text.matches(m.from).count() {
+                1 => None,
+                n => Some(format!("{} ({n} matches in {})", m.name, m.file)),
+            }
+        })
+        .collect();
+    assert!(stale.is_empty(), "stale mutants: {}", stale.join("; "));
     for m in MUTANTS {
-        let text = std::fs::read_to_string(root.join(m.file)).unwrap();
-        assert_eq!(text.matches(m.from).count(), 1, "stale mutant: {}", m.name);
         assert_ne!(m.from, m.to, "{}", m.name);
     }
 }
