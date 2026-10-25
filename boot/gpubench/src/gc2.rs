@@ -513,6 +513,121 @@ pub enum Scene {
     /// next tile reaching the tile buffer before the last one's rows are
     /// out).
     Busy(bool),
+    /// Run GC2V's edge ways: [`EDGE_WAYS`]' way.
+    Edge(usize),
+    /// Run GC2V's hidden layer: FT2 (`false`) or GC2K's worst (`true`) with
+    /// [`HIDDEN_LAYER`] drawn first under the whole scene: opaque and
+    /// covered by the Gouraud background (all but GC2K's worst's (3, 5)
+    /// strip, where it shows, in its reference too), so the core's
+    /// hidden-surface removal shades almost none of it, but every tile has
+    /// one more object to sort (a cheaper busy tile than [`BUSY_LAYER`]'s
+    /// blend, which doubled the render).
+    Hidden(bool),
+}
+
+/// Run GC2V's hidden layer's colour (opaque; never seen).
+pub const HIDDEN_LAYER: u32 = 0xFF80_4020;
+
+/// How an edge way's quad is painted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgePaint {
+    /// FT2's 32-bit texture, as FT2 draws it.
+    Tex,
+    /// One flat colour, no texture.
+    Flat,
+    /// The texture with its coordinates moved half a texel down (the side
+    /// 32 texture: 1/64 of `UV_ONE`).
+    TexHalf,
+}
+
+/// One of run GC2V's edge ways at 146.25 / 1 (the owner, 2026-10-25,
+/// after GC2U: every render wrong on the textured quad's top row from
+/// 146.25): FT2's quad (x 40, 400 x 560) with its top edge at `y`, painted
+/// as `paint`, over the Gouraud background or the black one alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EdgeWay {
+    pub y: i32,
+    pub paint: EdgePaint,
+    pub gouraud: bool,
+}
+
+const fn edge(y: i32, paint: EdgePaint, gouraud: bool) -> EdgeWay {
+    EdgeWay { y, paint, gouraud }
+}
+
+/// GC2V's edge ways: FT2 as is (the control, y 40), the top edge moved
+/// through its tile row (tile rows are 16 high: 32 its first row, 47 its
+/// last) and to the screen's top, then at y 40 flat, the texture half a
+/// texel down, and without the Gouraud background.
+pub const EDGE_WAYS: [EdgeWay; 9] = [
+    edge(40, EdgePaint::Tex, true),
+    edge(32, EdgePaint::Tex, true),
+    edge(36, EdgePaint::Tex, true),
+    edge(44, EdgePaint::Tex, true),
+    edge(47, EdgePaint::Tex, true),
+    edge(0, EdgePaint::Tex, true),
+    edge(40, EdgePaint::Flat, true),
+    edge(40, EdgePaint::TexHalf, true),
+    edge(40, EdgePaint::Tex, false),
+];
+pub const EDGE_SCENES: [Scene; 9] = [
+    Scene::Edge(0),
+    Scene::Edge(1),
+    Scene::Edge(2),
+    Scene::Edge(3),
+    Scene::Edge(4),
+    Scene::Edge(5),
+    Scene::Edge(6),
+    Scene::Edge(7),
+    Scene::Edge(8),
+];
+pub const EDGE_WAYS_ORDER: [(usize, u8); 9] = [
+    (0, ROWS),
+    (1, ROWS),
+    (2, ROWS),
+    (3, ROWS),
+    (4, ROWS),
+    (5, ROWS),
+    (6, ROWS),
+    (7, ROWS),
+    (8, ROWS),
+];
+/// The edge ways' rounds: every render was wrong at 146.25 in GC2U.
+pub const EDGE_ROUNDS: u32 = 10;
+/// The flat edge way's colour.
+pub const EDGE_FLAT: u32 = 0xFF30_A0E0;
+
+/// Run GC2V's part B at 133.25 / 1: GC2K's worst as is, with busy tiles
+/// (GC2U: 0 of 100 against 3-7, at 85% more render time) and with the
+/// hidden layer, [`HIDDEN_ROUNDS`] rounds each.
+pub const HIDDEN_SCENES: [Scene; 3] = [Scene::Sweep(0), Scene::Busy(true), Scene::Hidden(true)];
+pub const HIDDEN_WAYS: [(usize, u8); 3] = [(0, ROWS), (1, ROWS), (2, ROWS)];
+pub const HIDDEN_ROUNDS: u32 = 200;
+
+/// Edge way `w`'s background and slots.
+#[must_use]
+pub fn edge_scene(w: usize, t: Tex) -> (u32, [Option<Draw>; 3]) {
+    let e = EDGE_WAYS[w];
+    let (x, _, wd, h) = FT2_QUAD;
+    let paint = match e.paint {
+        EdgePaint::Tex => Paint::texture(t.t8888),
+        EdgePaint::Flat => Paint::Flat(EDGE_FLAT),
+        EdgePaint::TexHalf => {
+            let d = UV_ONE / 64;
+            Paint::Texture {
+                tex: t.t8888,
+                uv: [(0, d), (UV_ONE, d), (UV_ONE, UV_ONE + d), (0, UV_ONE + d)],
+                tint: WHITE,
+            }
+        }
+    };
+    let quad = Some(Draw::rect(x, e.y, wd, h, paint));
+    let gouraud = Draw::rect(0, 0, W as i32, H as i32, Paint::Gouraud(CORNERS));
+    if e.gouraud {
+        (BLACK, [Some(gouraud), quad, None])
+    } else {
+        (BLACK, [quad, None, None])
+    }
 }
 
 /// Run GC2U's busy layer: black at an eighth's opacity, blended over the
@@ -739,6 +854,15 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
             slots[2] = Some(flat(BUSY_LAYER, true));
             (bg, slots)
         }
+        Scene::Edge(w) => edge_scene(w, t),
+        Scene::Hidden(worst) => {
+            let (bg, slots) = if worst {
+                sweep_scene(0, t)
+            } else {
+                scene(FT2, t)
+            };
+            (bg, [Some(flat(HIDDEN_LAYER, false)), slots[0], slots[1]])
+        }
         Scene::Mirrored => {
             let c = [CORNERS[1], CORNERS[0], CORNERS[3], CORNERS[2]];
             let (sx, sy) = MIRRORED_SHIFT;
@@ -772,7 +896,10 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
             MIRRORED_QUAD.1 + MIRRORED_QUAD.3,
         ),
         Scene::Kind(FT2) | Scene::Busy(false) => patch_corner(0),
-        Scene::Busy(true) => SWEEP[0].corner(),
+        Scene::Busy(true) | Scene::Hidden(true) => SWEEP[0].corner(),
+        Scene::Hidden(false) => patch_corner(0),
+        // The quad's top-left corner: the fault's row against the edge.
+        Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
         Scene::Kind(_) => (0, 0),
     }
 }

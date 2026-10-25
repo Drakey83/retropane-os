@@ -114,6 +114,28 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "gpubench GC2V: the half-texel way not moved",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "            let d = UV_ONE / 64;",
+        to: "            let d = 0;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2v_moves_one_thing_at_a_time_from_ft2",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2V: the hidden layer drawn over the scene",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "            (bg, [Some(flat(HIDDEN_LAYER, false)), slots[0], slots[1]])",
+        to: "            (bg, [slots[0], slots[1], Some(flat(HIDDEN_LAYER, false))])",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2v_hidden_layer_lies_under_the_whole_scene",
+        ]),
+    },
+    Mutant {
         name: "hal-mem: the one-pass check misses the last word",
         file: "hal/mem/src/lib.rs",
         from: "        differ += u32::from(v != w);",

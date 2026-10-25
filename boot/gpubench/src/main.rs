@@ -7911,7 +7911,18 @@ mod image {
         || GC2_FAST
         || GC2_WRITEOUT
         || GC2_TIMING
-        || GC2_TEXLOAD;
+        || GC2_TEXLOAD
+        || GC2_EDGE;
+
+    /// Run GC2V (`RP_GPUBENCH_GC2_EDGE`, the owner after GC2U, 2026-10-25:
+    /// "Build the edge-isolation test at 146.25, plus a cheaper tile-race fix
+    /// at 133.25"): part A, FT2's quad at 146.25 / 1 in [`gc2::EDGE_WAYS`]
+    /// (its top edge moved through a tile row and to the screen's top, flat,
+    /// the texture half a texel down, no Gouraud background), every render
+    /// wrong on the quad's top row there in GC2U; part B, GC2K's worst at
+    /// 133.25 / 1 as is, with busy tiles and with the hidden layer.
+    /// Unattended.
+    const GC2_EDGE: bool = option_env!("RP_GPUBENCH_GC2_EDGE").is_some();
 
     /// Run GC2U (`RP_GPUBENCH_GC2_TEXLOAD`, the owner after GC2T,
     /// 2026-10-25: "build it"): FT2 and GC2K's worst at 133.25-149.50 / 1
@@ -9186,7 +9197,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_TEXLOAD {
+            if GC2_EDGE {
+                "the 16-bit kinds' targets inside the safe region (GC2V: no map; FT2's quad edge isolated at 146.25 / 1, then GC2K's worst at 133.25 / 1 as is, with busy tiles and with a hidden layer),"
+            } else if GC2_TEXLOAD {
                 "the 16-bit kinds' targets inside the safe region (GC2U: no map; FT2 and GC2K's worst at 133.25-149.50 / 1 with a 32-bit, a 16-bit and a PVRTC texture, and with busy tiles),"
             } else if GC2_TIMING {
                 "the 16-bit kinds' targets inside the safe region (GC2T: no map; the local memory's timing loosened on GC2K's worst at 133.25 / 1, then the climb 133.25-149.50 / 1),"
@@ -9320,7 +9333,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_TEXLOAD {
+        let patch = if GC2_EDGE {
+            gc2::EDGE_SCENES.len().max(gc2::HIDDEN_SCENES.len()) * gc2::words(gc2::FT2) as usize
+        } else if GC2_TEXLOAD {
             gc2::TEXLOAD_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_WRITEOUT || GC2_TIMING {
             gc2::ABOVE_SCENES.len().max(gc2::CONFIRM_SCENES.len()) * gc2::words(gc2::FT2) as usize
@@ -9654,7 +9669,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_TEXLOAD {
+                if GC2_EDGE {
+                    gc2_edge(g, &mut r, (tex, first, dsig));
+                } else if GC2_TEXLOAD {
                     gc2_texload(g, &mut r, (tex, first, dsig));
                 } else if GC2_TIMING {
                     gc2_timing(g, &mut r, (tex, first, dsig));
@@ -11147,6 +11164,44 @@ mod image {
                 }
             }
         }
+    }
+
+    /// Run GC2V (see [`GC2_EDGE`]): part A at 146.25 / 1, part B at 133.25 / 1.
+    #[inline(never)]
+    fn gc2_edge(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        log!(
+            "  GC2V A: FT2's quad at 146.25 / 1, {} ways (top edge at y 40, 32, 36, 44, 47, 0; flat; the texture half a texel down; no Gouraud background)",
+            gc2::EDGE_WAYS.len()
+        );
+        gc2_orders(
+            g,
+            r,
+            (tex, &mut *first, dsig),
+            &OrderPlan {
+                name: "GC2V A",
+                label: "GC2V EDGE",
+                scenes: &gc2::EDGE_SCENES,
+                ways: &gc2::EDGE_WAYS_ORDER,
+                step: (gc2_step(45, 4, 0, 1), ABOVE_NAMES[2]),
+                secs: u32::MAX / 1_000_000,
+                rounds: gc2::EDGE_ROUNDS,
+            },
+        );
+        log!("  GC2V B: GC2K's worst at 133.25 / 1 as is, with busy tiles, with the hidden layer");
+        gc2_orders(
+            g,
+            r,
+            (tex, &mut *first, dsig),
+            &OrderPlan {
+                name: "GC2V B",
+                label: "GC2V HIDDEN",
+                scenes: &gc2::HIDDEN_SCENES,
+                ways: &gc2::HIDDEN_WAYS,
+                step: GC2K_STEP,
+                secs: u32::MAX / 1_000_000,
+                rounds: gc2::HIDDEN_ROUNDS,
+            },
+        );
     }
 
     /// Run GC2U (see [`GC2_TEXLOAD`]): at each of [`gc2::ABOVE_PLL`], the

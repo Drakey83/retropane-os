@@ -5067,6 +5067,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2v = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_EDGE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5099,7 +5107,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 64] = [
+    let runs: [GpubenchRun; 65] = [
         (
             "run A",
             &run_a,
@@ -5349,6 +5357,20 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2V: FT2's quad edge isolated at 146.25 / 1, the hidden
+        // layer at 133.25 / 1: every way's references held, the run returns
+        // (wm-clocks build).
+        (
+            "run GC2V",
+            &run_gc2v,
+            &[
+                "GC2V A 146.25 / 1: 10 rounds (90 renders)",
+                "GC2V B 133.25 / 1: 200 rounds (600 renders)",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

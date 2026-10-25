@@ -611,3 +611,89 @@ fn gc2u_busy_tiles_add_one_blended_layer_over_the_same_scene() {
     assert_eq!(TEXLOAD_ROUNDS[0], 100);
     assert!(TEXLOAD_ROUNDS[1..].iter().all(|&r| r == 30));
 }
+
+#[test]
+fn gc2v_moves_one_thing_at_a_time_from_ft2() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    // Way 0 is FT2 exactly.
+    assert_eq!(order_scene(Scene::Edge(0), t), scene(FT2, t));
+    let base = EDGE_WAYS[0];
+    for (i, e) in EDGE_WAYS.iter().enumerate().skip(1) {
+        // Exactly one of the edge's row, the paint, the background changed.
+        let changed = usize::from(e.y != base.y)
+            + usize::from(e.paint != base.paint)
+            + usize::from(e.gouraud != base.gouraud);
+        assert_eq!(changed, 1, "way {i}");
+        // The quad on the screen at every row.
+        assert!(e.y >= 0 && e.y + FT2_QUAD.3 <= H as i32, "way {i}");
+        let (bg, slots) = edge_scene(i, t);
+        assert_eq!(bg, BLACK);
+        let quad = if e.gouraud { slots[1] } else { slots[0] };
+        let q = quad.unwrap();
+        assert_eq!(
+            q,
+            Draw::rect(FT2_QUAD.0, e.y, FT2_QUAD.2, FT2_QUAD.3, q.paint)
+        );
+        assert_eq!(order_corner(Scene::Edge(i)), (FT2_QUAD.0, e.y));
+    }
+    // The rows: through tile row 2 (32-47) and the screen's top.
+    let rows: std::vec::Vec<i32> = EDGE_WAYS[..6].iter().map(|e| e.y).collect();
+    assert_eq!(rows, [40, 32, 36, 44, 47, 0]);
+    // Half a texel of the side-32 texture down, every corner alike.
+    if let Paint::Texture { uv, .. } = edge_scene(7, t).1[1].unwrap().paint {
+        assert!(
+            uv.iter()
+                .all(|&(_, v)| v == 0 + UV_ONE / 64 || v == UV_ONE + UV_ONE / 64)
+        );
+        assert_eq!(8 << t.t8888.code, 32);
+    } else {
+        panic!("way 7 textured");
+    }
+    assert_eq!(
+        EDGE_SCENES.map(|s| order_scene(s, t)),
+        core::array::from_fn(|i| edge_scene(i, t))
+    );
+    assert!(
+        EDGE_WAYS_ORDER
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, ROWS))
+    );
+}
+
+#[test]
+fn gc2v_hidden_layer_lies_under_the_whole_scene() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    for (worst, base) in [(false, Scene::Kind(FT2)), (true, Scene::Sweep(0))] {
+        let (bg, slots) = order_scene(Scene::Hidden(worst), t);
+        let (bg0, slots0) = order_scene(base, t);
+        assert_eq!(bg, bg0);
+        // Opaque, full screen, first; the scene's own objects after it,
+        // in order; the scene's first object its Gouraud background (the
+        // whole screen; GC2K's worst's shifted by (3, 5), so the layer
+        // shows in that strip, as its reference does).
+        let layer = Draw::rect(0, 0, W as i32, H as i32, Paint::Flat(HIDDEN_LAYER));
+        assert_eq!(slots[0], Some(layer));
+        assert_eq!(slots[1..], slots0[..2]);
+        assert_eq!(slots0[2], None);
+        assert_eq!(slots0[0].map(|d| d.paint), Some(Paint::Gouraud(CORNERS)));
+        assert_eq!(order_corner(Scene::Hidden(worst)), order_corner(base));
+    }
+    assert_eq!(HIDDEN_LAYER >> 24, 0xFF);
+    assert_eq!(
+        HIDDEN_SCENES,
+        [Scene::Sweep(0), Scene::Busy(true), Scene::Hidden(true)]
+    );
+    assert!(HIDDEN_WAYS.iter().enumerate().all(|(i, w)| *w == (i, ROWS)));
+    assert_eq!(HIDDEN_ROUNDS, 200);
+}
