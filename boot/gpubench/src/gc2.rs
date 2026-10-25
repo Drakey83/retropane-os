@@ -500,6 +500,172 @@ pub fn sweep_scene(way: usize, t: Tex) -> (u32, [Option<Draw>; 3]) {
     )
 }
 
+/// One of run GC2O's scenes: a [`SWEEP`] way's scene, GC2K's worst scene
+/// mirrored left to right, or a GC2 kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scene {
+    Sweep(usize),
+    Mirrored,
+    Kind(usize),
+}
+
+/// The mirrored scene's quad (GC2K's worst, x 43-443, mirrored to 37-437)
+/// and its background's shift: its bottom-right corner at (437, 605), the
+/// tiles beside it to its right, drawn after it in row order and before it
+/// in reverse.
+pub const MIRRORED_QUAD: (i32, i32, i32, i32) = (37, 45, 400, 560);
+pub const MIRRORED_SHIFT: (i32, i32) = (-PATCH_SHIFT.0, PATCH_SHIFT.1);
+
+/// Run GC2O's scenes: GC2K's worst (`SWEEP[0]`), the row sweep's two worst
+/// (rows 597 and 598), the worst mirrored, the six 16-bit GC2 kinds; then
+/// the row sweep and the tile sweep (32).
+pub const ORDER_SCENES: [Scene; 42] = {
+    let mut s = [Scene::Sweep(0); 42];
+    s[1] = Scene::Sweep(SWEEP_ROWS_AT + 5);
+    s[2] = Scene::Sweep(SWEEP_ROWS_AT + 6);
+    s[3] = Scene::Mirrored;
+    let kinds = [0, 1, FT2, 5, 6, 7];
+    let mut i = 0;
+    while i < 6 {
+        s[4 + i] = Scene::Kind(kinds[i]);
+        i += 1;
+    }
+    let mut j = 0;
+    while j < 32 {
+        s[10 + j] = Scene::Sweep(SWEEP_ROWS_AT + j);
+        j += 1;
+    }
+    s
+};
+
+/// How GC2O lists the tiles (`rp_mbx3d_render::TileOrder`'s, by number:
+/// the shared module stays free of the renderer's state).
+pub const ROWS: u8 = 0;
+pub const REVERSED: u8 = 1;
+pub const COLUMNS_REVERSED: u8 = 2;
+
+/// Run GC2O's ways: (an [`ORDER_SCENES`] index, its tile order): the first
+/// ten scenes in all three orders, the sweeps' 32 in the two new ones (row
+/// order measured by GC2L).
+pub const ORDER_WAYS: [(usize, u8); 94] = {
+    let mut w = [(0, ROWS); 94];
+    let mut n = 0;
+    let mut s = 0;
+    while s < 10 {
+        w[n] = (s, ROWS);
+        w[n + 1] = (s, REVERSED);
+        w[n + 2] = (s, COLUMNS_REVERSED);
+        n += 3;
+        s += 1;
+    }
+    while s < 42 {
+        w[n] = (s, REVERSED);
+        w[n + 1] = (s, COLUMNS_REVERSED);
+        n += 2;
+        s += 1;
+    }
+    w
+};
+
+/// Run GC2P's scenes (GC2O made fast, the owner, 2026-10-24): GC2K's
+/// worst; the row sweep's rows 595-603 (the rows that went wrong in GC2L);
+/// the mirror; FT2; the five other 16-bit kinds. No tile sweep (never wrong
+/// in GC2L).
+pub const FAST_SCENES: [Scene; 17] = {
+    let mut s = [Scene::Sweep(0); 17];
+    let mut r = 0;
+    while r < 9 {
+        s[1 + r] = Scene::Sweep(SWEEP_ROWS_AT + 3 + r);
+        r += 1;
+    }
+    s[10] = Scene::Mirrored;
+    s[11] = Scene::Kind(FT2);
+    let kinds = [0, 1, 5, 6, 7];
+    let mut i = 0;
+    while i < 5 {
+        s[12 + i] = Scene::Kind(kinds[i]);
+        i += 1;
+    }
+    s
+};
+
+/// GC2P's scenes in all three orders (the rest in the two new ones): GC2K's
+/// worst, rows 597 and 598 (GC2L's worst rows), the mirror, FT2.
+pub const FAST_ALL_ORDERS: [usize; 5] = [0, 3, 4, 10, 11];
+
+/// Run GC2P's ways: [`FAST_ALL_ORDERS`]' scenes in rows, reversed and
+/// columns reversed; every other scene in reversed and columns reversed.
+pub const FAST_WAYS: [(usize, u8); 39] = {
+    let mut w = [(0, ROWS); 39];
+    let mut n = 0;
+    let mut s = 0;
+    while s < 17 {
+        let mut all = false;
+        let mut i = 0;
+        while i < FAST_ALL_ORDERS.len() {
+            all |= FAST_ALL_ORDERS[i] == s;
+            i += 1;
+        }
+        if all {
+            w[n] = (s, ROWS);
+            n += 1;
+        }
+        w[n] = (s, REVERSED);
+        w[n + 1] = (s, COLUMNS_REVERSED);
+        n += 2;
+        s += 1;
+    }
+    w
+};
+
+/// GC2P's renders a way: enough to see GC2L's normal-order rate (about 1 in
+/// 9 for GC2K's worst, 1 in 14 for row 597) many times over: about 16
+/// wrong expected in 150, so 0 of 150 in a new order means something.
+pub const FAST_ROUNDS: u32 = 150;
+
+/// Scene `s`'s background and slots.
+#[must_use]
+pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
+    match s {
+        Scene::Sweep(w) => sweep_scene(w, t),
+        Scene::Kind(k) => scene(k, t),
+        Scene::Mirrored => {
+            let c = [CORNERS[1], CORNERS[0], CORNERS[3], CORNERS[2]];
+            let (sx, sy) = MIRRORED_SHIFT;
+            let gouraud = Draw::rect(sx, sy, W as i32, H as i32, Paint::Gouraud(c));
+            let (x, y, w, h) = MIRRORED_QUAD;
+            let quad = Draw::rect(
+                x,
+                y,
+                w,
+                h,
+                Paint::Texture {
+                    tex: t.t8888,
+                    uv: [(UV_ONE, 0), (0, 0), (0, UV_ONE), (UV_ONE, UV_ONE)],
+                    tint: WHITE,
+                },
+            );
+            (BLACK, [Some(gouraud), Some(quad), None])
+        }
+    }
+}
+
+/// Where scene `s`'s wrong pixels are placed from: the textured quad's
+/// corner GC2K's patch sits beside (the bottom-left; the mirrored scene's
+/// bottom-right; FT2's quad's), else the screen's corner (0, 0).
+#[must_use]
+pub const fn order_corner(s: Scene) -> (i32, i32) {
+    match s {
+        Scene::Sweep(w) => SWEEP[w].corner(),
+        Scene::Mirrored => (
+            MIRRORED_QUAD.0 + MIRRORED_QUAD.2,
+            MIRRORED_QUAD.1 + MIRRORED_QUAD.3,
+        ),
+        Scene::Kind(FT2) => patch_corner(0),
+        Scene::Kind(_) => (0, 0),
+    }
+}
+
 /// Words in one band of kind `k`'s picture.
 #[must_use]
 pub const fn band_words(k: usize) -> u32 {

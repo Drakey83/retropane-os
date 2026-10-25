@@ -5026,6 +5026,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_SOAK_SECS", "10"),
         ],
     )?;
+    let run_gc2o = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_ORDER", "1"),
+            ("RP_GPUBENCH_SOAK_SECS", "10"),
+        ],
+    )?;
+    let run_gc2p = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_FAST", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5058,7 +5074,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 59] = [
+    let runs: [GpubenchRun; 61] = [
         (
             "run A",
             &run_a,
@@ -5268,6 +5284,33 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_gc2l,
             &[
                 "GC2: the 16-bit kinds' targets inside the safe region (GC2L: no map;",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2O: the tile orders (75 s at 133.25 / 1 here): runs to its
+        // end and returns (the pinned release doesn't model Windows
+        // Mobile's clock; stepped on the wm-clocks build).
+        (
+            "run GC2O",
+            &run_gc2o,
+            &[
+                "GC2: the 16-bit kinds' targets inside the safe region (GC2O: no map;",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2P: GC2O made fast (3 rounds here), then FT3 in each tile
+        // order: runs to its end and returns (the pinned release doesn't
+        // model Windows Mobile's clock; stepped on the wm-clocks build).
+        (
+            "run GC2P",
+            &run_gc2p,
+            &[
+                "GC2: the 16-bit kinds' targets inside the safe region (GC2P: no map;",
+                "GC2P part 2: done",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
