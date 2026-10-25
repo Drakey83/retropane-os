@@ -45,9 +45,10 @@ use rp_hal_api::BlockDevice;
 
 use crate::{EOC_MIN, Error, FAT_MASK, FatKind, SECTOR, Volume, entry_first, le16, le32};
 
-/// Files and folders a guard can protect (the CF card's: its boot folder
-/// and the four files in it).
-pub(crate) const FILES: usize = 5;
+/// Files and folders a guard can protect: the CF card's boot folder, the
+/// four files in it, `autorun.inf` and the icon it names (the drive's icon:
+/// hidden from the PC and kept, the owner, 2026-10-25), and one to spare.
+pub(crate) const FILES: usize = 8;
 /// Consecutive cluster runs per protected file (more: the guard can't be
 /// built, and the caller keeps the card read-only).
 pub(crate) const EXTENTS: usize = 8;
@@ -380,9 +381,10 @@ impl FatGuard {
 // --- exFAT -----------------------------------------------------------------
 
 /// The longest entry set a protected exFAT file may have: the file entry,
-/// the stream entry, one name entry (names up to 15 characters; every boot
+/// the stream entry, two name entries (names up to 30 characters, as
+/// `card-compact-flash.ico`; every boot
 /// file's is). A longer one: no guard, the card read-only.
-pub(crate) const EX_SET: usize = 3;
+pub(crate) const EX_SET: usize = 4;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ExProtected {

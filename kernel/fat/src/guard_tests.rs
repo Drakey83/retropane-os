@@ -770,9 +770,13 @@ fn an_exfat_boot_file_with_a_long_name_gives_no_guard() {
     let (mut dev, base, _) = formatted(Fs::ExFat, 8192, 512, false);
     dev.guard = None;
     let mut v = AnyVolume::mount(&mut dev, base).unwrap();
-    v.put("RetroPane/a boot file name.bin", b"x", &mut [0u8; 4096])
-        .unwrap();
-    assert!(v.guard(&["RetroPane/a boot file name.bin"]).is_err());
+    // Up to 30 characters: two name entries, guarded; more: no guard.
+    let icon = "RetroPane/card-compact-flash-icon.ico"; // leaf: 26
+    let long = "RetroPane/a boot file with a long name.bin"; // leaf: 32
+    v.put(icon, b"x", &mut [0u8; 4096]).unwrap();
+    v.put(long, b"x", &mut [0u8; 4096]).unwrap();
+    assert!(v.guard(&[icon]).is_ok(), "a 26-character name is guarded");
+    assert!(v.guard(&[long]).is_err());
     assert!(
         v.guard(&["RetroPane"]).is_ok(),
         "a short folder name is fine"

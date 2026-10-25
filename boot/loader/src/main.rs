@@ -282,10 +282,8 @@ mod image {
             let was = self.read_only();
             self.guard = self.card.as_mut().and_then(|sd| {
                 let start = partition_start(sd).ok()?;
-                AnyVolume::mount(Fed::Sd(sd), start)
-                    .ok()?
-                    .guard(&BOOT_FILES)
-                    .ok()
+                let mut vol = AnyVolume::mount(Fed::Sd(sd), start).ok()?;
+                guard_with_icon(&mut vol, &BOOT_FILES)
             });
             was != self.read_only()
         }
@@ -999,6 +997,36 @@ mod image {
         "RetroPane/startup.txt",
         "RetroPane/default.txt",
     ];
+
+    /// The guard for `boot` and the drive's icon: `autorun.inf` and the icon
+    /// it names, in the card's root (hidden from the PC and kept like the
+    /// boot files: the owner, 2026-10-25). `None` when it can't be built.
+    fn guard_with_icon(vol: &mut AnyVolume<Fed<'_>>, boot: &[&str]) -> Option<Guard> {
+        let mut text = [0u8; 256];
+        let mut n = 0;
+        let mut scratch = [0u8; rp_drv_sdcard::BLOCK];
+        let _ = vol.read_range(
+            "autorun.inf",
+            0,
+            text.len() as u64,
+            &mut scratch,
+            &mut |piece| {
+                let k = piece.len().min(text.len() - n);
+                text[n..n + k].copy_from_slice(&piece[..k]);
+                n += k;
+            },
+        );
+        let mut names = [""; 8];
+        names[..boot.len()].copy_from_slice(boot);
+        let mut k = boot.len();
+        names[k] = "autorun.inf";
+        k += 1;
+        if let Some(icon) = autorun_icon(&text[..n]) {
+            names[k] = icon;
+            k += 1;
+        }
+        vol.guard(&names[..k]).ok()
+    }
 
     /// `rm <path>`: deletes a file or an empty folder (crash-safe), never a
     /// boot file, never on a locked card.
@@ -1850,7 +1878,7 @@ mod image {
                         .map_or(0, |p| p.start);
                     self.guard = AnyVolume::mount(Fed::Cf(card), start)
                         .ok()
-                        .and_then(|mut v| v.guard(&CF_BOOT_FILES).ok());
+                        .and_then(|mut v| guard_with_icon(&mut v, &CF_BOOT_FILES));
                 }
             }
             was != self.read_only()

@@ -1572,7 +1572,7 @@ impl<D: BlockDevice> ExVolume<D> {
     /// exist (missing ones are skipped), as [`crate::Volume::guard`] does
     /// on FAT (see [`crate::guard`]). Fails, so the caller keeps the card
     /// read-only, when a file is more fragmented than the guard records or
-    /// a protected name needs more than one name entry (over 15
+    /// a protected name needs more than two name entries (over 30
     /// characters).
     #[inline(never)]
     pub fn guard(&mut self, names: &[&str]) -> Result<crate::Guard, Error> {

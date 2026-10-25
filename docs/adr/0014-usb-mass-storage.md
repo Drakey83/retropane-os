@@ -128,7 +128,15 @@ model with a built-in host that enumerates like Windows.
      and HaRET see ordinary files. Explorer hides them by default, as it
      hides Windows' own system files, and warns before touching one; the
      guard still refuses any change. A refused write leaves the drive as it
-     is (no blink).
+     is (no blink). Proven on the X51v the same day: the boot files hidden,
+     Windows' own "is a system file... are you sure?" warning, a forced
+     delete failing at once with a popup, the card byte-identical after.
+     The limit found: Windows changes its cached copy of the folder before
+     writing it, so after a forced delete it keeps retrying the refused
+     sector in the background (disk event 51 every ~22 s) until the drive is
+     re-read; the owner chose C, then A the same day (2026-10-25): MTP
+     (ADR-0037) is built now as the real fix, mass storage kept for Macs
+     and Linux. `autorun.inf` and the icon it names are guarded and hidden too.
    - **amended 2026-10-25, then withdrawn the same day by the owner** ("i
      dont want the blink, i dont want it to look broken, bad user
      experience": on the X51v, Explorer force-closed with the drive and
