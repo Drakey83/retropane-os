@@ -521,6 +521,20 @@ Mobile's timing throughout, but **240 KiB/s with the timing switched around each
 switching `MCMEM1` costs ~1 ms (inferred; to measure), which swamps the gain. To try: one switch
 per command.
 
+**Once a command, and C9, one field at a time (2026-10-25, `local/rp-storfast-C9.txt`, the 8 GB
+card, image sha 354348a9):** the switch moved to once a command (two `MCMEM1` writes for the
+64-sector write) changed nothing: 233-236 KiB/s at every faster data strobe, against 4,645 at
+Windows Mobile's. C9 then shortened one field at a time from Windows Mobile's timing, the other two
+kept: strobe 9 down to 1, hold 7 down to 0, set-up 7 down to 0, **every step 231-236 KiB/s, every
+sector right**. One step (51 cycles against 54) costs as much as the shortest (27): the speed
+doesn't follow the timing, nor the number of switches (once a sector and once a command gave the
+same). It drops whenever the data phase's `MCMEM1` value differs from the command's. Not yet
+known: where the ~2 ms a sector goes (the DRQ waits, the data words, or the card's programming
+at `finish`). Next measurement: the same write with each phase timed (command, each DRQ wait,
+the data words, `finish`) at Windows Mobile's and at strobe 9, and a write with `MCMEM1`
+rewritten to its own value (a write that changes nothing) to split "a write to the register"
+from "a different value".
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the
