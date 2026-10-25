@@ -526,8 +526,14 @@ took 327 ns at Windows Mobile's timing, 260 at `RDF` 11, 235 at `RDF` 10-7
 and 215 ns from `RDF` 6 down, and shortening `RDN` and `RRR` changed
 nothing: past `RDF` 6 something else paces the access (the CPLD's RDY, or
 the controller's own overhead), so CPLD reads are 1.52x faster at most,
-not 12x. Writes (the backlight blink) not yet run; nothing is changed in
-the OS until they are.
+not 12x. **Writes on the X51v (2026-10-24, the owner watching,
+`local/rp-cpldbus-writes-log.txt`): the backlight went dark and lit again at
+every one of the 33 steps**, Windows Mobile's timing and each faster one down
+to the minimum: writes latch right at 9 clocks too. A second watched run
+(the blinks numbered on screen) followed. **For the owner (results, not
+decisions):** which CS4 timing the OS uses: the fastest proven (`RDF` 3,
+`RDN` 2, `RRR` 0), or a margin for every X51v (the any-Axim rule; rp-cs3bus
+took two steps looser), knowing reads gain nothing past `RDF` 6 (215 ns).
 
 ## Open questions
 

@@ -81,6 +81,14 @@ pub const FIELDS: [Field; 3] = [Field::Rdf, Field::Rdn, Field::Rrr];
 /// Every step a run can take when every read is clean: 12 + 13 + 7.
 pub const MAX_STEPS: usize = 32;
 
+/// The steps the screen counts at most: the start, every read step, and
+/// (the watched build) a blink at Windows Mobile's timing and at each read
+/// step (the device's first watched run showed "66 of 65").
+#[must_use]
+pub const fn total_steps(writes: bool) -> usize {
+    1 + MAX_STEPS + if writes { MAX_STEPS + 1 } else { 0 }
+}
+
 /// `s` one code shorter in `field`, or `None` at the PXA27x's VLIO minimum
 /// (`RDF` 3, `RDN` 2, `RRR` 0).
 #[must_use]
@@ -120,7 +128,9 @@ pub const fn msc2(s: Step) -> Option<u32> {
 mod image {
     use core::fmt::Write;
 
-    use super::{FIELDS, MARKER, MAX_STEPS, OFFSETS, Step, WM, WM_MSC2, clocks, msc2, shorter};
+    use super::{
+        FIELDS, MARKER, MAX_STEPS, OFFSETS, Step, WM, WM_MSC2, clocks, msc2, shorter, total_steps,
+    };
     use rp_drv_cpld::{Cpld, handover};
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
@@ -221,7 +231,7 @@ mod image {
             )
         });
         let mut screen = Screen(console);
-        let steps = MAX_STEPS + if WRITES { MAX_STEPS + 1 } else { 0 };
+        let steps = total_steps(WRITES);
         screen.say(format_args!(
             "CPLD BUS TEST (R8): STEP 1 OF UP TO {steps}{}",
             if WRITES {
@@ -343,8 +353,12 @@ mod image {
         for (k, s) in clean.iter().enumerate() {
             let at = first + k + 1;
             screen.say(format_args!(
-                "STEP {at} OF UP TO {steps}: WATCH: the screen goes dark 1 s, then lights (RDF {} RDN {} RRR {})",
-                s.rdf, s.rdn, s.rrr
+                "STEP {at} OF UP TO {steps}: BLINK {} OF {}: WATCH: the screen goes dark 1 s, then lights (RDF {} RDN {} RRR {})",
+                k + 1,
+                clean.len(),
+                s.rdf,
+                s.rdn,
+                s.rrr
             ));
             rt::delay_us(3_000_000);
             rt::check_in();
@@ -411,6 +425,17 @@ mod tests {
         // Windows Mobile's 0x7FFC: 31 + 60 + 15 = 106 clocks; the minimum 9.
         assert_eq!(clocks(WM), 106);
         assert_eq!(clocks(cur), 9);
+    }
+
+    /// The screen's last step number is the total it shows: the start (1),
+    /// the read steps (2-33), the blinks (34-66), as the image numbers them.
+    #[test]
+    fn the_screen_counts_every_step() {
+        assert_eq!(total_steps(false), 1 + MAX_STEPS);
+        let first_blink = 1 + MAX_STEPS + 1;
+        let last_blink = first_blink + MAX_STEPS;
+        assert_eq!(total_steps(true), last_blink);
+        assert_eq!(total_steps(true), 66);
     }
 
     /// The minimum is the end in every field, whatever the others hold.
