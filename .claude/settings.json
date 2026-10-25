@@ -19,6 +19,11 @@
             "type": "command",
             "command": "python -I \"$CLAUDE_PROJECT_DIR/tools/remind/remind.py\" pretool",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/tools/remind/iterate_gate.py\"",
+            "timeout": 15
           }
         ]
       }

@@ -1,5 +1,20 @@
 # Working on RetroPane OS (read at the start of every session)
 
+0. **The owner's number one rule: iterate, don't imitate; be clever,
+   modern and efficient.** Before designing or building anything (a
+   driver, a filter, a test, a table of values), write down in the plan
+   or the commit: what Dell, Windows Mobile, Linux or the textbook does
+   (a finding, never the answer); the best way today's tools allow
+   (computed offline, measured, fitted to this exact hardware); and why
+   ours beats the original. A textbook default or a copied value is a
+   first draft to beat, not a design. The owner should never have to ask
+   for this again (2026-10-25: the scaler filter started as a 1980s cubic
+   until he asked). **Enforced, not only printed:** `tools/remind/iterate_gate.py`
+   (a PreToolUse hook in `.claude/settings.json`) refuses any commit holding
+   code whose message lacks an `Iterate:` line (60+ characters: vendor or
+   textbook way; ours; why it wins); docs-only commits may say
+   `Iterate: n/a`. The printed reminders (`remind.py`) only show the rule;
+   the gate is what makes skipping it impossible.
 1. **Read [docs/ROADMAP.md](docs/ROADMAP.md) "Now: the gate" before
    choosing any work or answering a progress question.** The gate holds
    the architectural lines (`arch N` in the ledgers of
