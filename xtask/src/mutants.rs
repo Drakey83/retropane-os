@@ -883,6 +883,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "ADR-0037: file bytes written off a sector (the card refuses: Windows' copy fails)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "            self.len / SECTOR * SECTOR",
+        to: "            self.len",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "explorer_on_a_real_card_copies_reads_renames_moves_and_deletes",
+        ]),
+    },
+    Mutant {
         name: "ADR-0037: a boot file announced writable over MTP (Windows tries, then fails)",
         file: "drivers/usb-mtp/src/lib.rs",
         from: "    if e.protected || e.long_name {

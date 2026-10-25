@@ -7,7 +7,17 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# FAT and exFAT cards as stores (`rp_usb_mtp::fat`, on rp-fat's node layer).
+fat = ["dep:rp-fat", "dep:rp-hal-api"]
+
 [dependencies]
+rp-fat = { path = "../../kernel/fat", optional = true }
+rp-hal-api = { path = "../../hal/api", optional = true }
+
+[dev-dependencies]
+rp-fat = { path = "../../kernel/fat", features = ["std"] }
+rp-hal-api = { path = "../../hal/api" }
 
 [lints]
 workspace = true

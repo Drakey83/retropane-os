@@ -178,12 +178,6 @@ pub trait Device {
     /// Gone, or the store failed.
     fn stat(&mut self, s: u8, loc: Loc, out: &mut Entry) -> Result<(), StoreError>;
 
-    /// The folder holding `loc` ([`ROOT`] for the root's children).
-    ///
-    /// # Errors
-    /// Gone, or the store failed.
-    fn parent(&mut self, s: u8, loc: Loc) -> Result<Loc, StoreError>;
-
     /// Reads file bytes from `offset`; returns how many (fewer only at the
     /// end).
     ///
@@ -200,7 +194,8 @@ pub trait Device {
     /// No room, a bad or taken name, a read-only store.
     fn create(&mut self, s: u8, dir: Loc, new: &NewObject) -> Result<Loc, StoreError>;
 
-    /// Writes into a reserved file.
+    /// Writes into a reserved file: in order, every offset a whole number
+    /// of 512-byte sectors (only the file's last write ends mid-sector).
     ///
     /// # Errors
     /// The store failed.
@@ -222,18 +217,18 @@ pub trait Device {
     /// Protected, not empty, read-only, or the store failed.
     fn delete(&mut self, s: u8, loc: Loc) -> Result<(), StoreError>;
 
-    /// Renames in place; returns the new location.
+    /// Renames `loc`, in folder `dir`; returns the new location.
     ///
     /// # Errors
     /// Protected, a bad or taken name, or the store failed.
-    fn rename(&mut self, s: u8, loc: Loc, name: &Text) -> Result<Loc, StoreError>;
+    fn rename(&mut self, s: u8, dir: Loc, loc: Loc, name: &Text) -> Result<Loc, StoreError>;
 
     /// Moves within the store (a directory change: no data moves); returns
     /// the new location.
     ///
     /// # Errors
     /// Protected, a taken name, a folder into itself, or the store failed.
-    fn relocate(&mut self, s: u8, loc: Loc, dir: Loc) -> Result<Loc, StoreError>;
+    fn relocate(&mut self, s: u8, from: Loc, loc: Loc, dir: Loc) -> Result<Loc, StoreError>;
 
     /// Whether the device boots from this store's medium (a format from
     /// the PC is refused at once: ADR-0037 Q3).

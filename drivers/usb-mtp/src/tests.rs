@@ -221,9 +221,6 @@ impl Device for Mem {
         self.entry(loc, out);
         Ok(())
     }
-    fn parent(&mut self, s: u8, loc: Loc) -> Result<Loc, StoreError> {
-        Ok(self.node(s, loc)?.parent)
-    }
     fn read(&mut self, s: u8, loc: Loc, offset: u64, buf: &mut [u8]) -> Result<usize, StoreError> {
         let n = self.node(s, loc)?;
         let off = (offset as usize).min(n.data.len());
@@ -259,6 +256,11 @@ impl Device for Mem {
     fn write(&mut self, s: u8, loc: Loc, offset: u64, data: &[u8]) -> Result<(), StoreError> {
         if let Some(e) = self.fail_write.take() {
             return Err(e);
+        }
+        // As a card: every write starts on a sector (the responder keeps
+        // the tail for the next one).
+        if !offset.is_multiple_of(512) {
+            return Err(StoreError::Device);
         }
         self.writes += 1;
         self.node(s, loc)?;
@@ -296,8 +298,9 @@ impl Device for Mem {
         self.nodes[loc as usize - 1].gone = true;
         Ok(())
     }
-    fn rename(&mut self, s: u8, loc: Loc, name: &Text) -> Result<Loc, StoreError> {
+    fn rename(&mut self, s: u8, dir: Loc, loc: Loc, name: &Text) -> Result<Loc, StoreError> {
         let n = self.node(s, loc)?;
+        assert_eq!(n.parent, dir, "the responder names the folder it is in");
         if n.protected {
             return Err(StoreError::Protected);
         }
@@ -312,8 +315,9 @@ impl Device for Mem {
         self.nodes[loc as usize - 1].name = name;
         Ok(loc)
     }
-    fn relocate(&mut self, s: u8, loc: Loc, dir: Loc) -> Result<Loc, StoreError> {
+    fn relocate(&mut self, s: u8, from: Loc, loc: Loc, dir: Loc) -> Result<Loc, StoreError> {
         let n = self.node(s, loc)?.clone();
+        assert_eq!(n.parent, from, "the responder names the folder it is in");
         if n.protected {
             return Err(StoreError::Protected);
         }
@@ -451,9 +455,9 @@ impl Answer {
     }
 }
 
-struct Pc<'b> {
+struct Pc<'b, D = Mem> {
     mtp: Mtp<'b>,
-    dev: Mem,
+    dev: D,
     pipe: TestPipe,
     tid: u32,
 }
@@ -485,7 +489,7 @@ macro_rules! pc {
     };
 }
 
-impl Pc<'_> {
+impl<D: Device> Pc<'_, D> {
     fn run(&mut self) {
         for _ in 0..100_000 {
             self.mtp.poll(&mut self.dev, &mut self.pipe);
@@ -1690,7 +1694,7 @@ fn device_side_changes_and_cards_reach_the_pc_as_events() {
     pc.open();
     pc.list(u32::MAX);
     let loc = pc.dev.add(0, ROOT, "put.txt", false, b"p", false);
-    pc.mtp.object_added(&mut pc.dev, 0, loc);
+    pc.mtp.object_added(&mut pc.dev, 0, ROOT, loc);
     pc.mtp.store_changed(1, false);
     pc.mtp.store_changed(1, true);
     for _ in 0..10 {
@@ -1997,3 +2001,6 @@ fn the_handle_index_survives_deletes_and_moves() {
     assert_eq!(h.find(1, 7), None);
     assert_eq!(h.find(0, 2 * 4096), Some(hs[2]));
 }
+
+#[path = "fat_tests.rs"]
+mod fat_tests;

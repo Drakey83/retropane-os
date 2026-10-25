@@ -1046,6 +1046,10 @@ dependencies = [
 [[package]]
 name = "rp-usb-mtp"
 version = "0.0.0"
+dependencies = [
+ "rp-fat",
+ "rp-hal-api",
+]
 
 [[package]]
 name = "rp-vram-map"

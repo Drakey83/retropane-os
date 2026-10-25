@@ -32,6 +32,8 @@
 pub mod codes;
 pub mod data;
 pub mod device;
+#[cfg(any(feature = "fat", test))]
+pub mod fat;
 pub mod handles;
 
 use codes::{container, dprop, ev, fmt, op, prop, rc, ty};
@@ -41,6 +43,9 @@ pub use handles::{Handles, Slot};
 
 /// Bulk packet size (full speed).
 pub const PACKET: usize = 64;
+/// A card's sector: object bytes go to the device in whole sectors but at
+/// the end ([`Device::write`]).
+pub const SECTOR: usize = 512;
 /// A container's header: length, type, code, transaction ID [SIC 7.1.1].
 pub const HEADER: usize = 12;
 /// How long the user has to confirm a format on the device (ADR-0037 Q3).
@@ -606,15 +611,13 @@ impl<'b> Mtp<'b> {
         }
     }
 
-    /// The device itself made `loc` on store `s` (a file the loader wrote):
-    /// the PC hears of it if it has seen the folder [MTP G.2.3].
-    pub fn object_added(&mut self, dev: &mut dyn Device, s: u8, loc: Loc) {
+    /// The device itself made `loc` in folder `parent` on store `s` (a file
+    /// the loader wrote): the PC hears of it if it has seen the folder
+    /// [MTP G.2.3].
+    pub fn object_added(&mut self, dev: &mut dyn Device, s: u8, parent: Loc, loc: Loc) {
         if self.session == 0 {
             return;
         }
-        let Ok(parent) = dev.parent(s, loc) else {
-            return;
-        };
         let ph = if parent == ROOT {
             0
         } else {
@@ -1053,7 +1056,7 @@ impl<'b> Mtp<'b> {
         // Make room for a packet before reading one.
         if self.sink == Sink::Object
             && self.buf.len() - self.len < PACKET
-            && let Err(e) = self.flush_object(dev)
+            && let Err(e) = self.flush_object(dev, false)
         {
             self.sink = Sink::Discard;
             self.rcode = store_rc(e);
@@ -1143,7 +1146,7 @@ impl<'b> Mtp<'b> {
                 self.buf[self.len..self.len + data.len()].copy_from_slice(data);
                 self.len += data.len();
                 if self.buf.len() - self.len < PACKET
-                    && let Err(e) = self.flush_object(dev)
+                    && let Err(e) = self.flush_object(dev, false)
                 {
                     self.sink = Sink::Discard;
                     self.rcode = store_rc(e);
@@ -1154,19 +1157,27 @@ impl<'b> Mtp<'b> {
 
     /// Writes the buffered object bytes to the reservation (whole sectors
     /// when it can: the buffer holds a whole number of them).
-    fn flush_object(&mut self, dev: &mut dyn Device) -> Result<(), StoreError> {
+    fn flush_object(&mut self, dev: &mut dyn Device, last: bool) -> Result<(), StoreError> {
         let Some(p) = self.pending else {
             return Ok(());
         };
-        if self.len == 0 {
+        // Whole sectors, the tail kept for the next write (a card writes
+        // sectors; the container's 12-byte header shifts the bytes), all of
+        // it at the end.
+        let n = if last {
+            self.len
+        } else {
+            self.len / SECTOR * SECTOR
+        };
+        if n == 0 {
             return Ok(());
         }
-        let n = self.len;
         dev.write(p.s, p.loc, self.obj_written, &self.buf[..n])?;
         self.obj_written += n as u64;
         self.stats.bytes_in += n as u64;
         self.in_bytes += n as u64;
-        self.len = 0;
+        self.buf.copy_within(n..self.len, 0);
+        self.len -= n;
         Ok(())
     }
 
@@ -1191,7 +1202,7 @@ impl<'b> Mtp<'b> {
                 }
             }
             Sink::Object => {
-                let flushed = self.flush_object(dev);
+                let flushed = self.flush_object(dev, true);
                 let Some(p) = self.pending else {
                     self.respond(rc::NO_VALID_OBJECT_INFO, &[]);
                     return;
@@ -2127,7 +2138,11 @@ impl<'b> Mtp<'b> {
             return;
         }
         if !copy && ds == slot.store {
-            match dev.relocate(slot.store, slot.loc, dir) {
+            let Some(from) = self.parent_loc(&slot) else {
+                self.respond(rc::INVALID_OBJECT_HANDLE, &[]);
+                return;
+            };
+            match dev.relocate(slot.store, from, slot.loc, dir) {
                 Ok(loc) => {
                     self.handles.relocate(h, ds, loc, dh);
                     self.respond(rc::OK, &[]);
@@ -2520,13 +2535,26 @@ impl<'b> Mtp<'b> {
         if e.protected || e.long_name {
             return rc::OBJECT_WRITE_PROTECTED;
         }
-        match dev.rename(slot.store, slot.loc, name) {
+        let Some(dir) = self.parent_loc(&slot) else {
+            return rc::INVALID_OBJECT_HANDLE;
+        };
+        match dev.rename(slot.store, dir, slot.loc, name) {
             Ok(loc) => {
                 self.handles.relocate(h, slot.store, loc, slot.parent);
                 rc::OK
             }
             Err(StoreError::BadName | StoreError::Exists) => rc::INVALID_OBJECT_PROP_VALUE,
             Err(err) => store_rc(err),
+        }
+    }
+
+    /// The location of the folder holding a live object ([`ROOT`] for the
+    /// root's children).
+    fn parent_loc(&self, slot: &Slot) -> Option<Loc> {
+        if slot.parent == 0 {
+            Some(ROOT)
+        } else {
+            self.handles.get(slot.parent).map(|p| p.loc)
         }
     }
 
