@@ -11251,6 +11251,32 @@ mod image {
     ) {
         const NAMES: [&str; 2] = ["152.75 / 1", "149.50 / 1"];
         const ALL: u128 = (1 << gc2::LASTPIX_WAYS.len()) - 1;
+        // The speed-up first (the owner, 2026-10-25: "make sure this test
+        // measures what kind of performance increase this will give us"):
+        // the same eight ways, 20 rounds each, at Windows Mobile's clock,
+        // 133.25 and 149.50 / 1; each way's fastest render logged, against
+        // 152.75's below.
+        for (step, name) in [
+            (WM_STEP, "99.67 / 2 (Windows Mobile's)"),
+            (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+            (gc2_step(23, 2, 0, 1), "149.50 / 1"),
+        ] {
+            log!("  GC2AB speed: the eight ways at {name}, 20 rounds");
+            gc2_orders(
+                g,
+                r,
+                (tex, &mut *first, dsig),
+                &OrderPlan {
+                    name: "GC2AB speed",
+                    label: "GC2AB SPEED",
+                    scenes: &gc2::LASTPIX_SCENES,
+                    ways: &gc2::LASTPIX_WAYS,
+                    step: (step, name),
+                    secs: u32::MAX / 1_000_000,
+                    rounds: 20,
+                },
+            );
+        }
         for (pi, &(m, n)) in gc2::LASTPIX_PLL.iter().enumerate() {
             log!(
                 "  GC2AB: at {}, reversed: kinds 0 and 1 with 0, 1, 2 hidden layers; GC2K's worst with 1, 2",

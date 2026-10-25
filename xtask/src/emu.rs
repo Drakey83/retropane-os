@@ -5400,6 +5400,8 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2AB",
             &run_gc2ab,
             &[
+                "GC2AB speed 99.67 / 2 (Windows Mobile's): 20 rounds (160 renders)",
+                "GC2AB speed 149.50 / 1: 20 rounds (160 renders)",
                 "GC2AB 152.75 / 1: 800 rounds (6400 renders)",
                 "GC2AB 152.75 / 1: controls at Windows Mobile's clock after: 8 of 8 right",
                 "RETROPANE-GPUBENCH: done",
