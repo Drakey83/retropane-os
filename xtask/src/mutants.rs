@@ -2239,8 +2239,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "exfat guard: a boot file's file entry deleted",
         file: "kernel/fat/src/guard.rs",
-        from: "0 => e[0] == was[0] && e[1] == was[1] && e[4..6] == was[4..6],",
-        to: "0 => true,",
+        from: "e[0] == was[0] && e[1] == was[1] && (now == real || now == ex_shown(real))",
+        to: "true",
         check: Check::Host(&[
             "-p",
             "rp-fat",
