@@ -11068,6 +11068,7 @@ mod image {
     /// Run GC2T's part 1 (see [`GC2_TIMING`]): FT3 with its copies queued at
     /// 108.33 and 133.25 / 1 under each of [`gc2::TIM_WAYS`], a reference
     /// at each (the render alone) and [`GC2Q_ROUNDS`] rounds.
+    #[inline(never)]
     fn ft3_timing(
         g: &mut Rig,
         r: &mut Renderer,
@@ -11478,7 +11479,9 @@ mod image {
         let mut wrong_by = [0u32; ORDER_MAX_WAYS];
         // Each way's fastest render (the 3D core's time, for the clock's
         // and the timing's speed).
-        let mut best_by = [u32::MAX; ORDER_MAX_WAYS];
+        // (u16: a render past 65 ms reads as 65,535; the stack held under
+        // 80% over GC2O's 94 ways.)
+        let mut best_by = [u16::MAX; ORDER_MAX_WAYS];
         let mut spots = [SweepSpots::NONE; ORDER_MAX_WAYS];
         let (mut elapsed_us, mut lines, mut rounds) = (0u64, 0u32, 0u32);
         let end_us = u64::from(plan.secs) * 1_000_000;
@@ -11499,7 +11502,7 @@ mod image {
                     &mut bases[sc],
                     &mut side,
                 );
-                best_by[w] = best_by[w].min(side.best_us);
+                best_by[w] = best_by[w].min(u16::try_from(side.best_us).unwrap_or(u16::MAX));
                 if !side.held() || wrong.is_none() {
                     unheld = Some((w, wrong, side));
                     elapsed_us += u64::from(us_since(t0));
