@@ -7896,14 +7896,16 @@ mod image {
     /// them (the run's control for the placement); then a soak of the
     /// 16-bit kinds at 99.67 and 133.25 / 1 ([`SOAK_SECS`] each), stopping at
     /// the first wrong render. Test-only, as GC2S. Unattended.
-    const GC2_INSIDE: bool = option_env!("RP_GPUBENCH_GC2_INSIDE").is_some()
-        || GC2_SOAK2
-        || GC2_PATCH
-        || GC2_SWEEP
-        || GC2_ORDER
-        || GC2_FAST
-        || GC2_WRITEOUT
-        || GC2_TIMING;
+    const GC2_INSIDE: bool = option_env!("RP_GPUBENCH_GC2_INSIDE").is_some() || GC2_NO_MAP;
+
+    /// The runs built on GC2I's references that skip GC2's map and run
+    /// their own soaks (GC2J on). The one list: the map's settings and the
+    /// inside placement read it, so a new run added here can't run the map
+    /// by mistake (GC2T ran the whole map on the X51v when it was missing
+    /// from one of three hand-kept lists; the emulator check now fails a
+    /// no-map run that maps).
+    const GC2_NO_MAP: bool =
+        GC2_SOAK2 || GC2_PATCH || GC2_SWEEP || GC2_ORDER || GC2_FAST || GC2_WRITEOUT || GC2_TIMING;
 
     /// Run GC2Q (`RP_GPUBENCH_GC2_WRITEOUT`, the owner after GC2P,
     /// 2026-10-24: "FT3 with the 2D copies started after the render ends,
@@ -8747,28 +8749,27 @@ mod image {
     ];
 
     /// The settings this build runs (rule 8 for GC2), rising.
-    const GC2_STEPS: &[(ClockStep, &str)] =
-        if GC2_SOAK2 || GC2_PATCH || GC2_SWEEP || GC2_ORDER || GC2_FAST || GC2_WRITEOUT {
-            &[]
-        } else if GC2_SAFE {
-            &GC2_S_STEPS
-        } else if GC2_D {
-            &GC2_D_STEPS
-        } else if GC2M {
-            &GC2M_STEPS
-        } else if GC3 {
-            &GC3_STEPS
-        } else if GC2_W {
-            &GC2_W_STEPS
-        } else if GC2_H2 {
-            &GC2_H2_STEPS
-        } else if GC2_H {
-            &GC2_H_STEPS
-        } else if GC2_F {
-            &GC2_F_STEPS
-        } else {
-            &GC2_ALL
-        };
+    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_NO_MAP {
+        &[]
+    } else if GC2_SAFE {
+        &GC2_S_STEPS
+    } else if GC2_D {
+        &GC2_D_STEPS
+    } else if GC2M {
+        &GC2M_STEPS
+    } else if GC3 {
+        &GC3_STEPS
+    } else if GC2_W {
+        &GC2_W_STEPS
+    } else if GC2_H2 {
+        &GC2_H2_STEPS
+    } else if GC2_H {
+        &GC2_H_STEPS
+    } else if GC2_F {
+        &GC2_F_STEPS
+    } else {
+        &GC2_ALL
+    };
     /// The kinds this build runs (GC2F: the three Gouraud-only kinds).
     const GC2_KINDS: core::ops::Range<usize> = if GC2_D {
         gc2::RUN_D

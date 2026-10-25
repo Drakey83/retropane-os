@@ -6563,6 +6563,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "gpubench {name}: G4a's rectangles should draw as on the device:{log}"
             ));
         }
+        // A run that says "no map" runs no map settings (GC2T ran GC2's whole
+        // map on the X51v, missing from a hand-kept list; the emulator's 3
+        // renders a setting hid the time).
+        if log.contains("no map;") && !log.contains(" at 0 settings rising then falling") {
+            return Err(format!(
+                "gpubench {name}: a no-map run ran GC2's map settings:{log}"
+            ));
+        }
         // A part that couldn't get its memory logs and skips itself; on the
         // emulator that is always the image's own sizing bug (GC2Q's part C
         // ran nothing on the X51v, and this check passed it).
