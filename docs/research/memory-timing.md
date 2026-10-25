@@ -517,6 +517,24 @@ says which steps blinked. Every step is labelled on screen. Emulator:
 `emu-cpldbus` (all 32 read steps clean, `MSC2` put back; timing not
 modelled, so the device's answer is its own).
 
+**Reads on the X51v (2026-10-24, `local/rp-cpldbus-reads.txt`):** every
+step clean down to the PXA's VLIO minimum (`RDF` 3, `RDN` 2, `RRR` 0: 9
+memory clocks an access against Windows Mobile's 106), 0 wrong of 6,000
+reads a step; the six offsets read as at hand-over (`0x00` `0x0048`, `0x04`
+`0x00a0`, `0x06` `0x0002`, `0x14` `0x0002`, `0x02` and `0x16` 0). A read
+took 327 ns at Windows Mobile's timing, 260 at `RDF` 11, 235 at `RDF` 10-7
+and 215 ns from `RDF` 6 down, and shortening `RDN` and `RRR` changed
+nothing: past `RDF` 6 something else paces the access (the CPLD's RDY, or
+the controller's own overhead), so CPLD reads are 1.52x faster at most,
+not 12x. **Writes on the X51v (2026-10-24, the owner watching,
+`local/rp-cpldbus-writes-log.txt`): the backlight went dark and lit again at
+every one of the 33 steps**, Windows Mobile's timing and each faster one down
+to the minimum: writes latch right at 9 clocks too. A second watched run
+(the blinks numbered on screen) followed. **For the owner (results, not
+decisions):** which CS4 timing the OS uses: the fastest proven (`RDF` 3,
+`RDN` 2, `RRR` 0), or a margin for every X51v (the any-Axim rule; rp-cs3bus
+took two steps looser), knowing reads gain nothing past `RDF` 6 (215 ns).
+
 ## Open questions
 
 1. The X51v's SDRAM chip markings (the owner can read them).
