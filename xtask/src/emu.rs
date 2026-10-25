@@ -9066,10 +9066,21 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
         let mut s = usb_connect(2)?;
         let mut bot = Bot::connect(3)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        // A frame sent until the loader stops saying "card busy" (it
+        // takes no card command within 2 s of the PC's last write).
+        let busy_retry = |s: &mut std::net::TcpStream, frame: &[u8], start: &str, secs| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                s.write_all(frame).map_err(|e| e.to_string())?;
+                let reply = usb_read_line(s, start, secs)?;
+                if !reply.contains("RPL ERR card busy") || Instant::now() > deadline {
+                    return Ok::<_, String>(reply);
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        };
         let say = |s: &mut std::net::TcpStream, cmd: &str, want: &str, secs| {
-            s.write_all(&rp_loadproto::control_frame(cmd))
-                .map_err(|e| e.to_string())?;
-            let reply = usb_read_line(s, "RPL ", secs)?;
+            let reply = busy_retry(s, &rp_loadproto::control_frame(cmd), "RPL ", secs)?;
             let line = reply
                 .lines()
                 .find(|l| l.starts_with("RPL "))
@@ -9152,11 +9163,14 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
         }
         let _ = bot.sense()?;
         // The refused write counts as the PC writing: the loader takes no
-        // card command for 2 s after it (ADR-0014 rule 3).
-        std::thread::sleep(Duration::from_millis(2500));
-        s.write_all(&rp_loadproto::control_frame("get card-sd.ico"))
-            .map_err(|e| e.to_string())?;
-        let text = usb_read_line(&mut s, "RPL OK 3000 bytes crc", 40)?;
+        // card command for 2 s after it (ADR-0014 rule 3); the next one is
+        // retried while it says so.
+        let text = busy_retry(
+            &mut s,
+            &rp_loadproto::control_frame("get card-sd.ico"),
+            "RPL ",
+            40,
+        )?;
         let (lines, reply) = crate::usb::parse_query(&text, "get")?;
         if crate::usb::decode_file(&lines, &reply)? != icon {
             return Err("the icon came back different after the format".into());
@@ -9181,8 +9195,8 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
         }
         let _ = bot.sense()?;
         // The refused write counts as the PC writing: the loader takes no
-        // card command for 2 s after it (ADR-0014 rule 3).
-        std::thread::sleep(Duration::from_millis(2500));
+        // card command for 2 s after it (ADR-0014 rule 3); the next one is
+        // retried while it says so.
         say(&mut s, "card check", "RPL OK check clean", 40)?;
         // FAT32 with 1 KiB clusters keeps the exFAT card's boot file.
         say(
@@ -9216,8 +9230,8 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
         }
         let _ = bot.sense()?;
         // The refused write counts as the PC writing: the loader takes no
-        // card command for 2 s after it (ADR-0014 rule 3).
-        std::thread::sleep(Duration::from_millis(2500));
+        // card command for 2 s after it (ADR-0014 rule 3); the next one is
+        // retried while it says so.
         // exFAT on the CF card with its boot folder: refused; wiped: done.
         say(
             &mut s,

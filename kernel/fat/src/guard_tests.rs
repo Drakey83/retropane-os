@@ -755,6 +755,14 @@ fn exfat_a_chained_boot_file_keeps_its_links() {
     let mut w = dev.data[lba as usize * SECTOR..][..SECTOR].to_vec();
     w[o..o + 4].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // cut short
     assert!(dev.write_blocks(lba, &w).is_err());
+    // Its end moved: a link where the chain ended.
+    let (s, n) = p.extents[p.runs - 1];
+    let end = s + n - 1;
+    let lba = ex.fat_start + end / 128;
+    let o = (end % 128) as usize * 4;
+    let mut w = dev.data[lba as usize * SECTOR..][..SECTOR].to_vec();
+    w[o..o + 4].copy_from_slice(&(end + 1).to_le_bytes());
+    assert!(dev.write_blocks(lba, &w).is_err());
 }
 
 #[test]
@@ -769,4 +777,68 @@ fn an_exfat_boot_file_with_a_long_name_gives_no_guard() {
         v.guard(&["RetroPane"]).is_ok(),
         "a short folder name is fine"
     );
+}
+
+/// The FAT sectors that differ between two card images.
+fn changed_fat_sectors(before: &[u8], after: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    before
+        .chunks(SECTOR)
+        .zip(after.chunks(SECTOR))
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (_, b))| (i as u32, b.to_vec()))
+        .collect()
+}
+
+#[test]
+fn every_fat_width_keeps_a_boot_files_chain() {
+    // As Windows would: the change made on a copy with no guard, then its
+    // FAT sectors written to the guarded card. Cutting the loader's chain
+    // short and moving its end (a link where the end was) are refused on
+    // FAT12, FAT16 and FAT32; the same change to another file passes.
+    for (fs, total, cluster) in &FORMATS[..3] {
+        let (mut dev, base, _) = formatted(*fs, *total, *cluster, false);
+        let attempt = |dev: &mut Guarded,
+                       name: &str,
+                       change: &dyn Fn(&mut Volume<&mut Guarded>, u32, u32)| {
+            let before = dev.data.clone();
+            let mut copy = Guarded {
+                data: before.clone(),
+                guard: None,
+                refused: 0,
+            };
+            {
+                let mut v = Volume::mount(&mut copy, base).unwrap();
+                let f = v.find(name).unwrap();
+                let n = f.size().div_ceil(*cluster);
+                change(&mut v, f.first_cluster(), n);
+                v.fat_flush().unwrap();
+            }
+            let sectors = changed_fat_sectors(&before, &copy.data);
+            assert!(!sectors.is_empty());
+            sectors
+                .iter()
+                .all(|(lba, s)| dev.write_blocks(*lba, s).is_ok())
+        };
+        let cut: &dyn Fn(&mut Volume<&mut Guarded>, u32, u32) = &|v, first, _| {
+            v.fat_set(first, crate::EOC).unwrap();
+        };
+        let moved: &dyn Fn(&mut Volume<&mut Guarded>, u32, u32) = &|v, first, n| {
+            let free = v.clusters() + 1; // the last cluster, free on this card
+            v.fat_set(first + n - 1, free).unwrap();
+            v.fat_set(free, crate::EOC).unwrap();
+        };
+        assert!(
+            !attempt(&mut dev, "retropane.bin", cut),
+            "{fs:?}: chain cut short"
+        );
+        assert!(
+            !attempt(&mut dev, "retropane.bin", moved),
+            "{fs:?}: chain end moved"
+        );
+        assert!(
+            attempt(&mut dev, "README.txt", moved),
+            "{fs:?}: another file's chain"
+        );
+    }
 }

@@ -2094,7 +2094,7 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "fat guard: the boot sector reformatted (its geometry not compared)",
         file: "kernel/fat/src/guard.rs",
-        from: "return s[GEOMETRY] == self.geometry;",
+        from: "return s[geo] == g.geometry[..g.geometry_len];",
         to: "return true;",
         check: Check::Host(&[
             "-p",
@@ -2105,22 +2105,24 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "fat guard: a boot file's chain relinked",
         file: "kernel/fat/src/guard.rs",
-        from: "Some(next) => v == next,",
-        to: "Some(_) => true,",
+        from: "if end { v >= EOC_MIN } else { v == want }",
+        to: "if end { v >= EOC_MIN } else { true }",
         check: Check::Host(&["-p", "rp-fat", "a_boot_files_chain_cannot_be_relinked"]),
     },
     Mutant {
         name: "fat guard: a boot file's chain end moved",
         file: "kernel/fat/src/guard.rs",
-        from: "Some(FAT_MASK) => v >= EOC_MIN,",
-        to: "Some(FAT_MASK) => true,",
+        from: "if end { v >= EOC_MIN } else { v == want }",
+        to: "if end { true } else { v == want }",
         check: Check::Host(&["-p", "rp-fat", "a_boot_files_chain_end_cannot_be_moved"]),
     },
     Mutant {
         name: "fat guard: a boot file's data written over",
         file: "kernel/fat/src/guard.rs",
-        from: "if files.iter().any(|f| f.holds(cluster)) {",
-        to: "if false {",
+        from: "/ self.sectors_per_cluster + 2;
+            if files.iter().any(|f| holds(&f.extents[..f.runs], cluster)) {",
+        to: "/ self.sectors_per_cluster + 2;
+            if false {",
         check: Check::Host(&[
             "-p",
             "rp-fat",
@@ -2136,6 +2138,168 @@ pub const MUTANTS: &[Mutant] = &[
             "-p",
             "rp-fat",
             "boot_files_cannot_be_deleted_replaced_or_renamed",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: half a FAT12 entry not judged",
+        file: "kernel/fat/src/guard.rs",
+        from: "v & vm == raw & vm",
+        to: "true",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "fat12_a_write_covering_half_a_protected_entry_is_judged_on_that_half",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: a FAT12 entry starting in the sector before skipped",
+        file: "kernel/fat/src/guard.rs",
+        from: "FatKind::Fat12 => self.fat.first_at(lo).saturating_sub(1),",
+        to: "FatKind::Fat12 => self.fat.first_at(lo),",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "fat12_a_write_covering_half_a_protected_entry_is_judged_on_that_half",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: FAT12/16's fixed root taken for reserved sectors",
+        file: "kernel/fat/src/guard.rs",
+        from: "if lba < self.root_lba {",
+        to: "if lba < self.data_start {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "fat16_the_fixed_root_keeps_boot_entries_and_takes_new_ones",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: a FAT16 chain end moved",
+        file: "kernel/fat/src/guard.rs",
+        from: "if end { v >= 0xFFF8 } else { v == want }",
+        to: "if end { true } else { v == want }",
+        check: Check::Host(&["-p", "rp-fat", "every_fat_width_keeps_a_boot_files_chain"]),
+    },
+    Mutant {
+        name: "fat guard: a FAT16 chain relinked",
+        file: "kernel/fat/src/guard.rs",
+        from: "if end { v >= 0xFFF8 } else { v == want }",
+        to: "if end { v >= 0xFFF8 } else { true }",
+        check: Check::Host(&["-p", "rp-fat", "every_fat_width_keeps_a_boot_files_chain"]),
+    },
+    Mutant {
+        name: "fat guard: a whole FAT12 entry relinked",
+        file: "kernel/fat/src/guard.rs",
+        from: "if end { v >= 0xFF8 } else { v == want }",
+        to: "if end { v >= 0xFF8 } else { true }",
+        check: Check::Host(&["-p", "rp-fat", "every_fat_width_keeps_a_boot_files_chain"]),
+    },
+    Mutant {
+        name: "exfat guard: the boot sector's layout not compared",
+        file: "kernel/fat/src/guard.rs",
+        from: ".filter(|i| !EX_VOLATILE.contains(i))",
+        to: ".filter(|_| false)",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "exfat_flags_and_timestamps_pass_names_bitmap_and_boot_region_do_not",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: a chained boot file's end moved",
+        file: "kernel/fat/src/guard.rs",
+        from: "Some(FAT_MASK) => le32(s, i as usize * 4) == 0xFFFF_FFFF,",
+        to: "Some(FAT_MASK) => true,",
+        check: Check::Host(&["-p", "rp-fat", "exfat_a_chained_boot_file_keeps_its_links"]),
+    },
+    Mutant {
+        name: "exfat guard: a boot file's bitmap bits cleared",
+        file: "kernel/fat/src/guard.rs",
+        from: "s[(bit / 8) as usize] & 1 << (bit % 8) != 0",
+        to: "true",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "exfat_flags_and_timestamps_pass_names_bitmap_and_boot_region_do_not",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: a boot file's data written over",
+        file: "kernel/fat/src/guard.rs",
+        from: ">> self.cluster_shift) + 2;
+            if files.iter().any(|f| holds(&f.extents[..f.runs], cluster)) {",
+        to: ">> self.cluster_shift) + 2;
+            if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "every_format_protects_a_scattered_boot_file_run_by_run",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: a boot file's file entry deleted",
+        file: "kernel/fat/src/guard.rs",
+        from: "0 => e[0] == was[0] && e[1] == was[1] && e[4..6] == was[4..6],",
+        to: "0 => true,",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "exfat_flags_and_timestamps_pass_names_bitmap_and_boot_region_do_not",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: a name longer than one entry let through",
+        file: "kernel/fat/src/exfat.rs",
+        from: "if at.count > EX_SET {",
+        to: "if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "an_exfat_boot_file_with_a_long_name_gives_no_guard",
+        ]),
+    },
+    Mutant {
+        name: "mkfs: the old boot sector left mountable",
+        file: "kernel/fat/src/mkfs.rs",
+        from: "zero(dev, old, 1, s)?;",
+        to: "let _ = old;",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "a_cut_format_leaves_no_mountable_volume_until_the_last_write",
+        ]),
+    },
+    Mutant {
+        name: "fat: end marks read as links on a narrow FAT",
+        file: "kernel/fat/src/lib.rs",
+        from: "if v >= m - 7 {",
+        to: "if v >= m - 1 {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "end_and_bad_marks_read_alike_on_every_fat_width",
+        ]),
+    },
+    Mutant {
+        name: "fat: FAT12's last count taken as FAT16's first",
+        file: "kernel/fat/src/lib.rs",
+        from: "} else if clusters < FAT12_LIMIT {",
+        to: "} else if clusters <= FAT12_LIMIT {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_fat_type_at_the_cluster_count_edges_is_what_mount_decides",
+        ]),
+    },
+    Mutant {
+        name: "mkfs: the up-case table's runs moved",
+        file: "kernel/fat/src/mkfs.rs",
+        from: "const UPCASE_RUNS: [(u32, u32); 4] = [(1415, 6134),",
+        to: "const UPCASE_RUNS: [(u32, u32); 4] = [(1416, 6133),",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_up_case_table_is_the_specifications_byte_for_byte",
         ]),
     },
     Mutant {
@@ -2294,10 +2458,9 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "fat: a FAT12/16 volume (a fixed root directory) taken for FAT32",
         file: "kernel/fat/src/lib.rs",
-        from: "            || le16(&buf, 17) != 0 // FAT32 has no fixed root directory
-",
-        to: "",
-        check: Check::Host(&["-p", "rp-fat", "rejects_what_is_not_fat32"]),
+        from: "let fat32 = root_entries == 0 && fat16_size == 0;",
+        to: "let fat32 = true;",
+        check: Check::Host(&["-p", "rp-fat", "every_format_mounts_writes_and_checks_clean"]),
     },
     Mutant {
         name: "fat: a new name ending in a dot taken (Windows can't open it)",

@@ -404,12 +404,18 @@ mod tests {
 
     #[test]
     fn command_frames_carry_short_ascii_commands() {
-        let mut dest = [0u8; 64];
+        // Room for more than the longest command, so "too long" is the
+        // command's fault, not the buffer's.
+        let mut dest = [0u8; 2 * COMMAND_MAX];
         let mut rx = Receiver::new();
         let (_, r) = feed_slice(&mut rx, &control_frame("drive rw"), &mut dest);
         let f = r.unwrap().unwrap();
         assert_eq!(f.kind, Kind::Control);
         assert_eq!(f.command(&dest), Ok(&b"drive rw"[..]));
+        // The longest taken whole.
+        let at = "y".repeat(COMMAND_MAX);
+        let (_, r) = feed_slice(&mut rx, &control_frame(&at), &mut dest);
+        assert_eq!(r.unwrap().unwrap().command(&dest), Ok(at.as_bytes()));
         // Too long, or binary: refused.
         let long = "x".repeat(COMMAND_MAX + 1);
         let (_, r) = feed_slice(&mut rx, &control_frame(&long), &mut dest);
