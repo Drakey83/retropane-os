@@ -565,6 +565,25 @@ card can make writes ~1.6x faster; and a filesystem that writes the same sectors
 (the FAT, a directory, the run log's sector a line) pays ~135 ms for each such write on this card,
 far more than any timing gains.
 
+**C12, recovery, pauses and the CFA erase commands (2026-10-25, `local/rp-storfast-C12.txt`,
+image sha fd4a4a22, the 8 GB card; 0 of 1,984 sectors wrong):**
+- *No lasting slow state:* after six rewrites (each ~129-135 ms), all ten fresh writes that
+  followed were fast at once: 5,743-5,795 KiB/s at Windows Mobile's timing, 9,431-9,620 at strobe
+  1 (one 6,540). The cost belongs to the sectors rewritten, not to the card.
+- *No background erasing:* a rewrite after a pause of 0, 10, 50, 100, 200, 500 or 1,000 ms ran at
+  226-230 KiB/s every time (a ~135 ms wait).
+- *The CFA erase commands don't help this card:* IDENTIFY claims no CFA feature set (words 83 and
+  86, bit 2 clear). ERASE SECTORS was taken anyway (282 and 137 ms), and the writes after it, with
+  or without erase, were as slow as a plain rewrite (114 and 237 KiB/s).
+- *The pattern:* a region's first rewrite usually fast and every later one slow; twice (C12's
+  region 0, C11's region 14) the first rewrite was slow too. Not explained (the card's grouping of
+  sectors into erase blocks, a guess).
+
+So the rewrite cost can't be avoided on the card's side: the gain is in software writing the same
+sectors as rarely as possible (the FAT's updates batched, the run log writing each sector once
+rather than a partial sector again for every line). To measure next: the rewrite cost by write size
+(1, 8 and 64 sectors), what the run log and the FAT actually pay.
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the
