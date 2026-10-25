@@ -9472,6 +9472,47 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                 }
                 poll_pause(Duration::from_millis(250));
             }
+            // The trace since the pull (R33): the PC's commands to the CF
+            // drive, each with its time and outcome. This PC asks the drive
+            // to be ready and reads sector 0; the trace must hold both.
+            ready(&mut bot, "CF after the quick swap")?;
+            let mut sector = [0u8; 512];
+            rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut sector)
+                .map_err(|_| "CF after the quick swap: sector 0 unreadable".to_string())?;
+            s.write_all(&rp_loadproto::control_frame("cf trace"))
+                .map_err(|e| e.to_string())?;
+            let mut trace = usb_read_until(&mut s, "RPL OK cf trace: ", 20)?;
+            if !trace.rsplit("RPL OK cf trace: ").next().is_some_and(|t| {
+                t.contains(
+                    "
+",
+                )
+            }) {
+                trace += &usb_read_until(
+                    &mut s, "
+", 10,
+                )?;
+            }
+            let rpd: Vec<&str> = trace.lines().filter(|l| l.starts_with("RPD ")).collect();
+            let total: usize = trace
+                .rsplit("RPL OK cf trace: ")
+                .next()
+                .and_then(|t| t.split_whitespace().next()?.parse().ok())
+                .ok_or_else(|| format!("cf trace: no count: {trace:?}"))?;
+            // `RPD at took op lba blocks result`.
+            let has = |op: &str, rest: &str| {
+                rpd.iter().any(|l| {
+                    let w: Vec<&str> = l.split_whitespace().collect();
+                    w.get(3) == Some(&op) && w[4..].join(" ").starts_with(rest)
+                })
+            };
+            if rpd.len() != total || !has("00", "0 0 ok") || !has("28", "0 1 ok") {
+                return Err(format!(
+                    "cf trace: {} lines for {total} commands, want TEST UNIT READY and READ(10) of sector 0: {trace:?}",
+                    rpd.len()
+                ));
+            }
+            eprintln!("    cf trace: {total} commands to the CF drive since the quick swap");
         }
         Ok(())
     };

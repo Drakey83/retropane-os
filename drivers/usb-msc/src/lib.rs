@@ -119,6 +119,30 @@ pub trait Storage: BlockDevice {
 /// Most logical units supported.
 pub const MAX_LUNS: usize = 2;
 
+/// One traced command ([`Msc::trace`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Traced {
+    /// When it came (the `now_ms` of `poll`).
+    pub at_ms: u32,
+    /// Until its status went back.
+    pub took_ms: u32,
+    /// Its first block and count (reads, writes, verifies; else 0).
+    pub lba: u32,
+    /// Its block count.
+    pub blocks: u32,
+    /// The SCSI operation code.
+    pub op: u8,
+    /// It failed: then its sense key and code.
+    pub failed: bool,
+    /// Sense key (when it failed).
+    pub key: u8,
+    /// Additional sense code (when it failed).
+    pub asc: u8,
+}
+
+/// Bytes a traced command takes in the trace buffer.
+pub const TRACE_BYTES: usize = 20;
+
 /// SCSI sense data: key, additional sense code and qualifier.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sense {
@@ -215,6 +239,14 @@ pub struct Stats {
 /// The mass-storage function.
 pub struct Msc<'b> {
     buf: &'b mut [u8],
+    /// Commands traced ([`Msc::trace`]): [`TRACE_BYTES`] bytes each, the
+    /// count, the unit traced, and the one being run (its entry).
+    trace: Option<&'b mut [u8]>,
+    trace_len: usize,
+    trace_lun: usize,
+    trace_open: Option<usize>,
+    /// The time `poll` was last called with (ms).
+    now: u32,
     serial: &'static [u8],
     luns: usize,
     units: [Unit; MAX_LUNS],
@@ -291,6 +323,11 @@ impl<'b> Msc<'b> {
         assert!((1..=MAX_LUNS).contains(&luns), "unsupported LUN count");
         Self {
             buf,
+            trace: None,
+            trace_len: 0,
+            trace_lun: 0,
+            trace_open: None,
+            now: 0,
             serial,
             luns,
             units: [Unit::default(); MAX_LUNS],
@@ -430,6 +467,7 @@ impl<'b> Msc<'b> {
     /// Moves as much as the pipe takes right now; call from the main loop.
     /// `now_ms` is any millisecond clock (wrapping).
     pub fn poll(&mut self, pipe: &mut dyn BulkPipe, luns: &mut [&mut dyn Storage], now_ms: u32) {
+        self.now = now_ms;
         self.settle_away(now_ms);
         // A reset abandoned the command a transfer was moving.
         if self.phase == Phase::Command && (self.send_dma || self.recv_dma.is_some()) {
@@ -518,6 +556,7 @@ impl<'b> Msc<'b> {
 
     fn execute(&mut self, cb: &[u8; 16], luns: &mut [&mut dyn Storage]) {
         let op = cb[0];
+        self.trace_start(cb);
         if self.lun >= self.luns.min(luns.len()) {
             self.fail(Sense::NO_LUN);
             return;
@@ -1115,7 +1154,107 @@ impl<'b> Msc<'b> {
         csw[12] = u8::from(self.failed);
         pipe.write_packet(&csw);
         self.phase = Phase::Command;
+        self.trace_end();
         true
+    }
+
+    /// Records every command for unit `lun` from now on in `buf` (as many
+    /// as fit, [`TRACE_BYTES`] each), anew: when it came (ms), what it was
+    /// and which blocks, how long its answer took, and how it ended (the
+    /// sense when it failed). Where a card's time goes after it comes back
+    /// (reminder R33): [`Msc::traced`] reads it.
+    pub fn trace(&mut self, buf: &'b mut [u8], lun: usize) {
+        self.trace = Some(buf);
+        self.trace_len = 0;
+        self.trace_lun = lun;
+        self.trace_open = None;
+    }
+
+    /// Starts the trace over (its buffer and unit kept).
+    pub fn trace_restart(&mut self) {
+        self.trace_len = 0;
+        self.trace_open = None;
+    }
+
+    /// Commands traced so far.
+    #[must_use]
+    pub fn trace_len(&self) -> usize {
+        self.trace_len
+    }
+
+    /// Entry `i` of the trace.
+    #[must_use]
+    pub fn traced(&self, i: usize) -> Option<Traced> {
+        if i >= self.trace_len {
+            return None;
+        }
+        let e = self
+            .trace
+            .as_ref()?
+            .get(i * TRACE_BYTES..(i + 1) * TRACE_BYTES)?;
+        let u32_at = |k: usize| u32::from_le_bytes([e[k], e[k + 1], e[k + 2], e[k + 3]]);
+        Some(Traced {
+            at_ms: u32_at(0),
+            took_ms: u32_at(4),
+            lba: u32_at(8),
+            blocks: u32::from(u16::from_le_bytes([e[12], e[13]])),
+            op: e[14],
+            failed: e[15] != 0,
+            key: e[16],
+            asc: e[17],
+        })
+    }
+
+    fn trace_start(&mut self, cb: &[u8; 16]) {
+        self.trace_open = None;
+        if self.lun != self.trace_lun {
+            return;
+        }
+        let at = self.trace_len * TRACE_BYTES;
+        let Some(e) = self
+            .trace
+            .as_mut()
+            .and_then(|t| t.get_mut(at..at + TRACE_BYTES))
+        else {
+            return;
+        };
+        // READ(10), WRITE(10), VERIFY(10): the blocks; others none.
+        let (lba, blocks) = if matches!(cb[0], 0x28 | 0x2A | 0x2F) {
+            (
+                u32::from_be_bytes([cb[2], cb[3], cb[4], cb[5]]),
+                u16::from_be_bytes([cb[7], cb[8]]),
+            )
+        } else {
+            (0, 0)
+        };
+        e.fill(0);
+        e[0..4].copy_from_slice(&self.now.to_le_bytes());
+        e[8..12].copy_from_slice(&lba.to_le_bytes());
+        e[12..14].copy_from_slice(&blocks.to_le_bytes());
+        e[14] = cb[0];
+        self.trace_open = Some(self.trace_len);
+        self.trace_len += 1;
+    }
+
+    fn trace_end(&mut self) {
+        let Some(i) = self.trace_open.take() else {
+            return;
+        };
+        let sense = self.units.get(self.lun).map(|u| u.sense);
+        let (now, failed) = (self.now, self.failed);
+        if let Some(e) = self
+            .trace
+            .as_mut()
+            .and_then(|t| t.get_mut(i * TRACE_BYTES..(i + 1) * TRACE_BYTES))
+        {
+            let at = u32::from_le_bytes([e[0], e[1], e[2], e[3]]);
+            e[4..8].copy_from_slice(&now.wrapping_sub(at).to_le_bytes());
+            e[15] = u8::from(failed);
+            if let (true, Some(sense)) = (failed, sense) {
+                e[16] = sense.key;
+                e[17] = sense.asc;
+            }
+        }
     }
 }
 

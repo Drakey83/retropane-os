@@ -1229,3 +1229,33 @@ fn a_reset_aborts_the_transfer_in_flight() {
     assert_eq!(csw.status, 0);
     assert!(d == want);
 }
+
+/// The trace records every command for its unit, in order: when it came,
+/// what it was and which blocks, how long it took, and the sense when it
+/// failed (here the start-up "away" a first TEST UNIT READY gets).
+#[test]
+fn the_trace_records_each_command_its_blocks_time_and_outcome() {
+    let mut buf = vec![0u8; 2 * BLOCK];
+    let mut trace = vec![0u8; 4 * TRACE_BYTES];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(16);
+    msc.trace(&mut trace, 0);
+    let (_, csw) = run_at(&mut msc, &mut disk, 1000, 0, 0, false, &[0; 6], &[]);
+    assert_eq!(csw.status, 1, "a view from before the start: away first");
+    let (_, csw) = run_at(&mut msc, &mut disk, 1500, 0, 1024, true, &read10(3, 2), &[]);
+    let _ = csw;
+    let t = msc.traced(0).unwrap();
+    assert_eq!(
+        (t.at_ms, t.op, t.failed, t.key, t.asc),
+        (1000, 0x00, true, 0x02, 0x3A)
+    );
+    let r = msc.traced(1).unwrap();
+    assert_eq!((r.at_ms, r.op, r.lba, r.blocks), (1500, 0x28, 3, 2));
+    assert_eq!(msc.traced(2), None);
+    // Full: later commands aren't recorded, earlier ones are kept.
+    for k in 0..6u32 {
+        let _ = run_at(&mut msc, &mut disk, 2000 + k, 0, 0, false, &[0; 6], &[]);
+    }
+    assert!(msc.traced(3).is_some() && msc.traced(4).is_none());
+    assert_eq!(msc.traced(0).unwrap().at_ms, 1000);
+}

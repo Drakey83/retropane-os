@@ -1579,6 +1579,10 @@ mod image {
     /// 2026-10-25; the owner's option A). One CPLD register read.
     const CF_DETECT_TICKS: u32 = TICK_1S / 20;
 
+    /// The CF drive's command trace (`cf trace`, R33): 16 KiB at the end of
+    /// the scratch area, 819 commands.
+    const CF_TRACE_BYTES: usize = 16 * 1024;
+
     /// The waits before each automatic retry of a CF card that is in but
     /// not attached (R33): one second, three, ten; then no more until it is
     /// re-inserted or `cf` asks.
@@ -2395,6 +2399,8 @@ mod image {
         let Some(scratch) = devices::take_scratch() else {
             halt()
         };
+        // The CF drive's command trace at the scratch area's end (R33).
+        let (scratch, trace_buf) = scratch.split_at_mut(scratch.len() - CF_TRACE_BYTES);
         let (msc_buf, fat_scratch) = scratch.split_at_mut(MSC_BUF);
         // In: the switch says so, or a card answered anyway (so a wrong
         // reading of the switch can't hide a working card).
@@ -2591,6 +2597,9 @@ mod image {
         let mut naps_mid_command = 0u32;
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
+        // Every command for the CF drive (unit 1), from start-up and anew
+        // at each pull: where a reseat's time goes, `cf trace` (R33).
+        msc.trace(trace_buf, 1);
         // R22 (the owner's ruling, 2026-10-24): after a run that returned
         // and left a card alone (never took it; its log only written inside
         // its slot), and the card in the slot is still that card (its
@@ -3066,6 +3075,30 @@ mod image {
                         // The loader's deepest stack so far (the CF card's
                         // timing searches at the attach once overflowed it:
                         // quality audit C79; emu-cf checks the headroom).
+                        // The CF drive's commands since the last pull (or
+                        // start-up): one RPD line each, `at took op lba
+                        // blocks result` in ms; the result `ok` or the
+                        // sense key/code.
+                        Ok(b"cf trace") => {
+                            let mut k = 0;
+                            while let Some(t) = msc.traced(k) {
+                                let mut l = Line::new();
+                                let _ = write!(
+                                    l,
+                                    "RPD {} {} {:02x} {} {} ",
+                                    t.at_ms, t.took_ms, t.op, t.lba, t.blocks
+                                );
+                                let _ = if t.failed {
+                                    write!(l, "{:x}/{:02x}\r\n", t.key, t.asc)
+                                } else {
+                                    l.write_str("ok\r\n")
+                                };
+                                usb_bytes(&mut udc, l.as_str().as_bytes());
+                                k += 1;
+                            }
+                            let _ = write!(status, "RPL OK cf trace: {k} commands\r\n");
+                            status.as_str()
+                        }
                         Ok(b"loader stack") => {
                             let (deep, size) = rt::stack_used();
                             let _ = write!(status, "RPL OK stack {deep} of {size}\r\n");
@@ -3257,6 +3290,9 @@ mod image {
                 cf_detect_at = rt::ticks();
             }
             if detect_due && cf.poll_detect(&mut gpio, cpld.as_mut()) {
+                if !cf.inserted {
+                    msc.trace_restart();
+                }
                 // A card that goes in (or was in at start-up) is attached
                 // at once, as the SD card is, so it shows up next to it.
                 if cf.inserted {

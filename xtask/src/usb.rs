@@ -1031,6 +1031,25 @@ pub fn last_log(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// `cargo xtask cf trace`: the CF drive's commands since the last pull (or
+/// the loader's start), as the loader traced them (R33), saved under
+/// `local/cftrace.txt` with the slot's events, and printed.
+pub fn cf_trace(root: &Path) -> Result<(), String> {
+    let (lines, reply) = query(root, "cf trace")?;
+    let events = command_reply(root, "cf log").unwrap_or_default();
+    let mut text = String::from("at_ms took_ms op lba blocks result\n");
+    for l in &lines {
+        text.push_str(l);
+        text.push('\n');
+    }
+    text.push_str(&format!("{reply}\n{events}\n"));
+    let dest = root.join("local").join("cftrace.txt");
+    std::fs::write(&dest, &text).map_err(|e| format!("{}: {e}", dest.display()))?;
+    print!("{text}");
+    eprintln!("    saved as {}", dest.display());
+    Ok(())
+}
+
 /// Sends a control command and returns the loader's reply (after `RPL OK `),
 /// or why it failed.
 pub fn command_reply(root: &Path, command: &str) -> Result<String, String> {

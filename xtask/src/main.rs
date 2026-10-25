@@ -469,13 +469,19 @@ fn main() -> ExitCode {
         "cf" => {
             // `cf soft`: without the hardware reset; `cf log`: the slot's
             // timestamped events (diagnostics only).
+            // `cf trace`: the drive's commands since the last pull (R33).
             let cmd = match args().nth(2).as_deref() {
                 Some("soft") => "cf soft",
                 Some("log") => "cf log",
+                Some("trace") => "cf trace",
                 _ => "cf",
             };
             eprintln!("==> {cmd}");
-            usb::command(&workspace_root(), cmd)
+            if cmd == "cf trace" {
+                usb::cf_trace(&workspace_root())
+            } else {
+                usb::command(&workspace_root(), cmd)
+            }
         }
         "stack" => {
             eprintln!("==> loader stack");
