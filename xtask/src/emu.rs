@@ -13443,6 +13443,78 @@ fn touch_near(output: &str, x: u16, y: u16) -> bool {
     })
 }
 
+/// The performance gate's P4 test image (rp-tabench): runs under the
+/// loader. With the fork's 3D model the CPU binner's way draws every set
+/// and its frames 2-5 repeat the first; the fork doesn't model the tile
+/// accelerator, so every TA way must run, time out ("TA done 0") and move
+/// on, which is the hang path a device TA hang takes (Q2 A). The clock,
+/// plane and core put back, it returns on a button.
+pub fn boot_loader_tabench(root: &Path) -> Result<(), String> {
+    if !device_has(root, "intel-2700g", "mbx-3d") {
+        eprintln!("    tabench: skipped (this emulator release doesn't model the MBX 3D core)");
+        return Ok(());
+    }
+    let release = crate::arm_release(root);
+    let dir = emu_dir(root)?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-tabench.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-tabench"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.query("sendkey ret 200")?;
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-TABENCH: DONE")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(3600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("tabench: never came back to the loader after the button press")?;
+    if crashed(log) || log.contains("did not return") {
+        return Err(format!("tabench: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "SET 6 of 6",
+        "memory manager ready: true",
+        "RETROPANE-TABENCH: DONE",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("tabench: the run log has no `{want}`:{log}"));
+        }
+    }
+    let binner = log.matches("  CPU BINNER: TA done 5;").count();
+    let repeated = log
+        .lines()
+        .filter(|l| l.starts_with("  CPU BINNER:") && l.contains("frames 2-5 as the first: 4 of 4"))
+        .count();
+    let binned = log.matches("    binned: ").count();
+    let ta = log.lines().filter(|l| l.starts_with("  TA, ")).count();
+    if binner != 6 || repeated != 6 || binned != 6 || ta != 30 || log.contains("render past 2 s") {
+        return Err(format!(
+            "tabench: {binned} sets binned, {binner} binner ways drawn, {repeated} repeatable, {ta} TA ways run (6, 6, 6, 30 wanted, no render past 2 s):{log}"
+        ));
+    }
+    eprintln!(
+        "    tabench OK: the binner drew all six sets repeatably on the modelled 3D core; all 30 TA ways ran and timed out safely (the fork has no TA); back at the loader on a button press"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     /// Every scratch file and raw binary goes through the helpers that
@@ -14015,76 +14087,4 @@ mod tests",
         assert_eq!(to_wsl_path(Path::new(r"\\?\D:\r")), "/mnt/d/r");
         assert_eq!(to_wsl_path(Path::new("/already/unix")), "/already/unix");
     }
-}
-
-/// The performance gate's P4 test image (rp-tabench): runs under the
-/// loader. With the fork's 3D model the CPU binner's way draws every set
-/// and its frames 2-5 repeat the first; the fork doesn't model the tile
-/// accelerator, so every TA way must run, time out ("TA done 0") and move
-/// on, which is the hang path a device TA hang takes (Q2 A). The clock,
-/// plane and core put back, it returns on a button.
-pub fn boot_loader_tabench(root: &Path) -> Result<(), String> {
-    if !device_has(root, "intel-2700g", "mbx-3d") {
-        eprintln!("    tabench: skipped (this emulator release doesn't model the MBX 3D core)");
-        return Ok(());
-    }
-    let release = crate::arm_release(root);
-    let dir = emu_dir(root)?;
-    let loader = dir.join("rp-loader.bin");
-    let bin = dir.join("rp-tabench.bin");
-    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
-    crate::sdkit::raw_binary(&release.join("rp-tabench"), &bin)?;
-    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
-    let check = || -> Result<(), String> {
-        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
-        mon.query("sendkey ret 200")?;
-        Ok(())
-    };
-    let output = boot(
-        root,
-        &Boot {
-            image: &loader,
-            marker: LOADER_MARKER,
-            screenshot: None,
-            sd_image: None,
-            steps: &[],
-            extra: &[],
-            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-TABENCH: DONE")),
-            during: Some(&check),
-            then: Some("RPL END"),
-            timeout: Duration::from_secs(3600),
-        },
-    )?;
-    let log = output
-        .rsplit_once("RPL LOG")
-        .map(|(_, l)| l)
-        .ok_or("tabench: never came back to the loader after the button press")?;
-    if crashed(log) || log.contains("did not return") {
-        return Err(format!("tabench: didn't return cleanly:{log}"));
-    }
-    for want in [
-        "SET 6 of 6",
-        "memory manager ready: true",
-        "RETROPANE-TABENCH: DONE",
-    ] {
-        if !log.contains(want) {
-            return Err(format!("tabench: the run log has no `{want}`:{log}"));
-        }
-    }
-    let binner = log.matches("  CPU BINNER: TA done 5;").count();
-    let repeated = log
-        .lines()
-        .filter(|l| l.starts_with("  CPU BINNER:") && l.contains("frames 2-5 as the first: 4 of 4"))
-        .count();
-    let binned = log.matches("    binned: ").count();
-    let ta = log.lines().filter(|l| l.starts_with("  TA, ")).count();
-    if binner != 6 || repeated != 6 || binned != 6 || ta != 30 || log.contains("render past 2 s") {
-        return Err(format!(
-            "tabench: {binned} sets binned, {binner} binner ways drawn, {repeated} repeatable, {ta} TA ways run (6, 6, 6, 30 wanted, no render past 2 s):{log}"
-        ));
-    }
-    eprintln!(
-        "    tabench OK: the binner drew all six sets repeatably on the modelled 3D core; all 30 TA ways ran and timed out safely (the fork has no TA); back at the loader on a button press"
-    );
-    Ok(())
 }

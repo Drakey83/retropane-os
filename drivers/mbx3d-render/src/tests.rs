@@ -1616,7 +1616,7 @@ mod binner_scenes {
         let m = memory();
         let clock = SimClock::default();
         let mut gpu = Gpu::new(m.clone(), &clock);
-        gpu.write32(MBXCLK, 0x6);
+        rp_drv_mbx_display::clock::restore(&mut gpu, rp_drv_mbx_display::clock::with_3d(0x5));
         for (off, v) in m3::pm_init_table(LAYOUT.params, LAYOUT.params_size, PM_TABLE) {
             gpu.write32(MBX + off, v);
         }
