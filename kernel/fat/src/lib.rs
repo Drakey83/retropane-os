@@ -1897,6 +1897,10 @@ pub mod survey;
 
 pub mod check;
 pub mod guard;
+pub mod node;
+pub mod node_ex;
+#[cfg(test)]
+mod node_tests;
 pub use check::Health;
 pub use guard::Guard;
 
@@ -2041,6 +2045,210 @@ impl<D: BlockDevice> AnyVolume<D> {
         match self {
             Self::Fat(v) => v.device(),
             Self::ExFat(v) => v.device(),
+        }
+    }
+
+    // --- The node layer (ADR-0037: crate::node) ---------------------------
+
+    /// The child after `cursor` in folder `dir` ([`node::Volume::node_child`]).
+    ///
+    /// # Errors
+    /// As the format's own.
+    pub fn node_child(
+        &mut self,
+        dir: u64,
+        cursor: &mut u64,
+        out: &mut node::Node,
+    ) -> Result<bool, Error> {
+        match self {
+            Self::Fat(v) => v.node_child(dir, cursor, out),
+            Self::ExFat(v) => v.node_child(dir, cursor, out),
+        }
+    }
+
+    /// The object at `loc`.
+    ///
+    /// # Errors
+    /// [`Error::NotFound`] when `loc` isn't a whole entry set.
+    pub fn node_stat(&mut self, loc: u64, out: &mut node::Node) -> Result<(), Error> {
+        match self {
+            Self::Fat(v) => v.node_stat(loc, out),
+            Self::ExFat(v) => v.node_stat(loc, out),
+        }
+    }
+
+    /// Reads file bytes from `offset`.
+    ///
+    /// # Errors
+    /// The card failed or the file is damaged.
+    pub fn node_read(
+        &mut self,
+        n: &node::Node,
+        offset: u64,
+        buf: &mut [u8],
+        scratch: &mut [u8],
+    ) -> Result<usize, Error> {
+        match self {
+            Self::Fat(v) => v.node_read(n, offset, buf, scratch),
+            Self::ExFat(v) => v.node_read(n, offset, buf, scratch),
+        }
+    }
+
+    /// Creates a folder or an empty file.
+    ///
+    /// # Errors
+    /// A bad or taken name, no room, or the folder is gone.
+    pub fn node_create(
+        &mut self,
+        dir: u64,
+        name: &[u16],
+        folder: bool,
+        hidden: bool,
+        stamps: (Option<node::Stamp>, Option<node::Stamp>),
+        scratch: &mut [u8],
+    ) -> Result<u64, Error> {
+        match self {
+            Self::Fat(v) => v.node_create(dir, name, folder, hidden, stamps, scratch),
+            Self::ExFat(v) => v.node_create(dir, name, folder, hidden, stamps, scratch),
+        }
+    }
+
+    /// Reserves a file's space whole, out of sight.
+    ///
+    /// # Errors
+    /// No room (nothing changed), or the folder is gone.
+    pub fn node_reserve(
+        &mut self,
+        dir: u64,
+        size: u64,
+        scratch: &mut [u8],
+    ) -> Result<node::Reservation, Error> {
+        match self {
+            Self::Fat(v) => v.node_reserve(dir, size, scratch),
+            Self::ExFat(v) => v.node_reserve(dir, size, scratch),
+        }
+    }
+
+    /// Writes into a reservation.
+    ///
+    /// # Errors
+    /// Past it, off a sector, or the card failed.
+    pub fn node_write(
+        &mut self,
+        r: &mut node::Reservation,
+        offset: u64,
+        data: &[u8],
+        scratch: &mut [u8],
+    ) -> Result<(), Error> {
+        match self {
+            Self::Fat(v) => v.node_write(r, offset, data, scratch),
+            Self::ExFat(v) => v.node_write(r, offset, data, scratch),
+        }
+    }
+
+    /// Names a complete reservation.
+    ///
+    /// # Errors
+    /// A bad or taken name (the reservation stays), or the card failed.
+    pub fn node_commit(
+        &mut self,
+        r: &node::Reservation,
+        dir: u64,
+        name: &[u16],
+        hidden: bool,
+        stamps: (Option<node::Stamp>, Option<node::Stamp>),
+        scratch: &mut [u8],
+    ) -> Result<u64, Error> {
+        match self {
+            Self::Fat(v) => v.node_commit(r, dir, name, hidden, stamps, scratch),
+            Self::ExFat(v) => v.node_commit(r, dir, name, hidden, stamps, scratch),
+        }
+    }
+
+    /// Drops a reservation.
+    ///
+    /// # Errors
+    /// The card failed.
+    pub fn node_abandon(&mut self, r: &node::Reservation) -> Result<(), Error> {
+        match self {
+            Self::Fat(v) => v.node_abandon(r),
+            Self::ExFat(v) => v.node_abandon(r),
+        }
+    }
+
+    /// Cleans up writes a power cut interrupted.
+    ///
+    /// # Errors
+    /// The card failed or is damaged.
+    pub fn node_recover(&mut self) -> Result<u32, Error> {
+        match self {
+            Self::Fat(v) => v.node_recover(),
+            Self::ExFat(v) => v.node_recover(),
+        }
+    }
+
+    /// Deletes a file or an empty folder.
+    ///
+    /// # Errors
+    /// Not empty, gone, or the card failed.
+    pub fn node_delete(&mut self, loc: u64) -> Result<(), Error> {
+        match self {
+            Self::Fat(v) => v.node_delete(loc),
+            Self::ExFat(v) => v.node_delete(loc),
+        }
+    }
+
+    /// Renames the object at `loc` in folder `dir`.
+    ///
+    /// # Errors
+    /// A bad or taken name, `loc` not in `dir`, or the card failed.
+    pub fn node_rename(
+        &mut self,
+        dir: u64,
+        loc: u64,
+        name: &[u16],
+        scratch: &mut [u8],
+    ) -> Result<u64, Error> {
+        match self {
+            Self::Fat(v) => v.node_rename(dir, loc, name, scratch),
+            Self::ExFat(v) => v.node_rename(dir, loc, name, scratch),
+        }
+    }
+
+    /// Moves the object at `loc` from folder `from` into folder `dir`.
+    ///
+    /// # Errors
+    /// A taken name, a folder into itself, or the card failed.
+    pub fn node_move(
+        &mut self,
+        from: u64,
+        loc: u64,
+        dir: u64,
+        scratch: &mut [u8],
+    ) -> Result<u64, Error> {
+        match self {
+            Self::Fat(v) => v.node_move(from, loc, dir, scratch),
+            Self::ExFat(v) => v.node_move(from, loc, dir, scratch),
+        }
+    }
+
+    /// Capacity and free space in bytes.
+    ///
+    /// # Errors
+    /// The card failed.
+    pub fn node_space(&mut self, scratch: &mut [u8]) -> Result<(u64, u64), Error> {
+        match self {
+            Self::Fat(v) => v.node_space(scratch),
+            Self::ExFat(v) => v.node_space(scratch),
+        }
+    }
+
+    /// The largest file the volume holds.
+    #[must_use]
+    pub fn node_max_file(&self) -> u64 {
+        match self {
+            Self::Fat(v) => v.node_max_file(),
+            Self::ExFat(v) => v.node_max_file(),
         }
     }
 }

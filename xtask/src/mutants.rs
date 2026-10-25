@@ -802,6 +802,87 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_cardlog),
     },
     Mutant {
+        name: "ADR-0037: a write in progress listed (the PC sees a half file's temporary entry)",
+        file: "kernel/fat/src/node.rs",
+        from: "            if e[11] & 0x08 != 0 || e[0] == b'.' || is_temp(&short).is_some() {",
+        to: "            if e[11] & 0x08 != 0 || e[0] == b'.' {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "a_reserved_file_is_invisible_until_committed",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a committed file's temporary entry left (two entries share its clusters)",
+        file: "kernel/fat/src/node.rs",
+        from: "        self.kill_temp(r.temp)?;
+        Ok(loc)",
+        to: "        Ok(loc)",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "a_reserved_file_is_invisible_until_committed",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: recovery frees a file a cut left named (its data lost)",
+        file: "kernel/fat/src/node.rs",
+        from: "            if !keep && self.valid_cluster(first) {",
+        to: "            if self.valid_cluster(first) {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "a_power_cut_mid_commit_keeps_a_named_file_or_frees_an_unnamed_one",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: names compared with their case (Cafe and CAFE both made: Windows can't tell them apart)",
+        file: "kernel/fat/src/node.rs",
+        from: "            .all(|(&x, &y)| x == y || upcase(x) == upcase(y))",
+        to: "            .all(|(&x, &y)| x == y)",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "names_are_taken_whatever_their_case",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a folder moved into its own child (its tree cut off)",
+        file: "kernel/fat/src/node.rs",
+        from: "            if c == top {
+                return Ok(true);",
+        to: "            if c == top && c == 0 {
+                return Ok(true);",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "moves_rewrite_the_entry_and_folders_follow",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: exFAT's name hash over the name as typed (Windows' lookups miss the file)",
+        file: "kernel/fat/src/node_ex.rs",
+        from: "        st[4..6].copy_from_slice(&hash16(&up[..name.len()]).to_le_bytes());",
+        to: "        st[4..6].copy_from_slice(&hash16(name).to_le_bytes());",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "exfat_name_hashes_are_over_the_up_cased_name",
+        ]),
+    },
+    Mutant {
         name: "ADR-0037: a boot file announced writable over MTP (Windows tries, then fails)",
         file: "drivers/usb-mtp/src/lib.rs",
         from: "    if e.protected || e.long_name {

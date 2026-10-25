@@ -78,11 +78,47 @@ type SlotVisit<'a> = dyn FnMut(u32, u32, usize, &[u8; ENTRY]) -> bool + 'a;
 /// A folder also knows where its own entry is (the sector and slot of its
 /// file entry, its set within that sector), so it can grow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Dir {
+pub(crate) struct Dir {
     first: u32,
     contiguous: bool,
     len: u32,
     entry: Option<(u32, usize)>,
+}
+
+impl Dir {
+    /// A folder for the node layer (crate::node_ex).
+    pub(crate) const fn new(
+        first: u32,
+        contiguous: bool,
+        len: u32,
+        entry: Option<(u32, usize)>,
+    ) -> Self {
+        Self {
+            first,
+            contiguous,
+            len,
+            entry,
+        }
+    }
+}
+
+impl ExFile {
+    /// A file for the node layer's reads (crate::node_ex).
+    pub(crate) const fn new(
+        first_cluster: u32,
+        size: u64,
+        valid: u64,
+        contiguous: bool,
+        is_dir: bool,
+    ) -> Self {
+        Self {
+            first_cluster,
+            size,
+            valid: if valid < size { valid } else { size },
+            contiguous,
+            is_dir,
+        }
+    }
 }
 
 /// Where a file's entry set is: its file entry's sector (and that
@@ -102,11 +138,11 @@ struct Found {
 
 /// A mounted exFAT volume.
 pub struct ExVolume<D> {
-    dev: D,
+    pub(crate) dev: D,
     /// The boot sector.
     base: u32,
     /// VolumeDirty was already set at mount (then a write leaves it set).
-    was_dirty: bool,
+    pub(crate) was_dirty: bool,
     /// Entry sets whose checksum failed, counted as directories are walked
     /// (for [`ExVolume::check`]).
     bad_sets: u32,
@@ -114,11 +150,14 @@ pub struct ExVolume<D> {
     /// the first write).
     bitmap: Option<(u32, u32)>,
     fat_start: u32,
-    heap_start: u32,
-    cluster_shift: u32,
-    clusters: u32,
-    root_cluster: u32,
-    buf: [u8; SECTOR],
+    pub(crate) heap_start: u32,
+    pub(crate) cluster_shift: u32,
+    pub(crate) clusters: u32,
+    pub(crate) root_cluster: u32,
+    pub(crate) buf: [u8; SECTOR],
+    /// The folder the node layer opened last, and its location (walks of a
+    /// folder find it again without reading its set: crate::node_ex).
+    pub(crate) node_dir_loc: Option<(u64, crate::node_ex::NodeDir)>,
 }
 
 fn le16(b: &[u8], o: usize) -> u16 {
@@ -231,6 +270,7 @@ impl<D: BlockDevice> ExVolume<D> {
             clusters,
             root_cluster,
             buf,
+            node_dir_loc: None,
         })
     }
 
@@ -256,17 +296,17 @@ impl<D: BlockDevice> ExVolume<D> {
         self.dev
     }
 
-    fn valid_cluster(&self, c: u32) -> bool {
+    pub(crate) fn valid_cluster(&self, c: u32) -> bool {
         (2..2 + self.clusters).contains(&c)
     }
 
-    fn cluster_lba(&self, c: u32) -> u32 {
+    pub(crate) fn cluster_lba(&self, c: u32) -> u32 {
         // In range by mount's checks for any valid cluster.
         self.heap_start + ((c - 2) << self.cluster_shift)
     }
 
     #[inline(never)]
-    fn fat_next(&mut self, c: u32) -> Result<Option<u32>, Error> {
+    pub(crate) fn fat_next(&mut self, c: u32) -> Result<Option<u32>, Error> {
         let sector = self.fat_start + c / (SECTOR as u32 / 4);
         self.dev.read_blocks(sector, &mut self.buf)?;
         let v = le32(&self.buf, (c % (SECTOR as u32 / 4)) as usize * 4);
@@ -290,7 +330,7 @@ impl<D: BlockDevice> ExVolume<D> {
     }
 
     /// The cluster after `c` in `dir`, if it has one (`k`: clusters so far).
-    fn dir_next(&mut self, dir: Dir, c: u32, k: u32) -> Result<Option<u32>, Error> {
+    pub(crate) fn dir_next(&mut self, dir: Dir, c: u32, k: u32) -> Result<Option<u32>, Error> {
         if k + 1 >= dir.len {
             // A folder ends at its size. The root has no size: its bound is
             // the volume, and a chain that long is a loop.
@@ -307,7 +347,7 @@ impl<D: BlockDevice> ExVolume<D> {
     /// end-of-directory entry: its sector, that sector's place in the
     /// directory, and its slot. Stops when `f` returns `true`.
     #[inline(never)]
-    fn walk_slots(&mut self, dir: Dir, f: &mut SlotVisit<'_>) -> Result<(), Error> {
+    pub(crate) fn walk_slots(&mut self, dir: Dir, f: &mut SlotVisit<'_>) -> Result<(), Error> {
         let mut cluster = dir.first;
         let mut nth = 0u32;
         for k in 0.. {
@@ -1038,7 +1078,7 @@ impl<D: BlockDevice> ExVolume<D> {
 
     /// Sets or clears VolumeDirty (outside the boot checksum by design);
     /// PercentInUse becomes "unknown", which it now is.
-    fn set_dirty(&mut self, dirty: bool) -> Result<(), Error> {
+    pub(crate) fn set_dirty(&mut self, dirty: bool) -> Result<(), Error> {
         self.dev.read_blocks(self.base, &mut self.buf)?;
         let flags = self.buf[106];
         self.buf[106] = if dirty {
@@ -1091,7 +1131,12 @@ impl<D: BlockDevice> ExVolume<D> {
     /// The first run of `n` free clusters from cluster `from` on, and how
     /// many free clusters the scan saw (all of them from `from` when there
     /// is no such run).
-    fn scan(&mut self, from: u32, n: u32, scratch: &mut [u8]) -> Result<(Option<u32>, u32), Error> {
+    pub(crate) fn scan(
+        &mut self,
+        from: u32,
+        n: u32,
+        scratch: &mut [u8],
+    ) -> Result<(Option<u32>, u32), Error> {
         let (lba0, bytes) = self.bitmap()?;
         let total = self.clusters;
         let per = (scratch.len() / SECTOR) as u32;
@@ -1132,7 +1177,7 @@ impl<D: BlockDevice> ExVolume<D> {
     }
 
     /// Marks clusters `first..first + n` used or free in the bitmap.
-    fn mark(&mut self, first: u32, n: u32, used: bool) -> Result<(), Error> {
+    pub(crate) fn mark(&mut self, first: u32, n: u32, used: bool) -> Result<(), Error> {
         let (lba0, _) = self.bitmap()?;
         let bits_per = SECTOR as u32 * 8;
         let mut bit = first - 2;
@@ -1155,7 +1200,7 @@ impl<D: BlockDevice> ExVolume<D> {
         Ok(())
     }
 
-    fn fat_set(&mut self, c: u32, v: u32) -> Result<(), Error> {
+    pub(crate) fn fat_set(&mut self, c: u32, v: u32) -> Result<(), Error> {
         let sector = self.fat_start + c / (SECTOR as u32 / 4);
         self.dev.read_blocks(sector, &mut self.buf)?;
         let o = (c % (SECTOR as u32 / 4)) as usize * 4;
@@ -1253,12 +1298,12 @@ impl<D: BlockDevice> ExVolume<D> {
     /// its file entry's sector (which ends the directory until then) lands.
     /// A full directory grows by a cluster first.
     #[inline(never)]
-    fn add_set(
+    pub(crate) fn add_set(
         &mut self,
         mut dir: Dir,
         set: &[[u8; ENTRY]],
         scratch: &mut [u8],
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         for _ in 0..2 {
             match self.place_set(dir, set) {
                 Err(Error::NoRoom) => self.grow(&mut dir, scratch)?,
@@ -1342,7 +1387,7 @@ impl<D: BlockDevice> ExVolume<D> {
     }
 
     /// [`ExVolume::add_set`] without growing: `NoRoom` when it doesn't fit.
-    fn place_set(&mut self, dir: Dir, set: &[[u8; ENTRY]]) -> Result<(), Error> {
+    pub(crate) fn place_set(&mut self, dir: Dir, set: &[[u8; ENTRY]]) -> Result<u64, Error> {
         let count = set.len();
         let mut middle = None;
         let mut end = None;
@@ -1370,7 +1415,8 @@ impl<D: BlockDevice> ExVolume<D> {
             false
         })?;
         if let Some((lba, slot)) = middle {
-            return self.write_entries(lba, slot, set);
+            self.write_entries(lba, slot, set)?;
+            return Ok(u64::from(lba) << 4 | slot as u64);
         }
         let (lba, nth, slot) = end.ok_or(Error::NoRoom)?;
         // Every sector it needs must exist before anything is written.
@@ -1385,7 +1431,8 @@ impl<D: BlockDevice> ExVolume<D> {
             let to = (from + SLOTS).min(count);
             self.write_entries(sectors[k as usize], 0, &set[from..to])?;
         }
-        self.write_entries(lba, slot, &set[..(SLOTS - slot).min(count)])
+        self.write_entries(lba, slot, &set[..(SLOTS - slot).min(count)])?;
+        Ok(u64::from(lba) << 4 | slot as u64)
     }
 
     fn write_entries(
