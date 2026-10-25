@@ -323,7 +323,7 @@ mod image {
         if !guard.touches(lba, n) {
             return write(lba, buf);
         }
-        for (s, i) in buf.chunks_exact(rp_drv_sdcard::BLOCK).zip(0u32..) {
+        for (s, i) in buf.as_chunks::<{ rp_drv_sdcard::BLOCK }>().0.iter().zip(0u32..) {
             let mut sector = [0u8; rp_drv_sdcard::BLOCK];
             sector.copy_from_slice(s);
             guard.unview(lba + i, &mut sector);

@@ -570,7 +570,7 @@ impl Guard {
     /// `lba`, as the drive is about to serve them) as hidden + system +
     /// read-only: see the module documentation.
     pub fn view(&self, lba: u32, data: &mut [u8]) {
-        for (s, i) in data.chunks_exact_mut(SECTOR).zip(0u32..) {
+        for (s, i) in data.as_chunks_mut::<SECTOR>().0.iter_mut().zip(0u32..) {
             let Some(at) = lba.checked_add(i) else { return };
             match &self.kind {
                 Kind::Fat(g) => g.view_sector(at, s),
@@ -583,7 +583,7 @@ impl Guard {
     /// (sectors from `lba` the PC writes, already [allowed](Self::allows)),
     /// before they reach the card.
     pub fn unview(&self, lba: u32, data: &mut [u8]) {
-        for (s, i) in data.chunks_exact_mut(SECTOR).zip(0u32..) {
+        for (s, i) in data.as_chunks_mut::<SECTOR>().0.iter_mut().zip(0u32..) {
             let Some(at) = lba.checked_add(i) else { return };
             match &self.kind {
                 Kind::Fat(g) => g.unview_sector(at, s),
