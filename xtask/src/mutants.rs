@@ -788,6 +788,22 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_run_limit),
     },
     Mutant {
+        name: "R22: a card the run took vouched for (the PC keeps a stale view: the noise-ri.bin loss)",
+        file: "boot/loader/src/main.rs",
+        from: "                if (state.taken | state.changed) & (1 << unit) == 0",
+        to: "                if state.changed & (1 << unit) == 0",
+        check: Check::Emu(crate::emu::boot_loader_cardlog),
+    },
+    Mutant {
+        name: "R22: a vouch that doesn't keep the host's view",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if let Some(u) = self.units.get_mut(lun) {
+            u.vouched = true;",
+        to: "        if let Some(u) = self.units.get_mut(lun) {
+            let _ = u;",
+        check: Check::Host(&["-p", "rp-usb-msc", "a_vouched_unit_keeps_the_hosts_view"]),
+    },
+    Mutant {
         name: "CF slot never powered on (the card reads nothing, as on the device)",
         file: "boot/loader/src/main.rs",
         from: "        cpld.set_cf_power(true, &mut BusyWait);",

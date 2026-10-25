@@ -8488,11 +8488,29 @@ fn received_log(output: &str) -> Result<String, String> {
     Ok(text[..end].trim_end_matches('\n').to_string())
 }
 
-/// A run's card log: both cards' files of `file` joined, as `cargo xtask
-/// cardlog` joins them.
-fn joined_card_log(sd: &Path, cf: &Path, file: &str) -> Result<String, String> {
-    let sd_part = card_file(sd, file).ok();
-    let cf_part = card_file(cf, file).ok();
+/// The slot file holding `name`'s run `number` on a card image, by its
+/// `rplog/index.txt` (R22: the run logs reuse fixed files).
+fn slot_file(image: &Path, name: &str, number: u32) -> Result<String, String> {
+    use rp_hal_x51v::cardlog;
+    let index = card_file(image, cardlog::INDEX)?;
+    let (slot, _) = cardlog::find(&index, Some(name.as_bytes()), Some(number))
+        .ok_or_else(|| format!("{name}-{number:04} isn't in {}", cardlog::INDEX))?;
+    let mut path = [0u8; 32];
+    let n = cardlog::slot_path(slot, &mut path);
+    Ok(String::from_utf8_lossy(&path[..n]).into_owned())
+}
+
+/// A run's card log: both cards' halves of `name`'s run `number` joined,
+/// as `cargo xtask cardlog` joins them.
+fn joined_card_log(sd: &Path, cf: &Path, name: &str, number: u32) -> Result<String, String> {
+    let file = format!("{name}-{number:04}");
+    let part = |card: &Path| {
+        slot_file(card, name, number)
+            .ok()
+            .and_then(|f| card_file(card, &f).ok())
+    };
+    let sd_part = part(sd);
+    let cf_part = part(cf);
     if sd_part.is_none() && cf_part.is_none() {
         return Err(format!("{file} is on neither card"));
     }
@@ -8573,7 +8591,9 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
                     extra: &["-drive", &cf_drive],
                     input: Some((&input, until)),
                     during: None,
-                    then: Some("RPL END"),
+                    // The loader ready again: past the run log, its word on
+                    // each card for the PC (R22's vouch) comes before it.
+                    then: Some(LOADER_MARKER),
                     timeout: Duration::from_secs(600),
                 },
             )?;
@@ -8583,15 +8603,16 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
             Ok(output)
         };
     let check = |name: &str, number: u32, output: &str, how: &str| -> Result<String, String> {
-        let file = format!("rplog/{name}-{number:04}.txt");
-        let card = joined_card_log(&sd, &cf, &file).map_err(|e| format!("cardlog {name}: {e}"))?;
+        let file = format!("{name}-{number:04}");
+        let card =
+            joined_card_log(&sd, &cf, name, number).map_err(|e| format!("cardlog {name}: {e}"))?;
         let log = received_log(output).map_err(|e| format!("cardlog {name}: {e}"))?;
         if card != log {
             return Err(format!(
                 "cardlog {name}: {file} differs from the run log:\n--- card ---\n{card}\n--- run log ---\n{log}"
             ));
         }
-        let first = format!("[loader: card log {file} on the SD and CF cards]");
+        let first = format!("[loader: card log {file} in rplog/ on the SD and CF cards]");
         if !card.contains(&first) {
             return Err(format!("cardlog {name}: no `{first}` in:\n{card}"));
         }
@@ -8640,7 +8661,7 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
 
     let out = run("light", &image("rp-light")?, None, "RPL END")?;
     check("light", 41, &out, "returned")?;
-    if card_file(&cf, "rplog/light-0041.txt")?
+    if card_file(&cf, &slot_file(&cf, "light", 41)?)?
         .iter()
         .any(|&b| b != 0)
     {
@@ -8648,18 +8669,25 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
             "cardlog light: the CF card's file was written though the SD card was free".into(),
         );
     }
-    let mut lights: Vec<String> = card_names(&sd, "rplog")?
-        .into_iter()
-        .filter(|n| n.starts_with("light-"))
-        .collect();
-    lights.sort();
-    if lights.len() != 33 || lights[0] != "light-0009.txt" {
-        return Err(format!(
-            "cardlog light: the SD card should keep light-0009..0041 (the 8 oldest of those beyond 32 deleted): {lights:?}"
-        ));
+    // The slots made once (R22): 32 log files and the index on each card;
+    // the 40 old-style files left as they were (their numbers counted).
+    for (card, what) in [(&sd, "SD"), (&cf, "CF")] {
+        let names = card_names(card, "rplog")?;
+        let slots = names.iter().filter(|n| n.starts_with("log-")).count();
+        let old = names.iter().filter(|n| n.starts_with("light-")).count();
+        let want_old = if what == "SD" { 40 } else { 0 };
+        if slots != rp_hal_x51v::cardlog::SLOTS
+            || old != want_old
+            || !names.iter().any(|n| n == "index.txt")
+        {
+            return Err(format!(
+                "cardlog light: the {what} card's rplog/ should hold {} slots, the index and {want_old} old files: {names:?}",
+                rp_hal_x51v::cardlog::SLOTS
+            ));
+        }
     }
     eprintln!(
-        "    cardlog light OK: the run log on the SD card line for line, numbered 41, the 8 oldest beyond 32 deleted"
+        "    cardlog light OK: the run log on the SD card line for line, numbered 41 (after the 40 old files), 32 slots and an index made on each card"
     );
 
     let out = run("sdtime", &image("rp-sdtime")?, None, "RPL END")?;
@@ -8668,11 +8696,21 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
     if card.matches(moved).count() != 1 {
         return Err(format!("cardlog sdtime: no `{moved}` once:\n{card}"));
     }
-    if card_file(&cf, "rplog/sdtime-0001.txt")?
+    if card_file(&cf, &slot_file(&cf, "sdtime", 1)?)?
         .iter()
         .all(|&b| b == 0)
     {
         return Err("cardlog sdtime: nothing on the CF card".into());
+    }
+    // R22: the run took the SD card (the PC re-reads it) and left the CF
+    // card alone, whose slots existed: the PC keeps its view of it.
+    if !out.contains("CF card: unchanged by the run (the PC keeps its view)") {
+        return Err(format!(
+            "cardlog sdtime: the CF card wasn't vouched for after a run that left it alone:\n{out}"
+        ));
+    }
+    if out.contains("SD card: unchanged by the run") {
+        return Err("cardlog sdtime: the SD card was vouched for though the run took it".into());
     }
     eprintln!(
         "    cardlog sdtime OK: the SD test moved the log to the CF card; the halves join into the run log"
@@ -8761,7 +8799,7 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
 /// the PC received (from the loader's first line to its closing line),
 /// closed as a run that returned, no write refused.
 fn gpubench_card_log(sd: &Path, name: &str, number: u32, log: &str) -> Result<(), String> {
-    let file = format!("rplog/gpubench-{number:04}.txt");
+    let file = slot_file(sd, "gpubench", number).map_err(|e| format!("gpubench {name}: {e}"))?;
     let raw = card_file(sd, &file).map_err(|e| format!("gpubench {name}: card log: {e}"))?;
     if raw.len() != rp_hal_x51v::cardlog::FILE_BYTES {
         return Err(format!(

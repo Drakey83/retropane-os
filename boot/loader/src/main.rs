@@ -2192,7 +2192,7 @@ mod image {
         // The previous program's run: if it crashed or hung, the crash
         // screen goes above the log.
         // The previous run's card log first: its run log is still open.
-        card_log_finish(&mut LogCards(&mut lun, &mut cf));
+        let logged = card_log_finish(&mut LogCards(&mut lun, &mut cf));
         let mut pending = devices::log_take();
         // Kept for `log`: a log sent while Windows was re-finding the
         // device can be lost on the way; its bytes stay in RAM until the
@@ -2312,6 +2312,42 @@ mod image {
         let mut naps_mid_command = 0u32;
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
+        // R22 (the owner's ruling, 2026-10-24): after a run that returned
+        // and left a card alone (never took it; its log only written inside
+        // its slot), and the card in the slot is still that card (its
+        // index holds this run where the run's file is), the PC's cached
+        // view of it is still right: its first look is served, not sent
+        // away, so Explorer doesn't re-read it cold.
+        if let Some(run) = &pending
+            && run.returned
+            && !run.crashed
+            && !run.handover
+            && let Some(state) = logged
+        {
+            for unit in [cardlog::SD, cardlog::CF] {
+                if (state.taken | state.changed) & (1 << unit) == 0
+                    && state.files[unit].sectors > 0
+                    && still_the_runs_card(
+                        &mut lun,
+                        &mut cf,
+                        unit,
+                        &state,
+                        &mut fat_scratch[..SCRATCH],
+                    )
+                {
+                    msc.vouch(unit);
+                    let what = if unit == cardlog::SD { "SD" } else { "CF" };
+                    let _ = writeln!(
+                        log,
+                        "{what} card: unchanged by the run (the PC keeps its view)"
+                    );
+                    let _ = writeln!(
+                        uart,
+                        "{what} card: unchanged by the run (the PC keeps its view)"
+                    );
+                }
+            }
+        }
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = pwm0.map(Backlight::new);
         // The USB controller's DMA channel (item 74).
@@ -2732,7 +2768,7 @@ mod image {
                             // short one; never longer than the default).
                             match core::str::from_utf8(&c[6..])
                                 .ok()
-                                .and_then(|t| t.trim().parse::<u32>().ok())
+                                .and_then(|t| t.trim_ascii().parse::<u32>().ok())
                                 .filter(|n| (1..=30).contains(n))
                             {
                                 Some(n) => {
@@ -3058,12 +3094,17 @@ mod image {
 
     /// The run log, framed for `cargo xtask load`; a run that didn't
     /// return (a hang the watchdog reset) says so before the end marker.
-    /// The run's card log (`rp_hal_x51v::cardlog`): reserves
-    /// `rplog/<name>-NNNN.txt` on each card that's in (the next number of
-    /// either, so both halves share it; the oldest beyond `KEEP` deleted)
-    /// and leaves the state for the program. `note` gets the line for the
-    /// top of the run log. Run with the PC away (the USB disconnected), so
-    /// no cached view of either card goes stale.
+    /// The run's card log (`rp_hal_x51v::cardlog`): on each card that's in,
+    /// one of the [`cardlog::SLOTS`] files `rplog/log-SS.txt`, made once
+    /// and reused (the one holding the oldest run, by `rplog/index.txt`),
+    /// zeroed and its index line written in place: no file is made or
+    /// removed run to run, so the PC's cached view of the card stays right
+    /// (reminder R22, the owner's ruling 2026-10-24). The run's number is
+    /// the image's next on either card (old `<name>-NNNN.txt` files count),
+    /// the same on both. A card whose slots or index had to be made is
+    /// marked changed in the state, for the PC to re-read it. Leaves the
+    /// state for the program; `note` gets the line for the top of the run
+    /// log. Run with the PC away (the USB disconnected).
     #[inline(never)]
     fn card_log_begin(
         lun: &mut Lun,
@@ -3073,56 +3114,79 @@ mod image {
         note: &mut Line,
     ) {
         cardsink::end();
+        let (zeros, rest) = scratch.split_at_mut(16 * 1024);
+        zeros.fill(0);
+        let (indexes, work) = rest.split_at_mut(2 * cardlog::INDEX_BYTES);
+        let (index_sd, index_cf) = indexes.split_at_mut(cardlog::INDEX_BYTES);
         let mut highest = 0u32;
-        let mut seen = |vol: &mut AnyVolume<Fed<'_>>| {
+        let mut order = 0u32;
+        let mut changed = 0u32;
+        // Per unit: (slot, its file, the index's file), set up on the card.
+        let mut plan: [Option<(usize, cardlog::File, cardlog::File)>; 2] = [None; 2];
+        let set_up = |vol: &mut AnyVolume<Fed<'_>>,
+                      index: &mut [u8],
+                      work: &mut [u8]|
+         -> Option<(usize, cardlog::File, cardlog::File, bool, u32, u32)> {
+            // Old-style files of this image still count for its numbers.
+            let mut old = 0u32;
             let _ = vol.list(cardlog::FOLDER, &mut |file, dir, _| {
                 if let Some(n) = cardlog::number_of(name, file).filter(|_| !dir) {
-                    highest = highest.max(n);
+                    old = old.max(n);
                 }
             });
+            let mut made = false;
+            let mut path = [0u8; 32];
+            let ix = match vol.extent(cardlog::INDEX) {
+                Ok(r) if r.sectors as usize * 512 >= cardlog::INDEX_BYTES => r,
+                _ => {
+                    made = true;
+                    // The slots with it, all at once: one change, ever.
+                    for slot in 0..cardlog::SLOTS {
+                        let n = cardlog::slot_path(slot, &mut path);
+                        let p = core::str::from_utf8(&path[..n]).ok()?;
+                        if vol.extent(p).is_err() {
+                            vol.reserve(p, cardlog::FILE_BYTES, work).ok()?;
+                        }
+                    }
+                    vol.reserve(cardlog::INDEX, cardlog::INDEX_BYTES, work)
+                        .ok()?
+                }
+            };
+            index.fill(0);
+            let mut at = 0;
+            vol.read_back(cardlog::INDEX, work, &mut |c| {
+                let k = c.len().min(index.len().saturating_sub(at));
+                index[at..at + k].copy_from_slice(&c[..k]);
+                at += k;
+            })
+            .ok()?;
+            let (slot, newest, high) = cardlog::choose(index, name);
+            let n = cardlog::slot_path(slot, &mut path);
+            let p = core::str::from_utf8(&path[..n]).ok()?;
+            let file = match vol.extent(p) {
+                Ok(r) if r.sectors as usize * 512 >= cardlog::FILE_BYTES => r,
+                // A slot gone (removed on the PC): made again.
+                _ => {
+                    made = true;
+                    vol.reserve(p, cardlog::FILE_BYTES, work).ok()?
+                }
+            };
+            Some((
+                slot,
+                cardlog::File {
+                    lba: file.lba,
+                    sectors: file.sectors,
+                },
+                cardlog::File {
+                    lba: ix.lba,
+                    sectors: ix.sectors,
+                },
+                made,
+                newest,
+                high.max(old),
+            ))
         };
         let sd_ok = !lun.locked;
-        if let Some(sd) = lun.card.as_mut().filter(|_| sd_ok)
-            && let Ok(mut vol) = mount_any(sd)
-        {
-            seen(&mut vol);
-        }
-        if let Ok(mut vol) = mount_cf(cf) {
-            seen(&mut vol);
-        }
-        let number = highest + 1;
-        let mut path = [0u8; 64];
-        let len = cardlog::path(name, number, &mut path);
-        let path = core::str::from_utf8(&path[..len]).unwrap_or("");
-        let mut files = [cardlog::File::default(); 2];
-        let mut reserve = |vol: &mut AnyVolume<Fed<'_>>, unit: usize| {
-            // This image's files beyond the newest KEEP (with this one),
-            // up to 8 a run: the folder can't grow without end.
-            let mut stale = [0u32; 8];
-            let mut k = 0;
-            let _ = vol.list(cardlog::FOLDER, &mut |file, dir, _| {
-                if let Some(n) = cardlog::number_of(name, file).filter(|_| !dir)
-                    && n + cardlog::KEEP <= number
-                    && k < stale.len()
-                {
-                    stale[k] = n;
-                    k += 1;
-                }
-            });
-            for &old in &stale[..k] {
-                let mut p = [0u8; 64];
-                let n = cardlog::path(name, old, &mut p);
-                if let Ok(p) = core::str::from_utf8(&p[..n]) {
-                    let _ = vol.remove(p);
-                }
-            }
-            if let Ok(r) = vol.reserve(path, cardlog::FILE_BYTES, scratch) {
-                files[unit] = cardlog::File {
-                    lba: r.lba,
-                    sectors: r.sectors,
-                };
-            }
-        };
         let mut sd_id = cardlog::SdCard::default();
         if let Some(sd) = lun.card.as_mut().filter(|_| sd_ok) {
             let id = sd.identity();
@@ -3131,26 +3195,69 @@ mod image {
                 flags: u32::from(id.high_capacity) | u32::from(id.wide) << 1,
                 blocks: id.blocks,
             };
-            if let Ok(mut vol) = mount_any(sd) {
-                reserve(&mut vol, cardlog::SD);
+            if let Ok(mut vol) = mount_any(sd)
+                && let Some((slot, file, ix, made, newest, high)) =
+                    set_up(&mut vol, index_sd, &mut *work)
+            {
+                plan[cardlog::SD] = Some((slot, file, ix));
+                changed |= u32::from(made) << cardlog::SD;
+                order = order.max(newest);
+                highest = highest.max(high);
             }
         }
-        if let Ok(mut vol) = mount_cf(cf) {
-            reserve(&mut vol, cardlog::CF);
+        if let Ok(mut vol) = mount_cf(cf)
+            && let Some((slot, file, ix, made, newest, high)) =
+                set_up(&mut vol, index_cf, &mut *work)
+        {
+            plan[cardlog::CF] = Some((slot, file, ix));
+            changed |= u32::from(made) << cardlog::CF;
+            order = order.max(newest);
+            highest = highest.max(high);
         }
-        let cf_sectors = match &cf.slot {
+        let number = highest + 1;
+        let entry = cardlog::Entry {
+            order: order + 1,
+            number,
+            name,
+        };
+        // Each card: the slot zeroed (`join` reads a zero as "not this
+        // card's"), then its index line, in place.
+        let mut files = [cardlog::File::default(); 2];
+        let mut cards = LogCards(lun, cf);
+        for (unit, index) in [(cardlog::SD, &mut *index_sd), (cardlog::CF, &mut *index_cf)] {
+            let Some((slot, file, ix)) = plan[unit] else {
+                continue;
+            };
+            let mut ok = true;
+            let mut at = 0;
+            while ok && at < file.sectors {
+                let n = (file.sectors - at).min((zeros.len() / 512) as u32);
+                ok = cards.write_many(unit, file.lba + at, &zeros[..n as usize * 512]);
+                at += n;
+            }
+            cardlog::set_index_entry(index, slot, entry);
+            let n = cardlog::INDEX_BYTES.div_ceil(512).min(ix.sectors as usize);
+            ok = ok && cards.write_many(unit, ix.lba, &index[..n * 512]);
+            if ok {
+                files[unit] = file;
+            }
+        }
+        let cf_sectors = match &cards.1.slot {
             CfSlot::Card(c) => c.sectors(),
             _ => 0,
         };
-        let state = cardlog::State::new(number, files, sd_id, cf_sectors);
+        let mut state = cardlog::State::new(number, files, sd_id, cf_sectors);
+        state.changed = changed;
         if !state.valid() {
             let _ = note.write_str("[loader: no card log: no card took the file]\n");
             return;
         }
         cardsink::begin(state);
+        let _ = write!(note, "[loader: card log ");
+        let _ = note.write_str(core::str::from_utf8(name).unwrap_or("run"));
         let _ = write!(
             note,
-            "[loader: card log {path} on the {}]\n",
+            "-{number:04} in rplog/ on the {}]\n",
             match (files[0].sectors > 0, files[1].sectors > 0) {
                 (true, true) => "SD and CF cards",
                 (true, false) => "SD card (no CF card)",
@@ -3178,6 +3285,70 @@ mod image {
         }
     }
 
+    /// Whether the card in `unit`'s slot is the one the run in `state` logged
+    /// to: its `rplog/index.txt` names the run's number in a slot whose file
+    /// starts where the run's did. Another card (swapped during the run)
+    /// fails it, so the PC re-reads that one.
+    fn still_the_runs_card(
+        lun: &mut Lun,
+        cf: &mut CfLun,
+        unit: usize,
+        state: &cardlog::State,
+        scratch: &mut [u8],
+    ) -> bool {
+        let check = |vol: &mut AnyVolume<Fed<'_>>, scratch: &mut [u8]| -> bool {
+            let (index, work) = scratch.split_at_mut(cardlog::INDEX_BYTES);
+            index.fill(0);
+            let mut at = 0;
+            if vol
+                .read_back(cardlog::INDEX, work, &mut |c| {
+                    let k = c.len().min(index.len().saturating_sub(at));
+                    index[at..at + k].copy_from_slice(&c[..k]);
+                    at += k;
+                })
+                .is_err()
+            {
+                return false;
+            }
+            let Some((slot, _)) = cardlog::find(index, None, Some(state.number)) else {
+                return false;
+            };
+            let mut path = [0u8; 32];
+            let n = cardlog::slot_path(slot, &mut path);
+            core::str::from_utf8(&path[..n])
+                .ok()
+                .and_then(|p| vol.extent(p).ok())
+                .is_some_and(|r| r.lba == state.files[unit].lba)
+        };
+        match unit {
+            cardlog::SD => lun
+                .card
+                .as_mut()
+                .and_then(|sd| mount_any(sd).ok())
+                .is_some_and(|mut vol| check(&mut vol, scratch)),
+            _ => mount_cf(cf).is_ok_and(|mut vol| check(&mut vol, scratch)),
+        }
+    }
+
+    impl LogCards<'_> {
+        /// Whole sectors `buf` from `lba` on `unit` (the card log's set-up:
+        /// a slot zeroed, the index written in place).
+        fn write_many(&mut self, unit: usize, lba: u32, buf: &[u8]) -> bool {
+            match unit {
+                cardlog::SD if !self.0.locked => self
+                    .0
+                    .card
+                    .as_mut()
+                    .is_some_and(|sd| sd.write_many(lba, buf).is_ok()),
+                cardlog::CF => match &mut self.1.slot {
+                    CfSlot::Card(c) if self.1.inserted => c.write_blocks(lba, buf).is_ok(),
+                    _ => false,
+                },
+                _ => false,
+            }
+        }
+    }
+
     impl cardsink::LoaderCards for LogCards<'_> {
         fn write(&mut self, unit: usize, lba: u32, sector: &[u8; 512]) -> bool {
             match unit {
@@ -3199,22 +3370,19 @@ mod image {
     /// run log): what a pause held back goes onto a card, then the closing
     /// line, saying how the run ended. A card is written only if its file
     /// still starts with this run's first bytes (after a reset the card in
-    /// the slot may not be the one the run reserved on).
+    /// the slot may not be the one the run reserved on). Its state, as the
+    /// log closed (for the vouch, R22); `None` with no card log.
     #[inline(never)]
-    fn card_log_finish(cards: &mut LogCards<'_>) {
+    fn card_log_finish(cards: &mut LogCards<'_>) -> Option<cardlog::State> {
         let Some(flags) = devices::log_flags() else {
             cardsink::end();
-            return;
+            return None;
         };
-        let Some(state) = cardsink::current() else {
-            return;
-        };
+        let state = cardsink::current()?;
         state.reclaim();
         let gone = cardsink::keep_after_reset(&mut |unit, lba, out| cards.read(unit, lba, out));
         cardsink::sync_with(cards);
-        let Some(state) = cardsink::current() else {
-            return;
-        };
+        let state = cardsink::current()?;
         let mut line = Line::new();
         let _ = write!(
             line,
@@ -3239,7 +3407,9 @@ mod image {
         );
         devices::log_append(line.as_str().as_bytes());
         cardsink::sync_with(cards);
+        let closed = cardsink::current().map(|s| *s);
         cardsink::end();
+        closed
     }
 
     /// Keeps a crash or hang report on the card as `crashlog.txt`

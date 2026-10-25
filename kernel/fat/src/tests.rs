@@ -1362,6 +1362,51 @@ fn reserve_gives_a_zeroed_run_written_in_place_on_either_kind() {
     }
 }
 
+/// An existing file's extent: where `reserve` put it, found again without
+/// a write (the device's write count unchanged); a missing or empty file
+/// isn't one; on FAT32 a file whose clusters aren't one run is refused.
+/// On FAT32 and exFAT alike (R22: the run logs reuse their files).
+#[test]
+fn extent_finds_a_reserved_file_again_without_writing() {
+    let fat = tiny_image(&[]);
+    let ex = crate::exfat::format::build(4096, 2, &[]);
+    let mut scratch = vec![0u8; 4096];
+    for (img, kind) in [(fat, "fat32"), (ex, "exfat")] {
+        let mut v = AnyVolume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+        let r = v.reserve("rplog/slot-00.txt", 5000, &mut scratch).unwrap();
+        v.put("rplog/empty.txt", b"", &mut scratch).unwrap();
+        let disk = match v {
+            AnyVolume::Fat32(v) => v.into_inner(),
+            AnyVolume::ExFat(v) => v.into_inner(),
+        };
+        let writes = disk.writes;
+        let mut v = AnyVolume::mount(disk, PARTITION_START).unwrap();
+        assert_eq!(v.extent("rplog/slot-00.txt"), Ok(r), "{kind}");
+        assert_eq!(
+            v.extent("rplog/slot-01.txt"),
+            Err(Error::NotFound),
+            "{kind}"
+        );
+        assert_eq!(v.extent("rplog/empty.txt"), Err(Error::NotFound), "{kind}");
+        let disk = match v {
+            AnyVolume::Fat32(v) => v.into_inner(),
+            AnyVolume::ExFat(v) => v.into_inner(),
+        };
+        assert_eq!(disk.writes, writes, "{kind}: extent wrote");
+    }
+    // FAT32: a file in two runs.
+    let blocked: Vec<u32> = (4..400).step_by(2).collect();
+    let img = small_image(
+        &[Entry {
+            name: "log.txt",
+            data: &pattern(3000, 2),
+        }],
+        &blocked,
+    );
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    assert_eq!(v.extent("log.txt"), Err(Error::Fragmented));
+}
+
 /// No run long enough: refused, and nothing is left behind (the file
 /// removed, its clusters free again).
 #[test]
@@ -1422,4 +1467,17 @@ fn power_loss_while_reserving_leaves_the_old_file_or_the_zeroed_one() {
         }
     }
     assert!(saw_old > 0 && saw_new > 0, "old {saw_old}, new {saw_new}");
+}
+
+/// A folder's path is the text up to its component's end; a part from
+/// another string is refused, not a panic.
+#[test]
+fn prefix_to_names_each_parent_folder() {
+    let path = "rplog/deep/log-00.txt";
+    let parts: Vec<&str> = crate::components(path).unwrap().collect();
+    assert_eq!(crate::prefix_to(path, parts[0]), Ok("rplog"));
+    assert_eq!(crate::prefix_to(path, parts[1]), Ok("rplog/deep"));
+    assert_eq!(crate::prefix_to(path, parts[2]), Ok(path));
+    let other = String::from("elsewhere/x");
+    assert_eq!(crate::prefix_to(path, &other), Err(crate::Error::BadName));
 }

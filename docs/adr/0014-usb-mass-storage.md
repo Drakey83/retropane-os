@@ -117,6 +117,23 @@ model with a built-in host that enumerates like Windows.
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.
+   - **amended 2026-10-24 (reminder R22, approved by the owner):** a card
+     an image run left alone keeps the PC's view: after a run that
+     returned (not a crash, hang or hand-over), a unit is **vouched for**
+     (its first look after the loader starts is served, not sent away) if
+     the image never took that card (`cardsink::taken`), the loader didn't
+     make a file or folder on it to set the run's log up, and the card in
+     the slot is still that card (its `rplog/index.txt` names this run in
+     the slot file the run wrote). The run's log is written only inside
+     one of 32 files made once (`rplog/log-00.txt`..`log-31.txt`, which
+     run each holds in `rplog/index.txt`), so the FAT and every folder
+     Windows cached are as it read them. Every vouch is logged ("SD/CF
+     card: unchanged by the run"). The cost: the slot file's *contents*
+     changed, and Windows may show a copy it read before the run; read
+     run logs with `cargo xtask cardlog` (through the loader), not
+     Explorer (quality audit C78). Before this, every run made both drives
+     go away (its log was a new file on each card), so Explorer re-read
+     the CF card cold after every run.
 4. **Data path**: a 32 KiB buffer (the loader's scratch area), filled or
    drained with one multi-block card command per 64 sectors, streamed as
    64-byte packets. Full-speed USB (12 Mbit/s) caps the drive at about

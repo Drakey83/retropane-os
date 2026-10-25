@@ -416,9 +416,10 @@ fn card_logs(entries: &[String], image: Option<&str>, number: Option<u32>) -> Ve
 }
 
 /// `cargo xtask cardlog [image] [number]`: a run's log kept on the cards
-/// as the run went (`rp_hal_x51v::cardlog`: `rplog/<image>-NNNN.txt` on
-/// the SD card, and on the CF card for what a program logged while it had
-/// the SD card), the newest (of `image`, or of any image) or the one
+/// as the run went (`rp_hal_x51v::cardlog`: a slot file `rplog/log-SS.txt`
+/// found through `rplog/index.txt`, or an old-style `rplog/<image>-NNNN.txt`,
+/// on the SD card, and on the CF card for what a program logged while it
+/// had the SD card), the newest (of `image`, or of any image) or the one
 /// numbered; both halves joined, saved under `local/cardlog/`, its text
 /// printed. A log without the closing line is a run that didn't come
 /// back: said so.
@@ -426,6 +427,10 @@ pub fn cardlog(root: &Path, image: Option<&str>, number: Option<u32>) -> Result<
     let folder = rp_hal_x51v::cardlog::FOLDER;
     let image = image.map(card_log_name);
     let image = image.as_deref();
+    // The slots first (R22): each card's index names the slot holding a run.
+    if let Some(found) = cardlog_from_slots(root, image, number)? {
+        return show_card_log(root, &found.file, found.sd.as_deref(), found.cf.as_deref());
+    }
     let sd = query(root, &format!("ls {folder}"))
         .map(|(e, _)| card_logs(&e, image, number))
         .unwrap_or_default();
@@ -457,12 +462,95 @@ pub fn cardlog(root: &Path, image: Option<&str>, number: Option<u32>) -> Result<
     };
     let sd_part = fetch("", &sd)?;
     let cf_part = fetch("cf:", &cf)?;
-    let joined: Vec<u8> =
-        rp_hal_x51v::cardlog::join(sd_part.as_deref(), cf_part.as_deref()).collect();
+    show_card_log(root, &name, sd_part.as_deref(), cf_part.as_deref())
+}
+
+/// A run's log found through the cards' `rplog/index.txt` (the slots,
+/// R22): the run's name for the saved file and each card's half; `None`
+/// when neither index names such a run (the old-style files are then
+/// looked for).
+fn cardlog_from_slots(
+    root: &Path,
+    image: Option<&str>,
+    number: Option<u32>,
+) -> Result<Option<FoundLog>, String> {
+    use rp_hal_x51v::cardlog;
+    let index_of = |unit: &str| -> Option<Vec<u8>> {
+        let (lines, reply) = query(root, &format!("get {unit}{}", cardlog::INDEX)).ok()?;
+        decode_file(&lines, &reply).ok()
+    };
+    let sd = index_of("");
+    let cf = index_of("cf:");
+    // The run: by image and number, or the newest (by the index's order).
+    let pick = |ix: &Option<Vec<u8>>| {
+        ix.as_deref().and_then(|ix| {
+            cardlog::find(ix, image.map(str::as_bytes), number).map(|(slot, n)| {
+                let e = cardlog::index_entry(ix, slot);
+                (
+                    slot,
+                    n,
+                    e.map_or(0, |e| e.order),
+                    e.map(|e| e.name.to_vec()),
+                )
+            })
+        })
+    };
+    let (a, b) = (pick(&sd), pick(&cf));
+    let Some((_, n, _, name)) = [&a, &b]
+        .into_iter()
+        .flatten()
+        .max_by_key(|(_, _, order, _)| *order)
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let name = name.unwrap_or_default();
+    let fetch = |unit: &str,
+                 hit: &Option<(usize, u32, u32, Option<Vec<u8>>)>|
+     -> Result<Option<Vec<u8>>, String> {
+        let Some((slot, k, _, who)) = hit else {
+            return Ok(None);
+        };
+        if *k != n || who.as_deref() != Some(&name[..]) {
+            return Ok(None);
+        }
+        let mut path = [0u8; 32];
+        let len = cardlog::slot_path(*slot, &mut path);
+        let path = String::from_utf8_lossy(&path[..len]).into_owned();
+        let (lines, reply) = query(root, &format!("get {unit}{path}"))?;
+        decode_file(&lines, &reply).map(Some)
+    };
+    let sd_part = fetch("", &a)?;
+    let cf_part = fetch("cf:", &b)?;
+    let file = format!("{}-{n:04}.txt", String::from_utf8_lossy(&name));
+    Ok(Some(FoundLog {
+        file,
+        sd: sd_part,
+        cf: cf_part,
+    }))
+}
+
+/// A run's log found through the index: its file name, each card's half.
+struct FoundLog {
+    file: String,
+    sd: Option<Vec<u8>>,
+    cf: Option<Vec<u8>>,
+}
+
+/// Joins a run's two halves, saves it under `local/cardlog/` as `name`
+/// and prints it.
+fn show_card_log(
+    root: &Path,
+    name: &str,
+    sd_part: Option<&[u8]>,
+    cf_part: Option<&[u8]>,
+) -> Result<(), String> {
+    let folder = rp_hal_x51v::cardlog::FOLDER;
+    let joined: Vec<u8> = rp_hal_x51v::cardlog::join(sd_part, cf_part).collect();
     let text = String::from_utf8_lossy(&joined).into_owned();
     let dir = root.join("local/cardlog");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let dest = dir.join(&name);
+    let dest = dir.join(name);
     std::fs::write(&dest, text.as_bytes()).map_err(|e| format!("{}: {e}", dest.display()))?;
     println!("{text}");
     eprintln!(
@@ -706,7 +794,7 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
             // port after the previous run, and the log was named `run`).
             if r.starts_with("RPL OK") {
                 eprintln!(
-                    "    card log: rplog/{}-NNNN.txt on the SD card (and the CF card when one is in)",
+                    "    card log: {}'s next run in rplog/ on the SD card (and the CF card when one is in); `cargo xtask cardlog` reads it",
                     card_log_name(what)
                 );
             } else {

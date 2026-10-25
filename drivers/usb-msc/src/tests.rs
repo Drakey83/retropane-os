@@ -1004,6 +1004,32 @@ fn a_view_from_before_the_drive_started_is_sent_away_first() {
     }
 }
 
+/// R22: a unit the loader vouches for (the run that just ended never took
+/// its card) serves the host's first poll, read or write at once: the
+/// host's cached view is kept, no away time, no unit attention; the other
+/// unit is still sent away.
+#[test]
+fn a_vouched_unit_keeps_the_hosts_view() {
+    for first in [vec![0u8; 6], read10(3, 1)] {
+        let mut buf = vec![0u8; 2 * BLOCK];
+        let mut msc = Msc::new(&mut buf, SERIAL, 1);
+        let mut disk = Disk::new(16);
+        msc.vouch(0);
+        let (len, dir_in) = if first[0] == 0x28 {
+            (512, true)
+        } else {
+            (0, false)
+        };
+        let (_, csw) = run_at(&mut msc, &mut disk, 1000, 0, len, dir_in, &first, &[]);
+        assert_eq!(csw.status, 0, "op {:#x}: not served at once", first[0]);
+        assert!(!msc.away(0));
+        assert_eq!(tur_at(&mut msc, &mut disk, 1100), (0, (0, 0, 0)));
+        // A device-side change afterwards still sends it away.
+        msc.medium_changed(0);
+        assert_eq!(tur_at(&mut msc, &mut disk, 1200).0, 1);
+    }
+}
+
 /// A fresh mount (READ CAPACITY first) is never delayed, and an empty
 /// slot's first look is just "no medium" (nothing to send away).
 #[test]

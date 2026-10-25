@@ -224,8 +224,10 @@ pub fn cf_common_phys() -> Option<u32> {
 /// is in the slot is GPIO13's to say (low = in); touch the windows only
 /// then.
 pub fn take_cf() -> Option<(Mmio, Mmio)> {
-    // A sector the card log sent is programmed first (quality audit C59).
+    // A sector the card log sent is programmed first (quality audit C59),
+    // and the card is marked the program's (R22: the PC re-reads it after).
     if cf_if_untaken().is_some() {
+        crate::cardsink::taken(crate::cardlog::CF);
         crate::cardsink::settle();
     }
     // SAFETY: single core, IRQs masked by `_start` and not re-enabled yet.

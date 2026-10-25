@@ -319,6 +319,18 @@ fn check_new_name(name: &[u8]) -> Result<(), Error> {
 /// Most directory levels a path may have.
 const MAX_DEPTH: usize = 16;
 
+/// The part of `path` up to the end of `part`, one of its components:
+/// the path of that folder. Taken with `get`, not by indexing: a `str`
+/// index that could panic links Rust's text-boundary panic, which brings
+/// ~4 KiB of Unicode tables into the loader (none is needed: `part` lies
+/// in `path`, so this never fails).
+fn prefix_to<'a>(path: &'a str, part: &str) -> Result<&'a str, Error> {
+    let end = (part.as_ptr() as usize)
+        .wrapping_sub(path.as_ptr() as usize)
+        .wrapping_add(part.len());
+    path.get(..end).ok_or(Error::BadName)
+}
+
 /// A path's components (`/` or `\` between them; empty ones skipped);
 /// `.`, `..` and more than [`MAX_DEPTH`] levels are refused.
 fn components(path: &str) -> Result<impl DoubleEndedIterator<Item = &str>, Error> {
@@ -1187,6 +1199,32 @@ impl<D: BlockDevice> Volume<D> {
         })
     }
 
+    /// Where an existing file lies, if its clusters are one run: its first
+    /// sector and its sectors (the size rounded up), as [`Self::reserve`]
+    /// gives for a new one, without changing anything on the card (the run
+    /// logs reuse their files: reminder R22, the PC's cached view stays
+    /// right). [`Error::Fragmented`] if the clusters aren't one run,
+    /// [`Error::NotFound`] if there's no such file or it's empty.
+    pub fn extent(&mut self, path: &str) -> Result<Reserved, Error> {
+        let f = self.find(path)?;
+        if f.first_cluster < 2 || f.size == 0 {
+            return Err(Error::NotFound);
+        }
+        let cluster_bytes = self.sectors_per_cluster * SECTOR as u32;
+        let clusters = f.size.div_ceil(cluster_bytes);
+        let mut c = f.first_cluster;
+        for _ in 1..clusters {
+            match self.next_cluster(c)? {
+                Some(n) if n == c + 1 => c = n,
+                _ => return Err(Error::Fragmented),
+            }
+        }
+        Ok(Reserved {
+            lba: self.cluster_lba(f.first_cluster),
+            sectors: f.size.div_ceil(SECTOR as u32),
+        })
+    }
+
     fn put_fill(
         &mut self,
         path: &str,
@@ -1198,10 +1236,7 @@ impl<D: BlockDevice> Volume<D> {
                 let mut parts = components(path)?;
                 parts.next_back();
                 for d in parts {
-                    // `d` is a slice of `path`: its end is where the prefix
-                    // naming this directory ends.
-                    let end = d.as_ptr() as usize - path.as_ptr() as usize + d.len();
-                    match self.mkdir(&path[..end], scratch) {
+                    match self.mkdir(prefix_to(path, d)?, scratch) {
                         Ok(()) | Err(Error::Exists) => {}
                         Err(e) => return Err(e),
                     }
@@ -1593,6 +1628,14 @@ impl<D: BlockDevice> AnyVolume<D> {
         match self {
             Self::Fat32(v) => v.reserve(path, bytes, scratch),
             Self::ExFat(v) => v.reserve(path, bytes, scratch),
+        }
+    }
+
+    /// Where an existing file lies if contiguous (`Volume::extent`).
+    pub fn extent(&mut self, path: &str) -> Result<Reserved, Error> {
+        match self {
+            Self::Fat32(v) => v.extent(path),
+            Self::ExFat(v) => v.extent(path),
         }
     }
 

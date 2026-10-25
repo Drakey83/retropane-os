@@ -872,6 +872,25 @@ impl<D: BlockDevice> ExVolume<D> {
         self.put_fill(path, Fill::Bytes(data), scratch)
     }
 
+    /// Where an existing file lies if it's stored as one run ("no FAT
+    /// chain", as [`Self::reserve`] makes it): its first sector and its
+    /// sectors, without changing anything on the card.
+    pub fn extent(&mut self, path: &str) -> Result<Reserved, Error> {
+        let f = self.find(path)?;
+        if f.is_dir || f.first_cluster < 2 || f.size == 0 {
+            return Err(Error::NotFound);
+        }
+        if !f.contiguous {
+            return Err(Error::Fragmented);
+        }
+        let sectors =
+            u32::try_from(f.size.div_ceil(SECTOR as u64)).map_err(|_| Error::Fragmented)?;
+        Ok(Reserved {
+            lba: self.cluster_lba(f.first_cluster),
+            sectors,
+        })
+    }
+
     /// Replaces or creates `path` (as [`Self::put`]) holding `bytes` zeros
     /// in one run of clusters, and returns where: see [`Reserved`]. A
     /// volume with no free run that long gives [`Error::Fragmented`] (the
@@ -909,8 +928,7 @@ impl<D: BlockDevice> ExVolume<D> {
                 let mut parts = crate::components(path)?;
                 parts.next_back();
                 for d in parts {
-                    let end = d.as_ptr() as usize - path.as_ptr() as usize + d.len();
-                    match self.mkdir(&path[..end], scratch) {
+                    match self.mkdir(crate::prefix_to(path, d)?, scratch) {
                         Ok(()) | Err(Error::Exists) => {}
                         Err(e) => return Err(e),
                     }

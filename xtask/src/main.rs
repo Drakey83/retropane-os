@@ -169,7 +169,8 @@ commands:
   log       the last image's run log again, from the loader (for a log
             lost on the way back; `load` asks for it by itself)
   cardlog   `cardlog [image] [number]`: a run's log kept on the cards as
-            the run went (rplog/<image>-NNNN.txt, every run the loader
+            the run went (one of 32 files rplog/log-SS.txt reused in turn,
+            which run each holds in rplog/index.txt; every run the loader
             starts; the SD card's part and the CF card's joined): the
             newest, or the one numbered; it survives hangs, watchdog and
             soft resets; saved under local/cardlog/

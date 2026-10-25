@@ -338,6 +338,18 @@ impl<'b> Msc<'b> {
         self.no_dma = false;
     }
 
+    /// The host's view of `lun` from before the drive started is still
+    /// right: nothing changed the card meanwhile (the loader knows: a run
+    /// that never took the card and wrote only inside its log's existing
+    /// file, reminder R22). Its first poll, read or write is then served,
+    /// not sent away, so the host keeps what it cached. A medium change
+    /// afterwards works as ever.
+    pub fn vouch(&mut self, lun: usize) {
+        if let Some(u) = self.units.get_mut(lun) {
+            u.vouched = true;
+        }
+    }
+
     /// The device changed unit `lun`'s medium (a file written on the card,
     /// a card in or out, its protection): the medium goes away until the
     /// host has noticed ([`AWAY_SEEN`] "no medium" answers and
