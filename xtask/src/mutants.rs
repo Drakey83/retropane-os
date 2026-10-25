@@ -906,8 +906,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "a medium change keeps the blocks read ahead (stale data served)",
         file: "drivers/usb-msc/src/lib.rs",
-        from: "    pub fn medium_changed(&mut self, lun: usize) {\n        self.ahead = None;",
-        to: "    pub fn medium_changed(&mut self, lun: usize) {",
+        from: "    fn change_now(&mut self, lun: usize) {\n        self.ahead = None;",
+        to: "    fn change_now(&mut self, lun: usize) {",
         check: Check::Host(&["-p", "rp-usb-msc", "a_medium_change_drops_the_read_ahead"]),
     },
     Mutant {

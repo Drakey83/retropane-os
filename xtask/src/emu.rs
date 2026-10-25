@@ -11851,7 +11851,9 @@ fn expect_away_then_back(bot: &mut Bot, after: &str) -> Result<(), String> {
 /// last refusal), then goes away, says "medium changed" once and is ready
 /// again; every state seen is reported if not.
 fn expect_blink_after_refusal(bot: &mut Bot, after: &str) -> Result<(), String> {
-    let start = Instant::now();
+    // At most 5 s for it to go, then 20 s to come back (as
+    // `expect_away_then_back`).
+    let mut deadline = Instant::now() + Duration::from_secs(5);
     let mut seq: Vec<(u8, u8, u8)> = Vec::new();
     let mut went = false;
     loop {
@@ -11864,12 +11866,14 @@ fn expect_blink_after_refusal(bot: &mut Bot, after: &str) -> Result<(), String> 
         if seq.last() != Some(&s) {
             seq.push(s);
         }
-        went |= r.status != 0;
+        if !went && r.status != 0 {
+            went = true;
+            deadline = Instant::now() + Duration::from_secs(20);
+        }
         if went && r.status == 0 {
             break;
         }
-        let limit = if went { 20 } else { 5 };
-        if start.elapsed() > Duration::from_secs(limit) {
+        if Instant::now() > deadline {
             return Err(format!(
                 "drive after {after}: {seq:x?} (never went away and came back)"
             ));
