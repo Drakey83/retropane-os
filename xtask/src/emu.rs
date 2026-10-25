@@ -8893,8 +8893,10 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
     let noise: Vec<u8> = (0..12u32 << 20)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
         .collect();
+    // 32 MiB: the noise, the loader's 32 run-log slots (8 MiB, made once on
+    // each card, R22) and C11's 512 KiB file in one run.
     let cf_data = rp_fat::format::build(&rp_fat::format::Image {
-        total_sectors: 32 * 1024, // 16 MiB
+        total_sectors: 64 * 1024,
         sectors_per_cluster: 8,
         files: &[rp_fat::format::Entry {
             name: "noise.bin",
@@ -8944,6 +8946,10 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
         "C10 data at Windows Mobile's: ",
         "C10 data at strobe 9: ",
         "C10 data at strobe 1: ",
+        "C11 fresh at strobe 1: ",
+        "C11 rewrite 6 of region 12 at Windows Mobile's: ",
+        "C11 read back at the slowest timing: 0 of 960 sectors differ",
+        "C11 rp-cf-write/FRESH.BIN removed: true",
         "C7 rp-cf-write removed from the CF card",
         "C8 done: ",
         "KiB): all right, one transfer each",

@@ -25,8 +25,12 @@
 //!   against ~4,700: which field does it); then **C10**: the same write
 //!   with each phase timed (the command, the switch to the data timing,
 //!   the card's DRQ waits, the data words, the switch back, its finish) at
-//!   Windows Mobile's data timing and at strobes 9 and 1, twice each; the
-//!   file and folder removed.
+//!   Windows Mobile's data timing and at strobes 9 and 1, twice each; then
+//!   **C11**: a 512 KiB file reserved beside it, twelve regions written
+//!   once each with the timings rotated, one region rewritten six times
+//!   (the card's rewrite cost), a fresh region after a read at the slowest
+//!   timing and one at strobe 1 after the rewrites, all read back; the
+//!   files and folder removed.
 //!   Nothing else on the card is written.
 //! - **C8, the CPLD's interrupt line** (reminder R24, reads only): the
 //!   owner pulls the CF card and puts it back while GPIO13 and CPLD `0x00`,
@@ -645,8 +649,163 @@ mod image {
                 }
             }
         }
+        if !cf.is_dead() {
+            fresh_test(cf, start, wm, slowest, data, back, work);
+        }
         cf.write_data_at(set_cf_timing, wm, wm, wm);
         remove_cf_file(cf, start, work);
+    }
+
+    /// C11's file, beside C7's: [`FRESH_REGIONS`] regions of [`CF_BLOCKS`].
+    const FRESH_FILE: &str = "rp-cf-write/FRESH.BIN";
+    const FRESH_REGIONS: u32 = 16;
+
+    /// C11 (R28 after C10: every write waited ~132 ms for its first DRQ,
+    /// at Windows Mobile's timing too, once the same sectors had been
+    /// written before): which explains it, the card rewriting the same
+    /// sectors again and again (A), or something kept after the first
+    /// read-back at the slowest timing (B)? A file reserved (written once
+    /// as zeros, as C7's first, fast, round wrote its sectors a second
+    /// time), then: twelve regions written once each, the timings rotated
+    /// (Windows Mobile's, strobe 9, strobe 1) with no read-back between;
+    /// one region rewritten six times at Windows Mobile's (the rewrite
+    /// cost); a read at the slowest timing, then a fresh region at Windows
+    /// Mobile's (B); a fresh region at strobe 1 after all that; every
+    /// region read back at the slowest timing; the file removed.
+    fn fresh_test(
+        cf: &mut Cf,
+        start: u32,
+        wm: u32,
+        slowest: u32,
+        data: &mut [u8],
+        back: &mut [u8],
+        work: &mut [u8],
+    ) {
+        let high = wm & !0xF_FFFF;
+        let wm_t = Timing::WINDOWS_MOBILE;
+        let timings = [
+            ("Windows Mobile's", wm_t),
+            ("strobe 9", Timing { asst: 9, ..wm_t }),
+            ("strobe 1", Timing { asst: 1, ..wm_t }),
+        ];
+        set_cf_timing(wm);
+        let base = {
+            let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+                log!("C11 mount failed: skipped");
+                return;
+            };
+            match vol.reserve(
+                FRESH_FILE,
+                (FRESH_REGIONS * CF_BLOCKS) as usize * BLOCK,
+                work,
+            ) {
+                Ok(r) => r.lba,
+                Err(e) => {
+                    log!("C11 reserve {FRESH_FILE}: {}: skipped", e.name());
+                    return;
+                }
+            }
+        };
+        log!(
+            "C11 {FRESH_FILE}: LBA {base}, {} sectors, contiguous, written once (zeros)",
+            FRESH_REGIONS * CF_BLOCKS
+        );
+        let us = |t: u32| u64::from(t) * 1_000_000 / u64::from(rt::TICK_HZ);
+        // One write of region `r` with seed `seed` at `t`: (ticks, the
+        // longest DRQ wait, written).
+        let mut write = |cf: &mut Cf, r: u32, t: Timing, seed: u32| -> (u32, u32, bool) {
+            fill(data, seed, 0);
+            cf.write_data_at(set_cf_timing, wm, wm, high | t.mcmem());
+            let mut drq = 0u32;
+            let t0 = rt::ticks();
+            let mut last = t0;
+            let ok = cf
+                .write_blocks_marked(base + r * CF_BLOCKS, data, &mut |p| {
+                    let now = rt::ticks();
+                    if p == WritePhase::Drq {
+                        drq = drq.max(now.wrapping_sub(last));
+                    }
+                    last = now;
+                })
+                .is_ok();
+            let took = rt::ticks().wrapping_sub(t0);
+            cf.write_data_at(set_cf_timing, wm, wm, wm);
+            rt::check_in();
+            (took, drq, ok)
+        };
+        let len = CF_BLOCKS as usize * BLOCK;
+        // Each region's seed, for the read-back (0: not written by C11).
+        let mut seeds = [0u32; FRESH_REGIONS as usize];
+        let mut totals = [0u32; 3];
+        for pass in 0..4u32 {
+            for k in 0..3u32 {
+                let which = ((k + pass) % 3) as usize;
+                let (label, t) = timings[which];
+                let r = pass * 3 + k;
+                let seed = 500 + r;
+                let (took, drq, ok) = write(cf, r, t, seed);
+                seeds[r as usize] = seed;
+                totals[which] = totals[which].wrapping_add(took);
+                log!(
+                    "C11 fresh region {r} at {label}: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+                    kib_s(len, took),
+                    us(drq)
+                );
+            }
+        }
+        for (k, (label, _)) in timings.iter().enumerate() {
+            log!(
+                "C11 fresh at {label}: {} KiB/s over 4 regions",
+                kib_s(4 * len, totals[k])
+            );
+        }
+        for n in 1..=6u32 {
+            let seed = 600 + n;
+            let (took, drq, ok) = write(cf, 12, wm_t, seed);
+            seeds[12] = seed;
+            log!(
+                "C11 rewrite {n} of region 12 at Windows Mobile's: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+                kib_s(len, took),
+                us(drq)
+            );
+        }
+        set_cf_timing(slowest);
+        let _ = cf.read_blocks(base, &mut back[..len]);
+        set_cf_timing(wm);
+        let (took, drq, ok) = write(cf, 13, wm_t, 700);
+        seeds[13] = 700;
+        log!(
+            "C11 after a read at the slowest timing, fresh region 13 at Windows Mobile's: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+            kib_s(len, took),
+            us(drq)
+        );
+        let (took, drq, ok) = write(cf, 14, timings[2].1, 701);
+        seeds[14] = 701;
+        log!(
+            "C11 fresh region 14 at strobe 1, after the rewrites: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+            kib_s(len, took),
+            us(drq)
+        );
+        // Every region as written, read at the slowest timing.
+        let mut bad = 0;
+        let mut checked = 0;
+        set_cf_timing(slowest);
+        for (r, &seed) in seeds.iter().enumerate().filter(|(_, s)| **s != 0) {
+            let back = &mut back[..len];
+            back.fill(0);
+            bad += if cf.read_blocks(base + r as u32 * CF_BLOCKS, back).is_ok() {
+                differs(back, seed, 0)
+            } else {
+                CF_BLOCKS
+            };
+            checked += CF_BLOCKS;
+        }
+        set_cf_timing(wm);
+        log!("C11 read back at the slowest timing: {bad} of {checked} sectors differ");
+        let removed = Volume::mount(&mut *cf, start)
+            .ok()
+            .is_some_and(|mut vol| vol.remove(FRESH_FILE).is_ok());
+        log!("C11 {FRESH_FILE} removed: {removed}");
     }
 
     /// One C10 write: `data` to `lba` with the data phase at `data_t` (the
