@@ -7917,7 +7917,21 @@ mod image {
         || GC2_FIX
         || GC2_FREE
         || GC2_LASTPIX
-        || GC2_RING;
+        || GC2_RING
+        || GC2_NIGHT;
+
+    /// Run GC2AD, reminder R36 (`RP_GPUBENCH_GC2_NIGHT`, see
+    /// [`gc2::NIGHT_SCENES`]): the two-hour soak at 149.50 / 1 over every
+    /// 16-bit kind and GC2K's worst, the ring and one full hidden layer
+    /// alternating, reversed. Unattended (the owner asleep).
+    const GC2_NIGHT: bool = option_env!("RP_GPUBENCH_GC2_NIGHT").is_some();
+
+    /// GC2AD's soak in seconds: [`gc2::NIGHT_MINUTES`] unless
+    /// `RP_GPUBENCH_GC2AD_SOAK_SECS` says otherwise (the emulator's check).
+    const GC2AD_SOAK_SECS: u32 = match option_env!("RP_GPUBENCH_GC2AD_SOAK_SECS") {
+        Some(s) => parse_decimal(s, 10),
+        None => gc2::NIGHT_MINUTES * 60,
+    };
 
     /// Run GC2AC (`RP_GPUBENCH_GC2_RING`, see [`gc2::RING_SCENES`]): the
     /// ring cure against one and two full hidden layers on GC2K's worst at
@@ -9252,7 +9266,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_RING {
+            if GC2_NIGHT {
+                "the 16-bit kinds' targets inside the safe region (GC2AD, R36: no map; two hours at 149.50 / 1 over every 16-bit kind and GC2K's worst, the ring and one full hidden layer alternating, reversed),"
+            } else if GC2_RING {
                 "the 16-bit kinds' targets inside the safe region (GC2AC: no map; the ring cure against one and two full hidden layers on GC2K's worst at 149.50 / 1),"
             } else if GC2_LASTPIX {
                 "the 16-bit kinds' targets inside the safe region (GC2AB: no map; the hidden layers against the last-pixel fault, reversed, at 152.75 / 1 or 149.50 / 1),"
@@ -9398,7 +9414,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_RING {
+        let patch = if GC2_NIGHT {
+            gc2::NIGHT_SCENES.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_RING {
             gc2::RING_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_LASTPIX {
             gc2::LASTPIX_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -9745,7 +9763,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_RING {
+                if GC2_NIGHT {
+                    gc2_night(g, &mut r, (tex, first, dsig));
+                } else if GC2_RING {
                     gc2_ring(g, &mut r, (tex, first, dsig));
                 } else if GC2_LASTPIX {
                     gc2_lastpix(g, &mut r, (tex, first, dsig));
@@ -11250,6 +11270,31 @@ mod image {
                 }
             }
         }
+    }
+
+    /// Run GC2AD (see [`GC2_NIGHT`]): the fourteen ways in turn at 149.50 /
+    /// 1 for [`GC2AD_SOAK_SECS`].
+    #[inline(never)]
+    fn gc2_night(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let (m, n) = gc2::NIGHT_PLL;
+        log!(
+            "  GC2AD (R36): at 149.50 / 1, reversed, {} min: kinds 0, 1, FT2, 5, 6, 7 and GC2K's worst, each with the ring then one full hidden layer, in turn",
+            GC2AD_SOAK_SECS / 60
+        );
+        gc2_orders(
+            g,
+            r,
+            (tex, first, dsig),
+            &OrderPlan {
+                name: "GC2AD soak",
+                label: "GC2AD R36 SOAK",
+                scenes: &gc2::NIGHT_SCENES,
+                ways: &gc2::NIGHT_WAYS,
+                step: (gc2_step(m, n, 0, 1), "149.50 / 1"),
+                secs: GC2AD_SOAK_SECS,
+                rounds: u32::MAX,
+            },
+        );
     }
 
     /// Run GC2AC (see [`GC2_RING`]): the seven ways at 149.50 / 1.

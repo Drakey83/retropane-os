@@ -1121,3 +1121,57 @@ fn gc2ac_ranks_the_ring_against_the_full_layers_at_149_50() {
     assert_eq!(13_000 * RING_PLL.0 / RING_PLL.1, 149_500);
     assert_eq!(RING_ROUNDS, 500);
 }
+
+#[test]
+fn gc2ad_soaks_every_kind_alternating_the_ring_and_one_full_layer_reversed() {
+    // Every base scene twice, the ring then one full layer, in that order.
+    assert_eq!(NIGHT_SCENES.len(), 2 * FIX_BASE.len());
+    for (b, pair) in NIGHT_SCENES.chunks(2).enumerate() {
+        assert_eq!(pair, [Scene::Fix(b, 7), Scene::Fix(b, 2)]);
+    }
+    assert_eq!(
+        FIXES[7],
+        Fix {
+            tex: TexFix::ClampV,
+            hidden: 0,
+            busy: false,
+            ring: true
+        }
+    );
+    assert_eq!(
+        FIXES[2],
+        Fix {
+            tex: TexFix::ClampV,
+            hidden: 1,
+            busy: false,
+            ring: false
+        }
+    );
+    // Every 16-bit kind (0, 1, FT2, 5, 6, 7) and GC2K's worst.
+    let mut kinds: std::vec::Vec<std::string::String> =
+        FIX_BASE.iter().map(|s| std::format!("{s:?}")).collect();
+    let mut want: std::vec::Vec<std::string::String> = [
+        Scene::Kind(0),
+        Scene::Kind(1),
+        Scene::Kind(FT2),
+        Scene::Kind(5),
+        Scene::Kind(6),
+        Scene::Kind(7),
+        Scene::Sweep(0),
+    ]
+    .iter()
+    .map(|s| std::format!("{s:?}"))
+    .collect();
+    kinds.sort();
+    want.sort();
+    assert_eq!(kinds, want);
+    // Every way reversed, each scene once, in turn.
+    assert!(
+        NIGHT_WAYS
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, REVERSED))
+    );
+    assert_eq!(13_000 * NIGHT_PLL.0 / NIGHT_PLL.1, 149_500);
+    assert_eq!(NIGHT_MINUTES, 120);
+}

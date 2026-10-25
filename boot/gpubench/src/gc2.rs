@@ -798,6 +798,37 @@ pub const RING_WAYS: [(usize, u8); 7] = [
 pub const RING_PLL: (u32, u32) = (23, 2);
 pub const RING_ROUNDS: u32 = 500;
 
+/// Run GC2AD, reminder R36 (the owner, 2026-10-25: "Build R36 as the 2-hour
+/// soak at 149.50 / 1 over every 16-bit kind and GC2K's worst, alternating
+/// the ring reversed and one full layer reversed"): each of [`FIX_BASE`]'s
+/// seven scenes with the ring (fix 7), then with one full hidden layer
+/// (fix 2), the clamped v shift in both; every way reversed, taken in turn,
+/// so the two cures alternate render by render. The ring rings textured
+/// objects only: kinds 0, 1 and 7 have none, so their ring ways are drawn
+/// with no cure (GC2AB: 0 of 800 each so at 149.50).
+pub const NIGHT_SCENES: [Scene; 14] = {
+    let mut s = [Scene::Fix(0, 0); 14];
+    let mut b = 0;
+    while b < 7 {
+        s[2 * b] = Scene::Fix(b, 7);
+        s[2 * b + 1] = Scene::Fix(b, 2);
+        b += 1;
+    }
+    s
+};
+pub const NIGHT_WAYS: [(usize, u8); 14] = {
+    let mut w = [(0, REVERSED); 14];
+    let mut i = 0;
+    while i < 14 {
+        w[i] = (i, REVERSED);
+        i += 1;
+    }
+    w
+};
+/// 149.50 / 1 for two hours (the owner asleep).
+pub const NIGHT_PLL: (u32, u32) = (23, 2);
+pub const NIGHT_MINUTES: u32 = 120;
+
 /// `d`'s texture coordinates moved half a texel as `how` says (none for an
 /// untextured object, or a wrapping texture under the clamped-only fixes).
 #[must_use]
