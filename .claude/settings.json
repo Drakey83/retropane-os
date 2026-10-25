@@ -22,7 +22,17 @@
           },
           {
             "type": "command",
-            "command": "python -I \"$CLAUDE_PROJECT_DIR/tools/remind/iterate_gate.py\"",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/tools/remind/rules_gate.py\" bash",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Workflow|mcp__ccd_session__start_session|mcp__ccd_session__hand_off_to_session",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/tools/remind/rules_gate.py\" spawn",
             "timeout": 15
           }
         ]

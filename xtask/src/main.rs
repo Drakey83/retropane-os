@@ -337,7 +337,8 @@ fn main() -> ExitCode {
             "cross",
         ]
         .iter()
-        .try_for_each(|c| run_step(c)),
+        .try_for_each(|c| run_step(c))
+        .and_then(|()| ci_stamp(&workspace_root())),
         "eol" | "reminders" | "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross"
         | "coverage" | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale"
         | "emu-blend-filter" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat"
@@ -654,6 +655,44 @@ type EmuCheck = fn(&std::path::Path) -> Result;
 /// so it can go anywhere without shifting the positional arguments.
 fn args() -> impl Iterator<Item = String> {
     std::env::args().filter(|a| a != devlock::NO_WAIT_FLAG)
+}
+
+/// After a full `ci` pass: `target/ci-pass.txt` holds HEAD and whether
+/// tracked files were clean, the stamp `tools/remind/rules_gate.py`
+/// checks before a push (the owner's rule: full CI before every push;
+/// 2026-10-25, a push found three problems a skipped CI would have).
+fn ci_stamp(root: &std::path::Path) -> Result {
+    let git = |args: &[&str]| -> std::result::Result<String, String> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .map_err(|e| format!("git: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let head = git(&["rev-parse", "HEAD"])?;
+    let dirty = !git(&["status", "--porcelain", "--untracked-files=no"])?.is_empty();
+    let state = if dirty { "dirty" } else { "clean" };
+    let path = root.join("target").join("ci-pass.txt");
+    std::fs::write(
+        &path,
+        format!(
+            "{head} {state}
+"
+        ),
+    )
+    .map_err(|e| format!("{}: {e}", path.display()))?;
+    eprintln!(
+        "    ci passed on {} ({state}): pushes of this commit allowed",
+        &head[..8]
+    );
+    Ok(())
 }
 
 fn run_step(step: &str) -> Result {

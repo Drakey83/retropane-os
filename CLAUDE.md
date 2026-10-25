@@ -9,12 +9,16 @@
    ours beats the original. A textbook default or a copied value is a
    first draft to beat, not a design. The owner should never have to ask
    for this again (2026-10-25: the scaler filter started as a 1980s cubic
-   until he asked). **Enforced, not only printed:** `tools/remind/iterate_gate.py`
-   (a PreToolUse hook in `.claude/settings.json`) refuses any commit holding
-   code whose message lacks an `Iterate:` line (60+ characters: vendor or
-   textbook way; ours; why it wins); docs-only commits may say
-   `Iterate: n/a`. The printed reminders (`remind.py`) only show the rule;
-   the gate is what makes skipping it impossible.
+   until he asked). **Enforced, not only printed:** `tools/remind/rules_gate.py`
+   (PreToolUse hooks in `.claude/settings.json`) refuses: a commit holding
+   code without an `Iterate:` line (60+ characters: vendor or textbook way;
+   ours; why it wins; docs-only commits may say `Iterate: n/a`); a commit
+   naming a co-author or generator; a commit touching an ADR-decided area
+   (`docs/adr/areas.md`) without naming one of its ADRs; a `git push` unless
+   `cargo xtask ci` passed on exactly that commit (`target/ci-pass.txt`);
+   another session or agent unless the owner's latest message asks for one.
+   The printed reminders (`remind.py`) only show the rules; the gate is what
+   makes skipping them impossible.
 1. **Read [docs/ROADMAP.md](docs/ROADMAP.md) "Now: the gate" before
    choosing any work or answering a progress question.** The gate holds
    the architectural lines (`arch N` in the ledgers of
