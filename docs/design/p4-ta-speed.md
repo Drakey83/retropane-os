@@ -152,6 +152,44 @@ Mobile's, 99.67 / 2, as decided for P4's first run).
    (8 x 16 tiles), objects through `rp-mbx3d-render`'s encoder, a list per
    tile, the region array; host-tested against the model of the 3D core
    (`rp-mbx3d-render::model`): its pictures equal the TA reference's.
+   **Rule 0 for the binner (2026-10-25, before code).** *Dell's way:* his
+   driver's flat scenes give every tile the one object list (no binning:
+   each tile reads every object); *the textbook's / the TA's:* a list per
+   tile grown as objects arrive, in linked blocks (the TA's 4-byte tail
+   pointer a tile), so list words are scattered over memory and each
+   block costs a link word. *Ours:* two passes, a counting sort: pass 1
+   counts each tile's quads from their bounding boxes, a running sum
+   gives every tile's list its exact place; pass 2 writes each quad's
+   index into a scratch array in SDRAM (2 bytes an entry); then every
+   tile's list is written in tile order, one block, end to end, so the
+   CPU's stores to the 2700G go out in address order (the write buffer
+   merges them) and the core reads each list straight through. No link
+   words, no overflow, memory exactly the entries (5,000 16 x 16 quads:
+   about 20,000 entries, 40 KiB of scratch); quads in a tile in draw
+   order (the sort is stable). Tiles with no quad share one list (the
+   background alone). Objects: each quad's two one-triangle objects
+   through the renderer's own encoder (one copy, proven on the X51v and
+   modelled), written once, in order. *Why it wins:* the TA must take
+   every vertex every frame (Dell: ~17 ms of bus at 5,000 quads); a
+   scene binned once is re-rendered with no words written at all (the
+   repeated frame), and a first frame writes each object once plus about
+   4 bytes a tile it touches. *Measured, not assumed:* the first frame's
+   CPU and bus time against the TA's in `rp-tabench`. *Later, if it pays:*
+   one 4-corner textured object a quad instead of two triangles (33 words
+   instead of 52, half the list entries) once the TA's own textured quad
+   object is logged in `rp-tabench` (its layout isn't modelled or
+   proven).
+   **Built 2026-10-25:** `rp-mbx3d-render`'s `binner` (`bin`,
+   `start_table`, `Layout`, `Scratch`, `Binned`), the caller's SDRAM as
+   scratch, no allocation; the quad's tiles from the renderer's own
+   bounding-box helper (one copy). Host tests on the model of the 3D core:
+   60 mixed quads (flat, Gouraud, textured, blended, partly off screen)
+   draw exactly the renderer's picture; 250 16 x 16 quads binned draw
+   exactly what every tile reading every object draws (Dell's way, the
+   reference); draw order kept in every tile; a repeated frame stores
+   nothing; no background leaves empty tiles white; scratch or parameter
+   memory too small refused, not overrun. Mutant: pass 2 in reverse draw
+   order fails three tests.
 4. **`rp-tabench`:** at 99.67 / 2 into a 16-bit target, 100 / 1,000 /
    5,000 quads of 16 x 16 and of 64 x 64, five frames each: the CPU
    binner (first frame and a repeated frame), the TA fed by CPU stores

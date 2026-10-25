@@ -1586,3 +1586,301 @@ fn rectangular_textures_draw_as_the_device_did() {
         assert_eq!(p & 0xFF_FFFF, want, "texel ({x},{y})");
     }
 }
+
+/// The CPU binner (P4 step 3) against the model of the 3D core.
+mod binner_scenes {
+    use super::*;
+    use crate::binner::{self, Binned, Layout, Scratch};
+
+    const LAYOUT: Layout = Layout {
+        params: 0x0010_0000,
+        params_size: 0x0010_0000,
+        regions: 0x0048_0000,
+        w: 480,
+        h: 640,
+    };
+    const PM_TABLE: u32 = 0x000F_C000;
+
+    /// A 2700G memory and core with the 3D clock on and the memory
+    /// manager set up for [`LAYOUT`].
+    struct Bench {
+        mem: Mem,
+        gpu: Gpu,
+        clock: SimClock,
+        starts: Vec<u32>,
+        entries: Vec<u16>,
+        objects: Vec<u32>,
+    }
+
+    fn bench(quads: usize) -> Bench {
+        let m = memory();
+        let clock = SimClock::default();
+        let mut gpu = Gpu::new(m.clone(), &clock);
+        gpu.write32(MBXCLK, 0x6);
+        for (off, v) in m3::pm_init_table(LAYOUT.params, LAYOUT.params_size, PM_TABLE) {
+            gpu.write32(MBX + off, v);
+        }
+        clock.advance(200);
+        Bench {
+            mem: Mem::new(m),
+            gpu,
+            clock,
+            starts: std::vec![0; 2401],
+            entries: std::vec![0; 64 * quads + 64],
+            objects: std::vec![0; quads],
+        }
+    }
+
+    impl Bench {
+        fn bin(&mut self, bg: Option<u32>, draws: &[Draw]) -> Result<Binned, Error> {
+            binner::bin(
+                &mut self.mem,
+                &LAYOUT,
+                bg,
+                draws,
+                Scratch {
+                    starts: &mut self.starts,
+                    entries: &mut self.entries,
+                    objects: &mut self.objects,
+                },
+            )
+        }
+
+        /// Renders whatever the region array lists; true if it finished.
+        fn render(&mut self) -> bool {
+            self.gpu.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
+            for (off, v) in binner::start_table(&LAYOUT, FULL) {
+                self.gpu.write32(MBX + off, v);
+            }
+            // Long enough for every tile reading every object (Dell's way).
+            self.clock.advance(10_000_000);
+            self.gpu.read32(MBX + reg::STATUS) & m3::RENDER_DONE != 0
+        }
+
+        fn px(&self, x: u32, y: u32) -> u32 {
+            self.mem.px(SCREEN.at, SCREEN.stride, x, y)
+        }
+
+        fn picture(&self) -> Vec<u32> {
+            (0..640)
+                .flat_map(|y| (0..480).map(move |x| (x, y)))
+                .map(|(x, y)| self.px(x, y))
+                .collect()
+        }
+    }
+
+    /// An 8 x 8 RGB565 texture, column `x` colour `x`, from `pool`.
+    fn texture_in(pool: &mut Pool, mem: &mut Mem) -> Texture {
+        let texels: Vec<u16> = (0..64).map(|i| ((i % 8) as u16 + 1) * 0x0841).collect();
+        upload(pool, mem, 0, format::RGB565, &texels).expect("upload")
+    }
+
+    /// [`texture_in`] a fresh pool (the bench keeps nothing else there).
+    fn texture(mem: &mut Mem) -> Texture {
+        texture_in(&mut Pool::new(POOL), mem)
+    }
+
+    /// `n` quads of `side` pixels scattered by a fixed sequence, some off
+    /// the screen's edges, flat, Gouraud and textured in turn, some
+    /// blended.
+    fn scene(n: usize, side: i32, tex: Texture) -> Vec<Draw> {
+        let mut s = 0x2545_F491u32;
+        let mut next = |m: u32| {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (s >> 8) % m
+        };
+        (0..n)
+            .map(|k| {
+                let x = next(480 + side as u32) as i32 - side / 2;
+                let y = next(640 + side as u32) as i32 - side / 2;
+                let c = 0xFF00_0000 | next(0x0100_0000);
+                let paint = match k % 4 {
+                    0 => Paint::Flat(c),
+                    1 => Paint::Gouraud([c, !c | 0xFF00_0000, c ^ 0x00FF_00FF, RED]),
+                    _ => Paint::texture(tex),
+                };
+                let d = Draw::rect(x, y, side, side, paint);
+                if k % 7 == 3 { d.over() } else { d }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_binned_scene_draws_what_the_renderer_draws() {
+        // 60 quads: within the renderer's 64 slots.
+        let mut g = rig(480, 640);
+        let t = texture_in(&mut g.pool, &mut g.mem);
+        let draws = scene(60, 40, t);
+        g.r.set_background(Some(GREY)).unwrap();
+        for (k, d) in draws.iter().enumerate() {
+            g.set(k, Some(*d));
+        }
+        g.frame();
+        let want: Vec<u32> = (0..640)
+            .flat_map(|y| (0..480).map(move |x| (x, y)))
+            .map(|(x, y)| g.px(x, y))
+            .collect();
+
+        let mut b = bench(60);
+        // The same texels at the same place in the bench's memory.
+        let texels: Vec<u32> = (0..t.bytes() / 4)
+            .map(|k| g.mem.load((t.at + 4 * k) as usize).unwrap())
+            .collect();
+        b.mem.store(t.at as usize, &texels);
+        let binned = b.bin(Some(GREY), &draws).unwrap();
+        assert!(b.render());
+        assert_eq!(b.gpu.tiles, 2400);
+        let got = b.picture();
+        let wrong = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+        assert_eq!(wrong, 0, "pixels unlike the renderer's");
+        assert_eq!(binned.tiles, 2400);
+        assert_eq!(binned.region_words, 4800);
+    }
+
+    /// Dell's way, the reference: every tile lists every object.
+    fn one_list(b: &mut Bench, n: usize) {
+        let mut list = std::vec![m3::STRIP_ONE_TRIANGLE | (64 / 4)];
+        for &p in &b.objects[..n] {
+            list.extend([p, p + object_words(p)]);
+        }
+        list.push(m3::END);
+        let at = LAYOUT.params + 0xF_0000;
+        b.mem.store(at as usize, &list);
+        let mut regions = std::vec![0u32; 4800];
+        m3::region_array(&mut regions, 60, 40, at).unwrap();
+        b.mem.store(LAYOUT.regions as usize, &regions);
+    }
+
+    fn object_words(p: u32) -> u32 {
+        if p & 0xFFE0_0000 == tex::STRIP_GAME {
+            tex::WORDS as u32
+        } else {
+            m3::TRIANGLE_WORDS as u32
+        }
+    }
+
+    /// The list words for the tiles that have quads (background, two
+    /// pointers an entry, the end), from the binner's tile ends.
+    fn listed(b: &Bench, entries: u32) -> u32 {
+        let (mut begin, mut words) = (0, 0);
+        for &stop in &b.starts[..2400] {
+            if stop != begin {
+                words += 2 + 2 * (stop - begin);
+            }
+            begin = stop;
+        }
+        assert_eq!(begin, entries);
+        words
+    }
+
+    #[test]
+    fn hundreds_of_quads_binned_equal_every_tile_reading_every_object() {
+        // 16 x 16 quads (a game's sprites): 250, as many as one list holds
+        // in the model (512 entries).
+        let mut b = bench(250);
+        let t = texture(&mut b.mem);
+        let draws = scene(250, 16, t);
+        let binned = b.bin(Some(GREY), &draws).unwrap();
+        assert!(b.render());
+        let got = b.picture();
+        // The lists: the shared empty one (background, end) and the rest.
+        assert_eq!(binned.list_words, 2 + listed(&b, binned.entries));
+        // A 16 x 16 quad touches 2-3 columns and 1-2 rows (fewer at the
+        // screen's edges).
+        assert!((250..=250 * 6).contains(&binned.entries), "{binned:?}");
+        one_list(&mut b, 250);
+        assert!(b.render());
+        let want = b.picture();
+        assert_eq!(got.iter().zip(&want).filter(|(a, b)| a != b).count(), 0);
+    }
+
+    #[test]
+    fn quads_keep_their_draw_order_in_every_tile() {
+        // Three opaque squares over one another: the last on top.
+        let mut b = bench(3);
+        let draws = [
+            Draw::rect(100, 100, 60, 60, Paint::Flat(RED)),
+            Draw::rect(120, 120, 60, 60, Paint::Flat(BLUE)),
+            Draw::rect(140, 140, 60, 60, Paint::Flat(0xFF00_FF00)),
+        ];
+        b.bin(Some(GREY), &draws).unwrap();
+        assert!(b.render());
+        assert_eq!(b.px(110, 110), RED);
+        assert_eq!(b.px(130, 130), BLUE);
+        assert_eq!(b.px(150, 150), 0xFF00_FF00);
+        assert_eq!(b.px(50, 50), GREY);
+    }
+
+    #[test]
+    fn a_binned_scene_renders_again_with_nothing_written() {
+        let mut b = bench(100);
+        let t = texture(&mut b.mem);
+        let before = b.mem.1;
+        let binned = b.bin(Some(GREY), &scene(100, 16, t)).unwrap();
+        // The objects, lists and region array each stored once.
+        assert_eq!(b.mem.1 - before, binned.words());
+        assert!(b.render());
+        let first = b.picture();
+        let stored = b.mem.1;
+        assert!(b.render());
+        assert_eq!(b.mem.1, stored, "a repeated frame stores nothing");
+        assert_eq!(b.picture(), first);
+    }
+
+    #[test]
+    fn no_background_leaves_empty_tiles_white_and_lists_only_the_quads() {
+        let mut b = bench(1);
+        let binned = b
+            .bin(None, &[Draw::rect(0, 0, 8, 16, Paint::Flat(RED))])
+            .unwrap();
+        assert!(b.render());
+        assert_eq!(b.px(4, 8), RED);
+        assert_eq!(b.px(20, 8), 0xFFFF_FFFF);
+        // One tile: two pointers and the end; the shared empty list: the
+        // end.
+        assert_eq!((binned.entries, binned.most), (1, 1));
+        assert_eq!(binned.list_words, 1 + 3);
+    }
+
+    #[test]
+    fn too_little_room_is_refused_not_overrun() {
+        let mut b = bench(10);
+        let t = texture(&mut b.mem);
+        let draws = scene(10, 64, t);
+        let mut try_with = |objects: usize, entries: usize, l: &Layout| {
+            binner::bin(
+                &mut b.mem,
+                l,
+                None,
+                &draws,
+                Scratch {
+                    starts: &mut b.starts,
+                    entries: &mut b.entries[..entries],
+                    objects: &mut b.objects[..objects],
+                },
+            )
+        };
+        // Scratch for 9 quads' objects; entries for 5.
+        assert_eq!(try_with(9, 700, &LAYOUT), Err(Error::NoMemory));
+        assert_eq!(try_with(10, 5, &LAYOUT), Err(Error::NoMemory));
+        // A parameter memory too small for the objects.
+        let small = Layout {
+            params_size: 1024,
+            ..LAYOUT
+        };
+        assert_eq!(try_with(10, 700, &small), Err(Error::TooComplex));
+        // Room for the objects, not the lists.
+        let tight = Layout {
+            params_size: 256 + 10 * 4 * 52 + 64,
+            ..LAYOUT
+        };
+        assert_eq!(try_with(10, 700, &tight), Err(Error::TooComplex));
+        // An unknown depth mode.
+        let bad = [draws[0].with_depth(Depth {
+            mode: 8,
+            write: false,
+            z: 0,
+        })];
+        assert_eq!(b.bin(None, &bad), Err(Error::Unsupported));
+    }
+}

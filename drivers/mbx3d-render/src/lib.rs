@@ -53,6 +53,7 @@
 #![cfg_attr(not(any(test, feature = "model")), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod binner;
 pub mod fixed;
 #[cfg(any(test, feature = "model"))]
 pub mod model;
@@ -684,6 +685,25 @@ fn hash(words: &[u32], tiles: TileRect) -> u64 {
     h
 }
 
+/// The tiles of a `cols` x `rows` grid a quad's bounding box touches, its
+/// corners floored and ceiled to whole pixels.
+fn draw_tiles(d: &Draw, cols: u32, rows: u32) -> TileRect {
+    let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    for p in d.corners {
+        (x0, y0) = (x0.min(p.x), y0.min(p.y));
+        (x1, y1) = (x1.max(p.x), y1.max(p.y));
+    }
+    // Floor and ceiling to whole pixels (1/16 units).
+    TileRect::of_pixels(
+        x0 >> 4,
+        y0 >> 4,
+        (x1 + SUB - 1) >> 4,
+        (y1 + SUB - 1) >> 4,
+        cols,
+        rows,
+    )
+}
+
 /// A quad's two objects: the words and their kind.
 fn encode(d: &Draw) -> ([u32; SLOT_WORDS], usize, Kind) {
     // The second word is the alpha test only; the depth mode goes in the
@@ -1229,20 +1249,7 @@ impl Renderer {
             None => Slot::default(),
             Some(d) => {
                 let (words, n, kind) = encode(d);
-                let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-                for p in d.corners {
-                    (x0, y0) = (x0.min(p.x), y0.min(p.y));
-                    (x1, y1) = (x1.max(p.x), y1.max(p.y));
-                }
-                // Floor and ceiling to whole pixels (1/16 units).
-                let tiles = TileRect::of_pixels(
-                    x0 >> 4,
-                    y0 >> 4,
-                    (x1 + SUB - 1) >> 4,
-                    (y1 + SUB - 1) >> 4,
-                    self.cols,
-                    self.rows,
-                );
+                let tiles = draw_tiles(d, self.cols, self.rows);
                 let s = Slot {
                     kind,
                     tiles,
