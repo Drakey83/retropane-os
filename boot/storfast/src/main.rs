@@ -18,8 +18,12 @@
 //!   Windows Mobile's timing, so a too-fast step spoils only that file's
 //!   data), each read back at the socket's slowest; the shortest right one
 //!   with the margin, three more rounds at it, the speed against Windows
-//!   Mobile's; the file and folder removed. Nothing else on the card is
-//!   written.
+//!   Mobile's; then **C9**: the same file written with one field at a
+//!   time shorter than Windows Mobile's (the strobe, the hold, the set-up,
+//!   the others kept), each down to the card's read limit in it, every
+//!   step timed and read back (C7's faster steps all wrote at ~240 KiB/s
+//!   against ~4,700: which field does it); the file and folder removed.
+//!   Nothing else on the card is written.
 //! - **C8, the CPLD's interrupt line** (reminder R24, reads only): the
 //!   owner pulls the CF card and puts it back while GPIO13 and CPLD `0x00`,
 //!   `0x04`, `0x06`, `0x14` are read every millisecond, each change logged.
@@ -575,6 +579,50 @@ mod image {
                 );
             }
             None => log!("C7 no strobe shorter than Windows Mobile's wrote right"),
+        }
+        // C9 (R28 after C7: every faster step wrote at ~240 KiB/s against
+        // ~4,700 at Windows Mobile's, the strobe step at Windows Mobile's
+        // value too, so the tuned set-up and hold are the suspects): one
+        // field at a time from Windows Mobile's timing, the others kept,
+        // down to the card's read limit in that field; each step's speed
+        // and sectors, a field stopped at its first wrong write. Results
+        // only: the owner chooses the loader's write timing from them.
+        let floor = Timing::from_mcmem(read_limit);
+        for field in timing::FIELDS {
+            let (name, value, low): (&str, fn(Timing) -> u32, u32) = match field {
+                timing::Field::Strobe => ("strobe", |t| t.asst, floor.asst),
+                timing::Field::Hold => ("hold", |t| t.hold, floor.hold),
+                timing::Field::SetUp => ("set-up", |t| t.set, floor.set),
+            };
+            let mut step = wm_t;
+            let mut best = None;
+            while let Some(next) = timing::shorter(step, field).filter(|s| value(*s) >= low) {
+                step = next;
+                let (took, failed, bad) = round(cf, step, 300 + value(step));
+                log!(
+                    "C9 {name} {} ({} cycles), the rest Windows Mobile's: {} KiB/s, failed {failed}, {bad} sectors differ",
+                    value(step),
+                    step.cycle_cycles(),
+                    kib_s(len, took)
+                );
+                if failed || bad != 0 || cf.is_dead() {
+                    break;
+                }
+                best = Some((step, took));
+            }
+            match best {
+                Some((b, took)) => log!(
+                    "C9 {name}: the shortest right {} ({} cycles): {} KiB/s against {} at Windows Mobile's",
+                    value(b),
+                    b.cycle_cycles(),
+                    kib_s(len, took),
+                    kib_s(len, t_wm)
+                ),
+                None => log!("C9 {name}: no step shorter than Windows Mobile's wrote right"),
+            }
+            if cf.is_dead() {
+                break;
+            }
         }
         cf.write_data_at(set_cf_timing, wm, wm, wm);
         remove_cf_file(cf, start, work);
