@@ -167,6 +167,8 @@ commands:
             (crash-safe; the files the device boots from are refused)
   card layout <sd|cf>: the card's partition, file system, clusters and
             alignment, read-only (through `cargo xtask card`)
+  hash      `hash <file>`: its size, CRC-32 and SHA-256, read on the device
+            (no data over USB); `get` checks big files with it, in ranges
   format    `format <sd|cf> <auto|fat12|fat16|fat32|exfat>`: formats a card on
             the device; prints the plan unless --yes; boot files and icon kept
   cf        identify the CompactFlash card through the loader (read-only;
@@ -461,6 +463,17 @@ fn main() -> ExitCode {
                 Err("usage: cargo xtask get <file on the card> [local name]".into())
             } else {
                 usb::get(&workspace_root(), &flag, args().nth(3).as_deref())
+            }
+        }
+        "hash" => {
+            // The file's size, CRC-32 and SHA-256 read on the device: no
+            // data over USB (R39).
+            let rest: Vec<String> = args().skip(2).collect();
+            eprintln!("==> hash {}", rest.join(" "));
+            if rest.is_empty() {
+                Err("usage: cargo xtask hash <file on the card, cf: for the CF card>".into())
+            } else {
+                usb::command(&workspace_root(), &format!("hash {}", rest.join(" ")))
             }
         }
         "format" => {

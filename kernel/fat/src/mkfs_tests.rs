@@ -670,3 +670,86 @@ fn a_survey_reads_back_every_layout_the_formatter_writes() {
     // Nothing there: an error, no panic.
     assert!(crate::survey::survey(&mut Sparse::new(4096)).is_err());
 }
+
+#[test]
+fn a_range_of_any_file_reads_exactly_those_bytes_on_every_format() {
+    for (total, fs) in [
+        (2 * MIB, Fs::Fat12),
+        (20 * MIB, Fs::Fat16),
+        (600 * MIB, Fs::Fat32),
+        (8 * MIB, Fs::ExFat),
+    ] {
+        let o = Options {
+            cluster_bytes: Some(1024),
+            ..opts(Some(fs))
+        };
+        let (d, l) = format(total, &o);
+        let mut v = AnyVolume::mount(d, l.part_start).unwrap();
+        let mut scratch = vec![0u8; 4096];
+        // A contiguous file, and one scattered over one-cluster holes.
+        let whole = pattern(20_000, 9);
+        v.put("whole.bin", &whole, &mut scratch).unwrap();
+        for i in 0..40 {
+            v.put(&format!("h/{i}"), &pattern(1000, i), &mut scratch)
+                .unwrap();
+        }
+        // Fill everything else (halving chunks until not one cluster fits
+        // outside the holes), so the next file can only go into them.
+        let filler = pattern(total as usize * 512, 3);
+        let (mut size, mut k) = (filler.len(), 0);
+        while size >= 1024 {
+            if v.put(&format!("f/{k}"), &filler[..size], &mut scratch)
+                .is_ok()
+            {
+                k += 1;
+            } else {
+                size /= 2;
+            }
+        }
+        // Then the holes: every other small file, one cluster each.
+        for i in (0..40).step_by(2) {
+            v.remove(&format!("h/{i}")).unwrap();
+        }
+        let scattered = pattern(18_000, 5);
+        v.put("scattered.bin", &scattered, &mut scratch).unwrap();
+        assert_eq!(
+            v.extent("scattered.bin").err(),
+            Some(crate::Error::Fragmented),
+            "{fs:?}: the file is scattered"
+        );
+        for (name, data) in [("whole.bin", &whole), ("scattered.bin", &scattered)] {
+            let size = data.len() as u64;
+            for (start, len) in [
+                (0, size),
+                (0, 1),
+                (1, 1),
+                (1023, 2),
+                (1024, 1024),
+                (3 * 1024 + 5, 10_000),
+                (511, 514),
+                (size - 1, 10),
+                (size, 5),
+                (size + 1000, 5),
+                (100, 0),
+                (0, u64::MAX),
+            ] {
+                let mut got = Vec::new();
+                let (s, n) = v
+                    .read_range(name, start, len, &mut scratch, &mut |c| {
+                        got.extend_from_slice(c)
+                    })
+                    .unwrap();
+                let a = start.min(size) as usize;
+                let b = start.saturating_add(len).min(size) as usize;
+                assert_eq!(s, size);
+                assert_eq!(n as usize, b - a, "{fs:?} {name} {start}+{len}");
+                assert_eq!(got, data[a..b], "{fs:?} {name} {start}+{len}");
+            }
+            // The whole range is the plain read.
+            let mut plain = Vec::new();
+            v.read_back(name, &mut scratch, &mut |c| plain.extend_from_slice(c))
+                .unwrap();
+            assert_eq!(&plain, data);
+        }
+    }
+}

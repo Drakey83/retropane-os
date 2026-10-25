@@ -1460,8 +1460,29 @@ mod image {
         out: &mut dyn FnMut(&[u8]),
         reply: &mut Line,
     ) {
+        // `@<start>+<length> <file>`: that range only (a big file comes in
+        // chunks, none long enough to meet any time limit: R39).
+        let (range, args) = match args.trim_ascii().strip_prefix(b"@") {
+            Some(rest) => {
+                let mut parts = rest.splitn(2, |&b| b == b' ');
+                let spec = parts.next().unwrap_or(b"");
+                let mut nums = spec.splitn(2, |&b| b == b'+').map(parse_number);
+                match (nums.next().flatten(), nums.next().flatten()) {
+                    (Some(a), Some(n)) => (
+                        Some((u64::from(a), u64::from(n))),
+                        parts.next().unwrap_or(b""),
+                    ),
+                    _ => {
+                        let _ =
+                            reply.write_str("RPL ERR usage: get [@<start>+<length>] <file>\r\n");
+                        return;
+                    }
+                }
+            }
+            None => (None, args),
+        };
         let Some(path) = arg_path(args).filter(|p| !p.is_empty()) else {
-            let _ = reply.write_str("RPL ERR usage: get <file>\r\n");
+            let _ = reply.write_str("RPL ERR usage: get [@<start>+<length>] <file>\r\n");
             return;
         };
         let (mut vol, path) = match mount_path(lun, cf, path) {
@@ -1479,15 +1500,63 @@ mod image {
             out(l);
             out(b"\r\n");
         };
-        let r = vol.read_back(path, scratch, &mut |piece| {
+        let (start, len) = range.unwrap_or((0, u64::MAX));
+        let r = vol.read_range(path, start, len, scratch, &mut |piece| {
             crc = crc32_update(crc, piece);
             total += piece.len() as u64;
             enc.feed(piece, &mut line);
         });
         enc.finish(&mut line);
         match r {
-            Ok(()) => {
-                let _ = write!(reply, "RPL OK {total} bytes crc {:08x}\r\n", !crc);
+            // The file's size after the range's CRC: an older PC tool reads
+            // the first three words.
+            Ok((size, _)) => {
+                let _ = write!(reply, "RPL OK {total} bytes crc {:08x} of {size}\r\n", !crc);
+            }
+            Err(e) => {
+                let _ = write!(reply, "RPL ERR {}\r\n", e.name());
+            }
+        }
+    }
+
+    /// `hash <file>`: the file's size, CRC-32 and SHA-256, read through the
+    /// card's own file system; no data moves over USB (a 37 MB file checked
+    /// in seconds, R39).
+    #[inline(never)]
+    fn hash_command(
+        lun: &mut Lun,
+        cf: &mut CfLun,
+        args: &[u8],
+        scratch: &mut [u8],
+        reply: &mut Line,
+    ) {
+        let Some(path) = arg_path(args).filter(|p| !p.is_empty()) else {
+            let _ = reply.write_str("RPL ERR usage: hash <file>\r\n");
+            return;
+        };
+        let (mut vol, path) = match mount_path(lun, cf, path) {
+            Ok(v) => v,
+            Err(why) => {
+                let _ = write!(reply, "RPL ERR card: {why}\r\n");
+                return;
+            }
+        };
+        let mut crc = !0u32;
+        let mut sha = rp_crypto::Sha256::new();
+        let t0 = rt::ticks();
+        match vol.read_range(path, 0, u64::MAX, scratch, &mut |piece| {
+            crc = crc32_update(crc, piece);
+            sha.update(piece);
+        }) {
+            Ok((size, _)) => {
+                let digest = rp_crypto::hex(&sha.finish());
+                let _ = write!(
+                    reply,
+                    "RPL OK hash {size} bytes crc {:08x} sha256 {} in {} ms\r\n",
+                    !crc,
+                    core::str::from_utf8(&digest).unwrap_or(""),
+                    rt::ticks().wrapping_sub(t0) / (TICK_1S / 1000)
+                );
             }
             Err(e) => {
                 let _ = write!(reply, "RPL ERR {}\r\n", e.name());
@@ -3201,7 +3270,7 @@ mod image {
             }
             if udc.host_open() {
                 if let Some(run) = pending.take() {
-                    send_log(&mut |b| usb_bytes(&mut udc, b), &run);
+                    send_log(&mut stream(&mut udc), &run);
                 }
             }
             let mut outcome = None;
@@ -3341,7 +3410,21 @@ mod image {
                                     &mut lun,
                                     &mut cf,
                                     &c[2..],
-                                    &mut |b| usb_bytes(&mut udc, b),
+                                    &mut stream(&mut udc),
+                                    &mut status,
+                                );
+                                status.as_str()
+                            }
+                        }
+                        Ok(c) if c.starts_with(b"hash ") => {
+                            if msc.host_writing(now_ms()) {
+                                "RPL ERR card busy: the PC is writing\r\n"
+                            } else {
+                                hash_command(
+                                    &mut lun,
+                                    &mut cf,
+                                    &c[5..],
+                                    &mut fat_scratch[..SCRATCH],
                                     &mut status,
                                 );
                                 status.as_str()
@@ -3356,7 +3439,7 @@ mod image {
                                     &mut cf,
                                     &c[4..],
                                     &mut fat_scratch[..SCRATCH],
-                                    &mut |b| usb_bytes(&mut udc, b),
+                                    &mut stream(&mut udc),
                                     &mut status,
                                 );
                                 status.as_str()
@@ -3364,7 +3447,7 @@ mod image {
                         }
                         Ok(b"log") => match &last_run {
                             Some(run) => {
-                                send_log_lines(&mut |b| usb_bytes(&mut udc, b), run);
+                                send_log_lines(&mut stream(&mut udc), run);
                                 "RPL OK log: the last run's log, again\r\n"
                             }
                             None => "RPL ERR log: no image has run since the loader started\r\n",
@@ -3412,7 +3495,7 @@ mod image {
                         Ok(b"trace") => {
                             trace_command(
                                 trace_area.as_deref(),
-                                &mut |b| usb_bytes(&mut udc, b),
+                                &mut stream(&mut udc),
                                 &mut status,
                             );
                             status.as_str()
@@ -4281,13 +4364,32 @@ mod image {
 
     /// All of `data` over USB, polling as the transmit ring drains (gives
     /// up after 5 s or if the PC goes away).
-    fn usb_bytes(udc: &mut Udc<rp_hal_pxa27x::Mmio>, mut data: &[u8]) {
+    /// Sends `data` over the serial port; `false` if the host stopped
+    /// taking it for 5 s (or the port isn't configured).
+    fn usb_bytes(udc: &mut Udc<rp_hal_pxa27x::Mmio>, mut data: &[u8]) -> bool {
         let start = rt::ticks();
         while !data.is_empty() && udc.configured() && rt::ticks().wrapping_sub(start) < 5 * TICK_1S
         {
             let n = udc.write(data);
             data = &data[n..];
             udc.poll();
+        }
+        data.is_empty()
+    }
+
+    /// A long reply's sender (`get`, `ls`, a run's log, the CF trace): once
+    /// the host stops reading for 5 s (it closed the port, or gave up on a
+    /// long reply), the rest is dropped at once instead of waiting 5 s a
+    /// chunk. Found on the X51v (R40, 2026-10-25): the PC gave up on a
+    /// 37 MB `get` after 50 s, the loader kept waiting line by line with
+    /// the drives unserved, and Windows reset the device into the
+    /// serial-only fallback.
+    fn stream(udc: &mut Udc<rp_hal_pxa27x::Mmio>) -> impl FnMut(&[u8]) + '_ {
+        let mut stalled = false;
+        move |b| {
+            if !stalled {
+                stalled = !usb_bytes(udc, b);
+            }
         }
     }
 

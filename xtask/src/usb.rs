@@ -360,15 +360,69 @@ pub fn get(root: &Path, file: &str, local: Option<&str>) -> Result<(), String> {
             dest.display()
         ));
     }
-    let (lines, reply) = query(root, &format!("get {file}"))?;
-    let data = decode_file(&lines, &reply)?;
+    // The size and digest first (`hash`; an older loader has none: one
+    // transfer, as before). A big file then comes in ranges, each CRC
+    // checked, none long enough to meet a time limit (R39), and the whole
+    // is checked against the loader's SHA-256.
+    let Some((size, sha)) = command_reply(root, &format!("hash {file}"))
+        .ok()
+        .and_then(|r| parse_hash(&r))
+    else {
+        let (lines, reply) = query(root, &format!("get {file}"))?;
+        let data = decode_file(&lines, &reply)?;
+        std::fs::write(dest, &data).map_err(|e| format!("{}: {e}", dest.display()))?;
+        eprintln!(
+            "    {} bytes, CRC checked, saved as {}",
+            data.len(),
+            dest.display()
+        );
+        return Ok(());
+    };
+    let mut data = Vec::with_capacity(size as usize);
+    let t0 = std::time::Instant::now();
+    while (data.len() as u64) < size {
+        let at = data.len() as u64;
+        let n = GET_CHUNK.min(size - at);
+        let (lines, reply) = query(root, &format!("get @{at}+{n} {file}"))?;
+        let piece = decode_file(&lines, &reply)?;
+        if piece.len() as u64 != n {
+            return Err(format!("{file}: {} bytes at {at}, asked {n}", piece.len()));
+        }
+        data.extend_from_slice(&piece);
+        if size > GET_CHUNK {
+            eprintln!("    {} of {size} bytes", data.len());
+        }
+    }
+    let ours = rp_crypto::hex(&rp_crypto::Sha256::digest(&data));
+    if ours[..] != *sha.as_bytes() {
+        return Err(format!(
+            "{file}: the whole file's SHA-256 differs from the card's"
+        ));
+    }
     std::fs::write(dest, &data).map_err(|e| format!("{}: {e}", dest.display()))?;
     eprintln!(
-        "    {} bytes, CRC checked, saved as {}",
+        "    {} bytes in {:.1} s, every range CRC checked and the whole SHA-256 matched, saved as {}",
         data.len(),
+        t0.elapsed().as_secs_f64(),
         dest.display()
     );
     Ok(())
+}
+
+/// Bytes a ranged `get` asks for at a time.
+const GET_CHUNK: u64 = 4 << 20;
+
+/// `hash`'s reply (`hash <size> bytes crc <crc> sha256 <hex> in <ms> ms`):
+/// the size and the SHA-256.
+fn parse_hash(reply: &str) -> Option<(u64, String)> {
+    let mut w = reply.split_whitespace();
+    if w.next()? != "hash" {
+        return None;
+    }
+    let size = w.next()?.parse().ok()?;
+    let sha = w.skip_while(|x| *x != "sha256").nth(1)?;
+    (sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| (size, sha.to_ascii_lowercase()))
 }
 
 /// The name a run's card log carries: the image's, without `rp-` (lowercase
@@ -1562,6 +1616,27 @@ fn autorun_icon(text: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod format_tests {
     use super::*;
+
+    #[test]
+    fn a_hash_reply_gives_the_size_and_digest() {
+        let sha = "ab".repeat(32);
+        assert_eq!(
+            parse_hash(&format!(
+                "hash 36962304 bytes crc e758cb61 sha256 {sha} in 812 ms"
+            )),
+            Some((36_962_304, sha.clone()))
+        );
+        assert_eq!(parse_hash("hash x bytes"), None);
+        assert_eq!(
+            parse_hash(&format!("hash 1 bytes crc 0 sha256 {}", &sha[..63])),
+            None
+        );
+        assert_eq!(
+            parse_hash("1 bytes crc 0"),
+            None,
+            "a get reply is not a hash"
+        );
+    }
 
     #[test]
     fn the_loader_command_is_built_from_the_flags() {

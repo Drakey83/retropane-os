@@ -1352,6 +1352,82 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+    /// Reads `len` bytes of `file` from byte `start` on (cut at its end),
+    /// calling `f` with each piece; returns the bytes passed. The chain is
+    /// followed to `start`'s cluster through the FAT alone (no data read),
+    /// so a big file comes in chunks without re-reading what came before
+    /// (the loader's ranged `get`).
+    ///
+    /// # Panics
+    /// If `scratch` is shorter than a sector.
+    #[inline(never)]
+    pub fn read_range(
+        &mut self,
+        file: &File,
+        start: u64,
+        len: u64,
+        scratch: &mut [u8],
+        mut f: impl FnMut(&[u8]),
+    ) -> Result<u64, Error> {
+        let max = (scratch.len() / SECTOR * SECTOR) as u64;
+        assert!(max >= SECTOR as u64, "scratch must hold a sector");
+        let size = u64::from(file.size);
+        if start >= size || len == 0 {
+            return Ok(0);
+        }
+        let end = size.min(start.saturating_add(len));
+        let cb = self.cluster_bytes() as u64;
+        let mut cluster = file.first_cluster;
+        // Bounded: a file under 4 GiB has at most that many clusters.
+        for _ in 0..start / cb {
+            cluster = self.next_cluster(cluster)?.ok_or(Error::Corrupt)?;
+        }
+        let mut pos = start - start % cb; // where `cluster` starts in the file
+        let mut at = start;
+        let mut hops = 0u32;
+        while at < end {
+            if !self.valid_cluster(cluster) {
+                return Err(Error::Corrupt);
+            }
+            // A run of consecutive clusters, as long as the scratch holds.
+            let run_start = cluster;
+            let mut run = 1u32;
+            let mut next = self.next_cluster(cluster)?;
+            while let Some(n) = next
+                && n == cluster + 1
+                && u64::from(run + 1) * cb <= max
+                && pos + u64::from(run) * cb < end
+            {
+                cluster = n;
+                run += 1;
+                next = self.next_cluster(cluster)?;
+            }
+            let run_end = (pos + u64::from(run) * cb).min(end);
+            let lba = self.cluster_lba(run_start);
+            while at < run_end {
+                let off = at - pos;
+                let in_sec = off % SECTOR as u64;
+                let n = (run_end - at).min(max - in_sec);
+                let secs = (in_sec + n).div_ceil(SECTOR as u64) as usize;
+                self.dev.read_blocks(
+                    lba + (off / SECTOR as u64) as u32,
+                    &mut scratch[..secs * SECTOR],
+                )?;
+                f(&scratch[in_sec as usize..(in_sec + n) as usize]);
+                at += n;
+            }
+            hops += run;
+            if hops > self.clusters {
+                return Err(Error::Corrupt);
+            }
+            pos += u64::from(run) * cb;
+            if at < end {
+                cluster = next.ok_or(Error::Corrupt)?;
+            }
+        }
+        Ok(end - start)
+    }
+
     // --- Writing -----------------------------------------------------------
 
     /// Replaces the contents of the root-directory file `name` with `data`
@@ -1897,6 +1973,31 @@ impl<D: BlockDevice> AnyVolume<D> {
             Self::ExFat(v) => {
                 let file = v.find(path)?;
                 v.read_file(&file, scratch, f)
+            }
+        }
+    }
+
+    /// Reads `len` bytes of `path` from byte `start` (see
+    /// [`Volume::read_range`]); returns the file's size and the bytes
+    /// passed.
+    pub fn read_range(
+        &mut self,
+        path: &str,
+        start: u64,
+        len: u64,
+        scratch: &mut [u8],
+        f: &mut dyn FnMut(&[u8]),
+    ) -> Result<(u64, u64), Error> {
+        match self {
+            Self::Fat(v) => {
+                let file = v.find(path)?;
+                let n = v.read_range(&file, start, len, scratch, f)?;
+                Ok((u64::from(file.size), n))
+            }
+            Self::ExFat(v) => {
+                let file = v.find(path)?;
+                let n = v.read_range(&file, start, len, scratch, f)?;
+                Ok((file.size, n))
             }
         }
     }

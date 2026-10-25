@@ -1486,6 +1486,85 @@ impl<D: BlockDevice> ExVolume<D> {
         }
         Ok(())
     }
+
+    /// Reads `len` bytes of `file` from byte `start` on, as
+    /// [`crate::Volume::read_range`] does (zeros past the valid length);
+    /// returns the bytes passed.
+    ///
+    /// # Panics
+    /// If `scratch` is shorter than a sector.
+    #[inline(never)]
+    pub fn read_range(
+        &mut self,
+        file: &ExFile,
+        start: u64,
+        len: u64,
+        scratch: &mut [u8],
+        mut f: impl FnMut(&[u8]),
+    ) -> Result<u64, Error> {
+        let max = (scratch.len() / SECTOR * SECTOR) as u64;
+        assert!(max >= SECTOR as u64, "scratch must hold a sector");
+        if start >= file.size || len == 0 {
+            return Ok(0);
+        }
+        if !self.valid_cluster(file.first_cluster) {
+            return Err(Error::Corrupt);
+        }
+        let cb = self.cluster_bytes() as u64;
+        let total_clusters = file.size.div_ceil(cb);
+        if total_clusters > u64::from(self.clusters)
+            || (file.contiguous
+                && u64::from(file.first_cluster) + total_clusters > 2 + u64::from(self.clusters))
+        {
+            return Err(Error::Corrupt);
+        }
+        let end = file.size.min(start.saturating_add(len));
+        let first = start / cb;
+        let mut cluster = if file.contiguous {
+            file.first_cluster + first as u32
+        } else {
+            let mut c = file.first_cluster;
+            for _ in 0..first {
+                c = self.fat_next(c)?.ok_or(Error::Corrupt)?;
+            }
+            c
+        };
+        let mut at = start;
+        let mut k = first;
+        while at < end {
+            let pos = k * cb;
+            let lba = self.cluster_lba(cluster);
+            let stop = (pos + cb).min(end);
+            while at < stop {
+                let off = at - pos;
+                let in_sec = off % SECTOR as u64;
+                let n = (stop - at).min(max - in_sec);
+                let secs = (in_sec + n).div_ceil(SECTOR as u64) as usize;
+                let piece = &mut scratch[..secs * SECTOR];
+                let (a, b) = (in_sec as usize, (in_sec + n) as usize);
+                if at >= file.valid {
+                    piece.fill(0);
+                } else {
+                    self.dev
+                        .read_blocks(lba + (off / SECTOR as u64) as u32, piece)?;
+                    // Zeros from the valid length on, within this piece.
+                    let keep = (file.valid - at).min(n) as usize;
+                    piece[a + keep..b].fill(0);
+                }
+                f(&piece[a..b]);
+                at += n;
+            }
+            k += 1;
+            if at < end {
+                cluster = if file.contiguous {
+                    cluster + 1
+                } else {
+                    self.fat_next(cluster)?.ok_or(Error::Corrupt)?
+                };
+            }
+        }
+        Ok(end - start)
+    }
 }
 
 impl<D: BlockDevice> ExVolume<D> {

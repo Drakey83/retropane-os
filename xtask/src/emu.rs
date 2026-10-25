@@ -9030,6 +9030,9 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
     let haret: Vec<u8> = (0..20_000u32).map(|i| (i * 13 + 5) as u8).collect();
     let icon: Vec<u8> = (0..3_000u32).map(|i| (i * 3) as u8).collect();
     let autorun = b"[autorun]\r\nicon=card-sd.ico\r\n";
+    let big: Vec<u8> = (0..2_621_440u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
     let entry = |name, data| rp_fat::format::Entry { name, data };
     let sd_image = rp_fat::format::build(&rp_fat::format::Image {
         total_sectors: 128 * 2048,
@@ -9041,6 +9044,7 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
             entry("autorun.inf", autorun),
             entry("card-sd.ico", &icon),
             entry("photo.jpg", b"not kept"),
+            entry("big.bin", &big),
         ],
         blocked_clusters: &[],
         ballast: 0,
@@ -9124,6 +9128,31 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
+        }
+        // A big file by `hash` and ranged `get`s (R39): three ranges put
+        // back together equal it, and the loader's SHA-256 is its own.
+        let h = say(&mut s, "hash big.bin", "RPL OK hash 2621440 bytes", 60)?;
+        let sha = rp_crypto::hex(&rp_crypto::Sha256::digest(&big));
+        if !h.contains(std::str::from_utf8(&sha).unwrap_or("?")) {
+            return Err(format!("hash big.bin: {h:?}"));
+        }
+        let mut whole = Vec::new();
+        for at in [0u32, 1_000_000, 2_000_000] {
+            let cmd = format!("get @{at}+1000000 big.bin");
+            let text = busy_retry(&mut s, &rp_loadproto::control_frame(&cmd), "RPL ", 60)?;
+            let (lines, reply) = crate::usb::parse_query(&text, "get")?;
+            whole.extend(crate::usb::decode_file(&lines, &reply)?);
+        }
+        if whole != big {
+            return Err(format!(
+                "ranged gets of big.bin: {} bytes, not the file",
+                whole.len()
+            ));
+        }
+        let cmd = rp_loadproto::control_frame("get @3000000+10 big.bin");
+        let past = busy_retry(&mut s, &cmd, "RPL ", 20)?;
+        if !past.contains("RPL OK 0 bytes crc 00000000 of 2621440") {
+            return Err(format!("a range past the end: {past:?}"));
         }
         // exFAT while the card holds boot files: refused, nothing written
         // (the drive stays as it is).
@@ -11649,6 +11678,9 @@ struct Bot {
     tag: u32,
     /// The logical unit commands go to (0: SD card, 1: CF card).
     lun: u8,
+    /// How long a command may take before it counts as no answer (a
+    /// hang detector, not a measurement: the guest's own time decides).
+    wait: Duration,
 }
 
 /// One command's outcome.
@@ -11664,6 +11696,7 @@ impl Bot {
             s: usb_connect(n)?,
             tag: 1,
             lun: 0,
+            wait: Duration::from_secs(20),
         })
     }
 
@@ -11726,7 +11759,7 @@ impl Bot {
         if !out.is_empty() {
             self.send_transfer(out)?;
         }
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + self.wait;
         let mut data = Vec::new();
         loop {
             let p = self.packet(deadline)?;
@@ -12254,7 +12287,12 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         // It crosses the slow block: the card driver must fall back to
         // single blocks and still return exactly the card's bytes.
         let t = Instant::now();
-        let r = bot.command(&rw10(0x28, 0, 2048), 2048 * 512, true, &[])?;
+        // Across the slow block, block by block on a loaded PC: more than
+        // the usual 20 s may pass (R32, 2026-10-25), still progress.
+        bot.wait = Duration::from_secs(120);
+        let r = bot.command(&rw10(0x28, 0, 2048), 2048 * 512, true, &[]);
+        bot.wait = Duration::from_secs(20);
+        let r = r?;
         if r.status != 0 || r.data.len() != 2048 * 512 {
             return Err(format!(
                 "drive: 1 MiB read across the slow block {SLOW_BLOCK} failed (status {})",
