@@ -219,6 +219,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "mved: the YUY2 destination stride back in 4-byte units (the X51v's first run)",
+        file: "drivers/mved/src/lib.rs",
+        from: "    let dst_field = job.dst_stride / 8;",
+        to: "    let dst_field = job.dst_stride / 4;",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mved",
+            "the_yuy2_job_writes_the_found_fields_start_last",
+        ]),
+    },
+    Mutant {
         name: "scaler filter: weights 64 times too big (the bug found building it)",
         file: "drivers/mbx-display/src/filter.rs",
         from: "let q = 2 * i128::from(ONE) * raw[k];",

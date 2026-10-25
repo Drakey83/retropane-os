@@ -130,7 +130,7 @@ mod image {
     }
 
     /// This image's version, in its first log line.
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2;
 
     /// Microseconds since `t0` (OSCR0 at 3.25 MHz).
     fn us_since(t0: u32) -> u32 {

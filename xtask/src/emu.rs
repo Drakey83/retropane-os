@@ -7041,7 +7041,7 @@ pub fn boot_loader_mved(root: &Path) -> Result<(), String> {
         "set to 0x3",
         "S1: reset; FIFO 0x00000000; status 0x00000000: passed",
         "S2: 64 x 64 4:2:0 at 0x400000 to YUY2 at 0x410000",
-        "job 0x30=0x80000 0x34=0x82000 0x38=0x20040 0x3c=0x4020 0x48=0x1",
+        "job 0x30=0x80000 0x34=0x82000 0x38=0x20040 0x3c=0x2020 0x48=0x1",
         "NOT DONE after",
         "guards intact: true; destination words unwritten: 2048 of 2048",
         "RETROPANE-MVED: S0 passed, S1 passed, S2 YUY2 FAILED, mode 3 not run",

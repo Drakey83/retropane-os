@@ -50,7 +50,8 @@ pub mod reg {
     pub const CONV_DST: usize = 0x34;
     /// Conversion size, `width | height << 11`.
     pub const CONV_SIZE: usize = 0x38;
-    /// Conversion strides: mode 1 `(dst stride / 4) << 9 | src stride / 8`;
+    /// Conversion strides: mode 1 `(dst stride / 8) << 9 | src stride / 8`
+    /// (the X51v, 2026-10-25; Dell's code as read said `/ 4`);
     /// mode 3 `src stride / 8`.
     pub const CONV_STRIDES: usize = 0x3C;
     /// Conversion destination for mode 3, address / 8.
@@ -506,7 +507,12 @@ const fn size_word(f: &Frame420) -> u32 {
 pub fn convert_yuy2(job: &Convert, vram_len: usize) -> Result<[(usize, u32); 5], JobError> {
     job.check(2, vram_len)?;
     let src_field = job.frame.stride / 8;
-    let dst_field = job.dst_stride / 4;
+    // In 8-byte units, as every address and stride here: the X51v's first
+    // run (2026-10-25, `rp-mved` v1, card log mved-0001) with Dell's
+    // `stride / 4` as we read it spaced the rows twice as far apart (every
+    // other row of the window written, the rest past its end, into the
+    // guard).
+    let dst_field = job.dst_stride / 8;
     // The source stride takes bits 8-0, the destination's the rest.
     if src_field > 0x1FF || dst_field > u32::MAX >> 9 {
         return Err(JobError::Field);
