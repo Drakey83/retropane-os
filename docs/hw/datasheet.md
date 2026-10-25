@@ -172,8 +172,11 @@ watching.
   writes at the TA's pace. DMA into the TA window works (pieces of whole
   32-byte lines within the reported room): 5,000 quads' list in 30.7 ms
   against 53.9 ms by CPU stores. TA-built scenes of 100-5,000 textured
-  quads into a 16-bit target rendered wrong and hung the 3D stage about
-  one render in four (open: audit C79).
+  quads into a 16-bit target rendered wrong while the frame began with the
+  GLES clear's colourless object, which draws nothing (audit C80); with a
+  plain strip as the background and the memory manager set up after a core
+  reset, every TA picture equals our binner's (`rp-tabench` run 5). About
+  one TA render in three still hangs the 3D stage (open: audit C81).
 - **The 2D engine's clock off** (`rp-gpubench` run FS, X51v, 2026-10-22,
   `local/cardlog/gpubench-0044.txt`): `MBXCLK` enable 0 (divider kept)
   with 20 fills and a fence queued pauses the work; the clock back on, it

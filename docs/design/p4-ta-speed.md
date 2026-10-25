@@ -301,6 +301,12 @@ own background, a black full-screen strip through the TA in place of the
 clear (the binner's same black), the memory manager always set up after a
 core reset, and a check first that the strip alone draws the target black.
 
+**Run 5 on the X51v (2026-10-25): the pictures right** (every TA picture
+equal to the binner's), the speed table in `docs/hw/2700g.md` "P4", **45 of
+150 TA renders hung** (audit C81). P4's question (the TA's speed against
+our lists at 100 / 1,000 / 5,000) is answered; ticking it is the owner's
+call.
+
 
 ## The choices for the owner
 
