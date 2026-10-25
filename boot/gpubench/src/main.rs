@@ -119,7 +119,7 @@ mod image {
     use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::{DmaEngine, RegisterBus};
-    use rp_hal_mem::{load32_volatile, store32_volatile, words_as_bytes};
+    use rp_hal_mem::{load32_volatile, read_compare_volatile, store32_volatile, words_as_bytes};
     use rp_hal_pxa27x::diag;
     use rp_hal_pxa27x::{Mmio, cpu, rt};
     use rp_hal_x51v::devices::KeptRunLog;
@@ -598,6 +598,8 @@ mod image {
         /// 3D registers [`Rig::frame`] sets to the run's values (run GC2F,
         /// idea (f)): written as each render starts, over the renderer's.
         over: Over,
+        /// GC2 renders checked, for [`GC2_SECOND_EVERY`].
+        checks: u32,
     }
 
     /// Up to eight 3D registers and their values, for [`Rig::over`].
@@ -7840,7 +7842,17 @@ mod image {
         || GC2_SOAK2
         || GC2_PATCH
         || GC2_SWEEP
-        || GC2_ORDER;
+        || GC2_ORDER
+        || GC2_FAST;
+
+    /// Run GC2P (`RP_GPUBENCH_GC2_FAST`, the owner, 2026-10-24: GC2O stopped
+    /// for taking hours, "always make the tests run as fast as possible"):
+    /// GC2O's question in [`gc2::FAST_WAYS`] for [`gc2::FAST_ROUNDS`] rounds
+    /// at 133.25 / 1, every picture checked in one pass, then FT3's 2D and 3D
+    /// at once at 108.33 / 1 in each tile order with every wrong word placed
+    /// by its row in its tile (the gate-overnight session: one fault, a
+    /// tile's write-out while local memory is busy?). Unattended.
+    const GC2_FAST: bool = option_env!("RP_GPUBENCH_GC2_FAST").is_some();
 
     /// Run GC2O (`RP_GPUBENCH_GC2_ORDER`, the owner's go after GC2L,
     /// 2026-10-24): the tile orders at 133.25 / 1 over [`gc2::ORDER_WAYS`]
@@ -8648,27 +8660,28 @@ mod image {
     ];
 
     /// The settings this build runs (rule 8 for GC2), rising.
-    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_SOAK2 || GC2_PATCH || GC2_SWEEP || GC2_ORDER {
-        &[]
-    } else if GC2_SAFE {
-        &GC2_S_STEPS
-    } else if GC2_D {
-        &GC2_D_STEPS
-    } else if GC2M {
-        &GC2M_STEPS
-    } else if GC3 {
-        &GC3_STEPS
-    } else if GC2_W {
-        &GC2_W_STEPS
-    } else if GC2_H2 {
-        &GC2_H2_STEPS
-    } else if GC2_H {
-        &GC2_H_STEPS
-    } else if GC2_F {
-        &GC2_F_STEPS
-    } else {
-        &GC2_ALL
-    };
+    const GC2_STEPS: &[(ClockStep, &str)] =
+        if GC2_SOAK2 || GC2_PATCH || GC2_SWEEP || GC2_ORDER || GC2_FAST {
+            &[]
+        } else if GC2_SAFE {
+            &GC2_S_STEPS
+        } else if GC2_D {
+            &GC2_D_STEPS
+        } else if GC2M {
+            &GC2M_STEPS
+        } else if GC3 {
+            &GC3_STEPS
+        } else if GC2_W {
+            &GC2_W_STEPS
+        } else if GC2_H2 {
+            &GC2_H2_STEPS
+        } else if GC2_H {
+            &GC2_H_STEPS
+        } else if GC2_F {
+            &GC2_F_STEPS
+        } else {
+            &GC2_ALL
+        };
     /// The kinds this build runs (GC2F: the three Gouraud-only kinds).
     const GC2_KINDS: core::ops::Range<usize> = if GC2_D {
         gc2::RUN_D
@@ -8853,6 +8866,10 @@ mod image {
         }
     }
 
+    /// One render in this many is read twice even when its first read is
+    /// right (GC2's rule 2 kept for read faults on right pictures).
+    const GC2_SECOND_EVERY: u32 = 16;
+
     /// The 50 ms between a picture's two reads (rule 2).
     fn gc2_wait() {
         for _ in 0..5 {
@@ -8926,7 +8943,24 @@ mod image {
         side.best_us = side.best_us.min(us);
         side.worst_us = side.worst_us.max(us);
         let words = gc2::words(k) as usize;
-        gc2_take_at(g, at, &mut first[..words]);
+        // One pass: the picture read once and held to the reference as it
+        // is read. GC2's rule 2 (a second read 50 ms later: the memory wrong,
+        // or the read?) where it tells something: whenever a word is off,
+        // and one render in GC2_SECOND_EVERY (a read fault on a right
+        // picture); a right first read needs no other (the owner,
+        // 2026-10-24: every test as fast as possible).
+        let off = read_compare_volatile(g.mem.0, at as usize, &want[..words], &mut first[..words]);
+        rt::check_in();
+        g.checks = g.checks.wrapping_add(1);
+        if off == Some(0) && !g.checks.is_multiple_of(GC2_SECOND_EVERY) {
+            if let Some(w) = side.words.get_mut(side.renders as usize - 1) {
+                *w = 0;
+            }
+            return Some(0);
+        }
+        if off.is_none() {
+            gc2_take_at(g, at, &mut first[..words]);
+        }
         gc2_wait();
         let f = gc2::KINDS[k].1;
         let mut t = gc2::Tally::default();
@@ -9049,7 +9083,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_ORDER {
+            if GC2_FAST {
+                "the 16-bit kinds' targets inside the safe region (GC2P: no map; GC2O made fast: the tile orders at 133.25 / 1 over GC2K's worst, rows 595-603, the mirror and the six 16-bit kinds, then FT3 at 108.33 / 1 in each order, its wrong words placed by row in their tile),"
+            } else if GC2_ORDER {
                 "the 16-bit kinds' targets inside the safe region (GC2O: no map; the tile orders at 133.25 / 1: rows, reversed, columns reversed, over GC2K's scenes, the mirror, the 16-bit kinds and both sweeps),"
             } else if GC2_SWEEP {
                 "the 16-bit kinds' targets inside the safe region (GC2L: no map; GC2K's patch mapped at 117.00 and 133.25 / 1: the textured quad's corner over every row of a tile row and 16 tiles, GC2K's worst way at three addresses (0x0 among them) and with the tiles reversed),"
@@ -9172,7 +9208,9 @@ mod image {
         }
         let largest = GC2_KINDS.map(gc2::words).max().unwrap_or(0) as usize;
         // GC2K: its ways' references after the first read's buffer.
-        let patch = if GC2_ORDER {
+        let patch = if GC2_FAST {
+            gc2::FAST_SCENES.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_ORDER {
             gc2::ORDER_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_SWEEP {
             gc2::SWEEP.len() * gc2::words(gc2::FT2) as usize
@@ -9500,7 +9538,22 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_ORDER {
+                if GC2_FAST {
+                    gc2_orders(
+                        g,
+                        &mut r,
+                        (tex, first, dsig),
+                        &OrderPlan {
+                            name: "GC2P",
+                            label: "GC2P ORDER",
+                            scenes: &gc2::FAST_SCENES,
+                            ways: &gc2::FAST_WAYS,
+                            step: GC2K_STEP,
+                            secs: u32::MAX / 1_000_000,
+                            rounds: GC2P_ROUNDS,
+                        },
+                    );
+                } else if GC2_ORDER {
                     gc2_order(g, &mut r, tex, first, dsig);
                 } else if GC2_SWEEP {
                     gc2_sweep(g, &mut r, tex, first, dsig);
@@ -10457,6 +10510,193 @@ mod image {
     /// renders a way).
     const GC2O_SECS: u32 = SOAK_SECS * 15 / 2;
 
+    /// GC2P's rounds: [`gc2::FAST_ROUNDS`], or `RP_GPUBENCH_GC2_RENDERS`
+    /// when it asks for fewer (the emulator's check runs 1).
+    const GC2P_ROUNDS: u32 = if GC2_RENDERS < 20 {
+        GC2_RENDERS
+    } else {
+        gc2::FAST_ROUNDS
+    };
+
+    /// GC2P's FT3 rounds a tile order (FT3 found 336-450 words wrong in
+    /// every round at 108.33 / 1: a handful places them).
+    const FT3_ORDER_ROUNDS: usize = 8;
+
+    /// The words differing between two 480 x 640 RGB565 pictures at `a`
+    /// and `b` in local memory, each placed: how many, by the row inside its
+    /// 8 x 16 tile, by tile column, by tile row.
+    fn ft_place(g: &Rig, a: u32, b: u32) -> (u32, [u32; 16], [u16; 60], [u16; 40]) {
+        let (mut n, mut by_row, mut by_col, mut by_trow) =
+            (0u32, [0u32; 16], [0u16; 60], [0u16; 40]);
+        for k in 0..480 * 640 / 2 {
+            let (x, y) = (
+                g.mem.load((a + 4 * k) as usize).unwrap_or(0),
+                g.mem.load((b + 4 * k) as usize).unwrap_or(0),
+            );
+            if x != y {
+                n += 1;
+                let (px, py) = ((2 * k) % 480, (2 * k) / 480);
+                by_row[(py % 16) as usize] += 1;
+                by_col[(px / 8) as usize] = by_col[(px / 8) as usize].saturating_add(1);
+                by_trow[(py / 16) as usize] = by_trow[(py / 16) as usize].saturating_add(1);
+            }
+        }
+        (n, by_row, by_col, by_trow)
+    }
+
+    /// GC2P's second part: FT3's test (the 3D target the scanned-out screen
+    /// at 0, ten full-screen 2D copies queued behind each render, the
+    /// copies apart) at 108.33 / 1 in each tile order: per order two renders
+    /// alone (the reference and its repeat), then [`FT3_ORDER_ROUNDS`]
+    /// together, every wrong word placed by its row in its tile, its tile
+    /// column and tile row (the gate-overnight session's question: in the
+    /// tiles' last rows, as GC2L's patch?).
+    #[inline(never)]
+    fn ft3_orders(g: &mut Rig) {
+        log!(
+            "GC2P part 2: FT3 at 108.33 / 1 in each tile order (rows, reversed, columns reversed), {FT3_ORDER_ROUNDS} rounds of a render with ten 2D copies queued behind it, every wrong word placed by its row in its 8 x 16 tile"
+        );
+        let found = (g.e.regs.read32(clock::COREPLL), diag::msc1());
+        let step = gc2_step(25, 3, 0, 1);
+        let at_wm = found.0 == ClockSpeed::WM.pll && found.1 == 0x2484_2481;
+        if !at_wm {
+            log!("  not Windows Mobile's clock and bus timing: run at the clock as found");
+        }
+        let Some(tex) = p_texture(g, 2, p_texel) else {
+            log!("  no memory for the texture");
+            return;
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            p_texture_free(g, tex);
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        g.set(
+            &mut r,
+            0,
+            Some(Draw::rect(
+                0,
+                0,
+                480,
+                640,
+                Paint::Gouraud([BLACK, WHITE, BLUE, YELLOW]),
+            )),
+        );
+        g.set(
+            &mut r,
+            1,
+            Some(Draw::rect(40, 40, 400, 560, Paint::texture(tex))),
+        );
+        const WORDS: u32 = 480 * 640 * 2 / 4;
+        let bufs = FT2_APART;
+        label_at(
+            g,
+            FT3_PIC,
+            ["GC2P PART 2: FT3", "108.33 / 1", "STARTING"],
+            SOAK_BLUE,
+        );
+        p2w_show(&mut g.e.regs, FT3_PIC, 960, PlaneFormat::Rgb565 as u32);
+        rt::delay_us(300_000);
+        for k in 0..8u16 {
+            let w = rp_image::need(
+                cmd::fill(
+                    Format::RGB565,
+                    bufs.0 as usize,
+                    960,
+                    (0, 80 * k, 480, 80 * k + 80),
+                    0x1111 * u32::from(k),
+                ),
+                "a 2D rectangle",
+            );
+            let _ = g.e.submit(&w);
+        }
+        let _ = g.e.finish(g.mem.0, 2_000_000);
+        if at_wm {
+            let lock = clock_apply(g, step);
+            clock_readback(g);
+            let under = underrun_take(&mut g.e.regs);
+            log!("  FT3 at 108.33 / 1: lock {lock:?} us, the underrun flag {under}");
+            if lock.is_none() {
+                clock_restore(&mut g.e.regs);
+                log!("  the clock didn't take: Windows Mobile's put back, nothing run");
+                let _ = r.release(&mut g.pool);
+                p_texture_free(g, tex);
+                return;
+            }
+        }
+        for (o, name) in [
+            (rp_mbx3d_render::TileOrder::Rows, "rows"),
+            (rp_mbx3d_render::TileOrder::Reversed, "reversed"),
+            (
+                rp_mbx3d_render::TileOrder::ColumnsReversed,
+                "columns reversed",
+            ),
+        ] {
+            r.set_tile_order(o);
+            r.invalidate_all();
+            let (alone, _) = ft2_round(g, &mut r, FT3_PIC, bufs, false);
+            let (w, n) = rp_image::need(
+                cmd::copy(
+                    Format::RGB565,
+                    (FT2_REF as usize, 960),
+                    (FT3_PIC as usize, 960),
+                    (0, 0),
+                    (0, 0, 480, 640),
+                    0,
+                ),
+                "a 2D rectangle",
+            );
+            let _ = g.e.submit(&w[..n]);
+            let _ = g.e.finish(g.mem.0, 2_000_000);
+            r.invalidate_all();
+            let _ = ft2_round(g, &mut r, FT3_PIC, bufs, false);
+            let (again, _) = ft_diff(g, FT3_PIC, FT2_REF, WORDS);
+            let (mut rows, mut cols, mut trows) = ([0u32; 16], [0u16; 60], [0u16; 40]);
+            let mut counts = [0u32; FT3_ORDER_ROUNDS];
+            for c in &mut counts {
+                r.invalidate_all();
+                let _ = ft2_round(g, &mut r, FT3_PIC, bufs, true);
+                let (n, br, bc, bt) = ft_place(g, FT3_PIC, FT2_REF);
+                *c = n;
+                for (a, b) in rows.iter_mut().zip(br) {
+                    *a += b;
+                }
+                for (a, b) in cols.iter_mut().zip(bc) {
+                    *a = a.saturating_add(b);
+                }
+                for (a, b) in trows.iter_mut().zip(bt) {
+                    *a = a.saturating_add(b);
+                }
+                rt::check_in();
+            }
+            log!(
+                "  FT3 108.33 / 1, tiles {name}: alone {alone:?} us, a second alone differs in {again} words; together {counts:?} words differ (of {WORDS})"
+            );
+            log!("    by row in the tile (0-15): {rows:?}");
+            log!("    by tile column (0-59): {cols:?}");
+            log!("    by tile row (0-39): {trows:?}");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        if at_wm {
+            clock_restore(&mut g.e.regs);
+            let under = underrun_take(&mut g.e.regs);
+            log!(
+                "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}, the underrun flag {under} (cleared)",
+                g.e.regs.read32(clock::COREPLL),
+                g.e.regs.read32(MBXCLK),
+                diag::msc1()
+            );
+        }
+        log!("GC2P part 2: done");
+        let _ = show_screen(&mut g.e.regs);
+        for k in 0..2 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        p_texture_free(g, tex);
+    }
+
     /// A [`gc2::ORDER_WAYS`] order as the renderer's.
     const fn tile_order(o: u8) -> rp_mbx3d_render::TileOrder {
         match o {
@@ -10477,17 +10717,24 @@ mod image {
 
     /// GC2O's place report: every way with wrong pixels, its scene, order,
     /// count and boxes (`when` names the moment).
-    fn order_report(when: &str, rounds: u32, wrong: &[u32], spots: &[SweepSpots]) {
-        log!("  GC2O places {when} ({rounds} rounds):");
+    fn order_report(
+        plan: &OrderPlan,
+        when: &str,
+        rounds: u32,
+        wrong: &[u32],
+        spots: &[SweepSpots],
+    ) {
+        let name = plan.name;
+        log!("  {name} places {when} ({rounds} rounds):");
         for (w, s) in spots.iter().enumerate() {
             if s.pixels == 0 {
                 continue;
             }
-            let (sc, o) = gc2::ORDER_WAYS[w];
-            let c = gc2::order_corner(gc2::ORDER_SCENES[sc]);
+            let (sc, o) = plan.ways[w];
+            let c = gc2::order_corner(plan.scenes[sc]);
             log!(
-                "    GC2O way {w} (scene {sc} {:?}, corner ({}, {}), {}): {} renders wrong, {} pixels placed; on the screen x {}-{} y {}-{}; from the corner x {}..{} y {}..{}",
-                gc2::ORDER_SCENES[sc],
+                "    {name} way {w} (scene {sc} {:?}, corner ({}, {}), {}): {} renders wrong, {} pixels placed; on the screen x {}-{} y {}-{}; from the corner x {}..{} y {}..{}",
+                plan.scenes[sc],
                 c.0,
                 c.1,
                 order_name(o),
@@ -10517,20 +10764,66 @@ mod image {
     /// after.
     #[inline(never)]
     fn gc2_order(g: &mut Rig, r: &mut Renderer, tex: gc2::Tex, first: &mut [u32], dsig: bool) {
-        const S: usize = gc2::ORDER_SCENES.len();
-        const N: usize = gc2::ORDER_WAYS.len();
+        gc2_orders(
+            g,
+            r,
+            (tex, first, dsig),
+            &OrderPlan {
+                name: "GC2O",
+                label: "GC2O ORDER",
+                scenes: &gc2::ORDER_SCENES,
+                ways: &gc2::ORDER_WAYS,
+                step: GC2K_STEP,
+                secs: GC2O_SECS,
+                rounds: u32::MAX,
+            },
+        );
+    }
+
+    /// A tile-order soak's plan (runs GC2O and GC2P): its scenes, its ways
+    /// (a scene and an order), the setting, and when it ends (`secs` or
+    /// `rounds`, whichever first).
+    struct OrderPlan {
+        name: &'static str,
+        label: &'static str,
+        scenes: &'static [gc2::Scene],
+        ways: &'static [(usize, u8)],
+        step: (ClockStep, &'static str),
+        secs: u32,
+        rounds: u32,
+    }
+
+    /// The most scenes and ways a plan holds (GC2O's).
+    const ORDER_MAX_SCENES: usize = gc2::ORDER_SCENES.len();
+    const ORDER_MAX_WAYS: usize = gc2::ORDER_WAYS.len();
+
+    /// A tile-order soak (see [`gc2_order`]) by `plan`.
+    #[inline(never)]
+    fn gc2_orders(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (tex, first, dsig): (gc2::Tex, &mut [u32], bool),
+        plan: &OrderPlan,
+    ) {
+        let (name, label0) = (plan.name, plan.label);
+        let (scenes, ways) = (plan.scenes, plan.ways);
+        if scenes.len() > ORDER_MAX_SCENES || ways.len() > ORDER_MAX_WAYS {
+            log!("  {name}: the plan holds too many scenes or ways: nothing run");
+            return;
+        }
+        let (n_scenes, n_ways) = (scenes.len(), ways.len());
         let k = gc2::FT2;
         let words = gc2::words(k) as usize;
         let at = gc_at(k);
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         let (first, rest) = first.split_at_mut(words);
-        if rest.len() < S * words {
+        if rest.len() < n_scenes * words {
             log!("  GC2O: not enough SDRAM for the references: nothing run");
             return;
         }
         let set = |g: &mut Rig, r: &mut Renderer, sc: usize, o: u8| {
             r.set_tile_order(tile_order(o));
-            let (bg, slots) = gc2::order_scene(gc2::ORDER_SCENES[sc], tex);
+            let (bg, slots) = gc2::order_scene(scenes[sc], tex);
             let _ = r.set_background(Some(bg));
             for (n, d) in slots.into_iter().enumerate() {
                 g.set(r, n, d);
@@ -10539,7 +10832,7 @@ mod image {
         // The scenes' references, in row order.
         r.start_clean();
         let mut refs_ok = true;
-        for sc in 0..S {
+        for sc in 0..n_scenes {
             set(g, r, sc, gc2::ROWS);
             let want = &mut rest[sc * words..(sc + 1) * words];
             r.invalidate_all();
@@ -10562,8 +10855,8 @@ mod image {
             refs_ok &= ok;
             if !ok || sc < 10 {
                 log!(
-                    "  GC2O reference {sc} ({:?}): {t0:?} us, renders 2-3 {again:?} words off it; {}",
-                    gc2::ORDER_SCENES[sc],
+                    "  {name} reference {sc} ({:?}): {t0:?} us, renders 2-3 {again:?} words off it; {}",
+                    scenes[sc],
                     Gc2Held(&side)
                 );
             }
@@ -10571,7 +10864,7 @@ mod image {
         // Every way's order at Windows Mobile's clock: its scene's picture.
         r.start_clean();
         let mut orders_ok = 0;
-        for (w, &(sc, o)) in gc2::ORDER_WAYS.iter().enumerate() {
+        for (w, &(sc, o)) in ways.iter().enumerate() {
             set(g, r, sc, o);
             let want = &rest[sc * words..(sc + 1) * words];
             let mut side = Gc2Side::new(dsig);
@@ -10581,7 +10874,7 @@ mod image {
                 orders_ok += 1;
             } else {
                 log!(
-                    "  GC2O way {w} (scene {sc}, {}) at Windows Mobile's clock: {wrong:?} words off its scene's reference; {}",
+                    "  {name} way {w} (scene {sc}, {}) at Windows Mobile's clock: {wrong:?} words off its scene's reference; {}",
                     order_name(o),
                     Gc2Held(&side)
                 );
@@ -10589,44 +10882,48 @@ mod image {
         }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
         log!(
-            "  GC2O references: {}; every way in its own order at Windows Mobile's clock: {orders_ok} of {N} its scene's picture",
+            "  {name} references: {}; every way in its own order at Windows Mobile's clock: {orders_ok} of {n_ways} its scene's picture",
             if refs_ok {
-                "all 42 repeatable and held"
+                "all repeatable and held"
             } else {
                 "NOT all repeatable"
             }
         );
-        if !refs_ok || orders_ok != N {
+        if !refs_ok || orders_ok != n_ways {
             log!("  GC2O: a reference or an order isn't proven: nothing run at 133.25 / 1");
             return;
         }
-        let (s, label) = GC2K_STEP;
-        let minutes = GC2O_SECS.div_ceil(60);
-        soak_label(g, ["GC2O ORDER", label, "STARTING"], SOAK_BLUE);
+        let (s, label) = plan.step;
+        let minutes = plan.secs.div_ceil(60);
+        soak_label(g, [label0, label, "STARTING"], SOAK_BLUE);
         let want_regs = gc2_clock_want(s.speed(), s.div);
         let lock = clock_apply(g, s);
         if lock.is_none() {
             clock_restore(&mut g.e.regs);
-            log!("  GC2O {label}: the clock didn't take; Windows Mobile's put back");
-            soak_label(g, ["GC2O ORDER", label, "CLOCK NOT TAKEN"], SOAK_RED);
+            log!("  {name} {label}: the clock didn't take; Windows Mobile's put back");
+            soak_label(g, [label0, label, "CLOCK NOT TAKEN"], SOAK_RED);
             return;
         }
-        log!("  GC2O {label}: lock {lock:?}; {N} ways in turn for {minutes} min");
+        log!(
+            "  {name} {label}: lock {lock:?}; {n_ways} ways in turn for {minutes} min or {} rounds, whichever first",
+            plan.rounds
+        );
         clock_readback(g);
         r.start_clean();
         // A scene's 3D registers after its first render here, which its
         // later renders in any order must leave (a tile order changes no
         // register; one baseline a scene keeps the stack in bounds over
         // GC2O's 94 ways).
-        let mut bases: [Gc2Baseline; S] = core::array::from_fn(|_| Gc2Baseline(None));
-        let mut wrong_by = [0u32; N];
-        let mut spots = [SweepSpots::NONE; N];
+        let mut bases: [Gc2Baseline; ORDER_MAX_SCENES] =
+            core::array::from_fn(|_| Gc2Baseline(None));
+        let mut wrong_by = [0u32; ORDER_MAX_WAYS];
+        let mut spots = [SweepSpots::NONE; ORDER_MAX_WAYS];
         let (mut elapsed_us, mut lines, mut rounds) = (0u64, 0u32, 0u32);
-        let end_us = u64::from(GC2O_SECS) * 1_000_000;
+        let end_us = u64::from(plan.secs) * 1_000_000;
         let mut unheld = None;
-        'soak: while elapsed_us < end_us {
+        'soak: while elapsed_us < end_us && rounds < plan.rounds {
             let t0 = rt::ticks();
-            for (w, &(sc, o)) in gc2::ORDER_WAYS.iter().enumerate() {
+            for (w, &(sc, o)) in ways.iter().enumerate() {
                 set(g, r, sc, o);
                 let want = &rest[sc * words..(sc + 1) * words];
                 let mut side = Gc2Side::new(dsig);
@@ -10647,7 +10944,7 @@ mod image {
                 }
                 if wrong.is_some_and(|n| n > 0) {
                     wrong_by[w] += 1;
-                    let c = gc2::order_corner(gc2::ORDER_SCENES[sc]);
+                    let c = gc2::order_corner(scenes[sc]);
                     let t = &side.tally;
                     for &(x, y, _, _) in &t.first[..t.n_first] {
                         spots[w].add((i32::from(x), i32::from(y)), c);
@@ -10660,23 +10957,33 @@ mod image {
             }
             rounds += 1;
             elapsed_us += u64::from(us_since(t0));
-            if elapsed_us >= u64::from(lines + 1) * 60_000_000 || elapsed_us >= end_us {
+            if elapsed_us >= u64::from(lines + 1) * 60_000_000
+                || elapsed_us >= end_us
+                || rounds == plan.rounds
+            {
                 lines += 1;
                 let all: u32 = wrong_by.iter().sum();
                 let mut l3 = heapless_name();
                 let _ = write!(l3, "MIN {lines} OF {minutes} WRONG {all}");
                 soak_label(
                     g,
-                    ["GC2O ORDER", label, l3.as_str()],
+                    [label0, label, l3.as_str()],
                     if all == 0 { SOAK_BLUE } else { SOAK_RED },
                 );
                 log!(
-                    "  GC2O {label}, minute {lines}: {rounds} rounds, wrong renders by way {wrong_by:?}"
+                    "  {name} {label}, minute {lines}: {rounds} rounds, wrong renders by way {:?}",
+                    &wrong_by[..n_ways]
                 );
                 if lines % 10 == 0 {
                     let mut when = heapless_name();
                     let _ = write!(when, "at minute {lines}");
-                    order_report(when.as_str(), rounds, &wrong_by, &spots);
+                    order_report(
+                        plan,
+                        when.as_str(),
+                        rounds,
+                        &wrong_by[..n_ways],
+                        &spots[..n_ways],
+                    );
                 }
             }
         }
@@ -10685,33 +10992,41 @@ mod image {
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
         if let Some((w, wrong, side)) = &unheld {
             log!(
-                "  GC2O {label}: STOPPED at way {w}, round {}, {} s in: {wrong:?} words; {}; Windows Mobile's clock put back",
+                "  {name} {label}: STOPPED at way {w}, round {}, {} s in: {wrong:?} words; {}; Windows Mobile's clock put back",
                 rounds + 1,
                 elapsed_us / 1_000_000,
                 Gc2Held(side)
             );
-            soak_label(g, ["GC2O ORDER", label, "STOPPED: NOT HELD"], SOAK_RED);
+            soak_label(g, [label0, label, "STOPPED: NOT HELD"], SOAK_RED);
         }
         log!(
-            "  GC2O {label}: {rounds} rounds ({} renders) in {} s; wrong renders by way {wrong_by:?}",
-            rounds * N as u32,
-            elapsed_us / 1_000_000
+            "  {name} {label}: {rounds} rounds ({} renders) in {} s; wrong renders by way {:?}",
+            rounds * n_ways as u32,
+            elapsed_us / 1_000_000,
+            &wrong_by[..n_ways]
         );
-        // By order: the wrong renders summed over the first ten scenes (all
-        // three orders) and over the sweeps (the two new ones).
+        // By order: the wrong renders summed over the scenes run in all
+        // three orders, and over those run in the two new ones only.
+        let all_three = |sc: usize| ways.iter().filter(|w| w.0 == sc).count() == 3;
         let mut by_order = [[0u32; 3]; 2];
-        for (w, &(sc, o)) in gc2::ORDER_WAYS.iter().enumerate() {
-            by_order[usize::from(sc >= 10)][usize::from(o)] += wrong_by[w];
+        for (w, &(sc, o)) in ways.iter().enumerate() {
+            by_order[usize::from(!all_three(sc))][usize::from(o)] += wrong_by[w];
         }
         log!(
-            "  GC2O {label}: wrong renders by order (rows, reversed, columns reversed): the ten scenes {:?}; the 32 sweep ways (no rows) {:?}",
+            "  {name} {label}: wrong renders by order (rows, reversed, columns reversed): the scenes in all three orders {:?}; the scenes in the new two only {:?}",
             by_order[0],
             by_order[1]
         );
-        order_report("at the end", rounds, &wrong_by, &spots);
+        order_report(
+            plan,
+            "at the end",
+            rounds,
+            &wrong_by[..n_ways],
+            &spots[..n_ways],
+        );
         r.start_clean();
         let mut controls = 0;
-        for &(sc, o) in &gc2::ORDER_WAYS {
+        for &(sc, o) in ways {
             set(g, r, sc, o);
             let want = &rest[sc * words..(sc + 1) * words];
             let mut side = Gc2Side::new(dsig);
@@ -10720,11 +11035,13 @@ mod image {
             controls += usize::from(wrong == Some(0) && side.held());
         }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
-        log!("  GC2O {label}: controls at Windows Mobile's clock after: {controls} of {N} right");
+        log!(
+            "  {name} {label}: controls at Windows Mobile's clock after: {controls} of {n_ways} right"
+        );
         let all: u32 = wrong_by.iter().sum();
         let mut l3 = heapless_name();
         let _ = write!(l3, "DONE: {all} WRONG");
-        soak_label(g, ["GC2O ORDER", label, l3.as_str()], SOAK_BLUE);
+        soak_label(g, [label0, label, l3.as_str()], SOAK_BLUE);
     }
 
     // ---- Run GC2R: what divide 1 changes, and how it is entered (2026-10-23) ----
@@ -11696,6 +12013,7 @@ mod image {
             keypad,
             pressed: false,
             over: Over::NONE,
+            checks: 0,
         };
         if START {
             start_watch(&mut g.e.regs, "N4 the keypad taken, the fence written");
@@ -11792,6 +12110,9 @@ mod image {
             rp_hal_x51v::devices::kept_stop();
         } else if GC2 {
             content_map2(&mut g);
+            if GC2_FAST {
+                ft3_orders(&mut g);
+            }
             rp_hal_x51v::devices::kept_stop();
         } else if CMAP {
             content_map(&mut g);

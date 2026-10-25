@@ -48,6 +48,39 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "hal-mem: the one-pass check misses the last word",
+        file: "hal/mem/src/lib.rs",
+        from: "        differ += u32::from(v != w);",
+        to: "        differ += u32::from(v != w && i + 1 < want.len());",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-mem",
+            "read_compare_reads_every_word_and_counts_the_differing_ones",
+        ]),
+    },
+    Mutant {
+        name: "hal-mem: the one-pass check reads past the run",
+        file: "hal/mem/src/lib.rs",
+        from: "    let src = buf.get(offset..offset.checked_add(bytes)?)?;",
+        to: "    let src = buf.get(offset..)?;",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-mem",
+            "read_compare_reads_every_word_and_counts_the_differing_ones",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2P: the mirror only in the new orders",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const FAST_ALL_ORDERS: [usize; 5] = [0, 3, 4, 10, 11];",
+        to: "pub const FAST_ALL_ORDERS: [usize; 5] = [0, 3, 4, 9, 11];",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2p_keeps_the_scenes_that_went_wrong_and_every_order_where_it_matters",
+        ]),
+    },
+    Mutant {
         name: "mbx3d-render: columns reversed reads each row from the left",
         file: "drivers/mbx3d-render/src/tiles.rs",
         from: "            .flat_map(move |y| (0..cols).rev().map(move |x| y * cols + x))",

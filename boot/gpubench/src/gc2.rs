@@ -567,6 +567,62 @@ pub const ORDER_WAYS: [(usize, u8); 94] = {
     w
 };
 
+/// Run GC2P's scenes (GC2O made fast, the owner, 2026-10-24): GC2K's
+/// worst; the row sweep's rows 595-603 (the rows that went wrong in GC2L);
+/// the mirror; FT2; the five other 16-bit kinds. No tile sweep (never wrong
+/// in GC2L).
+pub const FAST_SCENES: [Scene; 17] = {
+    let mut s = [Scene::Sweep(0); 17];
+    let mut r = 0;
+    while r < 9 {
+        s[1 + r] = Scene::Sweep(SWEEP_ROWS_AT + 3 + r);
+        r += 1;
+    }
+    s[10] = Scene::Mirrored;
+    s[11] = Scene::Kind(FT2);
+    let kinds = [0, 1, 5, 6, 7];
+    let mut i = 0;
+    while i < 5 {
+        s[12 + i] = Scene::Kind(kinds[i]);
+        i += 1;
+    }
+    s
+};
+
+/// GC2P's scenes in all three orders (the rest in the two new ones): GC2K's
+/// worst, rows 597 and 598 (GC2L's worst rows), the mirror, FT2.
+pub const FAST_ALL_ORDERS: [usize; 5] = [0, 3, 4, 10, 11];
+
+/// Run GC2P's ways: [`FAST_ALL_ORDERS`]' scenes in rows, reversed and
+/// columns reversed; every other scene in reversed and columns reversed.
+pub const FAST_WAYS: [(usize, u8); 39] = {
+    let mut w = [(0, ROWS); 39];
+    let mut n = 0;
+    let mut s = 0;
+    while s < 17 {
+        let mut all = false;
+        let mut i = 0;
+        while i < FAST_ALL_ORDERS.len() {
+            all |= FAST_ALL_ORDERS[i] == s;
+            i += 1;
+        }
+        if all {
+            w[n] = (s, ROWS);
+            n += 1;
+        }
+        w[n] = (s, REVERSED);
+        w[n + 1] = (s, COLUMNS_REVERSED);
+        n += 2;
+        s += 1;
+    }
+    w
+};
+
+/// GC2P's renders a way: enough to see GC2L's normal-order rate (about 1 in
+/// 9 for GC2K's worst, 1 in 14 for row 597) many times over: about 16
+/// wrong expected in 150, so 0 of 150 in a new order means something.
+pub const FAST_ROUNDS: u32 = 150;
+
 /// Scene `s`'s background and slots.
 #[must_use]
 pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {

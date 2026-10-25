@@ -246,6 +246,35 @@ pub fn load32_volatile(buf: &[u8], offset: usize) -> Option<u32> {
     Some(unsafe { word.as_ptr().cast::<u32>().read_volatile() })
 }
 
+/// Reads `out.len()` little-endian words from `buf` at `offset` into `out`,
+/// one volatile load each, and counts the words that differ from `want`'s:
+/// a picture read back from device memory and checked in one pass, one
+/// bounds check for the whole run (`rp-gpubench`'s checks: the CPU's reads
+/// of the 2700G's memory are bus-bound, the per-word checks are not).
+/// `None` (nothing read) if the run is out of bounds or not word-aligned,
+/// or `want` is shorter than `out`.
+pub fn read_compare_volatile(
+    buf: &[u8],
+    offset: usize,
+    want: &[u32],
+    out: &mut [u32],
+) -> Option<u32> {
+    let bytes = out.len().checked_mul(4)?;
+    let src = buf.get(offset..offset.checked_add(bytes)?)?;
+    if !(src.as_ptr() as usize).is_multiple_of(4) || want.len() < out.len() {
+        return None;
+    }
+    let p = src.as_ptr().cast::<u32>();
+    let mut differ = 0;
+    for (i, (o, &w)) in out.iter_mut().zip(want).enumerate() {
+        // SAFETY: word `i` of the in-bounds, word-aligned run checked above.
+        let v = unsafe { p.add(i).read_volatile() };
+        *o = v;
+        differ += u32::from(v != w);
+    }
+    Some(differ)
+}
+
 /// Writes `value` to the word at `buf[offset..offset + 4]` with one volatile
 /// store. `None` if out of bounds or not word-aligned.
 pub fn store32_volatile(buf: &mut [u8], offset: usize, value: u32) -> Option<()> {
@@ -549,6 +578,36 @@ mod tests {
         assert_eq!(load32_volatile(buf, 8), None, "past the end");
         assert_eq!(store32_volatile(buf, 6, 0), None);
         assert_eq!(load32_volatile(buf, usize::MAX - 1), None, "overflow");
+    }
+
+    #[test]
+    fn read_compare_reads_every_word_and_counts_the_differing_ones() {
+        let mut words = [1u32, 2, 3, 4, 5];
+        let buf = words_as_bytes_mut(&mut words);
+        let mut out = [0u32; 3];
+        // Words 1-3 against a picture differing in its last word.
+        assert_eq!(read_compare_volatile(buf, 4, &[2, 3, 9], &mut out), Some(1));
+        assert_eq!(out, [2, 3, 4]);
+        assert_eq!(read_compare_volatile(buf, 4, &[2, 3, 4], &mut out), Some(0));
+        // Every word compared, the first and the last included.
+        assert_eq!(read_compare_volatile(buf, 0, &[0, 2, 0], &mut out), Some(2));
+        assert_eq!(read_compare_volatile(buf, 8, &[3, 4, 0], &mut out), Some(1));
+        // The run past the end, unaligned, overflowing, or `want` short:
+        // nothing read.
+        let mut untouched = [7u32; 3];
+        assert_eq!(
+            read_compare_volatile(buf, 12, &[0; 3], &mut untouched),
+            None
+        );
+        assert_eq!(read_compare_volatile(buf, 2, &[0; 3], &mut untouched), None);
+        assert_eq!(
+            read_compare_volatile(buf, usize::MAX - 3, &[0; 3], &mut untouched),
+            None
+        );
+        assert_eq!(read_compare_volatile(buf, 0, &[0; 2], &mut untouched), None);
+        assert_eq!(untouched, [7; 3]);
+        // Nothing to read: nothing differs.
+        assert_eq!(read_compare_volatile(buf, 20, &[], &mut []), Some(0));
     }
 
     #[test]
