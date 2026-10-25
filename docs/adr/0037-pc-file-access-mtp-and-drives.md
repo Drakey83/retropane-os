@@ -251,8 +251,16 @@ Each line: what the source says, then what it means here.
     **Not offered:** PowerDown, ResetDevice's power side, SelfTest,
     InitiateCapture/OpenCapture, SetObjectProtection (the device decides
     protection), object references, Skip, GetThumb (no thumbnails until a
-    picture decoder is in the storage service: noted, not dropped),
-    FormatStore (Q3). DeleteObject of handle 0xFFFFFFFF ("everything") is
+    picture decoder is in the storage service: noted, not dropped).
+    **FormatStore (Q3 B)** only for a card that holds no RetroPane boot
+    files, and only after the user confirms on the device: the screen
+    names the card and its size, the Action key or an on-screen OK
+    confirms (as Windows Mobile confirms), anything else or 30 s refuses
+    (Access_Denied). The format is ADR-0036's (erase-block aligned, the
+    SD Association's layout, not Windows'), its file-system parameter
+    honoured when the card can take it; StoreRemoved then StoreAdded
+    follow. The card RetroPane boots from is refused at once
+    (Store_Read-Only). DeleteObject of handle 0xFFFFFFFF ("everything") is
     refused with Invalid_ObjectHandle: no single operation from a cable
     may empty every card.
 12. **Device identity:** manufacturer "Dell", model "Axim X51v" (from the
@@ -285,7 +293,8 @@ Each line: what the source says, then what it means here.
   [MTP 4.6]. DMA lengths come only from checked containers and never
   exceed a staging half (ADR-0014's audit, 2026-10-16).
 - **Nothing the cable can do destroys the system:** no power-down, no
-  format, no "delete everything", no protection change, boot files
+  format of a boot card and no format at all without the user's yes on
+  the device, no "delete everything", no protection change, boot files
   read-only by construction (rule 5), the guard underneath.
 - **Exposure:** in the loader (development), offered at once like the
   drive is today (docs/security.md, current exposures). In the OS proper:
@@ -316,7 +325,15 @@ Each line: what the source says, then what it means here.
 ## Votes for the owner
 
 **Voted 2026-10-25: every default (Q1 A, Q2 A, Q3 A, Q4 "Axim X51v", Q5
-the PDA icon).** The alternatives are kept below as the record.
+the PDA icon); then, the same day, the owner: "pick the ones that follow
+my rules". Picked against the rules (iterate, not imitate; legacy not
+locked out; security first; clever with no trade-off; keys behave like
+Windows Mobile): Q1 A, Q2 A, Q4 and Q5 kept; Q3 changed to B.** Q3 A
+refused something useful to stay simple (phones' way), while B gives the
+PC a format that is better than Windows' own (ADR-0036's aligned
+layout) with the user's consent on the device and the boot card never
+touched: more, with nothing given up. The alternatives are kept below as
+the record.
 
 - **Q1. How a computer gets MTP or a drive.**
   - **A (default): MTP first, the drive if no MTP session comes.** The MTP
