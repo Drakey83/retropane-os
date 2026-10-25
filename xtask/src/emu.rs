@@ -5367,6 +5367,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2V",
             &run_gc2v,
             &[
+                "GC2V A 143.00 / 1: 10 rounds (90 renders)",
                 "GC2V A 146.25 / 1: 10 rounds (90 renders)",
                 "GC2V B 133.25 / 1: 200 rounds (600 renders)",
                 "RETROPANE-GPUBENCH: done",

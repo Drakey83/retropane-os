@@ -11166,27 +11166,35 @@ mod image {
         }
     }
 
-    /// Run GC2V (see [`GC2_EDGE`]): part A at 146.25 / 1, part B at 133.25 / 1.
+    /// Run GC2V (see [`GC2_EDGE`]): part A at 143.00 and 146.25 / 1, part B
+    /// at 133.25 / 1.
     #[inline(never)]
     fn gc2_edge(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
-        log!(
-            "  GC2V A: FT2's quad at 146.25 / 1, {} ways (top edge at y 40, 32, 36, 44, 47, 0; flat; the texture half a texel down; no Gouraud background)",
-            gc2::EDGE_WAYS.len()
-        );
-        gc2_orders(
-            g,
-            r,
-            (tex, &mut *first, dsig),
-            &OrderPlan {
-                name: "GC2V A",
-                label: "GC2V EDGE",
-                scenes: &gc2::EDGE_SCENES,
-                ways: &gc2::EDGE_WAYS_ORDER,
-                step: (gc2_step(45, 4, 0, 1), ABOVE_NAMES[2]),
-                secs: u32::MAX / 1_000_000,
-                rounds: gc2::EDGE_ROUNDS,
-            },
-        );
+        // 143.00 / 1 (13 x 44 / 4) too: the one step between GC2U's clean
+        // 139.75 and its every-render-wrong 146.25.
+        for (s, name) in [
+            (gc2_step(44, 4, 0, 1), "143.00 / 1"),
+            (gc2_step(45, 4, 0, 1), ABOVE_NAMES[2]),
+        ] {
+            log!(
+                "  GC2V A: FT2's quad at {name}, {} ways (top edge at y 40, 32, 36, 44, 47, 0; flat; the texture half a texel down; no Gouraud background)",
+                gc2::EDGE_WAYS.len()
+            );
+            gc2_orders(
+                g,
+                r,
+                (tex, &mut *first, dsig),
+                &OrderPlan {
+                    name: "GC2V A",
+                    label: "GC2V EDGE",
+                    scenes: &gc2::EDGE_SCENES,
+                    ways: &gc2::EDGE_WAYS_ORDER,
+                    step: (s, name),
+                    secs: u32::MAX / 1_000_000,
+                    rounds: gc2::EDGE_ROUNDS,
+                },
+            );
+        }
         log!("  GC2V B: GC2K's worst at 133.25 / 1 as is, with busy tiles, with the hidden layer");
         gc2_orders(
             g,
