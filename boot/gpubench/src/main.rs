@@ -9267,7 +9267,7 @@ mod image {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
             if GC2_NIGHT {
-                "the 16-bit kinds' targets inside the safe region (GC2AD, R36: no map; two hours at 149.50 / 1 over every 16-bit kind and GC2K's worst, the ring and one full hidden layer alternating, reversed),"
+                "the 16-bit kinds' targets inside the safe region (GC2AD, R36: no map; two hours at 149.50 / 1 over every 16-bit kind and GC2K's worst, the ring, one full hidden layer and both at once alternating, reversed, each target poisoned first),"
             } else if GC2_RING {
                 "the 16-bit kinds' targets inside the safe region (GC2AC: no map; the ring cure against one and two full hidden layers on GC2K's worst at 149.50 / 1),"
             } else if GC2_LASTPIX {
@@ -11273,13 +11273,13 @@ mod image {
         }
     }
 
-    /// Run GC2AD (see [`GC2_NIGHT`]): the fourteen ways in turn at 149.50 /
+    /// Run GC2AD (see [`GC2_NIGHT`]): the eighteen ways in turn at 149.50 /
     /// 1 for [`GC2AD_SOAK_SECS`].
     #[inline(never)]
     fn gc2_night(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
         let (m, n) = gc2::NIGHT_PLL;
         log!(
-            "  GC2AD (R36): at 149.50 / 1, reversed, {} min: kinds 0, 1, FT2, 5, 6, 7 and GC2K's worst, each with the ring then one full hidden layer, in turn",
+            "  GC2AD (R36): at 149.50 / 1, reversed, {} min: kinds 0, 1, FT2, 5, 6, 7 and GC2K's worst, each with the ring then one full hidden layer, the textured four then both at once, in turn",
             GC2AD_SOAK_SECS / 60
         );
         gc2_orders(

@@ -1124,10 +1124,39 @@ fn gc2ac_ranks_the_ring_against_the_full_layers_at_149_50() {
 
 #[test]
 fn gc2ad_soaks_every_kind_alternating_the_ring_and_one_full_layer_reversed() {
-    // Every base scene twice, the ring then one full layer, in that order.
-    assert_eq!(NIGHT_SCENES.len(), 2 * FIX_BASE.len());
-    for (b, pair) in NIGHT_SCENES.chunks(2).enumerate() {
-        assert_eq!(pair, [Scene::Fix(b, 7), Scene::Fix(b, 2)]);
+    // Every base scene: the ring, then one full layer, then (the textured
+    // four only) both at once, in that order.
+    let mut want = std::vec::Vec::new();
+    for b in 0..FIX_BASE.len() {
+        want.push(Scene::Fix(b, 7));
+        want.push(Scene::Fix(b, 2));
+        if b < NIGHT_TEXTURED {
+            want.push(Scene::Fix(b, 8));
+        }
+    }
+    assert_eq!(NIGHT_SCENES.to_vec(), want);
+    assert_eq!(FIXES[8], ring_fix(1));
+    // The textured four are exactly the bases with a textured object: the
+    // ring draws bands there and nowhere else.
+    for (b, &base) in FIX_BASE.iter().enumerate() {
+        let tex = test_tex();
+        let (_, slots) = order_scene(base, tex);
+        let textured = slots
+            .iter()
+            .flatten()
+            .any(|d| matches!(d.paint, Paint::Texture { .. }));
+        assert_eq!(textured, b < NIGHT_TEXTURED, "base {b}");
+        // Both cures at once: one full layer, four ring bands a textured
+        // object, the scene's own objects, all within the renderer's slots
+        // (fix_scene would panic past them).
+        let objects = slots.iter().flatten().count();
+        let rings = slots
+            .iter()
+            .flatten()
+            .filter(|d| matches!(d.paint, Paint::Texture { .. }))
+            .count();
+        let (_, both) = fix_scene(b, 8, tex);
+        assert_eq!(both.iter().flatten().count(), 1 + 4 * rings + objects, "base {b}");
     }
     assert_eq!(
         FIXES[7],
@@ -1238,4 +1267,15 @@ fn the_poison_is_in_no_reference() {
     p.sort_unstable();
     p.dedup();
     assert_eq!(p.len(), POISON.len());
+}
+
+/// The four textures at their table places (no memory: the scenes' shape
+/// only).
+fn test_tex() -> Tex {
+    Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    }
 }

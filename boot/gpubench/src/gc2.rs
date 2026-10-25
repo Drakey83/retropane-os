@@ -800,26 +800,37 @@ pub const RING_ROUNDS: u32 = 500;
 
 /// Run GC2AD, reminder R36 (the owner, 2026-10-25: "Build R36 as the 2-hour
 /// soak at 149.50 / 1 over every 16-bit kind and GC2K's worst, alternating
-/// the ring reversed and one full layer reversed"): each of [`FIX_BASE`]'s
-/// seven scenes with the ring (fix 7), then with one full hidden layer
-/// (fix 2), the clamped v shift in both; every way reversed, taken in turn,
-/// so the two cures alternate render by render. The ring rings textured
-/// objects only: kinds 0, 1 and 7 have none, so their ring ways are drawn
-/// with no cure (GC2AB: 0 of 800 each so at 149.50).
-pub const NIGHT_SCENES: [Scene; 14] = {
-    let mut s = [Scene::Fix(0, 0); 14];
-    let mut b = 0;
+/// the ring reversed and one full layer reversed"; then "combine everything
+/// for the soak"): each of [`FIX_BASE`]'s seven scenes with the ring (fix
+/// 7), then with one full hidden layer (fix 2), and the four textured ones
+/// (FT2, GC2K's worst, kinds 5 and 6) with both at once (fix 8, GC2AC: 0 of
+/// 500 reversed), the clamped v shift in all; every way reversed, taken in
+/// turn, so the cures alternate render by render under the same heat. The
+/// ring rings textured objects only: kinds 0, 1 and 7 have none, so their
+/// ring ways are drawn with no cure (GC2AB: 0 of 800 each so at 149.50) and
+/// both at once would be their full-layer way again.
+pub const NIGHT_SCENES: [Scene; 18] = {
+    let mut s = [Scene::Fix(0, 0); 18];
+    let (mut b, mut n) = (0, 0);
     while b < 7 {
-        s[2 * b] = Scene::Fix(b, 7);
-        s[2 * b + 1] = Scene::Fix(b, 2);
+        s[n] = Scene::Fix(b, 7);
+        s[n + 1] = Scene::Fix(b, 2);
+        n += 2;
+        if b < NIGHT_TEXTURED {
+            s[n] = Scene::Fix(b, 8);
+            n += 1;
+        }
         b += 1;
     }
     s
 };
-pub const NIGHT_WAYS: [(usize, u8); 14] = {
-    let mut w = [(0, REVERSED); 14];
+/// [`FIX_BASE`]'s first four scenes have textured objects (the ring's
+/// work); the last three none.
+pub const NIGHT_TEXTURED: usize = 4;
+pub const NIGHT_WAYS: [(usize, u8); 18] = {
+    let mut w = [(0, REVERSED); 18];
     let mut i = 0;
-    while i < 14 {
+    while i < 18 {
         w[i] = (i, REVERSED);
         i += 1;
     }
