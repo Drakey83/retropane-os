@@ -39,6 +39,13 @@ pub const MARKER: &str = "RETROPANE-TABENCH";
 mod image {
     use core::fmt::Write;
 
+    #[path = "../isolate.rs"]
+    mod isolate;
+
+    /// Run 2 instead of run 1 (`RP_TABENCH_ISOLATE=1`; device build
+    /// `RP_TABENCH_ISOLATE=1 cargo xtask codegen-variant rp-tabench isolate`).
+    const ISOLATE: bool = option_env!("RP_TABENCH_ISOLATE").is_some();
+
     use rp_drv_blit2d::{MBX, reg, reset_core};
     use rp_drv_mbx_display::clock::{self, MBXCLK, with_3d};
     use rp_drv_mbx_display::font;
@@ -630,6 +637,44 @@ mod image {
         label(g.mem.0, &screen, [line, way.name()]);
     }
 
+    /// Run 2's label: "STEP n OF m" and the way.
+    fn step_line(g: &mut Rig, n: usize, m: usize, what: &str) {
+        let mut buf = [0u8; 40];
+        let len = {
+            let mut l = Line(&mut buf, 0);
+            let _ = write!(l, "RUN 2, STEP {n} OF {m}:");
+            l.1
+        };
+        let line = core::str::from_utf8(&buf[..len]).unwrap_or("STEP");
+        let screen = g.screen;
+        label(g.mem.0, &screen, [line, what]);
+    }
+
+    /// Ten pixels run 2 logs: the middles of the first five quads (on the
+    /// screen), then five fixed places.
+    fn isolate_samples(xy: &[u32]) -> [(u32, u32); 10] {
+        let mut s = [
+            (4, 4),
+            (240, 320),
+            (475, 4),
+            (4, 635),
+            (475, 635),
+            (4, 4),
+            (240, 320),
+            (475, 4),
+            (4, 635),
+            (475, 635),
+        ];
+        for (k, p) in xy[..5].iter().enumerate() {
+            let (x, y) = unpack(*p);
+            s[k] = (
+                (x + 8).clamp(0, W as i32 - 1) as u32,
+                (y + 8).clamp(0, H as i32 - 1) as u32,
+            );
+        }
+        s
+    }
+
     /// The pool's pieces: binner scratch, the reference picture, the DMA
     /// staging (whole cache lines).
     /// The SDRAM pool's pieces.
@@ -646,7 +691,8 @@ mod image {
     fn sdram() -> Option<Sdram> {
         let ram = rp_hal_x51v::devices::take_ram_pool()?;
         let (staging, rest) = ram.split_at_mut(STAGING);
-        let (reference, rest) = rest.split_at_mut(TARGET_WORDS);
+        // Room for a 32-bit picture (run 2's control).
+        let (reference, rest) = rest.split_at_mut(TARGET_WORDS * 2);
         let (starts, rest) = rest.split_at_mut(2408);
         let (objects, rest) = rest.split_at_mut(MOST);
         let (xy, rest) = rest.split_at_mut(MOST);
@@ -755,6 +801,15 @@ mod image {
             "memory manager ready: {ready}; DMA channel: {}",
             g.dma.is_some()
         );
+        if ISOLATE {
+            log!("RUN 2 (audit C79): why run 1's TA scenes drew wrong, one change at a time");
+            let (right, all) = isolate::run(&mut g);
+            let (rh, th) = (g.render_hangs, g.ta_hangs);
+            log!(
+                "{MARKER}: DONE - run 2: {right} of {all} TA frames drawn like the binner, {rh} renders past 2 s, {th} TA frames never done"
+            );
+            finish(g, screen, clk0);
+        }
         for (s, &(n, side)) in SETS.iter().enumerate() {
             scatter(g.xy, n, side);
             g.side = side;
@@ -816,6 +871,12 @@ mod image {
         }
         let (rh, th) = (g.render_hangs, g.ta_hangs);
         log!("{MARKER}: DONE - {rh} renders past 2 s, {th} TA frames never done");
+        finish(g, screen, clk0);
+    }
+
+    /// The results screen until a button (10 s at most), the core and the
+    /// clock put back, back to the loader.
+    fn finish(mut g: Rig, screen: Plane, clk0: u32) -> ! {
         label(g.mem.0, &screen, ["RP-TABENCH: DONE", "RESULTS IN THE LOG"]);
         let keypad = arm_keypad();
         hold_until_button(keypad, 10_000_000);

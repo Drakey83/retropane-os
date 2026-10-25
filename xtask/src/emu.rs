@@ -13512,6 +13512,57 @@ pub fn boot_loader_tabench(root: &Path) -> Result<(), String> {
     eprintln!(
         "    tabench OK: the binner drew all six sets repeatably on the modelled 3D core; all 30 TA ways ran and timed out safely (the fork has no TA); back at the loader on a button press"
     );
+    boot_loader_tabench_isolate(root)
+}
+
+/// Run 2 of rp-tabench (`RP_TABENCH_ISOLATE=1`, audit C79): every way's
+/// binner reference draws on the modelled 3D core; every TA frame times
+/// out (the fork has no TA) and the run moves on; it returns on a button.
+fn boot_loader_tabench_isolate(root: &Path) -> Result<(), String> {
+    let release = crate::arm_release(root);
+    let dir = emu_dir(root)?;
+    let loader = dir.join("rp-loader.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    let bin = variant_image(root, "rp-tabench", ("RP_TABENCH_ISOLATE", "1"))?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.query("sendkey ret 200")?;
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-TABENCH: DONE")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(1800),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("tabench run 2: never came back to the loader after the button press")?;
+    if crashed(log) || log.contains("did not return") {
+        return Err(format!("tabench run 2: didn't return cleanly:{log}"));
+    }
+    let references = log.matches("  reference (the binner) rendered in ").count();
+    let ways = log.lines().filter(|l| l.starts_with("WAY ")).count();
+    let done = "RETROPANE-TABENCH: DONE - run 2: 0 of 45 TA frames drawn like the binner";
+    if ways != 9 || references != 9 || !log.contains(done) || log.contains("render past 2 s") {
+        return Err(format!(
+            "tabench run 2: {ways} ways, {references} references drawn (9 and 9 wanted, every TA frame timed out, no render past 2 s):{log}"
+        ));
+    }
+    eprintln!(
+        "    tabench run 2 OK: all 9 ways' binner references drew on the modelled 3D core; all 45 TA frames timed out safely (the fork has no TA)"
+    );
     Ok(())
 }
 

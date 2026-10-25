@@ -254,6 +254,24 @@ words and ten pixel samples logged (as `rp-glesfeat`'s `through_ta`):
 A few minutes on the device, the owner watching (a hang may need a
 reset).
 
+**Run 2 built 2026-10-25** (`RP_TABENCH_ISOLATE=1 cargo xtask
+codegen-variant rp-tabench isolate`, `target/variants/isolate/
+rp-tabench.bin`): 100 quads of 16 x 16, nine ways of five TA frames, each
+after the binner's picture of the same scene under the same conditions
+(the reference, kept in SDRAM; 32-bit pictures compared by colour, the
+TA's clear writing alpha 0): (1) the control, `rp-glesfeat`'s conditions
+(32-bit target, its places: parameter memory `0x600000` 1 MiB, the
+manager's block `0x700000`, tail `0xA00000`, TA regions `0xA20000`; the
+manager set up once; an 8 x 8 texture); then one change each: (2) the
+16-bit target, (3) run 1's places, (4) the manager set up every frame,
+(5) the 64 x 64 texture; (6) the control with a 1 ms wait before the
+render; (7) run 1 as it was; (8) run 1 with the wait; (9) the control with
+`0x85C` bit 7 off (R37's picture half). Logged for each: words unlike the
+binner's a frame, the first frame's TA region array (tiles with a list),
+its first listed tile's list and object words, ten pixels against the
+binner's. `emu-tabench` runs it after run 1: the nine references draw on
+the modelled 3D core, every TA frame times out safely.
+
 ## The choices for the owner
 
 **Q1. Where the TA code lives.**
