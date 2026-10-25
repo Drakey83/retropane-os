@@ -699,3 +699,74 @@ fn gc2v_hidden_layer_lies_under_the_whole_scene() {
     assert!(HIDDEN_WAYS.iter().enumerate().all(|(i, w)| *w == (i, ROWS)));
     assert_eq!(HIDDEN_ROUNDS, 200);
 }
+
+#[test]
+fn gc2y_cures_every_scene_with_both_of_gc2vs_cures() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    for (i, &base) in CURED_BASE.iter().enumerate() {
+        let (bg0, slots0) = order_scene(base, t);
+        let (bg, slots) = order_scene(Scene::Cured(i), t);
+        assert_eq!(bg, bg0, "{i}");
+        // The hidden layer first, opaque, full screen; the scene's own two
+        // objects after it, in order, every texture at texel centres.
+        assert_eq!(
+            slots[0],
+            Some(Draw::rect(
+                0,
+                0,
+                W as i32,
+                H as i32,
+                Paint::Flat(HIDDEN_LAYER)
+            )),
+            "{i}"
+        );
+        assert_eq!(slots0[2], None, "{i}: a free slot for the layer");
+        for (c, o) in slots[1..].iter().zip(&slots0[..2]) {
+            match (c.map(|d| d.paint), o.map(|d| d.paint)) {
+                (
+                    Some(Paint::Texture { tex, uv, tint }),
+                    Some(Paint::Texture {
+                        tex: tex0,
+                        uv: uv0,
+                        tint: tint0,
+                    }),
+                ) => {
+                    assert_eq!((tex, tint), (tex0, tint0));
+                    let half = UV_ONE / (2 * (8 << tex.code));
+                    assert!(half > 0);
+                    for (a, b) in uv.iter().zip(uv0) {
+                        assert_eq!(*a, (b.0 + half, b.1 + half), "{i}");
+                    }
+                }
+                (a, b) => assert_eq!(a, b, "{i}"),
+            }
+            assert_eq!(c.map(|d| d.corners), o.map(|d| d.corners), "{i}");
+        }
+        assert_eq!(order_corner(Scene::Cured(i)), order_corner(base), "{i}");
+    }
+    // FT2's quad: half of its side-32 texel, as GC2V's v shift.
+    if let Some(Paint::Texture { uv, .. }) = order_scene(Scene::Cured(2), t).1[2].map(|d| d.paint) {
+        assert_eq!(uv[0], (UV_ONE / 64, UV_ONE / 64));
+    } else {
+        panic!("FT2's quad textured");
+    }
+    // A scene with no free slot isn't cured.
+    assert_eq!(cure(scene(4, t)), None);
+    // The ways: the cured seven, then FT2 and GC2K's worst uncured.
+    assert_eq!(CURED_SCENES[7..], [Scene::Kind(FT2), Scene::Sweep(0)]);
+    assert!(CURED_WAYS.iter().enumerate().all(|(i, w)| *w == (i, ROWS)));
+    assert_eq!(CURED_SOAK_WAYS, CURED_WAYS[..7]);
+    // Every 16-bit kind of GC2's climb cured.
+    for s in ABOVE_SCENES {
+        assert!(CURED_BASE.contains(&s));
+    }
+    let mhz: std::vec::Vec<u32> = CURED_PLL.iter().map(|&(m, n)| 13_000 * m / n).collect();
+    assert_eq!(mhz, [133_250, 139_750, 143_000, 146_250, 149_500]);
+    assert_eq!(CURED_ROUNDS, [100, 30, 30, 30, 30]);
+    assert_eq!(CURED_SOAK_MINUTES, 120);
+}

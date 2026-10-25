@@ -136,6 +136,28 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "gpubench GC2Y: the cure leaves textures at texel corners",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "                let half = UV_ONE / (2 * (8 << tex.code));",
+        to: "                let half = 0;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2y_cures_every_scene_with_both_of_gc2vs_cures",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2Y: the cure without the hidden layer",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "        [Some(flat(HIDDEN_LAYER, false)), centre(slots[0]), centre(slots[1])],",
+        to: "        [centre(slots[0]), centre(slots[1]), None],",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2y_cures_every_scene_with_both_of_gc2vs_cures",
+        ]),
+    },
+    Mutant {
         name: "hal-mem: the one-pass check misses the last word",
         file: "hal/mem/src/lib.rs",
         from: "        differ += u32::from(v != w);",

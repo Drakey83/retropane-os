@@ -523,7 +523,98 @@ pub enum Scene {
     /// one more object to sort (a cheaper busy tile than [`BUSY_LAYER`]'s
     /// blend, which doubled the render).
     Hidden(bool),
+    /// Run GC2Y's cured scenes: [`CURED_BASE`]'s scene with both of GC2V's
+    /// cures (see [`cure`]).
+    Cured(usize),
 }
+
+/// Run GC2Y's scenes to cure (the owner, 2026-10-25: "Build the
+/// combined-fix test: both cures together at 133.25-149.50, then a soak"):
+/// GC2's six 16-bit kinds and GC2K's worst.
+pub const CURED_BASE: [Scene; 7] = [
+    Scene::Kind(0),
+    Scene::Kind(1),
+    Scene::Kind(FT2),
+    Scene::Kind(5),
+    Scene::Kind(6),
+    Scene::Kind(7),
+    Scene::Sweep(0),
+];
+
+/// Both of GC2V's cures on a scene: every texture sampled at its texels'
+/// centres (its coordinates moved half a texel in u and v: GC2V's top-row
+/// fault, cleared at 143.00 and 146.25 by the v half), and [`HIDDEN_LAYER`]
+/// drawn first under it (GC2K's patch at 133.25, 9 of 200 to 0). `None`
+/// when the scene has no free slot for the layer.
+#[must_use]
+pub fn cure((bg, slots): (u32, [Option<Draw>; 3])) -> Option<(u32, [Option<Draw>; 3])> {
+    if slots[2].is_some() {
+        return None;
+    }
+    let centre = |d: Option<Draw>| {
+        d.map(|mut d| {
+            if let Paint::Texture { tex, uv, tint } = d.paint {
+                let half = UV_ONE / (2 * (8 << tex.code));
+                d.paint = Paint::Texture {
+                    tex,
+                    uv: uv.map(|(u, v)| (u + half, v + half)),
+                    tint,
+                };
+            }
+            d
+        })
+    };
+    Some((
+        bg,
+        [
+            Some(flat(HIDDEN_LAYER, false)),
+            centre(slots[0]),
+            centre(slots[1]),
+        ],
+    ))
+}
+
+/// GC2Y's ways: the seven cured scenes, then FT2 and GC2K's worst uncured
+/// (the controls: wrong at their clocks in GC2T-GC2V).
+pub const CURED_SCENES: [Scene; 9] = [
+    Scene::Cured(0),
+    Scene::Cured(1),
+    Scene::Cured(2),
+    Scene::Cured(3),
+    Scene::Cured(4),
+    Scene::Cured(5),
+    Scene::Cured(6),
+    Scene::Kind(FT2),
+    Scene::Sweep(0),
+];
+pub const CURED_WAYS: [(usize, u8); 9] = [
+    (0, ROWS),
+    (1, ROWS),
+    (2, ROWS),
+    (3, ROWS),
+    (4, ROWS),
+    (5, ROWS),
+    (6, ROWS),
+    (7, ROWS),
+    (8, ROWS),
+];
+/// The soak's ways: the cured scenes only.
+pub const CURED_SOAK_WAYS: [(usize, u8); 7] = [
+    (0, ROWS),
+    (1, ROWS),
+    (2, ROWS),
+    (3, ROWS),
+    (4, ROWS),
+    (5, ROWS),
+    (6, ROWS),
+];
+/// The climb's clocks (13 MHz x M / N): 133.25, 139.75, 143.00, 146.25,
+/// 149.50; 100 rounds at the first, 30 above.
+pub const CURED_PLL: [(u32, u32); 5] = [(41, 4), (43, 4), (44, 4), (45, 4), (23, 2)];
+pub const CURED_ROUNDS: [u32; 5] = [100, 30, 30, 30, 30];
+/// The soak: at the highest clock where every cured way was right, this
+/// many minutes (the owner asleep: a long soak costs no one's time).
+pub const CURED_SOAK_MINUTES: u32 = 120;
 
 /// Run GC2V's hidden layer's colour (opaque; never seen).
 pub const HIDDEN_LAYER: u32 = 0xFF80_4020;
@@ -855,6 +946,10 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
             (bg, slots)
         }
         Scene::Edge(w) => edge_scene(w, t),
+        Scene::Cured(i) => match CURED_BASE[i] {
+            Scene::Cured(_) => (BLACK, [None, None, None]),
+            base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
+        },
         Scene::Hidden(worst) => {
             let (bg, slots) = if worst {
                 sweep_scene(0, t)
@@ -900,6 +995,11 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         Scene::Hidden(false) => patch_corner(0),
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
+        Scene::Cured(i) => match CURED_BASE[i] {
+            Scene::Kind(FT2) => patch_corner(0),
+            Scene::Sweep(w) => SWEEP[w].corner(),
+            _ => (0, 0),
+        },
         Scene::Kind(_) => (0, 0),
     }
 }

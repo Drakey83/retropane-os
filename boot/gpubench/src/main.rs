@@ -7912,7 +7912,24 @@ mod image {
         || GC2_WRITEOUT
         || GC2_TIMING
         || GC2_TEXLOAD
-        || GC2_EDGE;
+        || GC2_EDGE
+        || GC2_CURED;
+
+    /// Run GC2Y (`RP_GPUBENCH_GC2_CURED`, the owner after GC2V, 2026-10-25:
+    /// "Build the combined-fix test: both cures together at 133.25-149.50,
+    /// then a soak"): the six 16-bit kinds and GC2K's worst with both of
+    /// GC2V's cures ([`gc2::cure`]), FT2 and GC2K's worst uncured as
+    /// controls, at [`gc2::CURED_PLL`]; then the cured seven soaked at the
+    /// highest clock where all seven were right ([`GC2Y_SOAK_SECS`]).
+    /// Unattended.
+    const GC2_CURED: bool = option_env!("RP_GPUBENCH_GC2_CURED").is_some();
+
+    /// GC2Y's soak in seconds: [`gc2::CURED_SOAK_MINUTES`] unless
+    /// `RP_GPUBENCH_GC2Y_SOAK_SECS` says otherwise (the emulator's check).
+    const GC2Y_SOAK_SECS: u32 = match option_env!("RP_GPUBENCH_GC2Y_SOAK_SECS") {
+        Some(s) => parse_decimal(s, 10),
+        None => gc2::CURED_SOAK_MINUTES * 60,
+    };
 
     /// Run GC2V (`RP_GPUBENCH_GC2_EDGE`, the owner after GC2U, 2026-10-25:
     /// "Build the edge-isolation test at 146.25, plus a cheaper tile-race fix
@@ -9197,7 +9214,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_EDGE {
+            if GC2_CURED {
+                "the 16-bit kinds' targets inside the safe region (GC2Y: no map; both of GC2V's cures on the six 16-bit kinds and GC2K's worst at 133.25-149.50 / 1, then a soak at the highest clean clock),"
+            } else if GC2_EDGE {
                 "the 16-bit kinds' targets inside the safe region (GC2V: no map; FT2's quad edge isolated at 146.25 / 1, then GC2K's worst at 133.25 / 1 as is, with busy tiles and with a hidden layer),"
             } else if GC2_TEXLOAD {
                 "the 16-bit kinds' targets inside the safe region (GC2U: no map; FT2 and GC2K's worst at 133.25-149.50 / 1 with a 32-bit, a 16-bit and a PVRTC texture, and with busy tiles),"
@@ -9333,7 +9352,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_EDGE {
+        let patch = if GC2_CURED {
+            gc2::CURED_SCENES.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_EDGE {
             gc2::EDGE_SCENES.len().max(gc2::HIDDEN_SCENES.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_TEXLOAD {
             gc2::TEXLOAD_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -9669,7 +9690,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_EDGE {
+                if GC2_CURED {
+                    gc2_cured(g, &mut r, (tex, first, dsig));
+                } else if GC2_EDGE {
                     gc2_edge(g, &mut r, (tex, first, dsig));
                 } else if GC2_TEXLOAD {
                     gc2_texload(g, &mut r, (tex, first, dsig));
@@ -11166,6 +11189,76 @@ mod image {
         }
     }
 
+    /// GC2Y's clock names, in [`gc2::CURED_PLL`]'s order.
+    const CURED_NAMES: [&str; 5] = [
+        "133.25 / 1",
+        "139.75 / 1",
+        "143.00 / 1",
+        "146.25 / 1",
+        "149.50 / 1",
+    ];
+
+    /// Run GC2Y (see [`GC2_CURED`]): the climb, then the soak at the highest
+    /// clock where every cured way was right (none soaked if none was).
+    #[inline(never)]
+    fn gc2_cured(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        const CURED_MASK: u128 = (1 << gc2::CURED_SOAK_WAYS.len()) - 1;
+        let mut best = None;
+        for (pi, &(m, n)) in gc2::CURED_PLL.iter().enumerate() {
+            log!(
+                "  GC2Y climb: divide 1 at {}, the cured seven and FT2 and GC2K's worst uncured",
+                CURED_NAMES[pi]
+            );
+            let wrong = gc2_orders(
+                g,
+                r,
+                (tex, &mut *first, dsig),
+                &OrderPlan {
+                    name: "GC2Y climb",
+                    label: "GC2Y CURED",
+                    scenes: &gc2::CURED_SCENES,
+                    ways: &gc2::CURED_WAYS,
+                    step: (gc2_step(m, n, 0, 1), CURED_NAMES[pi]),
+                    secs: u32::MAX / 1_000_000,
+                    rounds: gc2::CURED_ROUNDS[pi],
+                },
+            );
+            let clean = wrong & CURED_MASK == 0;
+            log!(
+                "  GC2Y climb {}: the cured seven {}",
+                CURED_NAMES[pi],
+                if clean { "all right" } else { "NOT all right" }
+            );
+            if clean {
+                best = Some(pi);
+            }
+        }
+        let Some(pi) = best else {
+            log!("  GC2Y soak: no clock had every cured way right: nothing soaked");
+            return;
+        };
+        let (m, n) = gc2::CURED_PLL[pi];
+        log!(
+            "  GC2Y soak: the cured seven at {} (the highest clock with all right) for {} min",
+            CURED_NAMES[pi],
+            GC2Y_SOAK_SECS / 60
+        );
+        gc2_orders(
+            g,
+            r,
+            (tex, &mut *first, dsig),
+            &OrderPlan {
+                name: "GC2Y soak",
+                label: "GC2Y SOAK",
+                scenes: &gc2::CURED_SCENES[..gc2::CURED_SOAK_WAYS.len()],
+                ways: &gc2::CURED_SOAK_WAYS,
+                step: (gc2_step(m, n, 0, 1), CURED_NAMES[pi]),
+                secs: GC2Y_SOAK_SECS,
+                rounds: u32::MAX,
+            },
+        );
+    }
+
     /// Run GC2V (see [`GC2_EDGE`]): part A at 143.00 and 146.25 / 1, part B
     /// at 133.25 / 1.
     #[inline(never)]
@@ -11516,19 +11609,21 @@ mod image {
     const ORDER_MAX_SCENES: usize = gc2::ORDER_SCENES.len();
     const ORDER_MAX_WAYS: usize = gc2::ORDER_WAYS.len();
 
-    /// A tile-order soak (see [`gc2_order`]) by `plan`.
+    /// A tile-order soak (see [`gc2_order`]) by `plan`: the ways with any
+    /// wrong render, a bit per way (all set when it couldn't run or a render
+    /// wasn't held).
     #[inline(never)]
     fn gc2_orders(
         g: &mut Rig,
         r: &mut Renderer,
         (tex, first, dsig): (gc2::Tex, &mut [u32], bool),
         plan: &OrderPlan,
-    ) {
+    ) -> u128 {
         let (name, label0) = (plan.name, plan.label);
         let (scenes, ways) = (plan.scenes, plan.ways);
         if scenes.len() > ORDER_MAX_SCENES || ways.len() > ORDER_MAX_WAYS {
             log!("  {name}: the plan holds too many scenes or ways: nothing run");
-            return;
+            return u128::MAX;
         }
         let (n_scenes, n_ways) = (scenes.len(), ways.len());
         let k = gc2::FT2;
@@ -11538,7 +11633,7 @@ mod image {
         let (first, rest) = first.split_at_mut(words);
         if rest.len() < n_scenes * words {
             log!("  {name}: not enough SDRAM for the references: nothing run");
-            return;
+            return u128::MAX;
         }
         let set = |g: &mut Rig, r: &mut Renderer, sc: usize, o: u8| {
             r.set_tile_order(tile_order(o));
@@ -11610,7 +11705,7 @@ mod image {
         );
         if !refs_ok || orders_ok != n_ways {
             log!("  GC2O: a reference or an order isn't proven: nothing run at 133.25 / 1");
-            return;
+            return u128::MAX;
         }
         let (s, label) = plan.step;
         let minutes = plan.secs.div_ceil(60);
@@ -11621,12 +11716,16 @@ mod image {
             clock_restore(&mut g.e.regs);
             log!("  {name} {label}: the clock didn't take; Windows Mobile's put back");
             soak_label(g, [label0, label, "CLOCK NOT TAKEN"], SOAK_RED);
-            return;
+            return u128::MAX;
         }
-        log!(
-            "  {name} {label}: lock {lock:?}; {n_ways} ways in turn for {} rounds (stopped at {minutes} min if slower)",
-            plan.rounds
-        );
+        if plan.rounds == u32::MAX {
+            log!("  {name} {label}: lock {lock:?}; {n_ways} ways in turn for {minutes} min");
+        } else {
+            log!(
+                "  {name} {label}: lock {lock:?}; {n_ways} ways in turn for {} rounds (stopped at {minutes} min if slower)",
+                plan.rounds
+            );
+        }
         clock_readback(g);
         r.start_clean();
         // A scene's 3D registers after its first render here, which its
@@ -11689,7 +11788,12 @@ mod image {
                 lines += 1;
                 let all: u32 = wrong_by.iter().sum();
                 let mut l3 = heapless_name();
-                let _ = write!(l3, "ROUND {rounds} OF {} WRONG {all}", plan.rounds);
+                // A soak run by time (no round count): its minutes.
+                let _ = if plan.rounds == u32::MAX {
+                    write!(l3, "MIN {lines} OF {minutes} WRONG {all}")
+                } else {
+                    write!(l3, "ROUND {rounds} OF {} WRONG {all}", plan.rounds)
+                };
                 soak_label(
                     g,
                     [label0, label, l3.as_str()],
@@ -11768,6 +11872,15 @@ mod image {
         let mut l3 = heapless_name();
         let _ = write!(l3, "DONE: {all} WRONG");
         soak_label(g, [label0, label, l3.as_str()], SOAK_BLUE);
+        // The ways with any wrong render (bit per way); every way when the
+        // soak stopped on a render not held.
+        if unheld.is_some() {
+            return u128::MAX;
+        }
+        wrong_by[..n_ways]
+            .iter()
+            .enumerate()
+            .fold(0, |m, (w, &n)| if n > 0 { m | 1 << w } else { m })
     }
 
     // ---- Run GC2R: what divide 1 changes, and how it is entered (2026-10-23) ----

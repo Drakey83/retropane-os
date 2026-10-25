@@ -5075,6 +5075,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2y = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_CURED", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2Y_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5107,7 +5116,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 65] = [
+    let runs: [GpubenchRun; 66] = [
         (
             "run A",
             &run_a,
@@ -5357,6 +5366,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2Y: both cures over the climb, then the soak at the highest
+        // clean clock (the emulator draws exactly: 149.50, a 20 s soak).
+        (
+            "run GC2Y",
+            &run_gc2y,
+            &[
+                "GC2Y climb 133.25 / 1: the cured seven all right",
+                "GC2Y climb 149.50 / 1: the cured seven all right",
+                "GC2Y soak: the cured seven at 149.50 / 1 (the highest clock with all right) for 0 min",
+                "GC2Y soak 149.50 / 1: controls at Windows Mobile's clock after: 7 of 7 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
