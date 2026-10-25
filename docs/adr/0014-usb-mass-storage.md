@@ -117,6 +117,18 @@ model with a built-in host that enumerates like Windows.
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.
+   - **amended 2026-10-25 (the owner's ruling A, reminder R41):** after the
+     boot-file guard refuses a PC write, the medium goes away and comes back
+     (as after the loader's own writes) once 500 ms pass with no further
+     refusal (`REFUSAL_QUIET_MS`). Found on the X51v the same day: Windows
+     deletes by changing its cached folder and FAT first, so Explorer showed
+     `haret.exe` deleted although the card refused it (byte-identical after),
+     and its cache then counted the file's clusters free, where its next file
+     could go and be refused. The change makes Windows re-read the card: the
+     file reappears within seconds and nothing is written over a false view.
+     Rejected: B, leaving Windows' view until the next re-offer (item 65's
+     behaviour, accepted 2026-10-24); C, the read-only attribute as well (not
+     chosen).
    - **amended 2026-10-24 (reminder R22, approved by the owner):** a card
      an image run left alone keeps the PC's view: after a run that
      returned (not a crash, hang or hand-over), a unit is **vouched for**

@@ -1259,3 +1259,42 @@ fn the_trace_records_each_command_its_blocks_time_and_outcome() {
     assert!(msc.traced(3).is_some() && msc.traced(4).is_none());
     assert_eq!(msc.traced(0).unwrap().at_ms, 1000);
 }
+
+#[test]
+fn a_medium_change_mid_transfer_waits_for_the_command_to_end() {
+    // The loader may change a medium from its main loop at any time (a
+    // write the guard refused, a CF card that stopped answering): a read
+    // the host is in the middle of still completes, whole, before the
+    // medium goes away; cut off, the host waits for a reply that never
+    // comes (found in emu-drive, 2026-10-25).
+    let mut buf = vec![0u8; 2 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(64);
+    mount(&mut msc, &mut disk);
+    assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 0);
+    let mut pipe = Pipe::default();
+    pipe.out
+        .push_back(cbw(7, 32 * BLOCK as u32, true, 0, &read10(0, 32)));
+    msc.poll(&mut pipe, &mut [&mut disk], 1000);
+    let csw = |p: &Pipe| {
+        p.ins
+            .last()
+            .is_some_and(|l| l.len() == 13 && l[..4] == 0x5342_5355u32.to_le_bytes())
+    };
+    assert!(!csw(&pipe), "the read is still under way");
+    msc.medium_changed(0);
+    assert!(!msc.away(0), "held while the command moves data");
+    for _ in 0..100_000 {
+        if csw(&pipe) {
+            break;
+        }
+        msc.poll(&mut pipe, &mut [&mut disk], 1000);
+    }
+    let last = pipe.ins.pop().expect("a CSW");
+    assert_eq!(last[12], 0, "the read succeeded");
+    assert_eq!(pipe.ins.concat().len(), 32 * BLOCK, "every block sent");
+    // Then the change: away, as for any device-side change.
+    msc.poll(&mut pipe, &mut [&mut disk], 1000);
+    assert!(msc.away(0));
+    assert_eq!(tur_at(&mut msc, &mut disk, 1000), (1, (0x02, 0x3A, 0x00)));
+}

@@ -84,6 +84,15 @@ mod image {
     /// clusters and for reading a written file back (the bigger it is, the
     /// fewer card commands each takes).
     const SCRATCH: usize = 64 * 1024;
+    /// After the guard refuses a PC write, the medium changes once the PC
+    /// has had this long without another refusal (ADR-0014 rule 3, the
+    /// owner's ruling A, 2026-10-25): Windows has already updated its own
+    /// view of the folder and FAT when the write is refused, so it must
+    /// re-read the card, or it shows a protected file deleted and may put
+    /// its next file in that file's clusters. The wait lets the PC see
+    /// the write's own "write-protected" answer first, and a burst of
+    /// retries end in one change.
+    const REFUSAL_QUIET_MS: u32 = 500;
 
     /// The SD card.
     type Sd = SdCard<PxaMmc<Mmio, Dma>>;
@@ -119,6 +128,9 @@ mod image {
         /// What the PC may not change, built from the card as it is now;
         /// `None` with no card or when it couldn't be built.
         guard: Option<Guard>,
+        /// When the guard last refused a PC write (ms): the medium is made
+        /// to change once the refusals stop ([`REFUSAL_QUIET_MS`]).
+        refused_at: Option<u32>,
         /// Offered to the PC (`drive off` makes it "no medium", like an
         /// empty card reader: the PC stops using it at once).
         offered: bool,
@@ -299,10 +311,11 @@ mod image {
                 .read_blocks(lba, buf)
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-            if !self.writable
-                || self.locked
-                || !self.guard.as_ref().is_some_and(|g| g.allows(lba, buf))
-            {
+            if !self.writable || self.locked {
+                return Err(BlockError::ReadOnly);
+            }
+            if !self.guard.as_ref().is_some_and(|g| g.allows(lba, buf)) {
+                self.refused_at = Some(now_ms());
                 return Err(BlockError::ReadOnly);
             }
             self.card
@@ -1589,6 +1602,8 @@ mod image {
         /// and after anything the loader wrote; `None` with no card or when
         /// it couldn't be built.
         guard: Option<Guard>,
+        /// When the guard last refused a PC write (ms), as [`Lun`]'s.
+        refused_at: Option<u32>,
         /// Times the detect line settled to a new level (diagnostics: a
         /// line that flaps would look like the card coming and going).
         changes: u32,
@@ -1774,7 +1789,11 @@ mod image {
             }
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-            if !self.writable || !self.guard.as_ref().is_some_and(|g| g.allows(lba, buf)) {
+            if !self.writable {
+                return Err(BlockError::ReadOnly);
+            }
+            if !self.guard.as_ref().is_some_and(|g| g.allows(lba, buf)) {
+                self.refused_at = Some(now_ms());
                 return Err(BlockError::ReadOnly);
             }
             match &mut self.slot {
@@ -2798,6 +2817,7 @@ mod image {
             spare,
             writable: true,
             guard: None,
+            refused_at: None,
             offered: true,
             inserted,
             locked,
@@ -2822,6 +2842,7 @@ mod image {
             seen: cf_in,
             writable: true,
             guard: None,
+            refused_at: None,
             changes: 0,
             ready: gpio.read(CF_READY),
             events: CfEvents {
@@ -3148,6 +3169,16 @@ mod image {
                 &mut [&mut lun, &mut cf],
                 now_ms(),
             );
+            for (unit, at) in [(0, &mut lun.refused_at), (1, &mut cf.refused_at)] {
+                if at.is_some_and(|t| now_ms().wrapping_sub(t) >= REFUSAL_QUIET_MS) {
+                    *at = None;
+                    msc.medium_changed(unit);
+                    let _ = writeln!(
+                        log,
+                        "drive {unit}: a write the guard refused: the PC re-reads the card"
+                    );
+                }
+            }
             cf.poll_ready(&mut gpio);
             if cf.drop_if_dead() {
                 msc.medium_changed(1);

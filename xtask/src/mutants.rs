@@ -2314,6 +2314,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "msc: a medium change cuts off the transfer under way",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "if self.phase != Phase::Command {",
+        to: "if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "a_medium_change_mid_transfer_waits_for_the_command_to_end",
+        ]),
+    },
+    Mutant {
         name: "mm: a frame range added over frames already owned",
         file: "kernel/mm/src/frames.rs",
         from: "if (start..end).any(|f| self.owns(f)) {",

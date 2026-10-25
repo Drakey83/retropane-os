@@ -174,6 +174,9 @@ impl Sense {
 #[derive(Clone, Copy, Debug, Default)]
 struct Unit {
     sense: Sense,
+    /// The device changed the medium while a command was moving data: the
+    /// change waits for the command to end ([`Msc::medium_changed`]).
+    change_due: bool,
     /// The device changed the medium: the next command reports it.
     attention: bool,
     /// The host ejected the medium: not present until offered again.
@@ -398,9 +401,26 @@ impl<'b> Msc<'b> {
     /// offered at once with the unit attention (a card inserted, or one
     /// attached after the host enumerated, shows up without seconds of
     /// "no medium"). Also offers an ejected medium again.
+    ///
+    /// Called while a command is moving data (the main loop may call it any
+    /// time: a guard's refusal, a card that stopped answering), the change
+    /// waits for that command to end, so its transfer and the blocks read
+    /// ahead for it are never cut off (the PC would wait for a reply that
+    /// never comes).
     pub fn medium_changed(&mut self, lun: usize) {
+        if self.phase != Phase::Command {
+            if let Some(u) = self.units.get_mut(lun) {
+                u.change_due = true;
+            }
+            return;
+        }
+        self.change_now(lun);
+    }
+
+    fn change_now(&mut self, lun: usize) {
         self.ahead = None;
         if let Some(u) = self.units.get_mut(lun) {
+            u.change_due = false;
             u.ejected = false;
             u.away_seen = 0;
             if u.shown || u.away.is_some() {
@@ -477,6 +497,14 @@ impl<'b> Msc<'b> {
         }
         // Bounded, so the caller's loop keeps servicing everything else.
         for _ in 0..64 {
+            // Changes held while a command ran, now that none does.
+            if self.phase == Phase::Command {
+                for lun in 0..self.units.len() {
+                    if self.units[lun].change_due {
+                        self.change_now(lun);
+                    }
+                }
+            }
             let progressed = match self.phase {
                 Phase::Command => self.take_command(pipe, luns),
                 Phase::SendResp => self.send_resp(pipe),
