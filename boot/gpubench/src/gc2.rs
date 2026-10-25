@@ -568,22 +568,30 @@ const fn fix(tex: TexFix, hidden: usize, busy: bool) -> Fix {
 /// narrower texture shifts with one hidden layer, then the clamped-v shift
 /// with two and four hidden layers, and with one and the busy layer (the
 /// cure that cleared GC2K's patch at 133.25, at 85% more render time).
-pub const FIXES: [Fix; 6] = [
+pub const FIXES: [Fix; 7] = [
     fix(TexFix::V, 1, false),
     fix(TexFix::ClampUv, 1, false),
     fix(TexFix::ClampV, 1, false),
     fix(TexFix::ClampV, 2, false),
     fix(TexFix::ClampV, 4, false),
     fix(TexFix::ClampV, 1, true),
+    // Run GC2AA: the clamped v shift with no hidden layer (the tile order
+    // alone against GC2K's patch).
+    fix(TexFix::ClampV, 0, false),
 ];
 
 /// GC2Z's scenes to fix: FT2 and GC2K's worst (clamped textures), kinds 5
-/// and 6 (wrapping, repeated textures: 6 broke under GC2Y's shift).
-pub const FIX_BASE: [Scene; 4] = [
+/// and 6 (wrapping, repeated textures: 6 broke under GC2Y's shift); then
+/// kinds 0, 1 and 7 (run GC2AA's soak: every 16-bit kind).
+pub const FIX_BASE: [Scene; 7] = [
     Scene::Kind(FT2),
     Scene::Sweep(0),
     Scene::Kind(5),
     Scene::Kind(6),
+    // Run GC2AA's soak: the untextured kinds too (every GC2 16-bit kind).
+    Scene::Kind(0),
+    Scene::Kind(1),
+    Scene::Kind(7),
 ];
 
 /// Part 1, the texture shifts at 143.00-149.50 / 1: every base scene with
@@ -632,6 +640,81 @@ pub const FIX_CORNER_SCENES: [Scene; 4] = [
 pub const FIX_CORNER_WAYS: [(usize, u8); 4] = [(0, ROWS), (1, ROWS), (2, ROWS), (3, ROWS)];
 /// 1,000 rounds a way: one hidden layer's 0.43% expects about 4.
 pub const FIX_CORNER_ROUNDS: u32 = 1000;
+
+/// Run GC2AA (the owner, 2026-10-25: "Look for a corner fix that costs
+/// nothing at 139.75-149.50, then soak the winner"): GC2K's worst with the
+/// clamped v shift and one hidden layer, and with none; GC2P's columns
+/// reversed (40 wrong in rows against 1 there, at no cost) and reversed.
+pub const FREE_SCENES: [Scene; 2] = [Scene::Fix(1, 2), Scene::Fix(1, 6)];
+/// The ways, in order: one layer in rows (the control, 3 of 1,000 at
+/// 139.75 in GC2Z), one layer columns reversed, none columns reversed, one
+/// layer reversed.
+pub const FREE_WAYS: [(usize, u8); 4] = [
+    (0, ROWS),
+    (0, COLUMNS_REVERSED),
+    (1, COLUMNS_REVERSED),
+    (0, REVERSED),
+];
+/// Which free ways win first when several are right at a clock: the new
+/// ones before the control.
+pub const FREE_PREFER: [usize; 4] = [1, 2, 3, 0];
+/// The clocks (13 MHz x M / N) and rounds a way: 139.75 (1,000: the
+/// control's 0.3% shows), 146.25 and 149.50 (500).
+pub const FREE_PLL: [(u32, u32, u32); 3] = [(43, 4, 1000), (45, 4, 500), (23, 2, 500)];
+/// The soak: the winner over every 16-bit kind and GC2K's worst, with one
+/// hidden layer ([`FREE_SOAK_SCENES`]`[0]`) or none (`[1]`), for
+/// [`FREE_SOAK_MINUTES`].
+pub const FREE_SOAK_SCENES: [[Scene; 7]; 2] = [
+    [
+        Scene::Fix(0, 2),
+        Scene::Fix(1, 2),
+        Scene::Fix(2, 2),
+        Scene::Fix(3, 2),
+        Scene::Fix(4, 2),
+        Scene::Fix(5, 2),
+        Scene::Fix(6, 2),
+    ],
+    [
+        Scene::Fix(0, 6),
+        Scene::Fix(1, 6),
+        Scene::Fix(2, 6),
+        Scene::Fix(3, 6),
+        Scene::Fix(4, 6),
+        Scene::Fix(5, 6),
+        Scene::Fix(6, 6),
+    ],
+];
+/// The soak's ways in each tile order (rows, reversed, columns reversed).
+pub const FREE_SOAK_WAYS: [[(usize, u8); 7]; 3] = [
+    [
+        (0, ROWS),
+        (1, ROWS),
+        (2, ROWS),
+        (3, ROWS),
+        (4, ROWS),
+        (5, ROWS),
+        (6, ROWS),
+    ],
+    [
+        (0, REVERSED),
+        (1, REVERSED),
+        (2, REVERSED),
+        (3, REVERSED),
+        (4, REVERSED),
+        (5, REVERSED),
+        (6, REVERSED),
+    ],
+    [
+        (0, COLUMNS_REVERSED),
+        (1, COLUMNS_REVERSED),
+        (2, COLUMNS_REVERSED),
+        (3, COLUMNS_REVERSED),
+        (4, COLUMNS_REVERSED),
+        (5, COLUMNS_REVERSED),
+        (6, COLUMNS_REVERSED),
+    ],
+];
+pub const FREE_SOAK_MINUTES: u32 = 60;
 
 /// `d`'s texture coordinates moved half a texel as `how` says (none for an
 /// untextured object, or a wrapping texture under the clamped-only fixes).

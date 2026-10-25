@@ -186,6 +186,28 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "gpubench GC2AA: the no-layer way given a hidden layer",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    fix(TexFix::ClampV, 0, false),\n];",
+        to: "    fix(TexFix::ClampV, 1, false),\n];",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2aa_tries_the_free_cures_and_soaks_every_kind",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2AA: the control preferred first",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const FREE_PREFER: [usize; 4] = [1, 2, 3, 0];",
+        to: "pub const FREE_PREFER: [usize; 4] = [0, 1, 2, 3];",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2aa_tries_the_free_cures_and_soaks_every_kind",
+        ]),
+    },
+    Mutant {
         name: "hal-mem: the one-pass check misses the last word",
         file: "hal/mem/src/lib.rs",
         from: "        differ += u32::from(v != w);",

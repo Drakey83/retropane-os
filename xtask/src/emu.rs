@@ -5092,6 +5092,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2aa = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_FREE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AA_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5124,7 +5133,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 67] = [
+    let runs: [GpubenchRun; 68] = [
         (
             "run A",
             &run_a,
@@ -5374,6 +5383,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AA: the free corner cures, then the winner soaked (the
+        // emulator draws exactly: every way right, the first preferred at
+        // 149.50, a 20 s soak).
+        (
+            "run GC2AA",
+            &run_gc2aa,
+            &[
+                "GC2AA 139.75 / 1: 1000 rounds (4000 renders)",
+                "GC2AA 149.50 / 1: right in every render: one hidden layer, columns reversed",
+                "GC2AA soak: one hidden layer, columns reversed at 149.50 / 1 over every 16-bit kind and GC2K's worst, 0 min",
+                "GC2AA soak 149.50 / 1: controls at Windows Mobile's clock after: 7 of 7 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

@@ -7914,7 +7914,23 @@ mod image {
         || GC2_TEXLOAD
         || GC2_EDGE
         || GC2_CURED
-        || GC2_FIX;
+        || GC2_FIX
+        || GC2_FREE;
+
+    /// Run GC2AA (`RP_GPUBENCH_GC2_FREE`, the owner after GC2Z, 2026-10-25:
+    /// "Look for a corner fix that costs nothing at 139.75-149.50, then soak
+    /// the winner"): GC2K's worst in [`gc2::FREE_WAYS`] at
+    /// [`gc2::FREE_PLL`]; then the way right at the highest clock (by
+    /// [`gc2::FREE_PREFER`]) over every 16-bit kind and GC2K's worst for
+    /// [`GC2AA_SOAK_SECS`]. Unattended.
+    const GC2_FREE: bool = option_env!("RP_GPUBENCH_GC2_FREE").is_some();
+
+    /// GC2AA's soak in seconds: [`gc2::FREE_SOAK_MINUTES`] unless
+    /// `RP_GPUBENCH_GC2AA_SOAK_SECS` says otherwise (the emulator's check).
+    const GC2AA_SOAK_SECS: u32 = match option_env!("RP_GPUBENCH_GC2AA_SOAK_SECS") {
+        Some(s) => parse_decimal(s, 10),
+        None => gc2::FREE_SOAK_MINUTES * 60,
+    };
 
     /// Run GC2Z (`RP_GPUBENCH_GC2_FIX`, the owner after GC2Y, 2026-10-25:
     /// "Build the narrower texture fix and a stronger corner-patch fix,
@@ -9224,7 +9240,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_FIX {
+            if GC2_FREE {
+                "the 16-bit kinds' targets inside the safe region (GC2AA: no map; free corner cures on GC2K's worst at 139.75-149.50 / 1, then the winner soaked over every 16-bit kind),"
+            } else if GC2_FIX {
                 "the 16-bit kinds' targets inside the safe region (GC2Z: no map; the narrower texture shifts at 143.00-149.50 / 1, then stronger corner cures at 139.75 / 1),"
             } else if GC2_CURED {
                 "the 16-bit kinds' targets inside the safe region (GC2Y: no map; both of GC2V's cures on the six 16-bit kinds and GC2K's worst at 133.25-149.50 / 1, then a soak at the highest clean clock),"
@@ -9364,7 +9382,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_FIX {
+        let patch = if GC2_FREE {
+            gc2::FREE_SOAK_SCENES[0].len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_FIX {
             gc2::FIX_TEX_SCENES.len().max(gc2::FIX_CORNER_SCENES.len())
                 * gc2::words(gc2::FT2) as usize
         } else if GC2_CURED {
@@ -9705,7 +9725,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_FIX {
+                if GC2_FREE {
+                    gc2_free(g, &mut r, (tex, first, dsig));
+                } else if GC2_FIX {
                     gc2_fix(g, &mut r, (tex, first, dsig));
                 } else if GC2_CURED {
                     gc2_cured(g, &mut r, (tex, first, dsig));
@@ -11204,6 +11226,75 @@ mod image {
                 }
             }
         }
+    }
+
+    /// Run GC2AA (see [`GC2_FREE`]).
+    #[inline(never)]
+    fn gc2_free(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        const NAMES: [&str; 3] = ["139.75 / 1", "146.25 / 1", "149.50 / 1"];
+        const WAY_NAMES: [&str; 4] = [
+            "one hidden layer, rows",
+            "one hidden layer, columns reversed",
+            "no hidden layer, columns reversed",
+            "one hidden layer, reversed",
+        ];
+        let mut winner = None;
+        for (pi, &(m, n, rounds)) in gc2::FREE_PLL.iter().enumerate() {
+            log!(
+                "  GC2AA: GC2K's worst at {}, {rounds} rounds: {WAY_NAMES:?}",
+                NAMES[pi]
+            );
+            let wrong = gc2_orders(
+                g,
+                r,
+                (tex, &mut *first, dsig),
+                &OrderPlan {
+                    name: "GC2AA",
+                    label: "GC2AA CORNER",
+                    scenes: &gc2::FREE_SCENES,
+                    ways: &gc2::FREE_WAYS,
+                    step: (gc2_step(m, n, 0, 1), NAMES[pi]),
+                    secs: u32::MAX / 1_000_000,
+                    rounds,
+                },
+            );
+            if let Some(&w) = gc2::FREE_PREFER.iter().find(|&&w| wrong & 1 << w == 0) {
+                log!(
+                    "  GC2AA {}: right in every render: {}",
+                    NAMES[pi],
+                    WAY_NAMES[w]
+                );
+                winner = Some((pi, w));
+            } else {
+                log!("  GC2AA {}: no way right in every render", NAMES[pi]);
+            }
+        }
+        let Some((pi, w)) = winner else {
+            log!("  GC2AA soak: no way was right at any clock: nothing soaked");
+            return;
+        };
+        let (m, n, _) = gc2::FREE_PLL[pi];
+        let (sc, order) = gc2::FREE_WAYS[w];
+        log!(
+            "  GC2AA soak: {} at {} over every 16-bit kind and GC2K's worst, {} min",
+            WAY_NAMES[w],
+            NAMES[pi],
+            GC2AA_SOAK_SECS / 60
+        );
+        gc2_orders(
+            g,
+            r,
+            (tex, &mut *first, dsig),
+            &OrderPlan {
+                name: "GC2AA soak",
+                label: "GC2AA SOAK",
+                scenes: &gc2::FREE_SOAK_SCENES[sc],
+                ways: &gc2::FREE_SOAK_WAYS[usize::from(order)],
+                step: (gc2_step(m, n, 0, 1), NAMES[pi]),
+                secs: GC2AA_SOAK_SECS,
+                rounds: u32::MAX,
+            },
+        );
     }
 
     /// Run GC2Z (see [`GC2_FIX`]).

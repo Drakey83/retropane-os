@@ -874,3 +874,56 @@ fn gc2z_fixes_shift_only_what_they_name_and_layer_in_order() {
     assert_eq!(mhz, [143_000, 146_250, 149_500]);
     assert_eq!((FIX_TEX_ROUNDS, FIX_CORNER_ROUNDS), (30, 1000));
 }
+
+#[test]
+fn gc2aa_tries_the_free_cures_and_soaks_every_kind() {
+    // The two scenes: GC2K's worst, the clamped v shift, one hidden layer
+    // and none.
+    for (s, hidden) in FREE_SCENES.iter().zip([1, 0]) {
+        let Scene::Fix(b, f) = *s else {
+            panic!("a fix");
+        };
+        assert_eq!(FIX_BASE[b], Scene::Sweep(0));
+        assert_eq!(
+            FIXES[f],
+            Fix {
+                tex: TexFix::ClampV,
+                hidden,
+                busy: false
+            }
+        );
+    }
+    assert_eq!(
+        FREE_WAYS,
+        [
+            (0, ROWS),
+            (0, COLUMNS_REVERSED),
+            (1, COLUMNS_REVERSED),
+            (0, REVERSED)
+        ]
+    );
+    let mut p = FREE_PREFER;
+    p.sort_unstable();
+    assert_eq!(p, [0, 1, 2, 3]);
+    assert_eq!(FREE_PREFER[3], 0, "the control last");
+    let mhz: std::vec::Vec<(u32, u32)> = FREE_PLL
+        .iter()
+        .map(|&(m, n, r)| (13_000 * m / n, r))
+        .collect();
+    assert_eq!(mhz, [(139_750, 1000), (146_250, 500), (149_500, 500)]);
+    // The soak: every 16-bit kind and GC2K's worst, once each, with the
+    // winner's hidden layers, in each order.
+    let base: std::vec::Vec<Scene> = FIX_BASE.to_vec();
+    for k in [0, 1, FT2, 5, 6, 7] {
+        assert!(base.contains(&Scene::Kind(k)), "{k}");
+    }
+    assert!(base.contains(&Scene::Sweep(0)));
+    for (scenes, f) in FREE_SOAK_SCENES.iter().zip([2, 6]) {
+        assert_eq!(*scenes, core::array::from_fn(|b| Scene::Fix(b, f)));
+    }
+    for (o, ways) in FREE_SOAK_WAYS.iter().enumerate() {
+        assert!(ways.iter().enumerate().all(|(i, w)| *w == (i, o as u8)));
+    }
+    assert_eq!([ROWS, REVERSED, COLUMNS_REVERSED], [0, 1, 2]);
+    assert_eq!(FREE_SOAK_MINUTES, 60);
+}
