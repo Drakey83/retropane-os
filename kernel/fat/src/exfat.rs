@@ -1488,6 +1488,106 @@ impl<D: BlockDevice> ExVolume<D> {
     }
 }
 
+impl<D: BlockDevice> ExVolume<D> {
+    /// A guard protecting the files and folders in `names` (paths) that
+    /// exist (missing ones are skipped), as [`crate::Volume::guard`] does
+    /// on FAT (see [`crate::guard`]). Fails, so the caller keeps the card
+    /// read-only, when a file is more fragmented than the guard records or
+    /// a protected name needs more than one name entry (over 15
+    /// characters).
+    #[inline(never)]
+    pub fn guard(&mut self, names: &[&str]) -> Result<crate::Guard, Error> {
+        use crate::guard::{
+            EX_SET, EX_VOLATILE, ExGuard, ExProtected, FILES, add_run, sector_hash,
+        };
+        let mut boot = [0u8; 120];
+        let mut region = [0u64; 23];
+        let mut fat_sectors = 0;
+        for k in 0..24u32 {
+            self.dev.read_blocks(self.base + k, &mut self.buf)?;
+            match k {
+                0 => {
+                    boot.copy_from_slice(&self.buf[..120]);
+                    fat_sectors = le32(&self.buf, 84);
+                }
+                12 => region[11] = sector_hash(&self.buf, &EX_VOLATILE),
+                _ => region[k as usize - 1] = sector_hash(&self.buf, &[]),
+            }
+        }
+        let mut partitions = [0u8; 66];
+        if self.base != 0 {
+            self.dev.read_blocks(0, &mut self.buf)?;
+            partitions.copy_from_slice(&self.buf[446..512]);
+        }
+        let mut g = ExGuard {
+            boot,
+            region,
+            fat_start: self.fat_start,
+            fat_sectors,
+            heap_start: self.heap_start,
+            cluster_shift: self.cluster_shift,
+            bitmap: self.bitmap()?,
+            files: [ExProtected::default(); FILES],
+            count: 0,
+        };
+        let cb = self.cluster_bytes() as u64;
+        for name in names.iter().take(FILES) {
+            let found = self
+                .parent_of(name)
+                .and_then(|(dir, leaf)| Ok((dir, self.find_set(dir, leaf)?)));
+            let (dir, (f, at)) = match found {
+                Ok(x) => x,
+                Err(Error::NotFound) => continue,
+                Err(e) => return Err(e),
+            };
+            if at.count > EX_SET {
+                return Err(Error::Corrupt);
+            }
+            let mut p = ExProtected {
+                entries: at.count,
+                folder: f.is_dir,
+                chained: !f.is_dir && !f.contiguous,
+                ..ExProtected::default()
+            };
+            // Each entry's place: the set may run into the directory's
+            // next sector.
+            for k in 0..at.count {
+                let slot = at.slot + k;
+                let lba = if slot < SLOTS {
+                    at.lba
+                } else {
+                    self.dir_sector(dir, at.nth + 1)?.ok_or(Error::Corrupt)?
+                };
+                p.at[k] = (lba, ((slot % SLOTS) * ENTRY) as u16);
+                p.set[k] = at.set[k];
+            }
+            // A file's clusters (a folder's aren't kept: the PC adds to it).
+            if !f.is_dir && f.size > 0 {
+                let n = f.size.div_ceil(cb);
+                if n > u64::from(self.clusters) || !self.valid_cluster(f.first_cluster) {
+                    return Err(Error::Corrupt);
+                }
+                let mut c = f.first_cluster;
+                for k in 0..n {
+                    if !self.valid_cluster(c) || !add_run(&mut p.extents, &mut p.runs, c) {
+                        return Err(Error::Corrupt);
+                    }
+                    if k + 1 < n {
+                        c = if f.contiguous {
+                            c + 1
+                        } else {
+                            self.fat_next(c)?.ok_or(Error::Corrupt)?
+                        };
+                    }
+                }
+            }
+            g.files[g.count] = p;
+            g.count += 1;
+        }
+        Ok(crate::Guard::exfat(self.base, partitions, g))
+    }
+}
+
 /// A small exFAT formatter (host only), for the tests and the emulator's
 /// card: MBR with one partition (type 0x07), the boot region with its
 /// checksum, the FAT, an allocation bitmap, an up-case table, and files in

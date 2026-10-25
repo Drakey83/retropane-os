@@ -6,6 +6,7 @@
 use rp_hal_api::BlockError;
 
 use super::*;
+use crate::FAT_PER_SECTOR;
 use crate::format::{self, Entry, Image, PARTITION_START};
 
 const BOOT: [&str; 4] = ["retropane.bin", "haret.exe", "startup.txt", "default.txt"];
@@ -371,4 +372,401 @@ fn a_boot_folder_keeps_its_entry_and_its_files() {
         Err(BlockError::ReadOnly)
     );
     assert_eq!(read(&mut v, "RetroPane/retropane.bin"), loader);
+}
+
+// --- Every format (ADR-0036 point 2) ---------------------------------------
+
+use crate::AnyVolume;
+use crate::mkfs::{self, Fs};
+
+/// A card formatted by `mkfs` as `fs`, the boot files and a README put on
+/// it, the guard built and armed; its partition's first sector. With
+/// `scatter`, the card is filled first and only one-cluster holes are left
+/// for the loader, so its chain is several runs.
+fn formatted(fs: Fs, total: u32, cluster: u32, scatter: bool) -> (Guarded, u32, Vec<u8>) {
+    let l = mkfs::plan(
+        total,
+        &mkfs::Options {
+            fs: Some(fs),
+            cluster_bytes: Some(cluster),
+            align_sectors: None,
+            label: "X51V",
+            serial: 7,
+        },
+    )
+    .unwrap();
+    let mut dev = Guarded {
+        data: vec![0u8; total as usize * SECTOR],
+        guard: None,
+        refused: 0,
+    };
+    mkfs::write(&mut dev, &l, &mut [0u8; 8192]).unwrap();
+    let cb = cluster as usize;
+    let loader = pattern(5 * cb + 100, 7); // six clusters
+    let mut scratch = vec![0u8; 8192];
+    let g = {
+        let mut v = AnyVolume::mount(&mut dev, l.part_start).unwrap();
+        v.put("haret.exe", &pattern(3000, 3), &mut scratch).unwrap();
+        v.put("startup.txt", b"set ramaddr 0xa8000000\n", &mut scratch)
+            .unwrap();
+        v.put("README.txt", b"hello", &mut scratch).unwrap();
+        if scatter {
+            for i in 0..16 {
+                v.put(&format!("fill/h{i}"), &pattern(cb, i), &mut scratch)
+                    .unwrap();
+            }
+            for size in [1024 * cb, 64 * cb, cb] {
+                for i in 0.. {
+                    let name = format!("fill/f{size}-{i}");
+                    if v.put(&name, &pattern(size, 9), &mut scratch).is_err() {
+                        break;
+                    }
+                }
+            }
+            // Eight holes: six for the loader, room for its entry.
+            for i in (1..16).step_by(2) {
+                v.remove(&format!("fill/h{i}")).unwrap();
+            }
+        }
+        v.put("retropane.bin", &loader, &mut scratch).unwrap();
+        let g = v.guard(&BOOT).unwrap();
+        assert_eq!(g.files(), 3, "{fs:?}: default.txt is absent and skipped");
+        g
+    };
+    dev.guard = Some(g);
+    (dev, l.part_start, loader)
+}
+
+fn read_any(dev: &mut Guarded, base: u32, name: &str) -> Vec<u8> {
+    let mut v = AnyVolume::mount(dev, base).unwrap();
+    let mut out = Vec::new();
+    v.read_back(name, &mut [0u8; 4096], &mut |c| out.extend_from_slice(c))
+        .unwrap();
+    out
+}
+
+const FORMATS: [(Fs, u32, u32); 4] = [
+    (Fs::Fat12, 4096, 512),
+    (Fs::Fat16, 20_000, 512),
+    (Fs::Fat32, 140_000, 512),
+    (Fs::ExFat, 8192, 512),
+];
+
+#[test]
+fn every_format_lets_everyday_changes_through() {
+    for (fs, total, cluster) in FORMATS {
+        let (mut dev, base, loader) = formatted(fs, total, cluster, false);
+        let mut scratch = vec![0u8; 8192];
+        {
+            let mut v = AnyVolume::mount(&mut dev, base).unwrap();
+            v.put("photos/cat.jpg", &pattern(9000, 1), &mut scratch)
+                .unwrap();
+            v.put("README.txt", b"changed", &mut scratch).unwrap();
+            v.put("notes.txt", b"x", &mut scratch).unwrap();
+            v.remove("notes.txt").unwrap();
+            v.remove("photos/cat.jpg").unwrap();
+        }
+        assert_eq!(dev.refused, 0, "{fs:?}");
+        assert_eq!(read_any(&mut dev, base, "retropane.bin"), loader, "{fs:?}");
+        assert_eq!(read_any(&mut dev, base, "README.txt"), b"changed");
+    }
+}
+
+#[test]
+fn every_format_refuses_deleting_replacing_or_formatting_a_boot_file() {
+    for (fs, total, cluster) in FORMATS {
+        let (mut dev, base, loader) = formatted(fs, total, cluster, false);
+        let mut scratch = vec![0u8; 8192];
+        {
+            let mut v = AnyVolume::mount(&mut dev, base).unwrap();
+            assert!(v.remove("retropane.bin").is_err(), "{fs:?}");
+            assert!(v.remove("haret.exe").is_err(), "{fs:?}");
+            assert!(
+                v.put("retropane.bin", &pattern(4000, 9), &mut scratch)
+                    .is_err()
+            );
+        }
+        // A format from the PC, to any format, at the same place.
+        for to in [Fs::Fat12, Fs::Fat16, Fs::Fat32, Fs::ExFat] {
+            let o = mkfs::Options {
+                fs: Some(to),
+                cluster_bytes: Some(cluster),
+                align_sectors: Some(base),
+                label: "",
+                serial: 1,
+            };
+            if let Ok(l) = mkfs::plan(total, &o) {
+                assert!(
+                    mkfs::write(&mut dev, &l, &mut scratch).is_err(),
+                    "{fs:?} to {to:?}"
+                );
+            }
+        }
+        assert!(dev.refused >= 3);
+        assert_eq!(read_any(&mut dev, base, "retropane.bin"), loader, "{fs:?}");
+        assert_eq!(read_any(&mut dev, base, "haret.exe"), pattern(3000, 3));
+    }
+}
+
+#[test]
+fn every_format_refuses_a_boot_files_data_and_its_partition_table() {
+    for (fs, total, cluster) in FORMATS {
+        let (mut dev, base, _) = formatted(fs, total, cluster, false);
+        let mut mbr = dev.data[..SECTOR].to_vec();
+        // The MBR's boot code may change, the table not.
+        mbr[0] = 0xFA;
+        assert!(dev.write_blocks(0, &mbr).is_ok(), "{fs:?}");
+        mbr[446 + 8] ^= 1;
+        assert!(dev.write_blocks(0, &mbr).is_err(), "{fs:?}");
+        // A sector inside the loader's data, alone and inside a long write.
+        let at = {
+            let mut v = AnyVolume::mount(&mut dev, base).unwrap();
+            v.extent("retropane.bin").unwrap().lba
+        };
+        assert!(dev.write_blocks(at + 1, &[0u8; SECTOR]).is_err(), "{fs:?}");
+        assert!(dev.write_blocks(at - 4, &vec![0u8; 16 * SECTOR]).is_err());
+        // The gap before the partition.
+        assert!(dev.write_blocks(base - 1, &[0u8; SECTOR]).is_err());
+    }
+}
+
+#[test]
+fn every_format_protects_a_scattered_boot_file_run_by_run() {
+    for (fs, total, cluster) in FORMATS {
+        let (mut dev, base, loader) = formatted(fs, total, cluster, true);
+        let spc = cluster / SECTOR as u32;
+        // Where each of the loader's clusters is, read without the guard.
+        let mut lbas = Vec::new();
+        {
+            let g = dev.guard.take();
+            match AnyVolume::mount(&mut dev, base).unwrap() {
+                AnyVolume::Fat(mut v) => {
+                    let mut c = v.find("retropane.bin").unwrap().first_cluster();
+                    loop {
+                        lbas.push(v.cluster_lba(c));
+                        match v.next_cluster(c).unwrap() {
+                            Some(n) => c = n,
+                            None => break,
+                        }
+                    }
+                }
+                AnyVolume::ExFat(_) => {}
+            }
+            dev.guard = g;
+        }
+        if let Some(crate::guard::Kind::Ex(ex)) = dev.guard.as_ref().map(|g| &g.kind) {
+            let p = ex
+                .files
+                .iter()
+                .take(ex.count)
+                .find(|p| p.set[2][2] == b'r')
+                .unwrap();
+            assert!(p.chained, "exFAT: chained through the FAT");
+            for &(s, n) in &p.extents[..p.runs] {
+                for c in s..s + n {
+                    lbas.push(ex.heap_start + ((c - 2) << ex.cluster_shift));
+                }
+            }
+        }
+        assert_eq!(lbas.len(), 6, "{fs:?}");
+        assert!(
+            lbas.windows(2).any(|w| w[1] != w[0] + spc),
+            "{fs:?}: scattered"
+        );
+        for &lba in &lbas {
+            assert!(
+                dev.write_blocks(lba, &[0xAA; SECTOR]).is_err(),
+                "{fs:?} {lba}"
+            );
+        }
+        assert_eq!(read_any(&mut dev, base, "retropane.bin"), loader, "{fs:?}");
+    }
+}
+
+/// A FAT12 card whose loader's chain has an entry straddling FAT sectors 0
+/// and 1 (cluster 341: bytes 511 and 512), and none at cluster 340.
+#[test]
+fn fat12_a_write_covering_half_a_protected_entry_is_judged_on_that_half() {
+    let (mut dev, base, _) = formatted(Fs::Fat12, 4096, 512, false);
+    dev.guard = None;
+    let mut scratch = vec![0u8; 8192];
+    let g = {
+        let mut v = AnyVolume::mount(&mut dev, base).unwrap();
+        for name in ["retropane.bin", "haret.exe", "startup.txt", "README.txt"] {
+            v.remove(name).unwrap();
+        }
+        // Clusters 2 to 340 for a filler, the loader from 341.
+        v.put("filler.bin", &pattern(339 * 512, 4), &mut scratch)
+            .unwrap();
+        v.put("retropane.bin", &pattern(4 * 512, 5), &mut scratch)
+            .unwrap();
+        v.guard(&BOOT).unwrap()
+    };
+    dev.guard = Some(g);
+    let (fat_start, fat_sectors) = {
+        let mut v = Volume::mount(&mut dev, base).unwrap();
+        assert_eq!(v.find("retropane.bin").unwrap().first_cluster(), 341);
+        (v.fat_start, v.fat_sectors)
+    };
+    let sector = |dev: &Guarded, lba: u32| dev.data[lba as usize * SECTOR..][..SECTOR].to_vec();
+    let (s0, s1) = (sector(&dev, fat_start), sector(&dev, fat_start + 1));
+    // Byte 511: its low nibble is cluster 340's (the filler's end), its
+    // high nibble cluster 341's lowest bits; byte 512 (the next sector's
+    // first) the rest of 341.
+    let mut w = s0.clone();
+    w[511] ^= 0x01;
+    assert!(
+        dev.write_blocks(fat_start, &w).is_ok(),
+        "340 is not protected"
+    );
+    let mut w = s0.clone();
+    w[511] ^= 0x10;
+    assert!(dev.write_blocks(fat_start, &w).is_err(), "341's low bits");
+    let mut w = s1.clone();
+    w[0] ^= 0x80;
+    assert!(
+        dev.write_blocks(fat_start + 1, &w).is_err(),
+        "341's high bits"
+    );
+    // The second FAT copy alike.
+    assert!(dev.write_blocks(fat_start + fat_sectors + 1, &w).is_err());
+    // Unchanged sectors pass.
+    assert!(dev.write_blocks(fat_start, &s0).is_ok());
+    assert!(dev.write_blocks(fat_start + 1, &s1).is_ok());
+}
+
+#[test]
+fn fat16_the_fixed_root_keeps_boot_entries_and_takes_new_ones() {
+    let (mut dev, base, _) = formatted(Fs::Fat16, 20_000, 512, false);
+    let (root, offset) = {
+        let mut v = Volume::mount(&mut dev, base).unwrap();
+        let f = v.find("haret.exe").unwrap();
+        assert!(
+            f.entry_lba >= v.root_lba && f.entry_lba < v.data_start,
+            "in the fixed root"
+        );
+        (f.entry_lba, usize::from(f.entry_index) * 32)
+    };
+    let s = dev.data[root as usize * SECTOR..][..SECTOR].to_vec();
+    let mut w = s.clone();
+    w[offset] = 0xE5; // deleted
+    assert!(dev.write_blocks(root, &w).is_err());
+    let mut w = s.clone();
+    w[offset + 3] = b'Z'; // renamed
+    assert!(dev.write_blocks(root, &w).is_err());
+    // A new entry in a free slot of the same sector passes.
+    let mut w = s.clone();
+    let free = (0..16).find(|&i| w[i * 32] == 0).unwrap();
+    w[free * 32..free * 32 + 11].copy_from_slice(b"NEW     TXT");
+    w[free * 32 + 11] = 0x20;
+    assert!(dev.write_blocks(root, &w).is_ok());
+    // The boot sector's label may change, its layout not.
+    let bs = base as usize * SECTOR;
+    let mut b = dev.data[bs..bs + SECTOR].to_vec();
+    b[43..54].copy_from_slice(b"RENAMED    ");
+    assert!(dev.write_blocks(base, &b).is_ok());
+    b[13] = 8; // sectors per cluster
+    assert!(dev.write_blocks(base, &b).is_err());
+}
+
+#[test]
+fn exfat_flags_and_timestamps_pass_names_bitmap_and_boot_region_do_not() {
+    let (mut dev, base, _) = formatted(Fs::ExFat, 8192, 512, false);
+    let bs = base as usize * SECTOR;
+    // VolumeFlags and PercentInUse: Windows' own.
+    let mut b = dev.data[bs..bs + SECTOR].to_vec();
+    b[106] |= 0x02;
+    b[112] = 40;
+    assert!(dev.write_blocks(base, &b).is_ok());
+    assert!(dev.write_blocks(base + 12, &b).is_ok(), "the backup too");
+    // The layout, an extended boot sector, the checksum: refused.
+    let mut w = b.clone();
+    w[109] += 1; // cluster size
+    assert!(dev.write_blocks(base, &w).is_err());
+    let mut e = dev.data[bs + SECTOR..bs + 2 * SECTOR].to_vec();
+    e[0] = 1;
+    assert!(dev.write_blocks(base + 1, &e).is_err());
+    assert!(dev.write_blocks(base + 13, &e).is_err());
+    assert!(dev.write_blocks(base + 11, &[0u8; SECTOR]).is_err());
+    // The loader's entry set: timestamps (and the checksum with them) pass;
+    // its deletion, name and size don't.
+    let g = dev.guard.clone().unwrap();
+    let crate::guard::Kind::Ex(ex) = &g.kind else {
+        panic!("an exFAT guard")
+    };
+    let p = ex
+        .files
+        .iter()
+        .take(ex.count)
+        .find(|p| p.set[2][2] == b'r')
+        .unwrap();
+    let at = |dev: &Guarded, k: usize| {
+        let (lba, o) = p.at[k];
+        (
+            lba,
+            usize::from(o),
+            dev.data[lba as usize * SECTOR..][..SECTOR].to_vec(),
+        )
+    };
+    let (lba, o, s) = at(&dev, 0);
+    let mut w = s.clone();
+    w[o + 8..o + 12].copy_from_slice(&0x5B21_7A00u32.to_le_bytes()); // created
+    w[o + 2] ^= 0x55; // the set checksum follows
+    assert!(dev.write_blocks(lba, &w).is_ok(), "timestamps");
+    let mut w = s.clone();
+    w[o] &= 0x7F; // deleted
+    assert!(dev.write_blocks(lba, &w).is_err());
+    let (lba, o, mut w) = at(&dev, 2);
+    w[o + 2] = b'R'; // renamed
+    assert!(dev.write_blocks(lba, &w).is_err());
+    let (lba, o, mut w) = at(&dev, 1);
+    w[o + 24] ^= 1; // its size
+    assert!(dev.write_blocks(lba, &w).is_err());
+    // Its clusters' bits in the bitmap stay set; others may change.
+    let (bm, _) = ex.bitmap;
+    let first = p.extents[0].0;
+    let mut w = dev.data[bm as usize * SECTOR..][..SECTOR].to_vec();
+    let bit = (first - 2) as usize;
+    w[bit / 8] &= !(1 << (bit % 8));
+    assert!(dev.write_blocks(bm, &w).is_err());
+    let mut w = dev.data[bm as usize * SECTOR..][..SECTOR].to_vec();
+    w[SECTOR - 1] |= 0x80; // a free cluster near the end
+    assert!(dev.write_blocks(bm, &w).is_ok());
+}
+
+#[test]
+fn exfat_a_chained_boot_file_keeps_its_links() {
+    let (mut dev, _, _) = formatted(Fs::ExFat, 8192, 512, true);
+    let g = dev.guard.clone().unwrap();
+    let crate::guard::Kind::Ex(ex) = &g.kind else {
+        panic!("an exFAT guard")
+    };
+    let p = ex
+        .files
+        .iter()
+        .take(ex.count)
+        .find(|p| p.set[2][2] == b'r')
+        .unwrap();
+    assert!(p.chained && p.runs > 1, "scattered");
+    let (s, n) = p.extents[0];
+    let last = s + n - 1;
+    let lba = ex.fat_start + last / 128;
+    let o = (last % 128) as usize * 4;
+    let mut w = dev.data[lba as usize * SECTOR..][..SECTOR].to_vec();
+    w[o..o + 4].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // cut short
+    assert!(dev.write_blocks(lba, &w).is_err());
+}
+
+#[test]
+fn an_exfat_boot_file_with_a_long_name_gives_no_guard() {
+    let (mut dev, base, _) = formatted(Fs::ExFat, 8192, 512, false);
+    dev.guard = None;
+    let mut v = AnyVolume::mount(&mut dev, base).unwrap();
+    v.put("RetroPane/a boot file name.bin", b"x", &mut [0u8; 4096])
+        .unwrap();
+    assert!(v.guard(&["RetroPane/a boot file name.bin"]).is_err());
+    assert!(
+        v.guard(&["RetroPane"]).is_ok(),
+        "a short folder name is fine"
+    );
 }

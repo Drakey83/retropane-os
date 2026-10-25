@@ -1898,6 +1898,15 @@ impl<D: BlockDevice> AnyVolume<D> {
         }
     }
 
+    /// The boot-file guard for whichever format the volume is (see
+    /// [`crate::guard`]).
+    pub fn guard(&mut self, names: &[&str]) -> Result<Guard, Error> {
+        match self {
+            Self::Fat(v) => v.guard(names),
+            Self::ExFat(v) => v.guard(names),
+        }
+    }
+
     /// Checks the volume, read-only ([`check`]).
     pub fn check(&mut self, seen: &mut [u8], scratch: &mut [u8]) -> Result<Health, Error> {
         match self {
