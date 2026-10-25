@@ -355,8 +355,10 @@ impl VideoPlane {
     /// as the X51v showed right (P9d, 2026-10-25): four vertical taps, and
     /// `SPOCTRL` bit 27 whenever the vertical scaler runs (without it a
     /// vertical shrink tears the picture, step 10; the owner's ruling,
-    /// 2026-10-24: keep bit 27 where the look needs it); mbxfb's filter
-    /// until a fitted set is proven at every scale (C73).
+    /// 2026-10-24: keep bit 27 where the look needs it); the designed
+    /// tables ([`Filter::designed`]: proven on the X51v by P9e, the owner's
+    /// choice 2026-10-25: no stripes, as sharp as Linux's set), which keep
+    /// mbxfb's set for enlarging.
     #[must_use]
     pub fn scale_to(&self, out_w: u16, out_h: u16, x: u16, y: u16) -> Scale {
         Scale {
@@ -366,7 +368,7 @@ impl VideoPlane {
             y,
             taps: 4,
             ur_c: out_h != 0 && out_h != self.height,
-            filter: ScalerFilter::Mbxfb,
+            filter: ScalerFilter::Designed,
         }
     }
 
@@ -868,7 +870,11 @@ mod tests {
         for (out_w, out_h) in [(240, 640), (240, 0), (480, 640), (0, 0)] {
             assert!(!v.scale_to(out_w, out_h, 0, 0).ur_c, "{out_w} {out_h}");
         }
-        assert_eq!(v.scale_to(240, 320, 1, 2).filter, ScalerFilter::Mbxfb);
+        assert_eq!(v.scale_to(240, 320, 1, 2).filter, ScalerFilter::Designed);
+        // Enlarging through scale_to loads mbxfb's set (the designed
+        // tables keep it there).
+        let up = v.scale_to(960, 1280, 0, 0);
+        assert_eq!(v.filter_words(up), SCALER_FILTER);
         assert_eq!(
             (v.scale_to(240, 320, 1, 2).x, v.scale_to(240, 320, 1, 2).y),
             (1, 2)

@@ -534,7 +534,7 @@ pub fn draw_filter_pattern(vram: &mut [u8]) {
 /// `GDRCTRL`'s pixel and line doubling (mbxfb's `PIXDBL`, `LNDBL`; Dell's
 /// driver sets them for Windows Mobile's 2x mode, `ddi_2700g`
 /// `0x021270B8`-`0x021270E8`, read 2026-10-24): reminder R16.
-// inherited: Dell ddi_2700g and Linux mbxfb (GDRCTRL bits 31 and 29), unproven
+// inherited: Dell ddi_2700g and Linux mbxfb (GDRCTRL bits 31 and 29), proven on the X51v by P9d step 11
 pub const GDRCTRL_DOUBLE: u32 = 1 << 31 | 1 << 29;
 
 /// One of P9d's steps: what it is and what to see, the source rectangle
@@ -1020,8 +1020,15 @@ mod tests {
             v.stride = W * 2;
             let _ = v.registers_scaled(VIDEO, false, s.scale);
         }
-        // The last step is scale_to's default for half height.
+        // The last step is scale_to's bit 27 and taps for half height
+        // (run with mbxfb's filter, before the designed tables became
+        // scale_to's default).
         let v = VideoPlane::new(VideoFormat::Uyvy, 480, 640, FILTER_AT);
-        assert_eq!(FILTER2_STEPS[7].scale, v.scale_to(480, 320, 0, 160));
+        let auto = v.scale_to(480, 320, 0, 160);
+        let s = FILTER2_STEPS[7].scale;
+        assert_eq!(
+            (s.ur_c, s.taps, s.out_h),
+            (auto.ur_c, auto.taps, auto.out_h)
+        );
     }
 }
