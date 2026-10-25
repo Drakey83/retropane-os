@@ -472,6 +472,19 @@ emulator (a 150 ns card, timing not modelled) everything reads right and
 Windows Mobile's `MCMEM1` comes back. The loader tunes each card at attach
 once the device run proves it.
 
+**Proven on the X51v (2026-10-24, `rp-storfast` r7, `local/rp-storfast-r7-log.txt`,
+the owner's 8 GB card rated 80 ns):** `tune` applied `0x00010282` (29 cycles
+against Windows Mobile's 54) and every sector of 4 MiB read the same as the
+port at Windows Mobile's timing, three passes on each path: **DMA 5,857 ->
+9,192 KiB/s (1.57x)**, 32-bit loads 3,439 -> 4,327 (1.26x), the 16-bit port
+2,569 -> 2,977 (1.16x). The real margin, for the record: right to 17 cycles
+(81 ns), 6 sectors wrong at 14; the 1.5x rule's 29 leaves 1.7x. Windows
+Mobile's timing went back at the end. The same run, SD: 1 MiB and 4 MiB
+reads by DMA 8.3 MB/s (1.9 by the FIFO; R18's "falls back to PIO" is gone),
+writes by DMA 1.6-2.2 MB/s, three soak rounds of 147 MB written and read back
+with 0 errors, the card swap and the lock switch right. Next: the loader
+calls `tune` at each attach (a loader change, its reinstall a watched step).
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the
