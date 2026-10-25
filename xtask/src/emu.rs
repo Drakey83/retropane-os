@@ -8840,8 +8840,8 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
     let mut want = vec![
         "storfast-quick.txt found",
         "C3 3 attach cycles: all good",
-        "C4 tune: Applied",
-        "C5 shortest read right: ",
+        "C4 tune (measured, ",
+        "the card's limit ",
         "C6 Windows Mobile's timing put back: MCMEM1 0x00020508",
         "KiB): all right, one transfer each",
         "S2 the speed writes read back: 0 blocks differ",
