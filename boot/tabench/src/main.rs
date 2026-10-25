@@ -261,8 +261,13 @@ mod image {
     }
 
     impl Rig {
-        /// The parameter memory manager set up; true when it said ready.
+        /// The core reset and the parameter memory manager set up again;
+        /// true when it said ready. Always both (run 2: set up again without
+        /// a reset, the manager handed the TA pages outside its range; our
+        /// renderer's `bring_up` and `rp-glesfeat`'s clean start reset first
+        /// too).
         fn pm_init(&mut self) -> bool {
+            reset_core(&mut self.regs, rt::delay_us);
             let zeros = [0u32; 64];
             for k in 0..16 * 1024 / 256 {
                 self.mem.store((PM_TABLE + 256 * k) as usize, &zeros);
@@ -358,8 +363,10 @@ mod image {
             )
         }
 
-        /// One TA frame of `quads` in `way`: the GLES clear first, as Dell's
-        /// frames start, then the quads; the 3D stage on the TA's regions
+        /// One TA frame of `quads` in `way`: our background first (a black
+        /// strip over the whole target: run 4 found the GLES clear's object
+        /// drawing nothing and blanking every tile it lies in, audit C79),
+        /// then the quads; the 3D stage on the TA's regions
         /// if it said done.
         fn ta_frame(&mut self, way: Way, n: usize) -> Frame {
             let mut f = Frame::default();
@@ -377,7 +384,7 @@ mod image {
                 clip: ta::clip(W, H),
             };
             let shape = way.shape();
-            let clear = ta::clear_stream(W, H);
+            let clear = background_strip();
             let side = self.side;
             let t0 = rt::ticks();
             let mut free_us = 0;
@@ -427,7 +434,7 @@ mod image {
             f
         }
 
-        /// The clear by the CPU, then the staged list's `n` words by DMA in
+        /// The background by the CPU, then the staged list's `n` words by DMA in
         /// pieces of whole 32-byte lines no larger than the FIFO's room or
         /// the window's rest (the CPU takes 8 words across the window's
         /// wrap), its end by the CPU. Returns the feed and the CPU's free
@@ -505,6 +512,33 @@ mod image {
     }
 
     const BLACK: u32 = 0xFF00_0000;
+
+    /// Our TA background: one strip of four over the whole target, black,
+    /// untextured (`rp-glesfeat` G2's form: the state block `0x10000053`
+    /// with Dell's smooth TSP, x, y, z 1.0, 1/w 1.0 and a colour a corner),
+    /// in place of the GLES clear, whose colourless object the 3D stage drew
+    /// nothing from in run 4 (audit C79). The binner's background is the
+    /// same black.
+    fn background_strip() -> [u32; 26] {
+        let mut s = [0u32; 26];
+        s[..6].copy_from_slice(&[
+            0x1000_0053,
+            0x2260_0E80,
+            m3::ISP_ALWAYS,
+            ta::clip(W, H),
+            0,
+            ta::STRIP,
+        ]);
+        let one = 1.0f32.to_bits();
+        let f = |v: i32| fixed::f32_bits(v, 0);
+        for (k, (x, y)) in [(0, 0), (W as i32, 0), (0, H as i32), (W as i32, H as i32)]
+            .into_iter()
+            .enumerate()
+        {
+            s[6 + 5 * k..11 + 5 * k].copy_from_slice(&[f(x), f(y), one, one, BLACK]);
+        }
+        s
+    }
 
     /// A quad's top left corner packed in a word: `x + 64`, `y + 64` (the
     /// quads reach up to half their side past the screen's edges).
@@ -810,6 +844,7 @@ mod image {
             );
             finish(g, screen, clk0);
         }
+        background_check(&mut g);
         for (s, &(n, side)) in SETS.iter().enumerate() {
             scatter(g.xy, n, side);
             g.side = side;
@@ -872,6 +907,27 @@ mod image {
         let (rh, th) = (g.render_hangs, g.ta_hangs);
         log!("{MARKER}: DONE - {rh} renders past 2 s, {th} TA frames never done");
         finish(g, screen, clk0);
+    }
+
+    /// Our TA background alone, once: the target's words not black after
+    /// it (0 wanted: every TA way's picture stands on it).
+    fn background_check(g: &mut Rig) {
+        if !g.pm_init() {
+            log!("    memory manager not ready");
+        }
+        let _ = ta::clear(g.mem.0, &TA);
+        cpu::drain_write_buffer();
+        let mut feed = ta::Feed::start(&mut g.regs, &TA, CLOCK, TA_LIMIT_US);
+        let _ = ta::draws(&[&background_strip()]).all(|i| feed.put(i));
+        let fed = feed.finish();
+        let us = if fed.done { g.render(&FROM_TA) } else { 0 };
+        let not_black = (0..TARGET_WORDS)
+            .filter(|&k| g.mem.load(TARGET as usize + 4 * k).unwrap_or(1) != 0)
+            .count();
+        log!(
+            "TA background alone (a black strip, in place of the GLES clear: audit C79): TA done {}, render {us} us, {not_black} of {TARGET_WORDS} words not black",
+            fed.done
+        );
     }
 
     /// The results screen until a button (10 s at most), the core and the

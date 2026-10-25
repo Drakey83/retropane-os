@@ -294,6 +294,14 @@ frames each, the target filled with a sentinel by the CPU first, the
 first listed tile's first two objects and sampled pixels logged against
 what they should be.
 
+**Run 4 on the X51v (2026-10-25): the GLES clear is the cause** (every
+stream without it drew our quads exactly, every one with it drew nothing;
+audit C80 for why). **Run 5 = run 1 again** (the default image) with our
+own background, a black full-screen strip through the TA in place of the
+clear (the binner's same black), the memory manager always set up after a
+core reset, and a check first that the strip alone draws the target black.
+
+
 ## The choices for the owner
 
 **Q1. Where the TA code lives.**
