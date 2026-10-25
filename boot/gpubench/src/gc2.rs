@@ -507,7 +507,34 @@ pub enum Scene {
     Sweep(usize),
     Mirrored,
     Kind(usize),
+    /// Run GC2U's busy tiles: FT2 (`false`) or GC2K's worst (`true`) with
+    /// [`BUSY_LAYER`] blended over the whole screen last, so every tile has
+    /// more to draw before its write-out (the tile-race hypothesis: the
+    /// next tile reaching the tile buffer before the last one's rows are
+    /// out).
+    Busy(bool),
 }
+
+/// Run GC2U's busy layer: black at an eighth's opacity, blended over the
+/// whole screen (it reads no texture: only the tiles' own work grows).
+pub const BUSY_LAYER: u32 = 0x2000_0000;
+
+/// Run GC2U's scenes (the owner, 2026-10-25: "build it", after GC2T: the
+/// texture lighter, and the tile race): FT2 and GC2K's worst, then both
+/// with busy tiles. The texture is the caller's (32-bit, 16-bit or PVRTC in
+/// [`Tex::t8888`]'s place); the busy ways run with the 32-bit one only.
+pub const TEXLOAD_SCENES: [Scene; 4] = [
+    Scene::Kind(FT2),
+    Scene::Sweep(0),
+    Scene::Busy(false),
+    Scene::Busy(true),
+];
+pub const TEXLOAD_WAYS: [(usize, u8); 4] = [(0, ROWS), (1, ROWS), (2, ROWS), (3, ROWS)];
+/// The lighter textures' ways: FT2 and GC2K's worst only.
+pub const TEXLOAD_LIGHT_WAYS: [(usize, u8); 2] = [(0, ROWS), (1, ROWS)];
+/// Rounds a way: at 133.25 / 1 (GC2K's worst wrong about 4 in 100) and
+/// above (FT2 wrong in every render from 146.25).
+pub const TEXLOAD_ROUNDS: [u32; 4] = [100, 30, 30, 30];
 
 /// The mirrored scene's quad (GC2K's worst, x 43-443, mirrored to 37-437)
 /// and its background's shift: its bottom-right corner at (437, 605), the
@@ -703,6 +730,15 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
     match s {
         Scene::Sweep(w) => sweep_scene(w, t),
         Scene::Kind(k) => scene(k, t),
+        Scene::Busy(worst) => {
+            let (bg, mut slots) = if worst {
+                sweep_scene(0, t)
+            } else {
+                scene(FT2, t)
+            };
+            slots[2] = Some(flat(BUSY_LAYER, true));
+            (bg, slots)
+        }
         Scene::Mirrored => {
             let c = [CORNERS[1], CORNERS[0], CORNERS[3], CORNERS[2]];
             let (sx, sy) = MIRRORED_SHIFT;
@@ -735,7 +771,8 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
             MIRRORED_QUAD.0 + MIRRORED_QUAD.2,
             MIRRORED_QUAD.1 + MIRRORED_QUAD.3,
         ),
-        Scene::Kind(FT2) => patch_corner(0),
+        Scene::Kind(FT2) | Scene::Busy(false) => patch_corner(0),
+        Scene::Busy(true) => SWEEP[0].corner(),
         Scene::Kind(_) => (0, 0),
     }
 }

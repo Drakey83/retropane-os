@@ -573,3 +573,41 @@ fn gc2t_loosens_one_field_at_a_time_from_the_rated_timing() {
         assert!(lmtim_with(base, TIM_WAYS[6].1).is_some(), "{khz}");
     }
 }
+
+#[test]
+fn gc2u_busy_tiles_add_one_blended_layer_over_the_same_scene() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    for (busy, base) in [(false, Scene::Kind(FT2)), (true, Scene::Sweep(0))] {
+        let (bg, slots) = order_scene(Scene::Busy(busy), t);
+        let (bg0, slots0) = order_scene(base, t);
+        // The same background and the same first two slots: only the layer
+        // is new, drawn last over the whole screen, blended, untextured.
+        assert_eq!(bg, bg0);
+        assert_eq!(slots[..2], slots0[..2]);
+        assert_eq!(slots0[2], None);
+        let layer = Draw::rect(0, 0, W as i32, H as i32, Paint::Flat(BUSY_LAYER)).over();
+        assert_eq!(slots[2], Some(layer));
+        // Its wrong pixels placed from the base scene's corner.
+        assert_eq!(order_corner(Scene::Busy(busy)), order_corner(base));
+    }
+    assert_eq!(BUSY_LAYER >> 24, 0x20);
+    // The ways: every scene once in row order, the lighter textures on the
+    // first two (no busy layer), 100 rounds at 133.25 and 30 above.
+    assert_eq!(TEXLOAD_WAYS.len(), TEXLOAD_SCENES.len());
+    assert!(
+        TEXLOAD_WAYS
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, ROWS))
+    );
+    assert_eq!(TEXLOAD_LIGHT_WAYS, TEXLOAD_WAYS[..2]);
+    assert_eq!(TEXLOAD_SCENES[..2], [Scene::Kind(FT2), Scene::Sweep(0)]);
+    assert_eq!(TEXLOAD_ROUNDS.len(), ABOVE_PLL.len());
+    assert_eq!(TEXLOAD_ROUNDS[0], 100);
+    assert!(TEXLOAD_ROUNDS[1..].iter().all(|&r| r == 30));
+}

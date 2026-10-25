@@ -5059,6 +5059,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2u = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TEXLOAD", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5091,7 +5099,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 63] = [
+    let runs: [GpubenchRun; 64] = [
         (
             "run A",
             &run_a,
@@ -5341,6 +5349,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2U: FT2 and GC2K's worst with a 32-bit, a 16-bit and a PVRTC
+        // texture and with busy tiles, at every climb step: every way's
+        // references held and the run returns (wm-clocks build).
+        (
+            "run GC2U",
+            &run_gc2u,
+            &[
+                "GC2U: divide 1 at 149.50 / 1, PVRTC texture",
+                "PVRTC texture 149.50 / 1: 30 rounds (60 renders)",
+                "32-bit texture 133.25 / 1: 100 rounds (400 renders)",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

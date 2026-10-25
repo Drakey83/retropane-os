@@ -92,6 +92,28 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "gpubench GC2U: the busy layer drawn opaque (hiding the scene)",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "            slots[2] = Some(flat(BUSY_LAYER, true));",
+        to: "            slots[2] = Some(flat(BUSY_LAYER, false));",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2u_busy_tiles_add_one_blended_layer_over_the_same_scene",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2U: busy tiles on FT2 placed from the screen's corner",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "        Scene::Kind(FT2) | Scene::Busy(false) => patch_corner(0),",
+        to: "        Scene::Kind(FT2) => patch_corner(0),\n        Scene::Busy(false) => (0, 0),",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2u_busy_tiles_add_one_blended_layer_over_the_same_scene",
+        ]),
+    },
+    Mutant {
         name: "hal-mem: the one-pass check misses the last word",
         file: "hal/mem/src/lib.rs",
         from: "        differ += u32::from(v != w);",

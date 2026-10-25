@@ -7904,8 +7904,23 @@ mod image {
     /// by mistake (GC2T ran the whole map on the X51v when it was missing
     /// from one of three hand-kept lists; the emulator check now fails a
     /// no-map run that maps).
-    const GC2_NO_MAP: bool =
-        GC2_SOAK2 || GC2_PATCH || GC2_SWEEP || GC2_ORDER || GC2_FAST || GC2_WRITEOUT || GC2_TIMING;
+    const GC2_NO_MAP: bool = GC2_SOAK2
+        || GC2_PATCH
+        || GC2_SWEEP
+        || GC2_ORDER
+        || GC2_FAST
+        || GC2_WRITEOUT
+        || GC2_TIMING
+        || GC2_TEXLOAD;
+
+    /// Run GC2U (`RP_GPUBENCH_GC2_TEXLOAD`, the owner after GC2T,
+    /// 2026-10-25: "build it"): FT2 and GC2K's worst at 133.25-149.50 / 1
+    /// ([`gc2::ABOVE_PLL`]) with their 32-bit texture, the same texels as a
+    /// 16-bit texture, and a PVRTC one (less texture read while a tile is
+    /// written out), and with the 32-bit texture and busy tiles (the tile
+    /// race: more to draw in every tile). Every way's wrong renders and
+    /// fastest render. Unattended.
+    const GC2_TEXLOAD: bool = option_env!("RP_GPUBENCH_GC2_TEXLOAD").is_some();
 
     /// Run GC2Q (`RP_GPUBENCH_GC2_WRITEOUT`, the owner after GC2P,
     /// 2026-10-24: "FT3 with the 2D copies started after the render ends,
@@ -9171,7 +9186,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_TIMING {
+            if GC2_TEXLOAD {
+                "the 16-bit kinds' targets inside the safe region (GC2U: no map; FT2 and GC2K's worst at 133.25-149.50 / 1 with a 32-bit, a 16-bit and a PVRTC texture, and with busy tiles),"
+            } else if GC2_TIMING {
                 "the 16-bit kinds' targets inside the safe region (GC2T: no map; the local memory's timing loosened on GC2K's worst at 133.25 / 1, then the climb 133.25-149.50 / 1),"
             } else if GC2_WRITEOUT {
                 "the 16-bit kinds' targets inside the safe region (GC2Q: no map; GC2K's worst at 133.25 / 1 with each write-out setting part B found, then divide 1 above 133.25: 139.75, 146.25, 149.50),"
@@ -9303,7 +9320,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_WRITEOUT || GC2_TIMING {
+        let patch = if GC2_TEXLOAD {
+            gc2::TEXLOAD_SCENES.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_WRITEOUT || GC2_TIMING {
             gc2::ABOVE_SCENES.len().max(gc2::CONFIRM_SCENES.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_FAST {
             gc2::FAST_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -9635,7 +9654,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_TIMING {
+                if GC2_TEXLOAD {
+                    gc2_texload(g, &mut r, (tex, first, dsig));
+                } else if GC2_TIMING {
                     gc2_timing(g, &mut r, (tex, first, dsig));
                 } else if GC2_WRITEOUT {
                     gc2_writeout_c(g, &mut r, (tex, first, dsig));
@@ -11125,6 +11146,80 @@ mod image {
                     let _ = underrun_take(&mut g.e.regs);
                 }
             }
+        }
+    }
+
+    /// Run GC2U (see [`GC2_TEXLOAD`]): at each of [`gc2::ABOVE_PLL`], the
+    /// 32-bit texture's ways (FT2, GC2K's worst, both with busy tiles), then
+    /// the same two scenes with the 16-bit and the PVRTC texture in its
+    /// place, [`gc2::TEXLOAD_ROUNDS`] rounds a way.
+    #[inline(never)]
+    fn gc2_texload(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (tex, first, dsig): (gc2::Tex, &mut [u32], bool),
+    ) {
+        let clamp = |t: Texture| Texture {
+            u_mode: tex.t8888.u_mode,
+            v_mode: tex.t8888.v_mode,
+            ..t
+        };
+        // The same texels as 16 bits (GC2K's way 4), and a PVRTC texture of
+        // the same side (its blocks a pattern: only its own reference is
+        // held, as every way's).
+        let t565 = tex16(g, tex.t8888.code, format::RGB565, 1, &|x, y| {
+            let c = gc2::texel8888(x, y);
+            ((c >> 8 & 0xF800) | (c >> 5 & 0x07E0) | (c >> 3 & 0x001F)) as u16
+        });
+        let pvr = texpvrtc(g, tex.t8888.code);
+        let (Some(t565), Some(pvr)) = (t565, pvr) else {
+            log!("  GC2U: no 2700G memory for the 16-bit and PVRTC textures: nothing run");
+            for t in [t565, pvr].into_iter().flatten() {
+                let _ = rp_mbx3d_render::release(&mut g.pool, t);
+            }
+            return;
+        };
+        let (t565, pvr) = (clamp(t565), clamp(pvr));
+        let kinds: [(&'static str, Texture); 3] = [
+            ("32-bit texture", tex.t8888),
+            ("16-bit texture", t565),
+            ("PVRTC texture", pvr),
+        ];
+        for (pi, &(m, n)) in gc2::ABOVE_PLL.iter().enumerate() {
+            let s = gc2_step(m, n, 0, 1);
+            for (ki, &(name, t)) in kinds.iter().enumerate() {
+                let (scenes, ways): (&[gc2::Scene], &[(usize, u8)]) = if ki == 0 {
+                    (&gc2::TEXLOAD_SCENES, &gc2::TEXLOAD_WAYS)
+                } else {
+                    (&gc2::TEXLOAD_SCENES[..2], &gc2::TEXLOAD_LIGHT_WAYS)
+                };
+                log!(
+                    "  GC2U: divide 1 at {}, {name} (FT2, GC2K's worst{})",
+                    ABOVE_NAMES[pi],
+                    if ki == 0 {
+                        ", both with busy tiles"
+                    } else {
+                        ""
+                    }
+                );
+                gc2_orders(
+                    g,
+                    r,
+                    (gc2::Tex { t8888: t, ..tex }, &mut *first, dsig),
+                    &OrderPlan {
+                        name,
+                        label: "GC2U TEXTURES",
+                        scenes,
+                        ways,
+                        step: (s, ABOVE_NAMES[pi]),
+                        secs: u32::MAX / 1_000_000,
+                        rounds: gc2::TEXLOAD_ROUNDS[pi],
+                    },
+                );
+            }
+        }
+        for t in [t565, pvr] {
+            let _ = rp_mbx3d_render::release(&mut g.pool, t);
         }
     }
 
