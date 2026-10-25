@@ -50,6 +50,13 @@ pub fn stage_seconds() -> u32 {
 /// whether the picture is right is the owner's eye (the watched part).
 pub const SCALE: bool = option_env!("RP_BLEND_SCALE").is_some();
 
+/// Run P9d (`RP_BLEND_FILTER`, 2026-10-25, gate V5): the scaler filter's
+/// format proven and a fitted one judged on a stripe pattern
+/// (`blendtest::FILTER_STEPS`), then the graphics plane doubled (R16).
+/// Watched: each step's picture is the owner's eye; the filter words read
+/// back and the underrun bits are logged.
+pub const FILTER: bool = option_env!("RP_BLEND_FILTER").is_some();
+
 /// One scaler step: its name, what to expect, the source (x, y, w, h)
 /// inside the 480 x 640 wallpaper, and the output (w, h, x, y, taps).
 pub struct ScaleStep {
@@ -239,6 +246,7 @@ mod image {
                     y,
                     taps,
                     ur_c: step.ur_c,
+                    filter: layers::ScalerFilter::Mbxfb,
                 },
             );
             d.set_graphics(
@@ -275,6 +283,85 @@ mod image {
             let _ = writeln!(
                 RunLog,
                 "P9 step {}/{n} {}: frame events in {frame_polls} polls of 10 ms: {frames}, under/overrun in {fault_polls} (bits {faults:08X})",
+                i + 1,
+                step.name,
+                frame_polls = super::stage_seconds() * 100,
+            );
+        }
+        d.hide_video();
+    }
+
+    /// Run P9d's steps ([`blendtest::FILTER_STEPS`]): the stripe pattern
+    /// through the scaler, the label plane over it, each step held
+    /// [`super::stage_seconds`] with its under/overrun polls counted; the
+    /// filter's fifteen registers read back and logged.
+    fn filter_steps<B: RegisterBus>(d: &mut Display<B>, vram: &mut [u8]) {
+        use rp_drv_mbx_display::layers::{VideoFormat, VideoPlane};
+        use rp_drv_mbx_display::{PixelFormat, Plane, ack_events, event};
+        blendtest::draw_filter_pattern(vram);
+        d.regs().write32(layers::reg::BGCOLOR, 0x0000_6020);
+        let n = blendtest::FILTER_STEPS.len();
+        for (i, step) in blendtest::FILTER_STEPS.iter().enumerate() {
+            let mut head = [0u8; 32];
+            let mut l = Buf(&mut head, 0);
+            let _ = write!(l, "STEP {} OF {n} (P9D)", i + 1);
+            let len = l.1;
+            let head = core::str::from_utf8(&head[..len]).unwrap_or("STEP");
+            label(vram, [head, step.name, step.expect]);
+            let (sx, sy, sw, sh) = step.src;
+            let mut src = VideoPlane::new(VideoFormat::Uyvy, sw, sh, blendtest::FILTER_AT);
+            src.stride = blendtest::W * 2;
+            src.offset = blendtest::FILTER_AT + usize::from(sy) * src.stride + usize::from(sx) * 2;
+            d.show_video_scaled(&src, blendtest::VIDEO, step.scale);
+            d.set_graphics(
+                &Plane {
+                    format: PixelFormat::Argb4444,
+                    width: blendtest::W as u16,
+                    height: blendtest::H as u16,
+                    offset: LABEL_AT,
+                    stride: blendtest::W * 2,
+                },
+                blendtest::GRAPHICS,
+            );
+            if step.double {
+                let g = d.regs().read32(reg::GDRCTRL);
+                d.regs()
+                    .write32(reg::GDRCTRL, g | blendtest::GDRCTRL_DOUBLE);
+            }
+            record(d.regs(), step.name);
+            let _ = writeln!(
+                RunLog,
+                "P9 scaler: VSADR {:08X} SSSIZE {:08X} SPOCTRL {:08X} SHCTRL {:08X}",
+                d.regs().read32(layers::reg::VSADR),
+                d.regs().read32(layers::reg::SSSIZE),
+                d.regs().read32(layers::reg::SPOCTRL),
+                d.regs().read32(layers::reg::SHCTRL)
+            );
+            let _ = write!(RunLog, "P9d filter:");
+            for (off, _) in layers::SCALER_FILTER {
+                let _ = write!(RunLog, " {:08X}", d.regs().read32(off));
+            }
+            let _ = writeln!(RunLog, "; GDRCTRL {:08X}", d.regs().read32(reg::GDRCTRL));
+            let _ = ack_events(d.regs(), event::UNDER_OVERRUN | event::VEVENT0);
+            let (mut frames, mut faults, mut fault_polls) = (0u32, 0u32, 0u32);
+            for _ in 0..super::stage_seconds() * 100 {
+                rt::delay_us(10_000);
+                let s = ack_events(d.regs(), event::UNDER_OVERRUN | event::VEVENT0);
+                frames += u32::from(s & event::VEVENT0 != 0);
+                if s & event::UNDER_OVERRUN != 0 {
+                    faults |= s & event::UNDER_OVERRUN;
+                    fault_polls += 1;
+                }
+                rt::check_in();
+            }
+            if step.double {
+                let g = d.regs().read32(reg::GDRCTRL);
+                d.regs()
+                    .write32(reg::GDRCTRL, g & !blendtest::GDRCTRL_DOUBLE);
+            }
+            let _ = writeln!(
+                RunLog,
+                "P9d step {}/{n} {}: frame events in {frame_polls} polls of 10 ms: {frames}, under/overrun in {fault_polls} (bits {faults:08X})",
                 i + 1,
                 step.name,
                 frame_polls = super::stage_seconds() * 100,
@@ -324,6 +411,12 @@ mod image {
             // device number for docs/perf.md. OS timer: 3.25 ticks a microsecond.
             let us = rt::ticks().wrapping_sub(t) / 13 * 4;
             let _ = writeln!(RunLog, "draw {}: {us} us", stage.letter());
+        }
+        if super::FILTER {
+            filter_steps(&mut d, vram);
+            before.restore(d.regs());
+            record(d.regs(), "restored");
+            rp_image::finish()
         }
         if super::SCALE {
             scale_steps(&mut d, vram);

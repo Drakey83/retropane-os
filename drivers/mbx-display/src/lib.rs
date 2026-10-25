@@ -13,6 +13,7 @@ pub mod blendtest;
 pub mod clock;
 pub mod console;
 pub mod crash;
+pub mod filter;
 pub mod font;
 pub mod layers;
 pub mod pattern;
@@ -271,7 +272,7 @@ pub fn video_show<B: RegisterBus>(
     regs.modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
     layers::video_clock(regs, true);
     if video.scales(scale) {
-        for (offset, value) in layers::SCALER_FILTER {
+        for (offset, value) in video.filter_words(scale) {
             regs.write32(offset, value);
         }
     }

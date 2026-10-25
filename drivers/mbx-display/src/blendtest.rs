@@ -477,6 +477,220 @@ fn yuv_at(x: usize, y: usize) -> (u8, u8, u8) {
     rgb_to_yuv(r, g, b)
 }
 
+// ---- Run P9d: the scaler filter's format proven, and one fitted ----
+
+/// Where P9d's stripe pattern goes: stage A's UYVY wallpaper's place
+/// (stage A isn't shown in P9d), 480 x 640, 2 bytes a pixel.
+pub const FILTER_AT: usize = 0x50_0000;
+
+/// Black and white at studio range (`Y` 16 and 235), and their average.
+pub const FILTER_DARK: u8 = 16;
+/// White at studio range.
+pub const FILTER_LIGHT: u8 = 235;
+/// The two's average, rounded up.
+pub const FILTER_MID: u8 = 126;
+
+/// P9d's pattern's luma at `(x, y)` (grey throughout: `U` = `V` = 128):
+/// four quarters of 240 x 320, the finest detail the scaler can be asked
+/// to keep: top left one-pixel vertical stripes (the horizontal filter's
+/// test), top right one-pixel horizontal stripes (the vertical filter's),
+/// bottom left a one-pixel checker (both), bottom right four-pixel
+/// stripes beside a patch of their average (what a right filter turns the
+/// fine stripes into when shrinking).
+#[must_use]
+pub const fn filter_luma(x: usize, y: usize) -> u8 {
+    let on = match (x < W / 2, y < H / 2) {
+        (true, true) => x.is_multiple_of(2),
+        (false, true) => y.is_multiple_of(2),
+        (true, false) => (x + y).is_multiple_of(2),
+        (false, false) => {
+            if x < W / 2 + W / 4 {
+                (x / 4).is_multiple_of(2)
+            } else {
+                return FILTER_MID;
+            }
+        }
+    };
+    if on { FILTER_LIGHT } else { FILTER_DARK }
+}
+
+/// Writes P9d's pattern at [`FILTER_AT`] (row by row, as every plane here).
+pub fn draw_filter_pattern(vram: &mut [u8]) {
+    let mut row = [0u8; W * 2];
+    for y in 0..H {
+        for x in (0..W).step_by(2) {
+            row[x * 2..][..4].copy_from_slice(&[
+                128,
+                filter_luma(x, y),
+                128,
+                filter_luma(x + 1, y),
+            ]);
+        }
+        let at = FILTER_AT + y * W * 2;
+        vram[at..at + W * 2].copy_from_slice(&row);
+    }
+}
+
+/// `GDRCTRL`'s pixel and line doubling (mbxfb's `PIXDBL`, `LNDBL`; Dell's
+/// driver sets them for Windows Mobile's 2x mode, `ddi_2700g`
+/// `0x021270B8`-`0x021270E8`, read 2026-10-24): reminder R16.
+// inherited: Dell ddi_2700g and Linux mbxfb (GDRCTRL bits 31 and 29), unproven
+pub const GDRCTRL_DOUBLE: u32 = 1 << 31 | 1 << 29;
+
+/// One of P9d's steps: what it is and what to see, the source rectangle
+/// in the pattern, the scale, and whether the graphics plane (the label)
+/// is doubled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FilterStep {
+    /// Line 2 on screen.
+    pub name: &'static str,
+    /// Line 3: what the owner should see.
+    pub expect: &'static str,
+    /// The source (x, y, w, h) in the pattern.
+    pub src: (u16, u16, u16, u16),
+    /// The scale, place and filter.
+    pub scale: crate::layers::Scale,
+    /// `GDRCTRL`'s doubling on (R16).
+    pub double: bool,
+}
+
+const fn step(
+    name: &'static str,
+    expect: &'static str,
+    src: (u16, u16, u16, u16),
+    (out_w, out_h, x, y): (u16, u16, u16, u16),
+    ur_c: bool,
+    filter: crate::layers::ScalerFilter,
+) -> FilterStep {
+    FilterStep {
+        name,
+        expect,
+        src,
+        scale: crate::layers::Scale {
+            out_w,
+            out_h,
+            x,
+            y,
+            taps: 4,
+            ur_c,
+            filter,
+        },
+        double: false,
+    }
+}
+
+/// P9d's steps (2026-10-25, gate V5, quality audit C73 and C70, reminder
+/// R16). Shrinking with mbxfb's set against the fitted one (1/2, 3/4);
+/// enlarging the vertical stripes 2x with only the centre weight (hard
+/// two-pixel stripes if the layout is read right), with mbxfb's set
+/// (softer) and with mbxfb's halved (darker and green if 64 is one: the
+/// chroma's 128 halves too); half size in one direction at a time without
+/// bit 27 (which direction's scaling underruns, C70); then the graphics
+/// plane doubled (R16). Bit 27 on wherever the picture is judged (`p9c`:
+/// shrinking streaks without it).
+pub const FILTER_STEPS: [FilterStep; 11] = {
+    use crate::filter::Filter;
+    use crate::layers::ScalerFilter::{Fitted, Given, Mbxfb};
+    const FULL: (u16, u16, u16, u16) = (0, 0, W as u16, H as u16);
+    const QUARTER: (u16, u16, u16, u16) = (0, 0, W as u16 / 2, H as u16 / 2);
+    const HALF: (u16, u16, u16, u16) = (240, 320, 120, 160);
+    const THREE_Q: (u16, u16, u16, u16) = (360, 480, 60, 80);
+    const UP: (u16, u16, u16, u16) = (480, 640, 0, 0);
+    const SAME: (u16, u16, u16, u16) = (0, 0, 0, 0);
+    let mut d = step(
+        "GRAPHICS DOUBLED",
+        "LABEL 2X SIZE",
+        FULL,
+        SAME,
+        false,
+        Mbxfb,
+    );
+    d.double = true;
+    [
+        step(
+            "1:1 (CONTROL)",
+            "FINE STRIPES, GREY PATCH",
+            FULL,
+            SAME,
+            false,
+            Mbxfb,
+        ),
+        step(
+            "HALF, LINUX FILTER",
+            "STRIPES OR BANDS?",
+            FULL,
+            HALF,
+            true,
+            Mbxfb,
+        ),
+        step(
+            "HALF, FITTED FILTER",
+            "EVEN GREY LIKE PATCH",
+            FULL,
+            HALF,
+            true,
+            Fitted,
+        ),
+        step(
+            "3/4, LINUX FILTER",
+            "STRIPES OR BANDS?",
+            FULL,
+            THREE_Q,
+            true,
+            Mbxfb,
+        ),
+        step(
+            "3/4, FITTED FILTER",
+            "EVEN GREY LIKE PATCH",
+            FULL,
+            THREE_Q,
+            true,
+            Fitted,
+        ),
+        step(
+            "2X UP, CENTRE ONLY",
+            "HARD 2-PIXEL STRIPES",
+            QUARTER,
+            UP,
+            true,
+            Given(Filter::NEAREST),
+        ),
+        step(
+            "2X UP, LINUX FILTER",
+            "SOFTER STRIPES",
+            QUARTER,
+            UP,
+            true,
+            Mbxfb,
+        ),
+        step(
+            "2X UP, HALF WEIGHTS",
+            "AS LAST, DARK + GREEN",
+            QUARTER,
+            UP,
+            true,
+            Given(Filter::MBXFB.halved()),
+        ),
+        step(
+            "HALF ACROSS, NO BIT 27",
+            "UNDERRUN COUNTED",
+            FULL,
+            (240, 640, 120, 0),
+            false,
+            Fitted,
+        ),
+        step(
+            "HALF DOWN, NO BIT 27",
+            "UNDERRUN COUNTED",
+            FULL,
+            (480, 320, 0, 160),
+            false,
+            Fitted,
+        ),
+        d,
+    ]
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,5 +806,84 @@ mod tests {
             .map(|i| u32::from(to_4444_dithered(0x80, i % 4, i / 4) & 0xF))
             .sum();
         assert!(sum.abs_diff(0x80 * 15 * 16 / 255) <= 1, "{sum}");
+    }
+
+    #[test]
+    fn p9d_pattern_holds_the_finest_detail_and_its_average() {
+        // Each quarter's pattern at its corners and edges (both phases).
+        assert_eq!(
+            (filter_luma(0, 0), filter_luma(1, 0)),
+            (FILTER_LIGHT, FILTER_DARK)
+        );
+        assert_eq!(
+            (filter_luma(239, 319), filter_luma(238, 0)),
+            (FILTER_DARK, FILTER_LIGHT)
+        );
+        assert_eq!(
+            (filter_luma(240, 0), filter_luma(240, 1)),
+            (FILTER_LIGHT, FILTER_DARK)
+        );
+        assert_eq!(
+            (filter_luma(0, 320), filter_luma(1, 320)),
+            (FILTER_LIGHT, FILTER_DARK)
+        );
+        assert_eq!(
+            (filter_luma(0, 321), filter_luma(239, 639)),
+            (FILTER_DARK, FILTER_LIGHT)
+        );
+        assert_eq!(
+            (filter_luma(240, 400), filter_luma(244, 400)),
+            (FILTER_LIGHT, FILTER_DARK)
+        );
+        assert_eq!(
+            (filter_luma(360, 320), filter_luma(479, 639)),
+            (FILTER_MID, FILTER_MID)
+        );
+        // The patch is the stripes' average.
+        let avg = (u16::from(FILTER_DARK) + u16::from(FILTER_LIGHT)).div_ceil(2);
+        assert_eq!(u16::from(FILTER_MID), avg);
+        // Drawn in UYVY at FILTER_AT, grey chroma, clear of rp-blend's
+        // label plane at 0xB00000.
+        let mut vram = std::vec![0u8; 0xB0_0000];
+        draw_filter_pattern(&mut vram);
+        assert_eq!(
+            &vram[FILTER_AT..FILTER_AT + 4],
+            &[128, FILTER_LIGHT, 128, FILTER_DARK]
+        );
+        let last = FILTER_AT + (H - 1) * W * 2 + (W - 2) * 2;
+        assert_eq!(&vram[last..last + 4], &[128, FILTER_MID, 128, FILTER_MID]);
+        const { assert!(FILTER_AT + W * H * 2 <= 0xB0_0000) };
+    }
+
+    #[test]
+    fn p9d_steps_scale_within_the_scalers_range_and_name_their_filter() {
+        use crate::layers::ScalerFilter;
+        let mut fitted = 0;
+        for s in FILTER_STEPS {
+            let (_, _, w, h) = s.src;
+            let mut v = VideoPlane::new(VideoFormat::Uyvy, w, h, FILTER_AT);
+            v.stride = W * 2;
+            // Panics if a ratio or place is out of range.
+            let _ = v.registers_scaled(VIDEO, false, s.scale);
+            assert!(s.name.len() <= 24 && s.expect.len() <= 24, "{}", s.name);
+            fitted += usize::from(s.scale.filter == ScalerFilter::Fitted);
+        }
+        assert_eq!(fitted, 4);
+        // The two proofs of the format; the doubling last and alone.
+        assert_eq!(
+            FILTER_STEPS[5].scale.filter,
+            ScalerFilter::Given(crate::filter::Filter::NEAREST)
+        );
+        assert_eq!(
+            FILTER_STEPS[7].scale.filter,
+            ScalerFilter::Given(crate::filter::Filter::MBXFB.halved())
+        );
+        assert!(FILTER_STEPS[10].double);
+        assert!(FILTER_STEPS[..10].iter().all(|s| !s.double));
+        // Bit 27 off only on the 1:1 control, the underrun steps and the
+        // doubling.
+        let off: std::vec::Vec<usize> = (0..11).filter(|&i| !FILTER_STEPS[i].scale.ur_c).collect();
+        assert_eq!(off, [0, 8, 9, 10]);
+        assert_eq!(GDRCTRL_DOUBLE, 0xA000_0000);
     }
 }

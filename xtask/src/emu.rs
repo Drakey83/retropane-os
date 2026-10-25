@@ -2471,6 +2471,7 @@ pub fn boot_loader_blend_scale(root: &Path) -> Result<(), String> {
             y: out.3,
             taps: out.4,
             ur_c: out.5,
+            filter: rp_drv_mbx_display::layers::ScalerFilter::Mbxfb,
         };
         let regs = v.registers_scaled(Layer::SOLO, false, scale);
         let want = |o: usize| regs.iter().find(|r| r.0 == o).map_or(0, |r| r.1);
@@ -2493,6 +2494,127 @@ pub fn boot_loader_blend_scale(root: &Path) -> Result<(), String> {
     }
     eprintln!(
         "    blend P9 OK: {steps} scaler steps up, each read back as written, put back (the picture: the X51v, watched)"
+    );
+    Ok(())
+}
+
+/// `rp-blend`'s run P9d (`RP_BLEND_FILTER`, gate V5): every step comes
+/// up; the scaler's size, pitch and place registers read back as
+/// `registers_scaled` wrote them, and on every scaling step the filter's
+/// fifteen registers as `filter_words` computed them (the fork stores
+/// them: docs/hw/emulator.md), so the fitted filter and the two proof sets
+/// reach the chip as the host tests built them; `GDRCTRL`'s doubling set
+/// on the last step only; the display put back. The pictures are the
+/// owner's eye on the X51v.
+pub fn boot_loader_blend_filter(root: &Path) -> Result<(), String> {
+    use rp_drv_mbx_display::blendtest::{self, FILTER_STEPS, GDRCTRL_DOUBLE};
+    use rp_drv_mbx_display::layers::{Layer, VideoFormat, VideoPlane, reg};
+    let release = crate::arm_release(root);
+    let dir = emu_dir(root)?;
+    let loader = dir.join("rp-loader.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    let bin = variant_image_with(
+        root,
+        "rp-blend",
+        ("RP_BLEND_FILTER", "1"),
+        Some(("RP_BLEND_SECONDS", "2")),
+    )?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RPL OK")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("blend P9d: no run log after the image returned")?;
+    if crashed(log) {
+        return Err(format!("blend P9d: crashed:{log}"));
+    }
+    let scaler: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("P9 scaler:"))
+        .collect();
+    let filter: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("P9d filter:"))
+        .collect();
+    if scaler.len() != FILTER_STEPS.len() || filter.len() != FILTER_STEPS.len() {
+        return Err(format!(
+            "blend P9d: want {} scaler and filter lines, got {} and {}:{log}",
+            FILTER_STEPS.len(),
+            scaler.len(),
+            filter.len()
+        ));
+    }
+    let mut filters_checked = 0;
+    for (i, step) in FILTER_STEPS.iter().enumerate() {
+        let (_, _, w, h) = step.src;
+        let mut v = VideoPlane::new(VideoFormat::Uyvy, w, h, blendtest::FILTER_AT);
+        v.stride = blendtest::W * 2;
+        let regs = v.registers_scaled(Layer::SOLO, false, step.scale);
+        let want = |o: usize| regs.iter().find(|r| r.0 == o).map_or(0, |r| r.1);
+        let expect = format!(
+            "P9 scaler: VSADR {:08X} SSSIZE {:08X} SPOCTRL {:08X} SHCTRL {:08X}",
+            want(reg::VSADR),
+            want(reg::SSSIZE),
+            want(reg::SPOCTRL),
+            want(reg::SHCTRL)
+        );
+        if scaler[i].trim() != expect {
+            return Err(format!(
+                "blend P9d step {}: read back {:?}, wrote {expect:?}",
+                i + 1,
+                scaler[i]
+            ));
+        }
+        let (words, gdr) = filter[i]
+            .trim()
+            .strip_prefix("P9d filter:")
+            .and_then(|l| l.split_once("; GDRCTRL "))
+            .ok_or_else(|| format!("blend P9d step {}: {:?}", i + 1, filter[i]))?;
+        let gdr = u32::from_str_radix(gdr.trim(), 16).map_err(|e| format!("{e}: {gdr}"))?;
+        if (gdr & GDRCTRL_DOUBLE == GDRCTRL_DOUBLE) != step.double {
+            return Err(format!(
+                "blend P9d step {}: GDRCTRL {gdr:08X}, doubling wanted {}",
+                i + 1,
+                step.double
+            ));
+        }
+        if v.scales(step.scale) {
+            let want: Vec<String> = v
+                .filter_words(step.scale)
+                .iter()
+                .map(|(_, w)| format!("{w:08X}"))
+                .collect();
+            if words.split_whitespace().collect::<Vec<_>>() != want {
+                return Err(format!(
+                    "blend P9d step {}: filter read back {words:?}, wrote {want:?}",
+                    i + 1
+                ));
+            }
+            filters_checked += 1;
+        }
+    }
+    let steps = log.lines().filter(|l| l.starts_with("P9d step ")).count();
+    if steps != FILTER_STEPS.len() || !log.contains("restored:") {
+        return Err(format!(
+            "blend P9d: {steps} steps held, or nothing put back:{log}"
+        ));
+    }
+    eprintln!(
+        "    blend P9d OK: {steps} steps up, the scaler and {filters_checked} filters read back as computed, the doubling on the last step only, put back (the pictures: the X51v, watched)"
     );
     Ok(())
 }

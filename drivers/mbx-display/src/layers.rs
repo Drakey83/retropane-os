@@ -10,6 +10,8 @@
 
 use rp_hal_api::{Field, RegisterBus};
 
+use crate::filter::Filter;
+
 /// Register offsets for the layers.
 pub mod reg {
     /// Video overlay clock (bit 0 enables).
@@ -136,6 +138,20 @@ pub struct Scale {
     pub taps: u8,
     /// `SPOCTRL` bit 27 (`VS_UR_C`), as Windows Mobile sets it.
     pub ur_c: bool,
+    /// The filter loaded when the plane scales.
+    pub filter: ScalerFilter,
+}
+
+/// Which filter the scaler is loaded with (see [`crate::filter`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalerFilter {
+    /// mbxfb's start-up set ([`SCALER_FILTER`]): proven on the X51v up 2x
+    /// and down to 1/2 and 3/4 (`p9c`, 2026-10-24).
+    Mbxfb,
+    /// [`Filter::fitted`] to this plane's scale (unproven until P9d).
+    Fitted,
+    /// A given set (P9d's proofs of the format).
+    Given(Filter),
 }
 
 impl Scale {
@@ -147,6 +163,7 @@ impl Scale {
         y: 0,
         taps: 1,
         ur_c: false,
+        filter: ScalerFilter::Mbxfb,
     };
 }
 
@@ -307,6 +324,21 @@ impl VideoPlane {
     pub fn scales(&self, scale: Scale) -> bool {
         (scale.out_w != 0 && scale.out_w != self.width)
             || (scale.out_h != 0 && scale.out_h != self.height)
+    }
+
+    /// The filter's fifteen writes for `scale` (see [`ScalerFilter`]).
+    #[must_use]
+    pub fn filter_words(&self, scale: Scale) -> [(usize, u32); 15] {
+        let or = |o: u16, s: u16| u32::from(if o == 0 { s } else { o });
+        match scale.filter {
+            ScalerFilter::Mbxfb => SCALER_FILTER,
+            ScalerFilter::Fitted => Filter::fitted(
+                (u32::from(self.width), u32::from(self.height)),
+                (or(scale.out_w, self.width), or(scale.out_h, self.height)),
+            )
+            .words(),
+            ScalerFilter::Given(f) => f.words(),
+        }
     }
 
     /// As [`Self::registers`], shown through the scaler at `scale`'s size
@@ -593,6 +625,7 @@ mod tests {
             y: 0,
             taps: 4,
             ur_c: false,
+            filter: ScalerFilter::Mbxfb,
         };
         let r = v.registers_scaled(Layer::SOLO, false, up);
         assert_eq!(VSCTRL_WIDTH.extract(r[2].1), 239, "VSCTRL keeps the source");
@@ -608,6 +641,7 @@ mod tests {
             y: 160,
             taps: 1,
             ur_c: false,
+            filter: ScalerFilter::Mbxfb,
         };
         let r = v.registers_scaled(Layer::SOLO, false, down);
         assert_eq!(r[3], (reg::VSADR, (59 << 22) | (120 << 11) | 160));

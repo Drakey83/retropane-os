@@ -219,6 +219,39 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "scaler filter: weights 64 times too big (the bug found building it)",
+        file: "drivers/mbx-display/src/filter.rs",
+        from: "let q = 2 * i128::from(ONE) * raw[k];",
+        to: "let q = 128 * i128::from(ONE) * raw[k];",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "fitted_sets_sum_to_one_at_every_phase_at_every_scale",
+        ]),
+    },
+    Mutant {
+        name: "scaler filter: the remainder not put back, phases off by a rounding",
+        file: "drivers/mbx-display/src/filter.rs",
+        from: "out_b[fix] = (i128::from(out_b[fix]) + left / mult(fix)) as i8;",
+        to: "out_b[fix] = (i128::from(out_b[fix])) as i8;",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "fitted_sets_sum_to_one_at_every_phase_at_every_scale",
+        ]),
+    },
+    Mutant {
+        name: "scaler filter: Linux's set swapped for another when the plane scales",
+        file: "drivers/mbx-display/src/layers.rs",
+        from: "ScalerFilter::Mbxfb => SCALER_FILTER,",
+        to: "ScalerFilter::Mbxfb => Filter::NEAREST.words(),",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "the_scaler_filter_loads_only_when_the_plane_scales_and_before_it_does",
+        ]),
+    },
+    Mutant {
         name: "gpubench GC2AD: the night soak's second cure is the ring again",
         file: "boot/gpubench/src/gc2.rs",
         from: "        s[2 * b + 1] = Scene::Fix(b, 2);",

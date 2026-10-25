@@ -206,6 +206,8 @@ commands:
             back to the loader): run it before `load rp-picture`
   emu-blend-scale rp-blend's P9 scaler steps (RP_BLEND_SCALE): each step up,
             the scaler registers read back as written, put back
+  emu-blend-filter rp-blend's P9d filter steps (RP_BLEND_FILTER): the scaler
+            and its computed filters read back as written, put back
   emu-blend only the rp-blend check (plane blending, three stages
             pixel-exact): run it before `load rp-blend`
   emu-mbx   only the GPU check (rp-mbx: fills by the emulated MBX 2D
@@ -337,16 +339,17 @@ fn main() -> ExitCode {
         .iter()
         .try_for_each(|c| run_step(c)),
         "eol" | "reminders" | "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross"
-        | "coverage" | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale" | "emu-mbx"
-        | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat" | "emu-mbx3d-api" | "emu-gpubench"
-        | "emu-cs3bus" | "emu-cpldbus" | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today"
-        | "emu-crash" | "emu-probe" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
-        | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
-        | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
-        | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1"
-        | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3"
-        | "emu-silent-pc" | "emu-refresh" | "emu-screen-measure" | "emu-unplug" | "emu-keepfed"
-        | "emu-cardlog" | "mutants" | "qemu" => run_step(&cmd),
+        | "coverage" | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale"
+        | "emu-blend-filter" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat"
+        | "emu-mbx3d-api" | "emu-gpubench" | "emu-cs3bus" | "emu-cpldbus" | "emu-mved"
+        | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-probe" | "emu-cf"
+        | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace" | "emu-fullsize"
+        | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite" | "emu-storfast"
+        | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect" | "emu-display-cal"
+        | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep" | "emu-dma-restart"
+        | "emu-audio-s2" | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh"
+        | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "emu-cardlog" | "mutants"
+        | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -675,6 +678,9 @@ fn run_step(step: &str) -> Result {
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
         "emu-blend-scale" => cross().and_then(|()| emu::boot_loader_blend_scale(&workspace_root())),
+        "emu-blend-filter" => {
+            cross().and_then(|()| emu::boot_loader_blend_filter(&workspace_root()))
+        }
         "emu-mbx" => cross().and_then(|()| emu::boot_loader_mbx(&workspace_root())),
         "emu-mbx-blend" => cross().and_then(|()| emu::boot_loader_mbx_blend(&workspace_root())),
         "emu-mbx3d" => cross().and_then(|()| emu::boot_loader_mbx3d(&workspace_root())),
@@ -754,6 +760,8 @@ fn run_step(step: &str) -> Result {
                 ("boot_loader_run_limit", emu::boot_loader_run_limit),
                 ("boot_loader_picture", emu::boot_loader_picture),
                 ("boot_loader_blend", emu::boot_loader_blend),
+                ("boot_loader_blend_scale", emu::boot_loader_blend_scale),
+                ("boot_loader_blend_filter", emu::boot_loader_blend_filter),
                 ("boot_loader_mbx", emu::boot_loader_mbx),
                 ("boot_loader_mbx_blend", emu::boot_loader_mbx_blend),
                 ("boot_loader_mbx3d", emu::boot_loader_mbx3d),

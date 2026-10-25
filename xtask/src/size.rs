@@ -430,7 +430,11 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 47 -> 52 KiB on 2026-10-24 (test image): the scale
         // variant loads the scaler's filter (quality audit C73); 47.7 KiB
         // measured, +~10%.
-        max_load: 52 * 1024,
+        // Ratcheted 52 -> 62 KiB on 2026-10-25 (test image): run P9d, the
+        // scaler filter computed for any scale (rp_drv_mbx_display::filter,
+        // quality audit C73), its stripe pattern and steps; 56.3 KiB
+        // measured, +~10%.
+        max_load: 62 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
