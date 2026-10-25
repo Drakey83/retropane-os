@@ -603,6 +603,9 @@ mod image {
         /// Run GC2Q: the write-out settings part B found (each cleaned FT3's
         /// queued copies), for part C's confirmation.
         writeout_hits: Over,
+        /// Run GC2T: `LMTIM` in place of the rated timing at every step but
+        /// Windows Mobile's (see [`step_speed`]).
+        tim: Option<u32>,
     }
 
     /// Up to eight 3D registers and their values, for [`Rig::over`].
@@ -7061,15 +7064,29 @@ mod image {
     /// changes nothing else), then the step's divider and the bus timing of
     /// its tier. The PLL's lock time, or `None` (Windows Mobile's speed is
     /// then back).
+    /// Step `s`'s clock and memory timing, with run GC2T's `LMTIM` in place
+    /// of the rated one when set (never at Windows Mobile's clock: the
+    /// controls and the put-back keep Dell's).
+    fn step_speed(g: &Rig, s: ClockStep) -> ClockSpeed {
+        let mut v = s.speed();
+        if let Some(t) = g.tim
+            && s.pll() != WM_STEP.pll()
+        {
+            v.lmtim = t;
+        }
+        v
+    }
+
     fn clock_apply(g: &mut Rig, s: ClockStep) -> Option<u32> {
+        let want = step_speed(g, s);
         let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
         let clk = g.e.regs.read32(MBXCLK);
         clock::restore(&mut g.e.regs, (clk & 3) | 1 << 2);
         rt::delay_us(1_000);
-        let lock = if clock_now(&mut g.e.regs) == s.speed() {
+        let lock = if clock_now(&mut g.e.regs) == want {
             Some(0)
         } else {
-            match clock::set_speed(&mut g.e.regs, s.speed(), rt::delay_us) {
+            match clock::set_speed(&mut g.e.regs, want, rt::delay_us) {
                 Some(a) => {
                     if a.rewrites + a.unwritten > 0 {
                         log!(
@@ -7885,7 +7902,8 @@ mod image {
         || GC2_SWEEP
         || GC2_ORDER
         || GC2_FAST
-        || GC2_WRITEOUT;
+        || GC2_WRITEOUT
+        || GC2_TIMING;
 
     /// Run GC2Q (`RP_GPUBENCH_GC2_WRITEOUT`, the owner after GC2P,
     /// 2026-10-24: "FT3 with the 2D copies started after the render ends,
@@ -7902,6 +7920,17 @@ mod image {
     /// `RP_GPUBENCH_GC2_WRITEOUT`): the rerun after part C's sizing fix,
     /// parts A and B already answered on the X51v (`gpubench-0093`).
     const GC2Q_C_ONLY: bool = option_env!("RP_GPUBENCH_GC2Q_C_ONLY").is_some();
+
+    /// Run GC2T (`RP_GPUBENCH_GC2_TIMING`, the owner after GC2Q, 2026-10-24:
+    /// "fix it and do the test"): the local memory's timing loosened one
+    /// field at a time ([`gc2::TIM_WAYS`]) where divide 1 goes wrong: part
+    /// 1, FT3's queued copies at 108.33 and 133.25 / 1 (every round wrong at
+    /// the rated timing); part 2, GC2K's worst at 133.25 / 1, 100 rounds a
+    /// timing; part 3, the six 16-bit kinds at 133.25-149.50 / 1, 30 rounds
+    /// a timing (FT2 wrong every render from 146.25 at the rated timing).
+    /// Every render's 3D time logged, for what a looser timing costs.
+    /// Unattended.
+    const GC2_TIMING: bool = option_env!("RP_GPUBENCH_GC2_TIMING").is_some();
 
     /// Run GC2P (`RP_GPUBENCH_GC2_FAST`, the owner, 2026-10-24: GC2O stopped
     /// for taking hours, "always make the tests run as fast as possible"):
@@ -9141,7 +9170,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_WRITEOUT {
+            if GC2_TIMING {
+                "the 16-bit kinds' targets inside the safe region (GC2T: no map; the local memory's timing loosened on GC2K's worst at 133.25 / 1, then the climb 133.25-149.50 / 1),"
+            } else if GC2_WRITEOUT {
                 "the 16-bit kinds' targets inside the safe region (GC2Q: no map; GC2K's worst at 133.25 / 1 with each write-out setting part B found, then divide 1 above 133.25: 139.75, 146.25, 149.50),"
             } else if GC2_FAST {
                 "the 16-bit kinds' targets inside the safe region (GC2P: no map; GC2O made fast: the tile orders at 133.25 / 1 over GC2K's worst, rows 595-603, the mirror and the six 16-bit kinds, then FT3 at 108.33 / 1 in each order, its wrong words placed by row in their tile),"
@@ -9271,7 +9302,7 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_WRITEOUT {
+        let patch = if GC2_WRITEOUT || GC2_TIMING {
             gc2::ABOVE_SCENES.len().max(gc2::CONFIRM_SCENES.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_FAST {
             gc2::FAST_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -9603,7 +9634,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_WRITEOUT {
+                if GC2_TIMING {
+                    gc2_timing(g, &mut r, (tex, first, dsig));
+                } else if GC2_WRITEOUT {
                     gc2_writeout_c(g, &mut r, (tex, first, dsig));
                 } else if GC2_FAST {
                     gc2_orders(
@@ -10784,10 +10817,17 @@ mod image {
     /// Run GC2Q's parts A and B on FT3's scene (see [`GC2_WRITEOUT`]).
     #[inline(never)]
     fn ft3_writeout(g: &mut Rig) {
-        log!(
-            "GC2Q parts A and B: FT3's test (the 3D target the scanned-out screen at 0, ten full-screen 2D copies) with the copies queued during the render, after it, or none, at 108.33 and 133.25 / 1 ({GC2Q_ROUNDS} rounds each, the wrong words placed by row in their tile); then each bit of the render block's {} words flipped alone against the queued copies at 108.33 / 1, one round a bit",
-            writeout_words().count()
-        );
+        if GC2_TIMING {
+            log!(
+                "GC2T part 1: FT3's test (the 3D target the scanned-out screen at 0, ten full-screen 2D copies queued during the render) at 108.33 and 133.25 / 1 under {} local-memory timings ({GC2Q_ROUNDS} rounds each, the wrong words placed by row in their tile, the 3D time of each)",
+                gc2::TIM_WAYS.len()
+            );
+        } else {
+            log!(
+                "GC2Q parts A and B: FT3's test (the 3D target the scanned-out screen at 0, ten full-screen 2D copies) with the copies queued during the render, after it, or none, at 108.33 and 133.25 / 1 ({GC2Q_ROUNDS} rounds each, the wrong words placed by row in their tile); then each bit of the render block's {} words flipped alone against the queued copies at 108.33 / 1, one round a bit",
+                writeout_words().count()
+            );
+        }
         let found = (g.e.regs.read32(clock::COREPLL), diag::msc1());
         let at_wm = found.0 == ClockSpeed::WM.pll && found.1 == 0x2484_2481;
         if !at_wm {
@@ -10863,149 +10903,157 @@ mod image {
             let (again, _) = ft_diff(g, FT3_PIC, FT2_REF, WORDS);
             (alone, again)
         };
-        // Part A.
-        let steps: &[(ClockStep, &str)] = &[
-            (gc2_step(25, 3, 0, 1), "108.33 / 1"),
-            (gc2_step(41, 4, 0, 1), "133.25 / 1"),
-        ];
-        for &(s, name) in steps {
-            if at_wm {
-                let lock = clock_apply(g, s);
-                clock_readback(g);
-                let under = underrun_take(&mut g.e.regs);
-                log!("  GC2Q A at {name}: lock {lock:?} us, the underrun flag {under}");
-                if lock.is_none() {
-                    clock_restore(&mut g.e.regs);
-                    log!("  the clock didn't take: Windows Mobile's put back, this step skipped");
-                    continue;
-                }
-            }
-            let (alone, again) = reference(g, &mut r);
-            log!("  GC2Q A {name}: alone {alone:?} us, a second alone differs in {again} words");
-            for (mode, mname) in [
-                (Ft2d::Queued, "copies queued during the render"),
-                (Ft2d::After, "copies after the render"),
-                (Ft2d::None, "no copies"),
-            ] {
-                let (mut rows, mut counts) = ([0u32; 16], [0u32; GC2Q_ROUNDS]);
-                let mut worst_3d = 0;
-                for c in &mut counts {
-                    let (t3d, _) = ft2_round_with(g, &mut r, FT3_PIC, bufs, mode, None);
-                    worst_3d = worst_3d.max(t3d.unwrap_or(u32::MAX));
-                    let (n, br, _, _) = ft_place(g, FT3_PIC, FT2_REF);
-                    *c = n;
-                    for (a, b) in rows.iter_mut().zip(br) {
-                        *a += b;
-                    }
-                }
-                log!(
-                    "  GC2Q A {name}, {mname}: {counts:?} words differ (of {WORDS}); 3D at most {worst_3d} us; by row in the tile {rows:?}"
-                );
-            }
-            if at_wm {
-                clock_restore(&mut g.e.regs);
-                let _ = underrun_take(&mut g.e.regs);
-            }
-        }
-        // Part B, at 108.33 / 1: the queued copies make every render wrong
-        // (FT3, GC2P), so one round a bit says whether that bit cleans it.
-        let s = gc2_step(25, 3, 0, 1);
-        if at_wm && clock_apply(g, s).is_none() {
-            clock_restore(&mut g.e.regs);
-            log!("  GC2Q B: 108.33 / 1 didn't take: part B skipped");
+        if GC2_TIMING {
+            ft3_timing(g, &mut r, bufs, &reference, at_wm);
         } else {
-            clock_readback(g);
-            r.start_clean();
-            let (alone, again) = reference(g, &mut r);
-            let (base_n, _) = {
-                let _ = ft2_round_with(g, &mut r, FT3_PIC, bufs, Ft2d::Queued, None);
-                ft_diff(g, FT3_PIC, FT2_REF, WORDS)
-            };
-            log!(
-                "  GC2Q B at 108.33 / 1: the reference alone {alone:?} us (a second {again} words off); with no bit flipped, the queued copies leave {base_n} words wrong"
-            );
-            let mut hits = [(0usize, 0u32); 8];
-            let (mut nh, mut tried, mut quiet, mut described) = (0usize, 0u32, 0u32, 0u32);
-            // A bit can only be seen to clean a fault that is there: with
-            // the copies leaving nothing wrong (a clean baseline, or the
-            // emulator, which draws exactly), every bit would read as a fix.
-            let words: &mut dyn Iterator<Item = (usize, u32)> = if base_n == 0 && !GC2Q_FORCE {
-                log!(
-                    "  GC2Q B: the baseline has nothing wrong: nothing to search (no bit can show a fix)"
-                );
-                &mut core::iter::empty()
-            } else if base_n == 0 {
-                log!(
-                    "  GC2Q B: the baseline has nothing wrong; the first word searched anyway (the emulator's check)"
-                );
-                &mut writeout_words().take(1)
-            } else {
-                &mut writeout_words()
-            };
-            for (wi, (off, base)) in words.enumerate() {
-                let mut per_bit = [0u32; 32];
-                for (bit, slot) in per_bit.iter_mut().enumerate() {
-                    let v = base ^ (1 << bit);
-                    r.start_clean();
-                    let (t3d, ok) =
-                        ft2_round_with(g, &mut r, FT3_PIC, bufs, Ft2d::Queued, Some((off, v)));
-                    g.e.regs.write32(MBX + off, base);
-                    tried += 1;
-                    let (n, _) = ft_diff(g, FT3_PIC, FT2_REF, WORDS);
-                    *slot = if t3d.is_none() || !ok { u32::MAX } else { n };
-                    if n == 0 && t3d.is_some() && ok {
-                        // Four more rounds: it must hold.
-                        let mut held = true;
-                        for _ in 0..4 {
-                            r.start_clean();
-                            let _ = ft2_round_with(
-                                g,
-                                &mut r,
-                                FT3_PIC,
-                                bufs,
-                                Ft2d::Queued,
-                                Some((off, v)),
-                            );
-                            g.e.regs.write32(MBX + off, base);
-                            held &= ft_diff(g, FT3_PIC, FT2_REF, WORDS).0 == 0;
-                        }
-                        if described < 16 {
-                            described += 1;
-                            log!(
-                                "    GC2Q B HIT? 0x{off:03x} bit {bit} (0x{v:08x}): 0 words wrong with the copies queued; four more rounds {}",
-                                if held { "all 0: a hit" } else { "not all 0" }
-                            );
-                        }
-                        if held && nh < hits.len() {
-                            hits[nh] = (off, v);
-                            nh += 1;
-                        }
-                    }
-                    if n < base_n / 2 {
-                        quiet += 1;
+            // Part A.
+            let steps: &[(ClockStep, &str)] = &[
+                (gc2_step(25, 3, 0, 1), "108.33 / 1"),
+                (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+            ];
+            for &(s, name) in steps {
+                if at_wm {
+                    let lock = clock_apply(g, s);
+                    clock_readback(g);
+                    let under = underrun_take(&mut g.e.regs);
+                    log!("  GC2Q A at {name}: lock {lock:?} us, the underrun flag {under}");
+                    if lock.is_none() {
+                        clock_restore(&mut g.e.regs);
+                        log!(
+                            "  the clock didn't take: Windows Mobile's put back, this step skipped"
+                        );
+                        continue;
                     }
                 }
+                let (alone, again) = reference(g, &mut r);
                 log!(
-                    "  GC2Q B word {wi} 0x{off:03x} from 0x{base:08x}: words wrong by bit (MAX: hung or refused) {per_bit:?}"
+                    "  GC2Q A {name}: alone {alone:?} us, a second alone differs in {again} words"
                 );
-                let mut l3 = heapless_name();
-                let _ = write!(l3, "WORD {} OF {}", wi + 1, writeout_words().count());
-                label_at(
-                    g,
-                    FT3_PIC,
-                    ["GC2Q PART B", "108.33 / 1", l3.as_str()],
-                    SOAK_BLUE,
-                );
+                for (mode, mname) in [
+                    (Ft2d::Queued, "copies queued during the render"),
+                    (Ft2d::After, "copies after the render"),
+                    (Ft2d::None, "no copies"),
+                ] {
+                    let (mut rows, mut counts) = ([0u32; 16], [0u32; GC2Q_ROUNDS]);
+                    let mut worst_3d = 0;
+                    for c in &mut counts {
+                        let (t3d, _) = ft2_round_with(g, &mut r, FT3_PIC, bufs, mode, None);
+                        worst_3d = worst_3d.max(t3d.unwrap_or(u32::MAX));
+                        let (n, br, _, _) = ft_place(g, FT3_PIC, FT2_REF);
+                        *c = n;
+                        for (a, b) in rows.iter_mut().zip(br) {
+                            *a += b;
+                        }
+                    }
+                    log!(
+                        "  GC2Q A {name}, {mname}: {counts:?} words differ (of {WORDS}); 3D at most {worst_3d} us; by row in the tile {rows:?}"
+                    );
+                }
+                if at_wm {
+                    clock_restore(&mut g.e.regs);
+                    let _ = underrun_take(&mut g.e.regs);
+                }
             }
-            r.start_clean();
-            log!(
-                "  GC2Q B: {tried} bits tried; {quiet} left fewer than half the words wrong; {nh} cleaned the queued copies' errors in 5 of 5 rounds: {:x?}",
-                &hits[..nh]
-            );
-            g.writeout_hits = Over::of(&hits[..nh]);
-            if at_wm {
+            // Part B, at 108.33 / 1: the queued copies make every render wrong
+            // (FT3, GC2P), so one round a bit says whether that bit cleans it.
+            let s = gc2_step(25, 3, 0, 1);
+            if at_wm && clock_apply(g, s).is_none() {
                 clock_restore(&mut g.e.regs);
-                let _ = underrun_take(&mut g.e.regs);
+                log!("  GC2Q B: 108.33 / 1 didn't take: part B skipped");
+            } else {
+                clock_readback(g);
+                r.start_clean();
+                let (alone, again) = reference(g, &mut r);
+                let (base_n, _) = {
+                    let _ = ft2_round_with(g, &mut r, FT3_PIC, bufs, Ft2d::Queued, None);
+                    ft_diff(g, FT3_PIC, FT2_REF, WORDS)
+                };
+                log!(
+                    "  GC2Q B at 108.33 / 1: the reference alone {alone:?} us (a second {again} words off); with no bit flipped, the queued copies leave {base_n} words wrong"
+                );
+                let mut hits = [(0usize, 0u32); 8];
+                let (mut nh, mut tried, mut quiet, mut described) = (0usize, 0u32, 0u32, 0u32);
+                // A bit can only be seen to clean a fault that is there: with
+                // the copies leaving nothing wrong (a clean baseline, or the
+                // emulator, which draws exactly), every bit would read as a fix.
+                let words: &mut dyn Iterator<Item = (usize, u32)> = if base_n == 0 && !GC2Q_FORCE {
+                    log!(
+                        "  GC2Q B: the baseline has nothing wrong: nothing to search (no bit can show a fix)"
+                    );
+                    &mut core::iter::empty()
+                } else if base_n == 0 {
+                    log!(
+                        "  GC2Q B: the baseline has nothing wrong; the first word searched anyway (the emulator's check)"
+                    );
+                    &mut writeout_words().take(1)
+                } else {
+                    &mut writeout_words()
+                };
+                for (wi, (off, base)) in words.enumerate() {
+                    let mut per_bit = [0u32; 32];
+                    for (bit, slot) in per_bit.iter_mut().enumerate() {
+                        let v = base ^ (1 << bit);
+                        r.start_clean();
+                        let (t3d, ok) =
+                            ft2_round_with(g, &mut r, FT3_PIC, bufs, Ft2d::Queued, Some((off, v)));
+                        g.e.regs.write32(MBX + off, base);
+                        tried += 1;
+                        let (n, _) = ft_diff(g, FT3_PIC, FT2_REF, WORDS);
+                        *slot = if t3d.is_none() || !ok { u32::MAX } else { n };
+                        if n == 0 && t3d.is_some() && ok {
+                            // Four more rounds: it must hold.
+                            let mut held = true;
+                            for _ in 0..4 {
+                                r.start_clean();
+                                let _ = ft2_round_with(
+                                    g,
+                                    &mut r,
+                                    FT3_PIC,
+                                    bufs,
+                                    Ft2d::Queued,
+                                    Some((off, v)),
+                                );
+                                g.e.regs.write32(MBX + off, base);
+                                held &= ft_diff(g, FT3_PIC, FT2_REF, WORDS).0 == 0;
+                            }
+                            if described < 16 {
+                                described += 1;
+                                log!(
+                                    "    GC2Q B HIT? 0x{off:03x} bit {bit} (0x{v:08x}): 0 words wrong with the copies queued; four more rounds {}",
+                                    if held { "all 0: a hit" } else { "not all 0" }
+                                );
+                            }
+                            if held && nh < hits.len() {
+                                hits[nh] = (off, v);
+                                nh += 1;
+                            }
+                        }
+                        if n < base_n / 2 {
+                            quiet += 1;
+                        }
+                    }
+                    log!(
+                        "  GC2Q B word {wi} 0x{off:03x} from 0x{base:08x}: words wrong by bit (MAX: hung or refused) {per_bit:?}"
+                    );
+                    let mut l3 = heapless_name();
+                    let _ = write!(l3, "WORD {} OF {}", wi + 1, writeout_words().count());
+                    label_at(
+                        g,
+                        FT3_PIC,
+                        ["GC2Q PART B", "108.33 / 1", l3.as_str()],
+                        SOAK_BLUE,
+                    );
+                }
+                r.start_clean();
+                log!(
+                    "  GC2Q B: {tried} bits tried; {quiet} left fewer than half the words wrong; {nh} cleaned the queued copies' errors in 5 of 5 rounds: {:x?}",
+                    &hits[..nh]
+                );
+                g.writeout_hits = Over::of(&hits[..nh]);
+                if at_wm {
+                    clock_restore(&mut g.e.regs);
+                    let _ = underrun_take(&mut g.e.regs);
+                }
             }
         }
         log!("GC2Q parts A and B: done");
@@ -11015,6 +11063,130 @@ mod image {
         }
         let _ = r.release(&mut g.pool);
         p_texture_free(g, tex);
+    }
+
+    /// Run GC2T's part 1 (see [`GC2_TIMING`]): FT3 with its copies queued at
+    /// 108.33 and 133.25 / 1 under each of [`gc2::TIM_WAYS`], a reference
+    /// at each (the render alone) and [`GC2Q_ROUNDS`] rounds.
+    fn ft3_timing(
+        g: &mut Rig,
+        r: &mut Renderer,
+        bufs: (u32, u32),
+        reference: &dyn Fn(&mut Rig, &mut Renderer) -> (Option<u32>, u32),
+        at_wm: bool,
+    ) {
+        const WORDS: u32 = 480 * 640 * 2 / 4;
+        let steps: [(ClockStep, &str); 2] = [
+            (gc2_step(25, 3, 0, 1), "108.33 / 1"),
+            (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+        ];
+        let n_tim = gc2::TIM_WAYS.len();
+        for (si, &(s, name)) in steps.iter().enumerate() {
+            for (ti, &(tname, add)) in gc2::TIM_WAYS.iter().enumerate() {
+                let Some(t) = gc2::lmtim_with(s.speed().lmtim, add) else {
+                    log!("  GC2T 1 {name} {tname}: a field past 4 bits, skipped");
+                    continue;
+                };
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "{} OF {}", si * n_tim + ti + 1, 2 * n_tim);
+                label_at(g, FT3_PIC, ["GC2T PART 1", name, l3.as_str()], SOAK_BLUE);
+                g.tim = Some(t);
+                if at_wm && clock_apply(g, s).is_none() {
+                    g.tim = None;
+                    clock_restore(&mut g.e.regs);
+                    log!(
+                        "  GC2T 1 {name} {tname}: the clock or timing didn't take: Windows Mobile's put back, skipped"
+                    );
+                    continue;
+                }
+                let held = g.e.regs.read32(clock::LMTIM);
+                r.start_clean();
+                let (alone, again) = reference(g, r);
+                let (mut rows, mut counts) = ([0u32; 16], [0u32; GC2Q_ROUNDS]);
+                let (mut best, mut worst) = (u32::MAX, 0);
+                for c in &mut counts {
+                    let (t3d, _) = ft2_round_with(g, r, FT3_PIC, bufs, Ft2d::Queued, None);
+                    best = best.min(t3d.unwrap_or(u32::MAX));
+                    worst = worst.max(t3d.unwrap_or(u32::MAX));
+                    let (n, br, _, _) = ft_place(g, FT3_PIC, FT2_REF);
+                    *c = n;
+                    for (a, b) in rows.iter_mut().zip(br) {
+                        *a += b;
+                    }
+                }
+                log!(
+                    "  GC2T 1 {name} {tname} (LMTIM 0x{t:x}, reads 0x{held:x}): alone {alone:?} us (a second {again} words off); copies queued: {counts:?} words differ (of {WORDS}); 3D {best}-{worst} us; by row in the tile {rows:?}"
+                );
+                g.tim = None;
+                if at_wm {
+                    clock_restore(&mut g.e.regs);
+                    let _ = underrun_take(&mut g.e.regs);
+                }
+            }
+        }
+    }
+
+    /// Run GC2T's parts 2 and 3 (see [`GC2_TIMING`]): GC2K's worst at 133.25
+    /// / 1, 100 rounds under each of [`gc2::TIM_CONFIRM`]; then the climb
+    /// ([`gc2::ABOVE_PLL`]), the six 16-bit kinds 30 rounds under each of
+    /// [`gc2::TIM_CLIMB`]. The rated timing put back after.
+    #[inline(never)]
+    fn gc2_timing(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        for &ti in &gc2::TIM_CONFIRM {
+            let (tname, add) = gc2::TIM_WAYS[ti];
+            g.tim = gc2::lmtim_with(GC2K_STEP.0.speed().lmtim, add);
+            log!(
+                "  GC2T 2: GC2K's worst at 133.25 / 1, {tname} (LMTIM {:x?})",
+                g.tim
+            );
+            if g.tim.is_none() {
+                continue;
+            }
+            gc2_orders(
+                g,
+                r,
+                (tex, &mut *first, dsig),
+                &OrderPlan {
+                    name: tname,
+                    label: "GC2T PART 2",
+                    scenes: &gc2::CONFIRM_SCENES,
+                    ways: &gc2::CONFIRM_WAYS,
+                    step: GC2K_STEP,
+                    secs: u32::MAX / 1_000_000,
+                    rounds: 100,
+                },
+            );
+        }
+        for (pi, &(m, n)) in gc2::ABOVE_PLL.iter().enumerate() {
+            let s = gc2_step(m, n, 0, 1);
+            for &ti in &gc2::TIM_CLIMB {
+                let (tname, add) = gc2::TIM_WAYS[ti];
+                g.tim = gc2::lmtim_with(s.speed().lmtim, add);
+                log!(
+                    "  GC2T 3: divide 1 at {}, {tname} (LMTIM {:x?})",
+                    ABOVE_NAMES[pi],
+                    g.tim
+                );
+                if g.tim.is_none() {
+                    continue;
+                }
+                gc2_orders(
+                    g,
+                    r,
+                    (tex, &mut *first, dsig),
+                    &OrderPlan {
+                        name: tname,
+                        label: "GC2T PART 3",
+                        scenes: &gc2::ABOVE_SCENES,
+                        ways: &gc2::ABOVE_WAYS,
+                        step: (s, ABOVE_NAMES[pi]),
+                        secs: u32::MAX / 1_000_000,
+                        rounds: 30,
+                    },
+                );
+            }
+        }
+        g.tim = None;
     }
 
     /// Run GC2Q part C: each write-out setting part B found confirmed on
@@ -11283,7 +11455,7 @@ mod image {
         let (s, label) = plan.step;
         let minutes = plan.secs.div_ceil(60);
         soak_label(g, [label0, label, "STARTING"], SOAK_BLUE);
-        let want_regs = gc2_clock_want(s.speed(), s.div);
+        let want_regs = gc2_clock_want(step_speed(g, s), s.div);
         let lock = clock_apply(g, s);
         if lock.is_none() {
             clock_restore(&mut g.e.regs);
@@ -11304,6 +11476,9 @@ mod image {
         let mut bases: [Gc2Baseline; ORDER_MAX_SCENES] =
             core::array::from_fn(|_| Gc2Baseline(None));
         let mut wrong_by = [0u32; ORDER_MAX_WAYS];
+        // Each way's fastest render (the 3D core's time, for the clock's
+        // and the timing's speed).
+        let mut best_by = [u32::MAX; ORDER_MAX_WAYS];
         let mut spots = [SweepSpots::NONE; ORDER_MAX_WAYS];
         let (mut elapsed_us, mut lines, mut rounds) = (0u64, 0u32, 0u32);
         let end_us = u64::from(plan.secs) * 1_000_000;
@@ -11324,6 +11499,7 @@ mod image {
                     &mut bases[sc],
                     &mut side,
                 );
+                best_by[w] = best_by[w].min(side.best_us);
                 if !side.held() || wrong.is_none() {
                     unheld = Some((w, wrong, side));
                     elapsed_us += u64::from(us_since(t0));
@@ -11387,10 +11563,11 @@ mod image {
             soak_label(g, [label0, label, "STOPPED: NOT HELD"], SOAK_RED);
         }
         log!(
-            "  {name} {label}: {rounds} rounds ({} renders) in {} s; wrong renders by way {:?}",
+            "  {name} {label}: {rounds} rounds ({} renders) in {} s; wrong renders by way {:?}; fastest render by way {:?} us",
             rounds * n_ways as u32,
             elapsed_us / 1_000_000,
-            &wrong_by[..n_ways]
+            &wrong_by[..n_ways],
+            &best_by[..n_ways]
         );
         // By order: the wrong renders summed over the scenes run in all
         // three orders, and over those run in the two new ones only.
@@ -12402,6 +12579,7 @@ mod image {
             over: Over::NONE,
             checks: 0,
             writeout_hits: Over::NONE,
+            tim: None,
         };
         if START {
             start_watch(&mut g.e.regs, "N4 the keypad taken, the fence written");
@@ -12497,7 +12675,7 @@ mod image {
             together3(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if GC2 {
-            if GC2_WRITEOUT && !GC2Q_C_ONLY {
+            if (GC2_WRITEOUT && !GC2Q_C_ONLY) || GC2_TIMING {
                 ft3_writeout(&mut g);
             } else if GC2Q_C_ONLY {
                 log!(

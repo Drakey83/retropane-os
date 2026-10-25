@@ -525,3 +525,51 @@ fn the_plane_is_one_plane_and_its_texture_holds_its_corners() {
         assert!(RUN_D.contains(&g) && RUN_D.contains(&t));
     }
 }
+
+#[test]
+fn gc2t_loosens_one_field_at_a_time_from_the_rated_timing() {
+    // 133.25 MHz's rated timing (Dell's routine): tRAS 9, tRP 4, tRCD 4,
+    // tRC 12, tDPL 2.
+    let rated = 0x944C2;
+    let got: std::vec::Vec<u32> = TIM_WAYS
+        .iter()
+        .map(|&(_, add)| lmtim_with(rated, add).unwrap())
+        .collect();
+    assert_eq!(
+        got,
+        [
+            0x944C2, 0x944C3, 0x944C4, 0x954C2, 0x945C2, 0xA44D2, 0xA55D3
+        ]
+    );
+    // Every way but the rated one changes something; tRAS + tRP >= tRC + 1
+    // held by every way.
+    assert_eq!(TIM_WAYS[0].1, [0; 5]);
+    for &(name, add) in &TIM_WAYS[1..] {
+        let t = lmtim_with(rated, add).unwrap();
+        assert_ne!(t, rated, "{name}");
+        let f = |i: usize| t >> TIM_SHIFTS[i] & 0xF;
+        assert!(f(0) + f(1) > f(3), "{name}");
+    }
+    // A field past 4 bits refused, not wrapped; bits above the fields kept.
+    assert_eq!(lmtim_with(0xF_0000, [1, 0, 0, 0, 0]), None);
+    assert_eq!(lmtim_with(0x0F_0000, [0, 0, 0, 0, 15]), Some(0x0F_000F));
+    assert_eq!(lmtim_with(0x10_0000, [0, 0, 0, 0, 1]), Some(0x10_0001));
+    // The confirmation and the climb: the rated timing first, write
+    // recovery next, and everything looser last.
+    assert_eq!(
+        TIM_CONFIRM.map(|i| TIM_WAYS[i].0),
+        ["rated", "tDPL +1", "tDPL +2", "all +1"]
+    );
+    assert_eq!(
+        TIM_CLIMB.map(|i| TIM_WAYS[i].0),
+        ["rated", "tDPL +1", "all +1"]
+    );
+    // At every clock the climb reaches, the loosest timing still fits.
+    for &(m, n) in &ABOVE_PLL {
+        let khz = 13_000 * m / n;
+        let cyc = |ns: u32| (ns * khz).div_ceil(1_000_000);
+        let (trc, trp) = (cyc(85), cyc(25));
+        let base = (trc - trp + 1) << 16 | trp << 12 | trp << 8 | trc << 4 | 2;
+        assert!(lmtim_with(base, TIM_WAYS[6].1).is_some(), "{khz}");
+    }
+}

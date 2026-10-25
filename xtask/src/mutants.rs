@@ -70,6 +70,28 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "gpubench GC2T: a looser timing wraps its field instead of refusing",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "        if v > 0xF {\n            return None;\n        }\n        out |= v << TIM_SHIFTS[i];",
+        to: "        out |= (v & 0xF) << TIM_SHIFTS[i];",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2t_loosens_one_field_at_a_time_from_the_rated_timing",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2T: write recovery left out of the climb",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const TIM_CLIMB: [usize; 3] = [0, 1, 6];",
+        to: "pub const TIM_CLIMB: [usize; 3] = [0, 3, 6];",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2t_loosens_one_field_at_a_time_from_the_rated_timing",
+        ]),
+    },
+    Mutant {
         name: "hal-mem: the one-pass check misses the last word",
         file: "hal/mem/src/lib.rs",
         from: "        differ += u32::from(v != w);",

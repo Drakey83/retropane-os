@@ -653,6 +653,50 @@ pub const ABOVE_WAYS: [(usize, u8); 6] = [
 pub const CONFIRM_SCENES: [Scene; 1] = [Scene::Sweep(0)];
 pub const CONFIRM_WAYS: [(usize, u8); 1] = [(0, ROWS)];
 
+/// Run GC2T's local-memory timings (the owner, 2026-10-24: "fix it and do
+/// the test", after GC2Q: the fault a tile's last rows written while
+/// another reader needs another row, uniform, not heat): each a name and
+/// the cycles added to `LMTIM`'s fields [tRAS, tRP, tRCD, tRC, tDPL] over
+/// the rated timing (`clock::Speed::rated`), whose write recovery tDPL is 2
+/// cycles at every clock (15 ns at 133.25 MHz, 13.7 at 146.25: the suspect).
+/// tRC +1 raises tRAS with it, keeping tRAS + tRP >= tRC + 1 as the rated
+/// timing does.
+pub const TIM_WAYS: [(&str, [u32; 5]); 7] = [
+    ("rated", [0, 0, 0, 0, 0]),
+    ("tDPL +1", [0, 0, 0, 0, 1]),
+    ("tDPL +2", [0, 0, 0, 0, 2]),
+    ("tRP +1", [0, 1, 0, 0, 0]),
+    ("tRCD +1", [0, 0, 1, 0, 0]),
+    ("tRC +1", [1, 0, 0, 1, 0]),
+    ("all +1", [1, 1, 1, 1, 1]),
+];
+
+/// `LMTIM`'s fields' shifts, in [`TIM_WAYS`]' order (4 bits each).
+pub const TIM_SHIFTS: [u32; 5] = [16, 12, 8, 4, 0];
+
+/// GC2T's timings on GC2K's worst at 133.25 / 1 (rated, tDPL +1, +2, all
+/// +1) and over the climb (rated, tDPL +1, all +1): indices into
+/// [`TIM_WAYS`].
+pub const TIM_CONFIRM: [usize; 4] = [0, 1, 2, 6];
+pub const TIM_CLIMB: [usize; 3] = [0, 1, 6];
+
+/// `base` (an `LMTIM` value) with `add` cycles on its fields, or `None`
+/// when a field would pass its 4 bits. Bits above the fields are kept.
+#[must_use]
+pub const fn lmtim_with(base: u32, add: [u32; 5]) -> Option<u32> {
+    let mut out = base & !0xF_FFFF;
+    let mut i = 0;
+    while i < 5 {
+        let v = (base >> TIM_SHIFTS[i] & 0xF) + add[i];
+        if v > 0xF {
+            return None;
+        }
+        out |= v << TIM_SHIFTS[i];
+        i += 1;
+    }
+    Some(out)
+}
+
 /// Scene `s`'s background and slots.
 #[must_use]
 pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {

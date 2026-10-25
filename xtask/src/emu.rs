@@ -5051,6 +5051,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2Q_FORCE", "1"),
         ],
     )?;
+    let run_gc2t = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TIMING", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5333,6 +5341,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2T: the local memory's timing loosened on FT3, GC2K's worst
+        // and the climb: every timing written, held and put back, and the
+        // run returns (stepped on the wm-clocks build).
+        (
+            "run GC2T",
+            &run_gc2t,
+            &[
+                "GC2T 1 133.25 / 1 all +1 (LMTIM 0xa55d3, reads 0xa55d3)",
+                "GC2T 2: GC2K's worst at 133.25 / 1, all +1 (LMTIM Some(a55d3))",
+                "GC2T 3: divide 1 at 149.50 / 1, all +1",
+                "GC2Q parts A and B: done",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
