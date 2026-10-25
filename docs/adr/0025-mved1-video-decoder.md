@@ -128,6 +128,14 @@ formats S4 makes worthwhile, and the media player on the ROADMAP.
 - `cargo xtask emu-mved`: the emulator doesn't model the unit, so it checks
   only that every wait times out safely and everything is put back.
 
+**Before its first run (2026-10-25):** never run on the X51v since it was
+built (gate P11, V8). Brought up to today's rules: the step on screen from
+the first moment ("STEP n OF 4", drawn on the 16-bit screen the loader
+shows, inside the 2700G's safe region, so nothing scans out from outside it
+while the decoder writes 2700G memory; docs/hw/2700g.md G19), the results
+screen's prompt, the log on the card (the loader's card log). Budget 42 ->
+50 KiB. `emu-mved` passes.
+
 ## The four lenses
 
 | Lens | Effect |

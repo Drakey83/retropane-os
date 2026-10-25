@@ -107,7 +107,7 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_blit2d::{self as cmd, Engine, Format};
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, layers::Layer, reg as dreg};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, font, layers::Layer, reg as dreg};
     use rp_drv_mved::{
         self as mv, CONVERT_DONE, ChromaOrder, Convert, Diff, Frame420, M24CLK, MVED,
         RESET_SEQUENCE, Rgb3, reg,
@@ -392,6 +392,93 @@ mod image {
     /// the chip's YUY2 read as U first (top right), its mode-3 output in
     /// the closest hypothesis' byte order (bottom left), the four stages'
     /// squares (bottom right).
+    /// The steps, for the label (the rule: every program shows it is
+    /// running and its step from the first moment).
+    const STEPS: u32 = 4;
+
+    /// Two lines in a dark band across the top of `screen` (the 16-bit
+    /// screen the loader shows, inside the safe region: no scan-out from
+    /// outside it while the decoder writes 2700G memory; or the 32-bit
+    /// results screen), white text at 3x.
+    fn label(vram: &mut [u8], screen: &Plane, lines: [&str; 2]) {
+        const BAND: u32 = 60;
+        const SCALE: u32 = 3;
+        let bpp = screen.format.bytes() as u32;
+        if !matches!(screen.format, PixelFormat::Rgb565 | PixelFormat::Argb8888)
+            || screen.offset + screen.stride * BAND as usize > vram.len()
+        {
+            return;
+        }
+        let (bg, fg) = if bpp == 2 {
+            (0x1082_1082, 0xFFFF_FFFF)
+        } else {
+            (0xFF10_1020, 0xFFFF_FFFF)
+        };
+        let at = |x: u32, y: u32| screen.offset + y as usize * screen.stride + (x * bpp) as usize;
+        for y in 0..BAND {
+            for x in (0..u32::from(screen.width)).step_by((4 / bpp) as usize) {
+                let _ = store32_volatile(vram, at(x, y), bg);
+            }
+        }
+        for (k, text) in lines.iter().enumerate() {
+            let y0 = 6 + 28 * k as u32;
+            for (i, ch) in text.chars().enumerate() {
+                let x0 = 12 + i as u32 * (font::WIDTH as u32 + 1) * SCALE;
+                if x0 + font::WIDTH as u32 * SCALE > u32::from(screen.width) {
+                    break;
+                }
+                for (gy, &bits) in font::glyph(ch).iter().enumerate() {
+                    for gx in 0..font::WIDTH as u32 {
+                        if bits & (1 << (font::WIDTH as u32 - 1 - gx)) == 0 {
+                            continue;
+                        }
+                        for dy in 0..SCALE {
+                            let y = y0 + gy as u32 * SCALE + dy;
+                            // Whole words: 3 pixels at 16 bits round to 4
+                            // (an even x), at 32 bits 3 words.
+                            let x = x0 + gx * SCALE;
+                            if bpp == 2 {
+                                let x = x & !1;
+                                for w in 0..2 {
+                                    let _ = store32_volatile(vram, at(x + 2 * w, y), fg);
+                                }
+                            } else {
+                                for dx in 0..SCALE {
+                                    let _ = store32_volatile(vram, at(x + dx, y), fg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cpu::drain_write_buffer();
+    }
+
+    /// [`label`] with the step line: "STEP n OF 4: what".
+    fn step_label(vram: &mut [u8], screen: &Plane, n: u32, what: &str) {
+        let mut buf = [0u8; 40];
+        let len = {
+            let mut l = Line(&mut buf, 0);
+            let _ = write!(l, "STEP {n} OF {STEPS}: {what}");
+            l.1
+        };
+        let line = core::str::from_utf8(&buf[..len]).unwrap_or("STEP");
+        label(vram, screen, ["RP-MVED: VIDEO DECODER", line]);
+    }
+
+    /// A formatting buffer on the stack.
+    struct Line<'a>(&'a mut [u8], usize);
+
+    impl Write for Line<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let n = s.len().min(self.0.len() - self.1);
+            self.0[self.1..self.1 + n].copy_from_slice(&s.as_bytes()[..n]);
+            self.1 += n;
+            Ok(())
+        }
+    }
+
     fn draw(
         e: &mut Engine<Mmio>,
         vram: &mut [u8],
@@ -446,7 +533,8 @@ mod image {
             crash(format_args!("no 2700G"))
         };
         let mut display = Display::new(regs);
-        let _ = display.adopt(vram.len());
+        let (screen, _) = display.adopt(vram.len());
+        step_label(vram, &screen, 1, "CLOCK + ID");
         let regs = display.into_inner();
         let mut e = Engine::new(regs, FENCE, rt::ticks, 3_250);
         let _ = store32_volatile(vram, FENCE, 0);
@@ -477,6 +565,7 @@ mod image {
 
         // S1: the reset; S0's surprise, if any, may clear here.
         rt::check_in();
+        step_label(vram, &screen, 2, "RESET");
         for (off, v) in RESET_SEQUENCE {
             write(&mut e.regs, off, v);
             rt::delay_us(10);
@@ -493,6 +582,7 @@ mod image {
         let mut rgb3 = None;
         if stages[1].go_on() {
             rt::check_in();
+            step_label(vram, &screen, 3, "CONVERT TO YUY2");
             let frame = Frame420::new(64, 64).unwrap_or(Frame420 {
                 width: 64,
                 height: 64,
@@ -518,6 +608,7 @@ mod image {
             // Mode 3 only after a conversion that finished inside its guards.
             if stages[2] != Outcome::Failed {
                 rt::check_in();
+                step_label(vram, &screen, 4, "CONVERT TO RGB");
                 let job = Convert {
                     dst: DST_RGB3,
                     dst_stride: 192,
@@ -538,6 +629,18 @@ mod image {
             &stages,
             stages[2] != Outcome::Failed && stages[2] != Outcome::NotRun,
             rgb3,
+        );
+        let results = Plane {
+            format: PixelFormat::Argb8888,
+            width: W as u16,
+            height: H as u16,
+            offset: TARGET,
+            stride: STRIDE,
+        };
+        label(
+            vram,
+            &results,
+            ["RP-MVED: DONE (LOG ON CARD)", "PRESS ANY BUTTON TO END"],
         );
         let saved = show_target(&mut e.regs);
         let keypad = arm_keypad();

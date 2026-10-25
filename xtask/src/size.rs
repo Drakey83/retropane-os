@@ -695,7 +695,10 @@ pub const BUDGETS: &[Budget] = &[
     // catches up at check-ins); 40.7 KiB measured.
     Budget {
         image: "rp-mved",
-        max_load: 42 * 1024,
+        // Ratcheted 42 -> 50 KiB on 2026-10-25 (test image): the on-screen
+        // step label from the first moment (the owner's label-the-screen
+        // rule) and the results screen's prompt; 45.8 KiB measured, +~10%.
+        max_load: 50 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
