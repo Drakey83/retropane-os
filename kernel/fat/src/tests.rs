@@ -629,7 +629,12 @@ fn ops(d: &MemDisk) -> usize {
 /// Runs every public operation on a (possibly hostile) volume; returns
 /// nothing, it only must not panic or run away.
 fn exercise(data: Vec<u8>) {
-    let Ok(mut v) = Volume::mount(bounded(data), PARTITION_START) else {
+    exercise_at(data, PARTITION_START);
+}
+
+/// [`exercise`] for a volume starting at `base`.
+fn exercise_at(data: Vec<u8>, base: u32) {
+    let Ok(mut v) = Volume::mount(bounded(data), base) else {
         return;
     };
     // A healthy 1024-sector image never needs more than this many transfers
@@ -1343,7 +1348,7 @@ fn reserve_gives_a_zeroed_run_written_in_place_on_either_kind() {
         assert_eq!(got, vec![0u8; 5000], "{kind}: not zero-filled");
         // A sector written in place, then the volume mounted afresh.
         let mut disk = match v {
-            AnyVolume::Fat32(v) => v.into_inner(),
+            AnyVolume::Fat(v) => v.into_inner(),
             AnyVolume::ExFat(v) => v.into_inner(),
         };
         let line = [b'x'; SECTOR];
@@ -1376,7 +1381,7 @@ fn extent_finds_a_reserved_file_again_without_writing() {
         let r = v.reserve("rplog/slot-00.txt", 5000, &mut scratch).unwrap();
         v.put("rplog/empty.txt", b"", &mut scratch).unwrap();
         let disk = match v {
-            AnyVolume::Fat32(v) => v.into_inner(),
+            AnyVolume::Fat(v) => v.into_inner(),
             AnyVolume::ExFat(v) => v.into_inner(),
         };
         let writes = disk.writes;
@@ -1389,7 +1394,7 @@ fn extent_finds_a_reserved_file_again_without_writing() {
         );
         assert_eq!(v.extent("rplog/empty.txt"), Err(Error::NotFound), "{kind}");
         let disk = match v {
-            AnyVolume::Fat32(v) => v.into_inner(),
+            AnyVolume::Fat(v) => v.into_inner(),
             AnyVolume::ExFat(v) => v.into_inner(),
         };
         assert_eq!(disk.writes, writes, "{kind}: extent wrote");
@@ -1480,4 +1485,134 @@ fn prefix_to_names_each_parent_folder() {
     assert_eq!(crate::prefix_to(path, parts[2]), Ok(path));
     let other = String::from("elsewhere/x");
     assert_eq!(crate::prefix_to(path, &other), Err(crate::Error::BadName));
+}
+
+/// A FAT12 or FAT16 card from the formatter, in memory.
+fn small_fat(fs: crate::mkfs::Fs, total: u32, cluster: u32) -> (MemDisk, u32) {
+    let l = crate::mkfs::plan(
+        total,
+        &crate::mkfs::Options {
+            fs: Some(fs),
+            cluster_bytes: Some(cluster),
+            align_sectors: None,
+            label: "OLD CARD",
+            serial: 1,
+        },
+    )
+    .unwrap();
+    let mut d = MemDisk::new(vec![0u8; total as usize * SECTOR]);
+    crate::mkfs::write(&mut d, &l, &mut [0u8; 4096]).unwrap();
+    (d, l.part_start)
+}
+
+#[test]
+fn fat12_entries_straddling_a_sector_keep_their_neighbours() {
+    // 512-byte clusters: entry 341 starts at FAT byte 511 and ends in the
+    // next sector (as do 682 and 1023); every value is written, read back
+    // after a fresh mount, and checked against the specification's packing.
+    let (d, base) = small_fat(crate::mkfs::Fs::Fat12, 4096, 512);
+    let mut v = Volume::mount(d, base).unwrap();
+    assert_eq!(v.kind(), crate::FatKind::Fat12);
+    let probe = [339, 340, 341, 342, 343, 681, 682, 683, 1022, 1023, 1024];
+    let value = |c: u32| (c * 7 + 0x123) & 0xFFF & !0x800; // not a mark
+    for &c in &probe {
+        v.fat_set(c, value(c)).unwrap();
+    }
+    v.fat_flush().unwrap();
+    let fat_start = v.fat_start;
+    let mut v = Volume::mount(v.into_inner(), base).unwrap();
+    for &c in &probe {
+        assert_eq!(v.fat_get(c).unwrap(), value(c), "cluster {c}");
+    }
+    // Untouched neighbours stay free.
+    for c in [338, 344, 680, 684, 1021, 1025] {
+        assert_eq!(v.fat_get(c).unwrap(), 0, "cluster {c}");
+    }
+    // The bytes on the card: entry 341 (odd) is the high nibble of byte
+    // 511 and all of byte 512, in both FAT copies.
+    let d = v.into_inner();
+    for copy in 0..2 {
+        let fat = (fat_start as usize + copy * v_fat_sectors(&d, base)) * SECTOR;
+        let lo = d.data[fat + 511] >> 4;
+        let hi = d.data[fat + 512];
+        assert_eq!(
+            u32::from(lo) | u32::from(hi) << 4,
+            value(341),
+            "copy {copy}"
+        );
+        // Entry 340 (even) is byte 510 and the low nibble of 511.
+        let e340 = u32::from(d.data[fat + 510]) | u32::from(d.data[fat + 511] & 0xF) << 8;
+        assert_eq!(e340, value(340));
+    }
+}
+
+fn v_fat_sectors(d: &MemDisk, base: u32) -> usize {
+    let b = base as usize * SECTOR;
+    usize::from(u16::from_le_bytes([d.data[b + 22], d.data[b + 23]]))
+}
+
+#[test]
+fn end_and_bad_marks_read_alike_on_every_fat_width() {
+    use crate::mkfs::Fs;
+    for (fs, total, eoc, bad) in [
+        (Fs::Fat12, 4096, 0xFF8u32, 0xFF7u32),
+        (Fs::Fat16, 20_000, 0xFFF8, 0xFFF7),
+    ] {
+        let (d, base) = small_fat(fs, total, 512);
+        let mut v = Volume::mount(d, base).unwrap();
+        for (raw, widened) in [
+            (eoc, EOC),
+            (eoc + 3, EOC),
+            (eoc + 7, EOC),
+            (bad, BAD),
+            (bad - 1, bad - 1),
+        ] {
+            v.fat_set(10, raw).unwrap();
+            assert_eq!(v.fat_get(10).unwrap(), widened, "{fs:?} {raw:#x}");
+        }
+        // FAT32's marks written through a narrow FAT become its marks.
+        v.fat_set(11, EOC).unwrap();
+        v.fat_set(12, BAD).unwrap();
+        assert_eq!(v.fat_get(11).unwrap(), EOC);
+        assert_eq!(v.fat_get(12).unwrap(), BAD);
+        assert_eq!(v.next_cluster(11).unwrap(), None);
+    }
+}
+
+#[test]
+fn hostile_fat12_and_fat16_cards_never_panic_or_loop() {
+    use crate::mkfs::Fs;
+    let mut x: u64 = 0x0F16_2026;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for (fs, total) in [(Fs::Fat12, 1500u32), (Fs::Fat16, 9000)] {
+        let (d, base) = small_fat(fs, total, 512);
+        let mut v = Volume::mount(d, base).unwrap();
+        let mut scratch = vec![0u8; 4096];
+        v.put("retropane.bin", &pattern(3000, 3), &mut scratch)
+            .unwrap();
+        v.put("dir/HARET.EXE", b"haret", &mut scratch).unwrap();
+        let root = v.root_lba as usize * SECTOR;
+        let fat = v.fat_start as usize * SECTOR;
+        let image = v.into_inner().data;
+        let bs = base as usize * SECTOR;
+        for i in 0..1000 {
+            let mut img = image.clone();
+            for _ in 0..1 + rnd() % 6 {
+                let region = match i % 4 {
+                    0 => bs..bs + SECTOR,
+                    1 => fat..fat + 2 * SECTOR,
+                    2 => root..root + 4 * SECTOR,
+                    _ => 0..img.len(),
+                };
+                let at = region.start + (rnd() as usize % region.len());
+                img[at] = rnd() as u8;
+            }
+            exercise_at(img, base);
+        }
+    }
 }

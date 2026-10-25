@@ -1,12 +1,12 @@
 //! A read-only file system check, as a modern fsck: every folder walked from
 //! the root, every cluster a file or folder uses marked once (in a bitmap
-//! the caller lends), then the allocation (FAT32's FAT, exFAT's bitmap)
+//! the caller lends), then the allocation (the FAT, exFAT's bitmap)
 //! compared with what was reached. Problems are counted and reported, never
 //! "fixed" silently: repairs are separate, explicit tools.
 
 use rp_hal_api::BlockDevice;
 
-use crate::{ATTR_DIRECTORY, Error, FAT_MASK, FAT_PER_SECTOR, SECTOR, Volume, le16, le32};
+use crate::{ATTR_DIRECTORY, BAD, Error, SECTOR, Volume, entry_first, entry_get, le32};
 
 /// What a check found.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub struct Health {
     pub free_but_used: u32,
     /// exFAT: entry sets whose checksum fails (those files are invisible).
     pub bad_sets: u32,
-    /// FAT32: FAT sectors where the mirrored copies differ.
+    /// FAT sectors where the mirrored copies differ.
     pub fat_copies_differ: u32,
     /// Folders not walked (nested deeper than the check follows).
     pub unchecked: u32,
@@ -87,7 +87,10 @@ impl<D: BlockDevice> Volume<D> {
         let mut h = Health::default();
         let mut pending = [0u32; PENDING];
         let mut np = 0;
-        if self.chain(self.root_cluster, None, &mut seen, &mut h)? {
+        // FAT12/16's fixed root has no chain: walked, nothing to mark.
+        if self.fixed_root(self.root_cluster)
+            || self.chain(self.root_cluster, None, &mut seen, &mut h)?
+        {
             pending[0] = self.root_cluster;
             np = 1;
         }
@@ -95,6 +98,7 @@ impl<D: BlockDevice> Volume<D> {
             np -= 1;
             let dir = pending[np];
             let mut skip = 0usize;
+            let kind = self.kind;
             loop {
                 let mut batch = [(0u32, 0u32, false); BATCH];
                 let (mut nb, mut idx, mut more) = (0, 0usize, false);
@@ -111,7 +115,7 @@ impl<D: BlockDevice> Volume<D> {
                         more = true;
                         return true;
                     }
-                    let first = u32::from(le16(e, 20)) << 16 | u32::from(le16(e, 26));
+                    let first = entry_first(e, kind);
                     batch[nb] = (first, le32(e, 28), e[11] & ATTR_DIRECTORY != 0);
                     nb += 1;
                     idx += 1;
@@ -207,8 +211,12 @@ impl<D: BlockDevice> Volume<D> {
         let per = (half / SECTOR) as u32;
         let compare = self.mirrored && self.fats >= 2;
         let total = self.clusters + 2;
+        let kind = self.kind;
+        let width = kind.width();
+        // The FAT's bytes that hold entries.
+        let fat_end = kind.offset(total - 1) + width;
         let mut s = 0;
-        while s < self.fat_sectors && s * FAT_PER_SECTOR < total {
+        while s < self.fat_sectors && s * (SECTOR as u32) < fat_end {
             let n = per.min(self.fat_sectors - s);
             let len = n as usize * SECTOR;
             self.dev.read_blocks(self.fat_start + s, &mut one[..len])?;
@@ -223,14 +231,19 @@ impl<D: BlockDevice> Volume<D> {
                     .filter(|(a, b)| a != b)
                     .count() as u32;
             }
-            for (i, e) in one[..len].as_chunks::<4>().0.iter().enumerate() {
-                let c = s * FAT_PER_SECTOR + i as u32;
-                if !(2..total).contains(&c) {
-                    continue;
-                }
-                let v = u32::from_le_bytes(*e) & FAT_MASK;
+            // The entries starting in these sectors; a FAT12 entry running
+            // past the last one is read through the FAT cache.
+            let lo = s * SECTOR as u32;
+            let hi = lo + len as u32;
+            for c in kind.first_at(lo).max(2)..kind.first_at(hi).min(total) {
+                let o = (kind.offset(c) - lo) as usize;
+                let v = if o + width as usize <= len {
+                    kind.widen(entry_get(kind, one, o, c))
+                } else {
+                    self.fat_get(c)?
+                };
                 // Free, or marked bad by a formatter: not lost.
-                if v != 0 && v != 0x0FFF_FFF7 && !seen.get(c) {
+                if v != 0 && v != BAD && !seen.get(c) {
                     h.lost += 1;
                 }
             }

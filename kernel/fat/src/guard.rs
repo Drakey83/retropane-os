@@ -96,7 +96,7 @@ impl<D: BlockDevice> Volume<D> {
     /// mirrored (a PC then writes only the active one).
     #[inline(never)]
     pub fn guard(&mut self, names: &[&str]) -> Result<Guard, Error> {
-        if !self.mirrored && self.fats > 1 {
+        if (!self.mirrored && self.fats > 1) || self.kind != crate::FatKind::Fat32 {
             return Err(Error::Corrupt);
         }
         let mut g = Guard {

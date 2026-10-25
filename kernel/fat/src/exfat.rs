@@ -136,7 +136,7 @@ fn le64(b: &[u8], o: usize) -> u64 {
 /// The boot region checksum over `sector` (sector `index` of 0..11): bytes
 /// 106, 107 (VolumeFlags) and 112 (PercentInUse) of sector 0 don't count.
 #[inline(never)]
-fn boot_checksum(mut sum: u32, index: usize, sector: &[u8]) -> u32 {
+pub(crate) fn boot_checksum(mut sum: u32, index: usize, sector: &[u8]) -> u32 {
     for (i, &b) in sector.iter().enumerate() {
         if index == 0 && matches!(i, 106 | 107 | 112) {
             continue;
