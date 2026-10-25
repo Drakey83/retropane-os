@@ -40,7 +40,7 @@ reply that parks it**, with a trigger saying when it must come back up.
 | ID | What | Raised | Trigger | Status |
 |---|---|---|---|---|
 | R1 | Give-up audit item 2: 2D and 3D at once and the 32-bit screen, retested with the screen and the 3D target inside the safe region (FT2's test), with `LMCFG` and `DMCTRL` (GC3, rebuilt). **Built 2026-10-24: run FT3** (`RP_GPUBENCH_FT3`: the 3D target the scanned-out screen at 0, three clocks) and GC3 now runs FT3 under each memory setting | Claude, 2026-10-23; FT2 analysis 2026-10-24 | image:rp-gpubench; device-run | done (FT3 and GC3 on the X51v, 2026-10-24: 2D and 3D at once exact at Windows Mobile's clock and 149.50 / 2 in option C's layout, ~380 words wrong at 108.33 / 1; LMCFG and DMCTRL change nothing: 2700g-full-potential.md P8) |
-| R2 | Give-up audit item 4: render-to-texture, the render block's other words (GC3T, built 2026-10-23, never run) | Claude, 2026-10-23 | image:rp-gpubench; device-run | open |
+| R2 | Give-up audit item 4: render-to-texture, the render block's other words (GC3T, built 2026-10-23, never run) | Claude, 2026-10-23 | image:rp-gpubench; device-run | done (GC3T on the X51v 2026-10-24: no single render-block bit twiddles the output; the leads left in 2700g.md) |
 | R3 | Give-up audit item 5: every `MSC1` CS3 timing combination (RDN, RRR, RDF), not just RDF | Claude, 2026-10-23 | image:rp-gpubench; image:rp-cs3bus; device-run | open |
 | R4 | Give-up audit item 6: isolate zeroing by cache-line allocate (hung the X51v once), one row a step, the owner nearby | Claude, 2026-10-23 | image:rp-probe; device-run | open |
 | R5 | Give-up audit item 7: the CPU's overclock past 624 MHz (C2), its own watched run with the self-test | Claude, 2026-10-23 | session | open |

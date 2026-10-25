@@ -120,7 +120,7 @@ In order (the gate's own steps; the backlog runs alongside, top first):
       | 1 | Divide 1 | largely solved: 108.33 / 1 soaked clean (GC2J), 2.17x Gouraud with the picture in the safe region (ADR-0034 P1 = C) | the corner sweep at 117-133.25 (the divide-1 session) |
       | 2 | 2D and 3D at once; the 32-bit screen | `LocalMemoryPriority`/`Timeout` aren't registers; FT/FT2 ran with the screen outside the safe region (C71); **FT3 built 2026-10-24** (the 3D target the scanned-out screen at 0, three clocks) and GC3 rewired to run it under `LMCFG` and `DMCTRL` | a device run of FT3 (or GC3) |
       | 3 | ARGB8888 errors at 125-149.50 / 2 | **answered** by GC2S: 9 of 9 right with the screen in the safe region | none |
-      | 4 | Render-to-texture | GC3T built, never run | into the combined run |
+      | 4 | Render-to-texture | **GC3T ran 2026-10-24: no single bit of the render block's 47 other words twiddles the output (1,504 renders, all plain rows, none hung)** | open leads: two bits at once, TEX0 bit 0, the 2D engine reordering (2700g.md) |
       | 5 | The CPU bus to the 2700G (`MSC1`): RDN, RRR and the combinations | never built | into the combined run (near its end: a bad combination can hang the bus) |
       | 6 | Zeroing by cache-line allocate (hung once) | never isolated | the combined run's last step, one row a step, the owner nearby |
       | 7 | The CPU's overclock past 624 MHz (C2) | never started | its own watched run, with the self-test |
