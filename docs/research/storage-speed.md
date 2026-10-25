@@ -497,7 +497,7 @@ twice it). **For the owner (results, not decisions; ruling A as built takes
 the rating as the truth):** (A) as built: the rating with the margin, this
 card 0.68x; (A2) never slower than Windows Mobile's table unless the card
 fails the check there: this card stays 1.0x, a card that truly needs 250 ns
-still gets it (it would fail the check at the table); (M) measured at
+still gets it (it would fail the check at the table); (M, **ruled by the owner 2026-10-24 and built the same day**) measured at
 attach: the card's own limit found by reads (as C5 does, the fallback
 proven here: failed reads are caught), then 1.5x it: this card ~39 cycles
 (~1.3x Windows Mobile's), the 8 GB card ~26 (a little faster than its 29).
