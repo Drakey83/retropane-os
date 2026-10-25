@@ -37,8 +37,10 @@ pub const MAGIC: [u8; 4] = *b"RPL1";
 pub const FILE_MAGIC: [u8; 4] = *b"RPF1";
 /// Frame start: a command.
 pub const CONTROL_MAGIC: [u8; 4] = *b"RPC1";
-/// Longest command.
-pub const COMMAND_MAX: usize = 32;
+/// Longest command: 64 bytes since 2026-10-25 (32 before), for `format`'s
+/// options (`format sd fat32 cluster 32 label RETROPANE wipe-boot`) and
+/// card paths. An older loader answers a longer one "bad command".
+pub const COMMAND_MAX: usize = 64;
 /// Longest file name in a file frame.
 pub const NAME_MAX: usize = 64;
 /// Sent by the device about once a second while it waits.

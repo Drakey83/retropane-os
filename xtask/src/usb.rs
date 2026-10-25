@@ -1421,8 +1421,186 @@ mod command_length_tests {
         let over = "g".repeat(max + 1);
         let err = control_frame_checked(&over).unwrap_err();
         assert!(err.contains(&format!("{} bytes", max + 1)), "{err}");
-        // The command that met it (2026-10-23).
-        assert!(control_frame_checked("get rp-wmprobe/rp-wm-baseline.txt").is_err());
+        // The command that met the old 32-byte limit (2026-10-23) fits now;
+        // one past 64 doesn't.
+        assert!(control_frame_checked("get rp-wmprobe/rp-wm-baseline.txt").is_ok());
+        assert!(control_frame_checked(&format!("get {}", "d/".repeat(31))).is_err());
         assert!(control_frame_checked("get rp-wmprobe/rp-wmprobe.txt").is_ok());
+    }
+}
+
+/// The files a format keeps on each card (the loader's own list, ADR-0036
+/// Q4 A), plus the icon `autorun.inf` names: what `format` saves to the PC
+/// first.
+fn format_keep(unit: &str) -> &'static [&'static str] {
+    if unit == "cf" {
+        &[
+            "cf:RetroPane/retropane.bin",
+            "cf:RetroPane/haret.exe",
+            "cf:RetroPane/startup.txt",
+            "cf:RetroPane/default.txt",
+            "cf:autorun.inf",
+        ]
+    } else {
+        &[
+            "retropane.bin",
+            "haret.exe",
+            "startup.txt",
+            "default.txt",
+            "autorun.inf",
+        ]
+    }
+}
+
+/// The loader's `format` command for `cargo xtask format <sd|cf> <fs>
+/// [--cluster <KiB>] [--label <name>] [--wipe-boot]`, or a usage error.
+pub fn format_command(args: &[String]) -> Result<String, String> {
+    const USAGE: &str = "usage: cargo xtask format <sd|cf> <auto|fat12|fat16|fat32|exfat> [--cluster <KiB>] [--label <name>] [--wipe-boot] [--yes]";
+    let (Some(unit), Some(fs)) = (args.first(), args.get(1)) else {
+        return Err(USAGE.into());
+    };
+    if !matches!(unit.as_str(), "sd" | "cf")
+        || !matches!(
+            fs.to_ascii_lowercase().as_str(),
+            "auto" | "fat12" | "fat16" | "fat32" | "exfat"
+        )
+    {
+        return Err(USAGE.into());
+    }
+    let mut cmd = format!("format {unit} {}", fs.to_ascii_lowercase());
+    let mut rest = args[2..].iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "--cluster" => {
+                let kib = rest
+                    .next()
+                    .and_then(|k| k.parse::<u32>().ok())
+                    .ok_or(USAGE)?;
+                cmd.push_str(&format!(" cluster {kib}"));
+            }
+            "--label" => {
+                let label = rest.next().ok_or(USAGE)?;
+                if label.is_empty() || label.contains(char::is_whitespace) {
+                    return Err("the label is one word (up to 11 characters)".into());
+                }
+                cmd.push_str(&format!(" label {label}"));
+            }
+            "--wipe-boot" => cmd.push_str(" wipe-boot"),
+            "--yes" => {}
+            _ => return Err(USAGE.into()),
+        }
+    }
+    Ok(cmd)
+}
+
+/// `cargo xtask format`: shows what the loader would do (nothing written);
+/// with `--yes`, saves the card's boot files and icon under
+/// `local/format-backup/<unit>-<time>/` (a second copy beside the one the
+/// loader keeps in RAM), then formats.
+pub fn format(root: &Path, args: &[String]) -> Result<(), String> {
+    let cmd = format_command(args)?;
+    let plan = command_reply(root, &format!("{cmd} plan"))?;
+    eprintln!("    {plan}");
+    if !args.iter().any(|a| a == "--yes") {
+        eprintln!(
+            "    nothing written: add --yes to format (the card's boot files are saved to local/ first)"
+        );
+        return Ok(());
+    }
+    let unit = args[0].as_str();
+    if !args.iter().any(|a| a == "--wipe-boot") {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let dir = root
+            .join("local/format-backup")
+            .join(format!("{unit}-{stamp}"));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let mut names: Vec<String> = format_keep(unit).iter().map(|s| (*s).to_string()).collect();
+        let mut i = 0;
+        while i < names.len() {
+            let name = names[i].clone();
+            i += 1;
+            let leaf = name.rsplit(['/', ':']).next().unwrap_or(&name);
+            let dest = dir.join(leaf);
+            match query(root, &format!("get {name}")) {
+                Ok((lines, reply)) => {
+                    let data = decode_file(&lines, &reply)?;
+                    std::fs::write(&dest, &data).map_err(|e| format!("{}: {e}", dest.display()))?;
+                    eprintln!("    saved {name} ({} bytes)", data.len());
+                    if leaf.eq_ignore_ascii_case("autorun.inf")
+                        && let Some(icon) = autorun_icon(&data)
+                    {
+                        let prefix = if unit == "cf" { "cf:" } else { "" };
+                        names.push(format!("{prefix}{icon}"));
+                    }
+                }
+                Err(e) if e.contains("not found") => eprintln!("    {name}: not on the card"),
+                Err(e) => return Err(format!("saving {name} before the format: {e}")),
+            }
+        }
+        eprintln!("    a copy is in {}", dir.display());
+    }
+    let done = command_reply(root, &cmd)?;
+    eprintln!("    {done}");
+    Ok(())
+}
+
+/// The icon an `autorun.inf` names, as the loader reads it: a plain file
+/// name in the root, an index after a comma dropped.
+fn autorun_icon(text: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(text);
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| l.len() > 5 && l[..5].eq_ignore_ascii_case("icon="))?;
+    let name = line[5..].split(',').next()?.trim();
+    let plain = |c: char| c.is_ascii_alphanumeric() || "._-".contains(c);
+    ((1..=32).contains(&name.len()) && name.chars().all(plain)).then(|| name.to_string())
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn the_loader_command_is_built_from_the_flags() {
+        let a = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        assert_eq!(format_command(&a("sd fat32")).unwrap(), "format sd fat32");
+        assert_eq!(
+            format_command(&a("cf exFAT --cluster 128 --label CF8GB --wipe-boot --yes")).unwrap(),
+            "format cf exfat cluster 128 label CF8GB wipe-boot"
+        );
+        for bad in [
+            "",
+            "sd",
+            "usb fat32",
+            "sd ntfs",
+            "sd fat32 --cluster",
+            "sd fat32 --cluster x",
+            "sd fat32 --what",
+        ] {
+            assert!(format_command(&a(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_icon_named_by_autorun_inf_is_read_as_the_loader_reads_it() {
+        assert_eq!(
+            autorun_icon(b"[autorun]\r\nicon=card-sd.ico\r\n").as_deref(),
+            Some("card-sd.ico")
+        );
+        assert_eq!(
+            autorun_icon(b"[autorun]\r\nICON = x.ico,0\r\n"),
+            None,
+            "spaces before ="
+        );
+        assert_eq!(
+            autorun_icon(b"[autorun]\r\nIcon=pda.ico,0\r\n").as_deref(),
+            Some("pda.ico")
+        );
+        assert_eq!(autorun_icon(b"icon=..\\boot\\x.ico"), None);
+        assert_eq!(autorun_icon(b"icon=a/b.ico"), None);
+        assert_eq!(autorun_icon(b"label=X51V"), None);
     }
 }

@@ -182,6 +182,28 @@ CF card's `RetroPane/`)?**
   same `mkfs`, a confirmation, and never the card RetroPane runs from
   without a warning (R29).
 
+## Status notes
+
+- 2026-10-25, built and checked on the PC: FAT12/16 in `rp-fat` (host
+  tests: a FAT12 entry straddling two sectors against the specification's
+  packing, end and bad marks on every width, the fixed root's 512 entries,
+  cards filled to the last cluster, 1,000 hostile cards each); the guard on
+  every format (19 tests: what Windows may do passes, deleting, replacing,
+  renaming or formatting a boot file is refused on all four, half a FAT12
+  entry, FAT16's fixed root, exFAT's flags and timestamps against its names,
+  bitmap bits, chains and boot region); `mkfs` (every format mounted,
+  written and checked clean, the FAT type at the cluster-count edges as
+  mount decides it, a format cut at every write leaves nothing mountable,
+  the up-case table byte for byte); the loader's `format` and `cargo xtask
+  format`. **Emulator (`cargo xtask emu-format`):** SD FAT32 -> FAT16 (the
+  three boot files, `autorun.inf` and its icon kept and read back) -> exFAT
+  (`wipe-boot`) -> FAT32 at 1 KiB clusters, CF -> FAT12 -> exFAT; exFAT
+  refused while boot files are on a card; the PC's write over a boot file
+  refused on FAT16, exFAT and the CF card; every card check clean. On the
+  way: loader commands raised from 32 to 64 bytes (`rp-loadproto`); the
+  loader's budget 128 -> 156 KiB (test image, logged in `xtask/src/size.rs`).
+  **Not yet proven on the X51v** (the owner's rule): roadmap step 6.
+
 ## The four lenses
 
 | Lens | Effect |

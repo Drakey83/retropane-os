@@ -760,7 +760,7 @@ mod image {
         let start = mbr_partitions(&block)
             .and_then(|p| p[0])
             .map_or(0, |p| p.start);
-        AnyVolume::mount(Fed(sd), start).map_err(|_| "not FAT32 or exFAT")
+        AnyVolume::mount(Fed(sd), start).map_err(|_| "not FAT or exFAT")
     }
 
     /// Writes the samples as little-endian 16-bit values (the CPU's own

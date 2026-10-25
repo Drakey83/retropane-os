@@ -343,9 +343,14 @@ pub const BUDGETS: &[Budget] = &[
     // measured once per card on its own test sectors and kept in
     // rplog/cfwrite.txt), after the CF drive's guard and put (ruling A,
     // ADR-0014); 128,222 B measured (Thumb).
+    // Ratcheted 128 -> 156 KiB on 2026-10-25 (test image, ADR-0013's rule;
+    // ADR-0036): FAT12 and FAT16, the boot-file guard on every format
+    // (exFAT's entry sets, bitmap and boot region), the formatter
+    // (`rp_fat::mkfs`: FAT12/16/32 and exFAT, the up-case table's ranges)
+    // and the `format` command; 145,926 B measured (Thumb), + ~9%.
     Budget {
         image: "rp-loader",
-        max_load: 128 * 1024,
+        max_load: 156 * 1024,
         // Zeroed RAM 20 -> 36 KiB on 2026-10-25 (approved by the owner):
         // the loader's stack 16 -> 32 KiB, after the CF card's timing
         // searches at the attach overflowed 16 (17,376 B deepest; quality

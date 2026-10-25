@@ -41,7 +41,7 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::{Bulk, Udc};
     use rp_drv_sdcard::{SdCard, mbr_partitions};
-    use rp_fat::{AnyVolume, Guard, Volume};
+    use rp_fat::{AnyVolume, Guard, Volume, mkfs};
     use rp_hal_api::{BlockDevice, BlockError};
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, dma_map, handoff, rt};
@@ -282,7 +282,7 @@ mod image {
             let was = self.read_only();
             self.guard = self.card.as_mut().and_then(|sd| {
                 let start = partition_start(sd).ok()?;
-                Volume::mount(Fed::Sd(sd), start)
+                AnyVolume::mount(Fed::Sd(sd), start)
                     .ok()?
                     .guard(&BOOT_FILES)
                     .ok()
@@ -528,13 +528,13 @@ mod image {
     /// it (as a drive) since the last time, so nothing cached is trusted.
     fn mount(sd: &mut Sd) -> Result<Volume<Fed<'_>>, &'static str> {
         let start = partition_start(sd)?;
-        Volume::mount(Fed::Sd(sd), start).map_err(|_| "not FAT32")
+        Volume::mount(Fed::Sd(sd), start).map_err(|_| "not FAT")
     }
 
     /// Mounts the first partition as FAT32 or exFAT, for storing files.
     fn mount_any(sd: &mut Sd) -> Result<AnyVolume<Fed<'_>>, &'static str> {
         let start = partition_start(sd)?;
-        AnyVolume::mount(Fed::Sd(sd), start).map_err(|_| "not FAT32 or exFAT")
+        AnyVolume::mount(Fed::Sd(sd), start).map_err(|_| "not FAT or exFAT")
     }
 
     /// [`mount_any`] for the CF card's first partition (the card log's
@@ -550,7 +550,7 @@ mod image {
         let start = mbr_partitions(&block)
             .and_then(|p| p[0])
             .map_or(0, |p| p.start);
-        AnyVolume::mount(Fed::Cf(card), start).map_err(|_| "not FAT32 or exFAT")
+        AnyVolume::mount(Fed::Cf(card), start).map_err(|_| "not FAT or exFAT")
     }
 
     /// The volume a path names: `cf:` first for the CF card's, else the
@@ -1008,6 +1008,327 @@ mod image {
         }
     }
 
+    /// Most files a format keeps: the boot files, `autorun.inf` and the
+    /// icon it names.
+    const KEEP_MAX: usize = 7;
+
+    /// The icon `autorun.inf` names (`icon=card-sd.ico`, an index after a
+    /// comma dropped), when it's a plain file name in the root: the file a
+    /// format keeps with it. The text is the card's, so only a short name
+    /// of plain characters is taken.
+    fn autorun_icon(text: &[u8]) -> Option<&str> {
+        let line = text.split(|&b| b == b'\n').find_map(|l| {
+            let l = l.trim_ascii();
+            (l.len() > 5 && l[..5].eq_ignore_ascii_case(b"icon=")).then(|| &l[5..])
+        })?;
+        let name = line.split(|&b| b == b',').next()?.trim_ascii();
+        let plain = |b: &u8| b.is_ascii_alphanumeric() || b"._-".contains(b);
+        (1..=32)
+            .contains(&name.len())
+            .then_some(name)
+            .filter(|n| n.iter().all(plain))
+            .and_then(|n| core::str::from_utf8(n).ok())
+    }
+
+    /// Reads `name` from `vol` into `ram` from `*used` on: where it went,
+    /// `None` if the card hasn't it, `Err` if RAM is too small.
+    fn keep_file(
+        vol: &mut AnyVolume<Fed<'_>>,
+        name: &str,
+        ram: &mut [u8],
+        used: &mut usize,
+        scratch: &mut [u8],
+    ) -> Result<Option<(usize, usize)>, ()> {
+        let start = *used;
+        let mut at = start;
+        let mut over = false;
+        let r = vol.read_back(
+            name,
+            scratch,
+            &mut |chunk| match ram.get_mut(at..at + chunk.len()) {
+                Some(dst) => {
+                    dst.copy_from_slice(chunk);
+                    at += chunk.len();
+                }
+                None => over = true,
+            },
+        );
+        if over {
+            return Err(());
+        }
+        Ok(r.ok().map(|()| {
+            *used = at;
+            (start, at - start)
+        }))
+    }
+
+    /// `format <sd|cf> <auto|fat12|fat16|fat32|exfat> [cluster <KiB>]
+    /// [label <name>] [keep-boot|wipe-boot] [plan]` (ADR-0036): formats
+    /// the card on the device. The files that boot the device from it, and
+    /// the drive's icon, are read into RAM first and put back after, each
+    /// read back and compared (`keep-boot`, the default); `wipe-boot`
+    /// formats them away. exFAT on a card with boot files is refused unless
+    /// `wipe-boot`: Windows Mobile can't read exFAT, so HaRET couldn't start
+    /// RetroPane from it. `plan` writes nothing. Never a locked SD card;
+    /// the caller refuses while the PC writes. Returns whether the card was
+    /// written (the caller then makes the drive go away and rebuilds the
+    /// guard).
+    #[inline(never)]
+    fn format_command(
+        lun: &mut Lun,
+        cf: &mut CfLun,
+        args: &[u8],
+        ram: &mut [u8],
+        scratch: &mut [u8],
+        reply: &mut Line,
+    ) -> bool {
+        const USAGE: &str = "RPL ERR usage: format <sd|cf> <auto|fat12|fat16|fat32|exfat> [cluster <KiB>] [label <name>] [keep-boot|wipe-boot] [plan]\r\n";
+        let Ok(text) = core::str::from_utf8(args) else {
+            let _ = reply.write_str(USAGE);
+            return false;
+        };
+        let mut words = text.split_ascii_whitespace();
+        let (Some(unit), Some(fs)) = (words.next(), words.next()) else {
+            let _ = reply.write_str(USAGE);
+            return false;
+        };
+        let cf_unit = match unit {
+            "sd" => false,
+            "cf" => true,
+            _ => {
+                let _ = reply.write_str(USAGE);
+                return false;
+            }
+        };
+        let fs = match fs {
+            "auto" => None,
+            f => match mkfs::Fs::parse(f) {
+                Some(f) => Some(f),
+                None => {
+                    let _ = reply.write_str(USAGE);
+                    return false;
+                }
+            },
+        };
+        let mut opts = mkfs::Options {
+            fs,
+            cluster_bytes: None,
+            align_sectors: None,
+            label: "RETROPANE",
+            serial: rt::ticks(),
+        };
+        let (mut wipe, mut plan_only) = (false, false);
+        while let Some(w) = words.next() {
+            match w {
+                "cluster" => {
+                    let kib = words.next().and_then(|n| n.parse::<u32>().ok());
+                    match kib.and_then(|k| k.checked_mul(1024)) {
+                        Some(b) => opts.cluster_bytes = Some(b),
+                        None => {
+                            let _ = reply.write_str(USAGE);
+                            return false;
+                        }
+                    }
+                }
+                "label" => match words.next() {
+                    Some(l) => opts.label = l,
+                    None => {
+                        let _ = reply.write_str(USAGE);
+                        return false;
+                    }
+                },
+                "keep-boot" => wipe = false,
+                "wipe-boot" => wipe = true,
+                "plan" => plan_only = true,
+                _ => {
+                    let _ = reply.write_str(USAGE);
+                    return false;
+                }
+            }
+        }
+        // The lock switch is the owner's: nothing writes a locked card.
+        if !cf_unit && lun.locked && !plan_only {
+            let _ = reply.write_str("RPL ERR card is write-protected (lock switch)\r\n");
+            return false;
+        }
+        let total = if cf_unit {
+            match &cf.slot {
+                CfSlot::Card(c) if cf.inserted => c.sectors(),
+                _ => {
+                    let _ = reply.write_str("RPL ERR no CF card\r\n");
+                    return false;
+                }
+            }
+        } else {
+            match lun.card.as_ref() {
+                Some(sd) => sd.blocks(),
+                None => {
+                    no_card(lun.init_error, reply);
+                    return false;
+                }
+            }
+        };
+        let layout = match mkfs::plan(total, &opts) {
+            Ok(l) => l,
+            Err(e) => {
+                let _ = write!(reply, "RPL ERR format: {}\r\n", e.name());
+                return false;
+            }
+        };
+
+        // What to keep, read from the card as it is (if it mounts at all).
+        let boot: &[&str] = if cf_unit {
+            &CF_BOOT_FILES[1..]
+        } else {
+            &BOOT_FILES
+        };
+        let mut names = [[0u8; 32]; KEEP_MAX];
+        let mut kept = [(0usize, 0usize, 0usize); KEEP_MAX]; // name length, start, length
+        let (mut n, mut used, mut boot_found) = (0, 0usize, 0);
+        if !wipe {
+            let mounted = if cf_unit {
+                mount_cf(cf)
+            } else {
+                lun.card.as_mut().ok_or("no card").and_then(mount_any)
+            };
+            if let Ok(mut vol) = mounted {
+                // The boot files and autorun.inf, then the icon it names.
+                let mut icon = [0u8; 32];
+                let mut icon_len = 0;
+                for (i, name) in boot.iter().copied().chain(["autorun.inf"]).enumerate() {
+                    match keep_file(&mut vol, name, ram, &mut used, scratch) {
+                        Err(()) => {
+                            let _ = reply.write_str(
+                                "RPL ERR format: the files to keep don't fit in RAM\r\n",
+                            );
+                            return false;
+                        }
+                        Ok(None) => {}
+                        Ok(Some((start, len))) => {
+                            names[n][..name.len()].copy_from_slice(name.as_bytes());
+                            kept[n] = (name.len(), start, len);
+                            n += 1;
+                            boot_found += usize::from(i < boot.len());
+                            if name == "autorun.inf"
+                                && let Some(ic) = autorun_icon(&ram[start..start + len])
+                            {
+                                icon[..ic.len()].copy_from_slice(ic.as_bytes());
+                                icon_len = ic.len();
+                            }
+                        }
+                    }
+                }
+                let ic = core::str::from_utf8(&icon[..icon_len]).unwrap_or("");
+                let dup = boot.iter().any(|b| b.eq_ignore_ascii_case(ic));
+                if !ic.is_empty() && !dup {
+                    match keep_file(&mut vol, ic, ram, &mut used, scratch) {
+                        Err(()) => {
+                            let _ = reply.write_str(
+                                "RPL ERR format: the files to keep don't fit in RAM\r\n",
+                            );
+                            return false;
+                        }
+                        Ok(None) => {}
+                        Ok(Some((start, len))) => {
+                            names[n][..ic.len()].copy_from_slice(ic.as_bytes());
+                            kept[n] = (ic.len(), start, len);
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if layout.fs == mkfs::Fs::ExFat && boot_found > 0 {
+            let _ = reply.write_str("RPL ERR format: Windows Mobile can't read exFAT, so HaRET couldn't start RetroPane from this card: add wipe-boot to format its boot files away\r\n");
+            return false;
+        }
+        let what = |reply: &mut Line, verb: &str| {
+            let _ = write!(
+                reply,
+                "{verb} {} with {} KiB clusters, {} clusters, partition at sector {}, data aligned to {} KiB",
+                layout.fs.name(),
+                layout.cluster_bytes() / 1024,
+                layout.clusters,
+                layout.part_start,
+                layout.align / 2
+            );
+        };
+        if plan_only {
+            let _ = reply.write_str("RPL OK plan: ");
+            what(reply, "would format as");
+            let _ = write!(reply, "; {n} files kept ({boot_found} boot)\r\n");
+            return false;
+        }
+
+        // The format itself, then the kept files put back and read back.
+        let t0 = rt::ticks();
+        let formatted = if cf_unit {
+            match &mut cf.slot {
+                CfSlot::Card(c) => mkfs::write(&mut Fed::Cf(c), &layout, scratch),
+                _ => Err(rp_fat::Error::NoRoom),
+            }
+        } else {
+            match lun.card.as_mut() {
+                Some(sd) => mkfs::write(&mut Fed::Sd(sd), &layout, scratch),
+                None => Err(rp_fat::Error::NoRoom),
+            }
+        };
+        if let Err(e) = formatted {
+            let _ = write!(
+                reply,
+                "RPL ERR format: {} (the card is unformatted; its kept files were in RAM only)\r\n",
+                e.name()
+            );
+            return true;
+        }
+        let t_format = rt::ticks().wrapping_sub(t0) / (TICK_1S / 1000);
+        let mounted = if cf_unit {
+            mount_cf(cf)
+        } else {
+            lun.card.as_mut().ok_or("no card").and_then(mount_any)
+        };
+        let mut vol = match mounted {
+            Ok(v) => v,
+            Err(why) => {
+                let _ = write!(
+                    reply,
+                    "RPL ERR format: the new volume doesn't mount: {why}\r\n"
+                );
+                return true;
+            }
+        };
+        // CF boot names are paths (`RetroPane/haret.exe`): put makes the
+        // folder again.
+        for (k, &(len, start, size)) in kept[..n].iter().enumerate() {
+            let path = core::str::from_utf8(&names[k][..len]).unwrap_or("");
+            let data = &ram[start..start + size];
+            if let Err(e) = vol.put(path, data, scratch) {
+                let _ = write!(
+                    reply,
+                    "RPL ERR format: putting {path} back: {}\r\n",
+                    e.name()
+                );
+                return true;
+            }
+            let (mut same, mut got) = (true, 0usize);
+            let check = vol.read_back(path, scratch, &mut |chunk| {
+                same &= data.get(got..got + chunk.len()) == Some(chunk);
+                got += chunk.len();
+            });
+            if check.is_err() || !same || got != size {
+                let _ = write!(reply, "RPL ERR format: {path} read back wrong\r\n");
+                return true;
+            }
+        }
+        let _ = reply.write_str("RPL OK ");
+        what(reply, "formatted as");
+        let _ = write!(
+            reply,
+            " in {t_format} ms; {n} files kept and read back ({boot_found} boot)\r\n"
+        );
+        true
+    }
+
     /// `card check`: a read-only check of the card's file system (FAT32 or
     /// exFAT): what it found, counted. `seen` holds a bit per cluster.
     #[inline(never)]
@@ -1362,7 +1683,7 @@ mod image {
                     let start = mbr_partitions(&block)
                         .and_then(|p| p[0])
                         .map_or(0, |p| p.start);
-                    self.guard = Volume::mount(Fed::Cf(card), start)
+                    self.guard = AnyVolume::mount(Fed::Cf(card), start)
                         .ok()
                         .and_then(|mut v| v.guard(&CF_BOOT_FILES).ok());
                 }
@@ -3033,6 +3354,36 @@ mod image {
                                 msc.medium_changed(1);
                             }
                             status.as_str()
+                        }
+                        Ok(c) if c.starts_with(b"format ") => {
+                            // The arguments out of the frame buffer: the
+                            // command reuses it to hold the files it keeps.
+                            let mut args = [0u8; 128];
+                            let n = (c.len() - 7).min(args.len());
+                            args[..n].copy_from_slice(&c[7..7 + n]);
+                            let plan = args[..n].split(|&b| b == b' ').any(|w| w == b"plan");
+                            let cf_unit = args[..n].starts_with(b"cf");
+                            if msc.host_writing(now_ms()) && !plan {
+                                "RPL ERR card busy: the PC is writing\r\n"
+                            } else {
+                                let scratch = &mut fat_scratch[..SCRATCH];
+                                let wrote = format_command(
+                                    &mut lun,
+                                    &mut cf,
+                                    &args[..n],
+                                    dest,
+                                    scratch,
+                                    &mut status,
+                                );
+                                if wrote {
+                                    // The PC must re-read the volume, and the
+                                    // guard is the new card's.
+                                    msc.medium_changed(usize::from(cf_unit));
+                                    lun.refresh_guard();
+                                    cf.refresh_guard();
+                                }
+                                status.as_str()
+                            }
                         }
                         Ok(c) if c.starts_with(b"rm ") => {
                             if msc.host_writing(now_ms()) {

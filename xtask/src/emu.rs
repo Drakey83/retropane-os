@@ -9000,6 +9000,292 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
 }
 
 /// `cargo xtask emu-cf`: the CompactFlash check on its own.
+/// `cargo xtask emu-format` alone: the loader built here first.
+pub fn boot_loader_format_alone(root: &Path) -> Result<(), String> {
+    let dir = emu_dir(root)?;
+    crate::sdkit::raw_binary(
+        &crate::arm_release(root).join("rp-loader"),
+        &dir.join("rp-loader.bin"),
+    )?;
+    boot_loader_format(root)
+}
+
+/// Formatting on the device (ADR-0036): the loader formats the SD card
+/// (128 MiB, FAT32 with the kit's boot files and icon) and the CF card
+/// (64 MiB) into each format through `format`, keeping the boot files and
+/// the icon `autorun.inf` names (read back), refusing exFAT while boot
+/// files are on the card and a FAT12 the card is too big for, and wiping
+/// them when told. After each format the PC sees the drive go away and
+/// come back, mounts it with `rp-fat` through the drive, finds the kept
+/// files whole, and its write over a boot file is refused (the guard
+/// rebuilt for FAT16 and exFAT). Afterwards the card images are checked on
+/// the host.
+pub fn boot_loader_format(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    format: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = raw_image(root, "rp-loader")?;
+    let boot_bin: Vec<u8> = (0..70_000u32).map(|i| (i * 7 + 1) as u8).collect();
+    let haret: Vec<u8> = (0..20_000u32).map(|i| (i * 13 + 5) as u8).collect();
+    let icon: Vec<u8> = (0..3_000u32).map(|i| (i * 3) as u8).collect();
+    let autorun = b"[autorun]\r\nicon=card-sd.ico\r\n";
+    let entry = |name, data| rp_fat::format::Entry { name, data };
+    let sd_image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 128 * 2048,
+        sectors_per_cluster: 8,
+        files: &[
+            entry("retropane.bin", &boot_bin),
+            entry("haret.exe", &haret),
+            entry("startup.txt", b"set ramaddr 0xa8000000\n"),
+            entry("autorun.inf", autorun),
+            entry("card-sd.ico", &icon),
+            entry("photo.jpg", b"not kept"),
+        ],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let sd = scratch(root, "sd-format.img")?;
+    std::fs::write(&sd, sd_image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let cf_image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 2048,
+        sectors_per_cluster: 8,
+        files: &[entry("on-cf.txt", b"compact flash")],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let cf = scratch(root, "cf-format.img")?;
+    std::fs::write(&cf, cf_image).map_err(|e| format!("{}: {e}", cf.display()))?;
+    let mut args: Vec<String> = usb_args(2).into();
+    args.extend(msc_args(3));
+    args.push("-drive".into());
+    args.push(drive_arg(root, "ide", &cf)?);
+    args.extend(wm_cpld_table_args());
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        let mut bot = Bot::connect(3)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        let say = |s: &mut std::net::TcpStream, cmd: &str, want: &str, secs| {
+            s.write_all(&rp_loadproto::control_frame(cmd))
+                .map_err(|e| e.to_string())?;
+            let reply = usb_read_line(s, "RPL ", secs)?;
+            let line = reply
+                .lines()
+                .find(|l| l.starts_with("RPL "))
+                .unwrap_or("")
+                .to_string();
+            if !line.starts_with(want) {
+                return Err(format!("`{cmd}`: {line:?} (wanted {want:?})"));
+            }
+            eprintln!("    {cmd}: {line}");
+            Ok(line)
+        };
+        // The PC's view of a unit after a format: away, back, then mounted
+        // through the drive; the file `name`'s first sector, if it's there.
+        let pc_view = |bot: &mut Bot, unit: u8, after: &str, kind: &str, name: &str| {
+            bot.lun = unit;
+            expect_away_then_back(bot, after)?;
+            let mut mbr = [0u8; 512];
+            rp_hal_api::BlockDevice::read_blocks(bot, 0, &mut mbr)
+                .map_err(|_| format!("{after}: the MBR doesn't read"))?;
+            let start = u32::from_le_bytes([mbr[454], mbr[455], mbr[456], mbr[457]]);
+            let mut v = rp_fat::AnyVolume::mount(&mut *bot, start)
+                .map_err(|e| format!("{after}: the PC can't mount it: {}", e.name()))?;
+            let got = match &v {
+                rp_fat::AnyVolume::Fat(f) => f.kind().name(),
+                rp_fat::AnyVolume::ExFat(_) => "exFAT",
+            };
+            if got != kind {
+                return Err(format!("{after}: the PC sees {got}, not {kind}"));
+            }
+            Ok::<_, String>(v.extent(name).ok().map(|r| r.lba))
+        };
+        // The PC mounts both drives first, as at plug-in (a unit's first
+        // answer is its power-on "medium changed").
+        for unit in [0u8, 1] {
+            bot.lun = unit;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while bot.command(&[0; 6], 0, false, &[])?.status != 0 {
+                let _ = bot.sense()?;
+                if Instant::now() > deadline {
+                    return Err(format!("unit {unit} never became ready"));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+        // exFAT while the card holds boot files: refused, nothing written
+        // (the drive stays as it is).
+        say(
+            &mut s,
+            "format sd exfat",
+            "RPL ERR format: Windows Mobile can't read exFAT",
+            20,
+        )?;
+        say(
+            &mut s,
+            "format sd fat12 cluster 16",
+            "RPL ERR format: cluster count",
+            20,
+        )?;
+        say(
+            &mut s,
+            "format sd fat16 plan",
+            "RPL OK plan: would format as FAT16",
+            20,
+        )?;
+        // FAT16, the boot files and the icon kept (photo.jpg isn't).
+        let line = say(
+            &mut s,
+            "format sd fat16 label X51V",
+            "RPL OK formatted as FAT16",
+            60,
+        )?;
+        if !line.contains("5 files kept and read back (3 boot)") {
+            return Err(format!("format sd fat16 kept the wrong files: {line:?}"));
+        }
+        let haret_at = pc_view(&mut bot, 0, "format sd fat16", "FAT16", "haret.exe")?
+            .ok_or("haret.exe wasn't kept")?;
+        let r = bot.command(&rw10(0x2A, haret_at, 1), 512, false, &[0; 512])?;
+        if r.status == 0 {
+            return Err("the PC overwrote haret.exe on the new FAT16 card: no guard".into());
+        }
+        let _ = bot.sense()?;
+        // The refused write counts as the PC writing: the loader takes no
+        // card command for 2 s after it (ADR-0014 rule 3).
+        std::thread::sleep(Duration::from_millis(2500));
+        s.write_all(&rp_loadproto::control_frame("get card-sd.ico"))
+            .map_err(|e| e.to_string())?;
+        let text = usb_read_line(&mut s, "RPL OK 3000 bytes crc", 40)?;
+        let (lines, reply) = crate::usb::parse_query(&text, "get")?;
+        if crate::usb::decode_file(&lines, &reply)? != icon {
+            return Err("the icon came back different after the format".into());
+        }
+        say(&mut s, "card check", "RPL OK check clean", 40)?;
+        // exFAT once the boot files are formatted away; then a file put.
+        say(
+            &mut s,
+            "format sd exfat wipe-boot",
+            "RPL OK formatted as exFAT",
+            60,
+        )?;
+        pc_view(&mut bot, 0, "format sd exfat", "exFAT", "x")?;
+        s.write_all(&rp_loadproto::file_frame("haret.exe", &haret))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK 20000 bytes", 40)?;
+        let haret_at = pc_view(&mut bot, 0, "put on exFAT", "exFAT", "haret.exe")?
+            .ok_or("haret.exe isn't on the exFAT card")?;
+        let r = bot.command(&rw10(0x2A, haret_at, 1), 512, false, &[0; 512])?;
+        if r.status == 0 {
+            return Err("the PC overwrote haret.exe on the exFAT card: no guard".into());
+        }
+        let _ = bot.sense()?;
+        // The refused write counts as the PC writing: the loader takes no
+        // card command for 2 s after it (ADR-0014 rule 3).
+        std::thread::sleep(Duration::from_millis(2500));
+        say(&mut s, "card check", "RPL OK check clean", 40)?;
+        // FAT32 with 1 KiB clusters keeps the exFAT card's boot file.
+        say(
+            &mut s,
+            "format sd fat32 cluster 1",
+            "RPL OK formatted as FAT32 with 1 KiB clusters",
+            60,
+        )?;
+        pc_view(&mut bot, 0, "format sd fat32", "FAT32", "haret.exe")?
+            .ok_or("haret.exe wasn't kept through FAT32")?;
+        // The CF card: FAT12 by size at 16 KiB clusters is too many, so
+        // FAT16 by the default rule; then its boot folder, guarded.
+        say(&mut s, "format cf auto", "RPL OK formatted as FAT", 60)?;
+        s.write_all(&rp_loadproto::file_frame("cf:RetroPane/haret.exe", &haret))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK 20000 bytes", 40)?;
+        let mut mbr = [0u8; 512];
+        bot.lun = 1;
+        expect_away_then_back(&mut bot, "cf put")?;
+        rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut mbr)
+            .map_err(|_| "the CF MBR doesn't read")?;
+        let start = u32::from_le_bytes([mbr[454], mbr[455], mbr[456], mbr[457]]);
+        let at = rp_fat::AnyVolume::mount(&mut bot, start)
+            .map_err(|e| format!("the PC can't mount the CF card: {}", e.name()))?
+            .extent("RetroPane/haret.exe")
+            .map_err(|e| format!("cf: {}", e.name()))?
+            .lba;
+        let r = bot.command(&rw10(0x2A, at, 1), 512, false, &[0; 512])?;
+        if r.status == 0 {
+            return Err("the PC overwrote the CF card's haret.exe: no guard".into());
+        }
+        let _ = bot.sense()?;
+        // The refused write counts as the PC writing: the loader takes no
+        // card command for 2 s after it (ADR-0014 rule 3).
+        std::thread::sleep(Duration::from_millis(2500));
+        // exFAT on the CF card with its boot folder: refused; wiped: done.
+        say(
+            &mut s,
+            "format cf exfat",
+            "RPL ERR format: Windows Mobile can't read exFAT",
+            20,
+        )?;
+        say(
+            &mut s,
+            "format cf exfat wipe-boot cluster 32",
+            "RPL OK formatted as exFAT with 32 KiB clusters",
+            60,
+        )?;
+        pc_view(&mut bot, 1, "format cf exfat", "exFAT", "x")?;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(240),
+        },
+    )?;
+    // The images on the host: the SD card FAT32 with haret.exe whole, the CF
+    // card exFAT; both clean.
+    for (path, kind) in [(&sd, "FAT32"), (&cf, "exFAT")] {
+        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        let start = u32::from_le_bytes([data[454], data[455], data[456], data[457]]);
+        let mut v = rp_fat::AnyVolume::mount(Disk(data), start)
+            .map_err(|e| format!("{}: {}", path.display(), e.name()))?;
+        let got = match &v {
+            rp_fat::AnyVolume::Fat(f) => f.kind().name(),
+            rp_fat::AnyVolume::ExFat(_) => "exFAT",
+        };
+        if got != kind {
+            return Err(format!("{}: {got}, not {kind}", path.display()));
+        }
+        let h = v
+            .check(&mut vec![0u8; 1 << 20], &mut vec![0u8; 8192])
+            .map_err(|e| e.name().to_string())?;
+        if !h.clean() {
+            return Err(format!("{}: not clean: {h:?}", path.display()));
+        }
+        if kind == "FAT32" {
+            let mut out = Vec::new();
+            v.read_back("haret.exe", &mut [0u8; 4096], &mut |c| {
+                out.extend_from_slice(c)
+            })
+            .map_err(|e| e.name().to_string())?;
+            if out != haret {
+                return Err("haret.exe on the SD image isn't whole".into());
+            }
+        }
+    }
+    eprintln!(
+        "    format: SD FAT32 -> FAT16 -> exFAT -> FAT32, CF -> FAT -> exFAT; kept files whole, guards rebuilt"
+    );
+    Ok(())
+}
+
 pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;

@@ -165,6 +165,8 @@ commands:
             checked end to end; never overwrites a local file
   rm        delete a file or empty folder on the card through the loader
             (crash-safe; the files the device boots from are refused)
+  format    `format <sd|cf> <auto|fat12|fat16|fat32|exfat>`: formats a card on
+            the device; prints the plan unless --yes; boot files and icon kept
   cf        identify the CompactFlash card through the loader (read-only;
             then it is the drive's second unit); `cf log`: READY changes,
             attach and drop times; `cf soft`: no hardware reset (diagnostics)
@@ -313,6 +315,8 @@ commands:
             the card as the PC's second drive)
   emu-stale only the stale-view check (a PC write from before an image's
             run is refused; the drive goes away; no file lost)
+  emu-format   formatting on the device: SD and CF into FAT12/16/32 and exFAT
+            through the loader, kept files read back, guards rebuilt
   emu-cardlog  the card log for every run: on the SD card line for line, moved
             to the CF card when a program takes the SD card, closed by the
             loader (returned, crashed, a watchdog reset), old files cleaned
@@ -351,7 +355,7 @@ fn main() -> ExitCode {
         | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1"
         | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3"
         | "emu-silent-pc" | "emu-refresh" | "emu-screen-measure" | "emu-unplug" | "emu-keepfed"
-        | "emu-cardlog" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-cardlog" | "emu-format" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -456,6 +460,13 @@ fn main() -> ExitCode {
             } else {
                 usb::get(&workspace_root(), &flag, args().nth(3).as_deref())
             }
+        }
+        "format" => {
+            // ADR-0036: the plan alone unless --yes; the card's boot files
+            // and icon are saved to local/ before anything is written.
+            let rest: Vec<String> = args().skip(2).collect();
+            eprintln!("==> format {}", rest.join(" "));
+            usb::format(&workspace_root(), &rest)
         }
         "rm" => {
             let rest: Vec<String> = args().skip(2).collect();
@@ -735,6 +746,7 @@ fn run_step(step: &str) -> Result {
         }
         "emu-storfast" => cross().and_then(|()| emu::boot_loader_storfast(&workspace_root())),
         "emu-cardlog" => cross().and_then(|()| emu::boot_loader_cardlog(&workspace_root())),
+        "emu-format" => cross().and_then(|()| emu::boot_loader_format_alone(&workspace_root())),
         "emu-drive" => cross().and_then(|()| emu::boot_loader_drive_alone(&workspace_root())),
         // Every check that goes through the USB controller, in `emu`'s order
         // (UDC work: the rest of the suite doesn't touch it).
@@ -746,6 +758,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_put(&workspace_root()))
             .and_then(|()| emu::boot_loader_put_exfat(&workspace_root()))
             .and_then(|()| emu::boot_loader_cf(&workspace_root()))
+            .and_then(|()| emu::boot_loader_format(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
             .and_then(|()| emu::boot_loader_locked(&workspace_root()))
@@ -794,6 +807,7 @@ fn run_step(step: &str) -> Result {
                 ("boot_loader_put", emu::boot_loader_put),
                 ("boot_loader_put_exfat", emu::boot_loader_put_exfat),
                 ("boot_loader_cf", emu::boot_loader_cf),
+                ("boot_loader_format", emu::boot_loader_format),
                 ("boot_loader_tone", emu::boot_loader_tone),
                 ("boot_loader_audio_s1", emu::boot_loader_audio_s1),
                 ("boot_loader_audio_sleep", emu::boot_loader_audio_sleep),

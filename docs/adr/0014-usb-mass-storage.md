@@ -199,8 +199,9 @@ model with a built-in host that enumerates like Windows.
   volume label. Formatting the card is refused too. The guard is rebuilt
   from the card after start-up, a card change and anything the PC tool
   asks (`put`, `rm`, `install`, an image's run); when it can't be built
-  (exFAT, a boot file in more than 8 pieces, unmirrored FATs) the card is
-  read-only, as before. `drive ro` still locks it; `drive rw` also makes
+  (a boot file in more than 8 pieces, unmirrored FATs; exFAT until
+  2026-10-25, when ADR-0036 gave FAT12, FAT16 and exFAT the guard too) the
+  card is read-only, as before. `drive ro` still locks it; `drive rw` also makes
   the CF card writable (it stays read-only by default until it stays
   attached, item 62).
 - **The CF card writable too, its boot files guarded (2026-10-24, the
