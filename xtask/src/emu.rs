@@ -8850,9 +8850,21 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
     });
     std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
     let cf = scratch(root, "cf-storfast.img")?;
-    let cf_data: Vec<u8> = (0..16u32 << 20)
+    // A FAT32 card (C7 makes its test file there) with a noise file
+    // filling most of it (C2-C4 compare what they read, so it isn't zeros).
+    let noise: Vec<u8> = (0..12u32 << 20)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
         .collect();
+    let cf_data = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 32 * 1024, // 16 MiB
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "noise.bin",
+            data: &noise,
+        }],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
     std::fs::write(&cf, cf_data).map_err(|e| format!("{}: {e}", cf.display()))?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let input = rp_loadproto::frame(&payload);
@@ -8886,6 +8898,10 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
         "C4 tune (measured, ",
         "the card's limit ",
         "C6 Windows Mobile's timing put back: MCMEM1 0x00020508",
+        "C7 rp-cf-write/WRITE.BIN: LBA ",
+        "C7 the shortest right data strobe 0 (",
+        "C7 rp-cf-write removed from the CF card",
+        "C8 done: ",
         "KiB): all right, one transfer each",
         "S2 the speed writes read back: 0 blocks differ",
         "of the last writes read back, 0 blocks differ",

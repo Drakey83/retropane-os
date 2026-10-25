@@ -1206,3 +1206,39 @@ fn a_tuned_card_writes_at_the_write_timing() {
     assert_eq!(back, block);
     TIMED.with(|t| *t.borrow_mut() = None);
 }
+
+/// With `write_data_at`, the command and address go at the command timing
+/// and only the data words at the data timing: a card that writes data
+/// wrong when the data timing is too fast stores garbage only in the sector
+/// addressed, the next sector untouched; at a right data timing every block
+/// lands; the read timing is back after each write.
+#[test]
+fn the_data_timing_covers_only_the_data_words() {
+    let (c, mut cf, _, t) = tuned(20, false);
+    let Tuned::Applied { was, now, .. } = t else {
+        panic!("{t:?}");
+    };
+    c.borrow_mut().write_below = 40;
+    TIMED.with(|t| *t.borrow_mut() = Some(c.clone()));
+    let mut back = [0u8; SECTOR];
+    cf.read_blocks(12, &mut back).unwrap();
+    let neighbour = back;
+    // Data too fast (the read timing, 30 cycles, under 40): sector 11 spoiled,
+    // sector 12 as it was, the command reached the card right.
+    cf.write_data_at(set_mcmem, now, was, now);
+    cf.write_blocks(11, &[0x3Cu8; SECTOR]).unwrap();
+    assert_eq!(c.borrow().mcmem, now);
+    cf.read_blocks(11, &mut back).unwrap();
+    assert_ne!(back, [0x3Cu8; SECTOR]);
+    cf.read_blocks(12, &mut back).unwrap();
+    assert_eq!(
+        back, neighbour,
+        "a too-fast data timing reached another sector"
+    );
+    // Data at Windows Mobile's timing: right.
+    cf.write_data_at(set_mcmem, now, was, was);
+    cf.write_blocks(11, &[0x3Cu8; SECTOR]).unwrap();
+    cf.read_blocks(11, &mut back).unwrap();
+    assert_eq!(back, [0x3Cu8; SECTOR]);
+    TIMED.with(|t| *t.borrow_mut() = None);
+}

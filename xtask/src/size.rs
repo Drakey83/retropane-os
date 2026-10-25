@@ -669,7 +669,10 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 108 -> 120 KiB on 2026-10-24 (test image): C4-C5, the
         // CF card's own timing and its margin (reminder R7); 111.8 KiB
         // measured once the size check read the real build (arm_release).
-        max_load: 120 * 1024,
+        // Ratcheted 120 -> 148 KiB on 2026-10-24 (test image): C7, the CF
+        // write test (rp-fat built a second time, for the CF card) and C8,
+        // the CPLD interrupt reads (R28, R24); 133.8 KiB measured.
+        max_load: 148 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

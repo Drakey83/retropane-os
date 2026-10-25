@@ -11,6 +11,18 @@
 //!   right at and backs off 1.5x (timed), then each read path's speed and
 //!   every sector against the port's at Windows Mobile's timing. Windows
 //!   Mobile's timing is put back at the end and by the crash path.
+//! - **C7, CF writes at a faster timing** (reminder R28): a 64-sector file
+//!   made in `/rp-cf-write/` on the CF card (its FAT32, at Windows Mobile's
+//!   timing), then written again and again with only the data words at a
+//!   shorter strobe (`CfCard::write_data_at`: the command and address at
+//!   Windows Mobile's timing, so a too-fast step spoils only that file's
+//!   data), each read back at the socket's slowest; the shortest right one
+//!   with the margin, three more rounds at it, the speed against Windows
+//!   Mobile's; the file and folder removed. Nothing else on the card is
+//!   written.
+//! - **C8, the CPLD's interrupt line** (reminder R24, reads only): the
+//!   owner pulls the CF card and puts it back while GPIO13 and CPLD `0x00`,
+//!   `0x04`, `0x06`, `0x14` are read every millisecond, each change logged.
 //! - **S1, SD reads by size** (item 1): every size class 2 blocks to 4 MiB
 //!   by DMA, each one DMA transfer and every byte checked; 1 MiB and 4 MiB
 //!   commands timed by DMA and by the FIFO.
@@ -41,7 +53,7 @@ pub const MARKER: &str = "RETROPANE-STORFAST";
 mod image {
     use core::fmt::Write;
 
-    use rp_drv_cf::timing::Timing;
+    use rp_drv_cf::timing::{self, Timing};
     use rp_drv_cf::{CfCard, ReadPath, SocketTiming, Tuned};
     use rp_drv_cpld::{Cpld, Delay, handover};
     use rp_drv_mbx_display::Display;
@@ -82,6 +94,13 @@ mod image {
     const READ_FILE: &str = "rp-storage-fast/READ.BIN";
     const SOAK_FILE: &str = "rp-storage-fast/SOAK.BIN";
     const DIR: &str = "rp-storage-fast";
+    /// C7's folder and file on the CF card: nothing outside them is written.
+    const CF_DIR: &str = "rp-cf-write";
+    const CF_FILE: &str = "rp-cf-write/WRITE.BIN";
+    /// C7's file: 64 sectors.
+    const CF_BLOCKS: u32 = 64;
+    /// The PXA GPIO the CPLD's interrupt reaches (docs/hw/interrupts.md).
+    const CPLD_IRQ_GPIO: u8 = 13;
     const MIB: usize = 1024 * 1024;
     /// On the SD card's root, this file makes the run short (the emulator
     /// check, `cargo xtask emu-storfast`: the emulated FIFO moves bytes
@@ -221,7 +240,7 @@ mod image {
             screen.say(format_args!(
                 "CF card: reading it at each timing (about a minute)"
             ));
-            compact_flash(&mut gpio, &mut cpld, pool);
+            compact_flash(screen, &mut gpio, &mut cpld, pool);
         }
         rt::check_in();
         if let Some((card, start)) = card {
@@ -304,7 +323,12 @@ mod image {
         }
     }
 
-    fn compact_flash(gpio: &mut Gpio<Mmio>, cpld: &mut BoardCpld, pool: &mut [u8]) {
+    fn compact_flash(
+        screen: &mut Screen<'_>,
+        gpio: &mut Gpio<Mmio>,
+        cpld: &mut BoardCpld,
+        pool: &mut [u8],
+    ) {
         let Some((attr, common)) = devices::take_cf() else {
             log!("C0 no CF windows");
             return;
@@ -409,12 +433,205 @@ mod image {
             },
             total / cycles
         );
-        own_timing(&mut cf, buf, reference);
+        let tuned = own_timing(&mut cf, buf, reference);
         put_back_cf_timing();
         log!(
             "C6 Windows Mobile's timing put back: MCMEM1 {:#010x}",
             devices::cf_mem_timing().unwrap_or(0)
         );
+        if let Some(now) = tuned {
+            screen.say(format_args!(
+                "CF card: writing its test file at faster timings"
+            ));
+            write_test(&mut cf, now, buf);
+            put_back_cf_timing();
+        }
+        cpld_irq(screen, gpio, cpld);
+    }
+
+    fn set_cf_timing(value: u32) {
+        let _ = devices::set_cf_mem_timing(value);
+    }
+
+    /// Where a card's first partition starts (0: no partition table).
+    fn first_partition<B: BlockDevice>(dev: &mut B) -> Option<u32> {
+        let mut block = [0u8; BLOCK];
+        dev.read_blocks(0, &mut block).ok()?;
+        Some(
+            mbr_partitions(&block)
+                .and_then(|p| p[0])
+                .map_or(0, |p| p.start),
+        )
+    }
+
+    /// C7: CF writes with only the data words at a shorter strobe (R28).
+    fn write_test(cf: &mut Cf, tuned: u32, pool: &mut [u8]) {
+        let wm = devices::CF_MEM_TIMING_WM;
+        let high = wm & !0xF_FFFF;
+        let slowest = high | Timing::SLOWEST.mcmem();
+        let (data, rest) = pool.split_at_mut(CF_BLOCKS as usize * BLOCK);
+        let (work, back) = rest.split_at_mut(64 * 1024);
+        let back = &mut back[..data.len()];
+        // The file, at Windows Mobile's timing.
+        set_cf_timing(wm);
+        let Some(start) = first_partition(cf) else {
+            log!("C7 the CF card's block 0 unreadable: skipped");
+            return;
+        };
+        fill(data, 0x5EED, 0);
+        let first = {
+            let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+                log!("C7 the CF card isn't FAT32: skipped (nothing written)");
+                return;
+            };
+            if let Err(e) = vol.put(CF_FILE, data, work) {
+                log!("C7 put {CF_FILE}: {}", e.name());
+                return;
+            }
+            match vol.find(CF_FILE) {
+                Ok(f) if f.size() == CF_BLOCKS * BLOCK as u32 => f.first_cluster(),
+                _ => {
+                    log!("C7 {CF_FILE} not as written");
+                    return;
+                }
+            }
+        };
+        let Some(lba) = contiguous(cf, start, first, CF_BLOCKS, work) else {
+            remove_cf_file(cf, start, work);
+            return;
+        };
+        log!("C7 {CF_FILE}: LBA {lba}, {CF_BLOCKS} sectors, contiguous");
+        let t = Timing::from_mcmem(tuned);
+        let len = data.len();
+        // One round: write at `data_t` (command at Windows Mobile's), read
+        // back at the slowest; (time, failed, sectors differ).
+        let mut round = |cf: &mut Cf, data_t: Timing, seed: u32| -> (u32, bool, u32) {
+            fill(data, seed, 0);
+            cf.write_data_at(set_cf_timing, wm, wm, high | data_t.mcmem());
+            let t0 = rt::ticks();
+            let failed = cf.write_blocks(lba, data).is_err();
+            let took = rt::ticks().wrapping_sub(t0);
+            set_cf_timing(slowest);
+            back.fill(0);
+            let read = cf.read_blocks(lba, back).is_ok();
+            set_cf_timing(wm);
+            rt::check_in();
+            let bad = if read {
+                differs(back, seed, 0)
+            } else {
+                CF_BLOCKS
+            };
+            (took, failed, bad)
+        };
+        let wm_t = Timing::WINDOWS_MOBILE;
+        let (t_wm, f_wm, b_wm) = round(cf, wm_t, 1);
+        log!(
+            "C7 at Windows Mobile's timing: {} KiB/s, failed {f_wm}, {b_wm} sectors differ",
+            kib_s(len, t_wm)
+        );
+        // The strobe from Windows Mobile's down, set-up and hold as the
+        // card's tuned read timing.
+        let mut limit = None;
+        for asst in (0..=wm_t.asst).rev() {
+            let step = Timing { asst, ..t };
+            let (took, failed, bad) = round(cf, step, 100 + asst);
+            log!(
+                "C7 data strobe {asst} ({} cycles): {} KiB/s, failed {failed}, {bad} sectors differ",
+                step.cycle_cycles(),
+                kib_s(len, took)
+            );
+            if failed || bad != 0 || cf.is_dead() {
+                break;
+            }
+            limit = Some(step);
+        }
+        match limit {
+            Some(l) => {
+                let (m, clamped) = timing::with_margin(l);
+                let mut bad_all = 0;
+                let mut took_all = 0u32;
+                for r in 0..3 {
+                    let (took, failed, bad) = round(cf, m, 200 + r);
+                    bad_all += bad + u32::from(failed) * CF_BLOCKS;
+                    took_all = took_all.wrapping_add(took);
+                }
+                log!(
+                    "C7 the shortest right data strobe {} ({} cycles); with the margin {:#010x} ({} cycles, clamped {clamped}): 3 rounds, {bad_all} sectors differ, {} KiB/s against {} at Windows Mobile's",
+                    l.asst,
+                    l.cycle_cycles(),
+                    high | m.mcmem(),
+                    m.cycle_cycles(),
+                    kib_s(3 * len, took_all),
+                    kib_s(len, t_wm)
+                );
+            }
+            None => log!("C7 no strobe shorter than Windows Mobile's wrote right"),
+        }
+        cf.write_data_at(set_cf_timing, wm, wm, wm);
+        remove_cf_file(cf, start, work);
+    }
+
+    /// C7's file and folder off the CF card, at Windows Mobile's timing.
+    fn remove_cf_file(cf: &mut Cf, start: u32, _work: &mut [u8]) {
+        set_cf_timing(devices::CF_MEM_TIMING_WM);
+        let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+            log!("C7 mount failed: {CF_FILE} is left on the CF card");
+            return;
+        };
+        for path in [CF_FILE, CF_DIR] {
+            match vol.remove(path) {
+                Ok(()) | Err(rp_fat::Error::NotFound) => {}
+                Err(e) => log!("C7 remove {path}: {}", e.name()),
+            }
+        }
+        log!("C7 {CF_DIR} removed from the CF card");
+    }
+
+    /// C8: the CPLD's interrupt line and status registers while the owner
+    /// pulls the CF card and puts it back (R24, reads only).
+    fn cpld_irq(screen: &mut Screen<'_>, gpio: &mut Gpio<Mmio>, cpld: &mut BoardCpld) {
+        const REGS: [usize; 4] = [0x00, 0x04, 0x06, 0x14];
+        gpio.make_input(CPLD_IRQ_GPIO);
+        let read = |gpio: &mut Gpio<Mmio>, cpld: &mut BoardCpld| {
+            (gpio.read(CPLD_IRQ_GPIO), REGS.map(|r| cpld.read(r)))
+        };
+        let secs = prompt_secs().min(40);
+        screen.say(format_args!(
+            "\nPULL THE CF CARD OUT, wait 2 seconds, PUT IT BACK ({secs} s)."
+        ));
+        let mut last = read(gpio, cpld);
+        log!(
+            "C8 at the start: GPIO13 {} 00={:04x} 04={:04x} 06={:04x} 14={:04x}",
+            u8::from(last.0),
+            last.1[0],
+            last.1[1],
+            last.1[2],
+            last.1[3]
+        );
+        let t0 = rt::ticks();
+        let mut changes = 0;
+        while rt::ticks().wrapping_sub(t0) < secs * rt::TICK_HZ {
+            rt::delay_us(1_000);
+            rt::check_in();
+            let now = read(gpio, cpld);
+            if now != last {
+                changes += 1;
+                if changes <= 64 {
+                    log!(
+                        "C8 +{} ms: GPIO13 {} 00={:04x} 04={:04x} 06={:04x} 14={:04x}",
+                        ms(rt::ticks().wrapping_sub(t0)),
+                        u8::from(now.0),
+                        now.1[0],
+                        now.1[1],
+                        now.1[2],
+                        now.1[3]
+                    );
+                }
+                last = now;
+            }
+        }
+        log!("C8 done: {changes} changes in {secs} s");
+        screen.say(format_args!("Done with the CF card."));
     }
 
     /// The image's put-back step: the socket at Windows Mobile's timing.
@@ -466,7 +683,7 @@ mod image {
     }
 
     /// C4: the card's own timing, measured by `tune` (reads only).
-    fn own_timing(cf: &mut Cf, buf: &mut [u8], reference: &[u8]) {
+    fn own_timing(cf: &mut Cf, buf: &mut [u8], reference: &[u8]) -> Option<u32> {
         let mut socket = Socket;
         let was = socket.read();
         let clk_ps = socket.clk_ps();
@@ -508,11 +725,11 @@ mod image {
                 log!(
                     "C4 tune (measured, {tune_ms} ms): Refused, {tried:#010x} read differently; {was:#010x} kept, card reads as before {card_ok}"
                 );
-                return;
+                return None;
             }
             Tuned::Kept(why) => {
                 log!("C4 tune (measured, {tune_ms} ms): Kept ({why})");
-                return;
+                return None;
             }
         };
         log!("C4 now {} cycles", Timing::from_mcmem(now).cycle_cycles());
@@ -531,6 +748,7 @@ mod image {
             }
         }
         let _ = cf.set_read_path(proven);
+        Some(now)
     }
 
     // ---- SD -----------------------------------------------------------
@@ -645,15 +863,15 @@ mod image {
     }
 
     /// The LBA of the file's first block if its clusters are one run.
-    fn contiguous(
-        card: &mut Card,
+    fn contiguous<B: BlockDevice>(
+        card: &mut B,
         start: u32,
         first: u32,
         blocks: u32,
         work: &mut [u8],
     ) -> Option<u32> {
         let bpb = &mut work[..BLOCK];
-        card.read_many(start, bpb).ok()?;
+        card.read_blocks(start, bpb).ok()?;
         let spc = u32::from(bpb[13]);
         let reserved = u32::from(u16::from_le_bytes([bpb[14], bpb[15]]));
         let fats = u32::from(bpb[16]);
@@ -672,7 +890,7 @@ mod image {
             let c = first + k;
             let s = fat_start + c / 128;
             if s != sector {
-                card.read_many(s, fat).ok()?;
+                card.read_blocks(s, fat).ok()?;
                 sector = s;
             }
             let i = (c % 128) as usize * 4;

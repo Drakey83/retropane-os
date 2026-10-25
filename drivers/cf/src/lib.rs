@@ -261,8 +261,13 @@ struct WriteTiming {
     set: fn(u32),
     /// The register for reads (put back after each write).
     read: u32,
-    /// The register for writes.
-    write: u32,
+    /// The register while the write command and its address go to the
+    /// task file (and the card is polled), so an address is always latched
+    /// at a proven timing.
+    command: u32,
+    /// The register while a sector's data words go out: a data word written
+    /// too fast spoils only that sector's data, never which sector.
+    data: u32,
 }
 
 /// What the CIS walk found: the configuration registers' base, and the
@@ -694,7 +699,21 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
     /// so a tuned card writes at the timing it was proven to write at
     /// (Windows Mobile's) until a write test proves more.
     pub fn write_at(&mut self, set: fn(u32), read: u32, write: u32) {
-        self.write_timing = Some(WriteTiming { set, read, write });
+        self.write_data_at(set, read, write, write);
+    }
+
+    /// As [`CfCard::write_at`], with the data words at their own timing:
+    /// `command` while the command, the address and the polling go to the
+    /// card, `data` only while a sector's 256 data words do (R28's write
+    /// test: a data timing too fast for the card can spoil the data of the
+    /// sector addressed, never another sector).
+    pub fn write_data_at(&mut self, set: fn(u32), read: u32, command: u32, data: u32) {
+        self.write_timing = Some(WriteTiming {
+            set,
+            read,
+            command,
+            data,
+        });
     }
 
     /// A 64-bit FNV-1a hash of IDENTIFY (through the 16-bit port) and the
@@ -992,7 +1011,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         let Some(t) = self.write_timing else {
             return self.write_sectors(lba, buf);
         };
-        (t.set)(t.write);
+        (t.set)(t.command);
         let done = self.write_sectors(lba, buf);
         (t.set)(t.read);
         done
@@ -1013,8 +1032,15 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
                 .map_err(|e| self.failed(e))?;
             for sector in run.as_chunks::<SECTOR>().0 {
                 self.wait_drq().map_err(|e| self.failed(e))?;
+                let t = self.write_timing;
+                if let Some(t) = t {
+                    (t.set)(t.data);
+                }
                 for pair in sector.as_chunks::<2>().0 {
                     self.common.write16(reg::DATA, u16::from_le_bytes(*pair));
+                }
+                if let Some(t) = t {
+                    (t.set)(t.command);
                 }
             }
             // Done when the card has programmed the last sector.
