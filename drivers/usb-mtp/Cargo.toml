@@ -1,0 +1,13 @@
+[package]
+name = "rp-usb-mtp"
+description = "MTP 1.1 over the USB Still Image transport: the device's cards as a portable device on the PC, refusals at once, all-or-nothing copies (ADR-0037)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

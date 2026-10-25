@@ -802,6 +802,72 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_cardlog),
     },
     Mutant {
+        name: "ADR-0037: a boot file announced writable over MTP (Windows tries, then fails)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "    if e.protected || e.long_name {
+        0x0001",
+        to: "    if e.long_name {
+        0x0001",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "object_info_carries_the_name_size_parent_and_protection",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a reservation kept when the session ends (an unplugged copy leaves its space taken)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "        if let Some(p) = self.pending.take() {
+            dev.abandon(p.s, p.loc);
+        }
+        self.session = 0;",
+        to: "        self.pending = None;
+        self.session = 0;",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "a_cancelled_or_unplugged_copy_leaves_nothing",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a short transfer committed (a half file takes its name)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "                } else if !complete || self.obj_written != p.size {",
+        to: "                } else if !complete {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "a_short_transfer_is_incomplete_and_kept_for_a_retry",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a deleted object's handle left alive (MTP 3.4.1: never reused)",
+        file: "drivers/usb-mtp/src/handles.rs",
+        from: "        {
+            self.unindex(k);
+            self.slots[k].store = DEAD;
+        }",
+        to: "        {
+            self.unindex(k);
+        }",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "the_handle_index_survives_deletes_and_moves",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: walks stop below the second level (a whole-store listing misses deep files)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "                        Some((h, loc, level)) if w.depth > 1 => {",
+        to: "                        Some((h, loc, level)) if w.depth > 2 => {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "property_lists_of_any_depth_come_in_one_operation",
+        ]),
+    },
+    Mutant {
         name: "R22: a vouch that doesn't keep the host's view",
         file: "drivers/usb-msc/src/lib.rs",
         from: "        if let Some(u) = self.units.get_mut(lun) {
