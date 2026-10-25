@@ -133,6 +133,10 @@ mod image {
         /// or when inserted), before the PC touched it: tells a flag left
         /// by Windows Mobile or a reset from one Windows set while mounted.
         dirty_found: Option<bool>,
+        /// Why the card in the slot didn't start (the SD driver's error),
+        /// reported with "no card" instead of dropped (2026-10-24: a 512 MB
+        /// card read as no card with no reason, testing-discipline rule 6).
+        init_error: Option<&'static str>,
     }
 
     /// The power button (GPIO0, docs/hw/README.md).
@@ -232,10 +236,19 @@ mod image {
                 };
                 if let Some(host) = host {
                     match SdCard::try_init(host) {
-                        Ok(card) => self.card = Some(card),
-                        Err((_, host)) => self.spare = Some(host),
+                        Ok(card) => {
+                            self.card = Some(card);
+                            self.init_error = None;
+                        }
+                        Err((e, host)) => {
+                            self.spare = Some(host);
+                            self.init_error = Some(e.name());
+                        }
                     }
                 }
+            }
+            if !inserted {
+                self.init_error = None;
             }
             self.inserted = inserted;
             self.locked = locked;
@@ -442,12 +455,13 @@ mod image {
         Option<PxaMmc<Mmio, Dma>>,
         [u16; 16],
         Option<(BoardCpld, handover::Source)>,
+        Option<&'static str>,
     ) {
         let Some((mut cpld, table)) = devices::take_cpld() else {
-            return (None, None, [0; 16], None);
+            return (None, None, [0; 16], None, None);
         };
         let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(dma_map::SD)) else {
-            return (None, None, [0; 16], Some(Cpld::adopt(cpld, table)));
+            return (None, None, [0; 16], Some(Cpld::adopt(cpld, table)), None);
         };
         // Diagnostics (CF power hunt): the CPLD's registers as Windows
         // Mobile left them, read before our first write. Reads only; whether
@@ -462,9 +476,23 @@ mod image {
         cpld.set_sd_power(true);
         rt::delay_us(10_000);
         match SdCard::try_init(PxaMmc::with_dma(mmc, dma)) {
-            Ok(card) => (Some(card), None, found, Some((cpld, source))),
-            Err((_, host)) => (None, Some(host), found, Some((cpld, source))),
+            Ok(card) => (Some(card), None, found, Some((cpld, source)), None),
+            Err((e, host)) => (
+                None,
+                Some(host),
+                found,
+                Some((cpld, source)),
+                Some(e.name()),
+            ),
         }
+    }
+
+    /// "No card", or why the card in the slot didn't start.
+    fn no_card(why: Option<&'static str>, out: &mut Line) {
+        let _ = match why {
+            Some(e) => write!(out, "RPL ERR card: a card is in but didn't start: {e}\r\n"),
+            None => out.write_str("RPL ERR card: no card\r\n"),
+        };
     }
 
     /// Where the card's first partition starts (0: no partition table).
@@ -608,7 +636,7 @@ mod image {
             return;
         }
         let Some(sd) = lun.card.as_mut() else {
-            let _ = reply.write_str("RPL ERR card: no card\r\n");
+            no_card(lun.init_error, reply);
             return;
         };
         let mut vol = match mount_any(sd) {
@@ -914,7 +942,7 @@ mod image {
             return;
         }
         let Some(sd) = lun.card.as_mut() else {
-            let _ = reply.write_str("RPL ERR card: no card\r\n");
+            no_card(lun.init_error, reply);
             return;
         };
         let mut vol = match mount_any(sd) {
@@ -939,7 +967,7 @@ mod image {
     #[inline(never)]
     fn card_check(lun: &mut Lun, seen: &mut [u8], scratch: &mut [u8], reply: &mut Line) {
         let Some(sd) = lun.card.as_mut() else {
-            let _ = reply.write_str("RPL ERR card: no card\r\n");
+            no_card(lun.init_error, reply);
             return;
         };
         let mut vol = match mount_any(sd) {
@@ -1805,7 +1833,7 @@ mod image {
             return;
         };
         let Some(sd) = lun.card.as_mut() else {
-            let _ = out.write_str("RPL ERR card: no card\r\n");
+            no_card(lun.init_error, out);
             return;
         };
         let count = count.min(4096);
@@ -2083,7 +2111,7 @@ mod image {
         // host gave up on the first descriptor request).
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
-        let (card, spare, cpld_found, cpld) = open_card();
+        let (card, spare, cpld_found, cpld, sd_error) = open_card();
         // When each start-up stage ended (`handoff`: boot time on the device).
         let mut stages = [rt::since_start(), 0, 0];
         let (mut cpld, cpld_source) = match cpld {
@@ -2111,6 +2139,7 @@ mod image {
             locked,
             seen: (inserted, locked),
             dirty_found: None,
+            init_error: if inserted { sd_error } else { None },
         };
         let dma = check_dma(&mut lun, msc_buf);
         lun.refresh_guard();

@@ -208,7 +208,14 @@ const READ_RETRIES: u32 = 2;
 /// CMD13 polls while a write is being programmed (each is a card command,
 /// about a millisecond; the specification allows 250 ms per block).
 const READY_TRIES: u32 = 200_000;
-const ACMD41_TRIES: u32 = 1000;
+/// ACMD41 rounds before a card that stays busy is given up: the SD
+/// specification allows a card 1 s to finish powering up, and a round (CMD55
+/// and ACMD41 at 400 kHz) takes ~0.6 ms, so 1,000 rounds (~0.6 s) gave up
+/// early: a 512 MB card on the X51v answered busy to all of them
+/// (2026-10-24, "init timeout"). 4,000 (~2.4 s) covers the 1 s with margin
+/// for old, slow cards. (Counted, not timed: the host has no clock; quality
+/// audit C76.)
+const ACMD41_TRIES: u32 = 4000;
 
 /// Clock during identification.
 pub const INIT_HZ: u32 = 400_000;
