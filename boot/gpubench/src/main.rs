@@ -9796,6 +9796,7 @@ mod image {
                             step: GC2K_STEP,
                             secs: u32::MAX / 1_000_000,
                             rounds: GC2P_ROUNDS,
+                            poison: false,
                         },
                     );
                 } else if GC2_ORDER {
@@ -11293,6 +11294,7 @@ mod image {
                 step: (gc2_step(m, n, 0, 1), "149.50 / 1"),
                 secs: GC2AD_SOAK_SECS,
                 rounds: u32::MAX,
+                poison: true,
             },
         );
     }
@@ -11316,6 +11318,7 @@ mod image {
                 step: (gc2_step(m, n, 0, 1), "149.50 / 1"),
                 secs: u32::MAX / 1_000_000,
                 rounds: gc2::RING_ROUNDS,
+                poison: false,
             },
         );
     }
@@ -11354,6 +11357,7 @@ mod image {
                     step: (step, name),
                     secs: u32::MAX / 1_000_000,
                     rounds: 20,
+                    poison: false,
                 },
             );
         }
@@ -11374,6 +11378,7 @@ mod image {
                     step: (gc2_step(m, n, 0, 1), NAMES[pi]),
                     secs: u32::MAX / 1_000_000,
                     rounds: gc2::LASTPIX_ROUNDS,
+                    poison: false,
                 },
             );
             if wrong & ALL != ALL {
@@ -11414,6 +11419,7 @@ mod image {
                     step: (gc2_step(m, n, 0, 1), NAMES[pi]),
                     secs: u32::MAX / 1_000_000,
                     rounds,
+                    poison: false,
                 },
             );
             if let Some(&w) = gc2::FREE_PREFER.iter().find(|&&w| wrong & 1 << w == 0) {
@@ -11451,6 +11457,7 @@ mod image {
                 step: (gc2_step(m, n, 0, 1), NAMES[pi]),
                 secs: GC2AA_SOAK_SECS,
                 rounds: u32::MAX,
+                poison: false,
             },
         );
     }
@@ -11476,6 +11483,7 @@ mod image {
                     step: (gc2_step(m, n, 0, 1), NAMES[pi]),
                     secs: u32::MAX / 1_000_000,
                     rounds: gc2::FIX_TEX_ROUNDS,
+                    poison: false,
                 },
             );
         }
@@ -11495,6 +11503,7 @@ mod image {
                 step: (gc2_step(43, 4, 0, 1), "139.75 / 1"),
                 secs: u32::MAX / 1_000_000,
                 rounds: gc2::FIX_CORNER_ROUNDS,
+                poison: false,
             },
         );
     }
@@ -11531,6 +11540,7 @@ mod image {
                     step: (gc2_step(m, n, 0, 1), CURED_NAMES[pi]),
                     secs: u32::MAX / 1_000_000,
                     rounds: gc2::CURED_ROUNDS[pi],
+                    poison: false,
                 },
             );
             let clean = wrong & CURED_MASK == 0;
@@ -11565,6 +11575,7 @@ mod image {
                 step: (gc2_step(m, n, 0, 1), CURED_NAMES[pi]),
                 secs: GC2Y_SOAK_SECS,
                 rounds: u32::MAX,
+                poison: false,
             },
         );
     }
@@ -11595,6 +11606,7 @@ mod image {
                     step: (s, name),
                     secs: u32::MAX / 1_000_000,
                     rounds: gc2::EDGE_ROUNDS,
+                    poison: false,
                 },
             );
         }
@@ -11611,6 +11623,7 @@ mod image {
                 step: GC2K_STEP,
                 secs: u32::MAX / 1_000_000,
                 rounds: gc2::HIDDEN_ROUNDS,
+                poison: false,
             },
         );
     }
@@ -11680,6 +11693,7 @@ mod image {
                         step: (s, ABOVE_NAMES[pi]),
                         secs: u32::MAX / 1_000_000,
                         rounds: gc2::TEXLOAD_ROUNDS[pi],
+                        poison: false,
                     },
                 );
             }
@@ -11717,6 +11731,7 @@ mod image {
                     step: GC2K_STEP,
                     secs: u32::MAX / 1_000_000,
                     rounds: 100,
+                    poison: false,
                 },
             );
         }
@@ -11745,6 +11760,7 @@ mod image {
                         step: (s, ABOVE_NAMES[pi]),
                         secs: u32::MAX / 1_000_000,
                         rounds: 30,
+                        poison: false,
                     },
                 );
             }
@@ -11776,6 +11792,7 @@ mod image {
                 step: GC2K_STEP,
                 secs: u32::MAX / 1_000_000,
                 rounds,
+                poison: false,
             };
             g.over = Over::NONE;
             log!("  GC2Q C: GC2K's worst without any setting (the control)");
@@ -11811,6 +11828,7 @@ mod image {
                     ),
                     secs: u32::MAX / 1_000_000,
                     rounds: 30,
+                    poison: false,
                 },
             );
         }
@@ -11898,6 +11916,7 @@ mod image {
                 step: GC2K_STEP,
                 secs: GC2O_SECS,
                 rounds: u32::MAX,
+                poison: false,
             },
         );
     }
@@ -11913,6 +11932,90 @@ mod image {
         step: (ClockStep, &'static str),
         secs: u32,
         rounds: u32,
+        /// Each render's target filled first with a colour no reference
+        /// holds (from GC2AD): a write the 3D core never makes then shows,
+        /// whatever the scene before it drew there (GC2AD's ring and full
+        /// layer ways draw the same picture back to back).
+        poison: bool,
+    }
+
+    /// Wrong renders a tile-order soak describes pixel by pixel (from
+    /// GC2AD: each wrong pixel against what each candidate cause of the
+    /// last-pixel fault would leave there, [`Suspects`]); the rest are
+    /// counted and placed.
+    const ORDER_DESCRIBED: u32 = 40;
+
+    const _: () = assert!(
+        gc2::TILE_W as u32 == rp_drv_mbx3d::TILE_W && gc2::TILE_H as u32 == rp_drv_mbx3d::TILE_H
+    );
+
+    /// One wrong pixel beside what each candidate cause of the last-pixel
+    /// fault (2700g.md "The last-pixel fault's candidates") would leave
+    /// there: (a) the write lost, the picture the target held before
+    /// (`prev`, the scene rendered just before); (b) a neighbouring tile's
+    /// pixel left in the core's tile buffer (the same place in the four
+    /// tiles around); (c) a bus or timing fault (the bits that differ); and
+    /// the pixel sharing its word (one lane of a write, or the whole word).
+    struct Suspects<'a> {
+        f: PixelFormat,
+        at: (i32, i32),
+        got: &'a [u32],
+        want: &'a [u32],
+        before: Before<'a>,
+    }
+
+    /// What a soak's target held before a render: the scene drawn just
+    /// before (or unknown, the first), or the poison it was filled with.
+    #[derive(Clone, Copy)]
+    enum Before<'a> {
+        Unknown,
+        Picture(&'a [u32]),
+        Poison(u16),
+    }
+
+    impl core::fmt::Display for Suspects<'_> {
+        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+            let (x, y) = self.at;
+            let px = |pic: &[u32], (x, y): (i32, i32)| gc2::pixel(self.f, pic, x, y);
+            let (got, want) = (px(self.got, self.at), px(self.want, self.at));
+            let (cx, cy) = gc2::in_tile(x, y);
+            write!(f, "({x},{y}) tile place ({cx},{cy}): got {got:x?} want {want:x?}")?;
+            if let (Some(a), Some(b)) = (got, want) {
+                write!(f, " xor 0x{:x}", a ^ b)?;
+            }
+            let p = gc2::pair(self.f, x, y);
+            if p != self.at {
+                write!(
+                    f,
+                    "; its word's other pixel got {:x?} want {:x?}",
+                    px(self.got, p),
+                    px(self.want, p)
+                )?;
+            }
+            match self.before {
+                Before::Picture(prev) => {
+                    write!(f, "; the picture before {:x?}", px(prev, self.at))?;
+                }
+                Before::Poison(c) => write!(f, "; the poison before 0x{c:x}")?,
+                Before::Unknown => f.write_str("; the picture before unknown")?,
+            }
+            f.write_str("; the same place in the tiles left, right, above, below")?;
+            for m in gc2::tile_mates(x, y) {
+                write!(f, " {:x?}", px(self.want, m))?;
+            }
+            Ok(())
+        }
+    }
+
+    /// The 480 x 640 RGB565 picture at `at` filled with `c` by the 2D
+    /// engine, finished before the 3D core starts (no 2D work behind a
+    /// render: R30); whether it finished.
+    fn poison_fill(g: &mut Rig, at: u32, c: u16) -> bool {
+        let w = rp_image::need(
+            cmd::fill(Format::RGB565, at as usize, 960, (0, 0, 480, 640), u32::from(c)),
+            "a 2D rectangle",
+        );
+        g.e.submit(&w).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok()
     }
 
     /// The most scenes and ways a plan holds (GC2O's).
@@ -12017,6 +12120,22 @@ mod image {
             log!("  GC2O: a reference or an order isn't proven: nothing run at 133.25 / 1");
             return u128::MAX;
         }
+        // The poison: a colour none of the references holds (16-bit
+        // pictures only), so a pixel the core never writes reads wrong.
+        let f = gc2::KINDS[k].1;
+        let poison = if plan.poison && f.bytes() == 2 {
+            let c = gc2::absent16(&rest[..n_scenes * words], &gc2::POISON);
+            rt::check_in();
+            match c {
+                Some(c) => {
+                    log!("  {name}: each render's target filled first with 0x{c:x} (in no reference)");
+                }
+                None => log!("  {name}: every poison colour is in a reference: run without one"),
+            }
+            c
+        } else {
+            None
+        };
         let (s, label) = plan.step;
         let minutes = plan.secs.div_ceil(60);
         soak_label(g, [label0, label, "STARTING"], SOAK_BLUE);
@@ -12059,6 +12178,11 @@ mod image {
         // 80% over GC2O's 94 ways.)
         let mut best_by = [u16::MAX; ORDER_MAX_WAYS];
         let mut spots = [SweepSpots::NONE; ORDER_MAX_WAYS];
+        // The wrong renders described so far, and the scene the target
+        // held before this render (the last-pixel fault's candidate (a):
+        // the write lost, the old picture left).
+        let (mut described, mut prev_sc) = (0u32, None);
+        let mut poison_failed = false;
         let (mut elapsed_us, mut lines, mut rounds) = (0u64, 0u32, 0u32);
         let end_us = u64::from(plan.secs) * 1_000_000;
         let mut unheld = None;
@@ -12067,6 +12191,13 @@ mod image {
             for (w, &(sc, o)) in ways.iter().enumerate() {
                 set(g, r, sc, o);
                 let want = &rest[sc * words..(sc + 1) * words];
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    log!("  {name} {label}: the poison fill didn't finish at way {w}: stopped");
+                    poison_failed = true;
+                    break 'soak;
+                }
                 let mut side = Gc2Side::new(dsig);
                 let wrong = gc2_render_at(
                     g,
@@ -12088,6 +12219,34 @@ mod image {
                     wrong_by[w] += 1;
                     let c = gc2::order_corner(scenes[sc]);
                     let t = &side.tally;
+                    if described < ORDER_DESCRIBED {
+                        described += 1;
+                        log!(
+                            "  {name} wrong render {described} (round {}, way {w}, scene {sc}, {}, {} us): {}",
+                            rounds + 1,
+                            order_name(o),
+                            side.best_us,
+                            Gc2Pixels(t)
+                        );
+                        let f = gc2::KINDS[k].1;
+                        let before = match (poison, prev_sc) {
+                            (Some(c), _) => Before::Poison(c),
+                            (None, Some(p)) => Before::Picture(&rest[p * words..(p + 1) * words]),
+                            (None, None) => Before::Unknown,
+                        };
+                        for &(x, y, _, _) in &t.first[..t.n_first] {
+                            log!(
+                                "    {}",
+                                Suspects {
+                                    f,
+                                    at: (i32::from(x), i32::from(y)),
+                                    got: &first[..words],
+                                    want,
+                                    before,
+                                }
+                            );
+                        }
+                    }
                     for &(x, y, _, _) in &t.first[..t.n_first] {
                         spots[w].add((i32::from(x), i32::from(y)), c);
                     }
@@ -12096,6 +12255,7 @@ mod image {
                         spots[w].add((i32::from(x1), i32::from(y1)), c);
                     }
                 }
+                prev_sc = Some(sc);
             }
             rounds += 1;
             elapsed_us += u64::from(us_since(t0));
@@ -12192,7 +12352,7 @@ mod image {
         soak_label(g, [label0, label, l3.as_str()], SOAK_BLUE);
         // The ways with any wrong render (bit per way); every way when the
         // soak stopped on a render not held.
-        if unheld.is_some() {
+        if unheld.is_some() || poison_failed {
             return u128::MAX;
         }
         wrong_by[..n_ways]

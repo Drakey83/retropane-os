@@ -1175,3 +1175,67 @@ fn gc2ad_soaks_every_kind_alternating_the_ring_and_one_full_layer_reversed() {
     assert_eq!(13_000 * NIGHT_PLL.0 / NIGHT_PLL.1, 149_500);
     assert_eq!(NIGHT_MINUTES, 120);
 }
+
+/// The last-pixel fault's suspects read the right pixels: both halves of
+/// a 16-bit word, a 32-bit picture's word, the picture's edges, a tile's
+/// last pixel and the same place in the tiles around it.
+#[test]
+fn suspects_read_the_right_pixels() {
+    let f16 = PixelFormat::Rgb565;
+    let f32 = PixelFormat::Argb8888;
+    // Each 16-bit pixel holds its own index (low 16 bits).
+    let n = (W * H) as usize;
+    let pic16: std::vec::Vec<u32> = (0..n / 2)
+        .map(|i| (2 * i as u32 & 0xFFFF) | ((2 * i as u32 + 1) & 0xFFFF) << 16)
+        .collect();
+    let idx = |x: i32, y: i32| (y as u32 * W + x as u32) & 0xFFFF;
+    for (x, y) in [(0, 0), (1, 0), (54, 415), (55, 415), (479, 639), (478, 639)] {
+        assert_eq!(pixel(f16, &pic16, x, y), Some(idx(x, y)), "({x},{y})");
+    }
+    let pic32: std::vec::Vec<u32> = (0..n as u32).collect();
+    assert_eq!(pixel(f32, &pic32, 55, 415), Some(415 * W + 55));
+    assert_eq!(pixel(f32, &pic32, 479, 639), Some(n as u32 - 1));
+    // Off the picture, either side, and past a short buffer.
+    for (x, y) in [(-1, 0), (480, 0), (0, -1), (0, 640)] {
+        assert_eq!(pixel(f16, &pic16, x, y), None, "({x},{y})");
+        assert_eq!(pixel(f32, &pic32, x, y), None, "({x},{y})");
+    }
+    assert_eq!(pixel(f16, &pic16[..10], 20, 0), None);
+    // The word's pair: the other half at 16 bits, itself at 32.
+    assert_eq!(pair(f16, 55, 415), (54, 415));
+    assert_eq!(pair(f16, 54, 415), (55, 415));
+    assert_eq!(pair(f32, 55, 415), (55, 415));
+    // GC2AA's fault at (55, 415): the last place of its 8 x 16 tile; one
+    // further is the next tile's first.
+    assert_eq!(in_tile(55, 415), (7, 15));
+    assert_eq!(in_tile(56, 416), (0, 0));
+    assert_eq!(in_tile(0, 0), (0, 0));
+    assert_eq!(
+        tile_mates(55, 415),
+        [(47, 415), (63, 415), (55, 399), (55, 431)]
+    );
+    // At the picture's corner the mates off it read as none.
+    let m = tile_mates(0, 0);
+    assert_eq!(pixel(f16, &pic16, m[0].0, m[0].1), None);
+    assert_eq!(pixel(f16, &pic16, m[2].0, m[2].1), None);
+    assert_eq!(pixel(f16, &pic16, m[1].0, m[1].1), Some(idx(8, 0)));
+}
+
+/// The poison is a colour no reference holds: either half of a word
+/// rules a candidate out, the first left wins, none left is none.
+#[test]
+fn the_poison_is_in_no_reference() {
+    let c = [0xF81F, 0x801F, 0x07E1];
+    assert_eq!(absent16(&[0x1234_5678], &c), Some(0xF81F));
+    // The low half and the high half each rule one out.
+    assert_eq!(absent16(&[0x0000_F81F], &c), Some(0x801F));
+    assert_eq!(absent16(&[0xF81F_0000, 0x801F_1111], &c), Some(0x07E1));
+    assert_eq!(absent16(&[0xF81F_801F, 0x07E1_0000], &c), None);
+    assert_eq!(absent16(&[], &c), Some(0xF81F));
+    assert_eq!(absent16(&[0], &[]), None);
+    // Every GC2 colour tried is a distinct 16-bit value.
+    let mut p = POISON.to_vec();
+    p.sort_unstable();
+    p.dedup();
+    assert_eq!(p.len(), POISON.len());
+}

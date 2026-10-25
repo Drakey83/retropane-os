@@ -1566,6 +1566,84 @@ impl Tally {
     }
 }
 
+/// The 3D core's tile: 8 x 16 pixels (`rp-mbx3d`'s `TILE_W`, `TILE_H`;
+/// the image holds the two equal at build time).
+pub const TILE_W: i32 = 8;
+pub const TILE_H: i32 = 16;
+
+/// Pixel (x, y) of a 480 x 640 picture in `f` held as words (the 16-bit
+/// formats two a word, the left one in the low half); `None` off the
+/// picture or past `pic`.
+#[must_use]
+pub fn pixel(f: PixelFormat, pic: &[u32], x: i32, y: i32) -> Option<u32> {
+    if !(0..W as i32).contains(&x) || !(0..H as i32).contains(&y) {
+        return None;
+    }
+    let at = y as usize * W as usize + x as usize;
+    if f.bytes() == 4 {
+        pic.get(at).copied()
+    } else {
+        pic.get(at / 2).map(|w| w >> (16 * (at % 2)) & 0xFFFF)
+    }
+}
+
+/// The pixel sharing (x, y)'s word in a 16-bit picture (its pair), or
+/// (x, y) itself in a 32-bit one.
+#[must_use]
+pub const fn pair(f: PixelFormat, x: i32, y: i32) -> (i32, i32) {
+    if f.bytes() == 4 { (x, y) } else { (x ^ 1, y) }
+}
+
+/// (x, y)'s place in its tile: column and row, (7, 15) the pixel a tile
+/// writes out last.
+#[must_use]
+pub const fn in_tile(x: i32, y: i32) -> (i32, i32) {
+    (x.rem_euclid(TILE_W), y.rem_euclid(TILE_H))
+}
+
+/// The same place in the four tiles around (x, y)'s: left, right, above,
+/// below. A wrong pixel equal to one of these in the reference is a
+/// neighbouring tile's pixel left in the core's tile buffer (the last-pixel
+/// fault's candidate (b), 2700g.md "The last-pixel fault's candidates").
+#[must_use]
+pub const fn tile_mates(x: i32, y: i32) -> [(i32, i32); 4] {
+    [
+        (x - TILE_W, y),
+        (x + TILE_W, y),
+        (x, y - TILE_H),
+        (x, y + TILE_H),
+    ]
+}
+
+/// Colours tried as a soak's poison, the most saturated first (no GC2
+/// scene's Gouraud or texture reaches them, by design; [`absent16`]
+/// checks it on the references themselves).
+pub const POISON: [u16; 8] = [
+    0xF81F, 0x801F, 0xF810, 0x07E1, 0xF801, 0x07FF, 0x0821, 0xFFE0,
+];
+
+/// The first of `candidates` that no 16-bit pixel of `pics` (pictures as
+/// words, two pixels a word) holds, or `None` if every one appears.
+#[must_use]
+pub fn absent16(pics: &[u32], candidates: &[u16]) -> Option<u16> {
+    let mut seen = 0u32;
+    for &w in pics {
+        for half in [w & 0xFFFF, w >> 16] {
+            for (i, &c) in candidates.iter().enumerate().take(32) {
+                if half == u32::from(c) {
+                    seen |= 1 << i;
+                }
+            }
+        }
+    }
+    candidates
+        .iter()
+        .take(32)
+        .enumerate()
+        .find(|&(i, _)| seen & (1 << i) == 0)
+        .map(|(_, &c)| c)
+}
+
 #[cfg(test)]
 #[path = "gc2_tests.rs"]
 mod tests;

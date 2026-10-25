@@ -5565,6 +5565,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_gc2ad,
             &[
                 "GC2AD (R36): at 149.50 / 1, reversed, 0 min",
+                // Every render's target poisoned first (a pixel the core never
+                // writes then reads wrong); the emulator overwrites it all.
+                "GC2AD soak: each render's target filled first with 0xf81f (in no reference)",
                 "wrong renders by way [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]",
                 "GC2AD soak 149.50 / 1: controls at Windows Mobile's clock after: 14 of 14 right",
                 "RETROPANE-GPUBENCH: done",
