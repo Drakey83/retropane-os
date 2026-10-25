@@ -22,7 +22,11 @@
 //!   time shorter than Windows Mobile's (the strobe, the hold, the set-up,
 //!   the others kept), each down to the card's read limit in it, every
 //!   step timed and read back (C7's faster steps all wrote at ~240 KiB/s
-//!   against ~4,700: which field does it); the file and folder removed.
+//!   against ~4,700: which field does it); then **C10**: the same write
+//!   with each phase timed (the command, the switch to the data timing,
+//!   the card's DRQ waits, the data words, the switch back, its finish) at
+//!   Windows Mobile's data timing and at strobes 9 and 1, twice each; the
+//!   file and folder removed.
 //!   Nothing else on the card is written.
 //! - **C8, the CPLD's interrupt line** (reminder R24, reads only): the
 //!   owner pulls the CF card and puts it back while GPIO13 and CPLD `0x00`,
@@ -58,7 +62,7 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_cf::timing::{self, Timing};
-    use rp_drv_cf::{CfCard, ReadPath, SocketTiming, Tuned};
+    use rp_drv_cf::{CfCard, ReadPath, SocketTiming, Tuned, WritePhase};
     use rp_drv_cpld::{Cpld, Delay, handover};
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
@@ -624,8 +628,92 @@ mod image {
                 break;
             }
         }
+        // C10 (R28 after C9: ~234 KiB/s whenever the data timing differs
+        // from the command's, whatever it is): the same write with each
+        // phase timed, at Windows Mobile's data timing (the register still
+        // written, to its own value) and at strobes 9 and 1, twice each.
+        // Where the ~2 ms a sector goes: the switches, the card's DRQ
+        // waits, the data words, or its programming at the end.
+        if !cf.is_dead() {
+            for (label, data_t) in [
+                ("Windows Mobile's", wm_t),
+                ("strobe 9", Timing { asst: 9, ..wm_t }),
+                ("strobe 1", Timing { asst: 1, ..wm_t }),
+            ] {
+                for r in 0..2u32 {
+                    phases(cf, label, data_t, 400 + r, wm, slowest, lba, data, back);
+                }
+            }
+        }
         cf.write_data_at(set_cf_timing, wm, wm, wm);
         remove_cf_file(cf, start, work);
+    }
+
+    /// One C10 write: `data` to `lba` with the data phase at `data_t` (the
+    /// command at `wm`), each phase timed, read back at `slowest`.
+    #[allow(clippy::too_many_arguments)]
+    fn phases(
+        cf: &mut Cf,
+        label: &str,
+        data_t: Timing,
+        seed: u32,
+        wm: u32,
+        slowest: u32,
+        lba: u32,
+        data: &mut [u8],
+        back: &mut [u8],
+    ) {
+        let high = wm & !0xF_FFFF;
+        fill(data, seed, 0);
+        cf.write_data_at(set_cf_timing, wm, wm, high | data_t.mcmem());
+        // Ticks in: the command, the switch to the data timing, the DRQ
+        // waits, the data words, the switch back, the finish; the longest
+        // DRQ wait.
+        let mut sums = [0u32; 7];
+        let t0 = rt::ticks();
+        let mut last = t0;
+        let ok = cf
+            .write_blocks_marked(lba, data, &mut |p| {
+                let now = rt::ticks();
+                let d = now.wrapping_sub(last);
+                last = now;
+                let k = match p {
+                    WritePhase::Command => 0,
+                    WritePhase::DataTiming => 1,
+                    WritePhase::Drq => {
+                        sums[6] = sums[6].max(d);
+                        2
+                    }
+                    WritePhase::Data => 3,
+                    WritePhase::CommandTiming => 4,
+                    WritePhase::Done => 5,
+                };
+                sums[k] = sums[k].wrapping_add(d);
+            })
+            .is_ok();
+        let took = rt::ticks().wrapping_sub(t0);
+        set_cf_timing(slowest);
+        back.fill(0);
+        let read = cf.read_blocks(lba, back).is_ok();
+        set_cf_timing(wm);
+        rt::check_in();
+        let bad = if read {
+            differs(back, seed, 0)
+        } else {
+            CF_BLOCKS
+        };
+        let us = |t: u32| u64::from(t) * 1_000_000 / u64::from(rt::TICK_HZ);
+        log!(
+            "C10 data at {label}: {} KiB/s, ok {ok}, {bad} sectors differ; command {} us, to the data timing {} us, DRQ waits {} us (longest {}), data words {} us, back to the command timing {} us, finish {} us",
+            kib_s(data.len(), took),
+            us(sums[0]),
+            us(sums[1]),
+            us(sums[2]),
+            us(sums[6]),
+            us(sums[3]),
+            us(sums[4]),
+            us(sums[5])
+        );
     }
 
     /// C7's file and folder off the CF card, at Windows Mobile's timing.

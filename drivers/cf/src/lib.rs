@@ -254,6 +254,28 @@ pub struct CfCard<A, C, D = NoDma> {
     write_timing: Option<WriteTiming>,
 }
 
+/// The phases of a write, in order, for [`CfCard::write_blocks_marked`]
+/// (R28's C10 times each): per command, `Command` once the command and its
+/// address are in the task file, `DataTiming` once the socket is at the
+/// data timing, then per sector `Drq` (the card asked for the sector) and
+/// `Data` (its words written), then `CommandTiming` (the socket back at the
+/// command timing) and `Done` (the card finished programming).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WritePhase {
+    /// The command and its address written.
+    Command,
+    /// The socket at the data timing (at once when no write timing is set).
+    DataTiming,
+    /// The card's DRQ for the next sector.
+    Drq,
+    /// The sector's 256 data words written.
+    Data,
+    /// The socket back at the command timing.
+    CommandTiming,
+    /// The card done with the command.
+    Done,
+}
+
 /// How [`CfCard::write_at`] times writes.
 #[derive(Clone, Copy)]
 struct WriteTiming {
@@ -1010,11 +1032,25 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
     }
 
     fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+        self.write_blocks_marked(lba, buf, &mut |_| {})
+    }
+}
+
+impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDma> CfCard<A, C, D> {
+    /// [`BlockDevice::write_blocks`], calling `mark` as each phase of each
+    /// command ends ([`WritePhase`]), for a caller timing them; the same
+    /// write `write_blocks` does.
+    pub fn write_blocks_marked(
+        &mut self,
+        lba: u32,
+        buf: &[u8],
+        mark: &mut dyn FnMut(WritePhase),
+    ) -> Result<(), BlockError> {
         let Some(t) = self.write_timing else {
-            return self.write_sectors(lba, buf);
+            return self.write_sectors(lba, buf, mark);
         };
         (t.set)(t.command);
-        let done = self.write_sectors(lba, buf);
+        let done = self.write_sectors(lba, buf, mark);
         (t.set)(t.read);
         done
     }
@@ -1022,7 +1058,12 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
 
 impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDma> CfCard<A, C, D> {
     /// [`BlockDevice::write_blocks`] at whatever timing the socket has.
-    fn write_sectors(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+    fn write_sectors(
+        &mut self,
+        lba: u32,
+        buf: &[u8],
+        mark: &mut dyn FnMut(WritePhase),
+    ) -> Result<(), BlockError> {
         self.range(lba, buf.len())?;
         if self.dead {
             return Err(BlockError::Device);
@@ -1032,6 +1073,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             let count = (run.len() / SECTOR) as u8;
             self.command(CMD_WRITE_SECTORS, at, count)
                 .map_err(|e| self.failed(e))?;
+            mark(WritePhase::Command);
             // The data phase at the data timing, switched once a command:
             // `MCMEM` takes ~1 ms to change on the X51v (2026-10-24: a switch
             // around every sector cut writes from 4,637 to 240 KiB/s). The
@@ -1041,6 +1083,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             if let Some(t) = t {
                 (t.set)(t.data);
             }
+            mark(WritePhase::DataTiming);
             for sector in run.as_chunks::<SECTOR>().0 {
                 if let Err(e) = self.wait_drq() {
                     if let Some(t) = t {
@@ -1048,15 +1091,19 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
                     }
                     return Err(self.failed(e));
                 }
+                mark(WritePhase::Drq);
                 for pair in sector.as_chunks::<2>().0 {
                     self.common.write16(reg::DATA, u16::from_le_bytes(*pair));
                 }
+                mark(WritePhase::Data);
             }
             if let Some(t) = t {
                 (t.set)(t.command);
             }
+            mark(WritePhase::CommandTiming);
             // Done when the card has programmed the last sector.
             self.finish(WRITE_SPIN_LIMIT).map_err(|e| self.failed(e))?;
+            mark(WritePhase::Done);
         }
         Ok(())
     }

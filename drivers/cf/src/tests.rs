@@ -1242,3 +1242,53 @@ fn the_data_timing_covers_only_the_data_words() {
     assert_eq!(back, [0x3Cu8; SECTOR]);
     TIMED.with(|t| *t.borrow_mut() = None);
 }
+
+/// A marked write is the same write, its phases reported in order: per
+/// command, the command, the data timing, a DRQ and the data per sector, the
+/// command timing, done; the socket at the data timing exactly between
+/// `DataTiming` and `CommandTiming`.
+#[test]
+fn a_marked_write_reports_each_phase_in_order() {
+    let (c, mut cf, _, t) = tuned(20, false);
+    let Tuned::Applied { was, now, .. } = t else {
+        panic!("{t:?}");
+    };
+    TIMED.with(|t| *t.borrow_mut() = Some(c.clone()));
+    cf.write_data_at(set_mcmem, now, was, was + 1);
+    let mut seen = Vec::new();
+    let block = [0x5Au8; 3 * SECTOR];
+    cf.write_blocks_marked(20, &block, &mut |p| seen.push((p, c.borrow().mcmem)))
+        .unwrap();
+    use WritePhase::*;
+    let phases: Vec<WritePhase> = seen.iter().map(|&(p, _)| p).collect();
+    assert_eq!(
+        phases,
+        [
+            Command,
+            DataTiming,
+            Drq,
+            Data,
+            Drq,
+            Data,
+            Drq,
+            Data,
+            CommandTiming,
+            Done
+        ]
+    );
+    assert_eq!(seen[0].1, was, "the command at the command timing");
+    assert!(
+        seen[1..8].iter().all(|&(_, m)| m == was + 1),
+        "the data phase at the data timing"
+    );
+    assert_eq!(seen[8].1, was);
+    assert_eq!(
+        c.borrow().mcmem,
+        now,
+        "the read timing back after the write"
+    );
+    let mut back = vec![0u8; block.len()];
+    cf.read_blocks(20, &mut back).unwrap();
+    assert_eq!(back, block);
+    TIMED.with(|t| *t.borrow_mut() = None);
+}
