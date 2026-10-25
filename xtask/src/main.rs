@@ -676,6 +676,14 @@ fn ci_stamp(root: &std::path::Path) -> Result {
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     };
+    // The owner's hard rules hold only with git's hooks on: a checkout
+    // without them can't pass CI, so it can't push.
+    let hooks = git(&["config", "--get", "core.hooksPath"]).unwrap_or_default();
+    if hooks != "tools/githooks" {
+        return Err(format!(
+            "git's hooks are off here (core.hooksPath {hooks:?}): run `git config core.hooksPath tools/githooks` (CLAUDE.md rule 0)"
+        ));
+    }
     let head = git(&["rev-parse", "HEAD"])?;
     let dirty = !git(&["status", "--porcelain", "--untracked-files=no"])?.is_empty();
     let state = if dirty { "dirty" } else { "clean" };
