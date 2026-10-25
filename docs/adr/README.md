@@ -40,5 +40,6 @@ Every decision record, generated from the records themselves by `cargo xtask adr
 | [0034](0034-compositor.md) | The compositor: layers, frame modes and the frame budget | Accepted | 2026-10-19 | 1 |
 | [0035](0035-2700g-clocks.md) | The 2700G's clocks: past Dell's, through a self-test on every device | Accepted | 2026-10-22 |  |
 | [0036](0036-card-file-systems-and-formatting.md) | Card file systems (exFAT, FAT32, FAT16, FAT12) and formatting on the device | Proposed | 2026-10-25 |  |
+| [0037](0037-pc-file-access-mtp-and-drives.md) | Files to the PC in the OS proper: MTP for Windows, drives kept for every other computer | Proposed | 2026-10-25 |  |
 
-36 records: 33 accepted, 3 proposed, 0 superseded, 0 rejected.
+37 records: 33 accepted, 4 proposed, 0 superseded, 0 rejected.

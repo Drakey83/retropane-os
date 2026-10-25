@@ -114,6 +114,13 @@ pub trait Storage: BlockDevice {
         let _ = wait;
         self.read_blocks(lba, buf)
     }
+    /// Changes blocks read from `lba` into what the host is shown, before
+    /// they are sent or kept read ahead (the loader shows boot files as
+    /// hidden + system + read-only: `rp_fat::Guard::view`). Nothing by
+    /// default.
+    fn view(&self, lba: u32, buf: &mut [u8]) {
+        let _ = (lba, buf);
+    }
 }
 
 /// Most logical units supported.
@@ -850,9 +857,26 @@ impl<'b> Msc<'b> {
         pipe: &mut dyn BulkPipe,
         lun: &mut dyn Storage,
     ) -> Result<(), BlockError> {
+        // Every block the host gets passes through the unit's view, read
+        // ahead or not, by DMA or not.
+        let at = self.read_raw(back, lba, n, pump, pipe, lun)?;
+        lun.view(lba, &mut self.buf[at..at + n * BLOCK]);
+        Ok(())
+    }
+
+    /// [`Self::read_into`]'s read: where in the buffer the blocks went.
+    fn read_raw(
+        &mut self,
+        back: usize,
+        lba: u32,
+        n: usize,
+        pump: bool,
+        pipe: &mut dyn BulkPipe,
+        lun: &mut dyn Storage,
+    ) -> Result<usize, BlockError> {
         if !pump && back == self.front && self.buf.len() / 2 < n * BLOCK {
             // No overlap: the whole buffer is one chunk, as before.
-            return lun.read_blocks(lba, &mut self.buf[..n * BLOCK]);
+            return lun.read_blocks(lba, &mut self.buf[..n * BLOCK]).map(|()| 0);
         }
         let half = self.half();
         let Msc {
@@ -867,8 +891,9 @@ impl<'b> Msc<'b> {
         let (into, from): (&mut [u8], &[u8]) = if back == 0 { (lo, hi) } else { (hi, lo) };
         let from = &from[..(*buf_len).min(from.len())];
         let into = &mut into[..n * BLOCK];
+        let at = back * half;
         if !pump || back == *front {
-            return lun.read_blocks(lba, into);
+            return lun.read_blocks(lba, into).map(|()| at);
         }
         lun.read_blocks_while(lba, into, &mut || {
             while *buf_pos < from.len() && pipe.can_write() {
@@ -878,6 +903,7 @@ impl<'b> Msc<'b> {
             }
             pipe.service();
         })
+        .map(|()| at)
     }
 
     /// Reads the command's next chunk (at most `max` bytes) into half

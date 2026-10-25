@@ -117,6 +117,18 @@ model with a built-in host that enumerates like Windows.
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.
+   - **amended 2026-10-25 (the owner: "do your proposed fix", R41,
+     ADR-0037):** the PC is shown the boot files as hidden + system +
+     read-only (a boot folder hidden + system): the loader changes those
+     attribute bytes in the directory sectors the drive serves
+     (`Guard::view`, through `Storage::view` in `rp-usb-msc`, so every
+     block sent, read ahead or by DMA, is shown that way) and puts the real
+     ones back on what the PC writes (`Guard::unview`); exFAT's set checksum
+     is recomputed both ways. The card is never changed, so Windows Mobile
+     and HaRET see ordinary files. Explorer hides them by default, as it
+     hides Windows' own system files, and warns before touching one; the
+     guard still refuses any change. A refused write leaves the drive as it
+     is (no blink).
    - **amended 2026-10-25, then withdrawn the same day by the owner** ("i
      dont want the blink, i dont want it to look broken, bad user
      experience": on the X51v, Explorer force-closed with the drive and

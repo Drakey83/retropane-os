@@ -139,6 +139,8 @@ struct Disk {
     waits: usize,
     /// Reads of any range that reaches this block fail.
     fail_from: Option<u32>,
+    /// A block shown to the host with its first byte 0xEE (`view`).
+    viewed: Option<u32>,
 }
 
 impl Disk {
@@ -158,6 +160,7 @@ impl Disk {
             overlap: false,
             waits: 0,
             fail_from: None,
+            viewed: None,
         }
     }
 }
@@ -207,6 +210,14 @@ impl Storage for Disk {
     }
     fn overlaps(&self) -> bool {
         self.overlap
+    }
+    fn view(&self, lba: u32, buf: &mut [u8]) {
+        if let Some(v) = self.viewed
+            && let Some(k) = v.checked_sub(lba)
+            && let Some(b) = buf.get_mut(k as usize * BLOCK)
+        {
+            *b = 0xEE;
+        }
     }
     fn read_blocks_while(
         &mut self,
@@ -1297,4 +1308,61 @@ fn a_medium_change_mid_transfer_waits_for_the_command_to_end() {
     msc.poll(&mut pipe, &mut [&mut disk], 1000);
     assert!(msc.away(0));
     assert_eq!(tur_at(&mut msc, &mut disk, 1000), (1, (0x02, 0x3A, 0x00)));
+}
+
+#[test]
+fn every_block_served_passes_through_the_units_view() {
+    // The loader shows boot files hidden to the host by changing the
+    // directory sectors it serves (rp_fat::Guard::view): read whole, read
+    // with DMA overlap, and read ahead, the host must get the view.
+    for overlap in [false, true] {
+        let mut buf = vec![0u8; 64 * BLOCK];
+        let mut msc = Msc::new(&mut buf, SERIAL, 1);
+        let mut disk = Disk::new(256);
+        disk.overlap = overlap;
+        disk.viewed = Some(37);
+        mount(&mut msc, &mut disk);
+        let mut pipe = if overlap {
+            Pipe::with_dma(2)
+        } else {
+            Pipe::default()
+        };
+        let (d, csw) = run_with(
+            &mut pipe,
+            &mut msc,
+            &mut disk,
+            1000,
+            0,
+            64 * BLOCK as u32,
+            true,
+            &read10(0, 64),
+            &[],
+        );
+        assert_eq!(csw.status, 0);
+        assert_eq!(d[37 * BLOCK], 0xEE, "overlap {overlap}: block 37 shown");
+        assert_eq!(d[36 * BLOCK], disk.data[36 * BLOCK], "others as they are");
+        // The next blocks, read ahead while the last chunk went out (with
+        // overlap): the view was applied as they were read.
+        disk.viewed = Some(70);
+        let before = disk.reads;
+        let (d, _) = run_with(
+            &mut pipe,
+            &mut msc,
+            &mut disk,
+            1000,
+            0,
+            32 * BLOCK as u32,
+            true,
+            &read10(64, 32),
+            &[],
+        );
+        if overlap {
+            assert_eq!(disk.reads, before + 1, "served from what was read ahead");
+            // Read ahead before the view moved: the old view (block 37's
+            // byte) doesn't reach here; block 70 wasn't marked yet.
+            assert_eq!(d[6 * BLOCK], disk.data[70 * BLOCK]);
+        } else {
+            assert_eq!(d[6 * BLOCK], 0xEE, "block 70 shown");
+        }
+    }
 }

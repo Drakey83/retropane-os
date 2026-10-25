@@ -26,6 +26,16 @@
 //!   the other boot sectors by a 64-bit hash, since only sector 0 sets the
 //!   layout), main and backup.
 //!
+//! **What the PC is shown (ADR-0014 rule 3, the owner's choice of
+//! 2026-10-25):** the protected files read as hidden + system + read-only
+//! (a protected folder hidden + system) in the directory sectors the drive
+//! serves ([`Guard::view`]), so Explorer doesn't show them by default, as
+//! Windows hides its own system files, and warns before touching one; the
+//! card keeps their real attributes ([`Guard::unview`] puts them back on
+//! what the PC writes), so Windows Mobile and HaRET see them unchanged.
+//! exFAT's entry set checksum is recomputed both ways. The guard stays the
+//! lock: a file the PC is talked past still can't be changed.
+//!
 //! Security (docs/security.md): the guard is built from the card (hostile
 //! until checked: the chains are walked with the volume's bounds checks and
 //! a step limit), and judged per sector, so a write split across commands
@@ -48,6 +58,20 @@ const GEOMETRY32: core::ops::Range<usize> = 11..52;
 const GEOMETRY16: core::ops::Range<usize> = 11..36;
 /// The MBR's partition table and signature.
 const PARTITIONS: core::ops::Range<usize> = 446..512;
+
+/// The attribute bits the PC is shown on a protected file (read-only,
+/// hidden, system), and on a protected folder (hidden, system); the same
+/// bits on FAT and exFAT.
+const SHOWN_FILE: u8 = 0x07;
+const SHOWN_FOLDER: u8 = 0x06;
+
+fn shown(attr: u8) -> u8 {
+    attr | if attr & 0x10 != 0 {
+        SHOWN_FOLDER
+    } else {
+        SHOWN_FILE
+    }
+}
 
 /// What the PC may not change on a volume: see the module documentation.
 #[derive(Clone)]
@@ -283,13 +307,38 @@ impl FatGuard {
                 return false;
             }
         }
-        // A directory sector: the protected entries' identity must stay.
+        // A directory sector: the protected entries' identity must stay
+        // (the attributes as the card has them, or as the PC was shown them).
         files.iter().filter(|f| f.entry_lba == lba).all(|f| {
             let e = &s[f.entry_offset..f.entry_offset + 32];
-            e[..12] == f.name_attr
+            let real = f.name_attr[11];
+            e[..11] == f.name_attr[..11]
+                && (e[11] == real || e[11] == shown(real))
                 && entry_first(e, self.fat) == f.first_cluster
                 && le32(e, 28) == f.size
         })
+    }
+
+    fn view_sector(&self, lba: u32, s: &mut [u8]) {
+        for f in self.files[..self.count]
+            .iter()
+            .filter(|f| f.entry_lba == lba)
+        {
+            s[f.entry_offset + 11] = shown(f.name_attr[11]);
+        }
+    }
+
+    fn unview_sector(&self, lba: u32, s: &mut [u8]) {
+        for f in self.files[..self.count]
+            .iter()
+            .filter(|f| f.entry_lba == lba)
+        {
+            s[f.entry_offset + 11] = f.name_attr[11];
+        }
+    }
+
+    fn touches(&self, lba: u32) -> bool {
+        self.files[..self.count].iter().any(|f| f.entry_lba == lba)
     }
 
     /// Whether `cluster`'s entry, as far as sector `s` (FAT bytes from `lo`)
@@ -354,14 +403,43 @@ impl ExProtected {
     fn entry_ok(&self, k: usize, e: &[u8]) -> bool {
         let was = &self.set[k];
         match k {
-            // The file entry: type (in use), secondary count, attributes.
-            0 => e[0] == was[0] && e[1] == was[1] && e[4..6] == was[4..6],
+            // The file entry: type (in use), secondary count, attributes
+            // (as the card has them, or as the PC was shown them).
+            0 => {
+                let real = u16::from_le_bytes([was[4], was[5]]);
+                let now = u16::from_le_bytes([e[4], e[5]]);
+                e[0] == was[0] && e[1] == was[1] && (now == real || now == ex_shown(real))
+            }
             // A folder's stream: its name's length and hash, its first
             // cluster (it may grow, or be chained once it does).
             1 if self.folder => e[0] == was[0] && e[3..6] == was[3..6] && e[20..24] == was[20..24],
             // A file's stream, the name: whole.
             _ => e[..32] == was[..],
         }
+    }
+}
+
+/// An exFAT file entry's attributes as the PC is shown them.
+fn ex_shown(attrs: u16) -> u16 {
+    attrs | u16::from(shown(attrs as u8) & 0x07)
+}
+
+impl ExProtected {
+    /// Sets the file entry `e` (in a sector the drive is about to serve or
+    /// write) to `attrs` and its set checksum to match: the other entries
+    /// of the set can't change while it is protected, so they are the ones
+    /// recorded.
+    fn set_attrs(&self, e: &mut [u8], attrs: u16) {
+        let mut set = self.set;
+        set[0].copy_from_slice(&e[..32]);
+        set[0][4..6].copy_from_slice(&attrs.to_le_bytes());
+        let sum = crate::exfat::set_checksum(&set[..self.entries]);
+        e[4..6].copy_from_slice(&attrs.to_le_bytes());
+        e[2..4].copy_from_slice(&sum.to_le_bytes());
+    }
+
+    fn real_attrs(&self) -> u16 {
+        u16::from_le_bytes([self.set[0][4], self.set[0][5]])
     }
 }
 
@@ -409,6 +487,30 @@ impl Guard {
 }
 
 impl ExGuard {
+    /// The file entries of protected sets in sector `lba`: (set, offset).
+    fn entries_in(&self, lba: u32) -> impl Iterator<Item = (&ExProtected, usize)> + '_ {
+        self.files[..self.count]
+            .iter()
+            .filter(move |f| f.entries > 0 && f.at[0].0 == lba)
+            .map(|f| (f, usize::from(f.at[0].1)))
+    }
+
+    fn view_sector(&self, lba: u32, s: &mut [u8]) {
+        for (f, o) in self.entries_in(lba) {
+            f.set_attrs(&mut s[o..o + 32], ex_shown(f.real_attrs()));
+        }
+    }
+
+    fn unview_sector(&self, lba: u32, s: &mut [u8]) {
+        for (f, o) in self.entries_in(lba) {
+            f.set_attrs(&mut s[o..o + 32], f.real_attrs());
+        }
+    }
+
+    fn touches(&self, lba: u32) -> bool {
+        self.entries_in(lba).next().is_some()
+    }
+
     fn allows_sector(&self, base: u32, lba: u32, s: &[u8]) -> bool {
         // The boot region, main and backup.
         if (base..base + 24).contains(&lba) {
@@ -464,6 +566,44 @@ impl ExGuard {
 }
 
 impl Guard {
+    /// Shows the PC the protected entries in `data` (whole sectors from
+    /// `lba`, as the drive is about to serve them) as hidden + system +
+    /// read-only: see the module documentation.
+    pub fn view(&self, lba: u32, data: &mut [u8]) {
+        for (s, i) in data.chunks_exact_mut(SECTOR).zip(0u32..) {
+            let Some(at) = lba.checked_add(i) else { return };
+            match &self.kind {
+                Kind::Fat(g) => g.view_sector(at, s),
+                Kind::Ex(g) => g.view_sector(at, s),
+            }
+        }
+    }
+
+    /// Puts back the real attributes of the protected entries in `data`
+    /// (sectors from `lba` the PC writes, already [allowed](Self::allows)),
+    /// before they reach the card.
+    pub fn unview(&self, lba: u32, data: &mut [u8]) {
+        for (s, i) in data.chunks_exact_mut(SECTOR).zip(0u32..) {
+            let Some(at) = lba.checked_add(i) else { return };
+            match &self.kind {
+                Kind::Fat(g) => g.unview_sector(at, s),
+                Kind::Ex(g) => g.unview_sector(at, s),
+            }
+        }
+    }
+
+    /// Whether any of the `count` sectors from `lba` holds a protected
+    /// entry (a write there goes through [`Self::unview`]).
+    #[must_use]
+    pub fn touches(&self, lba: u32, count: u32) -> bool {
+        (0..count).any(|i| {
+            lba.checked_add(i).is_some_and(|at| match &self.kind {
+                Kind::Fat(g) => g.touches(at),
+                Kind::Ex(g) => g.touches(at),
+            })
+        })
+    }
+
     /// Files and folders protected.
     #[must_use]
     pub fn files(&self) -> usize {

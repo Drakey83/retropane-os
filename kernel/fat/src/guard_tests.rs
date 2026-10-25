@@ -842,3 +842,203 @@ fn every_fat_width_keeps_a_boot_files_chain() {
         );
     }
 }
+
+/// The drive as the loader serves it (ADR-0014 rule 3): reads shown through
+/// the guard's view, writes judged by the guard and put back to the card's
+/// real attributes.
+struct Viewed<'a>(&'a mut Guarded);
+
+impl BlockDevice for Viewed<'_> {
+    fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+        self.0.read_blocks(lba, buf)?;
+        if let Some(g) = &self.0.guard {
+            g.view(lba, buf);
+        }
+        Ok(())
+    }
+    fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+        let Some(g) = self.0.guard.clone() else {
+            return self.0.write_blocks(lba, buf);
+        };
+        if !g.allows(lba, buf) {
+            self.0.refused += 1;
+            return Err(BlockError::ReadOnly);
+        }
+        let mut real = buf.to_vec();
+        g.unview(lba, &mut real);
+        let o = lba as usize * SECTOR;
+        self.0.data[o..o + real.len()].copy_from_slice(&real);
+        Ok(())
+    }
+}
+
+/// The attributes the protected `name`'s entry holds in `data` (FAT: the
+/// short entry's byte 11; exFAT: the file entry's bytes 4-5), and, for
+/// exFAT, whether its set checksum holds.
+fn attrs_of(data: &[u8], base: u32, name: &str, fs: Fs) -> (u16, bool) {
+    let mut dev = Guarded {
+        data: data.to_vec(),
+        guard: None,
+        refused: 0,
+    };
+    match fs {
+        Fs::ExFat => {
+            let mut v = crate::exfat::ExVolume::mount(&mut dev, base).unwrap();
+            let g = v.guard(&[name]).unwrap();
+            let Kind::Ex(ex) = g.kind else { unreachable!() };
+            let p = ex.files[0];
+            let (lba, o) = (p.at[0].0 as usize, usize::from(p.at[0].1));
+            let e: [u8; 32] = data[lba * SECTOR + o..][..32].try_into().unwrap();
+            let mut set = p.set;
+            set[0] = e;
+            let sum = crate::exfat::set_checksum(&set[..p.entries]);
+            (
+                u16::from_le_bytes([e[4], e[5]]),
+                sum == u16::from_le_bytes([e[2], e[3]]),
+            )
+        }
+        _ => {
+            let mut v = Volume::mount(&mut dev, base).unwrap();
+            let f = v.find_file_or_folder(name).unwrap();
+            let at = f.entry_lba as usize * SECTOR + usize::from(f.entry_index) * 32;
+            (u16::from(data[at + 11]), true)
+        }
+    }
+}
+
+#[test]
+fn the_pc_sees_boot_files_hidden_and_the_card_keeps_them_as_they_are() {
+    for (fs, total, cluster) in FORMATS {
+        let (mut dev, base, loader) = formatted(fs, total, cluster, false);
+        let (real, ok) = attrs_of(&dev.data, base, "haret.exe", fs);
+        assert!(ok);
+        assert_eq!(real & 0x07, 0, "{fs:?}: an ordinary file on the card");
+        let mut scratch = vec![0u8; 8192];
+        {
+            let mut pc = Viewed(&mut dev);
+            // What the PC reads: hidden + system + read-only, a valid set.
+            let mut seen = Vec::new();
+            {
+                let mut v = AnyVolume::mount(&mut pc, base).unwrap();
+                v.read_back("haret.exe", &mut scratch, &mut |c| {
+                    seen.extend_from_slice(c)
+                })
+                .unwrap();
+                assert_eq!(
+                    seen,
+                    pattern(3000, 3),
+                    "{fs:?}: found and read through the view"
+                );
+                // A busy session: new files beside the boot entries (their
+                // directory sectors written back as the PC sees them), a
+                // delete, a replacement.
+                for i in 0..30 {
+                    v.put(
+                        &format!("photo {i}.jpg"),
+                        &pattern(700, i as u8),
+                        &mut scratch,
+                    )
+                    .unwrap();
+                }
+                v.remove("README.txt").unwrap();
+                v.put("photo 3.jpg", b"replaced", &mut scratch).unwrap();
+            }
+            assert_eq!(pc.0.refused, 0, "{fs:?}: nothing refused");
+        }
+        // The PC's view of the directory, read raw through the drive.
+        let mut shown_data = dev.data.clone();
+        let mut view_dev = Guarded {
+            data: dev.data.clone(),
+            guard: dev.guard.clone(),
+            refused: 0,
+        };
+        let n = (shown_data.len() / SECTOR) as u32;
+        for lba in 0..n {
+            let o = lba as usize * SECTOR;
+            let mut s = [0u8; SECTOR];
+            view_dev.read_blocks(lba, &mut s).unwrap();
+            dev.guard.as_ref().unwrap().view(lba, &mut s);
+            shown_data[o..o + SECTOR].copy_from_slice(&s);
+        }
+        let (shown, ok) = attrs_of(&shown_data, base, "haret.exe", fs);
+        assert!(ok, "{fs:?}: the set checksum holds in the PC's view");
+        assert_eq!(
+            shown & 0x07,
+            0x07,
+            "{fs:?}: hidden, system, read-only to the PC"
+        );
+        // The card: the real attributes, a clean volume, the files whole.
+        let (after, ok) = attrs_of(&dev.data, base, "haret.exe", fs);
+        assert!(ok, "{fs:?}: the card's set checksum");
+        assert_eq!(after, real, "{fs:?}: the card's attributes as they were");
+        assert_eq!(read_any(&mut dev, base, "retropane.bin"), loader);
+        assert_eq!(read_any(&mut dev, base, "photo 3.jpg"), b"replaced");
+        let mut v = AnyVolume::mount(&mut dev, base).unwrap();
+        let h = v.check(&mut vec![0u8; 1 << 16], &mut scratch).unwrap();
+        assert!(h.clean(), "{fs:?}: {h:?}");
+    }
+}
+
+#[test]
+fn only_the_shown_attributes_are_taken_back_from_the_pc() {
+    for (fs, total, cluster) in [FORMATS[1], FORMATS[3]] {
+        let (mut dev, base, _) = formatted(fs, total, cluster, false);
+        let g = dev.guard.clone().unwrap();
+        // The haret.exe entry's sector and where its attributes are.
+        let (lba, at) = match &g.kind {
+            Kind::Ex(ex) => {
+                let p = ex
+                    .files
+                    .iter()
+                    .take(ex.count)
+                    .find(|p| p.set[2][2] == b'h')
+                    .unwrap();
+                (p.at[0].0, usize::from(p.at[0].1) + 4)
+            }
+            Kind::Fat(_) => {
+                let mut v = Volume::mount(&mut dev, base).unwrap();
+                let f = v.find("haret.exe").unwrap();
+                (f.entry_lba, usize::from(f.entry_index) * 32 + 11)
+            }
+        };
+        let mut s = dev.data[lba as usize * SECTOR..][..SECTOR].to_vec();
+        let real = s[at];
+        g.view(lba, &mut s);
+        assert_eq!(s[at], real | 0x07);
+        // As shown, or as the card has it: both taken (written back real).
+        assert!(g.allows(lba, &s));
+        let mut w = s.clone();
+        g.unview(lba, &mut w);
+        assert_eq!(w[at], real);
+        assert_eq!(
+            &w,
+            &dev.data[lba as usize * SECTOR..][..SECTOR],
+            "unview gives the card's bytes"
+        );
+        // Anything else: refused (read-only cleared, the archive bit flipped,
+        // only read-only set).
+        for other in [real | 0x06, (real ^ 0x20) | 0x07, real | 0x01] {
+            let mut x = s.clone();
+            x[at] = other;
+            if fs == Fs::ExFat {
+                // The checksum made to match, as a PC would.
+                let Kind::Ex(ex) = &g.kind else {
+                    unreachable!()
+                };
+                let p = ex
+                    .files
+                    .iter()
+                    .take(ex.count)
+                    .find(|p| p.set[2][2] == b'h')
+                    .unwrap();
+                let o = usize::from(p.at[0].1);
+                let mut set = p.set;
+                set[0].copy_from_slice(&x[o..o + 32]);
+                let sum = crate::exfat::set_checksum(&set[..p.entries]);
+                x[o + 2..o + 4].copy_from_slice(&sum.to_le_bytes());
+            }
+            assert!(!g.allows(lba, &x), "{fs:?}: attributes {other:#x} refused");
+        }
+        assert!(g.touches(lba, 1) && !g.touches(lba + 1000, 1));
+    }
+}

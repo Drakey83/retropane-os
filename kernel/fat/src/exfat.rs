@@ -159,7 +159,7 @@ fn sum_entry(mut sum: u16, e: &[u8; ENTRY], first: bool) -> u16 {
 }
 
 /// The entry set checksum.
-fn set_checksum(set: &[[u8; ENTRY]]) -> u16 {
+pub(crate) fn set_checksum(set: &[[u8; ENTRY]]) -> u16 {
     set.iter()
         .enumerate()
         .fold(0, |sum, (k, e)| sum_entry(sum, e, k == 0))

@@ -2132,7 +2132,7 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "fat guard: a boot file renamed (its directory entry's name not compared)",
         file: "kernel/fat/src/guard.rs",
-        from: "e[..12] == f.name_attr",
+        from: "e[..11] == f.name_attr[..11]",
         to: "true",
         check: Check::Host(&[
             "-p",
@@ -2322,6 +2322,50 @@ pub const MUTANTS: &[Mutant] = &[
             "-p",
             "rp-usb-msc",
             "a_medium_change_mid_transfer_waits_for_the_command_to_end",
+        ]),
+    },
+    Mutant {
+        name: "msc: blocks served without the unit's view",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "lun.view(lba, &mut self.buf[at..at + n * BLOCK]);",
+        to: "let _ = at;",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "every_block_served_passes_through_the_units_view",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: the PC not shown the boot files hidden",
+        file: "kernel/fat/src/guard.rs",
+        from: "s[f.entry_offset + 11] = shown(f.name_attr[11]);",
+        to: "let _ = f;",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_pc_sees_boot_files_hidden_and_the_card_keeps_them_as_they_are",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: the PC's shown attributes written to the card",
+        file: "kernel/fat/src/guard.rs",
+        from: "s[f.entry_offset + 11] = f.name_attr[11];",
+        to: "let _ = f;",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_pc_sees_boot_files_hidden_and_the_card_keeps_them_as_they_are",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: the PC's shown attributes written to the card",
+        file: "kernel/fat/src/guard.rs",
+        from: "f.set_attrs(&mut s[o..o + 32], f.real_attrs());",
+        to: "let _ = (f, o);",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_pc_sees_boot_files_hidden_and_the_card_keeps_them_as_they_are",
         ]),
     },
     Mutant {

@@ -9186,6 +9186,21 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
         }
         let haret_at = pc_view(&mut bot, 0, "format sd fat16", "FAT16", "haret.exe")?
             .ok_or("haret.exe wasn't kept")?;
+        // The PC is shown the boot file hidden + system + read-only (the
+        // owner's choice, 2026-10-25); the card keeps it as it was (checked
+        // on the image afterwards).
+        let mut mbr = [0u8; 512];
+        rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut mbr)
+            .map_err(|_| "the MBR doesn't read")?;
+        let fat16_start = u32::from_le_bytes([mbr[454], mbr[455], mbr[456], mbr[457]]);
+        match fixed_root_attr(&mut bot, fat16_start, b"HARET   EXE") {
+            Some(a) if a & 0x07 == 0x07 => {}
+            other => {
+                return Err(format!(
+                    "haret.exe as the PC sees it: attributes {other:x?}"
+                ));
+            }
+        }
         let r = bot.command(&rw10(0x2A, haret_at, 1), 512, false, &[0; 512])?;
         if r.status == 0 {
             return Err("the PC overwrote haret.exe on the new FAT16 card: no guard".into());
@@ -11880,6 +11895,29 @@ fn expect_away_then_back(bot: &mut Bot, after: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The attribute byte of the short entry `name` (11 bytes, 8.3 padded) in
+/// the FAT12/16 volume at `start`'s fixed root directory, read raw through
+/// `dev` (the PC's view when `dev` is the drive).
+fn fixed_root_attr(
+    dev: &mut dyn rp_hal_api::BlockDevice,
+    start: u32,
+    name: &[u8; 11],
+) -> Option<u8> {
+    let mut b = [0u8; 512];
+    dev.read_blocks(start, &mut b).ok()?;
+    let le16 = |o: usize| u32::from(u16::from_le_bytes([b[o], b[o + 1]]));
+    let root = start + le16(14) + u32::from(b[16]) * le16(22);
+    let sectors = (le16(17) * 32).div_ceil(512);
+    let mut s = [0u8; 512];
+    for k in 0..sectors {
+        dev.read_blocks(root + k, &mut s).ok()?;
+        if let Some(e) = s.chunks(32).find(|e| &e[..11] == name) {
+            return Some(e[11]);
+        }
+    }
+    None
 }
 
 /// After a write the guard refused, the drive stays as it was: ready, no

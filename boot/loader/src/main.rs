@@ -299,17 +299,37 @@ mod image {
                 .read_blocks(lba, buf)
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-            if !self.writable
-                || self.locked
-                || !self.guard.as_ref().is_some_and(|g| g.allows(lba, buf))
-            {
-                return Err(BlockError::ReadOnly);
-            }
-            self.card
-                .as_mut()
-                .ok_or(BlockError::Device)?
-                .write_blocks(lba, buf)
+            let guard = match &self.guard {
+                Some(g) if self.writable && !self.locked && g.allows(lba, buf) => g,
+                _ => return Err(BlockError::ReadOnly),
+            };
+            let card = self.card.as_mut().ok_or(BlockError::Device)?;
+            write_unviewed(guard, lba, buf, &mut |at, b| card.write_blocks(at, b))
         }
+    }
+
+    /// Writes what the PC sent, with the real attributes of the boot files'
+    /// entries put back where it wrote them as it was shown them (hidden +
+    /// system + read-only: `Guard::view`, ADR-0014 rule 3): sector by sector
+    /// when a protected entry is among them (a directory sector, rarely),
+    /// else as sent.
+    fn write_unviewed(
+        guard: &Guard,
+        lba: u32,
+        buf: &[u8],
+        write: &mut dyn FnMut(u32, &[u8]) -> Result<(), BlockError>,
+    ) -> Result<(), BlockError> {
+        let n = (buf.len() / rp_drv_sdcard::BLOCK) as u32;
+        if !guard.touches(lba, n) {
+            return write(lba, buf);
+        }
+        for (s, i) in buf.chunks_exact(rp_drv_sdcard::BLOCK).zip(0u32..) {
+            let mut sector = [0u8; rp_drv_sdcard::BLOCK];
+            sector.copy_from_slice(s);
+            guard.unview(lba + i, &mut sector);
+            write(lba + i, &sector)?;
+        }
+        Ok(())
     }
 
     impl Storage for Lun {
@@ -324,6 +344,11 @@ mod image {
         }
         fn product(&self) -> &[u8; 16] {
             b"SD card         "
+        }
+        fn view(&self, lba: u32, buf: &mut [u8]) {
+            if let Some(g) = &self.guard {
+                g.view(lba, buf);
+            }
         }
         // Item 58: with DMA reads on, the card's waits send the previous
         // chunk to the PC, so the drive overlaps and reads ahead.
@@ -1843,11 +1868,14 @@ mod image {
             }
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-            if !self.writable || !self.guard.as_ref().is_some_and(|g| g.allows(lba, buf)) {
-                return Err(BlockError::ReadOnly);
-            }
+            let guard = match &self.guard {
+                Some(g) if self.writable && g.allows(lba, buf) => g,
+                _ => return Err(BlockError::ReadOnly),
+            };
             match &mut self.slot {
-                CfSlot::Card(c) if self.inserted => c.write_blocks(lba, buf),
+                CfSlot::Card(c) if self.inserted => {
+                    write_unviewed(guard, lba, buf, &mut |at, b| c.write_blocks(at, b))
+                }
                 _ => Err(BlockError::Device),
             }
         }
@@ -1865,6 +1893,11 @@ mod image {
         }
         fn read_only(&self) -> bool {
             !self.writable || self.guard.is_none()
+        }
+        fn view(&self, lba: u32, buf: &mut [u8]) {
+            if let Some(g) = &self.guard {
+                g.view(lba, buf);
+            }
         }
         fn product(&self) -> &[u8; 16] {
             b"CF card         "
