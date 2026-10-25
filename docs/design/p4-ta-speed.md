@@ -221,6 +221,38 @@ Mobile's, 99.67 / 2, as decided for P4's first run).
    list is what makes DMA possible.
 5. **Emulator check and mutants**, then the owner's go (attended for its
    first minutes: a TA hang may need a reset).
+   **Done 2026-10-25:** `emu-tabench` passes; mutants on the feed and the
+   streams (one survived, its guard test added).
+
+## Run 1 on the X51v (2026-10-25) and run 2
+
+Run 1's numbers and reading are in `docs/hw/2700g.md` "P4". In short: the
+TA's speed is measured (5,000 small quads: 52 ms Dell's way, 37.6 ms with
+state once, 30.7 ms as one list by DMA with 26 ms of the CPU free; large
+quads ~51-55 ms every way), our binner 42.7 / 93 ms for a new scene and
+**0 for an unchanged one**; **but the TA's scenes drew wrong and hung the
+3D stage about one render in four** (audit C79). P4 isn't ticked until
+the TA path draws right.
+
+**Run 2 (proposed): why the TA's scenes draw wrong.** One scene, 100
+quads of 16 x 16 (run 1's clearest symptom: its render took the clear's
+time alone), five frames a way, the first listed tile's list and object
+words and ten pixel samples logged (as `rp-glesfeat`'s `through_ta`):
+
+1. **The control, `rp-glesfeat`'s conditions:** a 32-bit target, its TA
+   layout (tail `0xA00000`, regions `0xA20000`), the memory manager set
+   up once, the 8 x 8 texture: expected right (G, M drew so);
+2. then **one change at a time** toward run 1: the 16-bit target; the
+   parameter memory at `0x300000`; the memory manager set up before every
+   frame; the 64 x 64 texture; no wait between the TA's done and the
+   render against a 1 ms wait;
+3. the first change that breaks it is the cause; its fix goes into
+   `rp-mbx3d` (the class: a host test that the feed refuses the bad
+   layout or waits), then run 1 again for P4's numbers with right
+   pictures.
+
+A few minutes on the device, the owner watching (a hang may need a
+reset).
 
 ## The choices for the owner
 

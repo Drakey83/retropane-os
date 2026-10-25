@@ -166,6 +166,14 @@ watching.
 - **2D commands by DMA** (`rp-gpubench` run FD, X51v, 2026-10-22): DMA
   into the command window (`0x0FFF5000`) works; 352 words cost the CPU 2
   us to arm against 43-60 us to write; batches must fit the FIFO's room.
+- **The TA's window shares the 2D FIFO's level** (`rp-tabench` run 1,
+  X51v, 2026-10-25; ADR-0026 T8): with the 2D engine idle, TA words fill
+  `0x12c`'s FIFO level to 510 (full) while the TA bins; the CPU then
+  writes at the TA's pace. DMA into the TA window works (pieces of whole
+  32-byte lines within the reported room): 5,000 quads' list in 30.7 ms
+  against 53.9 ms by CPU stores. TA-built scenes of 100-5,000 textured
+  quads into a 16-bit target rendered wrong and hung the 3D stage about
+  one render in four (open: audit C79).
 - **The 2D engine's clock off** (`rp-gpubench` run FS, X51v, 2026-10-22,
   `local/cardlog/gpubench-0044.txt`): `MBXCLK` enable 0 (divider kept)
   with 20 fills and a fence queued pauses the work; the clock back on, it
