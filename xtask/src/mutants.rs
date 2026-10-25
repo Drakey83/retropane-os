@@ -894,6 +894,28 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "ADR-0037: Microsoft's descriptors in the drive layout (a revision Windows recorded without them)",
+        file: "drivers/pxa-udc/src/usb.rs",
+        from: "                (3, 0xEE) if mtp => {",
+        to: "                (3, 0xEE) => {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "the_drive_layout_offers_none_of_microsofts_descriptors",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: the compatible ID on the serial port's interface (Windows binds MTP to the wrong one)",
+        file: "drivers/pxa-udc/src/usb.rs",
+        from: "    MTP_INTERFACE as u8, // first interface",
+        to: "    0, // first interface",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "microsofts_descriptors_are_well_formed",
+        ]),
+    },
+    Mutant {
         name: "ADR-0037: a boot file announced writable over MTP (Windows tries, then fails)",
         file: "drivers/usb-mtp/src/lib.rs",
         from: "    if e.protected || e.long_name {
