@@ -691,9 +691,10 @@ pub mod ta {
         ]
     }
 
-    pub use super::ta_feed::{Clock, Fed, Item, Layout, clear, draws, feed};
+    pub use super::ta_feed::{Clock, Fed, Feed, Item, Layout, clear, draws, feed};
     pub use super::ta_quads::{
-        Batching, Form, Quad, Quads, STATE_WORDS, State, TEXTURED_MASK, items, quads,
+        Batching, Form, LIST, Primitive, Quad, Quads, STATE_WORDS, Shape, State, TEXTURED_MASK,
+        items, quads,
     };
 }
 

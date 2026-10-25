@@ -92,27 +92,122 @@ pub enum Batching {
     Once,
 }
 
-/// Items (words and primitive ends) the stream of `n` quads holds.
-#[must_use]
-pub const fn items(form: Form, batching: Batching, n: usize) -> usize {
-    let quad = 1 + 4 * form.vertex_words() + 1;
-    match batching {
-        Batching::PerQuad => n * (STATE_WORDS + quad),
-        Batching::Once if n == 0 => 0,
-        Batching::Once => STATE_WORDS + n * quad,
+/// How the quads' corners go in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Primitive {
+    /// A strip of four a quad, each ended in the end window (`rp-glesfeat`
+    /// G2 drew one this way): the primitive word and an end a quad.
+    Strips,
+    /// One triangle list (primitive word `0x7...`, the GLES driver's
+    /// `0x02274a1c`) for the batch: six corners a quad (two triangles), one
+    /// end for all, so the words run unbroken (a DMA's pieces). Whether the
+    /// TA draws it is P4's run's question.
+    List,
+}
+
+impl Primitive {
+    /// Corners a quad.
+    #[must_use]
+    pub const fn corners(self) -> usize {
+        match self {
+            Self::Strips => 4,
+            Self::List => 6,
+        }
+    }
+
+    /// Its primitive word.
+    #[must_use]
+    pub const fn word(self) -> u32 {
+        match self {
+            Self::Strips => STRIP,
+            Self::List => LIST,
+        }
     }
 }
 
-/// The stream for `quads`: the state block ([`TEXTURED_MASK`], then
-/// `state`), then for each quad the strip word, its four corners (top
-/// left, top right, bottom left, bottom right: the strip order the TA
-/// drew in `rp-glesfeat` G2), and the primitive's end.
+/// The triangle list's primitive word (bits 31-28 `0x7`, the polygon
+/// offset 0).
+pub const LIST: u32 = 0x7000_0000;
+
+/// The corners of a quad in a triangle list, as strip corner numbers (bit
+/// 0 right, bit 1 bottom): top left, top right, bottom left; top right,
+/// bottom right, bottom left (the renderer's triangles, same winding).
+const LIST_CORNERS: [usize; 6] = [0, 1, 2, 1, 3, 2];
+
+/// How a stream is shaped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shape {
+    /// The vertex's words.
+    pub form: Form,
+    /// How often the state block goes in.
+    pub batching: Batching,
+    /// How the corners go in.
+    pub primitive: Primitive,
+}
+
+impl Shape {
+    /// Dell's: 7-word vertices, the state block a quad, a strip a quad.
+    pub const DELL: Self = Self {
+        form: Form::Coloured,
+        batching: Batching::PerQuad,
+        primitive: Primitive::Strips,
+    };
+
+    /// Whether quad `k` starts with the state block.
+    const fn has_state(self, k: usize) -> bool {
+        k == 0 || matches!(self.batching, Batching::PerQuad)
+    }
+
+    /// Whether quad `k` starts a primitive.
+    const fn has_primitive(self, k: usize) -> bool {
+        matches!(self.primitive, Primitive::Strips) || self.has_state(k)
+    }
+
+    /// Whether quad `k` of `n` ends its primitive.
+    const fn has_end(self, k: usize, n: usize) -> bool {
+        matches!(self.primitive, Primitive::Strips)
+            || matches!(self.batching, Batching::PerQuad)
+            || k + 1 == n
+    }
+
+    /// Words of quad `k`'s state block and primitive word.
+    const fn head(self, k: usize) -> usize {
+        (if self.has_state(k) { STATE_WORDS } else { 0 })
+            + (if self.has_primitive(k) { 1 } else { 0 })
+    }
+
+    /// Words of a quad's corners.
+    const fn body(self) -> usize {
+        self.primitive.corners() * self.form.vertex_words()
+    }
+
+    /// Items of quads `0..k` of `n`.
+    const fn prefix(self, k: usize, n: usize) -> usize {
+        let mut total = 0;
+        let mut j = 0;
+        while j < k {
+            total += self.head(j) + self.body() + if self.has_end(j, n) { 1 } else { 0 };
+            j += 1;
+        }
+        total
+    }
+}
+
+/// Items (words and primitive ends) the stream of `n` quads holds.
 #[must_use]
-pub fn quads(state: State, form: Form, batching: Batching, quads: &[Quad]) -> Quads<'_> {
+pub const fn items(shape: Shape, n: usize) -> usize {
+    shape.prefix(n, n)
+}
+
+/// The stream for `quads` in `shape`: the state block ([`TEXTURED_MASK`],
+/// then `state`), the primitive word, each quad's corners (a strip: top
+/// left, top right, bottom left, bottom right, the order the TA drew in
+/// `rp-glesfeat` G2; a list: [`LIST_CORNERS`]), and the primitive's end.
+#[must_use]
+pub fn quads(state: State, shape: Shape, quads: &[Quad]) -> Quads<'_> {
     Quads {
         state,
-        form,
-        batching,
+        shape,
         quads,
         quad: 0,
         at: 0,
@@ -123,8 +218,7 @@ pub fn quads(state: State, form: Form, batching: Batching, quads: &[Quad]) -> Qu
 #[derive(Clone, Debug)]
 pub struct Quads<'a> {
     state: State,
-    form: Form,
-    batching: Batching,
+    shape: Shape,
     quads: &'a [Quad],
     /// The quad being sent.
     quad: usize,
@@ -133,11 +227,6 @@ pub struct Quads<'a> {
 }
 
 impl Quads<'_> {
-    /// Whether quad `k` starts with the state block.
-    fn has_state(&self, k: usize) -> bool {
-        k == 0 || self.batching == Batching::PerQuad
-    }
-
     fn state_word(&self, k: usize) -> u32 {
         let s = &self.state;
         match k {
@@ -151,12 +240,13 @@ impl Quads<'_> {
         }
     }
 
-    /// Word `f` of corner `c` (strip order) of `q`.
+    /// Word `f` of corner `c` (strip numbering: bit 0 right, bit 1
+    /// bottom) of `q`.
     fn vertex_word(&self, q: &Quad, c: usize, f: usize) -> u32 {
         let (right, bottom) = (c & 1 != 0, c & 2 != 0);
         let pick = |a: f32, b: f32, second: bool| if second { b } else { a };
         // The colour word is the fifth; the white form leaves it out.
-        let f = if self.form == Form::White && f >= 4 {
+        let f = if self.shape.form == Form::White && f >= 4 {
             f + 1
         } else {
             f
@@ -178,21 +268,29 @@ impl Iterator for Quads<'_> {
 
     fn next(&mut self) -> Option<Item> {
         let q = self.quads.get(self.quad)?;
-        let state = if self.has_state(self.quad) {
-            STATE_WORDS
-        } else {
-            0
-        };
-        let vw = self.form.vertex_words();
+        let sh = self.shape;
+        let k = self.quad;
+        let state = if sh.has_state(k) { STATE_WORDS } else { 0 };
+        let head = sh.head(k);
+        let vw = sh.form.vertex_words();
         let at = self.at;
         self.at += 1;
         let item = if at < state {
             Item::Word(self.state_word(at))
-        } else if at == state {
-            Item::Word(STRIP)
-        } else if at <= state + 4 * vw {
-            let k = at - state - 1;
-            Item::Word(self.vertex_word(q, k / vw, k % vw))
+        } else if at < head {
+            Item::Word(sh.primitive.word())
+        } else if at < head + sh.body() {
+            let i = at - head;
+            let corner = match sh.primitive {
+                Primitive::Strips => i / vw,
+                Primitive::List => LIST_CORNERS[i / vw],
+            };
+            let w = Item::Word(self.vertex_word(q, corner, i % vw));
+            if at + 1 == head + sh.body() && !sh.has_end(k, self.quads.len()) {
+                self.quad += 1;
+                self.at = 0;
+            }
+            w
         } else {
             self.quad += 1;
             self.at = 0;
@@ -202,8 +300,9 @@ impl Iterator for Quads<'_> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let all = items(self.form, self.batching, self.quads.len());
-        let done = items(self.form, self.batching, self.quad) + self.at;
+        let n = self.quads.len();
+        let all = items(self.shape, n);
+        let done = self.shape.prefix(self.quad, n) + self.at;
         let left = all.saturating_sub(done);
         (left, Some(left))
     }

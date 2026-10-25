@@ -124,16 +124,10 @@ pub fn draws<'a>(draws: &'a [&'a [u32]]) -> impl Iterator<Item = Item> + 'a {
 }
 
 /// `stream` through the tile accelerator on `regs` (the 2700G register
-/// window): the done bit enabled, the start table, each word into the TA
-/// window and each [`Item::End`] as a `1` into the end window (each
-/// window's offset counting on and wrapping at [`PORT_SIZE`], as Dell's
-/// driver counts), the scene's end, then the done bit polled for up to
-/// `limit_us` (ADR-0026 D3: no interrupt from the 3D core). Every word
-/// waits for room in the FIFO; room that doesn't come within `limit_us`
-/// ends the stream ([`Fed::stuck`]). The stream may be built as it goes
-/// (an iterator over quads): the CPU's words go straight into the window,
-/// with no copy of the frame in memory. [`clear`] first. The 2D engine
-/// idle meanwhile (ADR-0026 T8: one FIFO).
+/// window): [`Feed::start`], each item [`Feed::put`], [`Feed::finish`].
+/// The stream may be built as it goes (an iterator over quads): the CPU's
+/// words go straight into the window, with no copy of the frame in memory.
+/// [`clear`] first. The 2D engine idle meanwhile (ADR-0026 T8: one FIFO).
 pub fn feed<B: RegisterBus>(
     regs: &mut B,
     l: &Layout,
@@ -141,89 +135,173 @@ pub fn feed<B: RegisterBus>(
     clock: Clock,
     limit_us: u32,
 ) -> Fed {
-    let mut fed = Fed::default();
-    let en = regs.read32(MBX + reg::ENABLE);
-    regs.write32(MBX + reg::CLEAR, DONE);
-    regs.write32(MBX + reg::ENABLE, en | DONE);
-    let t0 = (clock.now)();
-    let table = l.start_table();
-    for &(off, v) in &table {
-        regs.write32(MBX + off, v);
-    }
-    let grid = table.iter().find(|p| p.0 == GRID).map_or(0, |p| p.1);
-    let mut sink = Sink {
-        regs,
-        clock,
-        limit_us,
-        credit: 0,
-        fed: &mut fed,
-    };
-    let (mut at, mut ends) = (0usize, 0usize);
-    let sent = stream.into_iter().all(|item| match item {
-        Item::Word(v) => {
-            let ok = sink.put(PORT + at, v);
-            at = (at + 4) % PORT_SIZE;
-            ok
-        }
-        Item::End => {
-            let ok = sink.put(END_PORT + ends, 1);
-            ends = (ends + 4) % PORT_SIZE;
-            ok
-        }
-    }) && {
-        sink.regs.write32(MBX + GRID, grid | SCENE_END);
-        sink.put(PORT + at, super::END)
-    };
-    fed.feed_us = clock.us_since(t0);
-    if sent {
-        while clock.us_since(t0) < limit_us {
-            if regs.read32(MBX + reg::STATUS) & DONE != 0 {
-                fed.done = true;
-                fed.ta_us = clock.us_since(t0);
-                break;
-            }
-        }
-    }
-    regs.write32(MBX + reg::CLEAR, DONE);
-    regs.write32(MBX + reg::ENABLE, en);
-    regs.write32(MBX + GRID, grid);
-    fed
+    let mut f = Feed::start(regs, l, clock, limit_us);
+    let _ = stream.into_iter().all(|item| f.put(item));
+    f.finish()
 }
 
-/// The FIFO's writer: words go in while the credit (free words at the last
-/// status read) lasts.
-struct Sink<'a, B> {
-    regs: &'a mut B,
+/// One scene into the TA, a piece at a time: the CPU's items by
+/// [`Self::put`], or another writer's words (DMA) straight into the window
+/// at [`Self::window_offset`] once [`Self::room`] says they fit, then
+/// [`Self::advanced`]. Each window's offset counts on and wraps at
+/// [`PORT_SIZE`], as Dell's driver counts; every CPU word waits for room in
+/// the FIFO, and room that doesn't come within the limit ends the scene
+/// ([`Fed::stuck`]: nothing more is written, no scene end).
+pub struct Feed<'r, B> {
+    regs: &'r mut B,
     clock: Clock,
     limit_us: u32,
+    /// Free FIFO words at the last status read, less those written since.
     credit: u32,
-    fed: &'a mut Fed,
+    fed: Fed,
+    /// The TA window's and the end window's offsets (bytes).
+    at: usize,
+    ends: usize,
+    /// ENABLE as found, and the table's `0x85C`.
+    en: u32,
+    grid: u32,
+    t0: u32,
 }
 
-impl<B: RegisterBus> Sink<'_, B> {
-    /// Writes `v` to `offset` once the FIFO has room; false (and
-    /// [`Fed::stuck`]) if it stayed full for the limit.
-    fn put(&mut self, offset: usize, v: u32) -> bool {
-        if self.credit == 0 {
-            let t0 = (self.clock.now)();
-            loop {
-                let s = self.regs.read32(MBX + reg::STATUS);
-                self.fed.level_reads += 1;
-                let free = free_bytes(s) / 4;
-                self.fed.level_max = self.fed.level_max.max(FIFO_WORDS - free);
-                if free != 0 {
-                    self.credit = free;
-                    break;
+impl<'r, B: RegisterBus> Feed<'r, B> {
+    /// The done bit cleared and enabled, then the TA's start table for `l`.
+    pub fn start(regs: &'r mut B, l: &Layout, clock: Clock, limit_us: u32) -> Self {
+        let en = regs.read32(MBX + reg::ENABLE);
+        regs.write32(MBX + reg::CLEAR, DONE);
+        regs.write32(MBX + reg::ENABLE, en | DONE);
+        let t0 = (clock.now)();
+        let table = l.start_table();
+        for &(off, v) in &table {
+            regs.write32(MBX + off, v);
+        }
+        let grid = table.iter().find(|p| p.0 == GRID).map_or(0, |p| p.1);
+        Self {
+            regs,
+            clock,
+            limit_us,
+            credit: 0,
+            fed: Fed::default(),
+            at: 0,
+            ends: 0,
+            en,
+            grid,
+            t0,
+        }
+    }
+
+    /// Audit C78 (reminder R37): `0x85C` for the scene's body with the
+    /// scene-end bit off (`false`) or on as the GLES driver's table has it
+    /// (`true`, the start's); the scene's end sets it either way. Before
+    /// the first word.
+    pub fn scene_end_in_body(&mut self, on: bool) {
+        let v = if on {
+            self.grid
+        } else {
+            self.grid & !SCENE_END
+        };
+        self.regs.write32(MBX + GRID, v);
+    }
+
+    /// `item` into its window once the FIFO has room; false once the scene
+    /// has ended stuck.
+    pub fn put(&mut self, item: Item) -> bool {
+        match item {
+            Item::Word(v) => {
+                let ok = self.write(PORT + self.at, v);
+                if ok {
+                    self.at = (self.at + 4) % PORT_SIZE;
                 }
-                if self.clock.us_since(t0) > self.limit_us {
-                    self.fed.stuck = Some(s);
-                    return false;
-                }
+                ok
             }
+            Item::End => {
+                let ok = self.write(END_PORT + self.ends, 1);
+                if ok {
+                    self.ends = (self.ends + 4) % PORT_SIZE;
+                }
+                ok
+            }
+        }
+    }
+
+    /// Free FIFO words now (one status read, counted in [`Fed`]); 0 once
+    /// stuck.
+    pub fn room(&mut self) -> u32 {
+        if self.fed.stuck.is_some() {
+            return 0;
+        }
+        let s = self.regs.read32(MBX + reg::STATUS);
+        self.fed.level_reads += 1;
+        let free = free_bytes(s) / 4;
+        self.fed.level_max = self.fed.level_max.max(FIFO_WORDS - free);
+        self.credit = free;
+        free
+    }
+
+    /// Waits up to the limit for room; false (and [`Fed::stuck`]) if none
+    /// came.
+    fn wait_room(&mut self) -> bool {
+        let t0 = (self.clock.now)();
+        loop {
+            if self.fed.stuck.is_some() {
+                return false;
+            }
+            if self.room() != 0 {
+                return true;
+            }
+            if self.clock.us_since(t0) > self.limit_us {
+                self.fed.stuck = Some(self.regs.read32(MBX + reg::STATUS));
+                return false;
+            }
+        }
+    }
+
+    fn write(&mut self, offset: usize, v: u32) -> bool {
+        if self.credit == 0 && !self.wait_room() {
+            return false;
         }
         self.regs.write32(offset, v);
         self.credit -= 1;
         self.fed.words += 1;
         true
+    }
+
+    /// Where the next TA window word goes, in bytes from [`PORT`].
+    #[must_use]
+    pub const fn window_offset(&self) -> usize {
+        self.at
+    }
+
+    /// Another writer put `words` into the TA window at
+    /// [`Self::window_offset`] (within the room [`Self::room`] gave).
+    pub fn advanced(&mut self, words: u32) {
+        self.at = (self.at + 4 * words as usize) % PORT_SIZE;
+        self.credit = self.credit.saturating_sub(words);
+        self.fed.words += words;
+    }
+
+    /// The scene's end (unless stuck), the done bit polled for up to the
+    /// limit from the start (ADR-0026 D3: no interrupt from the 3D core),
+    /// then the bit and `0x85C` put back.
+    pub fn finish(mut self) -> Fed {
+        let grid = self.grid;
+        let sent = self.fed.stuck.is_none() && {
+            self.regs.write32(MBX + GRID, grid | SCENE_END);
+            self.put(Item::Word(super::END))
+        };
+        let (clock, t0) = (self.clock, self.t0);
+        self.fed.feed_us = clock.us_since(t0);
+        if sent {
+            while clock.us_since(t0) < self.limit_us {
+                if self.regs.read32(MBX + reg::STATUS) & DONE != 0 {
+                    self.fed.done = true;
+                    self.fed.ta_us = clock.us_since(t0);
+                    break;
+                }
+            }
+        }
+        self.regs.write32(MBX + reg::CLEAR, DONE);
+        self.regs.write32(MBX + reg::ENABLE, self.en);
+        self.regs.write32(MBX + GRID, grid);
+        self.fed
     }
 }
