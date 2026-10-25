@@ -18,7 +18,9 @@
 //! for what's still unknown (the ISP/TSP bits, the strip pointer's flags,
 //! the tile size, textures, the tile accelerator path).
 //!
-//! Pure: no hardware access; the test image writes these words.
+//! Pure but for the tile accelerator's feed ([`ta::feed`]), which drives
+//! the registers through [`rp_hal_api::RegisterBus`] (host-tested on a
+//! mock); everything else is words the test image writes.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -581,6 +583,7 @@ pub mod ta {
             (0x850, height << 16),
             (0x854, EPSILON),
             (0x858, EPSILON),
+            // inherited: C78, libGLES_CL.dll 0x02261580 (bit 7, the scene end, on)
             (0x85C, 0x0004_00E1 | grid << 10),
             (START, 1),
         ]
@@ -687,7 +690,11 @@ pub mod ta {
             one,
         ]
     }
+
+    pub use super::ta_feed::{Clock, Fed, Layout, clear, feed};
 }
+
+mod ta_feed;
 
 #[cfg(test)]
 mod tests;

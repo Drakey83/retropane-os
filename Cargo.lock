@@ -314,6 +314,12 @@ dependencies = [
 [[package]]
 name = "rp-drv-mbx3d"
 version = "0.0.0"
+dependencies = [
+ "rp-drv-blit2d",
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-mock",
+]
 
 [[package]]
 name = "rp-drv-mved"

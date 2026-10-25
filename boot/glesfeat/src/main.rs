@@ -1873,10 +1873,6 @@ mod image {
         }
     }
 
-    /// The longest stream [`through_ta`] sends.
-    const TA_WORDS: usize = 96;
-    /// The most draws in one [`through_ta`].
-    const TA_DRAWS: usize = 4;
     /// The most list words [`through_ta`] reads from the first tile.
     const TA_LIST: usize = 6;
 
@@ -1892,12 +1888,11 @@ mod image {
     }
 
     /// `draws` through the tile accelerator (`rp-mbx3d` version 18's
-    /// path: its buffers zeroed, its start table, each draw into its
-    /// window followed by a `1` into the end window (each window's offset
-    /// counting on, as Dell's driver counts), the scene's end), then, if
-    /// the TA said done, the 3D stage on the TA's region array. With
-    /// `words`, logs the first tile's list and each object the TA wrote
-    /// (`words` of each).
+    /// path, now the driver's [`m3::ta::feed`]: its buffers zeroed, its
+    /// start table, each draw into its window followed by a `1` into the
+    /// end window, the scene's end), then, if the TA said done, the 3D stage
+    /// on the TA's region array. With `words`, logs the first tile's list
+    /// and each object the TA wrote (`words` of each).
     #[inline(never)]
     fn through_ta(
         e: &mut Engine<Mmio>,
@@ -1912,36 +1907,24 @@ mod image {
             done: false,
             list: [m3::END; TA_LIST],
         };
-        for k in 0..TAIL_SIZE / 4 {
-            let _ = store32_volatile(vram, l.tail + 4 * k, 0);
-        }
-        for k in 0..2 * (COLS * ROWS + 1) as usize {
-            let _ = store32_volatile(vram, l.ta_regions + 4 * k, 0);
-        }
+        let ta = m3::ta::Layout {
+            tail: l.tail as u32,
+            tail_bytes: TAIL_SIZE as u32,
+            regions: l.ta_regions as u32,
+            width: W,
+            height: H,
+        };
+        let _ = m3::ta::clear(vram, &ta);
         cpu::drain_write_buffer();
-        let t = m3::ta::start_table(l.tail as u32, l.ta_regions as u32, W, H, COLS, ROWS);
-        let mut w = [(0usize, 0u32); 9 + TA_WORDS + TA_DRAWS + 2];
-        w[..9].copy_from_slice(&t);
-        let (mut at, mut n, mut ends) = (9, 0, 0);
-        for d in draws.iter().take(TA_DRAWS) {
-            if n + d.len() > TA_WORDS {
-                log!("    the draws exceed {TA_WORDS} words: the rest not sent");
-                break;
-            }
-            for &v in d.iter() {
-                w[at] = (m3::ta::PORT - MBX + 4 * n, v);
-                at += 1;
-                n += 1;
-            }
-            w[at] = (m3::ta::END_PORT - MBX + 4 * ends, 1);
-            at += 1;
-            ends += 1;
+        let clock = m3::ta::Clock {
+            now: rt::ticks,
+            ticks_per_ms: rt::TICK_HZ / 1000,
+        };
+        let fed = m3::ta::feed(&mut e.regs, &ta, draws, clock, 200_000);
+        out.ta = fed.done;
+        if let Some(s) = fed.stuck {
+            log!("    the FIFO stayed full (status 0x{s:08x}): the stream cut short");
         }
-        let r85c = t[7];
-        w[at] = (r85c.0, r85c.1 | m3::ta::SCENE_END);
-        w[at + 1] = (m3::ta::PORT - MBX + 4 * n, m3::END);
-        out.ta = run(e, &w[..at + 2], m3::ta::DONE, 200_000);
-        e.regs.write32(MBX + r85c.0, r85c.1);
         if !out.ta {
             log!("    the TA never said done: no render");
             return out;

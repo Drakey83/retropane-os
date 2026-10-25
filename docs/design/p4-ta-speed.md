@@ -105,6 +105,24 @@ Mobile's, 99.67 / 2, as decided for P4's first run).
    as a slice of any length, sent in FIFO-sized pieces; `rp-glesfeat`
    then calls it (one copy). Host-tested against `rp-glesfeat`'s proven
    word sequence (the same writes for its four draws).
+   **Built 2026-10-25:** `rp-mbx3d`'s `ta::feed` (`drivers/mbx3d/src/ta_feed.rs`),
+   with `ta::clear` and `ta::Layout`; `rp-glesfeat`'s `through_ta` calls
+   it, its 96-word and 4-draw limits gone. Rule 0 for the feed: Dell's
+   GLES driver writes word after word and lets a full FIFO stall the bus;
+   ours reads the FIFO's room once a piece and writes that many words (a
+   credit: one status read per up to 510 words, each read crossing the
+   same slow bus), and a FIFO full for the limit ends the scene with its
+   status instead of hanging the CPU (C53's evidence kept). It records the
+   status reads, the deepest FIFO level seen (ADR-0026 T8's evidence: do
+   TA words show in the 2D engine's level?), the feeding time and the
+   TA's time. Host tests: the exact writes of `through_ta` for four draws,
+   both windows wrapping at 4 KiB, a full FIFO waited out with its room
+   used whole, a FIFO that stays full, a TA that never says done.
+   Found: the TA start table's `0x85C` word (`0x000400E1`, Dell's)
+   already has bit 7, the scene-end bit, on, so the scene end's write
+   repeats it; whether Dell's GLES driver clears bit 7 for a scene's
+   body is open (an audit question, C78). Not yet on the device: the
+   status reads between window writes are new there.
 2. **The streams:** textured quads as strips, state once per batch, the
    6-word vertex (no colour) as a second form; host-tested word by word.
 3. **The CPU binner** (test-only): a quad's tiles from its bounding box

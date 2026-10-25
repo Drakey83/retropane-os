@@ -418,3 +418,265 @@ fn rectangular_tex0_carries_both_size_codes() {
         tex::tex0(3, tex::ARGB4444)
     );
 }
+
+/// The TA feed (P4 step 1) against `rp-glesfeat`'s `through_ta`, whose
+/// writes drew right on the X51v (G, G2 ways 7-8, M).
+mod feed {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::vec;
+    use std::vec::Vec;
+
+    use rp_drv_blit2d::{MBX, reg};
+    use rp_hal_mock::{Access, MockBus};
+
+    use super::*;
+
+    // Starts just short of the wrap: timeouts must survive it.
+    static NOW: AtomicU32 = AtomicU32::new(u32::MAX - 5_000);
+    fn tick() -> u32 {
+        NOW.fetch_add(1_000, Ordering::Relaxed)
+    }
+    const CLOCK: ta::Clock = ta::Clock {
+        now: tick,
+        ticks_per_ms: 1_000,
+    };
+
+    /// `rp-glesfeat`'s own layout (`OURS_LAYOUT`) and target.
+    const GLESFEAT: ta::Layout = ta::Layout {
+        tail: 0x00A0_0000,
+        tail_bytes: 0x1_0000,
+        regions: 0x00A2_0000,
+        width: 480,
+        height: 640,
+    };
+
+    /// FIFO levels as the status register shows them: bits 16-23, the
+    /// ninth bit in bit 30.
+    const fn level(words: u32) -> u32 {
+        (words & 0xFF) << 16 | (words >> 8) << 30
+    }
+
+    /// `through_ta`'s writes for `draws`, as it built them: its `run` (the
+    /// done bit cleared and enabled, ENABLE read as `en`), the start table,
+    /// each draw then a `1` into the end window, `0x85C` with the scene-end
+    /// bit, the end word, the bit cleared and ENABLE put back, `0x85C` put
+    /// back.
+    fn through_ta(draws: &[&[u32]], en: u32) -> Vec<(usize, u32)> {
+        let t = ta::start_table(0x00A0_0000, 0x00A2_0000, 480, 640, 60, 40);
+        let mut w = vec![
+            (MBX + reg::CLEAR, ta::DONE),
+            (MBX + reg::ENABLE, en | ta::DONE),
+        ];
+        w.extend(t.iter().map(|&(o, v)| (MBX + o, v)));
+        let (mut n, mut ends) = (0, 0);
+        for d in draws {
+            for &v in d.iter() {
+                w.push((ta::PORT + 4 * n, v));
+                n += 1;
+            }
+            w.push((ta::END_PORT + 4 * ends, 1));
+            ends += 1;
+        }
+        w.push((MBX + t[7].0, t[7].1 | ta::SCENE_END));
+        w.push((ta::PORT + 4 * n, END));
+        w.push((MBX + reg::CLEAR, ta::DONE));
+        w.push((MBX + reg::ENABLE, en));
+        w.push((MBX + t[7].0, t[7].1));
+        w
+    }
+
+    fn quad(x: f32) -> [u32; 9 + 3 * ta::TEX_VERTEX_WORDS] {
+        let p = |x: f32, y: f32| tex::Vertex {
+            x,
+            y,
+            z: 0.5,
+            rhw: 1.0,
+            argb: 0xFFFF_FFFF,
+            u: 0.0,
+            v: 0.0,
+        };
+        ta::textured_stream(
+            tex::TSP_GAME,
+            ISP_ALWAYS,
+            ta::dell_texture(0x00E0_0000),
+            ta::clip(480, 640),
+            &[p(x, 0.0), p(x + 16.0, 0.0), p(x, 16.0)],
+        )
+    }
+
+    /// A bus whose FIFO is empty and whose TA says done at once.
+    fn idle(en: u32) -> MockBus {
+        let mut bus = MockBus::new();
+        bus.preset(MBX + reg::ENABLE, en)
+            .preset(MBX + reg::STATUS, ta::DONE);
+        bus
+    }
+
+    #[test]
+    fn four_draws_write_through_tas_proven_words() {
+        let clear = ta::clear_stream(480, 640);
+        let (a, b, c) = (quad(10.0), quad(100.0), quad(200.0));
+        let draws: [&[u32]; 4] = [&clear, &a, &b, &c];
+        let mut bus = idle(0x0000_0044);
+        let fed = ta::feed(&mut bus, &GLESFEAT, &draws, CLOCK, 200_000);
+        assert_eq!(bus.writes(), through_ta(&draws, 0x0000_0044));
+        assert!(fed.done && fed.stuck.is_none());
+        // 15 + 3 x 30 words, 4 end-window ones, the end word.
+        assert_eq!(fed.words, 15 + 3 * 30 + 4 + 1);
+        // An empty FIFO: one status read for room, the whole stream on it.
+        assert_eq!(fed.level_reads, 1);
+        assert_eq!(fed.level_max, 0);
+        assert!(fed.ta_us >= fed.feed_us);
+    }
+
+    #[test]
+    fn a_long_stream_wraps_both_windows() {
+        // 2,000 words in 100 draws: the TA window's offset passes 4 KiB
+        // once; 100 end-window words don't.
+        let draw = [7u32; 20];
+        let draws: Vec<&[u32]> = (0..100).map(|_| &draw[..]).collect();
+        let mut bus = idle(0);
+        let fed = ta::feed(&mut bus, &GLESFEAT, &draws, CLOCK, 200_000);
+        assert!(fed.done);
+        assert_eq!(fed.words, 2_000 + 100 + 1);
+        let port: Vec<usize> = bus
+            .writes()
+            .iter()
+            .filter(|w| (ta::PORT..ta::PORT + ta::PORT_SIZE).contains(&w.0))
+            .map(|w| w.0 - ta::PORT)
+            .collect();
+        assert_eq!(port.len(), 2_001);
+        assert!(
+            port.iter()
+                .enumerate()
+                .all(|(k, &o)| o == 4 * k % ta::PORT_SIZE)
+        );
+        let ends: Vec<usize> = bus
+            .writes()
+            .iter()
+            .filter(|w| w.0 >= ta::END_PORT)
+            .map(|w| w.0 - ta::END_PORT)
+            .collect();
+        assert_eq!(ends, (0..100).map(|k| 4 * k).collect::<Vec<_>>());
+        // 2,101 words in pieces of the FIFO's 510: five reads, no more.
+        assert_eq!(fed.level_reads, 5);
+    }
+
+    #[test]
+    fn the_end_window_wraps_too() {
+        // 1,100 one-word draws: 1,100 end-window words pass 4 KiB.
+        let draws: Vec<&[u32]> = (0..1_100).map(|_| &[5u32][..]).collect();
+        let mut bus = idle(0);
+        assert!(ta::feed(&mut bus, &GLESFEAT, &draws, CLOCK, 200_000).done);
+        let ends: Vec<usize> = bus
+            .writes()
+            .iter()
+            .filter(|w| w.0 >= ta::END_PORT)
+            .map(|w| w.0 - ta::END_PORT)
+            .collect();
+        assert_eq!(ends.len(), 1_100);
+        assert_eq!(ends[1_024], 0);
+        assert_eq!(ends[1_099], 4 * 75);
+    }
+
+    #[test]
+    fn a_full_fifo_is_waited_out_and_its_room_used_whole() {
+        let draw = [3u32; 8];
+        let mut bus = idle(0);
+        // Full (0x1FF, past the 0x1FE capacity), then 2 words free, then
+        // empty.
+        bus.script_reads(MBX + reg::STATUS, &[level(0x1FF), level(0x1FC), 0]);
+        let fed = ta::feed(&mut bus, &GLESFEAT, &[&draw], CLOCK, 200_000);
+        assert!(fed.done);
+        assert_eq!(fed.words, 8 + 1 + 1);
+        assert_eq!(fed.level_max, 0x1FE);
+        // Full, 2 words free (2 written), then room for the rest: three.
+        assert_eq!(fed.level_reads, 3);
+        // No write went in while the FIFO was full: the first window write
+        // follows the second status read, the third read the second word.
+        let log = bus.log();
+        let at = |n: usize| {
+            log.iter()
+                .enumerate()
+                .filter(|(_, a)| matches!(a, Access::Write { offset, .. } if *offset >= ta::PORT))
+                .nth(n)
+                .unwrap()
+                .0
+        };
+        let status_reads = |end: usize| {
+            log[..end]
+                .iter()
+                .filter(
+                    |a| matches!(a, Access::Read { offset, .. } if *offset == MBX + reg::STATUS),
+                )
+                .count()
+        };
+        assert_eq!(status_reads(at(0)), 2);
+        assert_eq!(status_reads(at(2)), 3);
+    }
+
+    #[test]
+    fn a_fifo_that_stays_full_ends_the_scene_without_hanging() {
+        let mut bus = idle(0x10);
+        bus.preset(MBX + reg::STATUS, level(0x1FE) | ta::DONE);
+        let fed = ta::feed(&mut bus, &GLESFEAT, &[&[1, 2, 3]], CLOCK, 50_000);
+        assert_eq!(fed.stuck, Some(level(0x1FE) | ta::DONE));
+        assert!(!fed.done);
+        assert_eq!(fed.words, 0);
+        let w = bus.writes();
+        // Nothing into the windows, no scene end; the bit and 0x85C put back.
+        assert!(w.iter().all(|x| x.0 < ta::PORT));
+        // 0x85C written by the start table and put back, the scene end's
+        // write (the same value: the table's word has bit 7 on) left out.
+        let t = GLESFEAT.start_table();
+        assert_eq!(w.iter().filter(|x| x.0 == MBX + 0x85C).count(), 2);
+        assert_eq!(
+            w[w.len() - 3..],
+            [
+                (MBX + reg::CLEAR, ta::DONE),
+                (MBX + reg::ENABLE, 0x10),
+                (MBX + 0x85C, t[7].1)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_ta_that_never_says_done_is_reported_not_waited_on() {
+        let mut bus = idle(0);
+        bus.preset(MBX + reg::STATUS, 0);
+        let fed = ta::feed(&mut bus, &GLESFEAT, &[&[1]], CLOCK, 20_000);
+        assert!(!fed.done && fed.stuck.is_none());
+        assert_eq!(fed.ta_us, 0);
+        assert_eq!(fed.words, 3);
+    }
+
+    #[test]
+    fn the_layout_gives_glesfeats_start_table() {
+        assert_eq!(GLESFEAT.grid(), (60, 40));
+        assert_eq!(
+            GLESFEAT.start_table(),
+            ta::start_table(0x00A0_0000, 0x00A2_0000, 480, 640, 60, 40)
+        );
+    }
+
+    #[test]
+    fn clear_zeroes_the_tail_and_the_region_array_and_stays_in_bounds() {
+        let small = ta::Layout {
+            tail: 0x100,
+            tail_bytes: 0x40,
+            regions: 0x200,
+            width: 16,
+            height: 32,
+        };
+        let mut vram = vec![0xAAu8; 0x400];
+        assert!(ta::clear(&mut vram, &small));
+        assert!(vram[0x100..0x140].iter().all(|&b| b == 0));
+        // 2 x 2 tiles + 1, 8 bytes each: 40 bytes.
+        assert!(vram[0x200..0x228].iter().all(|&b| b == 0));
+        assert_eq!(vram[0x228], 0xAA);
+        assert_eq!(vram[0x140], 0xAA);
+        assert!(!ta::clear(&mut vram[..0x220], &small));
+    }
+}
