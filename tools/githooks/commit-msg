@@ -1,0 +1,12 @@
+#!/bin/sh
+# Owner rule (2026-10-15): commit messages carry only the change
+# description: no Co-Authored-By trailer, no AI attribution.
+f="$1"
+sed -i -e '/^[Cc]o-[Aa]uthored-[Bb]y:/d' \
+       -e '/Generated with \[Claude Code\]/d' \
+       -e '/noreply@anthropic\.com/d' "$f"
+# Drop trailing blank lines left behind.
+sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$f"
+# The owner's hard rules on Claude's commits, checked with the files
+# really staged (tools/remind/rules_gate.py; the owner's own commits pass).
+exec python -I "$(git rev-parse --show-toplevel)/tools/remind/rules_gate.py" commit-msg "$f"

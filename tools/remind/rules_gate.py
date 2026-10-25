@@ -4,6 +4,8 @@
                                  commit` and `git push` (stdin: the hook's JSON)
     rules_gate.py spawn          a PreToolUse hook for the tools that start
                                  another session or agent
+    rules_gate.py commit-msg F   git's commit-msg hook (tools/githooks)
+    rules_gate.py pre-push       git's pre-push hook (tools/githooks)
     rules_gate.py --self-test    checks its own rules
 
 The owner, 2026-10-25, after a printed reminder was skipped: "why do i have
@@ -281,10 +283,38 @@ def self_test():
     return 1 if bad else 0
 
 
+def git_hook(mode):
+    """Git's own commit-msg and pre-push hooks (tools/githooks): the same
+    rules at the moment git acts, with the files really staged (a file
+    changed by the same command as the commit reaches git, not the
+    PreToolUse check). Claude's commands only (`CLAUDECODE` set): the
+    owner's own commits and pushes pass. Exit 1 refuses."""
+    if not os.environ.get("CLAUDECODE"):
+        return 0
+    if mode == "commit-msg":
+        with open(sys.argv[2], encoding="utf-8") as fh:
+            message = fh.read()
+        reason = commit_verdict(message, set(git("diff", "--cached", "--name-only")), areas())
+    else:
+        head = git("rev-parse", "HEAD")[0]
+        clean = not git("status", "--porcelain", "--untracked-files=no")
+        reason = push_verdict(head, clean, read_stamp())
+    if reason:
+        print("Refused by the owner's hard rules (tools/remind/rules_gate.py): " + reason, file=sys.stderr)
+        return 1
+    return 0
+
+
 def main():
     if "--self-test" in sys.argv:
         return self_test()
     mode = sys.argv[1] if len(sys.argv) > 1 else "bash"
+    if mode in ("commit-msg", "pre-push"):
+        try:
+            return git_hook(mode)
+        except Exception as e:  # a broken gate refuses, loudly
+            print(f"rules_gate.py failed ({e}): fix the gate, don't bypass it", file=sys.stderr)
+            return 1
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         hook(mode)

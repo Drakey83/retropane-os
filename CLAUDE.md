@@ -17,8 +17,11 @@
    (`docs/adr/areas.md`) without naming one of its ADRs; a `git push` unless
    `cargo xtask ci` passed on exactly that commit (`target/ci-pass.txt`);
    another session or agent unless the owner's latest message asks for one.
-   The printed reminders (`remind.py`) only show the rules; the gate is what
-   makes skipping them impossible.
+   Git's own hooks (`tools/githooks`, `core.hooksPath`) run the commit and
+   push checks again as git acts, on Claude's commands only (`CLAUDECODE`
+   set), so a file changed in the same command can't slip past. The printed
+   reminders (`remind.py`) only show the rules; the gate is what makes
+   skipping them impossible.
 1. **Read [docs/ROADMAP.md](docs/ROADMAP.md) "Now: the gate" before
    choosing any work or answering a progress question.** The gate holds
    the architectural lines (`arch N` in the ledgers of

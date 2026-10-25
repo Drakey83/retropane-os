@@ -1,0 +1,4 @@
+#!/bin/sh
+# The owner's rule: full `cargo xtask ci` before every push, on Claude's
+# pushes (tools/remind/rules_gate.py; the owner's own pushes pass).
+exec python -I "$(git rev-parse --show-toplevel)/tools/remind/rules_gate.py" pre-push
