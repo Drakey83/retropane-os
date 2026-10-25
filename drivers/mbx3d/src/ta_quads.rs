@@ -204,29 +204,42 @@ pub const fn items(shape: Shape, n: usize) -> usize {
 /// left, top right, bottom left, bottom right, the order the TA drew in
 /// `rp-glesfeat` G2; a list: [`LIST_CORNERS`]), and the primitive's end.
 #[must_use]
-pub fn quads(state: State, shape: Shape, quads: &[Quad]) -> Quads<'_> {
+pub fn quads(state: State, shape: Shape, quads: &[Quad]) -> Quads<impl Fn(usize) -> Quad + Clone> {
+    quads_with(state, shape, quads.len(), |k| quads[k])
+}
+
+/// [`quads`] of `n` quads that `quad` gives by index (once each, in order),
+/// so a frame of thousands needs no array of them.
+#[must_use]
+pub fn quads_with<F: Fn(usize) -> Quad>(state: State, shape: Shape, n: usize, quad: F) -> Quads<F> {
     Quads {
         state,
         shape,
-        quads,
+        n,
+        get: quad,
+        current: None,
         quad: 0,
         at: 0,
     }
 }
 
 /// The iterator [`quads`] returns.
-#[derive(Clone, Debug)]
-pub struct Quads<'a> {
+#[derive(Clone)]
+pub struct Quads<F> {
     state: State,
     shape: Shape,
-    quads: &'a [Quad],
+    /// Quads in all, and the one that gives each.
+    n: usize,
+    get: F,
+    /// The quad being sent, once fetched.
+    current: Option<Quad>,
     /// The quad being sent.
     quad: usize,
     /// The item within it, its state block (when it has one) first.
     at: usize,
 }
 
-impl Quads<'_> {
+impl<F> Quads<F> {
     fn state_word(&self, k: usize) -> u32 {
         let s = &self.state;
         match k {
@@ -263,11 +276,15 @@ impl Quads<'_> {
     }
 }
 
-impl Iterator for Quads<'_> {
+impl<F: Fn(usize) -> Quad> Iterator for Quads<F> {
     type Item = Item;
 
     fn next(&mut self) -> Option<Item> {
-        let q = self.quads.get(self.quad)?;
+        if self.quad >= self.n {
+            return None;
+        }
+        let q = *self.current.get_or_insert_with(|| (self.get)(self.quad));
+        let q = &q;
         let sh = self.shape;
         let k = self.quad;
         let state = if sh.has_state(k) { STATE_WORDS } else { 0 };
@@ -286,21 +303,23 @@ impl Iterator for Quads<'_> {
                 Primitive::List => LIST_CORNERS[i / vw],
             };
             let w = Item::Word(self.vertex_word(q, corner, i % vw));
-            if at + 1 == head + sh.body() && !sh.has_end(k, self.quads.len()) {
+            if at + 1 == head + sh.body() && !sh.has_end(k, self.n) {
                 self.quad += 1;
                 self.at = 0;
+                self.current = None;
             }
             w
         } else {
             self.quad += 1;
             self.at = 0;
+            self.current = None;
             Item::End
         };
         Some(item)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let n = self.quads.len();
+        let n = self.n;
         let all = items(self.shape, n);
         let done = self.shape.prefix(self.quad, n) + self.at;
         let left = all.saturating_sub(done);
@@ -308,4 +327,4 @@ impl Iterator for Quads<'_> {
     }
 }
 
-impl ExactSizeIterator for Quads<'_> {}
+impl<F: Fn(usize) -> Quad> ExactSizeIterator for Quads<F> {}

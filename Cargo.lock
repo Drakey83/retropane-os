@@ -958,6 +958,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-tabench"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-blit2d",
+ "rp-drv-mbx-display",
+ "rp-drv-mbx3d",
+ "rp-drv-pxa-keypad",
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-image",
+ "rp-mbx3d-render",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-threads"
 version = "0.0.0"
 dependencies = [

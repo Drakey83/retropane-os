@@ -151,13 +151,30 @@ pub fn bin<M: LocalMem>(
     draws: &[Draw],
     scratch: Scratch<'_>,
 ) -> Result<Binned, Error> {
+    bin_with(mem, l, background, draws.len(), |i| draws[i], scratch)
+}
+
+/// [`bin`] of `n` quads that `draw` gives by index (called three times for
+/// each, in order), so a scene of thousands needs no array of them: a
+/// game's or a test's quads made as they are wanted.
+///
+/// # Errors
+///
+/// As [`bin`].
+pub fn bin_with<M: LocalMem>(
+    mem: &mut M,
+    l: &Layout,
+    background: Option<u32>,
+    n: usize,
+    draw: impl Fn(usize) -> Draw,
+    scratch: Scratch<'_>,
+) -> Result<Binned, Error> {
     let (cols, rows) = l.grid();
     let tiles = (cols * rows) as usize;
-    if draws.len() > 1 << 16 || scratch.objects.len() < draws.len() || scratch.starts.len() <= tiles
-    {
+    if n > 1 << 16 || scratch.objects.len() < n || scratch.starts.len() <= tiles {
         return Err(Error::NoMemory);
     }
-    if draws.iter().any(|d| {
+    if (0..n).map(&draw).any(|d| {
         d.depth.is_some_and(|dp| dp.mode > m3::depth::ALWAYS)
             || d.alpha.is_some_and(|a| a.func > m3::depth::ALWAYS)
     }) {
@@ -168,8 +185,8 @@ pub fn bin<M: LocalMem>(
     // Pass 1: each tile's quads counted (in the slot after its own).
     starts.fill(0);
     let mut total = 0usize;
-    for d in draws {
-        let r = draw_tiles(d, cols, rows);
+    for d in (0..n).map(&draw) {
+        let r = draw_tiles(&d, cols, rows);
         for y in u32::from(r.y0)..u32::from(r.y1) {
             for x in u32::from(r.x0)..u32::from(r.x1) {
                 starts[(y * cols + x) as usize + 1] += 1;
@@ -190,8 +207,8 @@ pub fn bin<M: LocalMem>(
     }
     // Pass 2: each quad's index into its tiles' places; after it,
     // `starts[k]` is tile k's end (tile k + 1's start).
-    for (i, d) in draws.iter().enumerate() {
-        let r = draw_tiles(d, cols, rows);
+    for (i, d) in (0..n).map(&draw).enumerate() {
+        let r = draw_tiles(&d, cols, rows);
         for y in u32::from(r.y0)..u32::from(r.y1) {
             for x in u32::from(r.x0)..u32::from(r.x1) {
                 let k = (y * cols + x) as usize;
@@ -209,18 +226,18 @@ pub fn bin<M: LocalMem>(
     });
     objs.flush();
     objs.at = l.params + OBJECTS_AT;
-    for (i, d) in draws.iter().enumerate() {
-        let (words, n, kind) = encode(d);
+    for (i, d) in (0..n).map(&draw).enumerate() {
+        let (words, len, kind) = encode(&d);
         let flags = if kind == Kind::Textured {
             tex::STRIP_GAME
         } else {
             m3::STRIP_ONE_TRIANGLE
         };
         scratch.objects[i] = flags | ((objs.next_at() - l.params) / 4);
-        if objs.next_at() + 4 * n as u32 > l.params + l.params_size {
+        if objs.next_at() + 4 * len as u32 > l.params + l.params_size {
             return Err(Error::TooComplex);
         }
-        objs.put_all(&words[..n]);
+        objs.put_all(&words[..len]);
     }
     objs.flush();
     let object_words = objs.stored;

@@ -41,6 +41,7 @@ row with every new ADR that decides an area of code.
 | boot/glesfeat/ | 0024, 0026, 0035 |
 | boot/mbx3d/ | 0024, 0026 |
 | boot/mbx3d-api/ | 0024, 0026 |
+| boot/tabench/ | 0024, 0026, 0034, 0035 |
 | boot/blend/ | 0022, 0034 |
 | boot/mbx/ | 0023 |
 | boot/mbx-blend/ | 0023, 0030 |

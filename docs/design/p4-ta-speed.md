@@ -197,6 +197,28 @@ Mobile's, 99.67 / 2, as decided for P4's first run).
    time, TA time, render time, bytes, parameter memory, each picture
    checked against the reference; a TA hang recorded and the run moved on
    (Q2 A); the step on screen from the first moment; the log on the card.
+   **Built 2026-10-25 (`boot/tabench`):** six sets (100 / 1,000 / 5,000
+   textured quads of 16 x 16 and 64 x 64, a 64 x 64 RGB565 texture), six
+   ways, five frames each: the CPU binner (first frame binned, then the
+   same scene rendered again); the TA fed by CPU stores Dell's way (7-word
+   vertices, state and a strip a quad); state once; state once and one
+   triangle list; that list by DMA (staged in SDRAM, pieces of whole
+   lines no larger than the FIFO's room or the window's rest, as run FD
+   found a DMA must keep to; the CPU's free time logged); Dell's way with
+   `0x85C` bit 7 off for the body (C78, R37). Every TA frame starts with
+   the GLES clear (as Dell's frames do) and a fresh memory manager. Each
+   way's CPU, TA and render times, words, the FIFO's deepest level and
+   status reads; each frame's picture hashed against its way's first, the
+   first counted word by word against the binner's. A TA that never says
+   done is logged and the run moves on; a render past 2 s resets the
+   core. The display keeps the loader's screen in the safe region
+   (ADR-0034 P), the renders go to an off-screen 16-bit target. Memory:
+   the quads are made by index from a 4-byte position each
+   (`binner::bin_with`, `ta::quads_with`), the scratch and staging in the
+   SDRAM pool. Not in it: the 6-word vertex (R38, audit E5). Found
+   building it: the DMA can't feed strips (each ends with a CPU write to
+   the end window, so a piece would be one ~100-byte quad); the triangle
+   list is what makes DMA possible.
 5. **Emulator check and mutants**, then the owner's go (attended for its
    first minutes: a TA hang may need a reset).
 

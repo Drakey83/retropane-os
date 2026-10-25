@@ -750,6 +750,23 @@ mod feed {
     }
 
     #[test]
+    fn another_writers_words_use_up_the_room_before_the_cpus_next() {
+        // The FIFO reports 510 free; a DMA takes all of it; the CPU's next
+        // word must ask again (and here wait out a full FIFO) rather than
+        // spend room that is gone.
+        let mut bus = idle(0);
+        bus.script_reads(MBX + reg::STATUS, &[0, level(0x1FE), 0]);
+        let mut f = ta::Feed::start(&mut bus, &GLESFEAT, CLOCK, 200_000);
+        assert_eq!(f.room(), 510);
+        f.advanced(510);
+        assert!(f.put(ta::Item::Word(1)));
+        let fed = f.finish();
+        // room(), then the CPU's: full, then free.
+        assert_eq!(fed.level_reads, 3);
+        assert_eq!(fed.level_max, 0x1FE);
+    }
+
+    #[test]
     fn the_scene_end_bit_can_be_off_for_the_body_and_on_for_the_end() {
         let mut bus = idle(0);
         let mut f = ta::Feed::start(&mut bus, &GLESFEAT, CLOCK, 200_000);

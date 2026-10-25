@@ -609,6 +609,17 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (the performance gate's P4, docs/design/p4-ta-speed.md):
+    // the tile accelerator against the CPU binner, six content sets, six
+    // ways; its quads made as they are wanted and its buffers in the SDRAM
+    // pool, so the zeroed RAM is the runtime's alone. 55.5 KiB measured
+    // (2026-10-25), + ~10%.
+    Budget {
+        image: "rp-tabench",
+        max_load: 61 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Test image (docs/design/ui.md, the 3D compositor proposal's GPU
     // facts): run A (fill rate, layers, partial frames, rectangular
     // textures, uploads, frame-event watch tests) and run B (texture-word
