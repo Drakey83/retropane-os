@@ -5091,7 +5091,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 62] = [
+    let runs: [GpubenchRun; 63] = [
         (
             "run A",
             &run_a,
