@@ -9192,7 +9192,7 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
         }
         let _ = bot.sense()?;
         bot.lun = 0;
-        expect_blink_after_refusal(
+        expect_no_blink_after_refusal(
             &mut bot,
             "a refused write over haret.exe on the new FAT16 card",
         )?;
@@ -9239,7 +9239,10 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
         }
         let _ = bot.sense()?;
         bot.lun = 0;
-        expect_blink_after_refusal(&mut bot, "a refused write over haret.exe on the exFAT card")?;
+        expect_no_blink_after_refusal(
+            &mut bot,
+            "a refused write over haret.exe on the exFAT card",
+        )?;
         // The refused write counts as the PC writing: the loader takes no
         // card command for 2 s after it (ADR-0014 rule 3); the next one is
         // retried while it says so.
@@ -9276,7 +9279,7 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
         }
         let _ = bot.sense()?;
         bot.lun = 1;
-        expect_blink_after_refusal(&mut bot, "a refused write over the CF card's haret.exe")?;
+        expect_no_blink_after_refusal(&mut bot, "a refused write over the CF card's haret.exe")?;
         // The refused write counts as the PC writing: the loader takes no
         // card command for 2 s after it (ADR-0014 rule 3); the next one is
         // retried while it says so.
@@ -9701,7 +9704,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         {
             return Err("CF unit: the PC overwrote a CF boot file (RetroPane/haret.exe)".into());
         }
-        expect_blink_after_refusal(&mut bot, "a CF write the guard refused")?;
+        expect_no_blink_after_refusal(&mut bot, "a CF write the guard refused")?;
         // Pulled out: the loader lets the card go and switches the slot
         // off; pushed back in, it is attached again from a power cycle.
         if device_has_runtime(&mut mon, "/machine/peripheral/cfslot", "pressed") {
@@ -11879,49 +11882,21 @@ fn expect_away_then_back(bot: &mut Bot, after: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// After a write the guard refused (the owner's ruling A, 2026-10-25):
-/// the drive stays ready for the loader's quiet time (500 ms after the
-/// last refusal), then goes away, says "medium changed" once and is ready
-/// again; every state seen is reported if not.
-fn expect_blink_after_refusal(bot: &mut Bot, after: &str) -> Result<(), String> {
-    // At most 5 s for it to go, then 20 s to come back (as
-    // `expect_away_then_back`).
-    let mut deadline = Instant::now() + Duration::from_secs(5);
-    let mut seq: Vec<(u8, u8, u8)> = Vec::new();
-    let mut went = false;
-    loop {
+/// After a write the guard refused, the drive stays as it was: ready, no
+/// medium change (the owner, 2026-10-25: no blink, nothing that looks
+/// broken; ruling A's away-and-back withdrawn). Watched for longer than
+/// the loader's old quiet time and the PC's write grace together.
+fn expect_no_blink_after_refusal(bot: &mut Bot, after: &str) -> Result<(), String> {
+    let until = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < until {
         let r = bot.command(&[0; 6], 0, false, &[])?;
-        let s = if r.status == 0 {
-            (0, 0, 0)
-        } else {
-            bot.sense()?
-        };
-        if seq.last() != Some(&s) {
-            seq.push(s);
-        }
-        if !went && r.status != 0 {
-            went = true;
-            deadline = Instant::now() + Duration::from_secs(20);
-        }
-        if went && r.status == 0 {
-            break;
-        }
-        if Instant::now() > deadline {
+        if r.status != 0 {
+            let s = bot.sense()?;
             return Err(format!(
-                "drive after {after}: {seq:x?} (never went away and came back)"
+                "drive after {after}: went away ({s:x?}): no blink wanted"
             ));
         }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let tail: Vec<_> = seq
-        .iter()
-        .copied()
-        .skip_while(|&s| s == (0, 0, 0))
-        .collect();
-    if tail != [(0x02, 0x3A, 0x00), (0x06, 0x28, 0x00), (0, 0, 0)] {
-        return Err(format!(
-            "drive after {after}: wanted ready, away, medium changed, ready; got {seq:x?}"
-        ));
+        std::thread::sleep(Duration::from_millis(200));
     }
     Ok(())
 }
@@ -12194,7 +12169,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         refuses_boot_file(&mut bot, "at start")?;
         // The owner's ruling A (2026-10-25): after a refused write the drive
         // goes away and comes back, so the PC drops the view it changed.
-        expect_blink_after_refusal(&mut bot, "a write the guard refused")?;
+        expect_no_blink_after_refusal(&mut bot, "a write the guard refused")?;
         if drive_file(&mut bot, "retropane.bin")? != old {
             return Err("drive: a refused write changed retropane.bin".into());
         }
@@ -12263,7 +12238,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             "drive",
         )?;
         refuses_boot_file(&mut bot, "after the device replaced it")?;
-        expect_blink_after_refusal(&mut bot, "a write the guard refused (again)")?;
+        expect_no_blink_after_refusal(&mut bot, "a write the guard refused (again)")?;
         if drive_file(&mut bot, "retropane.bin")? != via_serial {
             return Err("drive: a refused write changed the new retropane.bin".into());
         }
