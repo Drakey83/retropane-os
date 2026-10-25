@@ -11718,14 +11718,22 @@ mod image {
             soak_label(g, [label0, label, "CLOCK NOT TAKEN"], SOAK_RED);
             return u128::MAX;
         }
-        if plan.rounds == u32::MAX {
-            log!("  {name} {label}: lock {lock:?}; {n_ways} ways in turn for {minutes} min");
+        // One log line for both kinds of soak (two here took the stack past
+        // 80% in GC2Y's emulator check).
+        let mut span = heapless_name();
+        let _ = if plan.rounds == u32::MAX {
+            write!(span, "{minutes} min")
         } else {
-            log!(
-                "  {name} {label}: lock {lock:?}; {n_ways} ways in turn for {} rounds (stopped at {minutes} min if slower)",
+            write!(
+                span,
+                "{} rounds (stopped at {minutes} min if slower)",
                 plan.rounds
-            );
-        }
+            )
+        };
+        log!(
+            "  {name} {label}: lock {lock:?}; {n_ways} ways in turn for {}",
+            span.as_str()
+        );
         clock_readback(g);
         r.start_clean();
         // A scene's 3D registers after its first render here, which its
