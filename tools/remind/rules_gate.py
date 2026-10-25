@@ -20,7 +20,7 @@ never checked.
    it wins. A commit with no code may say `Iterate: n/a`.
 2. **No attribution**: a commit message naming a co-author or a generator
    (`Co-Authored-By`, `Generated with`) is refused (the owner's rule).
-3. **ADR before code**: a commit touching a path in docs/adr/areas.md
+3. **ADR before code**: a commit touching a path in docs/adr-areas.md
    names at least one of its ADRs (`ADR-0034`).
 4. **CI before push**: `git push` only when `cargo xtask ci` passed on
    exactly this HEAD with no tracked change (its stamp, target/ci-pass.txt).
@@ -76,9 +76,9 @@ def files_in(command):
 
 
 def areas():
-    """docs/adr/areas.md's rows: (path prefix, set of ADR numbers)."""
+    """docs/adr-areas.md's rows: (path prefix, set of ADR numbers)."""
     rows = []
-    with open(os.path.join(ROOT, "docs", "adr", "areas.md"), encoding="utf-8") as fh:
+    with open(os.path.join(ROOT, "docs", "adr-areas.md"), encoding="utf-8") as fh:
         for line in fh:
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             if len(cells) == 2 and "/" in cells[0] and re.fullmatch(r"[\d, ]+", cells[1]):
@@ -120,7 +120,7 @@ def commit_verdict(command, paths, rows):
             p, s = sorted(missing.items())[0]
             names = ", ".join(f"ADR-{n:04}" for n in sorted(s))
             return (
-                f"ADR before code: {p} is decided by {names} (docs/adr/areas.md); read its numbered "
+                f"ADR before code: {p} is decided by {names} (docs/adr-areas.md); read its numbered "
                 f"rules, check the change against them, and name the ADR in the message"
             )
     return None
@@ -234,7 +234,7 @@ def self_test():
         (f'git commit -m "x (ADR-0025)\n\nIterate: {long}"', {"drivers/mbx-display/src/a.rs"}, False),
         (f'git commit -m "x ADR-0034\n\nIterate: {long}"', {"drivers/mbx-display/a.rs", "drivers/mved/b.rs"}, False),
         (f'git commit -m "x ADR-0034 ADR-0025\n\nIterate: {long}"', {"drivers/mbx-display/a.rs", "drivers/mved/b.rs"}, True),
-        ('git commit -m "d\n\nIterate: n/a"', {"docs/adr/areas.md"}, True),
+        ('git commit -m "d\n\nIterate: n/a"', {"docs/adr-areas.md"}, True),
     ]
     bad = 0
     for cmd, paths, allow in commits:

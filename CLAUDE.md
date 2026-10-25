@@ -14,7 +14,7 @@
    code without an `Iterate:` line (60+ characters: vendor or textbook way;
    ours; why it wins; docs-only commits may say `Iterate: n/a`); a commit
    naming a co-author or generator; a commit touching an ADR-decided area
-   (`docs/adr/areas.md`) without naming one of its ADRs; a `git push` unless
+   (`docs/adr-areas.md`) without naming one of its ADRs; a `git push` unless
    `cargo xtask ci` passed on exactly that commit (`target/ci-pass.txt`);
    another session or agent unless the owner's latest message asks for one.
    Git's own hooks (`tools/githooks`, `core.hooksPath`) run the commit and
