@@ -445,11 +445,11 @@ mod image {
             "C6 Windows Mobile's timing put back: MCMEM1 {:#010x}",
             devices::cf_mem_timing().unwrap_or(0)
         );
-        if let Some(now) = tuned {
+        if let Some((now, read_limit)) = tuned {
             screen.say(format_args!(
                 "CF card: writing its test file at faster timings"
             ));
-            write_test(&mut cf, now, buf);
+            write_test(&mut cf, now, read_limit, buf);
             put_back_cf_timing();
         }
         cpld_irq(screen, gpio, cpld);
@@ -471,7 +471,7 @@ mod image {
     }
 
     /// C7: CF writes with only the data words at a shorter strobe (R28).
-    fn write_test(cf: &mut Cf, tuned: u32, pool: &mut [u8]) {
+    fn write_test(cf: &mut Cf, tuned: u32, read_limit: u32, pool: &mut [u8]) {
         let wm = devices::CF_MEM_TIMING_WM;
         let high = wm & !0xF_FFFF;
         let slowest = high | Timing::SLOWEST.mcmem();
@@ -538,7 +538,10 @@ mod image {
         // The strobe from Windows Mobile's down, set-up and hold as the
         // card's tuned read timing.
         let mut limit = None;
-        for asst in (0..=wm_t.asst).rev() {
+        // Down to the card's read limit's strobe: the DRQ polls in the data
+        // phase are reads at the data timing.
+        let floor = Timing::from_mcmem(read_limit).asst;
+        for asst in (floor..=wm_t.asst).rev() {
             let step = Timing { asst, ..t };
             let (took, failed, bad) = round(cf, step, 100 + asst);
             log!(
@@ -689,7 +692,7 @@ mod image {
     }
 
     /// C4: the card's own timing, measured by `tune` (reads only).
-    fn own_timing(cf: &mut Cf, buf: &mut [u8], reference: &[u8]) -> Option<u32> {
+    fn own_timing(cf: &mut Cf, buf: &mut [u8], reference: &[u8]) -> Option<(u32, u32)> {
         let mut socket = Socket;
         let was = socket.read();
         let clk_ps = socket.clk_ps();
@@ -709,6 +712,7 @@ mod image {
         let t0 = rt::ticks();
         let tuned = cf.tune(&mut socket);
         let tune_ms = ms(rt::ticks().wrapping_sub(t0));
+        let read_limit;
         let now = match tuned {
             Tuned::Applied {
                 was,
@@ -716,6 +720,7 @@ mod image {
                 limit,
                 clamped,
             } => {
+                read_limit = limit;
                 log!(
                     "C4 tune (measured, {tune_ms} ms): the card's limit {limit:#010x} ({} cycles, {} ns), with the margin {now:#010x} (clamped {clamped}); was {was:#010x}",
                     Timing::from_mcmem(limit).cycle_cycles(),
@@ -754,7 +759,7 @@ mod image {
             }
         }
         let _ = cf.set_read_path(proven);
-        Some(now)
+        Some((now, read_limit))
     }
 
     // ---- SD -----------------------------------------------------------

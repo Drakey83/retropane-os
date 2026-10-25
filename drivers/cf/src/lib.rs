@@ -702,11 +702,13 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         self.write_data_at(set, read, write, write);
     }
 
-    /// As [`CfCard::write_at`], with the data words at their own timing:
-    /// `command` while the command, the address and the polling go to the
-    /// card, `data` only while a sector's 256 data words do (R28's write
-    /// test: a data timing too fast for the card can spoil the data of the
-    /// sector addressed, never another sector).
+    /// As [`CfCard::write_at`], with the data phase at its own timing:
+    /// `command` while the command and the address go to the card and while
+    /// it programs, `data` from the command's first DRQ to its last data
+    /// word (its DRQ polls included: a `data` timing must be no shorter than
+    /// the card's proven read timing). R28's write test: a data timing too
+    /// fast for the card can spoil the data of the sectors addressed, never
+    /// another sector.
     pub fn write_data_at(&mut self, set: fn(u32), read: u32, command: u32, data: u32) {
         self.write_timing = Some(WriteTiming {
             set,
@@ -1030,18 +1032,28 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             let count = (run.len() / SECTOR) as u8;
             self.command(CMD_WRITE_SECTORS, at, count)
                 .map_err(|e| self.failed(e))?;
+            // The data phase at the data timing, switched once a command:
+            // `MCMEM` takes ~1 ms to change on the X51v (2026-10-24: a switch
+            // around every sector cut writes from 4,637 to 240 KiB/s). The
+            // DRQ polls between sectors are reads at the data timing, so a
+            // data timing must be no shorter than the card's proven reads.
+            let t = self.write_timing;
+            if let Some(t) = t {
+                (t.set)(t.data);
+            }
             for sector in run.as_chunks::<SECTOR>().0 {
-                self.wait_drq().map_err(|e| self.failed(e))?;
-                let t = self.write_timing;
-                if let Some(t) = t {
-                    (t.set)(t.data);
+                if let Err(e) = self.wait_drq() {
+                    if let Some(t) = t {
+                        (t.set)(t.command);
+                    }
+                    return Err(self.failed(e));
                 }
                 for pair in sector.as_chunks::<2>().0 {
                     self.common.write16(reg::DATA, u16::from_le_bytes(*pair));
                 }
-                if let Some(t) = t {
-                    (t.set)(t.command);
-                }
+            }
+            if let Some(t) = t {
+                (t.set)(t.command);
             }
             // Done when the card has programmed the last sector.
             self.finish(WRITE_SPIN_LIMIT).map_err(|e| self.failed(e))?;
