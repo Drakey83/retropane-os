@@ -628,10 +628,13 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 140 -> 170 KiB on 2026-10-24 (test image): runs GC2O-GC2Q
     // (the tile orders, the one-pass check, the write-out search and the
     // climb above 133.25 / 1); GC2Q's variant 152,952 B measured, + ~10%.
+    // Zeroed RAM ratcheted 32 -> 40 KiB on 2026-10-25 (test image): the
+    // stack 24 -> 32 KiB (the GC2 soaks' shared code at 80% of 24, GC2Y
+    // 19,928 B in the emulator), 34,912 B.
     Budget {
         image: "rp-gpubench",
         max_load: 170 * 1024,
-        max_zero: 32 * 1024,
+        max_zero: 40 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (docs/research/storage-speed.md): the CF socket's timings,
