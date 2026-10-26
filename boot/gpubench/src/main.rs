@@ -606,6 +606,12 @@ mod image {
         /// Run GC2T: `LMTIM` in place of the rated timing at every step but
         /// Windows Mobile's (see [`step_speed`]).
         tim: Option<u32>,
+        /// Run GC2AF: microseconds [`Rig::frame`] waits on the CPU's own
+        /// timer after starting a render before it first reads the 3D
+        /// core's status (0: it reads the status register throughout, as
+        /// every run before). The CPU then stays off the 2700G's bus while
+        /// the core draws.
+        quiet_us: u32,
     }
 
     /// Up to eight 3D registers and their values, for [`Rig::over`].
@@ -736,7 +742,16 @@ mod image {
             };
             let t0 = self.clock.now_us();
             let mut exact = None;
-            while self.clock.now_us().wrapping_sub(t0) < 500_000 {
+            // Run GC2AF's quiet way: the CPU off the 2700G's bus for the
+            // render (its own timer only), then one status read; the
+            // render's time is then the wait, an upper bound.
+            if self.quiet_us != 0 {
+                while self.clock.now_us().wrapping_sub(t0) < self.quiet_us {}
+                if self.e.regs.read32(MBX + reg::STATUS) & RENDER_DONE != 0 {
+                    exact = Some(self.quiet_us);
+                }
+            }
+            while exact.is_none() && self.clock.now_us().wrapping_sub(t0) < 500_000 {
                 if self.e.regs.read32(MBX + reg::STATUS) & RENDER_DONE != 0 {
                     exact = Some(self.clock.now_us().wrapping_sub(t0));
                     break;
@@ -7919,7 +7934,8 @@ mod image {
         || GC2_LASTPIX
         || GC2_RING
         || GC2_NIGHT
-        || GC2_TRACE;
+        || GC2_TRACE
+        || GC2_SPLIT;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -7928,7 +7944,18 @@ mod image {
     /// About 12 minutes, unattended.
     const GC2_TRACE: bool = option_env!("RP_GPUBENCH_GC2_TRACE").is_some();
 
-    /// GC2AE's renders a part capped (`RP_GPUBENCH_GC2AE_ROUNDS`, the
+    /// Run GC2AF, reminder R37 (`RP_GPUBENCH_GC2_SPLIT`): R36's fault
+    /// generator with the other readers of the 2700G's memory taken off one
+    /// at a time (the display's fetch, the CPU's status reads, both), and at
+    /// 74.75 / 1 and 149.50 / 2: divide 1 itself against the contention.
+    /// About 8 minutes, unattended.
+    const GC2_SPLIT: bool = option_env!("RP_GPUBENCH_GC2_SPLIT").is_some();
+
+    /// GC2AF's quiet wait: past the fault generator's render at 149.50 / 1
+    /// (5.1-5.8 ms in GC2AE), on the CPU's own timer.
+    const GC2AF_QUIET_US: u32 = 7_000;
+
+    /// GC2AE's and GC2AF's renders a part capped (`RP_GPUBENCH_GC2AE_ROUNDS`, the
     /// emulator's check); none on the device.
     const GC2AE_ROUNDS: u32 = match option_env!("RP_GPUBENCH_GC2AE_ROUNDS") {
         Some(s) => parse_decimal(s, 1),
@@ -9285,7 +9312,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_TRACE {
+            if GC2_SPLIT {
+                "the 16-bit kinds' targets inside the safe region (GC2AF, R37: no map; R36's fault generator with the display's fetch, the CPU's status reads or both off, and at 74.75 / 1 and 149.50 / 2, each target poisoned first),"
+            } else if GC2_TRACE {
                 "the 16-bit kinds' targets inside the safe region (GC2AE, R37: no map; R36's fault traced and varied, then one full hidden layer reversed on every 16-bit kind at 146.25 / 1, each target poisoned first),"
             } else if GC2_NIGHT {
                 "the 16-bit kinds' targets inside the safe region (GC2AD, R36: no map; two hours at 149.50 / 1 over every 16-bit kind and GC2K's worst, the ring, one full hidden layer and both at once alternating, reversed, each target poisoned first),"
@@ -9435,7 +9464,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_TRACE {
+        let patch = if GC2_SPLIT {
+            gc2::TRACE_SCENES.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_TRACE {
             gc2::MARGIN_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NIGHT {
             gc2::NIGHT_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -9786,7 +9817,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_TRACE {
+                if GC2_SPLIT {
+                    gc2_split(g, &mut r, (tex, first, dsig));
+                } else if GC2_TRACE {
                     gc2_trace(g, &mut r, (tex, first, dsig));
                 } else if GC2_NIGHT {
                     gc2_night(g, &mut r, (tex, first, dsig));
@@ -9824,6 +9857,7 @@ mod image {
                             poison: false,
                             describe: ORDER_DESCRIBED,
                             pause: false,
+                            quiet: false,
                         },
                     );
                 } else if GC2_ORDER {
@@ -11324,6 +11358,7 @@ mod image {
                 poison: true,
                 describe: ORDER_DESCRIBED,
                 pause: false,
+                quiet: false,
             },
         );
     }
@@ -11356,6 +11391,7 @@ mod image {
             poison: true,
             describe,
             pause,
+            quiet: false,
         };
         let step = |k: usize| {
             let ((m, n), name) = gc2::TRACE_STEPS[k];
@@ -11417,8 +11453,59 @@ mod image {
                 poison: true,
                 describe: 10,
                 pause: false,
+                quiet: false,
             },
         );
+    }
+
+    /// Run GC2AF (see [`GC2_SPLIT`]): the fault generator, 400 renders a
+    /// way: as GC2AE; the display's fetch off; the CPU quiet; both; at
+    /// 74.75 / 1 (Dell's divide-1 clock) and 149.50 / 2 (divide 2 at the
+    /// top clock). Every target poisoned; each part its own references and
+    /// controls at Windows Mobile's clock.
+    #[inline(never)]
+    fn gc2_split(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let n = gc2::TRACE_CONDITION.min(GC2AE_ROUNDS);
+        log!(
+            "  GC2AF (R37): FT2 with the ring and one full layer, reversed, {n} renders a way: 149.50 / 1 as GC2AE; the display's fetch off; the CPU's status reads off ({GC2AF_QUIET_US} us on its own timer); both; 74.75 / 1; 149.50 / 2"
+        );
+        let top = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        let one = |name, label, step, pause, quiet| OrderPlan {
+            name,
+            label,
+            scenes: &gc2::TRACE_SCENES,
+            ways: &gc2::TRACE_REVERSED,
+            step,
+            secs: 600,
+            rounds: n,
+            poison: true,
+            describe: 3,
+            pause,
+            quiet,
+        };
+        let plans = [
+            one("GC2AF as GC2AE", "GC2AF 1 AS BEFORE", top, false, false),
+            one("GC2AF fetch off", "GC2AF 2 FETCH OFF", top, true, false),
+            one("GC2AF CPU quiet", "GC2AF 3 CPU QUIET", top, false, true),
+            one("GC2AF both off", "GC2AF 4 BOTH OFF", top, true, true),
+            one(
+                "GC2AF Dell's",
+                "GC2AF 5 74.75 / 1",
+                (gc2_step(23, 4, 0, 1), "74.75 / 1"),
+                false,
+                false,
+            ),
+            one(
+                "GC2AF divide 2",
+                "GC2AF 6 149.50 / 2",
+                (gc2_step(23, 2, 0, 2), "149.50 / 2"),
+                false,
+                false,
+            ),
+        ];
+        for p in &plans {
+            gc2_orders(g, r, (tex, &mut *first, dsig), p);
+        }
     }
 
     /// Run GC2AC (see [`GC2_RING`]): the seven ways at 149.50 / 1.
@@ -11443,6 +11530,7 @@ mod image {
                 poison: false,
                 describe: ORDER_DESCRIBED,
                 pause: false,
+                quiet: false,
             },
         );
     }
@@ -11484,6 +11572,7 @@ mod image {
                     poison: false,
                     describe: ORDER_DESCRIBED,
                     pause: false,
+                    quiet: false,
                 },
             );
         }
@@ -11507,6 +11596,7 @@ mod image {
                     poison: false,
                     describe: ORDER_DESCRIBED,
                     pause: false,
+                    quiet: false,
                 },
             );
             if wrong & ALL != ALL {
@@ -11550,6 +11640,7 @@ mod image {
                     poison: false,
                     describe: ORDER_DESCRIBED,
                     pause: false,
+                    quiet: false,
                 },
             );
             if let Some(&w) = gc2::FREE_PREFER.iter().find(|&&w| wrong & 1 << w == 0) {
@@ -11590,6 +11681,7 @@ mod image {
                 poison: false,
                 describe: ORDER_DESCRIBED,
                 pause: false,
+                quiet: false,
             },
         );
     }
@@ -11618,6 +11710,7 @@ mod image {
                     poison: false,
                     describe: ORDER_DESCRIBED,
                     pause: false,
+                    quiet: false,
                 },
             );
         }
@@ -11640,6 +11733,7 @@ mod image {
                 poison: false,
                 describe: ORDER_DESCRIBED,
                 pause: false,
+                quiet: false,
             },
         );
     }
@@ -11679,6 +11773,7 @@ mod image {
                     poison: false,
                     describe: ORDER_DESCRIBED,
                     pause: false,
+                    quiet: false,
                 },
             );
             let clean = wrong & CURED_MASK == 0;
@@ -11716,6 +11811,7 @@ mod image {
                 poison: false,
                 describe: ORDER_DESCRIBED,
                 pause: false,
+                quiet: false,
             },
         );
     }
@@ -11749,6 +11845,7 @@ mod image {
                     poison: false,
                     describe: ORDER_DESCRIBED,
                     pause: false,
+                    quiet: false,
                 },
             );
         }
@@ -11768,6 +11865,7 @@ mod image {
                 poison: false,
                 describe: ORDER_DESCRIBED,
                 pause: false,
+                quiet: false,
             },
         );
     }
@@ -11840,6 +11938,7 @@ mod image {
                         poison: false,
                         describe: ORDER_DESCRIBED,
                         pause: false,
+                        quiet: false,
                     },
                 );
             }
@@ -11880,6 +11979,7 @@ mod image {
                     poison: false,
                     describe: ORDER_DESCRIBED,
                     pause: false,
+                    quiet: false,
                 },
             );
         }
@@ -11911,6 +12011,7 @@ mod image {
                         poison: false,
                         describe: ORDER_DESCRIBED,
                         pause: false,
+                        quiet: false,
                     },
                 );
             }
@@ -11945,6 +12046,7 @@ mod image {
                 poison: false,
                 describe: ORDER_DESCRIBED,
                 pause: false,
+                quiet: false,
             };
             g.over = Over::NONE;
             log!("  GC2Q C: GC2K's worst without any setting (the control)");
@@ -11983,6 +12085,7 @@ mod image {
                     poison: false,
                     describe: ORDER_DESCRIBED,
                     pause: false,
+                    quiet: false,
                 },
             );
         }
@@ -12073,6 +12176,7 @@ mod image {
                 poison: false,
                 describe: ORDER_DESCRIBED,
                 pause: false,
+                quiet: false,
             },
         );
     }
@@ -12098,6 +12202,8 @@ mod image {
         /// The display's fetch off around each render (test G16's way; the
         /// screen dark meanwhile): whether the scan-out's reads take part.
         pause: bool,
+        /// The CPU off the 2700G's bus while the core draws ([`Rig::quiet_us`]).
+        quiet: bool,
     }
 
     /// Wrong renders a tile-order soak describes pixel by pixel (from
@@ -12396,6 +12502,7 @@ mod image {
                 if plan.pause {
                     let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
                 }
+                g.quiet_us = if plan.quiet { GC2AF_QUIET_US } else { 0 };
                 let wrong = gc2_render_at(
                     g,
                     r,
@@ -12406,6 +12513,7 @@ mod image {
                     &mut bases[sc],
                     &mut side,
                 );
+                g.quiet_us = 0;
                 if plan.pause {
                     let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
                 }
@@ -13543,6 +13651,7 @@ mod image {
             checks: 0,
             writeout_hits: Over::NONE,
             tim: None,
+            quiet_us: 0,
         };
         if START {
             start_watch(&mut g.e.regs, "N4 the keypad taken, the fence written");

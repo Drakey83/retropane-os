@@ -5282,6 +5282,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
         ],
     )?;
+    let run_gc2af = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_SPLIT", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5314,7 +5323,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 72] = [
+    let runs: [GpubenchRun; 73] = [
         (
             "run A",
             &run_a,
@@ -5564,6 +5573,26 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AF (R37): the fault generator with the display's fetch, the
+        // CPU's status reads or both off, at 74.75 / 1 and 149.50 / 2, two
+        // renders a way (every way right in the emulator; the fetch-off
+        // ways' controls right: the underrun flag settled first).
+        (
+            "run GC2AF",
+            &run_gc2af,
+            &[
+                "GC2AF (R37): FT2 with the ring and one full layer, reversed",
+                "GC2AF as GC2AE 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF fetch off 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF CPU quiet 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF both off 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF Dell's 74.75 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF divide 2 149.50 / 2: controls at Windows Mobile's clock after: 1 of 1 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
