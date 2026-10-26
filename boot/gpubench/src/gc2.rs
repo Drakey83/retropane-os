@@ -541,6 +541,9 @@ pub enum Scene {
     /// Run GC2AK's textured sweep with the u and v shift (see
     /// [`corner_uv_scene`]; only through [`order_scene_wide`]).
     CornerUv(usize),
+    /// Run GC2AL's cure `c`, scene `i` (see [`cure_scene`]; only through
+    /// [`order_scene_wide`]).
+    Cure(usize, usize),
 }
 
 /// The objects a scene holds through [`order_scene_wide`]: a scene's own
@@ -1017,6 +1020,9 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     if let Scene::CornerUv(i) = s {
         return corner_uv_scene(i, t);
     }
+    if let Scene::Cure(c, i) = s {
+        return cure_scene(c, i, t);
+    }
     let (bg, slots) = order_scene(s, t);
     let mut out = [None; SLOTS];
     out[..3].copy_from_slice(&slots);
@@ -1449,7 +1455,8 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         | Scene::Geo(_)
         | Scene::Quad(_)
         | Scene::Corner(..)
-        | Scene::CornerUv(_) => (BLACK, [None, None, None]),
+        | Scene::CornerUv(_)
+        | Scene::Cure(..) => (BLACK, [None, None, None]),
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Cured(_) => (BLACK, [None, None, None]),
             base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
@@ -1500,7 +1507,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
         Scene::Geo(_) | Scene::Quad(_) => patch_corner(0),
-        Scene::Corner(..) | Scene::CornerUv(_) => (0, 0),
+        Scene::Corner(..) | Scene::CornerUv(_) | Scene::Cure(..) => (0, 0),
         Scene::Fix(b, _) => match FIX_BASE[b] {
             Scene::Kind(FT2) => patch_corner(0),
             Scene::Sweep(w) => SWEEP[w].corner(),
@@ -1986,12 +1993,9 @@ pub const CORNER_ROUNDS: u32 = 200;
 /// place's index `k` (0..128).
 #[must_use]
 pub const fn corner_rect(i: usize, j: usize) -> ((i32, i32, i32, i32), usize) {
-    let k = (CORNER_RECTS * i + j) % 128;
-    let (a, c) = ((k % 8) as i32, (k / 8) as i32);
     // Cells of 240 x 208 pixels, their origins on tile seams (x a multiple
     // of 8, y of 16), so each edge's offset into its tile is `a` or `c`.
-    let (cx, cy) = ((j % 2) as i32 * 240, (j / 2) as i32 * 208);
-    ((cx + 16 + a, cy + 16 + c, cx + 200 + a, cy + 176 + c), k)
+    corner_rect_of(CORNER_RECTS, i, j)
 }
 
 /// Corner scene `i`, flat or textured (see [`CORNER_RECTS`]).
@@ -2094,6 +2098,85 @@ pub const LADDER_STEPS: [((u32, u32), u32, &str); 6] = [
 /// Rounds a scene a setting: 100 (a corner place faulting 3% of renders
 /// shows with ~95%; the step that passes gets its own soak).
 pub const LADDER_ROUNDS: u32 = 100;
+
+/// Run GC2AL (the owner, 2026-10-26: "Keep working on the fast mode: find
+/// what cures the remaining textured faults"). GC2AK left textured faults
+/// at every divide-1 step: one pixel in a tile's last rows beside a
+/// rectangle's corner, as GC2AI. GC2T's reading: the core starts the next
+/// tile in its on-chip buffer before the last rows are written out; every
+/// cure here gives a tile more to do first, or changes which tile follows.
+/// Five rectangles a scene (two hidden layers or an extra blended layer
+/// take the slots of the sixth), all of GC2AK's u and v textured kind.
+pub const CURE_RECTS: usize = 5;
+pub const CURE_SCENES: usize = 128_usize.div_ceil(CURE_RECTS);
+/// GC2AL's cures: (0) one full layer (GC2AK's, the baseline); (1) two full
+/// layers; (2) one full layer and [`INVISIBLE`] blended over everything.
+/// Tile order is the way's (reversed, or rows for the baseline's twin).
+pub const CURES: usize = 3;
+/// Fully transparent black: blended over every tile, nothing seen.
+pub const INVISIBLE: u32 = 0x0000_0000;
+pub const CURE_ROUNDS: u32 = 100;
+
+/// Rectangle `j` of a scene of `per` (see [`corner_rect`]).
+#[must_use]
+pub const fn corner_rect_of(per: usize, i: usize, j: usize) -> ((i32, i32, i32, i32), usize) {
+    let k = (per * i + j) % 128;
+    let (a, c) = ((k % 8) as i32, (k / 8) as i32);
+    let (cx, cy) = ((j % 2) as i32 * 240, (j / 2) as i32 * 208);
+    ((cx + 16 + a, cy + 16 + c, cx + 200 + a, cy + 176 + c), k)
+}
+
+/// GC2AL's scene `i` with cure `cure` (see [`CURES`]).
+#[must_use]
+pub fn cure_scene(cure: usize, i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    for _ in 0..if cure == 1 { 2 } else { 1 } {
+        out[n] = Some(flat(HIDDEN_LAYER, false));
+        n += 1;
+    }
+    for d in slots.iter().flatten() {
+        if !matches!(d.paint, Paint::Texture { .. }) {
+            out[n] = Some(*d);
+            n += 1;
+        }
+    }
+    for j in 0..CURE_RECTS {
+        let ((x0, y0, x1, y1), _) = corner_rect_of(CURE_RECTS, i, j);
+        let d = Draw::rect(x0, y0, x1 - x0, y1 - y0, Paint::texture(t.t8888));
+        out[n] = Some(shift_texture(d, TexFix::ClampUv));
+        n += 1;
+    }
+    if cure == 2 {
+        out[n] = Some(flat(INVISIBLE, true));
+    }
+    (bg, out)
+}
+
+const fn cure_set(cure: usize) -> [Scene; CURE_SCENES] {
+    let mut s = [Scene::Cure(0, 0); CURE_SCENES];
+    let mut i = 0;
+    while i < CURE_SCENES {
+        s[i] = Scene::Cure(cure, i);
+        i += 1;
+    }
+    s
+}
+pub const CURE_ONE: [Scene; CURE_SCENES] = cure_set(0);
+pub const CURE_TWO: [Scene; CURE_SCENES] = cure_set(1);
+pub const CURE_BUSY: [Scene; CURE_SCENES] = cure_set(2);
+const fn cure_ways(o: u8) -> [(usize, u8); CURE_SCENES] {
+    let mut w = [(0, REVERSED); CURE_SCENES];
+    let mut i = 0;
+    while i < CURE_SCENES {
+        w[i] = (i, o);
+        i += 1;
+    }
+    w
+}
+pub const CURE_REVERSED: [(usize, u8); CURE_SCENES] = cure_ways(REVERSED);
+pub const CURE_ROWS: [(usize, u8); CURE_SCENES] = cure_ways(ROWS);
 
 /// Colours tried as a soak's poison, the most saturated first (no GC2
 /// scene's Gouraud or texture reaches them, by design; [`absent16`]

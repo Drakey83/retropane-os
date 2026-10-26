@@ -1585,3 +1585,47 @@ fn gc2ak_sweeps_uv_at_each_setting() {
     assert_eq!(LADDER_STEPS[5].1, 2);
     const { assert!(LADDER_ROUNDS >= 100) };
 }
+
+/// GC2AL's cures: five rectangles a scene cover all 128 places, the same
+/// rectangles in every cure, only the layers or the blended layer differ,
+/// and every scene fits the renderer's slots.
+#[test]
+fn gc2al_cures_differ_only_in_their_cure() {
+    let t = test_tex();
+    let mut seen = [false; 128];
+    for i in 0..CURE_SCENES {
+        for j in 0..CURE_RECTS {
+            seen[corner_rect_of(CURE_RECTS, i, j).1] = true;
+        }
+        let scene = |c| -> std::vec::Vec<Draw> {
+            let (_, s) = cure_scene(c, i, t);
+            s.iter().flatten().copied().collect()
+        };
+        assert_eq!(CURES, 3, "one layer, two layers, the blended layer");
+        let (one, two, busy) = (scene(0), scene(1), scene(2));
+        assert_eq!(one.len(), 2 + CURE_RECTS);
+        assert_eq!(two.len(), 3 + CURE_RECTS);
+        assert_eq!(busy.len(), 3 + CURE_RECTS);
+        assert!(two.len() <= SLOTS && busy.len() <= SLOTS);
+        assert_eq!(two[0], two[1], "two full layers");
+        assert_eq!(two[1..], one[..], "then the same scene");
+        assert_eq!(busy[..one.len()], one[..], "the same scene first");
+        let last = busy[one.len()];
+        assert_eq!(last.paint, Paint::Flat(INVISIBLE));
+        assert_ne!(last, flat(INVISIBLE, false), "blended, not opaque");
+        assert!(
+            one[2..]
+                .iter()
+                .all(|d| matches!(d.paint, Paint::Texture { .. }))
+        );
+    }
+    assert!(seen.iter().all(|&b| b), "every place swept");
+    for i in 0..CURE_SCENES {
+        assert_eq!(CURE_ONE[i], Scene::Cure(0, i));
+        assert_eq!(CURE_TWO[i], Scene::Cure(1, i));
+        assert_eq!(CURE_BUSY[i], Scene::Cure(2, i));
+        assert_eq!((CURE_REVERSED[i], CURE_ROWS[i]), ((i, REVERSED), (i, ROWS)));
+    }
+    assert_eq!(corner_rect_of(CORNER_RECTS, 3, 4), corner_rect(3, 4));
+    const { assert!(CURE_SCENES < 42 && CURE_ROUNDS >= 100) };
+}
