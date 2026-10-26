@@ -358,6 +358,7 @@ impl Host {
     /// the status OUT. `None` if the device stalled.
     fn control_in(&mut self, s: [u8; 8]) -> Option<Vec<u8>> {
         self.setup(s);
+        let want = usize::from(u16::from_le_bytes([s[6], s[7]]));
         let mut data = Vec::new();
         for _ in 0..64 {
             if self.sim().csr0 & reg::SST != 0 {
@@ -368,11 +369,20 @@ impl Host {
             if let Some(p) = self.sim().host_in() {
                 let short = p.len() < usb::EP0_SIZE;
                 data.extend(p);
-                if short {
+                // As a host does: a short packet or all it asked for ends
+                // the data stage (USB 2.0 8.5.3.2).
+                if short || data.len() >= want {
                     // Status stage: zero-length OUT.
                     self.sim().csr0 |= reg::OPC;
                     self.poll(2);
                     assert_eq!(self.sim().csr0 & reg::OPC, 0, "status OUT not acknowledged");
+                    // Nothing more for this request: a stray packet would
+                    // answer the next one.
+                    self.poll(3);
+                    assert!(
+                        self.sim().host_in().is_none(),
+                        "a packet after the data stage"
+                    );
                     return Some(data);
                 }
             }
@@ -1253,6 +1263,33 @@ fn enumerates_as_mtp_like_windows_and_records_what_windows_read() {
     h.udc.disable();
     h.udc.enable().unwrap();
     assert_eq!(h.udc.ms_seen(), 0);
+}
+
+#[test]
+fn a_reply_that_fills_the_request_ends_without_a_zero_length_packet() {
+    // Windows reads the compatible ID's 16-byte header first: one full
+    // packet that is all it asked for, then the status stage. A zero-length
+    // packet after it would wait in the FIFO and answer the next request
+    // (found in the emulator, ADR-0037).
+    let mut h = mtp_host();
+    h.reset();
+    h.setup([0xC0, usb::MS_VENDOR_CODE, 0, 0, 4, 0, 16, 0]);
+    let mut packets = Vec::new();
+    for _ in 0..20 {
+        if let Some(p) = h.sim().host_in() {
+            packets.push(p);
+        }
+        h.poll(3);
+    }
+    assert_eq!(packets, [usb::MS_COMPAT_ID[..16].to_vec()]);
+    h.sim().csr0 |= reg::OPC;
+    h.poll(2);
+    // The next request is answered by its own reply.
+    assert_eq!(
+        h.control_in([0xC0, usb::MS_VENDOR_CODE, 0, 0, 4, 0, 40, 0])
+            .unwrap(),
+        usb::MS_COMPAT_ID
+    );
 }
 
 #[test]

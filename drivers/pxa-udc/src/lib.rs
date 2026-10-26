@@ -27,7 +27,8 @@ pub mod unplug;
 pub mod usb;
 
 use rp_hal_api::{Port, RegisterBus, RegisterBus8, Width};
-use usb::{Cdc, Layout, Reply, Setup};
+pub use usb::Layout;
+use usb::{Cdc, Reply, Setup};
 
 /// Register offsets and bits (docs/hw/udc.md).
 pub mod reg {
@@ -332,6 +333,10 @@ pub struct Udc<B> {
     ep0_buf: [u8; 128],
     ep0_len: usize,
     ep0_pos: usize,
+    /// The IN reply's wLength: a reply that fills it ends without a
+    /// zero-length packet (USB 2.0 8.5.3.2: that packet only ends a reply
+    /// shorter than asked for).
+    ep0_want: usize,
     configuration: u8,
     rx: Ring<256>,
     tx: Ring<512>,
@@ -363,6 +368,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             ep0_buf: [0; 128],
             ep0_len: 0,
             ep0_pos: 0,
+            ep0_want: 0,
             configuration: 0,
             rx: Ring::new(),
             tx: Ring::new(),
@@ -698,6 +704,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
                 self.ep0_buf[..n].copy_from_slice(&data[..n]);
                 self.ep0_len = n;
                 self.ep0_pos = 0;
+                self.ep0_want = usize::from(s.length);
                 self.ep0 = Ep0::InData;
                 self.send_ep0_packet();
             }
@@ -796,6 +803,14 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             self.csr_write(slot, reg::FEF);
         }
         self.halt_cleared = false;
+    }
+
+    /// Drops what waits in MTP's bulk FIFOs (a cancelled transfer [SIC
+    /// 5.2.1]); a halt stays.
+    pub fn mtp_flush(&mut self) {
+        for slot in [SLOT_MSC_OUT, SLOT_MSC_IN] {
+            self.csr_write(slot, reg::FEF);
+        }
     }
 
     /// Whether the host cleared the halt on both bulk endpoints, once.
@@ -1045,6 +1060,12 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         self.ep0_pos = end;
         if n < usb::EP0_SIZE {
             self.bus.write32(reg::csr(0), reg::IPR);
+            self.ep0 = Ep0::StatusOut;
+        } else if end == self.ep0_len && end >= self.ep0_want {
+            // A full last packet that gives the host all it asked for: the
+            // data stage is over (a zero-length packet here would wait in
+            // the FIFO and answer the next request: found in the emulator
+            // with the compatible ID's 16-byte header, ADR-0037).
             self.ep0 = Ep0::StatusOut;
         }
     }
