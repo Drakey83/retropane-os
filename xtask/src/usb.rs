@@ -84,6 +84,7 @@ fn load_script_opts(frame: &Path, wait_log: bool, frames: usize) -> String {
     let path = frame.display().to_string().replace('\'', "''");
     let stop = if wait_log { "" } else { "exit 0\n" };
     let early = frames.saturating_sub(1);
+    let kick = kick_task();
     open_port()
         + &format!(
             r#"$bytes = [System.IO.File]::ReadAllBytes('{path}')
@@ -121,7 +122,7 @@ $lastKick = Get-Date
 while (-not $done -and (Get-Date) -lt $deadline) {{
     Start-Sleep -Milliseconds 500
     if (((Get-Date) - $lastKick).TotalSeconds -ge 8) {{
-        schtasks /Run /TN '{RESTART_TASK}' 2>&1 | Out-Null
+        {kick}
         $lastKick = Get-Date
         Start-Sleep -Milliseconds 2500
     }}
@@ -741,6 +742,20 @@ pub fn setup_restart_task(_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Starts the restart task only when it runs as SYSTEM, in the session no
+/// window can show in. The owner's rule (2026-10-26, every session): "I
+/// dont want anymore of the blue screens popping up to interrupt me when i
+/// type ... either do it in a way that doesnt interrupt my pc or if thats
+/// not possinble dont do it". A task registered the old way (an
+/// administrator task in his own session) flashed an "Administrator:
+/// powershell.exe" window and took his keyboard, so it isn't started.
+fn kick_task() -> String {
+    format!(
+        "$rt = Get-ScheduledTask -TaskName '{RESTART_TASK}' -ErrorAction SilentlyContinue; \
+         if ($rt -and $rt.Principal.UserId -eq 'SYSTEM') {{ schtasks /Run /TN '{RESTART_TASK}' 2>&1 | Out-Null }}"
+    )
+}
+
 /// The script the task runs: restarts every present USB entry that could be
 /// the Axim (ours, Windows Mobile's, or a failed one), so the port is
 /// enumerated afresh.
@@ -847,9 +862,7 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
         // Windows still holds a stale entry for the port (Windows Mobile's
         // device after a fresh start, or ours): restart it and look again.
         eprintln!("    no port yet: asking Windows to re-find the Axim");
-        let _ = powershell(&format!(
-            "schtasks /Run /TN '{RESTART_TASK}' | Out-Null; Start-Sleep 6"
-        ));
+        let _ = powershell(&format!("{}; Start-Sleep 6", kick_task()));
         out = powershell(&load_script_opts(&frame, true, frames))?;
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -1221,9 +1234,7 @@ fn run_refinding(script: &str) -> Result<String, String> {
         return Ok(text);
     }
     eprintln!("    no port yet: asking Windows to re-find the Axim");
-    let _ = powershell(&format!(
-        "schtasks /Run /TN '{RESTART_TASK}' | Out-Null; Start-Sleep 6"
-    ));
+    let _ = powershell(&format!("{}; Start-Sleep 6", kick_task()));
     let out = powershell(script)?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -1456,6 +1467,18 @@ mod tests {
     fn the_log_wait_kicks_the_device_restart_task() {
         let s = load_script(Path::new("x.frame"));
         assert!(s.contains("schtasks /Run /TN 'RetroPane USB restart'"));
+    }
+
+    /// The owner's rule (2026-10-26): nothing pops up over his work. The
+    /// task is started only when it runs as SYSTEM (no window can show),
+    /// from every place that starts it.
+    #[test]
+    fn the_restart_task_is_started_only_when_it_runs_hidden() {
+        let k = kick_task();
+        assert!(k.contains("$rt.Principal.UserId -eq 'SYSTEM'"));
+        let src = include_str!("usb.rs");
+        let starts = src.matches("schtasks /Run /TN").count();
+        assert_eq!(starts, 3, "one start in kick_task, two in its tests");
     }
 
     #[test]
