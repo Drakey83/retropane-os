@@ -120,6 +120,12 @@ pub struct Ui {
     probe: usize,
     /// The split layout: the cards are the drive's, so MTP lists none.
     no_cards: bool,
+    /// R61's Explorer test: how many stores MTP lists (2: both cards; 1:
+    /// the SD card alone, to see whether Explorer skips a lone storage).
+    store_limit: u8,
+    /// R61's Explorer test: the perceived device type Windows reads (5: a
+    /// PDA; 3: a phone, to see which Explorer opens in Tiles).
+    perceived: u32,
 }
 
 /// The icon experiment (R61, the owner's priority: each card its own icon
@@ -181,6 +187,8 @@ impl Tables {
                 icon_at: None,
                 probe: 0,
                 no_cards: false,
+                store_limit: 2,
+                perceived: 5,
             },
         })?;
         Some(tables)
@@ -202,6 +210,18 @@ impl Tables {
         if present {
             self.mtp.store_changed(s, true);
         }
+    }
+
+    /// R61's Explorer test: the stores MTP lists (1 or 2) and the
+    /// perceived device type; `None` past the range. Takes effect at the
+    /// next enumeration (the caller re-plugs).
+    pub fn set_explorer_test(&mut self, stores: u8, perceived: u32) -> Option<()> {
+        if !(1..=2).contains(&stores) || perceived > 6 {
+            return None;
+        }
+        self.ui.store_limit = stores;
+        self.ui.perceived = perceived;
+        Some(())
     }
 
     /// Whether MTP lists the cards (`false` in the split layout, where they
@@ -495,7 +515,15 @@ impl Cards for LoaderCards<'_> {
         Self: 'b;
 
     fn stores(&self) -> u8 {
-        if self.ui.no_cards { 0 } else { 2 }
+        if self.ui.no_cards {
+            0
+        } else {
+            self.ui.store_limit
+        }
+    }
+
+    fn perceived_type(&self) -> u32 {
+        self.ui.perceived
     }
 
     fn disk(&mut self, s: u8) -> Option<(Self::Disk<'_>, u32)> {

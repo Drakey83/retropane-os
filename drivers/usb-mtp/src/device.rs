@@ -257,6 +257,11 @@ pub trait Device {
     /// connection too).
     fn set_friendly_name(&mut self, name: &Text);
 
+    /// The perceived device type [MTP C.2.43] Windows reads (5: a PDA).
+    fn perceived_type(&self) -> u32 {
+        5
+    }
+
     /// The device icon (a `.ico` [MTP C.2.37]): its length, 0 for none.
     fn icon_len(&mut self) -> u32 {
         0

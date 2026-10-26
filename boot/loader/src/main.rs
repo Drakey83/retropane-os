@@ -3692,6 +3692,40 @@ mod image {
                                 }
                             }
                         }
+                        // R61's Explorer test: `drive mtp test <stores 1-2> <type 0-6>`,
+                        // offered afresh so Windows reads it at enumeration.
+                        Ok(c) if c.starts_with(b"drive mtp test ") => {
+                            let mut it = core::str::from_utf8(&c[15..])
+                                .unwrap_or("")
+                                .split_ascii_whitespace()
+                                .map(str::parse::<u32>);
+                            let (stores, kind) = (it.next(), it.next());
+                            let set = match (mtp_t.as_mut(), stores, kind) {
+                                (Some(t), Some(Ok(n)), Some(Ok(k))) => {
+                                    t.set_explorer_test(n as u8, k).map(|()| (n, k))
+                                }
+                                _ => None,
+                            };
+                            match set {
+                                Some((n, k)) => {
+                                    relayout_at = Some(now_ms().wrapping_add(300));
+                                    let _ = write!(
+                                        status,
+                                        "RPL OK mtp test: {n} store(s), perceived type {k}, offered afresh in 0.3 s
+"
+                                    );
+                                    status.as_str()
+                                }
+                                None if mtp_t.is_none() => {
+                                    "RPL ERR drive: MTP unavailable (the RAM pool was taken)
+"
+                                }
+                                None => {
+                                    "RPL ERR usage: drive mtp test <stores 1-2> <type 0-6>
+"
+                                }
+                            }
+                        }
                         Ok(c) if c.starts_with(b"drive mtp probe ") => {
                             let n = core::str::from_utf8(&c[16..])
                                 .ok()

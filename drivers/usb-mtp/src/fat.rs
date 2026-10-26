@@ -71,6 +71,11 @@ pub trait Cards {
     /// The PC renamed the device.
     fn set_friendly_name(&mut self, name: &Text);
 
+    /// The perceived device type (5: a PDA).
+    fn perceived_type(&self) -> u32 {
+        5
+    }
+
     /// The device icon's length (0: none).
     fn icon_len(&mut self) -> u32 {
         0
@@ -133,6 +138,9 @@ impl<C: Cards + ?Sized> Cards for &mut C {
     }
     fn set_friendly_name(&mut self, name: &Text) {
         (**self).set_friendly_name(name);
+    }
+    fn perceived_type(&self) -> u32 {
+        (**self).perceived_type()
     }
     fn icon_len(&mut self) -> u32 {
         (**self).icon_len()
@@ -597,6 +605,10 @@ impl<C: Cards> Device for FatDevice<'_, C> {
 
     fn set_friendly_name(&mut self, name: &Text) {
         self.cards.set_friendly_name(name);
+    }
+
+    fn perceived_type(&self) -> u32 {
+        self.cards.perceived_type()
     }
 
     fn icon_len(&mut self) -> u32 {

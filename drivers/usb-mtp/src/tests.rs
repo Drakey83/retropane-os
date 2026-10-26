@@ -871,6 +871,22 @@ fn a_folder_holding_folder_png_offers_it_as_its_thumbnail() {
     let t = pc.op(op::GET_THUMB, &[h], None);
     assert_eq!(t.rc, rc::OK);
     assert_eq!(t.data, png);
+    // A 32-bit BMP (its height negative: rows top-down).
+    let mut bmp = b"BM".to_vec();
+    bmp.extend_from_slice(&[0; 16]);
+    bmp.extend_from_slice(&64i32.to_le_bytes());
+    bmp.extend_from_slice(&(-48i32).to_le_bytes());
+    bmp.extend_from_slice(&[1, 0, 32, 0]);
+    let pics = pc.dev.add(0, ROOT, "Pics", true, b"", false);
+    pc.dev.add(0, pics, "FOLDER.BMP", false, &bmp, false);
+    let ph = pc.handle(u32::MAX, "Pics");
+    let a = pc.op(op::GET_OBJECT_INFO, &[ph], None);
+    let mut r = Reader::new(&a.data);
+    r.skip(4 + 2 + 2 + 4).unwrap();
+    assert_eq!(r.u16().unwrap(), fmt::BMP);
+    assert_eq!(r.u32().unwrap(), bmp.len() as u32);
+    assert_eq!((r.u32().unwrap(), r.u32().unwrap()), (64, 48));
+    assert_eq!(pc.op(op::GET_THUMB, &[ph], None).data, bmp);
     // A folder without one, one whose picture isn't a PNG, and a file.
     let sub = pc.handle(h, "Sub");
     for no in [sub, pc.handle(u32::MAX, "big.bin")] {
