@@ -378,6 +378,13 @@ own parameter memory (`0x300000`, 4 MiB), the binner's apart (`0x800000`,
 3 MiB), the binner's frames rendered between the TA's. It shows whether
 the gains hold with the fix in place, and whether the hangs are gone.
 
+**Run 9 on the X51v (2026-10-26): 0 of 150 TA renders hung, every TA
+picture the binner's, the same times** (`docs/hw/2700g.md` "P4"). C81
+fixed. P4's question is answered; ticking it is the owner's call. Left
+for later: the binner's first frames 5-14% slower with its parameter
+memory at `0x800000` (R59); the 6-word vertex (R38); the TA at divide 1
+(R41).
+
 
 ## The choices for the owner
 
