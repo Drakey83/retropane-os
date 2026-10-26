@@ -387,6 +387,56 @@ the record.
   layout (each card a drive letter with its own icon, no device); the split
   layout; a device setting choosing between them.
 
+  **Changed by the owner (2026-10-26, later):** the vision is wanted
+  **natively on every PC, nothing installed, LegacySync not needed**: the
+  device and its three storages (SD, CF, internal) together, each with its
+  own icon, opening in the Tiles view. **Measured on the X51v the same day
+  (R61):** a folder holding `folder.png` or `folder.bmp` is drawn with that
+  picture (the MTP thumbnail, nothing installed); see-through pixels are
+  drawn white, solid ones exactly, so each picture sits on a solid
+  smoked-glass square (the owner's design, `docs/design/mockups/storage-tiles.png`,
+  theme-proof: dark, light and colour themes alike); a lone storage is
+  **not** skipped (Explorer shows it as one plain drive to open); the
+  perceived type "phone" gave no Tiles view (Windows kept "Handheld" from
+  the install; a fresh install not yet measured). **The options, for the
+  owner's vote (Claude's recommendation first; nothing built until voted):**
+  - **A (recommended): one storage, the three as glass tiles inside it.**
+    This PC > **Axim X51v** (the PDA) > one drive, named by Q6a below >
+    **SD Card, CF Card, Internal**, each its own glass tile; inside each,
+    that card's files. The device builds the top level itself (the three
+    are views of the cards, files never stored there) and refuses a file
+    dropped beside them. *Pros:* the only layout measured to give all three
+    their own icons inside the one device, natively, on every Windows PC,
+    nothing installed; the tiles look right on any theme; one MTP function
+    (rules 1-13 unchanged); a card pulled out just disappears from the
+    tiles. *Cons:* one extra click through a plain drive icon (measured:
+    Windows won't skip it); one capacity bar for the drive (the cards'
+    total; each card's own free space shows only in the tile's properties);
+    the tiles show in the Large and Extra large icon views (Tiles and Medium
+    still to measure); the first look on the X51v needed F5 (to measure on
+    a PC that never saw the Axim).
+  - **B: the split layout (tried 2026-10-26).** Axim X51v (the PDA, holding
+    Internal) beside **X51V SD** and **X51V CF** as drive letters, each with
+    its own icon. *Pros:* real icons at This PC's top level, each card's own
+    capacity bar, the drive's speed, also own icons on Macs and Linux.
+    *Cons:* not inside the device; drive letters may land apart (this PC:
+    fixed for these two cards only); a card served as a drive is the PC's
+    alone until ejected (ADR-0014); Internal stays a plain drive inside the
+    device (or a glass tile, as A).
+  - **C: today's MTP.** Axim X51v > SD Card, CF Card, Internal as three
+    storages. *Pros:* standard, one click fewer, each card's capacity bar.
+    *Cons:* the plain drive icon for all three (measured: no native way to
+    change it).
+  - **D: a device setting** offering A, B and C, with one of them the
+    default (adds a choice in Settings; the PC re-plugs when changed).
+  - **Q6a. A's drive name:** "Storage" (default), "Cards & Storage", or
+    "Axim X51v" (the path would read Axim X51v > Axim X51v).
+  - **Q6b. The internal-storage tile's picture:** the owner's pick (the
+    PDA stands in).
+  - **Tiles as the default view (all options):** still open; next
+    measurement is one fresh install as a phone (one UAC click), then the
+    views Windows offers to remember per device.
+
 ### Try-out: the split layout (2026-10-26, the owner's "lets try 3")
 
 Not a default: a fourth layout the loader offers on request
