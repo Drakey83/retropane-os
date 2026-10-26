@@ -1283,3 +1283,71 @@ fn test_tex() -> Tex {
         plane: TEXTURES[3],
     }
 }
+
+/// GC2AE's source search: the nearest place holding a value, ties to the
+/// first in row order, the pixel itself left out, the window's edges and
+/// the picture's both counted right.
+#[test]
+fn the_source_search_finds_the_nearest_and_counts() {
+    let f = PixelFormat::Rgb565;
+    let n = (W * H) as usize;
+    let mut pic = std::vec![0u32; n / 2];
+    let mut put = |x: u32, y: u32, v: u32| {
+        let at = (y * W + x) as usize;
+        let sh = 16 * (at % 2);
+        pic[at / 2] = (pic[at / 2] & !(0xFFFF << sh)) | (v << sh);
+    };
+    put(100, 100, 7); // the pixel itself: never its own source
+    put(100, 84, 7); // one tile above
+    put(104, 100, 7); // nearer: 4 to the right
+    put(100, 140, 7); // the window's edge (ry 40)
+    put(100, 141, 7); // past it
+    assert_eq!(nearest(f, &pic, (100, 100), 7, (24, 40)), (Some((4, 0)), 3));
+    // Equal distances: the first in row order (above before below).
+    let mut pic2 = std::vec![0u32; n / 2];
+    let mut put2 = |x: u32, y: u32, v: u32| {
+        let at = (y * W + x) as usize;
+        let sh = 16 * (at % 2);
+        pic2[at / 2] = (pic2[at / 2] & !(0xFFFF << sh)) | (v << sh);
+    };
+    put2(50, 34, 9);
+    put2(50, 66, 9);
+    assert_eq!(
+        nearest(f, &pic2, (50, 50), 9, (24, 40)),
+        (Some((0, -16)), 2)
+    );
+    // Nothing in the window; at the picture's corner the window is clipped.
+    assert_eq!(nearest(f, &pic2, (400, 400), 9, (24, 40)), (None, 0));
+    assert_eq!(nearest(f, &pic, (0, 0), 7, (24, 40)), (None, 0));
+    assert_eq!(count(f, &pic, 7), 5);
+    assert_eq!(count(f, &pic, 0), W * H - 5);
+}
+
+/// GC2AE's plan: R36's fault generator (FT2, both cures), its clocks as
+/// named, and the margin's seven scenes with one full layer, reversed.
+#[test]
+fn gc2ae_traces_the_both_cures_way_and_checks_the_margin() {
+    assert_eq!(TRACE_SCENES, [NIGHT_SCENES[2]]);
+    assert_eq!(TRACE_SCENES[0], Scene::Fix(0, 8));
+    assert_eq!(TRACE_REVERSED, [(0, REVERSED)]);
+    assert_eq!(TRACE_ROWS, [(0, ROWS)]);
+    for ((m, n), name) in TRACE_STEPS {
+        let khz = 13_000 * m / n;
+        assert_eq!(
+            std::format!("{}.{:02} / 1", khz / 1000, khz % 1000 / 10),
+            name
+        );
+    }
+    for (b, s) in MARGIN_SCENES.iter().enumerate() {
+        assert_eq!(*s, Scene::Fix(b, 2));
+        assert_eq!(MARGIN_WAYS[b], (b, REVERSED));
+    }
+    assert_eq!(MARGIN_SCENES.len(), FIX_BASE.len());
+    // At R36's rate for the fault generator (160 of 3,299), the trace
+    // expects about 29 faults and each condition about 19: enough to tell
+    // a rate halved or zeroed apart from no change.
+    const { assert!(TRACE_RENDERS * 160 / 3_299 >= 20) };
+    const { assert!(TRACE_CONDITION * 160 / 3_299 >= 15) };
+    // The margin at least R36's renders a scene in a tenth of the time.
+    const { assert!(MARGIN_ROUNDS >= 3_299 / 11) };
+}

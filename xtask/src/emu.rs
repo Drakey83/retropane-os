@@ -5273,6 +5273,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AD_SOAK_SECS", "20"),
         ],
     )?;
+    let run_gc2ae = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TRACE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5305,7 +5314,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 71] = [
+    let runs: [GpubenchRun; 72] = [
         (
             "run A",
             &run_a,
@@ -5555,6 +5564,26 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AE (R37): the trace, the conditions and the margin, two
+        // renders a part (the emulator draws exactly: every way right, the
+        // display's fetch put back on).
+        (
+            "run GC2AE",
+            &run_gc2ae,
+            &[
+                "GC2AE (R37): FT2 with the ring and one full layer",
+                "GC2AE trace: each render's target filled first with 0xf81f (in no reference)",
+                "GC2AE trace 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE rows 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE fetch off 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE clock 146.25 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE clock 133.25 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE margin 146.25 / 1: controls at Windows Mobile's clock after: 7 of 7 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

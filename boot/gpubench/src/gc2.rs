@@ -836,6 +836,45 @@ pub const NIGHT_WAYS: [(usize, u8); 18] = {
     }
     w
 };
+/// Run GC2AE, reminder R37 (the owner, 2026-10-25: "do everything that
+/// you recommend to give us the clearest picture"): R36's fault generator,
+/// FT2 with the ring and one full layer at once (160 of 3,299 wrong at
+/// 149.50 / 1 reversed), traced and varied.
+pub const TRACE_SCENES: [Scene; 1] = [Scene::Fix(0, 8)];
+pub const TRACE_REVERSED: [(usize, u8); 1] = [(0, REVERSED)];
+pub const TRACE_ROWS: [(usize, u8); 1] = [(0, ROWS)];
+/// Its clocks below 149.50 / 1 (13 MHz x m / n): 146.25, 139.75, 133.25.
+pub const TRACE_STEPS: [((u32, u32), &str); 3] = [
+    ((45, 4), "146.25 / 1"),
+    ((43, 4), "139.75 / 1"),
+    ((41, 4), "133.25 / 1"),
+];
+/// R36's winning cure, one full hidden layer reversed with the clamped v
+/// shift, on all seven scenes at 146.25 / 1: the step the owner's X51v
+/// would run under ADR-0035 rule 1 (one below its fastest pass).
+pub const MARGIN_SCENES: [Scene; 7] = {
+    let mut s = [Scene::Fix(0, 2); 7];
+    let mut b = 0;
+    while b < 7 {
+        s[b] = Scene::Fix(b, 2);
+        b += 1;
+    }
+    s
+};
+pub const MARGIN_WAYS: [(usize, u8); 7] = {
+    let mut w = [(0, REVERSED); 7];
+    let mut i = 0;
+    while i < 7 {
+        w[i] = (i, REVERSED);
+        i += 1;
+    }
+    w
+};
+/// Renders a part: the trace, each condition, the margin's rounds.
+pub const TRACE_RENDERS: u32 = 600;
+pub const TRACE_CONDITION: u32 = 400;
+pub const MARGIN_ROUNDS: u32 = 300;
+
 /// 149.50 / 1 for two hours (the owner asleep).
 pub const NIGHT_PLL: (u32, u32) = (23, 2);
 pub const NIGHT_MINUTES: u32 = 120;
@@ -1624,6 +1663,46 @@ pub const fn tile_mates(x: i32, y: i32) -> [(i32, i32); 4] {
         (x, y - TILE_H),
         (x, y + TILE_H),
     ]
+}
+
+/// Where value `v` lies in picture `pic` nearest (x, y), within `r` (dx,
+/// dy) either side, (x, y) itself left out: the offset (fewest steps, then
+/// the first in row order) and how many places in the window hold it. Run
+/// GC2AE: where a wrong pixel's colour came from.
+#[must_use]
+pub fn nearest(
+    f: PixelFormat,
+    pic: &[u32],
+    (x, y): (i32, i32),
+    v: u32,
+    (rx, ry): (i32, i32),
+) -> (Option<(i32, i32)>, u32) {
+    let (mut best, mut n) = (None::<(i32, i32)>, 0);
+    for dy in -ry..=ry {
+        for dx in -rx..=rx {
+            if (dx, dy) == (0, 0) || pixel(f, pic, x + dx, y + dy) != Some(v) {
+                continue;
+            }
+            n += 1;
+            let d = dx.abs() + dy.abs();
+            if best.is_none_or(|(bx, by)| d < bx.abs() + by.abs()) {
+                best = Some((dx, dy));
+            }
+        }
+    }
+    (best, n)
+}
+
+/// How many pixels of `pic` hold `v`.
+#[must_use]
+pub fn count(f: PixelFormat, pic: &[u32], v: u32) -> u32 {
+    let mut n = 0;
+    for y in 0..H as i32 {
+        for x in 0..W as i32 {
+            n += u32::from(pixel(f, pic, x, y) == Some(v));
+        }
+    }
+    n
 }
 
 /// Colours tried as a soak's poison, the most saturated first (no GC2

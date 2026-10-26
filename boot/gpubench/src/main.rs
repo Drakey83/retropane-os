@@ -7918,7 +7918,22 @@ mod image {
         || GC2_FREE
         || GC2_LASTPIX
         || GC2_RING
-        || GC2_NIGHT;
+        || GC2_NIGHT
+        || GC2_TRACE;
+
+    /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
+    /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
+    /// lies in the reference), its rate against the tile order, the
+    /// display's fetch and the clock, and R36's winning cure at 146.25 / 1.
+    /// About 12 minutes, unattended.
+    const GC2_TRACE: bool = option_env!("RP_GPUBENCH_GC2_TRACE").is_some();
+
+    /// GC2AE's renders a part capped (`RP_GPUBENCH_GC2AE_ROUNDS`, the
+    /// emulator's check); none on the device.
+    const GC2AE_ROUNDS: u32 = match option_env!("RP_GPUBENCH_GC2AE_ROUNDS") {
+        Some(s) => parse_decimal(s, 1),
+        None => u32::MAX,
+    };
 
     /// Run GC2AD, reminder R36 (`RP_GPUBENCH_GC2_NIGHT`, see
     /// [`gc2::NIGHT_SCENES`]): the two-hour soak at 149.50 / 1 over every
@@ -9012,6 +9027,9 @@ mod image {
         /// Whether `DSIG` is watched: it read nonzero with the label shown
         /// at the start (the emulator doesn't model it: 0 throughout).
         watch_dsig: bool,
+        /// Whether the underrun flag counts (not while the display's fetch
+        /// is off on purpose, run GC2AE: it's read and cleared either way).
+        watch_underrun: bool,
         best_us: u32,
         worst_us: u32,
     }
@@ -9021,6 +9039,7 @@ mod image {
             Self {
                 best_us: u32::MAX,
                 watch_dsig,
+                watch_underrun: true,
                 ..Self::default()
             }
         }
@@ -9093,7 +9112,7 @@ mod image {
         side: &mut Gc2Side,
     ) -> Option<u32> {
         side.renders += 1;
-        side.underrun += u32::from(underrun_take(&mut g.e.regs));
+        side.underrun += u32::from(underrun_take(&mut g.e.regs) && side.watch_underrun);
         side.dark += u32::from(side.watch_dsig && g.e.regs.read32(DSIG) == 0);
         let before = gc2_regs(g);
         r.invalidate_all();
@@ -9104,7 +9123,7 @@ mod image {
         };
         let us = g.frame(r, target);
         let after = gc2_regs(g);
-        side.underrun += u32::from(underrun_take(&mut g.e.regs));
+        side.underrun += u32::from(underrun_take(&mut g.e.regs) && side.watch_underrun);
         side.dark += u32::from(side.watch_dsig && g.e.regs.read32(DSIG) == 0);
         side.clock_off += u32::from(before.0 != clock_want || after.0 != clock_want);
         // The renderer writes the 3D registers as a render starts: a
@@ -9266,7 +9285,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_NIGHT {
+            if GC2_TRACE {
+                "the 16-bit kinds' targets inside the safe region (GC2AE, R37: no map; R36's fault traced and varied, then one full hidden layer reversed on every 16-bit kind at 146.25 / 1, each target poisoned first),"
+            } else if GC2_NIGHT {
                 "the 16-bit kinds' targets inside the safe region (GC2AD, R36: no map; two hours at 149.50 / 1 over every 16-bit kind and GC2K's worst, the ring, one full hidden layer and both at once alternating, reversed, each target poisoned first),"
             } else if GC2_RING {
                 "the 16-bit kinds' targets inside the safe region (GC2AC: no map; the ring cure against one and two full hidden layers on GC2K's worst at 149.50 / 1),"
@@ -9414,7 +9435,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_NIGHT {
+        let patch = if GC2_TRACE {
+            gc2::MARGIN_SCENES.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_NIGHT {
             gc2::NIGHT_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_RING {
             gc2::RING_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -9763,7 +9786,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_NIGHT {
+                if GC2_TRACE {
+                    gc2_trace(g, &mut r, (tex, first, dsig));
+                } else if GC2_NIGHT {
                     gc2_night(g, &mut r, (tex, first, dsig));
                 } else if GC2_RING {
                     gc2_ring(g, &mut r, (tex, first, dsig));
@@ -9797,6 +9822,8 @@ mod image {
                             secs: u32::MAX / 1_000_000,
                             rounds: GC2P_ROUNDS,
                             poison: false,
+                            describe: ORDER_DESCRIBED,
+                            pause: false,
                         },
                     );
                 } else if GC2_ORDER {
@@ -11295,6 +11322,101 @@ mod image {
                 secs: GC2AD_SOAK_SECS,
                 rounds: u32::MAX,
                 poison: true,
+                describe: ORDER_DESCRIBED,
+                pause: false,
+            },
+        );
+    }
+
+    /// Run GC2AE (see [`GC2_TRACE`]): part 1, R36's fault generator at
+    /// 149.50 / 1 reversed, every wrong render described with where its
+    /// colour lies in the reference; part 2, its rate in rows, with the
+    /// display's fetch off around each render, and at 146.25, 139.75 and
+    /// 133.25 / 1; part 3, one full hidden layer reversed on all seven
+    /// scenes at 146.25 / 1. Every target poisoned first; each part its own
+    /// references and controls at Windows Mobile's clock.
+    #[inline(never)]
+    fn gc2_trace(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let (m, n) = gc2::NIGHT_PLL;
+        let top = (gc2_step(m, n, 0, 1), "149.50 / 1");
+        log!(
+            "  GC2AE (R37): FT2 with the ring and one full layer (R36: 160 of 3,299 wrong), {} renders traced at 149.50 / 1 reversed; {} a condition (rows; the display's fetch off; 146.25, 139.75, 133.25 / 1); one full layer reversed on all seven scenes at 146.25 / 1, {} rounds",
+            gc2::TRACE_RENDERS,
+            gc2::TRACE_CONDITION,
+            gc2::MARGIN_ROUNDS
+        );
+        let one = |name, label, ways, step, rounds, describe, pause| OrderPlan {
+            name,
+            label,
+            scenes: &gc2::TRACE_SCENES,
+            ways,
+            step,
+            secs: 600,
+            rounds,
+            poison: true,
+            describe,
+            pause,
+        };
+        let step = |k: usize| {
+            let ((m, n), name) = gc2::TRACE_STEPS[k];
+            (gc2_step(m, n, 0, 1), name)
+        };
+        let rev = &gc2::TRACE_REVERSED;
+        let (part, cond) = (
+            gc2::TRACE_RENDERS.min(GC2AE_ROUNDS),
+            gc2::TRACE_CONDITION.min(GC2AE_ROUNDS),
+        );
+        let plans = [
+            one(
+                "GC2AE trace",
+                "GC2AE 1 TRACE",
+                rev,
+                top,
+                part,
+                ORDER_DESCRIBED,
+                false,
+            ),
+            one(
+                "GC2AE rows",
+                "GC2AE 2 ROWS",
+                &gc2::TRACE_ROWS,
+                top,
+                cond,
+                3,
+                false,
+            ),
+            one(
+                "GC2AE fetch off",
+                "GC2AE 2 FETCH OFF",
+                rev,
+                top,
+                cond,
+                3,
+                true,
+            ),
+            one("GC2AE clock", "GC2AE 2 CLOCK", rev, step(0), cond, 3, false),
+            one("GC2AE clock", "GC2AE 2 CLOCK", rev, step(1), cond, 3, false),
+            one("GC2AE clock", "GC2AE 2 CLOCK", rev, step(2), cond, 3, false),
+        ];
+        for p in &plans {
+            gc2_orders(g, r, (tex, &mut *first, dsig), p);
+        }
+        let (m, n) = gc2::TRACE_STEPS[0].0;
+        gc2_orders(
+            g,
+            r,
+            (tex, first, dsig),
+            &OrderPlan {
+                name: "GC2AE margin",
+                label: "GC2AE 3 MARGIN",
+                scenes: &gc2::MARGIN_SCENES,
+                ways: &gc2::MARGIN_WAYS,
+                step: (gc2_step(m, n, 0, 1), "146.25 / 1"),
+                secs: 600,
+                rounds: gc2::MARGIN_ROUNDS.min(GC2AE_ROUNDS),
+                poison: true,
+                describe: 10,
+                pause: false,
             },
         );
     }
@@ -11319,6 +11441,8 @@ mod image {
                 secs: u32::MAX / 1_000_000,
                 rounds: gc2::RING_ROUNDS,
                 poison: false,
+                describe: ORDER_DESCRIBED,
+                pause: false,
             },
         );
     }
@@ -11358,6 +11482,8 @@ mod image {
                     secs: u32::MAX / 1_000_000,
                     rounds: 20,
                     poison: false,
+                    describe: ORDER_DESCRIBED,
+                    pause: false,
                 },
             );
         }
@@ -11379,6 +11505,8 @@ mod image {
                     secs: u32::MAX / 1_000_000,
                     rounds: gc2::LASTPIX_ROUNDS,
                     poison: false,
+                    describe: ORDER_DESCRIBED,
+                    pause: false,
                 },
             );
             if wrong & ALL != ALL {
@@ -11420,6 +11548,8 @@ mod image {
                     secs: u32::MAX / 1_000_000,
                     rounds,
                     poison: false,
+                    describe: ORDER_DESCRIBED,
+                    pause: false,
                 },
             );
             if let Some(&w) = gc2::FREE_PREFER.iter().find(|&&w| wrong & 1 << w == 0) {
@@ -11458,6 +11588,8 @@ mod image {
                 secs: GC2AA_SOAK_SECS,
                 rounds: u32::MAX,
                 poison: false,
+                describe: ORDER_DESCRIBED,
+                pause: false,
             },
         );
     }
@@ -11484,6 +11616,8 @@ mod image {
                     secs: u32::MAX / 1_000_000,
                     rounds: gc2::FIX_TEX_ROUNDS,
                     poison: false,
+                    describe: ORDER_DESCRIBED,
+                    pause: false,
                 },
             );
         }
@@ -11504,6 +11638,8 @@ mod image {
                 secs: u32::MAX / 1_000_000,
                 rounds: gc2::FIX_CORNER_ROUNDS,
                 poison: false,
+                describe: ORDER_DESCRIBED,
+                pause: false,
             },
         );
     }
@@ -11541,6 +11677,8 @@ mod image {
                     secs: u32::MAX / 1_000_000,
                     rounds: gc2::CURED_ROUNDS[pi],
                     poison: false,
+                    describe: ORDER_DESCRIBED,
+                    pause: false,
                 },
             );
             let clean = wrong & CURED_MASK == 0;
@@ -11576,6 +11714,8 @@ mod image {
                 secs: GC2Y_SOAK_SECS,
                 rounds: u32::MAX,
                 poison: false,
+                describe: ORDER_DESCRIBED,
+                pause: false,
             },
         );
     }
@@ -11607,6 +11747,8 @@ mod image {
                     secs: u32::MAX / 1_000_000,
                     rounds: gc2::EDGE_ROUNDS,
                     poison: false,
+                    describe: ORDER_DESCRIBED,
+                    pause: false,
                 },
             );
         }
@@ -11624,6 +11766,8 @@ mod image {
                 secs: u32::MAX / 1_000_000,
                 rounds: gc2::HIDDEN_ROUNDS,
                 poison: false,
+                describe: ORDER_DESCRIBED,
+                pause: false,
             },
         );
     }
@@ -11694,6 +11838,8 @@ mod image {
                         secs: u32::MAX / 1_000_000,
                         rounds: gc2::TEXLOAD_ROUNDS[pi],
                         poison: false,
+                        describe: ORDER_DESCRIBED,
+                        pause: false,
                     },
                 );
             }
@@ -11732,6 +11878,8 @@ mod image {
                     secs: u32::MAX / 1_000_000,
                     rounds: 100,
                     poison: false,
+                    describe: ORDER_DESCRIBED,
+                    pause: false,
                 },
             );
         }
@@ -11761,6 +11909,8 @@ mod image {
                         secs: u32::MAX / 1_000_000,
                         rounds: 30,
                         poison: false,
+                        describe: ORDER_DESCRIBED,
+                        pause: false,
                     },
                 );
             }
@@ -11793,6 +11943,8 @@ mod image {
                 secs: u32::MAX / 1_000_000,
                 rounds,
                 poison: false,
+                describe: ORDER_DESCRIBED,
+                pause: false,
             };
             g.over = Over::NONE;
             log!("  GC2Q C: GC2K's worst without any setting (the control)");
@@ -11829,6 +11981,8 @@ mod image {
                     secs: u32::MAX / 1_000_000,
                     rounds: 30,
                     poison: false,
+                    describe: ORDER_DESCRIBED,
+                    pause: false,
                 },
             );
         }
@@ -11917,6 +12071,8 @@ mod image {
                 secs: GC2O_SECS,
                 rounds: u32::MAX,
                 poison: false,
+                describe: ORDER_DESCRIBED,
+                pause: false,
             },
         );
     }
@@ -11937,6 +12093,11 @@ mod image {
         /// whatever the scene before it drew there (GC2AD's ring and full
         /// layer ways draw the same picture back to back).
         poison: bool,
+        /// Wrong renders described pixel by pixel ([`Suspects`]).
+        describe: u32,
+        /// The display's fetch off around each render (test G16's way; the
+        /// screen dark meanwhile): whether the scan-out's reads take part.
+        pause: bool,
     }
 
     /// Wrong renders a tile-order soak describes pixel by pixel (from
@@ -12005,6 +12166,27 @@ mod image {
             f.write_str("; the same place in the tiles left, right, above, below")?;
             for m in gc2::tile_mates(x, y) {
                 write!(f, " {:x?}", px(self.want, m))?;
+            }
+            // Where the wrong colour lies in the reference (run GC2AE):
+            // the nearest place within two tiles across and two and a half
+            // down, and how often in the whole picture.
+            if let Some(v) = got {
+                match gc2::nearest(self.f, self.want, self.at, v, (24, 40)) {
+                    (Some((dx, dy)), n) => {
+                        write!(
+                            f,
+                            "; got's colour in the reference nearest at ({dx:+},{dy:+}), {n} within 24 x 40"
+                        )?;
+                    }
+                    (None, _) => {
+                        f.write_str("; got's colour not in the reference within 24 x 40")?
+                    }
+                }
+                write!(
+                    f,
+                    ", {} in the whole picture",
+                    gc2::count(self.f, self.want, v)
+                )?;
             }
             Ok(())
         }
@@ -12209,7 +12391,11 @@ mod image {
                     poison_failed = true;
                     break 'soak;
                 }
-                let mut side = Gc2Side::new(dsig);
+                let mut side = Gc2Side::new(dsig && !plan.pause);
+                side.watch_underrun = !plan.pause;
+                if plan.pause {
+                    let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+                }
                 let wrong = gc2_render_at(
                     g,
                     r,
@@ -12220,6 +12406,9 @@ mod image {
                     &mut bases[sc],
                     &mut side,
                 );
+                if plan.pause {
+                    let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+                }
                 best_by[w] = best_by[w].min(u16::try_from(side.best_us).unwrap_or(u16::MAX));
                 if !side.held() || wrong.is_none() {
                     unheld = Some((w, wrong, side));
@@ -12230,7 +12419,7 @@ mod image {
                     wrong_by[w] += 1;
                     let c = gc2::order_corner(scenes[sc]);
                     let t = &side.tally;
-                    if described < ORDER_DESCRIBED {
+                    if described < plan.describe {
                         described += 1;
                         log!(
                             "  {name} wrong render {described} (round {}, way {w}, scene {sc}, {}, {} us): {}",
