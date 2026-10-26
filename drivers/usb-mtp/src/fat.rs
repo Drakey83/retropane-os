@@ -35,6 +35,13 @@ pub trait Cards {
     /// Built in or removable.
     fn kind(&self, s: u8) -> Kind;
 
+    /// StorageType and FilesystemType to report instead of the standard
+    /// ones ([`StoreInfo::codes`], an experiment's override).
+    fn codes(&self, s: u8) -> Option<(u16, u16)> {
+        let _ = s;
+        None
+    }
+
     /// Whether the PC may change anything on it (a locked card, a card
     /// with no guard: read-only).
     fn writable(&self, s: u8) -> bool;
@@ -99,6 +106,9 @@ impl<C: Cards + ?Sized> Cards for &mut C {
     }
     fn kind(&self, s: u8) -> Kind {
         (**self).kind(s)
+    }
+    fn codes(&self, s: u8) -> Option<(u16, u16)> {
+        (**self).codes(s)
     }
     fn writable(&self, s: u8) -> bool {
         (**self).writable(s)
@@ -436,6 +446,7 @@ impl<C: Cards> Device for FatDevice<'_, C> {
             description: Text::from_text(self.cards.description(s)).unwrap_or_default(),
             volume_id,
             max_file,
+            codes: self.cards.codes(s),
         })
     }
 

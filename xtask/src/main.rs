@@ -450,6 +450,11 @@ fn main() -> ExitCode {
                 }
                 // MTP's counters and the layout (ADR-0037).
                 "mtp-status" => usb::command(&workspace_root(), "drive mtp status"),
+                // The icon experiment's variants (R61).
+                "mtp-probe" => {
+                    let n = args().nth(3).unwrap_or_default();
+                    usb::command(&workspace_root(), &format!("drive mtp probe {n}"))
+                }
                 _ => Err(
                     "usage: cargo xtask drive rw|ro|on|off|status|mtp|msc|auto|mtp-status".into(),
                 ),

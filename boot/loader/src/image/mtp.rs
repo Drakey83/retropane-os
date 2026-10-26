@@ -103,7 +103,25 @@ pub struct Ui {
     name: Text,
     /// The icon as read (`None`: not yet; `Some(0)`: none on the card).
     icon_len: Option<usize>,
+    /// The icon experiment's variant ([`PROBES`], 0: the standard codes).
+    probe: usize,
 }
+
+/// The icon experiment (R61, the owner's priority: each card its own icon
+/// in Explorer, natively): StorageType and FilesystemType per card [MTP
+/// 5.2.2], (SD's, CF's), switched live by `drive mtp probe N` to see which
+/// of them Windows draws a storage's icon from. 0 is the standard pair.
+pub const PROBES: [[Option<(u16, u16)>; 2]; 5] = [
+    [None, None],
+    // DCF (a camera card's file system) / generic flat.
+    [Some((0x0004, 0x0003)), Some((0x0004, 0x0001))],
+    // Fixed RAM / removable ROM.
+    [Some((0x0003, 0x0002)), Some((0x0002, 0x0002))],
+    // Fixed ROM / fixed RAM with DCF.
+    [Some((0x0001, 0x0002)), Some((0x0003, 0x0003))],
+    // Vendor-defined file systems.
+    [Some((0x0004, 0x8001)), Some((0x0004, 0x8002))],
+];
 
 /// Everything MTP keeps, in the RAM pool.
 pub struct Tables {
@@ -146,6 +164,7 @@ impl Tables {
                 held: Pressed::NONE,
                 name: Text::from_text(rp_hal_x51v::MODEL).unwrap_or_default(),
                 icon_len: None,
+                probe: 0,
             },
         })?;
         Some(tables)
@@ -237,6 +256,19 @@ impl Tables {
         };
         let mut dev = FatDevice::new(&mut cards, scratch, state);
         mtp.reset(&mut dev, &mut UsbPipe(udc));
+    }
+
+    /// The icon experiment's variant `n` ([`PROBES`]): both cards are
+    /// announced as removed and added again, so Windows reads their codes
+    /// afresh. `None` past the table.
+    #[inline(never)]
+    pub fn set_probe(&mut self, n: usize, present: [bool; 2]) -> Option<()> {
+        PROBES.get(n)?;
+        self.ui.probe = n;
+        for (s, p) in (0u8..).zip(present) {
+            self.card_changed(s, p);
+        }
+        Some(())
     }
 
     /// The loader removed `loc` from store `s` (rule 10).
@@ -457,6 +489,10 @@ impl Cards for LoaderCards<'_> {
 
     fn kind(&self, _s: u8) -> Kind {
         Kind::Removable
+    }
+
+    fn codes(&self, s: u8) -> Option<(u16, u16)> {
+        PROBES[self.ui.probe].get(usize::from(s)).copied().flatten()
     }
 
     fn writable(&self, s: u8) -> bool {

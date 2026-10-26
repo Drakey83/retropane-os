@@ -390,6 +390,14 @@ fn free_space(m: &mut Initiator, store: u32) -> Result<(u64, String), String> {
     Ok((free, text(&mut r)?))
 }
 
+/// `store`'s StorageType and FilesystemType (GetStorageInfo [MTP 5.2.2]).
+fn storage_codes(m: &mut Initiator, store: u32) -> Result<(u16, u16), String> {
+    let a = m.ok(op::GET_STORAGE_INFO, &[store], None)?;
+    let bad = |_| "MTP: a short StorageInfo".to_string();
+    let mut r = Reader::new(&a.data);
+    Ok((r.u16().map_err(bad)?, r.u16().map_err(bad)?))
+}
+
 /// The store's root, by name.
 fn listing(m: &mut Initiator, store: u32) -> Result<Vec<(u32, Info)>, String> {
     let a = m.ok(op::GET_OBJECT_HANDLES, &[store, 0, u32::MAX], None)?;
@@ -704,6 +712,19 @@ fn windows(root: &Path) -> Result<(), String> {
             m.event(ev::STORE_REMOVED, Some(0x0002_FFFF), 30)?;
             mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
             m.event(ev::STORE_ADDED, Some(CF), 30)?;
+        }
+        // The icon experiment (R61): a probe's codes reach the PC with the
+        // events that make it read them again; probe 0 puts the standard
+        // ones back.
+        say(&mut s, "drive mtp probe 1", "RPL OK mtp probe 1")?;
+        m.event(ev::STORE_ADDED, Some(SD), 30)?;
+        if storage_codes(&mut m, SD)? != (0x0004, 0x0003) {
+            return Err("probe 1: the SD store doesn't report DCF".into());
+        }
+        say(&mut s, "drive mtp probe 0", "RPL OK mtp probe 0")?;
+        m.event(ev::STORE_ADDED, Some(SD), 30)?;
+        if storage_codes(&mut m, SD)? != (0x0004, 0x0002) {
+            return Err("probe 0: the SD store's standard codes aren't back".into());
         }
         // The loader's stack after all of it: under 75%.
         let line = say(&mut s, "loader stack", "RPL OK stack ")?;

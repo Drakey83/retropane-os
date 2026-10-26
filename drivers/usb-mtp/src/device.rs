@@ -71,6 +71,11 @@ pub struct StoreInfo {
     pub volume_id: Text,
     /// The largest file the file system holds (FAT32: 4 GiB - 1).
     pub max_file: u64,
+    /// The StorageType and FilesystemType codes to report instead of the
+    /// ones `kind` and a hierarchical store give [MTP 5.2.2]: an
+    /// experiment's override, to find which codes Windows draws a store's
+    /// icon from (R61). `None`: the standard ones.
+    pub codes: Option<(u16, u16)>,
 }
 
 /// One file or folder.

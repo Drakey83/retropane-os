@@ -1409,11 +1409,16 @@ impl<'b> Mtp<'b> {
             return;
         };
         let mut w = Writer::new(&mut self.buf[HEADER..]);
-        w.u16(match i.kind {
-            Kind::Fixed => 0x0003,
-            Kind::Removable => 0x0004,
-        });
-        w.u16(0x0002); // generic hierarchical
+        let standard = (
+            match i.kind {
+                Kind::Fixed => 0x0003,
+                Kind::Removable => 0x0004,
+            },
+            0x0002, // generic hierarchical
+        );
+        let (storage_type, filesystem_type) = i.codes.unwrap_or(standard);
+        w.u16(storage_type);
+        w.u16(filesystem_type);
         w.u16(if i.writable { 0x0000 } else { 0x0001 });
         w.u64(i.capacity);
         w.u64(i.free);

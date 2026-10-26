@@ -37,6 +37,8 @@ struct Mem {
     /// Fail the next write with this.
     fail_write: Option<StoreError>,
     writes: u32,
+    /// StorageInfo's codes override per store (`StoreInfo::codes`).
+    codes: [Option<(u16, u16)>; 2],
 }
 
 fn t(s: &str) -> Text {
@@ -60,6 +62,7 @@ impl Mem {
             initiator: None,
             fail_write: None,
             writes: 0,
+            codes: [None, None],
         };
         m.add(0, ROOT, "haret.exe", false, b"HARET", true);
         let docs = m.add(0, ROOT, "Docs", true, b"", false);
@@ -190,6 +193,7 @@ impl Device for Mem {
             description: t(if s == 0 { "SD Card" } else { "CF Card" }),
             volume_id: t(if s == 0 { "SD-1234" } else { "CF-5678" }),
             max_file: u64::from(u32::MAX),
+            codes: self.codes[i],
         })
     }
     fn child(
@@ -2027,3 +2031,21 @@ fn the_handle_index_survives_deletes_and_moves() {
 
 #[path = "fat_tests.rs"]
 mod fat_tests;
+
+#[test]
+fn a_stores_codes_are_the_standard_ones_unless_overridden() {
+    pc!(pc);
+    pc.open();
+    let codes = |pc: &mut Pc<'_, Mem>, s: u8| {
+        let a = pc.op(op::GET_STORAGE_INFO, &[store_id(s, true)], None);
+        assert_eq!(a.rc, rc::OK);
+        let mut r = Reader::new(&a.data);
+        (r.u16().unwrap(), r.u16().unwrap())
+    };
+    // Removable RAM, generic hierarchical [MTP 5.2.2].
+    assert_eq!(codes(&mut pc, 0), (0x0004, 0x0002));
+    // An experiment's override is reported as given, per store.
+    pc.dev.codes[1] = Some((0x0003, 0x0003));
+    assert_eq!(codes(&mut pc, 1), (0x0003, 0x0003));
+    assert_eq!(codes(&mut pc, 0), (0x0004, 0x0002));
+}

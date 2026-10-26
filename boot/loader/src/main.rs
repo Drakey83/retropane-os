@@ -3652,6 +3652,31 @@ mod image {
                                 }
                             }
                         }
+                        Ok(c) if c.starts_with(b"drive mtp probe ") => {
+                            let n = core::str::from_utf8(&c[16..])
+                                .ok()
+                                .and_then(|n| n.trim().parse::<usize>().ok());
+                            let present = [lun.present(), cf.present()];
+                            let set = match (mtp_t.as_mut(), n) {
+                                (Some(t), Some(n)) => t.set_probe(n, present).map(|()| n),
+                                _ => None,
+                            };
+                            match set {
+                                Some(n) => {
+                                    let _ = write!(
+                                        status,
+                                        "RPL OK mtp probe {n}: SD {:x?}, CF {:x?}\r\n",
+                                        mtp::PROBES[n][0],
+                                        mtp::PROBES[n][1]
+                                    );
+                                    status.as_str()
+                                }
+                                None if mtp_t.is_none() => {
+                                    "RPL ERR drive: MTP unavailable (the RAM pool was taken)\r\n"
+                                }
+                                None => "RPL ERR usage: drive mtp probe <0-4>\r\n",
+                            }
+                        }
                         Ok(b"drive mtp status") => match mtp_t.as_ref() {
                             Some(t) => {
                                 let st = t.mtp.stats();
