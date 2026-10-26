@@ -39,7 +39,10 @@ SECTIONS
 
     .stack (NOLOAD) : ALIGN(8) {
         __stack_bottom = .;
-        . += 16K;
+        /* 32 KiB (16 until 2026-10-25, when the CF card's timing searches at
+         * the attach overflowed it into .bss: quality audit C79); emu-cf
+         * fails past 75%. In the loader's own 1 MiB home. */
+        . += 32K;
         __stack_top = .;
         . += 1536;
         __irq_stack_top = .;

@@ -18,15 +18,16 @@ row with every new ADR that decides an area of code.
 | drivers/mbx3d/ | 0024, 0026, 0035 |
 | drivers/mbx3d-render/ | 0024, 0026, 0035 |
 | drivers/mved/ | 0025 |
-| drivers/pxa-udc/ | 0012, 0013, 0014 |
+| drivers/pxa-udc/ | 0012, 0013, 0014, 0037 |
 | drivers/usb-msc/ | 0014 |
+| drivers/usb-mtp/ | 0014, 0037 |
 | drivers/wm8750/ | 0032 |
 | drivers/pxa-i2s/ | 0032 |
 | drivers/cf/ | 0005, 0013 |
 | drivers/sdcard/ | 0005, 0013 |
 | drivers/pxa-keypad/ | 0033 |
 | drivers/tsc2046/ | 0033 |
-| kernel/fat/ | 0005, 0013 |
+| kernel/fat/ | 0005, 0013, 0036, 0037 |
 | kernel/mm/ | 0003, 0006, 0008, 0011, 0019 |
 | kernel/sched/ | 0010 |
 | kernel/ipc/ | 0016 |
@@ -34,7 +35,7 @@ row with every new ADR that decides an area of code.
 | kernel/power/ | 0031 |
 | kernel/crypto/ | 0029 |
 | hal/pxa27x/src/clocks.rs | 0031 |
-| boot/loader/ | 0012, 0013, 0017 |
+| boot/loader/ | 0012, 0013, 0014, 0017, 0036, 0037 |
 | boot/usb/ | 0012, 0014 |
 | boot/kernel/ | 0003, 0008, 0010 |
 | boot/gpubench/ | 0024, 0026, 0027, 0035 |

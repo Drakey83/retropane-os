@@ -28,6 +28,7 @@ members = [
     "drivers/pxa-mmc",
     "drivers/pxa-udc",
     "drivers/usb-msc",
+    "drivers/usb-mtp",
     "drivers/pxa-pwm",
     "drivers/cf",
     "drivers/pxa-i2c",
@@ -137,6 +138,8 @@ opt-level = "s"
 [profile.release.package.rp-fat]
 opt-level = "s"
 [profile.release.package.rp-usb-msc]
+opt-level = "s"
+[profile.release.package.rp-usb-mtp]
 opt-level = "s"
 [profile.release.package.rp-drv-cpld]
 opt-level = "s"

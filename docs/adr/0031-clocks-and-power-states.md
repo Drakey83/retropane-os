@@ -128,6 +128,16 @@ interactive case.
 | Sleep (`PWRMODE` 3) | user "off" (power button) | power button, RTC alarm (calendar), charger/cradle edges; WM's `PWER 0x80007803` (GPIO0, 1, 11-14, RTC) is the candidate list, a finding to work | resume through the boot path (RAM kept, self-refresh) |
 | Deep sleep (`PWRMODE` 7) | battery critical | power button only | cold boot |
 
+**A finding for the sleep design, not a ruling (2026-10-24, reminder R24,
+docs/hw/cpld.md "HTC's EGPIO CPLD"):** the X51v's board CPLD looks like HTC's
+"EGPIO" design (PhoneDB: HTC made the X51v), whose Linux driver rewrites every
+CPLD output from its shadow after a resume because the CPLD may lose power in
+suspend. If ours does, sleep must restore the shared shadow on wake (backlight,
+card power, codec, Wi-Fi bits) before anything uses them; and the CPLD's latched
+interrupt (GPIO13, the "card changed" flag `0x00` bit 1, proven 2026-10-24)
+belongs in the wake sources above. Both to be checked on the device when sleep is
+built.
+
 Deep idle (13 MHz mode) is **not used** for now. It stops the peripheral
 PLL, which stops SD, USB, UART and I2S. Standby saves more and wakes on
 the same events, so deep idle has no niche unless step (c) shows standby's

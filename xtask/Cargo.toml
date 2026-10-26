@@ -20,6 +20,7 @@ rp-looks = { path = "../boot/looks" }
 rp-screen-measure = { path = "../boot/screen-measure" }
 rp-mbx-render = { path = "../drivers/mbx-render", features = ["model"] }
 rp-loadproto = { path = "../boot/loadproto", features = ["std"] }
+rp-usb-mtp = { path = "../drivers/usb-mtp" }
 rp-fat = { path = "../kernel/fat", features = ["std"] }
 rp-hal-x51v = { path = "../hal/x51v" }
 rp-hal-api = { path = "../hal/api" }

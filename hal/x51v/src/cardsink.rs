@@ -152,7 +152,7 @@ pub(crate) fn after_write(text: &[u8]) {
     if due(s, text, len()) {
         // A program taking the SD controller waits for the card first;
         // what a busy card held back goes on at the next check-in.
-        rt::on_mmc_take(settle);
+        rt::on_mmc_take(sd_taken);
         rt::on_check_in(catch_up);
         sync(s, &mut Program::of(s), sector());
     }
@@ -171,6 +171,32 @@ pub fn catch_up() {
     if (s.synced as usize) < len() {
         sync(s, &mut Program::of(s), sector());
     }
+}
+
+/// The program takes `unit` for itself (its controller or socket): noted in
+/// the state, so the loader has the PC re-read that card after the run
+/// (reminder R22: a card the program never took keeps the PC's view).
+pub fn taken(unit: usize) {
+    if in_loader() {
+        return;
+    }
+    if let Some(s) = current() {
+        s.taken |= 1 << unit;
+    }
+}
+
+/// From the program's start: taking the SD controller marks the SD card
+/// taken ([`taken`]) and settles the card log first.
+pub fn arm() {
+    if !in_loader() {
+        rt::on_mmc_take(sd_taken);
+    }
+}
+
+/// The SD controller's take hook: [`taken`], then [`settle`].
+fn sd_taken() {
+    taken(crate::cardlog::SD);
+    settle();
 }
 
 /// Waits for a sector the card log sent and the card is still

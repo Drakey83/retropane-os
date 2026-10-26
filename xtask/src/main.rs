@@ -143,9 +143,11 @@ commands:
   install   put the kit's loader, HaRET and scripts on the card the same way
             (replaces the files already there; run cargo xtask sdkit first);
             `install cf` puts them in the CF card's RetroPane folder instead
-            (through the drive, each file read back and compared)
-  drive     the SD card as a drive on the PC (ADR-0014): `drive rw` lets the
-            PC write it, `drive ro` (the default at start) makes it read-only,
+            (through the loader, as the PC may not change them; each file
+            read back and compared)
+  drive     the SD and CF cards as drives on the PC (ADR-0014): writable by
+            default except their boot files; `drive ro` makes them read-only,
+            `drive rw` writable again,
             `drive off`/`drive on` withdraws/offers the card (an empty reader
             to the PC), `drive status` reports counters and the last card error
   backlight the X51v's backlight through the loader: `backlight` reports
@@ -163,13 +165,22 @@ commands:
             checked end to end; never overwrites a local file
   rm        delete a file or empty folder on the card through the loader
             (crash-safe; the files the device boots from are refused)
+  card layout <sd|cf>: the card's partition, file system, clusters and
+            alignment, read-only (through `cargo xtask card`)
+  hash      `hash <file>`: its size, CRC-32 and SHA-256, read on the device
+            (no data over USB); `get` checks big files with it, in ranges
+  format    `format <sd|cf> <auto|fat12|fat16|fat32|exfat>`: formats a card on
+            the device; prints the plan unless --yes; boot files and icon kept
   cf        identify the CompactFlash card through the loader (read-only;
             then it is the drive's second unit); `cf log`: READY changes,
             attach and drop times; `cf soft`: no hardware reset (diagnostics)
+  stack     the loader's deepest stack use so far, of its size (quality
+            audit C83: the CF attach's timing searches overflowed it once)
   log       the last image's run log again, from the loader (for a log
             lost on the way back; `load` asks for it by itself)
   cardlog   `cardlog [image] [number]`: a run's log kept on the cards as
-            the run went (rplog/<image>-NNNN.txt, every run the loader
+            the run went (one of 32 files rplog/log-SS.txt reused in turn,
+            which run each holds in rplog/index.txt; every run the loader
             starts; the SD card's part and the CF card's joined): the
             newest, or the one numbered; it survives hangs, watchdog and
             soft resets; saved under local/cardlog/
@@ -314,6 +325,8 @@ commands:
             the card as the PC's second drive)
   emu-stale only the stale-view check (a PC write from before an image's
             run is refused; the drive goes away; no file lost)
+  emu-format   formatting on the device: SD and CF into FAT12/16/32 and exFAT
+            through the loader, kept files read back, guards rebuilt
   emu-cardlog  the card log for every run: on the SD card line for line, moved
             to the CF card when a program takes the SD card, closed by the
             loader (returned, crashed, a watchdog reset), old files cleaned
@@ -349,12 +362,12 @@ fn main() -> ExitCode {
         | "emu-mbx3d-api" | "emu-tabench" | "emu-gpubench" | "emu-cs3bus" | "emu-cpldbus"
         | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-probe"
         | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace"
-        | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite"
+        | "emu-fullsize" | "emu-usb" | "emu-mtp" | "emu-stale" | "emu-drive" | "emu-usb-suite"
         | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect"
         | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep"
         | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh"
-        | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "emu-cardlog" | "mutants"
-        | "qemu" => run_step(&cmd),
+        | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "emu-cardlog" | "emu-format"
+        | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -432,10 +445,14 @@ fn main() -> ExitCode {
         "drive" => {
             eprintln!("==> drive {flag}");
             match flag.as_str() {
-                "rw" | "ro" | "on" | "off" | "status" => {
+                "rw" | "ro" | "on" | "off" | "status" | "mtp" | "msc" | "auto" => {
                     usb::command(&workspace_root(), &format!("drive {flag}"))
                 }
-                _ => Err("usage: cargo xtask drive rw|ro|on|off|status".into()),
+                // MTP's counters and the layout (ADR-0037).
+                "mtp-status" => usb::command(&workspace_root(), "drive mtp status"),
+                _ => Err(
+                    "usage: cargo xtask drive rw|ro|on|off|status|mtp|msc|auto|mtp-status".into(),
+                ),
             }
         }
         "card" => {
@@ -460,6 +477,24 @@ fn main() -> ExitCode {
                 usb::get(&workspace_root(), &flag, args().nth(3).as_deref())
             }
         }
+        "hash" => {
+            // The file's size, CRC-32 and SHA-256 read on the device: no
+            // data over USB (R48).
+            let rest: Vec<String> = args().skip(2).collect();
+            eprintln!("==> hash {}", rest.join(" "));
+            if rest.is_empty() {
+                Err("usage: cargo xtask hash <file on the card, cf: for the CF card>".into())
+            } else {
+                usb::command(&workspace_root(), &format!("hash {}", rest.join(" ")))
+            }
+        }
+        "format" => {
+            // ADR-0036: the plan alone unless --yes; the card's boot files
+            // and icon are saved to local/ before anything is written.
+            let rest: Vec<String> = args().skip(2).collect();
+            eprintln!("==> format {}", rest.join(" "));
+            usb::format(&workspace_root(), &rest)
+        }
         "rm" => {
             let rest: Vec<String> = args().skip(2).collect();
             eprintln!("==> rm {}", rest.join(" "));
@@ -472,13 +507,23 @@ fn main() -> ExitCode {
         "cf" => {
             // `cf soft`: without the hardware reset; `cf log`: the slot's
             // timestamped events (diagnostics only).
+            // `cf trace`: the drive's commands since the last pull (R42).
             let cmd = match args().nth(2).as_deref() {
                 Some("soft") => "cf soft",
                 Some("log") => "cf log",
+                Some("trace") => "cf trace",
                 _ => "cf",
             };
             eprintln!("==> {cmd}");
-            usb::command(&workspace_root(), cmd)
+            if cmd == "cf trace" {
+                usb::cf_trace(&workspace_root())
+            } else {
+                usb::command(&workspace_root(), cmd)
+            }
+        }
+        "stack" => {
+            eprintln!("==> loader stack");
+            usb::command(&workspace_root(), "loader stack")
         }
         "log" => {
             eprintln!("==> log");
@@ -757,6 +802,7 @@ fn run_step(step: &str) -> Result {
         "emu-threads" => cross().and_then(|()| emu::boot_threads(&workspace_root())),
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
+        "emu-mtp" => cross().and_then(|()| emu::boot_loader_mtp(&workspace_root())),
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
         "emu-loader" => cross().and_then(|()| emu::boot_loader(&workspace_root())),
         "emu-keepfed" => cross().and_then(|()| emu::boot_loader_keeps_feeding(&workspace_root())),
@@ -778,6 +824,7 @@ fn run_step(step: &str) -> Result {
         }
         "emu-storfast" => cross().and_then(|()| emu::boot_loader_storfast(&workspace_root())),
         "emu-cardlog" => cross().and_then(|()| emu::boot_loader_cardlog(&workspace_root())),
+        "emu-format" => cross().and_then(|()| emu::boot_loader_format_alone(&workspace_root())),
         "emu-drive" => cross().and_then(|()| emu::boot_loader_drive_alone(&workspace_root())),
         // Every check that goes through the USB controller, in `emu`'s order
         // (UDC work: the rest of the suite doesn't touch it).
@@ -789,6 +836,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_put(&workspace_root()))
             .and_then(|()| emu::boot_loader_put_exfat(&workspace_root()))
             .and_then(|()| emu::boot_loader_cf(&workspace_root()))
+            .and_then(|()| emu::boot_loader_format(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
             .and_then(|()| emu::boot_loader_locked(&workspace_root()))
@@ -836,10 +884,12 @@ fn run_step(step: &str) -> Result {
                 ("boot_loader_refresh", emu::boot_loader_refresh),
                 ("boot_usb_link", emu::boot_usb_link),
                 ("boot_loader_usb", emu::boot_loader_usb),
+                ("boot_loader_mtp", emu::boot_loader_mtp),
                 ("boot_loader_trace", emu::boot_loader_trace),
                 ("boot_loader_put", emu::boot_loader_put),
                 ("boot_loader_put_exfat", emu::boot_loader_put_exfat),
                 ("boot_loader_cf", emu::boot_loader_cf),
+                ("boot_loader_format", emu::boot_loader_format),
                 ("boot_loader_tone", emu::boot_loader_tone),
                 ("boot_loader_audio_s1", emu::boot_loader_audio_s1),
                 ("boot_loader_audio_sleep", emu::boot_loader_audio_sleep),
@@ -1393,8 +1443,24 @@ mod tests {
         ];
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut found = Vec::new();
-        for entry in std::fs::read_dir(&src).unwrap() {
-            let path = entry.unwrap().path();
+        // Every source file, in subfolders too (`emu/`).
+        let mut files = Vec::new();
+        let mut dirs = vec![src];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        assert!(
+            files.iter().any(|f| f.ends_with("emu/mtp.rs")),
+            "the walk sees subfolders"
+        );
+        for path in files {
             let text = std::fs::read_to_string(&path).unwrap();
             for (n, line) in text.lines().enumerate() {
                 if folders.iter().any(|f| line.contains(f.as_str())) {

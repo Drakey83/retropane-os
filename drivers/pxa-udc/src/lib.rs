@@ -27,6 +27,7 @@ pub mod unplug;
 pub mod usb;
 
 use rp_hal_api::{Port, RegisterBus, RegisterBus8, Width};
+pub use usb::Layout;
 use usb::{Cdc, Reply, Setup};
 
 /// Register offsets and bits (docs/hw/udc.md).
@@ -166,6 +167,10 @@ const SLOT_IN: usize = 2;
 const SLOT_OUT: usize = 3;
 const SLOT_MSC_OUT: usize = 4;
 const SLOT_MSC_IN: usize = 5;
+/// MTP's event endpoint (slot F), in the MTP layout only.
+const SLOT_MTP_EVENT: usize = 6;
+/// Slots, endpoint 0 included.
+const SLOTS: usize = 7;
 
 /// `UDCCRx.DE`: double buffering (two packet buffers in endpoint memory).
 const DE: u32 = 1 << 1;
@@ -208,6 +213,21 @@ const TABLE: [(usize, u32); 5] = [
     (
         SLOT_MSC_IN,
         endpoint(0, usb::EP_MSC_IN, 2, true, usb::BULK_SIZE),
+    ),
+];
+
+/// The MTP layout's table (ADR-0037): the drive layout's endpoints (the
+/// bulk pair carries MTP) and the event endpoint, all in interface 0 for
+/// the same reason.
+const TABLE_MTP: [(usize, u32); 6] = [
+    TABLE[0],
+    TABLE[1],
+    TABLE[2],
+    TABLE[3],
+    TABLE[4],
+    (
+        SLOT_MTP_EVENT,
+        endpoint(0, usb::EP_MTP_EVENT, 3, true, usb::EVENT_SIZE),
     ),
 ];
 
@@ -313,15 +333,23 @@ pub struct Udc<B> {
     ep0_buf: [u8; 128],
     ep0_len: usize,
     ep0_pos: usize,
+    /// The IN reply's wLength: a reply that fills it ends without a
+    /// zero-length packet (USB 2.0 8.5.3.2: that packet only ends a reply
+    /// shorter than asked for).
+    ep0_want: usize,
     configuration: u8,
     rx: Ring<256>,
     tx: Ring<512>,
     /// Per slot: an IN packet was written and its packet-complete not yet
     /// seen (one-in-flight mode).
-    in_wait: [bool; 6],
+    in_wait: [bool; SLOTS],
     /// Per slot: DMA serves the endpoint (`DME` set): the CPU paths leave
     /// its FIFO alone, and every status write carries `DME`.
-    dma: [bool; 6],
+    dma: [bool; SLOTS],
+    /// Per slot: halted (`FST` forced), until the host clears it.
+    halted: [bool; SLOTS],
+    /// The host cleared a halt on MTP's bulk pair (for the function).
+    halt_cleared: bool,
     /// The packet-complete interrupts are on ([`Udc::set_interrupts`]).
     interrupts: bool,
     /// A bus reset or a mass storage reset happened: the storage function
@@ -340,11 +368,14 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             ep0_buf: [0; 128],
             ep0_len: 0,
             ep0_pos: 0,
+            ep0_want: 0,
             configuration: 0,
             rx: Ring::new(),
             tx: Ring::new(),
-            in_wait: [false; 6],
-            dma: [false; 6],
+            in_wait: [false; SLOTS],
+            dma: [false; SLOTS],
+            halted: [false; SLOTS],
+            halt_cleared: false,
             interrupts: false,
             msc_reset: false,
             stats: Stats {
@@ -381,9 +412,16 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         self.bus.write32(reg::UDCICR0, 0);
         self.bus.write32(reg::UDCICR1, 0);
         self.udccr(0, reg::UDE);
-        for (slot, cfg) in TABLE {
+        let table: &[(usize, u32)] = if self.cdc.layout() == Layout::Mtp {
+            &TABLE_MTP
+        } else {
+            &TABLE
+        };
+        for &(slot, cfg) in table {
             self.bus.write32(reg::cr(slot), cfg);
         }
+        self.cdc.forget_ms();
+        self.halted = [false; SLOTS];
         // The X51v's UDC talks through port 2's transceiver: its output must
         // be on (WM leaves UP2OCR = HXOE; with it off the PC sees the device
         // attach but never gets an answer). Measured, docs/hw/udc.md. Only
@@ -586,8 +624,9 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         self.ep0 = Ep0::Idle;
         self.rx.clear();
         self.tx.clear();
-        self.in_wait = [false; 6];
-        self.dma = [false; 6];
+        self.in_wait = [false; SLOTS];
+        self.dma = [false; SLOTS];
+        self.halted = [false; SLOTS];
         self.msc_reset = true;
     }
 
@@ -665,6 +704,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
                 self.ep0_buf[..n].copy_from_slice(&data[..n]);
                 self.ep0_len = n;
                 self.ep0_pos = 0;
+                self.ep0_want = usize::from(s.length);
                 self.ep0 = Ep0::InData;
                 self.send_ep0_packet();
             }
@@ -690,6 +730,103 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         if self.cdc.take_msc_reset() {
             self.msc_reset = true;
         }
+        if let Some(ep) = self.cdc.take_clear_halt() {
+            let slot = if ep & 0x80 != 0 {
+                SLOT_MSC_IN
+            } else {
+                SLOT_MSC_OUT
+            };
+            self.halted[slot] = false;
+            self.csr_write(slot, reg::SST);
+            if !self.halted[SLOT_MSC_IN] && !self.halted[SLOT_MSC_OUT] {
+                self.halt_cleared = true;
+            }
+        }
+    }
+
+    /// Chooses what the device presents (serial only, serial + drive,
+    /// serial + MTP). Call while disabled; the host sees it at the next
+    /// enumeration.
+    pub fn set_layout(&mut self, layout: Layout) {
+        self.cdc.set_layout(layout);
+    }
+
+    /// What the device presents.
+    #[must_use]
+    pub fn layout(&self) -> Layout {
+        self.cdc.layout()
+    }
+
+    /// What the host read of Microsoft's OS descriptors since the
+    /// controller was enabled ([`usb::ms`] bits): the 2.0 set is read only
+    /// by Windows (ADR-0037 rule 4).
+    #[must_use]
+    pub fn ms_seen(&self) -> u8 {
+        self.cdc.ms_seen()
+    }
+
+    /// An MTP Cancel request's transaction ID, once [SIC 5.2.1].
+    pub fn take_mtp_cancel(&mut self) -> Option<u32> {
+        self.cdc.take_mtp_cancel()
+    }
+
+    /// Whether an MTP Device Reset request came, once [SIC 5.2.3].
+    pub fn take_mtp_reset(&mut self) -> bool {
+        self.cdc.take_mtp_reset()
+    }
+
+    /// MTP's answer to Get Device Status [SIC 5.2.4] (the function's
+    /// status; the halted endpoints are added here).
+    pub fn set_mtp_status(&mut self, code: u16) {
+        let mut b = [0u8; 12];
+        b[2..4].copy_from_slice(&code.to_le_bytes());
+        let mut n = 4;
+        if code == 0x201F {
+            for (slot, ep) in [
+                (SLOT_MSC_OUT, usb::EP_MSC_OUT),
+                (SLOT_MSC_IN, 0x80 | usb::EP_MSC_IN),
+            ] {
+                if self.halted[slot] {
+                    b[n..n + 4].copy_from_slice(&u32::from(ep).to_le_bytes());
+                    n += 4;
+                }
+            }
+        }
+        b[..2].copy_from_slice(&(n as u16).to_le_bytes());
+        self.cdc.set_mtp_status(&b[..n]);
+    }
+
+    /// Halts MTP's bulk pair (a malformed command [SIC 7]).
+    pub fn mtp_stall(&mut self) {
+        for slot in [SLOT_MSC_OUT, SLOT_MSC_IN] {
+            self.halted[slot] = true;
+            self.csr_write(slot, reg::FEF);
+        }
+        self.halt_cleared = false;
+    }
+
+    /// Drops what waits in MTP's bulk FIFOs (a cancelled transfer [SIC
+    /// 5.2.1]); a halt stays.
+    pub fn mtp_flush(&mut self) {
+        for slot in [SLOT_MSC_OUT, SLOT_MSC_IN] {
+            self.csr_write(slot, reg::FEF);
+        }
+    }
+
+    /// Whether the host cleared the halt on both bulk endpoints, once.
+    pub fn take_mtp_cleared(&mut self) -> bool {
+        core::mem::take(&mut self.halt_cleared)
+    }
+
+    /// Whether an MTP event can be queued on the interrupt endpoint.
+    pub fn mtp_event_can_write(&mut self) -> bool {
+        self.configured() && self.cdc.layout() == Layout::Mtp && self.in_room(SLOT_MTP_EVENT)
+    }
+
+    /// Queues one MTP event (at most [`usb::EVENT_SIZE`] bytes).
+    pub fn mtp_event_write(&mut self, data: &[u8]) {
+        let n = data.len().min(usb::EVENT_SIZE);
+        self.write_packet_sized(SLOT_MTP_EVENT, &data[..n], usb::EVENT_SIZE);
     }
 
     /// Chooses the composite layout (serial port + drive, the default) or
@@ -788,7 +925,8 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     /// it (a write without it would turn DMA off).
     fn csr_write(&mut self, slot: usize, bits: u32) {
         let dme = if self.dma[slot] { reg::DME } else { 0 };
-        self.bus.write32(reg::csr(slot), bits | dme);
+        let fst = if self.halted[slot] { reg::FST } else { 0 };
+        self.bus.write32(reg::csr(slot), bits | dme | fst);
     }
 
     /// The DMA port of a bulk endpoint: its FIFO (32-bit accesses) and
@@ -845,12 +983,17 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     /// Writes one bulk IN packet (at most 64 bytes; shorter ends the
     /// transfer). Returns whether it was short.
     fn write_packet(&mut self, slot: usize, data: &[u8]) -> bool {
+        self.write_packet_sized(slot, data, usb::BULK_SIZE)
+    }
+
+    /// Writes one IN packet of an endpoint whose packets are `max` bytes.
+    fn write_packet_sized(&mut self, slot: usize, data: &[u8], max: usize) -> bool {
         // A NAKed IN token (TRN) is cleared before the packet goes in, as
         // the hardware's known-good driver does (write-1-to-clear).
         if self.bus.read32(reg::csr(slot)) & reg::TRN != 0 {
             self.csr_write(slot, reg::TRN);
         }
-        let data = &data[..data.len().min(usb::BULK_SIZE)];
+        let data = &data[..data.len().min(max)];
         let (words, rest) = data.as_chunks::<4>();
         for w in words {
             self.bus.write32(reg::dr(slot), u32::from_le_bytes(*w));
@@ -860,7 +1003,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         }
         self.stats.tx_bytes += data.len() as u32;
         self.in_wait[slot] = true;
-        let short = data.len() < usb::BULK_SIZE;
+        let short = data.len() < max;
         if short {
             self.csr_write(slot, reg::SP);
         }
@@ -917,6 +1060,12 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         self.ep0_pos = end;
         if n < usb::EP0_SIZE {
             self.bus.write32(reg::csr(0), reg::IPR);
+            self.ep0 = Ep0::StatusOut;
+        } else if end == self.ep0_len && end >= self.ep0_want {
+            // A full last packet that gives the host all it asked for: the
+            // data stage is over (a zero-length packet here would wait in
+            // the FIFO and answer the next request: found in the emulator
+            // with the compatible ID's 16-byte header, ADR-0037).
             self.ep0 = Ep0::StatusOut;
         }
     }

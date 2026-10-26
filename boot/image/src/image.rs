@@ -40,6 +40,9 @@ static SCREEN: Global<Option<fn(&dyn Fn(&mut dyn Write)) -> bool>> = Global::new
 /// calls it before the image's `main`.
 pub fn install() {
     rt::set_fault_handler(fault);
+    // A card the program takes is marked so (the loader then has the PC
+    // re-read it; reminder R22).
+    rp_hal_x51v::cardsink::arm();
 }
 
 /// Sets a step to run first on a crash: what the image changed that must

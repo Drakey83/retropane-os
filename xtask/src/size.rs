@@ -338,10 +338,29 @@ pub const BUDGETS: &[Budget] = &[
     // when the run comes back (or at the next start), and `ls`/`get` read the
     // CF card (`cf:`) for the half a program kept there; one copy of the file
     // systems for both cards. 121,224 B measured (Thumb).
+    // Raised 124 -> 128 KiB on 2026-10-25 (approved by the owner): the CF
+    // card's write timing (the owner's ruling A, R28: rule M for writes,
+    // measured once per card on its own test sectors and kept in
+    // rplog/cfwrite.txt), after the CF drive's guard and put (ruling A,
+    // ADR-0014); 128,222 B measured (Thumb).
+    // Ratcheted 128 -> 156 KiB on 2026-10-25 (test image, ADR-0013's rule;
+    // ADR-0036): FAT12 and FAT16, the boot-file guard on every format
+    // (exFAT's entry sets, bitmap and boot region), the formatter
+    // (`rp_fat::mkfs`: FAT12/16/32 and exFAT, the up-case table's ranges)
+    // and the `format` command; 145,926 B measured (Thumb), + ~9%.
+    // 156 -> 244 KiB on 2026-10-25 (approved by the owner 2026-10-26, R54)
+    // (ADR-0037, R52): the cards over MTP (`rp-usb-mtp`'s responder, its
+    // card layer on rp-fat's node layer, the loader's glue and the keypad
+    // for a format's yes); one disk type for the drive and MTP keeps rp-fat
+    // built once (9 KB saved); 228,650 B measured (Thumb), + ~9%.
     Budget {
         image: "rp-loader",
-        max_load: 124 * 1024,
-        max_zero: 20 * 1024,
+        max_load: 244 * 1024,
+        // Zeroed RAM 20 -> 36 KiB on 2026-10-25 (approved by the owner):
+        // the loader's stack 16 -> 32 KiB, after the CF card's timing
+        // searches at the attach overflowed 16 (17,376 B deepest; quality
+        // audit C83); 36,656 B measured, the stack in its own 1 MiB home.
+        max_zero: 36 * 1024,
         device: OnDevice::Loader,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.
@@ -659,9 +678,12 @@ pub const BUDGETS: &[Budget] = &[
     // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
     // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
     // writes and the sync); 44.6 KiB measured, + ~10%.
+    // Ratcheted 45 -> 50 KiB on 2026-10-24 (test image): the card log's
+    // slots (reminder R22: `cardsink::taken` marks the CF card the image
+    // takes); 46,124 B measured, + ~10%.
     Budget {
         image: "rp-cftime",
-        max_load: 45 * 1024,
+        max_load: 50 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -690,7 +712,14 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 108 -> 120 KiB on 2026-10-24 (test image): C4-C5, the
         // CF card's own timing and its margin (reminder R7); 111.8 KiB
         // measured once the size check read the real build (arm_release).
-        max_load: 120 * 1024,
+        // Ratcheted 120 -> 148 KiB on 2026-10-24 (test image): C7, the CF
+        // write test (rp-fat built a second time, for the CF card) and C8,
+        // the CPLD interrupt reads (R28, R24); 133.8 KiB measured.
+        // Ratcheted 148 -> 164 KiB on 2026-10-25 (test image): C9-C13, the
+        // CF write ladders, each write's phases timed, fresh sectors and the
+        // rewrite cost, the CFA erase commands, the rewrite cost by size
+        // (R28); 150.9 KiB measured.
+        max_load: 164 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

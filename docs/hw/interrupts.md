@@ -16,7 +16,7 @@ The OAL's handler is a chain on the PXA's `ICIP`; GPIOs 2-120 (ICIP bit
 |---|---|---|---|
 | 1 | OS timer 0 (tick) | kernel | confirmed |
 | 13 | RTC alarm | | confirmed |
-| 16 | GPIO0 both edges, keypad, CPLD status bit 8 (via GPIO13, rising) | keyboard / power button | confirmed (driver likely) |
+| 16 | GPIO0 both edges, keypad, CPLD status bit 8 (via GPIO13, rising) | keyboard / power button | confirmed (driver likely). **GPIO13 is the CPLD's latched interrupt** (2026-10-24, `rp-storfast` C8: a CF pull latches CPLD `0x00` bit 1 and raises GPIO13, both until cleared; HTC's EGPIO design, cpld.md): the acknowledge to find (R24), then card, dock and button changes by interrupt |
 | 17 | GPIO94 falling (the handler also stops OS timer 1) | ? | confirmed |
 | 18 | GPIO11 both edges | ? | confirmed |
 | 19 | FFUART, DMA 8/9, CPLD bit 9 | serial (COM1) | confirmed |

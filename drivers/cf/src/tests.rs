@@ -24,6 +24,9 @@ struct Card {
     identify: [u16; 256],
     write_cache: bool,
     supports_cache_off: bool,
+    /// The CFA feature set: ERASE SECTORS and WRITE WITHOUT ERASE taken
+    /// (refused, aborted, without it).
+    cfa: bool,
     /// Faults.
     error_at: Option<u32>,
     never_ready: bool,
@@ -121,6 +124,7 @@ impl Card {
             identify,
             write_cache: true,
             supports_cache_off: true,
+            cfa: false,
             error_at: None,
             never_ready: false,
             busy_reads: 0,
@@ -223,7 +227,17 @@ impl Card {
                 self.left = 1;
                 self.phase = Phase::ReadOut;
             }
-            CMD_READ_SECTORS | CMD_WRITE_SECTORS => {
+            CMD_CFA_ERASE_SECTORS if self.cfa => {
+                if self.lba + self.left > SECTORS {
+                    self.fail(0x10);
+                    return;
+                }
+                let o = self.lba as usize * SECTOR;
+                self.disk[o..o + self.left as usize * SECTOR].fill(0xFF);
+            }
+            CMD_READ_SECTORS | CMD_WRITE_SECTORS | CMD_CFA_WRITE_WITHOUT_ERASE
+                if cmd != CMD_CFA_WRITE_WITHOUT_ERASE || self.cfa =>
+            {
                 if self.lba + self.left > SECTORS {
                     self.fail(0x10); // ID not found
                     return;
@@ -1204,5 +1218,198 @@ fn a_tuned_card_writes_at_the_write_timing() {
     assert_eq!(c.borrow().mcmem, now, "the read timing back after a write");
     cf.read_blocks(9, &mut back).unwrap();
     assert_eq!(back, block);
+    TIMED.with(|t| *t.borrow_mut() = None);
+}
+
+/// With `write_data_at`, the command and address go at the command timing
+/// and only the data words at the data timing: a card that writes data
+/// wrong when the data timing is too fast stores garbage only in the sector
+/// addressed, the next sector untouched; at a right data timing every block
+/// lands; the read timing is back after each write.
+#[test]
+fn the_data_timing_covers_only_the_data_words() {
+    let (c, mut cf, _, t) = tuned(20, false);
+    let Tuned::Applied { was, now, .. } = t else {
+        panic!("{t:?}");
+    };
+    c.borrow_mut().write_below = 40;
+    TIMED.with(|t| *t.borrow_mut() = Some(c.clone()));
+    let mut back = [0u8; SECTOR];
+    cf.read_blocks(12, &mut back).unwrap();
+    let neighbour = back;
+    // Data too fast (the read timing, 30 cycles, under 40): sector 11 spoiled,
+    // sector 12 as it was, the command reached the card right.
+    cf.write_data_at(set_mcmem, now, was, now);
+    cf.write_blocks(11, &[0x3Cu8; SECTOR]).unwrap();
+    assert_eq!(c.borrow().mcmem, now);
+    cf.read_blocks(11, &mut back).unwrap();
+    assert_ne!(back, [0x3Cu8; SECTOR]);
+    cf.read_blocks(12, &mut back).unwrap();
+    assert_eq!(
+        back, neighbour,
+        "a too-fast data timing reached another sector"
+    );
+    // Data at Windows Mobile's timing: right.
+    cf.write_data_at(set_mcmem, now, was, was);
+    cf.write_blocks(11, &[0x3Cu8; SECTOR]).unwrap();
+    cf.read_blocks(11, &mut back).unwrap();
+    assert_eq!(back, [0x3Cu8; SECTOR]);
+    TIMED.with(|t| *t.borrow_mut() = None);
+}
+
+/// A marked write is the same write, its phases reported in order: per
+/// command, the command, the data timing, a DRQ and the data per sector, the
+/// command timing, done; the socket at the data timing exactly between
+/// `DataTiming` and `CommandTiming`.
+#[test]
+fn a_marked_write_reports_each_phase_in_order() {
+    let (c, mut cf, _, t) = tuned(20, false);
+    let Tuned::Applied { was, now, .. } = t else {
+        panic!("{t:?}");
+    };
+    TIMED.with(|t| *t.borrow_mut() = Some(c.clone()));
+    cf.write_data_at(set_mcmem, now, was, was + 1);
+    let mut seen = Vec::new();
+    let block = [0x5Au8; 3 * SECTOR];
+    cf.write_blocks_marked(20, &block, &mut |p| seen.push((p, c.borrow().mcmem)))
+        .unwrap();
+    use WritePhase::*;
+    let phases: Vec<WritePhase> = seen.iter().map(|&(p, _)| p).collect();
+    assert_eq!(
+        phases,
+        [
+            Command,
+            DataTiming,
+            Drq,
+            Data,
+            Drq,
+            Data,
+            Drq,
+            Data,
+            CommandTiming,
+            Done
+        ]
+    );
+    assert_eq!(seen[0].1, was, "the command at the command timing");
+    assert!(
+        seen[1..8].iter().all(|&(_, m)| m == was + 1),
+        "the data phase at the data timing"
+    );
+    assert_eq!(seen[8].1, was);
+    assert_eq!(
+        c.borrow().mcmem,
+        now,
+        "the read timing back after the write"
+    );
+    let mut back = vec![0u8; block.len()];
+    cf.read_blocks(20, &mut back).unwrap();
+    assert_eq!(back, block);
+    TIMED.with(|t| *t.borrow_mut() = None);
+}
+
+/// The CFA feature set as IDENTIFY words 83 and 86 claim it (word 86
+/// counted only when word 83's signature says the words are valid); a card
+/// with it
+/// erases sectors ahead and writes them without erase (the data lands, the
+/// read timing back after); a card without it refuses both with an error,
+/// and stays usable (a refusal isn't a dead card).
+#[test]
+fn the_cfa_erase_commands_work_or_are_refused_cleanly() {
+    // Word 86's bit without word 83's signature counts for nothing.
+    let (c, attr, common) = card();
+    c.borrow_mut().identify[86] = 1 << 2;
+    let Ok(cf) = init(&c, attr, common) else {
+        panic!("init");
+    };
+    assert_eq!(cf.cfa(), (false, false));
+    for cfa in [true, false] {
+        let (c, attr, common) = card();
+        c.borrow_mut().cfa = cfa;
+        if cfa {
+            c.borrow_mut().identify[83] = 0x4000 | 1 << 2;
+            c.borrow_mut().identify[86] = 1 << 2;
+        }
+        let Ok(mut cf) = init(&c, attr, common) else {
+            panic!("init");
+        };
+        assert_eq!(cf.cfa(), (cfa, cfa));
+        let block = [0xA5u8; 2 * SECTOR];
+        let erased = cf.erase_sectors(30, 2);
+        let written = cf.write_without_erase_marked(30, &block, &mut |_| {});
+        let mut back = [0u8; 2 * SECTOR];
+        if cfa {
+            erased.unwrap();
+            written.unwrap();
+            cf.read_blocks(30, &mut back).unwrap();
+            assert_eq!(back, block);
+        } else {
+            assert_eq!(erased, Err(BlockError::Device));
+            assert_eq!(written, Err(BlockError::Device));
+            assert_eq!(cf.last_error() & 0x04, 0x04, "aborted");
+            assert!(!cf.is_dead());
+            cf.write_blocks(30, &block).unwrap();
+            cf.read_blocks(30, &mut back).unwrap();
+            assert_eq!(back, block);
+        }
+        assert_eq!(cf.erase_sectors(30, 0), Err(BlockError::OutOfRange));
+        assert_eq!(cf.erase_sectors(30, 257), Err(BlockError::OutOfRange));
+    }
+}
+
+/// Rule M for writes: from the command timing the data phase shortens
+/// field by field to the card's write limit (here 30 cycles), never below
+/// the read floor, and the limit with the margin is used once two more
+/// writes at it read back right; the test sectors hold the last pattern,
+/// other sectors are untouched; a card writing wrong at the command timing
+/// keeps it.
+#[test]
+fn writes_are_tuned_to_the_cards_own_limit_with_the_margin() {
+    let (c, mut cf, _, t) = tuned(20, false);
+    let Tuned::Applied {
+        was, now, limit, ..
+    } = t
+    else {
+        panic!("{t:?}");
+    };
+    c.borrow_mut().write_below = 30;
+    TIMED.with(|t| *t.borrow_mut() = Some(c.clone()));
+    let mut neighbour = [0u8; SECTOR];
+    cf.read_blocks(104, &mut neighbour).unwrap();
+    let mut buf = vec![0u8; 8 * SECTOR];
+    let mut back = vec![0u8; 8 * SECTOR];
+    let w = cf.tune_writes(set_mcmem, now, was, limit, 40, 64, &mut buf, &mut back);
+    let WriteTuned::Applied { limit: wl, now: wn } = w else {
+        panic!("{w:?}");
+    };
+    assert!(
+        cycles(wl) >= 30,
+        "the write limit is where the card writes right"
+    );
+    assert!(cycles(wn) * 10 >= cycles(wl) * 15, "the margin, 1.5x");
+    assert!(cycles(wn) < cycles(was), "shorter than the command timing");
+    let floor = timing::Timing::from_mcmem(limit);
+    let l = timing::Timing::from_mcmem(wl);
+    assert!(l.asst >= floor.asst && l.hold >= floor.hold && l.set >= floor.set);
+    assert_eq!(c.borrow().mcmem, now, "the read timing back");
+    // Writes now land right at the tuned timing, the neighbour untouched.
+    let block = [0x6Bu8; SECTOR];
+    cf.write_blocks(40, &block).unwrap();
+    let mut got = [0u8; SECTOR];
+    cf.read_blocks(40, &mut got).unwrap();
+    assert_eq!(got, block);
+    cf.read_blocks(104, &mut got).unwrap();
+    assert_eq!(got, neighbour, "nothing written past the area");
+    // A limit whose margin is no shorter than the command timing (40
+    // cycles: 60 with it, against 54) gains nothing: kept.
+    c.borrow_mut().write_below = 40;
+    let w = cf.tune_writes(set_mcmem, now, was, limit, 40, 64, &mut buf, &mut back);
+    assert_eq!(
+        w,
+        WriteTuned::Kept("no write timing with the margin shorter than the command's")
+    );
+    // A card wrong at the command timing keeps it.
+    c.borrow_mut().write_below = 1000;
+    let w = cf.tune_writes(set_mcmem, now, was, limit, 40, 64, &mut buf, &mut back);
+    assert_eq!(w, WriteTuned::Kept("writes wrong at the command timing"));
     TIMED.with(|t| *t.borrow_mut() = None);
 }

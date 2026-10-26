@@ -514,6 +514,91 @@ may be the socket's, not the cards' (a third card would tell). The margin on
 the set-up and hold is one step each (they measured zero): the 1.5x rule
 can't scale nothing. Next: the loader tunes each card at attach.
 
+**CF writes (2026-10-24, `rp-storfast` C7, R28):** with the command and address at Windows
+Mobile's timing and only the data words faster, the 8 GB card's data was right at every strobe
+down to 0 (10 cycles), 64 sectors read back exact each time. Speed: 4,637 KiB/s with Windows
+Mobile's timing throughout, but **240 KiB/s with the timing switched around each sector's data**:
+switching `MCMEM1` costs ~1 ms (inferred; to measure), which swamps the gain. To try: one switch
+per command.
+
+**Once a command, and C9, one field at a time (2026-10-25, `local/rp-storfast-C9.txt`, the 8 GB
+card, image sha 354348a9):** the switch moved to once a command (two `MCMEM1` writes for the
+64-sector write) changed nothing: 233-236 KiB/s at every faster data strobe, against 4,645 at
+Windows Mobile's. C9 then shortened one field at a time from Windows Mobile's timing, the other two
+kept: strobe 9 down to 1, hold 7 down to 0, set-up 7 down to 0, **every step 231-236 KiB/s, every
+sector right**. One step (51 cycles against 54) costs as much as the shortest (27): the speed
+doesn't follow the timing, nor the number of switches (once a sector and once a command gave the
+same). It drops whenever the data phase's `MCMEM1` value differs from the command's. Not yet
+known: where the ~2 ms a sector goes (the DRQ waits, the data words, or the card's programming
+at `finish`). Next measurement: the same write with each phase timed (command, each DRQ wait,
+the data words, `finish`) at Windows Mobile's and at strobe 9, and a write with `MCMEM1`
+rewritten to its own value (a write that changes nothing) to split "a write to the register"
+from "a different value".
+
+**C10, each phase timed (2026-10-25, `local/rp-storfast-C10.txt`, image sha 14037a68): the
+slowness is the card rewriting the same sectors, not the timing.** At Windows Mobile's data
+timing too, the C10 writes ran at 231-232 KiB/s: of each 64-sector write's ~138 ms, the command
+took 3-5 us, each switch 1 us, the finish 210 us, and **one DRQ wait ~132 ms** (the card asking
+for the first sector). C7's first write, to the file's newly allocated sectors, ran at 4,699
+KiB/s; every later write rewrote those same 64 sectors, and each waited ~132 ms first (a flash
+card erasing before it rewrites). C7 and C9 always wrote Windows Mobile's round first: their
+"20x slower at any faster timing" was "a rewrite is 20x slower", and the reading above (the data
+phase's value) is withdrawn. What the timing does change, from C10's data words for 64 sectors:
+5,041 us at Windows Mobile's, 4,808 at strobe 9, **2,961 at strobe 1 (41% less)**; for a write to
+fresh sectors that is very roughly 4,700 to 6,500 KiB/s (an estimate). To measure: each timing
+writing sectors it hasn't written before, rounds alternated (C11), and the rewrite cost on its
+own (a card property: how often a filesystem rewrites the same sectors, the FAT and directories,
+matters more than the timing for small writes).
+
+**C11, fresh sectors and the rewrite cost (2026-10-25, `local/rp-storfast-C11.txt`, image sha
+34453b33, the 8 GB card): faster write timing pays, 1.64x.** A 512 KiB file reserved (its sectors
+written once, as zeros), then twelve 64-sector regions written once each, the timings rotated, every
+sector right on read-back: **Windows Mobile's 5,745-5,794 KiB/s, strobe 9 6,051-6,056, strobe 1
+9,427-9,447** (the first region, at Windows Mobile's, 2,113 with one 9.7 ms DRQ wait: the card's
+first write of the run). The card's limit for writes is at least strobe 1 (27 cycles against 54);
+none was tried shorter. The rewrite cost: one region written again at once, 5,749 KiB/s the first
+time, then **226-229 KiB/s every time after (one ~135 ms DRQ wait each)**. A read at the slowest
+timing changes nothing (the fresh region after it: 5,793). Not explained: a fresh region at strobe 1
+right after the rewrites ran at 240 KiB/s (a 130 ms wait), while the one before it was fast; the card
+may be catching up on its own erasing after the rewrites. What it means: a write timing tuned per
+card can make writes ~1.6x faster; and a filesystem that writes the same sectors again soon after
+(the FAT, a directory, the run log's sector a line) pays ~135 ms for each such write on this card,
+far more than any timing gains.
+
+**C12, recovery, pauses and the CFA erase commands (2026-10-25, `local/rp-storfast-C12.txt`,
+image sha fd4a4a22, the 8 GB card; 0 of 1,984 sectors wrong):**
+- *No lasting slow state:* after six rewrites (each ~129-135 ms), all ten fresh writes that
+  followed were fast at once: 5,743-5,795 KiB/s at Windows Mobile's timing, 9,431-9,620 at strobe
+  1 (one 6,540). The cost belongs to the sectors rewritten, not to the card.
+- *No background erasing:* a rewrite after a pause of 0, 10, 50, 100, 200, 500 or 1,000 ms ran at
+  226-230 KiB/s every time (a ~135 ms wait).
+- *The CFA erase commands don't help this card:* IDENTIFY claims no CFA feature set (words 83 and
+  86, bit 2 clear). ERASE SECTORS was taken anyway (282 and 137 ms), and the writes after it, with
+  or without erase, were as slow as a plain rewrite (114 and 237 KiB/s).
+- *The pattern:* a region's first rewrite usually fast and every later one slow; twice (C12's
+  region 0, C11's region 14) the first rewrite was slow too. Not explained (the card's grouping of
+  sectors into erase blocks, a guess).
+
+So the rewrite cost can't be avoided on the card's side: the gain is in software writing the same
+sectors as rarely as possible (the FAT's updates batched, the run log writing each sector once
+rather than a partial sector again for every line). To measure next: the rewrite cost by write size
+(1, 8 and 64 sectors), what the run log and the FAT actually pay.
+
+**The owner's ruling A (2026-10-25): rule M for writes, once per card.** Built:
+`CfCard::tune_writes` keeps the command and address at Windows Mobile's timing and shortens the
+data phase one field at a time (strobe, hold, set-up), none below the card's proven read timing
+(the data phase's DRQ polls are reads at it), each step written to fresh sectors of its own file
+(no step pays the rewrite cost) and read back at the slowest timing; the limit with the 1.5x
+margin, used only if shorter than Windows Mobile's and two more writes read back right. The loader
+runs it once per card, right at the attach before the PC can look at the card (so the PC's first
+look never sees "medium changed"), on `rplog/cfwrite.bin` (128 KiB, kept), and keeps the result in
+`rplog/cfwrite.txt`, a line a card: its identity (a hash of IDENTIFY's serial, model and size), the
+data timing, the limit, the model. A card already there writes nothing; its read timing is
+measured later as before. `cf` and the loader's log say `writes N cycles (limit L)` or `(kept)`.
+Emulator: `emu-cf` (measured at the first attach, kept after a re-insert). On the device: waiting
+for the owner's go; the 8 GB card's C11 limit (strobe 1, 27 cycles) suggests ~40 cycles with the
+margin, ~7 MB/s (an estimate).
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the

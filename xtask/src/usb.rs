@@ -12,7 +12,7 @@
 //! extra crates are needed; the script is passed base64-encoded (UTF-16LE,
 //! as `-EncodedCommand` expects) so no quoting can break it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 /// Must match `rp_drv_pxa_udc::usb::{VENDOR_ID, PRODUCT_ID}`.
@@ -360,15 +360,69 @@ pub fn get(root: &Path, file: &str, local: Option<&str>) -> Result<(), String> {
             dest.display()
         ));
     }
-    let (lines, reply) = query(root, &format!("get {file}"))?;
-    let data = decode_file(&lines, &reply)?;
+    // The size and digest first (`hash`; an older loader has none: one
+    // transfer, as before). A big file then comes in ranges, each CRC
+    // checked, none long enough to meet a time limit (R48), and the whole
+    // is checked against the loader's SHA-256.
+    let Some((size, sha)) = command_reply(root, &format!("hash {file}"))
+        .ok()
+        .and_then(|r| parse_hash(&r))
+    else {
+        let (lines, reply) = query(root, &format!("get {file}"))?;
+        let data = decode_file(&lines, &reply)?;
+        std::fs::write(dest, &data).map_err(|e| format!("{}: {e}", dest.display()))?;
+        eprintln!(
+            "    {} bytes, CRC checked, saved as {}",
+            data.len(),
+            dest.display()
+        );
+        return Ok(());
+    };
+    let mut data = Vec::with_capacity(size as usize);
+    let t0 = std::time::Instant::now();
+    while (data.len() as u64) < size {
+        let at = data.len() as u64;
+        let n = GET_CHUNK.min(size - at);
+        let (lines, reply) = query(root, &format!("get @{at}+{n} {file}"))?;
+        let piece = decode_file(&lines, &reply)?;
+        if piece.len() as u64 != n {
+            return Err(format!("{file}: {} bytes at {at}, asked {n}", piece.len()));
+        }
+        data.extend_from_slice(&piece);
+        if size > GET_CHUNK {
+            eprintln!("    {} of {size} bytes", data.len());
+        }
+    }
+    let ours = rp_crypto::hex(&rp_crypto::Sha256::digest(&data));
+    if ours[..] != *sha.as_bytes() {
+        return Err(format!(
+            "{file}: the whole file's SHA-256 differs from the card's"
+        ));
+    }
     std::fs::write(dest, &data).map_err(|e| format!("{}: {e}", dest.display()))?;
     eprintln!(
-        "    {} bytes, CRC checked, saved as {}",
+        "    {} bytes in {:.1} s, every range CRC checked and the whole SHA-256 matched, saved as {}",
         data.len(),
+        t0.elapsed().as_secs_f64(),
         dest.display()
     );
     Ok(())
+}
+
+/// Bytes a ranged `get` asks for at a time.
+const GET_CHUNK: u64 = 4 << 20;
+
+/// `hash`'s reply (`hash <size> bytes crc <crc> sha256 <hex> in <ms> ms`):
+/// the size and the SHA-256.
+fn parse_hash(reply: &str) -> Option<(u64, String)> {
+    let mut w = reply.split_whitespace();
+    if w.next()? != "hash" {
+        return None;
+    }
+    let size = w.next()?.parse().ok()?;
+    let sha = w.skip_while(|x| *x != "sha256").nth(1)?;
+    (sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| (size, sha.to_ascii_lowercase()))
 }
 
 /// The name a run's card log carries: the image's, without `rp-` (lowercase
@@ -416,9 +470,10 @@ fn card_logs(entries: &[String], image: Option<&str>, number: Option<u32>) -> Ve
 }
 
 /// `cargo xtask cardlog [image] [number]`: a run's log kept on the cards
-/// as the run went (`rp_hal_x51v::cardlog`: `rplog/<image>-NNNN.txt` on
-/// the SD card, and on the CF card for what a program logged while it had
-/// the SD card), the newest (of `image`, or of any image) or the one
+/// as the run went (`rp_hal_x51v::cardlog`: a slot file `rplog/log-SS.txt`
+/// found through `rplog/index.txt`, or an old-style `rplog/<image>-NNNN.txt`,
+/// on the SD card, and on the CF card for what a program logged while it
+/// had the SD card), the newest (of `image`, or of any image) or the one
 /// numbered; both halves joined, saved under `local/cardlog/`, its text
 /// printed. A log without the closing line is a run that didn't come
 /// back: said so.
@@ -426,6 +481,10 @@ pub fn cardlog(root: &Path, image: Option<&str>, number: Option<u32>) -> Result<
     let folder = rp_hal_x51v::cardlog::FOLDER;
     let image = image.map(card_log_name);
     let image = image.as_deref();
+    // The slots first (R22): each card's index names the slot holding a run.
+    if let Some(found) = cardlog_from_slots(root, image, number)? {
+        return show_card_log(root, &found.file, found.sd.as_deref(), found.cf.as_deref());
+    }
     let sd = query(root, &format!("ls {folder}"))
         .map(|(e, _)| card_logs(&e, image, number))
         .unwrap_or_default();
@@ -457,12 +516,95 @@ pub fn cardlog(root: &Path, image: Option<&str>, number: Option<u32>) -> Result<
     };
     let sd_part = fetch("", &sd)?;
     let cf_part = fetch("cf:", &cf)?;
-    let joined: Vec<u8> =
-        rp_hal_x51v::cardlog::join(sd_part.as_deref(), cf_part.as_deref()).collect();
+    show_card_log(root, &name, sd_part.as_deref(), cf_part.as_deref())
+}
+
+/// A run's log found through the cards' `rplog/index.txt` (the slots,
+/// R22): the run's name for the saved file and each card's half; `None`
+/// when neither index names such a run (the old-style files are then
+/// looked for).
+fn cardlog_from_slots(
+    root: &Path,
+    image: Option<&str>,
+    number: Option<u32>,
+) -> Result<Option<FoundLog>, String> {
+    use rp_hal_x51v::cardlog;
+    let index_of = |unit: &str| -> Option<Vec<u8>> {
+        let (lines, reply) = query(root, &format!("get {unit}{}", cardlog::INDEX)).ok()?;
+        decode_file(&lines, &reply).ok()
+    };
+    let sd = index_of("");
+    let cf = index_of("cf:");
+    // The run: by image and number, or the newest (by the index's order).
+    let pick = |ix: &Option<Vec<u8>>| {
+        ix.as_deref().and_then(|ix| {
+            cardlog::find(ix, image.map(str::as_bytes), number).map(|(slot, n)| {
+                let e = cardlog::index_entry(ix, slot);
+                (
+                    slot,
+                    n,
+                    e.map_or(0, |e| e.order),
+                    e.map(|e| e.name.to_vec()),
+                )
+            })
+        })
+    };
+    let (a, b) = (pick(&sd), pick(&cf));
+    let Some((_, n, _, name)) = [&a, &b]
+        .into_iter()
+        .flatten()
+        .max_by_key(|(_, _, order, _)| *order)
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let name = name.unwrap_or_default();
+    let fetch = |unit: &str,
+                 hit: &Option<(usize, u32, u32, Option<Vec<u8>>)>|
+     -> Result<Option<Vec<u8>>, String> {
+        let Some((slot, k, _, who)) = hit else {
+            return Ok(None);
+        };
+        if *k != n || who.as_deref() != Some(&name[..]) {
+            return Ok(None);
+        }
+        let mut path = [0u8; 32];
+        let len = cardlog::slot_path(*slot, &mut path);
+        let path = String::from_utf8_lossy(&path[..len]).into_owned();
+        let (lines, reply) = query(root, &format!("get {unit}{path}"))?;
+        decode_file(&lines, &reply).map(Some)
+    };
+    let sd_part = fetch("", &a)?;
+    let cf_part = fetch("cf:", &b)?;
+    let file = format!("{}-{n:04}.txt", String::from_utf8_lossy(&name));
+    Ok(Some(FoundLog {
+        file,
+        sd: sd_part,
+        cf: cf_part,
+    }))
+}
+
+/// A run's log found through the index: its file name, each card's half.
+struct FoundLog {
+    file: String,
+    sd: Option<Vec<u8>>,
+    cf: Option<Vec<u8>>,
+}
+
+/// Joins a run's two halves, saves it under `local/cardlog/` as `name`
+/// and prints it.
+fn show_card_log(
+    root: &Path,
+    name: &str,
+    sd_part: Option<&[u8]>,
+    cf_part: Option<&[u8]>,
+) -> Result<(), String> {
+    let folder = rp_hal_x51v::cardlog::FOLDER;
+    let joined: Vec<u8> = rp_hal_x51v::cardlog::join(sd_part, cf_part).collect();
     let text = String::from_utf8_lossy(&joined).into_owned();
     let dir = root.join("local/cardlog");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let dest = dir.join(&name);
+    let dest = dir.join(name);
     std::fs::write(&dest, text.as_bytes()).map_err(|e| format!("{}: {e}", dest.display()))?;
     println!("{text}");
     eprintln!(
@@ -706,7 +848,7 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
             // port after the previous run, and the log was named `run`).
             if r.starts_with("RPL OK") {
                 eprintln!(
-                    "    card log: rplog/{}-NNNN.txt on the SD card (and the CF card when one is in)",
+                    "    card log: {}'s next run in rplog/ on the SD card (and the CF card when one is in); `cargo xtask cardlog` reads it",
                     card_log_name(what)
                 );
             } else {
@@ -943,6 +1085,25 @@ pub fn last_log(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// `cargo xtask cf trace`: the CF drive's commands since the last pull (or
+/// the loader's start), as the loader traced them (R42), saved under
+/// `local/cftrace.txt` with the slot's events, and printed.
+pub fn cf_trace(root: &Path) -> Result<(), String> {
+    let (lines, reply) = query(root, "cf trace")?;
+    let events = command_reply(root, "cf log").unwrap_or_default();
+    let mut text = String::from("at_ms took_ms op lba blocks result\n");
+    for l in &lines {
+        text.push_str(l);
+        text.push('\n');
+    }
+    text.push_str(&format!("{reply}\n{events}\n"));
+    let dest = root.join("local").join("cftrace.txt");
+    std::fs::write(&dest, &text).map_err(|e| format!("{}: {e}", dest.display()))?;
+    print!("{text}");
+    eprintln!("    saved as {}", dest.display());
+    Ok(())
+}
+
 /// Sends a control command and returns the loader's reply (after `RPL OK `),
 /// or why it failed.
 pub fn command_reply(root: &Path, command: &str) -> Result<String, String> {
@@ -1093,9 +1254,10 @@ pub fn cf_kit_files() -> Vec<(&'static str, &'static str)> {
 }
 
 /// Puts the kit's boot files on the CF card, in [`CF_KIT_DIR`], through the
-/// loader's drive: the drive made writable, each file copied by Windows,
-/// the drive made read-only again (Windows re-reads it), then every file
-/// read back from the card and compared byte for byte with the kit's.
+/// loader (`cf:` names: the PC itself may not change them, the guard keeps
+/// them, ADR-0014), each checked by its SHA-256 as the SD card's are, then
+/// every file read back through the loader and compared byte for byte with
+/// the kit's.
 pub fn install_cf(root: &Path) -> Result<(), String> {
     let kit = root.join("target/sdkit");
     let files = cf_kit_files();
@@ -1107,26 +1269,14 @@ pub fn install_cf(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    command(root, "drive rw")?;
-    let copied = cf_drive().and_then(|letter| {
-        let dir = PathBuf::from(format!("{letter}:\\{CF_KIT_DIR}"));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        for (local, name) in &files {
-            std::fs::copy(kit.join(local), dir.join(name))
-                .map_err(|e| format!("{name} onto the CF card: {e}"))?;
-        }
-        Ok(())
-    });
-    // Read-only again whatever happened, so the PC can't write the card by
-    // accident; Windows re-reads it after the change.
-    command(root, "drive ro")?;
-    copied?;
-    let letter = cf_drive()?;
-    let dir = PathBuf::from(format!("{letter}:\\{CF_KIT_DIR}"));
+    for (local, name) in &files {
+        let on_card = format!("cf:{CF_KIT_DIR}/{name}");
+        put(root, &kit.join(local).display().to_string(), Some(&on_card))?;
+    }
     for (local, name) in &files {
         let want = std::fs::read(kit.join(local)).map_err(|e| e.to_string())?;
-        let got =
-            std::fs::read(dir.join(name)).map_err(|e| format!("{name} on the CF card: {e}"))?;
+        let (lines, reply) = query(root, &format!("get cf:{CF_KIT_DIR}/{name}"))?;
+        let got = decode_file(&lines, &reply).map_err(|e| format!("{name} on the CF card: {e}"))?;
         if got != want {
             return Err(format!(
                 "{name} on the CF card differs from the kit's {local}"
@@ -1141,25 +1291,6 @@ pub fn install_cf(root: &Path) -> Result<(), String> {
         "    the CF card is up to date: in Windows Mobile, start haret.exe from the CF card's {CF_KIT_DIR} folder"
     );
     Ok(())
-}
-
-/// The CF card's drive letter (its volume label `X51V CF`), waited for up
-/// to 30 s: the drive goes away and comes back after a change.
-fn cf_drive() -> Result<char, String> {
-    let script = "(Get-Volume | Where-Object { $_.FileSystemLabel -eq 'X51V CF' } | Select-Object -First 1).DriveLetter";
-    for _ in 0..60 {
-        let out = powershell(script)?;
-        if let Some(c) = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .chars()
-            .next()
-            .filter(char::is_ascii_alphabetic)
-        {
-            return Ok(c);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    Err("the CF card's drive (label X51V CF) didn't appear in 30 s".into())
 }
 
 /// Runs the check.
@@ -1344,8 +1475,207 @@ mod command_length_tests {
         let over = "g".repeat(max + 1);
         let err = control_frame_checked(&over).unwrap_err();
         assert!(err.contains(&format!("{} bytes", max + 1)), "{err}");
-        // The command that met it (2026-10-23).
-        assert!(control_frame_checked("get rp-wmprobe/rp-wm-baseline.txt").is_err());
+        // The command that met the old 32-byte limit (2026-10-23) fits now;
+        // one past 64 doesn't.
+        assert!(control_frame_checked("get rp-wmprobe/rp-wm-baseline.txt").is_ok());
+        assert!(control_frame_checked(&format!("get {}", "d/".repeat(31))).is_err());
         assert!(control_frame_checked("get rp-wmprobe/rp-wmprobe.txt").is_ok());
+    }
+}
+
+/// The files a format keeps on each card (the loader's own list, ADR-0036
+/// Q4 A), plus the icon `autorun.inf` names: what `format` saves to the PC
+/// first.
+fn format_keep(unit: &str) -> &'static [&'static str] {
+    if unit == "cf" {
+        &[
+            "cf:RetroPane/retropane.bin",
+            "cf:RetroPane/haret.exe",
+            "cf:RetroPane/startup.txt",
+            "cf:RetroPane/default.txt",
+            "cf:autorun.inf",
+        ]
+    } else {
+        &[
+            "retropane.bin",
+            "haret.exe",
+            "startup.txt",
+            "default.txt",
+            "autorun.inf",
+        ]
+    }
+}
+
+/// The loader's `format` command for `cargo xtask format <sd|cf> <fs>
+/// [--cluster <KiB>] [--label <name>] [--wipe-boot]`, or a usage error.
+pub fn format_command(args: &[String]) -> Result<String, String> {
+    const USAGE: &str = "usage: cargo xtask format <sd|cf> <auto|fat12|fat16|fat32|exfat> [--cluster <KiB>] [--label <name>] [--wipe-boot] [--yes]";
+    let (Some(unit), Some(fs)) = (args.first(), args.get(1)) else {
+        return Err(USAGE.into());
+    };
+    if !matches!(unit.as_str(), "sd" | "cf")
+        || !matches!(
+            fs.to_ascii_lowercase().as_str(),
+            "auto" | "fat12" | "fat16" | "fat32" | "exfat"
+        )
+    {
+        return Err(USAGE.into());
+    }
+    let mut cmd = format!("format {unit} {}", fs.to_ascii_lowercase());
+    let mut rest = args[2..].iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "--cluster" => {
+                let kib = rest
+                    .next()
+                    .and_then(|k| k.parse::<u32>().ok())
+                    .ok_or(USAGE)?;
+                cmd.push_str(&format!(" cluster {kib}"));
+            }
+            "--label" => {
+                let label = rest.next().ok_or(USAGE)?;
+                if label.is_empty() || label.contains(char::is_whitespace) {
+                    return Err("the label is one word (up to 11 characters)".into());
+                }
+                cmd.push_str(&format!(" label {label}"));
+            }
+            "--wipe-boot" => cmd.push_str(" wipe-boot"),
+            "--yes" => {}
+            _ => return Err(USAGE.into()),
+        }
+    }
+    Ok(cmd)
+}
+
+/// `cargo xtask format`: shows what the loader would do (nothing written);
+/// with `--yes`, saves the card's boot files and icon under
+/// `local/format-backup/<unit>-<time>/` (a second copy beside the one the
+/// loader keeps in RAM), then formats.
+pub fn format(root: &Path, args: &[String]) -> Result<(), String> {
+    let cmd = format_command(args)?;
+    let plan = command_reply(root, &format!("{cmd} plan"))?;
+    eprintln!("    {plan}");
+    if !args.iter().any(|a| a == "--yes") {
+        eprintln!(
+            "    nothing written: add --yes to format (the card's boot files are saved to local/ first)"
+        );
+        return Ok(());
+    }
+    let unit = args[0].as_str();
+    if !args.iter().any(|a| a == "--wipe-boot") {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let dir = root
+            .join("local/format-backup")
+            .join(format!("{unit}-{stamp}"));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let mut names: Vec<String> = format_keep(unit).iter().map(|s| (*s).to_string()).collect();
+        let mut i = 0;
+        while i < names.len() {
+            let name = names[i].clone();
+            i += 1;
+            let leaf = name.rsplit(['/', ':']).next().unwrap_or(&name);
+            let dest = dir.join(leaf);
+            match query(root, &format!("get {name}")) {
+                Ok((lines, reply)) => {
+                    let data = decode_file(&lines, &reply)?;
+                    std::fs::write(&dest, &data).map_err(|e| format!("{}: {e}", dest.display()))?;
+                    eprintln!("    saved {name} ({} bytes)", data.len());
+                    if leaf.eq_ignore_ascii_case("autorun.inf")
+                        && let Some(icon) = autorun_icon(&data)
+                    {
+                        let prefix = if unit == "cf" { "cf:" } else { "" };
+                        names.push(format!("{prefix}{icon}"));
+                    }
+                }
+                Err(e) if e.contains("not found") => eprintln!("    {name}: not on the card"),
+                Err(e) => return Err(format!("saving {name} before the format: {e}")),
+            }
+        }
+        eprintln!("    a copy is in {}", dir.display());
+    }
+    let done = command_reply(root, &cmd)?;
+    eprintln!("    {done}");
+    Ok(())
+}
+
+/// The icon an `autorun.inf` names, as the loader reads it: a plain file
+/// name in the root, an index after a comma dropped.
+fn autorun_icon(text: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(text);
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| l.len() > 5 && l[..5].eq_ignore_ascii_case("icon="))?;
+    let name = line[5..].split(',').next()?.trim();
+    let plain = |c: char| c.is_ascii_alphanumeric() || "._-".contains(c);
+    ((1..=32).contains(&name.len()) && name.chars().all(plain)).then(|| name.to_string())
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn a_hash_reply_gives_the_size_and_digest() {
+        let sha = "ab".repeat(32);
+        assert_eq!(
+            parse_hash(&format!(
+                "hash 36962304 bytes crc e758cb61 sha256 {sha} in 812 ms"
+            )),
+            Some((36_962_304, sha.clone()))
+        );
+        assert_eq!(parse_hash("hash x bytes"), None);
+        assert_eq!(
+            parse_hash(&format!("hash 1 bytes crc 0 sha256 {}", &sha[..63])),
+            None
+        );
+        assert_eq!(
+            parse_hash("1 bytes crc 0"),
+            None,
+            "a get reply is not a hash"
+        );
+    }
+
+    #[test]
+    fn the_loader_command_is_built_from_the_flags() {
+        let a = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        assert_eq!(format_command(&a("sd fat32")).unwrap(), "format sd fat32");
+        assert_eq!(
+            format_command(&a("cf exFAT --cluster 128 --label CF8GB --wipe-boot --yes")).unwrap(),
+            "format cf exfat cluster 128 label CF8GB wipe-boot"
+        );
+        for bad in [
+            "",
+            "sd",
+            "usb fat32",
+            "sd ntfs",
+            "sd fat32 --cluster",
+            "sd fat32 --cluster x",
+            "sd fat32 --what",
+        ] {
+            assert!(format_command(&a(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_icon_named_by_autorun_inf_is_read_as_the_loader_reads_it() {
+        assert_eq!(
+            autorun_icon(b"[autorun]\r\nicon=card-sd.ico\r\n").as_deref(),
+            Some("card-sd.ico")
+        );
+        assert_eq!(
+            autorun_icon(b"[autorun]\r\nICON = x.ico,0\r\n"),
+            None,
+            "spaces before ="
+        );
+        assert_eq!(
+            autorun_icon(b"[autorun]\r\nIcon=pda.ico,0\r\n").as_deref(),
+            Some("pda.ico")
+        );
+        assert_eq!(autorun_icon(b"icon=..\\boot\\x.ico"), None);
+        assert_eq!(autorun_icon(b"icon=a/b.ico"), None);
+        assert_eq!(autorun_icon(b"label=X51V"), None);
     }
 }

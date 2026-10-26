@@ -1,5 +1,12 @@
-//! FAT32 on a [`BlockDevice`] (ADR-0013): the SD card as Windows Mobile and
-//! every PC format it.
+//! FAT12, FAT16 and FAT32 on a [`BlockDevice`] (ADR-0013, ADR-0036): the
+//! SD and CF cards as Windows Mobile and every PC format them, old 2 GB and
+//! smaller cards (FAT16, FAT12) included.
+//!
+//! The three differ only in the FAT's entry width (12, 16 or 28 bits) and
+//! FAT12/16's fixed root directory, a region before the data area that is
+//! never grown; the type is decided by the data-cluster count, as
+//! Microsoft's FAT specification says, except that a volume with FAT32's
+//! markers is FAT32 whatever its size ([`Volume::mount`]).
 //!
 //! Reads: mount a partition, find a file in the root directory by its long
 //! or short name, read it in runs of consecutive sectors. Writes: create a
@@ -23,12 +30,19 @@
 
 use rp_hal_api::{BlockDevice, BlockError};
 
-/// Sector size; the only one FAT32 cards use.
+/// Sector size; the only one SD and CF cards use.
 pub const SECTOR: usize = 512;
 /// Directory entries per sector.
 const ENTRIES: usize = SECTOR / 32;
-/// FAT entries per sector.
+/// FAT32 entries per sector.
 const FAT_PER_SECTOR: u32 = (SECTOR / 4) as u32;
+/// FAT12 has under 4,085 data clusters, FAT16 under 65,525 (Microsoft's
+/// FAT specification, "FAT type determination": the count alone decides).
+const FAT12_LIMIT: u32 = 4085;
+const FAT16_LIMIT: u32 = 65_525;
+/// The bad-cluster mark, in FAT32's numbering (narrower FATs are widened
+/// to it as they are read).
+const BAD: u32 = 0x0FFF_FFF7;
 /// Most data clusters a FAT32 volume can have: entries are 28 bits, and
 /// the top values mean bad (`0x0FFF_FFF7`) and end of chain.
 const MAX_CLUSTERS: u32 = 0x0FFF_FFF5;
@@ -51,12 +65,130 @@ const ATTR_DIRECTORY: u8 = 0x10;
 const ATTR_LONG_NAME: u8 = 0x0F;
 const FSINFO_UNKNOWN: u32 = 0xFFFF_FFFF;
 
+/// Which FAT a volume has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FatKind {
+    /// 12-bit entries (under 4,085 clusters: cards to about 64 MB).
+    Fat12,
+    /// 16-bit entries (under 65,525 clusters: cards to 2 GB, 4 GB at most).
+    Fat16,
+    /// 28-bit entries.
+    Fat32,
+}
+
+impl FatKind {
+    /// The bits an entry holds.
+    const fn mask(self) -> u32 {
+        match self {
+            Self::Fat12 => 0xFFF,
+            Self::Fat16 => 0xFFFF,
+            Self::Fat32 => FAT_MASK,
+        }
+    }
+
+    /// The byte where `cluster`'s entry starts in the FAT.
+    pub(crate) const fn offset(self, cluster: u32) -> u32 {
+        match self {
+            Self::Fat12 => cluster + cluster / 2,
+            Self::Fat16 => cluster * 2,
+            Self::Fat32 => cluster * 4,
+        }
+    }
+
+    /// Bytes an entry touches (a FAT12 entry: 1.5 bytes, in two).
+    pub(crate) const fn width(self) -> u32 {
+        match self {
+            Self::Fat32 => 4,
+            _ => 2,
+        }
+    }
+
+    /// The first cluster whose entry starts at or after FAT byte `byte`.
+    pub(crate) const fn first_at(self, byte: u32) -> u32 {
+        match self {
+            Self::Fat12 => (byte * 2).div_ceil(3),
+            Self::Fat16 => byte.div_ceil(2),
+            Self::Fat32 => byte.div_ceil(4),
+        }
+    }
+
+    /// An entry as stored, widened to FAT32's numbering: every end-of-chain
+    /// value reads as [`EOC`], the bad mark as [`BAD`].
+    pub(crate) const fn widen(self, v: u32) -> u32 {
+        let m = self.mask();
+        if v >= m - 7 {
+            EOC
+        } else if v == m - 8 {
+            BAD
+        } else {
+            v
+        }
+    }
+
+    /// The name a log or a partition table shows.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Fat12 => "FAT12",
+            Self::Fat16 => "FAT16",
+            Self::Fat32 => "FAT32",
+        }
+    }
+}
+
+/// `cluster`'s entry as stored, from `b` (the entry's bytes start at `o`),
+/// not widened.
+pub(crate) fn entry_get(kind: FatKind, b: &[u8], o: usize, cluster: u32) -> u32 {
+    match kind {
+        FatKind::Fat12 => {
+            let w = u32::from(le16(b, o));
+            if cluster & 1 == 0 { w & 0xFFF } else { w >> 4 }
+        }
+        FatKind::Fat16 => u32::from(le16(b, o)),
+        FatKind::Fat32 => le32(b, o) & FAT_MASK,
+    }
+}
+
+/// A directory entry's first cluster (FAT12/16 have no high half: those
+/// bytes were OS/2's extended-attribute handle, so they are ignored).
+pub(crate) fn entry_first(e: &[u8], kind: FatKind) -> u32 {
+    let high = if kind == FatKind::Fat32 {
+        u32::from(le16(e, 20)) << 16
+    } else {
+        0
+    };
+    high | u32::from(le16(e, 26))
+}
+
+/// Stores `value` (cut to the entry's width: [`EOC`] and [`BAD`] become the
+/// narrow marks) as `cluster`'s entry at `o`, keeping the bits around it
+/// (FAT12's neighbouring half byte, FAT32's top four bits).
+fn entry_put(kind: FatKind, b: &mut [u8], o: usize, cluster: u32, value: u32) {
+    let v = value & kind.mask();
+    match kind {
+        FatKind::Fat12 => {
+            let w = le16(b, o);
+            let w = if cluster & 1 == 0 {
+                (w & 0xF000) | v as u16
+            } else {
+                (w & 0x000F) | (v as u16) << 4
+            };
+            b[o..o + 2].copy_from_slice(&w.to_le_bytes());
+        }
+        FatKind::Fat16 => b[o..o + 2].copy_from_slice(&(v as u16).to_le_bytes()),
+        FatKind::Fat32 => {
+            let w = (le32(b, o) & !FAT_MASK) | v;
+            b[o..o + 4].copy_from_slice(&w.to_le_bytes());
+        }
+    }
+}
+
 /// What went wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The device failed.
     Device(BlockError),
-    /// The partition isn't FAT32 with 512-byte sectors.
+    /// The partition isn't FAT12, FAT16 or FAT32 with 512-byte sectors.
     NotFat32,
     /// No such file in the root directory.
     NotFound,
@@ -90,7 +222,7 @@ impl Error {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Device(_) => "device error",
-            Self::NotFat32 => "not FAT32",
+            Self::NotFat32 => "not FAT",
             Self::NotFound => "not found",
             Self::NoRoom => "no room",
             Self::Corrupt => "corrupt",
@@ -244,11 +376,12 @@ impl<'a> Fill<'a> {
 /// long name; `true` stops the walk.
 type Visit<'a> = dyn FnMut(u32, u8, &[u8; 32], &[u8]) -> bool + 'a;
 
-/// A mounted FAT32 partition.
+/// A mounted FAT12, FAT16 or FAT32 partition.
 pub struct Volume<D> {
     dev: D,
     /// The partition's first sector (the boot sector).
     base: u32,
+    kind: FatKind,
     sectors_per_cluster: u32,
     fat_start: u32,
     fat_sectors: u32,
@@ -257,12 +390,20 @@ pub struct Volume<D> {
     /// written, so the second is a backup of the first.
     mirrored: bool,
     data_start: u32,
+    /// The root directory's first cluster; 0 for FAT12/16's fixed root (the
+    /// number `..` entries use for the root), at `root_lba`.
     root_cluster: u32,
+    root_lba: u32,
+    /// The fixed root's sectors (0 on FAT32).
+    root_sectors: u32,
     /// Data clusters, numbered 2..2 + clusters.
     clusters: u32,
     fsinfo_lba: Option<u32>,
     buf: [u8; SECTOR],
-    /// Write-back cache of one FAT sector (`fat_cached` = its index).
+    /// Write-back cache of one FAT sector (`fat_cached` = its index). A
+    /// FAT12 entry straddling two sectors is read and written as its two
+    /// halves, one sector at a time (`fat_raw`, `fat_set`), so no FAT
+    /// width costs a second sector of RAM.
     fat_buf: [u8; SECTOR],
     fat_cached: Option<u32>,
     fat_dirty: bool,
@@ -318,6 +459,18 @@ fn check_new_name(name: &[u8]) -> Result<(), Error> {
 
 /// Most directory levels a path may have.
 const MAX_DEPTH: usize = 16;
+
+/// The part of `path` up to the end of `part`, one of its components:
+/// the path of that folder. Taken with `get`, not by indexing: a `str`
+/// index that could panic links Rust's text-boundary panic, which brings
+/// ~4 KiB of Unicode tables into the loader (none is needed: `part` lies
+/// in `path`, so this never fails).
+fn prefix_to<'a>(path: &'a str, part: &str) -> Result<&'a str, Error> {
+    let end = (part.as_ptr() as usize)
+        .wrapping_sub(path.as_ptr() as usize)
+        .wrapping_add(part.len());
+    path.get(..end).ok_or(Error::BadName)
+}
 
 /// A path's components (`/` or `\` between them; empty ones skipped);
 /// `.`, `..` and more than [`MAX_DEPTH`] levels are refused.
@@ -442,7 +595,8 @@ fn lfn_entries(name: &[u8], checksum: u8, out: &mut [[u8; 32]; LFN_MAX]) -> usiz
 const LFN_MAX: usize = NAME_MAX.div_ceil(13);
 
 impl<D: BlockDevice> Volume<D> {
-    /// Mounts the FAT32 partition whose first sector is `base`.
+    /// Mounts the FAT12, FAT16 or FAT32 partition whose first sector is
+    /// `base`.
     #[inline(never)]
     pub fn mount(mut dev: D, base: u32) -> Result<Self, Error> {
         let mut buf = [0u8; SECTOR];
@@ -451,14 +605,15 @@ impl<D: BlockDevice> Volume<D> {
         let sectors_per_cluster = u32::from(buf[13]);
         let reserved = u32::from(le16(&buf, 14));
         let fats = u32::from(buf[16]);
-        let mirrored = fats >= 2 && le16(&buf, 40) & 0x80 == 0;
-        let fat_sectors = le32(&buf, 36);
-        let root_cluster = le32(&buf, 44);
+        let root_entries = u32::from(le16(&buf, 17));
+        let fat16_size = u32::from(le16(&buf, 22));
+        // FAT32's markers: no fixed root directory and no 16-bit FAT size.
+        let fat32 = root_entries == 0 && fat16_size == 0;
+        let fat_sectors = if fat32 { le32(&buf, 36) } else { fat16_size };
         let total = match le16(&buf, 19) {
             0 => le32(&buf, 32),
             n => u32::from(n),
         };
-        let fsinfo = le16(&buf, 48);
         if usize::from(bytes_per_sector) != SECTOR
             || sectors_per_cluster == 0
             || !sectors_per_cluster.is_power_of_two()
@@ -466,8 +621,6 @@ impl<D: BlockDevice> Volume<D> {
             || fats == 0
             || fat_sectors == 0
             || fat_sectors > MAX_FAT_SECTORS
-            || le16(&buf, 17) != 0 // FAT32 has no fixed root directory
-            || root_cluster < 2
             || buf[510..512] != [0x55, 0xAA]
         {
             return Err(Error::NotFat32);
@@ -477,41 +630,63 @@ impl<D: BlockDevice> Volume<D> {
         // every cluster and the root must lie inside the partition. Then
         // every in-range cluster's sector number fits in a u32, so the code
         // that trusts validated clusters can't overflow.
+        let root_sectors = (root_entries * 32).div_ceil(SECTOR as u32);
         let fat_total = fats.checked_mul(fat_sectors);
         let fat_start = base.checked_add(reserved);
-        let data_start = fat_start.zip(fat_total).and_then(|(s, t)| s.checked_add(t));
+        let root_lba = fat_start.zip(fat_total).and_then(|(s, t)| s.checked_add(t));
+        let data_start = root_lba.and_then(|r| r.checked_add(root_sectors));
         let end = base.checked_add(total);
-        let (Some(fat_total), Some(fat_start), Some(data_start), Some(_)) =
-            (fat_total, fat_start, data_start, end)
+        let (Some(fat_total), Some(fat_start), Some(root_lba), Some(data_start), Some(_)) =
+            (fat_total, fat_start, root_lba, data_start, end)
         else {
             return Err(Error::NotFat32);
         };
-        let data_sectors = total.saturating_sub(reserved.saturating_add(fat_total));
-        // Volumes under 65,525 clusters are FAT12/16 by the specification's
-        // rule of thumb, but test images are tiny: the FAT32 markers above
-        // (no fixed root directory, a root cluster, 32-bit FAT size) decide.
+        let meta = reserved
+            .saturating_add(fat_total)
+            .saturating_add(root_sectors);
+        let data_sectors = total.saturating_sub(meta);
         let clusters = data_sectors / sectors_per_cluster;
-        // The FAT must have an entry for every cluster.
-        let fat_entries = u64::from(fat_sectors) * u64::from(FAT_PER_SECTOR);
+        // The cluster count decides FAT12 from FAT16 (the specification's
+        // rule); a FAT16-shaped volume with FAT32's count is invalid. Test
+        // images are tiny FAT32 ones, so FAT32's markers decide FAT32.
+        let kind = if fat32 {
+            FatKind::Fat32
+        } else if clusters < FAT12_LIMIT {
+            FatKind::Fat12
+        } else if clusters < FAT16_LIMIT {
+            FatKind::Fat16
+        } else {
+            return Err(Error::NotFat32);
+        };
+        let root_cluster = if fat32 { le32(&buf, 44) } else { 0 };
+        // The FAT must have an entry for every cluster (`clusters` is under
+        // 2^28 once checked, so the offset can't overflow).
+        let fat_bytes = u64::from(fat_sectors) * SECTOR as u64;
         if clusters == 0
             || clusters > MAX_CLUSTERS
-            || u64::from(clusters) + 2 > fat_entries
-            || !(2..2 + clusters).contains(&root_cluster)
+            || u64::from(kind.offset(clusters + 1)) + u64::from(kind.width()) > fat_bytes
+            || (fat32 && !(2..2 + clusters).contains(&root_cluster))
         {
             return Err(Error::NotFat32);
         }
+        let fsinfo = le16(&buf, 48);
         Ok(Self {
             dev,
             base,
+            kind,
             sectors_per_cluster,
             fat_start,
             fat_sectors,
             fats,
-            mirrored,
+            // FAT12/16 have no ExtFlags: every copy is always written.
+            mirrored: fats >= 2 && (!fat32 || le16(&buf, 40) & 0x80 == 0),
             data_start,
             root_cluster,
+            root_lba,
+            root_sectors,
             clusters,
-            fsinfo_lba: (fsinfo != 0 && fsinfo != 0xFFFF).then(|| base + u32::from(fsinfo)),
+            fsinfo_lba: (fat32 && fsinfo != 0 && fsinfo != 0xFFFF)
+                .then(|| base + u32::from(fsinfo)),
             buf,
             fat_buf: [0; SECTOR],
             fat_cached: None,
@@ -521,6 +696,12 @@ impl<D: BlockDevice> Volume<D> {
             lfn_checksum: 0,
             lfn_valid: false,
         })
+    }
+
+    /// Which FAT the volume has.
+    #[must_use]
+    pub fn kind(&self) -> FatKind {
+        self.kind
     }
 
     /// Bytes per cluster.
@@ -566,6 +747,21 @@ impl<D: BlockDevice> Volume<D> {
         (2..2 + self.clusters).contains(&c)
     }
 
+    /// Whether directory `dir` is FAT12/16's fixed root.
+    fn fixed_root(&self, dir: u32) -> bool {
+        dir == 0 && self.root_sectors > 0
+    }
+
+    /// Where directory cluster `cluster` lies (its first sector and sector
+    /// count); 0 on FAT12/16: the fixed root, whole.
+    fn dir_unit(&self, cluster: u32) -> (u32, u32) {
+        if self.fixed_root(cluster) {
+            (self.root_lba, self.root_sectors)
+        } else {
+            (self.cluster_lba(cluster), self.sectors_per_cluster)
+        }
+    }
+
     /// Most clusters a directory may span ([`DIR_MAX_BYTES`]).
     fn dir_clusters_max(&self) -> u32 {
         (DIR_MAX_BYTES / self.cluster_bytes()).max(1) as u32
@@ -598,23 +794,56 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
-    fn fat_get(&mut self, cluster: u32) -> Result<u32, Error> {
+    /// Where `cluster`'s entry starts: its FAT sector and the byte in it
+    /// (a FAT12 entry at byte 511 runs into the next sector).
+    fn fat_at(&self, cluster: u32) -> Result<(u32, usize), Error> {
         if !self.valid_cluster(cluster) {
             return Err(Error::Corrupt);
         }
-        self.fat_load(cluster / FAT_PER_SECTOR)?;
-        let o = (cluster % FAT_PER_SECTOR) as usize * 4;
-        Ok(le32(&self.fat_buf, o) & FAT_MASK)
+        let off = self.kind.offset(cluster);
+        Ok((off / SECTOR as u32, (off % SECTOR as u32) as usize))
+    }
+
+    /// `cluster`'s entry as stored (end marks not widened).
+    fn fat_raw(&mut self, cluster: u32) -> Result<u32, Error> {
+        let (sector, at) = self.fat_at(cluster)?;
+        let mut w = [0u8; 2];
+        if at + self.kind.width() as usize <= SECTOR {
+            self.fat_load(sector)?;
+            return Ok(entry_get(self.kind, &self.fat_buf, at, cluster));
+        }
+        // Straddling (FAT12 only): its low byte ends this sector, its high
+        // byte starts the next.
+        self.fat_load(sector)?;
+        w[0] = self.fat_buf[SECTOR - 1];
+        self.fat_load(sector + 1)?;
+        w[1] = self.fat_buf[0];
+        Ok(entry_get(self.kind, &w, 0, cluster))
+    }
+
+    fn fat_get(&mut self, cluster: u32) -> Result<u32, Error> {
+        let raw = self.fat_raw(cluster)?;
+        Ok(self.kind.widen(raw))
     }
 
     fn fat_set(&mut self, cluster: u32, value: u32) -> Result<(), Error> {
-        if !self.valid_cluster(cluster) {
-            return Err(Error::Corrupt);
+        let (sector, at) = self.fat_at(cluster)?;
+        if at + self.kind.width() as usize <= SECTOR {
+            self.fat_load(sector)?;
+            entry_put(self.kind, &mut self.fat_buf, at, cluster, value);
+            self.fat_dirty = true;
+            return Ok(());
         }
-        self.fat_load(cluster / FAT_PER_SECTOR)?;
-        let o = (cluster % FAT_PER_SECTOR) as usize * 4;
-        let v = (le32(&self.fat_buf, o) & !FAT_MASK) | (value & FAT_MASK);
-        self.fat_buf[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        // Straddling: each half in its own sector, the bits around kept.
+        self.fat_load(sector)?;
+        let mut w = [self.fat_buf[SECTOR - 1], 0];
+        self.fat_load(sector + 1)?;
+        w[1] = self.fat_buf[0];
+        entry_put(self.kind, &mut w, 0, cluster, value);
+        self.fat_buf[0] = w[1];
+        self.fat_dirty = true;
+        self.fat_load(sector)?;
+        self.fat_buf[SECTOR - 1] = w[0];
         self.fat_dirty = true;
         Ok(())
     }
@@ -669,7 +898,14 @@ impl<D: BlockDevice> Volume<D> {
         debug_assert!(need > 0);
         let end = 2 + self.clusters;
         let from = if self.valid_cluster(from) { from } else { 2 };
-        let max = (scratch.len() / SECTOR) as u32;
+        // FAT12's entries straddle sectors and its whole FAT is at most 12
+        // sectors: the cache alone reads it.
+        let max = if self.kind == FatKind::Fat12 {
+            0
+        } else {
+            (scratch.len() / SECTOR) as u32
+        };
+        let per = SECTOR as u32 / self.kind.width();
         // Sectors held in `scratch`: [first, first + len).
         let (mut first, mut len) = (0u32, 0u32);
         let mut grow = 1u32;
@@ -683,19 +919,20 @@ impl<D: BlockDevice> Volume<D> {
         for (lo, hi) in [(from, end), (2, wrap_end)] {
             let mut run = 0;
             for c in lo..hi {
-                let s = c / FAT_PER_SECTOR;
+                let s = c / per;
                 let v = if max == 0 || self.fat_cached == Some(s) {
                     self.fat_get(c)?
                 } else {
                     if !(first..first + len).contains(&s) {
-                        let n = grow.min(max).min((hi - 1) / FAT_PER_SECTOR - s + 1);
+                        let n = grow.min(max).min((hi - 1) / per - s + 1);
                         self.dev
                             .read_blocks(self.fat_start + s, &mut scratch[..n as usize * SECTOR])?;
                         (first, len) = (s, n);
                         grow = grow.saturating_mul(2);
                     }
-                    let i = (s - first) * FAT_PER_SECTOR + c % FAT_PER_SECTOR;
-                    le32(scratch, i as usize * 4) & FAT_MASK
+                    let i = (s - first) * per + c % per;
+                    let o = (i * self.kind.width()) as usize;
+                    entry_get(self.kind, scratch, o, c)
                 };
                 if v != 0 {
                     run = 0;
@@ -794,15 +1031,16 @@ impl<D: BlockDevice> Volume<D> {
     /// none) until `f` returns `true`. Returns whether it did.
     fn walk_dir(&mut self, dir: u32, f: &mut Visit<'_>) -> Result<bool, Error> {
         let mut cluster = dir;
-        if !self.valid_cluster(cluster) {
+        let fixed = self.fixed_root(dir);
+        if !fixed && !self.valid_cluster(cluster) {
             return Err(Error::Corrupt);
         }
         let mut visited = 0u32;
         self.lfn_valid = false;
         self.lfn_len = 0;
         loop {
-            let lba = self.cluster_lba(cluster);
-            for s in 0..self.sectors_per_cluster {
+            let (lba, sectors) = self.dir_unit(cluster);
+            for s in 0..sectors {
                 self.dev.read_blocks(lba + s, &mut self.buf)?;
                 for i in 0..ENTRIES {
                     let mut e = [0u8; 32];
@@ -829,6 +1067,9 @@ impl<D: BlockDevice> Volume<D> {
                     }
                 }
             }
+            if fixed {
+                return Ok(false);
+            }
             visited += 1;
             match self.next_cluster(cluster)? {
                 // Past the largest directory FAT32 allows (a loop ends here
@@ -854,6 +1095,7 @@ impl<D: BlockDevice> Volume<D> {
         mut f: impl FnMut(&DirEntry<'_>),
     ) -> Result<(), Error> {
         let dir = self.resolve_dir(path)?;
+        let kind = self.kind;
         self.walk_dir(dir, &mut |_, _, e, lfn| {
             if e[0] == b'.' {
                 return false; // . and ..
@@ -867,7 +1109,7 @@ impl<D: BlockDevice> Volume<D> {
             f(&DirEntry {
                 name,
                 size: le32(e, 28),
-                first_cluster: (u32::from(le16(e, 20)) << 16) | u32::from(le16(e, 26)),
+                first_cluster: entry_first(e, kind),
                 is_dir: e[11] & ATTR_DIRECTORY != 0,
             });
             false
@@ -924,6 +1166,7 @@ impl<D: BlockDevice> Volume<D> {
     fn find_entry(&mut self, dir: u32, name: &str, want_dir: bool) -> Result<File, Error> {
         let want = name.as_bytes();
         let mut found = None;
+        let kind = self.kind;
         self.walk_dir(dir, &mut |lba, index, e, lfn| {
             let is_dir = e[11] & ATTR_DIRECTORY != 0;
             if is_dir != want_dir || e[11] & 0x08 != 0 || e[0] == b'.' {
@@ -937,7 +1180,7 @@ impl<D: BlockDevice> Volume<D> {
                 found = Some(File {
                     entry_lba: lba,
                     entry_index: index,
-                    first_cluster: (u32::from(le16(e, 20)) << 16) | u32::from(le16(e, 26)),
+                    first_cluster: entry_first(e, kind),
                     size: le32(e, 28),
                 });
             }
@@ -997,8 +1240,11 @@ impl<D: BlockDevice> Volume<D> {
         }
         self.dev.write_blocks(file.entry_lba, &self.buf)?;
         // ... and those at the end of the sector before, in the same cluster.
-        let first_of_cluster =
-            (file.entry_lba - self.data_start).is_multiple_of(self.sectors_per_cluster);
+        let first_of_cluster = if file.entry_lba < self.data_start {
+            file.entry_lba == self.root_lba // FAT12/16's fixed root: one unit
+        } else {
+            (file.entry_lba - self.data_start).is_multiple_of(self.sectors_per_cluster)
+        };
         if spilled && !first_of_cluster {
             let lba = file.entry_lba - 1;
             self.dev.read_blocks(lba, &mut self.buf)?;
@@ -1106,6 +1352,82 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+    /// Reads `len` bytes of `file` from byte `start` on (cut at its end),
+    /// calling `f` with each piece; returns the bytes passed. The chain is
+    /// followed to `start`'s cluster through the FAT alone (no data read),
+    /// so a big file comes in chunks without re-reading what came before
+    /// (the loader's ranged `get`).
+    ///
+    /// # Panics
+    /// If `scratch` is shorter than a sector.
+    #[inline(never)]
+    pub fn read_range(
+        &mut self,
+        file: &File,
+        start: u64,
+        len: u64,
+        scratch: &mut [u8],
+        mut f: impl FnMut(&[u8]),
+    ) -> Result<u64, Error> {
+        let max = (scratch.len() / SECTOR * SECTOR) as u64;
+        assert!(max >= SECTOR as u64, "scratch must hold a sector");
+        let size = u64::from(file.size);
+        if start >= size || len == 0 {
+            return Ok(0);
+        }
+        let end = size.min(start.saturating_add(len));
+        let cb = self.cluster_bytes() as u64;
+        let mut cluster = file.first_cluster;
+        // Bounded: a file under 4 GiB has at most that many clusters.
+        for _ in 0..start / cb {
+            cluster = self.next_cluster(cluster)?.ok_or(Error::Corrupt)?;
+        }
+        let mut pos = start - start % cb; // where `cluster` starts in the file
+        let mut at = start;
+        let mut hops = 0u32;
+        while at < end {
+            if !self.valid_cluster(cluster) {
+                return Err(Error::Corrupt);
+            }
+            // A run of consecutive clusters, as long as the scratch holds.
+            let run_start = cluster;
+            let mut run = 1u32;
+            let mut next = self.next_cluster(cluster)?;
+            while let Some(n) = next
+                && n == cluster + 1
+                && u64::from(run + 1) * cb <= max
+                && pos + u64::from(run) * cb < end
+            {
+                cluster = n;
+                run += 1;
+                next = self.next_cluster(cluster)?;
+            }
+            let run_end = (pos + u64::from(run) * cb).min(end);
+            let lba = self.cluster_lba(run_start);
+            while at < run_end {
+                let off = at - pos;
+                let in_sec = off % SECTOR as u64;
+                let n = (run_end - at).min(max - in_sec);
+                let secs = (in_sec + n).div_ceil(SECTOR as u64) as usize;
+                self.dev.read_blocks(
+                    lba + (off / SECTOR as u64) as u32,
+                    &mut scratch[..secs * SECTOR],
+                )?;
+                f(&scratch[in_sec as usize..(in_sec + n) as usize]);
+                at += n;
+            }
+            hops += run;
+            if hops > self.clusters {
+                return Err(Error::Corrupt);
+            }
+            pos += u64::from(run) * cb;
+            if at < end {
+                cluster = next.ok_or(Error::Corrupt)?;
+            }
+        }
+        Ok(end - start)
+    }
+
     // --- Writing -----------------------------------------------------------
 
     /// Replaces the contents of the root-directory file `name` with `data`
@@ -1187,6 +1509,32 @@ impl<D: BlockDevice> Volume<D> {
         })
     }
 
+    /// Where an existing file lies, if its clusters are one run: its first
+    /// sector and its sectors (the size rounded up), as [`Self::reserve`]
+    /// gives for a new one, without changing anything on the card (the run
+    /// logs reuse their files: reminder R22, the PC's cached view stays
+    /// right). [`Error::Fragmented`] if the clusters aren't one run,
+    /// [`Error::NotFound`] if there's no such file or it's empty.
+    pub fn extent(&mut self, path: &str) -> Result<Reserved, Error> {
+        let f = self.find(path)?;
+        if f.first_cluster < 2 || f.size == 0 {
+            return Err(Error::NotFound);
+        }
+        let cluster_bytes = self.sectors_per_cluster * SECTOR as u32;
+        let clusters = f.size.div_ceil(cluster_bytes);
+        let mut c = f.first_cluster;
+        for _ in 1..clusters {
+            match self.next_cluster(c)? {
+                Some(n) if n == c + 1 => c = n,
+                _ => return Err(Error::Fragmented),
+            }
+        }
+        Ok(Reserved {
+            lba: self.cluster_lba(f.first_cluster),
+            sectors: f.size.div_ceil(SECTOR as u32),
+        })
+    }
+
     fn put_fill(
         &mut self,
         path: &str,
@@ -1198,10 +1546,7 @@ impl<D: BlockDevice> Volume<D> {
                 let mut parts = components(path)?;
                 parts.next_back();
                 for d in parts {
-                    // `d` is a slice of `path`: its end is where the prefix
-                    // naming this directory ends.
-                    let end = d.as_ptr() as usize - path.as_ptr() as usize + d.len();
-                    match self.mkdir(&path[..end], scratch) {
+                    match self.mkdir(prefix_to(path, d)?, scratch) {
                         Ok(()) | Err(Error::Exists) => {}
                         Err(e) => return Err(e),
                     }
@@ -1413,8 +1758,8 @@ impl<D: BlockDevice> Volume<D> {
         let mut cluster = dir;
         let mut visited = 0u32;
         loop {
-            let lba = self.cluster_lba(cluster);
-            for s in 0..self.sectors_per_cluster {
+            let (lba, sectors) = self.dir_unit(cluster);
+            for s in 0..sectors {
                 self.dev.read_blocks(lba + s, &mut self.buf)?;
                 for i in 0..ENTRIES {
                     if matches!(self.buf[i * 32], 0x00 | 0xE5) {
@@ -1427,6 +1772,10 @@ impl<D: BlockDevice> Volume<D> {
                         len = 0;
                     }
                 }
+            }
+            // FAT12/16's fixed root never grows.
+            if self.fixed_root(dir) {
+                return Err(Error::NoRoom);
             }
             visited += 1;
             match self.next_cluster(cluster)? {
@@ -1543,20 +1892,26 @@ fn short_to_display(short: &[u8], nt: u8, out: &mut [u8; 12]) -> usize {
 pub mod format;
 
 pub mod exfat;
+pub mod mkfs;
+pub mod survey;
 
 pub mod check;
 pub mod guard;
+pub mod node;
+pub mod node_ex;
+#[cfg(test)]
+mod node_tests;
 pub use check::Health;
 pub use guard::Guard;
 
-/// A FAT32 or exFAT volume, whichever the boot sector says: what a caller
+/// A FAT (12, 16 or 32) or exFAT volume, whichever the boot sector says: what a caller
 /// that only stores and reads files needs (the loader's `put`, crash
 /// reports), so SDXC cards work wherever SD and SDHC cards do.
 // No heap to box the larger variant into; one lives briefly on the stack.
 #[allow(clippy::large_enum_variant)]
 pub enum AnyVolume<D> {
-    /// FAT32 (SD and SDHC cards).
-    Fat32(Volume<D>),
+    /// FAT12, FAT16 or FAT32 (SD and SDHC cards, CF cards, old cards).
+    Fat(Volume<D>),
     /// exFAT (SDXC cards).
     ExFat(exfat::ExVolume<D>),
 }
@@ -1569,7 +1924,7 @@ impl<D: BlockDevice> AnyVolume<D> {
         if &boot[3..11] == b"EXFAT   " {
             exfat::ExVolume::mount(dev, base).map(Self::ExFat)
         } else {
-            Volume::mount(dev, base).map(Self::Fat32)
+            Volume::mount(dev, base).map(Self::Fat)
         }
     }
 
@@ -1577,7 +1932,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     /// directory only for now.
     pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
         match self {
-            Self::Fat32(v) => v.put(path, data, scratch),
+            Self::Fat(v) => v.put(path, data, scratch),
             Self::ExFat(v) => v.put(path, data, scratch),
         }
     }
@@ -1591,8 +1946,16 @@ impl<D: BlockDevice> AnyVolume<D> {
         scratch: &mut [u8],
     ) -> Result<Reserved, Error> {
         match self {
-            Self::Fat32(v) => v.reserve(path, bytes, scratch),
+            Self::Fat(v) => v.reserve(path, bytes, scratch),
             Self::ExFat(v) => v.reserve(path, bytes, scratch),
+        }
+    }
+
+    /// Where an existing file lies if contiguous (`Volume::extent`).
+    pub fn extent(&mut self, path: &str) -> Result<Reserved, Error> {
+        match self {
+            Self::Fat(v) => v.extent(path),
+            Self::ExFat(v) => v.extent(path),
         }
     }
 
@@ -1607,7 +1970,7 @@ impl<D: BlockDevice> AnyVolume<D> {
         f: &mut dyn FnMut(&[u8]),
     ) -> Result<(), Error> {
         match self {
-            Self::Fat32(v) => {
+            Self::Fat(v) => {
                 let file = v.find(path)?;
                 v.read_file(&file, scratch, f)
             }
@@ -1618,18 +1981,52 @@ impl<D: BlockDevice> AnyVolume<D> {
         }
     }
 
+    /// Reads `len` bytes of `path` from byte `start` (see
+    /// [`Volume::read_range`]); returns the file's size and the bytes
+    /// passed.
+    pub fn read_range(
+        &mut self,
+        path: &str,
+        start: u64,
+        len: u64,
+        scratch: &mut [u8],
+        f: &mut dyn FnMut(&[u8]),
+    ) -> Result<(u64, u64), Error> {
+        match self {
+            Self::Fat(v) => {
+                let file = v.find(path)?;
+                let n = v.read_range(&file, start, len, scratch, f)?;
+                Ok((u64::from(file.size), n))
+            }
+            Self::ExFat(v) => {
+                let file = v.find(path)?;
+                let n = v.read_range(&file, start, len, scratch, f)?;
+                Ok((file.size, n))
+            }
+        }
+    }
+
     /// Deletes the file or empty folder at `path` (crash-safe on either).
     pub fn remove(&mut self, path: &str) -> Result<(), Error> {
         match self {
-            Self::Fat32(v) => v.remove(path),
+            Self::Fat(v) => v.remove(path),
             Self::ExFat(v) => v.remove(path),
+        }
+    }
+
+    /// The boot-file guard for whichever format the volume is (see
+    /// [`crate::guard`]).
+    pub fn guard(&mut self, names: &[&str]) -> Result<Guard, Error> {
+        match self {
+            Self::Fat(v) => v.guard(names),
+            Self::ExFat(v) => v.guard(names),
         }
     }
 
     /// Checks the volume, read-only ([`check`]).
     pub fn check(&mut self, seen: &mut [u8], scratch: &mut [u8]) -> Result<Health, Error> {
         match self {
-            Self::Fat32(v) => v.check(seen, scratch),
+            Self::Fat(v) => v.check(seen, scratch),
             Self::ExFat(v) => v.check(seen, scratch),
         }
     }
@@ -1638,7 +2035,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     /// its name, whether it is a folder, and its size in bytes.
     pub fn list(&mut self, path: &str, f: &mut dyn FnMut(&[u8], bool, u64)) -> Result<(), Error> {
         match self {
-            Self::Fat32(v) => v.for_each_in(path, |e| f(e.name, e.is_dir, u64::from(e.size))),
+            Self::Fat(v) => v.for_each_in(path, |e| f(e.name, e.is_dir, u64::from(e.size))),
             Self::ExFat(v) => v.for_each_in(path, |n, e| f(n, e.is_dir, e.size)),
         }
     }
@@ -1646,8 +2043,212 @@ impl<D: BlockDevice> AnyVolume<D> {
     /// The block device.
     pub fn device(&self) -> &D {
         match self {
-            Self::Fat32(v) => v.device(),
+            Self::Fat(v) => v.device(),
             Self::ExFat(v) => v.device(),
+        }
+    }
+
+    // --- The node layer (ADR-0037: crate::node) ---------------------------
+
+    /// The child after `cursor` in folder `dir` ([`node::Volume::node_child`]).
+    ///
+    /// # Errors
+    /// As the format's own.
+    pub fn node_child(
+        &mut self,
+        dir: u64,
+        cursor: &mut u64,
+        out: &mut node::Node,
+    ) -> Result<bool, Error> {
+        match self {
+            Self::Fat(v) => v.node_child(dir, cursor, out),
+            Self::ExFat(v) => v.node_child(dir, cursor, out),
+        }
+    }
+
+    /// The object at `loc`.
+    ///
+    /// # Errors
+    /// [`Error::NotFound`] when `loc` isn't a whole entry set.
+    pub fn node_stat(&mut self, loc: u64, out: &mut node::Node) -> Result<(), Error> {
+        match self {
+            Self::Fat(v) => v.node_stat(loc, out),
+            Self::ExFat(v) => v.node_stat(loc, out),
+        }
+    }
+
+    /// Reads file bytes from `offset`.
+    ///
+    /// # Errors
+    /// The card failed or the file is damaged.
+    pub fn node_read(
+        &mut self,
+        n: &node::Node,
+        offset: u64,
+        buf: &mut [u8],
+        scratch: &mut [u8],
+    ) -> Result<usize, Error> {
+        match self {
+            Self::Fat(v) => v.node_read(n, offset, buf, scratch),
+            Self::ExFat(v) => v.node_read(n, offset, buf, scratch),
+        }
+    }
+
+    /// Creates a folder or an empty file.
+    ///
+    /// # Errors
+    /// A bad or taken name, no room, or the folder is gone.
+    pub fn node_create(
+        &mut self,
+        dir: u64,
+        name: &[u16],
+        folder: bool,
+        hidden: bool,
+        stamps: (Option<node::Stamp>, Option<node::Stamp>),
+        scratch: &mut [u8],
+    ) -> Result<u64, Error> {
+        match self {
+            Self::Fat(v) => v.node_create(dir, name, folder, hidden, stamps, scratch),
+            Self::ExFat(v) => v.node_create(dir, name, folder, hidden, stamps, scratch),
+        }
+    }
+
+    /// Reserves a file's space whole, out of sight.
+    ///
+    /// # Errors
+    /// No room (nothing changed), or the folder is gone.
+    pub fn node_reserve(
+        &mut self,
+        dir: u64,
+        size: u64,
+        scratch: &mut [u8],
+    ) -> Result<node::Reservation, Error> {
+        match self {
+            Self::Fat(v) => v.node_reserve(dir, size, scratch),
+            Self::ExFat(v) => v.node_reserve(dir, size, scratch),
+        }
+    }
+
+    /// Writes into a reservation.
+    ///
+    /// # Errors
+    /// Past it, off a sector, or the card failed.
+    pub fn node_write(
+        &mut self,
+        r: &mut node::Reservation,
+        offset: u64,
+        data: &[u8],
+        scratch: &mut [u8],
+    ) -> Result<(), Error> {
+        match self {
+            Self::Fat(v) => v.node_write(r, offset, data, scratch),
+            Self::ExFat(v) => v.node_write(r, offset, data, scratch),
+        }
+    }
+
+    /// Names a complete reservation.
+    ///
+    /// # Errors
+    /// A bad or taken name (the reservation stays), or the card failed.
+    pub fn node_commit(
+        &mut self,
+        r: &node::Reservation,
+        dir: u64,
+        name: &[u16],
+        hidden: bool,
+        stamps: (Option<node::Stamp>, Option<node::Stamp>),
+        scratch: &mut [u8],
+    ) -> Result<u64, Error> {
+        match self {
+            Self::Fat(v) => v.node_commit(r, dir, name, hidden, stamps, scratch),
+            Self::ExFat(v) => v.node_commit(r, dir, name, hidden, stamps, scratch),
+        }
+    }
+
+    /// Drops a reservation.
+    ///
+    /// # Errors
+    /// The card failed.
+    pub fn node_abandon(&mut self, r: &node::Reservation) -> Result<(), Error> {
+        match self {
+            Self::Fat(v) => v.node_abandon(r),
+            Self::ExFat(v) => v.node_abandon(r),
+        }
+    }
+
+    /// Cleans up writes a power cut interrupted.
+    ///
+    /// # Errors
+    /// The card failed or is damaged.
+    pub fn node_recover(&mut self) -> Result<u32, Error> {
+        match self {
+            Self::Fat(v) => v.node_recover(),
+            Self::ExFat(v) => v.node_recover(),
+        }
+    }
+
+    /// Deletes a file or an empty folder.
+    ///
+    /// # Errors
+    /// Not empty, gone, or the card failed.
+    pub fn node_delete(&mut self, loc: u64) -> Result<(), Error> {
+        match self {
+            Self::Fat(v) => v.node_delete(loc),
+            Self::ExFat(v) => v.node_delete(loc),
+        }
+    }
+
+    /// Renames the object at `loc` in folder `dir`.
+    ///
+    /// # Errors
+    /// A bad or taken name, `loc` not in `dir`, or the card failed.
+    pub fn node_rename(
+        &mut self,
+        dir: u64,
+        loc: u64,
+        name: &[u16],
+        scratch: &mut [u8],
+    ) -> Result<u64, Error> {
+        match self {
+            Self::Fat(v) => v.node_rename(dir, loc, name, scratch),
+            Self::ExFat(v) => v.node_rename(dir, loc, name, scratch),
+        }
+    }
+
+    /// Moves the object at `loc` from folder `from` into folder `dir`.
+    ///
+    /// # Errors
+    /// A taken name, a folder into itself, or the card failed.
+    pub fn node_move(
+        &mut self,
+        from: u64,
+        loc: u64,
+        dir: u64,
+        scratch: &mut [u8],
+    ) -> Result<u64, Error> {
+        match self {
+            Self::Fat(v) => v.node_move(from, loc, dir, scratch),
+            Self::ExFat(v) => v.node_move(from, loc, dir, scratch),
+        }
+    }
+
+    /// Capacity and free space in bytes.
+    ///
+    /// # Errors
+    /// The card failed.
+    pub fn node_space(&mut self, scratch: &mut [u8]) -> Result<(u64, u64), Error> {
+        match self {
+            Self::Fat(v) => v.node_space(scratch),
+            Self::ExFat(v) => v.node_space(scratch),
+        }
+    }
+
+    /// The largest file the volume holds.
+    #[must_use]
+    pub fn node_max_file(&self) -> u64 {
+        match self {
+            Self::Fat(v) => v.node_max_file(),
+            Self::ExFat(v) => v.node_max_file(),
         }
     }
 }

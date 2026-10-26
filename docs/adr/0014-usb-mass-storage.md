@@ -117,6 +117,65 @@ model with a built-in host that enumerates like Windows.
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.
+   - **amended 2026-10-25 (the owner: "do your proposed fix", R50,
+     ADR-0037):** the PC is shown the boot files as hidden + system +
+     read-only (a boot folder hidden + system): the loader changes those
+     attribute bytes in the directory sectors the drive serves
+     (`Guard::view`, through `Storage::view` in `rp-usb-msc`, so every
+     block sent, read ahead or by DMA, is shown that way) and puts the real
+     ones back on what the PC writes (`Guard::unview`); exFAT's set checksum
+     is recomputed both ways. The card is never changed, so Windows Mobile
+     and HaRET see ordinary files. Explorer hides them by default, as it
+     hides Windows' own system files, and warns before touching one; the
+     guard still refuses any change. A refused write leaves the drive as it
+     is (no blink). Proven on the X51v the same day: the boot files hidden,
+     Windows' own "is a system file... are you sure?" warning, a forced
+     delete failing at once with a popup, the card byte-identical after.
+     The limit found: Windows changes its cached copy of the folder before
+     writing it, so after a forced delete it keeps retrying the refused
+     sector in the background (disk event 51 every ~22 s) until the drive is
+     re-read; the owner chose C, then A the same day (2026-10-25): MTP
+     (ADR-0037) is built now as the real fix, mass storage kept for Macs
+     and Linux. `autorun.inf` and the icon it names are guarded and hidden too.
+   - **amended 2026-10-25, then withdrawn the same day by the owner** ("i
+     dont want the blink, i dont want it to look broken, bad user
+     experience": on the X51v, Explorer force-closed with the drive and
+     Windows asked to "scan and fix" the card, its FAT dirty flag left set by
+     the interrupted delete). The text below is kept as the record; the
+     loader no longer does it, and a refused write leaves the drive as it is.
+     The next design (a write-protected boot partition, or MTP for the OS
+     proper) waits for the owner's vote (R50). Kept from that work: a medium
+     change asked for mid-transfer waits for the command to end
+     (`rp-usb-msc`; it fixed R41's hang).
+   - *(withdrawn)* **amended 2026-10-25 (the owner's ruling A, reminder R50):** after the
+     boot-file guard refuses a PC write, the medium goes away and comes back
+     (as after the loader's own writes) once 500 ms pass with no further
+     refusal (`REFUSAL_QUIET_MS`). Found on the X51v the same day: Windows
+     deletes by changing its cached folder and FAT first, so Explorer showed
+     `haret.exe` deleted although the card refused it (byte-identical after),
+     and its cache then counted the file's clusters free, where its next file
+     could go and be refused. The change makes Windows re-read the card: the
+     file reappears within seconds and nothing is written over a false view.
+     Rejected: B, leaving Windows' view until the next re-offer (item 65's
+     behaviour, accepted 2026-10-24); C, the read-only attribute as well (not
+     chosen).
+   - **amended 2026-10-24 (reminder R22, approved by the owner):** a card
+     an image run left alone keeps the PC's view: after a run that
+     returned (not a crash, hang or hand-over), a unit is **vouched for**
+     (its first look after the loader starts is served, not sent away) if
+     the image never took that card (`cardsink::taken`), the loader didn't
+     make a file or folder on it to set the run's log up, and the card in
+     the slot is still that card (its `rplog/index.txt` names this run in
+     the slot file the run wrote). The run's log is written only inside
+     one of 32 files made once (`rplog/log-00.txt`..`log-31.txt`, which
+     run each holds in `rplog/index.txt`), so the FAT and every folder
+     Windows cached are as it read them. Every vouch is logged ("SD/CF
+     card: unchanged by the run"). The cost: the slot file's *contents*
+     changed, and Windows may show a copy it read before the run; read
+     run logs with `cargo xtask cardlog` (through the loader), not
+     Explorer (quality audit C82). Before this, every run made both drives
+     go away (its log was a new file on each card), so Explorer re-read
+     the CF card cold after every run.
 4. **Data path**: a 32 KiB buffer (the loader's scratch area), filled or
    drained with one multi-block card command per 64 sectors, streamed as
    64-byte packets. Full-speed USB (12 Mbit/s) caps the drive at about
@@ -182,10 +241,30 @@ model with a built-in host that enumerates like Windows.
   volume label. Formatting the card is refused too. The guard is rebuilt
   from the card after start-up, a card change and anything the PC tool
   asks (`put`, `rm`, `install`, an image's run); when it can't be built
-  (exFAT, a boot file in more than 8 pieces, unmirrored FATs) the card is
-  read-only, as before. `drive ro` still locks it; `drive rw` also makes
+  (a boot file in more than 8 pieces, unmirrored FATs; exFAT until
+  2026-10-25, when ADR-0036 gave FAT12, FAT16 and exFAT the guard too) the
+  card is read-only, as before. `drive ro` still locks it; `drive rw` also makes
   the CF card writable (it stays read-only by default until it stays
-  attached, item 62). Device run: Windows wrote and deleted files; its
+  attached, item 62).
+- **The CF card writable too, its boot files guarded (2026-10-24, the
+  owner's ruling A):** "they are supposed to work like a modern drive,
+  read and write". Item 62's reason is gone (the CF card attaches and
+  stays attached since R7's timing work), so the CF drive is writable by
+  default like the SD drive, with its own guard: the folder `RetroPane/`
+  (its entry: not renamed, moved or deleted; what it holds otherwise
+  changes) and `retropane.bin`, `haret.exe`, `startup.txt` and
+  `default.txt` in it, which Windows Mobile boots from (reminder R27). The
+  guard is built when the card attaches (before the PC first asks) and
+  after anything the loader writes; when it can't be built the card is
+  read-only. `cargo xtask install cf` puts the boot files through the
+  loader (`put` with `cf:` names) instead of through Windows, then reads
+  each back through the loader. Rejected: B, writable with no guard (quick,
+  but Windows could delete the CF card's loader and the boot files would
+  no longer always be protected). Emulator: `emu-cf` writes the CF drive by
+  default, is refused after `drive ro` and written after `drive rw`, puts
+  `cf:RetroPane/haret.exe` through the loader and is refused overwriting
+  it through the drive. On the way, the loader's reply line keeps room for
+  its end (a long `cf log` lost its `\r\n`, and the PC waited for it). Device run: Windows wrote and deleted files; its
   delete of `default.txt` was refused on the card (Windows' cached view
   showed it gone until the drive was offered again, item 65); the boot
   files stayed identical to a backup.

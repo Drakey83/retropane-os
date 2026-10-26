@@ -1049,6 +1049,233 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_run_limit),
     },
     Mutant {
+        name: "R42: the CF detect read once a second (a quick swap missed, the card back only after a failed read)",
+        file: "boot/loader/src/main.rs",
+        from: "    const CF_DETECT_TICKS: u32 = TICK_1S / 20;",
+        to: "    const CF_DETECT_TICKS: u32 = TICK_1S;",
+        check: Check::Emu(crate::emu::boot_loader_cf),
+    },
+    Mutant {
+        name: "R22: a card the run took vouched for (the PC keeps a stale view: the noise-ri.bin loss)",
+        file: "boot/loader/src/main.rs",
+        from: "                if (state.taken | state.changed) & (1 << unit) == 0",
+        to: "                if state.changed & (1 << unit) == 0",
+        check: Check::Emu(crate::emu::boot_loader_cardlog),
+    },
+    Mutant {
+        name: "ADR-0037: a control reply that fills its request ends with a zero-length packet (it answers the next request)",
+        file: "drivers/pxa-udc/src/lib.rs",
+        from: "        } else if end == self.ep0_len && end >= self.ep0_want {",
+        to: "        } else if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "a_reply_that_fills_the_request_ends_without_a_zero_length_packet",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a boot file's entry not protected by place (MTP lists it writable)",
+        file: "kernel/fat/src/guard.rs",
+        from: "                .any(|f| f.entry_lba == lba && f.entry_offset == offset),",
+        to: "                .any(|f| f.entry_lba == lba && f.entry_offset == offset + 32),",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "every_format_names_its_protected_entries_by_place",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a write in progress listed (the PC sees a half file's temporary entry)",
+        file: "kernel/fat/src/node.rs",
+        from: "            if e[11] & 0x08 != 0 || e[0] == b'.' || is_temp(&short).is_some() {",
+        to: "            if e[11] & 0x08 != 0 || e[0] == b'.' {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "a_reserved_file_is_invisible_until_committed",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a committed file's temporary entry left (two entries share its clusters)",
+        file: "kernel/fat/src/node.rs",
+        from: "        self.kill_temp(r.temp)?;
+        Ok(loc)",
+        to: "        Ok(loc)",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "a_reserved_file_is_invisible_until_committed",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: recovery frees a file a cut left named (its data lost)",
+        file: "kernel/fat/src/node.rs",
+        from: "            if !keep && self.valid_cluster(first) {",
+        to: "            if self.valid_cluster(first) {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "a_power_cut_mid_commit_keeps_a_named_file_or_frees_an_unnamed_one",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: names compared with their case (Cafe and CAFE both made: Windows can't tell them apart)",
+        file: "kernel/fat/src/node.rs",
+        from: "            .all(|(&x, &y)| x == y || upcase(x) == upcase(y))",
+        to: "            .all(|(&x, &y)| x == y)",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "names_are_taken_whatever_their_case",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a folder moved into its own child (its tree cut off)",
+        file: "kernel/fat/src/node.rs",
+        from: "            if c == top {
+                return Ok(true);",
+        to: "            if c == top && c == 0 {
+                return Ok(true);",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "moves_rewrite_the_entry_and_folders_follow",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: exFAT's name hash over the name as typed (Windows' lookups miss the file)",
+        file: "kernel/fat/src/node_ex.rs",
+        from: "        st[4..6].copy_from_slice(&hash16(&up[..name.len()]).to_le_bytes());",
+        to: "        st[4..6].copy_from_slice(&hash16(name).to_le_bytes());",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "exfat_name_hashes_are_over_the_up_cased_name",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: file bytes written off a sector (the card refuses: Windows' copy fails)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "            self.len / SECTOR * SECTOR",
+        to: "            self.len",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "explorer_on_a_real_card_copies_reads_renames_moves_and_deletes",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: Microsoft's descriptors in the drive layout (a revision Windows recorded without them)",
+        file: "drivers/pxa-udc/src/usb.rs",
+        from: "                (3, 0xEE) if mtp => {",
+        to: "                (3, 0xEE) => {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "the_drive_layout_offers_none_of_microsofts_descriptors",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: the compatible ID on the serial port's interface (Windows binds MTP to the wrong one)",
+        file: "drivers/pxa-udc/src/usb.rs",
+        from: "    MTP_INTERFACE as u8, // first interface",
+        to: "    0, // first interface",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "microsofts_descriptors_are_well_formed",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a boot file announced writable over MTP (Windows tries, then fails)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "    if e.protected || e.long_name {
+        0x0001",
+        to: "    if e.long_name {
+        0x0001",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "object_info_carries_the_name_size_parent_and_protection",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a reservation kept when the session ends (an unplugged copy leaves its space taken)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "        if let Some(p) = self.pending.take() {
+            dev.abandon(p.s, p.loc);
+        }
+        self.session = 0;",
+        to: "        self.pending = None;
+        self.session = 0;",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "a_cancelled_or_unplugged_copy_leaves_nothing",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a short transfer committed (a half file takes its name)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "                } else if !complete || self.obj_written != p.size {",
+        to: "                } else if !complete {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "a_short_transfer_is_incomplete_and_kept_for_a_retry",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a deleted object's handle left alive (MTP 3.4.1: never reused)",
+        file: "drivers/usb-mtp/src/handles.rs",
+        from: "        {
+            self.unindex(k);
+            self.slots[k].store = DEAD;
+        }",
+        to: "        {
+            self.unindex(k);
+        }",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "the_handle_index_survives_deletes_and_moves",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: walks stop below the second level (a whole-store listing misses deep files)",
+        file: "drivers/usb-mtp/src/lib.rs",
+        from: "                        Some((h, loc, level)) if w.depth > 1 => {",
+        to: "                        Some((h, loc, level)) if w.depth > 2 => {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-mtp",
+            "property_lists_of_any_depth_come_in_one_operation",
+        ]),
+    },
+    Mutant {
+        name: "R22: a vouch that doesn't keep the host's view",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if let Some(u) = self.units.get_mut(lun) {
+            u.vouched = true;",
+        to: "        if let Some(u) = self.units.get_mut(lun) {
+            let _ = u;",
+        check: Check::Host(&["-p", "rp-usb-msc", "a_vouched_unit_keeps_the_hosts_view"]),
+    },
+    Mutant {
         name: "CF slot never powered on (the card reads nothing, as on the device)",
         file: "boot/loader/src/main.rs",
         from: "        cpld.set_cf_power(true, &mut BusyWait);",
@@ -1144,8 +1371,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "a medium change keeps the blocks read ahead (stale data served)",
         file: "drivers/usb-msc/src/lib.rs",
-        from: "    pub fn medium_changed(&mut self, lun: usize) {\n        self.ahead = None;",
-        to: "    pub fn medium_changed(&mut self, lun: usize) {",
+        from: "    fn change_now(&mut self, lun: usize) {\n        self.ahead = None;",
+        to: "    fn change_now(&mut self, lun: usize) {",
         check: Check::Host(&["-p", "rp-usb-msc", "a_medium_change_drops_the_read_ahead"]),
     },
     Mutant {
@@ -2332,7 +2559,7 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "fat guard: the boot sector reformatted (its geometry not compared)",
         file: "kernel/fat/src/guard.rs",
-        from: "return s[GEOMETRY] == self.geometry;",
+        from: "return s[geo] == g.geometry[..g.geometry_len];",
         to: "return true;",
         check: Check::Host(&[
             "-p",
@@ -2343,22 +2570,24 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "fat guard: a boot file's chain relinked",
         file: "kernel/fat/src/guard.rs",
-        from: "Some(next) => v == next,",
-        to: "Some(_) => true,",
+        from: "if end { v >= EOC_MIN } else { v == want }",
+        to: "if end { v >= EOC_MIN } else { true }",
         check: Check::Host(&["-p", "rp-fat", "a_boot_files_chain_cannot_be_relinked"]),
     },
     Mutant {
         name: "fat guard: a boot file's chain end moved",
         file: "kernel/fat/src/guard.rs",
-        from: "Some(FAT_MASK) => v >= EOC_MIN,",
-        to: "Some(FAT_MASK) => true,",
+        from: "if end { v >= EOC_MIN } else { v == want }",
+        to: "if end { true } else { v == want }",
         check: Check::Host(&["-p", "rp-fat", "a_boot_files_chain_end_cannot_be_moved"]),
     },
     Mutant {
         name: "fat guard: a boot file's data written over",
         file: "kernel/fat/src/guard.rs",
-        from: "if files.iter().any(|f| f.holds(cluster)) {",
-        to: "if false {",
+        from: "/ self.sectors_per_cluster + 2;
+            if files.iter().any(|f| holds(&f.extents[..f.runs], cluster)) {",
+        to: "/ self.sectors_per_cluster + 2;
+            if false {",
         check: Check::Host(&[
             "-p",
             "rp-fat",
@@ -2368,12 +2597,240 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "fat guard: a boot file renamed (its directory entry's name not compared)",
         file: "kernel/fat/src/guard.rs",
-        from: "e[..12] == f.name_attr",
+        from: "e[..11] == f.name_attr[..11]",
         to: "true",
         check: Check::Host(&[
             "-p",
             "rp-fat",
             "boot_files_cannot_be_deleted_replaced_or_renamed",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: half a FAT12 entry not judged",
+        file: "kernel/fat/src/guard.rs",
+        from: "v & vm == raw & vm",
+        to: "true",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "fat12_a_write_covering_half_a_protected_entry_is_judged_on_that_half",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: a FAT12 entry starting in the sector before skipped",
+        file: "kernel/fat/src/guard.rs",
+        from: "FatKind::Fat12 => self.fat.first_at(lo).saturating_sub(1),",
+        to: "FatKind::Fat12 => self.fat.first_at(lo),",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "fat12_a_write_covering_half_a_protected_entry_is_judged_on_that_half",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: FAT12/16's fixed root taken for reserved sectors",
+        file: "kernel/fat/src/guard.rs",
+        from: "if lba < self.root_lba {",
+        to: "if lba < self.data_start {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "fat16_the_fixed_root_keeps_boot_entries_and_takes_new_ones",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: a FAT16 chain end moved",
+        file: "kernel/fat/src/guard.rs",
+        from: "if end { v >= 0xFFF8 } else { v == want }",
+        to: "if end { true } else { v == want }",
+        check: Check::Host(&["-p", "rp-fat", "every_fat_width_keeps_a_boot_files_chain"]),
+    },
+    Mutant {
+        name: "fat guard: a FAT16 chain relinked",
+        file: "kernel/fat/src/guard.rs",
+        from: "if end { v >= 0xFFF8 } else { v == want }",
+        to: "if end { v >= 0xFFF8 } else { true }",
+        check: Check::Host(&["-p", "rp-fat", "every_fat_width_keeps_a_boot_files_chain"]),
+    },
+    Mutant {
+        name: "fat guard: a whole FAT12 entry relinked",
+        file: "kernel/fat/src/guard.rs",
+        from: "if end { v >= 0xFF8 } else { v == want }",
+        to: "if end { v >= 0xFF8 } else { true }",
+        check: Check::Host(&["-p", "rp-fat", "every_fat_width_keeps_a_boot_files_chain"]),
+    },
+    Mutant {
+        name: "exfat guard: the boot sector's layout not compared",
+        file: "kernel/fat/src/guard.rs",
+        from: ".filter(|i| !EX_VOLATILE.contains(i))",
+        to: ".filter(|_| false)",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "exfat_flags_and_timestamps_pass_names_bitmap_and_boot_region_do_not",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: a chained boot file's end moved",
+        file: "kernel/fat/src/guard.rs",
+        from: "Some(FAT_MASK) => le32(s, i as usize * 4) == 0xFFFF_FFFF,",
+        to: "Some(FAT_MASK) => true,",
+        check: Check::Host(&["-p", "rp-fat", "exfat_a_chained_boot_file_keeps_its_links"]),
+    },
+    Mutant {
+        name: "exfat guard: a boot file's bitmap bits cleared",
+        file: "kernel/fat/src/guard.rs",
+        from: "s[(bit / 8) as usize] & 1 << (bit % 8) != 0",
+        to: "true",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "exfat_flags_and_timestamps_pass_names_bitmap_and_boot_region_do_not",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: a boot file's data written over",
+        file: "kernel/fat/src/guard.rs",
+        from: ">> self.cluster_shift) + 2;
+            if files.iter().any(|f| holds(&f.extents[..f.runs], cluster)) {",
+        to: ">> self.cluster_shift) + 2;
+            if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "every_format_protects_a_scattered_boot_file_run_by_run",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: a boot file's file entry deleted",
+        file: "kernel/fat/src/guard.rs",
+        from: "e[0] == was[0] && e[1] == was[1] && (now == real || now == ex_shown(real))",
+        to: "true",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "exfat_flags_and_timestamps_pass_names_bitmap_and_boot_region_do_not",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: a name longer than one entry let through",
+        file: "kernel/fat/src/exfat.rs",
+        from: "if at.count > EX_SET {",
+        to: "if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "an_exfat_boot_file_with_a_long_name_gives_no_guard",
+        ]),
+    },
+    Mutant {
+        name: "mkfs: the old boot sector left mountable",
+        file: "kernel/fat/src/mkfs.rs",
+        from: "zero(dev, old, 1, s)?;",
+        to: "let _ = old;",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "a_cut_format_leaves_no_mountable_volume_until_the_last_write",
+        ]),
+    },
+    Mutant {
+        name: "fat: end marks read as links on a narrow FAT",
+        file: "kernel/fat/src/lib.rs",
+        from: "if v >= m - 7 {",
+        to: "if v >= m - 1 {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "end_and_bad_marks_read_alike_on_every_fat_width",
+        ]),
+    },
+    Mutant {
+        name: "fat: FAT12's last count taken as FAT16's first",
+        file: "kernel/fat/src/lib.rs",
+        from: "} else if clusters < FAT12_LIMIT {",
+        to: "} else if clusters <= FAT12_LIMIT {",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_fat_type_at_the_cluster_count_edges_is_what_mount_decides",
+        ]),
+    },
+    Mutant {
+        name: "mkfs: the up-case table's runs moved",
+        file: "kernel/fat/src/mkfs.rs",
+        from: "const UPCASE_RUNS: [(u32, u32); 4] = [(1415, 6134),",
+        to: "const UPCASE_RUNS: [(u32, u32); 4] = [(1416, 6133),",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_up_case_table_is_the_specifications_byte_for_byte",
+        ]),
+    },
+    Mutant {
+        name: "fat: a straddling FAT12 entry's low half not written",
+        file: "kernel/fat/src/lib.rs",
+        from: "self.fat_buf[SECTOR - 1] = w[0];",
+        to: "let _ = w[0];",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "fat12_entries_straddling_a_sector_keep_their_neighbours",
+        ]),
+    },
+    Mutant {
+        name: "msc: a medium change cuts off the transfer under way",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "if self.phase != Phase::Command {",
+        to: "if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "a_medium_change_mid_transfer_waits_for_the_command_to_end",
+        ]),
+    },
+    Mutant {
+        name: "msc: blocks served without the unit's view",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "lun.view(lba, &mut self.buf[at..at + n * BLOCK]);",
+        to: "let _ = at;",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "every_block_served_passes_through_the_units_view",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: the PC not shown the boot files hidden",
+        file: "kernel/fat/src/guard.rs",
+        from: "s[f.entry_offset + 11] = shown(f.name_attr[11]);",
+        to: "let _ = f;",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_pc_sees_boot_files_hidden_and_the_card_keeps_them_as_they_are",
+        ]),
+    },
+    Mutant {
+        name: "fat guard: the PC's shown attributes written to the card",
+        file: "kernel/fat/src/guard.rs",
+        from: "s[f.entry_offset + 11] = f.name_attr[11];",
+        to: "let _ = f;",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_pc_sees_boot_files_hidden_and_the_card_keeps_them_as_they_are",
+        ]),
+    },
+    Mutant {
+        name: "exfat guard: the PC's shown attributes written to the card",
+        file: "kernel/fat/src/guard.rs",
+        from: "f.set_attrs(&mut s[o..o + 32], f.real_attrs());",
+        to: "let _ = (f, o);",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "the_pc_sees_boot_files_hidden_and_the_card_keeps_them_as_they_are",
         ]),
     },
     Mutant {
@@ -2532,10 +2989,13 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "fat: a FAT12/16 volume (a fixed root directory) taken for FAT32",
         file: "kernel/fat/src/lib.rs",
-        from: "            || le16(&buf, 17) != 0 // FAT32 has no fixed root directory
-",
-        to: "",
-        check: Check::Host(&["-p", "rp-fat", "rejects_what_is_not_fat32"]),
+        from: "let fat32 = root_entries == 0 && fat16_size == 0;",
+        to: "let fat32 = true;",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "every_format_mounts_writes_and_checks_clean",
+        ]),
     },
     Mutant {
         name: "fat: a new name ending in a dot taken (Windows can't open it)",

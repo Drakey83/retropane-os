@@ -466,8 +466,25 @@ mod tests {
     #[test]
     fn only_usb_powershell_reaches_the_device() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        for entry in std::fs::read_dir(&src).unwrap() {
-            let path = entry.unwrap().path();
+        // Every source file, in subfolders too (`emu/`): a device path
+        // there must not escape the guard.
+        let mut files = Vec::new();
+        let mut dirs = vec![src];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        assert!(
+            files.iter().any(|f| f.ends_with("emu/mtp.rs")),
+            "the walk sees subfolders"
+        );
+        for path in files {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             if name == "devlock.rs" || path.extension().is_none_or(|e| e != "rs") {
                 continue;

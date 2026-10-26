@@ -11,6 +11,37 @@
 //!   right at and backs off 1.5x (timed), then each read path's speed and
 //!   every sector against the port's at Windows Mobile's timing. Windows
 //!   Mobile's timing is put back at the end and by the crash path.
+//! - **C7, CF writes at a faster timing** (reminder R28): a 64-sector file
+//!   made in `/rp-cf-write/` on the CF card (its FAT32, at Windows Mobile's
+//!   timing), then written again and again with only the data words at a
+//!   shorter strobe (`CfCard::write_data_at`: the command and address at
+//!   Windows Mobile's timing, so a too-fast step spoils only that file's
+//!   data), each read back at the socket's slowest; the shortest right one
+//!   with the margin, three more rounds at it, the speed against Windows
+//!   Mobile's; then **C9**: the same file written with one field at a
+//!   time shorter than Windows Mobile's (the strobe, the hold, the set-up,
+//!   the others kept), each down to the card's read limit in it, every
+//!   step timed and read back (C7's faster steps all wrote at ~240 KiB/s
+//!   against ~4,700: which field does it); then **C10**: the same write
+//!   with each phase timed (the command, the switch to the data timing,
+//!   the card's DRQ waits, the data words, the switch back, its finish) at
+//!   Windows Mobile's data timing and at strobes 9 and 1, twice each; then
+//!   **C11**: a 512 KiB file reserved beside it, twelve regions written
+//!   once each with the timings rotated, one region rewritten six times
+//!   (the card's rewrite cost), a fresh region after a read at the slowest
+//!   timing and one at strobe 1 after the rewrites, all read back; then
+//!   **C12**: a 1 MiB file: how long the card stays slow after six
+//!   rewrites (ten fresh writes timed, at Windows Mobile's timing and at
+//!   strobe 1), whether a pause (0-1,000 ms) before a rewrite lets it erase
+//!   in the background, and the CFA erase commands (erase ahead, then
+//!   write without erase or normally), all read back; then **C13**: the
+//!   rewrite cost by size (1, 8 and 64 sectors written six times to the
+//!   same place) and a log's pattern (16 lines, two to a sector), all read
+//!   back; the files and folder removed.
+//!   Nothing else on the card is written.
+//! - **C8, the CPLD's interrupt line** (reminder R24, reads only): the
+//!   owner pulls the CF card and puts it back while GPIO13 and CPLD `0x00`,
+//!   `0x04`, `0x06`, `0x14` are read every millisecond, each change logged.
 //! - **S1, SD reads by size** (item 1): every size class 2 blocks to 4 MiB
 //!   by DMA, each one DMA transfer and every byte checked; 1 MiB and 4 MiB
 //!   commands timed by DMA and by the FIFO.
@@ -41,8 +72,8 @@ pub const MARKER: &str = "RETROPANE-STORFAST";
 mod image {
     use core::fmt::Write;
 
-    use rp_drv_cf::timing::Timing;
-    use rp_drv_cf::{CfCard, ReadPath, SocketTiming, Tuned};
+    use rp_drv_cf::timing::{self, Timing};
+    use rp_drv_cf::{CfCard, ReadPath, SocketTiming, Tuned, WritePhase};
     use rp_drv_cpld::{Cpld, Delay, handover};
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
@@ -82,6 +113,13 @@ mod image {
     const READ_FILE: &str = "rp-storage-fast/READ.BIN";
     const SOAK_FILE: &str = "rp-storage-fast/SOAK.BIN";
     const DIR: &str = "rp-storage-fast";
+    /// C7's folder and file on the CF card: nothing outside them is written.
+    const CF_DIR: &str = "rp-cf-write";
+    const CF_FILE: &str = "rp-cf-write/WRITE.BIN";
+    /// C7's file: 64 sectors.
+    const CF_BLOCKS: u32 = 64;
+    /// The PXA GPIO the CPLD's interrupt reaches (docs/hw/interrupts.md).
+    const CPLD_IRQ_GPIO: u8 = 13;
     const MIB: usize = 1024 * 1024;
     /// On the SD card's root, this file makes the run short (the emulator
     /// check, `cargo xtask emu-storfast`: the emulated FIFO moves bytes
@@ -199,6 +237,12 @@ mod image {
             log!("no CPLD");
             return;
         };
+        // R8: the CPLD's bus as `take_cpld` set it (RetroPane's RDF 6:
+        // `MSC2` low half 0x7F6C; Windows Mobile's 0x7FFC).
+        log!(
+            "C0 MSC2 {:#010x} (the CPLD's bus, CS4 the low half)",
+            rp_hal_pxa27x::diag::msc2()
+        );
         // The CPLD doesn't read back: keep what the loader keeps on.
         cpld.set_backlight_enable(true);
         cpld.set_sd_power(true);
@@ -221,7 +265,7 @@ mod image {
             screen.say(format_args!(
                 "CF card: reading it at each timing (about a minute)"
             ));
-            compact_flash(&mut gpio, &mut cpld, pool);
+            compact_flash(screen, &mut gpio, &mut cpld, pool);
         }
         rt::check_in();
         if let Some((card, start)) = card {
@@ -304,7 +348,12 @@ mod image {
         }
     }
 
-    fn compact_flash(gpio: &mut Gpio<Mmio>, cpld: &mut BoardCpld, pool: &mut [u8]) {
+    fn compact_flash(
+        screen: &mut Screen<'_>,
+        gpio: &mut Gpio<Mmio>,
+        cpld: &mut BoardCpld,
+        pool: &mut [u8],
+    ) {
         let Some((attr, common)) = devices::take_cf() else {
             log!("C0 no CF windows");
             return;
@@ -409,12 +458,830 @@ mod image {
             },
             total / cycles
         );
-        own_timing(&mut cf, buf, reference);
+        let tuned = own_timing(&mut cf, buf, reference);
         put_back_cf_timing();
         log!(
             "C6 Windows Mobile's timing put back: MCMEM1 {:#010x}",
             devices::cf_mem_timing().unwrap_or(0)
         );
+        if let Some((now, read_limit)) = tuned {
+            screen.say(format_args!(
+                "CF card: writing its test file at faster timings"
+            ));
+            write_test(&mut cf, now, read_limit, buf);
+            put_back_cf_timing();
+        }
+        cpld_irq(screen, gpio, cpld);
+    }
+
+    fn set_cf_timing(value: u32) {
+        let _ = devices::set_cf_mem_timing(value);
+    }
+
+    /// Where a card's first partition starts (0: no partition table).
+    fn first_partition<B: BlockDevice>(dev: &mut B) -> Option<u32> {
+        let mut block = [0u8; BLOCK];
+        dev.read_blocks(0, &mut block).ok()?;
+        Some(
+            mbr_partitions(&block)
+                .and_then(|p| p[0])
+                .map_or(0, |p| p.start),
+        )
+    }
+
+    /// C7: CF writes with only the data words at a shorter strobe (R28).
+    fn write_test(cf: &mut Cf, tuned: u32, read_limit: u32, pool: &mut [u8]) {
+        let wm = devices::CF_MEM_TIMING_WM;
+        let high = wm & !0xF_FFFF;
+        let slowest = high | Timing::SLOWEST.mcmem();
+        let (data, rest) = pool.split_at_mut(CF_BLOCKS as usize * BLOCK);
+        let (work, back) = rest.split_at_mut(64 * 1024);
+        let back = &mut back[..data.len()];
+        // The file, at Windows Mobile's timing.
+        set_cf_timing(wm);
+        let Some(start) = first_partition(cf) else {
+            log!("C7 the CF card's block 0 unreadable: skipped");
+            return;
+        };
+        fill(data, 0x5EED, 0);
+        let first = {
+            let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+                log!("C7 the CF card isn't FAT32: skipped (nothing written)");
+                return;
+            };
+            if let Err(e) = vol.put(CF_FILE, data, work) {
+                log!("C7 put {CF_FILE}: {}", e.name());
+                return;
+            }
+            match vol.find(CF_FILE) {
+                Ok(f) if f.size() == CF_BLOCKS * BLOCK as u32 => f.first_cluster(),
+                _ => {
+                    log!("C7 {CF_FILE} not as written");
+                    return;
+                }
+            }
+        };
+        let Some(lba) = contiguous(cf, start, first, CF_BLOCKS, work) else {
+            remove_cf_file(cf, start, work);
+            return;
+        };
+        log!("C7 {CF_FILE}: LBA {lba}, {CF_BLOCKS} sectors, contiguous");
+        let t = Timing::from_mcmem(tuned);
+        let len = data.len();
+        // One round: write at `data_t` (command at Windows Mobile's), read
+        // back at the slowest; (time, failed, sectors differ).
+        let mut round = |cf: &mut Cf, data_t: Timing, seed: u32| -> (u32, bool, u32) {
+            fill(data, seed, 0);
+            cf.write_data_at(set_cf_timing, wm, wm, high | data_t.mcmem());
+            let t0 = rt::ticks();
+            let failed = cf.write_blocks(lba, data).is_err();
+            let took = rt::ticks().wrapping_sub(t0);
+            set_cf_timing(slowest);
+            back.fill(0);
+            let read = cf.read_blocks(lba, back).is_ok();
+            set_cf_timing(wm);
+            rt::check_in();
+            let bad = if read {
+                differs(back, seed, 0)
+            } else {
+                CF_BLOCKS
+            };
+            (took, failed, bad)
+        };
+        let wm_t = Timing::WINDOWS_MOBILE;
+        let (t_wm, f_wm, b_wm) = round(cf, wm_t, 1);
+        log!(
+            "C7 at Windows Mobile's timing: {} KiB/s, failed {f_wm}, {b_wm} sectors differ",
+            kib_s(len, t_wm)
+        );
+        // The strobe from Windows Mobile's down, set-up and hold as the
+        // card's tuned read timing.
+        let mut limit = None;
+        // Down to the card's read limit's strobe: the DRQ polls in the data
+        // phase are reads at the data timing.
+        let floor = Timing::from_mcmem(read_limit).asst;
+        for asst in (floor..=wm_t.asst).rev() {
+            let step = Timing { asst, ..t };
+            let (took, failed, bad) = round(cf, step, 100 + asst);
+            log!(
+                "C7 data strobe {asst} ({} cycles): {} KiB/s, failed {failed}, {bad} sectors differ",
+                step.cycle_cycles(),
+                kib_s(len, took)
+            );
+            if failed || bad != 0 || cf.is_dead() {
+                break;
+            }
+            limit = Some(step);
+        }
+        match limit {
+            Some(l) => {
+                let (m, clamped) = timing::with_margin(l);
+                let mut bad_all = 0;
+                let mut took_all = 0u32;
+                for r in 0..3 {
+                    let (took, failed, bad) = round(cf, m, 200 + r);
+                    bad_all += bad + u32::from(failed) * CF_BLOCKS;
+                    took_all = took_all.wrapping_add(took);
+                }
+                log!(
+                    "C7 the shortest right data strobe {} ({} cycles); with the margin {:#010x} ({} cycles, clamped {clamped}): 3 rounds, {bad_all} sectors differ, {} KiB/s against {} at Windows Mobile's",
+                    l.asst,
+                    l.cycle_cycles(),
+                    high | m.mcmem(),
+                    m.cycle_cycles(),
+                    kib_s(3 * len, took_all),
+                    kib_s(len, t_wm)
+                );
+            }
+            None => log!("C7 no strobe shorter than Windows Mobile's wrote right"),
+        }
+        // C9 (R28 after C7: every faster step wrote at ~240 KiB/s against
+        // ~4,700 at Windows Mobile's, the strobe step at Windows Mobile's
+        // value too, so the tuned set-up and hold are the suspects): one
+        // field at a time from Windows Mobile's timing, the others kept,
+        // down to the card's read limit in that field; each step's speed
+        // and sectors, a field stopped at its first wrong write. Results
+        // only: the owner chooses the loader's write timing from them.
+        let floor = Timing::from_mcmem(read_limit);
+        for field in timing::FIELDS {
+            let (name, value, low): (&str, fn(Timing) -> u32, u32) = match field {
+                timing::Field::Strobe => ("strobe", |t| t.asst, floor.asst),
+                timing::Field::Hold => ("hold", |t| t.hold, floor.hold),
+                timing::Field::SetUp => ("set-up", |t| t.set, floor.set),
+            };
+            let mut step = wm_t;
+            let mut best = None;
+            while let Some(next) = timing::shorter(step, field).filter(|s| value(*s) >= low) {
+                step = next;
+                let (took, failed, bad) = round(cf, step, 300 + value(step));
+                log!(
+                    "C9 {name} {} ({} cycles), the rest Windows Mobile's: {} KiB/s, failed {failed}, {bad} sectors differ",
+                    value(step),
+                    step.cycle_cycles(),
+                    kib_s(len, took)
+                );
+                if failed || bad != 0 || cf.is_dead() {
+                    break;
+                }
+                best = Some((step, took));
+            }
+            match best {
+                Some((b, took)) => log!(
+                    "C9 {name}: the shortest right {} ({} cycles): {} KiB/s against {} at Windows Mobile's",
+                    value(b),
+                    b.cycle_cycles(),
+                    kib_s(len, took),
+                    kib_s(len, t_wm)
+                ),
+                None => log!("C9 {name}: no step shorter than Windows Mobile's wrote right"),
+            }
+            if cf.is_dead() {
+                break;
+            }
+        }
+        // C10 (R28 after C9: ~234 KiB/s whenever the data timing differs
+        // from the command's, whatever it is): the same write with each
+        // phase timed, at Windows Mobile's data timing (the register still
+        // written, to its own value) and at strobes 9 and 1, twice each.
+        // Where the ~2 ms a sector goes: the switches, the card's DRQ
+        // waits, the data words, or its programming at the end.
+        if !cf.is_dead() {
+            for (label, data_t) in [
+                ("Windows Mobile's", wm_t),
+                ("strobe 9", Timing { asst: 9, ..wm_t }),
+                ("strobe 1", Timing { asst: 1, ..wm_t }),
+            ] {
+                for r in 0..2u32 {
+                    phases(cf, label, data_t, 400 + r, wm, slowest, lba, data, back);
+                }
+            }
+        }
+        if !cf.is_dead() {
+            fresh_test(cf, start, wm, slowest, data, back, work);
+        }
+        if !cf.is_dead() {
+            erase_test(cf, start, wm, slowest, data, back, work);
+        }
+        if !cf.is_dead() {
+            size_test(cf, start, wm, slowest, data, back, work);
+        }
+        cf.write_data_at(set_cf_timing, wm, wm, wm);
+        remove_cf_file(cf, start, work);
+    }
+
+    /// One write of `data` (filled with `seed`'s pattern) to `lba`, its data
+    /// phase at `t` (the command at `wm`), by WRITE SECTORS or the CFA
+    /// write without erase: (ticks, the longest DRQ wait, written).
+    fn timed_write(
+        cf: &mut Cf,
+        lba: u32,
+        data: &mut [u8],
+        seed: u32,
+        wm: u32,
+        t: Timing,
+        without_erase: bool,
+    ) -> (u32, u32, bool) {
+        fill(data, seed, 0);
+        cf.write_data_at(set_cf_timing, wm, wm, (wm & !0xF_FFFF) | t.mcmem());
+        let mut drq = 0u32;
+        let t0 = rt::ticks();
+        let mut last = t0;
+        let mut mark = |p| {
+            let now = rt::ticks();
+            if p == WritePhase::Drq {
+                drq = drq.max(now.wrapping_sub(last));
+            }
+            last = now;
+        };
+        let ok = if without_erase {
+            cf.write_without_erase_marked(lba, data, &mut mark)
+        } else {
+            cf.write_blocks_marked(lba, data, &mut mark)
+        }
+        .is_ok();
+        let took = rt::ticks().wrapping_sub(t0);
+        cf.write_data_at(set_cf_timing, wm, wm, wm);
+        rt::check_in();
+        (took, drq, ok)
+    }
+
+    /// C13's file: 256 sectors.
+    const SIZES_FILE: &str = "rp-cf-write/SIZES.BIN";
+
+    /// C13 (R28 after C12: a rewrite costs ~135 ms for 64 sectors, and
+    /// nothing on the card's side avoids it): what a rewrite costs by its
+    /// size, as the run log and the FAT pay it: 1, 8 and 64 sectors each
+    /// written six times in a row to the same place; then a log's pattern,
+    /// 16 lines two to a sector (each sector written twice, then the next);
+    /// each write timed, the last ones read back; the file removed.
+    fn size_test(
+        cf: &mut Cf,
+        start: u32,
+        wm: u32,
+        slowest: u32,
+        data: &mut [u8],
+        back: &mut [u8],
+        work: &mut [u8],
+    ) {
+        let wm_t = Timing::WINDOWS_MOBILE;
+        set_cf_timing(wm);
+        let base = {
+            let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+                log!("C13 mount failed: skipped");
+                return;
+            };
+            match vol.reserve(SIZES_FILE, 256 * BLOCK, work) {
+                Ok(r) => r.lba,
+                Err(e) => {
+                    log!("C13 reserve {SIZES_FILE}: {}: skipped", e.name());
+                    return;
+                }
+            }
+        };
+        let us = |t: u32| u64::from(t) * 1_000_000 / u64::from(rt::TICK_HZ);
+        let mut bad = 0;
+        // The last write at `lba` (`n` sectors, `seed`) read back.
+        let mut check = |cf: &mut Cf, lba: u32, n: usize, seed: u32| {
+            let back = &mut back[..n * BLOCK];
+            set_cf_timing(slowest);
+            back.fill(0);
+            bad += if cf.read_blocks(lba, back).is_ok() {
+                differs(back, seed, 0)
+            } else {
+                n as u32
+            };
+            set_cf_timing(wm);
+        };
+        for (k, n) in [1usize, 8, 64].into_iter().enumerate() {
+            let lba = base + k as u32 * 64;
+            let mut seed = 0;
+            for w in 1..=6u32 {
+                seed = 900 + 10 * k as u32 + w;
+                let (took, drq, ok) =
+                    timed_write(cf, lba, &mut data[..n * BLOCK], seed, wm, wm_t, false);
+                log!(
+                    "C13 {n} sectors, write {w} to the same place: {} us, the longest DRQ wait {} us, ok {ok}",
+                    us(took),
+                    us(drq)
+                );
+            }
+            check(cf, lba, n, seed);
+        }
+        // A log's pattern: a line written into its sector, the next line
+        // into the same sector again, then the next sector.
+        let mut total = 0u32;
+        let mut slowest_line = 0u32;
+        let mut slow = 0;
+        for line in 0..16u32 {
+            let lba = base + 192 + line / 2;
+            let seed = 950 + line;
+            let (took, _, _) = timed_write(cf, lba, &mut data[..BLOCK], seed, wm, wm_t, false);
+            total = total.wrapping_add(took);
+            slowest_line = slowest_line.max(took);
+            slow += u32::from(us(took) > 20_000);
+            if line % 2 == 1 {
+                check(cf, lba, 1, seed);
+            }
+        }
+        log!(
+            "C13 a log's pattern, 16 lines two to a sector: {} us in all, the slowest line {} us, {slow} lines over 20 ms",
+            us(total),
+            us(slowest_line)
+        );
+        log!("C13 read back at the slowest timing: {bad} sectors differ");
+        let removed = Volume::mount(&mut *cf, start)
+            .ok()
+            .is_some_and(|mut vol| vol.remove(SIZES_FILE).is_ok());
+        log!("C13 {SIZES_FILE} removed: {removed}");
+    }
+
+    /// C12's file: [`ERASE_REGIONS`] regions of [`CF_BLOCKS`].
+    const ERASE_FILE: &str = "rp-cf-write/ERASE.BIN";
+    const ERASE_REGIONS: u32 = 32;
+
+    /// C12 (R28 after C11: rewrites cost ~135 ms each from the second on,
+    /// and a fresh write right after the rewrites was slow too): (1) how
+    /// long the card stays slow after six rewrites, ten fresh regions in a
+    /// row timed, at Windows Mobile's timing and again at strobe 1; (2)
+    /// whether idle time lets it erase in the background: a region written,
+    /// rewritten, then after a pause (0 to 1,000 ms) rewritten again,
+    /// timed; (3) the CFA feature set the card claims, and its erase
+    /// commands tried: sectors erased ahead, then written without erase,
+    /// and erased then written normally, against a plain rewrite. Every
+    /// region read back at the slowest timing; the file removed.
+    fn erase_test(
+        cf: &mut Cf,
+        start: u32,
+        wm: u32,
+        slowest: u32,
+        data: &mut [u8],
+        back: &mut [u8],
+        work: &mut [u8],
+    ) {
+        let wm_t = Timing::WINDOWS_MOBILE;
+        let fast = Timing { asst: 1, ..wm_t };
+        set_cf_timing(wm);
+        let base = {
+            let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+                log!("C12 mount failed: skipped");
+                return;
+            };
+            match vol.reserve(
+                ERASE_FILE,
+                (ERASE_REGIONS * CF_BLOCKS) as usize * BLOCK,
+                work,
+            ) {
+                Ok(r) => r.lba,
+                Err(e) => {
+                    log!("C12 reserve {ERASE_FILE}: {}: skipped", e.name());
+                    return;
+                }
+            }
+        };
+        log!(
+            "C12 {ERASE_FILE}: LBA {base}, {} sectors, contiguous",
+            ERASE_REGIONS * CF_BLOCKS
+        );
+        let len = CF_BLOCKS as usize * BLOCK;
+        let us = |t: u32| u64::from(t) * 1_000_000 / u64::from(rt::TICK_HZ);
+        let mut seeds = [0u32; ERASE_REGIONS as usize];
+        let mut seed = 800u32;
+        // Writes region `r`, logs it; its speed.
+        let mut write = |cf: &mut Cf,
+                         seeds: &mut [u32],
+                         r: u32,
+                         t: Timing,
+                         without_erase: bool,
+                         what: core::fmt::Arguments<'_>| {
+            seed += 1;
+            let (took, drq, ok) =
+                timed_write(cf, base + r * CF_BLOCKS, data, seed, wm, t, without_erase);
+            if ok {
+                seeds[r as usize] = seed;
+            }
+            log!(
+                "C12 {what}: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+                kib_s(len, took),
+                us(drq)
+            );
+            kib_s(len, took)
+        };
+        // (1) Recovery after rewrites, at each timing.
+        for (pass, (label, t)) in [("Windows Mobile's", wm_t), ("strobe 1", fast)]
+            .into_iter()
+            .enumerate()
+        {
+            let r0 = pass as u32 * 11;
+            for n in 1..=6 {
+                write(
+                    cf,
+                    &mut seeds,
+                    r0,
+                    wm_t,
+                    false,
+                    format_args!("recovery at {label}: rewrite {n} of region {r0}"),
+                );
+            }
+            let mut slow = 0;
+            for k in 1..=10 {
+                let r = r0 + k;
+                let kib = write(
+                    cf,
+                    &mut seeds,
+                    r,
+                    t,
+                    false,
+                    format_args!("recovery at {label}: fresh {k} (region {r})"),
+                );
+                slow += u32::from(kib < 1000);
+            }
+            log!(
+                "C12 recovery at {label}: {slow} of 10 fresh writes after six rewrites under 1,000 KiB/s"
+            );
+        }
+        // (2) Idle time before a second rewrite.
+        for (k, ms) in [0u32, 10, 50, 100, 200, 500, 1000].into_iter().enumerate() {
+            let r = 22 + k as u32;
+            write(
+                cf,
+                &mut seeds,
+                r,
+                wm_t,
+                false,
+                format_args!("idle {ms} ms: region {r} written"),
+            );
+            write(
+                cf,
+                &mut seeds,
+                r,
+                wm_t,
+                false,
+                format_args!("idle {ms} ms: region {r} rewritten"),
+            );
+            rt::delay_us(ms * 1000);
+            write(
+                cf,
+                &mut seeds,
+                r,
+                wm_t,
+                false,
+                format_args!("idle {ms} ms: region {r} rewritten again after the pause"),
+            );
+        }
+        // (3) The CFA erase commands.
+        let (supported, enabled) = cf.cfa();
+        log!(
+            "C12 CFA feature set: supported {supported}, enabled {enabled} (IDENTIFY words 83, 86)"
+        );
+        for (k, without) in [(29u32, true), (30, false)] {
+            write(
+                cf,
+                &mut seeds,
+                k,
+                wm_t,
+                false,
+                format_args!("erase: region {k} written"),
+            );
+            write(
+                cf,
+                &mut seeds,
+                k,
+                wm_t,
+                false,
+                format_args!("erase: region {k} rewritten"),
+            );
+            write(
+                cf,
+                &mut seeds,
+                k,
+                wm_t,
+                false,
+                format_args!("erase: region {k} rewritten again (the slow case)"),
+            );
+            set_cf_timing(wm);
+            let t0 = rt::ticks();
+            let erased = cf.erase_sectors(base + k * CF_BLOCKS, CF_BLOCKS);
+            let took = rt::ticks().wrapping_sub(t0);
+            match erased {
+                Ok(()) => log!("C12 erase: region {k} erased ahead in {} us", us(took)),
+                Err(_) => log!(
+                    "C12 erase: region {k}: ERASE SECTORS refused (error {:#04x}) after {} us",
+                    cf.last_error(),
+                    us(took)
+                ),
+            }
+            seeds[k as usize] = 0;
+            let what = if without {
+                "written without erase"
+            } else {
+                "written normally"
+            };
+            write(
+                cf,
+                &mut seeds,
+                k,
+                wm_t,
+                without,
+                format_args!("erase: region {k} {what} after the erase"),
+            );
+            if without && erased.is_ok() {
+                write(
+                    cf,
+                    &mut seeds,
+                    k,
+                    fast,
+                    false,
+                    format_args!("erase: region {k} rewritten at strobe 1 after"),
+                );
+            }
+            if cf.is_dead() {
+                break;
+            }
+        }
+        // Every region as last written, read at the slowest timing.
+        let mut bad = 0;
+        let mut checked = 0;
+        set_cf_timing(slowest);
+        for (r, &seed) in seeds.iter().enumerate().filter(|(_, s)| **s != 0) {
+            let back = &mut back[..len];
+            back.fill(0);
+            bad += if cf.read_blocks(base + r as u32 * CF_BLOCKS, back).is_ok() {
+                differs(back, seed, 0)
+            } else {
+                CF_BLOCKS
+            };
+            checked += CF_BLOCKS;
+        }
+        set_cf_timing(wm);
+        log!("C12 read back at the slowest timing: {bad} of {checked} sectors differ");
+        let removed = Volume::mount(&mut *cf, start)
+            .ok()
+            .is_some_and(|mut vol| vol.remove(ERASE_FILE).is_ok());
+        log!("C12 {ERASE_FILE} removed: {removed}");
+    }
+
+    /// C11's file, beside C7's: [`FRESH_REGIONS`] regions of [`CF_BLOCKS`].
+    const FRESH_FILE: &str = "rp-cf-write/FRESH.BIN";
+    const FRESH_REGIONS: u32 = 16;
+
+    /// C11 (R28 after C10: every write waited ~132 ms for its first DRQ,
+    /// at Windows Mobile's timing too, once the same sectors had been
+    /// written before): which explains it, the card rewriting the same
+    /// sectors again and again (A), or something kept after the first
+    /// read-back at the slowest timing (B)? A file reserved (written once
+    /// as zeros, as C7's first, fast, round wrote its sectors a second
+    /// time), then: twelve regions written once each, the timings rotated
+    /// (Windows Mobile's, strobe 9, strobe 1) with no read-back between;
+    /// one region rewritten six times at Windows Mobile's (the rewrite
+    /// cost); a read at the slowest timing, then a fresh region at Windows
+    /// Mobile's (B); a fresh region at strobe 1 after all that; every
+    /// region read back at the slowest timing; the file removed.
+    fn fresh_test(
+        cf: &mut Cf,
+        start: u32,
+        wm: u32,
+        slowest: u32,
+        data: &mut [u8],
+        back: &mut [u8],
+        work: &mut [u8],
+    ) {
+        let wm_t = Timing::WINDOWS_MOBILE;
+        let timings = [
+            ("Windows Mobile's", wm_t),
+            ("strobe 9", Timing { asst: 9, ..wm_t }),
+            ("strobe 1", Timing { asst: 1, ..wm_t }),
+        ];
+        set_cf_timing(wm);
+        let base = {
+            let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+                log!("C11 mount failed: skipped");
+                return;
+            };
+            match vol.reserve(
+                FRESH_FILE,
+                (FRESH_REGIONS * CF_BLOCKS) as usize * BLOCK,
+                work,
+            ) {
+                Ok(r) => r.lba,
+                Err(e) => {
+                    log!("C11 reserve {FRESH_FILE}: {}: skipped", e.name());
+                    return;
+                }
+            }
+        };
+        log!(
+            "C11 {FRESH_FILE}: LBA {base}, {} sectors, contiguous, written once (zeros)",
+            FRESH_REGIONS * CF_BLOCKS
+        );
+        let us = |t: u32| u64::from(t) * 1_000_000 / u64::from(rt::TICK_HZ);
+        // One write of region `r` with seed `seed` at `t`: (ticks, the
+        // longest DRQ wait, written).
+        let mut write = |cf: &mut Cf, r: u32, t: Timing, seed: u32| {
+            timed_write(cf, base + r * CF_BLOCKS, data, seed, wm, t, false)
+        };
+        let len = CF_BLOCKS as usize * BLOCK;
+        // Each region's seed, for the read-back (0: not written by C11).
+        let mut seeds = [0u32; FRESH_REGIONS as usize];
+        let mut totals = [0u32; 3];
+        for pass in 0..4u32 {
+            for k in 0..3u32 {
+                let which = ((k + pass) % 3) as usize;
+                let (label, t) = timings[which];
+                let r = pass * 3 + k;
+                let seed = 500 + r;
+                let (took, drq, ok) = write(cf, r, t, seed);
+                seeds[r as usize] = seed;
+                totals[which] = totals[which].wrapping_add(took);
+                log!(
+                    "C11 fresh region {r} at {label}: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+                    kib_s(len, took),
+                    us(drq)
+                );
+            }
+        }
+        for (k, (label, _)) in timings.iter().enumerate() {
+            log!(
+                "C11 fresh at {label}: {} KiB/s over 4 regions",
+                kib_s(4 * len, totals[k])
+            );
+        }
+        for n in 1..=6u32 {
+            let seed = 600 + n;
+            let (took, drq, ok) = write(cf, 12, wm_t, seed);
+            seeds[12] = seed;
+            log!(
+                "C11 rewrite {n} of region 12 at Windows Mobile's: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+                kib_s(len, took),
+                us(drq)
+            );
+        }
+        set_cf_timing(slowest);
+        let _ = cf.read_blocks(base, &mut back[..len]);
+        set_cf_timing(wm);
+        let (took, drq, ok) = write(cf, 13, wm_t, 700);
+        seeds[13] = 700;
+        log!(
+            "C11 after a read at the slowest timing, fresh region 13 at Windows Mobile's: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+            kib_s(len, took),
+            us(drq)
+        );
+        let (took, drq, ok) = write(cf, 14, timings[2].1, 701);
+        seeds[14] = 701;
+        log!(
+            "C11 fresh region 14 at strobe 1, after the rewrites: {} KiB/s, the longest DRQ wait {} us, ok {ok}",
+            kib_s(len, took),
+            us(drq)
+        );
+        // Every region as written, read at the slowest timing.
+        let mut bad = 0;
+        let mut checked = 0;
+        set_cf_timing(slowest);
+        for (r, &seed) in seeds.iter().enumerate().filter(|(_, s)| **s != 0) {
+            let back = &mut back[..len];
+            back.fill(0);
+            bad += if cf.read_blocks(base + r as u32 * CF_BLOCKS, back).is_ok() {
+                differs(back, seed, 0)
+            } else {
+                CF_BLOCKS
+            };
+            checked += CF_BLOCKS;
+        }
+        set_cf_timing(wm);
+        log!("C11 read back at the slowest timing: {bad} of {checked} sectors differ");
+        let removed = Volume::mount(&mut *cf, start)
+            .ok()
+            .is_some_and(|mut vol| vol.remove(FRESH_FILE).is_ok());
+        log!("C11 {FRESH_FILE} removed: {removed}");
+    }
+
+    /// One C10 write: `data` to `lba` with the data phase at `data_t` (the
+    /// command at `wm`), each phase timed, read back at `slowest`.
+    #[allow(clippy::too_many_arguments)]
+    fn phases(
+        cf: &mut Cf,
+        label: &str,
+        data_t: Timing,
+        seed: u32,
+        wm: u32,
+        slowest: u32,
+        lba: u32,
+        data: &mut [u8],
+        back: &mut [u8],
+    ) {
+        let high = wm & !0xF_FFFF;
+        fill(data, seed, 0);
+        cf.write_data_at(set_cf_timing, wm, wm, high | data_t.mcmem());
+        // Ticks in: the command, the switch to the data timing, the DRQ
+        // waits, the data words, the switch back, the finish; the longest
+        // DRQ wait.
+        let mut sums = [0u32; 7];
+        let t0 = rt::ticks();
+        let mut last = t0;
+        let ok = cf
+            .write_blocks_marked(lba, data, &mut |p| {
+                let now = rt::ticks();
+                let d = now.wrapping_sub(last);
+                last = now;
+                let k = match p {
+                    WritePhase::Command => 0,
+                    WritePhase::DataTiming => 1,
+                    WritePhase::Drq => {
+                        sums[6] = sums[6].max(d);
+                        2
+                    }
+                    WritePhase::Data => 3,
+                    WritePhase::CommandTiming => 4,
+                    WritePhase::Done => 5,
+                };
+                sums[k] = sums[k].wrapping_add(d);
+            })
+            .is_ok();
+        let took = rt::ticks().wrapping_sub(t0);
+        set_cf_timing(slowest);
+        back.fill(0);
+        let read = cf.read_blocks(lba, back).is_ok();
+        set_cf_timing(wm);
+        rt::check_in();
+        let bad = if read {
+            differs(back, seed, 0)
+        } else {
+            CF_BLOCKS
+        };
+        let us = |t: u32| u64::from(t) * 1_000_000 / u64::from(rt::TICK_HZ);
+        log!(
+            "C10 data at {label}: {} KiB/s, ok {ok}, {bad} sectors differ; command {} us, to the data timing {} us, DRQ waits {} us (longest {}), data words {} us, back to the command timing {} us, finish {} us",
+            kib_s(data.len(), took),
+            us(sums[0]),
+            us(sums[1]),
+            us(sums[2]),
+            us(sums[6]),
+            us(sums[3]),
+            us(sums[4]),
+            us(sums[5])
+        );
+    }
+
+    /// C7's file and folder off the CF card, at Windows Mobile's timing.
+    fn remove_cf_file(cf: &mut Cf, start: u32, _work: &mut [u8]) {
+        set_cf_timing(devices::CF_MEM_TIMING_WM);
+        let Ok(mut vol) = Volume::mount(&mut *cf, start) else {
+            log!("C7 mount failed: {CF_FILE} is left on the CF card");
+            return;
+        };
+        for path in [CF_FILE, CF_DIR] {
+            match vol.remove(path) {
+                Ok(()) | Err(rp_fat::Error::NotFound) => {}
+                Err(e) => log!("C7 remove {path}: {}", e.name()),
+            }
+        }
+        log!("C7 {CF_DIR} removed from the CF card");
+    }
+
+    /// C8: the CPLD's interrupt line and status registers while the owner
+    /// pulls the CF card and puts it back (R24, reads only).
+    fn cpld_irq(screen: &mut Screen<'_>, gpio: &mut Gpio<Mmio>, cpld: &mut BoardCpld) {
+        const REGS: [usize; 4] = [0x00, 0x04, 0x06, 0x14];
+        gpio.make_input(CPLD_IRQ_GPIO);
+        let read = |gpio: &mut Gpio<Mmio>, cpld: &mut BoardCpld| {
+            (gpio.read(CPLD_IRQ_GPIO), REGS.map(|r| cpld.read(r)))
+        };
+        let secs = prompt_secs().min(40);
+        screen.say(format_args!(
+            "\nPULL THE CF CARD OUT, wait 2 seconds, PUT IT BACK ({secs} s)."
+        ));
+        let mut last = read(gpio, cpld);
+        log!(
+            "C8 at the start: GPIO13 {} 00={:04x} 04={:04x} 06={:04x} 14={:04x}",
+            u8::from(last.0),
+            last.1[0],
+            last.1[1],
+            last.1[2],
+            last.1[3]
+        );
+        let t0 = rt::ticks();
+        let mut changes = 0;
+        while rt::ticks().wrapping_sub(t0) < secs * rt::TICK_HZ {
+            rt::delay_us(1_000);
+            rt::check_in();
+            let now = read(gpio, cpld);
+            if now != last {
+                changes += 1;
+                if changes <= 64 {
+                    log!(
+                        "C8 +{} ms: GPIO13 {} 00={:04x} 04={:04x} 06={:04x} 14={:04x}",
+                        ms(rt::ticks().wrapping_sub(t0)),
+                        u8::from(now.0),
+                        now.1[0],
+                        now.1[1],
+                        now.1[2],
+                        now.1[3]
+                    );
+                }
+                last = now;
+            }
+        }
+        log!("C8 done: {changes} changes in {secs} s");
+        screen.say(format_args!("Done with the CF card."));
     }
 
     /// The image's put-back step: the socket at Windows Mobile's timing.
@@ -466,7 +1333,7 @@ mod image {
     }
 
     /// C4: the card's own timing, measured by `tune` (reads only).
-    fn own_timing(cf: &mut Cf, buf: &mut [u8], reference: &[u8]) {
+    fn own_timing(cf: &mut Cf, buf: &mut [u8], reference: &[u8]) -> Option<(u32, u32)> {
         let mut socket = Socket;
         let was = socket.read();
         let clk_ps = socket.clk_ps();
@@ -486,6 +1353,7 @@ mod image {
         let t0 = rt::ticks();
         let tuned = cf.tune(&mut socket);
         let tune_ms = ms(rt::ticks().wrapping_sub(t0));
+        let read_limit;
         let now = match tuned {
             Tuned::Applied {
                 was,
@@ -493,6 +1361,7 @@ mod image {
                 limit,
                 clamped,
             } => {
+                read_limit = limit;
                 log!(
                     "C4 tune (measured, {tune_ms} ms): the card's limit {limit:#010x} ({} cycles, {} ns), with the margin {now:#010x} (clamped {clamped}); was {was:#010x}",
                     Timing::from_mcmem(limit).cycle_cycles(),
@@ -508,11 +1377,11 @@ mod image {
                 log!(
                     "C4 tune (measured, {tune_ms} ms): Refused, {tried:#010x} read differently; {was:#010x} kept, card reads as before {card_ok}"
                 );
-                return;
+                return None;
             }
             Tuned::Kept(why) => {
                 log!("C4 tune (measured, {tune_ms} ms): Kept ({why})");
-                return;
+                return None;
             }
         };
         log!("C4 now {} cycles", Timing::from_mcmem(now).cycle_cycles());
@@ -531,6 +1400,7 @@ mod image {
             }
         }
         let _ = cf.set_read_path(proven);
+        Some((now, read_limit))
     }
 
     // ---- SD -----------------------------------------------------------
@@ -645,15 +1515,15 @@ mod image {
     }
 
     /// The LBA of the file's first block if its clusters are one run.
-    fn contiguous(
-        card: &mut Card,
+    fn contiguous<B: BlockDevice>(
+        card: &mut B,
         start: u32,
         first: u32,
         blocks: u32,
         work: &mut [u8],
     ) -> Option<u32> {
         let bpb = &mut work[..BLOCK];
-        card.read_many(start, bpb).ok()?;
+        card.read_blocks(start, bpb).ok()?;
         let spc = u32::from(bpb[13]);
         let reserved = u32::from(u16::from_le_bytes([bpb[14], bpb[15]]));
         let fats = u32::from(bpb[16]);
@@ -672,7 +1542,7 @@ mod image {
             let c = first + k;
             let s = fat_start + c / 128;
             if s != sector {
-                card.read_many(s, fat).ok()?;
+                card.read_blocks(s, fat).ok()?;
                 sector = s;
             }
             let i = (c % 128) as usize * 4;

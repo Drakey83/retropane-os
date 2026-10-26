@@ -332,3 +332,33 @@ now start the buffer at the front (usb-msc `read_step`; test
 `a_unit_without_overlap_sends_what_it_read_whatever_the_front` and a mutant).
 **Device check passed:** after a restart, J: showed "X51V CF", FAT32, 7.73 GB
 at first connect, with no off/on. `cf log` also lists the first six reads.
+
+## Card layouts and formatting on the device (2026-10-25)
+
+Read by `card layout` (rp_fat::survey, read-only), 2026-10-25, the owner's X51v:
+
+| Card | Partition | File system, formatter | Clusters | Data area starts | Aligned to |
+|---|---|---|---|---|---|
+| Owner's main SD (32 GB SDHC) | 0x0C at 8192 | FAT32, "MSWIN4.1", label X51V | 32 KiB | sector 24,576 | 4 MiB |
+| Spare SD "DELLAXIMX51" (4 GB SDHC), as found | 0x0C at 8192 | FAT32, "MSDOS5.0" | 4 KiB | sector 24,576 | 4 MiB |
+| Owner's 8 GB CF (boot folder `RetroPane/`) | 0x0B at **63** | FAT32, "MSDOS5.0" | 4 KiB | sector **32,831** | **512 B** (odd sector) |
+| Old SanDisk SDCFB-1024 (1 GB CF), as found | 0x06 at **63** | FAT16, "MSDOS5.0" | 16 KiB | sector **586** | **1 KiB** |
+
+Sector 63 is the 1990s cylinder-head-sector habit; with it, every cluster
+of the two CF cards straddles the card's flash pages. RetroPane's
+formatter (ADR-0036) on the same cards: the SanDisk FAT16 at sector 4096,
+data at 8192 (4 MiB); the spare SD exFAT data at 16,384 (8 MiB), FAT32 at
+24,576 (4 MiB).
+
+**Writes, 768 KB through the loader (`put`), the SanDisk 1 GB, one run each
+(a direction, not a measured gain):** factory layout (1 KiB aligned): a new
+file 161 ms, a replacement 175 ms; RetroPane's (4 MiB aligned, 16 KiB
+clusters): 154 ms and 158 ms (4% and 10% faster). Reads unchanged (346 ms).
+The format itself took 541 ms. Windows wrote a photo to the new FAT16
+volume, RetroPane read it back, `chkdsk` found no problems. Open: the same
+comparison on the 8 GB card (its 137 ms rewrites, C11-C13, may be the
+straddling clusters), repeated runs for a measured figure.
+
+The SanDisk card held `WM50_K_A12_X50v_WM65_EN.nb0` (a Windows Mobile 6.5
+ROM image for the X50v), copied to `local/cf-backup/` before the format
+(reminder R48: its `.crc` doesn't match a standard CRC-32).

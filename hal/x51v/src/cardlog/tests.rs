@@ -630,3 +630,63 @@ fn a_card_that_never_finishes_programming_is_given_up_on() {
     assert_eq!(s.failed, 1);
     assert_eq!(s.synced, 0, "its sector goes again on the CF card");
 }
+
+#[test]
+fn slot_paths_are_fixed_names() {
+    let mut out = [0u8; 32];
+    let n = slot_path(0, &mut out);
+    assert_eq!(&out[..n], b"rplog/log-00.txt");
+    let n = slot_path(31, &mut out);
+    assert_eq!(&out[..n], b"rplog/log-31.txt");
+}
+
+/// An index line round-trips; an empty, damaged or misplaced line is
+/// an empty slot; a full index gives its oldest run's slot next, an
+/// image's highest number and the newest order.
+#[test]
+fn the_index_says_which_run_each_slot_holds() {
+    let mut index = vec![0u8; INDEX_BYTES];
+    assert_eq!(index_entry(&index, 3), None);
+    let e = Entry {
+        order: 7,
+        number: 92,
+        name: b"gpubench",
+    };
+    set_index_entry(&mut index, 3, e);
+    assert_eq!(index_entry(&index, 3), Some(e));
+    assert_eq!(
+        &index[3 * INDEX_LINE..3 * INDEX_LINE + 25],
+        b"03 00000007 0092 gpubench"
+    );
+    assert_eq!(index[4 * INDEX_LINE - 1], b'\n');
+    // The first empty slot first.
+    assert_eq!(choose(&index, b"gpubench"), (0, 7, 92));
+    // Every slot full: the oldest run's.
+    for s in 0..SLOTS {
+        let name: &[u8] = if s % 2 == 0 { b"gpubench" } else { b"light" };
+        set_index_entry(
+            &mut index,
+            s,
+            Entry {
+                order: 100 + (s as u32 * 7) % SLOTS as u32,
+                number: s as u32,
+                name,
+            },
+        );
+    }
+    let (slot, newest, highest) = choose(&index, b"light");
+    assert_eq!(index_entry(&index, slot).unwrap().order, 100);
+    assert_eq!(newest, 100 + SLOTS as u32 - 1);
+    assert_eq!(highest, 31);
+    // A line damaged, or naming another slot: empty.
+    index[5 * INDEX_LINE] = b'x';
+    assert_eq!(index_entry(&index, 5), None);
+    let mut moved = index.clone();
+    moved.copy_within(6 * INDEX_LINE..7 * INDEX_LINE, 8 * INDEX_LINE);
+    assert_eq!(index_entry(&moved, 8), None);
+    // Found by image and number, or an image's newest.
+    assert_eq!(find(&index, Some(b"light"), Some(9)), Some((9, 9)));
+    let (s, _) = find(&index, Some(b"gpubench"), None).unwrap();
+    assert!(index_entry(&index, s).unwrap().name == b"gpubench");
+    assert_eq!(find(&index, Some(b"nothing"), None), None);
+}

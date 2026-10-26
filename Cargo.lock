@@ -656,6 +656,7 @@ dependencies = [
  "rp-drv-mbx-display",
  "rp-drv-mved",
  "rp-drv-pxa-gpio",
+ "rp-drv-pxa-keypad",
  "rp-drv-pxa-mmc",
  "rp-drv-pxa-pwm",
  "rp-drv-pxa-uart",
@@ -668,6 +669,7 @@ dependencies = [
  "rp-kernel-trace",
  "rp-loadproto",
  "rp-usb-msc",
+ "rp-usb-mtp",
 ]
 
 [[package]]
@@ -1067,6 +1069,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-usb-mtp"
+version = "0.0.0"
+dependencies = [
+ "rp-fat",
+ "rp-hal-api",
+]
+
+[[package]]
 name = "rp-vram-map"
 version = "0.0.0"
 
@@ -1151,6 +1161,7 @@ dependencies = [
  "rp-screen-measure",
  "rp-shell",
  "rp-today",
+ "rp-usb-mtp",
  "serde_json",
 ]
 

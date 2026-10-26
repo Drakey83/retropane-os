@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 const WAV_VOICE: &str = ",out.buffer-length=250000";
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.30.0";
+pub const QEMU_RELEASE: &str = "rp-v0.31.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -89,6 +89,9 @@ fn serial_port() -> u16 {
     monitor_port() - 1
 }
 
+mod mtp;
+pub use mtp::boot_loader_mtp;
+
 /// Local TCP port for QEMU's monitor (screenshots). `RETROPANE_MONITOR_PORT` overrides.
 ///
 /// Every port a run uses is an offset from this one, inside a block of
@@ -123,7 +126,7 @@ fn monitor_port() -> u16 {
 /// from `PORT_FIRST`. A block holds serial, monitor, QMP and
 /// [`USB_PORTS`] USB chardevs.
 const PORT_FIRST: u16 = 45_440;
-const PORT_BLOCK: u16 = 20;
+const PORT_BLOCK: u16 = 24;
 const PORT_BLOCKS: u16 = 64;
 const USB_PORTS: u16 = PORT_BLOCK - 3;
 
@@ -8886,11 +8889,29 @@ fn received_log(output: &str) -> Result<String, String> {
     Ok(text[..end].trim_end_matches('\n').to_string())
 }
 
-/// A run's card log: both cards' files of `file` joined, as `cargo xtask
-/// cardlog` joins them.
-fn joined_card_log(sd: &Path, cf: &Path, file: &str) -> Result<String, String> {
-    let sd_part = card_file(sd, file).ok();
-    let cf_part = card_file(cf, file).ok();
+/// The slot file holding `name`'s run `number` on a card image, by its
+/// `rplog/index.txt` (R22: the run logs reuse fixed files).
+fn slot_file(image: &Path, name: &str, number: u32) -> Result<String, String> {
+    use rp_hal_x51v::cardlog;
+    let index = card_file(image, cardlog::INDEX)?;
+    let (slot, _) = cardlog::find(&index, Some(name.as_bytes()), Some(number))
+        .ok_or_else(|| format!("{name}-{number:04} isn't in {}", cardlog::INDEX))?;
+    let mut path = [0u8; 32];
+    let n = cardlog::slot_path(slot, &mut path);
+    Ok(String::from_utf8_lossy(&path[..n]).into_owned())
+}
+
+/// A run's card log: both cards' halves of `name`'s run `number` joined,
+/// as `cargo xtask cardlog` joins them.
+fn joined_card_log(sd: &Path, cf: &Path, name: &str, number: u32) -> Result<String, String> {
+    let file = format!("{name}-{number:04}");
+    let part = |card: &Path| {
+        slot_file(card, name, number)
+            .ok()
+            .and_then(|f| card_file(card, &f).ok())
+    };
+    let sd_part = part(sd);
+    let cf_part = part(cf);
     if sd_part.is_none() && cf_part.is_none() {
         return Err(format!("{file} is on neither card"));
     }
@@ -8971,7 +8992,9 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
                     extra: &["-drive", &cf_drive],
                     input: Some((&input, until)),
                     during: None,
-                    then: Some("RPL END"),
+                    // The loader ready again: past the run log, its word on
+                    // each card for the PC (R22's vouch) comes before it.
+                    then: Some(LOADER_MARKER),
                     timeout: Duration::from_secs(600),
                 },
             )?;
@@ -8981,15 +9004,16 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
             Ok(output)
         };
     let check = |name: &str, number: u32, output: &str, how: &str| -> Result<String, String> {
-        let file = format!("rplog/{name}-{number:04}.txt");
-        let card = joined_card_log(&sd, &cf, &file).map_err(|e| format!("cardlog {name}: {e}"))?;
+        let file = format!("{name}-{number:04}");
+        let card =
+            joined_card_log(&sd, &cf, name, number).map_err(|e| format!("cardlog {name}: {e}"))?;
         let log = received_log(output).map_err(|e| format!("cardlog {name}: {e}"))?;
         if card != log {
             return Err(format!(
                 "cardlog {name}: {file} differs from the run log:\n--- card ---\n{card}\n--- run log ---\n{log}"
             ));
         }
-        let first = format!("[loader: card log {file} on the SD and CF cards]");
+        let first = format!("[loader: card log {file} in rplog/ on the SD and CF cards]");
         if !card.contains(&first) {
             return Err(format!("cardlog {name}: no `{first}` in:\n{card}"));
         }
@@ -9038,7 +9062,7 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
 
     let out = run("light", &image("rp-light")?, None, "RPL END")?;
     check("light", 41, &out, "returned")?;
-    if card_file(&cf, "rplog/light-0041.txt")?
+    if card_file(&cf, &slot_file(&cf, "light", 41)?)?
         .iter()
         .any(|&b| b != 0)
     {
@@ -9046,18 +9070,25 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
             "cardlog light: the CF card's file was written though the SD card was free".into(),
         );
     }
-    let mut lights: Vec<String> = card_names(&sd, "rplog")?
-        .into_iter()
-        .filter(|n| n.starts_with("light-"))
-        .collect();
-    lights.sort();
-    if lights.len() != 33 || lights[0] != "light-0009.txt" {
-        return Err(format!(
-            "cardlog light: the SD card should keep light-0009..0041 (the 8 oldest of those beyond 32 deleted): {lights:?}"
-        ));
+    // The slots made once (R22): 32 log files and the index on each card;
+    // the 40 old-style files left as they were (their numbers counted).
+    for (card, what) in [(&sd, "SD"), (&cf, "CF")] {
+        let names = card_names(card, "rplog")?;
+        let slots = names.iter().filter(|n| n.starts_with("log-")).count();
+        let old = names.iter().filter(|n| n.starts_with("light-")).count();
+        let want_old = if what == "SD" { 40 } else { 0 };
+        if slots != rp_hal_x51v::cardlog::SLOTS
+            || old != want_old
+            || !names.iter().any(|n| n == "index.txt")
+        {
+            return Err(format!(
+                "cardlog light: the {what} card's rplog/ should hold {} slots, the index and {want_old} old files: {names:?}",
+                rp_hal_x51v::cardlog::SLOTS
+            ));
+        }
     }
     eprintln!(
-        "    cardlog light OK: the run log on the SD card line for line, numbered 41, the 8 oldest beyond 32 deleted"
+        "    cardlog light OK: the run log on the SD card line for line, numbered 41 (after the 40 old files), 32 slots and an index made on each card"
     );
 
     let out = run("sdtime", &image("rp-sdtime")?, None, "RPL END")?;
@@ -9066,11 +9097,21 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
     if card.matches(moved).count() != 1 {
         return Err(format!("cardlog sdtime: no `{moved}` once:\n{card}"));
     }
-    if card_file(&cf, "rplog/sdtime-0001.txt")?
+    if card_file(&cf, &slot_file(&cf, "sdtime", 1)?)?
         .iter()
         .all(|&b| b == 0)
     {
         return Err("cardlog sdtime: nothing on the CF card".into());
+    }
+    // R22: the run took the SD card (the PC re-reads it) and left the CF
+    // card alone, whose slots existed: the PC keeps its view of it.
+    if !out.contains("CF card: unchanged by the run (the PC keeps its view)") {
+        return Err(format!(
+            "cardlog sdtime: the CF card wasn't vouched for after a run that left it alone:\n{out}"
+        ));
+    }
+    if out.contains("SD card: unchanged by the run") {
+        return Err("cardlog sdtime: the SD card was vouched for though the run took it".into());
     }
     eprintln!(
         "    cardlog sdtime OK: the SD test moved the log to the CF card; the halves join into the run log"
@@ -9159,7 +9200,7 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
 /// the PC received (from the loader's first line to its closing line),
 /// closed as a run that returned, no write refused.
 fn gpubench_card_log(sd: &Path, name: &str, number: u32, log: &str) -> Result<(), String> {
-    let file = format!("rplog/gpubench-{number:04}.txt");
+    let file = slot_file(sd, "gpubench", number).map_err(|e| format!("gpubench {name}: {e}"))?;
     let raw = card_file(sd, &file).map_err(|e| format!("gpubench {name}: card log: {e}"))?;
     if raw.len() != rp_hal_x51v::cardlog::FILE_BYTES {
         return Err(format!(
@@ -9248,9 +9289,23 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
     });
     std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
     let cf = scratch(root, "cf-storfast.img")?;
-    let cf_data: Vec<u8> = (0..16u32 << 20)
+    // A FAT32 card (C7 makes its test file there) with a noise file
+    // filling most of it (C2-C4 compare what they read, so it isn't zeros).
+    let noise: Vec<u8> = (0..12u32 << 20)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
         .collect();
+    // 32 MiB: the noise, the loader's 32 run-log slots (8 MiB, made once on
+    // each card, R22) and C11's 512 KiB file in one run.
+    let cf_data = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 1024,
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "noise.bin",
+            data: &noise,
+        }],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
     std::fs::write(&cf, cf_data).map_err(|e| format!("{}: {e}", cf.display()))?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let input = rp_loadproto::frame(&payload);
@@ -9284,6 +9339,29 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
         "C4 tune (measured, ",
         "the card's limit ",
         "C6 Windows Mobile's timing put back: MCMEM1 0x00020508",
+        "C7 rp-cf-write/WRITE.BIN: LBA ",
+        "C7 the shortest right data strobe 0 (",
+        "C9 strobe: the shortest right ",
+        "C9 hold: the shortest right ",
+        "C9 set-up: the shortest right ",
+        "C10 data at Windows Mobile's: ",
+        "C10 data at strobe 9: ",
+        "C10 data at strobe 1: ",
+        "C11 fresh at strobe 1: ",
+        "C11 rewrite 6 of region 12 at Windows Mobile's: ",
+        "C11 read back at the slowest timing: 0 of 960 sectors differ",
+        "C11 rp-cf-write/FRESH.BIN removed: true",
+        "C12 recovery at strobe 1: ",
+        "C12 idle 1000 ms: region 28 rewritten again after the pause: ",
+        "C12 CFA feature set: ",
+        "C12 read back at the slowest timing: 0 of ",
+        "C12 rp-cf-write/ERASE.BIN removed: true",
+        "C13 64 sectors, write 6 to the same place: ",
+        "C13 a log's pattern, 16 lines two to a sector: ",
+        "C13 read back at the slowest timing: 0 sectors differ",
+        "C13 rp-cf-write/SIZES.BIN removed: true",
+        "C7 rp-cf-write removed from the CF card",
+        "C8 done: ",
         "KiB): all right, one transfer each",
         "S2 the speed writes read back: 0 blocks differ",
         "of the last writes read back, 0 blocks differ",
@@ -9323,6 +9401,372 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
 }
 
 /// `cargo xtask emu-cf`: the CompactFlash check on its own.
+/// `cargo xtask emu-format` alone: the loader built here first.
+pub fn boot_loader_format_alone(root: &Path) -> Result<(), String> {
+    let dir = emu_dir(root)?;
+    crate::sdkit::raw_binary(
+        &crate::arm_release(root).join("rp-loader"),
+        &dir.join("rp-loader.bin"),
+    )?;
+    boot_loader_format(root)
+}
+
+/// Formatting on the device (ADR-0036): the loader formats the SD card
+/// (128 MiB, FAT32 with the kit's boot files and icon) and the CF card
+/// (64 MiB) into each format through `format`, keeping the boot files and
+/// the icon `autorun.inf` names (read back), refusing exFAT while boot
+/// files are on the card and a FAT12 the card is too big for, and wiping
+/// them when told. After each format the PC sees the drive go away and
+/// come back, mounts it with `rp-fat` through the drive, finds the kept
+/// files whole, and its write over a boot file is refused (the guard
+/// rebuilt for FAT16 and exFAT). Afterwards the card images are checked on
+/// the host.
+pub fn boot_loader_format(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    format: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = raw_image(root, "rp-loader")?;
+    let boot_bin: Vec<u8> = (0..70_000u32).map(|i| (i * 7 + 1) as u8).collect();
+    let haret: Vec<u8> = (0..20_000u32).map(|i| (i * 13 + 5) as u8).collect();
+    let icon: Vec<u8> = (0..3_000u32).map(|i| (i * 3) as u8).collect();
+    let autorun = b"[autorun]\r\nicon=card-sd.ico\r\n";
+    let big: Vec<u8> = (0..2_621_440u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    let entry = |name, data| rp_fat::format::Entry { name, data };
+    let sd_image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 128 * 2048,
+        sectors_per_cluster: 8,
+        files: &[
+            entry("retropane.bin", &boot_bin),
+            entry("haret.exe", &haret),
+            entry("startup.txt", b"set ramaddr 0xa8000000\n"),
+            entry("autorun.inf", autorun),
+            entry("card-sd.ico", &icon),
+            entry("photo.jpg", b"not kept"),
+            entry("big.bin", &big),
+        ],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let sd = scratch(root, "sd-format.img")?;
+    std::fs::write(&sd, sd_image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let cf_image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 2048,
+        sectors_per_cluster: 8,
+        files: &[entry("on-cf.txt", b"compact flash")],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let cf = scratch(root, "cf-format.img")?;
+    std::fs::write(&cf, cf_image).map_err(|e| format!("{}: {e}", cf.display()))?;
+    let mut args: Vec<String> = usb_args(2).into();
+    args.extend(msc_args(3));
+    args.push("-drive".into());
+    args.push(drive_arg(root, "ide", &cf)?);
+    args.extend(wm_cpld_table_args());
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        let mut bot = Bot::connect(3)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        // A frame sent until the loader stops saying "card busy" (it
+        // takes no card command within 2 s of the PC's last write).
+        let busy_retry = |s: &mut std::net::TcpStream, frame: &[u8], start: &str, secs| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                s.write_all(frame).map_err(|e| e.to_string())?;
+                let reply = usb_read_line(s, start, secs)?;
+                if !reply.contains("RPL ERR card busy") || Instant::now() > deadline {
+                    return Ok::<_, String>(reply);
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        };
+        let say = |s: &mut std::net::TcpStream, cmd: &str, want: &str, secs| {
+            let reply = busy_retry(s, &rp_loadproto::control_frame(cmd), "RPL ", secs)?;
+            let line = reply
+                .lines()
+                .find(|l| l.starts_with("RPL "))
+                .unwrap_or("")
+                .to_string();
+            if !line.starts_with(want) {
+                return Err(format!("`{cmd}`: {line:?} (wanted {want:?})"));
+            }
+            eprintln!("    {cmd}: {line}");
+            Ok(line)
+        };
+        // The PC's view of a unit after a format: away, back, then mounted
+        // through the drive; the file `name`'s first sector, if it's there.
+        let pc_view = |bot: &mut Bot, unit: u8, after: &str, kind: &str, name: &str| {
+            bot.lun = unit;
+            expect_away_then_back(bot, after)?;
+            let mut mbr = [0u8; 512];
+            rp_hal_api::BlockDevice::read_blocks(bot, 0, &mut mbr)
+                .map_err(|_| format!("{after}: the MBR doesn't read"))?;
+            let start = u32::from_le_bytes([mbr[454], mbr[455], mbr[456], mbr[457]]);
+            let mut v = rp_fat::AnyVolume::mount(&mut *bot, start)
+                .map_err(|e| format!("{after}: the PC can't mount it: {}", e.name()))?;
+            let got = match &v {
+                rp_fat::AnyVolume::Fat(f) => f.kind().name(),
+                rp_fat::AnyVolume::ExFat(_) => "exFAT",
+            };
+            if got != kind {
+                return Err(format!("{after}: the PC sees {got}, not {kind}"));
+            }
+            Ok::<_, String>(v.extent(name).ok().map(|r| r.lba))
+        };
+        // The PC mounts both drives first, as at plug-in (a unit's first
+        // answer is its power-on "medium changed").
+        for unit in [0u8, 1] {
+            bot.lun = unit;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while bot.command(&[0; 6], 0, false, &[])?.status != 0 {
+                let _ = bot.sense()?;
+                if Instant::now() > deadline {
+                    return Err(format!("unit {unit} never became ready"));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+        // A big file by `hash` and ranged `get`s (R48): three ranges put
+        // back together equal it, and the loader's SHA-256 is its own.
+        let h = say(&mut s, "hash big.bin", "RPL OK hash 2621440 bytes", 60)?;
+        let sha = rp_crypto::hex(&rp_crypto::Sha256::digest(&big));
+        if !h.contains(std::str::from_utf8(&sha).unwrap_or("?")) {
+            return Err(format!("hash big.bin: {h:?}"));
+        }
+        let mut whole = Vec::new();
+        for at in [0u32, 1_000_000, 2_000_000] {
+            let cmd = format!("get @{at}+1000000 big.bin");
+            let text = busy_retry(&mut s, &rp_loadproto::control_frame(&cmd), "RPL ", 60)?;
+            let (lines, reply) = crate::usb::parse_query(&text, "get")?;
+            whole.extend(crate::usb::decode_file(&lines, &reply)?);
+        }
+        if whole != big {
+            return Err(format!(
+                "ranged gets of big.bin: {} bytes, not the file",
+                whole.len()
+            ));
+        }
+        let cmd = rp_loadproto::control_frame("get @3000000+10 big.bin");
+        let past = busy_retry(&mut s, &cmd, "RPL ", 20)?;
+        if !past.contains("RPL OK 0 bytes crc 00000000 of 2621440") {
+            return Err(format!("a range past the end: {past:?}"));
+        }
+        // exFAT while the card holds boot files: refused, nothing written
+        // (the drive stays as it is).
+        say(
+            &mut s,
+            "format sd exfat",
+            "RPL ERR format: Windows Mobile can't read exFAT",
+            20,
+        )?;
+        say(
+            &mut s,
+            "format sd fat12 cluster 16",
+            "RPL ERR format: cluster count",
+            20,
+        )?;
+        say(
+            &mut s,
+            "format sd fat16 plan",
+            "RPL OK plan: would format as FAT16",
+            20,
+        )?;
+        // FAT16, the boot files and the icon kept (photo.jpg isn't).
+        let line = say(
+            &mut s,
+            "format sd fat16 label X51V",
+            "RPL OK formatted as FAT16",
+            60,
+        )?;
+        if !line.contains("5 files kept and read back (3 boot)") {
+            return Err(format!("format sd fat16 kept the wrong files: {line:?}"));
+        }
+        let haret_at = pc_view(&mut bot, 0, "format sd fat16", "FAT16", "haret.exe")?
+            .ok_or("haret.exe wasn't kept")?;
+        // The PC is shown the boot file hidden + system + read-only (the
+        // owner's choice, 2026-10-25); the card keeps it as it was (checked
+        // on the image afterwards).
+        let mut mbr = [0u8; 512];
+        rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut mbr)
+            .map_err(|_| "the MBR doesn't read")?;
+        let fat16_start = u32::from_le_bytes([mbr[454], mbr[455], mbr[456], mbr[457]]);
+        match fixed_root_attr(&mut bot, fat16_start, b"HARET   EXE") {
+            Some(a) if a & 0x07 == 0x07 => {}
+            other => {
+                return Err(format!(
+                    "haret.exe as the PC sees it: attributes {other:x?}"
+                ));
+            }
+        }
+        let r = bot.command(&rw10(0x2A, haret_at, 1), 512, false, &[0; 512])?;
+        if r.status == 0 {
+            return Err("the PC overwrote haret.exe on the new FAT16 card: no guard".into());
+        }
+        let _ = bot.sense()?;
+        bot.lun = 0;
+        expect_no_blink_after_refusal(
+            &mut bot,
+            "a refused write over haret.exe on the new FAT16 card",
+        )?;
+        // The refused write counts as the PC writing: the loader takes no
+        // card command for 2 s after it (ADR-0014 rule 3); the next one is
+        // retried while it says so.
+        let text = busy_retry(
+            &mut s,
+            &rp_loadproto::control_frame("get card-sd.ico"),
+            "RPL ",
+            40,
+        )?;
+        let (lines, reply) = crate::usb::parse_query(&text, "get")?;
+        if crate::usb::decode_file(&lines, &reply)? != icon {
+            return Err("the icon came back different after the format".into());
+        }
+        say(&mut s, "card check", "RPL OK check clean", 40)?;
+        // The layout as the loader reads it back, read-only.
+        let line = say(
+            &mut s,
+            "card layout sd",
+            "RPL OK layout: partition type 0x06",
+            20,
+        )?;
+        if !line.contains("FAT16 by 'MSWIN4.1' label 'X51V       ', 16384 B clusters") {
+            return Err(format!("card layout after the FAT16 format: {line:?}"));
+        }
+        // exFAT once the boot files are formatted away; then a file put.
+        say(
+            &mut s,
+            "format sd exfat wipe-boot",
+            "RPL OK formatted as exFAT",
+            60,
+        )?;
+        pc_view(&mut bot, 0, "format sd exfat", "exFAT", "x")?;
+        s.write_all(&rp_loadproto::file_frame("haret.exe", &haret))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK 20000 bytes", 40)?;
+        let haret_at = pc_view(&mut bot, 0, "put on exFAT", "exFAT", "haret.exe")?
+            .ok_or("haret.exe isn't on the exFAT card")?;
+        let r = bot.command(&rw10(0x2A, haret_at, 1), 512, false, &[0; 512])?;
+        if r.status == 0 {
+            return Err("the PC overwrote haret.exe on the exFAT card: no guard".into());
+        }
+        let _ = bot.sense()?;
+        bot.lun = 0;
+        expect_no_blink_after_refusal(
+            &mut bot,
+            "a refused write over haret.exe on the exFAT card",
+        )?;
+        // The refused write counts as the PC writing: the loader takes no
+        // card command for 2 s after it (ADR-0014 rule 3); the next one is
+        // retried while it says so.
+        say(&mut s, "card check", "RPL OK check clean", 40)?;
+        // FAT32 with 1 KiB clusters keeps the exFAT card's boot file.
+        say(
+            &mut s,
+            "format sd fat32 cluster 1",
+            "RPL OK formatted as FAT32 with 1 KiB clusters",
+            60,
+        )?;
+        pc_view(&mut bot, 0, "format sd fat32", "FAT32", "haret.exe")?
+            .ok_or("haret.exe wasn't kept through FAT32")?;
+        // The CF card: FAT12 by size at 16 KiB clusters is too many, so
+        // FAT16 by the default rule; then its boot folder, guarded.
+        say(&mut s, "format cf auto", "RPL OK formatted as FAT", 60)?;
+        s.write_all(&rp_loadproto::file_frame("cf:RetroPane/haret.exe", &haret))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK 20000 bytes", 40)?;
+        let mut mbr = [0u8; 512];
+        bot.lun = 1;
+        expect_away_then_back(&mut bot, "cf put")?;
+        rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut mbr)
+            .map_err(|_| "the CF MBR doesn't read")?;
+        let start = u32::from_le_bytes([mbr[454], mbr[455], mbr[456], mbr[457]]);
+        let at = rp_fat::AnyVolume::mount(&mut bot, start)
+            .map_err(|e| format!("the PC can't mount the CF card: {}", e.name()))?
+            .extent("RetroPane/haret.exe")
+            .map_err(|e| format!("cf: {}", e.name()))?
+            .lba;
+        let r = bot.command(&rw10(0x2A, at, 1), 512, false, &[0; 512])?;
+        if r.status == 0 {
+            return Err("the PC overwrote the CF card's haret.exe: no guard".into());
+        }
+        let _ = bot.sense()?;
+        bot.lun = 1;
+        expect_no_blink_after_refusal(&mut bot, "a refused write over the CF card's haret.exe")?;
+        // The refused write counts as the PC writing: the loader takes no
+        // card command for 2 s after it (ADR-0014 rule 3); the next one is
+        // retried while it says so.
+        // exFAT on the CF card with its boot folder: refused; wiped: done.
+        say(
+            &mut s,
+            "format cf exfat",
+            "RPL ERR format: Windows Mobile can't read exFAT",
+            20,
+        )?;
+        say(
+            &mut s,
+            "format cf exfat wipe-boot cluster 32",
+            "RPL OK formatted as exFAT with 32 KiB clusters",
+            60,
+        )?;
+        pc_view(&mut bot, 1, "format cf exfat", "exFAT", "x")?;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(240),
+        },
+    )?;
+    // The images on the host: the SD card FAT32 with haret.exe whole, the CF
+    // card exFAT; both clean.
+    for (path, kind) in [(&sd, "FAT32"), (&cf, "exFAT")] {
+        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        let start = u32::from_le_bytes([data[454], data[455], data[456], data[457]]);
+        let mut v = rp_fat::AnyVolume::mount(Disk(data), start)
+            .map_err(|e| format!("{}: {}", path.display(), e.name()))?;
+        let got = match &v {
+            rp_fat::AnyVolume::Fat(f) => f.kind().name(),
+            rp_fat::AnyVolume::ExFat(_) => "exFAT",
+        };
+        if got != kind {
+            return Err(format!("{}: {got}, not {kind}", path.display()));
+        }
+        let h = v
+            .check(&mut vec![0u8; 1 << 20], &mut vec![0u8; 8192])
+            .map_err(|e| e.name().to_string())?;
+        if !h.clean() {
+            return Err(format!("{}: not clean: {h:?}", path.display()));
+        }
+        if kind == "FAT32" {
+            let mut out = Vec::new();
+            v.read_back("haret.exe", &mut [0u8; 4096], &mut |c| {
+                out.extend_from_slice(c)
+            })
+            .map_err(|e| e.name().to_string())?;
+            if out != haret {
+                return Err("haret.exe on the SD image isn't whole".into());
+            }
+        }
+    }
+    eprintln!(
+        "    format: SD FAT32 -> FAT16 -> exFAT -> FAT32, CF -> FAT -> exFAT; kept files whole, guards rebuilt"
+    );
+    Ok(())
+}
+
 pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -9477,7 +9921,40 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        if !reply.contains("; timing own, ") || !reply.contains("writes at Windows Mobile's") {
+        // Its write timing too (the owner's ruling A, R28): measured once,
+        // right at the attach (the card, a fresh image, is new to this
+        // loader), on fresh sectors of its own file, and kept in
+        // rplog/cfwrite.txt; "kept" once a later attach has read it there
+        // (only the search writes that line).
+        // The loader's stack after the attach's timing searches, its
+        // deepest work: under 75% (16 KiB overflowed once into .bss and
+        // stopped the loader on the X51v, quality audit C83).
+        s.write_all(&rp_loadproto::control_frame("loader stack"))
+            .map_err(|e| e.to_string())?;
+        let stack_reply = usb_read_line(&mut s, "RPL ", 20)?;
+        let stack = stack_reply
+            .split("RPL OK stack ")
+            .nth(1)
+            .and_then(|t| {
+                let mut n = t.split(" of ");
+                let used: u32 = n.next()?.trim().parse().ok()?;
+                let size: u32 = n.next()?.trim().parse().ok()?;
+                Some((used, size))
+            })
+            .ok_or_else(|| format!("loader stack: {stack_reply:?}"))?;
+        eprintln!(
+            "    loader stack after the CF attach: {} of {} bytes",
+            stack.0, stack.1
+        );
+        if stack.0 * 4 > stack.1 * 3 {
+            return Err(format!(
+                "the loader's stack is {} of {} bytes after the CF attach (over 75%)",
+                stack.0, stack.1
+            ));
+        }
+        if !reply.contains("; timing own, ")
+            || !(reply.contains(" cycles (limit ") || reply.contains(" cycles (kept)"))
+        {
             return Err(format!("cf: the card's own timing not measured: {reply:?}"));
         }
         // The power sequence and the card's reset went through the CPLD,
@@ -9537,20 +10014,10 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         if mbr[510..] != [0x55, 0xAA] {
             return Err("CF unit: sector 0 isn't the image's MBR".into());
         }
-        // Read-only until the owner says otherwise...
-        if rp_hal_api::BlockDevice::write_blocks(&mut bot, 30000, &via_drive).is_ok() {
-            return Err("CF unit: written while read-only".into());
-        }
-        let _ = bot.sense()?;
-        s.write_all(&rp_loadproto::control_frame("drive rw"))
-            .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL OK drive read-write", 10)?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while rp_hal_api::BlockDevice::write_blocks(&mut bot, 30000, &via_drive).is_err() {
-            let _ = bot.sense()?; // medium changed, once
-            if Instant::now() > deadline {
-                return Err("CF unit: write refused after drive rw".into());
-            }
+        // Writable by default, like the SD card (ADR-0014, the owner's
+        // ruling A 2026-10-24): a write outside the boot files lands.
+        if rp_hal_api::BlockDevice::write_blocks(&mut bot, 30000, &via_drive).is_err() {
+            return Err("CF unit: a write refused though the drive is writable".into());
         }
         let mut back = vec![0u8; via_drive.len()];
         rp_hal_api::BlockDevice::read_blocks(&mut bot, 30000, &mut back)
@@ -9558,16 +10025,118 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         if back != via_drive {
             return Err("CF unit: read-back differs".into());
         }
+        // `drive ro` locks it, `drive rw` opens it again (each a medium
+        // change the PC is told of, once).
+        let drive = |s: &mut std::net::TcpStream,
+                     bot: &mut Bot,
+                     cmd: &str,
+                     want: &str,
+                     writable: bool|
+         -> Result<(), String> {
+            s.write_all(&rp_loadproto::control_frame(cmd))
+                .map_err(|e| e.to_string())?;
+            usb_read_until(s, want, 10)?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match rp_hal_api::BlockDevice::write_blocks(bot, 30000, &via_drive) {
+                    Ok(()) if writable => return Ok(()),
+                    Err(rp_hal_api::BlockError::ReadOnly) if !writable => return Ok(()),
+                    _ => {}
+                }
+                if Instant::now() > deadline {
+                    return Err(format!(
+                        "CF unit: after {cmd}, writes not {}",
+                        if writable { "taken" } else { "refused" }
+                    ));
+                }
+                poll_pause(Duration::from_millis(100));
+            }
+        };
+        drive(
+            &mut s,
+            &mut bot,
+            "drive ro",
+            "RPL OK drive read-only",
+            false,
+        )?;
+        drive(
+            &mut s,
+            &mut bot,
+            "drive rw",
+            "RPL OK drive read-write",
+            true,
+        )?;
+        // A boot file on the CF card, put there through the loader (`install
+        // cf`'s path: `cf:` names), which the PC reads but can't change.
+        let boot = (0..9000u32)
+            .map(|i| (i * 13 % 251) as u8)
+            .collect::<Vec<u8>>();
+        // Refused while the PC wrote the card in the last 2 s (it just did):
+        // sent again once it has been quiet.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let put = loop {
+            s.write_all(&rp_loadproto::file_frame("cf:RetroPane/haret.exe", &boot))
+                .map_err(|e| e.to_string())?;
+            // Its reply: the first line past the idle loader's READY lines.
+            let mut put = String::new();
+            while !put.lines().any(|l| l.starts_with("RPL ")) {
+                put += &usb_read_until(&mut s, "\r\n", 30)?;
+            }
+            if !put.contains("card busy") || Instant::now() > deadline {
+                break put;
+            }
+            poll_pause(Duration::from_millis(500));
+        };
+        if !put.contains("RPL OK 9000 bytes") {
+            return Err(format!("CF unit: put cf:RetroPane/haret.exe: {put:?}"));
+        }
+        let start = u32::from_le_bytes([mbr[454], mbr[455], mbr[456], mbr[457]]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (first, on_drive) = loop {
+            // Once the PC has seen the medium change.
+            let seen = rp_fat::Volume::mount(&mut bot, start)
+                .ok()
+                .and_then(|mut vol| {
+                    let f = vol.find("RetroPane/haret.exe").ok()?;
+                    let mut got = Vec::new();
+                    vol.read_file(&f, &mut [0u8; 4096], |c| got.extend_from_slice(c))
+                        .ok()?;
+                    Some((vol.extent("RetroPane/haret.exe").ok()?.lba, got))
+                });
+            if let Some(x) = seen {
+                break x;
+            }
+            if Instant::now() > deadline {
+                return Err("CF unit: the put boot file never showed through the drive".into());
+            }
+            let _ = bot.sense();
+            poll_pause(Duration::from_millis(100));
+        };
+        if on_drive != boot {
+            return Err("CF unit: the put boot file reads back wrong through the drive".into());
+        }
+        if rp_hal_api::BlockDevice::write_blocks(&mut bot, first, &[0u8; 512])
+            != Err(rp_hal_api::BlockError::ReadOnly)
+        {
+            return Err("CF unit: the PC overwrote a CF boot file (RetroPane/haret.exe)".into());
+        }
+        expect_no_blink_after_refusal(&mut bot, "a CF write the guard refused")?;
         // Pulled out: the loader lets the card go and switches the slot
         // off; pushed back in, it is attached again from a power cycle.
         if device_has_runtime(&mut mon, "/machine/peripheral/cfslot", "pressed") {
             mon.query("qom-set /machine/peripheral/cfslot pressed true")?;
-            // The reply ends its event list with ",\r\n" (the idle loader's
-            // READY lines don't).
+            // The reply: the line starting `RPL OK cf:` among the idle
+            // loader's READY lines (a long one is cut, its end kept).
             let mut cf_log = || -> Result<String, String> {
                 s.write_all(&rp_loadproto::control_frame("cf log"))
                     .map_err(|e| e.to_string())?;
-                usb_read_until(&mut s, ",\r\n", 10)
+                let mut got = String::new();
+                loop {
+                    got += &usb_read_until(&mut s, "\r\n", 10)?;
+                    if let Some(line) = got.lines().find(|l| l.starts_with("RPL OK cf:")) {
+                        return Ok(line.to_string());
+                    }
+                }
             };
             // The loader notices on its detect poll (debounced, in emulated
             // seconds, slower than ours on a busy PC): poll, never a guess.
@@ -9588,11 +10157,21 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                 l.contains("power off")
             })?;
             mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
-            let log = poll("re-inserted: never attached again", &|l| {
+            let log = match poll("re-inserted: never attached again", &|l| {
                 l.rsplit("power off")
                     .next()
                     .is_some_and(|a| a.contains("attached"))
-            })?;
+            }) {
+                Ok(l) => l,
+                // Why the attach failed: `cf` names the slot's last failure
+                // ("was ..."), then tries it once more itself (R42).
+                Err(e) => {
+                    s.write_all(&rp_loadproto::control_frame("cf"))
+                        .map_err(|e| e.to_string())?;
+                    let cf = usb_read_line(&mut s, "RPL ", 20).unwrap_or_default();
+                    return Err(format!("{e}; then cf: {cf:?}"));
+                }
+            };
             // Ordered events, no timing: a slot left powered would show
             // READY as soon as the card went back in, before the loader's
             // debounced attach (which powers it from off itself).
@@ -9605,6 +10184,103 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             let mut mbr = [0u8; 512];
             rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut mbr)
                 .map_err(|_| "CF re-inserted: sector 0 unreadable".to_string())?;
+            // The same card again: its write timing comes from
+            // rplog/cfwrite.txt, nothing measured or written (R28).
+            let mut reply = String::new();
+            for _ in 0..50 {
+                s.write_all(&rp_loadproto::control_frame("cf"))
+                    .map_err(|e| e.to_string())?;
+                reply = usb_read_line(&mut s, "RPL ", 20)?;
+                if reply.contains("; writes ") {
+                    break;
+                }
+                poll_pause(Duration::from_millis(200));
+            }
+            if !reply.contains(" cycles (kept)") {
+                return Err(format!(
+                    "CF re-inserted: its kept write timing not used: {reply:?}"
+                ));
+            }
+            // A quick swap (R42, on the X51v 0.12 s): out and back in a
+            // fraction of a second, nothing reading the card meanwhile. The
+            // loader must see it from the detect alone (read every 50 ms)
+            // and attach the card again; once a second missed it, and the
+            // card came back only when a later read failed.
+            // `cf log` (reads only: `cf` would attach the card itself):
+            // the slot's events, "attached" each time the loader took it.
+            let mut attached = || -> Result<(usize, String), String> {
+                s.write_all(&rp_loadproto::control_frame("cf log"))
+                    .map_err(|e| e.to_string())?;
+                let mut got = String::new();
+                loop {
+                    got += &usb_read_until(
+                        &mut s, "
+", 10,
+                    )?;
+                    if let Some(l) = got.lines().find(|l| l.starts_with("RPL OK cf:")) {
+                        let events = l.split("; reads").next().unwrap_or(l).to_string();
+                        return Ok((events.matches("attached").count(), events));
+                    }
+                }
+            };
+            let (before, _) = attached()?;
+            mon.query("qom-set /machine/peripheral/cfslot pressed true")?;
+            poll_pause(Duration::from_millis(150));
+            mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let (now, events) = attached()?;
+                if now > before {
+                    break;
+                }
+                if Instant::now() > deadline {
+                    return Err(format!(
+                        "CF quick swap: not seen by the detect and attached again: {events:?}"
+                    ));
+                }
+                poll_pause(Duration::from_millis(250));
+            }
+            // The trace since the pull (R42): the PC's commands to the CF
+            // drive, each with its time and outcome. This PC asks the drive
+            // to be ready and reads sector 0; the trace must hold both.
+            ready(&mut bot, "CF after the quick swap")?;
+            let mut sector = [0u8; 512];
+            rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut sector)
+                .map_err(|_| "CF after the quick swap: sector 0 unreadable".to_string())?;
+            s.write_all(&rp_loadproto::control_frame("cf trace"))
+                .map_err(|e| e.to_string())?;
+            let mut trace = usb_read_until(&mut s, "RPL OK cf trace: ", 20)?;
+            if !trace.rsplit("RPL OK cf trace: ").next().is_some_and(|t| {
+                t.contains(
+                    "
+",
+                )
+            }) {
+                trace += &usb_read_until(
+                    &mut s, "
+", 10,
+                )?;
+            }
+            let rpd: Vec<&str> = trace.lines().filter(|l| l.starts_with("RPD ")).collect();
+            let total: usize = trace
+                .rsplit("RPL OK cf trace: ")
+                .next()
+                .and_then(|t| t.split_whitespace().next()?.parse().ok())
+                .ok_or_else(|| format!("cf trace: no count: {trace:?}"))?;
+            // `RPD at took op lba blocks result`.
+            let has = |op: &str, rest: &str| {
+                rpd.iter().any(|l| {
+                    let w: Vec<&str> = l.split_whitespace().collect();
+                    w.get(3) == Some(&op) && w[4..].join(" ").starts_with(rest)
+                })
+            };
+            if rpd.len() != total || !has("00", "0 0 ok") || !has("28", "0 1 ok") {
+                return Err(format!(
+                    "cf trace: {} lines for {total} commands, want TEST UNIT READY and READ(10) of sector 0: {trace:?}",
+                    rpd.len()
+                ));
+            }
+            eprintln!("    cf trace: {total} commands to the CF drive since the quick swap");
         }
         Ok(())
     };
@@ -9628,7 +10304,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         return Err("CF: the drive's write isn't in the card image".into());
     }
     eprintln!(
-        "    CF card OK: attached on its own as Windows Mobile left the slot, before the drive is offered (ready at the PC's first question), powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
+        "    CF card OK: attached on its own as Windows Mobile left the slot, before the drive is offered (ready at the PC's first question), powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, written by default (refused after drive ro, written after drive rw), checked in the image; a boot file put through the loader (cf:RetroPane/haret.exe) read but not overwritten through the drive; pulled out: slot powered off, attached again on re-insert (no READY before)"
     );
     Ok(())
 }
@@ -11421,6 +12097,9 @@ struct Bot {
     tag: u32,
     /// The logical unit commands go to (0: SD card, 1: CF card).
     lun: u8,
+    /// How long a command may take before it counts as no answer (a
+    /// hang detector, not a measurement: the guest's own time decides).
+    wait: Duration,
 }
 
 /// One command's outcome.
@@ -11436,6 +12115,7 @@ impl Bot {
             s: usb_connect(n)?,
             tag: 1,
             lun: 0,
+            wait: Duration::from_secs(20),
         })
     }
 
@@ -11498,7 +12178,7 @@ impl Bot {
         if !out.is_empty() {
             self.send_transfer(out)?;
         }
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + self.wait;
         let mut data = Vec::new();
         loop {
             let p = self.packet(deadline)?;
@@ -11614,6 +12294,48 @@ fn expect_away_then_back(bot: &mut Bot, after: &str) -> Result<(), String> {
         return Err(format!(
             "drive after {after}: wanted away, medium changed, ready; got {seq:x?}"
         ));
+    }
+    Ok(())
+}
+
+/// The attribute byte of the short entry `name` (11 bytes, 8.3 padded) in
+/// the FAT12/16 volume at `start`'s fixed root directory, read raw through
+/// `dev` (the PC's view when `dev` is the drive).
+fn fixed_root_attr(
+    dev: &mut dyn rp_hal_api::BlockDevice,
+    start: u32,
+    name: &[u8; 11],
+) -> Option<u8> {
+    let mut b = [0u8; 512];
+    dev.read_blocks(start, &mut b).ok()?;
+    let le16 = |o: usize| u32::from(u16::from_le_bytes([b[o], b[o + 1]]));
+    let root = start + le16(14) + u32::from(b[16]) * le16(22);
+    let sectors = (le16(17) * 32).div_ceil(512);
+    let mut s = [0u8; 512];
+    for k in 0..sectors {
+        dev.read_blocks(root + k, &mut s).ok()?;
+        if let Some(e) = s.chunks(32).find(|e| &e[..11] == name) {
+            return Some(e[11]);
+        }
+    }
+    None
+}
+
+/// After a write the guard refused, the drive stays as it was: ready, no
+/// medium change (the owner, 2026-10-25: no blink, nothing that looks
+/// broken; ruling A's away-and-back withdrawn). Watched for longer than
+/// the loader's old quiet time and the PC's write grace together.
+fn expect_no_blink_after_refusal(bot: &mut Bot, after: &str) -> Result<(), String> {
+    let until = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < until {
+        let r = bot.command(&[0; 6], 0, false, &[])?;
+        if r.status != 0 {
+            let s = bot.sense()?;
+            return Err(format!(
+                "drive after {after}: went away ({s:x?}): no blink wanted"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(200));
     }
     Ok(())
 }
@@ -11884,6 +12606,9 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             Ok(())
         };
         refuses_boot_file(&mut bot, "at start")?;
+        // The owner's ruling A (2026-10-25): after a refused write the drive
+        // goes away and comes back, so the PC drops the view it changed.
+        expect_no_blink_after_refusal(&mut bot, "a write the guard refused")?;
         if drive_file(&mut bot, "retropane.bin")? != old {
             return Err("drive: a refused write changed retropane.bin".into());
         }
@@ -11952,6 +12677,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             "drive",
         )?;
         refuses_boot_file(&mut bot, "after the device replaced it")?;
+        expect_no_blink_after_refusal(&mut bot, "a write the guard refused (again)")?;
         if drive_file(&mut bot, "retropane.bin")? != via_serial {
             return Err("drive: a refused write changed the new retropane.bin".into());
         }
@@ -11975,7 +12701,12 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         // It crosses the slow block: the card driver must fall back to
         // single blocks and still return exactly the card's bytes.
         let t = Instant::now();
-        let r = bot.command(&rw10(0x28, 0, 2048), 2048 * 512, true, &[])?;
+        // Across the slow block, block by block on a loaded PC: more than
+        // the usual 20 s may pass (R41, 2026-10-25), still progress.
+        bot.wait = Duration::from_secs(120);
+        let r = bot.command(&rw10(0x28, 0, 2048), 2048 * 512, true, &[]);
+        bot.wait = Duration::from_secs(20);
+        let r = r?;
         if r.status != 0 || r.data.len() != 2048 * 512 {
             return Err(format!(
                 "drive: 1 MiB read across the slow block {SLOW_BLOCK} failed (status {})",
@@ -14044,9 +14775,16 @@ mod tests",
     /// test reaches past it into another run's ports.
     #[test]
     fn usb_ports_fit_the_port_block() {
-        let src = include_str!("emu.rs");
+        let src = [include_str!("emu.rs"), include_str!("emu/mtp.rs")].concat();
         let mut seen = 0;
-        for call in ["usb_connect(", "usb_args(", "msc_args(", "usb_port("] {
+        for call in [
+            "usb_connect(",
+            "usb_args(",
+            "msc_args(",
+            "mtp_args(",
+            "usb_port(",
+            "Initiator::connect(",
+        ] {
             for rest in src.split(call).skip(1) {
                 let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
                 if let Ok(n) = digits.parse::<u16>() {

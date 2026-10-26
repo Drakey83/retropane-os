@@ -35,10 +35,22 @@ pub const FILE_BYTES: usize = 256 * 1024;
 pub const SECTOR: usize = 512;
 /// The longest image name a file may carry (`name` command).
 pub const NAME_MAX: usize = 24;
-/// Files kept per image on each card: older ones are deleted when a run
-/// reserves its own, so the folder can't fill the card (32 x 256 KiB =
-/// 8 MiB per image per card).
+/// Files kept per image on each card under the old naming
+/// (`<image>-NNNN.txt`, before the slots): numbers still follow them.
 pub const KEEP: u32 = 32;
+/// The run-log files each card keeps, made once and reused in turn
+/// (reminder R22, the owner's ruling 2026-10-24): a run writes only inside
+/// a file that already exists, so the PC's cached view of the card (its
+/// folders and FAT) stays right and the drive needn't be remounted.
+pub const SLOTS: usize = 32;
+/// Which run each slot holds: [`INDEX_LINE`] bytes a slot, text.
+pub const INDEX: &str = "rplog/index.txt";
+/// One index line: `SS QQQQQQQQ NNNN name` padded with spaces, then `\n`
+/// (slot, the run's place in the order runs were logged, the image's run
+/// number, the image's name).
+pub const INDEX_LINE: usize = 48;
+/// The index file's size: a line a slot.
+pub const INDEX_BYTES: usize = SLOTS * INDEX_LINE;
 /// The state's first word.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"RPCL");
 
@@ -122,6 +134,13 @@ pub struct State {
     pub used: u32,
     /// Each unit's first sector written (valid with its `used` bit).
     pub first: [u32; 2],
+    /// Bit per unit the program took for itself (its controller or socket:
+    /// it may have written the card anywhere), whether or not a log line
+    /// went there afterwards (R22: the loader then has the PC re-read it).
+    pub taken: u32,
+    /// Bit per unit whose folders or FAT the loader changed to set this
+    /// run's log up (slots or index made): the PC re-reads it too.
+    pub changed: u32,
 }
 
 impl State {
@@ -145,6 +164,8 @@ impl State {
             noted: 0,
             used: 0,
             first: [0; 2],
+            taken: 0,
+            changed: 0,
         }
     }
 
@@ -436,6 +457,143 @@ pub fn join<'a>(sd: Option<&'a [u8]>, cf: Option<&'a [u8]>) -> impl Iterator<Ite
     (0..)
         .map(move |i| at(sd, i) | at(cf, i))
         .take_while(|&b| b != 0)
+}
+
+/// `rplog/log-SS.txt`, slot `slot`'s file, into `out`; its length.
+pub fn slot_path(slot: usize, out: &mut [u8; 32]) -> usize {
+    let s = (slot % 100) as u8;
+    let text = [
+        b'r',
+        b'p',
+        b'l',
+        b'o',
+        b'g',
+        b'/',
+        b'l',
+        b'o',
+        b'g',
+        b'-',
+        b'0' + s / 10,
+        b'0' + s % 10,
+        b'.',
+        b't',
+        b'x',
+        b't',
+    ];
+    out[..text.len()].copy_from_slice(&text);
+    text.len()
+}
+
+/// One slot's index line: which run it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Entry<'a> {
+    /// The order runs were logged (higher: later; 0: an empty slot).
+    pub order: u32,
+    /// The image's run number.
+    pub number: u32,
+    /// The image's name.
+    pub name: &'a [u8],
+}
+
+/// Slot `slot`'s line in an index (`None`: empty, unreadable or out of
+/// range: a slot to use first).
+#[must_use]
+pub fn index_entry(index: &[u8], slot: usize) -> Option<Entry<'_>> {
+    let line = index.get(slot * INDEX_LINE..(slot + 1) * INDEX_LINE)?;
+    let num = |b: &[u8]| -> Option<u32> {
+        if b.is_empty() || !b.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        Some(b.iter().fold(0u32, |v, &d| {
+            v.wrapping_mul(10).wrapping_add(u32::from(d - b'0'))
+        }))
+    };
+    let mut words = line
+        .split(|&b| b == b' ' || b == b'\n')
+        .filter(|w| !w.is_empty());
+    let s = num(words.next()?)?;
+    let order = num(words.next()?)?;
+    let number = num(words.next()?)?;
+    let name = words.next()?;
+    (s as usize == slot && order > 0 && name_ok(name)).then_some(Entry {
+        order,
+        number,
+        name,
+    })
+}
+
+/// Writes slot `slot`'s line for `entry` into `index`.
+pub fn set_index_entry(index: &mut [u8], slot: usize, entry: Entry<'_>) {
+    let Some(line) = index.get_mut(slot * INDEX_LINE..(slot + 1) * INDEX_LINE) else {
+        return;
+    };
+    line.fill(b' ');
+    let mut n = 0;
+    let mut put = |b: &[u8]| {
+        let k = b.len().min(INDEX_LINE - 1 - n);
+        line[n..n + k].copy_from_slice(&b[..k]);
+        n += k;
+    };
+    let digits = |v: u32, width: usize| {
+        let mut d = [b'0'; 10];
+        let mut x = v;
+        for i in (0..width).rev() {
+            d[i] = b'0' + (x % 10) as u8;
+            x /= 10;
+        }
+        d
+    };
+    put(&digits(slot as u32, 2)[..2]);
+    put(b" ");
+    put(&digits(entry.order, 8)[..8]);
+    put(b" ");
+    put(&digits(entry.number, 4)[..4]);
+    put(b" ");
+    put(entry.name);
+    line[INDEX_LINE - 1] = b'\n';
+}
+
+/// Where the next run goes on a card with this index, and what it says:
+/// the first empty slot, else the one holding the oldest run; the newest
+/// run's order; and `image`'s highest run number in it.
+#[must_use]
+pub fn choose(index: &[u8], image: &[u8]) -> (usize, u32, u32) {
+    let mut slot = 0;
+    let mut oldest = u32::MAX;
+    let mut newest = 0;
+    let mut highest = 0;
+    for s in 0..SLOTS {
+        match index_entry(index, s) {
+            None => {
+                if oldest > 0 {
+                    oldest = 0;
+                    slot = s;
+                }
+            }
+            Some(e) => {
+                newest = newest.max(e.order);
+                if e.name == image {
+                    highest = highest.max(e.number);
+                }
+                if e.order < oldest {
+                    oldest = e.order;
+                    slot = s;
+                }
+            }
+        }
+    }
+    (slot, newest, highest)
+}
+
+/// The slot holding `image`'s run `number` (or its newest with `None`), and
+/// that run's number.
+#[must_use]
+pub fn find(index: &[u8], image: Option<&[u8]>, number: Option<u32>) -> Option<(usize, u32)> {
+    (0..SLOTS)
+        .filter_map(|s| index_entry(index, s).map(|e| (s, e)))
+        .filter(|(_, e)| image.is_none_or(|i| e.name == i) && number.is_none_or(|n| e.number == n))
+        .max_by_key(|(_, e)| e.order)
+        .map(|(s, e)| (s, e.number))
 }
 
 /// Whether `name` may name a card log: 1 to [`NAME_MAX`] of `a-z`, `0-9`,

@@ -25,7 +25,7 @@ struct SimUdc {
     ep0_pending: Option<Vec<u8>>,
     cr: [u32; 24],
     /// The bulk endpoints, by slot.
-    bulk: [Bulk; 6],
+    bulk: [Bulk; 7],
     /// OUT byte counts read 0 (as if the count lagged the packet-complete
     /// of a packet that just reached the front).
     bcr_reads_zero: bool,
@@ -180,7 +180,7 @@ impl RegisterBus for SimUdc {
                 }
                 u32::from_le_bytes(w)
             }
-            o if (reg::csr(1)..=reg::csr(5)).contains(&o) => {
+            o if (reg::csr(1)..=reg::csr(6)).contains(&o) => {
                 let slot = (o - 0x100) / 4;
                 let b = &self.bulk[slot];
                 let pc = if b.pc { reg::PC } else { 0 };
@@ -203,14 +203,14 @@ impl RegisterBus for SimUdc {
                     }
                 }
             }
-            o if (reg::bcr(1)..=reg::bcr(5)).contains(&o) => {
+            o if (reg::bcr(1)..=reg::bcr(6)).contains(&o) => {
                 let slot = (o - 0x200) / 4;
                 if self.bcr_reads_zero {
                     return 0;
                 }
                 self.bulk[slot].queue.front().map_or(0, |p| p.len() as u32)
             }
-            o if (reg::dr(1)..=reg::dr(5)).contains(&o) => {
+            o if (reg::dr(1)..=reg::dr(6)).contains(&o) => {
                 let slot = (o - 0x300) / 4;
                 let mut w = [0u8; 4];
                 if let Some(p) = self.bulk[slot].queue.front_mut() {
@@ -278,10 +278,10 @@ impl RegisterBus for SimUdc {
                 );
                 self.cr[(o - 0x400) / 4] = v;
             }
-            o if (reg::dr(1)..=reg::dr(5)).contains(&o) => {
+            o if (reg::dr(1)..=reg::dr(6)).contains(&o) => {
                 self.bulk_write((o - 0x300) / 4, &v.to_le_bytes());
             }
-            o if (reg::csr(1)..=reg::csr(5)).contains(&o) => {
+            o if (reg::csr(1)..=reg::csr(6)).contains(&o) => {
                 let slot = (o - 0x100) / 4;
                 self.csr_writes.push((slot, v));
                 let is_in = self.cr[slot] & (1 << 12) != 0;
@@ -314,7 +314,7 @@ impl RegisterBus8 for SimUdc {
     fn write8(&mut self, offset: usize, v: u8) {
         if offset == reg::dr(0) {
             self.ep0_write(&[v]);
-        } else if (reg::dr(1)..=reg::dr(5)).contains(&offset) {
+        } else if (reg::dr(1)..=reg::dr(6)).contains(&offset) {
             self.bulk_write((offset - 0x300) / 4, &[v]);
         }
     }
@@ -358,6 +358,7 @@ impl Host {
     /// the status OUT. `None` if the device stalled.
     fn control_in(&mut self, s: [u8; 8]) -> Option<Vec<u8>> {
         self.setup(s);
+        let want = usize::from(u16::from_le_bytes([s[6], s[7]]));
         let mut data = Vec::new();
         for _ in 0..64 {
             if self.sim().csr0 & reg::SST != 0 {
@@ -368,11 +369,20 @@ impl Host {
             if let Some(p) = self.sim().host_in() {
                 let short = p.len() < usb::EP0_SIZE;
                 data.extend(p);
-                if short {
+                // As a host does: a short packet or all it asked for ends
+                // the data stage (USB 2.0 8.5.3.2).
+                if short || data.len() >= want {
                     // Status stage: zero-length OUT.
                     self.sim().csr0 |= reg::OPC;
                     self.poll(2);
                     assert_eq!(self.sim().csr0 & reg::OPC, 0, "status OUT not acknowledged");
+                    // Nothing more for this request: a stray packet would
+                    // answer the next one.
+                    self.poll(3);
+                    assert!(
+                        self.sim().host_in().is_none(),
+                        "a packet after the data stage"
+                    );
                     return Some(data);
                 }
             }
@@ -1067,4 +1077,317 @@ fn interrupts_raise_the_line_until_a_poll_serves_them() {
     assert_eq!(d.len(), 18);
     h.udc.disable();
     assert!(!h.sim().line(), "disabled: no events enabled");
+}
+
+// --- The MTP layout (ADR-0037) ----------------------------------------------
+
+fn mtp_host() -> Host {
+    let mut udc = Udc::new(SimUdc::default());
+    udc.set_layout(Layout::Mtp);
+    udc.enable().unwrap();
+    Host { udc }
+}
+
+/// Walks a configuration: every descriptor's (type, bytes), lengths
+/// chaining exactly to the end.
+fn walk(c: &[u8]) -> Vec<(u8, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        let len = usize::from(c[i]);
+        assert!(len >= 2);
+        out.push((c[i + 1], c[i..i + len].to_vec()));
+        i += len;
+    }
+    assert_eq!(i, c.len());
+    out
+}
+
+#[test]
+fn the_mtp_layout_names_its_interface_mtp_and_matches_its_table() {
+    let c = &usb::CONFIG_MTP;
+    assert_eq!(usize::from(u16::from_le_bytes([c[2], c[3]])), c.len());
+    assert_eq!(c[4], 3, "three interfaces");
+    // The serial port's descriptors are the drive layout's, byte for byte.
+    assert_eq!(c[9..75], usb::CONFIG[9..75]);
+    let d = walk(c);
+    let iface2 = d.iter().find(|(t, b)| *t == 4 && b[2] == 2).unwrap();
+    assert_eq!(
+        &iface2.1[4..9],
+        &[3, 0xFF, 0xFF, 0x00, 5],
+        "3 endpoints, vendor class, string 5"
+    );
+    let endpoints: Vec<(u8, u8, u16)> = d
+        .iter()
+        .filter(|(t, _)| *t == 5)
+        .map(|(_, b)| (b[2], b[3], u16::from_le_bytes([b[4], b[5]])))
+        .collect();
+    assert_eq!(
+        endpoints,
+        [
+            (0x83, 3, 16),
+            (0x01, 2, 64),
+            (0x82, 2, 64),
+            (0x04, 2, 64),
+            (0x85, 2, 64),
+            (0x86, 3, 32)
+        ]
+    );
+    for (slot, cfg) in TABLE_MTP {
+        let number = ((cfg >> 15) & 0xF) as u8;
+        let is_in = cfg & (1 << 12) != 0;
+        let size = ((cfg >> 2) & 0x3FF) as u16;
+        let kind = ((cfg >> 13) & 3) as u8;
+        let addr = number | if is_in { 0x80 } else { 0 };
+        assert!(
+            endpoints
+                .iter()
+                .any(|&(a, k, s)| a == addr && s == size && k == kind),
+            "slot {slot}"
+        );
+    }
+    // USB 2.01 (a BOS descriptor), revision 26.02; the drive layout stays.
+    assert_eq!(&usb::DEVICE_MTP[2..4], &[0x01, 0x02]);
+    assert_eq!(&usb::DEVICE_MTP[12..14], &[0x02, 0x26]);
+    assert_eq!(&usb::DEVICE[2..4], &[0x00, 0x02]);
+    assert_eq!(&usb::DEVICE[12..14], &[0x01, 0x26]);
+    assert_eq!(usb::MTP_NAME, [8, 3, b'M', 0, b'T', 0, b'P', 0]);
+}
+
+#[test]
+fn microsofts_descriptors_are_well_formed() {
+    let s = &usb::MS_OS_STRING;
+    assert_eq!(usize::from(s[0]), s.len());
+    let name: Vec<u8> = "MSFT100"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    assert_eq!(&s[2..16], &name[..]);
+    assert_eq!(s[16], usb::MS_VENDOR_CODE);
+    let c = &usb::MS_COMPAT_ID;
+    assert_eq!(
+        u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as usize,
+        c.len()
+    );
+    assert_eq!(&c[4..8], &[0x00, 0x01, 0x04, 0x00]);
+    assert_eq!(c[16], 2, "the MTP interface");
+    assert_eq!(&c[18..26], b"MTP\0\0\0\0\0");
+    let b = &usb::BOS;
+    assert_eq!(usize::from(u16::from_le_bytes([b[2], b[3]])), b.len());
+    assert_eq!(usize::from(b[5]), b.len() - 5);
+    assert_eq!(
+        &b[9..25],
+        &[
+            0xDF, 0x60, 0xDD, 0xD8, 0x89, 0x45, 0xC7, 0x4C, 0x9C, 0xD2, 0x65, 0x9D, 0x9E, 0x64,
+            0x8A, 0x9F
+        ]
+    );
+    assert_eq!(
+        usize::from(u16::from_le_bytes([b[29], b[30]])),
+        usb::MS_OS20_SET.len()
+    );
+    assert_eq!(b[31], usb::MS_VENDOR_CODE);
+    let set = &usb::MS_OS20_SET;
+    assert_eq!(usize::from(u16::from_le_bytes([set[8], set[9]])), set.len());
+    // Each descriptor's own length chains to the end; the subsets' totals
+    // cover what follows them.
+    let mut i = 0;
+    let mut kinds = Vec::new();
+    while i < set.len() {
+        let len = usize::from(u16::from_le_bytes([set[i], set[i + 1]]));
+        kinds.push(u16::from_le_bytes([set[i + 2], set[i + 3]]));
+        i += len;
+    }
+    assert_eq!(i, set.len());
+    assert_eq!(kinds, [0, 1, 2, 3]);
+    assert_eq!(usize::from(set[16]), set.len() - 10, "configuration subset");
+    assert_eq!(set[22], 2, "function at the MTP interface");
+    assert_eq!(usize::from(set[24]), 28, "function subset");
+    assert_eq!(&set[30..38], b"MTP\0\0\0\0\0");
+}
+
+#[test]
+fn enumerates_as_mtp_like_windows_and_records_what_windows_read() {
+    let mut h = mtp_host();
+    h.reset();
+    assert_eq!(
+        h.control_in([0x80, 6, 0, 1, 0, 0, 18, 0]).unwrap(),
+        usb::DEVICE_MTP
+    );
+    assert_eq!(
+        h.control_in([0x80, 6, 0, 2, 0, 0, 255, 0]).unwrap(),
+        usb::CONFIG_MTP
+    );
+    assert_eq!(
+        h.control_in([0x80, 6, 5, 3, 9, 4, 255, 0]).unwrap(),
+        usb::MTP_NAME
+    );
+    assert_eq!(h.udc.ms_seen(), 0);
+    assert_eq!(
+        h.control_in([0x80, 6, 0xEE, 3, 0, 0, 255, 0]).unwrap(),
+        usb::MS_OS_STRING
+    );
+    assert_eq!(
+        h.control_in([0xC0, usb::MS_VENDOR_CODE, 0, 0, 4, 0, 16, 0])
+            .unwrap(),
+        usb::MS_COMPAT_ID[..16]
+    );
+    assert_eq!(
+        h.control_in([0xC1, usb::MS_VENDOR_CODE, 0, 0, 4, 0, 40, 0])
+            .unwrap(),
+        usb::MS_COMPAT_ID
+    );
+    assert_eq!(
+        h.control_in([0x80, 6, 0, 0x0F, 0, 0, 5, 0]).unwrap(),
+        usb::BOS[..5]
+    );
+    assert_eq!(
+        h.control_in([0x80, 6, 0, 0x0F, 0, 0, 33, 0]).unwrap(),
+        usb::BOS
+    );
+    assert_eq!(h.udc.ms_seen() & usb::ms::SET20, 0);
+    assert_eq!(
+        h.control_in([0xC0, usb::MS_VENDOR_CODE, 0, 0, 7, 0, 46, 0])
+            .unwrap(),
+        usb::MS_OS20_SET
+    );
+    assert_eq!(
+        h.udc.ms_seen(),
+        usb::ms::STRING | usb::ms::COMPAT_ID | usb::ms::BOS | usb::ms::SET20
+    );
+    // Another vendor index stalls; a new enable forgets what was read.
+    assert!(
+        h.control_in([0xC0, usb::MS_VENDOR_CODE, 0, 0, 5, 0, 16, 0])
+            .is_none()
+    );
+    h.udc.disable();
+    h.udc.enable().unwrap();
+    assert_eq!(h.udc.ms_seen(), 0);
+}
+
+#[test]
+fn a_reply_that_fills_the_request_ends_without_a_zero_length_packet() {
+    // Windows reads the compatible ID's 16-byte header first: one full
+    // packet that is all it asked for, then the status stage. A zero-length
+    // packet after it would wait in the FIFO and answer the next request
+    // (found in the emulator, ADR-0037).
+    let mut h = mtp_host();
+    h.reset();
+    h.setup([0xC0, usb::MS_VENDOR_CODE, 0, 0, 4, 0, 16, 0]);
+    let mut packets = Vec::new();
+    for _ in 0..20 {
+        if let Some(p) = h.sim().host_in() {
+            packets.push(p);
+        }
+        h.poll(3);
+    }
+    assert_eq!(packets, [usb::MS_COMPAT_ID[..16].to_vec()]);
+    h.sim().csr0 |= reg::OPC;
+    h.poll(2);
+    // The next request is answered by its own reply.
+    assert_eq!(
+        h.control_in([0xC0, usb::MS_VENDOR_CODE, 0, 0, 4, 0, 40, 0])
+            .unwrap(),
+        usb::MS_COMPAT_ID
+    );
+}
+
+#[test]
+fn the_drive_layout_offers_none_of_microsofts_descriptors() {
+    let mut h = Host::new();
+    h.reset();
+    assert!(h.control_in([0x80, 6, 0xEE, 3, 0, 0, 255, 0]).is_none());
+    assert!(
+        h.control_in([0xC0, usb::MS_VENDOR_CODE, 0, 0, 4, 0, 16, 0])
+            .is_none()
+    );
+    assert!(h.control_in([0x80, 6, 0, 0x0F, 0, 0, 5, 0]).is_none());
+    assert!(h.control_in([0x80, 6, 5, 3, 9, 4, 255, 0]).is_none());
+    // MTP's class requests neither.
+    assert!(h.control_in([0xA1, 0x67, 0, 0, 2, 0, 12, 0]).is_none());
+}
+
+#[test]
+fn mtp_class_requests_reach_the_function() {
+    let mut h = mtp_host();
+    h.reset();
+    // Cancel: code 0x4001 and the transaction.
+    h.control_out(
+        [0x21, 0x64, 0, 0, 2, 0, 6, 0],
+        &[0x01, 0x40, 0x34, 0x12, 0, 0],
+    );
+    assert_eq!(h.udc.take_mtp_cancel(), Some(0x1234));
+    assert_eq!(h.udc.take_mtp_cancel(), None);
+    // A wrong cancellation code is ignored.
+    h.control_out([0x21, 0x64, 0, 0, 2, 0, 6, 0], &[0x02, 0x40, 1, 0, 0, 0]);
+    assert_eq!(h.udc.take_mtp_cancel(), None);
+    // Device Reset.
+    h.control_ack([0x21, 0x66, 0, 0, 2, 0, 0, 0]);
+    assert!(h.udc.take_mtp_reset());
+    // Get Device Status: OK by default, then what the function says.
+    assert_eq!(
+        h.control_in([0xA1, 0x67, 0, 0, 2, 0, 12, 0]).unwrap(),
+        [4, 0, 0x01, 0x20]
+    );
+    h.udc.set_mtp_status(0x2019);
+    assert_eq!(
+        h.control_in([0xA1, 0x67, 0, 0, 2, 0, 12, 0]).unwrap(),
+        [4, 0, 0x19, 0x20]
+    );
+    // On another interface: STALL.
+    assert!(h.control_in([0xA1, 0x67, 0, 0, 0, 0, 12, 0]).is_none());
+}
+
+#[test]
+fn a_stalled_pipe_reports_its_endpoints_until_the_host_clears_them() {
+    let mut h = mtp_host();
+    h.reset();
+    h.set_configuration();
+    h.udc.mtp_stall();
+    let writes: Vec<(usize, u32)> = core::mem::take(&mut h.sim().csr_writes);
+    for slot in [SLOT_MSC_OUT, SLOT_MSC_IN] {
+        assert!(
+            writes.iter().any(|&(s, v)| s == slot && v & reg::FST != 0),
+            "slot {slot} halted"
+        );
+    }
+    h.udc.set_mtp_status(0x201F);
+    assert_eq!(
+        h.control_in([0xA1, 0x67, 0, 0, 2, 0, 12, 0]).unwrap(),
+        [12, 0, 0x1F, 0x20, 0x04, 0, 0, 0, 0x85, 0, 0, 0]
+    );
+    h.control_ack([0x02, 1, 0, 0, 0x04, 0, 0, 0]);
+    assert!(!h.udc.take_mtp_cleared(), "one of two cleared");
+    h.control_ack([0x02, 1, 0, 0, 0x85, 0, 0, 0]);
+    assert!(h.udc.take_mtp_cleared());
+    let writes: Vec<(usize, u32)> = core::mem::take(&mut h.sim().csr_writes);
+    assert!(
+        writes
+            .iter()
+            .any(|&(s, v)| s == SLOT_MSC_IN && v & reg::SST != 0 && v & reg::FST == 0)
+    );
+    h.udc.set_mtp_status(0x2001);
+    assert_eq!(
+        h.control_in([0xA1, 0x67, 0, 0, 2, 0, 12, 0]).unwrap(),
+        [4, 0, 0x01, 0x20]
+    );
+}
+
+#[test]
+fn events_go_out_on_their_own_endpoint() {
+    let mut h = mtp_host();
+    // The MTP table has the event endpoint; the drive table doesn't.
+    assert_ne!(h.sim().cr[SLOT_MTP_EVENT], 0);
+    assert_eq!(Host::new().sim().cr[SLOT_MTP_EVENT], 0);
+    h.reset();
+    assert!(!h.udc.mtp_event_can_write(), "not before configuration");
+    h.set_configuration();
+    assert!(h.udc.mtp_event_can_write());
+    let event = [16, 0, 0, 0, 4, 0, 0x02, 0x40, 0, 0, 0, 0, 7, 0, 0, 0];
+    h.udc.mtp_event_write(&event);
+    h.sim().host_in_on(SLOT_MTP_EVENT);
+    assert_eq!(
+        h.sim().bulk[SLOT_MTP_EVENT].sent.pop_front().unwrap(),
+        event
+    );
 }
