@@ -65,6 +65,9 @@ pub enum Mode {
     /// The drive only (ADR-0014): this loader's default until the X51v
     /// proves MTP (R53), so the owner's daily drive doesn't change first.
     Msc,
+    /// ADR-0037's split try-out: the cards as drives (each with its own
+    /// icon) and the device over MTP beside them, holding no card.
+    Split,
 }
 
 impl Mode {
@@ -73,6 +76,7 @@ impl Mode {
         match self {
             Mode::Auto | Mode::Mtp => Layout::Mtp,
             Mode::Msc => Layout::Drive,
+            Mode::Split => Layout::Split,
         }
     }
 
@@ -83,6 +87,10 @@ impl Mode {
             (Mode::Auto, Layout::Mtp) => Layout::Drive,
             (Mode::Msc, Layout::Serial) => Layout::Drive,
             (Mode::Auto | Mode::Mtp, Layout::Serial) => Layout::Mtp,
+            // A PC that won't configure the split layout gets the cards as
+            // drives, then the serial port, then the split layout again.
+            (Mode::Split, Layout::Split) => Layout::Drive,
+            (Mode::Split, Layout::Serial) => Layout::Split,
             _ => Layout::Serial,
         }
     }
@@ -92,6 +100,7 @@ impl Mode {
             Mode::Auto => "auto",
             Mode::Mtp => "mtp",
             Mode::Msc => "msc",
+            Mode::Split => "split",
         }
     }
 }
@@ -109,6 +118,8 @@ pub struct Ui {
     icon_at: Option<(u8, u32)>,
     /// The icon experiment's variant ([`PROBES`], 0: the standard codes).
     probe: usize,
+    /// The split layout: the cards are the drive's, so MTP lists none.
+    no_cards: bool,
 }
 
 /// The icon experiment (R61, the owner's priority: each card its own icon
@@ -169,6 +180,7 @@ impl Tables {
                 name: Text::from_text(rp_hal_x51v::MODEL).unwrap_or_default(),
                 icon_at: None,
                 probe: 0,
+                no_cards: false,
             },
         })?;
         Some(tables)
@@ -182,10 +194,21 @@ impl Tables {
         self.state.forget(s);
         // Either card may hold the device icon.
         self.ui.icon_at = None;
+        if self.ui.no_cards {
+            // Not MTP's store: the drive tells the PC.
+            return;
+        }
         self.mtp.store_changed(s, false);
         if present {
             self.mtp.store_changed(s, true);
         }
+    }
+
+    /// Whether MTP lists the cards (`false` in the split layout, where they
+    /// are the drive's: a card is never open to the PC two ways at once).
+    /// Takes effect at the next enumeration (the caller re-plugs).
+    pub fn set_cards(&mut self, on: bool) {
+        self.ui.no_cards = !on;
     }
 
     /// One turn of the responder: the controller's class requests, then
@@ -472,7 +495,7 @@ impl Cards for LoaderCards<'_> {
         Self: 'b;
 
     fn stores(&self) -> u8 {
-        2
+        if self.ui.no_cards { 0 } else { 2 }
     }
 
     fn disk(&mut self, s: u8) -> Option<(Self::Disk<'_>, u32)> {
@@ -649,19 +672,20 @@ impl Cards for LoaderCards<'_> {
 }
 
 /// The controller's MTP endpoints as the responder's pipe: the bulk pair
-/// (slots D and E, the drive's) and the event endpoint (slot F). CPU
-/// packets for now; DMA as the drive has it is quality audit C86.
+/// (slots D and E, the drive's, in the MTP layout; G and H in the split
+/// layout) and the event endpoint (slot F). CPU packets for now; DMA as
+/// the drive has it is quality audit C86.
 struct UsbPipe<'a>(&'a mut Udc<Mmio>);
 
 impl Pipe for UsbPipe<'_> {
     fn read_packet(&mut self, buf: &mut [u8; PACKET]) -> Option<usize> {
-        self.0.msc_read(buf)
+        self.0.mtp_read(buf)
     }
     fn can_write(&mut self) -> bool {
-        self.0.msc_can_write()
+        self.0.mtp_can_write()
     }
     fn write_packet(&mut self, data: &[u8]) {
-        self.0.msc_write(data);
+        self.0.mtp_write(data);
     }
     fn event_can_write(&mut self) -> bool {
         self.0.mtp_event_can_write()

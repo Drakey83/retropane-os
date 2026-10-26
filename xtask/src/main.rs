@@ -445,7 +445,7 @@ fn main() -> ExitCode {
         "drive" => {
             eprintln!("==> drive {flag}");
             match flag.as_str() {
-                "rw" | "ro" | "on" | "off" | "status" | "mtp" | "msc" | "auto" => {
+                "rw" | "ro" | "on" | "off" | "status" | "mtp" | "msc" | "auto" | "split" => {
                     usb::command(&workspace_root(), &format!("drive {flag}"))
                 }
                 // MTP's counters and the layout (ADR-0037).
@@ -456,7 +456,8 @@ fn main() -> ExitCode {
                     usb::command(&workspace_root(), &format!("drive mtp probe {n}"))
                 }
                 _ => Err(
-                    "usage: cargo xtask drive rw|ro|on|off|status|mtp|msc|auto|mtp-status".into(),
+                    "usage: cargo xtask drive rw|ro|on|off|status|mtp|msc|auto|split|mtp-status"
+                        .into(),
                 ),
             }
         }

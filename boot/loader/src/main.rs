@@ -3370,6 +3370,16 @@ mod image {
                 Some(t) if udc.layout() == Layout::Mtp => {
                     t.poll(&mut udc, &mut lun, &mut cf, &mut log);
                 }
+                // The split try-out: the device over MTP (no card) and the
+                // cards as drives, both served each turn.
+                Some(t) if udc.layout() == Layout::Split => {
+                    t.poll(&mut udc, &mut lun, &mut cf, &mut log);
+                    msc.poll(
+                        &mut Pipe(&mut udc, udc_dma.as_mut()),
+                        &mut [&mut lun, &mut cf],
+                        now_ms(),
+                    );
+                }
                 _ => msc.poll(
                     &mut Pipe(&mut udc, udc_dma.as_mut()),
                     &mut [&mut lun, &mut cf],
@@ -3384,6 +3394,9 @@ mod image {
             }
             if relayout_at.is_some_and(|t| now_ms().wrapping_sub(t) < 1 << 31) {
                 relayout_at = None;
+                if let Some(t) = mtp_t.as_mut() {
+                    t.set_cards(drive_mode != mtp::Mode::Split);
+                }
                 let first = drive_mode.first();
                 udc.set_layout(first);
                 replug(&mut udc, uhc.as_mut());
@@ -3646,10 +3659,16 @@ mod image {
                             handoff_command(ready_at, &stages, &mut status);
                             status.as_str()
                         }
-                        Ok(c) if matches!(c, b"drive mtp" | b"drive msc" | b"drive auto") => {
+                        Ok(c)
+                            if matches!(
+                                c,
+                                b"drive mtp" | b"drive msc" | b"drive auto" | b"drive split"
+                            ) =>
+                        {
                             let mode = match c {
                                 b"drive mtp" => mtp::Mode::Mtp,
                                 b"drive auto" => mtp::Mode::Auto,
+                                b"drive split" => mtp::Mode::Split,
                                 _ => mtp::Mode::Msc,
                             };
                             if mode != mtp::Mode::Msc && mtp_t.is_none() {
@@ -3666,6 +3685,9 @@ mod image {
                                     }
                                     mtp::Mode::Msc => {
                                         "RPL OK drive msc: the cards as drives in 0.3 s\r\n"
+                                    }
+                                    mtp::Mode::Split => {
+                                        "RPL OK drive split: the cards as drives, the device over MTP beside them, in 0.3 s\r\n"
                                     }
                                 }
                             }
@@ -4198,6 +4220,7 @@ mod image {
     fn layout_name(l: Layout) -> &'static str {
         match l {
             Layout::Mtp => "serial + MTP",
+            Layout::Split => "serial + drive + MTP",
             Layout::Drive => "serial + drive",
             Layout::Serial => "serial-only",
         }
@@ -4207,6 +4230,7 @@ mod image {
     fn layout_tag(l: Layout) -> &'static str {
         match l {
             Layout::Mtp => "mtp",
+            Layout::Split => "split",
             Layout::Drive => "composite",
             Layout::Serial => "serial-only",
         }
