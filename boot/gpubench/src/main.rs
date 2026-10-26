@@ -7937,7 +7937,8 @@ mod image {
         || GC2_TRACE
         || GC2_SPLIT
         || GC2_INNER
-        || GC2_GEO;
+        || GC2_GEO
+        || GC2_QUAD;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -7965,6 +7966,11 @@ mod image {
     /// last rows wrong at divide 1, and why one full layer alone stays
     /// clean. About 5 minutes, unattended.
     const GC2_GEO: bool = option_env!("RP_GPUBENCH_GC2_GEO").is_some();
+
+    /// Run GC2AI, reminder R37 (`RP_GPUBENCH_GC2_QUAD`, see
+    /// [`gc2::QUAD_WAYS`]): the flat quad's edges and order moved one at a
+    /// time against the stacked tile. About 7 minutes, unattended.
+    const GC2_QUAD: bool = option_env!("RP_GPUBENCH_GC2_QUAD").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9338,7 +9344,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_GEO {
+            if GC2_QUAD {
+                "the 16-bit kinds' targets inside the safe region (GC2AI, R37: no map; the flat quad's edges and order moved one at a time over the ring and one full layer; each target poisoned first),"
+            } else if GC2_GEO {
                 "the 16-bit kinds' targets inside the safe region (GC2AH, R37: no map; the geometry without texture: the ring over one, none and two full layers, two layers alone, the ring's edges mid-tile; each target poisoned first),"
             } else if GC2_INNER {
                 "the 16-bit kinds' targets inside the safe region (GC2AG, R37: no map; R36's fault generator with its texture inside the safe region, untextured, its parameter memory moved, and both moves, each target poisoned first),"
@@ -9494,7 +9502,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_GEO {
+        let patch = if GC2_QUAD {
+            gc2::QUAD_SCENES.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_GEO {
             gc2::GEO_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_INNER || GC2_SPLIT {
             gc2::TRACE_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -9849,7 +9859,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_GEO {
+                if GC2_QUAD {
+                    gc2_quad(g, &mut r, (tex, first, dsig));
+                } else if GC2_GEO {
                     gc2_geo(g, &mut r, (tex, first, dsig));
                 } else if GC2_INNER {
                     gc2_inner(g, &mut r, (tex, first, dsig));
@@ -11491,6 +11503,36 @@ mod image {
                 rounds: gc2::MARGIN_ROUNDS.min(GC2AE_ROUNDS),
                 poison: true,
                 describe: 10,
+                pause: false,
+                quiet: false,
+                flat: false,
+            },
+        );
+    }
+
+    /// Run GC2AI (see [`GC2_QUAD`]): the eight quad ways in turn at 149.50
+    /// / 1 reversed, [`gc2::QUAD_ROUNDS`] rounds, every target poisoned,
+    /// each way's wrong pixels placed.
+    #[inline(never)]
+    fn gc2_quad(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let n = gc2::QUAD_ROUNDS.min(GC2AE_ROUNDS);
+        log!(
+            "  GC2AI (R37): the flat quad over the ring and one full layer at 149.50 / 1 reversed, {n} rounds: as GC2AG; top at y 32; top at y 44; right at x 436; at x 448; at x 456; at x 400; drawn first"
+        );
+        gc2_orders(
+            g,
+            r,
+            (tex, first, dsig),
+            &OrderPlan {
+                name: "GC2AI",
+                label: "GC2AI QUAD EDGES",
+                scenes: &gc2::QUAD_SCENES,
+                ways: &gc2::QUAD_ORDER,
+                step: (gc2_step(23, 2, 0, 1), "149.50 / 1"),
+                secs: 900,
+                rounds: n,
+                poison: true,
+                describe: 16,
                 pause: false,
                 quiet: false,
                 flat: false,

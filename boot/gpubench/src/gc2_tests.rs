@@ -1451,3 +1451,35 @@ fn gc2ah_geometry_ways_are_built_as_named() {
     // in its rounds: enough to place them; none in way 3 is then telling.
     const { assert!(GEO_ROUNDS >= 400) };
 }
+
+/// GC2AI's ways: way 0 is GC2AG's untextured fault generator object for
+/// object; each other way moves only the flat quad (or draws it first),
+/// the layer and the ring always where FT2's quad puts them.
+#[test]
+fn gc2ai_moves_only_the_quad() {
+    let t = test_tex();
+    let (_, generator) = fix_scene(0, 8, t);
+    let generator: std::vec::Vec<Draw> = untextured(generator).iter().flatten().copied().collect();
+    let (_, w0) = quad_scene(0, t);
+    let w0: std::vec::Vec<Draw> = w0.iter().flatten().copied().collect();
+    assert_eq!(w0, generator, "way 0 is GC2AG's untextured scene");
+    let is_quad = |d: &Draw| d.paint == Paint::Flat(UNTEXTURED);
+    for (w, qw) in QUAD_WAYS.iter().enumerate() {
+        let (_, s) = quad_scene(w, t);
+        let s: std::vec::Vec<Draw> = s.iter().flatten().copied().collect();
+        assert_eq!(s.len(), w0.len(), "way {w}");
+        let (x0, y0, x1, y1) = qw.rect;
+        let quad = Draw::rect(x0, y0, x1 - x0, y1 - y0, Paint::Flat(UNTEXTURED));
+        assert_eq!(s.iter().filter(|d| is_quad(d)).count(), 1, "way {w}");
+        assert_eq!(s.iter().position(&is_quad) == Some(0), qw.first, "way {w}");
+        assert!(s.contains(&quad), "way {w}");
+        let rest: std::vec::Vec<Draw> = s.iter().filter(|d| !is_quad(d)).copied().collect();
+        let rest0: std::vec::Vec<Draw> = w0.iter().filter(|d| !is_quad(d)).copied().collect();
+        assert_eq!(rest, rest0, "way {w}: only the quad changes");
+    }
+    for (i, sc) in QUAD_SCENES.iter().enumerate() {
+        assert_eq!(*sc, Scene::Quad(i));
+        assert_eq!(QUAD_ORDER[i], (i, REVERSED));
+    }
+    const { assert!(QUAD_ROUNDS >= 400) };
+}

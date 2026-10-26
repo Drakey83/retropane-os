@@ -5309,6 +5309,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
         ],
     )?;
+    let run_gc2ai = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_QUAD", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5341,7 +5350,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 75] = [
+    let runs: [GpubenchRun; 76] = [
         (
             "run A",
             &run_a,
@@ -5591,6 +5600,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AI (R37): the quad ways, two rounds (the emulator draws
+        // exactly: every way right).
+        (
+            "run GC2AI",
+            &run_gc2ai,
+            &[
+                "GC2AI (R37): the flat quad over the ring and one full layer",
+                "GC2AI: each render's target filled first with 0xf81f (in no reference)",
+                "wrong renders by way [0, 0, 0, 0, 0, 0, 0, 0]",
+                "GC2AI 149.50 / 1: controls at Windows Mobile's clock after: 8 of 8 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

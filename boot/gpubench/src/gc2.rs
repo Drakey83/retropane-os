@@ -532,6 +532,9 @@ pub enum Scene {
     /// Run GC2AH's geometry: [`GEO`]'s way (see [`geo_scene`]; only
     /// through [`order_scene_wide`]).
     Geo(usize),
+    /// Run GC2AI's quad ways: [`QUAD_WAYS`]' way (see [`quad_scene`]; only
+    /// through [`order_scene_wide`]).
+    Quad(usize),
 }
 
 /// The objects a scene holds through [`order_scene_wide`]: a scene's own
@@ -999,6 +1002,9 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     if let Scene::Geo(w) = s {
         return geo_scene(w, t);
     }
+    if let Scene::Quad(w) = s {
+        return quad_scene(w, t);
+    }
     let (bg, slots) = order_scene(s, t);
     let mut out = [None; SLOTS];
     out[..3].copy_from_slice(&slots);
@@ -1427,7 +1433,7 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         Scene::Edge(w) => edge_scene(w, t),
         // Fixes and geometry ways take more than three slots:
         // [`order_scene_wide`] only.
-        Scene::Fix(..) | Scene::Geo(_) => (BLACK, [None, None, None]),
+        Scene::Fix(..) | Scene::Geo(_) | Scene::Quad(_) => (BLACK, [None, None, None]),
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Cured(_) => (BLACK, [None, None, None]),
             base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
@@ -1477,7 +1483,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         Scene::Hidden(false) => patch_corner(0),
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
-        Scene::Geo(_) => patch_corner(0),
+        Scene::Geo(_) | Scene::Quad(_) => patch_corner(0),
         Scene::Fix(b, _) => match FIX_BASE[b] {
             Scene::Kind(FT2) => patch_corner(0),
             Scene::Sweep(w) => SWEEP[w].corner(),
@@ -1823,6 +1829,119 @@ pub fn geo_scene(w: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     }
     for d in slots.into_iter().flatten() {
         if !matches!(d.paint, Paint::Texture { .. }) {
+            out[n] = Some(d);
+            n += 1;
+        }
+    }
+    (bg, out)
+}
+
+/// One of run GC2AI's ways: GC2AG's untextured fault generator (one full
+/// layer, then the ring of FT2's quad at reach 16, then FT2's Gouraud
+/// background, then the quad flat grey on top) with the flat quad at
+/// `rect` (x0, y0, x1, y1, pixels) instead of FT2's (40, 40, 440, 600); the
+/// ring stays where FT2's quad puts it. `first`: the quad drawn before
+/// everything instead (under the Gouraud background, so never seen).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuadWay {
+    pub rect: (i32, i32, i32, i32),
+    pub first: bool,
+}
+
+/// Run GC2AI (the owner, 2026-10-26: "Build the next test: the rectangle
+/// back, flat, its edges and corners moved one at a time against the
+/// stacked tile"). GC2AH: with FT2's quad taken out the fault went (0 of
+/// 2,400); GC2AG's untextured way, the quad flat, had 17 of 400 at x
+/// 449-455, y 45-47 (the tile x 448-455, y 32-47: the ring's top band and
+/// the layer, no part of the quad). Each way moves one of the quad's edges
+/// or its order: (0) as GC2AG; (1) its top edge on the tile seam y 32; (2)
+/// its top edge at y 44, mid-tile; (3) its right edge at x 436, mid-tile;
+/// (4) at x 448, the seam beside the fault's column; (5) at x 456, over the
+/// fault's column; (6) at x 400, far from it; (7) drawn first, hidden.
+pub const QUAD_WAYS: [QuadWay; 8] = [
+    QuadWay {
+        rect: (40, 40, 440, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 32, 440, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 44, 440, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 436, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 448, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 456, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 400, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 440, 600),
+        first: true,
+    },
+];
+pub const QUAD_SCENES: [Scene; 8] = {
+    let mut s = [Scene::Quad(0); 8];
+    let mut i = 0;
+    while i < 8 {
+        s[i] = Scene::Quad(i);
+        i += 1;
+    }
+    s
+};
+pub const QUAD_ORDER: [(usize, u8); 8] = {
+    let mut w = [(0, REVERSED); 8];
+    let mut i = 0;
+    while i < 8 {
+        w[i] = (i, REVERSED);
+        i += 1;
+    }
+    w
+};
+pub const QUAD_ROUNDS: u32 = 400;
+
+/// [`QUAD_WAYS`]' way `w` (see [`QuadWay`]).
+#[must_use]
+pub fn quad_scene(w: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let qw = QUAD_WAYS[w];
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let (x0, y0, x1, y1) = qw.rect;
+    let quad = Draw::rect(x0, y0, x1 - x0, y1 - y0, Paint::Flat(UNTEXTURED));
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    if qw.first {
+        out[n] = Some(quad);
+        n += 1;
+    }
+    out[n] = Some(flat(HIDDEN_LAYER, false));
+    n += 1;
+    for d in slots.iter().flatten() {
+        if matches!(d.paint, Paint::Texture { .. }) {
+            for band in ring(d) {
+                out[n] = Some(band);
+                n += 1;
+            }
+        }
+    }
+    for d in slots.into_iter().flatten() {
+        if matches!(d.paint, Paint::Texture { .. }) {
+            if !qw.first {
+                out[n] = Some(quad);
+                n += 1;
+            }
+        } else {
             out[n] = Some(d);
             n += 1;
         }
