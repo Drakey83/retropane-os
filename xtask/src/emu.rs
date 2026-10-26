@@ -9530,7 +9530,7 @@ pub fn boot_loader_format(root: &Path) -> Result<(), String> {
                 std::thread::sleep(Duration::from_millis(200));
             }
         }
-        // A big file by `hash` and ranged `get`s (R48): three ranges put
+        // A big file by `hash` and ranged `get`s (R49): three ranges put
         // back together equal it, and the loader's SHA-256 is its own.
         let h = say(&mut s, "hash big.bin", "RPL OK hash 2621440 bytes", 60)?;
         let sha = rp_crypto::hex(&rp_crypto::Sha256::digest(&big));
@@ -10164,7 +10164,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             }) {
                 Ok(l) => l,
                 // Why the attach failed: `cf` names the slot's last failure
-                // ("was ..."), then tries it once more itself (R42).
+                // ("was ..."), then tries it once more itself (R43).
                 Err(e) => {
                     s.write_all(&rp_loadproto::control_frame("cf"))
                         .map_err(|e| e.to_string())?;
@@ -10201,7 +10201,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                     "CF re-inserted: its kept write timing not used: {reply:?}"
                 ));
             }
-            // A quick swap (R42, on the X51v 0.12 s): out and back in a
+            // A quick swap (R43, on the X51v 0.12 s): out and back in a
             // fraction of a second, nothing reading the card meanwhile. The
             // loader must see it from the detect alone (read every 50 ms)
             // and attach the card again; once a second missed it, and the
@@ -10240,7 +10240,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                 }
                 poll_pause(Duration::from_millis(250));
             }
-            // The trace since the pull (R42): the PC's commands to the CF
+            // The trace since the pull (R43): the PC's commands to the CF
             // drive, each with its time and outcome. This PC asks the drive
             // to be ready and reads sector 0; the trace must hold both.
             ready(&mut bot, "CF after the quick swap")?;
@@ -12702,7 +12702,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         // single blocks and still return exactly the card's bytes.
         let t = Instant::now();
         // Across the slow block, block by block on a loaded PC: more than
-        // the usual 20 s may pass (R41, 2026-10-25), still progress.
+        // the usual 20 s may pass (R42, 2026-10-25), still progress.
         bot.wait = Duration::from_secs(120);
         let r = bot.command(&rw10(0x28, 0, 2048), 2048 * 512, true, &[]);
         bot.wait = Duration::from_secs(20);
@@ -14246,7 +14246,7 @@ pub fn boot_loader_tabench(root: &Path) -> Result<(), String> {
     boot_loader_tabench_isolate(root)
 }
 
-/// Run 6 of rp-tabench (`RP_TABENCH_ISOLATE=1`, audit C81: the render hangs): every way's
+/// Run 8 of rp-tabench (`RP_TABENCH_ISOLATE=1`, audit C81: the first render after a set-up): every way's
 /// binner reference draws on the modelled 3D core; every TA frame times
 /// out (the fork has no TA) and the run moves on; it returns on a button.
 fn boot_loader_tabench_isolate(root: &Path) -> Result<(), String> {
@@ -14279,26 +14279,26 @@ fn boot_loader_tabench_isolate(root: &Path) -> Result<(), String> {
     let log = output
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
-        .ok_or("tabench run 6: never came back to the loader after the button press")?;
+        .ok_or("tabench run 8: never came back to the loader after the button press")?;
     if crashed(log) || log.contains("did not return") {
-        return Err(format!("tabench run 6: didn't return cleanly:{log}"));
+        return Err(format!("tabench run 8: didn't return cleanly:{log}"));
     }
-    let scenes = log
-        .lines()
-        .filter(|l| l.starts_with("SCENE ") && !l.ends_with("rendered in 0 us"))
-        .count();
     let ways = log
         .lines()
-        .filter(|l| l.contains(" like the binner's, ") && l.contains(" hung; "))
+        .filter(|l| l.contains(" set-ups, frame 1 hung "))
         .count();
-    let done = "RETROPANE-TABENCH: DONE - run 6: 0 of 120 TA frames like the binner's";
-    if scenes != 2 || ways != 12 || !log.contains(done) || log.contains("HUNG") {
+    let done = "RETROPANE-TABENCH: DONE - run 8: 0 of ";
+    if !log.contains("the binner's reference: rendered in ")
+        || log.contains("the binner's reference: rendered in 0 us")
+        || ways != 5
+        || !log.contains(done)
+    {
         return Err(format!(
-            "tabench run 6: {scenes} scenes' references drawn, {ways} ways run (2 and 12 wanted, every TA frame timed out, no render hung):{log}"
+            "tabench run 8: the reference drawn and 5 ways run wanted ({ways} ways), every TA frame timed out:{log}"
         ));
     }
     eprintln!(
-        "    tabench run 6 OK: both scenes' binner references drew on the modelled 3D core; all 120 TA frames of the 12 ways timed out safely (the fork has no TA)"
+        "    tabench run 8 OK: the binner's reference drew on the modelled 3D core; all 5 ways ran, every TA warm-up and frame timed out safely (the fork has no TA)"
     );
     Ok(())
 }

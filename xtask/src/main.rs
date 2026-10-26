@@ -479,7 +479,7 @@ fn main() -> ExitCode {
         }
         "hash" => {
             // The file's size, CRC-32 and SHA-256 read on the device: no
-            // data over USB (R48).
+            // data over USB (R49).
             let rest: Vec<String> = args().skip(2).collect();
             eprintln!("==> hash {}", rest.join(" "));
             if rest.is_empty() {
@@ -507,7 +507,7 @@ fn main() -> ExitCode {
         "cf" => {
             // `cf soft`: without the hardware reset; `cf log`: the slot's
             // timestamped events (diagnostics only).
-            // `cf trace`: the drive's commands since the last pull (R42).
+            // `cf trace`: the drive's commands since the last pull (R43).
             let cmd = match args().nth(2).as_deref() {
                 Some("soft") => "cf soft",
                 Some("log") => "cf log",

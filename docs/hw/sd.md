@@ -398,4 +398,4 @@ Formats on the device: exFAT 304 ms, FAT32 with the six kit files kept
 card (label, the `autorun.inf` icon), wrote a photo to it, and `chkdsk`
 found no problems on it; its delete of `haret.exe` was refused on the card
 (the file byte-identical after), while Explorer showed it gone (reminder
-R50: the owner's ruling A).
+R51: the owner's ruling A).

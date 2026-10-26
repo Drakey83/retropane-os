@@ -6,8 +6,8 @@
   built; nothing works until proven on the X51v. Its first layer for the
   loader is built (ADR-0014 rule 3: the PC's view of the boot files).
 - **Date:** 2026-10-25
-- Reminders: R52 (this project), R50 (Windows shows a refused delete as
-  done), R21 (the internal flash as a drive), R45 (the PDA icon), ADR-0014
+- Reminders: R53 (this project), R51 (Windows shows a refused delete as
+  done), R21 (the internal flash as a drive), R46 (the PDA icon), ADR-0014
   (USB mass storage), ADR-0036 (card formats), ADR-0013 (`rp-fat`).
 - **Sources** (cited by section, never copied: both documents are licensed
   for internal use only and stay in `local/specs/`):
@@ -107,8 +107,8 @@ Each line: what the source says, then what it means here.
 8. **Protection status [MTP 5.3.1.3, B.2.3]:** 0x0000 none, 0x0001
    read-only (no delete, no change, no property change by the PC),
    0x8002 read-only data (properties such as the name may change), 0x8003
-   not transferable. *Found: R52's note "read-only 0x8001 (Android)" is
-   not an MTP value; corrected in R52.*
+   not transferable. *Found: R53's note "read-only 0x8001 (Android)" is
+   not an MTP value; corrected in R53.*
 9. **Hidden and System properties [MTP B.2.13-14]** are hints for the
    PC's user interface only. The specification says that an object the
    device doesn't want the PC to have must not be listed at all.
@@ -166,7 +166,7 @@ Each line: what the source says, then what it means here.
    FAT12/16/32 and exFAT. SD is store `0x0001_0001`, CF `0x0002_0001`,
    the internal flash (R21) `0x0003_0001`; an empty slot is
    `0x000N_0000` [MTP 5.2.1, D.2.4].
-2. **The loader serves MTP now** (R52 step 4), because the loader is
+2. **The loader serves MTP now** (R53 step 4), because the loader is
    where the cards are served until the OS proper exists; the same crate
    then moves into the storage service (phase 6) unchanged. This replaces
    the earlier "the loader keeps mass storage only".
@@ -318,7 +318,7 @@ Each line: what the source says, then what it means here.
 | Speed | MTP slower than mass storage (per-object round trips) | Same DMA path as our drive; folder listing in one round trip | Ratchet: MTP vs drive MB/s; list time for 1,000 files |
 | Moves on the card | Often copy + delete through the PC | MoveObject = one directory change (instant, no data copied); CopyObject on the device, no USB traffic | Emulator timing; X51v: move a 20 MB file |
 | Stale Explorer | Common (missed events) | Every device-side change and card swap pushed as an event | Emulator: `put` while browsing, card out and in |
-| Thumbnails | Android shows picture thumbnails in Explorer | **Behind Android for now** (GetThumb not offered until a picture decoder is in the storage service, R53): an open gap, not a choice to keep | R53 |
+| Thumbnails | Android shows picture thumbnails in Explorer | **Behind Android for now** (GetThumb not offered until a picture decoder is in the storage service, R54): an open gap, not a choice to keep | R54 |
 | Macs | Need a separate app | Get the drive automatically (Q1) | Mac test (owner's or borrowed), else the emulator host without MTP |
 | Names | Device names may be illegal on the card | Legal-name pattern published; checked on the device too | Host tests (every FAT/exFAT forbidden character, 255-character names) |
 
@@ -369,7 +369,7 @@ the record.
   (default)**, "RetroPane", or "RetroPane on Axim X51v"; and whether
   renaming it in Explorer changes it on the device (default yes, kept on
   the device).
-- **Q5. The device's icon in Explorer:** **R45's Icons-Land "PDA" icon
+- **Q5. The device's icon in Explorer:** **R46's Icons-Land "PDA" icon
   (default),** served as MTP's device icon [MTP C.2.37] (its licence
   allows use in the product with credit; the About screen credits it), or
   Windows' generic portable-device icon.
@@ -385,7 +385,7 @@ the record.
 - The handle table's size from the card survey (rule 7).
 - MTP speed against the drive's (rule 13).
 
-## The plan (R52 steps 3-5; nothing runs on the Axim without the owner's go)
+## The plan (R53 steps 3-5; nothing runs on the Axim without the owner's go)
 
 1. `rp-fat`: handle-addressed listing, streaming reserve-fill-commit,
    rename, move, copy, the temporary-name recovery in the disk check;

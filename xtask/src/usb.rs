@@ -362,7 +362,7 @@ pub fn get(root: &Path, file: &str, local: Option<&str>) -> Result<(), String> {
     }
     // The size and digest first (`hash`; an older loader has none: one
     // transfer, as before). A big file then comes in ranges, each CRC
-    // checked, none long enough to meet a time limit (R48), and the whole
+    // checked, none long enough to meet a time limit (R49), and the whole
     // is checked against the loader's SHA-256.
     let Some((size, sha)) = command_reply(root, &format!("hash {file}"))
         .ok()
@@ -1086,7 +1086,7 @@ pub fn last_log(root: &Path) -> Result<(), String> {
 }
 
 /// `cargo xtask cf trace`: the CF drive's commands since the last pull (or
-/// the loader's start), as the loader traced them (R42), saved under
+/// the loader's start), as the loader traced them (R43), saved under
 /// `local/cftrace.txt` with the slot's events, and printed.
 pub fn cf_trace(root: &Path) -> Result<(), String> {
     let (lines, reply) = query(root, "cf trace")?;

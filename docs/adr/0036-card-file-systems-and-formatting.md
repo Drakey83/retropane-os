@@ -6,8 +6,8 @@
   below are open, each built with the default marked **(default)** so a
   different vote changes a constant, not the design.
 - **Date:** 2026-10-25
-- Reminders: R44 (formatting), R26 (old cards: FAT16, exFAT's first real
-  card), R29 (the formatter's design points), R21 and R45 (later users).
+- Reminders: R45 (formatting), R26 (old cards: FAT16, exFAT's first real
+  card), R29 (the formatter's design points), R21 and R46 (later users).
 
 ## In plain words
 
@@ -37,7 +37,7 @@ does it (aligned to the card's erase blocks), not the way Windows does.
   `exfat::format::build`) and build whole images in memory for tests and
   the emulator: no FAT12/16, no alignment, the exFAT one writes a partial
   up-case table and no backup boot region.
-- The owner's direction (R44, 2026-10-25): storage free of Windows Mobile
+- The owner's direction (R45, 2026-10-25): storage free of Windows Mobile
   anchors, the best format wherever no hardware blocks it; the current
   cards stay FAT32 while HaRET starts RetroPane from Windows Mobile.
   Windows Mobile 5/6 (Windows CE 5.x) has no exFAT, which came with CE 6.0
@@ -127,7 +127,7 @@ that every layout `mkfs` writes is mounted, written and checked by
   FAT16 to 2 GiB, FAT32 to 32 GiB, exFAT above. Pros: what every camera
   and phone expects of a card that size; old cards stay readable
   everywhere. Cons: FAT32 on a 4-32 GB card is slower to mount than exFAT
-  (Windows reads the whole FAT: 16 s on the 8 GB CF card, R42).
+  (Windows reads the whole FAT: 16 s on the 8 GB CF card, R43).
 - B: exFAT for every card over 32 MiB. Pros: the fastest format here
   (a small bitmap instead of a large FAT, contiguous files with no chain);
   Cons: Windows Mobile and old PCs (before XP SP2 + update) can't read it,
@@ -214,9 +214,9 @@ CF card's `RetroPane/`)?**
   own checker) found no problems on either card after RetroPane's formats
   and Windows' writes; both drive icons shown through `autorun.inf`.
   Layouts and timings: docs/hw/sd.md, docs/hw/cf.md. Found: Explorer shows
-  a refused delete as done (R50, the owner's ruling A), the serial-only
-  fallback after a long run of card writes (R49), big `get`s failing at
-  50 s (R48).
+  a refused delete as done (R51, the owner's ruling A), the serial-only
+  fallback after a long run of card writes (R50), big `get`s failing at
+  50 s (R49).
 
 ## The four lenses
 
@@ -225,7 +225,7 @@ CF card's `RetroPane/`)?**
 | 🔁 Iterate | One file system crate for every format, the same guard rules for all; every layout the formatter writes is checked by our own reader on the host, in the emulator and on a real card |
 | ✨ Modernize | exFAT becomes a full drive format (written, guarded); cards are formatted the way the SD Association specifies (erase-unit alignment) instead of the way Windows does |
 | 🗄️ Legacy support | FAT12 and FAT16 cards (old SD and CF cards) open and write; no card is locked out for its age |
-| ⚡ Better / faster | Large aligned clusters shrink the FAT 8x on the 8 GB CF card (mounts faster on the PC, R42); exFAT's bitmap and chainless files; the formatter streams with no extra memory |
+| ⚡ Better / faster | Large aligned clusters shrink the FAT 8x on the 8 GB CF card (mounts faster on the PC, R43); exFAT's bitmap and chainless files; the formatter streams with no extra memory |
 
 ## Security
 
@@ -239,7 +239,7 @@ sector, so a split or mixed write can't slip a protected byte through.
 
 ## Alternatives considered
 
-- **A RetroPane flash format with MTP to the PC** (R44): the best format
+- **A RetroPane flash format with MTP to the PC** (R45): the best format
   for flash in principle, but no PC or camera reads it, and MTP replaces
   the drive (ADR-0014). Kept as a later option for internal flash (R21),
   where no other device reads the medium anyway.
@@ -255,7 +255,7 @@ sector, so a split or mixed write can't slip a protected byte through.
 - The loader grows (FAT12/16, the exFAT guard, the formatter, the up-case
   ranges): a test image, ratcheted with a logged reason.
 - The OS gets one storage layer for SD, CF and, later, the internal flash
-  (R21) and its icon (R45).
+  (R21) and its icon (R46).
 - Device proof needed (the owner's rule: nothing works until proven on the
   X51v): R26's spare SD card formatted exFAT on the device, the kit put on
   it, Windows refused a delete of a boot file; the 1 GB SanDisk CF card

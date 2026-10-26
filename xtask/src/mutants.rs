@@ -1049,7 +1049,7 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_run_limit),
     },
     Mutant {
-        name: "R42: the CF detect read once a second (a quick swap missed, the card back only after a failed read)",
+        name: "R43: the CF detect read once a second (a quick swap missed, the card back only after a failed read)",
         file: "boot/loader/src/main.rs",
         from: "    const CF_DETECT_TICKS: u32 = TICK_1S / 20;",
         to: "    const CF_DETECT_TICKS: u32 = TICK_1S;",

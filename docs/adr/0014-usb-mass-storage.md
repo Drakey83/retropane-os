@@ -117,7 +117,7 @@ model with a built-in host that enumerates like Windows.
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.
-   - **amended 2026-10-25 (the owner: "do your proposed fix", R50,
+   - **amended 2026-10-25 (the owner: "do your proposed fix", R51,
      ADR-0037):** the PC is shown the boot files as hidden + system +
      read-only (a boot folder hidden + system): the loader changes those
      attribute bytes in the directory sectors the drive serves
@@ -144,10 +144,10 @@ model with a built-in host that enumerates like Windows.
      the interrupted delete). The text below is kept as the record; the
      loader no longer does it, and a refused write leaves the drive as it is.
      The next design (a write-protected boot partition, or MTP for the OS
-     proper) waits for the owner's vote (R50). Kept from that work: a medium
+     proper) waits for the owner's vote (R51). Kept from that work: a medium
      change asked for mid-transfer waits for the command to end
-     (`rp-usb-msc`; it fixed R41's hang).
-   - *(withdrawn)* **amended 2026-10-25 (the owner's ruling A, reminder R50):** after the
+     (`rp-usb-msc`; it fixed R42's hang).
+   - *(withdrawn)* **amended 2026-10-25 (the owner's ruling A, reminder R51):** after the
      boot-file guard refuses a PC write, the medium goes away and comes back
      (as after the loader's own writes) once 500 ms pass with no further
      refusal (`REFUSAL_QUIET_MS`). Found on the X51v the same day: Windows

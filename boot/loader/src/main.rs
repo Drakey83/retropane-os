@@ -1531,7 +1531,7 @@ mod image {
         reply: &mut Line,
     ) {
         // `@<start>+<length> <file>`: that range only (a big file comes in
-        // chunks, none long enough to meet any time limit: R48).
+        // chunks, none long enough to meet any time limit: R49).
         let (range, args) = match args.trim_ascii().strip_prefix(b"@") {
             Some(rest) => {
                 let mut parts = rest.splitn(2, |&b| b == b' ');
@@ -1591,7 +1591,7 @@ mod image {
 
     /// `hash <file>`: the file's size, CRC-32 and SHA-256, read through the
     /// card's own file system; no data moves over USB (a 37 MB file checked
-    /// in seconds, R48).
+    /// in seconds, R49).
     #[inline(never)]
     fn hash_command(
         lun: &mut Lun,
@@ -1760,7 +1760,7 @@ mod image {
         /// Automatic retries done for this insertion: a card that failed to
         /// attach or stopped answering is taken again up to
         /// [`CF_RETRY_SECS`]'s count, spaced out (a passing hiccup, or a card
-        /// pulled and pushed back faster than the detect debounce sees, R42,
+        /// pulled and pushed back faster than the detect debounce sees, R43,
         /// no longer leaves the PC an empty drive until someone re-inserts
         /// it); after that it waits for re-insertion or `cf`, never a retry
         /// loop.
@@ -2130,16 +2130,16 @@ mod image {
     /// How often the CF slot's detect is read: 50 ms, so a card pulled and
     /// pushed back in a fraction of a second is seen within ~100 ms (two
     /// agreeing readings). Once a second missed a 0.12 s swap on the X51v
-    /// and the card came back only 17 s later, when a read failed (R42,
+    /// and the card came back only 17 s later, when a read failed (R43,
     /// 2026-10-25; the owner's option A). One CPLD register read.
     const CF_DETECT_TICKS: u32 = TICK_1S / 20;
 
-    /// The CF drive's command trace (`cf trace`, R42): 16 KiB at the end of
+    /// The CF drive's command trace (`cf trace`, R43): 16 KiB at the end of
     /// the scratch area, 819 commands.
     const CF_TRACE_BYTES: usize = 16 * 1024;
 
     /// The waits before each automatic retry of a CF card that is in but
-    /// not attached (R42): one second, three, ten; then no more until it is
+    /// not attached (R43): one second, three, ten; then no more until it is
     /// re-inserted or `cf` asks.
     const CF_RETRY_SECS: [u32; 3] = [1, 3, 10];
 
@@ -2956,7 +2956,7 @@ mod image {
         let Some(scratch) = devices::take_scratch() else {
             halt()
         };
-        // The CF drive's command trace at the scratch area's end (R42).
+        // The CF drive's command trace at the scratch area's end (R43).
         let (scratch, trace_buf) = scratch.split_at_mut(scratch.len() - CF_TRACE_BYTES);
         let (msc_buf, fat_scratch) = scratch.split_at_mut(MSC_BUF);
         // In: the switch says so, or a card answered anyway (so a wrong
@@ -3157,7 +3157,7 @@ mod image {
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // Every command for the CF drive (unit 1), from start-up and anew
-        // at each pull: where a reseat's time goes, `cf trace` (R42).
+        // at each pull: where a reseat's time goes, `cf trace` (R43).
         msc.trace(trace_buf, 1);
         // R22 (the owner's ruling, 2026-10-24): after a run that returned
         // and left a card alone (never took it; its log only written inside
@@ -3203,7 +3203,7 @@ mod image {
         udc.set_msc_luns(2);
         // The cards over MTP (ADR-0037): its tables in the RAM pool, which
         // nothing else uses while the loader runs. The drive stays the
-        // default until the X51v proves MTP (R52): `drive mtp|auto` offers it.
+        // default until the X51v proves MTP (R53): `drive mtp|auto` offers it.
         let mut mtp_t = devices::take_ram_pool().and_then(mtp::Tables::new);
         let mut drive_mode = mtp::Mode::Msc;
         // Since when the MTP layout has been configured with no session.
@@ -4593,7 +4593,7 @@ mod image {
     /// A long reply's sender (`get`, `ls`, a run's log, the CF trace): once
     /// the host stops reading for 5 s (it closed the port, or gave up on a
     /// long reply), the rest is dropped at once instead of waiting 5 s a
-    /// chunk. Found on the X51v (R49, 2026-10-25): the PC gave up on a
+    /// chunk. Found on the X51v (R50, 2026-10-25): the PC gave up on a
     /// 37 MB `get` after 50 s, the loader kept waiting line by line with
     /// the drives unserved, and Windows reset the device into the
     /// serial-only fallback.

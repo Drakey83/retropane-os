@@ -361,4 +361,4 @@ straddling clusters), repeated runs for a measured figure.
 
 The SanDisk card held `WM50_K_A12_X50v_WM65_EN.nb0` (a Windows Mobile 6.5
 ROM image for the X50v), copied to `local/cf-backup/` before the format
-(reminder R48: its `.crc` doesn't match a standard CRC-32).
+(reminder R49: its `.crc` doesn't match a standard CRC-32).

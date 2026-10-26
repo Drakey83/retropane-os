@@ -331,6 +331,26 @@ before its first TA way, and never between TA frames (a render that hangs
 still resets the core and sets it up again, the recovery). `emu-tabench`
 passes.
 
+**Run 7 on the X51v (2026-10-26): 148 of 150 TA renders right, the two
+hangs each the first render after a set-up** (C81's last piece); `0x85C`
+bit 7 makes no difference (C78, R37 done). The speed table is in
+`docs/hw/2700g.md` "P4".
+
+**The fix, without giving back speed (the owner, 2026-10-26: "can we fix
+everything in a way that won't impact the performance gains?" then "yes
+build it"):** both pieces belong at set-up time, never per frame. (1) The
+memory manager set up once (run 7: frames as fast or faster than run 5's,
+no set-up a frame) becomes `rp-mbx3d`'s rule, the only way to set it up,
+with a host test. (2) The first render after a set-up, measured by **run
+8** (the isolate variant, built 2026-10-26): twenty set-ups a way, each
+followed by its fix and two real frames of run 7's set 1, a hang at 200 ms;
+the ways: no fix, a warm-up scene of our background strip, a warm-up of one
+textured quad, the status read again and 1 ms waited, and that wait then
+the strip. Each logs its hangs on the first and second real frame, the
+warm-ups' own hangs, and the fix's cost a set-up (paid at start-up and
+after a recovery only). The winner goes into the driver's set-up; run 1's
+full table then runs again to show the gains unchanged.
+
 
 ## The choices for the owner
 

@@ -1216,7 +1216,7 @@ impl<'b> Msc<'b> {
     /// as fit, [`TRACE_BYTES`] each), anew: when it came (ms), what it was
     /// and which blocks, how long its answer took, and how it ended (the
     /// sense when it failed). Where a card's time goes after it comes back
-    /// (reminder R42): [`Msc::traced`] reads it.
+    /// (reminder R43): [`Msc::traced`] reads it.
     pub fn trace(&mut self, buf: &'b mut [u8], lun: usize) {
         self.trace = Some(buf);
         self.trace_len = 0;

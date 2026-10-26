@@ -29,7 +29,7 @@ use super::{
 /// docs/overnight.md). The table holds 14 times that: both cards listed
 /// whole (a photo import walks everything), with the files a session copies
 /// on, in 1.5 MiB of the RAM pool. The CF card's count comes with the first
-/// device run (R52). A full table answers Device_Busy and is counted
+/// device run (R53). A full table answers Device_Busy and is counted
 /// (`drive status`), never a crash.
 pub const HANDLES: usize = 65_536;
 /// The responder's staging buffer: 32 sectors, one card command per
@@ -49,7 +49,7 @@ const DEPTH: usize = 8;
 /// How long the PC may go without opening an MTP session before an
 /// automatic layout offers the drive instead (rule 4; Windows never waits
 /// for it: it reads the OS 2.0 set). A first value: the wait is measured on
-/// Windows 11 and a Mac on the first device run (R52) before it is fixed.
+/// Windows 11 and a Mac on the first device run (R53) before it is fixed.
 pub const PATIENCE_MS: u32 = 8_000;
 
 /// How the PC gets the cards (`cargo xtask drive mtp|msc|auto`, rule 4).
@@ -60,7 +60,7 @@ pub enum Mode {
     /// MTP only.
     Mtp,
     /// The drive only (ADR-0014): this loader's default until the X51v
-    /// proves MTP (R52), so the owner's daily drive doesn't change first.
+    /// proves MTP (R53), so the owner's daily drive doesn't change first.
     Msc,
 }
 
