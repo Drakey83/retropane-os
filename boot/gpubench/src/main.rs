@@ -7948,7 +7948,8 @@ mod image {
         || GC2_BITS
         || GC2_PUNCH
         || GC2_REGS
-        || GC2_664;
+        || GC2_664
+        || GC2_TIMER;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -8053,6 +8054,14 @@ mod image {
     /// GC2AM's every-render texel fault at 149.50 / 1. About 4 minutes,
     /// unattended.
     const GC2_664: bool = option_env!("RP_GPUBENCH_GC2_664").is_some();
+
+    /// Run GC2AU, reminder R37 (`RP_GPUBENCH_GC2_TIMER`): GC2AT found
+    /// `0x664`'s low field a lever (the fault from about 75 words a render
+    /// to about 13 at 12-15, about 3 us a step), its control spoiled (an
+    /// override never puts back); the clean control, the field at 15 with
+    /// each higher bit, and every tile order with and without it. About 5
+    /// minutes, unattended.
+    const GC2_TIMER: bool = option_env!("RP_GPUBENCH_GC2_TIMER").is_some();
 
     /// Run GC2AT, reminder R37 (`RP_GPUBENCH_GC2_664_MIX`, with
     /// `RP_GPUBENCH_GC2_664`): GC2AS again with its values bit-reversed and
@@ -9441,7 +9450,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_664 {
+            if GC2_TIMER {
+                "the 16-bit kinds' targets inside the safe region (GC2AU, R37: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R37: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
             } else if GC2_REGS {
                 "the 16-bit kinds' targets inside the safe region (GC2AR, R37: no map; GC2AM's every-render texel fault, the opaque path's, with each bit of the render block's 53 words flipped alone, one render a bit at 149.50 / 1; each target poisoned first),"
@@ -9619,7 +9630,7 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_REGS || GC2_664 {
+        let patch = if GC2_REGS || GC2_664 || GC2_TIMER {
             gc2::words(gc2::FT2) as usize
         } else if GC2_PUNCH {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
@@ -9992,7 +10003,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_664 {
+                if GC2_TIMER {
+                    gc2_timer(g, &mut r, (tex, first, dsig));
+                } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
                 } else if GC2_REGS {
                     gc2_reg_search(g, &mut r, (tex, first, dsig));
@@ -11662,6 +11675,179 @@ mod image {
             },
         );
     }
+
+    /// Run GC2AU (see [`GC2_TIMER`]): GC2AT's set-up (GC2AM's phase scene 0,
+    /// opaque, poisoned, 149.50 / 1). (1) The clean control GC2AS and GC2AT
+    /// lacked (their `0x6FC` renders still had `0x664` set: an override
+    /// writes, it never puts back): `0x664` = 15, `0x6FC` = 15 with `0x664`
+    /// at 0, and nothing written, interleaved, [`GC2AU_RENDERS`] each; (2)
+    /// `0x664` = 15 with each of its bits 4-31 set as well, a plain render
+    /// between (GC2AR set those with the low field at 0, where a scale or
+    /// an extension of it would show nothing); (3) every tile order with
+    /// `0x664` at 0 and at 15. Wrong words and render times logged; the
+    /// control at Windows Mobile's clock after.
+    #[inline(never)]
+    fn gc2_timer(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let tag = "GC2AU";
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < words {
+            log!("  {tag}: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        let want = &mut rest[..words];
+        log!(
+            "  {tag} (R37): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order"
+        );
+        r.set_tile_order(tile_order(gc2::REVERSED));
+        r.set_header_xor(0, 0);
+        r.set_tsp_or(0);
+        g.over = Over::NONE;
+        let set = |g: &mut Rig, r: &mut Renderer| {
+            let (bg, slots) = gc2::order_scene_wide(gc2::Scene::Phase(0), tex);
+            let _ = r.set_background(Some(bg));
+            for (n, d) in slots.into_iter().enumerate() {
+                g.set(r, n, d);
+            }
+        };
+        let target = Target {
+            picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        r.start_clean();
+        set(g, r);
+        r.invalidate_all();
+        let t0 = g.frame(r, target);
+        gc2_take_at(g, at, want);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        let again = [
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+        ];
+        log!(
+            "  {tag} reference: {t0:?} us, renders 2-3 {again:?} words off it; {}",
+            Gc2Held(&side)
+        );
+        if t0.is_none() || again != [Some(0); 2] {
+            log!("  {tag}: the reference isn't repeatable: nothing run");
+            return;
+        }
+        let poison = gc2::absent16(want, &gc2::POISON);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let want_regs = gc2_clock_want(step_speed(g, s), s.div);
+        let Some(lock) = clock_apply(g, s) else {
+            clock_restore(&mut g.e.regs);
+            log!("  {tag}: 149.50 / 1 didn't take; Windows Mobile's put back");
+            return;
+        };
+        log!("  {tag} 149.50 / 1: lock {lock}");
+        clock_readback(g);
+        // One render as the core stands: its wrong words and its time.
+        let mut one = |g: &mut Rig, r: &mut Renderer| -> (Option<u32>, u32) {
+            set(g, r);
+            if let Some(c) = poison
+                && !poison_fill(g, at, c)
+            {
+                return (None, 0);
+            }
+            let mut side = Gc2Side::new(false);
+            let mut base = Gc2Baseline(None);
+            let w = gc2_render_at(g, r, (k, at), want, first, want_regs, &mut base, &mut side);
+            (w, side.best_us)
+        };
+        let n = GC2AU_RENDERS;
+        // A way's renders: (renders right, wrong words in all, fastest us,
+        // slowest us, wrong words by render).
+        let mut way = |g: &mut Rig, r: &mut Renderer, regs: &[(usize, u32)], m: usize| {
+            let mut by = [0i32; GC2AU_RENDERS];
+            let (mut right, mut total, mut lo, mut hi) = (0u32, 0u32, u32::MAX, 0u32);
+            for b in by.iter_mut().take(m) {
+                g.over = Over::of(regs);
+                let (w, us) = one(g, r);
+                g.over = Over::NONE;
+                for &(off, _) in regs {
+                    g.e.regs.write32(MBX + off, 0);
+                }
+                *b = w.map_or(-1, |x| x as i32);
+                right += u32::from(w == Some(0));
+                total += w.unwrap_or(0);
+                (lo, hi) = (lo.min(us), hi.max(us));
+            }
+            (right, total, lo, hi, by)
+        };
+        // (1) The clean control, interleaved a render at a time.
+        let mut tally = [(0u32, 0u32, u32::MAX, 0u32); 3];
+        let ways: [&[(usize, u32)]; 3] = [&[(0x664, 15)], &[(0x6FC, 15)], &[]];
+        for _ in 0..n {
+            for (t, regs) in tally.iter_mut().zip(ways) {
+                let (right, total, lo, hi, _) = way(g, r, regs, 1);
+                *t = (t.0 + right, t.1 + total, t.2.min(lo), t.3.max(hi));
+            }
+        }
+        for (name, t) in ["0x664 = 15", "0x6FC = 15", "none written"]
+            .into_iter()
+            .zip(tally)
+        {
+            log!(
+                "  GC2AU 1 {name}: {} of {n} right, words wrong total {}, us {}-{}",
+                t.0,
+                t.1,
+                t.2,
+                t.3
+            );
+        }
+        soak_label(g, ["GC2AU TIMER", "149.50 / 1", "PART 1 OF 3"], SOAK_BLUE);
+        // (2) The low field at 15 with each higher bit, a plain render between.
+        let m = GC2AU_BITS_RENDERS;
+        for bit in 4..32u32 {
+            let v = 15 | (1 << bit);
+            let (right, total, lo, hi, by) = way(g, r, &[(0x664, v)], m);
+            let (_, plain, _, _, _) = way(g, r, &[], 1);
+            log!(
+                "  GC2AU 2 0x664 = 0x{v:08x}: {right} of {m} right, words wrong total {total}, us {lo}-{hi}; by render {:?}; a plain render after {plain}",
+                &by[..m]
+            );
+        }
+        soak_label(g, ["GC2AU TIMER", "149.50 / 1", "PART 2 OF 3"], SOAK_BLUE);
+        // (3) Every tile order, the timer at 0 and at 15.
+        for o in [
+            gc2::REVERSED,
+            gc2::ROWS,
+            gc2::COLUMNS,
+            gc2::COLUMNS_REVERSED,
+            gc2::CHECKER,
+            gc2::SCRAMBLED,
+            gc2::INTERLEAVED,
+        ] {
+            r.set_tile_order(tile_order(o));
+            let (r0, t0, lo0, hi0, _) = way(g, r, &[], n);
+            let (r15, t15, lo15, hi15, by) = way(g, r, &[(0x664, 15)], n);
+            log!(
+                "  GC2AU 3 {}: timer 0 {r0} of {n} right, total {t0}, us {lo0}-{hi0} | timer 15 {r15} right, total {t15}, us {lo15}-{hi15}; by render {by:?}",
+                order_name(o)
+            );
+        }
+        g.over = Over::NONE;
+        r.set_tile_order(tile_order(gc2::REVERSED));
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        set(g, r);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!("  GC2AU: done; the control at Windows Mobile's clock after: {control:?} words off");
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2AU's renders a way (parts 1 and 3), and a higher bit's (part 2).
+    const GC2AU_RENDERS: usize = 20;
+    const GC2AU_BITS_RENDERS: usize = 8;
 
     /// Run GC2AS (see [`GC2_664`]): GC2AR's scene and setting (GC2AM's
     /// phase scene 0, reversed, opaque, poisoned, 149.50 / 1), with

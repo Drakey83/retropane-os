@@ -5389,6 +5389,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
         ],
     )?;
+    let run_gc2au = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TIMER", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2at = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5446,7 +5454,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 87] = [
+    let runs: [GpubenchRun; 88] = [
         (
             "run A",
             &run_a,
@@ -5696,6 +5704,24 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AU (R37): 0x664's timer against a clean control, its
+        // higher bits and every tile order (the emulator draws exactly).
+        (
+            "run GC2AU",
+            &run_gc2au,
+            &[
+                "GC2AU (R37): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; 0x664 = 15 against a clean control",
+                "GC2AU reference:",
+                "GC2AU 1 0x664 = 15: 20 of 20 right, words wrong total 0,",
+                "GC2AU 1 none written: 20 of 20 right, words wrong total 0,",
+                "GC2AU 2 0x664 = 0x8000000f: 8 of 8 right, words wrong total 0,",
+                "GC2AU 3 interleaved: timer 0 20 of 20 right, total 0,",
+                "GC2AU: done; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
