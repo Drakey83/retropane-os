@@ -1386,3 +1386,68 @@ fn untextured_takes_every_texture_out_and_nothing_else() {
         }
     }
 }
+
+/// GC2AH's geometry ways: no texture anywhere, the layers first, the ring
+/// at its reach (16 puts the bands' right edge on the x 456 tile seam, 12
+/// mid-tile at x 452), FT2's other objects last and unchanged.
+#[test]
+fn gc2ah_geometry_ways_are_built_as_named() {
+    let t = test_tex();
+    let (_, base) = order_scene(FIX_BASE[0], t);
+    let others: std::vec::Vec<Draw> = base
+        .iter()
+        .flatten()
+        .filter(|d| !matches!(d.paint, Paint::Texture { .. }))
+        .copied()
+        .collect();
+    for (w, gw) in GEO.iter().enumerate() {
+        let (_, s) = geo_scene(w, t);
+        let s: std::vec::Vec<Draw> = s.iter().flatten().copied().collect();
+        assert!(
+            !s.iter().any(|d| matches!(d.paint, Paint::Texture { .. })),
+            "way {w}"
+        );
+        let bands = if gw.reach == 0 { 0 } else { 4 };
+        assert_eq!(s.len(), gw.layers + bands + others.len(), "way {w}");
+        assert!(
+            s[..gw.layers]
+                .iter()
+                .all(|d| d.paint == Paint::Flat(HIDDEN_LAYER))
+        );
+        assert_eq!(&s[gw.layers + bands..], &others[..], "way {w}");
+    }
+    let edge = |w: usize| {
+        let (_, s) = geo_scene(w, t);
+        let top = s
+            .iter()
+            .flatten()
+            .nth(GEO[w].layers)
+            .copied()
+            .expect("the top band");
+        top.corners
+            .map(|p| p.x / rp_mbx3d_render::SUB)
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+    };
+    assert_eq!(edge(0), 456);
+    assert_eq!(edge(0) % 8, 0, "on a tile seam");
+    assert_eq!(edge(4), 452);
+    assert_ne!(edge(4) % 8, 0, "mid-tile");
+    assert_eq!(GEO_WAYS[..2], [(0, REVERSED), (0, ROWS)]);
+    assert_eq!(
+        GEO[3],
+        GeoWay {
+            layers: 2,
+            reach: 0
+        }
+    );
+    // Each scene is its way, and every way's scene is run.
+    for (i, sc) in GEO_SCENES.iter().enumerate() {
+        assert_eq!(*sc, Scene::Geo(i));
+        assert!(GEO_WAYS.iter().any(|w| w.0 == i), "scene {i} run");
+    }
+    // At GC2AG's untextured rate (17 of 400) way 0 expects about 17 faults
+    // in its rounds: enough to place them; none in way 3 is then telling.
+    const { assert!(GEO_ROUNDS >= 400) };
+}

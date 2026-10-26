@@ -529,6 +529,9 @@ pub enum Scene {
     /// Run GC2Z's ways: [`FIX_BASE`]'s scene with [`FIXES`]' fix (see
     /// [`fix_scene`]; only through [`order_scene_wide`]).
     Fix(usize, usize),
+    /// Run GC2AH's geometry: [`GEO`]'s way (see [`geo_scene`]; only
+    /// through [`order_scene_wide`]).
+    Geo(usize),
 }
 
 /// The objects a scene holds through [`order_scene_wide`]: a scene's own
@@ -921,6 +924,14 @@ pub const RING_REACH: i32 = 16;
 /// the side bands stop where they start, so no tile gets two.
 #[must_use]
 pub fn ring(d: &Draw) -> [Draw; 4] {
+    ring_with(d, RING_REACH)
+}
+
+/// [`ring`] with its bands `reach` pixels each side of the edges (run
+/// GC2AH: 12 puts the bands' outer edges mid-tile, 16 on the tile seams for
+/// FT2's quad).
+#[must_use]
+pub fn ring_with(d: &Draw, reach: i32) -> [Draw; 4] {
     use rp_mbx3d_render::SUB;
     let span = |v: [i32; 4]| {
         v.iter()
@@ -934,13 +945,13 @@ pub fn ring(d: &Draw) -> [Draw; 4] {
         let (r, b) = (r.clamp(l, w), b.clamp(t, h));
         Draw::rect(l, t, r - l, b - t, Paint::Flat(HIDDEN_LAYER))
     };
-    let (l, r) = (x0 - RING_REACH, x1 + RING_REACH);
-    let (top, bottom) = (y0 + RING_REACH, y1 - RING_REACH);
+    let (l, r) = (x0 - reach, x1 + reach);
+    let (top, bottom) = (y0 + reach, y1 - reach);
     [
-        band(l, y0 - RING_REACH, r, top),
-        band(l, bottom, r, y1 + RING_REACH),
-        band(l, top, x0 + RING_REACH, bottom),
-        band(x1 - RING_REACH, top, r, bottom),
+        band(l, y0 - reach, r, top),
+        band(l, bottom, r, y1 + reach),
+        band(l, top, x0 + reach, bottom),
+        band(x1 - reach, top, r, bottom),
     ]
 }
 
@@ -984,6 +995,9 @@ pub fn fix_scene(b: usize, f: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
 pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     if let Scene::Fix(b, f) = s {
         return fix_scene(b, f, t);
+    }
+    if let Scene::Geo(w) = s {
+        return geo_scene(w, t);
     }
     let (bg, slots) = order_scene(s, t);
     let mut out = [None; SLOTS];
@@ -1411,8 +1425,9 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
             (bg, slots)
         }
         Scene::Edge(w) => edge_scene(w, t),
-        // Fixes take more than three slots: [`order_scene_wide`] only.
-        Scene::Fix(..) => (BLACK, [None, None, None]),
+        // Fixes and geometry ways take more than three slots:
+        // [`order_scene_wide`] only.
+        Scene::Fix(..) | Scene::Geo(_) => (BLACK, [None, None, None]),
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Cured(_) => (BLACK, [None, None, None]),
             base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
@@ -1462,6 +1477,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         Scene::Hidden(false) => patch_corner(0),
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
+        Scene::Geo(_) => patch_corner(0),
         Scene::Fix(b, _) => match FIX_BASE[b] {
             Scene::Kind(FT2) => patch_corner(0),
             Scene::Sweep(w) => SWEEP[w].corner(),
@@ -1723,6 +1739,96 @@ pub fn untextured<const N: usize>(slots: [Option<Draw>; N]) -> [Option<Draw>; N]
 
 /// [`untextured`]'s colour (mid grey).
 pub const UNTEXTURED: u32 = 0xFF80_8080;
+
+/// One of run GC2AH's geometry ways: FT2's scene with its textured quad
+/// taken out (no texture: GC2AG's fault stayed without one), `layers` full
+/// hidden layers first, then the ring of the quad's outline `reach` pixels
+/// each side (0: none), then FT2's other objects (the Gouraud background
+/// over them all, so none is seen).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeoWay {
+    pub layers: usize,
+    pub reach: i32,
+}
+
+/// Run GC2AH (the owner, 2026-10-26: "Build the geometry test next (which
+/// stacked shapes in one tile trigger it, and why the full layer alone
+/// stays clean)"). The hypothesis from GC2AE-GC2AG: the core shades a
+/// tile's last rows wrong when the tile it draws follows one with fewer
+/// objects (the faults sat in the bands' first tile column in draw order:
+/// x 448-455 reversed, x 24-31 in rows), and one full layer alone is clean
+/// because every tile then holds the same count. Its predictions: way 0
+/// faults at x 448-455, in rows order at x 24-31; way 1 (a step of one) no
+/// more than way 0; way 2 (a step of one over two layers) as way 0 or more;
+/// way 3 (two layers, no step) none; way 4 (the band edges mid-tile: a
+/// partly covered tile between) tells whether a seam-aligned edge matters.
+pub const GEO: [GeoWay; 5] = [
+    GeoWay {
+        layers: 1,
+        reach: RING_REACH,
+    },
+    GeoWay {
+        layers: 0,
+        reach: RING_REACH,
+    },
+    GeoWay {
+        layers: 2,
+        reach: RING_REACH,
+    },
+    GeoWay {
+        layers: 2,
+        reach: 0,
+    },
+    GeoWay {
+        layers: 1,
+        reach: 12,
+    },
+];
+pub const GEO_SCENES: [Scene; 5] = [
+    Scene::Geo(0),
+    Scene::Geo(1),
+    Scene::Geo(2),
+    Scene::Geo(3),
+    Scene::Geo(4),
+];
+/// Way 0 in both orders (the placement prediction), the rest reversed.
+pub const GEO_WAYS: [(usize, u8); 6] = [
+    (0, REVERSED),
+    (0, ROWS),
+    (1, REVERSED),
+    (2, REVERSED),
+    (3, REVERSED),
+    (4, REVERSED),
+];
+pub const GEO_ROUNDS: u32 = 400;
+
+/// [`GEO`]'s way `w` (see [`GeoWay`]).
+#[must_use]
+pub fn geo_scene(w: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let gw = GEO[w];
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    for _ in 0..gw.layers {
+        out[n] = Some(flat(HIDDEN_LAYER, false));
+        n += 1;
+    }
+    for d in slots.iter().flatten() {
+        if gw.reach != 0 && matches!(d.paint, Paint::Texture { .. }) {
+            for band in ring_with(d, gw.reach) {
+                out[n] = Some(band);
+                n += 1;
+            }
+        }
+    }
+    for d in slots.into_iter().flatten() {
+        if !matches!(d.paint, Paint::Texture { .. }) {
+            out[n] = Some(d);
+            n += 1;
+        }
+    }
+    (bg, out)
+}
 
 /// Colours tried as a soak's poison, the most saturated first (no GC2
 /// scene's Gouraud or texture reaches them, by design; [`absent16`]
