@@ -27,10 +27,6 @@ const PROBE: &str = "RetroPane echo test 26";
 /// the device leaving and returning; restarting its device entry makes
 /// Windows enumerate it afresh, which a cable replug otherwise did.
 const RESTART_TASK: &str = "RetroPane USB restart";
-/// The script the task runs: restarts every present USB entry that could be
-/// the Axim (ours, Windows Mobile's, or a failed one), so the port is
-/// enumerated afresh.
-const RESTART_SCRIPT: &str = "xtask/scripts/usb-restart.ps1";
 
 /// Finds and opens the port (prints `PORT COMn`, or `NOPORT` and exits).
 pub(crate) fn open_port_script() -> String {
@@ -713,26 +709,17 @@ pub(crate) fn powershell(script: &str) -> Result<std::process::Output, String> {
 /// Windows' `CREATE_NO_WINDOW` process creation flag: a console program
 /// started with it gets no console window.
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Creates the admin scheduled task that restarts the Axim's USB device
-/// entry (one UAC prompt, once). Without it, every `load` needs a cable
-/// replug for the PC to find the loader again.
-pub fn setup_restart_task(root: &Path) -> Result<(), String> {
-    let script = root.join(RESTART_SCRIPT);
-    let script = script
-        .to_str()
-        .ok_or("repository path isn't valid text")?
-        .replace('\'', "''");
-    let register = format!(
-        "Register-ScheduledTask -TaskName '{RESTART_TASK}' -Action (New-ScheduledTaskAction \
-         -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File \"{script}\"') \
-         -RunLevel Highest -Force | Out-Null"
-    );
+/// Creates the scheduled task that restarts the Axim's USB device entry
+/// (one UAC prompt, once). Without it, every `load` needs a cable replug for
+/// the PC to find the loader again.
+pub fn setup_restart_task(_root: &Path) -> Result<(), String> {
+    let register = restart_task_registration(RESTART_SCRIPT_TEXT);
     // Elevated through UAC (the user approves the prompt), then waited for.
     let script = format!(
-        "$p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList \
-         '-NoProfile','-EncodedCommand','{}'; exit $p.ExitCode",
+        "$p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+         -ArgumentList '-NoProfile','-EncodedCommand','{}'; exit $p.ExitCode",
         encode_command(&register)
     );
     let out = powershell(&script)?;
@@ -752,6 +739,28 @@ pub fn setup_restart_task(root: &Path) -> Result<(), String> {
         "    task '{RESTART_TASK}' created: cargo xtask load now re-finds the Axim by itself"
     );
     Ok(())
+}
+
+/// The script the task runs: restarts every present USB entry that could be
+/// the Axim (ours, Windows Mobile's, or a failed one), so the port is
+/// enumerated afresh.
+/// The restart script, carried inside the task (not read from the
+/// repository: an administrator task running a file any of the user's
+/// programs can edit would hand them administrator rights).
+const RESTART_SCRIPT_TEXT: &str = include_str!("../scripts/usb-restart.ps1");
+
+/// The task's registration: run as SYSTEM, in the session no window is
+/// ever shown in (the owner, 2026-10-26: an "Administrator: powershell.exe"
+/// window popped up over his work at every `load`, eight seconds apart while
+/// the loader came back), with the script inline and the window hidden.
+fn restart_task_registration(script: &str) -> String {
+    format!(
+        "$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument \
+         '-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {}'; \
+         $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; \
+         Register-ScheduledTask -TaskName '{RESTART_TASK}' -Action $a -Principal $p -Force | Out-Null",
+        encode_command(script)
+    )
 }
 
 /// Sends the image `what` (an image name, built first, or a `.bin` file) to
@@ -1347,6 +1356,18 @@ fn stderr_note(stderr: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The restart task never shows a window over the owner's work and
+    /// runs nothing a user program could edit (2026-10-26).
+    #[test]
+    fn the_restart_task_runs_hidden_as_system_with_its_script_inline() {
+        let r = restart_task_registration(RESTART_SCRIPT_TEXT);
+        assert!(r.contains("-UserId 'SYSTEM' -LogonType ServiceAccount"));
+        assert!(r.contains("-WindowStyle Hidden -EncodedCommand "));
+        assert!(!r.contains("-File"), "no script file read at run time");
+        assert!(RESTART_SCRIPT_TEXT.contains("pnputil /restart-device"));
+    }
+
     use super::*;
 
     /// The CF card gets the loader under the loader's name, HaRET's two

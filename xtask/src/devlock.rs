@@ -510,6 +510,10 @@ mod tests {
             } else if name == "spot.rs" {
                 // The colorimeter's pseudo-console host: once, after the lock.
                 assert_eq!((spawns, ports), (1, 0), "spot.rs: one PowerShell host");
+                assert!(
+                    text.contains("creation_flags(crate::usb::CREATE_NO_WINDOW)"),
+                    "spot.rs must start PowerShell without a window"
+                );
                 let body = text.split("pub fn open(").nth(1).unwrap();
                 let lock = body.find("crate::devlock::ensure_held()?").unwrap();
                 assert!(lock < body.find("Command::new(\"powershell").unwrap());

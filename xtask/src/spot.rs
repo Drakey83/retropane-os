@@ -43,7 +43,15 @@ impl Spot {
         if ccss.exists() {
             cmd += &format!(" -X \"{}\"", ccss.display());
         }
-        let mut child = Command::new("powershell")
+        let mut ps = Command::new("powershell");
+        // No console window over the owner's work (2026-10-26): the host
+        // makes its own pseudo-console for spotread and talks through pipes.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            ps.creation_flags(crate::usb::CREATE_NO_WINDOW);
+        }
+        let mut child = ps
             .args([
                 "-NoProfile",
                 "-NonInteractive",
