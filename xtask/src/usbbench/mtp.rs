@@ -31,7 +31,15 @@ const STORE: &str = "SD Card";
 /// The PowerShell side: copy `src` into the store's bench folder and back
 /// into `back`; prints `WRITE <ms>` and `READ <ms>`, or `ERROR <why>`.
 fn script(src: &Path, back: &Path, len: usize) -> String {
-    let q = |p: &Path| p.display().to_string().replace('\'', "''");
+    // Windows' Shell copies nothing, silently, from a path mixing `/` and
+    // `\` (found on the X51v run, 2026-10-26: the bench's first copy never
+    // reached the device): every separator as Windows writes it.
+    let q = |p: &Path| {
+        p.display()
+            .to_string()
+            .replace('/', "\\")
+            .replace('\'', "''")
+    };
     r#"
 $ErrorActionPreference = 'Stop'
 function Wait-Until([scriptblock]$done, [int]$secs, [string]$what) {
@@ -164,7 +172,8 @@ mod tests {
     #[test]
     fn the_script_names_only_the_bench_folder_and_quotes_paths() {
         let s = script(Path::new("C:/a b/it's/bench.bin"), Path::new("C:/back"), 10);
-        assert!(s.contains("'C:/a b/it''s/bench.bin'"));
+        assert!(s.contains("'C:\\a b\\it''s\\bench.bin'"));
+        assert!(!s.contains("C:/"), "no forward slashes in a Shell path");
         assert!(s.contains("ParseName('rp-mtpbench')"));
         for p in ["@DEVICE@", "@STORE@", "@DIR@", "@FILE@", "@SRC@", "@BACK@", "@LEN@"] {
             assert!(!s.contains(p), "{p} left unfilled");
