@@ -292,7 +292,7 @@ const FORMATS: [u16; 26] = [
 ];
 
 /// Operations offered (ADR-0037 rule 11).
-const OPERATIONS: [u16; 28] = [
+const OPERATIONS: [u16; 29] = [
     op::GET_DEVICE_INFO,
     op::OPEN_SESSION,
     op::CLOSE_SESSION,
@@ -321,7 +321,73 @@ const OPERATIONS: [u16; 28] = [
     op::SET_OBJECT_PROP_LIST,
     op::SEND_OBJECT_PROP_LIST,
     op::GET_OBJECT_REFERENCES,
+    op::GET_THUMB,
 ];
+
+/// A folder's picture: the file of one of these names it holds (as
+/// Windows' own `folder.jpg` for an album), sent as the folder's thumbnail
+/// [MTP 5.3.1, D.2.10] (R61: Windows draws no storage's own icon, but it
+/// draws a folder's picture, measured on the X51v). PNG first; BMP for its
+/// 32-bit alpha (Windows drew the PNG's see-through pixels solid).
+pub const FOLDER_PICTURES: [&str; 2] = ["folder.png", "folder.bmp"];
+/// The largest folder picture offered: a thumbnail, not an image.
+const FOLDER_PICTURE_MAX: u64 = 512 * 1024;
+
+/// A folder picture: where it is, its size, its format and pixel size.
+#[derive(Clone, Copy)]
+struct Picture {
+    loc: Loc,
+    size: u64,
+    format: u16,
+    width: u32,
+    height: u32,
+}
+
+/// Folder `e`'s picture ([`FOLDER_PICTURES`], read from its header).
+/// `None` for a file, a folder without one, or a file that isn't the
+/// format its name says.
+fn folder_picture(dev: &mut dyn Device, s: u8, e: &Entry) -> Option<Picture> {
+    if !e.folder {
+        return None;
+    }
+    let mut cursor = 0;
+    let mut c = Entry::default();
+    while dev.child(s, e.loc, &mut cursor, &mut c).ok()? {
+        let Some(k) = FOLDER_PICTURES.iter().position(|n| c.name.eq_ascii_ci(n)) else {
+            continue;
+        };
+        if c.folder || c.size > FOLDER_PICTURE_MAX {
+            return None;
+        }
+        let mut head = [0u8; 26];
+        if dev.read(s, c.loc, 0, &mut head).ok()? != head.len() {
+            return None;
+        }
+        let be = |i: usize| u32::from_be_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]]);
+        let le = |i: usize| i32::from_le_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]]);
+        let (format, width, height) = if k == 0 {
+            if head[..8] != *b"\x89PNG\r\n\x1a\n" || head[12..16] != *b"IHDR" {
+                return None;
+            }
+            (fmt::PNG, be(16), be(20))
+        } else {
+            // BITMAPFILEHEADER, then the info header's width and height (a
+            // negative height: rows top-down).
+            if head[..2] != *b"BM" {
+                return None;
+            }
+            (fmt::BMP, le(18).unsigned_abs(), le(22).unsigned_abs())
+        };
+        return Some(Picture {
+            loc: c.loc,
+            size: c.size,
+            format,
+            width,
+            height,
+        });
+    }
+    None
+}
 
 /// Events sent.
 const EVENT_CODES: [u16; 8] = [
@@ -1320,6 +1386,7 @@ impl<'b> Mtp<'b> {
             op::SET_OBJECT_PROP_VALUE | op::SET_OBJECT_PROP_LIST => self.start_out(Sink::Dataset),
             op::GET_OBJECT_PROP_LIST => self.prop_list(dev),
             op::GET_OBJECT_REFERENCES => self.references(),
+            op::GET_THUMB => self.get_thumb(dev),
             // Offered nowhere (ADR-0037 rule 11): power, self-test, capture,
             // protection, references, thumbnails.
             _ => self.respond(rc::OPERATION_NOT_SUPPORTED, &[]),
@@ -1535,15 +1602,26 @@ impl<'b> Mtp<'b> {
                 return;
             }
         };
+        let picture = folder_picture(dev, slot.store, &e);
         let mut w = Writer::new(&mut self.buf[HEADER..]);
         w.u32(store_id(slot.store, true));
         w.u16(format_of(&e));
         w.u16(protection(&e));
         w.u32(e.size.min(u64::from(u32::MAX)) as u32);
-        w.u16(0); // thumbnail format
-        w.u32(0);
-        w.u32(0);
-        w.u32(0);
+        match picture {
+            Some(p) => {
+                w.u16(p.format);
+                w.u32(p.size as u32);
+                w.u32(p.width);
+                w.u32(p.height);
+            }
+            None => {
+                w.u16(0); // thumbnail format
+                w.u32(0);
+                w.u32(0);
+                w.u32(0);
+            }
+        }
         w.u32(0); // image width, height, depth
         w.u32(0);
         w.u32(0);
@@ -1604,6 +1682,33 @@ impl<'b> Mtp<'b> {
         let payload = end - off;
         let known = payload < u64::from(u32::MAX) - HEADER as u64;
         self.start_in(known.then_some(payload), 0, source);
+    }
+
+    /// GetThumb [MTP D.2.10]: a folder's picture ([`FOLDER_PICTURES`]).
+    fn get_thumb(&mut self, dev: &mut dyn Device) {
+        self.extra(1);
+        let h = self.p(0);
+        let mut e = Entry::default();
+        let slot = match self.object(dev, h, &mut e) {
+            Ok(s) => s,
+            Err(code) => {
+                self.respond(code, &[]);
+                return;
+            }
+        };
+        match folder_picture(dev, slot.store, &e) {
+            Some(p) if p.size > 0 => self.start_in(
+                Some(p.size),
+                0,
+                Gen::Object {
+                    s: slot.store,
+                    loc: p.loc,
+                    off: 0,
+                    end: p.size,
+                },
+            ),
+            _ => self.respond(rc::NO_THUMBNAIL_PRESENT, &[]),
+        }
     }
 
     fn delete_object(&mut self, dev: &mut dyn Device) {

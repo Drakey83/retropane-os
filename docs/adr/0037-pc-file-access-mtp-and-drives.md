@@ -374,6 +374,149 @@ the record.
   allows use in the product with credit; the About screen credits it), or
   Windows' generic portable-device icon.
 
+- **Q6. The look in Explorer, each card with its own icon (raised by the
+  owner 2026-10-26, R61). Voted 2026-10-26: C, today's MTP layout (the
+  owner: "just do c").** Axim X51v with the PDA icon, holding SD Card, CF
+  Card and (with R21) Internal as storages with Windows' plain drive icon
+  and each its own capacity bar; no glass-tile layer, no split default.
+  Options A, B and D and the measurements behind them are kept below as
+  the record.
+
+  **Q6L. The owner's look with LegacySync installed (the owner,
+  2026-10-26: "figure out a way to make it work like i want if you install
+  legacy sync"; open, for his vote; R66: nothing built until then). Parked
+  by the owner the same day ("lagacysync is a project for later").** The
+  goal: Axim X51v with SD, CF and Internal inside, each with its own icon,
+  opening in Tiles; C stays the look on any PC without LegacySync. Rule 0:
+  ActiveSync (2005) put its own code inside Explorer (a shell namespace
+  extension, "Mobile Device"); OneDrive today uses Windows' cloud-files
+  API; phone makers ship nothing (Explorer's plain drives). The routes:
+  - **L-A (recommended to measure first): a small filter on Windows' own
+    MTP driver.** LegacySync installs a user-mode (UMDF) filter above
+    `WpdMtpDr` for the Axim's USB ID only (UMDF filters over the MTP
+    stack exist: `UmdfServiceOrder`, OSR's NTDEV threads). It answers
+    Explorer's one missing question, each storage's icon
+    (`WPD_RESOURCE_ICON`, which Microsoft documents for storages), with
+    the card's own picture, and passes everything else through. *Pros:*
+    the same native view as C, only with the icons; no copies, no stale
+    list, nothing inside Explorer (a fault stops the Axim's driver host,
+    never Explorer); small. *Cons, all to measure in a Windows VM before
+    the owner's PC:* whether Explorer draws a storage's icon resource at
+    all (unmeasured: the inbox driver never offers one); signing: free
+    only by libwdi/Zadig's way (a certificate made on each PC at install,
+    trusted by that PC alone, its private key destroyed after signing the
+    one package), else an EV certificate (paid, yearly) for Microsoft's
+    attestation signing; one UAC prompt at install.
+  - **L-B: OneDrive's way (cloud files).** "Axim X51v" in Explorer's
+    navigation pane with the PDA icon; SD, CF and Internal real folders
+    with their own icons (`desktop.ini`, native) and Tiles set as their
+    view; files fetched when opened. *Pros:* full control of the look,
+    documented API, no driver. *Cons:* it is a sync, not a view: copies or
+    placeholders on the PC, a stale list when the Axim is unplugged,
+    conflicts when both sides change a file; the most work.
+  - **L-C: ActiveSync's way (inside Explorer).** A shell namespace
+    extension draws the whole Axim folder: icons, Tiles, capacity bars,
+    anything. *Pros:* exactly the owner's picture, live, no copies.
+    *Cons:* our code runs inside Explorer (a bug can crash Explorer);
+    Microsoft's hardest shell API; the most risk.
+  - **L-D: no Explorer piece:** LegacySync does installs, sync and backup;
+    Explorer shows C.
+  - **Tiles as the default view:** for L-B and L-C it is ours to set; for
+    L-A it needs Explorer's per-folder view memory (`Bags`, no API, keyed by
+    the folder's shell path): to measure in the same VM run.
+ Measured on the X51v: in the MTP view
+  Windows' driver offers an icon on the device only and no resource of any
+  kind on a storage (`tools/wpdprobe`), so every card is Windows' plain
+  drive there (Windows Mobile's own MTP looks the same). **The owner's
+  rulings (2026-10-26):** his vision (the one "Axim X51v" with each card's
+  own icon inside it) comes with **LegacySync**, as a PC-side helper built
+  into it (ADR-0028); **the default look without LegacySync is still to
+  decide**; and first he wants to **see the split layout** (below) for
+  himself. Options: today's MTP layout (PDA icon, plain cards); the drive
+  layout (each card a drive letter with its own icon, no device); the split
+  layout; a device setting choosing between them.
+
+  **Changed by the owner (2026-10-26, later):** the vision is wanted
+  **natively on every PC, nothing installed, LegacySync not needed**: the
+  device and its three storages (SD, CF, internal) together, each with its
+  own icon, opening in the Tiles view. **Measured on the X51v the same day
+  (R61):** a folder holding `folder.png` or `folder.bmp` is drawn with that
+  picture (the MTP thumbnail, nothing installed); see-through pixels are
+  drawn white, solid ones exactly, so each picture sits on a solid
+  smoked-glass square (the owner's design, `docs/design/mockups/storage-tiles.png`,
+  theme-proof: dark, light and colour themes alike); a lone storage is
+  **not** skipped (Explorer shows it as one plain drive to open); the
+  perceived type "phone" gave no Tiles view (Windows kept "Handheld" from
+  the install; a fresh install not yet measured). **The options, for the
+  owner's vote (Claude's recommendation first; nothing built until voted):**
+  - **A (recommended): one storage, the three as glass tiles inside it.**
+    This PC > **Axim X51v** (the PDA) > one drive, named by Q6a below >
+    **SD Card, CF Card, Internal**, each its own glass tile; inside each,
+    that card's files. The device builds the top level itself (the three
+    are views of the cards, files never stored there) and refuses a file
+    dropped beside them. *Pros:* the only layout measured to give all three
+    their own icons inside the one device, natively, on every Windows PC,
+    nothing installed; the tiles look right on any theme; one MTP function
+    (rules 1-13 unchanged); a card pulled out just disappears from the
+    tiles. *Cons:* one extra click through a plain drive icon (measured:
+    Windows won't skip it); one capacity bar for the drive (the cards'
+    total; each card's own free space shows only in the tile's properties);
+    the tiles show in the Large and Extra large icon views (Tiles and Medium
+    still to measure); the first look on the X51v needed F5 (to measure on
+    a PC that never saw the Axim).
+  - **B: the split layout (tried 2026-10-26).** Axim X51v (the PDA, holding
+    Internal) beside **X51V SD** and **X51V CF** as drive letters, each with
+    its own icon. *Pros:* real icons at This PC's top level, each card's own
+    capacity bar, the drive's speed, also own icons on Macs and Linux.
+    *Cons:* not inside the device; drive letters may land apart (this PC:
+    fixed for these two cards only); a card served as a drive is the PC's
+    alone until ejected (ADR-0014); Internal stays a plain drive inside the
+    device (or a glass tile, as A).
+  - **C: today's MTP.** Axim X51v > SD Card, CF Card, Internal as three
+    storages. *Pros:* standard, one click fewer, each card's capacity bar.
+    *Cons:* the plain drive icon for all three (measured: no native way to
+    change it).
+  - **D: a device setting** offering A, B and C, with one of them the
+    default (adds a choice in Settings; the PC re-plugs when changed).
+  - **Q6a. A's drive name:** "Storage" (default), "Cards & Storage", or
+    "Axim X51v" (the path would read Axim X51v > Axim X51v).
+  - **Q6b. The internal-storage tile's picture:** the owner's pick (the
+    PDA stands in).
+  - **Tiles as the default view (all options):** still open; next
+    measurement is one fresh install as a phone (one UAC click), then the
+    views Windows offers to remember per device.
+
+### Try-out: the split layout (2026-10-26, the owner's "lets try 3")
+
+**Removed 2026-10-26 after Q6 was voted C** (the owner: "remove the test
+switches, the probes and the split layout, keep folder pictures"), with
+the icon experiment's StorageInfo variants (`drive mtp probe`) and the
+Explorer test's switches (`drive mtp test`); folder pictures
+(`folder.png`/`folder.bmp` sent as the folder's MTP thumbnail) stay. The
+record of what was tried: a fourth layout the loader offered on request
+(`cargo xtask drive split`), so the owner could see it before Q6 was
+voted.
+
+- **What the PC sees:** "Axim X51v" (MTP, the PDA icon) and the two cards
+  as their own drives, each with its own icon (`autorun.inf`, proven
+  2026-10-12). Each card is served **one way only**, by the drive, so no
+  card is ever open to two protocols at once (Q1's rejected "both at
+  once" served the same card twice). The MTP device holds no store until
+  the internal flash (R21) is one: it shows empty.
+- **USB:** CDC serial (interfaces 0-1), mass storage (interface 2, bulk
+  0x04/0x85, as the drive layout), MTP (interface 3: bulk OUT 0x07, bulk
+  IN 0x88, interrupt IN 0x89; UDC slots G, H, I, in hardware interface 0
+  like every other endpoint, docs/hw/udc.md). Microsoft's compatible ID
+  and OS 2.0 function subset name interface 3. **`bcdDevice` 26.03**
+  (rule 3's reason: Windows records per revision whether OS descriptors
+  exist). The drive (26.01) and MTP (26.02) layouts stay byte for byte.
+- **Rules kept:** 1 (one responder: the same `rp-usb-mtp`, with no
+  stores), 3 (the existing layouts unchanged), 4 (the automatic choice is
+  untouched: split is only ever asked for), 5-13 (the responder is the
+  same code); ADR-0014's drive rules apply to the cards unchanged.
+- **The emulator tracks it** (docs/hw/emulator.md): the fork's host
+  learns a configuration holding both the drive and MTP.
+
 ## Open points to measure (not votes)
 
 - Windows 11: which operations it sends and in what order (logged), the

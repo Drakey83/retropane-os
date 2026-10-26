@@ -663,7 +663,7 @@ fn device_info_says_mtp_with_microsofts_extension_and_a_32_digit_serial() {
     ] {
         assert!(listed.contains(&must), "{must:#x}");
     }
-    for never in [op::POWER_DOWN, op::SET_OBJECT_PROTECTION, op::GET_THUMB] {
+    for never in [op::POWER_DOWN, op::SET_OBJECT_PROTECTION] {
         assert!(!listed.contains(&never), "{never:#x}");
     }
     let events = r.u32().unwrap();
@@ -840,6 +840,61 @@ fn object_info_carries_the_name_size_parent_and_protection() {
         None,
     );
     assert_eq!(system.data, [1, 0]);
+}
+
+#[test]
+fn a_folder_holding_folder_png_offers_it_as_its_thumbnail() {
+    pc!(pc);
+    // A real PNG header: 40 x 30 pixels.
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    png.extend_from_slice(&40u32.to_be_bytes());
+    png.extend_from_slice(&30u32.to_be_bytes());
+    png.extend_from_slice(&[8, 6, 0, 0, 0, 1, 2, 3, 4]);
+    let docs = pc.dev.find(0, "Docs").unwrap();
+    pc.dev.add(0, docs, "Folder.PNG", false, &png, false);
+    // Not a PNG: no picture.
+    let sub = pc.dev.find(0, "Docs/Sub").unwrap();
+    pc.dev
+        .add(0, sub, "folder.png", false, b"not a picture", false);
+    pc.open();
+    let h = pc.handle(u32::MAX, "Docs");
+    let a = pc.op(op::GET_OBJECT_INFO, &[h], None);
+    let mut r = Reader::new(&a.data);
+    r.skip(4 + 2 + 2 + 4).unwrap();
+    assert_eq!(r.u16().unwrap(), fmt::PNG, "thumbnail format");
+    assert_eq!(r.u32().unwrap(), png.len() as u32);
+    assert_eq!((r.u32().unwrap(), r.u32().unwrap()), (40, 30));
+    let t = pc.op(op::GET_THUMB, &[h], None);
+    assert_eq!(t.rc, rc::OK);
+    assert_eq!(t.data, png);
+    // A 32-bit BMP (its height negative: rows top-down).
+    let mut bmp = b"BM".to_vec();
+    bmp.extend_from_slice(&[0; 16]);
+    bmp.extend_from_slice(&64i32.to_le_bytes());
+    bmp.extend_from_slice(&(-48i32).to_le_bytes());
+    bmp.extend_from_slice(&[1, 0, 32, 0]);
+    let pics = pc.dev.add(0, ROOT, "Pics", true, b"", false);
+    pc.dev.add(0, pics, "FOLDER.BMP", false, &bmp, false);
+    let ph = pc.handle(u32::MAX, "Pics");
+    let a = pc.op(op::GET_OBJECT_INFO, &[ph], None);
+    let mut r = Reader::new(&a.data);
+    r.skip(4 + 2 + 2 + 4).unwrap();
+    assert_eq!(r.u16().unwrap(), fmt::BMP);
+    assert_eq!(r.u32().unwrap(), bmp.len() as u32);
+    assert_eq!((r.u32().unwrap(), r.u32().unwrap()), (64, 48));
+    assert_eq!(pc.op(op::GET_THUMB, &[ph], None).data, bmp);
+    // A folder without one, one whose picture isn't a PNG, and a file.
+    let sub = pc.handle(h, "Sub");
+    for no in [sub, pc.handle(u32::MAX, "big.bin")] {
+        let a = pc.op(op::GET_OBJECT_INFO, &[no], None);
+        let mut r = Reader::new(&a.data);
+        r.skip(4 + 2 + 2 + 4).unwrap();
+        assert_eq!(r.u16().unwrap(), 0);
+        assert_eq!(
+            pc.op(op::GET_THUMB, &[no], None).rc,
+            rc::NO_THUMBNAIL_PRESENT
+        );
+    }
 }
 
 // --- Reading -----------------------------------------------------------------
@@ -2027,3 +2082,18 @@ fn the_handle_index_survives_deletes_and_moves() {
 
 #[path = "fat_tests.rs"]
 mod fat_tests;
+
+#[test]
+fn a_stores_codes_are_removable_and_generic_hierarchical() {
+    pc!(pc);
+    pc.open();
+    let codes = |pc: &mut Pc<'_, Mem>, s: u8| {
+        let a = pc.op(op::GET_STORAGE_INFO, &[store_id(s, true)], None);
+        assert_eq!(a.rc, rc::OK);
+        let mut r = Reader::new(&a.data);
+        (r.u16().unwrap(), r.u16().unwrap())
+    };
+    // Removable RAM, generic hierarchical [MTP 5.2.2], on both cards.
+    assert_eq!(codes(&mut pc, 0), (0x0004, 0x0002));
+    assert_eq!(codes(&mut pc, 1), (0x0004, 0x0002));
+}

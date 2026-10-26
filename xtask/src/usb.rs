@@ -1259,14 +1259,16 @@ fn run_refinding(script: &str) -> Result<String, String> {
 
 /// What `cargo xtask install` puts on the card: (file in the kit, name on
 /// the card). The loader is what HaRET starts (the kit's loader folder);
-/// the icon pair is the card's drive icon on the PC.
-const KIT_FILES: [(&str, &str); 6] = [
+/// the icon pair is the card's drive icon on the PC; `device.ico` the
+/// Axim's own (the CF card gets it too).
+const KIT_FILES: [(&str, &str); 7] = [
     ("loader/retropane.bin", "retropane.bin"),
     ("loader/startup.txt", "startup.txt"),
     ("default.txt", "default.txt"),
     ("haret.exe", "haret.exe"),
     ("cards/sd/card-sd.ico", "card-sd.ico"),
     ("cards/sd/autorun.inf", "autorun.inf"),
+    ("device.ico", "device.ico"),
 ];
 
 /// Puts the kit's files on the card through the loader: each replaced,
@@ -1400,8 +1402,9 @@ mod tests {
     use super::*;
 
     /// The CF card gets the loader under the loader's name, HaRET's two
-    /// scripts and HaRET, all from the SD list, never the kit's top-level
-    /// image (the probe) and never the SD card's drive icon.
+    /// scripts, HaRET and the device's icon, all from the SD list, never
+    /// the kit's top-level image (the probe) and never the SD card's drive
+    /// icon.
     #[test]
     fn the_cf_kit_is_the_sd_kit_less_its_icon() {
         let cf = cf_kit_files();
@@ -1409,7 +1412,8 @@ mod tests {
         assert!(cf.contains(&("loader/startup.txt", "startup.txt")));
         assert!(cf.contains(&("default.txt", "default.txt")));
         assert!(cf.contains(&("haret.exe", "haret.exe")));
-        assert_eq!(cf.len(), 4);
+        assert!(cf.contains(&("device.ico", "device.ico")));
+        assert_eq!(cf.len(), 5);
         assert!(cf.iter().all(|(local, _)| *local != "retropane.bin"));
     }
 

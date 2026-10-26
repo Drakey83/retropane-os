@@ -97,6 +97,10 @@ fn shortcut(target: &str) -> String {
     format!("{}#{cmd}", cmd.chars().count())
 }
 
+/// The device's icon on the PC (ADR-0037 Q5, R60): Icons-Land's PDA, which
+/// the loader serves to Windows from the card.
+pub const DEVICE_ICON_ASSET: &str = "assets/device/pda.ico";
+
 /// A card's `autorun.inf`: only the drive icon (CRLF, as Windows writes it).
 fn autorun_inf(icon: &str) -> String {
     format!("[autorun]\r\nicon={icon}\r\n")
@@ -173,6 +177,10 @@ pub fn build(root: &Path) -> Result<(), String> {
         std::fs::write(out.join("autorun.inf"), autorun_inf(icon))
             .map_err(|e| format!("cards/{dir}/autorun.inf: {e}"))?;
     }
+    // The device's own icon (assets/device, Icons-Land's PDA): copied as
+    // made, never altered (its licence).
+    std::fs::copy(root.join(DEVICE_ICON_ASSET), kit.join("device.ico"))
+        .map_err(|e| format!("{DEVICE_ICON_ASSET}: {e}"))?;
     eprintln!("    SD kit ready: {}", kit.display());
     Ok(())
 }
@@ -220,6 +228,19 @@ pub(crate) fn objcopy() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_device_icon_is_icons_lands_file_as_made() {
+        // Its licence: never modified in shape or colour. Any change to
+        // the file (a repack, a dropped size, git's line endings) fails
+        // here.
+        let bytes = std::fs::read(crate::workspace_root().join(DEVICE_ICON_ASSET)).unwrap();
+        assert_eq!(bytes.len(), 432_254);
+        assert_eq!(
+            rp_crypto::hex(&rp_crypto::Sha256::digest(&bytes)),
+            *b"e2fd161e408369c5651d3b0002c426ee2c19fa0ade279b1352aa639a84ebecc9"
+        );
+    }
 
     #[test]
     fn autorun_names_the_icon_only() {
