@@ -5389,6 +5389,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
         ],
     )?;
+    let run_gc2ax = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TIMER_ALL", "1"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
     let run_gc2aw = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5470,7 +5478,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 90] = [
+    let runs: [GpubenchRun; 91] = [
         (
             "run A",
             &run_a,
@@ -5720,6 +5728,20 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AX (R37): GC2AQ's plans with the timer at 0 and 15 (one
+        // round each here; the emulator draws exactly).
+        (
+            "run GC2AX",
+            &run_gc2ax,
+            &[
+                "GC2AX (R37): 0x664 at 0 and at 15 at 149.50 / 1, reversed; each the untextured fault generator (1 rounds) and the flat and textured corner sweeps (1 rounds a scene)",
+                "GC2AX timer 0 generator",
+                "GC2AX timer 15 tex",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

@@ -7956,7 +7956,8 @@ mod image {
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
-        || GC2_BAND;
+        || GC2_BAND
+        || GC2_TIMER_ALL;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -8081,6 +8082,12 @@ mod image {
     /// sweep with the timer at 0 and at 15, for the width of divide 1's
     /// coordinate error with each. About 5 minutes, unattended.
     const GC2_BAND: bool = option_env!("RP_GPUBENCH_GC2_BAND").is_some();
+
+    /// Run GC2AX, reminder R37 (`RP_GPUBENCH_GC2_TIMER_ALL`): GC2AQ's
+    /// untextured fault generator and flat and textured corner sweeps with
+    /// `0x664` at 0 and at 15, for whether the timer ends the untextured
+    /// faults too. About 20 minutes, unattended.
+    const GC2_TIMER_ALL: bool = option_env!("RP_GPUBENCH_GC2_TIMER_ALL").is_some();
 
     /// Run GC2AT, reminder R37 (`RP_GPUBENCH_GC2_664_MIX`, with
     /// `RP_GPUBENCH_GC2_664`): GC2AS again with its values bit-reversed and
@@ -9469,7 +9476,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_BAND {
+            if GC2_TIMER_ALL {
+                "the 16-bit kinds' targets inside the safe region (GC2AX, R37: no map; the untextured fault generator and the flat and textured corner sweeps at 149.50 / 1 with 0x664 at 0 and at 15; each target poisoned first),"
+            } else if GC2_BAND {
                 "the 16-bit kinds' targets inside the safe region (GC2AW, R37: no map; GC2AM's phase sweep at 149.50 / 1 with 0x664 at 0 and at 15; each target poisoned first),"
             } else if GC2_WHERE {
                 "the 16-bit kinds' targets inside the safe region (GC2AV, R37: no map; GC2AM's every-render texel fault, the opaque path's, every wrong word placed by tile and row, 0x664 = 15 then 0, at 149.50 / 1; each target poisoned first),"
@@ -9653,7 +9662,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_BAND {
+        let patch = if GC2_TIMER_ALL {
+            gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_BAND {
             gc2::PHASES * gc2::words(gc2::FT2) as usize
         } else if GC2_REGS || GC2_664 || GC2_TIMER || GC2_WHERE {
             gc2::words(gc2::FT2) as usize
@@ -10028,7 +10039,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_BAND {
+                if GC2_TIMER_ALL {
+                    gc2_timer_all(g, &mut r, (tex, first, dsig));
+                } else if GC2_BAND {
                     gc2_band(g, &mut r, (tex, first, dsig));
                 } else if GC2_WHERE {
                     gc2_where(g, &mut r, (tex, first, dsig));
@@ -12362,6 +12375,106 @@ mod image {
         );
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
+
+    /// Run GC2AX (see [`GC2_TIMER_ALL`]): GC2AQ's three plans at 149.50 / 1,
+    /// reversed, every target poisoned (GC2AG's untextured fault generator,
+    /// GC2AJ's flat corner sweep with its control, GC2AK's textured one),
+    /// with `0x664` at 0 and then at 15 through [`Rig::over`] for each whole
+    /// plan: whether the timer that took GC2AM's texel fault from 12 tiles
+    /// to one column (GC2AV) also ends the untextured tile-row faults the
+    /// punch-through path ended (GC2AQ).
+    #[inline(never)]
+    fn gc2_timer_all(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (tex, first, dsig): (gc2::Tex, &mut [u32], bool),
+    ) {
+        let (gen_n, sweep_n) = (
+            GC2AX_GEN_ROUNDS.min(GC2AE_ROUNDS),
+            GC2AX_SWEEP_ROUNDS.min(GC2AE_ROUNDS),
+        );
+        log!(
+            "  GC2AX (R37): 0x664 at 0 and at 15 at 149.50 / 1, reversed; each the untextured fault generator ({gen_n} rounds) and the flat and textured corner sweeps ({sweep_n} rounds a scene)"
+        );
+        let step = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        const NAMES: [[(&str, &str); 3]; 2] = [
+            [
+                ("GC2AX timer 0 generator", "GC2AX TIMER 0 GENERATOR"),
+                ("GC2AX timer 0 flat", "GC2AX TIMER 0 FLAT SWEEP"),
+                ("GC2AX timer 0 tex", "GC2AX TIMER 0 TEX SWEEP"),
+            ],
+            [
+                ("GC2AX timer 15 generator", "GC2AX TIMER 15 GENERATOR"),
+                ("GC2AX timer 15 flat", "GC2AX TIMER 15 FLAT SWEEP"),
+                ("GC2AX timer 15 tex", "GC2AX TIMER 15 TEX SWEEP"),
+            ],
+        ];
+        for (k, timer) in [0u32, 15].into_iter().enumerate() {
+            // The whole plan (its references and controls at Windows
+            // Mobile's clock too) with the timer, as GC2AW.
+            g.over = if timer == 0 {
+                Over::NONE
+            } else {
+                Over::of(&[(0x664, timer)])
+            };
+            let names = NAMES[k];
+            let plans = [
+                OrderPlan {
+                    name: names[0].0,
+                    label: names[0].1,
+                    scenes: &gc2::ORDER_TRY_SCENES,
+                    ways: &gc2::ORDER_TRY[..1],
+                    step,
+                    secs: 600,
+                    rounds: gen_n,
+                    poison: true,
+                    describe: 4,
+                    pause: false,
+                    quiet: false,
+                    flat: true,
+                },
+                OrderPlan {
+                    name: names[1].0,
+                    label: names[1].1,
+                    scenes: &gc2::CORNER_FLAT[..],
+                    ways: &gc2::CORNER_WAYS[..],
+                    step,
+                    secs: 900,
+                    rounds: sweep_n,
+                    poison: true,
+                    describe: 6,
+                    pause: false,
+                    quiet: false,
+                    flat: false,
+                },
+                OrderPlan {
+                    name: names[2].0,
+                    label: names[2].1,
+                    scenes: &gc2::CORNER_UV[..],
+                    ways: &gc2::CORNER_WAYS[..gc2::CORNER_SCENES_EACH],
+                    step,
+                    secs: 900,
+                    rounds: sweep_n,
+                    poison: true,
+                    describe: 6,
+                    pause: false,
+                    quiet: false,
+                    flat: false,
+                },
+            ];
+            for p in &plans {
+                gc2_orders(g, r, (tex, &mut *first, dsig), p);
+            }
+            g.over = Over::NONE;
+            g.e.regs.write32(MBX + 0x664, 0);
+        }
+    }
+
+    /// GC2AX's rounds: the fault generator's (GC2AQ's, it fails rarely), and a
+    /// corner sweep's (a third of GC2AQ's: 50 rounds still gave about 50 and
+    /// 20 wrong renders without a cure).
+    const GC2AX_GEN_ROUNDS: u32 = 400;
+    const GC2AX_SWEEP_ROUNDS: u32 = 50;
 
     /// GC2AQ's rounds: the fault generator's, and a corner sweep's.
     const GC2AQ_GEN_ROUNDS: u32 = 400;
