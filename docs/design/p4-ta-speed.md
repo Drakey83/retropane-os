@@ -385,6 +385,9 @@ for later: the binner's first frames 5-14% slower with its parameter
 memory at `0x800000` (R59); the 6-word vertex (R38); the TA at divide 1
 (R41).
 
+**P4 ticked by the owner, 2026-10-26:** "Tick P4: the TA's speed against
+our lists is measured, with right pictures and no hangs."
+
 
 ## The choices for the owner
 
