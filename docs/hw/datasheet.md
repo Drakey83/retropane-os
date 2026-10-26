@@ -176,7 +176,10 @@ watching.
   GLES clear's colourless object, which draws nothing (audit C80); with a
   plain strip as the background and the memory manager set up after a core
   reset, every TA picture equals our binner's (`rp-tabench` run 5). About
-  one TA render in three still hangs the 3D stage (open: audit C81).
+  one TA render in three hung the 3D stage while the memory manager was
+  set up again between scenes or shared its parameter memory with the CPU
+  binner's; set up once, in a parameter memory of its own, 0 of 150 hung
+  (`rp-tabench` run 9, audit C81 fixed).
 - **The 2D engine's clock off** (`rp-gpubench` run FS, X51v, 2026-10-22,
   `local/cardlog/gpubench-0044.txt`): `MBXCLK` enable 0 (divider kept)
   with 20 fills and a fence queued pauses the work; the clock back on, it
