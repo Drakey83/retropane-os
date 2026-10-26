@@ -8054,6 +8054,14 @@ mod image {
     /// unattended.
     const GC2_664: bool = option_env!("RP_GPUBENCH_GC2_664").is_some();
 
+    /// Run GC2AT, reminder R37 (`RP_GPUBENCH_GC2_664_MIX`, with
+    /// `RP_GPUBENCH_GC2_664`): GC2AS again with its values bit-reversed and
+    /// a render with no word written beside each pair: GC2AS's fault fell
+    /// in steps with the value (59 to 11 words) in 0x664 and the unused
+    /// 0x6FC alike, in rising order, so a value and the run's drift
+    /// couldn't be told apart. About 6 minutes, unattended.
+    const GC2_664_MIX: bool = option_env!("RP_GPUBENCH_GC2_664_MIX").is_some();
+
     /// Run GC2AR, reminder R37 (`RP_GPUBENCH_GC2_REGS`): GC2AQ put every
     /// divide-1 fault in the opaque objects' path; each bit of the render
     /// block's 53 words (GC2Q's list) flipped alone on GC2AM's every-render
@@ -11666,18 +11674,19 @@ mod image {
     /// against its control's; the control at Windows Mobile's clock after.
     #[inline(never)]
     fn gc2_664(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let tag = if GC2_664_MIX { "GC2AT" } else { "GC2AS" };
         let k = gc2::FT2;
         let words = gc2::words(k) as usize;
         let at = gc_at(k);
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         let (first, rest) = first.split_at_mut(words);
         if rest.len() < words {
-            log!("  GC2AS: not enough SDRAM for the reference: nothing run");
+            log!("  {tag}: not enough SDRAM for the reference: nothing run");
             return;
         }
         let want = &mut rest[..words];
         log!(
-            "  GC2AS (R37): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; 0x664 bits 0-3 at each of 16 values, {GC2AS_RENDERS} renders each, each beside one with the value in 0x6FC (unused) instead"
+            "  {tag} (R37): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; 0x664 bits 0-3 at each of 16 values, {GC2AS_RENDERS} renders each, each beside one with the value in 0x6FC (unused) instead"
         );
         r.set_tile_order(tile_order(gc2::REVERSED));
         r.set_header_xor(0, 0);
@@ -11707,11 +11716,11 @@ mod image {
             gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
         ];
         log!(
-            "  GC2AS reference: {t0:?} us, renders 2-3 {again:?} words off it; {}",
+            "  {tag} reference: {t0:?} us, renders 2-3 {again:?} words off it; {}",
             Gc2Held(&side)
         );
         if t0.is_none() || again != [Some(0); 2] {
-            log!("  GC2AS: the reference isn't repeatable: nothing run");
+            log!("  {tag}: the reference isn't repeatable: nothing run");
             return;
         }
         let poison = gc2::absent16(want, &gc2::POISON);
@@ -11720,10 +11729,10 @@ mod image {
         let want_regs = gc2_clock_want(step_speed(g, s), s.div);
         let Some(lock) = clock_apply(g, s) else {
             clock_restore(&mut g.e.regs);
-            log!("  GC2AS: 149.50 / 1 didn't take; Windows Mobile's put back");
+            log!("  {tag}: 149.50 / 1 didn't take; Windows Mobile's put back");
             return;
         };
-        log!("  GC2AS 149.50 / 1: lock {lock}");
+        log!("  {tag} 149.50 / 1: lock {lock}");
         clock_readback(g);
         // One render as the core stands: its wrong words and its time.
         let mut one = |g: &mut Rig, r: &mut Renderer| -> (Option<u32>, u32) {
@@ -11746,9 +11755,21 @@ mod image {
                 *u = (u.0.min(o.1), u.1.max(o.1));
             };
         let mut clean = [0u32; 16];
-        for v in 0..16u32 {
-            let (mut w, mut wc) = ([0i32; GC2AS_RENDERS], [0i32; GC2AS_RENDERS]);
-            let (mut u, mut uc) = ((u32::MAX, 0u32), (u32::MAX, 0u32));
+        // GC2AT: the values bit-reversed (no value's place in the run follows
+        // its size: GC2AS's rising order couldn't tell a value from the
+        // run's drift), and a third render each time with no word written.
+        let order: [u32; 16] = if GC2_664_MIX {
+            [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]
+        } else {
+            core::array::from_fn(|i| i as u32)
+        };
+        for (step, v) in order.into_iter().enumerate() {
+            let (mut w, mut wc, mut wp) = (
+                [0i32; GC2AS_RENDERS],
+                [0i32; GC2AS_RENDERS],
+                [0i32; GC2AS_RENDERS],
+            );
+            let (mut u, mut uc, mut up) = ((u32::MAX, 0u32), (u32::MAX, 0u32), (u32::MAX, 0u32));
             for i in 0..n {
                 g.over = Over::of(&[(0x664, v)]);
                 let o = one(g, r);
@@ -11759,24 +11780,46 @@ mod image {
                 g.over = Over::NONE;
                 g.e.regs.write32(MBX + 0x664, 0);
                 g.e.regs.write32(MBX + 0x6FC, 0);
+                if GC2_664_MIX {
+                    let o = one(g, r);
+                    tally(o, &mut wp, &mut up, i);
+                }
             }
             let sum = |a: &[i32]| a.iter().map(|&x| x.max(0) as u32).sum::<u32>();
             let zero = |a: &[i32]| a.iter().filter(|&&x| x == 0).count() as u32;
             clean[v as usize] = zero(&w);
-            log!(
-                "  GC2AS 0x664 = {v}: {} of {n} renders right, words wrong total {} (0x6FC = {v}: {} of {n} right, total {}); us {}-{} ({}-{}); words wrong by render {w:?} ({wc:?})",
-                zero(&w),
-                sum(&w),
-                zero(&wc),
-                sum(&wc),
-                u.0,
-                u.1,
-                uc.0,
-                uc.1
-            );
+            if GC2_664_MIX {
+                log!(
+                    "  {tag} step {step} 0x664 = {v}: {} of {n} right, total {}, us {}-{} | 0x6FC = {v}: {} right, total {}, us {}-{} | none written: {} right, total {}, us {}-{}; by render {w:?} | {wc:?} | {wp:?}",
+                    zero(&w),
+                    sum(&w),
+                    u.0,
+                    u.1,
+                    zero(&wc),
+                    sum(&wc),
+                    uc.0,
+                    uc.1,
+                    zero(&wp),
+                    sum(&wp),
+                    up.0,
+                    up.1
+                );
+            } else {
+                log!(
+                    "  {tag} 0x664 = {v}: {} of {n} renders right, words wrong total {} (0x6FC = {v}: {} of {n} right, total {}); us {}-{} ({}-{}); words wrong by render {w:?} ({wc:?})",
+                    zero(&w),
+                    sum(&w),
+                    zero(&wc),
+                    sum(&wc),
+                    u.0,
+                    u.1,
+                    uc.0,
+                    uc.1
+                );
+            }
             let mut l3 = heapless_name();
-            let _ = write!(l3, "VALUE {} OF 16 RIGHT {}/{n}", v + 1, zero(&w));
-            soak_label(g, ["GC2AS 0x664", "149.50 / 1", l3.as_str()], SOAK_BLUE);
+            let _ = write!(l3, "STEP {} OF 16 RIGHT {}/{n}", step + 1, zero(&w));
+            soak_label(g, [tag, "149.50 / 1", l3.as_str()], SOAK_BLUE);
         }
         g.over = Over::NONE;
         clock_restore(&mut g.e.regs);
@@ -11786,7 +11829,7 @@ mod image {
         set(g, r);
         let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
         log!(
-            "  GC2AS: renders right by value {clean:?} of {n} each; the control at Windows Mobile's clock after: {control:?} words off"
+            "  {tag}: renders right by value {clean:?} of {n} each; the control at Windows Mobile's clock after: {control:?} words off"
         );
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
