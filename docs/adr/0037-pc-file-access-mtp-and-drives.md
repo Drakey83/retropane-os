@@ -384,7 +384,8 @@ the record.
 
   **Q6L. The owner's look with LegacySync installed (the owner,
   2026-10-26: "figure out a way to make it work like i want if you install
-  legacy sync"; open, for his vote; R66: nothing built until then).** The
+  legacy sync"; open, for his vote; R66: nothing built until then). Parked
+  by the owner the same day ("lagacysync is a project for later").** The
   goal: Axim X51v with SD, CF and Internal inside, each with its own icon,
   opening in Tiles; C stays the look on any PC without LegacySync. Rule 0:
   ActiveSync (2005) put its own code inside Explorer (a shell namespace
