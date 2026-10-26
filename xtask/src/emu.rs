@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 const WAV_VOICE: &str = ",out.buffer-length=250000";
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.30.0";
+pub const QEMU_RELEASE: &str = "rp-v0.31.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
