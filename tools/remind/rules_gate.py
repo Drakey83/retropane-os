@@ -30,6 +30,14 @@ never checked.
 The files a commit holds: those staged now, those named by a `git add` in
 the same command, and with `-a` every tracked change; when they can't be
 told, the strictest rule applies. A broken gate refuses, loudly.
+
+Which repository: the one the command's git acts in, not the one this
+script sits in. The PreToolUse hook always runs the main checkout's copy,
+so a commit or push in a worktree (`git -C <dir>`, `cd <dir> && git ...`)
+is judged by that worktree's HEAD, staged files and CI stamp
+(`acting_dir`; until 2026-10-25 it read the main checkout's, and refused a
+worktree push whose own CI had passed: reminder R39). Git's own hooks run
+the worktree's copy and judge it already.
 """
 
 import json
@@ -41,20 +49,60 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MIN_TEXT = 60
 CODE = re.compile(r"\.(rs|py|c|h|s|S|ld|toml|sh|ps1|json)$")
-COMMIT = re.compile(r"(?:^|[;&|(]\s*|\s)git(?:\s+-C\s+\S+)?\s+commit\b")
-PUSH = re.compile(r"(?:^|[;&|(]\s*|\s)git(?:\s+-C\s+\S+)?\s+push\b")
-ADD = re.compile(r"(?:^|[;&|(]\s*|\s)git(?:\s+-C\s+\S+)?\s+(?:add|mv|rm)\s+([^;&|]*)")
+COMMIT = re.compile(r"(?:^|[;&|(]\s*|\s)git(?:\s+-C\s+(?:\"[^\"]*\"|'[^']*'|\S+))?\s+commit\b")
+PUSH = re.compile(r"(?:^|[;&|(]\s*|\s)git(?:\s+-C\s+(?:\"[^\"]*\"|'[^']*'|\S+))?\s+push\b")
+ADD = re.compile(r"(?:^|[;&|(]\s*|\s)git(?:\s+-C\s+(?:\"[^\"]*\"|'[^']*'|\S+))?\s+(?:add|mv|rm)\s+([^;&|]*)")
 LINE = re.compile(r"Iterate:\s*(.*)", re.S)
 ATTRIBUTION = re.compile(r"co-authored-by|generated with", re.I)
 ADR_CITED = re.compile(r"ADR-0*(\d{1,4})\b")
-STAMP = os.path.join(ROOT, "target", "ci-pass.txt")
+GIT_C = re.compile(r"(?:^|[;&|(]\s*|\s)git\s+-C\s+(\"[^\"]*\"|'[^']*'|\S+)")
+CD = re.compile(r"(?:^|[;&|(]\s*)cd\s+(\"[^\"]*\"|'[^']*'|[^\s;&|]+)")
+# The repository the command being judged acts in (set by `hook`).
+REPO = ROOT
 ASKS_FOR_SPAWN = re.compile(
     r"\b(sessions?|agents?|subagents?|workflows?|fan[- ]?out|in parallel|fork)\b", re.I
 )
 
 
+def native(path):
+    """A Git Bash path (`/c/Users/...`) as Windows' Python opens it; others
+    unchanged; quotes dropped."""
+    path = path.strip("'\"")
+    m = re.match(r"^/([a-zA-Z])(/|$)", path)
+    return f"{m.group(1).upper()}:/{path[3:]}" if m else path
+
+
+def acting_dir(command, cwd):
+    """Where the command's `git commit` or `git push` runs: the folder of a
+    `git -C <dir>` on it, else the `cd`s before it (each from the last),
+    else the hook's working directory, else this script's repository."""
+    here = native(cwd) if cwd else ROOT
+    act = COMMIT.search(command) or PUSH.search(command)
+    end = act.start() if act else len(command)
+    seg = command[act.start():act.end()] if act else ""
+    m = GIT_C.search(seg)
+    for c in CD.finditer(command[:end]):
+        here = os.path.join(here, native(c.group(1)))
+    if m:
+        here = os.path.join(here, native(m.group(1)))
+    return os.path.normpath(here)
+
+
+def repo_of(folder):
+    """The top of the repository holding `folder`."""
+    out = subprocess.run(
+        ["git", "-C", folder, "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(f"{folder}: {out.stderr.strip()}")
+    return out.stdout.strip()
+
+
 def git(*args):
-    out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=10)
+    out = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, timeout=10)
     if out.returncode != 0:
         raise RuntimeError(out.stderr.strip())
     return [l for l in out.stdout.splitlines() if l.strip()]
@@ -78,7 +126,10 @@ def files_in(command):
 def areas():
     """docs/adr-areas.md's rows: (path prefix, set of ADR numbers)."""
     rows = []
-    with open(os.path.join(ROOT, "docs", "adr-areas.md"), encoding="utf-8") as fh:
+    path = os.path.join(REPO, "docs", "adr-areas.md")
+    if not os.path.exists(path):  # a branch from before the table moved
+        path = os.path.join(ROOT, "docs", "adr-areas.md")
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             if len(cells) == 2 and "/" in cells[0] and re.fullmatch(r"[\d, ]+", cells[1]):
@@ -139,7 +190,7 @@ def push_verdict(head, clean, stamp):
 
 def read_stamp():
     try:
-        with open(STAMP, encoding="utf-8") as fh:
+        with open(os.path.join(REPO, "target", "ci-pass.txt"), encoding="utf-8") as fh:
             parts = fh.read().split()
         return (parts[0], parts[1]) if len(parts) >= 2 else None
     except OSError:
@@ -200,6 +251,10 @@ def hook(mode):
             deny(reason)
         return
     command = (data.get("tool_input") or {}).get("command") or ""
+    if not (COMMIT.search(command) or PUSH.search(command)):
+        return
+    global REPO
+    REPO = repo_of(acting_dir(command, data.get("cwd")))
     if COMMIT.search(command):
         try:
             paths = files_in(command)
@@ -246,7 +301,13 @@ def self_test():
         if COMMIT.search(cmd) or PUSH.search(cmd):
             bad += 1
             print("WRONG: matched", cmd)
-    if not COMMIT.search("cd x && git -C . commit -q -m y") or not PUSH.search("git push origin main"):
+    if (
+        not COMMIT.search("cd x && git -C . commit -q -m y")
+        or not PUSH.search("git push origin main")
+        # A quoted folder with a space once let a push past the patterns.
+        or not PUSH.search('git -C "C:/a b/wt" push origin x')
+        or not COMMIT.search("git -C 'C:/a b' commit -m y")
+    ):
         bad += 1
         print("WRONG: missed a commit or push")
     pushes = [
@@ -256,6 +317,23 @@ def self_test():
         (("a" * 40, True, ("a" * 40, "dirty")), False),
         (("a" * 40, True, None), False),
     ]
+    # Which repository: the git -C folder, the cds before the git command
+    # (chained, relative to the last), the hook's folder, Git Bash paths.
+    dirs = [
+        ("git push origin x", "C:/r", "C:/r"),
+        ("git -C /c/Users/a/wt push origin x", "C:/r", "C:/Users/a/wt"),
+        ('git -C "C:/a b/wt" push', "C:/r", "C:/a b/wt"),
+        ("cd /c/Users/a/wt && git push origin x", "C:/r", "C:/Users/a/wt"),
+        ("cd a && cd b && git commit -m x", "C:/r", "C:/r/a/b"),
+        ("git push origin x && cd /c/elsewhere", "C:/r", "C:/r"),
+        ("cd /c/w && git -C ../v commit -m x", "C:/r", "C:/v"),
+        ("git push", None, ROOT),
+    ]
+    for cmd, cwd, want in dirs:
+        got = acting_dir(cmd, cwd)
+        if os.path.normcase(got) != os.path.normcase(os.path.normpath(want)):
+            bad += 1
+            print("WRONG folder:", cmd, "->", got)
     for (head, clean, stamp), allow in pushes:
         if (push_verdict(head, clean, stamp) is None) != allow:
             bad += 1
