@@ -21,6 +21,8 @@ rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
 rp-fat = { path = "../../kernel/fat" }
 rp-usb-msc = { path = "../../drivers/usb-msc" }
+rp-usb-mtp = { path = "../../drivers/usb-mtp", features = ["fat"] }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-pwm = { path = "../../drivers/pxa-pwm" }
 rp-drv-cf = { path = "../../drivers/cf" }
 rp-loadproto = { path = "../loadproto" }

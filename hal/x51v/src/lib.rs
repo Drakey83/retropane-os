@@ -11,10 +11,15 @@ pub mod cardlog;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod cardsink;
 pub mod cardwrite;
+pub mod carve;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod devices;
 pub mod kept;
 pub mod vcore;
+
+/// The device's model, as it names itself to a PC (MTP's model, ADR-0037
+/// rule 12): from the board, so another board's port names its own.
+pub const MODEL: &str = "Axim X51v";
 
 /// How sure we are of a hardware fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

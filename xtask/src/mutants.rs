@@ -802,6 +802,30 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_cardlog),
     },
     Mutant {
+        name: "ADR-0037: a control reply that fills its request ends with a zero-length packet (it answers the next request)",
+        file: "drivers/pxa-udc/src/lib.rs",
+        from: "        } else if end == self.ep0_len && end >= self.ep0_want {",
+        to: "        } else if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "a_reply_that_fills_the_request_ends_without_a_zero_length_packet",
+        ]),
+    },
+    Mutant {
+        name: "ADR-0037: a boot file's entry not protected by place (MTP lists it writable)",
+        file: "kernel/fat/src/guard.rs",
+        from: "                .any(|f| f.entry_lba == lba && f.entry_offset == offset),",
+        to: "                .any(|f| f.entry_lba == lba && f.entry_offset == offset + 32),",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "--features",
+            "std",
+            "every_format_names_its_protected_entries_by_place",
+        ]),
+    },
+    Mutant {
         name: "ADR-0037: a write in progress listed (the PC sees a half file's temporary entry)",
         file: "kernel/fat/src/node.rs",
         from: "            if e[11] & 0x08 != 0 || e[0] == b'.' || is_temp(&short).is_some() {",

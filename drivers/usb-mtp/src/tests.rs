@@ -479,9 +479,10 @@ macro_rules! pc {
         let mut buf = vec![0u8; 4096];
         let mut slots = vec![Slot::default(); $slots];
         let mut index = vec![0u32; 2 * $slots];
+        let mut walk = vec![(0, 0, 0, false); MAX_DEPTH];
         #[allow(unused_mut)]
         let mut $pc = Pc {
-            mtp: Mtp::new(identity(), &mut buf, &mut slots, &mut index),
+            mtp: Mtp::new(identity(), &mut buf, &mut slots, &mut index, &mut walk),
             dev: Mem::new(),
             pipe: TestPipe::default(),
             tid: 0,
@@ -1675,6 +1676,28 @@ fn the_boot_card_is_never_formatted_and_others_need_the_users_yes() {
         rc::OK
     );
     assert_eq!(pc.dev.formatted, [1]);
+    // The formatted card is listed afresh: removed, then added.
+    for _ in 0..10 {
+        pc.mtp.poll(&mut pc.dev, &mut pc.pipe);
+    }
+    let events: Vec<(u16, u32)> = pc
+        .pipe
+        .events
+        .drain(..)
+        .map(|e| {
+            (
+                u16::from_le_bytes([e[6], e[7]]),
+                u32::from_le_bytes(e[12..16].try_into().unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        events,
+        [
+            (ev::STORE_REMOVED, 2 << 16 | 0xFFFF),
+            (ev::STORE_ADDED, store_id(1, true))
+        ]
+    );
     // No answer within the time: refused.
     pc.dev.present[1] = true;
     let a = pc.op(op::FORMAT_STORE, &[store_id(1, true), 0], None);

@@ -76,6 +76,9 @@ fn serial_port() -> u16 {
     monitor_port() - 1
 }
 
+mod mtp;
+pub use mtp::boot_loader_mtp;
+
 /// Local TCP port for QEMU's monitor (screenshots). `RETROPANE_MONITOR_PORT` overrides.
 ///
 /// Every port a run uses is an offset from this one, inside a block of
@@ -110,7 +113,7 @@ fn monitor_port() -> u16 {
 /// from `PORT_FIRST`. A block holds serial, monitor, QMP and
 /// [`USB_PORTS`] USB chardevs.
 const PORT_FIRST: u16 = 45_440;
-const PORT_BLOCK: u16 = 20;
+const PORT_BLOCK: u16 = 24;
 const PORT_BLOCKS: u16 = 64;
 const USB_PORTS: u16 = PORT_BLOCK - 3;
 
@@ -14245,9 +14248,16 @@ mod tests",
     /// test reaches past it into another run's ports.
     #[test]
     fn usb_ports_fit_the_port_block() {
-        let src = include_str!("emu.rs");
+        let src = [include_str!("emu.rs"), include_str!("emu/mtp.rs")].concat();
         let mut seen = 0;
-        for call in ["usb_connect(", "usb_args(", "msc_args(", "usb_port("] {
+        for call in [
+            "usb_connect(",
+            "usb_args(",
+            "msc_args(",
+            "mtp_args(",
+            "usb_port(",
+            "Initiator::connect(",
+        ] {
             for rest in src.split(call).skip(1) {
                 let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
                 if let Ok(n) = digits.parse::<u16>() {

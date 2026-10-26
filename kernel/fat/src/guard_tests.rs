@@ -1046,3 +1046,29 @@ fn only_the_shown_attributes_are_taken_back_from_the_pc() {
         assert!(g.touches(lba, 1) && !g.touches(lba + 1000, 1));
     }
 }
+
+#[test]
+fn every_format_names_its_protected_entries_by_place() {
+    // MTP asks by an object's entry (ADR-0037): the boot files' entries are
+    // protected, every other entry not, in every format.
+    for (fs, total, cluster) in FORMATS {
+        let (mut dev, base, _) = formatted(fs, total, cluster, false);
+        let g = dev.guard.clone().unwrap();
+        let mut v = AnyVolume::mount(&mut dev, base).unwrap();
+        let (mut cursor, mut n) = (0u64, crate::node::Node::default());
+        let mut seen = Vec::new();
+        while v
+            .node_child(crate::node::ROOT, &mut cursor, &mut n)
+            .unwrap()
+        {
+            let name = String::from_utf16(n.name()).unwrap();
+            let (lba, offset) = ((n.entry >> 4) as u32, (n.entry & 15) as usize * 32);
+            let boot = BOOT.iter().any(|b| b.eq_ignore_ascii_case(&name));
+            assert_eq!(g.protects_entry(lba, offset), boot, "{fs:?} {name}");
+            assert!(!g.protects_entry(lba ^ 1, offset), "{fs:?} {name}");
+            seen.push(name);
+        }
+        assert!(seen.iter().any(|n| n == "README.txt"), "{fs:?}");
+        assert!(seen.iter().any(|n| n == "retropane.bin"), "{fs:?}");
+    }
+}

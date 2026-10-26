@@ -3,7 +3,7 @@
 //! each card checked after.
 
 use super::*;
-use crate::fat::{Cards, FatDevice};
+use crate::fat::{Cards, FatDevice, FatState};
 use rp_fat::AnyVolume;
 use rp_fat::mkfs::{self, Fs, Options};
 use rp_fat::node::{Node, ROOT as FROOT};
@@ -153,7 +153,9 @@ macro_rules! fat_pc {
         let mut buf = vec![0u8; 16 * 1024];
         let mut slots = vec![Slot::default(); 1024];
         let mut index = vec![0u32; 2048];
+        let mut walk = vec![(0, 0, 0, false); MAX_DEPTH];
         let mut scratch = vec![0u8; 16 * 1024];
+        let mut st = FatState::new();
         let cards = TwoCards {
             imgs: [
                 image($fs, $sectors, $cluster),
@@ -164,8 +166,8 @@ macro_rules! fat_pc {
             consent: Consent::No,
         };
         let mut $pc = Pc {
-            mtp: Mtp::new(identity(), &mut buf, &mut slots, &mut index),
-            dev: FatDevice::new(cards, &mut scratch),
+            mtp: Mtp::new(identity(), &mut buf, &mut slots, &mut index, &mut walk),
+            dev: FatDevice::new(cards, &mut scratch, &mut st),
             pipe: TestPipe::default(),
             tid: 0,
         };
@@ -380,5 +382,54 @@ fn storage_info_reads_the_real_card() {
             "S0-0CAFE0001",
             "{fs}: the volume serial"
         );
+    });
+}
+
+#[test]
+fn a_send_spans_devices_rebuilt_over_the_same_state() {
+    // The loader puts a FatDevice together for every poll (it uses its
+    // cards between polls): a file reserved by one is written and
+    // committed by the next, on both formats.
+    on_each(|fs, sectors, cluster, what| {
+        let mut st = FatState::new();
+        let mut scratch = vec![0u8; 16 * 1024];
+        let mut cards = TwoCards {
+            imgs: [image(fs, sectors, cluster), image(Fs::Fat16, 65_536, 2048)],
+            now: 0,
+            name: Text::from_text("Axim X51v").unwrap(),
+            consent: Consent::No,
+        };
+        let data: Vec<u8> = (0..5000u32).map(|i| (i * 7) as u8).collect();
+        let new = NewObject {
+            name: Text::from_text("kept.bin").unwrap(),
+            folder: false,
+            size: data.len() as u64,
+            created: None,
+            modified: None,
+            hidden: false,
+        };
+        let tmp = FatDevice::new(&mut cards, &mut scratch, &mut st)
+            .create(0, ROOT, &new)
+            .unwrap();
+        FatDevice::new(&mut cards, &mut scratch, &mut st)
+            .write(0, tmp, 0, &data[..4096])
+            .unwrap();
+        FatDevice::new(&mut cards, &mut scratch, &mut st)
+            .write(0, tmp, 4096, &data[4096..])
+            .unwrap();
+        let loc = FatDevice::new(&mut cards, &mut scratch, &mut st)
+            .commit(0, tmp)
+            .unwrap();
+        let mut dev = FatDevice::new(&mut cards, &mut scratch, &mut st);
+        let mut e = Entry::default();
+        dev.stat(0, loc, &mut e).unwrap();
+        assert_eq!(e.size, data.len() as u64, "{what}");
+        let mut back = vec![0u8; data.len()];
+        assert_eq!(
+            dev.read(0, loc, 0, &mut back).unwrap(),
+            data.len(),
+            "{what}"
+        );
+        assert_eq!(back, data, "{what}");
     });
 }

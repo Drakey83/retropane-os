@@ -606,6 +606,22 @@ impl Guard {
         })
     }
 
+    /// Whether the entry at `lba`, byte `offset` (a FAT short entry, an
+    /// exFAT file entry) is a protected file's or folder's: MTP refuses to
+    /// change it by name (ADR-0037 rule 9), where the drive's writes are
+    /// checked sector by sector.
+    #[must_use]
+    pub fn protects_entry(&self, lba: u32, offset: usize) -> bool {
+        match &self.kind {
+            Kind::Fat(g) => g.files[..g.count]
+                .iter()
+                .any(|f| f.entry_lba == lba && f.entry_offset == offset),
+            Kind::Ex(g) => g.files[..g.count]
+                .iter()
+                .any(|f| f.entries > 0 && f.at[0] == (lba, offset as u16)),
+        }
+    }
+
     /// Files and folders protected.
     #[must_use]
     pub fn files(&self) -> usize {

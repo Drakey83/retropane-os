@@ -84,6 +84,60 @@ pub trait Cards {
     fn now_ms(&self) -> u32;
 }
 
+/// Borrowed cards are cards (the loader lends its own for each poll).
+impl<C: Cards + ?Sized> Cards for &mut C {
+    type Disk<'a>
+        = C::Disk<'a>
+    where
+        Self: 'a;
+
+    fn stores(&self) -> u8 {
+        (**self).stores()
+    }
+    fn disk(&mut self, s: u8) -> Option<(Self::Disk<'_>, u32)> {
+        (**self).disk(s)
+    }
+    fn kind(&self, s: u8) -> Kind {
+        (**self).kind(s)
+    }
+    fn writable(&self, s: u8) -> bool {
+        (**self).writable(s)
+    }
+    fn protected(&self, s: u8, sector: u32, offset: usize) -> bool {
+        (**self).protected(s, sector, offset)
+    }
+    fn boots_from(&mut self, s: u8) -> bool {
+        (**self).boots_from(s)
+    }
+    fn description(&self, s: u8) -> &'static str {
+        (**self).description(s)
+    }
+    fn format_consent(&mut self, s: u8, start: bool) -> Consent {
+        (**self).format_consent(s, start)
+    }
+    fn format(&mut self, s: u8) -> Result<(), StoreError> {
+        (**self).format(s)
+    }
+    fn friendly_name(&self) -> Text {
+        (**self).friendly_name()
+    }
+    fn set_friendly_name(&mut self, name: &Text) {
+        (**self).set_friendly_name(name);
+    }
+    fn icon_len(&mut self) -> u32 {
+        (**self).icon_len()
+    }
+    fn icon_read(&mut self, offset: u32, buf: &mut [u8]) -> usize {
+        (**self).icon_read(offset, buf)
+    }
+    fn initiator(&mut self, who: &Text) {
+        (**self).initiator(who);
+    }
+    fn now_ms(&self) -> u32 {
+        (**self).now_ms()
+    }
+}
+
 /// A file being sent: its reservation and what it will be called.
 #[derive(Clone, Copy)]
 struct Pending {
@@ -96,13 +150,61 @@ struct Pending {
     modified: Option<Stamp>,
 }
 
+/// What the device keeps about the cards between operations: a file being
+/// sent, free space and serials. Kept by the owner (in static memory, not
+/// on its stack), so a [`FatDevice`] can be put together for each poll
+/// while the owner uses its cards between polls.
+#[derive(Clone, Copy)]
+pub struct FatState {
+    pending: [Option<Pending>; MAX_STORES],
+    space: [Option<(u64, u64)>; MAX_STORES],
+    serials: [Option<u32>; MAX_STORES],
+}
+
+impl FatState {
+    /// Nothing known yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            pending: [None; MAX_STORES],
+            space: [None; MAX_STORES],
+            serials: [None; MAX_STORES],
+        }
+    }
+
+    /// Forget what is cached about store `s` (its card changed under us:
+    /// the device wrote it, or it was swapped). A reservation on it is
+    /// dropped (the next mount's recovery frees its clusters).
+    pub fn forget(&mut self, s: u8) {
+        if let Some(i) = Some(usize::from(s)).filter(|&i| i < MAX_STORES) {
+            self.space[i] = None;
+            self.pending[i] = None;
+            self.serials[i] = None;
+        }
+    }
+}
+
+impl FatState {
+    /// Store `s`'s free space changed under us (the owner wrote a file):
+    /// read again at the next GetStorageInfo; a file being sent stays.
+    pub fn space_changed(&mut self, s: u8) {
+        if let Some(i) = Some(usize::from(s)).filter(|&i| i < MAX_STORES) {
+            self.space[i] = None;
+        }
+    }
+}
+
+impl Default for FatState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The cards as MTP stores.
 pub struct FatDevice<'s, C> {
     cards: C,
     scratch: &'s mut [u8],
-    pending: [Option<Pending>; MAX_STORES],
-    space: [Option<(u64, u64)>; MAX_STORES],
-    serials: [Option<u32>; MAX_STORES],
+    st: &'s mut FatState,
 }
 
 fn err(e: Error) -> StoreError {
@@ -160,19 +262,14 @@ fn serial_of(boot: &[u8; 512]) -> u32 {
 
 impl<'s, C: Cards> FatDevice<'s, C> {
     /// Serves `cards`, staging card commands in `scratch` (whole sectors;
-    /// 8 KiB or more keeps FAT searches short).
+    /// 8 KiB or more keeps FAT searches short), with what is known about
+    /// them in `st`.
     ///
     /// # Panics
     /// If `scratch` is under 4 KiB.
-    pub fn new(cards: C, scratch: &'s mut [u8]) -> Self {
+    pub fn new(cards: C, scratch: &'s mut [u8], st: &'s mut FatState) -> Self {
         assert!(scratch.len() >= 4096, "scratch too small");
-        Self {
-            cards,
-            scratch,
-            pending: [None; MAX_STORES],
-            space: [None; MAX_STORES],
-            serials: [None; MAX_STORES],
-        }
+        Self { cards, scratch, st }
     }
 
     /// The cards.
@@ -184,10 +281,8 @@ impl<'s, C: Cards> FatDevice<'s, C> {
     /// the device wrote it, or it was swapped). A reservation on it is
     /// dropped (the next mount's recovery frees its clusters).
     pub fn forget(&mut self, s: u8) {
-        if let Some(i) = self.slot(s) {
-            self.space[i] = None;
-            self.pending[i] = None;
-            self.serials[i] = None;
+        if self.slot(s).is_some() {
+            self.st.forget(s);
         }
     }
 
@@ -262,7 +357,7 @@ impl<'s, C: Cards> FatDevice<'s, C> {
         let Some(i) = self.slot(s) else {
             return 0;
         };
-        if let Some(v) = self.serials[i] {
+        if let Some(v) = self.st.serials[i] {
             return v;
         }
         let Some((mut disk, base)) = self.cards.disk(s) else {
@@ -273,7 +368,7 @@ impl<'s, C: Cards> FatDevice<'s, C> {
             return 0;
         }
         let v = serial_of(&boot);
-        self.serials[i] = Some(v);
+        self.st.serials[i] = Some(v);
         v
     }
 
@@ -292,7 +387,7 @@ impl<'s, C: Cards> FatDevice<'s, C> {
 
     fn changed(&mut self, s: u8) {
         if let Some(i) = self.slot(s) {
-            self.space[i] = None;
+            self.st.space[i] = None;
         }
     }
 }
@@ -304,7 +399,7 @@ impl<C: Cards> Device for FatDevice<'_, C> {
 
     fn info(&mut self, s: u8) -> Option<StoreInfo> {
         let i = self.slot(s)?;
-        let (space, max_file) = match self.space[i] {
+        let (space, max_file) = match self.st.space[i] {
             Some(sp) => (sp, None),
             None => {
                 let r = self
@@ -313,7 +408,7 @@ impl<C: Cards> Device for FatDevice<'_, C> {
                 (r.0, Some(r.1))
             }
         };
-        self.space[i] = Some(space);
+        self.st.space[i] = Some(space);
         let max_file = match max_file {
             Some(m) => m,
             None => self.with(s, |v, _| Ok(v.node_max_file())).ok()?,
@@ -397,7 +492,7 @@ impl<C: Cards> Device for FatDevice<'_, C> {
         if !rp_fat::node::valid_name(name) {
             return Err(StoreError::BadName);
         }
-        if let Some(p) = self.pending[i].take() {
+        if let Some(p) = self.st.pending[i].take() {
             let _ = self.with(s, |v, _| v.node_abandon(&p.r));
         }
         let r = self.with(s, |v, sc| v.node_reserve(dir, new.size, sc))?;
@@ -411,23 +506,23 @@ impl<C: Cards> Device for FatDevice<'_, C> {
             modified: stamps.1,
         };
         p.name[..name.len()].copy_from_slice(name);
-        self.pending[i] = Some(p);
+        self.st.pending[i] = Some(p);
         Ok(r.temp)
     }
 
     fn write(&mut self, s: u8, loc: Loc, offset: u64, data: &[u8]) -> Result<(), StoreError> {
         let i = self.slot(s).ok_or(StoreError::Absent)?;
-        let mut p = self.pending[i]
+        let mut p = self.st.pending[i]
             .filter(|p| p.r.temp == loc)
             .ok_or(StoreError::NotFound)?;
         let r = self.with(s, |v, sc| v.node_write(&mut p.r, offset, data, sc));
-        self.pending[i] = Some(p);
+        self.st.pending[i] = Some(p);
         r
     }
 
     fn commit(&mut self, s: u8, loc: Loc) -> Result<Loc, StoreError> {
         let i = self.slot(s).ok_or(StoreError::Absent)?;
-        let p = self.pending[i]
+        let p = self.st.pending[i]
             .filter(|p| p.r.temp == loc)
             .ok_or(StoreError::NotFound)?;
         let at = self.with(s, |v, sc| {
@@ -440,7 +535,7 @@ impl<C: Cards> Device for FatDevice<'_, C> {
                 sc,
             )
         })?;
-        self.pending[i] = None;
+        self.st.pending[i] = None;
         self.changed(s);
         Ok(at)
     }
@@ -449,9 +544,9 @@ impl<C: Cards> Device for FatDevice<'_, C> {
         let Some(i) = self.slot(s) else {
             return;
         };
-        if let Some(p) = self.pending[i].filter(|p| p.r.temp == loc) {
+        if let Some(p) = self.st.pending[i].filter(|p| p.r.temp == loc) {
             let _ = self.with(s, |v, _| v.node_abandon(&p.r));
-            self.pending[i] = None;
+            self.st.pending[i] = None;
             self.changed(s);
         }
     }

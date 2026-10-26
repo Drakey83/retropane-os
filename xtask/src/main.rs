@@ -354,7 +354,7 @@ fn main() -> ExitCode {
         | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat" | "emu-mbx3d-api" | "emu-gpubench"
         | "emu-cs3bus" | "emu-cpldbus" | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today"
         | "emu-crash" | "emu-probe" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
-        | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
+        | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-mtp" | "emu-stale" | "emu-drive"
         | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
         | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1"
         | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3"
@@ -437,10 +437,14 @@ fn main() -> ExitCode {
         "drive" => {
             eprintln!("==> drive {flag}");
             match flag.as_str() {
-                "rw" | "ro" | "on" | "off" | "status" => {
+                "rw" | "ro" | "on" | "off" | "status" | "mtp" | "msc" | "auto" => {
                     usb::command(&workspace_root(), &format!("drive {flag}"))
                 }
-                _ => Err("usage: cargo xtask drive rw|ro|on|off|status".into()),
+                // MTP's counters and the layout (ADR-0037).
+                "mtp-status" => usb::command(&workspace_root(), "drive mtp status"),
+                _ => Err(
+                    "usage: cargo xtask drive rw|ro|on|off|status|mtp|msc|auto|mtp-status".into(),
+                ),
             }
         }
         "card" => {
@@ -740,6 +744,7 @@ fn run_step(step: &str) -> Result {
         "emu-threads" => cross().and_then(|()| emu::boot_threads(&workspace_root())),
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
+        "emu-mtp" => cross().and_then(|()| emu::boot_loader_mtp(&workspace_root())),
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
         "emu-loader" => cross().and_then(|()| emu::boot_loader(&workspace_root())),
         "emu-keepfed" => cross().and_then(|()| emu::boot_loader_keeps_feeding(&workspace_root())),
@@ -818,6 +823,7 @@ fn run_step(step: &str) -> Result {
                 ("boot_loader_refresh", emu::boot_loader_refresh),
                 ("boot_usb_link", emu::boot_usb_link),
                 ("boot_loader_usb", emu::boot_loader_usb),
+                ("boot_loader_mtp", emu::boot_loader_mtp),
                 ("boot_loader_trace", emu::boot_loader_trace),
                 ("boot_loader_put", emu::boot_loader_put),
                 ("boot_loader_put_exfat", emu::boot_loader_put_exfat),
@@ -1376,8 +1382,24 @@ mod tests {
         ];
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut found = Vec::new();
-        for entry in std::fs::read_dir(&src).unwrap() {
-            let path = entry.unwrap().path();
+        // Every source file, in subfolders too (`emu/`).
+        let mut files = Vec::new();
+        let mut dirs = vec![src];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        assert!(
+            files.iter().any(|f| f.ends_with("emu/mtp.rs")),
+            "the walk sees subfolders"
+        );
+        for path in files {
             let text = std::fs::read_to_string(&path).unwrap();
             for (n, line) in text.lines().enumerate() {
                 if folders.iter().any(|f| line.contains(f.as_str())) {

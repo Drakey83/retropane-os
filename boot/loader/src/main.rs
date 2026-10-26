@@ -39,7 +39,7 @@ mod image {
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_pwm::Backlight;
     use rp_drv_pxa_uart::PxaUart;
-    use rp_drv_pxa_udc::{Bulk, Udc};
+    use rp_drv_pxa_udc::{Bulk, Layout, Udc};
     use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_fat::{AnyVolume, Guard, Volume, mkfs};
     use rp_hal_api::{BlockDevice, BlockError};
@@ -52,6 +52,8 @@ mod image {
     use rp_usb_msc::{BulkPipe, Msc, Storage};
 
     rp_hal_pxa27x::entry!(main);
+
+    mod mtp;
 
     /// The CPLD, with the shadow table every program shares.
     type BoardCpld = Cpld<Mmio, handover::Table<'static>>;
@@ -119,6 +121,9 @@ mod image {
         /// What the PC may not change, built from the card as it is now;
         /// `None` with no card or when it couldn't be built.
         guard: Option<Guard>,
+        /// The first partition's start, read with the guard (MTP's card
+        /// calls use it without a sector buffer of their own each time).
+        part_start: Option<u32>,
         /// Offered to the PC (`drive off` makes it "no medium", like an
         /// empty card reader: the PC stops using it at once).
         offered: bool,
@@ -280,8 +285,9 @@ mod image {
         /// view of the protection changed.
         fn refresh_guard(&mut self) -> bool {
             let was = self.read_only();
-            self.guard = self.card.as_mut().and_then(|sd| {
-                let start = partition_start(sd).ok()?;
+            self.part_start = self.card.as_mut().and_then(|sd| partition_start(sd).ok());
+            let start = self.part_start;
+            self.guard = self.card.as_mut().zip(start).and_then(|(sd, start)| {
                 let mut vol = AnyVolume::mount(Fed::Sd(sd), start).ok()?;
                 guard_with_icon(&mut vol, &BOOT_FILES)
             });
@@ -605,6 +611,11 @@ mod image {
     enum Fed<'a> {
         Sd(&'a mut Sd),
         Cf(&'a mut CfCard<Mmio, Mmio, Option<Dma>>),
+        /// A card as the PC may change it (MTP, ADR-0037 rule 5): writes
+        /// through its guard. One disk type for every file-system user
+        /// keeps `rp-fat` built once in the loader.
+        PcSd(&'a mut Lun),
+        PcCf(&'a mut CfLun),
     }
 
     impl Fed<'_> {
@@ -612,7 +623,8 @@ mod image {
         fn note(&self) -> Note {
             match self {
                 Fed::Sd(sd) => card_note(sd),
-                Fed::Cf(_) => Note {
+                Fed::PcSd(lun) if let Some(sd) = lun.card.as_ref() => card_note(sd),
+                Fed::Cf(_) | Fed::PcSd(_) | Fed::PcCf(_) => Note {
                     what: "",
                     failure: None,
                     status: 0,
@@ -624,7 +636,8 @@ mod image {
         fn reads(&self) -> u32 {
             match self {
                 Fed::Sd(sd) => sd.reads(),
-                Fed::Cf(_) => 0,
+                Fed::PcSd(lun) => lun.card.as_ref().map_or(0, SdCard::reads),
+                Fed::Cf(_) | Fed::PcCf(_) => 0,
             }
         }
     }
@@ -635,6 +648,8 @@ mod image {
             match self {
                 Fed::Sd(sd) => sd.read_blocks(lba, buf),
                 Fed::Cf(cf) => cf.read_blocks(lba, buf),
+                Fed::PcSd(lun) => lun.read_blocks(lba, buf),
+                Fed::PcCf(cf) => cf.read_blocks(lba, buf),
             }
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
@@ -642,6 +657,8 @@ mod image {
             match self {
                 Fed::Sd(sd) => sd.write_blocks(lba, buf),
                 Fed::Cf(cf) => cf.write_blocks(lba, buf),
+                Fed::PcSd(lun) => lun.write_blocks(lba, buf),
+                Fed::PcCf(cf) => cf.write_blocks(lba, buf),
             }
         }
     }
@@ -666,10 +683,13 @@ mod image {
         lun: &mut Lun,
         cf: &mut CfLun,
         msc: &mut Msc<'_>,
+        mtp_busy: bool,
+        seen: &mut mtp::Seen,
         frame: Frame,
         dest: &mut [u8],
         reply: &mut Line,
     ) {
+        seen.after_n = 0;
         let (payload, scratch) = dest.split_at_mut(dest.len() - SCRATCH);
         if frame.len > payload.len() {
             let _ = reply.write_str(LoadError::TooBig.reply());
@@ -691,8 +711,9 @@ mod image {
             let _ = reply.write_str("RPL ERR card is write-protected (lock switch)\r\n");
             return;
         }
-        // Never write the card while the PC (as a drive) is writing it.
-        if msc.host_writing(now_ms()) {
+        // Never write the card while the PC is writing it (as a drive, or
+        // in an MTP operation).
+        if msc.host_writing(now_ms()) || mtp_busy {
             let _ = reply.write_str("RPL ERR card busy: the PC is writing\r\n");
             return;
         }
@@ -713,6 +734,9 @@ mod image {
         };
         // Whatever happens next, the PC must re-read the volume.
         msc.medium_changed(unit);
+        // Where the path is before and after, for MTP's events (rule 10).
+        seen.unit = unit as u8;
+        seen.before_n = mtp::node_path(&mut vol, name, &mut seen.before);
         let t0 = rt::ticks();
         let reads0 = vol.device().reads();
         let written = match vol.put(name, contents, scratch) {
@@ -723,6 +747,7 @@ mod image {
             }
         };
         let t_write = rt::ticks().wrapping_sub(t0);
+        seen.after_n = mtp::node_path(&mut vol, name, &mut seen.after);
         let reads = vol.device().reads().wrapping_sub(reads0);
         // Read back through the FAT code and compare with what was sent;
         // the SHA-256 of what the card now holds goes back to the PC.
@@ -1654,6 +1679,7 @@ mod image {
     /// reset this should bring Windows Mobile back without Dell's factory
     /// prompt (item 64; not yet tried on the device). Returns only if
     /// nothing reset within 1 s, with GPIO99 back low.
+    #[inline(never)]
     fn board_reset(gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) {
         if let Some(cpld) = cpld {
             cpld.set(rp_drv_cpld::reg::CTL08, 0x0002);
@@ -1668,6 +1694,7 @@ mod image {
     /// `trace`: the last program's trace ring (item 54) as it lies, one
     /// `RPD` line per four words (the header first), for `cargo xtask
     /// trace` to decode; the reply says how many events it holds.
+    #[inline(never)]
     fn trace_command(area: Option<&[u32]>, out: &mut dyn FnMut(&[u8]), reply: &mut Line) {
         let Some(area) = area else {
             let _ = reply.write_str("RPL ERR trace: no trace region\r\n");
@@ -1693,6 +1720,7 @@ mod image {
     /// Powers the CF slot from off, as Windows Mobile's socket driver does
     /// when a card goes in: off, 308 ms, on (two stages), 100 ms. The card
     /// is then reset by `CfCard::init` through the RESET line.
+    #[inline(never)]
     fn cf_power_cycle(cpld: &mut BoardCpld) {
         cpld.set_cf_power(false, &mut BusyWait);
         rt::delay_us(308_000);
@@ -1716,6 +1744,8 @@ mod image {
         /// and after anything the loader wrote; `None` with no card or when
         /// it couldn't be built.
         guard: Option<Guard>,
+        /// The first partition's start, read with the guard (as `Lun`'s).
+        part_start: Option<u32>,
         /// Times the detect line settled to a new level (diagnostics: a
         /// line that flaps would look like the card coming and going).
         changes: u32,
@@ -1860,6 +1890,7 @@ mod image {
                 self.slot = CfSlot::Idle(attr, common, dma, why);
             }
             self.guard = None;
+            self.part_start = None;
         }
 
         /// Rebuilds the guard from the card as it is now (attached, or after
@@ -1868,6 +1899,7 @@ mod image {
         fn refresh_guard(&mut self) -> bool {
             let was = self.read_only();
             self.guard = None;
+            self.part_start = None;
             if let CfSlot::Card(card) = &mut self.slot
                 && self.inserted
             {
@@ -1876,6 +1908,7 @@ mod image {
                     let start = mbr_partitions(&block)
                         .and_then(|p| p[0])
                         .map_or(0, |p| p.start);
+                    self.part_start = Some(start);
                     self.guard = AnyVolume::mount(Fed::Cf(card), start)
                         .ok()
                         .and_then(|mut v| guard_with_icon(&mut v, &CF_BOOT_FILES));
@@ -2473,6 +2506,7 @@ mod image {
     /// ready (milliseconds since the start), and when each start-up stage
     /// before the display ended (`stages`: the SD card, its DMA self-test and
     /// file system checks, the CF slot), to find where the boot time goes.
+    #[inline(never)]
     fn handoff_command(ready_at: u32, stages: &[u32; 3], out: &mut Line) {
         let ms = |t: u32| t / (TICK_1S / 1000);
         let _ = write!(
@@ -2802,6 +2836,7 @@ mod image {
     /// HaRET the board as Windows Mobile left it is recorded
     /// (`rp_hal_x51v::board`); on every return from an image, crashed or
     /// not, whatever differs is put back.
+    #[inline(never)]
     fn board_step(
         regs: &mut Mmio,
         mut cpld: Option<&mut BoardCpld>,
@@ -2933,6 +2968,7 @@ mod image {
             spare,
             writable: true,
             guard: None,
+            part_start: None,
             offered: true,
             inserted,
             locked,
@@ -2957,6 +2993,7 @@ mod image {
             seen: cf_in,
             writable: true,
             guard: None,
+            part_start: None,
             changes: 0,
             ready: gpio.read(CF_READY),
             events: CfEvents {
@@ -3164,6 +3201,25 @@ mod image {
         let mut udc_dma = rt::take_dma(dma_map::UDC);
         let mut power = PowerButton::new(&mut gpio);
         udc.set_msc_luns(2);
+        // The cards over MTP (ADR-0037): its tables in the RAM pool, which
+        // nothing else uses while the loader runs. The drive stays the
+        // default until the X51v proves MTP (R43): `drive mtp|auto` offers it.
+        let mut mtp_t = devices::take_ram_pool().and_then(mtp::Tables::new);
+        let mut drive_mode = mtp::Mode::Msc;
+        // Since when the MTP layout has been configured with no session.
+        let mut mtp_since = now_ms();
+        let mut put_seen = mtp::Seen::new();
+        // A card changed under the PC: the drive and MTP both hear of it.
+        macro_rules! card_changed {
+            ($u:expr) => {{
+                let u: usize = $u;
+                msc.medium_changed(u);
+                if let Some(t) = mtp_t.as_mut() {
+                    let present = if u == 0 { lun.present() } else { cf.present() };
+                    t.card_changed(u as u8, present);
+                }
+            }};
+        }
         // Layout fallback: if the PC keeps trying (bus resets) but never
         // configures the composite device, offer the serial-only layout it
         // already knows, so no host can lock the loop out; and back again.
@@ -3176,6 +3232,9 @@ mod image {
         let mut guard_due = false;
         // `reboot wm`: when to reset (after the reply has reached the PC).
         let mut reboot_at: Option<u32> = None;
+        // `drive mtp|msc|auto`: when to offer the mode's layout (after the
+        // reply has reached the PC, as `reboot wm`).
+        let mut relayout_at: Option<u32> = None;
         let _ = writeln!(
             log,
             "SD card: {} (a drive on the PC)",
@@ -3214,7 +3273,7 @@ mod image {
                 watchdog.feed(RUN_LIMIT);
             }
             if rt::ticks().wrapping_sub(active) > QUIET {
-                if msc.busy() {
+                if msc.busy() || mtp_t.as_ref().is_some_and(|t| t.mtp.busy()) {
                     naps_mid_command = naps_mid_command.wrapping_add(1);
                 }
                 let t = rt::ticks();
@@ -3235,6 +3294,9 @@ mod image {
             }
             if udc.take_msc_reset() {
                 msc.reset();
+                if let Some(t) = mtp_t.as_mut() {
+                    t.bus_reset(&mut udc, &mut lun, &mut cf, &mut log);
+                }
             }
             if patience.due(now_ms(), udc.configured(), udc.stats().resets) {
                 replug(&mut udc, uhc.as_mut());
@@ -3246,47 +3308,77 @@ mod image {
             } else if udc.stats().resets != layout_resets
                 && rt::ticks().wrapping_sub(layout_since) > LAYOUT_PATIENCE
             {
-                let composite = !udc.composite();
-                udc.set_composite(composite);
+                let next = drive_mode.after(udc.layout());
+                udc.set_layout(next);
                 replug(&mut udc, uhc.as_mut());
                 layout_since = rt::ticks();
                 layout_resets = udc.stats().resets;
                 let _ = writeln!(
                     log,
                     "PC didn't configure the device: offering the {} layout",
-                    if composite {
-                        "serial + drive"
-                    } else {
-                        "serial-only"
-                    }
+                    layout_name(next)
                 );
-                let _ = writeln!(
-                    uart,
-                    "USB layout: {}",
-                    if composite {
-                        "composite"
-                    } else {
-                        "serial-only"
-                    }
-                );
+                let _ = writeln!(uart, "USB layout: {}", layout_tag(next));
+            }
+            // Rule 4: a PC that configures the MTP layout but opens no
+            // session (a Mac binds nothing to it) gets the drive. Windows
+            // never waits for it: only Windows reads the OS 2.0 set.
+            if udc.layout() != Layout::Mtp
+                || !udc.configured()
+                || mtp_t.as_ref().is_none_or(|t| t.mtp.session() != 0)
+            {
+                mtp_since = now_ms();
+            } else if drive_mode == mtp::Mode::Auto
+                && udc.ms_seen() & rp_drv_pxa_udc::usb::ms::SET20 == 0
+                && now_ms().wrapping_sub(mtp_since) > mtp::PATIENCE_MS
+            {
+                udc.set_layout(Layout::Drive);
+                replug(&mut udc, uhc.as_mut());
+                mtp_since = now_ms();
+                layout_since = rt::ticks();
+                layout_resets = udc.stats().resets;
+                let _ = writeln!(log, "No MTP session from the PC: offering the drive");
+                let _ = writeln!(uart, "USB layout: composite (no MTP session)");
             }
             if core::mem::take(&mut guard_due) {
                 if lun.refresh_guard() {
-                    msc.medium_changed(0);
+                    card_changed!(0);
                 }
                 if cf.refresh_guard() {
-                    msc.medium_changed(1);
+                    card_changed!(1);
                 }
             }
-            msc.poll(
-                &mut Pipe(&mut udc, udc_dma.as_mut()),
-                &mut [&mut lun, &mut cf],
-                now_ms(),
-            );
+            match mtp_t.as_mut() {
+                Some(t) if udc.layout() == Layout::Mtp => {
+                    t.poll(&mut udc, &mut lun, &mut cf, &mut log);
+                }
+                _ => msc.poll(
+                    &mut Pipe(&mut udc, udc_dma.as_mut()),
+                    &mut [&mut lun, &mut cf],
+                    now_ms(),
+                ),
+            }
+            let mtp_busy = mtp_t.as_ref().is_some_and(|t| t.mtp.busy());
             cf.poll_ready(&mut gpio);
             if cf.drop_if_dead() {
-                msc.medium_changed(1);
+                card_changed!(1);
                 let _ = writeln!(log, "CF card stopped answering: let go (re-insert or cf)");
+            }
+            if relayout_at.is_some_and(|t| now_ms().wrapping_sub(t) < 1 << 31) {
+                relayout_at = None;
+                let first = drive_mode.first();
+                udc.set_layout(first);
+                replug(&mut udc, uhc.as_mut());
+                mtp_since = now_ms();
+                layout_since = rt::ticks();
+                layout_resets = udc.stats().resets;
+                let _ = writeln!(
+                    log,
+                    "drive {}: offering the {} layout",
+                    drive_mode.name(),
+                    layout_name(first)
+                );
+                let _ = writeln!(uart, "USB layout: {}", layout_tag(first));
             }
             if reboot_at.is_some_and(|t| now_ms().wrapping_sub(t) < 1 << 31) {
                 reboot_at = None;
@@ -3351,6 +3443,7 @@ mod image {
                 || outcome.is_some()
                 || msc_now != msc_seen
                 || msc.busy()
+                || mtp_busy
                 || udc.tx_pending() > 0
             {
                 active = rt::ticks();
@@ -3372,7 +3465,19 @@ mod image {
                         watchdog.feed(RUN_LIMIT);
                     }
                     let mut reply = Line::new();
-                    put_file(&mut lun, &mut cf, &mut msc, frame, dest, &mut reply);
+                    put_file(
+                        &mut lun,
+                        &mut cf,
+                        &mut msc,
+                        mtp_busy,
+                        &mut put_seen,
+                        frame,
+                        dest,
+                        &mut reply,
+                    );
+                    if let Some(t) = mtp_t.as_mut() {
+                        t.put_done(&put_seen, &mut lun, &mut cf, &mut log);
+                    }
                     send(&mut uart, &mut udc, reply.as_str());
                     let _ = writeln!(log, "{}", reply.as_str().trim_ascii_end());
                 }
@@ -3438,7 +3543,7 @@ mod image {
                             status.as_str()
                         }
                         Ok(c) if c == b"ls" || c.starts_with(b"ls ") => {
-                            if msc.host_writing(now_ms()) {
+                            if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 ls_command(
@@ -3452,7 +3557,7 @@ mod image {
                             }
                         }
                         Ok(c) if c.starts_with(b"hash ") => {
-                            if msc.host_writing(now_ms()) {
+                            if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 hash_command(
@@ -3466,7 +3571,7 @@ mod image {
                             }
                         }
                         Ok(c) if c.starts_with(b"get ") => {
-                            if msc.host_writing(now_ms()) {
+                            if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 get_command(
@@ -3523,6 +3628,51 @@ mod image {
                             handoff_command(ready_at, &stages, &mut status);
                             status.as_str()
                         }
+                        Ok(c) if matches!(c, b"drive mtp" | b"drive msc" | b"drive auto") => {
+                            let mode = match c {
+                                b"drive mtp" => mtp::Mode::Mtp,
+                                b"drive auto" => mtp::Mode::Auto,
+                                _ => mtp::Mode::Msc,
+                            };
+                            if mode != mtp::Mode::Msc && mtp_t.is_none() {
+                                "RPL ERR drive: MTP unavailable (the RAM pool was taken)\r\n"
+                            } else {
+                                drive_mode = mode;
+                                relayout_at = Some(now_ms().wrapping_add(300));
+                                match mode {
+                                    mtp::Mode::Mtp => {
+                                        "RPL OK drive mtp: the cards as a portable device (MTP) in 0.3 s\r\n"
+                                    }
+                                    mtp::Mode::Auto => {
+                                        "RPL OK drive auto: MTP, the drive if the PC opens no session, in 0.3 s\r\n"
+                                    }
+                                    mtp::Mode::Msc => {
+                                        "RPL OK drive msc: the cards as drives in 0.3 s\r\n"
+                                    }
+                                }
+                            }
+                        }
+                        Ok(b"drive mtp status") => match mtp_t.as_ref() {
+                            Some(t) => {
+                                let st = t.mtp.stats();
+                                let (used, size) = t.mtp.handles_used();
+                                let _ = write!(
+                                    status,
+                                    "RPL OK mtp mode {} layout {} session {} ops {} failed {} handles {used}/{size} table full {} cancels {} ms descriptors {:#x} no session for {} ms\r\n",
+                                    drive_mode.name(),
+                                    layout_tag(udc.layout()),
+                                    t.mtp.session(),
+                                    st.ops,
+                                    st.failed,
+                                    st.table_full,
+                                    st.cancels,
+                                    udc.ms_seen(),
+                                    now_ms().wrapping_sub(mtp_since),
+                                );
+                                status.as_str()
+                            }
+                            None => "RPL ERR drive: MTP unavailable (the RAM pool was taken)\r\n",
+                        },
                         Ok(b"reboot wm") => {
                             reboot_at = Some(now_ms().wrapping_add(300));
                             "RPL OK reboot wm: resetting into Windows Mobile in 0.3 s\r\n"
@@ -3566,12 +3716,12 @@ mod image {
                             // already attached is only reported (a medium
                             // change would make Windows remount the drive).
                             if had != matches!(cf.slot, CfSlot::Card(_)) {
-                                msc.medium_changed(1);
+                                card_changed!(1);
                             }
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"card layout ") => {
-                            if msc.host_writing(now_ms()) {
+                            if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 card_layout(&mut lun, &mut cf, &c[12..], &mut status);
@@ -3586,7 +3736,7 @@ mod image {
                             args[..n].copy_from_slice(&c[7..7 + n]);
                             let plan = args[..n].split(|&b| b == b' ').any(|w| w == b"plan");
                             let cf_unit = args[..n].starts_with(b"cf");
-                            if msc.host_writing(now_ms()) && !plan {
+                            if (msc.host_writing(now_ms()) || mtp_busy) && !plan {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 let scratch = &mut fat_scratch[..SCRATCH];
@@ -3601,7 +3751,7 @@ mod image {
                                 if wrote {
                                     // The PC must re-read the volume, and the
                                     // guard is the new card's.
-                                    msc.medium_changed(usize::from(cf_unit));
+                                    card_changed!(usize::from(cf_unit));
                                     lun.refresh_guard();
                                     cf.refresh_guard();
                                 }
@@ -3609,12 +3759,19 @@ mod image {
                             }
                         }
                         Ok(c) if c.starts_with(b"rm ") => {
-                            if msc.host_writing(now_ms()) {
+                            if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
+                                let gone = arg_path(&c[3..]).and_then(|p| mtp::locate(&mut lun, p));
                                 rm_command(&mut lun, &c[3..], &mut status);
-                                // The PC must re-read the volume.
+                                // The PC must re-read the volume (MTP: the
+                                // object is gone, rule 10).
                                 msc.medium_changed(0);
+                                if let (Some(t), Some(loc)) = (mtp_t.as_mut(), gone)
+                                    && status.as_str().starts_with("RPL OK")
+                                {
+                                    t.removed(0, loc);
+                                }
                                 status.as_str()
                             }
                         }
@@ -3679,7 +3836,7 @@ mod image {
                             status.as_str()
                         }
                         Ok(b"card check") => {
-                            if msc.host_writing(now_ms()) {
+                            if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 let (scratch, seen) = fat_scratch.split_at_mut(SCRATCH);
@@ -3699,11 +3856,11 @@ mod image {
                             if watchdog.armed() {
                                 watchdog.feed(RUN_LIMIT);
                             }
-                            if msc.host_writing(now_ms()) {
+                            if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 card_repair(&mut lun, &c[12..], &mut status);
-                                msc.medium_changed(0);
+                                card_changed!(0);
                                 status.as_str()
                             }
                         }
@@ -3711,11 +3868,11 @@ mod image {
                             if watchdog.armed() {
                                 watchdog.feed(RUN_LIMIT);
                             }
-                            if msc.host_writing(now_ms()) {
+                            if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 card_scrub(&mut lun, &c[11..], &mut status);
-                                msc.medium_changed(0);
+                                card_changed!(0);
                                 status.as_str()
                             }
                         }
@@ -3732,7 +3889,7 @@ mod image {
                         }
                         Ok(b"drive off") | Ok(b"drive on") => {
                             lun.offered = f.command(dest) == Ok(b"drive on");
-                            msc.medium_changed(0);
+                            card_changed!(0);
                             if lun.offered && !udc.composite() {
                                 // The fallback left the serial-only layout
                                 // up (the PC was slow after a reset); a
@@ -3756,8 +3913,8 @@ mod image {
                             lun.writable = f.command(dest) == Ok(b"drive rw");
                             cf.writable = lun.writable;
                             // The PC re-reads the media and their protection.
-                            msc.medium_changed(0);
-                            msc.medium_changed(1);
+                            card_changed!(0);
+                            card_changed!(1);
                             if lun.writable {
                                 "RPL OK drive read-write\r\n"
                             } else {
@@ -3873,7 +4030,7 @@ mod image {
                     cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
                     cf_attached(&mut cf, &mut fat_scratch[..SCRATCH]);
                 }
-                msc.medium_changed(1);
+                card_changed!(1);
                 let _ = writeln!(
                     log,
                     "CF card {}",
@@ -3898,7 +4055,7 @@ mod image {
                 if cf_write_tune(&mut cf, &mut fat_scratch[..SCRATCH]) {
                     // Its files changed (the write timing found and kept):
                     // the PC re-reads the card.
-                    msc.medium_changed(1);
+                    card_changed!(1);
                 }
                 if let Some(w) = cf.wtuned {
                     let _ = writeln!(log, "CF card writes: {}", WriteText(w));
@@ -3917,7 +4074,7 @@ mod image {
                 cf.retries += 1;
                 cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
                 cf_attached(&mut cf, &mut fat_scratch[..SCRATCH]);
-                msc.medium_changed(1);
+                card_changed!(1);
                 let _ = writeln!(
                     log,
                     "CF card retried: {}",
@@ -3929,7 +4086,7 @@ mod image {
                 );
             }
             if rt::ticks().wrapping_sub(last) >= TICK_1S && lun.poll_slot(&mut gpio) {
-                msc.medium_changed(0);
+                card_changed!(0);
                 let _ = writeln!(
                     log,
                     "SD card {}{}",
@@ -3994,6 +4151,24 @@ mod image {
     /// controller the PC sees an unplug first (docs/hw/udc.md T4). Whether
     /// the controller came up.
     #[inline(never)]
+    /// A layout as the screen names it.
+    fn layout_name(l: Layout) -> &'static str {
+        match l {
+            Layout::Mtp => "serial + MTP",
+            Layout::Drive => "serial + drive",
+            Layout::Serial => "serial-only",
+        }
+    }
+
+    /// A layout as the serial line names it (`USB layout: ...`).
+    fn layout_tag(l: Layout) -> &'static str {
+        match l {
+            Layout::Mtp => "mtp",
+            Layout::Drive => "composite",
+            Layout::Serial => "serial-only",
+        }
+    }
+
     fn replug(udc: &mut Udc<Mmio>, uhc: Option<&mut Mmio>) -> bool {
         match uhc {
             Some(uhc) => {
@@ -4206,6 +4381,7 @@ mod image {
     /// to: its `rplog/index.txt` names the run's number in a slot whose file
     /// starts where the run's did. Another card (swapped during the run)
     /// fails it, so the PC re-reads that one.
+    #[inline(never)]
     fn still_the_runs_card(
         lun: &mut Lun,
         cf: &mut CfLun,
@@ -4342,6 +4518,7 @@ mod image {
         vol.put("crashlog.txt", run.log, scratch).is_ok()
     }
 
+    #[inline(never)]
     fn send_log(out: &mut dyn FnMut(&[u8]), run: &devices::PreviousRun) {
         out(b"RPL LOG\r\n");
         out(run.log);
@@ -4361,6 +4538,7 @@ mod image {
 
     /// The run log again, for `log`: each line as an `RPD` data line, the
     /// notes `send_log` adds included.
+    #[inline(never)]
     fn send_log_lines(out: &mut dyn FnMut(&[u8]), run: &devices::PreviousRun) {
         for line in run.log.split(|&b| b == b'\n') {
             out(b"RPD ");

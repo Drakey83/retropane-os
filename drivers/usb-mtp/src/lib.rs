@@ -53,6 +53,12 @@ pub const CONSENT_MS: u32 = 30_000;
 /// The deepest folder nesting a recursive delete or copy follows; deeper
 /// folders are kept (Partial_Deletion), never a crash.
 pub const MAX_DEPTH: usize = 64;
+
+/// One level of a folder walk (a delete or a copy of a whole folder): the
+/// folder, the cursor in it, the copy's folder, whether something in it was
+/// kept. The owner supplies the walk's table ([`Mtp::new`]): folders as deep
+/// as it is long are walked, deeper ones kept.
+pub type Level = (Loc, u64, Loc, bool);
 /// Events waiting for the interrupt pipe; on overflow the queue becomes one
 /// UnreportedStatus (the PC re-reads), never a silent drop.
 const EVENTS: usize = 16;
@@ -471,23 +477,27 @@ pub struct Mtp<'b> {
     trace: [Traced; TRACE],
     trace_n: usize,
     /// The PC's version string (logged once).
-    stack: [(Loc, u64, Loc, bool); MAX_DEPTH],
+    stack: &'b mut [Level],
 }
 
 impl<'b> Mtp<'b> {
     /// A function staging data in `buf` (at least 2 KiB; 16 KiB moves a
     /// card's sectors in one command), its handles in `slots`/`index`
-    /// ([`Handles::new`]).
+    /// ([`Handles::new`]), folder walks in `walk` ([`MAX_DEPTH`] levels is
+    /// the usual). Every table is the owner's (static memory), so the
+    /// function itself is small enough to build anywhere.
     ///
     /// # Panics
-    /// If `buf` is under 2 KiB or `index` too short.
+    /// If `buf` is under 2 KiB, `index` too short or `walk` empty.
     pub fn new(
         id: Identity,
         buf: &'b mut [u8],
         slots: &'b mut [Slot],
         index: &'b mut [u32],
+        walk: &'b mut [Level],
     ) -> Self {
         assert!(buf.len() >= 2048, "staging buffer too small");
+        assert!(!walk.is_empty(), "no walk table");
         Self {
             id,
             buf,
@@ -527,7 +537,7 @@ impl<'b> Mtp<'b> {
             stats: Stats::default(),
             trace: [Traced::default(); TRACE],
             trace_n: 0,
-            stack: [(0, 0, 0, false); MAX_DEPTH],
+            stack: walk,
         }
     }
 
@@ -766,6 +776,9 @@ impl<'b> Mtp<'b> {
         self.stats.events += 1;
     }
 
+    // Its own frame (not the poll loop's): only the phase running is on
+    // the owner's stack (the loader's is 32 KiB, ADR-0037 rule 7).
+    #[inline(never)]
     fn take_command(&mut self, dev: &mut dyn Device, pipe: &mut dyn Pipe) -> bool {
         let mut pkt = [0u8; PACKET];
         let Some(n) = pipe.read_packet(&mut pkt) else {
@@ -875,6 +888,9 @@ impl<'b> Mtp<'b> {
         self.phase = Phase::DataIn;
     }
 
+    // Its own frame (not the poll loop's): only the phase running is on
+    // the owner's stack (the loader's is 32 KiB, ADR-0037 rule 7).
+    #[inline(never)]
     fn data_in(&mut self, dev: &mut dyn Device, pipe: &mut dyn Pipe) -> bool {
         if self.zlp {
             if !pipe.can_write() {
@@ -1052,6 +1068,9 @@ impl<'b> Mtp<'b> {
         self.phase = Phase::DataOut;
     }
 
+    // Its own frame (not the poll loop's): only the phase running is on
+    // the owner's stack (the loader's is 32 KiB, ADR-0037 rule 7).
+    #[inline(never)]
     fn data_out(&mut self, dev: &mut dyn Device, pipe: &mut dyn Pipe) -> bool {
         // Make room for a packet before reading one.
         if self.sink == Sink::Object
@@ -1113,6 +1132,7 @@ impl<'b> Mtp<'b> {
         true
     }
 
+    #[inline(never)]
     fn take_out(&mut self, dev: &mut dyn Device, data: &[u8]) {
         let data = if self.out_known {
             let left = self.out_total.saturating_sub(self.out_got);
@@ -1157,6 +1177,7 @@ impl<'b> Mtp<'b> {
 
     /// Writes the buffered object bytes to the reservation (whole sectors
     /// when it can: the buffer holds a whole number of them).
+    #[inline(never)]
     fn flush_object(&mut self, dev: &mut dyn Device, last: bool) -> Result<(), StoreError> {
         let Some(p) = self.pending else {
             return Ok(());
@@ -1181,6 +1202,7 @@ impl<'b> Mtp<'b> {
         Ok(())
     }
 
+    #[inline(never)]
     fn finish_out(&mut self, dev: &mut dyn Device, complete: bool) {
         let failed = self.rcode;
         match self.sink {
@@ -1648,7 +1670,7 @@ impl<'b> Mtp<'b> {
                         self.stack[depth - 1].3 = true;
                         kept_any = true;
                     } else if e.folder {
-                        if depth == MAX_DEPTH {
+                        if depth == self.stack.len() {
                             self.stack[depth - 1].3 = true;
                             kept_any = true;
                         } else {
@@ -1953,6 +1975,9 @@ impl<'b> Mtp<'b> {
         }
     }
 
+    // Its own frame (not the poll loop's): only the phase running is on
+    // the owner's stack (the loader's is 32 KiB, ADR-0037 rule 7).
+    #[inline(never)]
     fn wait_consent(&mut self, dev: &mut dyn Device) -> bool {
         let (s, since) = self.consent;
         let answer = if dev.now_ms().wrapping_sub(since) >= CONSENT_MS {
@@ -1976,7 +2001,13 @@ impl<'b> Mtp<'b> {
         let r = dev.format(s);
         self.handles.kill_store(s);
         match r {
-            Ok(()) => self.respond(rc::OK, &[]),
+            Ok(()) => {
+                // The card is a new volume: the PC lists it afresh
+                // (ADR-0037, FormatStore).
+                self.store_changed(s, false);
+                self.store_changed(s, true);
+                self.respond(rc::OK, &[]);
+            }
             Err(e) => self.respond(store_rc(e), &[]),
         }
     }
@@ -2249,7 +2280,7 @@ impl<'b> Mtp<'b> {
         })
     }
 
-    /// Copies a file or a whole folder (fixed stack, [`MAX_DEPTH`]).
+    /// Copies a file or a whole folder (the owner's walk table).
     fn copy_tree(
         &mut self,
         dev: &mut dyn Device,
@@ -2283,7 +2314,7 @@ impl<'b> Mtp<'b> {
                 continue;
             }
             if c.folder {
-                if depth == MAX_DEPTH {
+                if depth == self.stack.len() {
                     return Err(rc::GENERAL_ERROR);
                 }
                 let sub = dev.create(ds, dst, &mk(c.name, &c)).map_err(store_rc)?;
