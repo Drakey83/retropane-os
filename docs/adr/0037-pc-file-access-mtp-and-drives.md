@@ -380,7 +380,50 @@ the record.
   Card and (with R21) Internal as storages with Windows' plain drive icon
   and each its own capacity bar; no glass-tile layer, no split default.
   Options A, B and D and the measurements behind them are kept below as
-  the record. Measured on the X51v: in the MTP view
+  the record.
+
+  **Q6L. The owner's look with LegacySync installed (the owner,
+  2026-10-26: "figure out a way to make it work like i want if you install
+  legacy sync"; open, for his vote; R66: nothing built until then).** The
+  goal: Axim X51v with SD, CF and Internal inside, each with its own icon,
+  opening in Tiles; C stays the look on any PC without LegacySync. Rule 0:
+  ActiveSync (2005) put its own code inside Explorer (a shell namespace
+  extension, "Mobile Device"); OneDrive today uses Windows' cloud-files
+  API; phone makers ship nothing (Explorer's plain drives). The routes:
+  - **L-A (recommended to measure first): a small filter on Windows' own
+    MTP driver.** LegacySync installs a user-mode (UMDF) filter above
+    `WpdMtpDr` for the Axim's USB ID only (UMDF filters over the MTP
+    stack exist: `UmdfServiceOrder`, OSR's NTDEV threads). It answers
+    Explorer's one missing question, each storage's icon
+    (`WPD_RESOURCE_ICON`, which Microsoft documents for storages), with
+    the card's own picture, and passes everything else through. *Pros:*
+    the same native view as C, only with the icons; no copies, no stale
+    list, nothing inside Explorer (a fault stops the Axim's driver host,
+    never Explorer); small. *Cons, all to measure in a Windows VM before
+    the owner's PC:* whether Explorer draws a storage's icon resource at
+    all (unmeasured: the inbox driver never offers one); signing: free
+    only by libwdi/Zadig's way (a certificate made on each PC at install,
+    trusted by that PC alone, its private key destroyed after signing the
+    one package), else an EV certificate (paid, yearly) for Microsoft's
+    attestation signing; one UAC prompt at install.
+  - **L-B: OneDrive's way (cloud files).** "Axim X51v" in Explorer's
+    navigation pane with the PDA icon; SD, CF and Internal real folders
+    with their own icons (`desktop.ini`, native) and Tiles set as their
+    view; files fetched when opened. *Pros:* full control of the look,
+    documented API, no driver. *Cons:* it is a sync, not a view: copies or
+    placeholders on the PC, a stale list when the Axim is unplugged,
+    conflicts when both sides change a file; the most work.
+  - **L-C: ActiveSync's way (inside Explorer).** A shell namespace
+    extension draws the whole Axim folder: icons, Tiles, capacity bars,
+    anything. *Pros:* exactly the owner's picture, live, no copies.
+    *Cons:* our code runs inside Explorer (a bug can crash Explorer);
+    Microsoft's hardest shell API; the most risk.
+  - **L-D: no Explorer piece:** LegacySync does installs, sync and backup;
+    Explorer shows C.
+  - **Tiles as the default view:** for L-B and L-C it is ours to set; for
+    L-A it needs Explorer's per-folder view memory (`Bags`, no API, keyed by
+    the folder's shell path): to measure in the same VM run.
+ Measured on the X51v: in the MTP view
   Windows' driver offers an icon on the device only and no resource of any
   kind on a storage (`tools/wpdprobe`), so every card is Windows' plain
   drive there (Windows Mobile's own MTP looks the same). **The owner's
