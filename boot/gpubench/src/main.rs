@@ -7955,7 +7955,8 @@ mod image {
         || GC2_REGS
         || GC2_664
         || GC2_TIMER
-        || GC2_WHERE;
+        || GC2_WHERE
+        || GC2_BAND;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -8074,6 +8075,12 @@ mod image {
     /// every wrong word placed by tile and row, against the timer at 0.
     /// About 2 minutes, unattended.
     const GC2_WHERE: bool = option_env!("RP_GPUBENCH_GC2_WHERE").is_some();
+
+    /// Run GC2AW, reminder R37 (`RP_GPUBENCH_GC2_BAND`): GC2AV found the
+    /// fault left with `0x664` = 15 to be GC2AM's texel pick; GC2AM's phase
+    /// sweep with the timer at 0 and at 15, for the width of divide 1's
+    /// coordinate error with each. About 5 minutes, unattended.
+    const GC2_BAND: bool = option_env!("RP_GPUBENCH_GC2_BAND").is_some();
 
     /// Run GC2AT, reminder R37 (`RP_GPUBENCH_GC2_664_MIX`, with
     /// `RP_GPUBENCH_GC2_664`): GC2AS again with its values bit-reversed and
@@ -9462,7 +9469,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_WHERE {
+            if GC2_BAND {
+                "the 16-bit kinds' targets inside the safe region (GC2AW, R37: no map; GC2AM's phase sweep at 149.50 / 1 with 0x664 at 0 and at 15; each target poisoned first),"
+            } else if GC2_WHERE {
                 "the 16-bit kinds' targets inside the safe region (GC2AV, R37: no map; GC2AM's every-render texel fault, the opaque path's, every wrong word placed by tile and row, 0x664 = 15 then 0, at 149.50 / 1; each target poisoned first),"
             } else if GC2_TIMER {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R37: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
@@ -9644,7 +9653,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_REGS || GC2_664 || GC2_TIMER || GC2_WHERE {
+        let patch = if GC2_BAND {
+            gc2::PHASES * gc2::words(gc2::FT2) as usize
+        } else if GC2_REGS || GC2_664 || GC2_TIMER || GC2_WHERE {
             gc2::words(gc2::FT2) as usize
         } else if GC2_PUNCH {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
@@ -10017,7 +10028,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_WHERE {
+                if GC2_BAND {
+                    gc2_band(g, &mut r, (tex, first, dsig));
+                } else if GC2_WHERE {
                     gc2_where(g, &mut r, (tex, first, dsig));
                 } else if GC2_TIMER {
                     gc2_timer(g, &mut r, (tex, first, dsig));
@@ -12705,6 +12718,54 @@ mod image {
             },
         );
     }
+
+    /// Run GC2AW (see [`GC2_BAND`]): GC2AM's phase sweep at 149.50 / 1
+    /// ([`gc2::PHASE_SCENES`], [`GC2AW_ROUNDS`] rounds, reversed, every target
+    /// poisoned) with `0x664` at 0, then at 15 ([`Rig::over`] for the whole
+    /// plan, its references and controls at Windows Mobile's clock
+    /// included): how many of the 31 phases pick the wrong texel with the
+    /// timer and without, so its effect on divide 1's coordinate error is
+    /// read as a width (GC2AM: phases 0-5 wrong, the error under 18 /
+    /// 65,536 of the texture).
+    #[inline(never)]
+    fn gc2_band(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        log!(
+            "  GC2AW (R37): GC2AM's phase sweep ({} phases of {} / 65,536 of the texture, {} rounds) at 149.50 / 1 with 0x664 at 0, then at 15",
+            gc2::PHASES,
+            gc2::PHASE_STEP,
+            GC2AW_ROUNDS.min(GC2AE_ROUNDS)
+        );
+        for (timer, pname, label) in [
+            (0u32, "GC2AW timer 0", "GC2AW TIMER 0"),
+            (15, "GC2AW timer 15", "GC2AW TIMER 15"),
+        ] {
+            g.over = if timer == 0 {
+                Over::NONE
+            } else {
+                Over::of(&[(0x664, timer)])
+            };
+            let plan = OrderPlan {
+                name: pname,
+                label,
+                scenes: &gc2::PHASE_SCENES[..],
+                ways: &gc2::PHASE_WAYS[..],
+                step: (gc2_step(23, 2, 0, 1), "149.50 / 1"),
+                secs: 900,
+                rounds: GC2AW_ROUNDS.min(GC2AE_ROUNDS),
+                poison: true,
+                describe: 4,
+                pause: false,
+                quiet: false,
+                flat: false,
+            };
+            gc2_orders(g, r, (tex, &mut *first, dsig), &plan);
+            g.over = Over::NONE;
+            g.e.regs.write32(MBX + 0x664, 0);
+        }
+    }
+
+    /// GC2AW's rounds a phase.
+    const GC2AW_ROUNDS: u32 = 5;
 
     /// Run GC2AM (see [`GC2_TEXEL`]): at 149.50 and at 117.00 / 1, the phase
     /// sweep ([`gc2::PHASE_SCENES`], [`gc2::PHASE_ROUNDS`] rounds, every

@@ -5389,6 +5389,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
         ],
     )?;
+    let run_gc2aw = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_BAND", "1"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
     let run_gc2av = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5462,7 +5470,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 89] = [
+    let runs: [GpubenchRun; 90] = [
         (
             "run A",
             &run_a,
@@ -5712,6 +5720,20 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AW (R37): GC2AM's phase sweep with the timer at 0 and 15
+        // (one round a phase here; the emulator draws exactly).
+        (
+            "run GC2AW",
+            &run_gc2aw,
+            &[
+                "GC2AW (R37): GC2AM's phase sweep (31 phases of 3 / 65,536 of the texture, 1 rounds) at 149.50 / 1 with 0x664 at 0, then at 15",
+                "GC2AW timer 0",
+                "GC2AW timer 15",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
