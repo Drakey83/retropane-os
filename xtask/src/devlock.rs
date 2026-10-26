@@ -501,6 +501,12 @@ mod tests {
                     body.contains("crate::devlock::ensure_held()?"),
                     "fn powershell must take the Axim lock before anything else"
                 );
+                // Every device command without a window over the owner's
+                // work (2026-10-26).
+                assert!(
+                    body.contains("creation_flags(CREATE_NO_WINDOW)"),
+                    "fn powershell must start PowerShell without a window"
+                );
             } else if name == "spot.rs" {
                 // The colorimeter's pseudo-console host: once, after the lock.
                 assert_eq!((spawns, ports), (1, 0), "spot.rs: one PowerShell host");
