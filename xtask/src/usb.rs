@@ -695,12 +695,25 @@ fn parse(output: &str) -> Outcome {
 /// ends (crate::devlock; a test keeps this the only way).
 pub(crate) fn powershell(script: &str) -> Result<std::process::Output, String> {
     crate::devlock::ensure_held()?;
-    Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
-        .arg(encode_command(script))
-        .output()
-        .map_err(|e| format!("powershell: {e}"))
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        .arg(encode_command(script));
+    // No console window: each device command used to flash a blue
+    // PowerShell window over whatever the owner was typing in (the owner,
+    // 2026-10-26). The script only talks to the serial port and its output
+    // comes back through the pipes, so it needs no console of its own.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.output().map_err(|e| format!("powershell: {e}"))
 }
+
+/// Windows' `CREATE_NO_WINDOW` process creation flag: a console program
+/// started with it gets no console window.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Creates the admin scheduled task that restarts the Axim's USB device
 /// entry (one UAC prompt, once). Without it, every `load` needs a cable

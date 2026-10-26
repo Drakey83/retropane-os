@@ -443,6 +443,13 @@ mod feed {
         ticks_per_ms: 1_000,
     };
 
+    /// The manager taken as set up (the feed tests don't set it up).
+    const READY: ta::Ready = ta::Ready::set_up_by_caller(ta::ParamMemory {
+        at: 0x0060_0000,
+        size: 0x0010_0000,
+        table: 0x0070_0000,
+    });
+
     /// `rp-glesfeat`'s own layout (`OURS_LAYOUT`) and target.
     const GLESFEAT: ta::Layout = ta::Layout {
         tail: 0x00A0_0000,
@@ -520,7 +527,14 @@ mod feed {
         let (a, b, c) = (quad(10.0), quad(100.0), quad(200.0));
         let draws: [&[u32]; 4] = [&clear, &a, &b, &c];
         let mut bus = idle(0x0000_0044);
-        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&draws), CLOCK, 200_000);
+        let fed = ta::feed(
+            &mut bus,
+            &READY,
+            &GLESFEAT,
+            ta::draws(&draws),
+            CLOCK,
+            200_000,
+        );
         assert_eq!(bus.writes(), through_ta(&draws, 0x0000_0044));
         assert!(fed.done && fed.stuck.is_none());
         // 15 + 3 x 30 words, 4 end-window ones, the end word.
@@ -538,7 +552,14 @@ mod feed {
         let draw = [7u32; 20];
         let draws: Vec<&[u32]> = (0..100).map(|_| &draw[..]).collect();
         let mut bus = idle(0);
-        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&draws), CLOCK, 200_000);
+        let fed = ta::feed(
+            &mut bus,
+            &READY,
+            &GLESFEAT,
+            ta::draws(&draws),
+            CLOCK,
+            200_000,
+        );
         assert!(fed.done);
         assert_eq!(fed.words, 2_000 + 100 + 1);
         let port: Vec<usize> = bus
@@ -569,7 +590,17 @@ mod feed {
         // 1,100 one-word draws: 1,100 end-window words pass 4 KiB.
         let draws: Vec<&[u32]> = (0..1_100).map(|_| &[5u32][..]).collect();
         let mut bus = idle(0);
-        assert!(ta::feed(&mut bus, &GLESFEAT, ta::draws(&draws), CLOCK, 200_000).done);
+        assert!(
+            ta::feed(
+                &mut bus,
+                &READY,
+                &GLESFEAT,
+                ta::draws(&draws),
+                CLOCK,
+                200_000
+            )
+            .done
+        );
         let ends: Vec<usize> = bus
             .writes()
             .iter()
@@ -588,7 +619,14 @@ mod feed {
         // Full (0x1FF, past the 0x1FE capacity), then 2 words free, then
         // empty.
         bus.script_reads(MBX + reg::STATUS, &[level(0x1FF), level(0x1FC), 0]);
-        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&[&draw]), CLOCK, 200_000);
+        let fed = ta::feed(
+            &mut bus,
+            &READY,
+            &GLESFEAT,
+            ta::draws(&[&draw]),
+            CLOCK,
+            200_000,
+        );
         assert!(fed.done);
         assert_eq!(fed.words, 8 + 1 + 1);
         assert_eq!(fed.level_max, 0x1FE);
@@ -621,7 +659,14 @@ mod feed {
     fn a_fifo_that_stays_full_ends_the_scene_without_hanging() {
         let mut bus = idle(0x10);
         bus.preset(MBX + reg::STATUS, level(0x1FE) | ta::DONE);
-        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&[&[1, 2, 3]]), CLOCK, 50_000);
+        let fed = ta::feed(
+            &mut bus,
+            &READY,
+            &GLESFEAT,
+            ta::draws(&[&[1, 2, 3]]),
+            CLOCK,
+            50_000,
+        );
         assert_eq!(fed.stuck, Some(level(0x1FE) | ta::DONE));
         assert!(!fed.done);
         assert_eq!(fed.words, 0);
@@ -646,7 +691,14 @@ mod feed {
     fn a_ta_that_never_says_done_is_reported_not_waited_on() {
         let mut bus = idle(0);
         bus.preset(MBX + reg::STATUS, 0);
-        let fed = ta::feed(&mut bus, &GLESFEAT, ta::draws(&[&[1]]), CLOCK, 20_000);
+        let fed = ta::feed(
+            &mut bus,
+            &READY,
+            &GLESFEAT,
+            ta::draws(&[&[1]]),
+            CLOCK,
+            20_000,
+        );
         assert!(!fed.done && fed.stuck.is_none());
         assert_eq!(fed.ta_us, 0);
         assert_eq!(fed.words, 3);
@@ -690,7 +742,7 @@ mod feed {
             })
             .collect();
         let mut bus = idle(0);
-        let fed = ta::feed(&mut bus, &GLESFEAT, stream, CLOCK, 200_000);
+        let fed = ta::feed(&mut bus, &READY, &GLESFEAT, stream, CLOCK, 200_000);
         assert!(fed.done);
         assert_eq!(
             fed.words as usize,
@@ -723,7 +775,7 @@ mod feed {
         // window wrapped), then the CPU's end and the scene's end after
         // them.
         let mut bus = idle(0);
-        let mut f = ta::Feed::start(&mut bus, &GLESFEAT, CLOCK, 200_000);
+        let mut f = ta::Feed::start(&mut bus, &READY, &GLESFEAT, CLOCK, 200_000);
         assert!(f.put(ta::Item::Word(9)));
         assert_eq!(f.room(), 510);
         assert_eq!(f.window_offset(), 4);
@@ -756,7 +808,7 @@ mod feed {
         // spend room that is gone.
         let mut bus = idle(0);
         bus.script_reads(MBX + reg::STATUS, &[0, level(0x1FE), 0]);
-        let mut f = ta::Feed::start(&mut bus, &GLESFEAT, CLOCK, 200_000);
+        let mut f = ta::Feed::start(&mut bus, &READY, &GLESFEAT, CLOCK, 200_000);
         assert_eq!(f.room(), 510);
         f.advanced(510);
         assert!(f.put(ta::Item::Word(1)));
@@ -769,7 +821,7 @@ mod feed {
     #[test]
     fn the_scene_end_bit_can_be_off_for_the_body_and_on_for_the_end() {
         let mut bus = idle(0);
-        let mut f = ta::Feed::start(&mut bus, &GLESFEAT, CLOCK, 200_000);
+        let mut f = ta::Feed::start(&mut bus, &READY, &GLESFEAT, CLOCK, 200_000);
         f.scene_end_in_body(false);
         assert!(f.put(ta::Item::Word(1)));
         assert!(f.finish().done);
@@ -1013,5 +1065,164 @@ mod quads {
             ta::items(list(Form::White, Batching::Once), 5_000),
             9 + 5_000 * 36 + 1
         );
+    }
+}
+
+/// The TA's one set-up (audit C81): the only way to a token the feed needs.
+mod set_up {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::vec;
+    use std::vec::Vec;
+
+    use rp_drv_blit2d::{MBX, reg};
+    use rp_hal_mock::MockBus;
+
+    use super::*;
+
+    static NOW: AtomicU32 = AtomicU32::new(u32::MAX - 5_000);
+    fn tick() -> u32 {
+        NOW.fetch_add(1_000, Ordering::Relaxed)
+    }
+    const CLOCK: ta::Clock = ta::Clock {
+        now: tick,
+        ticks_per_ms: 1_000,
+    };
+    fn drain() {}
+
+    const PM: ta::ParamMemory = ta::ParamMemory {
+        at: 0x0030_0000,
+        size: 0x0040_0000,
+        table: 0x000F_C000,
+    };
+
+    fn ready_bus() -> MockBus {
+        let mut bus = MockBus::new();
+        bus.preset(MBX + reg::STATUS, PM_READY);
+        bus
+    }
+
+    #[test]
+    fn set_up_resets_the_core_zeroes_the_block_then_sets_the_manager_up() {
+        let mut bus = ready_bus();
+        let mut vram = vec![0xAAu8; 0x10_0000];
+        let ready = ta::set_up(&mut bus, &mut vram, PM, &[], |_| {}, drain, CLOCK).unwrap();
+        assert_eq!(ready.param_memory(), PM);
+        let w = bus.writes();
+        // The reset first (blit2d's reset_core), then the manager's table
+        // last, its start (0x838) the final manager write.
+        assert_eq!(w[0], (MBX + reg::RESET, 0x111));
+        let table: Vec<(usize, u32)> = pm_init_table(PM.at, PM.size, PM.table)
+            .iter()
+            .map(|&(o, v)| (MBX + o, v))
+            .collect();
+        let at = w.iter().position(|x| *x == table[0]).unwrap();
+        assert_eq!(w[at..at + table.len()], table[..]);
+        // The block zeroed, nothing past it.
+        assert!(vram[0xF_C000..0x10_0000].iter().all(|&b| b == 0));
+        assert_eq!(vram[0xF_BFFF], 0xAA);
+    }
+
+    #[test]
+    fn set_up_refuses_a_place_it_cannot_use_or_must_share() {
+        let mut vram = vec![0u8; 0x10_0000];
+        let mut try_at = |pm: ta::ParamMemory, keep: &[(u32, u32)]| {
+            ta::set_up(&mut ready_bus(), &mut vram, pm, keep, |_| {}, drain, CLOCK).map(|_| ())
+        };
+        // The binner's parameter memory inside the TA's: run 7's hangs.
+        assert_eq!(
+            try_at(PM, &[(0x0030_0000, 0x0010_0000)]),
+            Err(ta::SetUpError::Overlap)
+        );
+        // Touching only at the edges is apart.
+        assert_eq!(try_at(PM, &[(0x0070_0000, 0x0030_0000)]), Ok(()));
+        assert_eq!(try_at(PM, &[(0x0020_0000, 0x0010_0000)]), Ok(()));
+        // The block inside a kept region.
+        assert_eq!(
+            try_at(PM, &[(0x000F_0000, 0x0001_0000)]),
+            Err(ta::SetUpError::Overlap)
+        );
+        // Past the manager's 8 MiB reach.
+        let far = ta::ParamMemory {
+            at: 0x0070_0000,
+            ..PM
+        };
+        assert_eq!(try_at(far, &[]), Err(ta::SetUpError::BadPlace));
+        // Misaligned memory or block.
+        let odd = ta::ParamMemory {
+            at: 0x0030_0800,
+            ..PM
+        };
+        assert_eq!(try_at(odd, &[]), Err(ta::SetUpError::BadPlace));
+        let odd_table = ta::ParamMemory {
+            table: 0x000F_D000,
+            ..PM
+        };
+        assert_eq!(try_at(odd_table, &[]), Err(ta::SetUpError::BadPlace));
+        // The block inside the memory itself.
+        let inside = ta::ParamMemory {
+            table: 0x0034_0000,
+            ..PM
+        };
+        assert_eq!(try_at(inside, &[]), Err(ta::SetUpError::Overlap));
+    }
+
+    #[test]
+    fn a_manager_that_never_says_ready_is_reported() {
+        let mut vram = vec![0u8; 0x10_0000];
+        let r = ta::set_up(
+            &mut MockBus::new(),
+            &mut vram,
+            PM,
+            &[],
+            |_| {},
+            drain,
+            CLOCK,
+        );
+        assert_eq!(r.map(|_| ()), Err(ta::SetUpError::NotReady));
+    }
+
+    #[test]
+    fn feeding_never_touches_the_memory_manager() {
+        // A whole frame fed: none of the manager's registers (0x824-0x83C)
+        // or 0x6D8 (its set-up's) written. The class run 5 fell into.
+        let mut bus = ready_bus();
+        bus.preset(MBX + reg::STATUS, PM_READY | ta::DONE);
+        let mut vram = vec![0u8; 0x10_0000];
+        let ready = ta::set_up(&mut bus, &mut vram, PM, &[], |_| {}, drain, CLOCK).unwrap();
+        let before = bus.writes().len();
+        let l = ta::Layout {
+            tail: 0x0072_0000,
+            tail_bytes: 0x1_0000,
+            regions: 0x0074_0000,
+            width: 480,
+            height: 640,
+        };
+        let draw = [7u32; 40];
+        let fed = ta::feed(
+            &mut bus,
+            &ready,
+            &l,
+            ta::draws(&[&draw, &draw]),
+            CLOCK,
+            200_000,
+        );
+        assert!(fed.done);
+        let manager = |o: usize| (MBX + 0x824..=MBX + 0x83C).contains(&o) || o == MBX + 0x6D8;
+        assert!(bus.writes()[before..].iter().all(|w| !manager(w.0)));
+    }
+
+    #[test]
+    fn recover_sets_the_same_place_up_again() {
+        let mut bus = ready_bus();
+        let mut vram = vec![0u8; 0x10_0000];
+        let mut ready = ta::set_up(&mut bus, &mut vram, PM, &[], |_| {}, drain, CLOCK).unwrap();
+        let first = bus.writes();
+        ready
+            .recover(&mut bus, &mut vram, |_| {}, drain, CLOCK)
+            .unwrap();
+        let all = bus.writes();
+        assert_eq!(all[first.len()..], first[..]);
     }
 }

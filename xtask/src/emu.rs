@@ -14221,7 +14221,8 @@ pub fn boot_loader_tabench(root: &Path) -> Result<(), String> {
     }
     for want in [
         "SET 6 of 6",
-        "memory manager ready: true",
+        "the TA set up once (the driver's ta::set_up",
+        "): ready true;",
         "RETROPANE-TABENCH: DONE",
     ] {
         if !log.contains(want) {

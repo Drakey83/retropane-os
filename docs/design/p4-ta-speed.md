@@ -351,6 +351,33 @@ warm-ups' own hangs, and the fix's cost a set-up (paid at start-up and
 after a recovery only). The winner goes into the driver's set-up; run 1's
 full table then runs again to show the gains unchanged.
 
+**Run 8 on the X51v (2026-10-26): no first-render hang without a binner
+before it** (200 of 200 frames right, no fix needed; the warm-ups would
+cost 1-17 ms a set-up for nothing). Run 7's two hangs followed binner
+frames in the same parameter memory: **run 9** gives each path its own
+parameter memory, with the set-up rule in `rp-mbx3d`.
+
+**The driver rule, built 2026-10-26 (`rp-mbx3d`'s `ta::set_up`,
+`drivers/mbx3d/src/ta_setup.rs`):** the TA's memory manager is set up
+only through `ta::set_up` (a core reset, the manager's block zeroed, the
+manager, its ready waited), which refuses a parameter memory that is
+misaligned, past the manager's 8 MiB reach, or overlapping any region the
+caller names (the binner's parameter memory and region array); it returns
+the `Ready` token that `ta::Feed::start` and `ta::feed` require, and
+`Ready::recover` is the one way to set it up again, after a render that
+hung. Nothing per frame. Host tests: the exact sequence (the reset first,
+the manager's table last), the refusals (overlap, the edges apart, reach,
+alignment, the block inside the memory), a manager that never says ready,
+recovery repeating the set-up, and a whole fed frame writing none of the
+manager's registers. `rp-glesfeat` keeps its own proven set-up and takes
+the token with `Ready::set_up_by_caller`.
+
+**Run 9 built 2026-10-26 (the default `rp-tabench`):** run 1's sets and
+ways with the TA set up once through the driver for the whole run, in its
+own parameter memory (`0x300000`, 4 MiB), the binner's apart (`0x800000`,
+3 MiB), the binner's frames rendered between the TA's. It shows whether
+the gains hold with the fix in place, and whether the hangs are gone.
+
 
 ## The choices for the owner
 

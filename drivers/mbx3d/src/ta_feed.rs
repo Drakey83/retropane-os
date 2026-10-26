@@ -130,12 +130,13 @@ pub fn draws<'a>(draws: &'a [&'a [u32]]) -> impl Iterator<Item = Item> + 'a {
 /// [`clear`] first. The 2D engine idle meanwhile (ADR-0026 T8: one FIFO).
 pub fn feed<B: RegisterBus>(
     regs: &mut B,
+    ready: &super::ta_setup::Ready,
     l: &Layout,
     stream: impl IntoIterator<Item = Item>,
     clock: Clock,
     limit_us: u32,
 ) -> Fed {
-    let mut f = Feed::start(regs, l, clock, limit_us);
+    let mut f = Feed::start(regs, ready, l, clock, limit_us);
     let _ = stream.into_iter().all(|item| f.put(item));
     f.finish()
 }
@@ -165,7 +166,15 @@ pub struct Feed<'r, B> {
 
 impl<'r, B: RegisterBus> Feed<'r, B> {
     /// The done bit cleared and enabled, then the TA's start table for `l`.
-    pub fn start(regs: &'r mut B, l: &Layout, clock: Clock, limit_us: u32) -> Self {
+    /// `_ready`: the manager set up for the TA ([`super::ta_setup::set_up`],
+    /// once, never between scenes: audit C81).
+    pub fn start(
+        regs: &'r mut B,
+        _ready: &super::ta_setup::Ready,
+        l: &Layout,
+        clock: Clock,
+        limit_us: u32,
+    ) -> Self {
         let en = regs.read32(MBX + reg::ENABLE);
         regs.write32(MBX + reg::CLEAR, DONE);
         regs.write32(MBX + reg::ENABLE, en | DONE);
