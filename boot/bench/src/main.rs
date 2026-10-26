@@ -107,6 +107,11 @@ mod image {
             }
         }
 
+        // The image never returns to the loader (it ends in the fault
+        // below), so it reports its own deepest stack: the emulator check
+        // fails past 80% (`check_stack`).
+        let (used, size) = rt::stack_used();
+        let _ = writeln!(out.0, "stack: deepest {used} of {size} bytes");
         let _ = writeln!(out.0, "{}", super::DONE);
 
         // Fault-path self-test: 0x80000000 is unmapped in the bring-up map, so

@@ -96,7 +96,9 @@ pub const BUDGETS: &[Budget] = &[
         // Zeroed RAM ratcheted to 32 KiB on 2026-10-22 (test image): LZ4's
         // table kept in static memory as the kernel keeps it (8 KiB, ADR-0001
         // "Why, and what was fixed"); 27.7 KiB measured, +~15%.
-        max_zero: 32 * 1024,
+        // Ratcheted 32 -> 48 KiB on 2026-10-26 (test image): the stack
+        // 16 -> 32 KiB (it overflowed into `.bss`, quality audit C90).
+        max_zero: 48 * 1024,
         device: OnDevice::NeverReturns,
     },
     // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table
