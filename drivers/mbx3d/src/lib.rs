@@ -696,10 +696,12 @@ pub mod ta {
         Batching, Form, LIST, Primitive, Quad, Quads, STATE_WORDS, Shape, State, TEXTURED_MASK,
         items, quads, quads_with,
     };
+    pub use super::ta_setup::{ParamMemory, Ready, SetUpError, set_up};
 }
 
 mod ta_feed;
 mod ta_quads;
+mod ta_setup;
 
 #[cfg(test)]
 mod tests;

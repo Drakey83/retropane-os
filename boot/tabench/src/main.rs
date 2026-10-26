@@ -100,18 +100,43 @@ mod image {
     /// plus [`ta::PORT`]), for the DMA.
     const TA_WINDOW: u32 = 0x0FFE_0000 + ta::PORT as u32;
 
+    /// The binner's own parameter memory, apart from the TA's (run 8, audit
+    /// C81: run 7's two hangs each followed binner frames rendered into the
+    /// TA's parameter memory). Its objects are counted from `0x60C`, so it
+    /// need not lie in the manager's 8 MiB reach.
+    const BIN_PM: u32 = 0x0080_0000;
+    const BIN_PM_SIZE: u32 = 0x0030_0000;
     const BIN: binner::Layout = binner::Layout {
-        params: PM,
-        params_size: PM_SIZE,
+        params: BIN_PM,
+        params_size: BIN_PM_SIZE,
         regions: REGIONS,
         w: W as u16,
         h: H as u16,
     };
-    /// The 3D stage on the TA's region array.
+    /// The 3D stage on the TA's region array, in the TA's parameter memory.
     const FROM_TA: binner::Layout = binner::Layout {
+        params: PM,
+        params_size: PM_SIZE,
         regions: TA_REGIONS,
-        ..BIN
+        w: W as u16,
+        h: H as u16,
     };
+    /// The TA's parameter memory, set up once by the driver.
+    const TA_PM: ta::ParamMemory = ta::ParamMemory {
+        at: PM,
+        size: PM_SIZE,
+        table: PM_TABLE,
+    };
+    /// What the TA's parameter memory must stay clear of: the binner's
+    /// parameter memory and region array, the TA's tail and region array,
+    /// the target.
+    const KEEP: [(u32, u32); 5] = [
+        (BIN_PM, BIN_PM_SIZE),
+        (REGIONS, 0x4B00),
+        (TAIL, 0x1_0000),
+        (TA_REGIONS, 0x4B08),
+        (TARGET, W * H * 2),
+    ];
     const TA: ta::Layout = ta::Layout {
         tail: TAIL,
         tail_bytes: 0x1_0000,
@@ -255,41 +280,42 @@ mod image {
         /// The set's quads' side.
         side: i32,
         dma: Option<rp_hal_pxa27x::dma::Dma>,
+        /// The TA's set-up (the driver's token: set up once, recovered only
+        /// after a hang).
+        ready: Option<ta::Ready>,
         /// Renders past 2 s (core resets), TA ways that never said done.
         render_hangs: u32,
         ta_hangs: u32,
     }
 
     impl Rig {
-        /// The core reset and the parameter memory manager set up again;
-        /// true when it said ready. Always both (run 2: set up again without
-        /// a reset, the manager handed the TA pages outside its range; our
-        /// renderer's `bring_up` and `rp-glesfeat`'s clean start reset first
-        /// too).
+        /// The TA's memory manager through the driver: the first time
+        /// `ta::set_up` (a core reset, the manager, once: audit C81), after
+        /// that only `Ready::recover` (a render that hung). True when ready.
         fn pm_init(&mut self) -> bool {
-            reset_core(&mut self.regs, rt::delay_us);
-            let zeros = [0u32; 64];
-            for k in 0..16 * 1024 / 256 {
-                self.mem.store((PM_TABLE + 256 * k) as usize, &zeros);
+            let r = match self.ready.as_mut() {
+                Some(ready) => ready.recover(
+                    &mut self.regs,
+                    self.mem.0,
+                    rt::delay_us,
+                    cpu::drain_write_buffer,
+                    CLOCK,
+                ),
+                None => ta::set_up(
+                    &mut self.regs,
+                    self.mem.0,
+                    TA_PM,
+                    &KEEP,
+                    rt::delay_us,
+                    cpu::drain_write_buffer,
+                    CLOCK,
+                )
+                .map(|ready| self.ready = Some(ready)),
+            };
+            if let Err(e) = r {
+                log!("    the TA's set-up: {e:?}");
             }
-            self.mem.sync();
-            let en = self.regs.read32(MBX + reg::ENABLE);
-            self.regs.write32(MBX + reg::ENABLE, en | m3::PM_READY);
-            self.regs.write32(MBX + reg::CLEAR, m3::PM_READY);
-            for (off, v) in m3::pm_init_table(PM, PM_SIZE, PM_TABLE) {
-                self.regs.write32(MBX + off, v);
-            }
-            let t0 = rt::ticks();
-            let mut ok = false;
-            while us_since(t0) < 100_000 {
-                if self.regs.read32(MBX + reg::STATUS) & m3::PM_READY != 0 {
-                    ok = true;
-                    break;
-                }
-            }
-            self.regs.write32(MBX + reg::CLEAR, m3::PM_READY);
-            self.regs.write32(MBX + reg::ENABLE, en);
-            ok
+            r.is_ok()
         }
 
         /// The 3D stage on `l`'s region array into the target; its time,
@@ -314,7 +340,6 @@ mod image {
             self.regs.write32(MBX + reg::ENABLE, en);
             if us == 0 {
                 self.render_hangs += 1;
-                reset_core(&mut self.regs, rt::delay_us);
                 let ok = self.pm_init();
                 log!("    render past 2 s: core reset, memory manager ready again: {ok}");
             }
@@ -404,7 +429,10 @@ mod image {
                 f.cpu_us = built + us_since(t1);
                 fed
             } else {
-                let mut feed = ta::Feed::start(&mut self.regs, &TA, CLOCK, TA_LIMIT_US);
+                let Some(ready) = self.ready.as_ref() else {
+                    return f;
+                };
+                let mut feed = ta::Feed::start(&mut self.regs, ready, &TA, CLOCK, TA_LIMIT_US);
                 if way == Way::TaDellBit7Off {
                     feed.scene_end_in_body(false);
                 }
@@ -443,7 +471,11 @@ mod image {
                 log!("    no DMA channel");
                 return (ta::Fed::default(), 0);
             };
-            let mut feed = ta::Feed::start(&mut self.regs, &TA, CLOCK, TA_LIMIT_US);
+            let Some(ready) = self.ready.as_ref() else {
+                self.dma = Some(dma);
+                return (ta::Fed::default(), 0);
+            };
+            let mut feed = ta::Feed::start(&mut self.regs, ready, &TA, CLOCK, TA_LIMIT_US);
             let mut ok = ta::draws(&[clear]).all(|i| feed.put(i));
             let mut at = 0;
             // When the FIFO last had room for a piece.
@@ -800,12 +832,15 @@ mod image {
             xy: ram.xy,
             side: 16,
             dma: rt::take_dma(rp_hal_pxa27x::dma_map::SD),
+            ready: None,
             render_hangs: 0,
             ta_hangs: 0,
         };
+        // The TA set up once, through the driver, for the whole run (run 8:
+        // no hang without a binner in its parameter memory).
         let ready = g.pm_init();
         log!(
-            "memory manager ready: {ready}; DMA channel: {}",
+            "the TA set up once (the driver's ta::set_up, its own parameter memory 0x{PM:x}, the binner's 0x{BIN_PM:x}): ready {ready}; DMA channel: {}",
             g.dma.is_some()
         );
         if ISOLATE {
@@ -829,12 +864,6 @@ mod image {
             let mut binned = false;
             for way in WAYS {
                 step(&mut g, s + 1, n, side, way);
-                if way == Way::TaDell {
-                    // The memory manager set up once for the set's TA ways,
-                    // after a core reset (run 6: once, 20 of 20 right).
-                    let ready = g.pm_init();
-                    log!("  memory manager set up for the set's TA ways (once): ready {ready}");
-                }
                 let mut frames = [Frame::default(); FRAMES];
                 let mut first_off = None;
                 for (k, fr) in frames.iter_mut().enumerate() {
@@ -891,12 +920,13 @@ mod image {
     /// Our TA background alone, once: the target's words not black after
     /// it (0 wanted: every TA way's picture stands on it).
     fn background_check(g: &mut Rig) {
-        if !g.pm_init() {
-            log!("    memory manager not ready");
-        }
         let _ = ta::clear(g.mem.0, &TA);
         cpu::drain_write_buffer();
-        let mut feed = ta::Feed::start(&mut g.regs, &TA, CLOCK, TA_LIMIT_US);
+        let Some(ready) = g.ready.as_ref() else {
+            log!("TA background alone: no TA set-up");
+            return;
+        };
+        let mut feed = ta::Feed::start(&mut g.regs, ready, &TA, CLOCK, TA_LIMIT_US);
         let _ = ta::draws(&[&background_strip()]).all(|i| feed.put(i));
         let fed = feed.finish();
         let us = if fed.done { g.render(&FROM_TA) } else { 0 };

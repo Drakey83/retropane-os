@@ -211,9 +211,17 @@ pub(super) fn run8(g: &mut Rig) -> (u32, u32) {
         height: H,
     };
     let from_ta = binner::Layout {
+        params: p.pm,
+        params_size: p.pm_size,
         regions: p.ta_regions,
         ..REFERENCE
     };
+    // This run sets the manager up its own way (what it measures).
+    let token = ta::Ready::set_up_by_caller(ta::ParamMemory {
+        at: p.pm,
+        size: p.pm_size,
+        table: p.pm_table,
+    });
     let state = ta::State {
         tsp: ta::TSP_DELL_TEXTURED,
         isp: m3::ISP_ALWAYS,
@@ -282,7 +290,7 @@ pub(super) fn run8(g: &mut Rig) -> (u32, u32) {
                 let _ = ta::clear(g.mem.0, &ta_layout);
                 cpu::drain_write_buffer();
                 let xy = &*g.xy;
-                let mut feed = ta::Feed::start(&mut g.regs, &ta_layout, CLOCK, TA_LIMIT_US);
+                let mut feed = ta::Feed::start(&mut g.regs, &token, &ta_layout, CLOCK, TA_LIMIT_US);
                 let _ = match warm {
                     Some(s) => ta::draws(&[s]).all(|i| feed.put(i)),
                     None => ta::quads_with(state, ta::Shape::DELL, 1, |q| ta_quad(xy[q], SIDE))
@@ -307,7 +315,7 @@ pub(super) fn run8(g: &mut Rig) -> (u32, u32) {
                 let _ = ta::clear(g.mem.0, &ta_layout);
                 cpu::drain_write_buffer();
                 let xy = &*g.xy;
-                let mut feed = ta::Feed::start(&mut g.regs, &ta_layout, CLOCK, TA_LIMIT_US);
+                let mut feed = ta::Feed::start(&mut g.regs, &token, &ta_layout, CLOCK, TA_LIMIT_US);
                 let _ = ta::draws(&[&strip])
                     .chain(ta::quads_with(state, ta::Shape::DELL, QUADS, |q| {
                         ta_quad(xy[q], SIDE)

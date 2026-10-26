@@ -1920,7 +1920,21 @@ mod image {
             now: rt::ticks,
             ticks_per_ms: rt::TICK_HZ / 1000,
         };
-        let fed = m3::ta::feed(&mut e.regs, &ta, m3::ta::draws(draws), clock, 200_000);
+        // This image's own proven sequence sets the manager up (`pm_init`,
+        // after `clean`'s reset), kept word for word with its device runs.
+        let ready = m3::ta::Ready::set_up_by_caller(m3::ta::ParamMemory {
+            at: l.pm as u32,
+            size: l.pm_size,
+            table: l.pm_table as u32,
+        });
+        let fed = m3::ta::feed(
+            &mut e.regs,
+            &ready,
+            &ta,
+            m3::ta::draws(draws),
+            clock,
+            200_000,
+        );
         out.ta = fed.done;
         if let Some(s) = fed.stuck {
             log!("    the FIFO stayed full (status 0x{s:08x}): the stream cut short");
