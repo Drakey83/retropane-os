@@ -289,7 +289,7 @@ mod image {
             let start = self.part_start;
             self.guard = self.card.as_mut().zip(start).and_then(|(sd, start)| {
                 let mut vol = AnyVolume::mount(Fed::Sd(sd), start).ok()?;
-                guard_with_icon(&mut vol, &BOOT_FILES)
+                guard_with_icon(&mut vol, &BOOT_FILES, DEVICE_ICON)
             });
             was != self.read_only()
         }
@@ -1022,11 +1022,22 @@ mod image {
         "RetroPane/startup.txt",
         "RetroPane/default.txt",
     ];
+    /// The device's own icon on the PC (ADR-0037 Q5: Icons-Land's PDA,
+    /// `assets/device`, R60): Windows draws the Axim with it. Kept like
+    /// the boot files; MTP serves the SD card's, else the CF card's.
+    const DEVICE_ICON: &str = "device.ico";
+    /// The CF card's, in its boot folder.
+    const CF_DEVICE_ICON: &str = "RetroPane/device.ico";
 
-    /// The guard for `boot` and the drive's icon: `autorun.inf` and the icon
-    /// it names, in the card's root (hidden from the PC and kept like the
-    /// boot files: the owner, 2026-10-25). `None` when it can't be built.
-    fn guard_with_icon(vol: &mut AnyVolume<Fed<'_>>, boot: &[&str]) -> Option<Guard> {
+    /// The guard for `boot`, the drive's icon (`autorun.inf` and the icon
+    /// it names, in the card's root: hidden from the PC and kept like the
+    /// boot files, the owner, 2026-10-25) and the device's icon
+    /// (`device_icon`). `None` when it can't be built.
+    fn guard_with_icon(
+        vol: &mut AnyVolume<Fed<'_>>,
+        boot: &[&str],
+        device_icon: &str,
+    ) -> Option<Guard> {
         let mut text = [0u8; 256];
         let mut n = 0;
         let mut scratch = [0u8; rp_drv_sdcard::BLOCK];
@@ -1041,11 +1052,12 @@ mod image {
                 n += k;
             },
         );
-        let mut names = [""; 8];
+        let mut names = [""; 10];
         names[..boot.len()].copy_from_slice(boot);
         let mut k = boot.len();
         names[k] = "autorun.inf";
-        k += 1;
+        names[k + 1] = device_icon;
+        k += 2;
         if let Some(icon) = autorun_icon(&text[..n]) {
             names[k] = icon;
             k += 1;
@@ -1159,7 +1171,7 @@ mod image {
 
     /// Most files a format keeps: the boot files, `autorun.inf` and the
     /// icon it names.
-    const KEEP_MAX: usize = 7;
+    const KEEP_MAX: usize = 8;
 
     /// The icon `autorun.inf` names (`icon=card-sd.ico`, an index after a
     /// comma dropped), when it's a plain file name in the root: the file a
@@ -1326,10 +1338,10 @@ mod image {
         };
 
         // What to keep, read from the card as it is (if it mounts at all).
-        let boot: &[&str] = if cf_unit {
-            &CF_BOOT_FILES[1..]
+        let (boot, device_icon): (&[&str], _) = if cf_unit {
+            (&CF_BOOT_FILES[1..], CF_DEVICE_ICON)
         } else {
-            &BOOT_FILES
+            (&BOOT_FILES, DEVICE_ICON)
         };
         let mut names = [[0u8; 32]; KEEP_MAX];
         let mut kept = [(0usize, 0usize, 0usize); KEEP_MAX]; // name length, start, length
@@ -1341,10 +1353,16 @@ mod image {
                 lun.card.as_mut().ok_or("no card").and_then(mount_any)
             };
             if let Ok(mut vol) = mounted {
-                // The boot files and autorun.inf, then the icon it names.
+                // The boot files, autorun.inf and the device's icon, then
+                // the icon autorun.inf names.
                 let mut icon = [0u8; 32];
                 let mut icon_len = 0;
-                for (i, name) in boot.iter().copied().chain(["autorun.inf"]).enumerate() {
+                for (i, name) in boot
+                    .iter()
+                    .copied()
+                    .chain(["autorun.inf", device_icon])
+                    .enumerate()
+                {
                     match keep_file(&mut vol, name, ram, &mut used, scratch) {
                         Err(()) => {
                             let _ = reply.write_str(
@@ -1911,7 +1929,7 @@ mod image {
                     self.part_start = Some(start);
                     self.guard = AnyVolume::mount(Fed::Cf(card), start)
                         .ok()
-                        .and_then(|mut v| guard_with_icon(&mut v, &CF_BOOT_FILES));
+                        .and_then(|mut v| guard_with_icon(&mut v, &CF_BOOT_FILES, CF_DEVICE_ICON));
                 }
             }
             was != self.read_only()

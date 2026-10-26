@@ -20,8 +20,8 @@ use rp_usb_mtp::{
 };
 
 use super::{
-    BOOT_FILES, CF_BOOT_FILES, CfLun, Fed, Line, Lun, MSC_SERIAL, SCRATCH, format_command,
-    mount_any, mount_cf, now_ms,
+    BOOT_FILES, CF_BOOT_FILES, CF_DEVICE_ICON, CfLun, DEVICE_ICON, Fed, Line, Lun, MSC_SERIAL,
+    SCRATCH, format_command, mount_any, mount_cf, now_ms,
 };
 
 /// Objects the handle table holds (rule 7). From the owner's cards: the
@@ -37,9 +37,12 @@ pub const HANDLES: usize = 65_536;
 const STAGING: usize = 16 * 1024;
 /// Card commands' scratch (FAT searches, directory sectors).
 const CARD_SCRATCH: usize = 16 * 1024;
-/// The device icon (Q5), read once from the file the card's `autorun.inf`
-/// names (the drive's own icon): Windows asks for it at every connection.
-const ICON_MAX: usize = 256 * 1024;
+/// The device icon's read buffer (Q5: Icons-Land's PDA, R60). The icon is
+/// served straight from the card as Windows asks for it (at every
+/// connection), so its size costs no RAM: this holds one request (at most a
+/// staging buffer) and the sector an unaligned piece starts in, read in one
+/// go.
+const ICON_SCRATCH: usize = STAGING + 512;
 /// RAM for a format's kept files (ADR-0036's `format`): a format from the
 /// PC is only for a card holding no boot files, so this holds at most
 /// `autorun.inf` and its icon. Not the image area: an image may be arriving.
@@ -101,8 +104,9 @@ pub struct Ui {
     /// The friendly name (Q4): kept while the loader runs; the OS proper's
     /// settings keep it across starts (quality audit C87).
     name: Text,
-    /// The icon as read (`None`: not yet; `Some(0)`: none on the card).
-    icon_len: Option<usize>,
+    /// The device icon's card and size (`None`: not looked for since the
+    /// last card change; a size of 0: on neither card).
+    icon_at: Option<(u8, u32)>,
     /// The icon experiment's variant ([`PROBES`], 0: the standard codes).
     probe: usize,
 }
@@ -142,7 +146,7 @@ impl Tables {
         let (walk, pool) = carve::<Level>(pool, MAX_DEPTH, (0, 0, 0, false))?;
         let (staging, pool) = carve(pool, STAGING, 0u8)?;
         let (scratch, pool) = carve(pool, CARD_SCRATCH, 0u8)?;
-        let (icon, pool) = carve(pool, ICON_MAX, 0u8)?;
+        let (icon, pool) = carve(pool, ICON_SCRATCH, 0u8)?;
         let (format_ram, pool) = carve(pool, FORMAT_RAM, 0u8)?;
         let (state, pool) = carve(pool, 1, FatState::new())?;
         let mut serial = [b'0'; 32];
@@ -163,7 +167,7 @@ impl Tables {
                 keypad: None,
                 held: Pressed::NONE,
                 name: Text::from_text(rp_hal_x51v::MODEL).unwrap_or_default(),
-                icon_len: None,
+                icon_at: None,
                 probe: 0,
             },
         })?;
@@ -176,9 +180,8 @@ impl Tables {
     #[inline(never)]
     pub fn card_changed(&mut self, s: u8, present: bool) {
         self.state.forget(s);
-        if s == 0 {
-            self.ui.icon_len = None;
-        }
+        // Either card may hold the device icon.
+        self.ui.icon_at = None;
         self.mtp.store_changed(s, false);
         if present {
             self.mtp.store_changed(s, true);
@@ -421,45 +424,46 @@ impl LoaderCards<'_> {
         }) * 512
     }
 
-    /// Reads the icon `autorun.inf` names into `icon`, once.
-    fn load_icon(&mut self) -> usize {
-        if let Some(n) = self.ui.icon_len {
-            return n;
+    /// Store `s`'s volume, when its card is in and mounts.
+    fn volume<'b>(lun: &'b mut Lun, cf: &'b mut CfLun, s: u8) -> Option<AnyVolume<Fed<'b>>> {
+        if s == 0 {
+            if !lun.present() {
+                return None;
+            }
+            mount_any(lun.card.as_mut()?).ok()
+        } else {
+            mount_cf(cf).ok()
         }
-        let mut n = 0;
-        if self.lun.present()
-            && let Some(sd) = self.lun.card.as_mut()
-            && let Ok(mut vol) = mount_any(sd)
-        {
-            let mut text = [0u8; 256];
-            let mut tn = 0;
+    }
+
+    /// The device icon's card and size, looked for once per card change:
+    /// the SD card's, else the CF card's.
+    fn device_icon(&mut self) -> (u8, u32) {
+        if let Some(at) = self.ui.icon_at {
+            return at;
+        }
+        let mut at = (0, 0);
+        for s in 0..2u8 {
             let mut sector = [0u8; 512];
-            let _ = vol.read_range("autorun.inf", 0, 256, &mut sector, &mut |p| {
-                let k = p.len().min(text.len() - tn);
-                text[tn..tn + k].copy_from_slice(&p[..k]);
-                tn += k;
+            let size = Self::volume(self.lun, self.cf, s).and_then(|mut v| {
+                v.read_range(ICON[usize::from(s)], 0, 0, &mut sector, &mut |_| {})
+                    .ok()
             });
-            if let Some(name) = super::autorun_icon(&text[..tn]) {
-                let icon = &mut *self.icon;
-                let mut over = false;
-                let r = vol.read_range(name, 0, icon.len() as u64 + 1, &mut sector, &mut |p| {
-                    let k = p.len().min(icon.len() - n);
-                    icon[n..n + k].copy_from_slice(&p[..k]);
-                    n += k;
-                    over |= k < p.len();
-                });
-                if r.is_err() || over {
-                    // Missing, unreadable or larger than the buffer: no
-                    // icon (Windows shows its own), said on the screen.
-                    let _ = writeln!(self.log, "MTP: device icon {name} not served");
-                    n = 0;
-                }
+            // MTP's sizes are 32-bit: a bigger file is no icon.
+            if let Some((size, _)) = size
+                && let Ok(n @ 1..) = u32::try_from(size)
+            {
+                at = (s, n);
+                break;
             }
         }
-        self.ui.icon_len = Some(n);
-        n
+        self.ui.icon_at = Some(at);
+        at
     }
 }
+
+/// The device icon on each card ([`DEVICE_ICON`], [`CF_DEVICE_ICON`]).
+const ICON: [&str; 2] = [DEVICE_ICON, CF_DEVICE_ICON];
 
 impl Cards for LoaderCards<'_> {
     type Disk<'b>
@@ -605,15 +609,38 @@ impl Cards for LoaderCards<'_> {
     }
 
     fn icon_len(&mut self) -> u32 {
-        self.load_icon() as u32
+        self.device_icon().1
     }
 
     fn icon_read(&mut self, offset: u32, buf: &mut [u8]) -> usize {
-        let n = self.load_icon();
-        let at = (offset as usize).min(n);
-        let k = buf.len().min(n - at);
-        buf[..k].copy_from_slice(&self.icon[at..at + k]);
-        k
+        let (s, size) = self.device_icon();
+        let want = buf.len().min(size.saturating_sub(offset) as usize);
+        let mut k = 0;
+        if let Some(mut vol) = Self::volume(self.lun, self.cf, s) {
+            let _ = vol.read_range(
+                ICON[usize::from(s)],
+                u64::from(offset),
+                want as u64,
+                self.icon,
+                &mut |p| {
+                    let n = p.len().min(want - k);
+                    buf[k..k + n].copy_from_slice(&p[..n]);
+                    k += n;
+                },
+            );
+        }
+        if k < want {
+            // The card went (or the file changed) mid-way: the length is
+            // already announced, so the rest goes as zeros (Windows shows
+            // its own icon) and the session keeps its framing.
+            buf[k..want].fill(0);
+            let _ = writeln!(
+                self.log,
+                "MTP: device icon cut short at {}",
+                offset as usize + k
+            );
+        }
+        want
     }
 
     fn now_ms(&self) -> u32 {

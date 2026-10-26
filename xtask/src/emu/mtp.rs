@@ -461,10 +461,13 @@ pub fn boot_loader_mtp(root: &Path) -> Result<(), String> {
     mac(root)
 }
 
-/// The SD card as the owner's: boot files, a README, the drive's icon.
+/// The SD card as the owner's: boot files, a README, the drive's icon and
+/// the device's (the real one: 432 KB, served in many unaligned pieces).
 fn sd_card(root: &Path, name: &str) -> Result<(std::path::PathBuf, Vec<u8>), String> {
     let entry = |name, data| rp_fat::format::Entry { name, data };
-    let icon = pattern(5000, 0x1C0);
+    let icon = std::fs::read(root.join(crate::sdkit::DEVICE_ICON_ASSET))
+        .map_err(|e| format!("{}: {e}", crate::sdkit::DEVICE_ICON_ASSET))?;
+    let drive_icon = pattern(5000, 0x1C0);
     let image = rp_fat::format::build(&rp_fat::format::Image {
         total_sectors: 64 * 2048,
         sectors_per_cluster: 8,
@@ -476,7 +479,8 @@ fn sd_card(root: &Path, name: &str) -> Result<(std::path::PathBuf, Vec<u8>), Str
                 "autorun.inf",
                 b"[autorun]\r\nicon=card-sd.ico\r\nlabel=X51V\r\n",
             ),
-            entry("card-sd.ico", &icon),
+            entry("card-sd.ico", &drive_icon),
+            entry("device.ico", &icon),
             entry("README.txt", b"hello from the card"),
         ],
         blocked_clusters: &[],
@@ -584,6 +588,10 @@ fn windows(root: &Path) -> Result<(), String> {
             ));
         }
         let boot = *boot;
+        let (_, info) = find(&list, "device.ico")?;
+        if info.protection != 0x0001 {
+            return Err("the device's icon listed writable".into());
+        }
         let (readme, info) = find(&list, "README.txt")?;
         if info.protection != 0 {
             return Err("README.txt listed read-only".into());
@@ -687,7 +695,8 @@ fn windows(root: &Path) -> Result<(), String> {
         if info.name != "put.txt" || info.format == fmt::ASSOCIATION {
             return Err(format!("the put's event names {:?}", info.name));
         }
-        // The device's name (Q4) and icon (Q5, the drive's icon file).
+        // The device's name (Q4) and icon (Q5: device.ico byte for byte,
+        // not the drive's icon).
         let a = m.ok(
             op::GET_DEVICE_PROP_VALUE,
             &[u32::from(dprop::FRIENDLY_NAME)],
