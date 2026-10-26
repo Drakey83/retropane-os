@@ -1042,6 +1042,10 @@ pub struct Renderer {
     /// in the array's order): a measurement's choice (`rp-gpubench` runs
     /// GC2L, GC2O), row order otherwise.
     tile_order: TileOrder,
+    /// A measurement's bit flip in every textured object's header (run
+    /// GC2AP): the header word (0 ISP, 1-3 TEX0-2, 4 TSP) and the bits
+    /// XORed into it; (0, 0) never changes anything.
+    header_xor: (usize, u32),
 }
 
 /// The order the tiles are listed for the core in (the picture is the same
@@ -1173,6 +1177,7 @@ impl Renderer {
             irq: false,
             irq_stale: false,
             tile_order: TileOrder::Rows,
+            header_xor: (0, 0),
         })
     }
 
@@ -1185,6 +1190,16 @@ impl Renderer {
         } else {
             TileOrder::Rows
         });
+    }
+
+    /// A measurement's bit flip in every textured object's header from the
+    /// next [`Self::set`] on: `mask` XORed into header word `word` (0 ISP,
+    /// 1-3 TEX0-2, 4 TSP) of both triangles (`rp-gpubench` run GC2AP's
+    /// search). A word past the header or a zero mask flips nothing. The
+    /// slots' hashes cover the flipped words, so a slot set again with the
+    /// same draw is written again.
+    pub fn set_header_xor(&mut self, word: usize, mask: u32) {
+        self.header_xor = if word < 5 { (word, mask) } else { (0, 0) };
     }
 
     /// The order the tiles are listed for the core in ([`TileOrder`]).
@@ -1282,7 +1297,13 @@ impl Renderer {
         let new = match draw {
             None => Slot::default(),
             Some(d) => {
-                let (words, n, kind) = encode(d);
+                let (mut words, n, kind) = encode(d);
+                let (hw, mask) = self.header_xor;
+                if kind == Kind::Textured && mask != 0 {
+                    for t in 0..2 {
+                        words[t * m3::tex::WORDS + hw] ^= mask;
+                    }
+                }
                 let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
                 for p in d.corners {
                     (x0, y0) = (x0.min(p.x), y0.min(p.y));

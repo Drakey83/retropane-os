@@ -1657,3 +1657,58 @@ fn new_tile_orders_list_every_tile_once_and_draw_the_same() {
         assert_eq!(words(&g), a, "{order:?}");
     }
 }
+
+/// GC2AP's hook: a flip changes exactly that header word of both triangles
+/// of a textured slot, nothing of a flat one, and (0, 0) or a word past
+/// the header nothing at all.
+#[test]
+fn the_header_flip_changes_only_its_word() {
+    let mut g = rig(480, 640);
+    let tex = columns(&mut g);
+    let at = |g: &Rig, w: usize| {
+        g.mem
+            .load((rp_vram_map::PARAMS.at + SLOTS_AT) as usize + 4 * w)
+            .unwrap()
+    };
+    let draw = Draw::rect(43, 45, 400, 560, Paint::texture(tex));
+    g.set(0, Some(draw));
+    let base: Vec<u32> = (0..2 * m3::tex::WORDS).map(|w| at(&g, w)).collect();
+    for (word, mask) in [(1usize, 1u32 << 7), (4, 1 << 22), (0, 1 << 3)] {
+        g.r.set_header_xor(word, mask);
+        g.set(0, Some(draw));
+        for (w, &b) in base.iter().enumerate() {
+            let flipped = w % m3::tex::WORDS == word;
+            let want = if flipped { b ^ mask } else { b };
+            assert_eq!(at(&g, w), want, "word {word} mask {mask:#x}: {w}");
+        }
+    }
+    for (word, mask) in [(0usize, 0u32), (5, 1)] {
+        g.r.set_header_xor(word, mask);
+        g.set(0, Some(draw));
+        for (w, &b) in base.iter().enumerate() {
+            assert_eq!(at(&g, w), b, "({word}, {mask}) flips nothing");
+        }
+    }
+    // A flat slot is never flipped.
+    g.r.set_header_xor(0, u32::MAX);
+    let flat = Draw::rect(0, 0, 64, 64, Paint::Flat(0xFF12_3456));
+    g.set(1, Some(flat));
+    let f1: Vec<u32> = (0..SLOT_WORDS)
+        .map(|w| {
+            g.mem
+                .load((rp_vram_map::PARAMS.at + SLOTS_AT + SLOT_BYTES) as usize + 4 * w)
+                .unwrap()
+        })
+        .collect();
+    g.r.set_header_xor(0, 0);
+    g.set(1, Some(Draw::rect(0, 0, 64, 32, Paint::Flat(0xFF12_3456))));
+    g.set(1, Some(flat));
+    let f2: Vec<u32> = (0..SLOT_WORDS)
+        .map(|w| {
+            g.mem
+                .load((rp_vram_map::PARAMS.at + SLOTS_AT + SLOT_BYTES) as usize + 4 * w)
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(f1, f2);
+}
