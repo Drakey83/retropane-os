@@ -7946,7 +7946,8 @@ mod image {
         || GC2_ORDERS
         || GC2_PROOF
         || GC2_BITS
-        || GC2_PUNCH;
+        || GC2_PUNCH
+        || GC2_REGS;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -8044,6 +8045,13 @@ mod image {
     /// generator and the flat and textured corner sweeps at 149.50 / 1,
     /// reversed, against none. About 45 minutes, unattended.
     const GC2_PUNCH: bool = option_env!("RP_GPUBENCH_GC2_PUNCH").is_some();
+
+    /// Run GC2AR, reminder R37 (`RP_GPUBENCH_GC2_REGS`): GC2AQ put every
+    /// divide-1 fault in the opaque objects' path; each bit of the render
+    /// block's 53 words (GC2Q's list) flipped alone on GC2AM's every-render
+    /// texel fault at 149.50 / 1, for a setting that keeps the opaque path
+    /// and its speed. About 6 minutes, unattended.
+    const GC2_REGS: bool = option_env!("RP_GPUBENCH_GC2_REGS").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9417,7 +9425,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_PUNCH {
+            if GC2_REGS {
+                "the 16-bit kinds' targets inside the safe region (GC2AR, R37: no map; GC2AM's every-render texel fault, the opaque path's, with each bit of the render block's 53 words flipped alone, one render a bit at 149.50 / 1; each target poisoned first),"
+            } else if GC2_PUNCH {
                 "the 16-bit kinds' targets inside the safe region (GC2AQ, R37: no map; TSP bit 14, the punch-through object kind, or bit 15 on every object, on the untextured fault generator and the flat and textured corner sweeps at 149.50 / 1, reversed, against none; each target poisoned first),"
             } else if GC2_BITS {
                 "the 16-bit kinds' targets inside the safe region (GC2AP, R37: no map; GC2AM's every-render texel fault with each bit of the textured objects' headers flipped alone, one render a bit at 149.50 / 1; each target poisoned first),"
@@ -9591,7 +9601,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_PUNCH {
+        let patch = if GC2_REGS {
+            gc2::words(gc2::FT2) as usize
+        } else if GC2_PUNCH {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_BITS {
             gc2::words(gc2::FT2) as usize
@@ -9962,7 +9974,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_PUNCH {
+                if GC2_REGS {
+                    gc2_reg_search(g, &mut r, (tex, first, dsig));
+                } else if GC2_PUNCH {
                     gc2_punch(g, &mut r, (tex, first, dsig));
                 } else if GC2_BITS {
                     gc2_bits(g, &mut r, (tex, first, dsig));
@@ -11627,6 +11641,142 @@ mod image {
                 flat: false,
             },
         );
+    }
+
+    /// Run GC2AR (see [`GC2_REGS`]): GC2AM's phase scene 0 (its every-render
+    /// texel fault, the opaque path's: GC2AQ) in the reversed order, its
+    /// reference at Windows Mobile's clock; at 149.50 / 1 three renders as
+    /// the renderer sets the core, then each bit of [`writeout_words`]'s 53
+    /// render-block words flipped alone ([`Rig::over`], the word put back
+    /// after) for one render; a render with no wrong word is a candidate,
+    /// held four more renders, and its render time logged beside the
+    /// unflipped one's (a fix that costs the speed is no fix). Every target
+    /// poisoned; the control at Windows Mobile's clock after.
+    #[inline(never)]
+    fn gc2_reg_search(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (tex, first, dsig): (gc2::Tex, &mut [u32], bool),
+    ) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < words {
+            log!("  GC2AR: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        let want = &mut rest[..words];
+        log!(
+            "  GC2AR (R37): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; each bit of {} render-block words flipped alone, one render each",
+            writeout_words().count()
+        );
+        r.set_tile_order(tile_order(gc2::REVERSED));
+        r.set_header_xor(0, 0);
+        r.set_tsp_or(0);
+        g.over = Over::NONE;
+        let set = |g: &mut Rig, r: &mut Renderer| {
+            let (bg, slots) = gc2::order_scene_wide(gc2::Scene::Phase(0), tex);
+            let _ = r.set_background(Some(bg));
+            for (n, d) in slots.into_iter().enumerate() {
+                g.set(r, n, d);
+            }
+        };
+        let target = Target {
+            picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        r.start_clean();
+        set(g, r);
+        r.invalidate_all();
+        let t0 = g.frame(r, target);
+        gc2_take_at(g, at, want);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        let again = [
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+        ];
+        log!(
+            "  GC2AR reference: {t0:?} us, renders 2-3 {again:?} words off it; {}",
+            Gc2Held(&side)
+        );
+        if t0.is_none() || again != [Some(0); 2] {
+            log!("  GC2AR: the reference isn't repeatable: nothing run");
+            return;
+        }
+        let poison = gc2::absent16(want, &gc2::POISON);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let want_regs = gc2_clock_want(step_speed(g, s), s.div);
+        let Some(lock) = clock_apply(g, s) else {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2AR: 149.50 / 1 didn't take; Windows Mobile's put back");
+            return;
+        };
+        log!("  GC2AR 149.50 / 1: lock {lock}");
+        clock_readback(g);
+        // One render as the core stands: its wrong words and its time.
+        let mut one = |g: &mut Rig, r: &mut Renderer| -> (Option<u32>, u32) {
+            set(g, r);
+            if let Some(c) = poison
+                && !poison_fill(g, at, c)
+            {
+                return (None, 0);
+            }
+            let mut side = Gc2Side::new(false);
+            let mut base = Gc2Baseline(None);
+            let w = gc2_render_at(g, r, (k, at), want, first, want_regs, &mut base, &mut side);
+            (w, side.best_us)
+        };
+        let unflipped = [one(g, r), one(g, r), one(g, r)];
+        log!("  GC2AR: unflipped, (words wrong, us) in three renders {unflipped:?}");
+        let (mut hits, mut tried) = (0u32, 0u32);
+        let n_words = writeout_words().count();
+        for (wi, (off, base)) in writeout_words().enumerate() {
+            // One line a word, whatever the hits (the emulator draws
+            // exactly, so there every bit holds: a line a hit outran the
+            // 64 KiB log kept in SRAM): a bit's first render's wrong words
+            // (-1: no render) and time, its slowest of five where it held.
+            let (mut by_bit, mut us_bit, mut held) = ([-1i32; 32], [0u32; 32], 0u32);
+            for bit in 0..32u32 {
+                let v = base ^ (1 << bit);
+                g.over = Over::of(&[(off, v)]);
+                tried += 1;
+                let (got, us) = one(g, r);
+                by_bit[bit as usize] = got.map_or(-1, |w| w as i32);
+                us_bit[bit as usize] = us;
+                if got == Some(0) {
+                    let more = [one(g, r), one(g, r), one(g, r), one(g, r)];
+                    if more.iter().all(|h| h.0 == Some(0)) {
+                        held |= 1 << bit;
+                        hits += 1;
+                        us_bit[bit as usize] = more.iter().fold(us, |a, h| a.max(h.1));
+                    }
+                }
+                g.over = Over::NONE;
+                g.e.regs.write32(MBX + off, base);
+            }
+            log!(
+                "  GC2AR word {wi} 0x{off:03x} from 0x{base:08x}: held 0 wrong in 5 of 5, bits 0x{held:08x}; words wrong by bit {by_bit:?}; us by bit {us_bit:?}"
+            );
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "WORD {} OF {n_words} HITS {hits}", wi + 1);
+            soak_label(g, ["GC2AR REGISTERS", "149.50 / 1", l3.as_str()], SOAK_BLUE);
+        }
+        g.over = Over::NONE;
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        set(g, r);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!(
+            "  GC2AR: {tried} bits tried, {hits} held 0 wrong in 5 of 5; the control at Windows Mobile's clock after: {control:?} words off"
+        );
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
 
     /// GC2AQ's rounds: the fault generator's, and a corner sweep's.

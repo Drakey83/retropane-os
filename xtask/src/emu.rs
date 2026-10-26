@@ -5389,6 +5389,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
         ],
     )?;
+    let run_gc2ar = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_REGS", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5421,7 +5429,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 84] = [
+    let runs: [GpubenchRun; 85] = [
         (
             "run A",
             &run_a,
@@ -5671,6 +5679,24 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AR (R37): the register search (the emulator draws exactly,
+        // so the unflipped renders are right; a flip may change its
+        // picture, logged, not checked).
+        (
+            "run GC2AR",
+            &run_gc2ar,
+            &[
+                "GC2AR (R37): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; each bit of 53 render-block words",
+                "GC2AR reference:",
+                "GC2AR: unflipped, (words wrong, us) in three renders [(Some(0),",
+                "GC2AR word 52 ",
+                "bits tried",
+                "the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
