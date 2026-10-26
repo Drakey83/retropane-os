@@ -374,6 +374,44 @@ the record.
   allows use in the product with credit; the About screen credits it), or
   Windows' generic portable-device icon.
 
+- **Q6. The look in Explorer, each card with its own icon (raised by the
+  owner 2026-10-26, R61; open).** Measured on the X51v: in the MTP view
+  Windows' driver offers an icon on the device only and no resource of any
+  kind on a storage (`tools/wpdprobe`), so every card is Windows' plain
+  drive there (Windows Mobile's own MTP looks the same). **The owner's
+  rulings (2026-10-26):** his vision (the one "Axim X51v" with each card's
+  own icon inside it) comes with **LegacySync**, as a PC-side helper built
+  into it (ADR-0028); **the default look without LegacySync is still to
+  decide**; and first he wants to **see the split layout** (below) for
+  himself. Options: today's MTP layout (PDA icon, plain cards); the drive
+  layout (each card a drive letter with its own icon, no device); the split
+  layout; a device setting choosing between them.
+
+### Try-out: the split layout (2026-10-26, the owner's "lets try 3")
+
+Not a default: a fourth layout the loader offers on request
+(`cargo xtask drive split`), so the owner can see it before Q6 is voted.
+
+- **What the PC sees:** "Axim X51v" (MTP, the PDA icon) and the two cards
+  as their own drives, each with its own icon (`autorun.inf`, proven
+  2026-10-12). Each card is served **one way only**, by the drive, so no
+  card is ever open to two protocols at once (Q1's rejected "both at
+  once" served the same card twice). The MTP device holds no store until
+  the internal flash (R21) is one: it shows empty.
+- **USB:** CDC serial (interfaces 0-1), mass storage (interface 2, bulk
+  0x04/0x85, as the drive layout), MTP (interface 3: bulk OUT 0x07, bulk
+  IN 0x88, interrupt IN 0x89; UDC slots G, H, I, in hardware interface 0
+  like every other endpoint, docs/hw/udc.md). Microsoft's compatible ID
+  and OS 2.0 function subset name interface 3. **`bcdDevice` 26.03**
+  (rule 3's reason: Windows records per revision whether OS descriptors
+  exist). The drive (26.01) and MTP (26.02) layouts stay byte for byte.
+- **Rules kept:** 1 (one responder: the same `rp-usb-mtp`, with no
+  stores), 3 (the existing layouts unchanged), 4 (the automatic choice is
+  untouched: split is only ever asked for), 5-13 (the responder is the
+  same code); ADR-0014's drive rules apply to the cards unchanged.
+- **The emulator tracks it** (docs/hw/emulator.md): the fork's host
+  learns a configuration holding both the drive and MTP.
+
 ## Open points to measure (not votes)
 
 - Windows 11: which operations it sends and in what order (logged), the
