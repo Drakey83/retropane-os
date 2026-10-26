@@ -12497,6 +12497,16 @@ mod image {
         clock_restore(&mut g.e.regs);
         clock_readback(g);
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        // The display's fetch back on can latch the underrun flag once
+        // (GC2AE on the X51v: its control after the fetch-off part read
+        // "0 of 1" with every reference before and after right): a frame
+        // and more for it to settle, then the flag cleared, before the
+        // controls count it.
+        if plan.pause {
+            let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+            gc2_wait();
+            let _ = underrun_take(&mut g.e.regs);
+        }
         if let Some((w, wrong, side)) = &unheld {
             log!(
                 "  {name} {label}: STOPPED at way {w}, round {}, {} s in: {wrong:?} words; {}; Windows Mobile's clock put back",
