@@ -7947,7 +7947,8 @@ mod image {
         || GC2_PROOF
         || GC2_BITS
         || GC2_PUNCH
-        || GC2_REGS;
+        || GC2_REGS
+        || GC2_664;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -8045,6 +8046,13 @@ mod image {
     /// generator and the flat and textured corner sweeps at 149.50 / 1,
     /// reversed, against none. About 45 minutes, unattended.
     const GC2_PUNCH: bool = option_env!("RP_GPUBENCH_GC2_PUNCH").is_some();
+
+    /// Run GC2AS, reminder R37 (`RP_GPUBENCH_GC2_664`): GC2AR's one
+    /// consistent lead, `0x664` bits 0-3, at each of its 16 values, 20
+    /// renders each beside a control with the value in an unused word, on
+    /// GC2AM's every-render texel fault at 149.50 / 1. About 4 minutes,
+    /// unattended.
+    const GC2_664: bool = option_env!("RP_GPUBENCH_GC2_664").is_some();
 
     /// Run GC2AR, reminder R37 (`RP_GPUBENCH_GC2_REGS`): GC2AQ put every
     /// divide-1 fault in the opaque objects' path; each bit of the render
@@ -9425,7 +9433,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_REGS {
+            if GC2_664 {
+                "the 16-bit kinds' targets inside the safe region (GC2AS, R37: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_REGS {
                 "the 16-bit kinds' targets inside the safe region (GC2AR, R37: no map; GC2AM's every-render texel fault, the opaque path's, with each bit of the render block's 53 words flipped alone, one render a bit at 149.50 / 1; each target poisoned first),"
             } else if GC2_PUNCH {
                 "the 16-bit kinds' targets inside the safe region (GC2AQ, R37: no map; TSP bit 14, the punch-through object kind, or bit 15 on every object, on the untextured fault generator and the flat and textured corner sweeps at 149.50 / 1, reversed, against none; each target poisoned first),"
@@ -9601,7 +9611,7 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_REGS {
+        let patch = if GC2_REGS || GC2_664 {
             gc2::words(gc2::FT2) as usize
         } else if GC2_PUNCH {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
@@ -9974,7 +9984,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_REGS {
+                if GC2_664 {
+                    gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_REGS {
                     gc2_reg_search(g, &mut r, (tex, first, dsig));
                 } else if GC2_PUNCH {
                     gc2_punch(g, &mut r, (tex, first, dsig));
@@ -11642,6 +11654,145 @@ mod image {
             },
         );
     }
+
+    /// Run GC2AS (see [`GC2_664`]): GC2AR's scene and setting (GC2AM's
+    /// phase scene 0, reversed, opaque, poisoned, 149.50 / 1), with
+    /// `0x664`'s low field (bits 0-3, GC2AR's one consistent lead) at each
+    /// of its 16 values for [`GC2AS_RENDERS`] renders, each render
+    /// alternating with one that puts the same value in `0x6FC` instead (a
+    /// word the renderer leaves at 0, whose flips GC2AR found did nothing
+    /// but the fault's render-to-render spread): the control under the
+    /// same conditions. A value's wrong words and render times logged
+    /// against its control's; the control at Windows Mobile's clock after.
+    #[inline(never)]
+    fn gc2_664(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < words {
+            log!("  GC2AS: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        let want = &mut rest[..words];
+        log!(
+            "  GC2AS (R37): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; 0x664 bits 0-3 at each of 16 values, {GC2AS_RENDERS} renders each, each beside one with the value in 0x6FC (unused) instead"
+        );
+        r.set_tile_order(tile_order(gc2::REVERSED));
+        r.set_header_xor(0, 0);
+        r.set_tsp_or(0);
+        g.over = Over::NONE;
+        let set = |g: &mut Rig, r: &mut Renderer| {
+            let (bg, slots) = gc2::order_scene_wide(gc2::Scene::Phase(0), tex);
+            let _ = r.set_background(Some(bg));
+            for (n, d) in slots.into_iter().enumerate() {
+                g.set(r, n, d);
+            }
+        };
+        let target = Target {
+            picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        r.start_clean();
+        set(g, r);
+        r.invalidate_all();
+        let t0 = g.frame(r, target);
+        gc2_take_at(g, at, want);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        let again = [
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+        ];
+        log!(
+            "  GC2AS reference: {t0:?} us, renders 2-3 {again:?} words off it; {}",
+            Gc2Held(&side)
+        );
+        if t0.is_none() || again != [Some(0); 2] {
+            log!("  GC2AS: the reference isn't repeatable: nothing run");
+            return;
+        }
+        let poison = gc2::absent16(want, &gc2::POISON);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let want_regs = gc2_clock_want(step_speed(g, s), s.div);
+        let Some(lock) = clock_apply(g, s) else {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2AS: 149.50 / 1 didn't take; Windows Mobile's put back");
+            return;
+        };
+        log!("  GC2AS 149.50 / 1: lock {lock}");
+        clock_readback(g);
+        // One render as the core stands: its wrong words and its time.
+        let mut one = |g: &mut Rig, r: &mut Renderer| -> (Option<u32>, u32) {
+            set(g, r);
+            if let Some(c) = poison
+                && !poison_fill(g, at, c)
+            {
+                return (None, 0);
+            }
+            let mut side = Gc2Side::new(false);
+            let mut base = Gc2Baseline(None);
+            let w = gc2_render_at(g, r, (k, at), want, first, want_regs, &mut base, &mut side);
+            (w, side.best_us)
+        };
+        let n = GC2AS_RENDERS;
+        // A render's (wrong words, us) into the value's tallies: -1 no render.
+        let tally =
+            |o: (Option<u32>, u32), w: &mut [i32; GC2AS_RENDERS], u: &mut (u32, u32), i: usize| {
+                w[i] = o.0.map_or(-1, |x| x as i32);
+                *u = (u.0.min(o.1), u.1.max(o.1));
+            };
+        let mut clean = [0u32; 16];
+        for v in 0..16u32 {
+            let (mut w, mut wc) = ([0i32; GC2AS_RENDERS], [0i32; GC2AS_RENDERS]);
+            let (mut u, mut uc) = ((u32::MAX, 0u32), (u32::MAX, 0u32));
+            for i in 0..n {
+                g.over = Over::of(&[(0x664, v)]);
+                let o = one(g, r);
+                tally(o, &mut w, &mut u, i);
+                g.over = Over::of(&[(0x6FC, v)]);
+                let o = one(g, r);
+                tally(o, &mut wc, &mut uc, i);
+                g.over = Over::NONE;
+                g.e.regs.write32(MBX + 0x664, 0);
+                g.e.regs.write32(MBX + 0x6FC, 0);
+            }
+            let sum = |a: &[i32]| a.iter().map(|&x| x.max(0) as u32).sum::<u32>();
+            let zero = |a: &[i32]| a.iter().filter(|&&x| x == 0).count() as u32;
+            clean[v as usize] = zero(&w);
+            log!(
+                "  GC2AS 0x664 = {v}: {} of {n} renders right, words wrong total {} (0x6FC = {v}: {} of {n} right, total {}); us {}-{} ({}-{}); words wrong by render {w:?} ({wc:?})",
+                zero(&w),
+                sum(&w),
+                zero(&wc),
+                sum(&wc),
+                u.0,
+                u.1,
+                uc.0,
+                uc.1
+            );
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "VALUE {} OF 16 RIGHT {}/{n}", v + 1, zero(&w));
+            soak_label(g, ["GC2AS 0x664", "149.50 / 1", l3.as_str()], SOAK_BLUE);
+        }
+        g.over = Over::NONE;
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        set(g, r);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!(
+            "  GC2AS: renders right by value {clean:?} of {n} each; the control at Windows Mobile's clock after: {control:?} words off"
+        );
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2AS's renders a value, and as many of the control's.
+    const GC2AS_RENDERS: usize = 20;
 
     /// Run GC2AR (see [`GC2_REGS`]): GC2AM's phase scene 0 (its every-render
     /// texel fault, the opaque path's: GC2AQ) in the reversed order, its
