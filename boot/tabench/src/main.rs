@@ -42,7 +42,7 @@ mod image {
     #[path = "../isolate.rs"]
     mod isolate;
 
-    /// Run 6 instead of run 1 (`RP_TABENCH_ISOLATE=1`; device build
+    /// Run 8 instead of run 1 (`RP_TABENCH_ISOLATE=1`; device build
     /// `RP_TABENCH_ISOLATE=1 cargo xtask codegen-variant rp-tabench isolate`).
     const ISOLATE: bool = option_env!("RP_TABENCH_ISOLATE").is_some();
 
@@ -669,12 +669,12 @@ mod image {
         label(g.mem.0, &screen, [line, way.name()]);
     }
 
-    /// Run 6's label: "STEP n OF m" and the way.
+    /// Run 8's label: "STEP n OF m" and the way.
     fn step_line(g: &mut Rig, n: usize, m: usize, what: &str) {
         let mut buf = [0u8; 40];
         let len = {
             let mut l = Line(&mut buf, 0);
-            let _ = write!(l, "RUN 6, STEP {n} OF {m}:");
+            let _ = write!(l, "RUN 8, STEP {n} OF {m}:");
             l.1
         };
         let line = core::str::from_utf8(&buf[..len]).unwrap_or("STEP");
@@ -809,13 +809,11 @@ mod image {
             g.dma.is_some()
         );
         if ISOLATE {
-            log!(
-                "RUN 6 (audit C81): why TA scenes' renders hang, the memory manager's set-up and the waits"
-            );
-            let (right, all) = isolate::run6(&mut g);
+            log!("RUN 8 (audit C81): fixes for the first render after the memory manager's set-up");
+            let (right, all) = isolate::run8(&mut g);
             let (rh, th) = (g.render_hangs, g.ta_hangs);
             log!(
-                "{MARKER}: DONE - run 6: {right} of {all} TA frames like the binner's, {rh} renders past 2 s, {th} TA frames never done"
+                "{MARKER}: DONE - run 8: {right} of {all} TA frames like the binner's, {rh} renders past 2 s, {th} TA frames never done"
             );
             finish(g, screen, clk0);
         }
