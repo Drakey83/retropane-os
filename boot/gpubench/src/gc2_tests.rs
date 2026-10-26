@@ -1483,3 +1483,62 @@ fn gc2ai_moves_only_the_quad() {
     }
     const { assert!(QUAD_ROUNDS >= 400) };
 }
+
+/// GC2AJ's sweep: every one of the 128 places of an 8 x 16 tile is some
+/// rectangle's, every rectangle's four corners sit at its place, the
+/// rectangles keep apart and on the screen, and each scene is the layer,
+/// FT2's Gouraud and the six rectangles; the flat plan ends with GC2AI's
+/// faulting way as its control.
+#[test]
+fn gc2aj_sweeps_every_corner_place_of_a_tile() {
+    let mut seen = [false; 128];
+    for i in 0..CORNER_SCENES_EACH {
+        let mut rects = std::vec::Vec::new();
+        for j in 0..CORNER_RECTS {
+            let ((x0, y0, x1, y1), k) = corner_rect(i, j);
+            seen[k] = true;
+            let (a, c) = ((k % 8) as i32, (k / 8) as i32);
+            for x in [x0, x1] {
+                assert_eq!(x.rem_euclid(8), a, "scene {i} rect {j}");
+            }
+            for y in [y0, y1] {
+                assert_eq!(y.rem_euclid(16), c, "scene {i} rect {j}");
+            }
+            assert!(x0 >= 0 && y0 >= 0 && x1 <= W as i32 && y1 <= H as i32);
+            assert!(x1 - x0 >= 16 && y1 - y0 >= 32, "edges in different tiles");
+            rects.push((x0, y0, x1, y1));
+        }
+        for (p, a) in rects.iter().enumerate() {
+            for b in &rects[p + 1..] {
+                assert!(
+                    a.2 <= b.0 || b.2 <= a.0 || a.3 <= b.1 || b.3 <= a.1,
+                    "scene {i} overlap"
+                );
+            }
+        }
+        for textured in [false, true] {
+            let (_, s) = corner_scene(textured, i, test_tex());
+            let s: std::vec::Vec<Draw> = s.iter().flatten().copied().collect();
+            assert_eq!(s.len(), 2 + CORNER_RECTS);
+            assert_eq!(s[0].paint, Paint::Flat(HIDDEN_LAYER));
+            assert!(matches!(s[1].paint, Paint::Gouraud(_)));
+            assert!(
+                s[2..]
+                    .iter()
+                    .all(|d| matches!(d.paint, Paint::Texture { .. }) == textured)
+            );
+        }
+    }
+    assert!(seen.iter().all(|&b| b), "every place swept");
+    assert_eq!(CORNER_FLAT[CORNER_SCENES_EACH], Scene::Quad(0));
+    assert_eq!(CORNER_FLAT[3], Scene::Corner(false, 3));
+    assert_eq!(CORNER_TEX[3], Scene::Corner(true, 3));
+    assert!(
+        CORNER_WAYS
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, REVERSED))
+    );
+    const { assert!(CORNER_ROUNDS >= 200) };
+    const { assert!(CORNER_SCENES_EACH < 42) };
+}

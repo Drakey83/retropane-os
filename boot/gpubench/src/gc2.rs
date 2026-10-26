@@ -535,6 +535,9 @@ pub enum Scene {
     /// Run GC2AI's quad ways: [`QUAD_WAYS`]' way (see [`quad_scene`]; only
     /// through [`order_scene_wide`]).
     Quad(usize),
+    /// Run GC2AJ's corner sweep: textured or flat, scene `i` (see
+    /// [`corner_scene`]; only through [`order_scene_wide`]).
+    Corner(bool, usize),
 }
 
 /// The objects a scene holds through [`order_scene_wide`]: a scene's own
@@ -1005,6 +1008,9 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     if let Scene::Quad(w) = s {
         return quad_scene(w, t);
     }
+    if let Scene::Corner(textured, i) = s {
+        return corner_scene(textured, i, t);
+    }
     let (bg, slots) = order_scene(s, t);
     let mut out = [None; SLOTS];
     out[..3].copy_from_slice(&slots);
@@ -1433,7 +1439,9 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         Scene::Edge(w) => edge_scene(w, t),
         // Fixes and geometry ways take more than three slots:
         // [`order_scene_wide`] only.
-        Scene::Fix(..) | Scene::Geo(_) | Scene::Quad(_) => (BLACK, [None, None, None]),
+        Scene::Fix(..) | Scene::Geo(_) | Scene::Quad(_) | Scene::Corner(..) => {
+            (BLACK, [None, None, None])
+        }
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Cured(_) => (BLACK, [None, None, None]),
             base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
@@ -1484,6 +1492,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
         Scene::Geo(_) | Scene::Quad(_) => patch_corner(0),
+        Scene::Corner(..) => (0, 0),
         Scene::Fix(b, _) => match FIX_BASE[b] {
             Scene::Kind(FT2) => patch_corner(0),
             Scene::Sweep(w) => SWEEP[w].corner(),
@@ -1948,6 +1957,92 @@ pub fn quad_scene(w: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     }
     (bg, out)
 }
+
+/// Run GC2AJ (the owner, 2026-10-26: "Build the corner sweep: the
+/// rectangle's corner moved over every position around a tile, with one
+/// full layer alone (the recommended fix), and run it"). GC2AI tied the
+/// fault to exact corner places, so the cure's clean renders over seven
+/// scenes don't cover every geometry. Each scene: one full hidden layer,
+/// FT2's Gouraud background, then [`CORNER_RECTS`] rectangles (flat grey,
+/// or FT2's 8888 texture with the clamped v shift) in a 2 x 3 grid, every
+/// corner of rectangle `k` at the same place in its tile: x offset `k % 8`,
+/// y offset `k / 8` (all 128 places of an 8 x 16 tile over the scenes).
+pub const CORNER_RECTS: usize = 6;
+/// Scenes for the 128 places, six a scene (the last repeats the first
+/// places).
+pub const CORNER_SCENES_EACH: usize = 128_usize.div_ceil(CORNER_RECTS);
+/// Rounds a scene: 200 (a place faulting 1.5% of renders shows with ~95%).
+pub const CORNER_ROUNDS: u32 = 200;
+
+/// Rectangle `j` of corner scene `i`: (x0, y0, x1, y1) pixels, and its
+/// place's index `k` (0..128).
+#[must_use]
+pub const fn corner_rect(i: usize, j: usize) -> ((i32, i32, i32, i32), usize) {
+    let k = (CORNER_RECTS * i + j) % 128;
+    let (a, c) = ((k % 8) as i32, (k / 8) as i32);
+    // Cells of 240 x 208 pixels, their origins on tile seams (x a multiple
+    // of 8, y of 16), so each edge's offset into its tile is `a` or `c`.
+    let (cx, cy) = ((j % 2) as i32 * 240, (j / 2) as i32 * 208);
+    ((cx + 16 + a, cy + 16 + c, cx + 200 + a, cy + 176 + c), k)
+}
+
+/// Corner scene `i`, flat or textured (see [`CORNER_RECTS`]).
+#[must_use]
+pub fn corner_scene(textured: bool, i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    out[0] = Some(flat(HIDDEN_LAYER, false));
+    let mut n = 1;
+    for d in slots.iter().flatten() {
+        if !matches!(d.paint, Paint::Texture { .. }) {
+            out[n] = Some(*d);
+            n += 1;
+        }
+    }
+    for j in 0..CORNER_RECTS {
+        let ((x0, y0, x1, y1), _) = corner_rect(i, j);
+        let paint = if textured {
+            Paint::texture(t.t8888)
+        } else {
+            Paint::Flat(UNTEXTURED)
+        };
+        let d = Draw::rect(x0, y0, x1 - x0, y1 - y0, paint);
+        out[n] = Some(shift_texture(d, TexFix::ClampV));
+        n += 1;
+    }
+    (bg, out)
+}
+
+/// GC2AJ's flat plan: the corner scenes, then GC2AI's faulting way (the
+/// ring over the layer, the quad's corner at x 440, y 40) as the control
+/// that the run can see the fault.
+pub const CORNER_FLAT: [Scene; CORNER_SCENES_EACH + 1] = {
+    let mut s = [Scene::Quad(0); CORNER_SCENES_EACH + 1];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::Corner(false, i);
+        i += 1;
+    }
+    s
+};
+pub const CORNER_TEX: [Scene; CORNER_SCENES_EACH] = {
+    let mut s = [Scene::Corner(true, 0); CORNER_SCENES_EACH];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::Corner(true, i);
+        i += 1;
+    }
+    s
+};
+pub const CORNER_WAYS: [(usize, u8); CORNER_SCENES_EACH + 1] = {
+    let mut w = [(0, REVERSED); CORNER_SCENES_EACH + 1];
+    let mut i = 0;
+    while i <= CORNER_SCENES_EACH {
+        w[i] = (i, REVERSED);
+        i += 1;
+    }
+    w
+};
 
 /// Colours tried as a soak's poison, the most saturated first (no GC2
 /// scene's Gouraud or texture reaches them, by design; [`absent16`]
