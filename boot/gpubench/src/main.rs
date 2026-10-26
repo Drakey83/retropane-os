@@ -7941,7 +7941,8 @@ mod image {
         || GC2_QUAD
         || GC2_CORNER
         || GC2_LADDER
-        || GC2_CURE;
+        || GC2_CURE
+        || GC2_TEXEL;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -7992,6 +7993,12 @@ mod image {
     /// [`gc2::CURES`]): the textured corner sweep at 149.50 / 1 with each
     /// candidate cure in turn. About 25 minutes, unattended.
     const GC2_CURE: bool = option_env!("RP_GPUBENCH_GC2_CURE").is_some();
+
+    /// Run GC2AM, reminder R37 (`RP_GPUBENCH_GC2_TEXEL`,
+    /// docs/design/divide1-texel-margin.md): divide 1's texel-pick error
+    /// measured by a phase sweep, then the safe ratios at every corner
+    /// place, at 149.50 and 117.00 / 1. About 20 minutes, unattended.
+    const GC2_TEXEL: bool = option_env!("RP_GPUBENCH_GC2_TEXEL").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9365,7 +9372,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_CURE {
+            if GC2_TEXEL {
+                "the 16-bit kinds' targets inside the safe region (GC2AM, R37: no map; divide 1's texel-pick error by a phase sweep of GC2AL's faulting rectangle, then textured rectangles at 1:1, 2:1, 4:1 and 1:2 at their best phase at every corner place, at 149.50 and 117.00 / 1; each target poisoned first),"
+            } else if GC2_CURE {
                 "the 16-bit kinds' targets inside the safe region (GC2AL, R37: no map; the textured corner sweep at 149.50 / 1 with one full layer reversed and in rows, two full layers, and one with an invisible blended layer over everything; each target poisoned first),"
             } else if GC2_LADDER {
                 "the 16-bit kinds' targets inside the safe region (GC2AK, R37: no map; GC2AJ's corner sweep, flat and textured with the u and v shift, one full layer alone, at 149.50, 139.75, 133.25, 117.00, 108.33 / 1 and 149.50 / 2; each target poisoned first),"
@@ -9529,7 +9538,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_CURE {
+        let patch = if GC2_TEXEL {
+            gc2::PHASES * gc2::words(gc2::FT2) as usize
+        } else if GC2_CURE {
             gc2::CURE_SCENES * gc2::words(gc2::FT2) as usize
         } else if GC2_CORNER || GC2_LADDER {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
@@ -9890,7 +9901,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_CURE {
+                if GC2_TEXEL {
+                    gc2_texel(g, &mut r, (tex, first, dsig));
+                } else if GC2_CURE {
                     gc2_cure(g, &mut r, (tex, first, dsig));
                 } else if GC2_LADDER {
                     gc2_ladder(g, &mut r, (tex, first, dsig));
@@ -11545,6 +11558,69 @@ mod image {
                 flat: false,
             },
         );
+    }
+
+    /// Run GC2AM (see [`GC2_TEXEL`]): at 149.50 and at 117.00 / 1, the phase
+    /// sweep ([`gc2::PHASE_SCENES`], [`gc2::PHASE_ROUNDS`] rounds, every
+    /// wrong render described with its columns), then each of
+    /// [`gc2::RATIOS`] at all 128 corner places ([`gc2::RATIO_ROUNDS`]
+    /// rounds); every target poisoned.
+    #[inline(never)]
+    fn gc2_texel(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        log!(
+            "  GC2AM (R37): divide 1's texel picks: GC2AL's faulting rectangle (x {}-{}, y {}-{}) with its u phase in {} steps of {} / 65,536 of the texture, {} rounds; then textured rectangles at 1:1, 2:1, 4:1 and 1:2 at their best phase at all 128 corner places, {} rounds; at 149.50 and 117.00 / 1",
+            gc2::PHASE_RECT.0,
+            gc2::PHASE_RECT.2,
+            gc2::PHASE_RECT.1,
+            gc2::PHASE_RECT.3,
+            gc2::PHASES,
+            gc2::PHASE_STEP,
+            gc2::PHASE_ROUNDS.min(GC2AE_ROUNDS),
+            gc2::RATIO_ROUNDS.min(GC2AE_ROUNDS)
+        );
+        const NAMES: [(&str, &str); 4] = [
+            ("GC2AM 1:1", "GC2AM RATIO 1:1"),
+            ("GC2AM 2:1", "GC2AM RATIO 2:1"),
+            ("GC2AM 4:1", "GC2AM RATIO 4:1"),
+            ("GC2AM 1:2", "GC2AM RATIO 1:2"),
+        ];
+        for (m, d, name) in [(23, 2, "149.50 / 1"), (27, 3, "117.00 / 1")] {
+            let step = (gc2_step(m, d, 0, 1), name);
+            let plan = |pname, label, scenes, ways, rounds, describe| OrderPlan {
+                name: pname,
+                label,
+                scenes,
+                ways,
+                step,
+                secs: 900,
+                rounds,
+                poison: true,
+                describe,
+                pause: false,
+                quiet: false,
+                flat: false,
+            };
+            let phase = plan(
+                "GC2AM phase",
+                "GC2AM PHASE SWEEP",
+                &gc2::PHASE_SCENES[..],
+                &gc2::PHASE_WAYS[..],
+                gc2::PHASE_ROUNDS.min(GC2AE_ROUNDS),
+                40,
+            );
+            gc2_orders(g, r, (tex, &mut *first, dsig), &phase);
+            for (k, (pname, label)) in NAMES.iter().enumerate() {
+                let p = plan(
+                    pname,
+                    label,
+                    &gc2::RATIO_SCENES[k][..],
+                    &gc2::CURE_REVERSED[..],
+                    gc2::RATIO_ROUNDS.min(GC2AE_ROUNDS),
+                    4,
+                );
+                gc2_orders(g, r, (tex, &mut *first, dsig), &p);
+            }
+        }
     }
 
     /// Run GC2AL (see [`GC2_CURE`]): four plans at 149.50 / 1, the same

@@ -544,6 +544,10 @@ pub enum Scene {
     /// Run GC2AL's cure `c`, scene `i` (see [`cure_scene`]; only through
     /// [`order_scene_wide`]).
     Cure(usize, usize),
+    /// Run GC2AM's phase step `n` (see [`phase_scene`]).
+    Phase(usize),
+    /// Run GC2AM's ratio `r`, scene `i` (see [`ratio_scene`]).
+    Ratio(usize, usize),
 }
 
 /// The objects a scene holds through [`order_scene_wide`]: a scene's own
@@ -1023,6 +1027,12 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     if let Scene::Cure(c, i) = s {
         return cure_scene(c, i, t);
     }
+    if let Scene::Phase(n) = s {
+        return phase_scene(n, t);
+    }
+    if let Scene::Ratio(r, i) = s {
+        return ratio_scene(r, i, t);
+    }
     let (bg, slots) = order_scene(s, t);
     let mut out = [None; SLOTS];
     out[..3].copy_from_slice(&slots);
@@ -1456,7 +1466,9 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         | Scene::Quad(_)
         | Scene::Corner(..)
         | Scene::CornerUv(_)
-        | Scene::Cure(..) => (BLACK, [None, None, None]),
+        | Scene::Cure(..)
+        | Scene::Phase(_)
+        | Scene::Ratio(..) => (BLACK, [None, None, None]),
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Cured(_) => (BLACK, [None, None, None]),
             base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
@@ -1507,7 +1519,8 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
         Scene::Geo(_) | Scene::Quad(_) => patch_corner(0),
-        Scene::Corner(..) | Scene::CornerUv(_) | Scene::Cure(..) => (0, 0),
+        Scene::Corner(..) | Scene::CornerUv(_) | Scene::Cure(..) | Scene::Ratio(..) => (0, 0),
+        Scene::Phase(_) => (PHASE_RECT.0, PHASE_RECT.1),
         Scene::Fix(b, _) => match FIX_BASE[b] {
             Scene::Kind(FT2) => patch_corner(0),
             Scene::Sweep(w) => SWEEP[w].corner(),
@@ -2112,6 +2125,7 @@ pub const CURE_SCENES: usize = 128_usize.div_ceil(CURE_RECTS);
 /// GC2AL's cures: (0) one full layer (GC2AK's, the baseline); (1) two full
 /// layers; (2) one full layer and [`INVISIBLE`] blended over everything.
 /// Tile order is the way's (reversed, or rows for the baseline's twin).
+#[cfg(test)]
 pub const CURES: usize = 3;
 /// Fully transparent black: blended over every tile, nothing seen.
 pub const INVISIBLE: u32 = 0x0000_0000;
@@ -2177,6 +2191,150 @@ const fn cure_ways(o: u8) -> [(usize, u8); CURE_SCENES] {
 }
 pub const CURE_REVERSED: [(usize, u8); CURE_SCENES] = cure_ways(REVERSED);
 pub const CURE_ROWS: [(usize, u8); CURE_SCENES] = cure_ways(ROWS);
+
+/// Run GC2AM (the owner, 2026-10-26: "Chase it ... research how similar
+/// issues have been solved, cleverly, in the past ... losslessly";
+/// docs/design/divide1-texel-margin.md). Part 1: GC2AL's faulting
+/// rectangle (scene 1, rectangle 2) alone, its u phase stepped across one
+/// period of its sample pattern; part 2: textured rectangles at the safe
+/// ratios, each at its best phase, at every corner place of a tile.
+pub const PHASE_RECT: (i32, i32, i32, i32) = corner_rect_of(CURE_RECTS, 1, 2).0;
+/// Part 1's steps: 31 of [`PHASE_STEP`] UV units (UV_ONE is the whole
+/// texture: 2,048 a texel of FT2's 32), together just over 1/23 of a texel
+/// (89 units), the sample pattern's period at 32 texels on 184 pixels.
+pub const PHASES: usize = 31;
+pub const PHASE_STEP: i32 = 3;
+pub const PHASE_ROUNDS: u32 = 3;
+
+/// Part 2's ratios: (pixels, texels) of one side: 1:1, 2:1, 4:1, 1:2.
+pub const RATIOS: [(i32, i32); 4] = [(1, 1), (2, 1), (4, 1), (1, 2)];
+pub const RATIO_ROUNDS: u32 = 30;
+
+/// The best phase at `p / q` pixels a texel (lowest terms), in UV units of
+/// a `side`-texel texture: the samples' fractions are `p` evenly spaced
+/// values, so a phase of 1 / (2p) texel keeps every one 1 / (2p) from an
+/// edge, the most any phase can (docs/design/divide1-texel-margin.md).
+#[must_use]
+pub const fn best_phase(p: i32, side: i32) -> i32 {
+    UV_ONE / side / (2 * p)
+}
+
+/// The least distance, in 65,536ths of a texel, of any sample of `n`
+/// pixels from a texel edge, at `px` pixels for `texels` texels and a
+/// phase of `phase` texel / 65,536 (samples at whole pixels, the core's
+/// convention as GC2Z's half-texel cure showed).
+#[cfg(test)]
+#[must_use]
+pub fn margin(px: i64, texels: i64, phase: i64, n: i64) -> i64 {
+    let one = 65_536i64;
+    (0..n)
+        .map(|m| {
+            let f = (phase + m * texels * one / px).rem_euclid(one);
+            f.min(one - f)
+        })
+        .min()
+        .unwrap_or(one)
+}
+
+/// Part 1's scene `n`: one full layer, FT2's Gouraud, then
+/// [`PHASE_RECT`] with FT2's texture, shifted half a texel in u and v as
+/// GC2AK and `n * PHASE_STEP` more in u.
+#[must_use]
+pub fn phase_scene(n: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, mut out) = layer_and_gouraud(t);
+    let (x0, y0, x1, y1) = PHASE_RECT;
+    let d = shift_texture(
+        Draw::rect(x0, y0, x1 - x0, y1 - y0, Paint::texture(t.t8888)),
+        TexFix::ClampUv,
+    );
+    let Paint::Texture { tex, uv, tint } = d.paint else {
+        return (bg, out);
+    };
+    let du = n as i32 * PHASE_STEP;
+    out[2] = Some(Draw {
+        paint: Paint::Texture {
+            tex,
+            uv: uv.map(|(u, v)| (u + du, v)),
+            tint,
+        },
+        ..d
+    });
+    (bg, out)
+}
+
+/// Part 2's scene `i` at ratio `r`: one full layer, FT2's Gouraud, then
+/// five rectangles of FT2's texture at [`RATIOS`]`[r]`, each at the best
+/// phase in u and v, every corner of rectangle `k` at x offset `k % 8`, y
+/// offset `k / 8` in its tile (as GC2AJ).
+#[must_use]
+pub fn ratio_scene(r: usize, i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, mut out) = layer_and_gouraud(t);
+    let (px, tx) = RATIOS[r];
+    let side = t.t8888.side() as i32;
+    let size = side * px / tx;
+    let ph = best_phase(px, side);
+    for j in 0..CURE_RECTS {
+        let ((x0, y0, _, _), _) = corner_rect_of(CURE_RECTS, i, j);
+        let d = Draw::rect(x0, y0, size, size, Paint::texture(t.t8888));
+        let Paint::Texture { tex, uv, tint } = d.paint else {
+            continue;
+        };
+        out[2 + j] = Some(Draw {
+            paint: Paint::Texture {
+                tex,
+                uv: uv.map(|(u, v)| (u + ph, v + ph)),
+                tint,
+            },
+            ..d
+        });
+    }
+    (bg, out)
+}
+
+/// One full layer and FT2's Gouraud background, the rest of the slots free.
+fn layer_and_gouraud(t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    out[0] = Some(flat(HIDDEN_LAYER, false));
+    if let Some(g) = slots
+        .iter()
+        .flatten()
+        .find(|d| !matches!(d.paint, Paint::Texture { .. }))
+    {
+        out[1] = Some(*g);
+    }
+    (bg, out)
+}
+
+pub const PHASE_SCENES: [Scene; PHASES] = {
+    let mut s = [Scene::Phase(0); PHASES];
+    let mut i = 0;
+    while i < PHASES {
+        s[i] = Scene::Phase(i);
+        i += 1;
+    }
+    s
+};
+pub const PHASE_WAYS: [(usize, u8); PHASES] = {
+    let mut w = [(0, REVERSED); PHASES];
+    let mut i = 0;
+    while i < PHASES {
+        w[i] = (i, REVERSED);
+        i += 1;
+    }
+    w
+};
+const fn ratio_set(r: usize) -> [Scene; CURE_SCENES] {
+    let mut s = [Scene::Ratio(0, 0); CURE_SCENES];
+    let mut i = 0;
+    while i < CURE_SCENES {
+        s[i] = Scene::Ratio(r, i);
+        i += 1;
+    }
+    s
+}
+pub const RATIO_SCENES: [[Scene; CURE_SCENES]; 4] =
+    [ratio_set(0), ratio_set(1), ratio_set(2), ratio_set(3)];
 
 /// Colours tried as a soak's poison, the most saturated first (no GC2
 /// scene's Gouraud or texture reaches them, by design; [`absent16`]

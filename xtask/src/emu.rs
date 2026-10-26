@@ -5345,6 +5345,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
         ],
     )?;
+    let run_gc2am = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TEXEL", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5377,7 +5386,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 79] = [
+    let runs: [GpubenchRun; 80] = [
         (
             "run A",
             &run_a,
@@ -5627,6 +5636,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AM (R37): the phase sweep and the safe ratios, one round a
+        // scene (the emulator draws exactly: every way right).
+        (
+            "run GC2AM",
+            &run_gc2am,
+            &[
+                "GC2AM (R37): divide 1's texel picks",
+                "GC2AM phase 149.50 / 1: controls at Windows Mobile's clock after: 31 of 31 right",
+                "GC2AM 1:1 149.50 / 1: controls at Windows Mobile's clock after: 26 of 26 right",
+                "GC2AM 1:2 117.00 / 1: controls at Windows Mobile's clock after: 26 of 26 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

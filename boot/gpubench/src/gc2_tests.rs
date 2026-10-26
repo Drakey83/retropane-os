@@ -1629,3 +1629,78 @@ fn gc2al_cures_differ_only_in_their_cure() {
     assert_eq!(corner_rect_of(CORNER_RECTS, 3, 4), corner_rect(3, 4));
     const { assert!(CURE_SCENES < 42 && CURE_ROUNDS >= 100) };
 }
+
+/// GC2AM: the phase scenes move only the one rectangle's u, a step at a
+/// time; the safe ratios' best phases keep every sample at the promised
+/// margin and 5.75:1 can't do better than 1/46 of a texel; the ratio
+/// scenes' rectangles keep apart and on the screen.
+#[test]
+fn gc2am_measures_the_error_and_keeps_the_margin() {
+    let t = test_tex();
+    let u_of = |n: usize| {
+        let (_, s) = phase_scene(n, t);
+        let d = s[2].expect("the rectangle");
+        let Paint::Texture { uv, .. } = d.paint else {
+            panic!("textured");
+        };
+        (d.corners, uv)
+    };
+    let (c0, uv0) = u_of(0);
+    for n in 1..PHASES {
+        let (c, uv) = u_of(n);
+        assert_eq!(c, c0, "the rectangle never moves");
+        for (a, b) in uv0.iter().zip(&uv) {
+            assert_eq!((b.0 - a.0, b.1), (n as i32 * PHASE_STEP, a.1));
+        }
+    }
+    // The sweep spans one period of the pattern at 32 texels on 184 px.
+    let period = UV_ONE / 32 / 23;
+    assert!((PHASES as i32 - 1) * PHASE_STEP >= period);
+    assert_eq!(PHASE_RECT.2 - PHASE_RECT.0, 184);
+    // The best phase's margin, in 65,536ths of a texel, over 200 pixels.
+    let at = |px: i64, tx: i64, p: i64| margin(px, tx, p, 200);
+    let one = 65_536i64;
+    for (px, tx) in RATIOS {
+        let ph = i64::from(best_phase(px, 32)) * 32;
+        assert_eq!(
+            at(i64::from(px), i64::from(tx), ph),
+            one / (2 * i64::from(px)),
+            "{px}:{tx}"
+        );
+    }
+    // At 5.75:1 (23 pixels for 4 texels) no phase beats 1/46 of a texel.
+    let best = (0..one / 23).map(|p| at(23, 4, p)).max().unwrap_or(0);
+    assert!(best <= one / 46 + 1 && best >= one / 46 - 1, "{best}");
+    // The ratio scenes: five rectangles apart, on the screen, at size.
+    for r in 0..RATIOS.len() {
+        for (i, sc) in RATIO_SCENES[r].iter().enumerate() {
+            assert_eq!(*sc, Scene::Ratio(r, i));
+            let (_, s) = ratio_scene(r, i, t);
+            let rects: std::vec::Vec<Draw> = s[2..].iter().flatten().copied().collect();
+            assert_eq!(rects.len(), CURE_RECTS);
+            let (px, tx) = RATIOS[r];
+            for d in &rects {
+                let xs = d.corners.map(|p| p.x / rp_mbx3d_render::SUB);
+                let ys = d.corners.map(|p| p.y / rp_mbx3d_render::SUB);
+                let w = xs.iter().max().unwrap() - xs.iter().min().unwrap();
+                assert_eq!(w, 32 * px / tx);
+                assert!(
+                    *xs.iter().max().unwrap() <= W as i32 && *ys.iter().max().unwrap() <= H as i32
+                );
+            }
+        }
+    }
+    assert!(
+        PHASE_SCENES
+            .iter()
+            .enumerate()
+            .all(|(i, s)| *s == Scene::Phase(i))
+    );
+    assert!(
+        PHASE_WAYS
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, REVERSED))
+    );
+    const { assert!(PHASES < 42 && PHASE_ROUNDS >= 3 && RATIO_ROUNDS >= 30) };
+}
