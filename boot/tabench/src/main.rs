@@ -370,11 +370,9 @@ mod image {
         /// if it said done.
         fn ta_frame(&mut self, way: Way, n: usize) -> Frame {
             let mut f = Frame::default();
-            // Every frame from a fresh memory manager: the TA's pages
-            // given back (5,000 64 x 64 quads take most of it).
-            if !self.pm_init() {
-                log!("    memory manager not ready");
-            }
+            // No memory manager set-up here: run 6 (audit C81) found that
+            // setting it up again between scenes hangs about half the
+            // renders; it is set up once a set, before the TA's ways.
             let _ = ta::clear(self.mem.0, &TA);
             cpu::drain_write_buffer();
             let state = ta::State {
@@ -833,6 +831,12 @@ mod image {
             let mut binned = false;
             for way in WAYS {
                 step(&mut g, s + 1, n, side, way);
+                if way == Way::TaDell {
+                    // The memory manager set up once for the set's TA ways,
+                    // after a core reset (run 6: once, 20 of 20 right).
+                    let ready = g.pm_init();
+                    log!("  memory manager set up for the set's TA ways (once): ready {ready}");
+                }
                 let mut frames = [Frame::default(); FRAMES];
                 let mut first_off = None;
                 for (k, fr) in frames.iter_mut().enumerate() {

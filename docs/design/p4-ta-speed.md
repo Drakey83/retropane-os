@@ -325,6 +325,12 @@ half hung** (waits and resets didn't help; `docs/hw/2700g.md` "P4"). Next,
 run 7: run 1 with the manager set up once a set, for P4's numbers without
 hangs.
 
+**Run 7 built 2026-10-26** (the default `rp-tabench`): run 1's sets and
+ways with the memory manager set up once a set, after a core reset, just
+before its first TA way, and never between TA frames (a render that hangs
+still resets the core and sets it up again, the recovery). `emu-tabench`
+passes.
+
 
 ## The choices for the owner
 
