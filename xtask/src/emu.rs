@@ -5291,6 +5291,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
         ],
     )?;
+    let run_gc2ag = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_INNER", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5323,7 +5332,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 73] = [
+    let runs: [GpubenchRun; 74] = [
         (
             "run A",
             &run_a,
@@ -5573,6 +5582,27 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AG (R37): the fault generator with the 3D core's own
+        // traffic changed one kind at a time, two renders a way (the
+        // emulator draws exactly: every way right, the texture's copy and
+        // the moved parameter memory sound).
+        (
+            "run GC2AG",
+            &run_gc2ag,
+            &[
+                "GC2AG (R37): FT2 with the ring and one full layer, reversed, 149.50 / 1",
+                "copied to 0x",
+                ": 0 words read back wrong",
+                "GC2AG as GC2AE 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AG texture inside 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AG untextured 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AG lists moved 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AG both moved 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

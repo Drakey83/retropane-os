@@ -7935,7 +7935,8 @@ mod image {
         || GC2_RING
         || GC2_NIGHT
         || GC2_TRACE
-        || GC2_SPLIT;
+        || GC2_SPLIT
+        || GC2_INNER;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -7950,6 +7951,24 @@ mod image {
     /// 74.75 / 1 and 149.50 / 2: divide 1 itself against the contention.
     /// About 8 minutes, unattended.
     const GC2_SPLIT: bool = option_env!("RP_GPUBENCH_GC2_SPLIT").is_some();
+
+    /// Run GC2AG, reminder R37 (`RP_GPUBENCH_GC2_INNER`): the fault
+    /// generator with the 3D core's own memory traffic changed one kind at a
+    /// time: its texture copied inside the safe region, no texture at all,
+    /// the parameter memory (the tile lists and objects) moved, and both
+    /// moves. About 5 minutes, unattended.
+    const GC2_INNER: bool = option_env!("RP_GPUBENCH_GC2_INNER").is_some();
+
+    /// GC2AG's moved parameter memory: the frozen map's second 32-bit
+    /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
+    /// region), below the manager's 8 MiB reach, 1 MiB as the map's own.
+    const GC2AG_PARAMS: rp_vram_map::Region = rp_vram_map::Region {
+        name: "GC2AG's moved parameter memory",
+        at: map::SCREENS[1].at,
+        size: map::PARAMS.size,
+        align: 0x1000,
+    };
+    const _: () = assert!(GC2AG_PARAMS.size <= map::SCREENS[1].size);
 
     /// GC2AF's quiet wait: past the fault generator's render at 149.50 / 1
     /// (5.1-5.8 ms in GC2AE), on the CPU's own timer.
@@ -9312,7 +9331,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_SPLIT {
+            if GC2_INNER {
+                "the 16-bit kinds' targets inside the safe region (GC2AG, R37: no map; R36's fault generator with its texture inside the safe region, untextured, its parameter memory moved, and both moves, each target poisoned first),"
+            } else if GC2_SPLIT {
                 "the 16-bit kinds' targets inside the safe region (GC2AF, R37: no map; R36's fault generator with the display's fetch, the CPU's status reads or both off, and at 74.75 / 1 and 149.50 / 2, each target poisoned first),"
             } else if GC2_TRACE {
                 "the 16-bit kinds' targets inside the safe region (GC2AE, R37: no map; R36's fault traced and varied, then one full hidden layer reversed on every 16-bit kind at 146.25 / 1, each target poisoned first),"
@@ -9464,7 +9485,7 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_SPLIT {
+        let patch = if GC2_INNER || GC2_SPLIT {
             gc2::TRACE_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_TRACE {
             gc2::MARGIN_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -9817,7 +9838,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_SPLIT {
+                if GC2_INNER {
+                    gc2_inner(g, &mut r, (tex, first, dsig));
+                } else if GC2_SPLIT {
                     gc2_split(g, &mut r, (tex, first, dsig));
                 } else if GC2_TRACE {
                     gc2_trace(g, &mut r, (tex, first, dsig));
@@ -9858,6 +9881,7 @@ mod image {
                             describe: ORDER_DESCRIBED,
                             pause: false,
                             quiet: false,
+                            flat: false,
                         },
                     );
                 } else if GC2_ORDER {
@@ -11359,6 +11383,7 @@ mod image {
                 describe: ORDER_DESCRIBED,
                 pause: false,
                 quiet: false,
+                flat: false,
             },
         );
     }
@@ -11392,6 +11417,7 @@ mod image {
             describe,
             pause,
             quiet: false,
+            flat: false,
         };
         let step = |k: usize| {
             let ((m, n), name) = gc2::TRACE_STEPS[k];
@@ -11454,8 +11480,92 @@ mod image {
                 describe: 10,
                 pause: false,
                 quiet: false,
+                flat: false,
             },
         );
+    }
+
+    /// Run GC2AG (see [`GC2_INNER`]): the fault generator, 400 renders a
+    /// way at 149.50 / 1 reversed: as GC2AE; its 8888 texture copied inside
+    /// the safe region ([`gc2::TEX_INSIDE`], read back); untextured; the
+    /// parameter memory moved ([`GC2AG_PARAMS`], a second renderer); both
+    /// moves. Every target poisoned; each part its own references and
+    /// controls at Windows Mobile's clock.
+    #[inline(never)]
+    fn gc2_inner(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let n = gc2::TRACE_CONDITION.min(GC2AE_ROUNDS);
+        log!(
+            "  GC2AG (R37): FT2 with the ring and one full layer, reversed, 149.50 / 1, {n} renders a way: as GC2AE; the texture inside the safe region; untextured; the parameter memory at 0x{:x} instead of 0x{:x}; both moves",
+            GC2AG_PARAMS.at,
+            map::PARAMS.at
+        );
+        // The texture inside, copied word by word and read back (GC2J's).
+        let t = tex.t8888;
+        for i in 0..t.bytes() / 4 {
+            let w = g.mem.load((t.at + 4 * i) as usize).unwrap_or(0xDEAD_BEEF);
+            g.mem.store((gc2::TEX_INSIDE + 4 * i) as usize, &[w]);
+        }
+        g.mem.sync();
+        let copy_off = (0..t.bytes() / 4)
+            .filter(|&i| {
+                g.mem.load((gc2::TEX_INSIDE + 4 * i) as usize)
+                    != g.mem.load((t.at + 4 * i) as usize)
+            })
+            .count();
+        let inside = gc2::Tex {
+            t8888: Texture {
+                at: gc2::TEX_INSIDE,
+                ..t
+            },
+            ..tex
+        };
+        log!(
+            "  GC2AG: the 8888 texture (0x{:x}, {} bytes) copied to 0x{:x}: {copy_off} words read back wrong",
+            t.at,
+            t.bytes(),
+            gc2::TEX_INSIDE
+        );
+        let Some(mut moved) = Renderer::new_in(&mut g.pool, 480, 640, GC2AG_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2AG: no renderer with the parameter memory moved: nothing run");
+            return;
+        };
+        let top = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        let one = |name, label, flat| OrderPlan {
+            name,
+            label,
+            scenes: &gc2::TRACE_SCENES,
+            ways: &gc2::TRACE_REVERSED,
+            step: top,
+            secs: 600,
+            rounds: n,
+            poison: true,
+            describe: 3,
+            pause: false,
+            quiet: false,
+            flat,
+        };
+        let base = one("GC2AG as GC2AE", "GC2AG 1 AS BEFORE", false);
+        gc2_orders(g, r, (tex, &mut *first, dsig), &base);
+        if copy_off == 0 {
+            let p = one("GC2AG texture inside", "GC2AG 2 TEX INSIDE", false);
+            gc2_orders(g, r, (inside, &mut *first, dsig), &p);
+        } else {
+            log!("  GC2AG: the texture's copy isn't right: its ways not run");
+        }
+        let p = one("GC2AG untextured", "GC2AG 3 NO TEXTURE", true);
+        gc2_orders(g, r, (tex, &mut *first, dsig), &p);
+        let p = one("GC2AG lists moved", "GC2AG 4 LISTS MOVED", false);
+        gc2_orders(g, &mut moved, (tex, &mut *first, dsig), &p);
+        if copy_off == 0 {
+            let p = one("GC2AG both moved", "GC2AG 5 BOTH MOVED", false);
+            gc2_orders(g, &mut moved, (inside, first, dsig), &p);
+        }
+        // Its tile-region array back to the pool (the run's end checks
+        // everything is given back).
+        if !moved.release(&mut g.pool) {
+            log!("  GC2AG: the moved renderer's memory not given back");
+        }
     }
 
     /// Run GC2AF (see [`GC2_SPLIT`]): the fault generator, 400 renders a
@@ -11482,6 +11592,7 @@ mod image {
             describe: 3,
             pause,
             quiet,
+            flat: false,
         };
         let plans = [
             one("GC2AF as GC2AE", "GC2AF 1 AS BEFORE", top, false, false),
@@ -11531,6 +11642,7 @@ mod image {
                 describe: ORDER_DESCRIBED,
                 pause: false,
                 quiet: false,
+                flat: false,
             },
         );
     }
@@ -11573,6 +11685,7 @@ mod image {
                     describe: ORDER_DESCRIBED,
                     pause: false,
                     quiet: false,
+                    flat: false,
                 },
             );
         }
@@ -11597,6 +11710,7 @@ mod image {
                     describe: ORDER_DESCRIBED,
                     pause: false,
                     quiet: false,
+                    flat: false,
                 },
             );
             if wrong & ALL != ALL {
@@ -11641,6 +11755,7 @@ mod image {
                     describe: ORDER_DESCRIBED,
                     pause: false,
                     quiet: false,
+                    flat: false,
                 },
             );
             if let Some(&w) = gc2::FREE_PREFER.iter().find(|&&w| wrong & 1 << w == 0) {
@@ -11682,6 +11797,7 @@ mod image {
                 describe: ORDER_DESCRIBED,
                 pause: false,
                 quiet: false,
+                flat: false,
             },
         );
     }
@@ -11711,6 +11827,7 @@ mod image {
                     describe: ORDER_DESCRIBED,
                     pause: false,
                     quiet: false,
+                    flat: false,
                 },
             );
         }
@@ -11734,6 +11851,7 @@ mod image {
                 describe: ORDER_DESCRIBED,
                 pause: false,
                 quiet: false,
+                flat: false,
             },
         );
     }
@@ -11774,6 +11892,7 @@ mod image {
                     describe: ORDER_DESCRIBED,
                     pause: false,
                     quiet: false,
+                    flat: false,
                 },
             );
             let clean = wrong & CURED_MASK == 0;
@@ -11812,6 +11931,7 @@ mod image {
                 describe: ORDER_DESCRIBED,
                 pause: false,
                 quiet: false,
+                flat: false,
             },
         );
     }
@@ -11846,6 +11966,7 @@ mod image {
                     describe: ORDER_DESCRIBED,
                     pause: false,
                     quiet: false,
+                    flat: false,
                 },
             );
         }
@@ -11866,6 +11987,7 @@ mod image {
                 describe: ORDER_DESCRIBED,
                 pause: false,
                 quiet: false,
+                flat: false,
             },
         );
     }
@@ -11939,6 +12061,7 @@ mod image {
                         describe: ORDER_DESCRIBED,
                         pause: false,
                         quiet: false,
+                        flat: false,
                     },
                 );
             }
@@ -11980,6 +12103,7 @@ mod image {
                     describe: ORDER_DESCRIBED,
                     pause: false,
                     quiet: false,
+                    flat: false,
                 },
             );
         }
@@ -12012,6 +12136,7 @@ mod image {
                         describe: ORDER_DESCRIBED,
                         pause: false,
                         quiet: false,
+                        flat: false,
                     },
                 );
             }
@@ -12047,6 +12172,7 @@ mod image {
                 describe: ORDER_DESCRIBED,
                 pause: false,
                 quiet: false,
+                flat: false,
             };
             g.over = Over::NONE;
             log!("  GC2Q C: GC2K's worst without any setting (the control)");
@@ -12086,6 +12212,7 @@ mod image {
                     describe: ORDER_DESCRIBED,
                     pause: false,
                     quiet: false,
+                    flat: false,
                 },
             );
         }
@@ -12177,6 +12304,7 @@ mod image {
                 describe: ORDER_DESCRIBED,
                 pause: false,
                 quiet: false,
+                flat: false,
             },
         );
     }
@@ -12204,6 +12332,9 @@ mod image {
         pause: bool,
         /// The CPU off the 2700G's bus while the core draws ([`Rig::quiet_us`]).
         quiet: bool,
+        /// Every textured object drawn in one flat colour instead (run
+        /// GC2AG: no texture fetch at all), the scene otherwise as it is.
+        flat: bool,
     }
 
     /// Wrong renders a tile-order soak describes pixel by pixel (from
@@ -12347,7 +12478,10 @@ mod image {
         }
         let set = |g: &mut Rig, r: &mut Renderer, sc: usize, o: u8| {
             r.set_tile_order(tile_order(o));
-            let (bg, slots) = gc2::order_scene_wide(scenes[sc], tex);
+            let (bg, mut slots) = gc2::order_scene_wide(scenes[sc], tex);
+            if plan.flat {
+                slots = gc2::untextured(slots);
+            }
             let _ = r.set_background(Some(bg));
             for (n, d) in slots.into_iter().enumerate() {
                 g.set(r, n, d);

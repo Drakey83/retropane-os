@@ -1705,6 +1705,25 @@ pub fn count(f: PixelFormat, pic: &[u32], v: u32) -> u32 {
     n
 }
 
+/// Run GC2AG's untextured way: every textured object of `slots` drawn in
+/// one flat opaque colour (mid grey) instead, the rest as they are, so the
+/// 3D core fetches no texture.
+#[must_use]
+pub fn untextured<const N: usize>(slots: [Option<Draw>; N]) -> [Option<Draw>; N] {
+    slots.map(|d| {
+        d.map(|d| match d.paint {
+            Paint::Texture { .. } => Draw {
+                paint: Paint::Flat(UNTEXTURED),
+                ..d
+            },
+            _ => d,
+        })
+    })
+}
+
+/// [`untextured`]'s colour (mid grey).
+pub const UNTEXTURED: u32 = 0xFF80_8080;
+
 /// Colours tried as a soak's poison, the most saturated first (no GC2
 /// scene's Gouraud or texture reaches them, by design; [`absent16`]
 /// checks it on the references themselves).

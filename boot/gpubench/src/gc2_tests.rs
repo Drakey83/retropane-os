@@ -1351,3 +1351,38 @@ fn gc2ae_traces_the_both_cures_way_and_checks_the_margin() {
     // The margin at least R36's renders a scene in a tenth of the time.
     const { assert!(MARGIN_ROUNDS >= 3_299 / 11) };
 }
+
+/// GC2AG's untextured way: every textured object flat, nothing else moved,
+/// no texture left in the scene, and the same objects in the same slots.
+#[test]
+fn untextured_takes_every_texture_out_and_nothing_else() {
+    let (_, slots) = fix_scene(0, 8, test_tex());
+    let flat = untextured(slots);
+    assert!(
+        slots
+            .iter()
+            .flatten()
+            .any(|d| matches!(d.paint, Paint::Texture { .. }))
+    );
+    for (a, b) in slots.iter().zip(flat.iter()) {
+        match (a, b) {
+            (None, None) => {}
+            (Some(a), Some(b)) => {
+                if matches!(a.paint, Paint::Texture { .. }) {
+                    assert_eq!(b.paint, Paint::Flat(UNTEXTURED));
+                    assert_eq!(
+                        Draw {
+                            paint: a.paint,
+                            ..*b
+                        },
+                        *a,
+                        "only the paint changed"
+                    );
+                } else {
+                    assert_eq!(a, b);
+                }
+            }
+            _ => panic!("a slot appeared or went"),
+        }
+    }
+}

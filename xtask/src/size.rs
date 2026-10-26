@@ -639,10 +639,12 @@ pub const BUDGETS: &[Budget] = &[
     // GC2AF (R37: the source search, the display's fetch and the CPU's
     // status reads switched per run); GC2Q's write-out variant 175,248 B
     // measured, + ~10%.
+    // Zeroed RAM ratcheted 40 -> 48 KiB the same day: the stack 32 -> 40
+    // KiB (run GC2AG's second renderer, 29,256 B deep in the emulator).
     Budget {
         image: "rp-gpubench",
         max_load: 192 * 1024,
-        max_zero: 40 * 1024,
+        max_zero: 48 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (docs/research/storage-speed.md): the CF socket's timings,
