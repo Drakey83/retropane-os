@@ -175,7 +175,9 @@ mod tests {
         assert!(s.contains("'C:\\a b\\it''s\\bench.bin'"));
         assert!(!s.contains("C:/"), "no forward slashes in a Shell path");
         assert!(s.contains("ParseName('rp-mtpbench')"));
-        for p in ["@DEVICE@", "@STORE@", "@DIR@", "@FILE@", "@SRC@", "@BACK@", "@LEN@"] {
+        for p in [
+            "@DEVICE@", "@STORE@", "@DIR@", "@FILE@", "@SRC@", "@BACK@", "@LEN@",
+        ] {
             assert!(!s.contains(p), "{p} left unfilled");
         }
         // The only thing it creates on the device is the bench folder.
