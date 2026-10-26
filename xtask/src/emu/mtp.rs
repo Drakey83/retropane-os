@@ -458,7 +458,6 @@ pub fn boot_loader_mtp(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     windows(root)?;
-    split(root)?;
     mac(root)
 }
 
@@ -723,18 +722,9 @@ fn windows(root: &Path) -> Result<(), String> {
             mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
             m.event(ev::STORE_ADDED, Some(CF), 30)?;
         }
-        // The icon experiment (R61): a probe's codes reach the PC with the
-        // events that make it read them again; probe 0 puts the standard
-        // ones back.
-        say(&mut s, "drive mtp probe 1", "RPL OK mtp probe 1")?;
-        m.event(ev::STORE_ADDED, Some(SD), 30)?;
-        if storage_codes(&mut m, SD)? != (0x0004, 0x0003) {
-            return Err("probe 1: the SD store doesn't report DCF".into());
-        }
-        say(&mut s, "drive mtp probe 0", "RPL OK mtp probe 0")?;
-        m.event(ev::STORE_ADDED, Some(SD), 30)?;
+        // The SD store reports removable RAM, generic hierarchical.
         if storage_codes(&mut m, SD)? != (0x0004, 0x0002) {
-            return Err("probe 0: the SD store's standard codes aren't back".into());
+            return Err("the SD store's StorageInfo codes aren't the standard ones".into());
         }
         // The loader's stack after all of it: under 75%.
         let line = say(&mut s, "loader stack", "RPL OK stack ")?;
@@ -765,88 +755,6 @@ fn windows(root: &Path) -> Result<(), String> {
     )?;
     eprintln!(
         "    MTP OK (Windows): stayed MTP past the wait (OS 2.0 set read); device info, both stores, listed and read, a file in and back, a boot file's delete refused, a cancelled copy left nothing, the loader's put and a CF swap as events, name and icon"
-    );
-    Ok(())
-}
-
-/// ADR-0037's split try-out on a host like Windows 11: the cards come as
-/// drives (both units mount) and the device over MTP beside them, listing
-/// no store, with the PDA icon read off the card the drive serves.
-fn split(root: &Path) -> Result<(), String> {
-    let loader = raw_image(root, "rp-loader")?;
-    let (sd, icon) = sd_card(root, "sd-mtp-split.img")?;
-    let cf = cf_card(root, "cf-mtp-split.img")?;
-    let mut args: Vec<String> = usb_args(17).into();
-    args.extend(mtp_args(18));
-    args.extend(msc_args(20));
-    args.push("-drive".into());
-    args.push(drive_arg(root, "ide", &cf)?);
-    args.extend(wm_cpld_table_args());
-    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
-    let check = || -> Result<(), String> {
-        let mut s = usb_connect(17)?;
-        usb_read_until(&mut s, LOADER_MARKER, 10)?;
-        say(&mut s, "drive split", "RPL OK drive split")?;
-        let mut m = Initiator::connect(18)?;
-        let mut bot = Bot::connect(20)?;
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let line = say(&mut s, "drive mtp status", "RPL OK mtp")?;
-            if line.contains("mode split layout split")
-                && field(&line, "ms descriptors ") == Some(0xF)
-            {
-                break;
-            }
-            if Instant::now() > deadline {
-                return Err(format!("drive split: never configured as split: {line:?}"));
-            }
-            poll_pause(Duration::from_millis(500));
-        }
-        // The device: a session, no store, the PDA icon.
-        m.ok(op::GET_DEVICE_INFO, &[], None)?;
-        m.ok(op::OPEN_SESSION, &[1], None)?;
-        let ids = m.ok(op::GET_STORAGE_IDS, &[], None)?.data;
-        if ids != [0, 0, 0, 0] {
-            return Err(format!("split: MTP lists stores: {ids:x?}"));
-        }
-        let a = m.ok(
-            op::GET_DEVICE_PROP_VALUE,
-            &[u32::from(dprop::DEVICE_ICON)],
-            None,
-        )?;
-        if a.data.get(4..) != Some(&icon[..]) {
-            return Err(format!("split: device icon {} bytes", a.data.len()));
-        }
-        // The cards: both units mount as drives.
-        let sd_sectors = bot.mount()?;
-        bot.lun = 1;
-        let cf_sectors = bot.mount()?;
-        if sd_sectors != 64 * 2048 || cf_sectors == 0 {
-            return Err(format!(
-                "split: drives of {sd_sectors} and {cf_sectors} sectors"
-            ));
-        }
-        let line = say(&mut s, "drive mtp status", "RPL OK mtp")?;
-        eprintln!("    {line}");
-        Ok(())
-    };
-    boot(
-        root,
-        &Boot {
-            image: &loader,
-            marker: LOADER_MARKER,
-            screenshot: None,
-            sd_image: Some(&sd),
-            steps: &[],
-            extra: &extra,
-            input: None,
-            during: Some(&check),
-            then: None,
-            timeout: Duration::from_secs(240),
-        },
-    )?;
-    eprintln!(
-        "    MTP OK (split): the device over MTP with no store and the PDA icon, both cards mounted as drives beside it"
     );
     Ok(())
 }

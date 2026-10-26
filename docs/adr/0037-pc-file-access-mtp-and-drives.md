@@ -488,8 +488,14 @@ the record.
 
 ### Try-out: the split layout (2026-10-26, the owner's "lets try 3")
 
-Not a default: a fourth layout the loader offers on request
-(`cargo xtask drive split`), so the owner can see it before Q6 is voted.
+**Removed 2026-10-26 after Q6 was voted C** (the owner: "remove the test
+switches, the probes and the split layout, keep folder pictures"), with
+the icon experiment's StorageInfo variants (`drive mtp probe`) and the
+Explorer test's switches (`drive mtp test`); folder pictures
+(`folder.png`/`folder.bmp` sent as the folder's MTP thumbnail) stay. The
+record of what was tried: a fourth layout the loader offered on request
+(`cargo xtask drive split`), so the owner could see it before Q6 was
+voted.
 
 - **What the PC sees:** "Axim X51v" (MTP, the PDA icon) and the two cards
   as their own drives, each with its own icon (`autorun.inf`, proven

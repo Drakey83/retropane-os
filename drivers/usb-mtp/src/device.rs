@@ -71,11 +71,6 @@ pub struct StoreInfo {
     pub volume_id: Text,
     /// The largest file the file system holds (FAT32: 4 GiB - 1).
     pub max_file: u64,
-    /// The StorageType and FilesystemType codes to report instead of the
-    /// ones `kind` and a hierarchical store give [MTP 5.2.2]: an
-    /// experiment's override, to find which codes Windows draws a store's
-    /// icon from (R61). `None`: the standard ones.
-    pub codes: Option<(u16, u16)>,
 }
 
 /// One file or folder.
@@ -256,11 +251,6 @@ pub trait Device {
     /// The PC renamed the device: keep it (it shows on the next
     /// connection too).
     fn set_friendly_name(&mut self, name: &Text);
-
-    /// The perceived device type [MTP C.2.43] Windows reads (5: a PDA).
-    fn perceived_type(&self) -> u32 {
-        5
-    }
 
     /// The device icon (a `.ico` [MTP C.2.37]): its length, 0 for none.
     fn icon_len(&mut self) -> u32 {

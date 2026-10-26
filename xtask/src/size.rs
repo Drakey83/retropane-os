@@ -767,13 +767,9 @@ pub const BUDGETS: &[Budget] = &[
     // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
     // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
     // writes and the sync); 30.2 KiB measured, + ~10%.
-    // Ratcheted 34 -> 38 KiB on 2026-10-26 (test image): pxa-udc's split
-    // layout (ADR-0037's try-out: its descriptors, Microsoft's IDs for
-    // interface 3 and its endpoint table ride in every USB image); 34.3 KiB
-    // measured, + ~10%.
     Budget {
         image: "rp-reconnect",
-        max_load: 38 * 1024,
+        max_load: 34 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -783,13 +779,9 @@ pub const BUDGETS: &[Budget] = &[
     // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
     // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
     // writes and the sync); 29.7 KiB measured, + ~10%.
-    // Ratcheted 34 -> 38 KiB on 2026-10-26 (test image): pxa-udc's split
-    // layout (ADR-0037's try-out: its descriptors, Microsoft's IDs for
-    // interface 3 and its endpoint table ride in every USB image); 33.8 KiB
-    // measured, + ~10%.
     Budget {
         image: "rp-unplug",
-        max_load: 38 * 1024,
+        max_load: 34 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

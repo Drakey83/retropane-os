@@ -25,7 +25,7 @@ struct SimUdc {
     ep0_pending: Option<Vec<u8>>,
     cr: [u32; 24],
     /// The bulk endpoints, by slot.
-    bulk: [Bulk; SLOTS],
+    bulk: [Bulk; 7],
     /// OUT byte counts read 0 (as if the count lagged the packet-complete
     /// of a packet that just reached the front).
     bcr_reads_zero: bool,
@@ -180,7 +180,7 @@ impl RegisterBus for SimUdc {
                 }
                 u32::from_le_bytes(w)
             }
-            o if (reg::csr(1)..=reg::csr(SLOTS - 1)).contains(&o) => {
+            o if (reg::csr(1)..=reg::csr(6)).contains(&o) => {
                 let slot = (o - 0x100) / 4;
                 let b = &self.bulk[slot];
                 let pc = if b.pc { reg::PC } else { 0 };
@@ -203,14 +203,14 @@ impl RegisterBus for SimUdc {
                     }
                 }
             }
-            o if (reg::bcr(1)..=reg::bcr(SLOTS - 1)).contains(&o) => {
+            o if (reg::bcr(1)..=reg::bcr(6)).contains(&o) => {
                 let slot = (o - 0x200) / 4;
                 if self.bcr_reads_zero {
                     return 0;
                 }
                 self.bulk[slot].queue.front().map_or(0, |p| p.len() as u32)
             }
-            o if (reg::dr(1)..=reg::dr(SLOTS - 1)).contains(&o) => {
+            o if (reg::dr(1)..=reg::dr(6)).contains(&o) => {
                 let slot = (o - 0x300) / 4;
                 let mut w = [0u8; 4];
                 if let Some(p) = self.bulk[slot].queue.front_mut() {
@@ -278,10 +278,10 @@ impl RegisterBus for SimUdc {
                 );
                 self.cr[(o - 0x400) / 4] = v;
             }
-            o if (reg::dr(1)..=reg::dr(SLOTS - 1)).contains(&o) => {
+            o if (reg::dr(1)..=reg::dr(6)).contains(&o) => {
                 self.bulk_write((o - 0x300) / 4, &v.to_le_bytes());
             }
-            o if (reg::csr(1)..=reg::csr(SLOTS - 1)).contains(&o) => {
+            o if (reg::csr(1)..=reg::csr(6)).contains(&o) => {
                 let slot = (o - 0x100) / 4;
                 self.csr_writes.push((slot, v));
                 let is_in = self.cr[slot] & (1 << 12) != 0;
@@ -314,7 +314,7 @@ impl RegisterBus8 for SimUdc {
     fn write8(&mut self, offset: usize, v: u8) {
         if offset == reg::dr(0) {
             self.ep0_write(&[v]);
-        } else if (reg::dr(1)..=reg::dr(SLOTS - 1)).contains(&offset) {
+        } else if (reg::dr(1)..=reg::dr(6)).contains(&offset) {
             self.bulk_write((offset - 0x300) / 4, &[v]);
         }
     }
@@ -1389,170 +1389,5 @@ fn events_go_out_on_their_own_endpoint() {
     assert_eq!(
         h.sim().bulk[SLOT_MTP_EVENT].sent.pop_front().unwrap(),
         event
-    );
-}
-
-// --- The split layout (ADR-0037's try-out) ----------------------------------
-
-fn split_host() -> Host {
-    let mut udc = Udc::new(SimUdc::default());
-    udc.set_layout(Layout::Split);
-    udc.enable().unwrap();
-    Host { udc }
-}
-
-#[test]
-fn the_split_layout_is_the_drive_layout_plus_mtp_on_its_own_endpoints() {
-    let c = &usb::CONFIG_SPLIT;
-    assert_eq!(usize::from(u16::from_le_bytes([c[2], c[3]])), c.len());
-    assert_eq!(c[4], 4, "four interfaces");
-    // The drive layout whole, byte for byte, after the header.
-    assert_eq!(c[9..usb::CONFIG.len()], usb::CONFIG[9..]);
-    let d = walk(c);
-    let iface3 = d.iter().find(|(t, b)| *t == 4 && b[2] == 3).unwrap();
-    assert_eq!(&iface3.1[4..9], &[3, 0xFF, 0xFF, 0x00, 5]);
-    let endpoints: Vec<(u8, u8, u16)> = d
-        .iter()
-        .filter(|(t, _)| *t == 5)
-        .map(|(_, b)| (b[2], b[3], u16::from_le_bytes([b[4], b[5]])))
-        .collect();
-    assert_eq!(
-        endpoints,
-        [
-            (0x83, 3, 16),
-            (0x01, 2, 64),
-            (0x82, 2, 64),
-            (0x04, 2, 64),
-            (0x85, 2, 64),
-            (0x07, 2, 64),
-            (0x88, 2, 64),
-            (0x89, 3, 32)
-        ]
-    );
-    // Every endpoint in the table is in the descriptors, and back.
-    assert_eq!(TABLE_SPLIT.len(), endpoints.len());
-    for (slot, cfg) in TABLE_SPLIT {
-        let number = ((cfg >> 15) & 0xF) as u8;
-        let is_in = cfg & (1 << 12) != 0;
-        let size = ((cfg >> 2) & 0x3FF) as u16;
-        let kind = ((cfg >> 13) & 3) as u8;
-        let addr = number | if is_in { 0x80 } else { 0 };
-        assert!(
-            endpoints
-                .iter()
-                .any(|&(a, k, s)| a == addr && s == size && k == kind),
-            "slot {slot}"
-        );
-    }
-    // Revision 26.03; the other layouts unchanged.
-    assert_eq!(&usb::DEVICE_SPLIT[2..4], &[0x01, 0x02]);
-    assert_eq!(&usb::DEVICE_SPLIT[12..14], &[0x03, 0x26]);
-    assert_eq!(&usb::DEVICE_MTP[12..14], &[0x02, 0x26]);
-    assert_eq!(&usb::DEVICE[12..14], &[0x01, 0x26]);
-    // Microsoft's descriptors name interface 3, otherwise the same.
-    assert_eq!(usb::MS_COMPAT_ID_SPLIT[16], 3);
-    assert_eq!(usb::MS_COMPAT_ID_SPLIT[..16], usb::MS_COMPAT_ID[..16]);
-    assert_eq!(usb::MS_COMPAT_ID_SPLIT[17..], usb::MS_COMPAT_ID[17..]);
-    assert_eq!(usb::MS_OS20_SET_SPLIT[22], 3);
-    assert_eq!(usb::MS_OS20_SET_SPLIT.len(), usb::MS_OS20_SET.len());
-}
-
-#[test]
-fn the_split_layout_answers_both_functions_on_their_own_interfaces() {
-    let mut h = split_host();
-    h.reset();
-    assert_eq!(
-        h.control_in([0x80, 6, 0, 1, 0, 0, 18, 0]).unwrap(),
-        usb::DEVICE_SPLIT
-    );
-    assert_eq!(
-        h.control_in([0x80, 6, 0, 2, 0, 0, 255, 0]).unwrap(),
-        usb::CONFIG_SPLIT
-    );
-    assert_eq!(
-        h.control_in([0xC1, usb::MS_VENDOR_CODE, 0, 0, 4, 0, 40, 0])
-            .unwrap(),
-        usb::MS_COMPAT_ID_SPLIT
-    );
-    assert_eq!(
-        h.control_in([0xC0, usb::MS_VENDOR_CODE, 0, 0, 7, 0, 46, 0])
-            .unwrap(),
-        usb::MS_OS20_SET_SPLIT
-    );
-    // The drive's class request on interface 2.
-    h.udc.set_msc_luns(2);
-    assert_eq!(h.control_in([0xA1, 0xFE, 0, 0, 2, 0, 1, 0]).unwrap(), [1]);
-    // MTP's on interface 3, and not on 2.
-    assert_eq!(
-        h.control_in([0xA1, 0x67, 0, 0, 3, 0, 12, 0]).unwrap(),
-        [4, 0, 0x01, 0x20]
-    );
-    assert!(h.control_in([0xA1, 0x67, 0, 0, 2, 0, 12, 0]).is_none());
-    h.control_out(
-        [0x21, 0x64, 0, 0, 3, 0, 6, 0],
-        &[0x01, 0x40, 0x78, 0x56, 0, 0],
-    );
-    assert_eq!(h.udc.take_mtp_cancel(), Some(0x5678));
-}
-
-#[test]
-fn split_mtp_moves_on_its_own_pair_and_halts_only_that_pair() {
-    let mut h = split_host();
-    h.reset();
-    h.set_configuration();
-    // MTP's packets go out on slot H, the drive's on slot E.
-    assert!(h.udc.mtp_can_write());
-    h.udc.mtp_write(&[1, 2, 3]);
-    h.sim().host_in_on(SLOT_SPLIT_MTP_IN);
-    assert_eq!(
-        h.sim().bulk[SLOT_SPLIT_MTP_IN].sent.pop_front().unwrap(),
-        [1, 2, 3]
-    );
-    assert!(h.sim().bulk[SLOT_MSC_IN].sent.is_empty());
-    assert!(h.udc.msc_can_write());
-    h.udc.msc_write(&[9]);
-    h.sim().host_in_on(SLOT_MSC_IN);
-    assert_eq!(h.sim().bulk[SLOT_MSC_IN].sent.pop_front().unwrap(), [9]);
-    // From the host: MTP's OUT on slot G, the drive's on slot D.
-    assert!(h.sim().host_out_on(SLOT_SPLIT_MTP_OUT, &[7, 7]));
-    assert!(h.sim().host_out_on(SLOT_MSC_OUT, &[5]));
-    let mut buf = [0u8; usb::BULK_SIZE];
-    assert_eq!(h.udc.mtp_read(&mut buf), Some(2));
-    assert_eq!(&buf[..2], &[7, 7]);
-    assert_eq!(h.udc.msc_read(&mut buf), Some(1));
-    assert_eq!(buf[0], 5);
-    // A stall halts MTP's pair, never the drive's.
-    h.sim().csr_writes.clear();
-    h.udc.mtp_stall();
-    let writes: Vec<(usize, u32)> = core::mem::take(&mut h.sim().csr_writes);
-    for slot in [SLOT_SPLIT_MTP_OUT, SLOT_SPLIT_MTP_IN] {
-        assert!(writes.iter().any(|&(s, v)| s == slot && v & reg::FST != 0));
-    }
-    assert!(
-        writes
-            .iter()
-            .all(|&(s, _)| s != SLOT_MSC_OUT && s != SLOT_MSC_IN)
-    );
-    h.udc.set_mtp_status(0x201F);
-    assert_eq!(
-        h.control_in([0xA1, 0x67, 0, 0, 3, 0, 12, 0]).unwrap(),
-        [12, 0, 0x1F, 0x20, 0x07, 0, 0, 0, 0x88, 0, 0, 0]
-    );
-    // Clearing the drive's endpoints doesn't clear MTP's; its own do.
-    h.control_ack([0x02, 1, 0, 0, 0x04, 0, 0, 0]);
-    h.control_ack([0x02, 1, 0, 0, 0x85, 0, 0, 0]);
-    assert!(!h.udc.take_mtp_cleared());
-    h.control_ack([0x02, 1, 0, 0, 0x07, 0, 0, 0]);
-    h.control_ack([0x02, 1, 0, 0, 0x88, 0, 0, 0]);
-    assert!(h.udc.take_mtp_cleared());
-    // DMA for MTP is its own pair.
-    assert_eq!(h.udc.mtp_bulk(), (crate::Bulk::MtpOut, crate::Bulk::MtpIn));
-    assert_eq!(
-        Udc::<SimUdc>::dma_port(crate::Bulk::MtpIn).request,
-        24 + SLOT_SPLIT_MTP_IN as u8
-    );
-    assert_eq!(
-        mtp_host().udc.mtp_bulk(),
-        (crate::Bulk::StorageOut, crate::Bulk::StorageIn)
     );
 }

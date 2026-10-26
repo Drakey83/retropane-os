@@ -3370,16 +3370,6 @@ mod image {
                 Some(t) if udc.layout() == Layout::Mtp => {
                     t.poll(&mut udc, &mut lun, &mut cf, &mut log);
                 }
-                // The split try-out: the device over MTP (no card) and the
-                // cards as drives, both served each turn.
-                Some(t) if udc.layout() == Layout::Split => {
-                    t.poll(&mut udc, &mut lun, &mut cf, &mut log);
-                    msc.poll(
-                        &mut Pipe(&mut udc, udc_dma.as_mut()),
-                        &mut [&mut lun, &mut cf],
-                        now_ms(),
-                    );
-                }
                 _ => msc.poll(
                     &mut Pipe(&mut udc, udc_dma.as_mut()),
                     &mut [&mut lun, &mut cf],
@@ -3394,9 +3384,6 @@ mod image {
             }
             if relayout_at.is_some_and(|t| now_ms().wrapping_sub(t) < 1 << 31) {
                 relayout_at = None;
-                if let Some(t) = mtp_t.as_mut() {
-                    t.set_cards(drive_mode != mtp::Mode::Split);
-                }
                 let first = drive_mode.first();
                 udc.set_layout(first);
                 replug(&mut udc, uhc.as_mut());
@@ -3659,16 +3646,10 @@ mod image {
                             handoff_command(ready_at, &stages, &mut status);
                             status.as_str()
                         }
-                        Ok(c)
-                            if matches!(
-                                c,
-                                b"drive mtp" | b"drive msc" | b"drive auto" | b"drive split"
-                            ) =>
-                        {
+                        Ok(c) if matches!(c, b"drive mtp" | b"drive msc" | b"drive auto") => {
                             let mode = match c {
                                 b"drive mtp" => mtp::Mode::Mtp,
                                 b"drive auto" => mtp::Mode::Auto,
-                                b"drive split" => mtp::Mode::Split,
                                 _ => mtp::Mode::Msc,
                             };
                             if mode != mtp::Mode::Msc && mtp_t.is_none() {
@@ -3686,69 +3667,7 @@ mod image {
                                     mtp::Mode::Msc => {
                                         "RPL OK drive msc: the cards as drives in 0.3 s\r\n"
                                     }
-                                    mtp::Mode::Split => {
-                                        "RPL OK drive split: the cards as drives, the device over MTP beside them, in 0.3 s\r\n"
-                                    }
                                 }
-                            }
-                        }
-                        // R61's Explorer test: `drive mtp test <stores 1-2> <type 0-6>`,
-                        // offered afresh so Windows reads it at enumeration.
-                        Ok(c) if c.starts_with(b"drive mtp test ") => {
-                            let mut it = core::str::from_utf8(&c[15..])
-                                .unwrap_or("")
-                                .split_ascii_whitespace()
-                                .map(str::parse::<u32>);
-                            let (stores, kind) = (it.next(), it.next());
-                            let set = match (mtp_t.as_mut(), stores, kind) {
-                                (Some(t), Some(Ok(n)), Some(Ok(k))) => {
-                                    t.set_explorer_test(n as u8, k).map(|()| (n, k))
-                                }
-                                _ => None,
-                            };
-                            match set {
-                                Some((n, k)) => {
-                                    relayout_at = Some(now_ms().wrapping_add(300));
-                                    let _ = write!(
-                                        status,
-                                        "RPL OK mtp test: {n} store(s), perceived type {k}, offered afresh in 0.3 s
-"
-                                    );
-                                    status.as_str()
-                                }
-                                None if mtp_t.is_none() => {
-                                    "RPL ERR drive: MTP unavailable (the RAM pool was taken)
-"
-                                }
-                                None => {
-                                    "RPL ERR usage: drive mtp test <stores 1-2> <type 0-6>
-"
-                                }
-                            }
-                        }
-                        Ok(c) if c.starts_with(b"drive mtp probe ") => {
-                            let n = core::str::from_utf8(&c[16..])
-                                .ok()
-                                .and_then(|n| n.trim().parse::<usize>().ok());
-                            let present = [lun.present(), cf.present()];
-                            let set = match (mtp_t.as_mut(), n) {
-                                (Some(t), Some(n)) => t.set_probe(n, present).map(|()| n),
-                                _ => None,
-                            };
-                            match set {
-                                Some(n) => {
-                                    let _ = write!(
-                                        status,
-                                        "RPL OK mtp probe {n}: SD {:x?}, CF {:x?}\r\n",
-                                        mtp::PROBES[n][0],
-                                        mtp::PROBES[n][1]
-                                    );
-                                    status.as_str()
-                                }
-                                None if mtp_t.is_none() => {
-                                    "RPL ERR drive: MTP unavailable (the RAM pool was taken)\r\n"
-                                }
-                                None => "RPL ERR usage: drive mtp probe <0-4>\r\n",
                             }
                         }
                         Ok(b"drive mtp status") => match mtp_t.as_ref() {
@@ -4254,7 +4173,6 @@ mod image {
     fn layout_name(l: Layout) -> &'static str {
         match l {
             Layout::Mtp => "serial + MTP",
-            Layout::Split => "serial + drive + MTP",
             Layout::Drive => "serial + drive",
             Layout::Serial => "serial-only",
         }
@@ -4264,7 +4182,6 @@ mod image {
     fn layout_tag(l: Layout) -> &'static str {
         match l {
             Layout::Mtp => "mtp",
-            Layout::Split => "split",
             Layout::Drive => "composite",
             Layout::Serial => "serial-only",
         }

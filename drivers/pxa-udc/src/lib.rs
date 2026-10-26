@@ -148,10 +148,6 @@ pub enum Bulk {
     StorageIn,
     /// Mass storage from the host.
     StorageOut,
-    /// MTP to the host in the split layout (its own pair).
-    MtpIn,
-    /// MTP from the host in the split layout.
-    MtpOut,
 }
 
 impl Bulk {
@@ -161,13 +157,7 @@ impl Bulk {
             Self::SerialOut => SLOT_OUT,
             Self::StorageIn => SLOT_MSC_IN,
             Self::StorageOut => SLOT_MSC_OUT,
-            Self::MtpIn => SLOT_SPLIT_MTP_IN,
-            Self::MtpOut => SLOT_SPLIT_MTP_OUT,
         }
-    }
-
-    const fn is_in(self) -> bool {
-        matches!(self, Self::SerialIn | Self::StorageIn | Self::MtpIn)
     }
 }
 
@@ -177,13 +167,10 @@ const SLOT_IN: usize = 2;
 const SLOT_OUT: usize = 3;
 const SLOT_MSC_OUT: usize = 4;
 const SLOT_MSC_IN: usize = 5;
-/// MTP's event endpoint (slot F), in the MTP and split layouts.
+/// MTP's event endpoint (slot F), in the MTP layout only.
 const SLOT_MTP_EVENT: usize = 6;
-/// The split layout's MTP bulk pair (slots G and H), beside the drive's.
-const SLOT_SPLIT_MTP_OUT: usize = 7;
-const SLOT_SPLIT_MTP_IN: usize = 8;
 /// Slots, endpoint 0 included.
-const SLOTS: usize = 9;
+const SLOTS: usize = 7;
 
 /// `UDCCRx.DE`: double buffering (two packet buffers in endpoint memory).
 const DE: u32 = 1 << 1;
@@ -241,29 +228,6 @@ const TABLE_MTP: [(usize, u32); 6] = [
     (
         SLOT_MTP_EVENT,
         endpoint(0, usb::EP_MTP_EVENT, 3, true, usb::EVENT_SIZE),
-    ),
-];
-
-/// The split layout's table (ADR-0037's try-out): the drive layout's
-/// endpoints, then MTP's own (event 0x89, bulk OUT 0x07, bulk IN 0x88), all
-/// in interface 0 for the same reason.
-const TABLE_SPLIT: [(usize, u32); 8] = [
-    TABLE[0],
-    TABLE[1],
-    TABLE[2],
-    TABLE[3],
-    TABLE[4],
-    (
-        SLOT_MTP_EVENT,
-        endpoint(0, usb::EP_SPLIT_MTP_EVENT, 3, true, usb::EVENT_SIZE),
-    ),
-    (
-        SLOT_SPLIT_MTP_OUT,
-        endpoint(0, usb::EP_SPLIT_MTP_OUT, 2, false, usb::BULK_SIZE),
-    ),
-    (
-        SLOT_SPLIT_MTP_IN,
-        endpoint(0, usb::EP_SPLIT_MTP_IN, 2, true, usb::BULK_SIZE),
     ),
 ];
 
@@ -448,10 +412,10 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         self.bus.write32(reg::UDCICR0, 0);
         self.bus.write32(reg::UDCICR1, 0);
         self.udccr(0, reg::UDE);
-        let table: &[(usize, u32)] = match self.cdc.layout() {
-            Layout::Mtp => &TABLE_MTP,
-            Layout::Split => &TABLE_SPLIT,
-            Layout::Drive | Layout::Serial => &TABLE,
+        let table: &[(usize, u32)] = if self.cdc.layout() == Layout::Mtp {
+            &TABLE_MTP
+        } else {
+            &TABLE
         };
         for &(slot, cfg) in table {
             self.bus.write32(reg::cr(slot), cfg);
@@ -488,9 +452,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     const BULK_EVENTS: u32 = reg::packet_irq(SLOT_IN)
         | reg::packet_irq(SLOT_OUT)
         | reg::packet_irq(SLOT_MSC_OUT)
-        | reg::packet_irq(SLOT_MSC_IN)
-        | reg::packet_irq(SLOT_SPLIT_MTP_OUT)
-        | reg::packet_irq(SLOT_SPLIT_MTP_IN);
+        | reg::packet_irq(SLOT_MSC_IN);
 
     /// `UDCICR0`: endpoint 0's packet-complete always (its state machine
     /// reads the event), the bulk endpoints' too with interrupts on.
@@ -769,61 +731,22 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             self.msc_reset = true;
         }
         if let Some(ep) = self.cdc.take_clear_halt() {
-            let (out, inp) = self.mtp_slots();
-            let slot = if ep & 0x80 != 0 { inp } else { out };
+            let slot = if ep & 0x80 != 0 {
+                SLOT_MSC_IN
+            } else {
+                SLOT_MSC_OUT
+            };
             self.halted[slot] = false;
             self.csr_write(slot, reg::SST);
-            if !self.halted[inp] && !self.halted[out] {
+            if !self.halted[SLOT_MSC_IN] && !self.halted[SLOT_MSC_OUT] {
                 self.halt_cleared = true;
             }
         }
     }
 
-    /// MTP's bulk pair's slots (OUT, IN): the drive's in the MTP layout,
-    /// its own in the split layout.
-    fn mtp_slots(&self) -> (usize, usize) {
-        if matches!(self.cdc.layout(), Layout::Split) {
-            (SLOT_SPLIT_MTP_OUT, SLOT_SPLIT_MTP_IN)
-        } else {
-            (SLOT_MSC_OUT, SLOT_MSC_IN)
-        }
-    }
-
-    /// MTP's bulk pair for DMA (OUT, IN) in the current layout.
-    #[must_use]
-    pub fn mtp_bulk(&self) -> (Bulk, Bulk) {
-        if matches!(self.cdc.layout(), Layout::Split) {
-            (Bulk::MtpOut, Bulk::MtpIn)
-        } else {
-            (Bulk::StorageOut, Bulk::StorageIn)
-        }
-    }
-
-    /// Takes the next MTP OUT packet, if one arrived.
-    pub fn mtp_read(&mut self, buf: &mut [u8; usb::BULK_SIZE]) -> Option<usize> {
-        let (out, _) = self.mtp_slots();
-        if !self.configured() || self.dma[out] {
-            return None;
-        }
-        self.read_packet(out, buf)
-    }
-
-    /// Whether an MTP bulk IN packet can be queued ([`Udc::in_room`]).
-    pub fn mtp_can_write(&mut self) -> bool {
-        let (_, inp) = self.mtp_slots();
-        self.configured() && !self.dma[inp] && self.in_room(inp)
-    }
-
-    /// Queues one MTP bulk IN packet (at most 64 bytes; shorter, even
-    /// empty, ends the transfer). Call only after [`Udc::mtp_can_write`].
-    pub fn mtp_write(&mut self, data: &[u8]) {
-        let (_, inp) = self.mtp_slots();
-        self.write_packet(inp, data);
-    }
-
     /// Chooses what the device presents (serial only, serial + drive,
-    /// serial + MTP, all three). Call while disabled; the host sees it at
-    /// the next enumeration.
+    /// serial + MTP). Call while disabled; the host sees it at the next
+    /// enumeration.
     pub fn set_layout(&mut self, layout: Layout) {
         self.cdc.set_layout(layout);
     }
@@ -859,9 +782,10 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         b[2..4].copy_from_slice(&code.to_le_bytes());
         let mut n = 4;
         if code == 0x201F {
-            let (out, inp) = self.mtp_slots();
-            let (ep_out, ep_in) = self.cdc.layout().mtp_bulk();
-            for (slot, ep) in [(out, ep_out), (inp, ep_in)] {
+            for (slot, ep) in [
+                (SLOT_MSC_OUT, usb::EP_MSC_OUT),
+                (SLOT_MSC_IN, 0x80 | usb::EP_MSC_IN),
+            ] {
                 if self.halted[slot] {
                     b[n..n + 4].copy_from_slice(&u32::from(ep).to_le_bytes());
                     n += 4;
@@ -874,8 +798,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
 
     /// Halts MTP's bulk pair (a malformed command [SIC 7]).
     pub fn mtp_stall(&mut self) {
-        let (out, inp) = self.mtp_slots();
-        for slot in [out, inp] {
+        for slot in [SLOT_MSC_OUT, SLOT_MSC_IN] {
             self.halted[slot] = true;
             self.csr_write(slot, reg::FEF);
         }
@@ -885,8 +808,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     /// Drops what waits in MTP's bulk FIFOs (a cancelled transfer [SIC
     /// 5.2.1]); a halt stays.
     pub fn mtp_flush(&mut self) {
-        let (out, inp) = self.mtp_slots();
-        for slot in [out, inp] {
+        for slot in [SLOT_MSC_OUT, SLOT_MSC_IN] {
             self.csr_write(slot, reg::FEF);
         }
     }
@@ -898,7 +820,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
 
     /// Whether an MTP event can be queued on the interrupt endpoint.
     pub fn mtp_event_can_write(&mut self) -> bool {
-        self.configured() && self.cdc.layout().mtp() && self.in_room(SLOT_MTP_EVENT)
+        self.configured() && self.cdc.layout() == Layout::Mtp && self.in_room(SLOT_MTP_EVENT)
     }
 
     /// Queues one MTP event (at most [`usb::EVENT_SIZE`] bytes).
@@ -1027,7 +949,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     pub fn set_dma(&mut self, ep: Bulk, on: bool) {
         let slot = ep.slot();
         self.dma[slot] = on;
-        let is_in = ep.is_in();
+        let is_in = ep == Bulk::SerialIn || ep == Bulk::StorageIn;
         let stale = if on && is_in {
             self.bus.read32(reg::csr(slot)) & reg::TRN
         } else {

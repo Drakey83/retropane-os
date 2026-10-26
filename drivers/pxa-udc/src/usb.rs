@@ -1,8 +1,7 @@
 //! Hardware-independent USB device logic for a composite device (ADR-0014,
 //! ADR-0037): a CDC-ACM serial port plus a USB Mass Storage interface (the
-//! drive layout), an MTP interface (the portable-device layout, with
-//! Microsoft's OS descriptors 1.0 and 2.0 naming it "MTP"), or both (the
-//! split layout: ADR-0037's try-out, each card a drive). The descriptors
+//! drive layout) or an MTP interface (the portable-device layout, with
+//! Microsoft's OS descriptors 1.0 and 2.0 naming it "MTP"). The descriptors
 //! (`const` data, nothing built at run time), SETUP parsing, and answers to
 //! the standard, CDC and mass-storage class requests that reach software.
 //! The PXA27x answers SET_ADDRESS, SET_CONFIGURATION and SET_INTERFACE in
@@ -36,15 +35,6 @@ pub const EP_MSC_IN: u8 = 5;
 pub const MSC_INTERFACE: u16 = 2;
 /// The MTP interface number (the drive's place in the MTP layout).
 pub const MTP_INTERFACE: u16 = 2;
-/// The MTP interface number in the split layout, after the drive's.
-pub const SPLIT_MTP_INTERFACE: u16 = 3;
-/// The split layout's MTP endpoints: its own bulk pair and event
-/// endpoint, beside the drive's.
-pub const EP_SPLIT_MTP_OUT: u8 = 7;
-/// The split layout's MTP bulk IN endpoint number.
-pub const EP_SPLIT_MTP_IN: u8 = 8;
-/// The split layout's MTP event (interrupt IN) endpoint number.
-pub const EP_SPLIT_MTP_EVENT: u8 = 9;
 /// MTP's event (interrupt IN) endpoint number; its bulk pair is the
 /// drive's (`EP_MSC_OUT`, `EP_MSC_IN`).
 pub const EP_MTP_EVENT: u8 = 6;
@@ -65,44 +55,6 @@ pub enum Layout {
     Drive,
     /// Serial port + MTP (ADR-0037, 26.02).
     Mtp,
-    /// Serial port + drive + MTP (ADR-0037's split try-out, 26.03): the
-    /// cards as drives, the device itself over MTP.
-    Split,
-}
-
-impl Layout {
-    /// Whether the layout has the MTP interface.
-    #[must_use]
-    pub const fn mtp(self) -> bool {
-        matches!(self, Self::Mtp | Self::Split)
-    }
-
-    /// Whether the layout has the mass storage interface.
-    #[must_use]
-    pub const fn drive(self) -> bool {
-        matches!(self, Self::Drive | Self::Split)
-    }
-
-    /// The MTP interface's number (meaningful when [`Layout::mtp`]).
-    #[must_use]
-    pub const fn mtp_interface(self) -> u16 {
-        if matches!(self, Self::Split) {
-            SPLIT_MTP_INTERFACE
-        } else {
-            MTP_INTERFACE
-        }
-    }
-
-    /// MTP's bulk pair's endpoint addresses (OUT, IN), as the host names
-    /// them in CLEAR_FEATURE.
-    #[must_use]
-    pub const fn mtp_bulk(self) -> (u8, u8) {
-        if matches!(self, Self::Split) {
-            (EP_SPLIT_MTP_OUT, 0x80 | EP_SPLIT_MTP_IN)
-        } else {
-            (EP_MSC_OUT, 0x80 | EP_MSC_IN)
-        }
-    }
 }
 
 const fn lo(v: u16) -> u8 {
@@ -335,43 +287,6 @@ pub const CONFIG_MTP: [u8; MTP_CONFIG_LEN] = {
     c
 };
 
-/// The split layout's device descriptor: as [`DEVICE_MTP`], revision 26.03
-/// (a new revision, for the same reason: Windows records per revision
-/// what it found).
-pub const DEVICE_SPLIT: [u8; 18] = {
-    let mut d = DEVICE_MTP;
-    d[12] = 0x03;
-    d
-};
-
-/// Total length of [`CONFIG_SPLIT`].
-const SPLIT_CONFIG_LEN: usize = CONFIG_LEN as usize + 30;
-
-/// The split layout's configuration: [`CONFIG`] whole (serial port and
-/// drive), then the MTP interface as interface 3 with its own endpoints.
-pub const CONFIG_SPLIT: [u8; SPLIT_CONFIG_LEN] = {
-    let mut c = [0u8; SPLIT_CONFIG_LEN];
-    let mut i = 0;
-    while i < CONFIG_LEN as usize {
-        c[i] = CONFIG[i];
-        i += 1;
-    }
-    c[2] = SPLIT_CONFIG_LEN as u8;
-    c[3] = 0;
-    c[4] = 4;
-    let mut k = 0;
-    while k < 30 {
-        c[CONFIG_LEN as usize + k] = CONFIG_MTP[SHARED + k];
-        k += 1;
-    }
-    let m = CONFIG_LEN as usize;
-    c[m + 2] = SPLIT_MTP_INTERFACE as u8;
-    c[m + 9 + 2] = EP_SPLIT_MTP_OUT;
-    c[m + 16 + 2] = 0x80 | EP_SPLIT_MTP_IN;
-    c[m + 23 + 2] = 0x80 | EP_SPLIT_MTP_EVENT;
-    c
-};
-
 /// Microsoft OS 1.0 string descriptor (index 0xEE): "MSFT100", our vendor
 /// code. Windows asks for it once per device revision.
 pub const MS_OS_STRING: [u8; 18] = [
@@ -441,13 +356,6 @@ pub const MS_COMPAT_ID: [u8; 40] = [
     0, // reserved
 ];
 
-/// [`MS_COMPAT_ID`] for the split layout: interface 3 is "MTP".
-pub const MS_COMPAT_ID_SPLIT: [u8; 40] = {
-    let mut c = MS_COMPAT_ID;
-    c[16] = SPLIT_MTP_INTERFACE as u8;
-    c
-};
-
 /// Total length of [`MS_OS20_SET`].
 const MS20_LEN: usize = 10 + 8 + 8 + 20;
 
@@ -507,14 +415,6 @@ pub const MS_OS20_SET: [u8; MS20_LEN] = [
     0,
     0,
 ];
-
-/// [`MS_OS20_SET`] for the split layout: the function at interface 3 is
-/// "MTP" (the same length, so [`BOS`] serves both).
-pub const MS_OS20_SET_SPLIT: [u8; MS20_LEN] = {
-    let mut c = MS_OS20_SET;
-    c[22] = SPLIT_MTP_INTERFACE as u8;
-    c
-};
 
 /// The BOS descriptor: one platform capability, Microsoft's OS 2.0
 /// ({D8DD60DF-4589-4CC7-9CD2-659D9E648A9F}), pointing at [`MS_OS20_SET`].
@@ -879,23 +779,19 @@ impl Cdc {
     pub fn handle(&mut self, s: &Setup, configuration: u8) -> Reply<'_> {
         let want = usize::from(s.length);
         let cut = |d: &'static [u8]| Reply::In(&d[..d.len().min(want)]);
-        let mtp = self.layout.mtp();
-        let drive = self.layout.drive();
-        let mtp_if = self.layout.mtp_interface();
-        let split = self.layout == Layout::Split;
+        let mtp = self.layout == Layout::Mtp;
+        let drive = self.layout == Layout::Drive;
         match (s.request_type, s.request) {
             // GET_DESCRIPTOR
             (0x80, 6) => match ((s.value >> 8) as u8, s.value as u8) {
                 (1, _) => cut(match self.layout {
                     Layout::Drive => &DEVICE,
                     Layout::Mtp => &DEVICE_MTP,
-                    Layout::Split => &DEVICE_SPLIT,
                     Layout::Serial => &DEVICE_SERIAL,
                 }),
                 (2, 0) => cut(match self.layout {
                     Layout::Drive => &CONFIG,
                     Layout::Mtp => &CONFIG_MTP,
-                    Layout::Split => &CONFIG_SPLIT,
                     Layout::Serial => &CONFIG_SERIAL,
                 }),
                 (3, 0) => cut(&LANGUAGES),
@@ -938,10 +834,12 @@ impl Cdc {
                 // CLEAR_FEATURE(ENDPOINT_HALT) on one of MTP's bulk
                 // endpoints after a stall [SIC 7.2.1]: the controller
                 // clears it.
-                if mtp && s.request_type == 0x02 && s.request == 1 && s.value == 0 && {
-                    let (out, inp) = self.layout.mtp_bulk();
-                    s.index == u16::from(out) || s.index == u16::from(inp)
-                } {
+                if mtp
+                    && s.request_type == 0x02
+                    && s.request == 1
+                    && s.value == 0
+                    && matches!(s.index, 0x04 | 0x85)
+                {
                     self.clear_halt = Some(s.index as u8);
                 }
                 Reply::Ack
@@ -962,30 +860,22 @@ impl Cdc {
             // Microsoft's OS descriptors (device or interface recipient).
             (0xC0 | 0xC1, MS_VENDOR_CODE) if mtp && s.index == 4 => {
                 self.ms_seen |= ms::COMPAT_ID;
-                cut(if split {
-                    &MS_COMPAT_ID_SPLIT
-                } else {
-                    &MS_COMPAT_ID
-                })
+                cut(&MS_COMPAT_ID)
             }
             (0xC0, MS_VENDOR_CODE) if mtp && s.index == 7 => {
                 self.ms_seen |= ms::SET20;
-                cut(if split {
-                    &MS_OS20_SET_SPLIT
-                } else {
-                    &MS_OS20_SET
-                })
+                cut(&MS_OS20_SET)
             }
             // MTP's class requests on its interface [SIC 5.2].
-            (0x21, mtp::CANCEL) if mtp && s.index == mtp_if && want == 6 => {
+            (0x21, mtp::CANCEL) if mtp && s.index == MTP_INTERFACE && want == 6 => {
                 self.pending_out = mtp::CANCEL;
                 Reply::Out(6)
             }
-            (0x21, mtp::DEVICE_RESET) if mtp && s.index == mtp_if && want == 0 => {
+            (0x21, mtp::DEVICE_RESET) if mtp && s.index == MTP_INTERFACE && want == 0 => {
                 self.mtp_reset = true;
                 Reply::Ack
             }
-            (0xA1, mtp::GET_DEVICE_STATUS) if mtp && s.index == mtp_if => {
+            (0xA1, mtp::GET_DEVICE_STATUS) if mtp && s.index == MTP_INTERFACE => {
                 let n = self.mtp_status_len.min(want);
                 self.buf_status = self.mtp_status;
                 Reply::In(&self.buf_status[..n])
