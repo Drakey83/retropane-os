@@ -348,7 +348,7 @@ pub const BUDGETS: &[Budget] = &[
     // (exFAT's entry sets, bitmap and boot region), the formatter
     // (`rp_fat::mkfs`: FAT12/16/32 and exFAT, the up-case table's ranges)
     // and the `format` command; 145,926 B measured (Thumb), + ~9%.
-    // 156 -> 244 KiB on 2026-10-25, WAITING FOR THE OWNER'S APPROVAL
+    // 156 -> 244 KiB on 2026-10-25 (approved by the owner 2026-10-26, R45)
     // (ADR-0037, R43): the cards over MTP (`rp-usb-mtp`'s responder, its
     // card layer on rp-fat's node layer, the loader's glue and the keypad
     // for a format's yes); one disk type for the drive and MTP keeps rp-fat
