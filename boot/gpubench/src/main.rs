@@ -8020,7 +8020,8 @@ mod image {
     /// about 2 hours 15 minutes).
     /// GC2AO's fixed soak (`RP_GPUBENCH_GC2AO_FIXED`, the owner, 2026-10-26:
     /// "i would only like to do a soak if it is in a fixed state"): only the
-    /// proven tile order (GC2AN's checker) with the layer, flat and textured.
+    /// proven tile orders (GC2AN's checker and columns) with the layer, flat
+    /// and textured.
     const GC2AO_FIXED: bool = option_env!("RP_GPUBENCH_GC2AO_FIXED").is_some();
 
     const GC2AO_ROUNDS: u32 = match option_env!("RP_GPUBENCH_GC2AO_ROUNDS") {
@@ -11778,8 +11779,12 @@ mod image {
             quiet: false,
             flat: false,
         };
-        let (il, ck) = (&gc2::PROOF_INTERLEAVED[..], &gc2::PROOF_CHECKER[..]);
-        let plans = [
+        let (il, ck, co) = (
+            &gc2::PROOF_INTERLEAVED[..],
+            &gc2::PROOF_CHECKER[..],
+            &gc2::PROOF_COLUMNS[..],
+        );
+        let plans: [OrderPlan; 8] = [
             plan(
                 "GC2AO flat layer interleaved",
                 "GC2AO 1 FLAT LAYER INTERLEAVED",
@@ -11816,9 +11821,23 @@ mod image {
                 &gc2::PROOF_TEX_LAYER[..],
                 ck,
             ),
+            plan(
+                "GC2AO flat layer columns",
+                "GC2AO 7 FLAT LAYER COLUMNS",
+                &gc2::PROOF_FLAT_LAYER[..],
+                co,
+            ),
+            plan(
+                "GC2AO tex layer columns",
+                "GC2AO 8 TEX LAYER COLUMNS",
+                &gc2::PROOF_TEX_LAYER[..],
+                co,
+            ),
         ];
         for p in &plans {
-            if GC2AO_FIXED && !p.name.ends_with("layer checker") {
+            if GC2AO_FIXED
+                && !(p.name.ends_with("layer checker") || p.name.ends_with("layer columns"))
+            {
                 continue;
             }
             gc2_orders(g, r, (tex, &mut *first, dsig), p);

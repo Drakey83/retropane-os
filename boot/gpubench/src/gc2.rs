@@ -2480,6 +2480,9 @@ const fn proof_ways(o: u8) -> [(usize, u8); CORNER_SCENES_EACH] {
 }
 pub const PROOF_CHECKER: [(usize, u8); CORNER_SCENES_EACH] = proof_ways(CHECKER);
 pub const PROOF_INTERLEAVED: [(usize, u8); CORNER_SCENES_EACH] = proof_ways(INTERLEAVED);
+/// GC2AN's columns order (consecutive tiles never in the same row): the
+/// fixed soak's second proven order.
+pub const PROOF_COLUMNS: [(usize, u8); CORNER_SCENES_EACH] = proof_ways(COLUMNS);
 pub const PROOF_ROUNDS: u32 = 100;
 
 /// Colours tried as a soak's poison, the most saturated first (no GC2

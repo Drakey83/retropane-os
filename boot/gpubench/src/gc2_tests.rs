@@ -1788,6 +1788,7 @@ fn gc2ao_puts_every_sample_clear_and_builds_the_proof() {
             (PROOF_CHECKER[i], PROOF_INTERLEAVED[i]),
             ((i, CHECKER), (i, INTERLEAVED))
         );
+        assert_eq!(PROOF_COLUMNS[i], (i, COLUMNS));
     }
     assert_eq!(PROOF_FLAT_LAYER[0], Scene::Proof(true, false, 0));
     assert_eq!(PROOF_TEX_BARE[0], Scene::Proof(false, true, 0));
