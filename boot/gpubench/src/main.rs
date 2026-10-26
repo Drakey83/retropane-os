@@ -7943,7 +7943,8 @@ mod image {
         || GC2_LADDER
         || GC2_CURE
         || GC2_TEXEL
-        || GC2_ORDERS;
+        || GC2_ORDERS
+        || GC2_PROOF;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -8005,6 +8006,21 @@ mod image {
     /// [`gc2::ORDER_TRY`]): the untextured fault generator in six tile
     /// orders at 149.50 / 1. About 6 minutes, unattended.
     const GC2_ORDERS: bool = option_env!("RP_GPUBENCH_GC2_ORDERS").is_some();
+
+    /// Run GC2AO, reminder R37 (`RP_GPUBENCH_GC2_PROOF`, see
+    /// [`gc2::proof_scene`]): both cures (the interleaved or checker order,
+    /// the centre phase) over the flat and textured corner sweeps at 149.50 /
+    /// 1, with one full layer and without. About 30 minutes, unattended.
+    const GC2_PROOF: bool = option_env!("RP_GPUBENCH_GC2_PROOF").is_some();
+
+    /// GC2AO's rounds a scene: [`gc2::PROOF_ROUNDS`] unless
+    /// `RP_GPUBENCH_GC2AO_ROUNDS` says otherwise (the owner, 2026-10-26: "we
+    /// can do a soak test now": the same six plans as a soak, 500 rounds,
+    /// about 2 hours 15 minutes).
+    const GC2AO_ROUNDS: u32 = match option_env!("RP_GPUBENCH_GC2AO_ROUNDS") {
+        Some(s) => parse_decimal(s, 1),
+        None => gc2::PROOF_ROUNDS,
+    };
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9378,7 +9394,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_ORDERS {
+            if GC2_PROOF {
+                "the 16-bit kinds' targets inside the safe region (GC2AO, R37: no map; both cures, the interleaved or checker tile order and the centre texture phase, over the flat and textured corner sweeps at 149.50 / 1, with one full layer and without; each target poisoned first),"
+            } else if GC2_ORDERS {
                 "the 16-bit kinds' targets inside the safe region (GC2AN, R37: no map; the untextured fault generator at 149.50 / 1 in six tile orders: reversed, rows, columns reversed, columns, checker, scrambled; each target poisoned first),"
             } else if GC2_TEXEL {
                 "the 16-bit kinds' targets inside the safe region (GC2AM, R37: no map; divide 1's texel-pick error by a phase sweep of GC2AL's faulting rectangle, then textured rectangles at 1:1, 2:1, 4:1 and 1:2 at their best phase at every corner place, at 149.50 and 117.00 / 1; each target poisoned first),"
@@ -9546,7 +9564,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_ORDERS {
+        let patch = if GC2_PROOF {
+            gc2::CORNER_SCENES_EACH * gc2::words(gc2::FT2) as usize
+        } else if GC2_ORDERS {
             gc2::ORDER_TRY_SCENES.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_TEXEL {
             gc2::PHASES * gc2::words(gc2::FT2) as usize
@@ -9911,7 +9931,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_ORDERS {
+                if GC2_PROOF {
+                    gc2_proof(g, &mut r, (tex, first, dsig));
+                } else if GC2_ORDERS {
                     gc2_try_orders(g, &mut r, (tex, first, dsig));
                 } else if GC2_TEXEL {
                     gc2_texel(g, &mut r, (tex, first, dsig));
@@ -11572,6 +11594,76 @@ mod image {
         );
     }
 
+    /// Run GC2AO (see [`GC2_PROOF`]): six plans at 149.50 / 1, each the corner
+    /// sweep ([`gc2::PROOF_ROUNDS`] rounds a scene, every target poisoned):
+    /// flat and textured in the interleaved order with one full layer and
+    /// without, and with the layer in GC2AN's checker order.
+    #[inline(never)]
+    fn gc2_proof(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let n = GC2AO_ROUNDS.min(GC2AE_ROUNDS);
+        log!(
+            "  GC2AO (R37): both cures over the corner sweeps at 149.50 / 1, {n} rounds a scene: flat and textured (centre phase u {} v {} / 65,536 texel), in the interleaved order with one full layer and without, and in the checker order with the layer",
+            gc2::best_centre_phase(184, 32),
+            gc2::best_centre_phase(160, 32)
+        );
+        let plan = |name, label, scenes, ways| OrderPlan {
+            name,
+            label,
+            scenes,
+            ways,
+            step: (gc2_step(23, 2, 0, 1), "149.50 / 1"),
+            secs: 3600,
+            rounds: n,
+            poison: true,
+            describe: 8,
+            pause: false,
+            quiet: false,
+            flat: false,
+        };
+        let (il, ck) = (&gc2::PROOF_INTERLEAVED[..], &gc2::PROOF_CHECKER[..]);
+        let plans = [
+            plan(
+                "GC2AO flat layer interleaved",
+                "GC2AO 1 FLAT LAYER INTERLEAVED",
+                &gc2::PROOF_FLAT_LAYER[..],
+                il,
+            ),
+            plan(
+                "GC2AO tex layer interleaved",
+                "GC2AO 2 TEX LAYER INTERLEAVED",
+                &gc2::PROOF_TEX_LAYER[..],
+                il,
+            ),
+            plan(
+                "GC2AO flat bare interleaved",
+                "GC2AO 3 FLAT NO LAYER INTERLEAVED",
+                &gc2::PROOF_FLAT_BARE[..],
+                il,
+            ),
+            plan(
+                "GC2AO tex bare interleaved",
+                "GC2AO 4 TEX NO LAYER INTERLEAVED",
+                &gc2::PROOF_TEX_BARE[..],
+                il,
+            ),
+            plan(
+                "GC2AO flat layer checker",
+                "GC2AO 5 FLAT LAYER CHECKER",
+                &gc2::PROOF_FLAT_LAYER[..],
+                ck,
+            ),
+            plan(
+                "GC2AO tex layer checker",
+                "GC2AO 6 TEX LAYER CHECKER",
+                &gc2::PROOF_TEX_LAYER[..],
+                ck,
+            ),
+        ];
+        for p in &plans {
+            gc2_orders(g, r, (tex, &mut *first, dsig), p);
+        }
+    }
+
     /// Run GC2AN (see [`GC2_ORDERS`]): the six orders in turn at 149.50 / 1,
     /// [`gc2::ORDER_TRY_ROUNDS`] rounds, the textured objects drawn flat,
     /// every target poisoned.
@@ -12614,6 +12706,7 @@ mod image {
             gc2::COLUMNS => rp_mbx3d_render::TileOrder::Columns,
             gc2::CHECKER => rp_mbx3d_render::TileOrder::Checker,
             gc2::SCRAMBLED => rp_mbx3d_render::TileOrder::Scrambled,
+            gc2::INTERLEAVED => rp_mbx3d_render::TileOrder::Interleaved,
             _ => rp_mbx3d_render::TileOrder::Rows,
         }
     }
@@ -12626,6 +12719,7 @@ mod image {
             gc2::COLUMNS => "columns",
             gc2::CHECKER => "checker",
             gc2::SCRAMBLED => "scrambled",
+            gc2::INTERLEAVED => "interleaved",
             _ => "rows",
         }
     }

@@ -1726,3 +1726,70 @@ fn gc2an_tries_every_order_on_the_fault_generator() {
     // At GC2AG's 17 of 400, an order with none in 400 is a real change.
     const { assert!(ORDER_TRY_ROUNDS >= 400) };
 }
+
+/// GC2AO: the centre phase keeps the most margin any phase can (1/(2p)
+/// texel at p / q pixels a texel), 1:1 needs none, the proof scenes
+/// differ only in the layer and the paint, and the textured ones carry
+/// the centre phase in u and v.
+#[test]
+fn gc2ao_puts_every_sample_clear_and_builds_the_proof() {
+    let one = 65_536i64;
+    let margin = |px: i64, tx: i64, ph: i64| {
+        (0..px)
+            .map(|m| {
+                let f = (ph + (2 * m + 1) * tx * one / (2 * px)).rem_euclid(one);
+                f.min(one - f)
+            })
+            .min()
+            .unwrap_or(one)
+    };
+    // 184 pixels for 32 texels: 23 / 4, the best is 1/46 texel.
+    let u = best_centre_phase(184, 32);
+    assert!(
+        (margin(184, 32, u) - one / 46).abs() <= 64,
+        "{}",
+        margin(184, 32, u)
+    );
+    // 160 pixels for 32: 5 / 1, the best is 1/10 texel.
+    let v = best_centre_phase(160, 32);
+    assert!((margin(160, 32, v) - one / 10).abs() <= 64);
+    // 1:1 samples sit at texel centres with no phase; 1:2 needs half.
+    assert_eq!(best_centre_phase(32, 32), 0);
+    assert_eq!(margin(32, 32, 0), one / 2);
+    assert_eq!(margin(16, 32, best_centre_phase(16, 32)), one / 2);
+    let t = test_tex();
+    for i in 0..CORNER_SCENES_EACH {
+        let get = |layer, tex| -> std::vec::Vec<Draw> {
+            let (_, s) = proof_scene(layer, tex, i, t);
+            s.iter().flatten().copied().collect()
+        };
+        let (fl, tl, fb, tb) = (
+            get(true, false),
+            get(true, true),
+            get(false, false),
+            get(false, true),
+        );
+        assert_eq!(fl.len(), 2 + CORNER_RECTS);
+        assert_eq!(fb.len(), 1 + CORNER_RECTS);
+        assert_eq!(fl[0].paint, Paint::Flat(HIDDEN_LAYER));
+        assert_eq!(fl[1..], fb[..], "the layer the only difference");
+        assert_eq!(tl[1..], tb[..]);
+        for (a, b) in fl[2..].iter().zip(&tl[2..]) {
+            assert_eq!(a.corners, b.corners);
+            assert_eq!(a.paint, Paint::Flat(UNTEXTURED));
+            let Paint::Texture { uv, .. } = b.paint else {
+                panic!("textured");
+            };
+            assert_eq!(uv[0], ((u * 2048 / one) as i32, (v * 2048 / one) as i32));
+        }
+        assert_eq!(PROOF_TEX_LAYER[i], Scene::Proof(true, true, i));
+        assert_eq!(PROOF_FLAT_BARE[i], Scene::Proof(false, false, i));
+        assert_eq!(
+            (PROOF_CHECKER[i], PROOF_INTERLEAVED[i]),
+            ((i, CHECKER), (i, INTERLEAVED))
+        );
+    }
+    assert_eq!(PROOF_FLAT_LAYER[0], Scene::Proof(true, false, 0));
+    assert_eq!(PROOF_TEX_BARE[0], Scene::Proof(false, true, 0));
+    const { assert!(PROOF_ROUNDS >= 100) };
+}

@@ -1595,7 +1595,12 @@ fn rectangular_textures_draw_as_the_device_did() {
 fn new_tile_orders_list_every_tile_once_and_draw_the_same() {
     for (cols, rows) in [(60, 40), (7, 5), (1, 1), (128, 128)] {
         let n = cols * rows;
-        for order in [TileOrder::Columns, TileOrder::Checker, TileOrder::Scrambled] {
+        for order in [
+            TileOrder::Columns,
+            TileOrder::Checker,
+            TileOrder::Scrambled,
+            TileOrder::Interleaved,
+        ] {
             let got: Vec<usize> = (0..2 * n)
                 .filter_map(|i| crate::order_tile(order, i, cols, rows))
                 .collect();
@@ -1606,6 +1611,18 @@ fn new_tile_orders_list_every_tile_once_and_draw_the_same() {
                 (0..n).collect::<Vec<_>>(),
                 "{order:?} {cols}x{rows}"
             );
+            // Interleaved: no side-by-side neighbour next (rows of 4 tiles
+            // or more), and the rows strictly from the top.
+            if order == TileOrder::Interleaved && cols >= 4 {
+                for w in got.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    assert!(
+                        !(a / cols == b / cols && (a % cols).abs_diff(b % cols) == 1),
+                        "{cols}x{rows}: {a} then {b}"
+                    );
+                    assert!(b / cols >= a / cols, "top down");
+                }
+            }
             if order == TileOrder::Checker {
                 for w in got.windows(2) {
                     let (a, b) = (w[0], w[1]);
@@ -1627,7 +1644,12 @@ fn new_tile_orders_list_every_tile_once_and_draw_the_same() {
             .collect()
     };
     let a = words(&g);
-    for order in [TileOrder::Columns, TileOrder::Checker, TileOrder::Scrambled] {
+    for order in [
+        TileOrder::Columns,
+        TileOrder::Checker,
+        TileOrder::Scrambled,
+        TileOrder::Interleaved,
+    ] {
         g.r.set_tile_order(order);
         g.r.invalidate_all();
         let f = g.frame();

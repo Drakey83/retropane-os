@@ -1068,6 +1068,13 @@ pub enum TileOrder {
     /// index stepped by [`SCRAMBLE`], a prime no target's tile count is a
     /// multiple of): consecutive tiles far apart and unrelated (run GC2AN).
     Scrambled,
+    /// Row by row from the top, each row's even tiles first, then its odd
+    /// ones: no tile follows its side-by-side neighbour (GC2AN: the tile
+    /// race at divide 1 needs exactly that), and the picture still fills
+    /// from the top down, as the display scans it out (R20's tear-free
+    /// design), where the checkerboard and scrambled orders jump about
+    /// (run GC2AO).
+    Interleaved,
 }
 
 /// [`TileOrder::Scrambled`]'s step: a prime above 128 (so it divides no
@@ -1095,6 +1102,11 @@ pub const fn order_tile(order: TileOrder, i: usize, cols: usize, rows: usize) ->
             }
         }
         TileOrder::Scrambled if i < n => Some((n - 1 - i) * SCRAMBLE % n),
+        TileOrder::Interleaved if i < n => {
+            let (y, j, half) = (i / cols, i % cols, cols.div_ceil(2));
+            let x = if j < half { 2 * j } else { 2 * (j - half) + 1 };
+            Some(y * cols + x)
+        }
         _ => None,
     }
 }
@@ -1627,7 +1639,10 @@ impl Renderer {
             TileOrder::Rows => fwd = Some(todo.iter()),
             TileOrder::Reversed => rev = Some(todo.iter_rev()),
             TileOrder::ColumnsReversed => cols_rev = Some(todo.iter_cols_rev(cols, rows)),
-            TileOrder::Columns | TileOrder::Checker | TileOrder::Scrambled => {
+            TileOrder::Columns
+            | TileOrder::Checker
+            | TileOrder::Scrambled
+            | TileOrder::Interleaved => {
                 other = Some(
                     (0..2 * cols * rows)
                         .filter_map(move |i| order_tile(order, i, cols, rows))

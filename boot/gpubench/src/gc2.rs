@@ -548,6 +548,9 @@ pub enum Scene {
     Phase(usize),
     /// Run GC2AM's ratio `r`, scene `i` (see [`ratio_scene`]).
     Ratio(usize, usize),
+    /// Run GC2AO's proof: the layer or not, textured or flat, scene `i`
+    /// (see [`proof_scene`]).
+    Proof(bool, bool, usize),
 }
 
 /// The objects a scene holds through [`order_scene_wide`]: a scene's own
@@ -1033,6 +1036,9 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     if let Scene::Ratio(r, i) = s {
         return ratio_scene(r, i, t);
     }
+    if let Scene::Proof(layer, textured, i) = s {
+        return proof_scene(layer, textured, i, t);
+    }
     let (bg, slots) = order_scene(s, t);
     let mut out = [None; SLOTS];
     out[..3].copy_from_slice(&slots);
@@ -1293,6 +1299,8 @@ pub const COLUMNS_REVERSED: u8 = 2;
 pub const COLUMNS: u8 = 3;
 pub const CHECKER: u8 = 4;
 pub const SCRAMBLED: u8 = 5;
+/// Run GC2AO's order (`TileOrder::Interleaved`).
+pub const INTERLEAVED: u8 = 6;
 
 /// Run GC2AN (the owner, 2026-10-26: "i want to go for broke, i wont let go
 /// of this till we crack 150", then "150 fast lossless"): GC2AG's
@@ -1491,7 +1499,8 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         | Scene::CornerUv(_)
         | Scene::Cure(..)
         | Scene::Phase(_)
-        | Scene::Ratio(..) => (BLACK, [None, None, None]),
+        | Scene::Ratio(..)
+        | Scene::Proof(..) => (BLACK, [None, None, None]),
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Cured(_) => (BLACK, [None, None, None]),
             base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
@@ -1542,7 +1551,11 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
         Scene::Geo(_) | Scene::Quad(_) => patch_corner(0),
-        Scene::Corner(..) | Scene::CornerUv(_) | Scene::Cure(..) | Scene::Ratio(..) => (0, 0),
+        Scene::Corner(..)
+        | Scene::CornerUv(_)
+        | Scene::Cure(..)
+        | Scene::Ratio(..)
+        | Scene::Proof(..) => (0, 0),
         Scene::Phase(_) => (PHASE_RECT.0, PHASE_RECT.1),
         Scene::Fix(b, _) => match FIX_BASE[b] {
             Scene::Kind(FT2) => patch_corner(0),
@@ -2358,6 +2371,116 @@ const fn ratio_set(r: usize) -> [Scene; CURE_SCENES] {
 }
 pub const RATIO_SCENES: [[Scene; CURE_SCENES]; 4] =
     [ratio_set(0), ratio_set(1), ratio_set(2), ratio_set(3)];
+
+/// Run GC2AO (the owner, 2026-10-26: "Build the combined proof run: both
+/// cures together over the flat and textured corner sweeps at 149.50 / 1,
+/// then an overnight soak"): GC2AJ's corner sweep (six rectangles a scene,
+/// all 128 places of a tile) flat, and textured at the phase that keeps
+/// every centre sample furthest from a texel edge ([`best_centre_phase`],
+/// GC2AM: the core samples at pixel centres), with one full hidden layer
+/// or none, in the interleaved order (rows from the top, each row's even
+/// tiles then its odd ones) or GC2AN's checker.
+#[must_use]
+pub fn proof_scene(layer: bool, textured: bool, i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    if layer {
+        out[n] = Some(flat(HIDDEN_LAYER, false));
+        n += 1;
+    }
+    if let Some(g) = slots
+        .iter()
+        .flatten()
+        .find(|d| !matches!(d.paint, Paint::Texture { .. }))
+    {
+        out[n] = Some(*g);
+        n += 1;
+    }
+    let side = t.t8888.side() as i64;
+    for j in 0..CORNER_RECTS {
+        let ((x0, y0, x1, y1), _) = corner_rect(i, j);
+        let d = Draw::rect(
+            x0,
+            y0,
+            x1 - x0,
+            y1 - y0,
+            if textured {
+                Paint::texture(t.t8888)
+            } else {
+                Paint::Flat(UNTEXTURED)
+            },
+        );
+        out[n] = Some(match d.paint {
+            Paint::Texture { tex, uv, tint } => {
+                // The phase in UV units: a texel is UV_ONE / side.
+                let to_uv = |ph: i64| (ph * i64::from(UV_ONE) / side / 65_536) as i32;
+                let pu = to_uv(best_centre_phase(i64::from(x1 - x0), side));
+                let pv = to_uv(best_centre_phase(i64::from(y1 - y0), side));
+                Draw {
+                    paint: Paint::Texture {
+                        tex,
+                        uv: uv.map(|(u, v)| (u + pu, v + pv)),
+                        tint,
+                    },
+                    ..d
+                }
+            }
+            _ => d,
+        });
+        n += 1;
+    }
+    (bg, out)
+}
+
+/// The phase (in 65,536ths of a texel) that keeps every pixel-centre sample
+/// of `px` pixels showing `texels` texels furthest from a texel edge: the
+/// samples sit at phase + (m + 1/2) texels / px; searched in 1/1,024-texel
+/// steps over one texel (GC2AM: divide 1's error is under 0.009 texel and
+/// one-sided, so the margin, not the side, is what counts).
+#[must_use]
+pub fn best_centre_phase(px: i64, texels: i64) -> i64 {
+    let one = 65_536i64;
+    let margin = |ph: i64| {
+        (0..px)
+            .map(|m| {
+                let f = (ph + (2 * m + 1) * texels * one / (2 * px)).rem_euclid(one);
+                f.min(one - f)
+            })
+            .min()
+            .unwrap_or(one)
+    };
+    (0..1024)
+        .map(|k| k * 64)
+        .max_by_key(|&ph| (margin(ph), -ph))
+        .unwrap_or(0)
+}
+
+const fn proof_set(layer: bool, textured: bool) -> [Scene; CORNER_SCENES_EACH] {
+    let mut s = [Scene::Proof(false, false, 0); CORNER_SCENES_EACH];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::Proof(layer, textured, i);
+        i += 1;
+    }
+    s
+}
+pub const PROOF_FLAT_LAYER: [Scene; CORNER_SCENES_EACH] = proof_set(true, false);
+pub const PROOF_TEX_LAYER: [Scene; CORNER_SCENES_EACH] = proof_set(true, true);
+pub const PROOF_FLAT_BARE: [Scene; CORNER_SCENES_EACH] = proof_set(false, false);
+pub const PROOF_TEX_BARE: [Scene; CORNER_SCENES_EACH] = proof_set(false, true);
+const fn proof_ways(o: u8) -> [(usize, u8); CORNER_SCENES_EACH] {
+    let mut w = [(0, CHECKER); CORNER_SCENES_EACH];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        w[i] = (i, o);
+        i += 1;
+    }
+    w
+}
+pub const PROOF_CHECKER: [(usize, u8); CORNER_SCENES_EACH] = proof_ways(CHECKER);
+pub const PROOF_INTERLEAVED: [(usize, u8); CORNER_SCENES_EACH] = proof_ways(INTERLEAVED);
+pub const PROOF_ROUNDS: u32 = 100;
 
 /// Colours tried as a soak's poison, the most saturated first (no GC2
 /// scene's Gouraud or texture reaches them, by design; [`absent16`]
