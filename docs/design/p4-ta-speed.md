@@ -331,6 +331,11 @@ before its first TA way, and never between TA frames (a render that hangs
 still resets the core and sets it up again, the recovery). `emu-tabench`
 passes.
 
+**Run 7 on the X51v (2026-10-26): 148 of 150 TA renders right, the two
+hangs each the first render after a set-up** (C81's last piece); `0x85C`
+bit 7 makes no difference (C78, R37 done). The speed table is in
+`docs/hw/2700g.md` "P4".
+
 
 ## The choices for the owner
 
