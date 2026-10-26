@@ -1586,3 +1586,52 @@ fn rectangular_textures_draw_as_the_device_did() {
         assert_eq!(p & 0xFF_FFFF, want, "texel ({x},{y})");
     }
 }
+
+/// GC2AN's orders: each lists every tile exactly once (Columns' and
+/// Scrambled's first half, Checker's two passes), Checker never lists a
+/// tile's neighbour next, and every order draws the same picture as row
+/// order through the model.
+#[test]
+fn new_tile_orders_list_every_tile_once_and_draw_the_same() {
+    for (cols, rows) in [(60, 40), (7, 5), (1, 1), (128, 128)] {
+        let n = cols * rows;
+        for order in [TileOrder::Columns, TileOrder::Checker, TileOrder::Scrambled] {
+            let got: Vec<usize> = (0..2 * n)
+                .filter_map(|i| crate::order_tile(order, i, cols, rows))
+                .collect();
+            let mut sorted = got.clone();
+            sorted.sort_unstable();
+            assert_eq!(
+                sorted,
+                (0..n).collect::<Vec<_>>(),
+                "{order:?} {cols}x{rows}"
+            );
+            if order == TileOrder::Checker {
+                for w in got.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    let (dx, dy) = ((a % cols).abs_diff(b % cols), (a / cols).abs_diff(b / cols));
+                    assert!(dx + dy != 1, "{cols}x{rows}: {a} then its neighbour {b}");
+                }
+            }
+        }
+    }
+    let mut g = rig(480, 640);
+    let tex = columns(&mut g);
+    let c = [0xFF00_0000, 0xFFFF_FFFF, 0xFF10_20A0, 0xFFFF_E000];
+    g.set(0, Some(Draw::rect(0, 0, 480, 640, Paint::Gouraud(c))));
+    g.set(1, Some(Draw::rect(43, 45, 400, 560, Paint::texture(tex))));
+    g.frame();
+    let words = |g: &Rig| -> Vec<u32> {
+        (0..480 * 640)
+            .map(|i| g.mem.px(SCREEN.at, SCREEN.stride, i % 480, i / 480))
+            .collect()
+    };
+    let a = words(&g);
+    for order in [TileOrder::Columns, TileOrder::Checker, TileOrder::Scrambled] {
+        g.r.set_tile_order(order);
+        g.r.invalidate_all();
+        let f = g.frame();
+        assert_eq!(f.tiles, 60 * 40, "{order:?}");
+        assert_eq!(words(&g), a, "{order:?}");
+    }
+}

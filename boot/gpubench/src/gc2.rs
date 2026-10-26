@@ -1288,6 +1288,29 @@ pub const ORDER_SCENES: [Scene; 42] = {
 pub const ROWS: u8 = 0;
 pub const REVERSED: u8 = 1;
 pub const COLUMNS_REVERSED: u8 = 2;
+/// Run GC2AN's orders (rp-mbx3d-render's `TileOrder::Columns`, `Checker`,
+/// `Scrambled`).
+pub const COLUMNS: u8 = 3;
+pub const CHECKER: u8 = 4;
+pub const SCRAMBLED: u8 = 5;
+
+/// Run GC2AN (the owner, 2026-10-26: "i want to go for broke, i wont let go
+/// of this till we crack 150", then "150 fast lossless"): GC2AG's
+/// untextured fault generator (FT2's scene with the ring over one full
+/// layer, the quad flat: 17 of 400 wrong at 149.50 / 1 reversed, the tile
+/// race alone) in six tile orders. GC2AL: rows 120 against reversed 20 of
+/// 2,200, so the order matters; the new orders keep tiles drawn one after
+/// another apart in memory.
+pub const ORDER_TRY: [(usize, u8); 6] = [
+    (0, REVERSED),
+    (0, ROWS),
+    (0, COLUMNS_REVERSED),
+    (0, COLUMNS),
+    (0, CHECKER),
+    (0, SCRAMBLED),
+];
+pub const ORDER_TRY_SCENES: [Scene; 1] = [Scene::Fix(0, 8)];
+pub const ORDER_TRY_ROUNDS: u32 = 400;
 
 /// Run GC2O's ways: (an [`ORDER_SCENES`] index, its tile order): the first
 /// ten scenes in all three orders, the sweeps' 32 in the two new ones (row

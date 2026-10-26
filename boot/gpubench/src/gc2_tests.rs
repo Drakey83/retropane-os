@@ -1704,3 +1704,25 @@ fn gc2am_measures_the_error_and_keeps_the_margin() {
     );
     const { assert!(PHASES < 42 && PHASE_ROUNDS >= 3 && RATIO_ROUNDS >= 30) };
 }
+
+/// GC2AN's plan: the untextured fault generator (GC2AG's) in all six
+/// orders, each order once, the baseline (reversed) first.
+#[test]
+fn gc2an_tries_every_order_on_the_fault_generator() {
+    assert_eq!(ORDER_TRY_SCENES, [Scene::Fix(0, 8)]);
+    let orders: std::vec::Vec<u8> = ORDER_TRY.iter().map(|w| w.1).collect();
+    assert_eq!(
+        orders,
+        [
+            REVERSED,
+            ROWS,
+            COLUMNS_REVERSED,
+            COLUMNS,
+            CHECKER,
+            SCRAMBLED
+        ]
+    );
+    assert!(ORDER_TRY.iter().all(|w| w.0 == 0));
+    // At GC2AG's 17 of 400, an order with none in 400 is a real change.
+    const { assert!(ORDER_TRY_ROUNDS >= 400) };
+}

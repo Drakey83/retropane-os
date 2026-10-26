@@ -1055,6 +1055,48 @@ pub enum TileOrder {
     Reversed,
     /// Row by row from the top, each row from the right.
     ColumnsReversed,
+    /// Column by column from the right, each from the bottom: tiles drawn
+    /// one after another sit a tile row (16 lines of the target) apart in
+    /// memory, not side by side in the same lines (`rp-gpubench` run GC2AN:
+    /// does the tile race at divide 1 need neighbours in memory?).
+    Columns,
+    /// A checkerboard: every tile whose x + y is even, from the last, then
+    /// every odd one, from the last: no tile follows its neighbour (run
+    /// GC2AN).
+    Checker,
+    /// Every tile once, in a fixed scrambled order (the region array's
+    /// index stepped by [`SCRAMBLE`], a prime no target's tile count is a
+    /// multiple of): consecutive tiles far apart and unrelated (run GC2AN).
+    Scrambled,
+}
+
+/// [`TileOrder::Scrambled`]'s step: a prime above 128 (so it divides no
+/// count of at most 128 x 128 tiles) and far from any row length.
+pub const SCRAMBLE: usize = 1009;
+
+/// The `i`th tile number (of `cols` x `rows`) [`TileOrder::Columns`],
+/// [`TileOrder::Checker`] or [`TileOrder::Scrambled`] lists, for `i` in `0..2
+/// * cols * rows` (the checkerboard's two passes; the others use the first
+/// half); `None` where the order lists nothing at `i`.
+#[must_use]
+pub const fn order_tile(order: TileOrder, i: usize, cols: usize, rows: usize) -> Option<usize> {
+    let n = cols * rows;
+    match order {
+        TileOrder::Columns if i < n => {
+            let (x, y) = (cols - 1 - i / rows, rows - 1 - i % rows);
+            Some(y * cols + x)
+        }
+        TileOrder::Checker => {
+            let k = n - 1 - i % n;
+            if (k % cols + k / cols) % 2 == i / n {
+                Some(k)
+            } else {
+                None
+            }
+        }
+        TileOrder::Scrambled if i < n => Some((n - 1 - i) * SCRAMBLE % n),
+        _ => None,
+    }
 }
 
 impl Renderer {
@@ -1579,19 +1621,29 @@ impl Renderer {
         let (mut quads, mut cost) = (0, 0);
         let (mut row, mut row_mask) = (u32::MAX, 0u64);
         let (cols, rows) = (self.cols as usize, self.rows as usize);
-        let (mut fwd, mut rev, mut cols_rev) = (None, None, None);
-        match self.tile_order {
+        let (mut fwd, mut rev, mut cols_rev, mut other) = (None, None, None, None);
+        let order = self.tile_order;
+        match order {
             TileOrder::Rows => fwd = Some(todo.iter()),
             TileOrder::Reversed => rev = Some(todo.iter_rev()),
             TileOrder::ColumnsReversed => cols_rev = Some(todo.iter_cols_rev(cols, rows)),
+            TileOrder::Columns | TileOrder::Checker | TileOrder::Scrambled => {
+                other = Some(
+                    (0..2 * cols * rows)
+                        .filter_map(move |i| order_tile(order, i, cols, rows))
+                        .filter(|&k| todo.has(k)),
+                );
+            }
         }
         let mut next = || {
             if let Some(f) = &mut fwd {
                 f.next()
             } else if let Some(r) = &mut rev {
                 r.next()
+            } else if let Some(c) = &mut cols_rev {
+                c.next()
             } else {
-                cols_rev.as_mut().and_then(Iterator::next)
+                other.as_mut().and_then(Iterator::next)
             }
         };
         while let Some(k) = next() {
