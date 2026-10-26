@@ -1329,19 +1329,24 @@ mod image {
         let _ = r.release(&mut g.pool);
     }
 
-    /// A small fixed string buffer for log labels.
-    struct Name {
-        b: [u8; 96],
+    /// A small fixed string buffer for log labels (`N` bytes; GC2AV's
+    /// placed words take a longer one).
+    struct Name<const N: usize = 96> {
+        b: [u8; N],
         n: usize,
     }
 
-    impl Name {
+    impl<const N: usize> Name<N> {
+        const fn new() -> Self {
+            Self { b: [0; N], n: 0 }
+        }
+
         fn as_str(&self) -> &str {
             core::str::from_utf8(&self.b[..self.n]).unwrap_or("?")
         }
     }
 
-    impl Write for Name {
+    impl<const N: usize> Write for Name<N> {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             for &c in s.as_bytes() {
                 if self.n < self.b.len() {
@@ -7949,7 +7954,8 @@ mod image {
         || GC2_PUNCH
         || GC2_REGS
         || GC2_664
-        || GC2_TIMER;
+        || GC2_TIMER
+        || GC2_WHERE;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -8062,6 +8068,12 @@ mod image {
     /// each higher bit, and every tile order with and without it. About 5
     /// minutes, unattended.
     const GC2_TIMER: bool = option_env!("RP_GPUBENCH_GC2_TIMER").is_some();
+
+    /// Run GC2AV, reminder R37 (`RP_GPUBENCH_GC2_WHERE`): where GC2AU's
+    /// remaining fault is (reversed, `0x664` = 15: about 15 words a render),
+    /// every wrong word placed by tile and row, against the timer at 0.
+    /// About 2 minutes, unattended.
+    const GC2_WHERE: bool = option_env!("RP_GPUBENCH_GC2_WHERE").is_some();
 
     /// Run GC2AT, reminder R37 (`RP_GPUBENCH_GC2_664_MIX`, with
     /// `RP_GPUBENCH_GC2_664`): GC2AS again with its values bit-reversed and
@@ -9450,7 +9462,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_TIMER {
+            if GC2_WHERE {
+                "the 16-bit kinds' targets inside the safe region (GC2AV, R37: no map; GC2AM's every-render texel fault, the opaque path's, every wrong word placed by tile and row, 0x664 = 15 then 0, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_TIMER {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R37: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R37: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
@@ -9630,7 +9644,7 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_REGS || GC2_664 || GC2_TIMER {
+        let patch = if GC2_REGS || GC2_664 || GC2_TIMER || GC2_WHERE {
             gc2::words(gc2::FT2) as usize
         } else if GC2_PUNCH {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
@@ -10003,7 +10017,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_TIMER {
+                if GC2_WHERE {
+                    gc2_where(g, &mut r, (tex, first, dsig));
+                } else if GC2_TIMER {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
@@ -11675,6 +11691,181 @@ mod image {
             },
         );
     }
+
+    /// Run GC2AV (see [`GC2_WHERE`]): GC2AU's best way (GC2AM's phase scene
+    /// 0, reversed, `0x664` = 15, 149.50 / 1, poisoned) for
+    /// [`GC2AV_RENDERS`] renders, then the timer at 0 for as many: every
+    /// wrong word placed (its tile, the row in the tile, the pixel pair's
+    /// x, the right and the read value; the first [`GC2AV_LIST`] a render
+    /// listed), and each way's tiles and rows counted over its renders, so
+    /// the same few places every render (a targeted redo, a placement rule)
+    /// can be told from places that wander.
+    #[inline(never)]
+    fn gc2_where(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let tag = "GC2AV";
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < words {
+            log!("  {tag}: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        let want = &mut rest[..words];
+        log!(
+            "  {tag} (R37): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; every wrong word placed, 0x664 = 15 then 0"
+        );
+        r.set_tile_order(tile_order(gc2::REVERSED));
+        r.set_header_xor(0, 0);
+        r.set_tsp_or(0);
+        g.over = Over::NONE;
+        let set = |g: &mut Rig, r: &mut Renderer| {
+            let (bg, slots) = gc2::order_scene_wide(gc2::Scene::Phase(0), tex);
+            let _ = r.set_background(Some(bg));
+            for (n, d) in slots.into_iter().enumerate() {
+                g.set(r, n, d);
+            }
+        };
+        let target = Target {
+            picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        r.start_clean();
+        set(g, r);
+        r.invalidate_all();
+        let t0 = g.frame(r, target);
+        gc2_take_at(g, at, want);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        let again = [
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+        ];
+        log!(
+            "  {tag} reference: {t0:?} us, renders 2-3 {again:?} words off it; {}",
+            Gc2Held(&side)
+        );
+        if t0.is_none() || again != [Some(0); 2] {
+            log!("  {tag}: the reference isn't repeatable: nothing run");
+            return;
+        }
+        let poison = gc2::absent16(want, &gc2::POISON);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let want_regs = gc2_clock_want(step_speed(g, s), s.div);
+        let Some(lock) = clock_apply(g, s) else {
+            clock_restore(&mut g.e.regs);
+            log!("  {tag}: 149.50 / 1 didn't take; Windows Mobile's put back");
+            return;
+        };
+        log!("  {tag} 149.50 / 1: lock {lock}");
+        clock_readback(g);
+        // The picture is 480 x 640 RGB565, two pixels a word (240 words a
+        // row); tiles 8 x 16 (60 x 40).
+        const ROW_WORDS: usize = 240;
+        const TILES_X: usize = 480 / 8;
+        for (way, timer) in [("timer 15", 15u32), ("timer 0", 0)] {
+            let mut rows = [0u32; 16];
+            let mut tiles = [0u16; TILES_X * 40];
+            let mut totals = [0i32; GC2AV_RENDERS];
+            for (i, t) in totals.iter_mut().enumerate() {
+                set(g, r);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    *t = -1;
+                    continue;
+                }
+                g.over = Over::of(&[(0x664, timer)]);
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, want_regs, &mut base, &mut side);
+                g.over = Over::NONE;
+                g.e.regs.write32(MBX + 0x664, 0);
+                *t = w.map_or(-1, |x| x as i32);
+                if w.unwrap_or(0) == 0 {
+                    continue;
+                }
+                // `first` holds the picture as read.
+                let mut listed = 0;
+                let mut line = Name::<1024>::new();
+                for (j, (&got, &right)) in first[..words].iter().zip(want.iter()).enumerate() {
+                    if got == right {
+                        continue;
+                    }
+                    let (y, x) = (j / ROW_WORDS, (j % ROW_WORDS) * 2);
+                    let tile = (y / 16) * TILES_X + x / 8;
+                    rows[y % 16] += 1;
+                    tiles[tile] = tiles[tile].saturating_add(1);
+                    if listed < GC2AV_LIST {
+                        let _ = write!(
+                            line,
+                            " ({},{}) r{} x{} {:08x}>{:08x};",
+                            x / 8,
+                            y / 16,
+                            y % 16,
+                            x,
+                            right,
+                            got
+                        );
+                        listed += 1;
+                    }
+                }
+                log!(
+                    "  GC2AV {way} render {i}: {} words wrong:{}",
+                    *t,
+                    line.as_str()
+                );
+            }
+            log!("  GC2AV {way}: words wrong by render {totals:?}; by row in the tile {rows:?}");
+            // The tiles hit, most first (at most GC2AV_TILES), as (x,y)xcount.
+            let mut line = Name::<1024>::new();
+            let mut hit = 0;
+            for _ in 0..GC2AV_TILES {
+                let Some((best, &c)) = tiles.iter().enumerate().max_by_key(|&(_, &c)| c) else {
+                    break;
+                };
+                if c == 0 {
+                    break;
+                }
+                let _ = write!(line, " ({},{})x{c}", best % TILES_X, best / TILES_X);
+                tiles[best] = 0;
+                hit += 1;
+            }
+            let rest = tiles.iter().filter(|&&c| c > 0).count();
+            log!(
+                "  GC2AV {way}: tiles hit, most first:{} (and {rest} more after these {hit})",
+                line.as_str()
+            );
+            let mut l3 = heapless_name();
+            let _ = write!(
+                l3,
+                "{}",
+                if timer == 15 {
+                    "TIMER 15 DONE"
+                } else {
+                    "TIMER 0 DONE"
+                }
+            );
+            soak_label(g, ["GC2AV WHERE", "149.50 / 1", l3.as_str()], SOAK_BLUE);
+        }
+        g.over = Over::NONE;
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        set(g, r);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!("  GC2AV: done; the control at Windows Mobile's clock after: {control:?} words off");
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2AV's renders a way, wrong words listed a render, tiles listed a way.
+    const GC2AV_RENDERS: usize = 20;
+    const GC2AV_LIST: usize = 24;
+    const GC2AV_TILES: usize = 40;
 
     /// Run GC2AU (see [`GC2_TIMER`]): GC2AT's set-up (GC2AM's phase scene 0,
     /// opaque, poisoned, 149.50 / 1). (1) The clean control GC2AS and GC2AT

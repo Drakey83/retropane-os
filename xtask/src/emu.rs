@@ -5389,6 +5389,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
         ],
     )?;
+    let run_gc2av = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_WHERE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2au = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5454,7 +5462,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 88] = [
+    let runs: [GpubenchRun; 89] = [
         (
             "run A",
             &run_a,
@@ -5704,6 +5712,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AV (R37): every wrong word placed (the emulator draws
+        // exactly, so none).
+        (
+            "run GC2AV",
+            &run_gc2av,
+            &[
+                "GC2AV (R37): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; every wrong word placed",
+                "GC2AV reference:",
+                "GC2AV timer 15: words wrong by render [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; by row in the tile [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]",
+                "GC2AV timer 0: tiles hit, most first: (and 0 more after these 0)",
+                "GC2AV: done; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
