@@ -375,7 +375,12 @@ the record.
   Windows' generic portable-device icon.
 
 - **Q6. The look in Explorer, each card with its own icon (raised by the
-  owner 2026-10-26, R61; open).** Measured on the X51v: in the MTP view
+  owner 2026-10-26, R61). Voted 2026-10-26: C, today's MTP layout (the
+  owner: "just do c").** Axim X51v with the PDA icon, holding SD Card, CF
+  Card and (with R21) Internal as storages with Windows' plain drive icon
+  and each its own capacity bar; no glass-tile layer, no split default.
+  Options A, B and D and the measurements behind them are kept below as
+  the record. Measured on the X51v: in the MTP view
   Windows' driver offers an icon on the device only and no resource of any
   kind on a storage (`tools/wpdprobe`), so every card is Windows' plain
   drive there (Windows Mobile's own MTP looks the same). **The owner's
