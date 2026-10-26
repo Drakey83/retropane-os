@@ -7939,7 +7939,8 @@ mod image {
         || GC2_INNER
         || GC2_GEO
         || GC2_QUAD
-        || GC2_CORNER;
+        || GC2_CORNER
+        || GC2_LADDER;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -7978,6 +7979,13 @@ mod image {
     /// layer alone (the recommended cure), flat and textured, and GC2AI's
     /// faulting way as the control. About 20 minutes, unattended.
     const GC2_CORNER: bool = option_env!("RP_GPUBENCH_GC2_CORNER").is_some();
+
+    /// Run GC2AK, reminder R37 (`RP_GPUBENCH_GC2_LADDER`, see
+    /// [`gc2::LADDER_STEPS`]): GC2AJ's flat sweep (with its control) and
+    /// the textured sweep with the u and v shift, at every divide-1 step
+    /// from 149.50 down to 108.33 and at 149.50 / 2. About an hour,
+    /// unattended.
+    const GC2_LADDER: bool = option_env!("RP_GPUBENCH_GC2_LADDER").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9351,7 +9359,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_CORNER {
+            if GC2_LADDER {
+                "the 16-bit kinds' targets inside the safe region (GC2AK, R37: no map; GC2AJ's corner sweep, flat and textured with the u and v shift, one full layer alone, at 149.50, 139.75, 133.25, 117.00, 108.33 / 1 and 149.50 / 2; each target poisoned first),"
+            } else if GC2_CORNER {
                 "the 16-bit kinds' targets inside the safe region (GC2AJ, R37: no map; every corner place of an 8 x 16 tile with one full layer alone, flat and textured, and GC2AI's faulting way as the control; each target poisoned first),"
             } else if GC2_QUAD {
                 "the 16-bit kinds' targets inside the safe region (GC2AI, R37: no map; the flat quad's edges and order moved one at a time over the ring and one full layer; each target poisoned first),"
@@ -9511,7 +9521,7 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_CORNER {
+        let patch = if GC2_CORNER || GC2_LADDER {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_QUAD {
             gc2::QUAD_SCENES.len() * gc2::words(gc2::FT2) as usize
@@ -9870,7 +9880,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_CORNER {
+                if GC2_LADDER {
+                    gc2_ladder(g, &mut r, (tex, first, dsig));
+                } else if GC2_CORNER {
                     gc2_corner(g, &mut r, (tex, first, dsig));
                 } else if GC2_QUAD {
                     gc2_quad(g, &mut r, (tex, first, dsig));
@@ -11521,6 +11533,50 @@ mod image {
                 flat: false,
             },
         );
+    }
+
+    /// Run GC2AK (see [`GC2_LADDER`]): at each of [`gc2::LADDER_STEPS`],
+    /// GC2AJ's flat sweep with its control, then the textured sweep with
+    /// the u and v shift, [`gc2::LADDER_ROUNDS`] rounds a scene, reversed,
+    /// every target poisoned; each plan its own references and controls at
+    /// Windows Mobile's clock.
+    #[inline(never)]
+    fn gc2_ladder(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let n = gc2::LADDER_ROUNDS.min(GC2AE_ROUNDS);
+        log!(
+            "  GC2AK (R37): the corner sweep with one full layer alone, flat and textured with the u and v shift, {n} rounds a scene, at 149.50, 139.75, 133.25, 117.00, 108.33 / 1 and 149.50 / 2"
+        );
+        for ((m, d), div, name) in gc2::LADDER_STEPS {
+            let step = (gc2_step(m, d, 0, div), name);
+            let plan = |pname, label, scenes, ways| OrderPlan {
+                name: pname,
+                label,
+                scenes,
+                ways,
+                step,
+                secs: 1200,
+                rounds: n,
+                poison: true,
+                describe: 6,
+                pause: false,
+                quiet: false,
+                flat: false,
+            };
+            let flat = plan(
+                "GC2AK flat",
+                "GC2AK FLAT CORNERS",
+                &gc2::CORNER_FLAT[..],
+                &gc2::CORNER_WAYS[..],
+            );
+            gc2_orders(g, r, (tex, &mut *first, dsig), &flat);
+            let uv = plan(
+                "GC2AK uv",
+                "GC2AK UV CORNERS",
+                &gc2::CORNER_UV[..],
+                &gc2::CORNER_WAYS[..gc2::CORNER_SCENES_EACH],
+            );
+            gc2_orders(g, r, (tex, &mut *first, dsig), &uv);
+        }
     }
 
     /// Run GC2AJ (see [`GC2_CORNER`]): the flat sweep with GC2AI's faulting

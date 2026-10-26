@@ -5327,6 +5327,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
         ],
     )?;
+    let run_gc2ak = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_LADDER", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5359,7 +5368,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 77] = [
+    let runs: [GpubenchRun; 78] = [
         (
             "run A",
             &run_a,
@@ -5609,6 +5618,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2Q",
             &run_gc2q,
             &["GC2Q parts A and B: done", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AK (R37): the ladder, one round a scene at each setting
+        // (the emulator draws exactly: every way right).
+        (
+            "run GC2AK",
+            &run_gc2ak,
+            &[
+                "GC2AK (R37): the corner sweep with one full layer alone",
+                "GC2AK flat 149.50 / 1: controls at Windows Mobile's clock after: 23 of 23 right",
+                "GC2AK uv 149.50 / 1: controls at Windows Mobile's clock after: 22 of 22 right",
+                "GC2AK flat 108.33 / 1: controls at Windows Mobile's clock after: 23 of 23 right",
+                "GC2AK uv 149.50 / 2: controls at Windows Mobile's clock after: 22 of 22 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),

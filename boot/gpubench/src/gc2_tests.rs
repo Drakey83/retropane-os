@@ -1542,3 +1542,46 @@ fn gc2aj_sweeps_every_corner_place_of_a_tile() {
     const { assert!(CORNER_ROUNDS >= 200) };
     const { assert!(CORNER_SCENES_EACH < 42) };
 }
+
+/// GC2AK's ladder: the u and v sweep is GC2AJ's textured sweep with only
+/// the shift changed; its settings are the named clocks, fastest first,
+/// divide 1 then 149.50 / 2.
+#[test]
+fn gc2ak_sweeps_uv_at_each_setting() {
+    let t = test_tex();
+    for (i, sc) in CORNER_UV.iter().enumerate() {
+        assert_eq!(*sc, Scene::CornerUv(i));
+        let (_, v) = corner_scene(true, i, t);
+        let (_, uv) = corner_uv_scene(i, t);
+        let (v, uv): (std::vec::Vec<Draw>, std::vec::Vec<Draw>) = (
+            v.iter().flatten().copied().collect(),
+            uv.iter().flatten().copied().collect(),
+        );
+        assert_eq!(v.len(), uv.len());
+        assert_eq!(v[..2], uv[..2], "the layer and the Gouraud unchanged");
+        for (a, b) in v[2..].iter().zip(&uv[2..]) {
+            assert_eq!(a.corners, b.corners);
+            let (Paint::Texture { uv: ua, .. }, Paint::Texture { uv: ub, .. }) = (a.paint, b.paint)
+            else {
+                panic!("textured");
+            };
+            // v the same as GC2AJ's; u moved half a texel in.
+            assert_eq!(ua.map(|p| p.1), ub.map(|p| p.1));
+            assert_ne!(ua.map(|p| p.0), ub.map(|p| p.0));
+        }
+    }
+    let mut last = u32::MAX;
+    for ((m, n), div, name) in LADDER_STEPS {
+        let khz = 13_000 * m / n;
+        assert_eq!(
+            std::format!("{}.{:02} / {div}", khz / 1000, khz % 1000 / 10),
+            name
+        );
+        if div == 1 {
+            assert!(khz < last, "fastest first");
+            last = khz;
+        }
+    }
+    assert_eq!(LADDER_STEPS[5].1, 2);
+    const { assert!(LADDER_ROUNDS >= 100) };
+}

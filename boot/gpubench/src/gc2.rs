@@ -538,6 +538,9 @@ pub enum Scene {
     /// Run GC2AJ's corner sweep: textured or flat, scene `i` (see
     /// [`corner_scene`]; only through [`order_scene_wide`]).
     Corner(bool, usize),
+    /// Run GC2AK's textured sweep with the u and v shift (see
+    /// [`corner_uv_scene`]; only through [`order_scene_wide`]).
+    CornerUv(usize),
 }
 
 /// The objects a scene holds through [`order_scene_wide`]: a scene's own
@@ -1011,6 +1014,9 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     if let Scene::Corner(textured, i) = s {
         return corner_scene(textured, i, t);
     }
+    if let Scene::CornerUv(i) = s {
+        return corner_uv_scene(i, t);
+    }
     let (bg, slots) = order_scene(s, t);
     let mut out = [None; SLOTS];
     out[..3].copy_from_slice(&slots);
@@ -1439,9 +1445,11 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         Scene::Edge(w) => edge_scene(w, t),
         // Fixes and geometry ways take more than three slots:
         // [`order_scene_wide`] only.
-        Scene::Fix(..) | Scene::Geo(_) | Scene::Quad(_) | Scene::Corner(..) => {
-            (BLACK, [None, None, None])
-        }
+        Scene::Fix(..)
+        | Scene::Geo(_)
+        | Scene::Quad(_)
+        | Scene::Corner(..)
+        | Scene::CornerUv(_) => (BLACK, [None, None, None]),
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Cured(_) => (BLACK, [None, None, None]),
             base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
@@ -1492,7 +1500,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
         Scene::Geo(_) | Scene::Quad(_) => patch_corner(0),
-        Scene::Corner(..) => (0, 0),
+        Scene::Corner(..) | Scene::CornerUv(_) => (0, 0),
         Scene::Fix(b, _) => match FIX_BASE[b] {
             Scene::Kind(FT2) => patch_corner(0),
             Scene::Sweep(w) => SWEEP[w].corner(),
@@ -1989,6 +1997,22 @@ pub const fn corner_rect(i: usize, j: usize) -> ((i32, i32, i32, i32), usize) {
 /// Corner scene `i`, flat or textured (see [`CORNER_RECTS`]).
 #[must_use]
 pub fn corner_scene(textured: bool, i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    corner_scene_with(textured, i, t, TexFix::ClampV)
+}
+
+/// Corner scene `i`, textured, the clamped texture shifted half a texel in
+/// u and v (run GC2AK).
+#[must_use]
+pub fn corner_uv_scene(i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    corner_scene_with(true, i, t, TexFix::ClampUv)
+}
+
+fn corner_scene_with(
+    textured: bool,
+    i: usize,
+    t: Tex,
+    shift: TexFix,
+) -> (u32, [Option<Draw>; SLOTS]) {
     let (bg, slots) = order_scene(FIX_BASE[0], t);
     let mut out = [None; SLOTS];
     out[0] = Some(flat(HIDDEN_LAYER, false));
@@ -2007,7 +2031,7 @@ pub fn corner_scene(textured: bool, i: usize, t: Tex) -> (u32, [Option<Draw>; SL
             Paint::Flat(UNTEXTURED)
         };
         let d = Draw::rect(x0, y0, x1 - x0, y1 - y0, paint);
-        out[n] = Some(shift_texture(d, TexFix::ClampV));
+        out[n] = Some(shift_texture(d, shift));
         n += 1;
     }
     (bg, out)
@@ -2043,6 +2067,33 @@ pub const CORNER_WAYS: [(usize, u8); CORNER_SCENES_EACH + 1] = {
     }
     w
 };
+
+/// Run GC2AK (the owner, 2026-10-26: "Build the sweep with the u and v
+/// texture fix, run at each lower divide-1 step and at 149.50 / 2, to find
+/// the fastest setting where every corner position draws right"): GC2AJ's
+/// textured sweep with the clamped texture shifted half a texel in u and v
+/// (GC2AJ's every-render fault was the u counterpart of the v fault).
+pub const CORNER_UV: [Scene; CORNER_SCENES_EACH] = {
+    let mut s = [Scene::CornerUv(0); CORNER_SCENES_EACH];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::CornerUv(i);
+        i += 1;
+    }
+    s
+};
+/// GC2AK's settings, fastest first: 13 MHz x m / n, the cores' divide.
+pub const LADDER_STEPS: [((u32, u32), u32, &str); 6] = [
+    ((23, 2), 1, "149.50 / 1"),
+    ((43, 4), 1, "139.75 / 1"),
+    ((41, 4), 1, "133.25 / 1"),
+    ((27, 3), 1, "117.00 / 1"),
+    ((25, 3), 1, "108.33 / 1"),
+    ((23, 2), 2, "149.50 / 2"),
+];
+/// Rounds a scene a setting: 100 (a corner place faulting 3% of renders
+/// shows with ~95%; the step that passes gets its own soak).
+pub const LADDER_ROUNDS: u32 = 100;
 
 /// Colours tried as a soak's poison, the most saturated first (no GC2
 /// scene's Gouraud or texture reaches them, by design; [`absent16`]
