@@ -749,10 +749,18 @@ pub fn setup_restart_task(_root: &Path) -> Result<(), String> {
 /// not possinble dont do it". A task registered the old way (an
 /// administrator task in his own session) flashed an "Administrator:
 /// powershell.exe" window and took his keyboard, so it isn't started.
+///
+/// A refusal never ends the caller's script (2026-10-26, the GPU session's
+/// 1,500 s wait gave up after 20 s): the scripts run with
+/// `$ErrorActionPreference = 'Stop'`, where schtasks' "Access is denied" on
+/// stderr (a task registered before [`restart_task_registration`] let the
+/// user start it) is a terminating error. So it runs with errors as
+/// output, inside a try.
 fn kick_task() -> String {
     format!(
         "$rt = Get-ScheduledTask -TaskName '{RESTART_TASK}' -ErrorAction SilentlyContinue; \
-         if ($rt -and $rt.Principal.UserId -eq 'SYSTEM') {{ schtasks /Run /TN '{RESTART_TASK}' 2>&1 | Out-Null }}"
+         if ($rt -and $rt.Principal.UserId -eq 'SYSTEM') {{ try {{ & {{ $ErrorActionPreference = 'Continue'; \
+         schtasks /Run /TN '{RESTART_TASK}' 2>&1 | Out-Null }} }} catch {{ }} }}"
     )
 }
 
@@ -773,10 +781,20 @@ fn restart_task_registration(script: &str) -> String {
         "$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument \
          '-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {}'; \
          $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; \
-         Register-ScheduledTask -TaskName '{RESTART_TASK}' -Action $a -Principal $p -Force | Out-Null",
+         Register-ScheduledTask -TaskName '{RESTART_TASK}' -Action $a -Principal $p -Force | Out-Null; \
+         $svc = New-Object -ComObject Schedule.Service; $svc.Connect(); \
+         $t = $svc.GetFolder('\\').GetTask('{RESTART_TASK}'); \
+         $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; \
+         $t.SetSecurityDescriptor($t.GetSecurityDescriptor(4) + '(A;;{START_RIGHTS};;;' + $me + ')', 0)",
         encode_command(script)
     )
 }
+
+/// What the user who set the task up may do with it: read and start it
+/// (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE), never change it. Without
+/// it a task running as SYSTEM can only be started by an administrator,
+/// so `cargo xtask load` (run as the user) was refused (2026-10-26).
+const START_RIGHTS: &str = "0x1200a9";
 
 /// Sends the image `what` (an image name, built first, or a `.bin` file) to
 /// the resident loader.
@@ -1476,6 +1494,18 @@ mod tests {
     /// The owner's rule (2026-10-26): nothing pops up over his work. The
     /// task is started only when it runs as SYSTEM (no window can show),
     /// from every place that starts it.
+    #[test]
+    fn a_refused_kick_never_ends_the_script_and_the_user_may_start_the_task() {
+        let k = kick_task();
+        assert!(k.contains("try {"), "{k}");
+        assert!(k.contains("$ErrorActionPreference = 'Continue'"), "{k}");
+        let r = restart_task_registration("x");
+        assert!(r.contains("SetSecurityDescriptor"), "{r}");
+        assert!(r.contains(&format!("(A;;{START_RIGHTS};;;")), "{r}");
+        // Read and execute only: no write, delete or change of owner.
+        assert_eq!(START_RIGHTS, "0x1200a9");
+    }
+
     #[test]
     fn the_restart_task_is_started_only_when_it_runs_hidden() {
         let k = kick_task();
