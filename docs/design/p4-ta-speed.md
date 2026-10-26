@@ -319,6 +319,12 @@ with 1 ms before the render. Each frame against the binner's picture; each
 hang logged with the core's status and the TA's region array beside a
 frame that drew. It waits for after tonight's soak (the owner), R40.
 
+**Run 6 on the X51v (2026-10-26): the memory manager set up once a way, 20
+of 20 frames right and none hung; set up again before every frame, about
+half hung** (waits and resets didn't help; `docs/hw/2700g.md` "P4"). Next,
+run 7: run 1 with the manager set up once a set, for P4's numbers without
+hangs.
+
 
 ## The choices for the owner
 
