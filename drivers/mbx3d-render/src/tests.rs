@@ -1712,3 +1712,52 @@ fn the_header_flip_changes_only_its_word() {
         .collect();
     assert_eq!(f1, f2);
 }
+
+/// GC2AQ's hook: the bits land in the TSP word of both triangles of a flat
+/// and of a textured slot, and nowhere else; 0 changes nothing.
+#[test]
+fn the_tsp_bits_land_in_every_objects_tsp() {
+    let mut g = rig(480, 640);
+    let tex = columns(&mut g);
+    let word = |g: &Rig, slot: u32, w: usize| {
+        g.mem
+            .load((rp_vram_map::PARAMS.at + SLOTS_AT + slot * SLOT_BYTES) as usize + 4 * w)
+            .unwrap()
+    };
+    let flat = Draw::rect(0, 0, 64, 64, Paint::Flat(0xFF12_3456));
+    let textured = Draw::rect(43, 45, 400, 560, Paint::texture(tex));
+    g.set(0, Some(flat));
+    g.set(1, Some(textured));
+    let f0: Vec<u32> = (0..2 * m3::TRIANGLE_WORDS)
+        .map(|w| word(&g, 0, w))
+        .collect();
+    let t0: Vec<u32> = (0..2 * m3::tex::WORDS).map(|w| word(&g, 1, w)).collect();
+    g.r.set_tsp_or(1 << 14);
+    g.set(0, Some(flat));
+    g.set(1, Some(textured));
+    for (w, &b) in f0.iter().enumerate() {
+        let tsp = w % m3::TRIANGLE_WORDS == 1;
+        assert_eq!(
+            word(&g, 0, w),
+            if tsp { b | 1 << 14 } else { b },
+            "flat {w}"
+        );
+    }
+    for (w, &b) in t0.iter().enumerate() {
+        let tsp = w % m3::tex::WORDS == 4;
+        assert_eq!(
+            word(&g, 1, w),
+            if tsp { b | 1 << 14 } else { b },
+            "textured {w}"
+        );
+    }
+    g.r.set_tsp_or(0);
+    g.set(0, Some(flat));
+    g.set(1, Some(textured));
+    for (w, &b) in f0.iter().enumerate() {
+        assert_eq!(word(&g, 0, w), b);
+    }
+    for (w, &b) in t0.iter().enumerate() {
+        assert_eq!(word(&g, 1, w), b);
+    }
+}

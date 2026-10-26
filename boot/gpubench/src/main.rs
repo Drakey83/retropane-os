@@ -7945,7 +7945,8 @@ mod image {
         || GC2_TEXEL
         || GC2_ORDERS
         || GC2_PROOF
-        || GC2_BITS;
+        || GC2_BITS
+        || GC2_PUNCH;
 
     /// Run GC2AE, reminder R37 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -8036,6 +8037,13 @@ mod image {
     /// 149.50 / 1, against the unflipped picture. About 3 minutes,
     /// unattended.
     const GC2_BITS: bool = option_env!("RP_GPUBENCH_GC2_BITS").is_some();
+
+    /// Run GC2AQ, reminder R37 (`RP_GPUBENCH_GC2_PUNCH`): GC2AP's two hits,
+    /// TSP bit 14 (the punch-through object kind) and bit 15, ORed into
+    /// every object, flat and textured, on GC2AG's untextured fault
+    /// generator and the flat and textured corner sweeps at 149.50 / 1,
+    /// reversed, against none. About 45 minutes, unattended.
+    const GC2_PUNCH: bool = option_env!("RP_GPUBENCH_GC2_PUNCH").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9409,7 +9417,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_BITS {
+            if GC2_PUNCH {
+                "the 16-bit kinds' targets inside the safe region (GC2AQ, R37: no map; TSP bit 14, the punch-through object kind, or bit 15 on every object, on the untextured fault generator and the flat and textured corner sweeps at 149.50 / 1, reversed, against none; each target poisoned first),"
+            } else if GC2_BITS {
                 "the 16-bit kinds' targets inside the safe region (GC2AP, R37: no map; GC2AM's every-render texel fault with each bit of the textured objects' headers flipped alone, one render a bit at 149.50 / 1; each target poisoned first),"
             } else if GC2_PROOF {
                 "the 16-bit kinds' targets inside the safe region (GC2AO, R37: no map; both cures, the interleaved or checker tile order and the centre texture phase, over the flat and textured corner sweeps at 149.50 / 1, with one full layer and without; each target poisoned first),"
@@ -9581,7 +9591,9 @@ mod image {
         // (GC2K on). Every run flag with a soak must be here: GC2Q's part C
         // was left out and ran nothing on the X51v (the emulator check now
         // fails a run that logs a shortage).
-        let patch = if GC2_BITS {
+        let patch = if GC2_PUNCH {
+            gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_BITS {
             gc2::words(gc2::FT2) as usize
         } else if GC2_PROOF {
             gc2::CORNER_SCENES_EACH * gc2::words(gc2::FT2) as usize
@@ -9950,7 +9962,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_BITS {
+                if GC2_PUNCH {
+                    gc2_punch(g, &mut r, (tex, first, dsig));
+                } else if GC2_BITS {
                     gc2_bits(g, &mut r, (tex, first, dsig));
                 } else if GC2_PROOF {
                     gc2_proof(g, &mut r, (tex, first, dsig));
@@ -11613,6 +11627,99 @@ mod image {
                 flat: false,
             },
         );
+    }
+
+    /// GC2AQ's rounds: the fault generator's, and a corner sweep's.
+    const GC2AQ_GEN_ROUNDS: u32 = 400;
+    const GC2AQ_SWEEP_ROUNDS: u32 = 150;
+
+    /// Run GC2AQ (see [`GC2_PUNCH`]): at 149.50 / 1, reversed, each target
+    /// poisoned, for each of no TSP bits, bit 14 and bit 15 on every
+    /// object: GC2AG's untextured fault generator ([`GC2AQ_GEN_ROUNDS`]),
+    /// GC2AJ's flat corner sweep with its control and GC2AK's textured one
+    /// (the u and v half-texel shift) ([`GC2AQ_SWEEP_ROUNDS`] rounds a
+    /// scene). Each plan's references are drawn with its bits, so a bit that
+    /// changed the picture at Windows Mobile's clock shows in its
+    /// controls, not as a fix.
+    #[inline(never)]
+    fn gc2_punch(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let (gen_n, sweep_n) = (
+            GC2AQ_GEN_ROUNDS.min(GC2AE_ROUNDS),
+            GC2AQ_SWEEP_ROUNDS.min(GC2AE_ROUNDS),
+        );
+        log!(
+            "  GC2AQ (R37): TSP bits on every object at 149.50 / 1, reversed: none, bit 14 (punch-through), bit 15; each the untextured fault generator ({gen_n} rounds) and the flat and textured corner sweeps ({sweep_n} rounds a scene)"
+        );
+        let step = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        const NAMES: [[(&str, &str); 3]; 3] = [
+            [
+                ("GC2AQ none generator", "GC2AQ NONE GENERATOR"),
+                ("GC2AQ none flat", "GC2AQ NONE FLAT SWEEP"),
+                ("GC2AQ none tex", "GC2AQ NONE TEX SWEEP"),
+            ],
+            [
+                ("GC2AQ bit14 generator", "GC2AQ BIT 14 GENERATOR"),
+                ("GC2AQ bit14 flat", "GC2AQ BIT 14 FLAT SWEEP"),
+                ("GC2AQ bit14 tex", "GC2AQ BIT 14 TEX SWEEP"),
+            ],
+            [
+                ("GC2AQ bit15 generator", "GC2AQ BIT 15 GENERATOR"),
+                ("GC2AQ bit15 flat", "GC2AQ BIT 15 FLAT SWEEP"),
+                ("GC2AQ bit15 tex", "GC2AQ BIT 15 TEX SWEEP"),
+            ],
+        ];
+        for (k, bits) in [0u32, 1 << 14, 1 << 15].into_iter().enumerate() {
+            r.set_tsp_or(bits);
+            let names = NAMES[k];
+            let plans = [
+                OrderPlan {
+                    name: names[0].0,
+                    label: names[0].1,
+                    scenes: &gc2::ORDER_TRY_SCENES,
+                    ways: &gc2::ORDER_TRY[..1],
+                    step,
+                    secs: 600,
+                    rounds: gen_n,
+                    poison: true,
+                    describe: 4,
+                    pause: false,
+                    quiet: false,
+                    flat: true,
+                },
+                OrderPlan {
+                    name: names[1].0,
+                    label: names[1].1,
+                    scenes: &gc2::CORNER_FLAT[..],
+                    ways: &gc2::CORNER_WAYS[..],
+                    step,
+                    secs: 900,
+                    rounds: sweep_n,
+                    poison: true,
+                    describe: 6,
+                    pause: false,
+                    quiet: false,
+                    flat: false,
+                },
+                OrderPlan {
+                    name: names[2].0,
+                    label: names[2].1,
+                    scenes: &gc2::CORNER_UV[..],
+                    ways: &gc2::CORNER_WAYS[..gc2::CORNER_SCENES_EACH],
+                    step,
+                    secs: 900,
+                    rounds: sweep_n,
+                    poison: true,
+                    describe: 6,
+                    pause: false,
+                    quiet: false,
+                    flat: false,
+                },
+            ];
+            for p in &plans {
+                gc2_orders(g, r, (tex, &mut *first, dsig), p);
+            }
+        }
+        r.set_tsp_or(0);
     }
 
     /// Whether GC2AP flips header bit `bit` of word `word`: every bit but

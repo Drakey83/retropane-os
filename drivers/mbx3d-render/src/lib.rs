@@ -1046,6 +1046,10 @@ pub struct Renderer {
     /// GC2AP): the header word (0 ISP, 1-3 TEX0-2, 4 TSP) and the bits
     /// XORed into it; (0, 0) never changes anything.
     header_xor: (usize, u32),
+    /// A measurement's bits ORed into every object's TSP word, flat and
+    /// textured (run GC2AQ: TSP bit 14, the punch-through object kind, and
+    /// bit 15); 0 changes nothing.
+    tsp_or: u32,
 }
 
 /// The order the tiles are listed for the core in (the picture is the same
@@ -1178,6 +1182,7 @@ impl Renderer {
             irq_stale: false,
             tile_order: TileOrder::Rows,
             header_xor: (0, 0),
+            tsp_or: 0,
         })
     }
 
@@ -1200,6 +1205,14 @@ impl Renderer {
     /// same draw is written again.
     pub fn set_header_xor(&mut self, word: usize, mask: u32) {
         self.header_xor = if word < 5 { (word, mask) } else { (0, 0) };
+    }
+
+    /// A measurement's bits ORed into every object's TSP word from the next
+    /// [`Self::set`] on, flat and textured (`rp-gpubench` run GC2AQ: GC2AP
+    /// found TSP bit 14, the punch-through object kind, and bit 15 each end
+    /// divide 1's texel-pick fault); 0 changes nothing.
+    pub fn set_tsp_or(&mut self, mask: u32) {
+        self.tsp_or = mask;
     }
 
     /// The order the tiles are listed for the core in ([`TileOrder`]).
@@ -1302,6 +1315,18 @@ impl Renderer {
                 if kind == Kind::Textured && mask != 0 {
                     for t in 0..2 {
                         words[t * m3::tex::WORDS + hw] ^= mask;
+                    }
+                }
+                if self.tsp_or != 0 {
+                    // The TSP: word 4 of a textured triangle, word 1 of a
+                    // flat one (`m3::tex::triangle`, `m3::triangle`).
+                    let (per, at) = if kind == Kind::Textured {
+                        (m3::tex::WORDS, 4)
+                    } else {
+                        (m3::TRIANGLE_WORDS, 1)
+                    };
+                    for t in 0..2 {
+                        words[t * per + at] |= self.tsp_or;
                     }
                 }
                 let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
