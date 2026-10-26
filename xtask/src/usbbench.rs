@@ -25,6 +25,8 @@
 //! stale cached FAT and root directory lost such a file on 2026-10-16.
 
 use std::path::{Path, PathBuf};
+
+mod mtp;
 use std::time::Instant;
 
 /// Bytes in the serial frame: just under the loader's image area.
@@ -455,6 +457,10 @@ pub fn drivers() -> Result<(), String> {
 pub fn run(root: &Path, which: &str, runs: usize) -> Result<(), String> {
     crate::devlock::ensure_held()?;
     let runs = runs.max(1);
+    // MTP only when asked: the loader must be in its MTP layout first.
+    if which == "mtp" {
+        return mtp::run(root, runs);
+    }
     if which != "drive" {
         let out = root.join("target/load");
         std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
