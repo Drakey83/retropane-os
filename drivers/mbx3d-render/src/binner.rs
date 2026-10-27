@@ -227,7 +227,7 @@ pub fn bin_with<M: LocalMem>(
     objs.flush();
     objs.at = l.params + OBJECTS_AT;
     for (i, d) in (0..n).map(&draw).enumerate() {
-        let (words, len, kind) = encode(&d);
+        let (words, len, kind) = encode(&d, false);
         let flags = if kind == Kind::Textured {
             tex::STRIP_GAME
         } else {

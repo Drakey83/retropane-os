@@ -575,6 +575,9 @@ pub enum Scene {
     /// [`S3_ALONE_DOWN`], [`S3_REVERSED`], [`S3_GREY84`] (see
     /// [`corner3_scene`]; only through [`order_scene_wide`]).
     Corner3(u8),
+    /// Run GC2BU's position map: scene 3's top-right rectangle alone,
+    /// without the layer, moved `(dx, dy)` pixels (see [`corner3_scene`]).
+    Corner3At(i16, i16),
     /// Run GC2AK's textured sweep with the u and v shift (see
     /// [`corner_uv_scene`]; only through [`order_scene_wide`]).
     CornerUv(usize),
@@ -1069,6 +1072,9 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     }
     if let Scene::Corner3(m) = s {
         return corner3_scene(m, t);
+    }
+    if let Scene::Corner3At(dx, dy) = s {
+        return corner3_at(dx, dy, t);
     }
     if let Scene::CornerNoLayer(i) = s {
         let (bg, mut slots) = corner_scene(false, i, t);
@@ -1592,6 +1598,7 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         | Scene::CornerNoLayer(_)
         | Scene::CornerShade(..)
         | Scene::Corner3(_)
+        | Scene::Corner3At(..)
         | Scene::Split10(..)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
@@ -1652,6 +1659,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         | Scene::CornerNoLayer(_)
         | Scene::CornerShade(..)
         | Scene::Corner3(_)
+        | Scene::Corner3At(..)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
         | Scene::Ratio(..)
@@ -2277,6 +2285,28 @@ pub const S3_REVERSED: u8 = 4;
 pub const S3_GREY84: u8 = 5;
 /// GC2BS's grey (see [`S3_GREY84`]).
 pub const UNTEXTURED84: u32 = 0xFF84_8484;
+/// [`Scene::Corner3`]: every object with a depth test, "greater" with
+/// writes, the layer at [`S3_Z_LAYER`], the background at [`S3_Z_BG`], the
+/// rectangles at [`S3_Z_RECT`] (the same picture through the depth path a
+/// game takes; the chase's scenes all took Dell's "always, no write";
+/// run GC2BU).
+pub const S3_DEPTH: u8 = 6;
+/// [`Scene::Corner3`]: as [`S3_DEPTH`] with the compare "always" (the
+/// depth written, never compared).
+pub const S3_DEPTH_ALWAYS: u8 = 7;
+/// [`Scene::Corner3`]: the rectangles moved half a pixel right and down
+/// (their edges off the pixel grid; run GC2BU).
+pub const S3_HALF: u8 = 8;
+/// [`Scene::Corner3`]: as is; the renderer splits every quad along the
+/// other diagonal (`Renderer::set_diagonal_flip`, set by the scene
+/// setter; run GC2BU).
+pub const S3_FLIP: u8 = 9;
+/// [`Scene::Corner3`]'s flag: the hidden layer kept (the shipped form).
+pub const S3_LAYER: u8 = 0x80;
+/// GC2BU's depths (`z / 65536`, larger nearer).
+pub const S3_Z_LAYER: u16 = 0x1000;
+pub const S3_Z_BG: u16 = 0x3333;
+pub const S3_Z_RECT: u16 = 0xCCCC;
 
 /// Flat corner scene 3 without its hidden layer in form `m` (run GC2BS:
 /// what selects the top-right rectangle, and whether the green step is a
@@ -2284,7 +2314,11 @@ pub const UNTEXTURED84: u32 = 0xFF84_8484;
 #[must_use]
 pub fn corner3_scene(m: u8, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     let (bg, mut slots) = corner_scene(false, 3, t);
-    slots[0] = None;
+    let layer = m & S3_LAYER != 0;
+    let m = m & !S3_LAYER;
+    if !layer {
+        slots[0] = None;
+    }
     let rects: [usize; CORNER_RECTS] = {
         let mut r = [0; CORNER_RECTS];
         let mut n = 0;
@@ -2329,10 +2363,98 @@ pub fn corner3_scene(m: u8, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
                 }
             }
         }
+        S3_DEPTH | S3_DEPTH_ALWAYS => {
+            let mode = if m == S3_DEPTH {
+                rp_mbx3d_render::depth::GREATER
+            } else {
+                rp_mbx3d_render::depth::ALWAYS
+            };
+            for (i, d) in slots.iter_mut().enumerate() {
+                if let Some(d) = d {
+                    let z = if i == 0 {
+                        S3_Z_LAYER
+                    } else if d.paint == Paint::Flat(UNTEXTURED) {
+                        S3_Z_RECT
+                    } else {
+                        S3_Z_BG
+                    };
+                    *d = d.with_depth(rp_mbx3d_render::Depth {
+                        mode,
+                        write: true,
+                        z,
+                    });
+                }
+            }
+        }
+        S3_HALF => {
+            for &i in &rects {
+                if let Some(d) = slots[i].as_mut() {
+                    for p in &mut d.corners {
+                        p.x += rp_mbx3d_render::SUB / 2;
+                        p.y += rp_mbx3d_render::SUB / 2;
+                    }
+                }
+            }
+        }
         _ => {}
     }
     (bg, slots)
 }
+
+/// Scene 3's top-right rectangle alone, without the layer, moved `(dx,
+/// dy)` pixels (run GC2BU's position map: where on the screen the race
+/// drops a group).
+#[must_use]
+pub fn corner3_at(dx: i16, dy: i16, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, mut slots) = corner3_scene(S3_ALONE, t);
+    for d in slots.iter_mut().flatten() {
+        if d.paint == Paint::Flat(UNTEXTURED) {
+            for p in &mut d.corners {
+                p.x += i32::from(dx) * rp_mbx3d_render::SUB;
+                p.y += i32::from(dy) * rp_mbx3d_render::SUB;
+            }
+        }
+    }
+    (bg, slots)
+}
+
+/// GC2BU's forms of scene 3 without its layer: as is, the depth path, the
+/// depth written only, the rectangles half a pixel over, the other
+/// diagonal, as is again.
+pub const EDGE_FORMS: [Scene; 6] = [
+    Scene::Corner3(S3_AS_IS),
+    Scene::Corner3(S3_DEPTH),
+    Scene::Corner3(S3_DEPTH_ALWAYS),
+    Scene::Corner3(S3_HALF),
+    Scene::Corner3(S3_FLIP),
+    Scene::Corner3(S3_AS_IS),
+];
+/// GC2BU's position map: the top-right rectangle alone moved by whole
+/// tiles (its edges keep their places in their tiles) from its cell;
+/// (0, 208) is the middle-right cell, where the race lives.
+pub const EDGE_MAP: [Scene; 8] = [
+    Scene::Corner3At(0, 208),
+    Scene::Corner3At(0, 112),
+    Scene::Corner3At(0, 160),
+    Scene::Corner3At(0, 256),
+    Scene::Corner3At(0, 304),
+    Scene::Corner3At(-120, 208),
+    Scene::Corner3At(-240, 208),
+    Scene::Corner3At(-120, 160),
+];
+/// GC2BU's proof pairs: a cure form without and with the layer.
+pub const EDGE_PROOF_DEPTH: [Scene; 2] = [
+    Scene::Corner3(S3_DEPTH),
+    Scene::Corner3(S3_DEPTH | S3_LAYER),
+];
+pub const EDGE_PROOF_DEPTH_ALWAYS: [Scene; 2] = [
+    Scene::Corner3(S3_DEPTH_ALWAYS),
+    Scene::Corner3(S3_DEPTH_ALWAYS | S3_LAYER),
+];
+pub const EDGE_PROOF_HALF: [Scene; 2] =
+    [Scene::Corner3(S3_HALF), Scene::Corner3(S3_HALF | S3_LAYER)];
+pub const EDGE_PROOF_FLIP: [Scene; 2] =
+    [Scene::Corner3(S3_FLIP), Scene::Corner3(S3_FLIP | S3_LAYER)];
 
 /// GC2BS's scene plan: the forms of scene 3 without its hidden layer, the
 /// as-is form at both ends, then scene 3 with its layer (the shipped

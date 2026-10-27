@@ -538,11 +538,14 @@ fn no_quad_sets_a_tsp_bit_that_hangs_the_core() {
                     z: 1,
                 })
             })) {
-                let (w, n, kind) = encode(&Draw {
-                    blend,
-                    depth: d,
-                    ..square(0, 0, 8, paint)
-                });
+                let (w, n, kind) = encode(
+                    &Draw {
+                        blend,
+                        depth: d,
+                        ..square(0, 0, 8, paint)
+                    },
+                    false,
+                );
                 let (tsp_at, words) = match kind {
                     Kind::Textured => (4, tex::WORDS),
                     _ => (1, m3::TRIANGLE_WORDS),
@@ -970,11 +973,14 @@ fn the_depth_mode_never_reaches_the_alpha_bits() {
     // alpha test, whatever the depth test.
     for mode in 0..8 {
         for paint in [Paint::Flat(RED), Paint::Gouraud([RED; 4])] {
-            let (w, _, _) = encode(&square(0, 0, 8, paint).with_depth(Depth {
-                mode,
-                write: true,
-                z: 1,
-            }));
+            let (w, _, _) = encode(
+                &square(0, 0, 8, paint).with_depth(Depth {
+                    mode,
+                    write: true,
+                    z: 1,
+                }),
+                false,
+            );
             assert_eq!(w[0], m3::ISP_ALWAYS, "mode {mode}");
         }
     }
@@ -983,6 +989,7 @@ fn the_depth_mode_never_reaches_the_alpha_bits() {
             func: depth::GREATER,
             reference: 128,
         }),
+        false,
     );
     assert_eq!(w[0], 0x9000_0000);
 }
@@ -2142,4 +2149,35 @@ fn two_renderers_on_one_core() {
         "the second after core_taken"
     );
     assert!(r2.release(&mut g.pool));
+}
+
+#[test]
+fn diagonal_flip_splits_the_quad_the_other_way() {
+    let d = square(100, 100, 200, Paint::Flat(BLUE));
+    let (w, n, kind) = encode(&d, false);
+    let (f, nf, kindf) = encode(&d, true);
+    assert_eq!((n, kind), (nf, kindf));
+    assert_eq!(kind, Kind::Flat);
+    let xy = |w: &[u32; SLOT_WORDS], t: usize, k: usize| {
+        let at = t * m3::TRIANGLE_WORDS;
+        (
+            f32::from_bits(w[at + 2 + 2 * k]),
+            f32::from_bits(w[at + 3 + 2 * k]),
+        )
+    };
+    // As proven: (TL, TR, BL), (TR, BR, BL).
+    assert_eq!(xy(&w, 0, 2), (100.0, 300.0));
+    assert_eq!(xy(&w, 1, 0), (300.0, 100.0));
+    // Flipped: (TL, TR, BR), (TL, BR, BL).
+    assert_eq!(xy(&f, 0, 2), (300.0, 300.0));
+    assert_eq!(xy(&f, 1, 0), (100.0, 100.0));
+    assert_eq!(xy(&f, 1, 1), (300.0, 300.0));
+    assert_eq!(xy(&f, 1, 2), (100.0, 300.0));
+    // The outline and the colours are the same.
+    for t in 0..2 {
+        let at = t * m3::TRIANGLE_WORDS;
+        assert_eq!(w[at], f[at]);
+        assert_eq!(w[at + 1], f[at + 1]);
+        assert_eq!(w[at + 14..at + 17], f[at + 14..at + 17]);
+    }
 }

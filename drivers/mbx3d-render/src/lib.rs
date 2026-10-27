@@ -705,7 +705,7 @@ fn draw_tiles(d: &Draw, cols: u32, rows: u32) -> TileRect {
 }
 
 /// A quad's two objects: the words and their kind.
-fn encode(d: &Draw) -> ([u32; SLOT_WORDS], usize, Kind) {
+fn encode(d: &Draw, flip: bool) -> ([u32; SLOT_WORDS], usize, Kind) {
     // The second word is the alpha test only; the depth mode goes in the
     // TSP (writing it here too made "less" test "alpha < 0": ADR-0026).
     let isp = match d.alpha {
@@ -731,8 +731,14 @@ fn encode(d: &Draw) -> ([u32; SLOT_WORDS], usize, Kind) {
     };
     let (z, rhw) = (f32::from_bits(z), f32::from_bits(fixed::ONE));
     // Top left, top right, bottom left; top right, bottom right, bottom
-    // left (the proven squares' order, `rp-mbx3d` versions 21-23).
-    const TRIS: [[usize; 3]; 2] = [[0, 1, 3], [1, 2, 3]];
+    // left (the proven squares' order, `rp-mbx3d` versions 21-23); or,
+    // flipped, the other diagonal: top left, top right, bottom right; top
+    // left, bottom right, bottom left (the same winding).
+    let tris: [[usize; 3]; 2] = if flip {
+        [[0, 1, 2], [0, 2, 3]]
+    } else {
+        [[0, 1, 3], [1, 2, 3]]
+    };
     let mut w = [0u32; SLOT_WORDS];
     match d.paint {
         Paint::Flat(_) | Paint::Gouraud(_) => {
@@ -741,7 +747,7 @@ fn encode(d: &Draw) -> ([u32; SLOT_WORDS], usize, Kind) {
                 Paint::Flat(c) | Paint::Texture { tint: c, .. } => ([c; 4], m3::TSP_DELL),
             };
             let tsp = state(tsp);
-            for (t, tri) in TRIS.iter().enumerate() {
+            for (t, tri) in tris.iter().enumerate() {
                 let v = tri.map(|k| {
                     let (x, y) = pos(k);
                     m3::Vertex {
@@ -759,7 +765,7 @@ fn encode(d: &Draw) -> ([u32; SLOT_WORDS], usize, Kind) {
         }
         Paint::Texture { tex: t, uv, tint } => {
             let tsp = state(m3::ta::TSP_DELL_TEXTURED);
-            for (n, tri) in TRIS.iter().enumerate() {
+            for (n, tri) in tris.iter().enumerate() {
                 let v = tri.map(|k| {
                     let (x, y) = pos(k);
                     tex::Vertex {
@@ -1070,6 +1076,9 @@ pub struct Renderer {
     /// textured (run GC2AQ: TSP bit 14, the punch-through object kind, and
     /// bit 15); 0 changes nothing.
     tsp_or: u32,
+    /// Every quad split along its other diagonal (`rp-gpubench` run
+    /// GC2BU: the tile race's dropped groups sit on the diagonal).
+    diagonal_flip: bool,
 }
 
 /// The order the tiles are listed for the core in (the picture is the same
@@ -1203,6 +1212,7 @@ impl Renderer {
             tile_order: TileOrder::Rows,
             header_xor: (0, 0),
             tsp_or: 0,
+            diagonal_flip: false,
         })
     }
 
@@ -1247,6 +1257,13 @@ impl Renderer {
     /// divide 1's texel-pick fault); 0 changes nothing.
     pub fn set_tsp_or(&mut self, mask: u32) {
         self.tsp_or = mask;
+    }
+
+    /// A measurement's split of every quad along its other diagonal from
+    /// the next [`Self::set`] on (`rp-gpubench` run GC2BU); the words
+    /// differ, so the slots' hashes see it.
+    pub fn set_diagonal_flip(&mut self, flip: bool) {
+        self.diagonal_flip = flip;
     }
 
     /// The order the tiles are listed for the core in ([`TileOrder`]).
@@ -1350,7 +1367,7 @@ impl Renderer {
         let new = match draw {
             None => Slot::default(),
             Some(d) => {
-                let (mut words, n, kind) = encode(d);
+                let (mut words, n, kind) = encode(d, self.diagonal_flip);
                 let (hw, mask) = self.header_xor;
                 if kind == Kind::Textured && mask != 0 {
                     for t in 0..2 {

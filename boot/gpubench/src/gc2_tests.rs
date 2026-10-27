@@ -2619,3 +2619,87 @@ fn gc2bs_corner3_forms() {
     assert_eq!(CORNER3_SCENES[0], CORNER3_SCENES[6]);
     assert_eq!(CORNER3_SCENES[7], Scene::Corner(false, 3));
 }
+
+#[test]
+fn gc2bu_edge_forms() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    let sub = rp_mbx3d_render::SUB;
+    let (_, as_is) = order_scene_wide(Scene::Corner3(S3_AS_IS), t);
+    let (_, depth) = order_scene_wide(Scene::Corner3(S3_DEPTH), t);
+    let (_, always) = order_scene_wide(Scene::Corner3(S3_DEPTH_ALWAYS), t);
+    let (_, half) = order_scene_wide(Scene::Corner3(S3_HALF), t);
+    let (_, flip) = order_scene_wide(Scene::Corner3(S3_FLIP), t);
+    assert_eq!(as_is, flip, "the flip is the renderer's, not the scene's");
+    assert!(depth[0].is_none() && half[0].is_none());
+    for ((a, d), (w, h)) in as_is
+        .iter()
+        .zip(depth.iter())
+        .zip(always.iter().zip(half.iter()))
+    {
+        let (Some(a), Some(d), Some(w), Some(h)) = (a, d, w, h) else {
+            assert!(a.is_none() && d.is_none() && w.is_none() && h.is_none());
+            continue;
+        };
+        assert_eq!(a.corners, d.corners);
+        assert_eq!(a.paint, d.paint);
+        let rect = a.paint == Paint::Flat(UNTEXTURED);
+        let z = if rect { S3_Z_RECT } else { S3_Z_BG };
+        assert_eq!(
+            d.depth,
+            Some(rp_mbx3d_render::Depth {
+                mode: rp_mbx3d_render::depth::GREATER,
+                write: true,
+                z
+            })
+        );
+        assert_eq!(
+            w.depth,
+            Some(rp_mbx3d_render::Depth {
+                mode: rp_mbx3d_render::depth::ALWAYS,
+                write: true,
+                z
+            })
+        );
+        for (p, q) in h.corners.iter().zip(a.corners.iter()) {
+            if rect {
+                assert_eq!((p.x, p.y), (q.x + sub / 2, q.y + sub / 2));
+            } else {
+                assert_eq!((p.x, p.y), (q.x, q.y));
+            }
+        }
+    }
+    // The layer flag keeps the hidden layer, at the lowest depth.
+    let (_, layered) = order_scene_wide(Scene::Corner3(S3_DEPTH | S3_LAYER), t);
+    let layer = layered[0].expect("the layer kept");
+    assert_eq!(layer.depth.map(|d| d.z), Some(S3_Z_LAYER));
+    let (_, plain) = order_scene_wide(Scene::Corner3(S3_LAYER), t);
+    let (_, with) = order_scene_wide(Scene::Corner(false, 3), t);
+    assert_eq!(plain, with);
+    // The map: the rectangle alone, moved.
+    let (_, alone) = order_scene_wide(Scene::Corner3(S3_ALONE), t);
+    let (_, moved) = order_scene_wide(Scene::Corner3At(-120, 208), t);
+    let rect_of = |s: &[Option<Draw>; SLOTS]| {
+        s.iter()
+            .flatten()
+            .filter(|d| d.paint == Paint::Flat(UNTEXTURED))
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let (a, m) = (rect_of(&alone), rect_of(&moved));
+    assert_eq!((a.len(), m.len()), (1, 1));
+    for (p, q) in m[0].corners.iter().zip(a[0].corners.iter()) {
+        assert_eq!((p.x, p.y), (q.x - 120 * sub, q.y + 208 * sub));
+    }
+    assert_eq!(EDGE_MAP[0], Scene::Corner3At(0, 208));
+    assert_eq!(EDGE_FORMS[0], EDGE_FORMS[5]);
+    assert_eq!(EDGE_PROOF_FLIP[1], Scene::Corner3(S3_FLIP | S3_LAYER));
+    assert_eq!(EDGE_PROOF_DEPTH[0], EDGE_FORMS[1]);
+    assert_eq!(EDGE_PROOF_DEPTH_ALWAYS[0], EDGE_FORMS[2]);
+    assert_eq!(EDGE_PROOF_HALF[0], EDGE_FORMS[3]);
+    assert_eq!(EDGE_PROOF_FLIP[0], EDGE_FORMS[4]);
+}

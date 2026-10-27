@@ -7993,6 +7993,7 @@ mod image {
         || GC2_SHADE_HOT
         || GC2_PORT
         || GC2_REGION
+        || GC2_DIAGONAL
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8306,6 +8307,15 @@ mod image {
     /// SDRAM and the CPU quiet as controls; a clean side proven over both
     /// corner sweeps. About 25 minutes, unattended.
     const GC2_REGION: bool = option_env!("RP_GPUBENCH_GC2_REGION").is_some();
+
+    /// Run GC2BU, reminder R69 (`RP_GPUBENCH_GC2_DIAGONAL`): the race's
+    /// dropped group sits on the quad's diagonal in one patch of the screen
+    /// (every fault of GC2AJ-GC2BT), and nothing outside the core touches
+    /// it (GC2BS, GC2BT); four no-cost forms against it (the depth path a
+    /// game takes, depth writes alone, the rectangles half a pixel over,
+    /// the other diagonal), the position map, the clean forms proven. About
+    /// 25 minutes, unattended.
+    const GC2_DIAGONAL: bool = option_env!("RP_GPUBENCH_GC2_DIAGONAL").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9689,6 +9699,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_DIAGONAL {
+                "the 16-bit kinds' targets inside the safe region (GC2BU, R69: no map; the race's dropped group on the quad's diagonal against the depth path, depth writes, a half-pixel offset and the other diagonal, the position map, the clean forms proven, at 149.50 / 1 warm with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_REGION {
                 "the 16-bit kinds' targets inside the safe region (GC2BT, R69: no map; the region array and the manager's block on the die against in SDRAM at 149.50 / 1 warm with the lists on the die in the checker order, paired, the clean side proven over both corner sweeps; each target poisoned first),"
             } else if GC2_PORT {
@@ -9939,6 +9951,7 @@ mod image {
             || GC2_SHADE_HOT
             || GC2_PORT
             || GC2_REGION
+            || GC2_DIAGONAL
         {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
@@ -10335,6 +10348,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_DIAGONAL {
+                    gc2_diagonal(g, &mut r, (tex, first, dsig));
                 } else if GC2_REGION {
                     gc2_region(g, &mut r, (tex, first, dsig));
                 } else if GC2_PORT {
@@ -12968,6 +12983,9 @@ mod image {
 
     /// `scene` set on `r` (the background and every slot).
     fn gc2_set_scene(g: &mut Rig, r: &mut Renderer, scene: gc2::Scene, tex: gc2::Tex) {
+        r.set_diagonal_flip(
+            matches!(scene, gc2::Scene::Corner3(m) if m & !gc2::S3_LAYER == gc2::S3_FLIP),
+        );
         let (bg, slots) = gc2::order_scene_wide(scene, tex);
         let _ = r.set_background(Some(bg));
         for (n, d) in slots.into_iter().enumerate() {
@@ -16909,6 +16927,163 @@ mod image {
         }
         let _ = g.pool.free(ta, bytes);
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    const GC2BU_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 100 };
+    const GC2BU_MAP_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 50 };
+    const GC2BU_PROOF_ROUNDS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
+    const GC2BU_FORM_WAYS: [(usize, u8); gc2::EDGE_FORMS.len()] = gc2::order_ways(gc2::CHECKER);
+    const GC2BU_MAP_WAYS: [(usize, u8); gc2::EDGE_MAP.len()] = gc2::order_ways(gc2::CHECKER);
+    const GC2BU_PROOF_WAYS: [(usize, u8); 2] = gc2::order_ways(gc2::CHECKER);
+
+    /// Run GC2BU (see [`GC2_DIAGONAL`]): the race's dropped group on the quad's
+    /// diagonal against four no-cost forms, and where on the screen it
+    /// lives. GC2BQ's warm-up; then on the on-die checker renderer at
+    /// 149.50 / 1 through [`gc2_orders`]: [`gc2::EDGE_FORMS`]
+    /// ([`GC2BU_ROUNDS`] rounds), [`gc2::EDGE_MAP`] ([`GC2BU_MAP_ROUNDS`]),
+    /// then every cure form that drew 0 wrong, without and with the layer,
+    /// [`GC2BU_PROOF_ROUNDS`] rounds.
+    #[inline(never)]
+    fn gc2_diagonal(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        if all.len() < 2 * words {
+            log!("  GC2BU: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BU (R69): the race's dropped group on the quad's diagonal against the depth path, depth writes, a half-pixel offset and the other diagonal ({GC2BU_ROUNDS} rounds each), the position map ({GC2BU_MAP_ROUNDS}), the clean forms proven without and with the layer ({GC2BU_PROOF_ROUNDS}); 149.50 / 1 warm, the lists on the die, checker"
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BU TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BU: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        g.nudge = 0;
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BU") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BU", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        ondie.core_taken();
+        let top = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        let plan = |name, label, scenes, ways, rounds| OrderPlan {
+            name,
+            label,
+            scenes,
+            ways,
+            step: top,
+            secs: 900,
+            rounds,
+            poison: true,
+            describe: 2,
+            pause: false,
+            quiet: false,
+            flat: false,
+        };
+        let forms = plan(
+            "GC2BU forms",
+            "GC2BU 1 OF 3 FORMS",
+            &gc2::EDGE_FORMS[..],
+            &GC2BU_FORM_WAYS[..],
+            GC2BU_ROUNDS,
+        );
+        let bad = gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), &forms);
+        log!("  GC2BU forms done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        let map = plan(
+            "GC2BU map",
+            "GC2BU 2 OF 3 MAP",
+            &gc2::EDGE_MAP[..],
+            &GC2BU_MAP_WAYS[..],
+            GC2BU_MAP_ROUNDS,
+        );
+        gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), &map);
+        log!("  GC2BU map done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        // The proof: forms 1-4 of EDGE_FORMS are the cures; bit i of `bad`
+        // is set for a way with any wrong render.
+        let proofs: [(&'static [gc2::Scene], &str, &str); 4] = [
+            (
+                &gc2::EDGE_PROOF_DEPTH[..],
+                "GC2BU proof depth",
+                "GC2BU 3 OF 3 PROOF DEPTH",
+            ),
+            (
+                &gc2::EDGE_PROOF_DEPTH_ALWAYS[..],
+                "GC2BU proof depth always",
+                "GC2BU 3 OF 3 PROOF DEPTH ALWAYS",
+            ),
+            (
+                &gc2::EDGE_PROOF_HALF[..],
+                "GC2BU proof half",
+                "GC2BU 3 OF 3 PROOF HALF",
+            ),
+            (
+                &gc2::EDGE_PROOF_FLIP[..],
+                "GC2BU proof flip",
+                "GC2BU 3 OF 3 PROOF FLIP",
+            ),
+        ];
+        let mut proven = 0u32;
+        for (i, (scenes, name, label)) in proofs.iter().enumerate() {
+            if bad == u128::MAX || bad & (1 << (i + 1)) != 0 {
+                continue;
+            }
+            proven += 1;
+            let p = plan(
+                name,
+                label,
+                scenes,
+                &GC2BU_PROOF_WAYS[..],
+                GC2BU_PROOF_ROUNDS,
+            );
+            gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), &p);
+            log!("  {name} done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        }
+        if proven == 0 {
+            log!("  GC2BU proof: no cure form drew 0 wrong; nothing to prove");
+        }
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BU: the on-die renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        log!("  GC2BU done, TEMP0 {:?}", gc2ba_temp(&mut touch));
     }
 
     /// Run GC2BT's on-die pool: the 60 KiB between a 480 x 640 target at
