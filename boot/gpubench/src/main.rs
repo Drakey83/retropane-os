@@ -619,6 +619,10 @@ mod image {
         /// every run before). The CPU then stays off the 2700G's bus while
         /// the core draws.
         quiet_us: u32,
+        /// A tile-order soak's target when not `u32::MAX` (run GC2BT renders
+        /// at `0x0` so the die has room for its region arrays); [`gc_at`]
+        /// else.
+        at_override: u32,
     }
 
     /// Up to eight 3D registers and their values, for [`Rig::over`].
@@ -7988,6 +7992,7 @@ mod image {
         || GC2_ORDER_HOT
         || GC2_SHADE_HOT
         || GC2_PORT
+        || GC2_REGION
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8292,6 +8297,15 @@ mod image {
     /// clean ones proven without and with the layer. About 30 minutes,
     /// unattended.
     const GC2_PORT: bool = option_env!("RP_GPUBENCH_GC2_PORT").is_some();
+
+    /// Run GC2BT, reminder R69 (`RP_GPUBENCH_GC2_REGION`): the per-tile
+    /// region array (and the manager's block) on the die, the render's last
+    /// SDRAM reads taken off (GC2BS: the display's reads are not scene 3's
+    /// reader, and the position selects), paired against the chase's cure
+    /// set on both forms of scene 3 and scene 20, with the array moved in
+    /// SDRAM and the CPU quiet as controls; a clean side proven over both
+    /// corner sweeps. About 25 minutes, unattended.
+    const GC2_REGION: bool = option_env!("RP_GPUBENCH_GC2_REGION").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9675,6 +9689,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_REGION {
+                "the 16-bit kinds' targets inside the safe region (GC2BT, R69: no map; the region array and the manager's block on the die against in SDRAM at 149.50 / 1 warm with the lists on the die in the checker order, paired, the clean side proven over both corner sweeps; each target poisoned first),"
             } else if GC2_PORT {
                 "the 16-bit kinds' targets inside the safe region (GC2BS, R69: no map; the green step's selector and bit, and the port's cures, scene 3 without its layer at 149.50 / 1 warm with the lists on the die in the checker order, each way paired with the baseline, the clean cures proven; each target poisoned first),"
             } else if GC2_SHADE_HOT {
@@ -9917,7 +9933,13 @@ mod image {
             (1 + gc2::THRESHOLD.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_MAP {
             gc2::words(gc2::FT2) as usize
-        } else if GC2_PROVE2 || GC2_PROVE3 || GC2_ORDER_HOT || GC2_SHADE_HOT || GC2_PORT {
+        } else if GC2_PROVE2
+            || GC2_PROVE3
+            || GC2_ORDER_HOT
+            || GC2_SHADE_HOT
+            || GC2_PORT
+            || GC2_REGION
+        {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
             gc2::words(gc2::FT2) as usize
@@ -10313,6 +10335,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_REGION {
+                    gc2_region(g, &mut r, (tex, first, dsig));
                 } else if GC2_PORT {
                     gc2_port(g, &mut r, (tex, first, dsig));
                 } else if GC2_SHADE_HOT {
@@ -16887,6 +16911,438 @@ mod image {
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
 
+    /// Run GC2BT's on-die pool: the 60 KiB between a 480 x 640 target at
+    /// `0x0` and the on-die lists ([`GC2BB_PARAMS`]), holding the region
+    /// arrays of its two on-die renderers (19,200 B each, 64-aligned).
+    const GC2BT_DIE_POOL: rp_vram_map::Region = rp_vram_map::Region {
+        name: "GC2BT's on-die pool",
+        at: 2 * 480 * 640,
+        size: 0xA_0000 - 2 * 480 * 640,
+        align: 0x1000,
+    };
+    /// Run GC2BT's parameter-manager block on the die, after the pool.
+    const GC2BT_DIE_PM: rp_vram_map::Region = rp_vram_map::Region {
+        name: "GC2BT's on-die manager block",
+        at: 0xA_0000,
+        size: map::PM_TABLE.size,
+        align: 0x1000,
+    };
+    const _: () = assert!(GC2BT_DIE_PM.at + GC2BT_DIE_PM.size <= GC2BB_PARAMS.at);
+    const _: () = assert!(GC2BT_DIE_POOL.at + GC2BT_DIE_POOL.size <= GC2BT_DIE_PM.at);
+    /// Run GC2BT's target: the screen's own `0x0`, so the die has room
+    /// (GC2L: the address doesn't matter to the fault).
+    const GC2BT_AT: u32 = 0;
+    const GC2BT_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
+    const GC2BT_SIDE_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 100 };
+    const GC2BT_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 50 };
+    const GC2BT_FLAT_WAYS: [(usize, u8); gc2::CORNER_FLAT.len()] = gc2::order_ways(gc2::CHECKER);
+    const GC2BT_UV_WAYS: [(usize, u8); gc2::CORNER_UV.len()] = gc2::order_ways(gc2::CHECKER);
+
+    /// Run GC2BT (see [`GC2_REGION`]): the last SDRAM reads of a render
+    /// taken off, at 149.50 / 1 warm, the lists on the die, checker, the
+    /// target at [`GC2BT_AT`]. GC2BS showed the display's reads are not
+    /// what faults scene 3 (the fetch off left 17 of 100) and that the
+    /// position selects, so the reader left is the per-tile region array
+    /// the core fetches first for every tile, from SDRAM. After GC2BQ's
+    /// warm-up, four renderers share the core (`core_taken` at every
+    /// switch): `base` (lists on the die, region array in SDRAM: the
+    /// chase's cure set), `base2` (the same, its array 8 KiB further in
+    /// SDRAM), `die` (the region array on the die), `die2` (that and the
+    /// manager's block on the die). Pairs: die against base on scene 3
+    /// without its layer, with it, and scene 20 ([`GC2BT_PAIRS`],
+    /// [`GC2BT_SIDE_PAIRS`] for scene 20); die2, base2 and base with the
+    /// CPU quiet against base on scene 3 without its layer
+    /// ([`GC2BT_SIDE_PAIRS`]). Then, if die drew 0 wrong in all three, the
+    /// proof on die: the flat and textured corner sweeps, [`GC2BT_ROUNDS`]
+    /// rounds, through [`gc2_orders`].
+    #[inline(never)]
+    fn gc2_region(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = GC2BT_AT;
+        if all.len() < 4 * words {
+            log!("  GC2BT: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BT (R69): the region array (and the manager's block) on the die against in SDRAM, 149.50 / 1 warm, the lists on the die, checker, the target at 0x{at:x}: scene 3 without and with its layer ({GC2BT_PAIRS} pairs), scene 20 ({GC2BT_SIDE_PAIRS}); the manager's block, the array moved in SDRAM, the CPU quiet ({GC2BT_SIDE_PAIRS}); the clean side proven over both corner sweeps ({GC2BT_ROUNDS} rounds)"
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BT TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        // At most two renderers live at once (the stack: each is kilobytes;
+        // four hung the emulator): `base` throughout, one way renderer at a
+        // time, made for its parts and given back after.
+        let Some(mut base) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BT: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        log!(
+            "  GC2BT base's region array at 0x{:x} (SDRAM); the lists at 0x{:x}; the on-die pool at 0x{:x}, the on-die manager's block at 0x{:x}",
+            base.regions_at(),
+            GC2BB_PARAMS.at,
+            GC2BT_DIE_POOL.at,
+            GC2BT_DIE_PM.at
+        );
+        for rr in [&mut *r, &mut base] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        g.nudge = 0;
+        g.quiet_us = 0;
+        // Part 0: the warm-up, as GC2BQ's, on `r` at its own target.
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            let wat = gc_at(k);
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, wat), want, first, dsig, "GC2BT warm-up") {
+                let _ = base.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, wat, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, wat), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BT", &["A"]) {
+                let _ = base.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        // The references at Windows Mobile's clock on `base`, at the test's
+        // target.
+        let (first, rest) = all.split_at_mut(words);
+        let (want_bare, rest) = rest.split_at_mut(words);
+        let (want_layered, rest) = rest.split_at_mut(words);
+        let want_20 = &mut rest[..words];
+        let bare = gc2::Scene::Corner3(gc2::S3_AS_IS);
+        let layered = gc2::Scene::Corner(false, 3);
+        let s20 = gc2::CORNER_FLAT[GC2AY_SCENE];
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        base.core_taken();
+        base.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        let mut ok = true;
+        for (scene, want, name) in [
+            (bare, &mut *want_bare, "GC2BT bare"),
+            (layered, &mut *want_layered, "GC2BT layered"),
+            (s20, &mut *want_20, "GC2BT scene 20"),
+        ] {
+            gc2_set_scene(g, &mut base, scene, tex);
+            ok &= gc2_reference(g, &mut base, (k, at), want, first, dsig, name);
+        }
+        if !ok {
+            log!("  GC2BT: a reference failed: nothing more run");
+            let _ = base.release(&mut g.pool);
+            return;
+        }
+        let poison_bare = gc2::absent16(want_bare, &gc2::POISON);
+        let poison_layered = gc2::absent16(want_layered, &gc2::POISON);
+        let poison_20 = gc2::absent16(want_20, &gc2::POISON);
+        let step = gc2_step(23, 2, 0, 1);
+        clock_restore(&mut g.e.regs);
+        if clock_apply(g, step).is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2BT: 149.50 / 1 didn't take: nothing more run");
+            let _ = base.release(&mut g.pool);
+            return;
+        }
+        clock_readback(g);
+        let top_regs = gc2_clock_want(step_speed(g, step), step.div);
+        let render = |g: &mut Rig,
+                      rr: &mut Renderer,
+                      scene: gc2::Scene,
+                      want: &[u32],
+                      first: &mut [u32],
+                      poison: Option<u16>| {
+            gc2_set_scene(g, rr, scene, tex);
+            if let Some(c) = poison
+                && !poison_fill(g, at, c)
+            {
+                return (None, 0);
+            }
+            let mut side = Gc2Side::new(false);
+            let mut b = Gc2Baseline(None);
+            let w = gc2_render_at(g, rr, (k, at), want, first, top_regs, &mut b, &mut side);
+            (w, side.best_us)
+        };
+        // `way` against `base`, the core taken at every switch (C91); both
+        // are taken before each part, so the first renders set up too.
+        let mut last_way = false;
+        let mut pairs = |g: &mut Rig,
+                         base: &mut Renderer,
+                         way: &mut Renderer,
+                         scene: gc2::Scene,
+                         want: &[u32],
+                         first: &mut [u32],
+                         poison: Option<u16>,
+                         quiet: bool,
+                         n: u32|
+         -> (u32, u64, u32, u64, u32) {
+            let mut one = |g: &mut Rig, base: &mut Renderer, way: &mut Renderer, is_way: bool| {
+                let rr: &mut Renderer = if is_way { way } else { base };
+                if is_way != last_way {
+                    rr.core_taken();
+                    last_way = is_way;
+                }
+                g.quiet_us = if quiet && is_way { GC2AF_QUIET_US } else { 0 };
+                let out = render(g, rr, scene, want, first, poison);
+                g.quiet_us = 0;
+                out
+            };
+            gc2_pairs(g, base, way, n, &mut one)
+        };
+        let mut part = 0u32;
+        macro_rules! run {
+            ($way:expr, $wname:expr, $scene:expr, $sname:expr, $want:expr, $poison:expr, $quiet:expr, $n:expr, $label:expr) => {{
+                part += 1;
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "PART {part} OF 6");
+                soak_label(g, [$label, "149.50 / 1 WARM", l3.as_str()], SOAK_BLUE);
+                base.core_taken();
+                $way.core_taken();
+                let (bw, bus, ww, wus, failed) =
+                    pairs(g, &mut base, $way, $scene, $want, first, $poison, $quiet, $n);
+                let np = u64::from($n);
+                log!(
+                    "  GC2BT {} on {}: {ww} of {} wrong at mean {} us; base beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                    $wname,
+                    $sname,
+                    $n,
+                    wus / np,
+                    bus / np,
+                    gc2ba_temp(&mut touch)
+                );
+                (ww, failed)
+            }};
+        }
+        let setup = |rr: &mut Renderer| {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+            rr.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        };
+        let mut die_pool = rp_vram_map::Pool::new(GC2BT_DIE_POOL);
+        let mut die_clean = true;
+        // Parts 1-3: the region array on the die, checked at Windows
+        // Mobile's clock first.
+        match Renderer::new_in(&mut die_pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE) {
+            None => {
+                log!("  GC2BT: no renderer with its region array on the die: parts 1-3 skipped");
+                die_clean = false;
+            }
+            Some(mut die) => {
+                setup(&mut die);
+                log!(
+                    "  GC2BT die's region array at 0x{:x} (on the die)",
+                    die.regions_at()
+                );
+                clock_restore(&mut g.e.regs);
+                die.core_taken();
+                gc2_set_scene(g, &mut die, bare, tex);
+                let w = {
+                    let mut side = Gc2Side::new(dsig);
+                    let mut b = Gc2Baseline(None);
+                    gc2_render_at(
+                        g,
+                        &mut die,
+                        (k, at),
+                        want_bare,
+                        first,
+                        wm,
+                        &mut b,
+                        &mut side,
+                    )
+                };
+                log!("  GC2BT die at Windows Mobile's clock: {w:?} words off the reference");
+                let took = clock_apply(g, step).is_some();
+                clock_readback(g);
+                if w == Some(0) && took {
+                    let (ww, f) = run!(
+                        &mut die,
+                        "the region array on the die",
+                        bare,
+                        "scene 3 without its layer",
+                        want_bare,
+                        poison_bare,
+                        false,
+                        GC2BT_PAIRS,
+                        "GC2BT DIE ARRAY, BARE"
+                    );
+                    die_clean &= ww == 0 && f == 0;
+                    let (ww, f) = run!(
+                        &mut die,
+                        "the region array on the die",
+                        layered,
+                        "scene 3 with its layer",
+                        want_layered,
+                        poison_layered,
+                        false,
+                        GC2BT_PAIRS,
+                        "GC2BT DIE ARRAY, LAYERED"
+                    );
+                    die_clean &= ww == 0 && f == 0;
+                    let (ww, f) = run!(
+                        &mut die,
+                        "the region array on the die",
+                        s20,
+                        "scene 20",
+                        want_20,
+                        poison_20,
+                        false,
+                        GC2BT_SIDE_PAIRS,
+                        "GC2BT DIE ARRAY, SCENE 20"
+                    );
+                    die_clean &= ww == 0 && f == 0;
+                } else {
+                    log!(
+                        "  GC2BT: the die renderer doesn't draw the reference, or the clock didn't take: parts 1-3 skipped"
+                    );
+                    die_clean = false;
+                }
+                let _ = die.release(&mut die_pool);
+            }
+        }
+        // Part 4: the manager's block on the die too.
+        if let Some(mut die2) =
+            Renderer::new_in(&mut die_pool, 480, 640, GC2BB_PARAMS, GC2BT_DIE_PM)
+        {
+            setup(&mut die2);
+            log!(
+                "  GC2BT die2's region array at 0x{:x} (on the die)",
+                die2.regions_at()
+            );
+            let _ = run!(
+                &mut die2,
+                "the array and the manager's block on the die",
+                bare,
+                "scene 3 without its layer",
+                want_bare,
+                poison_bare,
+                false,
+                GC2BT_SIDE_PAIRS,
+                "GC2BT DIE ARRAY+PM, BARE"
+            );
+            let _ = die2.release(&mut die_pool);
+        } else {
+            log!("  GC2BT: no renderer with the manager's block on the die: part 4 skipped");
+        }
+        // Parts 5-6: the array 8 KiB further in SDRAM; the CPU quiet.
+        let gap = g.pool.alloc(0x2000, 64);
+        if let Some(mut base2) =
+            Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        {
+            setup(&mut base2);
+            log!(
+                "  GC2BT base2's region array at 0x{:x} (SDRAM)",
+                base2.regions_at()
+            );
+            let _ = run!(
+                &mut base2,
+                "the array 8 KiB further in SDRAM",
+                bare,
+                "scene 3 without its layer",
+                want_bare,
+                poison_bare,
+                false,
+                GC2BT_SIDE_PAIRS,
+                "GC2BT SDRAM ARRAY MOVED"
+            );
+            let _ = run!(
+                &mut base2,
+                "the CPU quiet (base2's array)",
+                bare,
+                "scene 3 without its layer",
+                want_bare,
+                poison_bare,
+                true,
+                GC2BT_SIDE_PAIRS,
+                "GC2BT CPU QUIET"
+            );
+            let _ = base2.release(&mut g.pool);
+        } else {
+            log!("  GC2BT: no second SDRAM renderer: parts 5-6 skipped");
+        }
+        if let Some(gap) = gap {
+            let _ = g.pool.free(gap, 0x2000);
+        }
+        log!(
+            "  GC2BT pairs done, TEMP0 {:?}; the region array on the die clean in all three: {die_clean}",
+            gc2ba_temp(&mut touch)
+        );
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        if die_clean {
+            // The proof on a die renderer: both corner sweeps through
+            // gc2_orders at the test's target.
+            match Renderer::new_in(&mut die_pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE) {
+                None => log!("  GC2BT proof: no die renderer: not run"),
+                Some(mut die) => {
+                    setup(&mut die);
+                    die.core_taken();
+                    g.at_override = at;
+                    let top = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+                    let plan = |name, label, scenes, ways| OrderPlan {
+                        name,
+                        label,
+                        scenes,
+                        ways,
+                        step: top,
+                        secs: 900,
+                        rounds: GC2BT_ROUNDS,
+                        poison: true,
+                        describe: 3,
+                        pause: false,
+                        quiet: false,
+                        flat: false,
+                    };
+                    let plans = [
+                        plan(
+                            "GC2BT proof flat",
+                            "GC2BT PROOF FLAT SWEEP",
+                            &gc2::CORNER_FLAT[..],
+                            &GC2BT_FLAT_WAYS[..],
+                        ),
+                        plan(
+                            "GC2BT proof textured",
+                            "GC2BT PROOF TEX SWEEP",
+                            &gc2::CORNER_UV[..],
+                            &GC2BT_UV_WAYS[..],
+                        ),
+                    ];
+                    for p in &plans {
+                        gc2_orders(g, &mut die, (tex, &mut *all, dsig), p);
+                        log!("  {} done, TEMP0 {:?}", p.name, gc2ba_temp(&mut touch));
+                    }
+                    g.at_override = u32::MAX;
+                    let _ = die.release(&mut die_pool);
+                }
+            }
+        } else {
+            log!("  GC2BT proof: the region array on the die wasn't clean in all three: not run");
+        }
+        let _ = base.release(&mut g.pool);
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        log!("  GC2BT done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+    }
+
     /// GC2BS's pairs a condition way (100; the emulator 2) and its proof
     /// pairs for each clean cure (300).
     const GC2BS_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 100 };
@@ -19424,7 +19880,10 @@ mod image {
         let (n_scenes, n_ways) = (scenes.len(), ways.len());
         let k = gc2::FT2;
         let words = gc2::words(k) as usize;
-        let at = gc_at(k);
+        let at = match g.at_override {
+            u32::MAX => gc_at(k),
+            o => o,
+        };
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         let (first, rest) = first.split_at_mut(words);
         if rest.len() < n_scenes * words {
@@ -20745,6 +21204,7 @@ mod image {
             writeout_hits: Over::NONE,
             tim: None,
             quiet_us: 0,
+            at_override: u32::MAX,
         };
         if START {
             start_watch(&mut g.e.regs, "N4 the keypad taken, the fence written");

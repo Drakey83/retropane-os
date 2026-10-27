@@ -17,6 +17,10 @@ fn main() {
         // inside its warm-up's frame with the on-die renderer beside the
         // first, 33,744 bytes deep in the emulator (82% of 40 KiB, over the
         // check's 80%): 48 KiB leaves it at 69%.
-        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=49152");
+        // 56 KiB from 2026-10-27: run GC2BT pairs a second renderer (its
+        // region array on the die) against the first inside the warm-up's
+        // frame, with the paired runner's closures, 40,456 bytes deep in the
+        // emulator (82% of 48 KiB): 56 KiB leaves it at 71%.
+        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=57344");
     }
 }

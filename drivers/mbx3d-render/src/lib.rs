@@ -1254,6 +1254,12 @@ impl Renderer {
         self.tile_order = order;
     }
 
+    /// Where its region array is (`rp-gpubench` run GC2BT logs it).
+    #[must_use]
+    pub fn regions_at(&self) -> u32 {
+        self.regions
+    }
+
     /// Gives the region array back to `pool`.
     pub fn release(self, pool: &mut Pool) -> bool {
         pool.free(self.regions, self.cols * self.rows * 8)

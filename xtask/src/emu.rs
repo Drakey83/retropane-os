@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bt = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_REGION", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bs = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5669,7 +5678,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 112] = [
+    let runs: [GpubenchRun; 113] = [
         (
             "run A",
             &run_a,
@@ -6012,6 +6021,29 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BT (R69): the region array on the die, shortened (the
+        // emulator draws exactly, so the die side is clean and the proof
+        // runs).
+        (
+            "run GC2BT",
+            &run_gc2bt,
+            &[
+                "GC2BT (R69): the region array (and the manager's block) on the die",
+                "GC2BT base's region array at 0x",
+                "GC2BT die's region array at 0x",
+                "GC2BT warm-up reference:",
+                "GC2BT A slice 10: ",
+                "GC2BT die at Windows Mobile's clock: Some(0) words off",
+                "GC2BT the region array on the die on scene 20: 0 of 2 wrong",
+                "GC2BT the CPU quiet (base2's array) on scene 3 without its layer: 0 of 2 wrong",
+                "the region array on the die clean in all three: true",
+                "GC2BT proof textured done, TEMP0",
+                "GC2BT done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
