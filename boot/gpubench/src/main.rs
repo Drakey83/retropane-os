@@ -7971,6 +7971,7 @@ mod image {
         || GC2_SPLIT10
         || GC2_UPSAMPLE
         || GC2_MAP
+        || GC2_NUDGE
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8220,6 +8221,13 @@ mod image {
     /// counted by column, fraction and tile row, at 149.50 / 1 warm with
     /// both tile-race cures on. About 15 minutes, unattended.
     const GC2_MAP: bool = option_env!("RP_GPUBENCH_GC2_MAP").is_some();
+
+    /// Run GC2BM, reminder R69 (`RP_GPUBENCH_GC2_NUDGE`): the no-cost cure
+    /// GC2BL's map points to, texture spans nudged one unit off an exact
+    /// 1/4,096-texel step, on the dyadic sweeps, the other diagonal, the
+    /// 16 x 16 enlargement and kind 10 itself, at 149.50 / 1 warm with both
+    /// tile-race cures on. About 15 minutes, unattended.
+    const GC2_NUDGE: bool = option_env!("RP_GPUBENCH_GC2_NUDGE").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9603,6 +9611,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_NUDGE {
+                "the 16-bit kinds' targets inside the safe region (GC2BM, R69: no map; texture spans nudged one unit off an exact 1/4096-texel step against the bilinear error, the ramp's sweeps, both diagonals, the 16 x 16 enlargement and kind 10, at 149.50 / 1 warm with the lists on the die and the checker order; each target poisoned first),"
             } else if GC2_MAP {
                 "the 16-bit kinds' targets inside the safe region (GC2BL, R69: no map; the bilinear error mapped over the sample fraction, twelve u sweeps of a 16 x 16 ramp at 149.50 / 1 warm with the lists on the die and the checker order, every wrong pixel counted by column, fraction and tile row; each target poisoned first),"
             } else if GC2_UPSAMPLE {
@@ -9830,6 +9840,8 @@ mod image {
         } else if GC2_UPSAMPLE {
             (1 + gc2::THRESHOLD.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_MAP {
+            gc2::words(gc2::FT2) as usize
+        } else if GC2_NUDGE {
             gc2::words(gc2::FT2) as usize
         } else if GC2_MAGNIFY {
             (1 + gc2::COMPENSATE.len()) * gc2::words(gc2::FT2) as usize
@@ -10223,6 +10235,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_NUDGE {
+                    gc2_nudge(g, &mut r, (tex, first, dsig));
                 } else if GC2_MAP {
                     gc2_map(g, &mut r, (tex, first, dsig));
                 } else if GC2_UPSAMPLE {
@@ -16030,6 +16044,421 @@ mod image {
         );
         if !ondie.release(&mut g.pool) {
             log!("  GC2BL: the on-die renderer's memory not given back");
+        }
+        let _ = g.pool.free(ta, bytes);
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// A GC2BM scene: which texture (0 the 16 x 16 ramp, 1 the 8 x 8 plane
+    /// kind 10 draws from), the full-screen quad's coordinates (`u0`, `v0`
+    /// at the top left, `us`, `vs` across and down, in [`UV_ONE`] units),
+    /// whether its corners are rotated one place (the quad split along the
+    /// other diagonal), and its name.
+    #[derive(Clone, Copy)]
+    struct Sweep {
+        tex: u8,
+        u0: i32,
+        us: i32,
+        v0: i32,
+        vs: i32,
+        rotated: bool,
+        name: &'static str,
+    }
+
+    /// GC2BM's scenes (GC2BL's map: exact 1/4,096-texel steps fail, odd
+    /// ones don't; kind 10 fails on its steep ramp): the dyadic sweeps
+    /// exact and nudged one unit, the other diagonal, and kind 10 itself
+    /// exact and nudged.
+    const GC2BM_SCENES: [Sweep; 16] = {
+        const fn sw(
+            tex: u8,
+            u0: i32,
+            us: i32,
+            v0: i32,
+            vs: i32,
+            rotated: bool,
+            name: &'static str,
+        ) -> Sweep {
+            Sweep {
+                tex,
+                u0,
+                us,
+                v0,
+                vs,
+                rotated,
+                name,
+            }
+        }
+        [
+            sw(
+                0,
+                2048,
+                61440,
+                2048,
+                0,
+                false,
+                "ramp 1/32 exact (GC2BL's worst, control)",
+            ),
+            sw(0, 2048, 61441, 2048, 0, false, "ramp 1/32 nudged +1"),
+            sw(0, 2048, 61439, 2048, 0, false, "ramp 1/32 nudged -1"),
+            sw(0, 2048, 30721, 2048, 0, false, "ramp 1/64 nudged +1"),
+            sw(0, 2048, 15361, 2048, 0, false, "ramp 1/128 nudged +1"),
+            sw(0, 2048, 7681, 2048, 0, false, "ramp 1/256 nudged +1"),
+            sw(0, 2048, 6828, 2048, 0, false, "ramp 1/288 nudged +1"),
+            sw(
+                0,
+                2048,
+                61440,
+                2048,
+                0,
+                true,
+                "ramp 1/32 exact, the other diagonal",
+            ),
+            sw(
+                0,
+                2048,
+                61441,
+                2048,
+                0,
+                true,
+                "ramp 1/32 nudged, the other diagonal",
+            ),
+            sw(
+                0,
+                2048,
+                61441,
+                2048,
+                61441,
+                false,
+                "the 16 x 16 enlargement nudged (GC2BK's wrong case)",
+            ),
+            sw(1, 4096, 8192, 4096, 8192, false, "kind 10 exact (control)"),
+            sw(
+                1,
+                4096,
+                8193,
+                4096,
+                8192,
+                false,
+                "kind 10, u span nudged +1",
+            ),
+            sw(
+                1,
+                4096,
+                8192,
+                4096,
+                8193,
+                false,
+                "kind 10, v span nudged +1",
+            ),
+            sw(1, 4096, 8193, 4096, 8193, false, "kind 10, both nudged +1"),
+            sw(
+                1,
+                4096,
+                8192,
+                4096,
+                8192,
+                true,
+                "kind 10 exact, the other diagonal",
+            ),
+            sw(
+                1,
+                4096,
+                8193,
+                4096,
+                8193,
+                true,
+                "kind 10 nudged, the other diagonal",
+            ),
+        ]
+    };
+    const GC2BM_RENDERS: u32 = if GC2_RENDERS < 20 { 2 } else { 50 };
+
+    /// Run GC2BM (see [`GC2_NUDGE`]): whether nudging a texture span one
+    /// unit off an exact 1/4,096-texel step cures the bilinear error, at
+    /// no cost. As GC2BL (its machinery and its warm-up), over
+    /// [`GC2BM_SCENES`], [`GC2BM_RENDERS`] renders each; every wrong pixel
+    /// counted, logged compactly (column runs, the top fraction bins, the
+    /// tile rows) so sixteen scenes fit the log.
+    #[inline(never)]
+    fn gc2_nudge(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        if all.len() < 2 * words {
+            log!("  GC2BM: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BM (R69): the nudged span against the bilinear error: {} full-screen sweeps (the 16 x 16 ramp and kind 10's plane, exact and nudged one unit, both diagonals) at 149.50 / 1 warm, both tile-race cures on, {GC2BM_RENDERS} renders each",
+            GC2BM_SCENES.len()
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BM TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let bytes = 4 * 16 * 16;
+        let Some(ta) = g.pool.alloc(bytes, 128) else {
+            log!("  GC2BM: no memory for the texture: nothing run");
+            return;
+        };
+        let mut bad = 0;
+        gc2::upsampled_words(16, |i, w| g.mem.store((ta + 4 * i) as usize, &[w]));
+        g.mem.sync();
+        gc2::upsampled_words(16, |i, w| {
+            bad += u32::from(g.mem.load((ta + 4 * i) as usize) != Some(w));
+        });
+        log!("  GC2BM the 16 x 16 ramp at 0x{ta:x}: {bad} words read back wrong");
+        let textures = [
+            rp_mbx3d_render::Texture {
+                at: ta,
+                code: 1,
+                ..tex.plane
+            },
+            tex.plane,
+        ];
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BM: no renderer with its parameter memory on the die: nothing run");
+            let _ = g.pool.free(ta, bytes);
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        let (first, rest) = all.split_at_mut(words);
+        let want = &mut rest[..words];
+        {
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BM") {
+                let _ = ondie.release(&mut g.pool);
+                let _ = g.pool.free(ta, bytes);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BM", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                let _ = g.pool.free(ta, bytes);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        ondie.core_taken();
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let target = Target {
+            picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        for (si, sw) in GC2BM_SCENES.iter().enumerate() {
+            let t = textures[usize::from(sw.tex)];
+            let texel = rp_mbx3d_render::UV_ONE >> (3 + t.code);
+            let uv = [
+                (sw.u0, sw.v0),
+                (sw.u0 + sw.us, sw.v0),
+                (sw.u0 + sw.us, sw.v0 + sw.vs),
+                (sw.u0, sw.v0 + sw.vs),
+            ];
+            let mut quad = Draw::rect(
+                0,
+                0,
+                480,
+                640,
+                Paint::Texture {
+                    tex: t,
+                    uv,
+                    tint: 0xFFFF_FFFF,
+                },
+            );
+            if sw.rotated {
+                // The same quad, its corners (and their coordinates) one
+                // place on: the renderer's triangles (0, 1, 3), (1, 2, 3)
+                // then meet on the other diagonal.
+                let c = quad.corners;
+                quad.corners = [c[1], c[2], c[3], c[0]];
+                quad.paint = Paint::Texture {
+                    tex: t,
+                    uv: [uv[1], uv[2], uv[3], uv[0]],
+                    tint: 0xFFFF_FFFF,
+                };
+            }
+            let _ = ondie.set_background(Some(0xFF00_0000));
+            g.set(&mut ondie, 0, Some(quad));
+            for slot in 1..gc2::SLOTS {
+                g.set(&mut ondie, slot, None);
+            }
+            let mut sname = heapless_name();
+            let _ = write!(sname, "GC2BM scene {si}");
+            if !gc2_reference(g, &mut ondie, (k, at), want, first, dsig, sname.as_str()) {
+                continue;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let Some(lock) = clock_apply(g, s) else {
+                clock_restore(&mut g.e.regs);
+                log!("  GC2BM scene {si}: 149.50 / 1 didn't take; skipped");
+                continue;
+            };
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "SCENE {} OF {}", si + 1, GC2BM_SCENES.len());
+            soak_label(
+                g,
+                ["GC2BM NUDGE", "149.50 / 1 WARM", l3.as_str()],
+                SOAK_BLUE,
+            );
+            let mut by_col = [0u16; 480];
+            let mut by_frac = [[0u16; 64]; 2];
+            let mut by_row = [0u16; 40];
+            let (mut wrong_renders, mut pixels, mut plus, mut minus, mut other, mut failed) =
+                (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+            let mut us_sum = 0u64;
+            for _ in 0..GC2BM_RENDERS {
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    failed += 1;
+                    continue;
+                }
+                ondie.invalidate_all();
+                let Some(us) = g.frame(&mut ondie, target) else {
+                    failed += 1;
+                    continue;
+                };
+                us_sum += u64::from(us);
+                let off = read_compare_volatile(
+                    g.mem.0,
+                    at as usize,
+                    &want[..words],
+                    &mut first[..words],
+                );
+                rt::check_in();
+                if off == Some(0) {
+                    continue;
+                }
+                wrong_renders += 1;
+                for i in 0..words {
+                    let got = g.mem.load(at as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+                    let w = want[i];
+                    if got == w {
+                        continue;
+                    }
+                    for half in 0..2 {
+                        let (gp, wp) = ((got >> (16 * half)) & 0xFFFF, (w >> (16 * half)) & 0xFFFF);
+                        if gp == wp {
+                            continue;
+                        }
+                        pixels += 1;
+                        let x = (i % 240) * 2 + half;
+                        let y = i / 240;
+                        by_col[x] = by_col[x].saturating_add(1);
+                        by_row[y / 16] = by_row[y / 16].saturating_add(1);
+                        let u = sw.u0 as i64 + (2 * x as i64 + 1) * sw.us as i64 / 960;
+                        let f = (u.rem_euclid(texel as i64) * 64 / texel as i64) as usize;
+                        let (gr, wr) = ((gp >> 11) as i32, (wp >> 11) as i32);
+                        let sign = if gr == wr + 1 {
+                            plus += 1;
+                            0
+                        } else if gr + 1 == wr {
+                            minus += 1;
+                            1
+                        } else {
+                            other += 1;
+                            continue;
+                        };
+                        by_frac[sign][f] = by_frac[sign][f].saturating_add(1);
+                    }
+                    if i % 16_384 == 16_383 {
+                        rt::check_in();
+                    }
+                }
+                rt::check_in();
+            }
+            clock_restore(&mut g.e.regs);
+            log!(
+                "  GC2BM scene {si} ({}; tex {}, u0 {}, us {}, v0 {}, vs {}, rotated {}; lock {lock}): {wrong_renders} of {GC2BM_RENDERS} renders wrong, {pixels} wrong pixels (red +1 {plus}, -1 {minus}, other {other}), {failed} not finished, mean {} us",
+                sw.name,
+                sw.tex,
+                sw.u0,
+                sw.us,
+                sw.v0,
+                sw.vs,
+                sw.rotated,
+                us_sum / u64::from(GC2BM_RENDERS.max(1))
+            );
+            if pixels > 0 {
+                // Column runs (first, last), at most 24, and how many columns.
+                let mut runs = Name::<256>::new();
+                let (mut start, mut n_runs, mut n_cols) = (None, 0u32, 0u32);
+                for x in 0..=480 {
+                    let on = x < 480 && by_col[x] > 0;
+                    n_cols += u32::from(on);
+                    if on && start.is_none() {
+                        start = Some(x);
+                    }
+                    if !on && let Some(a) = start {
+                        if n_runs < 24 {
+                            let _ = write!(runs, " {a}-{}", x - 1);
+                        }
+                        n_runs += 1;
+                        start = None;
+                    }
+                }
+                log!(
+                    "  GC2BM scene {si} wrong columns {n_cols}, {n_runs} runs:{}",
+                    runs.as_str()
+                );
+                for (sign, name) in [(0, "+1"), (1, "-1")] {
+                    let mut top = Name::<256>::new();
+                    let mut bins: [(u16, usize); 64] =
+                        core::array::from_fn(|b| (by_frac[sign][b], b));
+                    bins.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                    for &(c, b) in bins.iter().take(8).filter(|(c, _)| *c > 0) {
+                        let _ = write!(top, " {b}:{c}");
+                    }
+                    if !top.as_str().is_empty() {
+                        log!(
+                            "  GC2BM scene {si} red {name} by fraction/64:{}",
+                            top.as_str()
+                        );
+                    }
+                }
+                log!("  GC2BM scene {si} by tile row: {:?}", by_row);
+            }
+            rt::check_in();
+        }
+        log!("  GC2BM done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        clock_readback(g);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        r.core_taken();
+        gc2_set_scene(g, r, gc2::CORNER_FLAT[GC2AY_SCENE], tex);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!(
+            "  GC2BM: the control at Windows Mobile's clock after: {control:?} words off (scene 20 against the last sweep's reference: a count, not a check)"
+        );
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BM: the on-die renderer's memory not given back");
         }
         let _ = g.pool.free(ta, bytes);
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);

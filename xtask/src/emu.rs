@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bm = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_NUDGE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bl = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5606,7 +5615,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 105] = [
+    let runs: [GpubenchRun; 106] = [
         (
             "run A",
             &run_a,
@@ -5949,6 +5958,25 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BM (R69): the nudge, shortened (10 s warm-up, two renders a
+        // scene; the emulator draws exactly, so no scene logs counts).
+        (
+            "run GC2BM",
+            &run_gc2bm,
+            &[
+                "GC2BM (R69): the nudged span against the bilinear error",
+                "GC2BM the 16 x 16 ramp at 0x",
+                ": 0 words read back wrong",
+                "GC2BM A slice 10: ",
+                "GC2BM scene 0 reference:",
+                "GC2BM scene 15 (kind 10 nudged, the other diagonal;",
+                "0 of 2 renders wrong, 0 wrong pixels",
+                "GC2BM done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
