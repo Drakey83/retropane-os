@@ -2340,6 +2340,58 @@ pub const THRESHOLD: [Scene; 6] = [
     Scene::Magnified(320),
 ];
 
+/// `d` with its texture span nudged up `n` [`UV_ONE`] units on each axis
+/// (run GC2BM: an upward nudge clears divide 1's short samples on exact
+/// steps): u at the right corners, v at the bottom ones. Anything not
+/// textured as it is.
+#[must_use]
+pub fn nudged(d: Draw, n: i32) -> Draw {
+    let Paint::Texture { tex, uv, tint } = d.paint else {
+        return d;
+    };
+    let mut uv = uv;
+    uv[1].0 += n;
+    uv[2].0 += n;
+    uv[2].1 += n;
+    uv[3].1 += n;
+    Draw {
+        paint: Paint::Texture { tex, uv, tint },
+        ..d
+    }
+}
+
+/// GC2BO's content set: every 16-bit kind with the half-texel shift
+/// ([`Scene::KindUv`]), kind 10 drawn from its plane enlarged to 16 x 16
+/// ([`Scene::Upsampled10`]: the fourth cure) in its place.
+pub const PROOF2_KINDS: [Scene; 8] = [
+    Scene::KindUv(0),
+    Scene::KindUv(1),
+    Scene::KindUv(FT2),
+    Scene::KindUv(5),
+    Scene::KindUv(6),
+    Scene::KindUv(7),
+    Scene::KindUv(9),
+    Scene::Upsampled10(1),
+];
+
+/// GC2BO's soak: the content set, the ring scene, the flat corner scenes
+/// that faulted in GC2AJ and the textured one with the u and v shift.
+pub const PROOF2_SOAK: [Scene; 13] = [
+    Scene::KindUv(0),
+    Scene::KindUv(1),
+    Scene::KindUv(FT2),
+    Scene::KindUv(5),
+    Scene::KindUv(6),
+    Scene::KindUv(7),
+    Scene::KindUv(9),
+    Scene::Upsampled10(1),
+    Scene::Fix(0, 8),
+    Scene::Corner(false, 20),
+    Scene::Corner(false, 18),
+    Scene::Corner(false, 6),
+    Scene::CornerUv(20),
+];
+
 /// One texel of kind 10's 8 x 8 texture in [`UV_ONE`] units.
 pub const K10_TEXEL: i32 = UV_ONE / 8;
 /// GC2BI's compensation steps: kind 10's coordinates pulled back by 0.004,

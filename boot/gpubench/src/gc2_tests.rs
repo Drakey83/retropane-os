@@ -2420,3 +2420,48 @@ fn gc2bk_threshold_and_enlarged_scenes() {
         );
     }
 }
+
+/// GC2BO's nudge moves only a texture's far corners' coordinates up by
+/// the amount, on both axes, and leaves anything untextured alone; its
+/// lists name every 16-bit kind (kind 10 as its enlarged form) and the
+/// soak holds them and the scenes that faulted before.
+#[test]
+fn gc2bo_nudge_and_lists() {
+    let t = test_tex();
+    let (_, k) = order_scene(Scene::Kind(FT2), t);
+    for d in k.iter().flatten() {
+        let n = nudged(*d, 8);
+        assert_eq!(n.corners, d.corners);
+        match (d.paint, n.paint) {
+            (Paint::Texture { uv, .. }, Paint::Texture { uv: nv, .. }) => {
+                assert_eq!(nv[0], uv[0]);
+                assert_eq!(nv[1], (uv[1].0 + 8, uv[1].1));
+                assert_eq!(nv[2], (uv[2].0 + 8, uv[2].1 + 8));
+                assert_eq!(nv[3], (uv[3].0, uv[3].1 + 8));
+            }
+            (a, b) => assert_eq!(a, b, "untextured unchanged"),
+        }
+    }
+    let ks: std::vec::Vec<usize> = PROOF2_KINDS
+        .iter()
+        .filter_map(|s| match s {
+            Scene::KindUv(k) => Some(*k),
+            _ => None,
+        })
+        .collect();
+    let mut all16: std::vec::Vec<usize> = (0..KINDS.len())
+        .filter(|&k| KINDS[k].1.bytes() == 2)
+        .collect();
+    all16.retain(|&k| k != 10);
+    assert_eq!(ks, all16, "every 16-bit kind but 10, shifted");
+    assert!(
+        PROOF2_KINDS.contains(&Scene::Upsampled10(1)),
+        "kind 10 as its enlarged form"
+    );
+    for s in PROOF2_KINDS {
+        assert!(PROOF2_SOAK.contains(&s));
+    }
+    assert!(
+        PROOF2_SOAK.contains(&Scene::Fix(0, 8)) && PROOF2_SOAK.contains(&Scene::Corner(false, 20))
+    );
+}
