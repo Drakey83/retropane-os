@@ -2190,3 +2190,46 @@ fn gc2bg_proof_lists_are_the_16_bit_kinds_and_the_checker_order() {
     assert!(PROOF_SOAK.contains(&Scene::Corner(false, 20)));
     assert!(PROOF_SOAK.len() <= ORDER_SCENES.len());
 }
+
+/// GC2BH's shifted kinds: the shift moves every clamped texture's
+/// coordinates half a texel in u and v and changes nothing else; a
+/// wrapping texture (kind 6) and an untextured kind stay as they are.
+#[test]
+fn gc2bh_kind_uv_shifts_clamped_textures_only() {
+    let t = test_tex();
+    for k in [FT2, 10, 5, 6, 0] {
+        let (bg, raw) = order_scene(Scene::Kind(k), t);
+        let (bg2, uv) = order_scene(Scene::KindUv(k), t);
+        assert_eq!(bg, bg2);
+        for (a, b) in raw.iter().zip(&uv) {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    assert_eq!(a.corners, b.corners, "kind {k}: the geometry the same");
+                    assert_eq!(*b, shift_texture(*a, TexFix::ClampUv), "kind {k}");
+                }
+                (None, None) => {}
+                _ => panic!("kind {k}: a slot appeared or went"),
+            }
+        }
+    }
+    let (_, ft2) = order_scene(Scene::Kind(FT2), t);
+    let (_, ft2uv) = order_scene(Scene::KindUv(FT2), t);
+    assert_ne!(ft2, ft2uv, "FT2's clamped texture is shifted");
+    // The run's two lists are the same kinds, shifted and not, and every
+    // one textured and 16-bit.
+    for (a, b) in TEXEL_KINDS.iter().zip(&TEXEL_KINDS_UV) {
+        let (Scene::Kind(k), Scene::KindUv(k2)) = (*a, *b) else {
+            panic!("a kind and its shifted twin")
+        };
+        assert_eq!(k, k2);
+        assert_eq!(KINDS[k].1.bytes(), 2, "kind {k} is 16-bit");
+        let (_, slots) = order_scene(*a, t);
+        assert!(
+            slots
+                .iter()
+                .flatten()
+                .any(|d| matches!(d.paint, Paint::Texture { .. })),
+            "kind {k} is textured"
+        );
+    }
+}

@@ -507,6 +507,9 @@ pub enum Scene {
     Sweep(usize),
     Mirrored,
     Kind(usize),
+    /// Run GC2BH: kind `k` with every clamped texture shifted half a texel
+    /// in u and v ([`TexFix::ClampUv`]: GC2Z's texel cure).
+    KindUv(usize),
     /// Run GC2U's busy tiles: FT2 (`false`) or GC2K's worst (`true`) with
     /// [`BUSY_LAYER`] blended over the whole screen last, so every tile has
     /// more to draw before its write-out (the tile-race hypothesis: the
@@ -1489,6 +1492,13 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
     match s {
         Scene::Sweep(w) => sweep_scene(w, t),
         Scene::Kind(k) => scene(k, t),
+        Scene::KindUv(k) => {
+            let (bg, slots) = scene(k, t);
+            (
+                bg,
+                slots.map(|d| d.map(|d| shift_texture(d, TexFix::ClampUv))),
+            )
+        }
         Scene::Busy(worst) => {
             let (bg, mut slots) = if worst {
                 sweep_scene(0, t)
@@ -1578,7 +1588,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
             Scene::Sweep(w) => SWEEP[w].corner(),
             _ => (0, 0),
         },
-        Scene::Kind(_) => (0, 0),
+        Scene::Kind(_) | Scene::KindUv(_) => (0, 0),
     }
 }
 
@@ -2158,6 +2168,23 @@ pub const PROOF_SOAK: [Scene; 13] = [
     Scene::Corner(false, 18),
     Scene::Corner(false, 6),
     Scene::CornerUv(20),
+];
+
+/// GC2BH's textured kinds: FT2 (the clamped 8888 quad), kind 10 (one
+/// texture magnified by the bilinear filter), kind 5 (a bilinear 565
+/// texture) and kind 6 (a wrapping 4444 texture, which the shift leaves).
+pub const TEXEL_KINDS: [Scene; 4] = [
+    Scene::Kind(FT2),
+    Scene::Kind(10),
+    Scene::Kind(5),
+    Scene::Kind(6),
+];
+/// The same with GC2Z's half-texel shift.
+pub const TEXEL_KINDS_UV: [Scene; 4] = [
+    Scene::KindUv(FT2),
+    Scene::KindUv(10),
+    Scene::KindUv(5),
+    Scene::KindUv(6),
 ];
 
 /// GC2AJ's flat plan: the corner scenes, then GC2AI's faulting way (the
