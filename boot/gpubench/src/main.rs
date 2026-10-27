@@ -14131,7 +14131,12 @@ mod image {
         log!(
             "  GC2BD strip at Windows Mobile's clock: {off_rows} words off the full reference's rows {GC2BD_TOP} on; drawn again {again:?} words off; at the hidden address {hidden0:?} words off"
         );
-        let strip_ok = off_rows == 0 && again == Some(0) && hidden0 == Some(0);
+        // The pairs need the strip repeatable at both addresses (it is its
+        // own reference); its words off the full scene's rows are a
+        // finding (the X51v drew 17 on 2026-10-27 where the model draws 0:
+        // the core's set-up of the draws clipped at the strip's edges),
+        // not a gate.
+        let strip_ok = again == Some(0) && hidden0 == Some(0);
         let poison = gc2::absent16(want, &gc2::POISON);
         let strip_poison = gc2::absent16(strip_want, &gc2::POISON);
         let (m, n) = gc2::NIGHT_PLL;
@@ -14259,6 +14264,33 @@ mod image {
             let np = u64::from(GC2BD_PAIRS);
             log!(
                 "  GC2BD ring scene, the lists on the die: {ww} of {GC2BD_PAIRS} wrong at mean {} us; as GC2AE beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                wus / np,
+                bus / np,
+                gc2ba_temp(&mut touch)
+            );
+        }
+        // Part 4b: scene 20 itself with its lists on the die (GC2BB's rows
+        // were C91's).
+        {
+            soak_label(
+                g,
+                ["GC2BD 4B OF 5", "SCENE 20, LISTS ON DIE", "149.50 / 1 WARM"],
+                SOAK_BLUE,
+            );
+            let mut last_ondie = false;
+            r.core_taken();
+            let mut one = |g: &mut Rig, r: &mut Renderer, ondie: &mut Renderer, way: bool| {
+                let rr: &mut Renderer = if way { ondie } else { r };
+                if way != last_ondie {
+                    rr.core_taken();
+                    last_ondie = way;
+                }
+                render(g, rr, scene, want, first, top_regs)
+            };
+            let (bw, bus, ww, wus, failed) = gc2_pairs(g, r, &mut ondie, GC2BD_PAIRS, &mut one);
+            let np = u64::from(GC2BD_PAIRS);
+            log!(
+                "  GC2BD scene {GC2AY_SCENE}, the lists on the die: {ww} of {GC2BD_PAIRS} wrong at mean {} us; baseline beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
                 wus / np,
                 bus / np,
                 gc2ba_temp(&mut touch)

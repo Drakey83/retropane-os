@@ -5896,6 +5896,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2BD strip hidden (0x96000): 0 of 2 wrong",
                 "GC2BD strip hidden with the fetch off: 0 of 2 wrong",
                 "GC2BD ring scene, the lists on the die: 0 of 2 wrong",
+                "GC2BD scene 20, the lists on the die: 0 of 2 wrong",
                 "GC2BD the full scene after: 0 of 50 wrong",
                 "the control at Windows Mobile's clock after: Some(0) words off",
                 "RETROPANE-GPUBENCH: done",
