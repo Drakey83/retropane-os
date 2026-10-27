@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bb = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_ONE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2ba = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5507,7 +5516,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 94] = [
+    let runs: [GpubenchRun; 95] = [
         (
             "run A",
             &run_a,
@@ -5850,6 +5859,33 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BB (R69): the one run for the fix, shortened (10 s a
+        // phase, two pairs a way; the emulator draws exactly, so nothing
+        // is wrong and the on-die lists draw the same picture).
+        (
+            "run GC2BB",
+            &run_gc2bb,
+            &[
+                "GC2BB (R69): one run for the fix",
+                "GC2BB TEMP0 at the start:",
+                "GC2BB reference:",
+                "GC2BB lists on-die at 0xa5000 (36864 bytes): Some(0) words off",
+                "GC2BB D slice 10: ",
+                "GC2BB part 2, the ways",
+                "GC2BB way baseline: 0 of 2 wrong",
+                "GC2BB way lists on-die: 0 of 2 wrong",
+                "GC2BB way all three: 0 of 2 wrong",
+                "GC2BB way punch-through: 0 of 2 wrong",
+                "GC2BB ladder 117.00 / 1 (lock",
+                "GC2BB low overdraw (no hidden layer) at 149.50 / 1 warm: opaque 0 of 2 wrong",
+                "GC2BB phase 11 reference:",
+                "GC2BB texel phases 0-11 at 149.50 / 1 warm, wrong of 5 by phase (9: no reference) [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]",
+                "the control at Windows Mobile's clock after: Some(0) words off",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

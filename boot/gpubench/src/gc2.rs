@@ -538,6 +538,10 @@ pub enum Scene {
     /// Run GC2AJ's corner sweep: textured or flat, scene `i` (see
     /// [`corner_scene`]; only through [`order_scene_wide`]).
     Corner(bool, usize),
+    /// Run GC2BB's low-overdraw scene: flat corner scene `i` without its
+    /// hidden layer (the same picture: the layer is never seen; only
+    /// through [`order_scene_wide`]).
+    CornerNoLayer(usize),
     /// Run GC2AK's textured sweep with the u and v shift (see
     /// [`corner_uv_scene`]; only through [`order_scene_wide`]).
     CornerUv(usize),
@@ -1024,6 +1028,11 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     if let Scene::Corner(textured, i) = s {
         return corner_scene(textured, i, t);
     }
+    if let Scene::CornerNoLayer(i) = s {
+        let (bg, mut slots) = corner_scene(false, i, t);
+        slots[0] = None;
+        return (bg, slots);
+    }
     if let Scene::CornerUv(i) = s {
         return corner_uv_scene(i, t);
     }
@@ -1496,6 +1505,7 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         | Scene::Geo(_)
         | Scene::Quad(_)
         | Scene::Corner(..)
+        | Scene::CornerNoLayer(_)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
         | Scene::Phase(_)
@@ -1552,6 +1562,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
         Scene::Geo(_) | Scene::Quad(_) => patch_corner(0),
         Scene::Corner(..)
+        | Scene::CornerNoLayer(_)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
         | Scene::Ratio(..)
