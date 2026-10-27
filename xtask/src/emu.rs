@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bj = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_SPLIT10", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bi = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5579,7 +5588,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 102] = [
+    let runs: [GpubenchRun; 103] = [
         (
             "run A",
             &run_a,
@@ -5922,6 +5931,23 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BJ (R69): the split, shortened (10 s warm-up, a round a
+        // scene; the emulator draws exactly).
+        (
+            "run GC2BJ",
+            &run_gc2bj,
+            &[
+                "GC2BJ (R69): the texel error at large extent",
+                "GC2BJ reference:",
+                "GC2BJ A slice 10: ",
+                "GC2BJ 149.50 / 1: 1 rounds (8 renders)",
+                "GC2BJ 149.50 / 1 done, TEMP0",
+                "GC2BJ 146.25 / 1 done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

@@ -7968,6 +7968,7 @@ mod image {
         || GC2_PROVE
         || GC2_TEXEL_LAST
         || GC2_MAGNIFY
+        || GC2_SPLIT10
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8197,6 +8198,13 @@ mod image {
     /// the error shows at 149.50, 146.25 and 143.00 / 1, both tile-race
     /// cures on, warm. About 25 minutes, unattended.
     const GC2_MAGNIFY: bool = option_env!("RP_GPUBENCH_GC2_MAGNIFY").is_some();
+
+    /// Run GC2BJ, reminder R69 (`RP_GPUBENCH_GC2_SPLIT10`): the texel error
+    /// at large extent (GC2BI: the span clean on squares to 256, wrong on
+    /// kind 10's full screen) against the primitive split into quads, at
+    /// 149.50 and 146.25 / 1, both tile-race cures on, warm. About 20
+    /// minutes, unattended.
+    const GC2_SPLIT10: bool = option_env!("RP_GPUBENCH_GC2_SPLIT10").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9580,6 +9588,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_SPLIT10 {
+                "the 16-bit kinds' targets inside the safe region (GC2BJ, R69: no map; the texel error at large extent against the primitive split into quads, at 149.50 and 146.25 / 1 with the lists on the die and the checker order, warm; each target poisoned first),"
             } else if GC2_MAGNIFY {
                 "the 16-bit kinds' targets inside the safe region (GC2BI, R69: no map; the bilinear filter's magnification, 4x to 480 x 640, against divide 1's coordinate error at 149.50, 146.25 and 143.00 / 1 with the lists on the die and the checker order, warm; each target poisoned first),"
             } else if GC2_TEXEL_LAST {
@@ -9796,6 +9806,8 @@ mod image {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_TEXEL_LAST {
             8 * gc2::words(gc2::FT2) as usize
+        } else if GC2_SPLIT10 {
+            (1 + gc2::SPLIT.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_MAGNIFY {
             (1 + gc2::COMPENSATE.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_REGS
@@ -10188,6 +10200,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_SPLIT10 {
+                    gc2_split10(g, &mut r, (tex, first, dsig));
                 } else if GC2_MAGNIFY {
                     gc2_magnify(g, &mut r, (tex, first, dsig));
                 } else if GC2_TEXEL_LAST {
@@ -15467,6 +15481,99 @@ mod image {
         }
         if !ondie.release(&mut g.pool) {
             log!("  GC2BI: the on-die renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BJ's rounds a scene.
+    const GC2BJ_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 100 };
+    const GC2BJ_WAYS: [(usize, u8); gc2::SPLIT.len()] = gc2::checker_ways();
+
+    /// Run GC2BJ (see [`GC2_SPLIT10`]): whether the texel error at large
+    /// extent is cured by splitting the primitive, at no cost. Ten minutes'
+    /// warm-up; then through [`gc2_orders`] on the on-die renderer in the
+    /// checker order at 149.50 / 1, [`gc2::SPLIT`] [`GC2BJ_ROUNDS`] a
+    /// scene (each its own reference at Windows Mobile's clock), two
+    /// renders described; then the same at 146.25 / 1.
+    #[inline(never)]
+    fn gc2_split10(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        if all.len() < 2 * words {
+            log!("  GC2BJ: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BJ (R69): the texel error at large extent against splitting the primitive, both tile-race cures on, warm: kind 10, its span on squares of 320, 384 and 480, kind 10 split into 1 x 2, 2 x 2, 2 x 3 and 2 x 4 quads, at 149.50 and 146.25 / 1, {GC2BJ_ROUNDS} rounds a scene"
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BJ TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BJ: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BJ") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BJ", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        ondie.core_taken();
+        for ((lm, ln), name) in [((23, 2), "149.50 / 1"), ((45, 4), "146.25 / 1")] {
+            let p = OrderPlan {
+                name: "GC2BJ",
+                label: "GC2BJ SPLIT",
+                scenes: &gc2::SPLIT[..],
+                ways: &GC2BJ_WAYS[..],
+                step: (gc2_step(lm, ln, 0, 1), name),
+                secs: 900,
+                rounds: GC2BJ_ROUNDS,
+                poison: true,
+                describe: 2,
+                pause: false,
+                quiet: false,
+                flat: false,
+            };
+            gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), &p);
+            log!("  GC2BJ {name} done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        }
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BJ: the on-die renderer's memory not given back");
         }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }

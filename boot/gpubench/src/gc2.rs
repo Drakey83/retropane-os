@@ -518,6 +518,11 @@ pub enum Scene {
     /// moved by (du, dv) in [`UV_ONE`] units of the texture (negative:
     /// pulled back against divide 1's one-sided error).
     Shifted10(i32, i32),
+    /// Run GC2BJ: kind 10 drawn as `cols` x `rows` quads tiling the screen,
+    /// each with its part of the texture span (the same picture in exact
+    /// arithmetic), so no pixel lies far from its quad's first corner;
+    /// only through [`order_scene_wide`].
+    Split10(usize, usize),
     /// Run GC2U's busy tiles: FT2 (`false`) or GC2K's worst (`true`) with
     /// [`BUSY_LAYER`] blended over the whole screen last, so every tile has
     /// more to draw before its write-out (the tile-race hypothesis: the
@@ -1027,6 +1032,9 @@ pub fn fix_scene(b: usize, f: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
 #[must_use]
 #[inline(never)]
 pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    if let Scene::Split10(cols, rows) = s {
+        return split10_scene(cols, rows, t);
+    }
     if let Scene::Fix(b, f) = s {
         return fix_scene(b, f, t);
     }
@@ -1542,6 +1550,7 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         | Scene::Quad(_)
         | Scene::Corner(..)
         | Scene::CornerNoLayer(_)
+        | Scene::Split10(..)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
         | Scene::Phase(_)
@@ -1614,7 +1623,11 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
             Scene::Sweep(w) => SWEEP[w].corner(),
             _ => (0, 0),
         },
-        Scene::Kind(_) | Scene::KindUv(_) | Scene::Magnified(_) | Scene::Shifted10(..) => (0, 0),
+        Scene::Kind(_)
+        | Scene::KindUv(_)
+        | Scene::Magnified(_)
+        | Scene::Shifted10(..)
+        | Scene::Split10(..) => (0, 0),
     }
 }
 
@@ -2220,6 +2233,51 @@ pub const MAGNIFIED: [Scene; 8] = [
     Scene::Magnified(128),
     Scene::Magnified(256),
     Scene::Kind(10),
+];
+
+/// Run GC2BJ's scene: kind 10 as `cols` x `rows` quads (see
+/// [`Scene::Split10`]); each quad's corners at whole pixels, its
+/// coordinates kind 10's span interpolated to those pixels (rounded to
+/// the nearest unit: the picture is its own reference).
+#[must_use]
+pub fn split10_scene(cols: usize, rows: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (a, b) = (UV_ONE / 16, 3 * UV_ONE / 16);
+    let (w, h) = (W as i32, H as i32);
+    let at = |p: i32, n: i32| a + ((b - a) as i64 * p as i64 / n as i64) as i32;
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    for j in 0..rows as i32 {
+        for i in 0..cols as i32 {
+            if n == SLOTS {
+                break;
+            }
+            let (x0, x1) = (w * i / cols as i32, w * (i + 1) / cols as i32);
+            let (y0, y1) = (h * j / rows as i32, h * (j + 1) / rows as i32);
+            let (u0, u1, v0, v1) = (at(x0, w), at(x1, w), at(y0, h), at(y1, h));
+            let paint = Paint::Texture {
+                tex: t.plane,
+                uv: [(u0, v0), (u1, v0), (u1, v1), (u0, v1)],
+                tint: WHITE,
+            };
+            out[n] = Some(Draw::rect(x0, y0, x1 - x0, y1 - y0, paint));
+            n += 1;
+        }
+    }
+    (BLACK, out)
+}
+
+/// GC2BJ's scenes: kind 10 as it is; kind 10's span on squares of side
+/// 320, 384 and 480 (GC2BI: clean to 256, kind 10 wrong); kind 10 split
+/// into 1 x 2, 2 x 2, 2 x 3 and 2 x 4 quads.
+pub const SPLIT: [Scene; 8] = [
+    Scene::Kind(10),
+    Scene::Magnified(320),
+    Scene::Magnified(384),
+    Scene::Magnified(480),
+    Scene::Split10(1, 2),
+    Scene::Split10(2, 2),
+    Scene::Split10(2, 3),
+    Scene::Split10(2, 4),
 ];
 
 /// One texel of kind 10's 8 x 8 texture in [`UV_ONE`] units.

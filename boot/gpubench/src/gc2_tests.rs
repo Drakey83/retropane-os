@@ -2295,3 +2295,47 @@ fn gc2bi_compensation_moves_only_kind_10s_coordinates() {
             .any(|s| matches!(s, Scene::Shifted10(u, _) if *u > 0))
     );
 }
+
+/// GC2BJ's split scenes tile the whole screen once, quad edge to quad
+/// edge, each quad's coordinates kind 10's span at its corners (within a
+/// unit), and every quad within the slots; through the model a split
+/// draws kind 10's picture to within a step of each channel.
+#[test]
+fn gc2bj_splits_tile_the_screen_with_kind_10s_span() {
+    let t = test_tex();
+    let (a, b) = (UV_ONE / 16, 3 * UV_ONE / 16);
+    for s in &SPLIT[4..] {
+        let Scene::Split10(cols, rows) = *s else {
+            panic!("a split")
+        };
+        let (bg, slots) = order_scene_wide(*s, t);
+        assert_eq!(bg, 0xFF00_0000);
+        let quads: std::vec::Vec<_> = slots.iter().flatten().collect();
+        assert_eq!(quads.len(), cols * rows, "every quad in the slots");
+        let mut cover = std::vec![0u8; (W * H) as usize];
+        for d in &quads {
+            let x0 = d.corners[0].x / rp_mbx3d_render::SUB;
+            let y0 = d.corners[0].y / rp_mbx3d_render::SUB;
+            let x1 = d.corners[2].x / rp_mbx3d_render::SUB;
+            let y1 = d.corners[2].y / rp_mbx3d_render::SUB;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    cover[(y * W as i32 + x) as usize] += 1;
+                }
+            }
+            let Paint::Texture { uv, .. } = d.paint else {
+                panic!("textured")
+            };
+            let want = |p: i32, n: i32| a + (b - a) * p / n;
+            assert!((uv[0].0 - want(x0, W as i32)).abs() <= 1);
+            assert!((uv[2].0 - want(x1, W as i32)).abs() <= 1);
+            assert!((uv[0].1 - want(y0, H as i32)).abs() <= 1);
+            assert!((uv[2].1 - want(y1, H as i32)).abs() <= 1);
+        }
+        assert!(
+            cover.iter().all(|&c| c == 1),
+            "{cols} x {rows}: every pixel once"
+        );
+    }
+    assert_eq!(SPLIT[0], Scene::Kind(10));
+}
