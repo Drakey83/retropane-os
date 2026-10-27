@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bd = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_STRIP", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bc = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5525,7 +5534,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 96] = [
+    let runs: [GpubenchRun; 97] = [
         (
             "run A",
             &run_a,
@@ -5868,6 +5877,27 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BD (R69): the strip, shortened (10 s warm-up, two pairs a
+        // way; the emulator draws exactly: the strip is the reference's
+        // rows and nothing is wrong).
+        (
+            "run GC2BD",
+            &run_gc2bd,
+            &[
+                "GC2BD (R69): the core rendering where the display isn't reading",
+                "GC2BD reference:",
+                "GC2BD strip at Windows Mobile's clock: 0 words off the full reference's rows 224 on; drawn again Some(0) words off; at the hidden address Some(0) words off",
+                "GC2BD A slice 10: ",
+                "GC2BD strip hidden (0x96000): 0 of 2 wrong",
+                "GC2BD strip hidden with the fetch off: 0 of 2 wrong",
+                "GC2BD ring scene, the lists on the die: 0 of 2 wrong",
+                "GC2BD the full scene after: 0 of 50 wrong",
+                "the control at Windows Mobile's clock after: Some(0) words off",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

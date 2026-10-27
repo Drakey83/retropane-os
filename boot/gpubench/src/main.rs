@@ -7962,6 +7962,7 @@ mod image {
         || GC2_CAUSE
         || GC2_ONE
         || GC2_SCHEDULE
+        || GC2_STRIP
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8151,6 +8152,14 @@ mod image {
     /// the fetch off, punch-through read back. About 30 minutes,
     /// unattended.
     const GC2_SCHEDULE: bool = option_env!("RP_GPUBENCH_GC2_SCHEDULE").is_some();
+
+    /// Run GC2BD, reminder R69 (`RP_GPUBENCH_GC2_STRIP`): fix (A)'s one
+    /// shape after GC2BC: scene 20's faulting rows as a strip rendered into
+    /// on-die memory the display never reads, against the same strip at a
+    /// displayed address, warm; the hidden strip with the fetch off; the
+    /// ring scene's lists on the die at 300 pairs. About 25 minutes,
+    /// unattended.
+    const GC2_STRIP: bool = option_env!("RP_GPUBENCH_GC2_STRIP").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9534,6 +9543,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_STRIP {
+                "the 16-bit kinds' targets inside the safe region (GC2BD, R69: no map; scene 20's rows 224-319 as a strip rendered where the display never reads against a displayed address at 149.50 / 1 warm, the hidden strip with the fetch off, the ring scene's lists on the die; each target poisoned first),"
             } else if GC2_SCHEDULE {
                 "the 16-bit kinds' targets inside the safe region (GC2BC, R69: no map; the stall-free schedule's levers at 149.50 / 1 warm on GC2AJ's flat corner scene 20: DMCTRL's fields, the render begun at a scan line, bands behind the scan, the ring scene with the lists on the die and the fetch off, punch-through read back, the texel phases; each target poisoned first),"
             } else if GC2_ONE {
@@ -9728,6 +9739,8 @@ mod image {
             (1 + GC2BB_PHASES) * gc2::words(gc2::FT2) as usize
         } else if GC2_SCHEDULE {
             (2 + GC2BB_PHASES) * gc2::words(gc2::FT2) as usize
+        } else if GC2_STRIP {
+            3 * gc2::words(gc2::FT2) as usize
         } else if GC2_REGS
             || GC2_BLOCK
             || GC2_HEAT
@@ -10118,6 +10131,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_STRIP {
+                    gc2_strip(g, &mut r, (tex, first, dsig));
                 } else if GC2_SCHEDULE {
                     gc2_schedule(g, &mut r, (tex, first, dsig));
                 } else if GC2_ONE {
@@ -13938,6 +13953,353 @@ mod image {
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
 
+    /// GC2BD's strip: scene 20's rows [`GC2BD_TOP`] on, [`GC2BD_ROWS`] of
+    /// them (six tile rows: its faulting rectangle's top edge on the first
+    /// tile row's last row, the faults in the second), rendered by a
+    /// 480 x 96 renderer with the scene's draws shifted up by that many
+    /// rows (the tile-relative geometry kept).
+    const GC2BD_TOP: i32 = 224;
+    const GC2BD_ROWS: u16 = 96;
+    const GC2BD_WORDS: usize = 480 * GC2BD_ROWS as usize / 2;
+    /// The strip at a displayed address: where those rows sit in the
+    /// scanned-out target (the display shows the label band and the
+    /// target's first 576 rows).
+    const GC2BD_SHOWN: u32 = gc2::INSIDE_AT + GC2BD_TOP as u32 * 960;
+    /// The strip where the display never reads: the on-die region past the
+    /// scanned-out 480 x 640 (the target's last 64 rows and the 36 KiB
+    /// after), inside G19's edge.
+    const GC2BD_HIDDEN: u32 = 480 * 2 * 640;
+    const _: () = assert!(GC2BD_HIDDEN + 4 * GC2BD_WORDS as u32 <= gc2::SAFE_END);
+    const _: () = assert!(GC2BD_SHOWN + 4 * GC2BD_WORDS as u32 <= gc2::INSIDE_AT + 480 * 2 * 576);
+    /// GC2BD's pairs: the strips, the fetch-off control, the ring scene.
+    const GC2BD_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
+    const GC2BD_CONTROL_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 150 };
+
+    /// A 2D fill of `rows` rows of a 480-wide RGB565 picture at `at` with
+    /// `c`, finished before the 3D core starts (R30: no 2D work behind a
+    /// render).
+    fn poison_fill_rows(g: &mut Rig, at: u32, rows: u16, c: u16) -> bool {
+        let w = rp_image::need(
+            cmd::fill(
+                Format::RGB565,
+                at as usize,
+                960,
+                (0, 0, 480, rows),
+                u32::from(c),
+            ),
+            "a 2D rectangle",
+        );
+        g.e.submit(&w).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok()
+    }
+
+    /// Run GC2BD (see [`GC2_STRIP`]): fix (A)'s one shape measured. Scene 20
+    /// reversed and poisoned; its reference, the ring scene's, and the
+    /// strip's (at the displayed address, held to the full reference's
+    /// rows, and at the hidden one) at Windows Mobile's clock; ten minutes'
+    /// warm-up on the full scene; then, at 149.50 / 1 warm: (2) the strip
+    /// at the hidden address paired with the strip at the displayed one,
+    /// [`GC2BD_PAIRS`]; (3) the hidden strip with the display's fetch off
+    /// paired with the hidden strip, [`GC2BD_CONTROL_PAIRS`]; (4) the ring
+    /// scene with its lists on the die paired with the baseline,
+    /// [`GC2BD_PAIRS`]; (5) fifty full-scene renders (the plateau's rate).
+    /// `TEMP0` at each part; the control at Windows Mobile's clock after.
+    #[inline(never)]
+    fn gc2_strip(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < 3 * words {
+            log!("  GC2BD: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let (want, rest) = rest.split_at_mut(words);
+        let (ring_want, strip_want) = rest.split_at_mut(words);
+        let strip_want = &mut strip_want[..GC2BD_WORDS];
+        log!(
+            "  GC2BD (R69): the core rendering where the display isn't reading: scene {GC2AY_SCENE}'s rows {GC2BD_TOP}-{} as a 480 x {GC2BD_ROWS} strip at 0x{GC2BD_HIDDEN:x} (never scanned out) against 0x{GC2BD_SHOWN:x} (shown), {GC2BD_PAIRS} pairs at 149.50 / 1 warm; the hidden strip with the fetch off, {GC2BD_CONTROL_PAIRS}; the ring scene's lists on the die, {GC2BD_PAIRS}; the full scene after",
+            GC2BD_TOP + i32::from(GC2BD_ROWS) - 1
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!(
+            "  GC2BD TEMP0 at the start: {:?}; scan line {}",
+            gc2ba_temp(&mut touch),
+            scan_line(g)
+        );
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BD: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        let Some(mut rs) =
+            Renderer::new_in(&mut g.pool, 480, GC2BD_ROWS, GC2AG_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BD: no strip renderer: nothing run");
+            let _ = ondie.release(&mut g.pool);
+            return;
+        };
+        for rr in [&mut *r, &mut ondie, &mut rs] {
+            rr.set_tile_order(tile_order(gc2::REVERSED));
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+        let ring = gc2::TRACE_SCENES[0];
+        // The strip's scene set on the strip renderer.
+        let set_strip = |g: &mut Rig, rs: &mut Renderer| {
+            let (bg, slots) = gc2::order_scene_wide(scene, tex);
+            let slots = gc2::shifted(slots, -GC2BD_TOP);
+            let _ = rs.set_background(Some(bg));
+            for (n, d) in slots.into_iter().enumerate() {
+                g.set(rs, n, d);
+            }
+        };
+        // One strip render at `at`: its wrong words (`None`: not finished)
+        // and its time; `strip_want` the picture it must draw.
+        let strip_render = |g: &mut Rig,
+                            rs: &mut Renderer,
+                            at: u32,
+                            strip_want: &[u32],
+                            first: &mut [u32],
+                            poison: Option<u16>|
+         -> (Option<u32>, u32) {
+            set_strip(g, rs);
+            if let Some(c) = poison
+                && !poison_fill_rows(g, at, GC2BD_ROWS, c)
+            {
+                return (None, 0);
+            }
+            rs.invalidate_all();
+            let t = Target {
+                picture: Picture::packed(at, 480, GC2BD_ROWS, gc2::KINDS[k].1),
+                x: 0,
+                y: 0,
+            };
+            let Some(us) = g.frame(rs, t) else {
+                return (None, 0);
+            };
+            let off = read_compare_volatile(
+                g.mem.0,
+                at as usize,
+                &strip_want[..GC2BD_WORDS],
+                &mut first[..GC2BD_WORDS],
+            );
+            rt::check_in();
+            if off == Some(0) {
+                return (Some(0), us);
+            }
+            let mut wrong = 0;
+            for i in 0..GC2BD_WORDS {
+                let got = g.mem.load(at as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+                if got != strip_want[i] {
+                    wrong += 1;
+                }
+            }
+            (Some(wrong), us)
+        };
+        // References at Windows Mobile's clock.
+        gc2_set_scene(g, r, scene, tex);
+        if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BD") {
+            let _ = ondie.release(&mut g.pool);
+            let _ = rs.release(&mut g.pool);
+            return;
+        }
+        gc2_set_scene(g, r, ring, tex);
+        let ring_ok = gc2_reference(g, r, (k, at), ring_want, first, dsig, "GC2BD ring");
+        rs.core_taken();
+        // The strip as drawn is its own reference (this first render's
+        // compare is against nothing yet); held to the full reference's
+        // rows (the shift's proof on the device), and the hidden address
+        // must draw the same.
+        let _ = strip_render(g, &mut rs, GC2BD_SHOWN, strip_want, first, None);
+        for (i, w) in strip_want.iter_mut().enumerate() {
+            *w = g
+                .mem
+                .load(GC2BD_SHOWN as usize + 4 * i)
+                .unwrap_or(0xDEAD_BEEF);
+        }
+        let row0 = GC2BD_TOP as usize * 240;
+        let off_rows = (0..GC2BD_WORDS)
+            .filter(|&i| strip_want[i] != want[row0 + i])
+            .count();
+        let (again, _) = strip_render(g, &mut rs, GC2BD_SHOWN, strip_want, first, None);
+        let (hidden0, _) = strip_render(g, &mut rs, GC2BD_HIDDEN, strip_want, first, None);
+        log!(
+            "  GC2BD strip at Windows Mobile's clock: {off_rows} words off the full reference's rows {GC2BD_TOP} on; drawn again {again:?} words off; at the hidden address {hidden0:?} words off"
+        );
+        let strip_ok = off_rows == 0 && again == Some(0) && hidden0 == Some(0);
+        let poison = gc2::absent16(want, &gc2::POISON);
+        let strip_poison = gc2::absent16(strip_want, &gc2::POISON);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let top_regs = gc2_clock_want(step_speed(g, s), s.div);
+        let render = |g: &mut Rig,
+                      r: &mut Renderer,
+                      scene: gc2::Scene,
+                      want: &[u32],
+                      first: &mut [u32],
+                      regs: [u32; 5]|
+         -> (Option<u32>, u32) {
+            gc2_set_scene(g, r, scene, tex);
+            if let Some(c) = poison
+                && !poison_fill(g, at, c)
+            {
+                return (None, 0);
+            }
+            let mut side = Gc2Side::new(false);
+            let mut base = Gc2Baseline(None);
+            let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+            (w, side.best_us)
+        };
+        // Part 1: the warm-up on the full scene.
+        r.core_taken();
+        {
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| {
+                render(g, r, scene, want, first, regs)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BD", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                let _ = rs.release(&mut g.pool);
+                return;
+            }
+        }
+        if strip_ok {
+            // Part 2: the hidden strip against the shown one.
+            soak_label(
+                g,
+                ["GC2BD 2 OF 5", "HIDDEN VS SHOWN", "149.50 / 1 WARM"],
+                SOAK_BLUE,
+            );
+            rs.core_taken();
+            let mut one = |g: &mut Rig, _r: &mut Renderer, rs: &mut Renderer, way: bool| {
+                let at = if way { GC2BD_HIDDEN } else { GC2BD_SHOWN };
+                strip_render(g, rs, at, strip_want, first, strip_poison)
+            };
+            let (bw, bus, ww, wus, failed) = gc2_pairs(g, r, &mut rs, GC2BD_PAIRS, &mut one);
+            let np = u64::from(GC2BD_PAIRS);
+            log!(
+                "  GC2BD strip hidden (0x{GC2BD_HIDDEN:x}): {ww} of {GC2BD_PAIRS} wrong at mean {} us; shown (0x{GC2BD_SHOWN:x}) beside it {bw} of {GC2BD_PAIRS} at {} us; {failed} not finished; TEMP0 {:?}",
+                wus / np,
+                bus / np,
+                gc2ba_temp(&mut touch)
+            );
+            // Part 3: the hidden strip with the fetch off, against itself.
+            soak_label(
+                g,
+                ["GC2BD 3 OF 5", "HIDDEN, FETCH OFF", "149.50 / 1 WARM"],
+                SOAK_BLUE,
+            );
+            let mut one = |g: &mut Rig, _r: &mut Renderer, rs: &mut Renderer, way: bool| {
+                if way {
+                    let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+                }
+                let out = strip_render(g, rs, GC2BD_HIDDEN, strip_want, first, strip_poison);
+                if way {
+                    let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+                    rt::delay_us(20_000);
+                    let _ = underrun_take(&mut g.e.regs);
+                }
+                out
+            };
+            let (bw, bus, ww, wus, failed) =
+                gc2_pairs(g, r, &mut rs, GC2BD_CONTROL_PAIRS, &mut one);
+            let np = u64::from(GC2BD_CONTROL_PAIRS);
+            log!(
+                "  GC2BD strip hidden with the fetch off: {ww} of {GC2BD_CONTROL_PAIRS} wrong at mean {} us; hidden with it on beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                wus / np,
+                bus / np,
+                gc2ba_temp(&mut touch)
+            );
+        } else {
+            log!(
+                "  GC2BD: the strip isn't the full reference's rows or isn't repeatable: parts 2 and 3 skipped"
+            );
+        }
+        // Part 4: the ring scene, its lists on the die.
+        if ring_ok {
+            soak_label(
+                g,
+                ["GC2BD 4 OF 5", "RING, LISTS ON DIE", "149.50 / 1 WARM"],
+                SOAK_BLUE,
+            );
+            let ring_poison = gc2::absent16(ring_want, &gc2::POISON);
+            let mut last_ondie = false;
+            r.core_taken();
+            let mut one = |g: &mut Rig, r: &mut Renderer, ondie: &mut Renderer, way: bool| {
+                let rr: &mut Renderer = if way { ondie } else { r };
+                if way != last_ondie {
+                    rr.core_taken();
+                    last_ondie = way;
+                }
+                gc2_set_scene(g, rr, ring, tex);
+                if let Some(c) = ring_poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(
+                    g,
+                    rr,
+                    (k, at),
+                    ring_want,
+                    first,
+                    top_regs,
+                    &mut base,
+                    &mut side,
+                );
+                (w, side.best_us)
+            };
+            let (bw, bus, ww, wus, failed) = gc2_pairs(g, r, &mut ondie, GC2BD_PAIRS, &mut one);
+            let np = u64::from(GC2BD_PAIRS);
+            log!(
+                "  GC2BD ring scene, the lists on the die: {ww} of {GC2BD_PAIRS} wrong at mean {} us; as GC2AE beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                wus / np,
+                bus / np,
+                gc2ba_temp(&mut touch)
+            );
+        }
+        // Part 5: the full scene's rate at the plateau.
+        soak_label(
+            g,
+            ["GC2BD 5 OF 5", "FULL SCENE", "149.50 / 1 WARM"],
+            SOAK_BLUE,
+        );
+        r.core_taken();
+        let (mut wrong, mut n) = (0u32, 0u32);
+        for _ in 0..50 {
+            let (w, _) = render(g, r, scene, want, first, top_regs);
+            n += 1;
+            if w != Some(0) {
+                wrong += 1;
+            }
+            rt::check_in();
+        }
+        log!(
+            "  GC2BD the full scene after: {wrong} of {n} wrong; TEMP0 {:?}",
+            gc2ba_temp(&mut touch)
+        );
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        gc2_set_scene(g, r, scene, tex);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!(
+            "  GC2BD: done, TEMP0 {:?}; the control at Windows Mobile's clock after: {control:?} words off",
+            gc2ba_temp(&mut touch)
+        );
+        if !ondie.release(&mut g.pool) || !rs.release(&mut g.pool) {
+            log!("  GC2BD: a renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
     /// GC2AY's six bits that stayed clean 16 renders (chance at the run's
     /// early low rate, or a real lowering: GC2AZ's pairs tell).
     const GC2AZ_BITS: [(usize, u32); 6] = [
@@ -15878,17 +16240,7 @@ mod image {
     /// engine, finished before the 3D core starts (no 2D work behind a
     /// render: R30); whether it finished.
     fn poison_fill(g: &mut Rig, at: u32, c: u16) -> bool {
-        let w = rp_image::need(
-            cmd::fill(
-                Format::RGB565,
-                at as usize,
-                960,
-                (0, 0, 480, 640),
-                u32::from(c),
-            ),
-            "a 2D rectangle",
-        );
-        g.e.submit(&w).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok()
+        poison_fill_rows(g, at, 640, c)
     }
 
     /// The most scenes and ways a plan holds (GC2O's).

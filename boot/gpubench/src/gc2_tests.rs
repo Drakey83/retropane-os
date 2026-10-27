@@ -2015,3 +2015,98 @@ fn gc2bc_bisect_second_renderer_in_between_only() {
     );
     assert_eq!(a, b, "scene 20 after the second renderer drew it");
 }
+
+/// Renders `(bg, slots)` on `r` through the model into a 480 x `h` target
+/// at `at` and returns its words.
+fn model_render_words(
+    r: &mut Renderer,
+    gpu: &mut Gpu,
+    mem: &mut Mem,
+    clock: &mut SimClock,
+    at: u32,
+    h: u16,
+    (bg, slots): (u32, [Option<Draw>; SLOTS]),
+) -> std::vec::Vec<u32> {
+    r.set_background(Some(bg)).expect("background");
+    for (s, d) in slots.iter().enumerate() {
+        r.set(mem, s, d.as_ref()).expect("slot");
+    }
+    r.invalidate_all();
+    let t = Target {
+        picture: Picture::packed(at, W as u16, h, KINDS[FT2].1),
+        x: 0,
+        y: 0,
+    };
+    let due = r
+        .render(gpu, mem, clock, t)
+        .expect("render")
+        .expect("something to render");
+    clock.set(due);
+    loop {
+        match r.poll(gpu, mem, clock) {
+            Poll::Done(_) => break,
+            Poll::Wait(t) => clock.set(t),
+            p => panic!("{p:?}"),
+        }
+    }
+    (0..(W as usize * h as usize / 2))
+        .map(|i| mem.load((at + 4 * i as u32) as usize).expect("in memory"))
+        .collect()
+}
+
+/// GC2BD's strip: scene 20 shifted up 224 rows into a 480 x 96 target is
+/// the full scene's rows 224-319 word for word (the shift keeps the
+/// tile-relative geometry: 224 is 14 tile rows).
+#[test]
+fn gc2bd_strip_is_the_full_scenes_rows() {
+    let m = memory();
+    let mut clock = SimClock::default();
+    let mut pool = Pool::new(POOL);
+    let mut mem = Mem::new(m.clone());
+    let mut gpu = Gpu::new(m, &clock);
+    let mut r = Renderer::new(&mut pool, W as u16, H as u16).expect("renderer");
+    let strip_params = rp_vram_map::Region {
+        name: "strip lists",
+        at: 0x0034_0000,
+        size: 0x0010_0000,
+        align: 0x1000,
+    };
+    let mut rs = Renderer::new_in(&mut pool, W as u16, 96, strip_params, rp_vram_map::PM_TABLE)
+        .expect("strip renderer");
+    let mut place = |n: usize, mem: &mut Mem| {
+        let t = TEXTURES[n];
+        let at = pool.alloc(t.bytes(), 128).expect("texture memory");
+        texture_words(n, |i, w| mem.store((at + 4 * i) as usize, &[w]));
+        Texture { at, ..t }
+    };
+    let tex = Tex {
+        t565: place(0, &mut mem),
+        t4444: place(1, &mut mem),
+        t8888: place(2, &mut mem),
+        plane: place(3, &mut mem),
+    };
+    let scene = order_scene_wide(CORNER_FLAT[20], tex);
+    let full = model_render_words(
+        &mut r, &mut gpu, &mut mem, &mut clock, INSIDE_AT, H as u16, scene,
+    );
+    let (bg, slots) = scene;
+    rs.core_taken();
+    let strip = model_render_words(
+        &mut rs,
+        &mut gpu,
+        &mut mem,
+        &mut clock,
+        480 * 2 * 640,
+        96,
+        (bg, shifted(slots, -224)),
+    );
+    let row0 = 224 * 240;
+    assert_eq!(strip.len(), 96 * 240);
+    assert_eq!(
+        &full[row0..row0 + 96 * 240],
+        &strip[..],
+        "the strip is rows 224-319"
+    );
+    // And not by accident: the rows above differ.
+    assert_ne!(&full[0..96 * 240], &strip[..]);
+}

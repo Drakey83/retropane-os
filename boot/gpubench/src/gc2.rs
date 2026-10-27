@@ -2101,6 +2101,20 @@ fn corner_scene_with(
     (bg, out)
 }
 
+/// `slots` with every draw moved `dy` pixels down (up for a negative
+/// `dy`): a scene's rows rendered into a shorter target (run GC2BD), the
+/// tile-relative geometry kept when `dy` is a multiple of the tile's 16
+/// rows.
+#[must_use]
+pub fn shifted<const N: usize>(mut slots: [Option<Draw>; N], dy: i32) -> [Option<Draw>; N] {
+    for d in slots.iter_mut().flatten() {
+        for p in &mut d.corners {
+            p.y += dy * rp_mbx3d_render::SUB;
+        }
+    }
+    slots
+}
+
 /// GC2AJ's flat plan: the corner scenes, then GC2AI's faulting way (the
 /// ring over the layer, the quad's corner at x 440, y 40) as the control
 /// that the run can see the fault.
