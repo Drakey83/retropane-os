@@ -578,6 +578,10 @@ pub enum Scene {
     /// Run GC2BU's position map: scene 3's top-right rectangle alone,
     /// without the layer, moved `(dx, dy)` pixels (see [`corner3_scene`]).
     Corner3At(i16, i16),
+    /// Run GC2BV's sealed sweep: flat corner scene `i` (its layer kept) with
+    /// [`extra_slots`]' seal `seal` ([`S3_BAND`] or [`S3_DOUBLE`]) on every
+    /// rectangle (only through [`order_scene_wide`]).
+    CornerSeal(usize, u8),
     /// Run GC2AK's textured sweep with the u and v shift (see
     /// [`corner_uv_scene`]; only through [`order_scene_wide`]).
     CornerUv(usize),
@@ -1075,6 +1079,9 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     }
     if let Scene::Corner3At(dx, dy) = s {
         return corner3_at(dx, dy, t);
+    }
+    if let Scene::CornerSeal(i, _) = s {
+        return corner_scene(false, i, t);
     }
     if let Scene::CornerNoLayer(i) = s {
         let (bg, mut slots) = corner_scene(false, i, t);
@@ -1599,6 +1606,7 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         | Scene::CornerShade(..)
         | Scene::Corner3(_)
         | Scene::Corner3At(..)
+        | Scene::CornerSeal(..)
         | Scene::Split10(..)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
@@ -1660,6 +1668,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         | Scene::CornerShade(..)
         | Scene::Corner3(_)
         | Scene::Corner3At(..)
+        | Scene::CornerSeal(..)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
         | Scene::Ratio(..)
@@ -2297,10 +2306,22 @@ pub const S3_DEPTH_ALWAYS: u8 = 7;
 /// [`Scene::Corner3`]: the rectangles moved half a pixel right and down
 /// (their edges off the pixel grid; run GC2BU).
 pub const S3_HALF: u8 = 8;
-/// [`Scene::Corner3`]: as is; the renderer splits every quad along the
-/// other diagonal (`Renderer::set_diagonal_flip`, set by the scene
-/// setter; run GC2BU).
+/// [`Scene::Corner3`]: the rectangles' corners rotated one place (top
+/// right first), so the renderer's split joins top left to bottom right
+/// instead of top right to bottom left; the same winding and picture (runs
+/// GC2BU, GC2BV: GC2BU's form never reached `gc2_orders`, which builds its
+/// own scenes, so it ran as is).
 pub const S3_FLIP: u8 = 9;
+/// [`Scene::Corner3`]'s flag: each rectangle's diagonal sealed by a band of
+/// its own grey ([`seal_band`], in [`extra_slots`]; run GC2BV).
+pub const S3_BAND: u8 = 0x40;
+/// [`Scene::Corner3`]'s flag: each rectangle drawn a second time split the
+/// other way ([`extra_slots`]; run GC2BV).
+pub const S3_DOUBLE: u8 = 0x20;
+/// [`seal_band`]'s reach along each edge from the corner (pixels): the
+/// faults are four-pixel groups beside the diagonal (GC2BS-GC2BU), so the
+/// band is wider than a group on each side.
+pub const SEAL_REACH: i32 = 8;
 /// [`Scene::Corner3`]'s flag: the hidden layer kept (the shipped form).
 pub const S3_LAYER: u8 = 0x80;
 /// GC2BU's depths (`z / 65536`, larger nearer).
@@ -2315,7 +2336,7 @@ pub const S3_Z_RECT: u16 = 0xCCCC;
 pub fn corner3_scene(m: u8, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     let (bg, mut slots) = corner_scene(false, 3, t);
     let layer = m & S3_LAYER != 0;
-    let m = m & !S3_LAYER;
+    let m = m & !(S3_LAYER | S3_BAND | S3_DOUBLE);
     if !layer {
         slots[0] = None;
     }
@@ -2386,6 +2407,13 @@ pub fn corner3_scene(m: u8, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
                 }
             }
         }
+        S3_FLIP => {
+            for &i in &rects {
+                if let Some(d) = slots[i].as_mut() {
+                    d.corners.rotate_left(1);
+                }
+            }
+        }
         S3_HALF => {
             for &i in &rects {
                 if let Some(d) = slots[i].as_mut() {
@@ -2417,6 +2445,108 @@ pub fn corner3_at(dx: i16, dy: i16, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     }
     (bg, slots)
 }
+
+/// The band that seals a flat rectangle's diagonal (run GC2BV): the
+/// renderer splits a quad (top left, top right, bottom right, bottom left)
+/// into (TL, TR, BL) and (TR, BR, BL), so the two meet on TR-BL; the band's
+/// corners are [`SEAL_REACH`] pixels from TR and BL along the rectangle's
+/// edges (left of TR, below TR, right of BL, above BL), so it straddles
+/// that diagonal and stays inside the rectangle, in the rectangle's paint,
+/// and its own split (B-D) crosses the diagonal only once, at the middle.
+#[must_use]
+pub fn seal_band(d: &Draw) -> Draw {
+    let r = SEAL_REACH * rp_mbx3d_render::SUB;
+    let [_, tr, _, bl] = d.corners;
+    let mut b = *d;
+    b.corners = [
+        rp_mbx3d_render::Point {
+            x: tr.x - r,
+            y: tr.y,
+        },
+        rp_mbx3d_render::Point {
+            x: tr.x,
+            y: tr.y + r,
+        },
+        rp_mbx3d_render::Point {
+            x: bl.x + r,
+            y: bl.y,
+        },
+        rp_mbx3d_render::Point {
+            x: bl.x,
+            y: bl.y - r,
+        },
+    ];
+    b
+}
+
+/// The draws scene `s` puts in the renderer's slots [`SLOTS`] up (the
+/// scene's own are [`order_scene_wide`]'s): run GC2BV's seals, a band
+/// ([`seal_band`]) or a copy split the other way for every flat grey
+/// rectangle; nothing for every other scene.
+#[must_use]
+pub fn extra_slots(s: Scene, t: Tex) -> [Option<Draw>; SLOTS] {
+    let mut out = [None; SLOTS];
+    let seal = match s {
+        Scene::Corner3(m) => m & (S3_BAND | S3_DOUBLE),
+        Scene::CornerSeal(_, m) => m & (S3_BAND | S3_DOUBLE),
+        _ => 0,
+    };
+    if seal == 0 {
+        return out;
+    }
+    let (_, slots) = order_scene_wide(s, t);
+    let mut n = 0;
+    for d in slots.iter().flatten() {
+        if n == SLOTS {
+            break;
+        }
+        if matches!(d.paint, Paint::Flat(UNTEXTURED) | Paint::Flat(UNTEXTURED84)) {
+            out[n] = Some(if seal & S3_BAND != 0 {
+                seal_band(d)
+            } else {
+                let mut c = *d;
+                c.corners.rotate_left(1);
+                c
+            });
+            n += 1;
+        }
+    }
+    out
+}
+
+/// GC2BV's forms of scene 3: without its layer as is, the other diagonal,
+/// the band, the copy, as is again; with its layer as is and with the
+/// band.
+pub const SEAL_FORMS: [Scene; 7] = [
+    Scene::Corner3(S3_AS_IS),
+    Scene::Corner3(S3_FLIP),
+    Scene::Corner3(S3_BAND),
+    Scene::Corner3(S3_DOUBLE),
+    Scene::Corner3(S3_AS_IS),
+    Scene::Corner3(S3_LAYER),
+    Scene::Corner3(S3_LAYER | S3_BAND),
+];
+
+const fn seal_sweep(seal: u8) -> [Scene; CORNER_SCENES_EACH + 1] {
+    let mut s = CORNER_FLAT;
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::CornerSeal(i, seal);
+        i += 1;
+    }
+    s
+}
+/// The flat corner sweep (its layer kept) with every rectangle banded, and
+/// with every rectangle copied (GC2BV's proofs).
+pub const CORNER_FLAT_BAND: [Scene; CORNER_SCENES_EACH + 1] = seal_sweep(S3_BAND);
+pub const CORNER_FLAT_DOUBLE: [Scene; CORNER_SCENES_EACH + 1] = seal_sweep(S3_DOUBLE);
+/// GC2BV's scene-3 proofs: a seal without and with the layer.
+pub const SEAL_PROOF_BAND: [Scene; 2] =
+    [Scene::Corner3(S3_BAND), Scene::Corner3(S3_LAYER | S3_BAND)];
+pub const SEAL_PROOF_DOUBLE: [Scene; 2] = [
+    Scene::Corner3(S3_DOUBLE),
+    Scene::Corner3(S3_LAYER | S3_DOUBLE),
+];
 
 /// GC2BU's forms of scene 3 without its layer: as is, the depth path, the
 /// depth written only, the rectangles half a pixel over, the other

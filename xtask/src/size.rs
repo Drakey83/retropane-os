@@ -680,11 +680,14 @@ pub const BUDGETS: &[Budget] = &[
     // Loaded ratcheted 192 -> 196 KiB on 2026-10-27 (test image): run GC2BS
     // (the port's cures, the scene-3 forms, the paired proof) put the
     // biggest variant (GC2Q's write-out one) at 197,360 B.
+    // Loaded ratcheted 196 -> 200 KiB on 2026-10-27 (test image): runs
+    // GC2BT-GC2BV (the region array on the die, the diagonal's forms, the
+    // seals) put the biggest variant at 201,716 B.
     // Zeroed RAM ratcheted 56 -> 64 KiB on 2026-10-27: the stack 48 -> 56
     // KiB (run GC2BT, 40,456 B deep in the emulator); 59,496 B expected.
     Budget {
         image: "rp-gpubench",
-        max_load: 196 * 1024,
+        max_load: 200 * 1024,
         max_zero: 64 * 1024,
         device: OnDevice::Returns,
     },

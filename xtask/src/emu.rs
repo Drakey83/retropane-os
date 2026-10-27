@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bv = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_SEAL", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bu = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5687,7 +5696,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 114] = [
+    let runs: [GpubenchRun; 115] = [
         (
             "run A",
             &run_a,
@@ -6030,6 +6039,26 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BV (R69): the seals, shortened (the emulator draws
+        // exactly, so both seals are clean and both proofs run).
+        (
+            "run GC2BV",
+            &run_gc2bv,
+            &[
+                "GC2BV (R69): the crack on the rectangles' diagonal against its seals",
+                "GC2BV reference:",
+                "GC2BV A slice 10: ",
+                "GC2BV forms 149.50 / 1: controls at Windows Mobile's clock after: 7 of 7 right",
+                "GC2BV forms done, TEMP0",
+                "GC2BV proof band done, TEMP0",
+                "GC2BV proof band sweep 149.50 / 1: controls at Windows Mobile's clock after: 23 of 23 right",
+                "GC2BV proof copy sweep done, TEMP0",
+                "GC2BV done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

@@ -2634,7 +2634,15 @@ fn gc2bu_edge_forms() {
     let (_, always) = order_scene_wide(Scene::Corner3(S3_DEPTH_ALWAYS), t);
     let (_, half) = order_scene_wide(Scene::Corner3(S3_HALF), t);
     let (_, flip) = order_scene_wide(Scene::Corner3(S3_FLIP), t);
-    assert_eq!(as_is, flip, "the flip is the renderer's, not the scene's");
+    // The flip rotates the rectangles' corners (GC2BV: GC2BU's renderer
+    // flip never reached gc2_orders); everything else as is.
+    assert_eq!(as_is[..2], flip[..2]);
+    for (a, f) in as_is.iter().zip(flip.iter()).skip(2) {
+        let (Some(a), Some(f)) = (a, f) else { continue };
+        let mut r = a.corners;
+        r.rotate_left(1);
+        assert_eq!(f.corners, r);
+    }
     assert!(depth[0].is_none() && half[0].is_none());
     for ((a, d), (w, h)) in as_is
         .iter()
@@ -2702,4 +2710,113 @@ fn gc2bu_edge_forms() {
     assert_eq!(EDGE_PROOF_DEPTH_ALWAYS[0], EDGE_FORMS[2]);
     assert_eq!(EDGE_PROOF_HALF[0], EDGE_FORMS[3]);
     assert_eq!(EDGE_PROOF_FLIP[0], EDGE_FORMS[4]);
+}
+
+#[test]
+fn gc2bv_seals() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    let sub = rp_mbx3d_render::SUB;
+    let reach = SEAL_REACH * sub;
+    let greys = |s: &[Option<Draw>; SLOTS]| {
+        s.iter()
+            .flatten()
+            .filter(|d| d.paint == Paint::Flat(UNTEXTURED))
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let (_, as_is) = order_scene_wide(Scene::Corner3(S3_AS_IS), t);
+    let rects = greys(&as_is);
+    assert_eq!(rects.len(), CORNER_RECTS);
+    // The flip: each rectangle's corners rotated one place, the same set.
+    let (_, flip) = order_scene_wide(Scene::Corner3(S3_FLIP), t);
+    let f = greys(&flip);
+    for (a, b) in rects.iter().zip(f.iter()) {
+        let mut r = a.corners;
+        r.rotate_left(1);
+        assert_eq!(b.corners, r);
+        assert_eq!(b.paint, a.paint);
+    }
+    // No extras for the plain forms or other scenes.
+    for s in [
+        Scene::Corner3(S3_AS_IS),
+        Scene::Corner3(S3_FLIP),
+        Scene::Corner(false, 3),
+        Scene::Kind(0),
+    ] {
+        assert!(extra_slots(s, t).iter().all(Option::is_none), "{s:?}");
+    }
+    // The band: the scene's own slots unchanged; one band a rectangle.
+    let (_, banded) = order_scene_wide(Scene::Corner3(S3_BAND), t);
+    assert_eq!(banded, as_is);
+    let bands = extra_slots(Scene::Corner3(S3_BAND), t);
+    let b: Vec<Draw> = bands.iter().flatten().copied().collect();
+    assert_eq!(b.len(), CORNER_RECTS);
+    for (band, rect) in b.iter().zip(rects.iter()) {
+        let [tl, tr, br, bl] = rect.corners;
+        let [p, q, u, v] = band.corners;
+        assert_eq!(band.paint, rect.paint);
+        assert_eq!((p.x, p.y), (tr.x - reach, tr.y));
+        assert_eq!((q.x, q.y), (tr.x, tr.y + reach));
+        assert_eq!((u.x, u.y), (bl.x + reach, bl.y));
+        assert_eq!((v.x, v.y), (bl.x, bl.y - reach));
+        // Inside the rectangle.
+        for c in band.corners {
+            assert!(c.x >= tl.x && c.x <= br.x && c.y >= tl.y && c.y <= br.y);
+        }
+        // The band straddles TR-BL: p and v on the TL side, q and u on the
+        // BR side (the sign of the cross product against the diagonal).
+        let side = |c: rp_mbx3d_render::Point| {
+            i64::from(bl.x - tr.x) * i64::from(c.y - tr.y)
+                - i64::from(bl.y - tr.y) * i64::from(c.x - tr.x)
+        };
+        assert!(side(p) * side(q) < 0 && side(u) * side(v) < 0);
+        assert!(side(p) * side(v) > 0);
+        // The same winding as the rectangle.
+        let wind = |c: [rp_mbx3d_render::Point; 4]| {
+            i64::from(c[1].x - c[0].x) * i64::from(c[2].y - c[1].y)
+                - i64::from(c[1].y - c[0].y) * i64::from(c[2].x - c[1].x)
+        };
+        assert!(wind(band.corners) * wind(rect.corners) > 0);
+    }
+    // The copy: each rectangle rotated one place.
+    let copies: Vec<Draw> = extra_slots(Scene::Corner3(S3_DOUBLE), t)
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
+    assert_eq!(copies.len(), CORNER_RECTS);
+    for (c, r) in copies.iter().zip(rects.iter()) {
+        let mut x = r.corners;
+        x.rotate_left(1);
+        assert_eq!(c.corners, x);
+    }
+    // With the layer: the layer kept, the band still there.
+    let (_, layered) = order_scene_wide(Scene::Corner3(S3_LAYER | S3_BAND), t);
+    let (_, shipped) = order_scene_wide(Scene::Corner(false, 3), t);
+    assert_eq!(layered, shipped);
+    assert_eq!(extra_slots(Scene::Corner3(S3_LAYER | S3_BAND), t), bands);
+    // The sealed sweep: the shipped scene, banded.
+    let (_, s7) = order_scene_wide(Scene::CornerSeal(7, S3_BAND), t);
+    let (_, c7) = order_scene_wide(Scene::Corner(false, 7), t);
+    assert_eq!(s7, c7);
+    assert_eq!(
+        extra_slots(Scene::CornerSeal(7, S3_BAND), t)
+            .iter()
+            .flatten()
+            .count(),
+        CORNER_RECTS
+    );
+    assert_eq!(
+        CORNER_FLAT_BAND[CORNER_SCENES_EACH],
+        CORNER_FLAT[CORNER_SCENES_EACH]
+    );
+    assert_eq!(CORNER_FLAT_DOUBLE[3], Scene::CornerSeal(3, S3_DOUBLE));
+    assert_eq!(SEAL_FORMS[0], SEAL_FORMS[4]);
+    assert_eq!(SEAL_PROOF_BAND[0], SEAL_FORMS[2]);
+    assert_eq!(SEAL_PROOF_DOUBLE[0], SEAL_FORMS[3]);
 }

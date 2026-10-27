@@ -7994,6 +7994,7 @@ mod image {
         || GC2_PORT
         || GC2_REGION
         || GC2_DIAGONAL
+        || GC2_SEAL
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8316,6 +8317,14 @@ mod image {
     /// the other diagonal), the position map, the clean forms proven. About
     /// 25 minutes, unattended.
     const GC2_DIAGONAL: bool = option_env!("RP_GPUBENCH_GC2_DIAGONAL").is_some();
+
+    /// Run GC2BV, reminder R69 (`RP_GPUBENCH_GC2_SEAL`): the race's dropped
+    /// groups sit just beside the rectangles' internal diagonal, showing
+    /// the background (a crack between the two triangles); the other
+    /// diagonal (GC2BU's never ran), a band of the rectangle's grey over
+    /// the diagonal, and the rectangle drawn again split the other way,
+    /// the clean seals proven. About 25 minutes, unattended.
+    const GC2_SEAL: bool = option_env!("RP_GPUBENCH_GC2_SEAL").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9699,6 +9708,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_SEAL {
+                "the 16-bit kinds' targets inside the safe region (GC2BV, R69: no map; the crack on the rectangles' diagonal against the other diagonal, a band of the rectangle's grey and a copy split the other way, the clean seals proven, at 149.50 / 1 warm with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_DIAGONAL {
                 "the 16-bit kinds' targets inside the safe region (GC2BU, R69: no map; the race's dropped group on the quad's diagonal against the depth path, depth writes, a half-pixel offset and the other diagonal, the position map, the clean forms proven, at 149.50 / 1 warm with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_REGION {
@@ -9952,6 +9963,7 @@ mod image {
             || GC2_PORT
             || GC2_REGION
             || GC2_DIAGONAL
+            || GC2_SEAL
         {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
@@ -10348,6 +10360,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_SEAL {
+                    gc2_seal(g, &mut r, (tex, first, dsig));
                 } else if GC2_DIAGONAL {
                     gc2_diagonal(g, &mut r, (tex, first, dsig));
                 } else if GC2_REGION {
@@ -12983,13 +12997,13 @@ mod image {
 
     /// `scene` set on `r` (the background and every slot).
     fn gc2_set_scene(g: &mut Rig, r: &mut Renderer, scene: gc2::Scene, tex: gc2::Tex) {
-        r.set_diagonal_flip(
-            matches!(scene, gc2::Scene::Corner3(m) if m & !gc2::S3_LAYER == gc2::S3_FLIP),
-        );
         let (bg, slots) = gc2::order_scene_wide(scene, tex);
         let _ = r.set_background(Some(bg));
         for (n, d) in slots.into_iter().enumerate() {
             g.set(r, n, d);
+        }
+        for (n, d) in gc2::extra_slots(scene, tex).into_iter().enumerate() {
+            g.set(r, gc2::SLOTS + n, d);
         }
     }
 
@@ -16929,6 +16943,157 @@ mod image {
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
 
+    const GC2BV_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 300 };
+    const GC2BV_SWEEP_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 50 };
+    const GC2BV_PROOF_ROUNDS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
+    const GC2BV_FORM_WAYS: [(usize, u8); gc2::SEAL_FORMS.len()] = gc2::order_ways(gc2::CHECKER);
+    const GC2BV_SWEEP_WAYS: [(usize, u8); gc2::CORNER_FLAT.len()] = gc2::order_ways(gc2::CHECKER);
+    const GC2BV_PROOF_WAYS: [(usize, u8); 2] = gc2::order_ways(gc2::CHECKER);
+
+    /// Run GC2BV (see [`GC2_SEAL`]): the crack on the rectangles' diagonal
+    /// against its seals. GC2BQ's warm-up; then on the on-die checker
+    /// renderer at 149.50 / 1 through [`gc2_orders`]: [`gc2::SEAL_FORMS`]
+    /// ([`GC2BV_ROUNDS`] rounds); then for each seal (band, copy) clean
+    /// without the layer, its proof: scene 3 without and with its layer
+    /// ([`GC2BV_PROOF_ROUNDS`]) and the flat sweep with every rectangle
+    /// sealed ([`GC2BV_SWEEP_ROUNDS`]).
+    #[inline(never)]
+    fn gc2_seal(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        if all.len() < 2 * words {
+            log!("  GC2BV: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BV (R69): the crack on the rectangles' diagonal against its seals, 149.50 / 1 warm, the lists on the die, checker: scene 3 as is, the other diagonal, the band, the copy, as is again, with its layer as is and banded ({GC2BV_ROUNDS} rounds each); each clean seal proven on scene 3 without and with its layer ({GC2BV_PROOF_ROUNDS}) and over the flat sweep ({GC2BV_SWEEP_ROUNDS})"
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BV TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BV: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.set_diagonal_flip(false);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        g.nudge = 0;
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BV") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BV", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        ondie.core_taken();
+        let top = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        let plan = |name, label, scenes, ways, rounds| OrderPlan {
+            name,
+            label,
+            scenes,
+            ways,
+            step: top,
+            secs: 900,
+            rounds,
+            poison: true,
+            describe: 2,
+            pause: false,
+            quiet: false,
+            flat: false,
+        };
+        let forms = plan(
+            "GC2BV forms",
+            "GC2BV 1 OF 2 FORMS",
+            &gc2::SEAL_FORMS[..],
+            &GC2BV_FORM_WAYS[..],
+            GC2BV_ROUNDS,
+        );
+        let bad = gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), &forms);
+        log!("  GC2BV forms done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        // Ways 2 (the band) and 3 (the copy) of SEAL_FORMS are the seals.
+        let proofs: [(
+            usize,
+            &'static [gc2::Scene],
+            &'static [gc2::Scene],
+            &str,
+            &str,
+            &str,
+            &str,
+        ); 2] = [
+            (
+                2,
+                &gc2::SEAL_PROOF_BAND[..],
+                &gc2::CORNER_FLAT_BAND[..],
+                "GC2BV proof band",
+                "GC2BV 2 OF 2 BAND S3",
+                "GC2BV proof band sweep",
+                "GC2BV 2 OF 2 BAND SWEEP",
+            ),
+            (
+                3,
+                &gc2::SEAL_PROOF_DOUBLE[..],
+                &gc2::CORNER_FLAT_DOUBLE[..],
+                "GC2BV proof copy",
+                "GC2BV 2 OF 2 COPY S3",
+                "GC2BV proof copy sweep",
+                "GC2BV 2 OF 2 COPY SWEEP",
+            ),
+        ];
+        let mut proven = 0u32;
+        for (way, s3, sweep, n1, l1, n2, l2) in proofs {
+            if bad == u128::MAX || bad & (1 << way) != 0 {
+                continue;
+            }
+            proven += 1;
+            let p = plan(n1, l1, s3, &GC2BV_PROOF_WAYS[..], GC2BV_PROOF_ROUNDS);
+            gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), &p);
+            log!("  {n1} done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+            let p = plan(n2, l2, sweep, &GC2BV_SWEEP_WAYS[..], GC2BV_SWEEP_ROUNDS);
+            gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), &p);
+            log!("  {n2} done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        }
+        if proven == 0 {
+            log!("  GC2BV proof: no seal drew 0 wrong; nothing to prove");
+        }
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BV: the on-die renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        log!("  GC2BV done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+    }
+
     const GC2BU_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 100 };
     const GC2BU_MAP_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 50 };
     const GC2BU_PROOF_ROUNDS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
@@ -20074,6 +20239,9 @@ mod image {
             let _ = r.set_background(Some(bg));
             for (n, d) in slots.into_iter().enumerate() {
                 g.set(r, n, d);
+            }
+            for (n, d) in gc2::extra_slots(scenes[sc], tex).into_iter().enumerate() {
+                g.set(r, gc2::SLOTS + n, d);
             }
         };
         // The scenes' references, in row order.
