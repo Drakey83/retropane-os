@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2ba = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_CAUSE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2az = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5498,7 +5507,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 93] = [
+    let runs: [GpubenchRun; 94] = [
         (
             "run A",
             &run_a,
@@ -5841,6 +5850,26 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BA (R69): the cause test, shortened (10 s a phase; the
+        // emulator draws exactly, so nothing is wrong).
+        (
+            "run GC2BA",
+            &run_gc2ba,
+            &[
+                "GC2BA (R69): GC2AJ's flat corner scene 20 at 149.50 / 1, reversed, poisoned, nothing flipped, 10 s a phase in 10 slices with TEMP0",
+                "GC2BA TEMP0 at the start:",
+                "GC2BA reference:",
+                "GC2BA A slice 10: ",
+                "GC2BA B: the clock set again at once",
+                "GC2BA B slice 10: ",
+                "GC2BA C slice 10: 0 renders, 0 wrong",
+                "GC2BA D slice 10: ",
+                "the control at Windows Mobile's clock after: Some(0) words off",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

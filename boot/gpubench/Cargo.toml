@@ -24,6 +24,10 @@ rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
 rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+# Run GC2BA's thermometer: the touch controller's TEMP0 input.
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
+rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
 
 # Run GC2's references held to the model of the 3D core (src/gc2_tests.rs).
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]

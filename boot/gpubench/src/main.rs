@@ -104,6 +104,7 @@ mod g21;
 
 #[cfg(target_os = "none")]
 mod image {
+    use core::cell::RefCell;
     use core::fmt::Write;
 
     use rp_draw::{Cmd, Frame, Rect as DrawRect, Renderer as _};
@@ -116,8 +117,11 @@ mod image {
         reg as dreg, scanout,
     };
     use rp_drv_mbx3d::tex;
+    use rp_drv_pxa_gpio::{Gpio, GpioPin};
     use rp_drv_pxa_keypad::{Keypad, Pressed};
+    use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
+    use rp_drv_tsc2046::{Tsc2046, channel, single};
     use rp_hal_api::{DmaEngine, RegisterBus};
     use rp_hal_mem::{load32_volatile, read_compare_volatile, store32_volatile, words_as_bytes};
     use rp_hal_pxa27x::diag;
@@ -7955,6 +7959,7 @@ mod image {
         || GC2_REGS
         || GC2_BLOCK
         || GC2_HEAT
+        || GC2_CAUSE
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8121,6 +8126,14 @@ mod image {
     /// then GC2AY's six clean bits each beside interleaved controls. About
     /// 52 minutes, unattended.
     const GC2_HEAT: bool = option_env!("RP_GPUBENCH_GC2_HEAT").is_some();
+
+    /// Run GC2BA, reminder R69 (`RP_GPUBENCH_GC2_CAUSE`): GC2AZ's pause
+    /// was two changes at once (no drawing, the clock set again), and the
+    /// owner doubted heat. Scene 20's rate a minute at a time, the touch
+    /// controller's `TEMP0` beside it: 10 minutes at 149.50 / 1; the clock
+    /// set again at once, 10 more; 10 minutes not drawing at 149.50 / 1,
+    /// 10 more. About 42 minutes, unattended.
+    const GC2_CAUSE: bool = option_env!("RP_GPUBENCH_GC2_CAUSE").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9504,6 +9517,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_CAUSE {
+                "the 16-bit kinds' targets inside the safe region (GC2BA, R69: no map; GC2AJ's flat corner scene 20's fault rate a minute at a time with the touch controller's TEMP0, at 149.50 / 1: drawing, the clock set again at once, drawing, 10 minutes not drawing at the same clock, drawing; each target poisoned first),"
             } else if GC2_HEAT {
                 "the 16-bit kinds' targets inside the safe region (GC2AZ, R69: no map; GC2AJ's flat corner scene 20's fault rate a minute at a time at 149.50 / 1, then idle at Windows Mobile's clock, then 149.50 / 1 again, then GC2AY's six clean bits beside interleaved controls; each target poisoned first),"
             } else if GC2_BLOCK {
@@ -9688,7 +9703,14 @@ mod image {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_BAND {
             gc2::PHASES * gc2::words(gc2::FT2) as usize
-        } else if GC2_REGS || GC2_BLOCK || GC2_HEAT || GC2_664 || GC2_TIMER || GC2_WHERE {
+        } else if GC2_REGS
+            || GC2_BLOCK
+            || GC2_HEAT
+            || GC2_CAUSE
+            || GC2_664
+            || GC2_TIMER
+            || GC2_WHERE
+        {
             gc2::words(gc2::FT2) as usize
         } else if GC2_PUNCH {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
@@ -10071,6 +10093,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_CAUSE {
+                    gc2_cause(g, &mut r, (tex, first, dsig));
                 } else if GC2_HEAT {
                     gc2_heat(g, &mut r, (tex, first, dsig));
                 } else if GC2_BLOCK {
@@ -12609,6 +12633,201 @@ mod image {
             "  GC2AY: {tried} bits tried, {hits} held clean in {} of {}; the control at Windows Mobile's clock after: {control:?} words off",
             GC2AY_TRIES + GC2AY_HOLD,
             GC2AY_TRIES + GC2AY_HOLD
+        );
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BA's slices a phase (a minute each at the device's 20-minute
+    /// [`SOAK_SECS`], each phase half of it).
+    const GC2BA_SLICES: u32 = 10;
+    /// The touch controller's chip select and pen line (rp-noise's, touch.md).
+    const TS_CS: u8 = 24;
+    const TS_PENIRQ: u8 = 94;
+
+    /// GC2BA's thermometer: the touch controller's `TEMP0`, 64 conversions
+    /// after 64 to settle, averaged (12-bit: the voltage of the chip's own
+    /// diode, which falls as it warms). `None`: no GPIO or SSP to borrow.
+    fn gc2ba_temp(
+        touch: &mut Option<Tsc2046<Ssp<Mmio>, GpioPin<'_, Mmio>, GpioPin<'_, Mmio>>>,
+    ) -> Option<u32> {
+        let t = touch.as_mut()?;
+        for _ in 0..64 {
+            t.read_single(single::TEMP0);
+        }
+        let sum: u32 = (0..64)
+            .map(|_| u32::from(t.read_single(single::TEMP0)))
+            .sum();
+        // A differential conversion powers the converter down and re-arms
+        // the pen interrupt, as the touch driver leaves it (rp-noise's).
+        t.read(channel::Y);
+        Some(sum / 64)
+    }
+
+    /// Run GC2BA (see [`GC2_CAUSE`]): scene 20 of GC2AJ's flat sweep,
+    /// reversed and poisoned, its reference at Windows Mobile's clock; at
+    /// 149.50 / 1 four phases of half [`SOAK_SECS`] each in
+    /// [`GC2BA_SLICES`] slices (renders, wrong, mean time, `TEMP0`): (A)
+    /// drawing; (B) the clock put back and set again at once, drawing; (C)
+    /// not drawing, the clock left at 149.50 / 1; (D) drawing. The control
+    /// at Windows Mobile's clock after.
+    #[inline(never)]
+    fn gc2_cause(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < words {
+            log!("  GC2BA: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        let want = &mut rest[..words];
+        let phase_secs = SOAK_SECS / 2;
+        log!(
+            "  GC2BA (R69): GC2AJ's flat corner scene {GC2AY_SCENE} at 149.50 / 1, reversed, poisoned, nothing flipped, {phase_secs} s a phase in {GC2BA_SLICES} slices with TEMP0: A drawing; B the clock set again at once, drawing; C not drawing at 149.50 / 1; D drawing"
+        );
+        // The thermometer (as rp-noise and rp-today: Windows Mobile leaves
+        // GPIO24 as SSP1's frame signal; level and direction first, then a
+        // plain GPIO; the pen line an input).
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = match (gpio.as_ref(), rt::take_ssp1()) {
+            (Some(gpio), Some(ssp)) => {
+                gpio.borrow_mut().make_output(TS_CS, true);
+                gpio.borrow_mut().set_function(TS_CS, 0);
+                gpio.borrow_mut().make_input(TS_PENIRQ);
+                let mut ssp = Ssp::new(ssp);
+                ssp.configure_spi(2_600_000);
+                Some(Tsc2046::new(
+                    ssp,
+                    GpioPin::new(gpio, TS_CS),
+                    GpioPin::new(gpio, TS_PENIRQ),
+                ))
+            }
+            _ => None,
+        };
+        log!("  GC2BA TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        r.set_tile_order(tile_order(gc2::REVERSED));
+        r.set_header_xor(0, 0);
+        r.set_tsp_or(0);
+        g.over = Over::NONE;
+        let set = |g: &mut Rig, r: &mut Renderer| {
+            let (bg, slots) = gc2::order_scene_wide(gc2::CORNER_FLAT[GC2AY_SCENE], tex);
+            let _ = r.set_background(Some(bg));
+            for (n, d) in slots.into_iter().enumerate() {
+                g.set(r, n, d);
+            }
+        };
+        let target = Target {
+            picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        r.start_clean();
+        set(g, r);
+        r.invalidate_all();
+        let t0 = g.frame(r, target);
+        gc2_take_at(g, at, want);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        let again = [
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+            gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side),
+        ];
+        log!(
+            "  GC2BA reference: {t0:?} us, renders 2-3 {again:?} words off it; {}",
+            Gc2Held(&side)
+        );
+        if t0.is_none() || again != [Some(0); 2] {
+            log!("  GC2BA: the reference isn't repeatable: nothing run");
+            return;
+        }
+        let poison = gc2::absent16(want, &gc2::POISON);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let want_regs = gc2_clock_want(step_speed(g, s), s.div);
+        let mut one = |g: &mut Rig, r: &mut Renderer| -> (Option<u32>, u32) {
+            set(g, r);
+            if let Some(c) = poison
+                && !poison_fill(g, at, c)
+            {
+                return (None, 0);
+            }
+            let mut side = Gc2Side::new(false);
+            let mut base = Gc2Baseline(None);
+            let w = gc2_render_at(g, r, (k, at), want, first, want_regs, &mut base, &mut side);
+            (w, side.best_us)
+        };
+        let slice_us = u64::from(phase_secs) * 1_000_000 / u64::from(GC2BA_SLICES);
+        let Some(lock) = clock_apply(g, s) else {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2BA: 149.50 / 1 didn't take; Windows Mobile's put back");
+            return;
+        };
+        log!("  GC2BA A 149.50 / 1: lock {lock}");
+        clock_readback(g);
+        for (pi, phase) in ["A", "B", "C", "D"].into_iter().enumerate() {
+            if phase == "B" {
+                // The clock put back and set again, nothing else between.
+                clock_restore(&mut g.e.regs);
+                let Some(lock) = clock_apply(g, s) else {
+                    clock_restore(&mut g.e.regs);
+                    log!("  GC2BA B: 149.50 / 1 didn't take again; Windows Mobile's put back");
+                    return;
+                };
+                log!("  GC2BA B: the clock set again at once, lock {lock}");
+                clock_readback(g);
+            }
+            for slice in 0..GC2BA_SLICES {
+                let (mut used, mut renders, mut wrong, mut failed, mut sum_us) =
+                    (0u64, 0u32, 0u32, 0u32, 0u64);
+                let mut l2 = heapless_name();
+                let mut l3 = heapless_name();
+                if phase == "C" {
+                    let _ = write!(l2, "{} OF 4 NOT DRAWING", pi + 1);
+                    let _ = write!(l3, "SLICE {} OF {GC2BA_SLICES}", slice + 1);
+                    soak_label(g, ["GC2BA 149.50 / 1", l2.as_str(), l3.as_str()], SOAK_BLUE);
+                    while used < slice_us {
+                        rt::delay_us(100_000);
+                        rt::check_in();
+                        used += 100_000;
+                    }
+                } else {
+                    while used < slice_us {
+                        let t = rt::ticks();
+                        let (w, us) = one(g, r);
+                        renders += 1;
+                        match w {
+                            Some(0) => {}
+                            Some(_) => wrong += 1,
+                            None => failed += 1,
+                        }
+                        sum_us += u64::from(us);
+                        used += u64::from(us_since(t));
+                        rt::check_in();
+                    }
+                }
+                let temp = gc2ba_temp(&mut touch);
+                log!(
+                    "  GC2BA {phase} slice {}: {renders} renders, {wrong} wrong, {failed} not finished, mean {} us, TEMP0 {temp:?}",
+                    slice + 1,
+                    sum_us / u64::from(renders.max(1))
+                );
+                if phase != "C" {
+                    let _ = write!(l2, "{} OF 4 DRAWING", pi + 1);
+                    let _ = write!(l3, "SLICE {} OF {GC2BA_SLICES} WRONG {wrong}", slice + 1);
+                    soak_label(g, ["GC2BA 149.50 / 1", l2.as_str(), l3.as_str()], SOAK_BLUE);
+                }
+            }
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        set(g, r);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!(
+            "  GC2BA: done, TEMP0 {:?}; the control at Windows Mobile's clock after: {control:?} words off",
+            gc2ba_temp(&mut touch)
         );
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
