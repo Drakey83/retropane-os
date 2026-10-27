@@ -569,6 +569,12 @@ pub enum Scene {
     /// grey rectangles drawn Gouraud with four equal colours) as `m`'s bits
     /// say (see [`corner_shade_scene`]; only through [`order_scene_wide`]).
     CornerShade(usize, u8),
+    /// Run GC2BS's forms of flat corner scene 3 without its hidden layer
+    /// (GC2BR: 31% wrong, the chase's strongest generator at peak heat):
+    /// `m` one of [`S3_AS_IS`], [`S3_ALONE`], [`S3_ALONE_LEFT`],
+    /// [`S3_ALONE_DOWN`], [`S3_REVERSED`], [`S3_GREY84`] (see
+    /// [`corner3_scene`]; only through [`order_scene_wide`]).
+    Corner3(u8),
     /// Run GC2AK's textured sweep with the u and v shift (see
     /// [`corner_uv_scene`]; only through [`order_scene_wide`]).
     CornerUv(usize),
@@ -1060,6 +1066,9 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     }
     if let Scene::CornerShade(i, m) = s {
         return corner_shade_scene(i, m, t);
+    }
+    if let Scene::Corner3(m) = s {
+        return corner3_scene(m, t);
     }
     if let Scene::CornerNoLayer(i) = s {
         let (bg, mut slots) = corner_scene(false, i, t);
@@ -1582,6 +1591,7 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         | Scene::Corner(..)
         | Scene::CornerNoLayer(_)
         | Scene::CornerShade(..)
+        | Scene::Corner3(_)
         | Scene::Split10(..)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
@@ -1641,6 +1651,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         Scene::Corner(..)
         | Scene::CornerNoLayer(_)
         | Scene::CornerShade(..)
+        | Scene::Corner3(_)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
         | Scene::Ratio(..)
@@ -2244,6 +2255,98 @@ pub fn corner_shade_scene(i: usize, m: u8, t: Tex) -> (u32, [Option<Draw>; SLOTS
     }
     (bg, slots)
 }
+
+/// [`Scene::Corner3`]: scene 3 as it is, without the hidden layer.
+pub const S3_AS_IS: u8 = 0;
+/// [`Scene::Corner3`]: the top-right rectangle (the only one that faulted
+/// in GC2BP, GC2BQ and GC2BR) alone, the other five taken out.
+pub const S3_ALONE: u8 = 1;
+/// [`Scene::Corner3`]: the top-right rectangle alone, moved one cell
+/// (240 pixels, 30 tiles) left: its edges keep their places in their
+/// tiles; only the screen position changes.
+pub const S3_ALONE_LEFT: u8 = 2;
+/// [`Scene::Corner3`]: the top-right rectangle alone, moved one cell (208
+/// pixels, 13 tile rows) down.
+pub const S3_ALONE_DOWN: u8 = 3;
+/// [`Scene::Corner3`]: the six rectangles drawn in the opposite order
+/// (the lists built with the top-right one fifth, not second).
+pub const S3_REVERSED: u8 = 4;
+/// [`Scene::Corner3`]: the rectangles' grey `0x848484` instead of
+/// `0x808080`: its RGB565 green bit 0 already set (`0x21`), so a bit
+/// forced high can't show, while an arithmetic +1 step still does.
+pub const S3_GREY84: u8 = 5;
+/// GC2BS's grey (see [`S3_GREY84`]).
+pub const UNTEXTURED84: u32 = 0xFF84_8484;
+
+/// Flat corner scene 3 without its hidden layer in form `m` (run GC2BS:
+/// what selects the top-right rectangle, and whether the green step is a
+/// forced bit).
+#[must_use]
+pub fn corner3_scene(m: u8, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, mut slots) = corner_scene(false, 3, t);
+    slots[0] = None;
+    let rects: [usize; CORNER_RECTS] = {
+        let mut r = [0; CORNER_RECTS];
+        let mut n = 0;
+        for (i, d) in slots.iter().enumerate() {
+            if let Some(d) = d
+                && d.paint == Paint::Flat(UNTEXTURED)
+            {
+                r[n] = i;
+                n += 1;
+            }
+        }
+        debug_assert_eq!(n, CORNER_RECTS);
+        r
+    };
+    match m {
+        S3_ALONE | S3_ALONE_LEFT | S3_ALONE_DOWN => {
+            for (j, &i) in rects.iter().enumerate() {
+                if j != 1 {
+                    slots[i] = None;
+                }
+            }
+            if let Some(d) = slots[rects[1]].as_mut() {
+                for p in &mut d.corners {
+                    if m == S3_ALONE_LEFT {
+                        p.x -= 240 * rp_mbx3d_render::SUB;
+                    } else if m == S3_ALONE_DOWN {
+                        p.y += 208 * rp_mbx3d_render::SUB;
+                    }
+                }
+            }
+        }
+        S3_REVERSED => {
+            let drawn = rects.map(|i| slots[i]);
+            for (j, &i) in rects.iter().enumerate() {
+                slots[i] = drawn[CORNER_RECTS - 1 - j];
+            }
+        }
+        S3_GREY84 => {
+            for &i in &rects {
+                if let Some(d) = slots[i].as_mut() {
+                    d.paint = Paint::Flat(UNTEXTURED84);
+                }
+            }
+        }
+        _ => {}
+    }
+    (bg, slots)
+}
+
+/// GC2BS's scene plan: the forms of scene 3 without its hidden layer, the
+/// as-is form at both ends, then scene 3 with its layer (the shipped
+/// form).
+pub const CORNER3_SCENES: [Scene; 8] = [
+    Scene::Corner3(S3_AS_IS),
+    Scene::Corner3(S3_ALONE),
+    Scene::Corner3(S3_ALONE_LEFT),
+    Scene::Corner3(S3_ALONE_DOWN),
+    Scene::Corner3(S3_REVERSED),
+    Scene::Corner3(S3_GREY84),
+    Scene::Corner3(S3_AS_IS),
+    Scene::Corner(false, 3),
+];
 
 /// GC2BR's scene 3 ways: the control, the background flat, the rectangles
 /// Gouraud, and without the hidden layer.

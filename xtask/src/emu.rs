@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bs = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_PORT", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2br = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5660,7 +5669,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 111] = [
+    let runs: [GpubenchRun; 112] = [
         (
             "run A",
             &run_a,
@@ -6003,6 +6012,26 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BS (R69): the green step's selector, bit and the port's
+        // cures, shortened (the emulator draws exactly, so every way is
+        // clean and the proof runs its first three).
+        (
+            "run GC2BS",
+            &run_gc2bs,
+            &[
+                "GC2BS (R69): the green step's selector and bit",
+                "GC2BS warm-up reference:",
+                "GC2BS A slice 10: ",
+                "GC2BS forms done, TEMP0",
+                "GC2BS the target in SDRAM: 0 of 2 wrong",
+                "GC2BS ways done, TEMP0",
+                "GC2BS proof the video plane as scanout, scene 3 with its layer: 0 of 2 wrong",
+                "GC2BS done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

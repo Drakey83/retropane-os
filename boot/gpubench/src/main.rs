@@ -7987,6 +7987,7 @@ mod image {
         || GC2_PROVE3
         || GC2_ORDER_HOT
         || GC2_SHADE_HOT
+        || GC2_PORT
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8280,6 +8281,17 @@ mod image {
     /// holds), without the hidden layer, and the sweep with the rectangles
     /// Gouraud. About 25 minutes, unattended.
     const GC2_SHADE_HOT: bool = option_env!("RP_GPUBENCH_GC2_SHADE_HOT").is_some();
+
+    /// Run GC2BS, reminder R69 (`RP_GPUBENCH_GC2_PORT`): the green step's
+    /// selector (only scene 3's top-right rectangle faulted in GC2BP, GC2BQ
+    /// and GC2BR: alone, moved left, moved down, the draw order reversed),
+    /// its bit (the grey `0x848484`: a forced bit can't show), and five
+    /// no-cost cures at the memory's port (the video plane's fetch engine,
+    /// `DMCTRL`'s bytes halved and Linux's, the target in SDRAM), each
+    /// paired with the baseline on the chase's strongest generator, the
+    /// clean ones proven without and with the layer. About 30 minutes,
+    /// unattended.
+    const GC2_PORT: bool = option_env!("RP_GPUBENCH_GC2_PORT").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9663,6 +9675,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_PORT {
+                "the 16-bit kinds' targets inside the safe region (GC2BS, R69: no map; the green step's selector and bit, and the port's cures, scene 3 without its layer at 149.50 / 1 warm with the lists on the die in the checker order, each way paired with the baseline, the clean cures proven; each target poisoned first),"
             } else if GC2_SHADE_HOT {
                 "the 16-bit kinds' targets inside the safe region (GC2BR, R69: no map; flat corner scene 3's green step against the shading, the background flat, the rectangles Gouraud, no hidden layer, and the sweep with the rectangles Gouraud, the lists on the die at 149.50 / 1; each target poisoned first),"
             } else if GC2_ORDER_HOT {
@@ -9903,7 +9917,7 @@ mod image {
             (1 + gc2::THRESHOLD.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_MAP {
             gc2::words(gc2::FT2) as usize
-        } else if GC2_PROVE2 || GC2_PROVE3 || GC2_ORDER_HOT || GC2_SHADE_HOT {
+        } else if GC2_PROVE2 || GC2_PROVE3 || GC2_ORDER_HOT || GC2_SHADE_HOT || GC2_PORT {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
             gc2::words(gc2::FT2) as usize
@@ -10299,6 +10313,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_PORT {
+                    gc2_port(g, &mut r, (tex, first, dsig));
                 } else if GC2_SHADE_HOT {
                     gc2_order_hot(g, &mut r, (tex, first, dsig), true);
                 } else if GC2_ORDER_HOT {
@@ -16869,6 +16885,339 @@ mod image {
         }
         let _ = g.pool.free(ta, bytes);
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BS's pairs a condition way (100; the emulator 2) and its proof
+    /// pairs for each clean cure (300).
+    const GC2BS_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 100 };
+    const GC2BS_PROOF_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
+    const GC2BS_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 100 };
+    /// GC2BS's proof takes the first clean cures, at most this many.
+    const GC2BS_PROOF_MAX: usize = 3;
+    const GC2BS_SCENE_WAYS: [(usize, u8); gc2::CORNER3_SCENES.len()] =
+        gc2::order_ways(gc2::CHECKER);
+
+    /// GC2BS's condition ways on scene 3 without its layer, each paired
+    /// render by render with the on-die checker baseline.
+    #[derive(Clone, Copy)]
+    enum PortWay {
+        /// The display's fetch off (the known clean reference: GC2BB, GC2BF).
+        FetchOff,
+        /// The picture scanned out by the video plane (RGB565 at 1:1, GC2BE's
+        /// path) with the graphics plane's reads off: the other fetch engine.
+        VideoPlane,
+        /// `DMCTRL` written to this value for the way's render (GC2BC
+        /// measured these under the lists' stalls, which hid the display's).
+        Dmctrl(u32),
+        /// The target in local SDRAM ([`GC_AT`]): the write-out off the die's
+        /// port, the display reading the die as before.
+        Sdram,
+    }
+    const GC2BS_WAYS: [(PortWay, &str); 8] = [
+        (PortWay::FetchOff, "the display's fetch off"),
+        (PortWay::VideoPlane, "the video plane as scanout"),
+        (PortWay::Dmctrl(0x1030_3008), "DMCTRL byte 0 halved"),
+        (PortWay::Dmctrl(0x1030_1810), "DMCTRL byte 1 halved"),
+        (PortWay::Dmctrl(0x1018_3010), "DMCTRL byte 2 halved"),
+        (PortWay::Dmctrl(0x0830_3010), "DMCTRL byte 3 halved"),
+        (PortWay::Dmctrl(0xD030_3010), "DMCTRL Linux mbxfb's"),
+        (PortWay::Sdram, "the target in SDRAM"),
+    ];
+
+    /// Run GC2BS (see [`GC2_PORT`]): the green step's selector, its bit, and
+    /// five no-cost cures at the port, at 149.50 / 1 warm with the lists on
+    /// the die in the checker order. GC2BQ's warm-up; then (1) the forms of
+    /// scene 3 without its hidden layer ([`gc2::CORNER3_SCENES`]) through
+    /// [`gc2_orders`], [`GC2BS_ROUNDS`] rounds; (2) each of [`GC2BS_WAYS`]
+    /// on the as-is form, [`GC2BS_PAIRS`] pairs against the baseline; (3)
+    /// the proof: every cure way (not the fetch off) that drew 0 wrong, the
+    /// first [`GC2BS_PROOF_MAX`], [`GC2BS_PROOF_PAIRS`] pairs on the as-is
+    /// form and again on scene 3 with its layer.
+    #[inline(never)]
+    fn gc2_port(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        if all.len() < 3 * words {
+            log!("  GC2BS: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BS (R69): the green step's selector and bit, and the port's cures, 149.50 / 1 warm, the lists on the die, checker: {} forms of scene 3 without its layer ({GC2BS_ROUNDS} rounds); {} condition ways in {GC2BS_PAIRS} pairs; the clean cures proven in {GC2BS_PROOF_PAIRS} pairs without and with the layer",
+            gc2::CORNER3_SCENES.len(),
+            GC2BS_WAYS.len()
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        let dmctrl = g.e.regs.read32(rp_drv_mbx_display::reg::DMCTRL);
+        log!(
+            "  GC2BS TEMP0 at the start: {:?}; DMCTRL as found 0x{dmctrl:08x}; the SDRAM target at 0x{GC_AT:x}",
+            gc2ba_temp(&mut touch)
+        );
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BS: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        g.nudge = 0;
+        // Part 0: the warm-up, as GC2BQ's.
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BS warm-up") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BS", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        // Part 1: the forms of scene 3, on the on-die renderer in the
+        // checker order (their references inside).
+        ondie.core_taken();
+        let top = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        let forms = OrderPlan {
+            name: "GC2BS forms",
+            label: "GC2BS 1 OF 3 FORMS",
+            scenes: &gc2::CORNER3_SCENES[..],
+            ways: &GC2BS_SCENE_WAYS[..],
+            step: top,
+            secs: 900,
+            rounds: GC2BS_ROUNDS,
+            poison: true,
+            describe: 2,
+            pause: false,
+            quiet: false,
+            flat: false,
+        };
+        gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), &forms);
+        log!("  GC2BS forms done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        // Parts 2 and 3: the condition ways and the proof, paired.
+        let (first, rest) = all.split_at_mut(words);
+        let (want, rest) = rest.split_at_mut(words);
+        let want2 = &mut rest[..words];
+        let bare = gc2::Scene::Corner3(gc2::S3_AS_IS);
+        let layered = gc2::Scene::Corner(false, 3);
+        r.core_taken();
+        r.set_tile_order(tile_order(gc2::REVERSED));
+        gc2_set_scene(g, r, bare, tex);
+        let bare_ok = gc2_reference(g, r, (k, at), want, first, dsig, "GC2BS bare");
+        gc2_set_scene(g, r, layered, tex);
+        let layered_ok = gc2_reference(g, r, (k, at), want2, first, dsig, "GC2BS layered");
+        if !bare_ok || !layered_ok {
+            log!("  GC2BS: a reference failed: the ways skipped");
+            let _ = ondie.release(&mut g.pool);
+            return;
+        }
+        let poison = gc2::absent16(want, &gc2::POISON);
+        let poison2 = gc2::absent16(want2, &gc2::POISON);
+        let step = gc2_step(23, 2, 0, 1);
+        clock_restore(&mut g.e.regs);
+        if clock_apply(g, step).is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2BS: 149.50 / 1 didn't take for the ways: skipped");
+            let _ = ondie.release(&mut g.pool);
+            return;
+        }
+        clock_readback(g);
+        let top_regs = gc2_clock_want(step_speed(g, step), step.div);
+        ondie.core_taken();
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        let plane = VideoPlane::new(VideoFormat::Rgb565, 480, 640, at as usize);
+        let scale = plane.scale_to(480, 640, 0, 0);
+        let render = |g: &mut Rig,
+                      rr: &mut Renderer,
+                      scene: gc2::Scene,
+                      at: u32,
+                      want: &[u32],
+                      first: &mut [u32],
+                      poison: Option<u16>| {
+            gc2_set_scene(g, rr, scene, tex);
+            if let Some(c) = poison
+                && !poison_fill(g, at, c)
+            {
+                return (None, 0);
+            }
+            let mut side = Gc2Side::new(false);
+            let mut base = Gc2Baseline(None);
+            let w = gc2_render_at(g, rr, (k, at), want, first, top_regs, &mut base, &mut side);
+            (w, side.best_us)
+        };
+        // One pair of a way: the way's condition set for its render and put
+        // back after; the baseline's render as it is.
+        let run_way = |g: &mut Rig,
+                       r: &mut Renderer,
+                       ondie: &mut Renderer,
+                       way: PortWay,
+                       scene: gc2::Scene,
+                       want: &[u32],
+                       first: &mut [u32],
+                       poison: Option<u16>,
+                       pairs: u32|
+         -> (u32, u64, u32, u64, u32, u32) {
+            let mut underruns = 0u32;
+            let mut one = |g: &mut Rig, _r: &mut Renderer, ondie: &mut Renderer, is_way: bool| {
+                if !is_way {
+                    return render(g, ondie, scene, at, want, first, poison);
+                }
+                let _ = underrun_take(&mut g.e.regs);
+                let out = match way {
+                    PortWay::FetchOff => {
+                        let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+                        let out = render(g, ondie, scene, at, want, first, poison);
+                        let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+                        rt::delay_us(20_000);
+                        out
+                    }
+                    PortWay::VideoPlane => {
+                        let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+                        rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, Layer::SOLO, scale);
+                        rt::delay_us(20_000);
+                        let _ = underrun_take(&mut g.e.regs);
+                        let out = render(g, ondie, scene, at, want, first, poison);
+                        if underrun_take(&mut g.e.regs) {
+                            underruns += 1;
+                        }
+                        rp_drv_mbx_display::video_hide(&mut g.e.regs);
+                        let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+                        rt::delay_us(20_000);
+                        out
+                    }
+                    PortWay::Dmctrl(v) => {
+                        g.e.regs.write32(rp_drv_mbx_display::reg::DMCTRL, v);
+                        let out = render(g, ondie, scene, at, want, first, poison);
+                        if underrun_take(&mut g.e.regs) {
+                            underruns += 1;
+                        }
+                        g.e.regs.write32(rp_drv_mbx_display::reg::DMCTRL, dmctrl);
+                        out
+                    }
+                    PortWay::Sdram => render(g, ondie, scene, GC_AT, want, first, poison),
+                };
+                let _ = underrun_take(&mut g.e.regs);
+                out
+            };
+            let (bw, bus, ww, wus, failed) = gc2_pairs(g, r, ondie, pairs, &mut one);
+            (bw, bus, ww, wus, failed, underruns)
+        };
+        let mut clean = [false; GC2BS_WAYS.len()];
+        for (wi, (way, name)) in GC2BS_WAYS.iter().enumerate() {
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "WAY {} OF {}", wi + 1, GC2BS_WAYS.len());
+            soak_label(
+                g,
+                ["GC2BS 2 OF 3 PORT WAYS", "149.50 / 1 WARM", l3.as_str()],
+                SOAK_BLUE,
+            );
+            let (bw, bus, ww, wus, failed, underruns) = run_way(
+                g,
+                r,
+                &mut ondie,
+                *way,
+                bare,
+                want,
+                first,
+                poison,
+                GC2BS_PAIRS,
+            );
+            let np = u64::from(GC2BS_PAIRS);
+            clean[wi] = ww == 0 && failed == 0;
+            log!(
+                "  GC2BS {name}: {ww} of {GC2BS_PAIRS} wrong at mean {} us, {underruns} underruns; baseline beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                wus / np,
+                bus / np,
+                gc2ba_temp(&mut touch)
+            );
+        }
+        log!("  GC2BS ways done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        // Part 3: the proof of the clean cures (the fetch off is the
+        // reference, not a cure).
+        let mut proven = 0usize;
+        for (wi, (way, name)) in GC2BS_WAYS.iter().enumerate() {
+            if wi == 0 || !clean[wi] || proven >= GC2BS_PROOF_MAX {
+                continue;
+            }
+            proven += 1;
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "CURE {proven}: WAY {}", wi + 1);
+            soak_label(
+                g,
+                ["GC2BS 3 OF 3 PROOF", "149.50 / 1 WARM", l3.as_str()],
+                SOAK_BLUE,
+            );
+            let np = u64::from(GC2BS_PROOF_PAIRS);
+            let (bw, bus, ww, wus, failed, underruns) = run_way(
+                g,
+                r,
+                &mut ondie,
+                *way,
+                bare,
+                want,
+                first,
+                poison,
+                GC2BS_PROOF_PAIRS,
+            );
+            log!(
+                "  GC2BS proof {name}, scene 3 without its layer: {ww} of {GC2BS_PROOF_PAIRS} wrong at mean {} us, {underruns} underruns; baseline beside it {bw} at {} us; {failed} not finished",
+                wus / np,
+                bus / np
+            );
+            let (bw, bus, ww, wus, failed, underruns) = run_way(
+                g,
+                r,
+                &mut ondie,
+                *way,
+                layered,
+                want2,
+                first,
+                poison2,
+                GC2BS_PROOF_PAIRS,
+            );
+            log!(
+                "  GC2BS proof {name}, scene 3 with its layer: {ww} of {GC2BS_PROOF_PAIRS} wrong at mean {} us, {underruns} underruns; baseline beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                wus / np,
+                bus / np,
+                gc2ba_temp(&mut touch)
+            );
+        }
+        if proven == 0 {
+            log!("  GC2BS proof: no cure way drew 0 wrong; nothing to prove");
+        }
+        g.e.regs.write32(rp_drv_mbx_display::reg::DMCTRL, dmctrl);
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BS: the on-die renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        log!("  GC2BS done, TEMP0 {:?}", gc2ba_temp(&mut touch));
     }
 
     /// GC2BQ's rounds: the flat sweep a plan, scene 3 alone a plan.

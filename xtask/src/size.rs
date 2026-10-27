@@ -677,9 +677,12 @@ pub const BUDGETS: &[Budget] = &[
     // KiB (run GC2BG runs the tile-order soak's plans inside its warm-up's
     // frame with the on-die renderer beside the first, 33,744 B deep in
     // the emulator); 52,968 B measured.
+    // Loaded ratcheted 192 -> 196 KiB on 2026-10-27 (test image): run GC2BS
+    // (the port's cures, the scene-3 forms, the paired proof) put the
+    // biggest variant (GC2Q's write-out one) at 197,360 B.
     Budget {
         image: "rp-gpubench",
-        max_load: 192 * 1024,
+        max_load: 196 * 1024,
         max_zero: 56 * 1024,
         device: OnDevice::Returns,
     },

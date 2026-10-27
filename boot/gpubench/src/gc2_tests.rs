@@ -2549,3 +2549,73 @@ fn gc2br_shade_scenes() {
         CORNER_FLAT[CORNER_SCENES_EACH]
     );
 }
+
+#[test]
+fn gc2bs_corner3_forms() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    let rect_of = |slots: &[Option<Draw>; SLOTS]| -> Vec<Draw> {
+        slots
+            .iter()
+            .flatten()
+            .filter(|d| matches!(d.paint, Paint::Flat(UNTEXTURED) | Paint::Flat(UNTEXTURED84)))
+            .copied()
+            .collect()
+    };
+    let (bg0, with_layer) = order_scene_wide(Scene::Corner(false, 3), t);
+    let (bg1, as_is) = order_scene_wide(Scene::Corner3(S3_AS_IS), t);
+    assert_eq!(bg0, bg1);
+    assert!(
+        with_layer[0].is_some() && as_is[0].is_none(),
+        "the hidden layer taken out"
+    );
+    assert_eq!(&with_layer[1..], &as_is[1..], "nothing else changed");
+    let rects = rect_of(&as_is);
+    assert_eq!(rects.len(), CORNER_RECTS);
+    // The top-right rectangle: (259, 18)-(443, 178) in pixels.
+    let sub = rp_mbx3d_render::SUB;
+    assert_eq!(rects[1].corners[0].x, 259 * sub);
+    assert_eq!(rects[1].corners[0].y, 18 * sub);
+    assert_eq!(rects[1].corners[2].x, 443 * sub);
+    assert_eq!(rects[1].corners[2].y, 178 * sub);
+    let (_, alone) = order_scene_wide(Scene::Corner3(S3_ALONE), t);
+    let a = rect_of(&alone);
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0], rects[1]);
+    let (_, left) = order_scene_wide(Scene::Corner3(S3_ALONE_LEFT), t);
+    let l = rect_of(&left);
+    assert_eq!(l.len(), 1);
+    for (p, q) in l[0].corners.iter().zip(rects[1].corners.iter()) {
+        assert_eq!(p.x, q.x - 240 * sub);
+        assert_eq!(p.y, q.y);
+    }
+    let (_, down) = order_scene_wide(Scene::Corner3(S3_ALONE_DOWN), t);
+    let d = rect_of(&down);
+    assert_eq!(d.len(), 1);
+    for (p, q) in d[0].corners.iter().zip(rects[1].corners.iter()) {
+        assert_eq!(p.x, q.x);
+        assert_eq!(p.y, q.y + 208 * sub);
+    }
+    let (_, reversed) = order_scene_wide(Scene::Corner3(S3_REVERSED), t);
+    let rv = rect_of(&reversed);
+    assert_eq!(rv.len(), CORNER_RECTS);
+    for (j, d) in rv.iter().enumerate() {
+        assert_eq!(*d, rects[CORNER_RECTS - 1 - j]);
+    }
+    let (_, grey) = order_scene_wide(Scene::Corner3(S3_GREY84), t);
+    let gr = rect_of(&grey);
+    assert_eq!(gr.len(), CORNER_RECTS);
+    for (d, q) in gr.iter().zip(rects.iter()) {
+        assert_eq!(d.paint, Paint::Flat(UNTEXTURED84));
+        assert_eq!(d.corners, q.corners);
+    }
+    // RGB565 of the two greys: green bit 0 clear, then set.
+    assert_eq!((UNTEXTURED >> 8 & 0xFF) >> 2, 0x20);
+    assert_eq!((UNTEXTURED84 >> 8 & 0xFF) >> 2, 0x21);
+    assert_eq!(CORNER3_SCENES[0], CORNER3_SCENES[6]);
+    assert_eq!(CORNER3_SCENES[7], Scene::Corner(false, 3));
+}
