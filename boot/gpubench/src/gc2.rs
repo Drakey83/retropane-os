@@ -2204,10 +2204,16 @@ pub const KINDS16: [Scene; 8] = [
 /// Every scene of an `N`-scene plan in the checker order (run GC2BG).
 #[must_use]
 pub const fn checker_ways<const N: usize>() -> [(usize, u8); N] {
-    let mut w = [(0, CHECKER); N];
+    order_ways(CHECKER)
+}
+
+/// Every scene of an `N`-scene plan in tile order `o` (run GC2BQ).
+#[must_use]
+pub const fn order_ways<const N: usize>(o: u8) -> [(usize, u8); N] {
+    let mut w = [(0, o); N];
     let mut i = 0;
     while i < N {
-        w[i] = (i, CHECKER);
+        w[i] = (i, o);
         i += 1;
     }
     w

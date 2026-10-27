@@ -7985,6 +7985,7 @@ mod image {
         || GC2_NUDGE_SIZE
         || GC2_PROVE2
         || GC2_PROVE3
+        || GC2_ORDER_HOT
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8262,6 +8263,13 @@ mod image {
     /// nudged kind 5 wrong), and GC2BO's leaking flat corner scene 3 for 500
     /// rounds alone. About 50 minutes, unattended.
     const GC2_PROVE3: bool = option_env!("RP_GPUBENCH_GC2_PROVE3").is_some();
+
+    /// Run GC2BQ, reminder R69 (`RP_GPUBENCH_GC2_ORDER_HOT`): the tile race's
+    /// residue at peak heat (GC2BO, GC2BP: the flat sweep's corner scenes a
+    /// few renders in a hundred, the checker order with the lists on the
+    /// die) against the scrambled, columns and columns-reversed orders.
+    /// About 30 minutes, unattended.
+    const GC2_ORDER_HOT: bool = option_env!("RP_GPUBENCH_GC2_ORDER_HOT").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9645,6 +9653,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_ORDER_HOT {
+                "the 16-bit kinds' targets inside the safe region (GC2BQ, R69: no map; the tile race's residue at peak heat against the tile order, the flat corner sweep and its scene 3 with the lists on the die at 149.50 / 1; each target poisoned first),"
             } else if GC2_PROVE3 {
                 "the 16-bit kinds' targets inside the safe region (GC2BP, R69: no map; divide 1's four cures at once at 149.50 / 1 warm with the nudge on magnified textures only, over the corner sweeps, the ring scene and every 16-bit kind, flat corner scene 3 for 500 rounds, then a soak; each target poisoned first),"
             } else if GC2_PROVE2 {
@@ -9881,7 +9891,7 @@ mod image {
             (1 + gc2::THRESHOLD.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_MAP {
             gc2::words(gc2::FT2) as usize
-        } else if GC2_PROVE2 || GC2_PROVE3 {
+        } else if GC2_PROVE2 || GC2_PROVE3 || GC2_ORDER_HOT {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
             gc2::words(gc2::FT2) as usize
@@ -10277,6 +10287,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_ORDER_HOT {
+                    gc2_order_hot(g, &mut r, (tex, first, dsig));
                 } else if GC2_PROVE3 {
                     gc2_prove2(g, &mut r, (tex, first, dsig), true);
                 } else if GC2_PROVE2 {
@@ -16842,6 +16854,190 @@ mod image {
             log!("  {tag}: the on-die renderer's memory not given back");
         }
         let _ = g.pool.free(ta, bytes);
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BQ's rounds: the flat sweep a plan, scene 3 alone a plan.
+    const GC2BQ_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 50 };
+    const GC2BQ_SCENE3_ROUNDS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
+    const GC2BQ_FLAT_CHECKER: [(usize, u8); gc2::CORNER_FLAT.len()] = gc2::order_ways(gc2::CHECKER);
+    const GC2BQ_FLAT_SCRAMBLED: [(usize, u8); gc2::CORNER_FLAT.len()] =
+        gc2::order_ways(gc2::SCRAMBLED);
+    const GC2BQ_FLAT_COLUMNS: [(usize, u8); gc2::CORNER_FLAT.len()] = gc2::order_ways(gc2::COLUMNS);
+    const GC2BQ_FLAT_COLREV: [(usize, u8); gc2::CORNER_FLAT.len()] =
+        gc2::order_ways(gc2::COLUMNS_REVERSED);
+    const GC2BQ_ONE_CHECKER: [(usize, u8); 1] = gc2::order_ways(gc2::CHECKER);
+    const GC2BQ_ONE_SCRAMBLED: [(usize, u8); 1] = gc2::order_ways(gc2::SCRAMBLED);
+    const GC2BQ_ONE_COLUMNS: [(usize, u8); 1] = gc2::order_ways(gc2::COLUMNS);
+    const GC2BQ_ONE_COLREV: [(usize, u8); 1] = gc2::order_ways(gc2::COLUMNS_REVERSED);
+
+    /// Run GC2BQ (see [`GC2_ORDER_HOT`]): the tile race's residue at peak
+    /// heat against the tile order, with the lists on the die. Ten minutes'
+    /// warm-up; then through [`gc2_orders`] on the on-die renderer at 149.50
+    /// / 1: the flat corner sweep ([`GC2BQ_ROUNDS`] rounds) and its scene 3
+    /// alone ([`GC2BQ_SCENE3_ROUNDS`]) in the checker order, scrambled,
+    /// columns and columns reversed, and the checker order again last (the
+    /// control at both ends of the run, for drift).
+    #[inline(never)]
+    fn gc2_order_hot(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (tex, all, dsig): (gc2::Tex, &mut [u32], bool),
+    ) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        if all.len() < 2 * words {
+            log!("  GC2BQ: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BQ (R69): the tile race's residue at peak heat against the tile order, the lists on the die, 149.50 / 1: the flat sweep ({GC2BQ_ROUNDS} rounds) and its scene 3 alone ({GC2BQ_SCENE3_ROUNDS}) in checker, scrambled, columns, columns reversed, checker again"
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BQ TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BQ: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        g.nudge = 0;
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BQ") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BQ", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        ondie.core_taken();
+        let top = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        let plan = |name, label, scenes, ways, rounds| OrderPlan {
+            name,
+            label,
+            scenes,
+            ways,
+            step: top,
+            secs: 1200,
+            rounds,
+            poison: true,
+            describe: 3,
+            pause: false,
+            quiet: false,
+            flat: false,
+        };
+        let flat = &gc2::CORNER_FLAT[..];
+        let s3 = &gc2::CORNER_FLAT[3..4];
+        let plans = [
+            plan(
+                "GC2BQ checker",
+                "GC2BQ 1 OF 10 CHECKER",
+                flat,
+                &GC2BQ_FLAT_CHECKER[..],
+                GC2BQ_ROUNDS,
+            ),
+            plan(
+                "GC2BQ checker scene 3",
+                "GC2BQ 2 OF 10 CHECKER S3",
+                s3,
+                &GC2BQ_ONE_CHECKER[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+            plan(
+                "GC2BQ scrambled",
+                "GC2BQ 3 OF 10 SCRAMBLED",
+                flat,
+                &GC2BQ_FLAT_SCRAMBLED[..],
+                GC2BQ_ROUNDS,
+            ),
+            plan(
+                "GC2BQ scrambled scene 3",
+                "GC2BQ 4 OF 10 SCRAMBLED S3",
+                s3,
+                &GC2BQ_ONE_SCRAMBLED[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+            plan(
+                "GC2BQ columns",
+                "GC2BQ 5 OF 10 COLUMNS",
+                flat,
+                &GC2BQ_FLAT_COLUMNS[..],
+                GC2BQ_ROUNDS,
+            ),
+            plan(
+                "GC2BQ columns scene 3",
+                "GC2BQ 6 OF 10 COLUMNS S3",
+                s3,
+                &GC2BQ_ONE_COLUMNS[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+            plan(
+                "GC2BQ columns reversed",
+                "GC2BQ 7 OF 10 COL REV",
+                flat,
+                &GC2BQ_FLAT_COLREV[..],
+                GC2BQ_ROUNDS,
+            ),
+            plan(
+                "GC2BQ columns reversed scene 3",
+                "GC2BQ 8 OF 10 COL REV S3",
+                s3,
+                &GC2BQ_ONE_COLREV[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+            plan(
+                "GC2BQ checker again",
+                "GC2BQ 9 OF 10 CHECKER",
+                flat,
+                &GC2BQ_FLAT_CHECKER[..],
+                GC2BQ_ROUNDS,
+            ),
+            plan(
+                "GC2BQ checker again scene 3",
+                "GC2BQ 10 OF 10 CHECKER S3",
+                s3,
+                &GC2BQ_ONE_CHECKER[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+        ];
+        for p in &plans {
+            gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), p);
+            log!("  {} done, TEMP0 {:?}", p.name, gc2ba_temp(&mut touch));
+        }
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BQ: the on-die renderer's memory not given back");
+        }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
 

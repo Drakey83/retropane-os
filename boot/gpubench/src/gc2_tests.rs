@@ -2487,3 +2487,11 @@ fn gc2bo_nudge_and_lists() {
         PROOF2_SOAK.contains(&Scene::Fix(0, 8)) && PROOF2_SOAK.contains(&Scene::Corner(false, 20))
     );
 }
+
+#[test]
+fn gc2bq_order_ways() {
+    let w: [(usize, u8); 3] = order_ways(SCRAMBLED);
+    assert_eq!(w, [(0, SCRAMBLED), (1, SCRAMBLED), (2, SCRAMBLED)]);
+    let c: [(usize, u8); 2] = checker_ways();
+    assert_eq!(c, order_ways::<2>(CHECKER));
+}
