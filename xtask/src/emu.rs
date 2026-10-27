@@ -5449,6 +5449,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2ay = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_BLOCK", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5481,7 +5489,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 91] = [
+    let runs: [GpubenchRun; 92] = [
         (
             "run A",
             &run_a,
@@ -5824,6 +5832,25 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AY (R69): the TA block search (the emulator draws exactly,
+        // so every render is right and every bit is held; one render a bit
+        // and one more).
+        (
+            "run GC2AY",
+            &run_gc2ay,
+            &[
+                "GC2AY (R69): GC2AJ's flat corner scene 20 at 149.50 / 1, reversed, poisoned; each bit of 25 TA and parameter-manager words flipped alone, 1 renders a bit, a clean bit held 1 more",
+                "GC2AY reference:",
+                "GC2AY: the words as found",
+                "GC2AY: unflipped, 0 of 2 renders wrong",
+                "GC2AY word 24 0x87c",
+                "800 bits tried",
+                "the control at Windows Mobile's clock after: Some(0) words off",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
