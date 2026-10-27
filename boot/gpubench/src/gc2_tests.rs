@@ -2233,3 +2233,65 @@ fn gc2bh_kind_uv_shifts_clamped_textures_only() {
         );
     }
 }
+
+/// GC2BI's magnified scenes paint kind 10's texture span on one square
+/// quad of the named side at the top left, and the list ends with kind 10.
+#[test]
+fn gc2bi_magnified_scenes_are_kind_10s_span_on_one_square() {
+    let t = test_tex();
+    let (_, k10) = order_scene(Scene::Kind(10), t);
+    let paint = k10[0].expect("kind 10's quad").paint;
+    for s in &MAGNIFIED[..MAGNIFIED.len() - 1] {
+        let Scene::Magnified(m) = *s else {
+            panic!("a magnified scene")
+        };
+        let (bg, slots) = order_scene(*s, t);
+        assert_eq!(bg, 0xFF00_0000);
+        let d = slots[0].expect("the quad");
+        assert_eq!(d.paint, paint, "kind 10's paint");
+        assert_eq!(d, Draw::rect(0, 0, m as i32, m as i32, paint));
+        assert!(slots[1].is_none() && slots[2].is_none());
+    }
+    assert_eq!(MAGNIFIED[MAGNIFIED.len() - 1], Scene::Kind(10));
+}
+
+/// GC2BI's compensation scenes are kind 10 with only its coordinates
+/// moved, by the named amounts, the first not at all; every amount under
+/// a fiftieth of a texel (the error measured is under 0.009).
+#[test]
+fn gc2bi_compensation_moves_only_kind_10s_coordinates() {
+    let t = test_tex();
+    let (bg, k10) = order_scene(Scene::Kind(10), t);
+    let Paint::Texture { tex, uv, tint } = k10[0].expect("kind 10's quad").paint else {
+        panic!("kind 10 is textured")
+    };
+    assert_eq!(COMPENSATE[0], Scene::Shifted10(0, 0));
+    assert_eq!(order_scene(COMPENSATE[0], t), (bg, k10));
+    for s in COMPENSATE {
+        let Scene::Shifted10(du, dv) = s else {
+            panic!("a shifted scene")
+        };
+        assert!(du.abs() < K10_TEXEL / 50 && dv.abs() < K10_TEXEL / 50);
+        let (bg2, slots) = order_scene(s, t);
+        assert_eq!(bg2, bg);
+        let d = slots[0].expect("the quad");
+        assert_eq!(d.corners, k10[0].unwrap().corners);
+        let want = Paint::Texture {
+            tex,
+            uv: uv.map(|(u, v)| (u + du, v + dv)),
+            tint,
+        };
+        assert_eq!(d.paint, want);
+    }
+    // Pulled back and pushed forward both present.
+    assert!(
+        COMPENSATE
+            .iter()
+            .any(|s| matches!(s, Scene::Shifted10(u, _) if *u < 0))
+    );
+    assert!(
+        COMPENSATE
+            .iter()
+            .any(|s| matches!(s, Scene::Shifted10(u, _) if *u > 0))
+    );
+}

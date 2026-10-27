@@ -510,6 +510,14 @@ pub enum Scene {
     /// Run GC2BH: kind `k` with every clamped texture shifted half a texel
     /// in u and v ([`TexFix::ClampUv`]: GC2Z's texel cure).
     KindUv(usize),
+    /// Run GC2BI: kind 10's texture (texel 0's centre to texel 1's,
+    /// bilinear) on one `m` x `m` quad at the top left: magnified `m`
+    /// times in each direction (kind 10 itself is 480 x 640).
+    Magnified(usize),
+    /// Run GC2BI's compensation: kind 10 with its texture coordinates
+    /// moved by (du, dv) in [`UV_ONE`] units of the texture (negative:
+    /// pulled back against divide 1's one-sided error).
+    Shifted10(i32, i32),
     /// Run GC2U's busy tiles: FT2 (`false`) or GC2K's worst (`true`) with
     /// [`BUSY_LAYER`] blended over the whole screen last, so every tile has
     /// more to draw before its write-out (the tile-race hypothesis: the
@@ -1492,6 +1500,24 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
     match s {
         Scene::Sweep(w) => sweep_scene(w, t),
         Scene::Kind(k) => scene(k, t),
+        Scene::Magnified(m) => magnified_scene(m, t),
+        Scene::Shifted10(du, dv) => {
+            let (bg, slots) = scene(10, t);
+            let slots = slots.map(|d| {
+                d.map(|d| match d.paint {
+                    Paint::Texture { tex, uv, tint } => Draw {
+                        paint: Paint::Texture {
+                            tex,
+                            uv: uv.map(|(u, v)| (u + du, v + dv)),
+                            tint,
+                        },
+                        ..d
+                    },
+                    _ => d,
+                })
+            });
+            (bg, slots)
+        }
         Scene::KindUv(k) => {
             let (bg, slots) = scene(k, t);
             (
@@ -1588,7 +1614,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
             Scene::Sweep(w) => SWEEP[w].corner(),
             _ => (0, 0),
         },
-        Scene::Kind(_) | Scene::KindUv(_) => (0, 0),
+        Scene::Kind(_) | Scene::KindUv(_) | Scene::Magnified(_) | Scene::Shifted10(..) => (0, 0),
     }
 }
 
@@ -2169,6 +2195,59 @@ pub const PROOF_SOAK: [Scene; 13] = [
     Scene::Corner(false, 6),
     Scene::CornerUv(20),
 ];
+
+/// Run GC2BI's scene: kind 10's paint on one `m` x `m` quad (see
+/// [`Scene::Magnified`]).
+#[must_use]
+pub fn magnified_scene(m: usize, t: Tex) -> (u32, [Option<Draw>; 3]) {
+    let (a, b) = (UV_ONE / 16, 3 * UV_ONE / 16);
+    let paint = Paint::Texture {
+        tex: t.plane,
+        uv: [(a, a), (b, a), (b, b), (a, b)],
+        tint: WHITE,
+    };
+    let m = m.min(W as usize) as i32;
+    (BLACK, [Some(Draw::rect(0, 0, m, m, paint)), None, None])
+}
+
+/// GC2BI's magnifications: kind 10's texel span on quads of these sides.
+pub const MAGNIFIED: [Scene; 8] = [
+    Scene::Magnified(4),
+    Scene::Magnified(8),
+    Scene::Magnified(16),
+    Scene::Magnified(32),
+    Scene::Magnified(64),
+    Scene::Magnified(128),
+    Scene::Magnified(256),
+    Scene::Kind(10),
+];
+
+/// One texel of kind 10's 8 x 8 texture in [`UV_ONE`] units.
+pub const K10_TEXEL: i32 = UV_ONE / 8;
+/// GC2BI's compensation steps: kind 10's coordinates pulled back by 0.004,
+/// 0.008 and 0.012 texel in u, v and both (GC2AM put the warm error under
+/// 0.009 texel), and pushed forward 0.008 in both as the sign check;
+/// kind 10 as it is first.
+pub const COMPENSATE: [Scene; 11] = {
+    let d = [
+        K10_TEXEL * 4 / 1000,
+        K10_TEXEL * 8 / 1000,
+        K10_TEXEL * 12 / 1000,
+    ];
+    [
+        Scene::Shifted10(0, 0),
+        Scene::Shifted10(-d[0], 0),
+        Scene::Shifted10(-d[1], 0),
+        Scene::Shifted10(-d[2], 0),
+        Scene::Shifted10(0, -d[0]),
+        Scene::Shifted10(0, -d[1]),
+        Scene::Shifted10(0, -d[2]),
+        Scene::Shifted10(-d[0], -d[0]),
+        Scene::Shifted10(-d[1], -d[1]),
+        Scene::Shifted10(-d[2], -d[2]),
+        Scene::Shifted10(d[1], d[1]),
+    ]
+};
 
 /// GC2BH's textured kinds: FT2 (the clamped 8888 quad), kind 10 (one
 /// texture magnified by the bilinear filter), kind 5 (a bilinear 565

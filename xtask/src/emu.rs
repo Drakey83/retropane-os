@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bi = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_MAGNIFY", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bh = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5570,7 +5579,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 101] = [
+    let runs: [GpubenchRun; 102] = [
         (
             "run A",
             &run_a,
@@ -5913,6 +5922,25 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BI (R69): the magnification ladder, shortened (10 s
+        // warm-up, a round a scene; the emulator draws exactly).
+        (
+            "run GC2BI",
+            &run_gc2bi,
+            &[
+                "GC2BI (R69): the bilinear filter's magnification",
+                "GC2BI reference:",
+                "GC2BI A slice 10: ",
+                "GC2BI compensated 149.50 / 1: 1 rounds (11 renders)",
+                "GC2BI compensated done, TEMP0",
+                "GC2BI 149.50 / 1 done, TEMP0",
+                "GC2BI 146.25 / 1 done, TEMP0",
+                "GC2BI 143.00 / 1 done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
