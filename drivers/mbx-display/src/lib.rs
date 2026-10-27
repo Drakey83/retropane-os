@@ -39,6 +39,11 @@ pub mod reg {
     pub const GFXGAM0: usize = 0x2250;
     /// Display sync control.
     pub const DSCTRL: usize = 0x2154;
+    /// The display's memory control (mbxfb's name; Windows Mobile leaves
+    /// `0x10303010`, Linux writes `0xD0303010`: four byte fields, their
+    /// meaning unread; rp-gpubench run GC2BC measures them as the fetch's
+    /// burst or FIFO thresholds).
+    pub const DMCTRL: usize = 0x2188;
     /// Horizontal timing 1-3.
     pub const DHT01: usize = 0x2158;
     /// Horizontal timing 2.

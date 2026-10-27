@@ -1814,3 +1814,204 @@ fn gc2ao_puts_every_sample_clear_and_builds_the_proof() {
     assert_eq!(PROOF_TEX_BARE[0], Scene::Proof(false, true, 0));
     const { assert!(PROOF_ROUNDS >= 100) };
 }
+
+/// Renders `scene` on `r` through the model and hashes the whole target.
+#[allow(clippy::too_many_arguments)]
+fn model_scene_hash(
+    r: &mut Renderer,
+    gpu: &mut Gpu,
+    mem: &mut Mem,
+    clock: &mut SimClock,
+    at: u32,
+    scene: Scene,
+    tex: Tex,
+) -> u32 {
+    let (bg, slots) = order_scene_wide(scene, tex);
+    r.set_background(Some(bg)).expect("background");
+    for (s, d) in slots.iter().enumerate() {
+        r.set(mem, s, d.as_ref()).expect("slot");
+    }
+    r.invalidate_all();
+    let t = Target {
+        picture: Picture::packed(at, W as u16, H as u16, KINDS[FT2].1),
+        x: 0,
+        y: 0,
+    };
+    let due = r
+        .render(gpu, mem, clock, t)
+        .expect("render")
+        .expect("something to render");
+    clock.set(due);
+    loop {
+        match r.poll(gpu, mem, clock) {
+            Poll::Done(_) => break,
+            Poll::Wait(t) => clock.set(t),
+            p => panic!("{p:?}"),
+        }
+    }
+    (0..words(FT2)).fold(HASH_START, |h, i| {
+        fold(h, mem.load((at + 4 * i) as usize).expect("in memory"))
+    })
+}
+
+/// GC2BC's set-up on the host: scene 20 rendered, the ring scene rendered
+/// on the same renderer and on a second one sharing the manager's block,
+/// then scene 20 again must be the same picture (on the X51v's emulator
+/// check it wasn't: every render of scene 20 after the ring scene wrong:
+/// the first renderer's shadow of the core's registers was stale, so it
+/// drew the second's lists; `core_taken` at each switch is the fix).
+#[test]
+fn gc2bc_scene_20_survives_the_ring_scene_on_both_renderers() {
+    let m = memory();
+    let mut clock = SimClock::default();
+    let mut pool = Pool::new(POOL);
+    let mut mem = Mem::new(m.clone());
+    let mut gpu = Gpu::new(m, &clock);
+    let mut r = Renderer::new(&mut pool, W as u16, H as u16).expect("renderer");
+    let ondie = rp_vram_map::Region {
+        name: "on-die lists",
+        at: INSIDE_AT + 2 * W * H,
+        size: SAFE_END - (INSIDE_AT + 2 * W * H),
+        align: 0x1000,
+    };
+    let mut r2 = Renderer::new_in(&mut pool, W as u16, H as u16, ondie, rp_vram_map::PM_TABLE)
+        .expect("on-die renderer");
+    let mut place = |n: usize, mem: &mut Mem| {
+        let t = TEXTURES[n];
+        let at = pool.alloc(t.bytes(), 128).expect("texture memory");
+        texture_words(n, |i, w| mem.store((at + 4 * i) as usize, &[w]));
+        Texture { at, ..t }
+    };
+    let tex = Tex {
+        t565: place(0, &mut mem),
+        t4444: place(1, &mut mem),
+        t8888: place(2, &mut mem),
+        plane: place(3, &mut mem),
+    };
+    let at = INSIDE_AT;
+    let scene = CORNER_FLAT[20];
+    let ring = TRACE_SCENES[0];
+    let a = model_scene_hash(&mut r, &mut gpu, &mut mem, &mut clock, at, scene, tex);
+    let ring_r = model_scene_hash(&mut r, &mut gpu, &mut mem, &mut clock, at, ring, tex);
+    r2.core_taken();
+    let ring_r2 = model_scene_hash(&mut r2, &mut gpu, &mut mem, &mut clock, at, ring, tex);
+    assert_eq!(ring_r, ring_r2, "the on-die renderer draws the ring scene");
+    r.core_taken();
+    let b = model_scene_hash(&mut r, &mut gpu, &mut mem, &mut clock, at, scene, tex);
+    assert_eq!(a, b, "scene 20 again after the ring scene");
+    let c = model_scene_hash(&mut r, &mut gpu, &mut mem, &mut clock, at, scene, tex);
+    assert_eq!(a, c, "scene 20 a third time");
+}
+
+/// The bisect of the test above: the ring scene on the same renderer only.
+#[test]
+fn gc2bc_bisect_ring_on_the_same_renderer_only() {
+    let m = memory();
+    let mut clock = SimClock::default();
+    let mut pool = Pool::new(POOL);
+    let mut mem = Mem::new(m.clone());
+    let mut gpu = Gpu::new(m, &clock);
+    let mut r = Renderer::new(&mut pool, W as u16, H as u16).expect("renderer");
+    let mut place = |n: usize, mem: &mut Mem| {
+        let t = TEXTURES[n];
+        let at = pool.alloc(t.bytes(), 128).expect("texture memory");
+        texture_words(n, |i, w| mem.store((at + 4 * i) as usize, &[w]));
+        Texture { at, ..t }
+    };
+    let tex = Tex {
+        t565: place(0, &mut mem),
+        t4444: place(1, &mut mem),
+        t8888: place(2, &mut mem),
+        plane: place(3, &mut mem),
+    };
+    let at = INSIDE_AT;
+    let a = model_scene_hash(
+        &mut r,
+        &mut gpu,
+        &mut mem,
+        &mut clock,
+        at,
+        CORNER_FLAT[20],
+        tex,
+    );
+    let _ = model_scene_hash(
+        &mut r,
+        &mut gpu,
+        &mut mem,
+        &mut clock,
+        at,
+        TRACE_SCENES[0],
+        tex,
+    );
+    let b = model_scene_hash(
+        &mut r,
+        &mut gpu,
+        &mut mem,
+        &mut clock,
+        at,
+        CORNER_FLAT[20],
+        tex,
+    );
+    assert_eq!(a, b, "scene 20 after the ring scene on one renderer");
+}
+
+/// The other half: a second renderer sharing the manager's block renders
+/// in between, the first renderer's scene unchanged.
+#[test]
+fn gc2bc_bisect_second_renderer_in_between_only() {
+    let m = memory();
+    let mut clock = SimClock::default();
+    let mut pool = Pool::new(POOL);
+    let mut mem = Mem::new(m.clone());
+    let mut gpu = Gpu::new(m, &clock);
+    let mut r = Renderer::new(&mut pool, W as u16, H as u16).expect("renderer");
+    let ondie = rp_vram_map::Region {
+        name: "on-die lists",
+        at: INSIDE_AT + 2 * W * H,
+        size: SAFE_END - (INSIDE_AT + 2 * W * H),
+        align: 0x1000,
+    };
+    let mut r2 = Renderer::new_in(&mut pool, W as u16, H as u16, ondie, rp_vram_map::PM_TABLE)
+        .expect("on-die renderer");
+    let mut place = |n: usize, mem: &mut Mem| {
+        let t = TEXTURES[n];
+        let at = pool.alloc(t.bytes(), 128).expect("texture memory");
+        texture_words(n, |i, w| mem.store((at + 4 * i) as usize, &[w]));
+        Texture { at, ..t }
+    };
+    let tex = Tex {
+        t565: place(0, &mut mem),
+        t4444: place(1, &mut mem),
+        t8888: place(2, &mut mem),
+        plane: place(3, &mut mem),
+    };
+    let at = INSIDE_AT;
+    let a = model_scene_hash(
+        &mut r,
+        &mut gpu,
+        &mut mem,
+        &mut clock,
+        at,
+        CORNER_FLAT[20],
+        tex,
+    );
+    let _ = model_scene_hash(
+        &mut r2,
+        &mut gpu,
+        &mut mem,
+        &mut clock,
+        at,
+        CORNER_FLAT[20],
+        tex,
+    );
+    let b = model_scene_hash(
+        &mut r,
+        &mut gpu,
+        &mut mem,
+        &mut clock,
+        at,
+        CORNER_FLAT[20],
+        tex,
+    );
+    assert_eq!(a, b, "scene 20 after the second renderer drew it");
+}

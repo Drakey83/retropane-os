@@ -1206,6 +1206,20 @@ impl Renderer {
         })
     }
 
+    /// Another renderer has used the 3D core since this one's last frame:
+    /// the core's registers and its memory manager are no longer this
+    /// renderer's (each keeps its own shadow of them, ADR-0026 rule 3,
+    /// and writes only what it changed), so the next frame sets the core
+    /// up again (a reset and the manager's set-up, ~4.6 ms) before it
+    /// draws. The OS has one renderer on the core (rule 5); measurement
+    /// images with two (`rp-gpubench` GC2AG, GC2BB, GC2BC) call this at
+    /// every switch, or the frame draws the other renderer's lists (found
+    /// 2026-10-27: GC2BB's "lists on-die" pairs compared on-die against
+    /// on-die; the host test `two_renderers_on_one_core`).
+    pub fn core_taken(&mut self) {
+        self.ready = false;
+    }
+
     /// The tiles listed for the core in reverse order (last tile first), or
     /// in row order (the default). The picture is the same either way; the
     /// order the core draws its tiles in is what changes.

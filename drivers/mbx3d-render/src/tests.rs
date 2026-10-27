@@ -2059,3 +2059,87 @@ fn the_tsp_bits_land_in_every_objects_tsp() {
         assert_eq!(word(&g, 1, w), b);
     }
 }
+
+/// Two renderers on one core (a measurement image's case): after one has
+/// drawn, the other's shadow of the core's registers is stale and its next
+/// frame draws the first one's lists, unless it is told the core was taken
+/// (`core_taken`: the core set up again before it draws).
+#[test]
+fn two_renderers_on_one_core() {
+    let small = rp_vram_map::Region {
+        name: "second renderer's lists",
+        at: 0x0034_0000,
+        size: 0x0001_0000,
+        align: 0x1000,
+    };
+    let mut g = rig(480, 640);
+    let mut r2 = Renderer::new_in(&mut g.pool, 480, 640, small, rp_vram_map::PM_TABLE).unwrap();
+    let frame2 = |r2: &mut Renderer, g: &mut Rig| {
+        let due = r2
+            .render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL)
+            .expect("render")
+            .expect("something to render");
+        g.clock.set(due);
+        loop {
+            match r2.poll(&mut g.gpu, &mut g.mem, &mut g.clock) {
+                Poll::Done(_) => break,
+                Poll::Wait(at) => g.clock.set(at),
+                p => panic!("{p:?}"),
+            }
+        }
+    };
+    // The first renderer draws a blue square top left, the second a red
+    // one bottom right, on the same grey background.
+    g.r.set_background(Some(GREY)).unwrap();
+    g.set(0, Some(square(0, 0, 64, Paint::Flat(BLUE))));
+    r2.set_background(Some(GREY)).unwrap();
+    r2.set(&mut g.mem, 0, Some(&square(400, 560, 64, Paint::Flat(RED))))
+        .unwrap();
+    g.frame();
+    assert_eq!(g.px(10, 10) & 0xFF_FFFF, BLUE & 0xFF_FFFF);
+    frame2(&mut r2, &mut g);
+    assert_eq!(g.px(410, 570) & 0xFF_FFFF, RED & 0xFF_FFFF);
+    assert_eq!(
+        g.px(10, 10) & 0xFF_FFFF,
+        GREY & 0xFF_FFFF,
+        "the second's picture"
+    );
+    // Back to the first without telling it: the core still holds the
+    // second's region array, so its frame draws the second's picture.
+    g.r.invalidate_all();
+    g.frame();
+    assert_eq!(
+        g.px(410, 570) & 0xFF_FFFF,
+        RED & 0xFF_FFFF,
+        "the stale shadow's frame"
+    );
+    // Told, it draws its own.
+    g.r.core_taken();
+    g.r.invalidate_all();
+    g.frame();
+    assert_eq!(
+        g.px(10, 10) & 0xFF_FFFF,
+        BLUE & 0xFF_FFFF,
+        "after core_taken"
+    );
+    assert_eq!(
+        g.px(410, 570) & 0xFF_FFFF,
+        GREY & 0xFF_FFFF,
+        "after core_taken"
+    );
+    // And the second likewise.
+    r2.core_taken();
+    r2.invalidate_all();
+    frame2(&mut r2, &mut g);
+    assert_eq!(
+        g.px(410, 570) & 0xFF_FFFF,
+        RED & 0xFF_FFFF,
+        "the second after core_taken"
+    );
+    assert_eq!(
+        g.px(10, 10) & 0xFF_FFFF,
+        GREY & 0xFF_FFFF,
+        "the second after core_taken"
+    );
+    assert!(r2.release(&mut g.pool));
+}

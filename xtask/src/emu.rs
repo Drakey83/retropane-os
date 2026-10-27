@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bc = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_SCHEDULE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bb = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5516,7 +5525,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 95] = [
+    let runs: [GpubenchRun; 96] = [
         (
             "run A",
             &run_a,
@@ -5859,6 +5868,32 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BC (R69): the schedule's levers, shortened (10 s warm-up,
+        // two pairs a way; the emulator draws exactly and its scan line
+        // may not advance: waits may time out, which is logged, not
+        // checked).
+        (
+            "run GC2BC",
+            &run_gc2bc,
+            &[
+                "GC2BC (R69): the schedule's levers",
+                "GC2BC TEMP0 at the start:",
+                "GC2BC reference:",
+                "GC2BC ring scene: reference true; the on-die renderer draws it true",
+                "GC2BC A slice 10: ",
+                "GC2BC part 2: slot 0's TSP word with bit 14 set",
+                "GC2BC punch-through: 0 of 1 wrong",
+                "GC2BC DMCTRL 0xd0303010 (Linux mbxfb's): 0 of 2 wrong",
+                "GC2BC begun at line 610: 0 of 2 wrong",
+                "GC2BC 4 bands behind the scan: 0 of 2 wrong",
+                "GC2BC ring scene, both: 0 of 2 wrong",
+                "GC2BC texel phases 0-11 at 149.50 / 1 warm, wrong of 5 by phase (9: no reference) [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]",
+                "the control at Windows Mobile's clock after: Some(0) words off",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

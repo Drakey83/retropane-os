@@ -133,6 +133,13 @@ watching.
 ## 5. Devices
 
 ### Display (2700G)
+- `DMCTRL` (`0x2188`), the display's memory control (mbxfb's name):
+  Windows Mobile leaves `0x10303010`, Linux mbxfb writes `0xD0303010`;
+  its two high bits change nothing for the divide-1 corruption
+  (`rp-glesfeat` G17); its four byte fields' meaning is unread
+  (`rp-gpubench` GC2BC measures them as the fetch's burst or FIFO
+  thresholds against the 3D core's divide-1 fault and the underrun
+  flag). The scan line is `DVLNUM` (`0x2308`, bits 0-11).
 - One graphics plane composed by the 2D engine (ADR-0023), double
   buffered; its interrupt line is GPIO85. Windows Mobile's 648 x 645
   frame at `DISPPLL` `0xEC5` (23.56 MHz) gives 56.46 Hz; 60.0 Hz was
