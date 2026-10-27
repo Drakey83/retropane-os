@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bl = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_MAP", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bk = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5597,7 +5606,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 104] = [
+    let runs: [GpubenchRun; 105] = [
         (
             "run A",
             &run_a,
@@ -5940,6 +5949,25 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BL (R69): the map, shortened (10 s warm-up, two renders a
+        // scene; the emulator draws exactly, so no scene logs counts).
+        (
+            "run GC2BL",
+            &run_gc2bl,
+            &[
+                "GC2BL (R69): the bilinear error mapped",
+                "GC2BL the 16 x 16 texture at 0x",
+                ": 0 words read back wrong",
+                "GC2BL A slice 10: ",
+                "GC2BL scene 0 reference:",
+                "GC2BL scene 0 (1/32 texel a pixel, texel-centre phase (GC2BK's wrong case); u0 2048, span 61440, v 2048; lock",
+                "GC2BL scene 11 (1/32, v between two rows; u0 2048, span 61440, v 4096; lock",
+                "GC2BL done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

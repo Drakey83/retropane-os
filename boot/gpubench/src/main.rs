@@ -7970,6 +7970,7 @@ mod image {
         || GC2_MAGNIFY
         || GC2_SPLIT10
         || GC2_UPSAMPLE
+        || GC2_MAP
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8212,6 +8213,13 @@ mod image {
     /// 149.50 / 1) placed, and its no-cost cure, the texture enlarged once
     /// on the CPU so the core magnifies less. About 15 minutes, unattended.
     const GC2_UPSAMPLE: bool = option_env!("RP_GPUBENCH_GC2_UPSAMPLE").is_some();
+
+    /// Run GC2BL, reminder R69 (`RP_GPUBENCH_GC2_MAP`): the bilinear error
+    /// mapped over the sample fraction: twelve u sweeps of a 16 x 16 ramp
+    /// (dyadic and odd steps, two phases, three v's), every wrong pixel
+    /// counted by column, fraction and tile row, at 149.50 / 1 warm with
+    /// both tile-race cures on. About 15 minutes, unattended.
+    const GC2_MAP: bool = option_env!("RP_GPUBENCH_GC2_MAP").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9595,6 +9603,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_MAP {
+                "the 16-bit kinds' targets inside the safe region (GC2BL, R69: no map; the bilinear error mapped over the sample fraction, twelve u sweeps of a 16 x 16 ramp at 149.50 / 1 warm with the lists on the die and the checker order, every wrong pixel counted by column, fraction and tile row; each target poisoned first),"
             } else if GC2_UPSAMPLE {
                 "the 16-bit kinds' targets inside the safe region (GC2BK, R69: no map; the bilinear magnification limit at 149.50 / 1 placed between 256 and 320, and kind 10 drawn from its texture enlarged on the CPU, with the lists on the die and the checker order, warm; each target poisoned first),"
             } else if GC2_SPLIT10 {
@@ -9819,6 +9829,8 @@ mod image {
             (1 + gc2::SPLIT.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_UPSAMPLE {
             (1 + gc2::THRESHOLD.len()) * gc2::words(gc2::FT2) as usize
+        } else if GC2_MAP {
+            gc2::words(gc2::FT2) as usize
         } else if GC2_MAGNIFY {
             (1 + gc2::COMPENSATE.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_REGS
@@ -10211,6 +10223,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_MAP {
+                    gc2_map(g, &mut r, (tex, first, dsig));
                 } else if GC2_UPSAMPLE {
                     gc2_upsample(g, &mut r, (tex, first, dsig));
                 } else if GC2_SPLIT10 {
@@ -15752,6 +15766,272 @@ mod image {
             log!("  GC2BK: the on-die renderer's memory not given back");
         }
         free_ups(g, &ups);
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BL's scenes: one full-screen quad textured with the 16 x 16
+    /// enlargement of the plane ([`gc2::upsampled_words`]: red a ramp
+    /// along u, green and blue along v), `u` from `u0` to `u0 + span` across
+    /// the 480 columns and `v` fixed, in [`UV_ONE`] units (4,096 a texel).
+    /// Each row is one sweep of `u`, so a wrong pixel's column names its
+    /// sample fraction, whatever the core's convention.
+    const GC2BL_TEXEL: i32 = rp_mbx3d_render::UV_ONE / 16;
+    const GC2BL_SCENES: [(i32, i32, i32, &str); 12] = [
+        (
+            2048,
+            61440,
+            2048,
+            "1/32 texel a pixel, texel-centre phase (GC2BK's wrong case)",
+        ),
+        (2112, 61440, 2048, "1/32, phase +1/64 texel"),
+        (2048, 61440, 3072, "1/32, v at a quarter"),
+        (2048, 28672, 2048, "7/480 (GC2BK's right case)"),
+        (2048, 4096, 2048, "1/480 (kind 10's u sweep), v fixed"),
+        (2048, 4096, 4096, "1/480, v between two rows (a v blend)"),
+        (2048, 6827, 2048, "1/288 (wrong square)"),
+        (2048, 7228, 2048, "1/272 (right square)"),
+        (2048, 7680, 2048, "1/256 (right square)"),
+        (2048, 30720, 2048, "1/64"),
+        (2048, 15360, 2048, "1/128"),
+        (2048, 61440, 4096, "1/32, v between two rows"),
+    ];
+    const GC2BL_RENDERS: u32 = if GC2_RENDERS < 20 { 2 } else { 50 };
+
+    /// Run GC2BL (see [`GC2_MAP`]): the bilinear error mapped. Ten minutes'
+    /// warm-up on scene 20; then, on the on-die renderer in the checker
+    /// order at 149.50 / 1, each of [`GC2BL_SCENES`] (its reference at
+    /// Windows Mobile's clock, every target poisoned) for
+    /// [`GC2BL_RENDERS`] renders, every wrong pixel counted by column, by
+    /// its sample fraction in 64ths of a texel with the red error's sign,
+    /// and by tile row; the counts logged whole (a complete map of the
+    /// sweep). The texture written to its own memory and read back first.
+    #[inline(never)]
+    fn gc2_map(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        if all.len() < 2 * words {
+            log!("  GC2BL: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BL (R69): the bilinear error mapped: {} u sweeps of a 16 x 16 ramp over the 480 columns at 149.50 / 1 warm, both tile-race cures on, {GC2BL_RENDERS} renders each; wrong pixels by column, by sample fraction (64ths of a texel) with the red error's sign, by tile row",
+            GC2BL_SCENES.len()
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BL TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let bytes = 4 * 16 * 16;
+        let Some(ta) = g.pool.alloc(bytes, 128) else {
+            log!("  GC2BL: no memory for the texture: nothing run");
+            return;
+        };
+        let mut bad = 0;
+        gc2::upsampled_words(16, |i, w| g.mem.store((ta + 4 * i) as usize, &[w]));
+        g.mem.sync();
+        gc2::upsampled_words(16, |i, w| {
+            bad += u32::from(g.mem.load((ta + 4 * i) as usize) != Some(w));
+        });
+        log!("  GC2BL the 16 x 16 texture at 0x{ta:x}: {bad} words read back wrong");
+        let ramp = rp_mbx3d_render::Texture {
+            at: ta,
+            code: 1,
+            ..tex.plane
+        };
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BL: no renderer with its parameter memory on the die: nothing run");
+            let _ = g.pool.free(ta, bytes);
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        let (first, rest) = all.split_at_mut(words);
+        let want = &mut rest[..words];
+        // Part 1: the warm-up on scene 20, the SDRAM lists, reversed.
+        {
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BL") {
+                let _ = ondie.release(&mut g.pool);
+                let _ = g.pool.free(ta, bytes);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BL", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                let _ = g.pool.free(ta, bytes);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        // Part 2: the map.
+        ondie.core_taken();
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let target = Target {
+            picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        for (si, &(u0, span, v, name)) in GC2BL_SCENES.iter().enumerate() {
+            let paint = Paint::Texture {
+                tex: ramp,
+                uv: [(u0, v), (u0 + span, v), (u0 + span, v), (u0, v)],
+                tint: 0xFFFF_FFFF,
+            };
+            let quad = Draw::rect(0, 0, 480, 640, paint);
+            let _ = ondie.set_background(Some(0xFF00_0000));
+            g.set(&mut ondie, 0, Some(quad));
+            for slot in 1..gc2::SLOTS {
+                g.set(&mut ondie, slot, None);
+            }
+            let mut sname = heapless_name();
+            let _ = write!(sname, "GC2BL scene {si}");
+            if !gc2_reference(g, &mut ondie, (k, at), want, first, dsig, sname.as_str()) {
+                continue;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let Some(lock) = clock_apply(g, s) else {
+                clock_restore(&mut g.e.regs);
+                log!("  GC2BL scene {si}: 149.50 / 1 didn't take; skipped");
+                continue;
+            };
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "SCENE {} OF {}", si + 1, GC2BL_SCENES.len());
+            soak_label(g, ["GC2BL MAP", "149.50 / 1 WARM", l3.as_str()], SOAK_BLUE);
+            let mut by_col = [0u16; 480];
+            let mut by_frac = [[0u16; 64]; 2];
+            let mut by_row = [0u16; 40];
+            let (mut wrong_renders, mut pixels, mut plus, mut minus, mut other, mut failed) =
+                (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+            let mut us_sum = 0u64;
+            for _ in 0..GC2BL_RENDERS {
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    failed += 1;
+                    continue;
+                }
+                ondie.invalidate_all();
+                let Some(us) = g.frame(&mut ondie, target) else {
+                    failed += 1;
+                    continue;
+                };
+                us_sum += u64::from(us);
+                let off = read_compare_volatile(
+                    g.mem.0,
+                    at as usize,
+                    &want[..words],
+                    &mut first[..words],
+                );
+                rt::check_in();
+                if off == Some(0) {
+                    continue;
+                }
+                wrong_renders += 1;
+                for i in 0..words {
+                    let got = g.mem.load(at as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+                    let w = want[i];
+                    if got == w {
+                        continue;
+                    }
+                    for half in 0..2 {
+                        let (gp, wp) = ((got >> (16 * half)) & 0xFFFF, (w >> (16 * half)) & 0xFFFF);
+                        if gp == wp {
+                            continue;
+                        }
+                        pixels += 1;
+                        let x = (i % 240) * 2 + half;
+                        let y = i / 240;
+                        by_col[x] = by_col[x].saturating_add(1);
+                        by_row[y / 16] = by_row[y / 16].saturating_add(1);
+                        // The sample's u at the pixel's centre, in 64ths of a
+                        // texel within its texel.
+                        let u = u0 as i64 + (2 * x as i64 + 1) * span as i64 / 960;
+                        let f =
+                            (u.rem_euclid(GC2BL_TEXEL as i64) * 64 / GC2BL_TEXEL as i64) as usize;
+                        let (gr, wr) = ((gp >> 11) as i32, (wp >> 11) as i32);
+                        let sign = if gr == wr + 1 {
+                            plus += 1;
+                            0
+                        } else if gr + 1 == wr {
+                            minus += 1;
+                            1
+                        } else {
+                            other += 1;
+                            continue;
+                        };
+                        by_frac[sign][f] = by_frac[sign][f].saturating_add(1);
+                    }
+                    if i % 16_384 == 16_383 {
+                        rt::check_in();
+                    }
+                }
+                rt::check_in();
+            }
+            clock_restore(&mut g.e.regs);
+            log!(
+                "  GC2BL scene {si} ({name}; u0 {u0}, span {span}, v {v}; lock {lock}): {wrong_renders} of {GC2BL_RENDERS} renders wrong, {pixels} wrong pixels (red +1 {plus}, -1 {minus}, other {other}), {failed} not finished, mean {} us",
+                us_sum / u64::from(GC2BL_RENDERS.max(1))
+            );
+            if pixels > 0 {
+                for chunk in 0..8 {
+                    log!(
+                        "  GC2BL scene {si} columns {}-{}: {:?}",
+                        chunk * 60,
+                        chunk * 60 + 59,
+                        &by_col[chunk * 60..chunk * 60 + 60]
+                    );
+                }
+                log!(
+                    "  GC2BL scene {si} by fraction/64, red +1: {:?}",
+                    by_frac[0]
+                );
+                log!(
+                    "  GC2BL scene {si} by fraction/64, red -1: {:?}",
+                    by_frac[1]
+                );
+                log!("  GC2BL scene {si} by tile row: {:?}", by_row);
+            }
+            rt::check_in();
+        }
+        log!("  GC2BL done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        clock_readback(g);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        r.core_taken();
+        gc2_set_scene(g, r, gc2::CORNER_FLAT[GC2AY_SCENE], tex);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!(
+            "  GC2BL: the control at Windows Mobile's clock after: {control:?} words off (scene 20's picture, its reference stale: a count, not a check)"
+        );
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BL: the on-die renderer's memory not given back");
+        }
+        let _ = g.pool.free(ta, bytes);
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
 
