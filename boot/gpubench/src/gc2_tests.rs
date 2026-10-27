@@ -1543,6 +1543,22 @@ fn gc2aj_sweeps_every_corner_place_of_a_tile() {
     const { assert!(CORNER_SCENES_EACH < 42) };
 }
 
+/// GC2BB's low-overdraw scene is the flat corner scene with only its
+/// hidden layer (slot 0) taken out: the same picture, a third of the
+/// overdraw.
+#[test]
+fn gc2bb_no_layer_scene_is_the_corner_scene_without_slot_0() {
+    let t = test_tex();
+    for i in [0, 20, CORNER_SCENES_EACH - 1] {
+        let (bg, with) = order_scene_wide(Scene::Corner(false, i), t);
+        let (bg2, without) = order_scene_wide(Scene::CornerNoLayer(i), t);
+        assert_eq!(bg, bg2);
+        assert!(with[0].is_some(), "the corner scene's hidden layer");
+        assert!(without[0].is_none(), "taken out");
+        assert_eq!(with[1..], without[1..], "scene {i}: everything else the same");
+    }
+}
+
 /// GC2AK's ladder: the u and v sweep is GC2AJ's textured sweep with only
 /// the shift changed; its settings are the named clocks, fastest first,
 /// divide 1 then 149.50 / 2.
