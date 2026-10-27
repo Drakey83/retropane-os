@@ -2342,23 +2342,48 @@ pub const THRESHOLD: [Scene; 6] = [
 
 /// `d` with its texture span nudged up `n` [`UV_ONE`] units on each axis
 /// (run GC2BM: an upward nudge clears divide 1's short samples on exact
-/// steps): u at the right corners, v at the bottom ones. Anything not
-/// textured as it is.
+/// steps): u at the right corners, v at the bottom ones, each axis only
+/// when the texture is magnified at least [`NUDGE_MAGNIFIED`] times along
+/// it (GC2BO: a texture drawn about 1.45 pixels a texel, right as it is,
+/// went wrong nudged). Anything not textured as it is.
 #[must_use]
 pub fn nudged(d: Draw, n: i32) -> Draw {
     let Paint::Texture { tex, uv, tint } = d.paint else {
         return d;
     };
+    let texel = i64::from(UV_ONE >> (3 + tex.code));
+    let px = |a: i32, b: i32| i64::from((b - a).abs() / rp_mbx3d_render::SUB).max(1);
+    // Pixels across and down; the span in texels times the magnification
+    // is the pixels, so magnified >= M when pixels * texel >= M * span.
+    let (w, h) = (
+        px(d.corners[0].x, d.corners[1].x),
+        px(d.corners[0].y, d.corners[3].y),
+    );
+    let (su, sv) = (
+        i64::from((uv[1].0 - uv[0].0).abs()).max(1),
+        i64::from((uv[3].1 - uv[0].1).abs()).max(1),
+    );
+    let mag = NUDGE_MAGNIFIED as i64;
+    let (nu, nv) = (w * texel >= mag * su, h * texel >= mag * sv);
     let mut uv = uv;
-    uv[1].0 += n;
-    uv[2].0 += n;
-    uv[2].1 += n;
-    uv[3].1 += n;
+    if nu {
+        uv[1].0 += n;
+        uv[2].0 += n;
+    }
+    if nv {
+        uv[2].1 += n;
+        uv[3].1 += n;
+    }
     Draw {
         paint: Paint::Texture { tex, uv, tint },
         ..d
     }
 }
+
+/// The magnification from which [`nudged`] nudges an axis (GC2BL-GC2BN:
+/// the short-sample faults at 32 times and more; kind 5, about 1.45, is
+/// hurt by a nudge).
+pub const NUDGE_MAGNIFIED: u32 = 16;
 
 /// GC2BO's content set: every 16-bit kind with the half-texel shift
 /// ([`Scene::KindUv`]), kind 10 drawn from its plane enlarged to 16 x 16

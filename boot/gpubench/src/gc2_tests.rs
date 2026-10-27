@@ -2428,20 +2428,42 @@ fn gc2bk_threshold_and_enlarged_scenes() {
 #[test]
 fn gc2bo_nudge_and_lists() {
     let t = test_tex();
-    let (_, k) = order_scene(Scene::Kind(FT2), t);
-    for d in k.iter().flatten() {
-        let n = nudged(*d, 8);
-        assert_eq!(n.corners, d.corners);
-        match (d.paint, n.paint) {
-            (Paint::Texture { uv, .. }, Paint::Texture { uv: nv, .. }) => {
-                assert_eq!(nv[0], uv[0]);
-                assert_eq!(nv[1], (uv[1].0 + 8, uv[1].1));
-                assert_eq!(nv[2], (uv[2].0 + 8, uv[2].1 + 8));
-                assert_eq!(nv[3], (uv[3].0, uv[3].1 + 8));
-            }
-            (a, b) => assert_eq!(a, b, "untextured unchanged"),
+    // Magnified (kind 10's span from its enlarged plane: 32 times): nudged
+    // on both axes.
+    let (_, k) = order_scene(Scene::Upsampled10(1), t);
+    let d = k[0].unwrap();
+    let n = nudged(d, 8);
+    assert_eq!(n.corners, d.corners);
+    let (Paint::Texture { uv, .. }, Paint::Texture { uv: nv, .. }) = (d.paint, n.paint) else {
+        panic!("textured")
+    };
+    assert_eq!(nv[0], uv[0]);
+    assert_eq!(nv[1], (uv[1].0 + 8, uv[1].1));
+    assert_eq!(nv[2], (uv[2].0 + 8, uv[2].1 + 8));
+    assert_eq!(nv[3], (uv[3].0, uv[3].1 + 8));
+    // Barely magnified (kind 5, about 1.45 times): unchanged; untextured
+    // (kind 0): unchanged.
+    for kind in [5, 0] {
+        let (_, k) = order_scene(Scene::Kind(kind), t);
+        for d in k.iter().flatten() {
+            assert_eq!(nudged(*d, 8), *d, "kind {kind} left alone");
         }
     }
+    // FT2's 32 x 32 texture over 400 x 560 pixels: 12.5 times across (left
+    // alone), 17.5 times down (nudged).
+    let (_, k) = order_scene(Scene::Kind(FT2), t);
+    let d = k
+        .iter()
+        .flatten()
+        .find(|d| matches!(d.paint, Paint::Texture { .. }))
+        .unwrap();
+    let (Paint::Texture { uv, .. }, Paint::Texture { uv: nv, .. }) = (d.paint, nudged(*d, 8).paint)
+    else {
+        panic!("textured")
+    };
+    assert_eq!(nv[1], uv[1], "u left alone");
+    assert_eq!(nv[2], (uv[2].0, uv[2].1 + 8), "v nudged");
+    assert_eq!(nv[3], (uv[3].0, uv[3].1 + 8), "v nudged");
     let ks: std::vec::Vec<usize> = PROOF2_KINDS
         .iter()
         .filter_map(|s| match s {

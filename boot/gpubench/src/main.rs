@@ -7984,6 +7984,7 @@ mod image {
         || GC2_NUDGE
         || GC2_NUDGE_SIZE
         || GC2_PROVE2
+        || GC2_PROVE3
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8255,6 +8256,12 @@ mod image {
     /// 16-bit kind at 149.50 / 1 warm, then a 20-minute soak. About 45
     /// minutes, unattended.
     const GC2_PROVE2: bool = option_env!("RP_GPUBENCH_GC2_PROVE2").is_some();
+
+    /// Run GC2BP, reminder R69 (`RP_GPUBENCH_GC2_PROVE3`): GC2BO again with
+    /// the nudge on magnified textures only ([`gc2::NUDGE_MAGNIFIED`]: GC2BO
+    /// nudged kind 5 wrong), and GC2BO's leaking flat corner scene 3 for 500
+    /// rounds alone. About 50 minutes, unattended.
+    const GC2_PROVE3: bool = option_env!("RP_GPUBENCH_GC2_PROVE3").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9638,6 +9645,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_PROVE3 {
+                "the 16-bit kinds' targets inside the safe region (GC2BP, R69: no map; divide 1's four cures at once at 149.50 / 1 warm with the nudge on magnified textures only, over the corner sweeps, the ring scene and every 16-bit kind, flat corner scene 3 for 500 rounds, then a soak; each target poisoned first),"
             } else if GC2_PROVE2 {
                 "the 16-bit kinds' targets inside the safe region (GC2BO, R69: no map; divide 1's four cures at once at 149.50 / 1 warm over the corner sweeps, the ring scene and every 16-bit kind, then a soak; each target poisoned first),"
             } else if GC2_NUDGE_SIZE {
@@ -9872,7 +9881,7 @@ mod image {
             (1 + gc2::THRESHOLD.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_MAP {
             gc2::words(gc2::FT2) as usize
-        } else if GC2_PROVE2 {
+        } else if GC2_PROVE2 || GC2_PROVE3 {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
             gc2::words(gc2::FT2) as usize
@@ -10268,8 +10277,10 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_PROVE3 {
+                    gc2_prove2(g, &mut r, (tex, first, dsig), true);
                 } else if GC2_PROVE2 {
-                    gc2_prove2(g, &mut r, (tex, first, dsig));
+                    gc2_prove2(g, &mut r, (tex, first, dsig), false);
                 } else if GC2_NUDGE_SIZE {
                     gc2_nudge_size(g, &mut r, (tex, first, dsig));
                 } else if GC2_NUDGE {
@@ -16619,6 +16630,8 @@ mod image {
     /// GC2BO's nudge (GC2BN: 8 units cleared the enlargement), rounds and
     /// soak.
     const GC2BO_NUDGE: i32 = 8;
+    /// GC2BP's rounds of GC2BO's leaking flat corner scene 3 alone.
+    const GC2BP_SCENE3_ROUNDS: u32 = if GC2_RENDERS < 20 { 2 } else { 500 };
     const GC2BO_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 100 };
     const GC2BO_RING_ROUNDS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
     const GC2BO_KIND_WAYS: [(usize, u8); gc2::PROOF2_KINDS.len()] = gc2::checker_ways();
@@ -16635,16 +16648,22 @@ mod image {
     /// scene, [`gc2::PROOF2_KINDS`], then [`gc2::PROOF2_SOAK`] for
     /// [`SOAK_SECS`].
     #[inline(never)]
-    fn gc2_prove2(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+    fn gc2_prove2(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (tex, all, dsig): (gc2::Tex, &mut [u32], bool),
+        bp: bool,
+    ) {
+        let tag = if bp { "GC2BP" } else { "GC2BO" };
         let k = gc2::FT2;
         let words = gc2::words(k) as usize;
         let at = gc_at(k);
         if all.len() < 2 * words {
-            log!("  GC2BO: not enough SDRAM for the reference: nothing run");
+            log!("  {tag}: not enough SDRAM for the reference: nothing run");
             return;
         }
         log!(
-            "  GC2BO (R69): divide 1's four cures at once at 149.50 / 1 warm (the lists on the die and the checker order; the half-texel shift; every span nudged up {GC2BO_NUDGE} units; kind 10 from its plane enlarged to 16 x 16): the flat sweep ({} scenes), the textured sweep ({}), the ring scene, {} kinds, {GC2BO_ROUNDS} rounds a scene (the ring {GC2BO_RING_ROUNDS}); then the soak over {} scenes for {SOAK_SECS} s",
+            "  {tag} (R69): divide 1's four cures at once at 149.50 / 1 warm (the lists on the die and the checker order; the half-texel shift; every span nudged up {GC2BO_NUDGE} units; kind 10 from its plane enlarged to 16 x 16): the flat sweep ({} scenes), the textured sweep ({}), the ring scene, {} kinds, {GC2BO_ROUNDS} rounds a scene (the ring {GC2BO_RING_ROUNDS}); then the soak over {} scenes for {SOAK_SECS} s",
             gc2::CORNER_FLAT.len(),
             gc2::CORNER_UV.len(),
             gc2::PROOF2_KINDS.len(),
@@ -16652,11 +16671,11 @@ mod image {
         );
         let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
         let mut touch = gc2ba_touch(gpio.as_ref());
-        log!("  GC2BO TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        log!("  {tag} TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
         // The fourth cure's texture: the plane enlarged to 16 x 16.
         let bytes = 4 * 16 * 16;
         let Some(ta) = g.pool.alloc(bytes, 128) else {
-            log!("  GC2BO: no memory for the enlarged plane: nothing run");
+            log!("  {tag}: no memory for the enlarged plane: nothing run");
             return;
         };
         let mut bad = 0;
@@ -16665,7 +16684,7 @@ mod image {
         gc2::upsampled_words(16, |i, w| {
             bad += u32::from(g.mem.load((ta + 4 * i) as usize) != Some(w));
         });
-        log!("  GC2BO the plane enlarged to 16 x 16 at 0x{ta:x}: {bad} words read back wrong");
+        log!("  {tag} the plane enlarged to 16 x 16 at 0x{ta:x}: {bad} words read back wrong");
         if bad != 0 {
             let _ = g.pool.free(ta, bytes);
             return;
@@ -16680,7 +16699,7 @@ mod image {
         };
         let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
         else {
-            log!("  GC2BO: no renderer with its parameter memory on the die: nothing run");
+            log!("  {tag}: no renderer with its parameter memory on the die: nothing run");
             let _ = g.pool.free(ta, bytes);
             return;
         };
@@ -16697,7 +16716,7 @@ mod image {
             r.set_tile_order(tile_order(gc2::REVERSED));
             let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
             gc2_set_scene(g, r, scene, tex);
-            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BO") {
+            if !gc2_reference(g, r, (k, at), want, first, dsig, tag) {
                 let _ = ondie.release(&mut g.pool);
                 let _ = g.pool.free(ta, bytes);
                 return;
@@ -16717,7 +16736,7 @@ mod image {
                 let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
                 (w, side.best_us)
             };
-            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BO", &["A"]) {
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, tag, &["A"]) {
                 let _ = ondie.release(&mut g.pool);
                 let _ = g.pool.free(ta, bytes);
                 return;
@@ -16742,55 +16761,85 @@ mod image {
             quiet: false,
             flat: false,
         };
+        let n = if bp {
+            [
+                ("GC2BP flat", "GC2BP 2 OF 7 FLAT SWEEP"),
+                ("GC2BP textured", "GC2BP 3 OF 7 TEX SWEEP"),
+                ("GC2BP ring", "GC2BP 4 OF 7 RING"),
+                ("GC2BP kinds", "GC2BP 5 OF 7 KINDS"),
+                ("GC2BP soak", "GC2BP 7 OF 7 SOAK"),
+            ]
+        } else {
+            [
+                ("GC2BO flat", "GC2BO 2 OF 6 FLAT SWEEP"),
+                ("GC2BO textured", "GC2BO 3 OF 6 TEX SWEEP"),
+                ("GC2BO ring", "GC2BO 4 OF 6 RING"),
+                ("GC2BO kinds", "GC2BO 5 OF 6 KINDS"),
+                ("GC2BO soak", "GC2BO 6 OF 6 SOAK"),
+            ]
+        };
         let plans = [
             plan(
-                "GC2BO flat",
-                "GC2BO 2 OF 6 FLAT SWEEP",
+                n[0].0,
+                n[0].1,
                 &gc2::CORNER_FLAT[..],
                 &GC2BG_FLAT_WAYS[..],
                 GC2BO_ROUNDS,
                 1800,
             ),
             plan(
-                "GC2BO textured",
-                "GC2BO 3 OF 6 TEX SWEEP",
+                n[1].0,
+                n[1].1,
                 &gc2::CORNER_UV[..],
                 &GC2BG_UV_WAYS[..],
                 GC2BO_ROUNDS,
                 1800,
             ),
             plan(
-                "GC2BO ring",
-                "GC2BO 4 OF 6 RING",
+                n[2].0,
+                n[2].1,
                 &gc2::TRACE_SCENES[..],
                 &GC2BG_RING_WAYS[..],
                 GC2BO_RING_ROUNDS,
                 600,
             ),
             plan(
-                "GC2BO kinds",
-                "GC2BO 5 OF 6 KINDS",
+                n[3].0,
+                n[3].1,
                 &gc2::PROOF2_KINDS[..],
                 &GC2BO_KIND_WAYS[..],
                 GC2BO_ROUNDS,
                 900,
             ),
             plan(
-                "GC2BO soak",
-                "GC2BO 6 OF 6 SOAK",
+                n[4].0,
+                n[4].1,
                 &gc2::PROOF2_SOAK[..],
                 &GC2BO_SOAK_WAYS[..],
                 u32::MAX,
                 SOAK_SECS,
             ),
         ];
-        for p in &plans {
+        for (pi, p) in plans.iter().enumerate() {
             gc2_orders(g, &mut ondie, (tex16, &mut *all, dsig), p);
             log!("  {} done, TEMP0 {:?}", p.name, gc2ba_temp(&mut touch));
+            if bp && pi == 3 {
+                // GC2BO's leak: flat corner scene 3 alone, many rounds.
+                let p3 = plan(
+                    "GC2BP scene 3",
+                    "GC2BP 6 OF 7 SCENE 3",
+                    &gc2::CORNER_FLAT[3..4],
+                    &GC2BG_RING_WAYS[..],
+                    GC2BP_SCENE3_ROUNDS,
+                    900,
+                );
+                gc2_orders(g, &mut ondie, (tex16, &mut *all, dsig), &p3);
+                log!("  GC2BP scene 3 done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+            }
         }
         g.nudge = 0;
         if !ondie.release(&mut g.pool) {
-            log!("  GC2BO: the on-die renderer's memory not given back");
+            log!("  {tag}: the on-die renderer's memory not given back");
         }
         let _ = g.pool.free(ta, bytes);
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
