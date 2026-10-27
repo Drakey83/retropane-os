@@ -2110,3 +2110,58 @@ fn gc2bd_strip_is_the_full_scenes_rows() {
     // And not by accident: the rows above differ.
     assert_ne!(&full[0..96 * 240], &strip[..]);
 }
+
+/// GC2BE's two half-height renderers, one with its lists at 0x96000 on
+/// the die (96 KiB) and one with them in SDRAM, alternating on one core
+/// with `core_taken` at every switch, each drawing scene 20's rows 0-319
+/// into B and A: every render the same picture (the emulator check drew
+/// the on-die one wrong; the model says whether the renderer does).
+#[test]
+fn gc2be_half_renderers_alternate_on_one_core() {
+    let m = memory();
+    let mut clock = SimClock::default();
+    let mut pool = Pool::new(POOL);
+    let mut mem = Mem::new(m.clone());
+    let mut gpu = Gpu::new(m, &clock);
+    let sdram = rp_vram_map::Region {
+        name: "half lists in SDRAM",
+        at: 0x0034_0000,
+        size: 0x0010_0000,
+        align: 0x1000,
+    };
+    let ondie = rp_vram_map::Region {
+        name: "half lists on the die",
+        at: 0x0009_6000,
+        size: SAFE_END - 0x0009_6000,
+        align: 0x1000,
+    };
+    let mut rh = Renderer::new_in(&mut pool, W as u16, 320, sdram, rp_vram_map::PM_TABLE).unwrap();
+    let mut rd = Renderer::new_in(&mut pool, W as u16, 320, ondie, rp_vram_map::PM_TABLE).unwrap();
+    let mut place = |n: usize, mem: &mut Mem| {
+        let t = TEXTURES[n];
+        let at = pool.alloc(t.bytes(), 128).expect("texture memory");
+        texture_words(n, |i, w| mem.store((at + 4 * i) as usize, &[w]));
+        Texture { at, ..t }
+    };
+    let tex = Tex {
+        t565: place(0, &mut mem),
+        t4444: place(1, &mut mem),
+        t8888: place(2, &mut mem),
+        plane: place(3, &mut mem),
+    };
+    let scene = order_scene_wide(CORNER_FLAT[20], tex);
+    let (a_at, b_at) = (0u32, 480 * 2 * 320);
+    let want = model_render_words(&mut rh, &mut gpu, &mut mem, &mut clock, b_at, 320, scene);
+    let mut last = false;
+    for i in 0..8 {
+        let on_die = i % 2 == 1;
+        let r: &mut Renderer = if on_die { &mut rd } else { &mut rh };
+        if on_die != last {
+            r.core_taken();
+            last = on_die;
+        }
+        let at = if i % 4 < 2 { b_at } else { a_at };
+        let got = model_render_words(r, &mut gpu, &mut mem, &mut clock, at, 320, scene);
+        assert_eq!(got, want, "render {i} (on the die: {on_die}) at 0x{at:x}");
+    }
+}

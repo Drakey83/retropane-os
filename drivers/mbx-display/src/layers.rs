@@ -252,6 +252,11 @@ pub enum VideoFormat {
     /// Planar 4:2:0: a Y plane, then U and V planes of half width and half
     /// height ("YV12"/"I420", what JPEG decodes to): 1.5 bytes a pixel.
     Yuv420,
+    /// RGB565, 2 bytes a pixel: the graphics plane's format on the video
+    /// plane (`VSCTRL` code 7, the colour-space conversion off), shown
+    /// exactly on the X51v (`rp-gpubench` run D, 2026-10-19). A 3D target
+    /// shown through the scaler without the graphics plane's reads.
+    Rgb565,
 }
 
 /// The video plane: shown under (or over) the graphics plane, in YUV.
@@ -280,7 +285,9 @@ impl VideoPlane {
     #[must_use]
     pub const fn new(format: VideoFormat, width: u16, height: u16, offset: usize) -> Self {
         let (stride, u_offset, v_offset) = match format {
-            VideoFormat::Uyvy => ((width as usize * 2).div_ceil(16) * 16, 0, 0),
+            VideoFormat::Uyvy | VideoFormat::Rgb565 => {
+                ((width as usize * 2).div_ceil(16) * 16, 0, 0)
+            }
             VideoFormat::Yuv420 => {
                 let stride = (width as usize).div_ceil(32) * 32;
                 let u = offset + stride * height as usize;
@@ -302,7 +309,7 @@ impl VideoPlane {
     #[must_use]
     pub const fn bytes(&self) -> usize {
         match self.format {
-            VideoFormat::Uyvy => self.stride * self.height as usize,
+            VideoFormat::Uyvy | VideoFormat::Rgb565 => self.stride * self.height as usize,
             VideoFormat::Yuv420 => {
                 self.v_offset + self.stride / 2 * (self.height as usize / 2) - self.offset
             }
@@ -400,6 +407,7 @@ impl VideoPlane {
         );
         let (fmt, ubase, vbase) = match self.format {
             VideoFormat::Uyvy => (0xC, 0, 0),
+            VideoFormat::Rgb565 => (0x7, 0, 0),
             VideoFormat::Yuv420 => {
                 assert!(self.stride.is_multiple_of(32), "chroma stride unaligned");
                 assert!(
@@ -458,7 +466,8 @@ impl VideoPlane {
             SHCTRL_HPITCH.insert(SHCTRL_HINITIAL.insert(0, 4 << 11), pitch(w, ow))
         };
         let vsctrl = VSCTRL_FMT.insert(0, fmt);
-        let vsctrl = VSCTRL_CSC_EN.insert(vsctrl, 1);
+        // The colour-space conversion is for YUV; RGB is shown as it is.
+        let vsctrl = VSCTRL_CSC_EN.insert(vsctrl, u32::from(self.format != VideoFormat::Rgb565));
         let vsctrl = VSCTRL_GAMMA_EN.insert(vsctrl, u32::from(gamma));
         let vsctrl = VSCTRL_WIDTH.insert(vsctrl, w - 1);
         let vsctrl = VSCTRL_HEIGHT.insert(vsctrl, h - 1);
@@ -621,6 +630,23 @@ mod tests {
         assert_eq!(VSCTRL_WIDTH.extract(r[2].1), 479);
         assert_eq!(VSCTRL_HEIGHT.extract(r[2].1), 639);
         assert_eq!(VSADR_STRIDE.extract(r[3].1), 29);
+    }
+
+    #[test]
+    fn rgb565_layout_is_the_graphics_formats_code_with_conversion_off() {
+        let v = VideoPlane::new(VideoFormat::Rgb565, 480, 320, 0x4B000);
+        assert_eq!(v.stride, 960);
+        assert_eq!(v.bytes(), 480 * 320 * 2);
+        let r = v.registers(Layer::SOLO, false);
+        assert_eq!(VSCTRL_FMT.extract(r[2].1), 7);
+        assert_eq!(VSCTRL_CSC_EN.extract(r[2].1), 0);
+        assert_eq!(VSCTRL_WIDTH.extract(r[2].1), 479);
+        assert_eq!(VSCTRL_HEIGHT.extract(r[2].1), 319);
+        assert_eq!(VSADR_STRIDE.extract(r[3].1), 59);
+        // Shown at twice its height: the vertical pitch 1:2, bit 27 set.
+        let s = v.registers_scaled(Layer::SOLO, false, v.scale_to(480, 640, 0, 0));
+        assert_eq!(SPOCTRL_VPITCH.extract(s[5].1), 0x400);
+        assert_ne!(s[5].1 & SPOCTRL_VS_UR_C, 0);
     }
 
     #[test]

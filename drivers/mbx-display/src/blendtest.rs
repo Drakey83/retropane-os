@@ -363,6 +363,18 @@ pub fn draw(stage: Stage, vram: &mut [u8], work: &mut [u8]) {
                 vram[at..at + W * 2].copy_from_slice(&row[..W * 2]);
             }
         }
+        VideoFormat::Rgb565 => {
+            for y in 0..H {
+                for x in 0..W {
+                    let (r, g, b) = wall(x, y);
+                    let c =
+                        (u16::from(r >> 3) << 11) | (u16::from(g >> 2) << 5) | u16::from(b >> 3);
+                    row[x * 2..][..2].copy_from_slice(&c.to_le_bytes());
+                }
+                let at = video.offset + y * video.stride;
+                vram[at..at + W * 2].copy_from_slice(&row[..W * 2]);
+            }
+        }
         VideoFormat::Yuv420 => {
             for y in (0..H).step_by(2) {
                 let (luma, chroma) = row.split_at_mut(W * 2);

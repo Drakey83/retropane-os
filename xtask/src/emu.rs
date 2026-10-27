@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2be = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_VIDEO", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bd = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5534,7 +5543,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 97] = [
+    let runs: [GpubenchRun; 98] = [
         (
             "run A",
             &run_a,
@@ -5877,6 +5886,29 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BE (R69): the design, shortened (10 s warm-up, two pairs a
+        // way; the emulator draws exactly: the half picture is the
+        // reference's rows and nothing is wrong).
+        (
+            "run GC2BE",
+            &run_gc2be,
+            &[
+                "GC2BE (R69): the design on scene 20's rows 0-319",
+                "GC2BE reference:",
+                "GC2BE half picture at Windows Mobile's clock: 0 words off the full reference's rows 0-319; B again Some(0) words off; A Some(0); the on-die renderer Some(0)",
+                "GC2BE A slice 10: ",
+                "GC2BE the video plane shows A at 2x",
+                "GC2BE B (never read): 0 of 2 wrong",
+                "GC2BE B with the lists on the die: 0 of 2 wrong",
+                "GC2BE A with the lists on the die: 0 of 2 wrong",
+                "GC2BE B with the video plane hidden: 0 of 2 wrong",
+                "GC2BE the full scene after: 0 of 50 wrong",
+                "the control at Windows Mobile's clock after: Some(0) words off",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

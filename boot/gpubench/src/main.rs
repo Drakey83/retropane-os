@@ -7963,6 +7963,7 @@ mod image {
         || GC2_ONE
         || GC2_SCHEDULE
         || GC2_STRIP
+        || GC2_VIDEO
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8160,6 +8161,13 @@ mod image {
     /// ring scene's lists on the die at 300 pairs. About 25 minutes,
     /// unattended.
     const GC2_STRIP: bool = option_env!("RP_GPUBENCH_GC2_STRIP").is_some();
+
+    /// Run GC2BE, reminder R69 (`RP_GPUBENCH_GC2_VIDEO`): fix (A)'s design
+    /// measured: a 480 x 320 picture pair on the die, one shown by the
+    /// video plane at twice its height while the core draws the other,
+    /// with the lists in SDRAM and on the die, warm. About 20 minutes,
+    /// unattended.
+    const GC2_VIDEO: bool = option_env!("RP_GPUBENCH_GC2_VIDEO").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9543,6 +9551,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_VIDEO {
+                "the 16-bit kinds' targets inside the safe region (GC2BE, R69: no map; scene 20's rows 0-319 as a 480 x 320 picture pair on the die, one shown by the video plane at 2x while the core draws the other, with the lists in SDRAM and on the die, at 149.50 / 1 warm; each target poisoned first),"
             } else if GC2_STRIP {
                 "the 16-bit kinds' targets inside the safe region (GC2BD, R69: no map; scene 20's rows 224-319 as a strip rendered where the display never reads against a displayed address at 149.50 / 1 warm, the hidden strip with the fetch off, the ring scene's lists on the die; each target poisoned first),"
             } else if GC2_SCHEDULE {
@@ -9741,6 +9751,8 @@ mod image {
             (2 + GC2BB_PHASES) * gc2::words(gc2::FT2) as usize
         } else if GC2_STRIP {
             3 * gc2::words(gc2::FT2) as usize
+        } else if GC2_VIDEO {
+            2 * gc2::words(gc2::FT2) as usize
         } else if GC2_REGS
             || GC2_BLOCK
             || GC2_HEAT
@@ -10131,6 +10143,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_VIDEO {
+                    gc2_video(g, &mut r, (tex, first, dsig));
                 } else if GC2_STRIP {
                     gc2_strip(g, &mut r, (tex, first, dsig));
                 } else if GC2_SCHEDULE {
@@ -14328,6 +14342,353 @@ mod image {
         );
         if !ondie.release(&mut g.pool) || !rs.release(&mut g.pool) {
             log!("  GC2BD: a renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BE's half-height picture: scene 20's rows 0-319 (its faulting
+    /// rectangle's rows 239-255 among them) rendered by a 480 x 320
+    /// renderer, 300 KiB each: A at 0, shown by the video plane at twice
+    /// its height; B right after it, which the display never reads; the
+    /// lists on the die after B, inside G19's edge.
+    const GC2BE_ROWS: u16 = 320;
+    const GC2BE_WORDS: usize = 480 * GC2BE_ROWS as usize / 2;
+    const GC2BE_A: u32 = 0;
+    const GC2BE_B: u32 = 480 * 2 * GC2BE_ROWS as u32;
+    /// The on-die lists where the X51v proved them (GC2BB, GC2BD: 0xA5000,
+    /// 36 KiB; scene 20's lists are under 10 KiB). The emulator drew the
+    /// on-die renderer wrong (6 ms renders) with its lists at 0x96000 or
+    /// 0x97000 (96 or 92 KiB) once B had been drawn, and right at
+    /// Windows Mobile's clock before: its model of the parameter memory
+    /// at those places, not the device's (the host model draws both
+    /// right; the device is the measurement).
+    const GC2BE_PARAMS: rp_vram_map::Region = GC2BB_PARAMS;
+    const _: () = assert!(GC2BE_PARAMS.at + GC2BE_PARAMS.size <= gc2::SAFE_END);
+    const _: () = assert!(GC2BE_PARAMS.at >= 2 * GC2BE_B);
+    const GC2BE_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
+
+    /// The half-height renderer for a GC2BE render: the one with its lists
+    /// on the die or in SDRAM, told the core was taken when the last render
+    /// used the other.
+    fn gc2be_pick<'a>(
+        rh: &'a mut Renderer,
+        rd: &'a mut Renderer,
+        ondie: bool,
+        last: &mut u8,
+    ) -> &'a mut Renderer {
+        let want_last = u8::from(ondie);
+        let rr: &'a mut Renderer = if ondie { rd } else { rh };
+        if *last != want_last {
+            rr.core_taken();
+            *last = want_last;
+        }
+        rr
+    }
+
+    /// Run GC2BE (see [`GC2_VIDEO`]): fix (A)'s design measured on scene
+    /// 20's faulting half. References at Windows Mobile's clock (the full
+    /// scene for the warm-up; the half picture at B, then A and the on-die
+    /// renderer held to it); ten minutes' warm-up on the full scene with
+    /// the graphics plane as it is; then the graphics plane's reads off and
+    /// the video plane showing A (RGB565, 480 x 320 at twice its height,
+    /// P9's scaler set-up) and, at 149.50 / 1 warm, [`GC2BE_PAIRS`] pairs
+    /// each: (2) B, which the display never reads, against A, which it
+    /// reads; (3) B with the lists on the die against B; (4) A with the
+    /// lists on the die against A; (5) B with the video plane hidden
+    /// against B. The planes put back, fifty full-scene renders, the
+    /// control at Windows Mobile's clock after.
+    #[inline(never)]
+    fn gc2_video(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let fmt = gc2::KINDS[k].1;
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < 2 * words {
+            log!("  GC2BE: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let (want, half_want) = rest.split_at_mut(words);
+        let half_want = &mut half_want[..GC2BE_WORDS];
+        log!(
+            "  GC2BE (R69): the design on scene {GC2AY_SCENE}'s rows 0-{}: a 480 x {GC2BE_ROWS} picture A at 0x{GC2BE_A:x} shown by the video plane at twice its height, B at 0x{GC2BE_B:x} never read; {GC2BE_PAIRS} pairs each at 149.50 / 1 warm: B against A; B with the lists on the die (0x{:x}, {} KiB) against B; A with the lists on the die against A; B with the video plane hidden against B",
+            GC2BE_ROWS - 1,
+            GC2BE_PARAMS.at,
+            GC2BE_PARAMS.size / 1024
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BE TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let Some(mut rh) =
+            Renderer::new_in(&mut g.pool, 480, GC2BE_ROWS, GC2AG_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BE: no half-height renderer: nothing run");
+            return;
+        };
+        let Some(mut rd) =
+            Renderer::new_in(&mut g.pool, 480, GC2BE_ROWS, GC2BE_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BE: no half-height renderer with its lists on the die: nothing run");
+            let _ = rh.release(&mut g.pool);
+            return;
+        };
+        for rr in [&mut *r, &mut rh, &mut rd] {
+            rr.set_tile_order(tile_order(gc2::REVERSED));
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+        // One half-height render on `rr` at `at`, poisoned first: wrong
+        // words (`None`: not finished) and its time.
+        let half_render = |g: &mut Rig,
+                           rr: &mut Renderer,
+                           at: u32,
+                           half_want: &[u32],
+                           first: &mut [u32],
+                           poison: Option<u16>|
+         -> (Option<u32>, u32) {
+            gc2_set_scene(g, rr, scene, tex);
+            if let Some(c) = poison
+                && !poison_fill_rows(g, at, GC2BE_ROWS, c)
+            {
+                return (None, 0);
+            }
+            rr.invalidate_all();
+            let t = Target {
+                picture: Picture::packed(at, 480, GC2BE_ROWS, fmt),
+                x: 0,
+                y: 0,
+            };
+            let Some(us) = g.frame(rr, t) else {
+                return (None, 0);
+            };
+            if GC2_RENDERS < 20 {
+                // The emulator's check: each render's time and its core
+                // status after, for a render that goes wrong there.
+                log!(
+                    "    GC2BE render at 0x{at:x}: {us} us, status 0x{:08x}",
+                    g.e.regs.read32(MBX + 0x12C)
+                );
+            }
+            let off = read_compare_volatile(
+                g.mem.0,
+                at as usize,
+                &half_want[..GC2BE_WORDS],
+                &mut first[..GC2BE_WORDS],
+            );
+            rt::check_in();
+            if off == Some(0) {
+                return (Some(0), us);
+            }
+            let mut wrong = 0;
+            for i in 0..GC2BE_WORDS {
+                let got = g.mem.load(at as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+                if got != half_want[i] {
+                    wrong += 1;
+                }
+                if i % 16_384 == 16_383 {
+                    rt::check_in();
+                }
+            }
+            (Some(wrong), us)
+        };
+        // References.
+        gc2_set_scene(g, r, scene, tex);
+        if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BE") {
+            let _ = rh.release(&mut g.pool);
+            let _ = rd.release(&mut g.pool);
+            return;
+        }
+        rh.core_taken();
+        let _ = half_render(g, &mut rh, GC2BE_B, half_want, first, None);
+        gc2_take_at(g, GC2BE_B, half_want);
+        let (b_again, _) = half_render(g, &mut rh, GC2BE_B, half_want, first, None);
+        let (a0, _) = half_render(g, &mut rh, GC2BE_A, half_want, first, None);
+        rd.core_taken();
+        let (d0, _) = half_render(g, &mut rd, GC2BE_B, half_want, first, None);
+        let off_full = (0..GC2BE_WORDS)
+            .filter(|&i| half_want[i] != want[i])
+            .count();
+        log!(
+            "  GC2BE half picture at Windows Mobile's clock: {off_full} words off the full reference's rows 0-{}; B again {b_again:?} words off; A {a0:?}; the on-die renderer {d0:?}",
+            GC2BE_ROWS - 1
+        );
+        let half_ok = b_again == Some(0) && a0 == Some(0) && d0 == Some(0);
+        let poison = gc2::absent16(want, &gc2::POISON);
+        let half_poison = gc2::absent16(half_want, &gc2::POISON);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let top_regs = gc2_clock_want(step_speed(g, s), s.div);
+        let render = |g: &mut Rig,
+                      r: &mut Renderer,
+                      want: &[u32],
+                      first: &mut [u32],
+                      regs: [u32; 5]|
+         -> (Option<u32>, u32) {
+            gc2_set_scene(g, r, scene, tex);
+            if let Some(c) = poison
+                && !poison_fill(g, at, c)
+            {
+                return (None, 0);
+            }
+            let mut side = Gc2Side::new(false);
+            let mut base = Gc2Baseline(None);
+            let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+            (w, side.best_us)
+        };
+        // Part 1: the warm-up on the full scene, the planes as they are.
+        r.core_taken();
+        {
+            let mut one =
+                |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| render(g, r, want, first, regs);
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BE", &["A"]) {
+                let _ = rh.release(&mut g.pool);
+                let _ = rd.release(&mut g.pool);
+                return;
+            }
+        }
+        if half_ok {
+            // The display: the graphics plane's reads off, the video plane
+            // showing A at twice its height (no label meanwhile: the screen
+            // shows A, the scene, as the design would).
+            let plane = VideoPlane::new(VideoFormat::Rgb565, 480, GC2BE_ROWS, GC2BE_A as usize);
+            let scale = plane.scale_to(480, 640, 0, 0);
+            let show = |g: &mut Rig| {
+                rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, Layer::SOLO, scale);
+            };
+            let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+            show(g);
+            rt::delay_us(50_000);
+            let _ = underrun_take(&mut g.e.regs);
+            log!(
+                "  GC2BE the video plane shows A at 2x, the graphics plane's reads off; DSIG 0x{:08x}, scan line {}",
+                g.e.regs.read32(DSIG),
+                scan_line(g)
+            );
+            let mut last: u8 = 0; // 0: rh (lists in SDRAM), 1: rd (on the die)
+            let pick = gc2be_pick;
+            rh.core_taken();
+            // Part 2: B (never read) against A (read).
+            {
+                let mut one = |g: &mut Rig, rh: &mut Renderer, rd: &mut Renderer, way: bool| {
+                    let rr = pick(rh, rd, false, &mut last);
+                    let at = if way { GC2BE_B } else { GC2BE_A };
+                    half_render(g, rr, at, half_want, first, half_poison)
+                };
+                let (bw, bus, ww, wus, failed) =
+                    gc2_pairs(g, &mut rh, &mut rd, GC2BE_PAIRS, &mut one);
+                let np = u64::from(GC2BE_PAIRS);
+                log!(
+                    "  GC2BE B (never read): {ww} of {GC2BE_PAIRS} wrong at mean {} us; A (read by the display) beside it {bw} at {} us; {failed} not finished; underruns {}; TEMP0 {:?}",
+                    wus / np,
+                    bus / np,
+                    u32::from(underrun_take(&mut g.e.regs)),
+                    gc2ba_temp(&mut touch)
+                );
+            }
+            // Part 3: B with the lists on the die against B.
+            {
+                let mut one = |g: &mut Rig, rh: &mut Renderer, rd: &mut Renderer, way: bool| {
+                    let rr = pick(rh, rd, way, &mut last);
+                    half_render(g, rr, GC2BE_B, half_want, first, half_poison)
+                };
+                let (bw, bus, ww, wus, failed) =
+                    gc2_pairs(g, &mut rh, &mut rd, GC2BE_PAIRS, &mut one);
+                let np = u64::from(GC2BE_PAIRS);
+                log!(
+                    "  GC2BE B with the lists on the die: {ww} of {GC2BE_PAIRS} wrong at mean {} us; B with them in SDRAM beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                    wus / np,
+                    bus / np,
+                    gc2ba_temp(&mut touch)
+                );
+            }
+            // Part 4: A with the lists on the die against A.
+            {
+                let mut one = |g: &mut Rig, rh: &mut Renderer, rd: &mut Renderer, way: bool| {
+                    let rr = pick(rh, rd, way, &mut last);
+                    half_render(g, rr, GC2BE_A, half_want, first, half_poison)
+                };
+                let (bw, bus, ww, wus, failed) =
+                    gc2_pairs(g, &mut rh, &mut rd, GC2BE_PAIRS, &mut one);
+                let np = u64::from(GC2BE_PAIRS);
+                log!(
+                    "  GC2BE A with the lists on the die: {ww} of {GC2BE_PAIRS} wrong at mean {} us; A with them in SDRAM beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                    wus / np,
+                    bus / np,
+                    gc2ba_temp(&mut touch)
+                );
+            }
+            // Part 5: B with the video plane hidden (no display reads at
+            // all) against B.
+            {
+                let mut one = |g: &mut Rig, rh: &mut Renderer, rd: &mut Renderer, way: bool| {
+                    let rr = pick(rh, rd, false, &mut last);
+                    if way {
+                        rp_drv_mbx_display::video_hide(&mut g.e.regs);
+                    }
+                    let out = half_render(g, rr, GC2BE_B, half_want, first, half_poison);
+                    if way {
+                        show(g);
+                        rt::delay_us(20_000);
+                        let _ = underrun_take(&mut g.e.regs);
+                    }
+                    out
+                };
+                let (bw, bus, ww, wus, failed) =
+                    gc2_pairs(g, &mut rh, &mut rd, GC2BE_PAIRS, &mut one);
+                let np = u64::from(GC2BE_PAIRS);
+                log!(
+                    "  GC2BE B with the video plane hidden: {ww} of {GC2BE_PAIRS} wrong at mean {} us; B with it shown beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                    wus / np,
+                    bus / np,
+                    gc2ba_temp(&mut touch)
+                );
+            }
+            // The planes put back.
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+            let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+            rt::delay_us(50_000);
+            let _ = underrun_take(&mut g.e.regs);
+        } else {
+            log!(
+                "  GC2BE: the half picture isn't repeatable at both addresses or on the on-die renderer: parts 2-5 skipped"
+            );
+        }
+        // Part 6: the full scene's rate after, the planes as they were.
+        soak_label(
+            g,
+            ["GC2BE 6 OF 6", "FULL SCENE", "149.50 / 1 WARM"],
+            SOAK_BLUE,
+        );
+        r.core_taken();
+        let (mut wrong, mut n) = (0u32, 0u32);
+        for _ in 0..50 {
+            let (w, _) = render(g, r, want, first, top_regs);
+            n += 1;
+            if w != Some(0) {
+                wrong += 1;
+            }
+            rt::check_in();
+        }
+        log!(
+            "  GC2BE the full scene after: {wrong} of {n} wrong; TEMP0 {:?}",
+            gc2ba_temp(&mut touch)
+        );
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        gc2_set_scene(g, r, scene, tex);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!(
+            "  GC2BE: done, TEMP0 {:?}; the control at Windows Mobile's clock after: {control:?} words off",
+            gc2ba_temp(&mut touch)
+        );
+        if !rh.release(&mut g.pool) || !rd.release(&mut g.pool) {
+            log!("  GC2BE: a renderer's memory not given back");
         }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }

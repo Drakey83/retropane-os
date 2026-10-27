@@ -133,6 +133,11 @@ watching.
 ## 5. Devices
 
 ### Display (2700G)
+- The video plane in RGB565 (`VSCTRL` format 7, the colour-space
+  conversion off), shown exactly (run D): the driver's
+  `VideoFormat::Rgb565` (2026-10-27), a 16-bit 3D target shown through
+  the scaler while the core draws the other of a pair (`rp-gpubench`
+  GC2BE measures it at divide 1).
 - `DMCTRL` (`0x2188`), the display's memory control (mbxfb's name):
   Windows Mobile leaves `0x10303010`, Linux mbxfb writes `0xD0303010`;
   its two high bits change nothing for the divide-1 corruption
