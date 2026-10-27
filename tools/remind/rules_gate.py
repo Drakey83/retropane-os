@@ -41,7 +41,7 @@ script sits in. The PreToolUse hook always runs the main checkout's copy,
 so a commit or push in a worktree (`git -C <dir>`, `cd <dir> && git ...`)
 is judged by that worktree's HEAD, staged files and CI stamp
 (`acting_dir`; until 2026-10-25 it read the main checkout's, and refused a
-worktree push whose own CI had passed: reminder R39). Git's own hooks run
+worktree push whose own CI had passed: reminder R48). Git's own hooks run
 the worktree's copy and judge it already.
 """
 

@@ -1884,3 +1884,178 @@ mod binner_scenes {
         assert_eq!(b.bin(None, &bad), Err(Error::Unsupported));
     }
 }
+
+/// GC2AN's orders: each lists every tile exactly once (Columns' and
+/// Scrambled's first half, Checker's two passes), Checker never lists a
+/// tile's neighbour next, and every order draws the same picture as row
+/// order through the model.
+#[test]
+fn new_tile_orders_list_every_tile_once_and_draw_the_same() {
+    for (cols, rows) in [(60, 40), (7, 5), (1, 1), (128, 128)] {
+        let n = cols * rows;
+        for order in [
+            TileOrder::Columns,
+            TileOrder::Checker,
+            TileOrder::Scrambled,
+            TileOrder::Interleaved,
+        ] {
+            let got: Vec<usize> = (0..2 * n)
+                .filter_map(|i| crate::order_tile(order, i, cols, rows))
+                .collect();
+            let mut sorted = got.clone();
+            sorted.sort_unstable();
+            assert_eq!(
+                sorted,
+                (0..n).collect::<Vec<_>>(),
+                "{order:?} {cols}x{rows}"
+            );
+            // Interleaved: no side-by-side neighbour next (rows of 4 tiles
+            // or more), and the rows strictly from the top.
+            if order == TileOrder::Interleaved && cols >= 4 {
+                for w in got.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    assert!(
+                        !(a / cols == b / cols && (a % cols).abs_diff(b % cols) == 1),
+                        "{cols}x{rows}: {a} then {b}"
+                    );
+                    assert!(b / cols >= a / cols, "top down");
+                }
+            }
+            if order == TileOrder::Checker {
+                for w in got.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    let (dx, dy) = ((a % cols).abs_diff(b % cols), (a / cols).abs_diff(b / cols));
+                    assert!(dx + dy != 1, "{cols}x{rows}: {a} then its neighbour {b}");
+                }
+            }
+        }
+    }
+    let mut g = rig(480, 640);
+    let tex = columns(&mut g);
+    let c = [0xFF00_0000, 0xFFFF_FFFF, 0xFF10_20A0, 0xFFFF_E000];
+    g.set(0, Some(Draw::rect(0, 0, 480, 640, Paint::Gouraud(c))));
+    g.set(1, Some(Draw::rect(43, 45, 400, 560, Paint::texture(tex))));
+    g.frame();
+    let words = |g: &Rig| -> Vec<u32> {
+        (0..480 * 640)
+            .map(|i| g.mem.px(SCREEN.at, SCREEN.stride, i % 480, i / 480))
+            .collect()
+    };
+    let a = words(&g);
+    for order in [
+        TileOrder::Columns,
+        TileOrder::Checker,
+        TileOrder::Scrambled,
+        TileOrder::Interleaved,
+    ] {
+        g.r.set_tile_order(order);
+        g.r.invalidate_all();
+        let f = g.frame();
+        assert_eq!(f.tiles, 60 * 40, "{order:?}");
+        assert_eq!(words(&g), a, "{order:?}");
+    }
+}
+
+/// GC2AP's hook: a flip changes exactly that header word of both triangles
+/// of a textured slot, nothing of a flat one, and (0, 0) or a word past
+/// the header nothing at all.
+#[test]
+fn the_header_flip_changes_only_its_word() {
+    let mut g = rig(480, 640);
+    let tex = columns(&mut g);
+    let at = |g: &Rig, w: usize| {
+        g.mem
+            .load((rp_vram_map::PARAMS.at + SLOTS_AT) as usize + 4 * w)
+            .unwrap()
+    };
+    let draw = Draw::rect(43, 45, 400, 560, Paint::texture(tex));
+    g.set(0, Some(draw));
+    let base: Vec<u32> = (0..2 * m3::tex::WORDS).map(|w| at(&g, w)).collect();
+    for (word, mask) in [(1usize, 1u32 << 7), (4, 1 << 22), (0, 1 << 3)] {
+        g.r.set_header_xor(word, mask);
+        g.set(0, Some(draw));
+        for (w, &b) in base.iter().enumerate() {
+            let flipped = w % m3::tex::WORDS == word;
+            let want = if flipped { b ^ mask } else { b };
+            assert_eq!(at(&g, w), want, "word {word} mask {mask:#x}: {w}");
+        }
+    }
+    for (word, mask) in [(0usize, 0u32), (5, 1)] {
+        g.r.set_header_xor(word, mask);
+        g.set(0, Some(draw));
+        for (w, &b) in base.iter().enumerate() {
+            assert_eq!(at(&g, w), b, "({word}, {mask}) flips nothing");
+        }
+    }
+    // A flat slot is never flipped.
+    g.r.set_header_xor(0, u32::MAX);
+    let flat = Draw::rect(0, 0, 64, 64, Paint::Flat(0xFF12_3456));
+    g.set(1, Some(flat));
+    let f1: Vec<u32> = (0..SLOT_WORDS)
+        .map(|w| {
+            g.mem
+                .load((rp_vram_map::PARAMS.at + SLOTS_AT + SLOT_BYTES) as usize + 4 * w)
+                .unwrap()
+        })
+        .collect();
+    g.r.set_header_xor(0, 0);
+    g.set(1, Some(Draw::rect(0, 0, 64, 32, Paint::Flat(0xFF12_3456))));
+    g.set(1, Some(flat));
+    let f2: Vec<u32> = (0..SLOT_WORDS)
+        .map(|w| {
+            g.mem
+                .load((rp_vram_map::PARAMS.at + SLOTS_AT + SLOT_BYTES) as usize + 4 * w)
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(f1, f2);
+}
+
+/// GC2AQ's hook: the bits land in the TSP word of both triangles of a flat
+/// and of a textured slot, and nowhere else; 0 changes nothing.
+#[test]
+fn the_tsp_bits_land_in_every_objects_tsp() {
+    let mut g = rig(480, 640);
+    let tex = columns(&mut g);
+    let word = |g: &Rig, slot: u32, w: usize| {
+        g.mem
+            .load((rp_vram_map::PARAMS.at + SLOTS_AT + slot * SLOT_BYTES) as usize + 4 * w)
+            .unwrap()
+    };
+    let flat = Draw::rect(0, 0, 64, 64, Paint::Flat(0xFF12_3456));
+    let textured = Draw::rect(43, 45, 400, 560, Paint::texture(tex));
+    g.set(0, Some(flat));
+    g.set(1, Some(textured));
+    let f0: Vec<u32> = (0..2 * m3::TRIANGLE_WORDS)
+        .map(|w| word(&g, 0, w))
+        .collect();
+    let t0: Vec<u32> = (0..2 * m3::tex::WORDS).map(|w| word(&g, 1, w)).collect();
+    g.r.set_tsp_or(1 << 14);
+    g.set(0, Some(flat));
+    g.set(1, Some(textured));
+    for (w, &b) in f0.iter().enumerate() {
+        let tsp = w % m3::TRIANGLE_WORDS == 1;
+        assert_eq!(
+            word(&g, 0, w),
+            if tsp { b | 1 << 14 } else { b },
+            "flat {w}"
+        );
+    }
+    for (w, &b) in t0.iter().enumerate() {
+        let tsp = w % m3::tex::WORDS == 4;
+        assert_eq!(
+            word(&g, 1, w),
+            if tsp { b | 1 << 14 } else { b },
+            "textured {w}"
+        );
+    }
+    g.r.set_tsp_or(0);
+    g.set(0, Some(flat));
+    g.set(1, Some(textured));
+    for (w, &b) in f0.iter().enumerate() {
+        assert_eq!(word(&g, 0, w), b);
+    }
+    for (w, &b) in t0.iter().enumerate() {
+        assert_eq!(word(&g, 1, w), b);
+    }
+}

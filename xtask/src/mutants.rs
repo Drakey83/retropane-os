@@ -276,8 +276,19 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "gpubench GC2AD: the night soak's second cure is the ring again",
         file: "boot/gpubench/src/gc2.rs",
-        from: "        s[2 * b + 1] = Scene::Fix(b, 2);",
-        to: "        s[2 * b + 1] = Scene::Fix(b, 7);",
+        from: "        s[n + 1] = Scene::Fix(b, 2);",
+        to: "        s[n + 1] = Scene::Fix(b, 7);",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2ad_soaks_every_kind_alternating_the_ring_and_one_full_layer_reversed",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2AD: the both-cures way is one full layer again",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "            s[n] = Scene::Fix(b, 8);",
+        to: "            s[n] = Scene::Fix(b, 2);",
         check: Check::Host(&[
             "-p",
             "rp-gpubench",

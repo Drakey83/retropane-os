@@ -1062,6 +1062,14 @@ pub struct Renderer {
     /// in the array's order): a measurement's choice (`rp-gpubench` runs
     /// GC2L, GC2O), row order otherwise.
     tile_order: TileOrder,
+    /// A measurement's bit flip in every textured object's header (run
+    /// GC2AP): the header word (0 ISP, 1-3 TEX0-2, 4 TSP) and the bits
+    /// XORed into it; (0, 0) never changes anything.
+    header_xor: (usize, u32),
+    /// A measurement's bits ORed into every object's TSP word, flat and
+    /// textured (run GC2AQ: TSP bit 14, the punch-through object kind, and
+    /// bit 15); 0 changes nothing.
+    tsp_or: u32,
 }
 
 /// The order the tiles are listed for the core in (the picture is the same
@@ -1075,6 +1083,60 @@ pub enum TileOrder {
     Reversed,
     /// Row by row from the top, each row from the right.
     ColumnsReversed,
+    /// Column by column from the right, each from the bottom: tiles drawn
+    /// one after another sit a tile row (16 lines of the target) apart in
+    /// memory, not side by side in the same lines (`rp-gpubench` run GC2AN:
+    /// does the tile race at divide 1 need neighbours in memory?).
+    Columns,
+    /// A checkerboard: every tile whose x + y is even, from the last, then
+    /// every odd one, from the last: no tile follows its neighbour (run
+    /// GC2AN).
+    Checker,
+    /// Every tile once, in a fixed scrambled order (the region array's
+    /// index stepped by [`SCRAMBLE`], a prime no target's tile count is a
+    /// multiple of): consecutive tiles far apart and unrelated (run GC2AN).
+    Scrambled,
+    /// Row by row from the top, each row's even tiles first, then its odd
+    /// ones: no tile follows its side-by-side neighbour (GC2AN: the tile
+    /// race at divide 1 needs exactly that), and the picture still fills
+    /// from the top down, as the display scans it out (R20's tear-free
+    /// design), where the checkerboard and scrambled orders jump about
+    /// (run GC2AO).
+    Interleaved,
+}
+
+/// [`TileOrder::Scrambled`]'s step: a prime above 128 (so it divides no
+/// count of at most 128 x 128 tiles) and far from any row length.
+pub const SCRAMBLE: usize = 1009;
+
+/// The `i`th tile number (of `cols` x `rows`) [`TileOrder::Columns`],
+/// [`TileOrder::Checker`] or [`TileOrder::Scrambled`] lists, for `i` in `0..2
+/// * cols * rows` (the checkerboard's two passes; the others use the first
+/// half); `None` where the order lists nothing at `i`.
+#[must_use]
+pub const fn order_tile(order: TileOrder, i: usize, cols: usize, rows: usize) -> Option<usize> {
+    let n = cols * rows;
+    match order {
+        TileOrder::Columns if i < n => {
+            let (x, y) = (cols - 1 - i / rows, rows - 1 - i % rows);
+            Some(y * cols + x)
+        }
+        TileOrder::Checker => {
+            let k = n - 1 - i % n;
+            if (k % cols + k / cols) % 2 == i / n {
+                Some(k)
+            } else {
+                None
+            }
+        }
+        TileOrder::Scrambled if i < n => Some((n - 1 - i) * SCRAMBLE % n),
+        TileOrder::Interleaved if i < n => {
+            let (y, j, half) = (i / cols, i % cols, cols.div_ceil(2));
+            let x = if j < half { 2 * j } else { 2 * (j - half) + 1 };
+            Some(y * cols + x)
+        }
+        _ => None,
+    }
 }
 
 impl Renderer {
@@ -1139,6 +1201,8 @@ impl Renderer {
             irq: false,
             irq_stale: false,
             tile_order: TileOrder::Rows,
+            header_xor: (0, 0),
+            tsp_or: 0,
         })
     }
 
@@ -1151,6 +1215,24 @@ impl Renderer {
         } else {
             TileOrder::Rows
         });
+    }
+
+    /// A measurement's bit flip in every textured object's header from the
+    /// next [`Self::set`] on: `mask` XORed into header word `word` (0 ISP,
+    /// 1-3 TEX0-2, 4 TSP) of both triangles (`rp-gpubench` run GC2AP's
+    /// search). A word past the header or a zero mask flips nothing. The
+    /// slots' hashes cover the flipped words, so a slot set again with the
+    /// same draw is written again.
+    pub fn set_header_xor(&mut self, word: usize, mask: u32) {
+        self.header_xor = if word < 5 { (word, mask) } else { (0, 0) };
+    }
+
+    /// A measurement's bits ORed into every object's TSP word from the next
+    /// [`Self::set`] on, flat and textured (`rp-gpubench` run GC2AQ: GC2AP
+    /// found TSP bit 14, the punch-through object kind, and bit 15 each end
+    /// divide 1's texel-pick fault); 0 changes nothing.
+    pub fn set_tsp_or(&mut self, mask: u32) {
+        self.tsp_or = mask;
     }
 
     /// The order the tiles are listed for the core in ([`TileOrder`]).
@@ -1248,7 +1330,25 @@ impl Renderer {
         let new = match draw {
             None => Slot::default(),
             Some(d) => {
-                let (words, n, kind) = encode(d);
+                let (mut words, n, kind) = encode(d);
+                let (hw, mask) = self.header_xor;
+                if kind == Kind::Textured && mask != 0 {
+                    for t in 0..2 {
+                        words[t * m3::tex::WORDS + hw] ^= mask;
+                    }
+                }
+                if self.tsp_or != 0 {
+                    // The TSP: word 4 of a textured triangle, word 1 of a
+                    // flat one (`m3::tex::triangle`, `m3::triangle`).
+                    let (per, at) = if kind == Kind::Textured {
+                        (m3::tex::WORDS, 4)
+                    } else {
+                        (m3::TRIANGLE_WORDS, 1)
+                    };
+                    for t in 0..2 {
+                        words[t * per + at] |= self.tsp_or;
+                    }
+                }
                 let tiles = draw_tiles(d, self.cols, self.rows);
                 let s = Slot {
                     kind,
@@ -1586,19 +1686,32 @@ impl Renderer {
         let (mut quads, mut cost) = (0, 0);
         let (mut row, mut row_mask) = (u32::MAX, 0u64);
         let (cols, rows) = (self.cols as usize, self.rows as usize);
-        let (mut fwd, mut rev, mut cols_rev) = (None, None, None);
-        match self.tile_order {
+        let (mut fwd, mut rev, mut cols_rev, mut other) = (None, None, None, None);
+        let order = self.tile_order;
+        match order {
             TileOrder::Rows => fwd = Some(todo.iter()),
             TileOrder::Reversed => rev = Some(todo.iter_rev()),
             TileOrder::ColumnsReversed => cols_rev = Some(todo.iter_cols_rev(cols, rows)),
+            TileOrder::Columns
+            | TileOrder::Checker
+            | TileOrder::Scrambled
+            | TileOrder::Interleaved => {
+                other = Some(
+                    (0..2 * cols * rows)
+                        .filter_map(move |i| order_tile(order, i, cols, rows))
+                        .filter(|&k| todo.has(k)),
+                );
+            }
         }
         let mut next = || {
             if let Some(f) = &mut fwd {
                 f.next()
             } else if let Some(r) = &mut rev {
                 r.next()
+            } else if let Some(c) = &mut cols_rev {
+                c.next()
             } else {
-                cols_rev.as_mut().and_then(Iterator::next)
+                other.as_mut().and_then(Iterator::next)
             }
         };
         while let Some(k) = next() {

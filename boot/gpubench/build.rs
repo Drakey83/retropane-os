@@ -10,6 +10,9 @@ fn main() {
         // (2026-10-23); the GC2 soaks' shared code then sat at the checks'
         // 80% of 24 KiB, each new run tipping it over (GC2T 19,664, GC2Y
         // 19,928 in the emulator, 2026-10-25): 32 KiB leaves GC2Y at 61%.
-        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=32768");
+        // 40 KiB from 2026-10-25: run GC2AG holds a second renderer (its
+        // parameter memory moved) beside the first, 29,256 bytes deep in
+        // the emulator (89% of 32 KiB): 40 KiB leaves it at 71%.
+        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=40960");
     }
 }

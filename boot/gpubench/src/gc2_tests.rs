@@ -1124,10 +1124,43 @@ fn gc2ac_ranks_the_ring_against_the_full_layers_at_149_50() {
 
 #[test]
 fn gc2ad_soaks_every_kind_alternating_the_ring_and_one_full_layer_reversed() {
-    // Every base scene twice, the ring then one full layer, in that order.
-    assert_eq!(NIGHT_SCENES.len(), 2 * FIX_BASE.len());
-    for (b, pair) in NIGHT_SCENES.chunks(2).enumerate() {
-        assert_eq!(pair, [Scene::Fix(b, 7), Scene::Fix(b, 2)]);
+    // Every base scene: the ring, then one full layer, then (the textured
+    // four only) both at once, in that order.
+    let mut want = std::vec::Vec::new();
+    for b in 0..FIX_BASE.len() {
+        want.push(Scene::Fix(b, 7));
+        want.push(Scene::Fix(b, 2));
+        if b < NIGHT_TEXTURED {
+            want.push(Scene::Fix(b, 8));
+        }
+    }
+    assert_eq!(NIGHT_SCENES.to_vec(), want);
+    assert_eq!(FIXES[8], ring_fix(1));
+    // The textured four are exactly the bases with a textured object: the
+    // ring draws bands there and nowhere else.
+    for (b, &base) in FIX_BASE.iter().enumerate() {
+        let tex = test_tex();
+        let (_, slots) = order_scene(base, tex);
+        let textured = slots
+            .iter()
+            .flatten()
+            .any(|d| matches!(d.paint, Paint::Texture { .. }));
+        assert_eq!(textured, b < NIGHT_TEXTURED, "base {b}");
+        // Both cures at once: one full layer, four ring bands a textured
+        // object, the scene's own objects, all within the renderer's slots
+        // (fix_scene would panic past them).
+        let objects = slots.iter().flatten().count();
+        let rings = slots
+            .iter()
+            .flatten()
+            .filter(|d| matches!(d.paint, Paint::Texture { .. }))
+            .count();
+        let (_, both) = fix_scene(b, 8, tex);
+        assert_eq!(
+            both.iter().flatten().count(),
+            1 + 4 * rings + objects,
+            "base {b}"
+        );
     }
     assert_eq!(
         FIXES[7],
@@ -1174,4 +1207,590 @@ fn gc2ad_soaks_every_kind_alternating_the_ring_and_one_full_layer_reversed() {
     );
     assert_eq!(13_000 * NIGHT_PLL.0 / NIGHT_PLL.1, 149_500);
     assert_eq!(NIGHT_MINUTES, 120);
+}
+
+/// The last-pixel fault's suspects read the right pixels: both halves of
+/// a 16-bit word, a 32-bit picture's word, the picture's edges, a tile's
+/// last pixel and the same place in the tiles around it.
+#[test]
+fn suspects_read_the_right_pixels() {
+    let f16 = PixelFormat::Rgb565;
+    let f32 = PixelFormat::Argb8888;
+    // Each 16-bit pixel holds its own index (low 16 bits).
+    let n = (W * H) as usize;
+    let pic16: std::vec::Vec<u32> = (0..n / 2)
+        .map(|i| ((2 * i as u32) & 0xFFFF) | (((2 * i as u32 + 1) & 0xFFFF) << 16))
+        .collect();
+    let idx = |x: i32, y: i32| (y as u32 * W + x as u32) & 0xFFFF;
+    for (x, y) in [(0, 0), (1, 0), (54, 415), (55, 415), (479, 639), (478, 639)] {
+        assert_eq!(pixel(f16, &pic16, x, y), Some(idx(x, y)), "({x},{y})");
+    }
+    let pic32: std::vec::Vec<u32> = (0..n as u32).collect();
+    assert_eq!(pixel(f32, &pic32, 55, 415), Some(415 * W + 55));
+    assert_eq!(pixel(f32, &pic32, 479, 639), Some(n as u32 - 1));
+    // Off the picture, either side, and past a short buffer.
+    for (x, y) in [(-1, 0), (480, 0), (0, -1), (0, 640)] {
+        assert_eq!(pixel(f16, &pic16, x, y), None, "({x},{y})");
+        assert_eq!(pixel(f32, &pic32, x, y), None, "({x},{y})");
+    }
+    assert_eq!(pixel(f16, &pic16[..10], 20, 0), None);
+    // The word's pair: the other half at 16 bits, itself at 32.
+    assert_eq!(pair(f16, 55, 415), (54, 415));
+    assert_eq!(pair(f16, 54, 415), (55, 415));
+    assert_eq!(pair(f32, 55, 415), (55, 415));
+    // GC2AA's fault at (55, 415): the last place of its 8 x 16 tile; one
+    // further is the next tile's first.
+    assert_eq!(in_tile(55, 415), (7, 15));
+    assert_eq!(in_tile(56, 416), (0, 0));
+    assert_eq!(in_tile(0, 0), (0, 0));
+    assert_eq!(
+        tile_mates(55, 415),
+        [(47, 415), (63, 415), (55, 399), (55, 431)]
+    );
+    // At the picture's corner the mates off it read as none.
+    let m = tile_mates(0, 0);
+    assert_eq!(pixel(f16, &pic16, m[0].0, m[0].1), None);
+    assert_eq!(pixel(f16, &pic16, m[2].0, m[2].1), None);
+    assert_eq!(pixel(f16, &pic16, m[1].0, m[1].1), Some(idx(8, 0)));
+}
+
+/// The poison is a colour no reference holds: either half of a word
+/// rules a candidate out, the first left wins, none left is none.
+#[test]
+fn the_poison_is_in_no_reference() {
+    let c = [0xF81F, 0x801F, 0x07E1];
+    assert_eq!(absent16(&[0x1234_5678], &c), Some(0xF81F));
+    // The low half and the high half each rule one out.
+    assert_eq!(absent16(&[0x0000_F81F], &c), Some(0x801F));
+    assert_eq!(absent16(&[0xF81F_0000, 0x801F_1111], &c), Some(0x07E1));
+    assert_eq!(absent16(&[0xF81F_801F, 0x07E1_0000], &c), None);
+    assert_eq!(absent16(&[], &c), Some(0xF81F));
+    assert_eq!(absent16(&[0], &[]), None);
+    // Every GC2 colour tried is a distinct 16-bit value.
+    let mut p = POISON.to_vec();
+    p.sort_unstable();
+    p.dedup();
+    assert_eq!(p.len(), POISON.len());
+}
+
+/// The four textures at their table places (no memory: the scenes' shape
+/// only).
+fn test_tex() -> Tex {
+    Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    }
+}
+
+/// GC2AE's source search: the nearest place holding a value, ties to the
+/// first in row order, the pixel itself left out, the window's edges and
+/// the picture's both counted right.
+#[test]
+fn the_source_search_finds_the_nearest_and_counts() {
+    let f = PixelFormat::Rgb565;
+    let n = (W * H) as usize;
+    let mut pic = std::vec![0u32; n / 2];
+    let mut put = |x: u32, y: u32, v: u32| {
+        let at = (y * W + x) as usize;
+        let sh = 16 * (at % 2);
+        pic[at / 2] = (pic[at / 2] & !(0xFFFF << sh)) | (v << sh);
+    };
+    put(100, 100, 7); // the pixel itself: never its own source
+    put(100, 84, 7); // one tile above
+    put(104, 100, 7); // nearer: 4 to the right
+    put(100, 140, 7); // the window's edge (ry 40)
+    put(100, 141, 7); // past it
+    assert_eq!(nearest(f, &pic, (100, 100), 7, (24, 40)), (Some((4, 0)), 3));
+    // Equal distances: the first in row order (above before below).
+    let mut pic2 = std::vec![0u32; n / 2];
+    let mut put2 = |x: u32, y: u32, v: u32| {
+        let at = (y * W + x) as usize;
+        let sh = 16 * (at % 2);
+        pic2[at / 2] = (pic2[at / 2] & !(0xFFFF << sh)) | (v << sh);
+    };
+    put2(50, 34, 9);
+    put2(50, 66, 9);
+    assert_eq!(
+        nearest(f, &pic2, (50, 50), 9, (24, 40)),
+        (Some((0, -16)), 2)
+    );
+    // Nothing in the window; at the picture's corner the window is clipped.
+    assert_eq!(nearest(f, &pic2, (400, 400), 9, (24, 40)), (None, 0));
+    assert_eq!(nearest(f, &pic, (0, 0), 7, (24, 40)), (None, 0));
+    assert_eq!(count(f, &pic, 7), 5);
+    assert_eq!(count(f, &pic, 0), W * H - 5);
+}
+
+/// GC2AE's plan: R36's fault generator (FT2, both cures), its clocks as
+/// named, and the margin's seven scenes with one full layer, reversed.
+#[test]
+fn gc2ae_traces_the_both_cures_way_and_checks_the_margin() {
+    assert_eq!(TRACE_SCENES, [NIGHT_SCENES[2]]);
+    assert_eq!(TRACE_SCENES[0], Scene::Fix(0, 8));
+    assert_eq!(TRACE_REVERSED, [(0, REVERSED)]);
+    assert_eq!(TRACE_ROWS, [(0, ROWS)]);
+    for ((m, n), name) in TRACE_STEPS {
+        let khz = 13_000 * m / n;
+        assert_eq!(
+            std::format!("{}.{:02} / 1", khz / 1000, khz % 1000 / 10),
+            name
+        );
+    }
+    for (b, s) in MARGIN_SCENES.iter().enumerate() {
+        assert_eq!(*s, Scene::Fix(b, 2));
+        assert_eq!(MARGIN_WAYS[b], (b, REVERSED));
+    }
+    assert_eq!(MARGIN_SCENES.len(), FIX_BASE.len());
+    // At R36's rate for the fault generator (160 of 3,299), the trace
+    // expects about 29 faults and each condition about 19: enough to tell
+    // a rate halved or zeroed apart from no change.
+    const { assert!(TRACE_RENDERS * 160 / 3_299 >= 20) };
+    const { assert!(TRACE_CONDITION * 160 / 3_299 >= 15) };
+    // The margin at least R36's renders a scene in a tenth of the time.
+    const { assert!(MARGIN_ROUNDS >= 3_299 / 11) };
+}
+
+/// GC2AG's untextured way: every textured object flat, nothing else moved,
+/// no texture left in the scene, and the same objects in the same slots.
+#[test]
+fn untextured_takes_every_texture_out_and_nothing_else() {
+    let (_, slots) = fix_scene(0, 8, test_tex());
+    let flat = untextured(slots);
+    assert!(
+        slots
+            .iter()
+            .flatten()
+            .any(|d| matches!(d.paint, Paint::Texture { .. }))
+    );
+    for (a, b) in slots.iter().zip(flat.iter()) {
+        match (a, b) {
+            (None, None) => {}
+            (Some(a), Some(b)) => {
+                if matches!(a.paint, Paint::Texture { .. }) {
+                    assert_eq!(b.paint, Paint::Flat(UNTEXTURED));
+                    assert_eq!(
+                        Draw {
+                            paint: a.paint,
+                            ..*b
+                        },
+                        *a,
+                        "only the paint changed"
+                    );
+                } else {
+                    assert_eq!(a, b);
+                }
+            }
+            _ => panic!("a slot appeared or went"),
+        }
+    }
+}
+
+/// GC2AH's geometry ways: no texture anywhere, the layers first, the ring
+/// at its reach (16 puts the bands' right edge on the x 456 tile seam, 12
+/// mid-tile at x 452), FT2's other objects last and unchanged.
+#[test]
+fn gc2ah_geometry_ways_are_built_as_named() {
+    let t = test_tex();
+    let (_, base) = order_scene(FIX_BASE[0], t);
+    let others: std::vec::Vec<Draw> = base
+        .iter()
+        .flatten()
+        .filter(|d| !matches!(d.paint, Paint::Texture { .. }))
+        .copied()
+        .collect();
+    for (w, gw) in GEO.iter().enumerate() {
+        let (_, s) = geo_scene(w, t);
+        let s: std::vec::Vec<Draw> = s.iter().flatten().copied().collect();
+        assert!(
+            !s.iter().any(|d| matches!(d.paint, Paint::Texture { .. })),
+            "way {w}"
+        );
+        let bands = if gw.reach == 0 { 0 } else { 4 };
+        assert_eq!(s.len(), gw.layers + bands + others.len(), "way {w}");
+        assert!(
+            s[..gw.layers]
+                .iter()
+                .all(|d| d.paint == Paint::Flat(HIDDEN_LAYER))
+        );
+        assert_eq!(&s[gw.layers + bands..], &others[..], "way {w}");
+    }
+    let edge = |w: usize| {
+        let (_, s) = geo_scene(w, t);
+        let top = s
+            .iter()
+            .flatten()
+            .nth(GEO[w].layers)
+            .copied()
+            .expect("the top band");
+        top.corners
+            .map(|p| p.x / rp_mbx3d_render::SUB)
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+    };
+    assert_eq!(edge(0), 456);
+    assert_eq!(edge(0) % 8, 0, "on a tile seam");
+    assert_eq!(edge(4), 452);
+    assert_ne!(edge(4) % 8, 0, "mid-tile");
+    assert_eq!(GEO_WAYS[..2], [(0, REVERSED), (0, ROWS)]);
+    assert_eq!(
+        GEO[3],
+        GeoWay {
+            layers: 2,
+            reach: 0
+        }
+    );
+    // Each scene is its way, and every way's scene is run.
+    for (i, sc) in GEO_SCENES.iter().enumerate() {
+        assert_eq!(*sc, Scene::Geo(i));
+        assert!(GEO_WAYS.iter().any(|w| w.0 == i), "scene {i} run");
+    }
+    // At GC2AG's untextured rate (17 of 400) way 0 expects about 17 faults
+    // in its rounds: enough to place them; none in way 3 is then telling.
+    const { assert!(GEO_ROUNDS >= 400) };
+}
+
+/// GC2AI's ways: way 0 is GC2AG's untextured fault generator object for
+/// object; each other way moves only the flat quad (or draws it first),
+/// the layer and the ring always where FT2's quad puts them.
+#[test]
+fn gc2ai_moves_only_the_quad() {
+    let t = test_tex();
+    let (_, generator) = fix_scene(0, 8, t);
+    let generator: std::vec::Vec<Draw> = untextured(generator).iter().flatten().copied().collect();
+    let (_, w0) = quad_scene(0, t);
+    let w0: std::vec::Vec<Draw> = w0.iter().flatten().copied().collect();
+    assert_eq!(w0, generator, "way 0 is GC2AG's untextured scene");
+    let is_quad = |d: &Draw| d.paint == Paint::Flat(UNTEXTURED);
+    for (w, qw) in QUAD_WAYS.iter().enumerate() {
+        let (_, s) = quad_scene(w, t);
+        let s: std::vec::Vec<Draw> = s.iter().flatten().copied().collect();
+        assert_eq!(s.len(), w0.len(), "way {w}");
+        let (x0, y0, x1, y1) = qw.rect;
+        let quad = Draw::rect(x0, y0, x1 - x0, y1 - y0, Paint::Flat(UNTEXTURED));
+        assert_eq!(s.iter().filter(|d| is_quad(d)).count(), 1, "way {w}");
+        assert_eq!(s.iter().position(&is_quad) == Some(0), qw.first, "way {w}");
+        assert!(s.contains(&quad), "way {w}");
+        let rest: std::vec::Vec<Draw> = s.iter().filter(|d| !is_quad(d)).copied().collect();
+        let rest0: std::vec::Vec<Draw> = w0.iter().filter(|d| !is_quad(d)).copied().collect();
+        assert_eq!(rest, rest0, "way {w}: only the quad changes");
+    }
+    for (i, sc) in QUAD_SCENES.iter().enumerate() {
+        assert_eq!(*sc, Scene::Quad(i));
+        assert_eq!(QUAD_ORDER[i], (i, REVERSED));
+    }
+    const { assert!(QUAD_ROUNDS >= 400) };
+}
+
+/// GC2AJ's sweep: every one of the 128 places of an 8 x 16 tile is some
+/// rectangle's, every rectangle's four corners sit at its place, the
+/// rectangles keep apart and on the screen, and each scene is the layer,
+/// FT2's Gouraud and the six rectangles; the flat plan ends with GC2AI's
+/// faulting way as its control.
+#[test]
+fn gc2aj_sweeps_every_corner_place_of_a_tile() {
+    let mut seen = [false; 128];
+    for i in 0..CORNER_SCENES_EACH {
+        let mut rects = std::vec::Vec::new();
+        for j in 0..CORNER_RECTS {
+            let ((x0, y0, x1, y1), k) = corner_rect(i, j);
+            seen[k] = true;
+            let (a, c) = ((k % 8) as i32, (k / 8) as i32);
+            for x in [x0, x1] {
+                assert_eq!(x.rem_euclid(8), a, "scene {i} rect {j}");
+            }
+            for y in [y0, y1] {
+                assert_eq!(y.rem_euclid(16), c, "scene {i} rect {j}");
+            }
+            assert!(x0 >= 0 && y0 >= 0 && x1 <= W as i32 && y1 <= H as i32);
+            assert!(x1 - x0 >= 16 && y1 - y0 >= 32, "edges in different tiles");
+            rects.push((x0, y0, x1, y1));
+        }
+        for (p, a) in rects.iter().enumerate() {
+            for b in &rects[p + 1..] {
+                assert!(
+                    a.2 <= b.0 || b.2 <= a.0 || a.3 <= b.1 || b.3 <= a.1,
+                    "scene {i} overlap"
+                );
+            }
+        }
+        for textured in [false, true] {
+            let (_, s) = corner_scene(textured, i, test_tex());
+            let s: std::vec::Vec<Draw> = s.iter().flatten().copied().collect();
+            assert_eq!(s.len(), 2 + CORNER_RECTS);
+            assert_eq!(s[0].paint, Paint::Flat(HIDDEN_LAYER));
+            assert!(matches!(s[1].paint, Paint::Gouraud(_)));
+            assert!(
+                s[2..]
+                    .iter()
+                    .all(|d| matches!(d.paint, Paint::Texture { .. }) == textured)
+            );
+        }
+    }
+    assert!(seen.iter().all(|&b| b), "every place swept");
+    assert_eq!(CORNER_FLAT[CORNER_SCENES_EACH], Scene::Quad(0));
+    assert_eq!(CORNER_FLAT[3], Scene::Corner(false, 3));
+    assert_eq!(CORNER_TEX[3], Scene::Corner(true, 3));
+    assert!(
+        CORNER_WAYS
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, REVERSED))
+    );
+    const { assert!(CORNER_ROUNDS >= 200) };
+    const { assert!(CORNER_SCENES_EACH < 42) };
+}
+
+/// GC2AK's ladder: the u and v sweep is GC2AJ's textured sweep with only
+/// the shift changed; its settings are the named clocks, fastest first,
+/// divide 1 then 149.50 / 2.
+#[test]
+fn gc2ak_sweeps_uv_at_each_setting() {
+    let t = test_tex();
+    for (i, sc) in CORNER_UV.iter().enumerate() {
+        assert_eq!(*sc, Scene::CornerUv(i));
+        let (_, v) = corner_scene(true, i, t);
+        let (_, uv) = corner_uv_scene(i, t);
+        let (v, uv): (std::vec::Vec<Draw>, std::vec::Vec<Draw>) = (
+            v.iter().flatten().copied().collect(),
+            uv.iter().flatten().copied().collect(),
+        );
+        assert_eq!(v.len(), uv.len());
+        assert_eq!(v[..2], uv[..2], "the layer and the Gouraud unchanged");
+        for (a, b) in v[2..].iter().zip(&uv[2..]) {
+            assert_eq!(a.corners, b.corners);
+            let (Paint::Texture { uv: ua, .. }, Paint::Texture { uv: ub, .. }) = (a.paint, b.paint)
+            else {
+                panic!("textured");
+            };
+            // v the same as GC2AJ's; u moved half a texel in.
+            assert_eq!(ua.map(|p| p.1), ub.map(|p| p.1));
+            assert_ne!(ua.map(|p| p.0), ub.map(|p| p.0));
+        }
+    }
+    let mut last = u32::MAX;
+    for ((m, n), div, name) in LADDER_STEPS {
+        let khz = 13_000 * m / n;
+        assert_eq!(
+            std::format!("{}.{:02} / {div}", khz / 1000, khz % 1000 / 10),
+            name
+        );
+        if div == 1 {
+            assert!(khz < last, "fastest first");
+            last = khz;
+        }
+    }
+    assert_eq!(LADDER_STEPS[5].1, 2);
+    const { assert!(LADDER_ROUNDS >= 100) };
+}
+
+/// GC2AL's cures: five rectangles a scene cover all 128 places, the same
+/// rectangles in every cure, only the layers or the blended layer differ,
+/// and every scene fits the renderer's slots.
+#[test]
+fn gc2al_cures_differ_only_in_their_cure() {
+    let t = test_tex();
+    let mut seen = [false; 128];
+    for i in 0..CURE_SCENES {
+        for j in 0..CURE_RECTS {
+            seen[corner_rect_of(CURE_RECTS, i, j).1] = true;
+        }
+        let scene = |c| -> std::vec::Vec<Draw> {
+            let (_, s) = cure_scene(c, i, t);
+            s.iter().flatten().copied().collect()
+        };
+        assert_eq!(CURES, 3, "one layer, two layers, the blended layer");
+        let (one, two, busy) = (scene(0), scene(1), scene(2));
+        assert_eq!(one.len(), 2 + CURE_RECTS);
+        assert_eq!(two.len(), 3 + CURE_RECTS);
+        assert_eq!(busy.len(), 3 + CURE_RECTS);
+        assert!(two.len() <= SLOTS && busy.len() <= SLOTS);
+        assert_eq!(two[0], two[1], "two full layers");
+        assert_eq!(two[1..], one[..], "then the same scene");
+        assert_eq!(busy[..one.len()], one[..], "the same scene first");
+        let last = busy[one.len()];
+        assert_eq!(last.paint, Paint::Flat(INVISIBLE));
+        assert_ne!(last, flat(INVISIBLE, false), "blended, not opaque");
+        assert!(
+            one[2..]
+                .iter()
+                .all(|d| matches!(d.paint, Paint::Texture { .. }))
+        );
+    }
+    assert!(seen.iter().all(|&b| b), "every place swept");
+    for i in 0..CURE_SCENES {
+        assert_eq!(CURE_ONE[i], Scene::Cure(0, i));
+        assert_eq!(CURE_TWO[i], Scene::Cure(1, i));
+        assert_eq!(CURE_BUSY[i], Scene::Cure(2, i));
+        assert_eq!((CURE_REVERSED[i], CURE_ROWS[i]), ((i, REVERSED), (i, ROWS)));
+    }
+    assert_eq!(corner_rect_of(CORNER_RECTS, 3, 4), corner_rect(3, 4));
+    const { assert!(CURE_SCENES < 42 && CURE_ROUNDS >= 100) };
+}
+
+/// GC2AM: the phase scenes move only the one rectangle's u, a step at a
+/// time; the safe ratios' best phases keep every sample at the promised
+/// margin and 5.75:1 can't do better than 1/46 of a texel; the ratio
+/// scenes' rectangles keep apart and on the screen.
+#[test]
+fn gc2am_measures_the_error_and_keeps_the_margin() {
+    let t = test_tex();
+    let u_of = |n: usize| {
+        let (_, s) = phase_scene(n, t);
+        let d = s[2].expect("the rectangle");
+        let Paint::Texture { uv, .. } = d.paint else {
+            panic!("textured");
+        };
+        (d.corners, uv)
+    };
+    let (c0, uv0) = u_of(0);
+    for n in 1..PHASES {
+        let (c, uv) = u_of(n);
+        assert_eq!(c, c0, "the rectangle never moves");
+        for (a, b) in uv0.iter().zip(&uv) {
+            assert_eq!((b.0 - a.0, b.1), (n as i32 * PHASE_STEP, a.1));
+        }
+    }
+    // The sweep spans one period of the pattern at 32 texels on 184 px.
+    let period = UV_ONE / 32 / 23;
+    assert!((PHASES as i32 - 1) * PHASE_STEP >= period);
+    assert_eq!(PHASE_RECT.2 - PHASE_RECT.0, 184);
+    // The best phase's margin, in 65,536ths of a texel, over 200 pixels.
+    let at = |px: i64, tx: i64, p: i64| margin(px, tx, p, 200);
+    let one = 65_536i64;
+    for (px, tx) in RATIOS {
+        let ph = i64::from(best_phase(px, 32)) * 32;
+        assert_eq!(
+            at(i64::from(px), i64::from(tx), ph),
+            one / (2 * i64::from(px)),
+            "{px}:{tx}"
+        );
+    }
+    // At 5.75:1 (23 pixels for 4 texels) no phase beats 1/46 of a texel.
+    let best = (0..one / 23).map(|p| at(23, 4, p)).max().unwrap_or(0);
+    assert!(best <= one / 46 + 1 && best >= one / 46 - 1, "{best}");
+    // The ratio scenes: five rectangles apart, on the screen, at size.
+    for r in 0..RATIOS.len() {
+        for (i, sc) in RATIO_SCENES[r].iter().enumerate() {
+            assert_eq!(*sc, Scene::Ratio(r, i));
+            let (_, s) = ratio_scene(r, i, t);
+            let rects: std::vec::Vec<Draw> = s[2..].iter().flatten().copied().collect();
+            assert_eq!(rects.len(), CURE_RECTS);
+            let (px, tx) = RATIOS[r];
+            for d in &rects {
+                let xs = d.corners.map(|p| p.x / rp_mbx3d_render::SUB);
+                let ys = d.corners.map(|p| p.y / rp_mbx3d_render::SUB);
+                let w = xs.iter().max().unwrap() - xs.iter().min().unwrap();
+                assert_eq!(w, 32 * px / tx);
+                assert!(
+                    *xs.iter().max().unwrap() <= W as i32 && *ys.iter().max().unwrap() <= H as i32
+                );
+            }
+        }
+    }
+    assert!(
+        PHASE_SCENES
+            .iter()
+            .enumerate()
+            .all(|(i, s)| *s == Scene::Phase(i))
+    );
+    assert!(
+        PHASE_WAYS
+            .iter()
+            .enumerate()
+            .all(|(i, w)| *w == (i, REVERSED))
+    );
+    const { assert!(PHASES < 42 && PHASE_ROUNDS >= 3 && RATIO_ROUNDS >= 30) };
+}
+
+/// GC2AN's plan: the untextured fault generator (GC2AG's) in all six
+/// orders, each order once, the baseline (reversed) first.
+#[test]
+fn gc2an_tries_every_order_on_the_fault_generator() {
+    assert_eq!(ORDER_TRY_SCENES, [Scene::Fix(0, 8)]);
+    let orders: std::vec::Vec<u8> = ORDER_TRY.iter().map(|w| w.1).collect();
+    assert_eq!(
+        orders,
+        [
+            REVERSED,
+            ROWS,
+            COLUMNS_REVERSED,
+            COLUMNS,
+            CHECKER,
+            SCRAMBLED
+        ]
+    );
+    assert!(ORDER_TRY.iter().all(|w| w.0 == 0));
+    // At GC2AG's 17 of 400, an order with none in 400 is a real change.
+    const { assert!(ORDER_TRY_ROUNDS >= 400) };
+}
+
+/// GC2AO: the centre phase keeps the most margin any phase can (1/(2p)
+/// texel at p / q pixels a texel), 1:1 needs none, the proof scenes
+/// differ only in the layer and the paint, and the textured ones carry
+/// the centre phase in u and v.
+#[test]
+fn gc2ao_puts_every_sample_clear_and_builds_the_proof() {
+    let one = 65_536i64;
+    let margin = |px: i64, tx: i64, ph: i64| {
+        (0..px)
+            .map(|m| {
+                let f = (ph + (2 * m + 1) * tx * one / (2 * px)).rem_euclid(one);
+                f.min(one - f)
+            })
+            .min()
+            .unwrap_or(one)
+    };
+    // 184 pixels for 32 texels: 23 / 4, the best is 1/46 texel.
+    let u = best_centre_phase(184, 32);
+    assert!(
+        (margin(184, 32, u) - one / 46).abs() <= 64,
+        "{}",
+        margin(184, 32, u)
+    );
+    // 160 pixels for 32: 5 / 1, the best is 1/10 texel.
+    let v = best_centre_phase(160, 32);
+    assert!((margin(160, 32, v) - one / 10).abs() <= 64);
+    // 1:1 samples sit at texel centres with no phase; 1:2 needs half.
+    assert_eq!(best_centre_phase(32, 32), 0);
+    assert_eq!(margin(32, 32, 0), one / 2);
+    assert_eq!(margin(16, 32, best_centre_phase(16, 32)), one / 2);
+    let t = test_tex();
+    for i in 0..CORNER_SCENES_EACH {
+        let get = |layer, tex| -> std::vec::Vec<Draw> {
+            let (_, s) = proof_scene(layer, tex, i, t);
+            s.iter().flatten().copied().collect()
+        };
+        let (fl, tl, fb, tb) = (
+            get(true, false),
+            get(true, true),
+            get(false, false),
+            get(false, true),
+        );
+        assert_eq!(fl.len(), 2 + CORNER_RECTS);
+        assert_eq!(fb.len(), 1 + CORNER_RECTS);
+        assert_eq!(fl[0].paint, Paint::Flat(HIDDEN_LAYER));
+        assert_eq!(fl[1..], fb[..], "the layer the only difference");
+        assert_eq!(tl[1..], tb[..]);
+        for (a, b) in fl[2..].iter().zip(&tl[2..]) {
+            assert_eq!(a.corners, b.corners);
+            assert_eq!(a.paint, Paint::Flat(UNTEXTURED));
+            let Paint::Texture { uv, .. } = b.paint else {
+                panic!("textured");
+            };
+            assert_eq!(uv[0], ((u * 2048 / one) as i32, (v * 2048 / one) as i32));
+        }
+        assert_eq!(PROOF_TEX_LAYER[i], Scene::Proof(true, true, i));
+        assert_eq!(PROOF_FLAT_BARE[i], Scene::Proof(false, false, i));
+        assert_eq!(
+            (PROOF_CHECKER[i], PROOF_INTERLEAVED[i]),
+            ((i, CHECKER), (i, INTERLEAVED))
+        );
+        assert_eq!(PROOF_COLUMNS[i], (i, COLUMNS));
+    }
+    assert_eq!(PROOF_FLAT_LAYER[0], Scene::Proof(true, false, 0));
+    assert_eq!(PROOF_TEX_BARE[0], Scene::Proof(false, true, 0));
+    const { assert!(PROOF_ROUNDS >= 100) };
 }

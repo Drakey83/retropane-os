@@ -529,6 +529,28 @@ pub enum Scene {
     /// Run GC2Z's ways: [`FIX_BASE`]'s scene with [`FIXES`]' fix (see
     /// [`fix_scene`]; only through [`order_scene_wide`]).
     Fix(usize, usize),
+    /// Run GC2AH's geometry: [`GEO`]'s way (see [`geo_scene`]; only
+    /// through [`order_scene_wide`]).
+    Geo(usize),
+    /// Run GC2AI's quad ways: [`QUAD_WAYS`]' way (see [`quad_scene`]; only
+    /// through [`order_scene_wide`]).
+    Quad(usize),
+    /// Run GC2AJ's corner sweep: textured or flat, scene `i` (see
+    /// [`corner_scene`]; only through [`order_scene_wide`]).
+    Corner(bool, usize),
+    /// Run GC2AK's textured sweep with the u and v shift (see
+    /// [`corner_uv_scene`]; only through [`order_scene_wide`]).
+    CornerUv(usize),
+    /// Run GC2AL's cure `c`, scene `i` (see [`cure_scene`]; only through
+    /// [`order_scene_wide`]).
+    Cure(usize, usize),
+    /// Run GC2AM's phase step `n` (see [`phase_scene`]).
+    Phase(usize),
+    /// Run GC2AM's ratio `r`, scene `i` (see [`ratio_scene`]).
+    Ratio(usize, usize),
+    /// Run GC2AO's proof: the layer or not, textured or flat, scene `i`
+    /// (see [`proof_scene`]).
+    Proof(bool, bool, usize),
 }
 
 /// The objects a scene holds through [`order_scene_wide`]: a scene's own
@@ -800,31 +822,81 @@ pub const RING_ROUNDS: u32 = 500;
 
 /// Run GC2AD, reminder R36 (the owner, 2026-10-25: "Build R36 as the 2-hour
 /// soak at 149.50 / 1 over every 16-bit kind and GC2K's worst, alternating
-/// the ring reversed and one full layer reversed"): each of [`FIX_BASE`]'s
-/// seven scenes with the ring (fix 7), then with one full hidden layer
-/// (fix 2), the clamped v shift in both; every way reversed, taken in turn,
-/// so the two cures alternate render by render. The ring rings textured
-/// objects only: kinds 0, 1 and 7 have none, so their ring ways are drawn
-/// with no cure (GC2AB: 0 of 800 each so at 149.50).
-pub const NIGHT_SCENES: [Scene; 14] = {
-    let mut s = [Scene::Fix(0, 0); 14];
-    let mut b = 0;
+/// the ring reversed and one full layer reversed"; then "combine everything
+/// for the soak"): each of [`FIX_BASE`]'s seven scenes with the ring (fix
+/// 7), then with one full hidden layer (fix 2), and the four textured ones
+/// (FT2, GC2K's worst, kinds 5 and 6) with both at once (fix 8, GC2AC: 0 of
+/// 500 reversed), the clamped v shift in all; every way reversed, taken in
+/// turn, so the cures alternate render by render under the same heat. The
+/// ring rings textured objects only: kinds 0, 1 and 7 have none, so their
+/// ring ways are drawn with no cure (GC2AB: 0 of 800 each so at 149.50) and
+/// both at once would be their full-layer way again.
+pub const NIGHT_SCENES: [Scene; 18] = {
+    let mut s = [Scene::Fix(0, 0); 18];
+    let (mut b, mut n) = (0, 0);
     while b < 7 {
-        s[2 * b] = Scene::Fix(b, 7);
-        s[2 * b + 1] = Scene::Fix(b, 2);
+        s[n] = Scene::Fix(b, 7);
+        s[n + 1] = Scene::Fix(b, 2);
+        n += 2;
+        if b < NIGHT_TEXTURED {
+            s[n] = Scene::Fix(b, 8);
+            n += 1;
+        }
         b += 1;
     }
     s
 };
-pub const NIGHT_WAYS: [(usize, u8); 14] = {
-    let mut w = [(0, REVERSED); 14];
+/// [`FIX_BASE`]'s first four scenes have textured objects (the ring's
+/// work); the last three none.
+pub const NIGHT_TEXTURED: usize = 4;
+pub const NIGHT_WAYS: [(usize, u8); 18] = {
+    let mut w = [(0, REVERSED); 18];
     let mut i = 0;
-    while i < 14 {
+    while i < 18 {
         w[i] = (i, REVERSED);
         i += 1;
     }
     w
 };
+/// Run GC2AE, reminder R69 (the owner, 2026-10-25: "do everything that
+/// you recommend to give us the clearest picture"): R36's fault generator,
+/// FT2 with the ring and one full layer at once (160 of 3,299 wrong at
+/// 149.50 / 1 reversed), traced and varied.
+pub const TRACE_SCENES: [Scene; 1] = [Scene::Fix(0, 8)];
+pub const TRACE_REVERSED: [(usize, u8); 1] = [(0, REVERSED)];
+pub const TRACE_ROWS: [(usize, u8); 1] = [(0, ROWS)];
+/// Its clocks below 149.50 / 1 (13 MHz x m / n): 146.25, 139.75, 133.25.
+pub const TRACE_STEPS: [((u32, u32), &str); 3] = [
+    ((45, 4), "146.25 / 1"),
+    ((43, 4), "139.75 / 1"),
+    ((41, 4), "133.25 / 1"),
+];
+/// R36's winning cure, one full hidden layer reversed with the clamped v
+/// shift, on all seven scenes at 146.25 / 1: the step the owner's X51v
+/// would run under ADR-0035 rule 1 (one below its fastest pass).
+pub const MARGIN_SCENES: [Scene; 7] = {
+    let mut s = [Scene::Fix(0, 2); 7];
+    let mut b = 0;
+    while b < 7 {
+        s[b] = Scene::Fix(b, 2);
+        b += 1;
+    }
+    s
+};
+pub const MARGIN_WAYS: [(usize, u8); 7] = {
+    let mut w = [(0, REVERSED); 7];
+    let mut i = 0;
+    while i < 7 {
+        w[i] = (i, REVERSED);
+        i += 1;
+    }
+    w
+};
+/// Renders a part: the trace, each condition, the margin's rounds.
+pub const TRACE_RENDERS: u32 = 600;
+pub const TRACE_CONDITION: u32 = 400;
+pub const MARGIN_ROUNDS: u32 = 300;
+
 /// 149.50 / 1 for two hours (the owner asleep).
 pub const NIGHT_PLL: (u32, u32) = (23, 2);
 pub const NIGHT_MINUTES: u32 = 120;
@@ -871,6 +943,14 @@ pub const RING_REACH: i32 = 16;
 /// the side bands stop where they start, so no tile gets two.
 #[must_use]
 pub fn ring(d: &Draw) -> [Draw; 4] {
+    ring_with(d, RING_REACH)
+}
+
+/// [`ring`] with its bands `reach` pixels each side of the edges (run
+/// GC2AH: 12 puts the bands' outer edges mid-tile, 16 on the tile seams for
+/// FT2's quad).
+#[must_use]
+pub fn ring_with(d: &Draw, reach: i32) -> [Draw; 4] {
     use rp_mbx3d_render::SUB;
     let span = |v: [i32; 4]| {
         v.iter()
@@ -884,13 +964,13 @@ pub fn ring(d: &Draw) -> [Draw; 4] {
         let (r, b) = (r.clamp(l, w), b.clamp(t, h));
         Draw::rect(l, t, r - l, b - t, Paint::Flat(HIDDEN_LAYER))
     };
-    let (l, r) = (x0 - RING_REACH, x1 + RING_REACH);
-    let (top, bottom) = (y0 + RING_REACH, y1 - RING_REACH);
+    let (l, r) = (x0 - reach, x1 + reach);
+    let (top, bottom) = (y0 + reach, y1 - reach);
     [
-        band(l, y0 - RING_REACH, r, top),
-        band(l, bottom, r, y1 + RING_REACH),
-        band(l, top, x0 + RING_REACH, bottom),
-        band(x1 - RING_REACH, top, r, bottom),
+        band(l, y0 - reach, r, top),
+        band(l, bottom, r, y1 + reach),
+        band(l, top, x0 + reach, bottom),
+        band(x1 - reach, top, r, bottom),
     ]
 }
 
@@ -934,6 +1014,30 @@ pub fn fix_scene(b: usize, f: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
 pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     if let Scene::Fix(b, f) = s {
         return fix_scene(b, f, t);
+    }
+    if let Scene::Geo(w) = s {
+        return geo_scene(w, t);
+    }
+    if let Scene::Quad(w) = s {
+        return quad_scene(w, t);
+    }
+    if let Scene::Corner(textured, i) = s {
+        return corner_scene(textured, i, t);
+    }
+    if let Scene::CornerUv(i) = s {
+        return corner_uv_scene(i, t);
+    }
+    if let Scene::Cure(c, i) = s {
+        return cure_scene(c, i, t);
+    }
+    if let Scene::Phase(n) = s {
+        return phase_scene(n, t);
+    }
+    if let Scene::Ratio(r, i) = s {
+        return ratio_scene(r, i, t);
+    }
+    if let Scene::Proof(layer, textured, i) = s {
+        return proof_scene(layer, textured, i, t);
     }
     let (bg, slots) = order_scene(s, t);
     let mut out = [None; SLOTS];
@@ -1190,6 +1294,31 @@ pub const ORDER_SCENES: [Scene; 42] = {
 pub const ROWS: u8 = 0;
 pub const REVERSED: u8 = 1;
 pub const COLUMNS_REVERSED: u8 = 2;
+/// Run GC2AN's orders (rp-mbx3d-render's `TileOrder::Columns`, `Checker`,
+/// `Scrambled`).
+pub const COLUMNS: u8 = 3;
+pub const CHECKER: u8 = 4;
+pub const SCRAMBLED: u8 = 5;
+/// Run GC2AO's order (`TileOrder::Interleaved`).
+pub const INTERLEAVED: u8 = 6;
+
+/// Run GC2AN (the owner, 2026-10-26: "i want to go for broke, i wont let go
+/// of this till we crack 150", then "150 fast lossless"): GC2AG's
+/// untextured fault generator (FT2's scene with the ring over one full
+/// layer, the quad flat: 17 of 400 wrong at 149.50 / 1 reversed, the tile
+/// race alone) in six tile orders. GC2AL: rows 120 against reversed 20 of
+/// 2,200, so the order matters; the new orders keep tiles drawn one after
+/// another apart in memory.
+pub const ORDER_TRY: [(usize, u8); 6] = [
+    (0, REVERSED),
+    (0, ROWS),
+    (0, COLUMNS_REVERSED),
+    (0, COLUMNS),
+    (0, CHECKER),
+    (0, SCRAMBLED),
+];
+pub const ORDER_TRY_SCENES: [Scene; 1] = [Scene::Fix(0, 8)];
+pub const ORDER_TRY_ROUNDS: u32 = 400;
 
 /// Run GC2O's ways: (an [`ORDER_SCENES`] index, its tile order): the first
 /// ten scenes in all three orders, the sweeps' 32 in the two new ones (row
@@ -1361,8 +1490,17 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
             (bg, slots)
         }
         Scene::Edge(w) => edge_scene(w, t),
-        // Fixes take more than three slots: [`order_scene_wide`] only.
-        Scene::Fix(..) => (BLACK, [None, None, None]),
+        // Fixes and geometry ways take more than three slots:
+        // [`order_scene_wide`] only.
+        Scene::Fix(..)
+        | Scene::Geo(_)
+        | Scene::Quad(_)
+        | Scene::Corner(..)
+        | Scene::CornerUv(_)
+        | Scene::Cure(..)
+        | Scene::Phase(_)
+        | Scene::Ratio(..)
+        | Scene::Proof(..) => (BLACK, [None, None, None]),
         Scene::Cured(i) => match CURED_BASE[i] {
             Scene::Cured(_) => (BLACK, [None, None, None]),
             base => cure(order_scene(base, t)).unwrap_or((BLACK, [None, None, None])),
@@ -1412,6 +1550,13 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         Scene::Hidden(false) => patch_corner(0),
         // The quad's top-left corner: the fault's row against the edge.
         Scene::Edge(w) => (FT2_QUAD.0, EDGE_WAYS[w].y),
+        Scene::Geo(_) | Scene::Quad(_) => patch_corner(0),
+        Scene::Corner(..)
+        | Scene::CornerUv(_)
+        | Scene::Cure(..)
+        | Scene::Ratio(..)
+        | Scene::Proof(..) => (0, 0),
+        Scene::Phase(_) => (PHASE_RECT.0, PHASE_RECT.1),
         Scene::Fix(b, _) => match FIX_BASE[b] {
             Scene::Kind(FT2) => patch_corner(0),
             Scene::Sweep(w) => SWEEP[w].corner(),
@@ -1564,6 +1709,809 @@ impl Tally {
             }
         }
     }
+}
+
+/// The 3D core's tile: 8 x 16 pixels (`rp-mbx3d`'s `TILE_W`, `TILE_H`;
+/// the image holds the two equal at build time).
+pub const TILE_W: i32 = 8;
+pub const TILE_H: i32 = 16;
+
+/// Pixel (x, y) of a 480 x 640 picture in `f` held as words (the 16-bit
+/// formats two a word, the left one in the low half); `None` off the
+/// picture or past `pic`.
+#[must_use]
+pub fn pixel(f: PixelFormat, pic: &[u32], x: i32, y: i32) -> Option<u32> {
+    if !(0..W as i32).contains(&x) || !(0..H as i32).contains(&y) {
+        return None;
+    }
+    let at = y as usize * W as usize + x as usize;
+    if f.bytes() == 4 {
+        pic.get(at).copied()
+    } else {
+        pic.get(at / 2).map(|w| w >> (16 * (at % 2)) & 0xFFFF)
+    }
+}
+
+/// The pixel sharing (x, y)'s word in a 16-bit picture (its pair), or
+/// (x, y) itself in a 32-bit one.
+#[must_use]
+pub const fn pair(f: PixelFormat, x: i32, y: i32) -> (i32, i32) {
+    if f.bytes() == 4 { (x, y) } else { (x ^ 1, y) }
+}
+
+/// (x, y)'s place in its tile: column and row, (7, 15) the pixel a tile
+/// writes out last.
+#[must_use]
+pub const fn in_tile(x: i32, y: i32) -> (i32, i32) {
+    (x.rem_euclid(TILE_W), y.rem_euclid(TILE_H))
+}
+
+/// The same place in the four tiles around (x, y)'s: left, right, above,
+/// below. A wrong pixel equal to one of these in the reference is a
+/// neighbouring tile's pixel left in the core's tile buffer (the last-pixel
+/// fault's candidate (b), 2700g.md "The last-pixel fault's candidates").
+#[must_use]
+pub const fn tile_mates(x: i32, y: i32) -> [(i32, i32); 4] {
+    [
+        (x - TILE_W, y),
+        (x + TILE_W, y),
+        (x, y - TILE_H),
+        (x, y + TILE_H),
+    ]
+}
+
+/// Where value `v` lies in picture `pic` nearest (x, y), within `r` (dx,
+/// dy) either side, (x, y) itself left out: the offset (fewest steps, then
+/// the first in row order) and how many places in the window hold it. Run
+/// GC2AE: where a wrong pixel's colour came from.
+#[must_use]
+pub fn nearest(
+    f: PixelFormat,
+    pic: &[u32],
+    (x, y): (i32, i32),
+    v: u32,
+    (rx, ry): (i32, i32),
+) -> (Option<(i32, i32)>, u32) {
+    let (mut best, mut n) = (None::<(i32, i32)>, 0);
+    for dy in -ry..=ry {
+        for dx in -rx..=rx {
+            if (dx, dy) == (0, 0) || pixel(f, pic, x + dx, y + dy) != Some(v) {
+                continue;
+            }
+            n += 1;
+            let d = dx.abs() + dy.abs();
+            if best.is_none_or(|(bx, by)| d < bx.abs() + by.abs()) {
+                best = Some((dx, dy));
+            }
+        }
+    }
+    (best, n)
+}
+
+/// How many pixels of `pic` hold `v`.
+#[must_use]
+pub fn count(f: PixelFormat, pic: &[u32], v: u32) -> u32 {
+    let mut n = 0;
+    for y in 0..H as i32 {
+        for x in 0..W as i32 {
+            n += u32::from(pixel(f, pic, x, y) == Some(v));
+        }
+    }
+    n
+}
+
+/// Run GC2AG's untextured way: every textured object of `slots` drawn in
+/// one flat opaque colour (mid grey) instead, the rest as they are, so the
+/// 3D core fetches no texture.
+#[must_use]
+pub fn untextured<const N: usize>(slots: [Option<Draw>; N]) -> [Option<Draw>; N] {
+    slots.map(|d| {
+        d.map(|d| match d.paint {
+            Paint::Texture { .. } => Draw {
+                paint: Paint::Flat(UNTEXTURED),
+                ..d
+            },
+            _ => d,
+        })
+    })
+}
+
+/// [`untextured`]'s colour (mid grey).
+pub const UNTEXTURED: u32 = 0xFF80_8080;
+
+/// One of run GC2AH's geometry ways: FT2's scene with its textured quad
+/// taken out (no texture: GC2AG's fault stayed without one), `layers` full
+/// hidden layers first, then the ring of the quad's outline `reach` pixels
+/// each side (0: none), then FT2's other objects (the Gouraud background
+/// over them all, so none is seen).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeoWay {
+    pub layers: usize,
+    pub reach: i32,
+}
+
+/// Run GC2AH (the owner, 2026-10-26: "Build the geometry test next (which
+/// stacked shapes in one tile trigger it, and why the full layer alone
+/// stays clean)"). The hypothesis from GC2AE-GC2AG: the core shades a
+/// tile's last rows wrong when the tile it draws follows one with fewer
+/// objects (the faults sat in the bands' first tile column in draw order:
+/// x 448-455 reversed, x 24-31 in rows), and one full layer alone is clean
+/// because every tile then holds the same count. Its predictions: way 0
+/// faults at x 448-455, in rows order at x 24-31; way 1 (a step of one) no
+/// more than way 0; way 2 (a step of one over two layers) as way 0 or more;
+/// way 3 (two layers, no step) none; way 4 (the band edges mid-tile: a
+/// partly covered tile between) tells whether a seam-aligned edge matters.
+pub const GEO: [GeoWay; 5] = [
+    GeoWay {
+        layers: 1,
+        reach: RING_REACH,
+    },
+    GeoWay {
+        layers: 0,
+        reach: RING_REACH,
+    },
+    GeoWay {
+        layers: 2,
+        reach: RING_REACH,
+    },
+    GeoWay {
+        layers: 2,
+        reach: 0,
+    },
+    GeoWay {
+        layers: 1,
+        reach: 12,
+    },
+];
+pub const GEO_SCENES: [Scene; 5] = [
+    Scene::Geo(0),
+    Scene::Geo(1),
+    Scene::Geo(2),
+    Scene::Geo(3),
+    Scene::Geo(4),
+];
+/// Way 0 in both orders (the placement prediction), the rest reversed.
+pub const GEO_WAYS: [(usize, u8); 6] = [
+    (0, REVERSED),
+    (0, ROWS),
+    (1, REVERSED),
+    (2, REVERSED),
+    (3, REVERSED),
+    (4, REVERSED),
+];
+pub const GEO_ROUNDS: u32 = 400;
+
+/// [`GEO`]'s way `w` (see [`GeoWay`]).
+#[must_use]
+pub fn geo_scene(w: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let gw = GEO[w];
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    for _ in 0..gw.layers {
+        out[n] = Some(flat(HIDDEN_LAYER, false));
+        n += 1;
+    }
+    for d in slots.iter().flatten() {
+        if gw.reach != 0 && matches!(d.paint, Paint::Texture { .. }) {
+            for band in ring_with(d, gw.reach) {
+                out[n] = Some(band);
+                n += 1;
+            }
+        }
+    }
+    for d in slots.into_iter().flatten() {
+        if !matches!(d.paint, Paint::Texture { .. }) {
+            out[n] = Some(d);
+            n += 1;
+        }
+    }
+    (bg, out)
+}
+
+/// One of run GC2AI's ways: GC2AG's untextured fault generator (one full
+/// layer, then the ring of FT2's quad at reach 16, then FT2's Gouraud
+/// background, then the quad flat grey on top) with the flat quad at
+/// `rect` (x0, y0, x1, y1, pixels) instead of FT2's (40, 40, 440, 600); the
+/// ring stays where FT2's quad puts it. `first`: the quad drawn before
+/// everything instead (under the Gouraud background, so never seen).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuadWay {
+    pub rect: (i32, i32, i32, i32),
+    pub first: bool,
+}
+
+/// Run GC2AI (the owner, 2026-10-26: "Build the next test: the rectangle
+/// back, flat, its edges and corners moved one at a time against the
+/// stacked tile"). GC2AH: with FT2's quad taken out the fault went (0 of
+/// 2,400); GC2AG's untextured way, the quad flat, had 17 of 400 at x
+/// 449-455, y 45-47 (the tile x 448-455, y 32-47: the ring's top band and
+/// the layer, no part of the quad). Each way moves one of the quad's edges
+/// or its order: (0) as GC2AG; (1) its top edge on the tile seam y 32; (2)
+/// its top edge at y 44, mid-tile; (3) its right edge at x 436, mid-tile;
+/// (4) at x 448, the seam beside the fault's column; (5) at x 456, over the
+/// fault's column; (6) at x 400, far from it; (7) drawn first, hidden.
+pub const QUAD_WAYS: [QuadWay; 8] = [
+    QuadWay {
+        rect: (40, 40, 440, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 32, 440, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 44, 440, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 436, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 448, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 456, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 400, 600),
+        first: false,
+    },
+    QuadWay {
+        rect: (40, 40, 440, 600),
+        first: true,
+    },
+];
+pub const QUAD_SCENES: [Scene; 8] = {
+    let mut s = [Scene::Quad(0); 8];
+    let mut i = 0;
+    while i < 8 {
+        s[i] = Scene::Quad(i);
+        i += 1;
+    }
+    s
+};
+pub const QUAD_ORDER: [(usize, u8); 8] = {
+    let mut w = [(0, REVERSED); 8];
+    let mut i = 0;
+    while i < 8 {
+        w[i] = (i, REVERSED);
+        i += 1;
+    }
+    w
+};
+pub const QUAD_ROUNDS: u32 = 400;
+
+/// [`QUAD_WAYS`]' way `w` (see [`QuadWay`]).
+#[must_use]
+pub fn quad_scene(w: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let qw = QUAD_WAYS[w];
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let (x0, y0, x1, y1) = qw.rect;
+    let quad = Draw::rect(x0, y0, x1 - x0, y1 - y0, Paint::Flat(UNTEXTURED));
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    if qw.first {
+        out[n] = Some(quad);
+        n += 1;
+    }
+    out[n] = Some(flat(HIDDEN_LAYER, false));
+    n += 1;
+    for d in slots.iter().flatten() {
+        if matches!(d.paint, Paint::Texture { .. }) {
+            for band in ring(d) {
+                out[n] = Some(band);
+                n += 1;
+            }
+        }
+    }
+    for d in slots.into_iter().flatten() {
+        if matches!(d.paint, Paint::Texture { .. }) {
+            if !qw.first {
+                out[n] = Some(quad);
+                n += 1;
+            }
+        } else {
+            out[n] = Some(d);
+            n += 1;
+        }
+    }
+    (bg, out)
+}
+
+/// Run GC2AJ (the owner, 2026-10-26: "Build the corner sweep: the
+/// rectangle's corner moved over every position around a tile, with one
+/// full layer alone (the recommended fix), and run it"). GC2AI tied the
+/// fault to exact corner places, so the cure's clean renders over seven
+/// scenes don't cover every geometry. Each scene: one full hidden layer,
+/// FT2's Gouraud background, then [`CORNER_RECTS`] rectangles (flat grey,
+/// or FT2's 8888 texture with the clamped v shift) in a 2 x 3 grid, every
+/// corner of rectangle `k` at the same place in its tile: x offset `k % 8`,
+/// y offset `k / 8` (all 128 places of an 8 x 16 tile over the scenes).
+pub const CORNER_RECTS: usize = 6;
+/// Scenes for the 128 places, six a scene (the last repeats the first
+/// places).
+pub const CORNER_SCENES_EACH: usize = 128_usize.div_ceil(CORNER_RECTS);
+/// Rounds a scene: 200 (a place faulting 1.5% of renders shows with ~95%).
+pub const CORNER_ROUNDS: u32 = 200;
+
+/// Rectangle `j` of corner scene `i`: (x0, y0, x1, y1) pixels, and its
+/// place's index `k` (0..128).
+#[must_use]
+pub const fn corner_rect(i: usize, j: usize) -> ((i32, i32, i32, i32), usize) {
+    // Cells of 240 x 208 pixels, their origins on tile seams (x a multiple
+    // of 8, y of 16), so each edge's offset into its tile is `a` or `c`.
+    corner_rect_of(CORNER_RECTS, i, j)
+}
+
+/// Corner scene `i`, flat or textured (see [`CORNER_RECTS`]).
+#[must_use]
+pub fn corner_scene(textured: bool, i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    corner_scene_with(textured, i, t, TexFix::ClampV)
+}
+
+/// Corner scene `i`, textured, the clamped texture shifted half a texel in
+/// u and v (run GC2AK).
+#[must_use]
+pub fn corner_uv_scene(i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    corner_scene_with(true, i, t, TexFix::ClampUv)
+}
+
+fn corner_scene_with(
+    textured: bool,
+    i: usize,
+    t: Tex,
+    shift: TexFix,
+) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    out[0] = Some(flat(HIDDEN_LAYER, false));
+    let mut n = 1;
+    for d in slots.iter().flatten() {
+        if !matches!(d.paint, Paint::Texture { .. }) {
+            out[n] = Some(*d);
+            n += 1;
+        }
+    }
+    for j in 0..CORNER_RECTS {
+        let ((x0, y0, x1, y1), _) = corner_rect(i, j);
+        let paint = if textured {
+            Paint::texture(t.t8888)
+        } else {
+            Paint::Flat(UNTEXTURED)
+        };
+        let d = Draw::rect(x0, y0, x1 - x0, y1 - y0, paint);
+        out[n] = Some(shift_texture(d, shift));
+        n += 1;
+    }
+    (bg, out)
+}
+
+/// GC2AJ's flat plan: the corner scenes, then GC2AI's faulting way (the
+/// ring over the layer, the quad's corner at x 440, y 40) as the control
+/// that the run can see the fault.
+pub const CORNER_FLAT: [Scene; CORNER_SCENES_EACH + 1] = {
+    let mut s = [Scene::Quad(0); CORNER_SCENES_EACH + 1];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::Corner(false, i);
+        i += 1;
+    }
+    s
+};
+pub const CORNER_TEX: [Scene; CORNER_SCENES_EACH] = {
+    let mut s = [Scene::Corner(true, 0); CORNER_SCENES_EACH];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::Corner(true, i);
+        i += 1;
+    }
+    s
+};
+pub const CORNER_WAYS: [(usize, u8); CORNER_SCENES_EACH + 1] = {
+    let mut w = [(0, REVERSED); CORNER_SCENES_EACH + 1];
+    let mut i = 0;
+    while i <= CORNER_SCENES_EACH {
+        w[i] = (i, REVERSED);
+        i += 1;
+    }
+    w
+};
+
+/// Run GC2AK (the owner, 2026-10-26: "Build the sweep with the u and v
+/// texture fix, run at each lower divide-1 step and at 149.50 / 2, to find
+/// the fastest setting where every corner position draws right"): GC2AJ's
+/// textured sweep with the clamped texture shifted half a texel in u and v
+/// (GC2AJ's every-render fault was the u counterpart of the v fault).
+pub const CORNER_UV: [Scene; CORNER_SCENES_EACH] = {
+    let mut s = [Scene::CornerUv(0); CORNER_SCENES_EACH];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::CornerUv(i);
+        i += 1;
+    }
+    s
+};
+/// GC2AK's settings, fastest first: 13 MHz x m / n, the cores' divide.
+pub const LADDER_STEPS: [((u32, u32), u32, &str); 6] = [
+    ((23, 2), 1, "149.50 / 1"),
+    ((43, 4), 1, "139.75 / 1"),
+    ((41, 4), 1, "133.25 / 1"),
+    ((27, 3), 1, "117.00 / 1"),
+    ((25, 3), 1, "108.33 / 1"),
+    ((23, 2), 2, "149.50 / 2"),
+];
+/// Rounds a scene a setting: 100 (a corner place faulting 3% of renders
+/// shows with ~95%; the step that passes gets its own soak).
+pub const LADDER_ROUNDS: u32 = 100;
+
+/// Run GC2AL (the owner, 2026-10-26: "Keep working on the fast mode: find
+/// what cures the remaining textured faults"). GC2AK left textured faults
+/// at every divide-1 step: one pixel in a tile's last rows beside a
+/// rectangle's corner, as GC2AI. GC2T's reading: the core starts the next
+/// tile in its on-chip buffer before the last rows are written out; every
+/// cure here gives a tile more to do first, or changes which tile follows.
+/// Five rectangles a scene (two hidden layers or an extra blended layer
+/// take the slots of the sixth), all of GC2AK's u and v textured kind.
+pub const CURE_RECTS: usize = 5;
+pub const CURE_SCENES: usize = 128_usize.div_ceil(CURE_RECTS);
+/// GC2AL's cures: (0) one full layer (GC2AK's, the baseline); (1) two full
+/// layers; (2) one full layer and [`INVISIBLE`] blended over everything.
+/// Tile order is the way's (reversed, or rows for the baseline's twin).
+#[cfg(test)]
+pub const CURES: usize = 3;
+/// Fully transparent black: blended over every tile, nothing seen.
+pub const INVISIBLE: u32 = 0x0000_0000;
+pub const CURE_ROUNDS: u32 = 100;
+
+/// Rectangle `j` of a scene of `per` (see [`corner_rect`]).
+#[must_use]
+pub const fn corner_rect_of(per: usize, i: usize, j: usize) -> ((i32, i32, i32, i32), usize) {
+    let k = (per * i + j) % 128;
+    let (a, c) = ((k % 8) as i32, (k / 8) as i32);
+    let (cx, cy) = ((j % 2) as i32 * 240, (j / 2) as i32 * 208);
+    ((cx + 16 + a, cy + 16 + c, cx + 200 + a, cy + 176 + c), k)
+}
+
+/// GC2AL's scene `i` with cure `cure` (see [`CURES`]).
+#[must_use]
+pub fn cure_scene(cure: usize, i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    for _ in 0..if cure == 1 { 2 } else { 1 } {
+        out[n] = Some(flat(HIDDEN_LAYER, false));
+        n += 1;
+    }
+    for d in slots.iter().flatten() {
+        if !matches!(d.paint, Paint::Texture { .. }) {
+            out[n] = Some(*d);
+            n += 1;
+        }
+    }
+    for j in 0..CURE_RECTS {
+        let ((x0, y0, x1, y1), _) = corner_rect_of(CURE_RECTS, i, j);
+        let d = Draw::rect(x0, y0, x1 - x0, y1 - y0, Paint::texture(t.t8888));
+        out[n] = Some(shift_texture(d, TexFix::ClampUv));
+        n += 1;
+    }
+    if cure == 2 {
+        out[n] = Some(flat(INVISIBLE, true));
+    }
+    (bg, out)
+}
+
+const fn cure_set(cure: usize) -> [Scene; CURE_SCENES] {
+    let mut s = [Scene::Cure(0, 0); CURE_SCENES];
+    let mut i = 0;
+    while i < CURE_SCENES {
+        s[i] = Scene::Cure(cure, i);
+        i += 1;
+    }
+    s
+}
+pub const CURE_ONE: [Scene; CURE_SCENES] = cure_set(0);
+pub const CURE_TWO: [Scene; CURE_SCENES] = cure_set(1);
+pub const CURE_BUSY: [Scene; CURE_SCENES] = cure_set(2);
+const fn cure_ways(o: u8) -> [(usize, u8); CURE_SCENES] {
+    let mut w = [(0, REVERSED); CURE_SCENES];
+    let mut i = 0;
+    while i < CURE_SCENES {
+        w[i] = (i, o);
+        i += 1;
+    }
+    w
+}
+pub const CURE_REVERSED: [(usize, u8); CURE_SCENES] = cure_ways(REVERSED);
+pub const CURE_ROWS: [(usize, u8); CURE_SCENES] = cure_ways(ROWS);
+
+/// Run GC2AM (the owner, 2026-10-26: "Chase it ... research how similar
+/// issues have been solved, cleverly, in the past ... losslessly";
+/// docs/design/divide1-texel-margin.md). Part 1: GC2AL's faulting
+/// rectangle (scene 1, rectangle 2) alone, its u phase stepped across one
+/// period of its sample pattern; part 2: textured rectangles at the safe
+/// ratios, each at its best phase, at every corner place of a tile.
+pub const PHASE_RECT: (i32, i32, i32, i32) = corner_rect_of(CURE_RECTS, 1, 2).0;
+/// Part 1's steps: 31 of [`PHASE_STEP`] UV units (UV_ONE is the whole
+/// texture: 2,048 a texel of FT2's 32), together just over 1/23 of a texel
+/// (89 units), the sample pattern's period at 32 texels on 184 pixels.
+pub const PHASES: usize = 31;
+pub const PHASE_STEP: i32 = 3;
+pub const PHASE_ROUNDS: u32 = 3;
+
+/// Part 2's ratios: (pixels, texels) of one side: 1:1, 2:1, 4:1, 1:2.
+pub const RATIOS: [(i32, i32); 4] = [(1, 1), (2, 1), (4, 1), (1, 2)];
+pub const RATIO_ROUNDS: u32 = 30;
+
+/// The best phase at `p / q` pixels a texel (lowest terms), in UV units of
+/// a `side`-texel texture: the samples' fractions are `p` evenly spaced
+/// values, so a phase of 1 / (2p) texel keeps every one 1 / (2p) from an
+/// edge, the most any phase can (docs/design/divide1-texel-margin.md).
+#[must_use]
+pub const fn best_phase(p: i32, side: i32) -> i32 {
+    UV_ONE / side / (2 * p)
+}
+
+/// The least distance, in 65,536ths of a texel, of any sample of `n`
+/// pixels from a texel edge, at `px` pixels for `texels` texels and a
+/// phase of `phase` texel / 65,536 (samples at whole pixels, the core's
+/// convention as GC2Z's half-texel cure showed).
+#[cfg(test)]
+#[must_use]
+pub fn margin(px: i64, texels: i64, phase: i64, n: i64) -> i64 {
+    let one = 65_536i64;
+    (0..n)
+        .map(|m| {
+            let f = (phase + m * texels * one / px).rem_euclid(one);
+            f.min(one - f)
+        })
+        .min()
+        .unwrap_or(one)
+}
+
+/// Part 1's scene `n`: one full layer, FT2's Gouraud, then
+/// [`PHASE_RECT`] with FT2's texture, shifted half a texel in u and v as
+/// GC2AK and `n * PHASE_STEP` more in u.
+#[must_use]
+pub fn phase_scene(n: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, mut out) = layer_and_gouraud(t);
+    let (x0, y0, x1, y1) = PHASE_RECT;
+    let d = shift_texture(
+        Draw::rect(x0, y0, x1 - x0, y1 - y0, Paint::texture(t.t8888)),
+        TexFix::ClampUv,
+    );
+    let Paint::Texture { tex, uv, tint } = d.paint else {
+        return (bg, out);
+    };
+    let du = n as i32 * PHASE_STEP;
+    out[2] = Some(Draw {
+        paint: Paint::Texture {
+            tex,
+            uv: uv.map(|(u, v)| (u + du, v)),
+            tint,
+        },
+        ..d
+    });
+    (bg, out)
+}
+
+/// Part 2's scene `i` at ratio `r`: one full layer, FT2's Gouraud, then
+/// five rectangles of FT2's texture at [`RATIOS`]`[r]`, each at the best
+/// phase in u and v, every corner of rectangle `k` at x offset `k % 8`, y
+/// offset `k / 8` in its tile (as GC2AJ).
+#[must_use]
+pub fn ratio_scene(r: usize, i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, mut out) = layer_and_gouraud(t);
+    let (px, tx) = RATIOS[r];
+    let side = t.t8888.side() as i32;
+    let size = side * px / tx;
+    let ph = best_phase(px, side);
+    for j in 0..CURE_RECTS {
+        let ((x0, y0, _, _), _) = corner_rect_of(CURE_RECTS, i, j);
+        let d = Draw::rect(x0, y0, size, size, Paint::texture(t.t8888));
+        let Paint::Texture { tex, uv, tint } = d.paint else {
+            continue;
+        };
+        out[2 + j] = Some(Draw {
+            paint: Paint::Texture {
+                tex,
+                uv: uv.map(|(u, v)| (u + ph, v + ph)),
+                tint,
+            },
+            ..d
+        });
+    }
+    (bg, out)
+}
+
+/// One full layer and FT2's Gouraud background, the rest of the slots free.
+fn layer_and_gouraud(t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    out[0] = Some(flat(HIDDEN_LAYER, false));
+    if let Some(g) = slots
+        .iter()
+        .flatten()
+        .find(|d| !matches!(d.paint, Paint::Texture { .. }))
+    {
+        out[1] = Some(*g);
+    }
+    (bg, out)
+}
+
+pub const PHASE_SCENES: [Scene; PHASES] = {
+    let mut s = [Scene::Phase(0); PHASES];
+    let mut i = 0;
+    while i < PHASES {
+        s[i] = Scene::Phase(i);
+        i += 1;
+    }
+    s
+};
+pub const PHASE_WAYS: [(usize, u8); PHASES] = {
+    let mut w = [(0, REVERSED); PHASES];
+    let mut i = 0;
+    while i < PHASES {
+        w[i] = (i, REVERSED);
+        i += 1;
+    }
+    w
+};
+const fn ratio_set(r: usize) -> [Scene; CURE_SCENES] {
+    let mut s = [Scene::Ratio(0, 0); CURE_SCENES];
+    let mut i = 0;
+    while i < CURE_SCENES {
+        s[i] = Scene::Ratio(r, i);
+        i += 1;
+    }
+    s
+}
+pub const RATIO_SCENES: [[Scene; CURE_SCENES]; 4] =
+    [ratio_set(0), ratio_set(1), ratio_set(2), ratio_set(3)];
+
+/// Run GC2AO (the owner, 2026-10-26: "Build the combined proof run: both
+/// cures together over the flat and textured corner sweeps at 149.50 / 1,
+/// then an overnight soak"): GC2AJ's corner sweep (six rectangles a scene,
+/// all 128 places of a tile) flat, and textured at the phase that keeps
+/// every centre sample furthest from a texel edge ([`best_centre_phase`],
+/// GC2AM: the core samples at pixel centres), with one full hidden layer
+/// or none, in the interleaved order (rows from the top, each row's even
+/// tiles then its odd ones) or GC2AN's checker.
+#[must_use]
+pub fn proof_scene(layer: bool, textured: bool, i: usize, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, slots) = order_scene(FIX_BASE[0], t);
+    let mut out = [None; SLOTS];
+    let mut n = 0;
+    if layer {
+        out[n] = Some(flat(HIDDEN_LAYER, false));
+        n += 1;
+    }
+    if let Some(g) = slots
+        .iter()
+        .flatten()
+        .find(|d| !matches!(d.paint, Paint::Texture { .. }))
+    {
+        out[n] = Some(*g);
+        n += 1;
+    }
+    let side = t.t8888.side() as i64;
+    for j in 0..CORNER_RECTS {
+        let ((x0, y0, x1, y1), _) = corner_rect(i, j);
+        let d = Draw::rect(
+            x0,
+            y0,
+            x1 - x0,
+            y1 - y0,
+            if textured {
+                Paint::texture(t.t8888)
+            } else {
+                Paint::Flat(UNTEXTURED)
+            },
+        );
+        out[n] = Some(match d.paint {
+            Paint::Texture { tex, uv, tint } => {
+                // The phase in UV units: a texel is UV_ONE / side.
+                let to_uv = |ph: i64| (ph * i64::from(UV_ONE) / side / 65_536) as i32;
+                let pu = to_uv(best_centre_phase(i64::from(x1 - x0), side));
+                let pv = to_uv(best_centre_phase(i64::from(y1 - y0), side));
+                Draw {
+                    paint: Paint::Texture {
+                        tex,
+                        uv: uv.map(|(u, v)| (u + pu, v + pv)),
+                        tint,
+                    },
+                    ..d
+                }
+            }
+            _ => d,
+        });
+        n += 1;
+    }
+    (bg, out)
+}
+
+/// The phase (in 65,536ths of a texel) that keeps every pixel-centre sample
+/// of `px` pixels showing `texels` texels furthest from a texel edge: the
+/// samples sit at phase + (m + 1/2) texels / px; searched in 1/1,024-texel
+/// steps over one texel (GC2AM: divide 1's error is under 0.009 texel and
+/// one-sided, so the margin, not the side, is what counts).
+#[must_use]
+pub fn best_centre_phase(px: i64, texels: i64) -> i64 {
+    let one = 65_536i64;
+    let margin = |ph: i64| {
+        (0..px)
+            .map(|m| {
+                let f = (ph + (2 * m + 1) * texels * one / (2 * px)).rem_euclid(one);
+                f.min(one - f)
+            })
+            .min()
+            .unwrap_or(one)
+    };
+    (0..1024)
+        .map(|k| k * 64)
+        .max_by_key(|&ph| (margin(ph), -ph))
+        .unwrap_or(0)
+}
+
+const fn proof_set(layer: bool, textured: bool) -> [Scene; CORNER_SCENES_EACH] {
+    let mut s = [Scene::Proof(false, false, 0); CORNER_SCENES_EACH];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::Proof(layer, textured, i);
+        i += 1;
+    }
+    s
+}
+pub const PROOF_FLAT_LAYER: [Scene; CORNER_SCENES_EACH] = proof_set(true, false);
+pub const PROOF_TEX_LAYER: [Scene; CORNER_SCENES_EACH] = proof_set(true, true);
+pub const PROOF_FLAT_BARE: [Scene; CORNER_SCENES_EACH] = proof_set(false, false);
+pub const PROOF_TEX_BARE: [Scene; CORNER_SCENES_EACH] = proof_set(false, true);
+const fn proof_ways(o: u8) -> [(usize, u8); CORNER_SCENES_EACH] {
+    let mut w = [(0, CHECKER); CORNER_SCENES_EACH];
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        w[i] = (i, o);
+        i += 1;
+    }
+    w
+}
+pub const PROOF_CHECKER: [(usize, u8); CORNER_SCENES_EACH] = proof_ways(CHECKER);
+pub const PROOF_INTERLEAVED: [(usize, u8); CORNER_SCENES_EACH] = proof_ways(INTERLEAVED);
+/// GC2AN's columns order (consecutive tiles never in the same row): the
+/// fixed soak's second proven order.
+pub const PROOF_COLUMNS: [(usize, u8); CORNER_SCENES_EACH] = proof_ways(COLUMNS);
+pub const PROOF_ROUNDS: u32 = 100;
+
+/// Colours tried as a soak's poison, the most saturated first (no GC2
+/// scene's Gouraud or texture reaches them, by design; [`absent16`]
+/// checks it on the references themselves).
+pub const POISON: [u16; 8] = [
+    0xF81F, 0x801F, 0xF810, 0x07E1, 0xF801, 0x07FF, 0x0821, 0xFFE0,
+];
+
+/// The first of `candidates` that no 16-bit pixel of `pics` (pictures as
+/// words, two pixels a word) holds, or `None` if every one appears.
+#[must_use]
+pub fn absent16(pics: &[u32], candidates: &[u16]) -> Option<u16> {
+    let mut seen = 0u32;
+    for &w in pics {
+        for half in [w & 0xFFFF, w >> 16] {
+            for (i, &c) in candidates.iter().enumerate().take(32) {
+                if half == u32::from(c) {
+                    seen |= 1 << i;
+                }
+            }
+        }
+    }
+    candidates
+        .iter()
+        .take(32)
+        .enumerate()
+        .find(|&(i, _)| seen & (1 << i) == 0)
+        .map(|(_, &c)| c)
 }
 
 #[cfg(test)]

@@ -5276,6 +5276,179 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2AD_SOAK_SECS", "20"),
         ],
     )?;
+    let run_gc2ae = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TRACE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
+    let run_gc2af = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_SPLIT", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
+    let run_gc2ag = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_INNER", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
+    let run_gc2ah = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_GEO", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
+    let run_gc2ai = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_QUAD", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
+    let run_gc2aj = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_CORNER", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
+    let run_gc2ak = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_LADDER", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
+    let run_gc2al = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_CURE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
+    let run_gc2am = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TEXEL", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
+    let run_gc2an = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_ORDERS", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "2"),
+        ],
+    )?;
+    let run_gc2ao = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_PROOF", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
+    let run_gc2ap = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_BITS", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
+    let run_gc2aq = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_PUNCH", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
+    let run_gc2ax = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TIMER_ALL", "1"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
+    let run_gc2aw = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_BAND", "1"),
+            ("RP_GPUBENCH_GC2AE_ROUNDS", "1"),
+        ],
+    )?;
+    let run_gc2av = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_WHERE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
+    let run_gc2au = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TIMER", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
+    let run_gc2at = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_664", "1"),
+            ("RP_GPUBENCH_GC2_664_MIX", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
+    let run_gc2as = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_664", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
+    let run_gc2ar = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_REGS", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
@@ -5308,7 +5481,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 71] = [
+    let runs: [GpubenchRun; 91] = [
         (
             "run A",
             &run_a,
@@ -5561,6 +5734,336 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             false,
             (0, 0, 0),
         ),
+        // Run GC2AX (R69): GC2AQ's plans with the timer at 0 and 15 (one
+        // round each here; the emulator draws exactly).
+        (
+            "run GC2AX",
+            &run_gc2ax,
+            &[
+                "GC2AX (R69): 0x664 at 0 and at 15 at 149.50 / 1, reversed; each the untextured fault generator (1 rounds) and the flat and textured corner sweeps (1 rounds a scene)",
+                "GC2AX timer 0 generator",
+                "GC2AX timer 15 tex",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AW (R69): GC2AM's phase sweep with the timer at 0 and 15
+        // (one round a phase here; the emulator draws exactly).
+        (
+            "run GC2AW",
+            &run_gc2aw,
+            &[
+                "GC2AW (R69): GC2AM's phase sweep (31 phases of 3 / 65,536 of the texture, 1 rounds) at 149.50 / 1 with 0x664 at 0, then at 15",
+                "GC2AW timer 0",
+                "GC2AW timer 15",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AV (R69): every wrong word placed (the emulator draws
+        // exactly, so none).
+        (
+            "run GC2AV",
+            &run_gc2av,
+            &[
+                "GC2AV (R69): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; every wrong word placed",
+                "GC2AV reference:",
+                "GC2AV timer 15: words wrong by render [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; by row in the tile [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]",
+                "GC2AV timer 0: tiles hit, most first: (and 0 more after these 0)",
+                "GC2AV: done; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AU (R69): 0x664's timer against a clean control, its
+        // higher bits and every tile order (the emulator draws exactly).
+        (
+            "run GC2AU",
+            &run_gc2au,
+            &[
+                "GC2AU (R69): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; 0x664 = 15 against a clean control",
+                "GC2AU reference:",
+                "GC2AU 1 0x664 = 15: 20 of 20 right, words wrong total 0,",
+                "GC2AU 1 none written: 20 of 20 right, words wrong total 0,",
+                "GC2AU 2 0x664 = 0x8000000f: 8 of 8 right, words wrong total 0,",
+                "GC2AU 3 interleaved: timer 0 20 of 20 right, total 0,",
+                "GC2AU: done; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AT (R69): GC2AS mixed (values bit-reversed, a render with
+        // no word written beside each pair; the emulator draws exactly).
+        (
+            "run GC2AT",
+            &run_gc2at,
+            &[
+                "GC2AT (R69): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; 0x664 bits 0-3 at each of 16 values, 20 renders each",
+                "GC2AT reference:",
+                "GC2AT step 0 0x664 = 0: 20 of 20 right, total 0,",
+                "GC2AT step 15 0x664 = 15: 20 of 20 right, total 0,",
+                "none written: 20 right, total 0,",
+                "GC2AT: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AS (R69): 0x664's low field swept (the emulator draws
+        // exactly, so every render of every value is right).
+        (
+            "run GC2AS",
+            &run_gc2as,
+            &[
+                "GC2AS (R69): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; 0x664 bits 0-3 at each of 16 values, 20 renders each",
+                "GC2AS reference:",
+                "GC2AS 0x664 = 0: 20 of 20 renders right",
+                "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
+                "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AR (R69): the register search (the emulator draws exactly,
+        // so the unflipped renders are right; a flip may change its
+        // picture, logged, not checked).
+        (
+            "run GC2AR",
+            &run_gc2ar,
+            &[
+                "GC2AR (R69): GC2AM's phase scene 0 at 149.50 / 1, reversed, opaque; each bit of 53 render-block words",
+                "GC2AR reference:",
+                "GC2AR: unflipped, (words wrong, us) in three renders [(Some(0),",
+                "GC2AR word 52 ",
+                "bits tried",
+                "the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AQ (R69): the punch-through bits, one round a scene (the
+        // emulator draws exactly: every way right).
+        (
+            "run GC2AQ",
+            &run_gc2aq,
+            &[
+                "GC2AQ (R69): TSP bits on every object at 149.50 / 1, reversed",
+                "GC2AQ none generator 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AQ bit14 flat 149.50 / 1: controls at Windows Mobile's clock after: 23 of 23 right",
+                "GC2AQ bit15 tex 149.50 / 1: controls at Windows Mobile's clock after: 22 of 22 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AP (R69): the header bit search (the emulator draws
+        // exactly, so the unflipped renders are right; a flip may change the
+        // emulator's picture, which is logged, not checked).
+        (
+            "run GC2AP",
+            &run_gc2ap,
+            &[
+                "GC2AP (R69): GC2AM's phase scene 0 at 149.50 / 1, interleaved, 134 header bits flipped alone",
+                "GC2AP reference:",
+                "GC2AP: unflipped, words wrong in three renders [Some(0), Some(0), Some(0)]",
+                "GC2AP header word 4:",
+                "bits tried",
+                "the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AO (R69): the proof's six plans, one round a scene (the
+        // emulator draws exactly: every way right).
+        (
+            "run GC2AO",
+            &run_gc2ao,
+            &[
+                "GC2AO (R69): both cures over the corner sweeps at 149.50 / 1",
+                "GC2AO flat layer interleaved 149.50 / 1: controls at Windows Mobile's clock after: 22 of 22 right",
+                "GC2AO tex bare interleaved 149.50 / 1: controls at Windows Mobile's clock after: 22 of 22 right",
+                "GC2AO tex layer checker 149.50 / 1: controls at Windows Mobile's clock after: 22 of 22 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AN (R69): the six tile orders, two rounds (the emulator
+        // draws exactly: every order the same picture, every way right).
+        (
+            "run GC2AN",
+            &run_gc2an,
+            &[
+                "GC2AN (R69): the untextured fault generator at 149.50 / 1 in six tile orders",
+                "GC2AN: each render's target filled first with 0xf81f (in no reference)",
+                "every way in its own order at Windows Mobile's clock: 6 of 6 its scene's picture",
+                "wrong renders by way [0, 0, 0, 0, 0, 0]",
+                "GC2AN 149.50 / 1: controls at Windows Mobile's clock after: 6 of 6 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AM (R69): the phase sweep and the safe ratios, one round a
+        // scene (the emulator draws exactly: every way right).
+        (
+            "run GC2AM",
+            &run_gc2am,
+            &[
+                "GC2AM (R69): divide 1's texel picks",
+                "GC2AM phase 149.50 / 1: controls at Windows Mobile's clock after: 31 of 31 right",
+                "GC2AM 1:1 149.50 / 1: controls at Windows Mobile's clock after: 26 of 26 right",
+                "GC2AM 1:2 117.00 / 1: controls at Windows Mobile's clock after: 26 of 26 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AL (R69): the cures, one round a scene (the emulator draws
+        // exactly: every way right).
+        (
+            "run GC2AL",
+            &run_gc2al,
+            &[
+                "GC2AL (R69): the textured corner sweep",
+                "GC2AL one layer 149.50 / 1: controls at Windows Mobile's clock after: 26 of 26 right",
+                "GC2AL rows 149.50 / 1: controls at Windows Mobile's clock after: 26 of 26 right",
+                "GC2AL two layers 149.50 / 1: controls at Windows Mobile's clock after: 26 of 26 right",
+                "GC2AL blended 149.50 / 1: controls at Windows Mobile's clock after: 26 of 26 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AK (R69): the ladder, one round a scene at each setting
+        // (the emulator draws exactly: every way right).
+        (
+            "run GC2AK",
+            &run_gc2ak,
+            &[
+                "GC2AK (R69): the corner sweep with one full layer alone",
+                "GC2AK flat 149.50 / 1: controls at Windows Mobile's clock after: 23 of 23 right",
+                "GC2AK uv 149.50 / 1: controls at Windows Mobile's clock after: 22 of 22 right",
+                "GC2AK flat 108.33 / 1: controls at Windows Mobile's clock after: 23 of 23 right",
+                "GC2AK uv 149.50 / 2: controls at Windows Mobile's clock after: 22 of 22 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AJ (R69): the corner sweep, one round (the emulator draws
+        // exactly: every way right).
+        (
+            "run GC2AJ",
+            &run_gc2aj,
+            &[
+                "GC2AJ (R69): the corner sweep with one full layer alone",
+                "GC2AJ flat: each render's target filled first with 0xf81f (in no reference)",
+                "GC2AJ flat 149.50 / 1: controls at Windows Mobile's clock after: 23 of 23 right",
+                "GC2AJ textured 149.50 / 1: controls at Windows Mobile's clock after: 22 of 22 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AI (R69): the quad ways, two rounds (the emulator draws
+        // exactly: every way right).
+        (
+            "run GC2AI",
+            &run_gc2ai,
+            &[
+                "GC2AI (R69): the flat quad over the ring and one full layer",
+                "GC2AI: each render's target filled first with 0xf81f (in no reference)",
+                "wrong renders by way [0, 0, 0, 0, 0, 0, 0, 0]",
+                "GC2AI 149.50 / 1: controls at Windows Mobile's clock after: 8 of 8 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AH (R69): the geometry ways, two rounds (the emulator draws
+        // exactly: every way right).
+        (
+            "run GC2AH",
+            &run_gc2ah,
+            &[
+                "GC2AH (R69): the geometry at 149.50 / 1, no texture",
+                "GC2AH: each render's target filled first with 0xf81f (in no reference)",
+                "wrong renders by way [0, 0, 0, 0, 0, 0]",
+                "GC2AH 149.50 / 1: controls at Windows Mobile's clock after: 6 of 6 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AG (R69): the fault generator with the 3D core's own
+        // traffic changed one kind at a time, two renders a way (the
+        // emulator draws exactly: every way right, the texture's copy and
+        // the moved parameter memory sound).
+        (
+            "run GC2AG",
+            &run_gc2ag,
+            &[
+                "GC2AG (R69): FT2 with the ring and one full layer, reversed, 149.50 / 1",
+                "copied to 0x",
+                ": 0 words read back wrong",
+                "GC2AG as GC2AE 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AG texture inside 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AG untextured 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AG lists moved 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AG both moved 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AF (R69): the fault generator with the display's fetch, the
+        // CPU's status reads or both off, at 74.75 / 1 and 149.50 / 2, two
+        // renders a way (every way right in the emulator; the fetch-off
+        // ways' controls right: the underrun flag settled first).
+        (
+            "run GC2AF",
+            &run_gc2af,
+            &[
+                "GC2AF (R69): FT2 with the ring and one full layer, reversed",
+                "GC2AF as GC2AE 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF fetch off 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF CPU quiet 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF both off 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF Dell's 74.75 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AF divide 2 149.50 / 2: controls at Windows Mobile's clock after: 1 of 1 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2AE (R69): the trace, the conditions and the margin, two
+        // renders a part (the emulator draws exactly: every way right, the
+        // display's fetch put back on).
+        (
+            "run GC2AE",
+            &run_gc2ae,
+            &[
+                "GC2AE (R69): FT2 with the ring and one full layer",
+                "GC2AE trace: each render's target filled first with 0xf81f (in no reference)",
+                "GC2AE trace 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE rows 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE fetch off 149.50 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE clock 146.25 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE clock 133.25 / 1: controls at Windows Mobile's clock after: 1 of 1 right",
+                "GC2AE margin 146.25 / 1: controls at Windows Mobile's clock after: 7 of 7 right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
         // Run GC2AD (R36): the night soak, cut to 20 s (the emulator draws
         // exactly: every way right).
         (
@@ -5568,8 +6071,11 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_gc2ad,
             &[
                 "GC2AD (R36): at 149.50 / 1, reversed, 0 min",
-                "wrong renders by way [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]",
-                "GC2AD soak 149.50 / 1: controls at Windows Mobile's clock after: 14 of 14 right",
+                // Every render's target poisoned first (a pixel the core never
+                // writes then reads wrong); the emulator overwrites it all.
+                "GC2AD soak: each render's target filled first with 0xf81f (in no reference)",
+                "wrong renders by way [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]",
+                "GC2AD soak 149.50 / 1: controls at Windows Mobile's clock after: 18 of 18 right",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
