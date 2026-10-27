@@ -1555,7 +1555,11 @@ fn gc2bb_no_layer_scene_is_the_corner_scene_without_slot_0() {
         assert_eq!(bg, bg2);
         assert!(with[0].is_some(), "the corner scene's hidden layer");
         assert!(without[0].is_none(), "taken out");
-        assert_eq!(with[1..], without[1..], "scene {i}: everything else the same");
+        assert_eq!(
+            with[1..],
+            without[1..],
+            "scene {i}: everything else the same"
+        );
     }
 }
 
