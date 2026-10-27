@@ -673,10 +673,14 @@ pub const BUDGETS: &[Budget] = &[
     // measured, + ~10%.
     // Zeroed RAM ratcheted 40 -> 48 KiB the same day: the stack 32 -> 40
     // KiB (run GC2AG's second renderer, 29,256 B deep in the emulator).
+    // Zeroed RAM ratcheted 48 -> 56 KiB on 2026-10-27: the stack 40 -> 48
+    // KiB (run GC2BG runs the tile-order soak's plans inside its warm-up's
+    // frame with the on-die renderer beside the first, 33,744 B deep in
+    // the emulator); 52,968 B measured.
     Budget {
         image: "rp-gpubench",
         max_load: 192 * 1024,
-        max_zero: 48 * 1024,
+        max_zero: 56 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (docs/research/storage-speed.md): the CF socket's timings,

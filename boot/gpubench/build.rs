@@ -13,6 +13,10 @@ fn main() {
         // 40 KiB from 2026-10-25: run GC2AG holds a second renderer (its
         // parameter memory moved) beside the first, 29,256 bytes deep in
         // the emulator (89% of 32 KiB): 40 KiB leaves it at 71%.
-        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=40960");
+        // 48 KiB from 2026-10-27: run GC2BG runs the tile-order soak's plans
+        // inside its warm-up's frame with the on-die renderer beside the
+        // first, 33,744 bytes deep in the emulator (82% of 40 KiB, over the
+        // check's 80%): 48 KiB leaves it at 69%.
+        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=49152");
     }
 }

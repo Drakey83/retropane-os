@@ -2115,6 +2115,51 @@ pub fn shifted<const N: usize>(mut slots: [Option<Draw>; N], dy: i32) -> [Option
     slots
 }
 
+/// GC2's 16-bit kinds (every RGB565 target, which fits the safe region):
+/// the proof run's content set (run GC2BG).
+pub const KINDS16: [Scene; 8] = [
+    Scene::Kind(0),
+    Scene::Kind(1),
+    Scene::Kind(FT2),
+    Scene::Kind(5),
+    Scene::Kind(6),
+    Scene::Kind(7),
+    Scene::Kind(9),
+    Scene::Kind(10),
+];
+
+/// Every scene of an `N`-scene plan in the checker order (run GC2BG).
+#[must_use]
+pub const fn checker_ways<const N: usize>() -> [(usize, u8); N] {
+    let mut w = [(0, CHECKER); N];
+    let mut i = 0;
+    while i < N {
+        w[i] = (i, CHECKER);
+        i += 1;
+    }
+    w
+}
+
+/// GC2BG's soak: the 16-bit kinds, the ring scene, the flat corner scenes
+/// that faulted in GC2AJ (20, 18, 6) and the textured one with the u and v
+/// shift at scene 20, in turn, in the checker order with the lists on
+/// the die.
+pub const PROOF_SOAK: [Scene; 13] = [
+    Scene::Kind(0),
+    Scene::Kind(1),
+    Scene::Kind(FT2),
+    Scene::Kind(5),
+    Scene::Kind(6),
+    Scene::Kind(7),
+    Scene::Kind(9),
+    Scene::Kind(10),
+    Scene::Fix(0, 8),
+    Scene::Corner(false, 20),
+    Scene::Corner(false, 18),
+    Scene::Corner(false, 6),
+    Scene::CornerUv(20),
+];
+
 /// GC2AJ's flat plan: the corner scenes, then GC2AI's faulting way (the
 /// ring over the layer, the quad's corner at x 440, y 40) as the control
 /// that the run can see the fault.

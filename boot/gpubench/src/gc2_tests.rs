@@ -2165,3 +2165,28 @@ fn gc2be_half_renderers_alternate_on_one_core() {
         assert_eq!(got, want, "render {i} (on the die: {on_die}) at 0x{at:x}");
     }
 }
+
+/// GC2BG's content set is every 16-bit kind (each fits the safe region),
+/// its checker ways list every scene once in the checker order, and its
+/// soak holds the kinds, the ring scene and the faulting corner scenes.
+#[test]
+fn gc2bg_proof_lists_are_the_16_bit_kinds_and_the_checker_order() {
+    let mut seen = 0;
+    for s in KINDS16 {
+        let Scene::Kind(k) = s else { panic!("a kind") };
+        assert_eq!(KINDS[k].1.bytes(), 2, "kind {k} is 16-bit");
+        assert!(fits_inside(k), "kind {k} fits the safe region");
+        seen += 1;
+    }
+    let all16 = (0..KINDS.len())
+        .filter(|&k| KINDS[k].1.bytes() == 2)
+        .count();
+    assert_eq!(seen, all16, "every 16-bit kind");
+    let w: [(usize, u8); 23] = checker_ways();
+    for (i, &(s, o)) in w.iter().enumerate() {
+        assert_eq!((s, o), (i, CHECKER));
+    }
+    assert!(PROOF_SOAK.contains(&Scene::Fix(0, 8)));
+    assert!(PROOF_SOAK.contains(&Scene::Corner(false, 20)));
+    assert!(PROOF_SOAK.len() <= ORDER_SCENES.len());
+}

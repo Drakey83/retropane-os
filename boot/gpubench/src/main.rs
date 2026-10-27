@@ -7965,6 +7965,7 @@ mod image {
         || GC2_STRIP
         || GC2_VIDEO
         || GC2_COMBO
+        || GC2_PROVE
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8175,6 +8176,12 @@ mod image {
     /// the checker order, punch-through on top of the on-die lists, and the
     /// warm ladder with them. About 25 minutes, unattended.
     const GC2_COMBO: bool = option_env!("RP_GPUBENCH_GC2_COMBO").is_some();
+
+    /// Run GC2BG, reminder R69 (`RP_GPUBENCH_GC2_PROVE`): the fix's proof,
+    /// the lists on the die and the checker order at 149.50 / 1 warm over
+    /// the corner sweeps, the ring scene and GC2's 16-bit kinds, then an
+    /// hour's soak. About 85 minutes, unattended.
+    const GC2_PROVE: bool = option_env!("RP_GPUBENCH_GC2_PROVE").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9558,6 +9565,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_PROVE {
+                "the 16-bit kinds' targets inside the safe region (GC2BG, R69: no map; the lists on the die and the checker order at 149.50 / 1 warm over the flat and textured corner sweeps, the ring scene and GC2's 16-bit kinds, then an hour's soak; each target poisoned first),"
             } else if GC2_COMBO {
                 "the 16-bit kinds' targets inside the safe region (GC2BF, R69: no map; scene 20 with its lists on the die at 149.50 / 1 warm, the display's fetch off, 0x664's wait, the checker order and punch-through on top, and the ladder on-die against SDRAM; each target poisoned first),"
             } else if GC2_VIDEO {
@@ -9764,6 +9773,8 @@ mod image {
             2 * gc2::words(gc2::FT2) as usize
         } else if GC2_COMBO {
             gc2::words(gc2::FT2) as usize
+        } else if GC2_PROVE {
+            gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_REGS
             || GC2_BLOCK
             || GC2_HEAT
@@ -10154,6 +10165,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_PROVE {
+                    gc2_prove(g, &mut r, (tex, first, dsig));
                 } else if GC2_COMBO {
                     gc2_combo(g, &mut r, (tex, first, dsig));
                 } else if GC2_VIDEO {
@@ -14967,6 +14980,161 @@ mod image {
         );
         if !ondie.release(&mut g.pool) {
             log!("  GC2BF: the on-die renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BG's rounds a scene (100: a place faulting 3% shows with ~95%),
+    /// its ring rounds, and its soak's length (three of the device's
+    /// 20-minute [`SOAK_SECS`]: an hour).
+    const GC2BG_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 100 };
+    const GC2BG_RING_ROUNDS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
+    const GC2BG_SOAK_SECS: u32 = SOAK_SECS * 3;
+    const GC2BG_FLAT_WAYS: [(usize, u8); gc2::CORNER_FLAT.len()] = gc2::checker_ways();
+    const GC2BG_UV_WAYS: [(usize, u8); gc2::CORNER_UV.len()] = gc2::checker_ways();
+    const GC2BG_RING_WAYS: [(usize, u8); gc2::TRACE_SCENES.len()] = gc2::checker_ways();
+    const GC2BG_KIND_WAYS: [(usize, u8); gc2::KINDS16.len()] = gc2::checker_ways();
+    const GC2BG_SOAK_WAYS: [(usize, u8); gc2::PROOF_SOAK.len()] = gc2::checker_ways();
+
+    /// Run GC2BG (see [`GC2_PROVE`]): the fix's proof over geometry and
+    /// content, warm. Ten minutes' warm-up on scene 20 (the SDRAM lists,
+    /// reversed: the plateau); then, every render on the renderer with its
+    /// lists on the die in the checker order at 149.50 / 1, through
+    /// [`gc2_orders`] (each plan's references and controls at Windows
+    /// Mobile's clock, every target poisoned, wrong pixels described): the
+    /// flat corner sweep with its control (GC2AI's faulting way), the
+    /// textured sweep with the u and v shift, the ring scene, GC2's 16-bit
+    /// kinds, [`GC2BG_ROUNDS`] a scene; then [`gc2::PROOF_SOAK`] for
+    /// [`GC2BG_SOAK_SECS`]. `TEMP0` between plans.
+    #[inline(never)]
+    fn gc2_prove(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        if all.len() < 2 * words {
+            log!("  GC2BG: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BG (R69): the fix's proof: the lists on the die and the checker order at 149.50 / 1 warm over the flat corner sweep ({} scenes), the textured sweep with the u and v shift ({}), the ring scene, GC2's {} 16-bit kinds, {GC2BG_ROUNDS} rounds a scene (the ring {GC2BG_RING_ROUNDS}); then the soak over {} scenes for {GC2BG_SOAK_SECS} s",
+            gc2::CORNER_FLAT.len(),
+            gc2::CORNER_UV.len(),
+            gc2::KINDS16.len(),
+            gc2::PROOF_SOAK.len()
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BG TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BG: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        // Part 1: the warm-up on scene 20, the SDRAM lists, reversed (the
+        // plans below split the whole buffer for themselves).
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BG") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BG", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        // Parts 2-6 on the on-die renderer, every way in the checker order.
+        ondie.core_taken();
+        let top = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        let plan = |name, label, scenes, ways, rounds, secs| OrderPlan {
+            name,
+            label,
+            scenes,
+            ways,
+            step: top,
+            secs,
+            rounds,
+            poison: true,
+            describe: 12,
+            pause: false,
+            quiet: false,
+            flat: false,
+        };
+        let plans = [
+            plan(
+                "GC2BG flat",
+                "GC2BG 2 OF 6 FLAT SWEEP",
+                &gc2::CORNER_FLAT[..],
+                &GC2BG_FLAT_WAYS[..],
+                GC2BG_ROUNDS,
+                1800,
+            ),
+            plan(
+                "GC2BG textured",
+                "GC2BG 3 OF 6 TEX SWEEP",
+                &gc2::CORNER_UV[..],
+                &GC2BG_UV_WAYS[..],
+                GC2BG_ROUNDS,
+                1800,
+            ),
+            plan(
+                "GC2BG ring",
+                "GC2BG 4 OF 6 RING",
+                &gc2::TRACE_SCENES[..],
+                &GC2BG_RING_WAYS[..],
+                GC2BG_RING_ROUNDS,
+                600,
+            ),
+            plan(
+                "GC2BG kinds",
+                "GC2BG 5 OF 6 KINDS",
+                &gc2::KINDS16[..],
+                &GC2BG_KIND_WAYS[..],
+                GC2BG_ROUNDS,
+                900,
+            ),
+            plan(
+                "GC2BG soak",
+                "GC2BG 6 OF 6 SOAK",
+                &gc2::PROOF_SOAK[..],
+                &GC2BG_SOAK_WAYS[..],
+                u32::MAX,
+                GC2BG_SOAK_SECS,
+            ),
+        ];
+        for p in &plans {
+            gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), p);
+            log!("  {} done, TEMP0 {:?}", p.name, gc2ba_temp(&mut touch));
+        }
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BG: the on-die renderer's memory not given back");
         }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
