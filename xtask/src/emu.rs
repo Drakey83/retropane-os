@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2br = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_SHADE_HOT", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bq = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5651,7 +5660,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 110] = [
+    let runs: [GpubenchRun; 111] = [
         (
             "run A",
             &run_a,
@@ -5994,6 +6003,23 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BR (R69): scene 3's green step against the shading,
+        // shortened (the emulator draws exactly).
+        (
+            "run GC2BR",
+            &run_gc2br,
+            &[
+                "GC2BR (R69): scene 3's green step against the shading",
+                "GC2BR reference:",
+                "GC2BR A slice 10: ",
+                "GC2BR rectangles Gouraud done, TEMP0",
+                "GC2BR sweep Gouraud done, TEMP0",
+                "GC2BR scene 3 again done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

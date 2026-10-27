@@ -2495,3 +2495,57 @@ fn gc2bq_order_ways() {
     let c: [(usize, u8); 2] = checker_ways();
     assert_eq!(c, order_ways::<2>(CHECKER));
 }
+
+#[test]
+fn gc2br_shade_scenes() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    let (bg0, base) = order_scene_wide(Scene::Corner(false, 3), t);
+    let (bg1, same) = order_scene_wide(Scene::CornerShade(3, 0), t);
+    assert_eq!((bg0, base), (bg1, same), "mode 0 is the control");
+    let (_, flat_bg) = order_scene_wide(Scene::CornerShade(3, SHADE_FLAT_BG), t);
+    let (_, gour) = order_scene_wide(Scene::CornerShade(3, SHADE_GOURAUD_RECT), t);
+    let mut changed_bg = 0;
+    let mut changed_rect = 0;
+    for ((b, f), g) in base.iter().zip(flat_bg.iter()).zip(gour.iter()) {
+        let (Some(b), Some(f), Some(g)) = (b, f, g) else {
+            assert!(b.is_none() && f.is_none() && g.is_none());
+            continue;
+        };
+        assert_eq!(b.corners, f.corners);
+        assert_eq!(b.corners, g.corners);
+        match b.paint {
+            Paint::Gouraud(c) => {
+                assert_eq!(f.paint, Paint::Flat(c[0]));
+                assert_eq!(g.paint, b.paint);
+                changed_bg += 1;
+            }
+            Paint::Flat(UNTEXTURED) => {
+                assert_eq!(f.paint, b.paint);
+                assert_eq!(g.paint, Paint::Gouraud([UNTEXTURED; 4]));
+                changed_rect += 1;
+            }
+            _ => {
+                assert_eq!(f.paint, b.paint);
+                assert_eq!(g.paint, b.paint);
+            }
+        }
+    }
+    assert!(changed_bg >= 1, "the background has a Gouraud object");
+    assert_eq!(changed_rect, CORNER_RECTS, "every rectangle Gouraud");
+    assert_eq!(SHADE_S3[0], Scene::CornerShade(3, 0));
+    assert_eq!(SHADE_S3[3], Scene::CornerNoLayer(3));
+    assert_eq!(CORNER_FLAT_GOURAUD.len(), CORNER_FLAT.len());
+    assert_eq!(
+        CORNER_FLAT_GOURAUD[3],
+        Scene::CornerShade(3, SHADE_GOURAUD_RECT)
+    );
+    assert_eq!(
+        CORNER_FLAT_GOURAUD[CORNER_SCENES_EACH],
+        CORNER_FLAT[CORNER_SCENES_EACH]
+    );
+}

@@ -7986,6 +7986,7 @@ mod image {
         || GC2_PROVE2
         || GC2_PROVE3
         || GC2_ORDER_HOT
+        || GC2_SHADE_HOT
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8270,6 +8271,15 @@ mod image {
     /// die) against the scrambled, columns and columns-reversed orders.
     /// About 30 minutes, unattended.
     const GC2_ORDER_HOT: bool = option_env!("RP_GPUBENCH_GC2_ORDER_HOT").is_some();
+
+    /// Run GC2BR, reminder R69 (`RP_GPUBENCH_GC2_SHADE_HOT`): flat corner
+    /// scene 3's green step (GC2BP, GC2BQ: the grey one step high over a
+    /// tile's whole share of a rectangle where the tile also holds the
+    /// Gouraud background) against the shading: the background flat, the
+    /// rectangles Gouraud with equal colours (a cure at no cost if it
+    /// holds), without the hidden layer, and the sweep with the rectangles
+    /// Gouraud. About 25 minutes, unattended.
+    const GC2_SHADE_HOT: bool = option_env!("RP_GPUBENCH_GC2_SHADE_HOT").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9653,6 +9663,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_SHADE_HOT {
+                "the 16-bit kinds' targets inside the safe region (GC2BR, R69: no map; flat corner scene 3's green step against the shading, the background flat, the rectangles Gouraud, no hidden layer, and the sweep with the rectangles Gouraud, the lists on the die at 149.50 / 1; each target poisoned first),"
             } else if GC2_ORDER_HOT {
                 "the 16-bit kinds' targets inside the safe region (GC2BQ, R69: no map; the tile race's residue at peak heat against the tile order, the flat corner sweep and its scene 3 with the lists on the die at 149.50 / 1; each target poisoned first),"
             } else if GC2_PROVE3 {
@@ -9891,7 +9903,7 @@ mod image {
             (1 + gc2::THRESHOLD.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_MAP {
             gc2::words(gc2::FT2) as usize
-        } else if GC2_PROVE2 || GC2_PROVE3 || GC2_ORDER_HOT {
+        } else if GC2_PROVE2 || GC2_PROVE3 || GC2_ORDER_HOT || GC2_SHADE_HOT {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
             gc2::words(gc2::FT2) as usize
@@ -10287,8 +10299,10 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_SHADE_HOT {
+                    gc2_order_hot(g, &mut r, (tex, first, dsig), true);
                 } else if GC2_ORDER_HOT {
-                    gc2_order_hot(g, &mut r, (tex, first, dsig));
+                    gc2_order_hot(g, &mut r, (tex, first, dsig), false);
                 } else if GC2_PROVE3 {
                     gc2_prove2(g, &mut r, (tex, first, dsig), true);
                 } else if GC2_PROVE2 {
@@ -16883,23 +16897,31 @@ mod image {
         g: &mut Rig,
         r: &mut Renderer,
         (tex, all, dsig): (gc2::Tex, &mut [u32], bool),
+        br: bool,
     ) {
+        let tag = if br { "GC2BR" } else { "GC2BQ" };
         let k = gc2::FT2;
         let words = gc2::words(k) as usize;
         let at = gc_at(k);
         if all.len() < 2 * words {
-            log!("  GC2BQ: not enough SDRAM for the reference: nothing run");
+            log!("  {tag}: not enough SDRAM for the reference: nothing run");
             return;
         }
-        log!(
-            "  GC2BQ (R69): the tile race's residue at peak heat against the tile order, the lists on the die, 149.50 / 1: the flat sweep ({GC2BQ_ROUNDS} rounds) and its scene 3 alone ({GC2BQ_SCENE3_ROUNDS}) in checker, scrambled, columns, columns reversed, checker again"
-        );
+        if br {
+            log!(
+                "  GC2BR (R69): scene 3's green step against the shading, the lists on the die, checker, 149.50 / 1: scene 3 ({GC2BQ_SCENE3_ROUNDS} rounds each) as is, the background flat, the rectangles Gouraud, without the hidden layer; the flat sweep with the rectangles Gouraud ({GC2BQ_ROUNDS} rounds); scene 3 as is again"
+            );
+        } else {
+            log!(
+                "  GC2BQ (R69): the tile race's residue at peak heat against the tile order, the lists on the die, 149.50 / 1: the flat sweep ({GC2BQ_ROUNDS} rounds) and its scene 3 alone ({GC2BQ_SCENE3_ROUNDS}) in checker, scrambled, columns, columns reversed, checker again"
+            );
+        }
         let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
         let mut touch = gc2ba_touch(gpio.as_ref());
-        log!("  GC2BQ TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        log!("  {tag} TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
         let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
         else {
-            log!("  GC2BQ: no renderer with its parameter memory on the die: nothing run");
+            log!("  {tag}: no renderer with its parameter memory on the die: nothing run");
             return;
         };
         for rr in [&mut *r, &mut ondie] {
@@ -16915,7 +16937,7 @@ mod image {
             r.set_tile_order(tile_order(gc2::REVERSED));
             let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
             gc2_set_scene(g, r, scene, tex);
-            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BQ") {
+            if !gc2_reference(g, r, (k, at), want, first, dsig, tag) {
                 let _ = ondie.release(&mut g.pool);
                 return;
             }
@@ -16934,7 +16956,7 @@ mod image {
                 let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
                 (w, side.best_us)
             };
-            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BQ", &["A"]) {
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, tag, &["A"]) {
                 let _ = ondie.release(&mut g.pool);
                 return;
             }
@@ -16952,14 +16974,59 @@ mod image {
             secs: 1200,
             rounds,
             poison: true,
-            describe: 3,
+            describe: if br { 1 } else { 3 },
             pause: false,
             quiet: false,
             flat: false,
         };
         let flat = &gc2::CORNER_FLAT[..];
         let s3 = &gc2::CORNER_FLAT[3..4];
-        let plans = [
+        let shade = &gc2::SHADE_S3;
+        let plans_br = [
+            plan(
+                "GC2BR scene 3",
+                "GC2BR 1 OF 6 AS IS",
+                &shade[0..1],
+                &GC2BQ_ONE_CHECKER[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+            plan(
+                "GC2BR background flat",
+                "GC2BR 2 OF 6 FLAT BACK",
+                &shade[1..2],
+                &GC2BQ_ONE_CHECKER[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+            plan(
+                "GC2BR rectangles Gouraud",
+                "GC2BR 3 OF 6 GOURAUD",
+                &shade[2..3],
+                &GC2BQ_ONE_CHECKER[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+            plan(
+                "GC2BR no hidden layer",
+                "GC2BR 4 OF 6 NO LAYER",
+                &shade[3..4],
+                &GC2BQ_ONE_CHECKER[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+            plan(
+                "GC2BR sweep Gouraud",
+                "GC2BR 5 OF 6 SWEEP",
+                &gc2::CORNER_FLAT_GOURAUD[..],
+                &GC2BQ_FLAT_CHECKER[..],
+                GC2BQ_ROUNDS,
+            ),
+            plan(
+                "GC2BR scene 3 again",
+                "GC2BR 6 OF 6 AS IS",
+                &shade[0..1],
+                &GC2BQ_ONE_CHECKER[..],
+                GC2BQ_SCENE3_ROUNDS,
+            ),
+        ];
+        let plans_bq = [
             plan(
                 "GC2BQ checker",
                 "GC2BQ 1 OF 10 CHECKER",
@@ -17031,12 +17098,13 @@ mod image {
                 GC2BQ_SCENE3_ROUNDS,
             ),
         ];
-        for p in &plans {
+        let plans = if br { &plans_br[..] } else { &plans_bq[..] };
+        for p in plans {
             gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), p);
             log!("  {} done, TEMP0 {:?}", p.name, gc2ba_temp(&mut touch));
         }
         if !ondie.release(&mut g.pool) {
-            log!("  GC2BQ: the on-die renderer's memory not given back");
+            log!("  {tag}: the on-die renderer's memory not given back");
         }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }

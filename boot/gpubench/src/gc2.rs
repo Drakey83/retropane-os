@@ -564,6 +564,11 @@ pub enum Scene {
     /// hidden layer (the same picture: the layer is never seen; only
     /// through [`order_scene_wide`]).
     CornerNoLayer(usize),
+    /// Run GC2BR's shading ways: flat corner scene `i` with [`SHADE_FLAT_BG`]
+    /// (the Gouraud background drawn flat) and [`SHADE_GOURAUD_RECT`] (the
+    /// grey rectangles drawn Gouraud with four equal colours) as `m`'s bits
+    /// say (see [`corner_shade_scene`]; only through [`order_scene_wide`]).
+    CornerShade(usize, u8),
     /// Run GC2AK's textured sweep with the u and v shift (see
     /// [`corner_uv_scene`]; only through [`order_scene_wide`]).
     CornerUv(usize),
@@ -1052,6 +1057,9 @@ pub fn order_scene_wide(s: Scene, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
     }
     if let Scene::Corner(textured, i) = s {
         return corner_scene(textured, i, t);
+    }
+    if let Scene::CornerShade(i, m) = s {
+        return corner_shade_scene(i, m, t);
     }
     if let Scene::CornerNoLayer(i) = s {
         let (bg, mut slots) = corner_scene(false, i, t);
@@ -1573,6 +1581,7 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         | Scene::Quad(_)
         | Scene::Corner(..)
         | Scene::CornerNoLayer(_)
+        | Scene::CornerShade(..)
         | Scene::Split10(..)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
@@ -1631,6 +1640,7 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         Scene::Geo(_) | Scene::Quad(_) => patch_corner(0),
         Scene::Corner(..)
         | Scene::CornerNoLayer(_)
+        | Scene::CornerShade(..)
         | Scene::CornerUv(_)
         | Scene::Cure(..)
         | Scene::Ratio(..)
@@ -2206,6 +2216,55 @@ pub const KINDS16: [Scene; 8] = [
 pub const fn checker_ways<const N: usize>() -> [(usize, u8); N] {
     order_ways(CHECKER)
 }
+
+/// [`Scene::CornerShade`]'s bit: the Gouraud background drawn flat, each
+/// shaded object in its first corner's colour (run GC2BR).
+pub const SHADE_FLAT_BG: u8 = 1;
+/// [`Scene::CornerShade`]'s bit: the grey rectangles drawn Gouraud with
+/// four equal colours, the same picture through the shading path the
+/// background takes (run GC2BR).
+pub const SHADE_GOURAUD_RECT: u8 = 2;
+
+/// Flat corner scene `i` with its shading changed as `m`'s bits say
+/// ([`SHADE_FLAT_BG`], [`SHADE_GOURAUD_RECT`]; run GC2BR: GC2BP and GC2BQ
+/// put every wrong pixel of scene 3 inside one tile's share of a grey
+/// rectangle where the tile also holds the Gouraud background, the grey
+/// one green step high).
+#[must_use]
+pub fn corner_shade_scene(i: usize, m: u8, t: Tex) -> (u32, [Option<Draw>; SLOTS]) {
+    let (bg, mut slots) = corner_scene(false, i, t);
+    for d in slots.iter_mut().flatten() {
+        match d.paint {
+            Paint::Gouraud(c) if m & SHADE_FLAT_BG != 0 => d.paint = Paint::Flat(c[0]),
+            Paint::Flat(UNTEXTURED) if m & SHADE_GOURAUD_RECT != 0 => {
+                d.paint = Paint::Gouraud([UNTEXTURED; 4]);
+            }
+            _ => {}
+        }
+    }
+    (bg, slots)
+}
+
+/// GC2BR's scene 3 ways: the control, the background flat, the rectangles
+/// Gouraud, and without the hidden layer.
+pub const SHADE_S3: [Scene; 4] = [
+    Scene::CornerShade(3, 0),
+    Scene::CornerShade(3, SHADE_FLAT_BG),
+    Scene::CornerShade(3, SHADE_GOURAUD_RECT),
+    Scene::CornerNoLayer(3),
+];
+
+/// The flat corner sweep ([`CORNER_FLAT`]) with its rectangles drawn
+/// Gouraud (run GC2BR's breadth check of the cure candidate).
+pub const CORNER_FLAT_GOURAUD: [Scene; CORNER_SCENES_EACH + 1] = {
+    let mut s = CORNER_FLAT;
+    let mut i = 0;
+    while i < CORNER_SCENES_EACH {
+        s[i] = Scene::CornerShade(i, SHADE_GOURAUD_RECT);
+        i += 1;
+    }
+    s
+};
 
 /// Every scene of an `N`-scene plan in tile order `o` (run GC2BQ).
 #[must_use]
