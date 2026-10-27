@@ -2339,3 +2339,84 @@ fn gc2bj_splits_tile_the_screen_with_kind_10s_span() {
     }
     assert_eq!(SPLIT[0], Scene::Kind(10));
 }
+
+/// GC2BK's enlarged plane: its corner texels are the plane's corners, its
+/// centre the corners' average, each texel the bilinear blend rounded, and
+/// every texel written once.
+#[test]
+fn gc2bk_upsampled_plane_is_the_corners_blended() {
+    for side in [8u32, 16] {
+        let mut t = std::vec![None; (side * side) as usize];
+        upsampled_words(side, |i, w| {
+            assert!(t[i as usize].replace(w).is_none(), "texel {i} once");
+        });
+        let at = |x: u32, y: u32| {
+            let i = (0..side * side).find(|&i| untwiddle(i) == (x, y)).unwrap();
+            t[i as usize].unwrap()
+        };
+        let s = side - 1;
+        assert_eq!(at(0, 0), 0xFF00_0000);
+        assert_eq!(at(s, 0), 0xFFF0_0000);
+        assert_eq!(at(0, s), 0xFF00_E0F0);
+        assert_eq!(at(s, s), 0xFFF0_E0F0);
+        // Every channel of every texel the exact blend, rounded.
+        for y in 0..side {
+            for x in 0..side {
+                let w = at(x, y);
+                for (k, c) in [
+                    (16, [0u32, 0xF0, 0, 0xF0]),
+                    (8, [0, 0, 0xE0, 0xE0]),
+                    (0, [0, 0, 0xF0, 0xF0]),
+                ] {
+                    let exact = (c[0] * (s - x) * (s - y)
+                        + c[1] * x * (s - y)
+                        + c[2] * (s - x) * y
+                        + c[3] * x * y) as f64
+                        / (s * s) as f64;
+                    let got = (w >> k) & 0xFF;
+                    assert!(
+                        (got as f64 - exact).abs() <= 0.5,
+                        "side {side} ({x},{y}) channel {k}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// GC2BK's threshold squares sit between GC2BI's clean 256 and GC2BJ's
+/// wrong 320, after kind 10 as the control; its enlarged scenes draw one
+/// full-screen quad from the first texel's centre to the last's of the
+/// texture they're given.
+#[test]
+fn gc2bk_threshold_and_enlarged_scenes() {
+    assert_eq!(THRESHOLD[0], Scene::Kind(10));
+    let sides: std::vec::Vec<usize> = THRESHOLD[1..]
+        .iter()
+        .map(|s| match s {
+            Scene::Magnified(m) => *m,
+            _ => panic!("a square"),
+        })
+        .collect();
+    assert_eq!(sides, [256, 272, 288, 304, 320]);
+    let t = test_tex();
+    for code in [0u8, 1] {
+        let side = 8i32 << code;
+        let (bg, slots) = order_scene(Scene::Upsampled10(code), t);
+        assert_eq!(bg, 0xFF00_0000);
+        let d = slots[0].expect("the quad");
+        assert_eq!(
+            d.corners,
+            Draw::rect(0, 0, W as i32, H as i32, Paint::Flat(0)).corners
+        );
+        let Paint::Texture { tex, uv, .. } = d.paint else {
+            panic!("textured")
+        };
+        assert_eq!(tex, t.plane);
+        assert_eq!(uv[0], (UV_ONE / (2 * side), UV_ONE / (2 * side)));
+        assert_eq!(
+            uv[2],
+            (UV_ONE - UV_ONE / (2 * side), UV_ONE - UV_ONE / (2 * side))
+        );
+    }
+}

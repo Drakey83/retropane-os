@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bk = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_UPSAMPLE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bj = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5588,7 +5597,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 103] = [
+    let runs: [GpubenchRun; 104] = [
         (
             "run A",
             &run_a,
@@ -5931,6 +5940,26 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BK (R69): the threshold and the enlarged plane, shortened
+        // (10 s warm-up, a round a scene; the emulator draws exactly).
+        (
+            "run GC2BK",
+            &run_gc2bk,
+            &[
+                "GC2BK (R69): the bilinear filter's magnification limit",
+                "GC2BK the plane enlarged to 8 x 8 at 0x",
+                "GC2BK the plane enlarged to 16 x 16 at 0x",
+                ": 0 words read back wrong",
+                "GC2BK reference:",
+                "GC2BK A slice 10: ",
+                "GC2BK threshold done, TEMP0",
+                "GC2BK enlarged 8 done, TEMP0",
+                "GC2BK enlarged 16 done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

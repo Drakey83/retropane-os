@@ -7969,6 +7969,7 @@ mod image {
         || GC2_TEXEL_LAST
         || GC2_MAGNIFY
         || GC2_SPLIT10
+        || GC2_UPSAMPLE
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8205,6 +8206,12 @@ mod image {
     /// 149.50 and 146.25 / 1, both tile-race cures on, warm. About 20
     /// minutes, unattended.
     const GC2_SPLIT10: bool = option_env!("RP_GPUBENCH_GC2_SPLIT10").is_some();
+
+    /// Run GC2BK, reminder R69 (`RP_GPUBENCH_GC2_UPSAMPLE`): the bilinear
+    /// magnification limit (GC2BJ: clean to 256x, wrong from 320x at
+    /// 149.50 / 1) placed, and its no-cost cure, the texture enlarged once
+    /// on the CPU so the core magnifies less. About 15 minutes, unattended.
+    const GC2_UPSAMPLE: bool = option_env!("RP_GPUBENCH_GC2_UPSAMPLE").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9588,6 +9595,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_UPSAMPLE {
+                "the 16-bit kinds' targets inside the safe region (GC2BK, R69: no map; the bilinear magnification limit at 149.50 / 1 placed between 256 and 320, and kind 10 drawn from its texture enlarged on the CPU, with the lists on the die and the checker order, warm; each target poisoned first),"
             } else if GC2_SPLIT10 {
                 "the 16-bit kinds' targets inside the safe region (GC2BJ, R69: no map; the texel error at large extent against the primitive split into quads, at 149.50 and 146.25 / 1 with the lists on the die and the checker order, warm; each target poisoned first),"
             } else if GC2_MAGNIFY {
@@ -9808,6 +9817,8 @@ mod image {
             8 * gc2::words(gc2::FT2) as usize
         } else if GC2_SPLIT10 {
             (1 + gc2::SPLIT.len()) * gc2::words(gc2::FT2) as usize
+        } else if GC2_UPSAMPLE {
+            (1 + gc2::THRESHOLD.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_MAGNIFY {
             (1 + gc2::COMPENSATE.len()) * gc2::words(gc2::FT2) as usize
         } else if GC2_REGS
@@ -10200,6 +10211,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_UPSAMPLE {
+                    gc2_upsample(g, &mut r, (tex, first, dsig));
                 } else if GC2_SPLIT10 {
                     gc2_split10(g, &mut r, (tex, first, dsig));
                 } else if GC2_MAGNIFY {
@@ -15575,6 +15588,170 @@ mod image {
         if !ondie.release(&mut g.pool) {
             log!("  GC2BJ: the on-die renderer's memory not given back");
         }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BK's rounds a scene.
+    const GC2BK_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 100 };
+    const GC2BK_THRESHOLD_WAYS: [(usize, u8); gc2::THRESHOLD.len()] = gc2::checker_ways();
+    const GC2BK_UP: [[gc2::Scene; 1]; 2] =
+        [[gc2::Scene::Upsampled10(0)], [gc2::Scene::Upsampled10(1)]];
+    const GC2BK_UP_WAYS: [(usize, u8); 1] = gc2::checker_ways();
+
+    /// Run GC2BK (see [`GC2_UPSAMPLE`]): the bilinear magnification limit's
+    /// no-cost cure. Ten minutes' warm-up; then through [`gc2_orders`] on
+    /// the on-die renderer in the checker order at 149.50 / 1,
+    /// [`GC2BK_ROUNDS`] a scene: [`gc2::THRESHOLD`] (kind 10 and its span on
+    /// squares of 256-320); then kind 10 drawn from the plane enlarged on
+    /// the CPU to 8 x 8 and 16 x 16 ([`gc2::upsampled_words`]: magnified 68
+    /// and 32 times across instead of 480).
+    #[inline(never)]
+    fn gc2_upsample(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        if all.len() < 2 * words {
+            log!("  GC2BK: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BK (R69): the bilinear filter's magnification limit and its no-cost cure, both tile-race cures on, warm, at 149.50 / 1: kind 10 and its span on squares of 256-320; kind 10 from the plane enlarged on the CPU to 8 x 8 and 16 x 16; {GC2BK_ROUNDS} rounds a scene"
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BK TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        // The enlarged planes, each in its own memory, read back.
+        let mut ups = [None; 2];
+        for (code, slot) in ups.iter_mut().enumerate() {
+            let side = 8u32 << code;
+            let bytes = 4 * side * side;
+            let Some(a) = g.pool.alloc(bytes, 128) else {
+                log!("  GC2BK: no memory for the {side} x {side} plane");
+                continue;
+            };
+            let mut bad = 0;
+            gc2::upsampled_words(side, |i, w| g.mem.store((a + 4 * i) as usize, &[w]));
+            g.mem.sync();
+            gc2::upsampled_words(side, |i, w| {
+                bad += u32::from(g.mem.load((a + 4 * i) as usize) != Some(w));
+            });
+            log!(
+                "  GC2BK the plane enlarged to {side} x {side} at 0x{a:x}: {bad} words read back wrong"
+            );
+            if bad == 0 {
+                *slot = Some((
+                    gc2::Tex {
+                        plane: rp_mbx3d_render::Texture {
+                            at: a,
+                            code: code as u8,
+                            ..tex.plane
+                        },
+                        ..tex
+                    },
+                    a,
+                    bytes,
+                ));
+            } else {
+                let _ = g.pool.free(a, bytes);
+            }
+        }
+        let free_ups = |g: &mut Rig, ups: &[Option<(gc2::Tex, u32, u32)>; 2]| {
+            for u in ups.iter().flatten() {
+                let _ = g.pool.free(u.1, u.2);
+            }
+        };
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BK: no renderer with its parameter memory on the die: nothing run");
+            free_ups(g, &ups);
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BK") {
+                let _ = ondie.release(&mut g.pool);
+                free_ups(g, &ups);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BK", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                free_ups(g, &ups);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        ondie.core_taken();
+        let top = (gc2_step(23, 2, 0, 1), "149.50 / 1");
+        let plan = |name, label, scenes, ways| OrderPlan {
+            name,
+            label,
+            scenes,
+            ways,
+            step: top,
+            secs: 900,
+            rounds: GC2BK_ROUNDS,
+            poison: true,
+            describe: 2,
+            pause: false,
+            quiet: false,
+            flat: false,
+        };
+        let p = plan(
+            "GC2BK threshold",
+            "GC2BK THRESHOLD",
+            &gc2::THRESHOLD[..],
+            &GC2BK_THRESHOLD_WAYS[..],
+        );
+        gc2_orders(g, &mut ondie, (tex, &mut *all, dsig), &p);
+        log!("  GC2BK threshold done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        for (code, u) in ups.iter().enumerate() {
+            let Some((utex, _, _)) = u else {
+                continue;
+            };
+            let name = if code == 0 {
+                "GC2BK enlarged 8"
+            } else {
+                "GC2BK enlarged 16"
+            };
+            let p = plan(
+                name,
+                "GC2BK ENLARGED",
+                &GC2BK_UP[code][..],
+                &GC2BK_UP_WAYS[..],
+            );
+            gc2_orders(g, &mut ondie, (*utex, &mut *all, dsig), &p);
+            log!("  {name} done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        }
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BK: the on-die renderer's memory not given back");
+        }
+        free_ups(g, &ups);
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
 

@@ -523,6 +523,12 @@ pub enum Scene {
     /// arithmetic), so no pixel lies far from its quad's first corner;
     /// only through [`order_scene_wide`].
     Split10(usize, usize),
+    /// Run GC2BK: kind 10 drawn from [`Tex::plane`] holding the plane's
+    /// corners enlarged on the CPU ([`upsampled_words`]) to a texture of
+    /// side `8 << code`, sampled from its first texel's centre to its
+    /// last's: the same picture as kind 10 in exact arithmetic, magnified
+    /// `side - 1` times less.
+    Upsampled10(u8),
     /// Run GC2U's busy tiles: FT2 (`false`) or GC2K's worst (`true`) with
     /// [`BUSY_LAYER`] blended over the whole screen last, so every tile has
     /// more to draw before its write-out (the tile-race hypothesis: the
@@ -1509,6 +1515,23 @@ pub fn order_scene(s: Scene, t: Tex) -> (u32, [Option<Draw>; 3]) {
         Scene::Sweep(w) => sweep_scene(w, t),
         Scene::Kind(k) => scene(k, t),
         Scene::Magnified(m) => magnified_scene(m, t),
+        Scene::Upsampled10(code) => {
+            let side = 8i32 << code;
+            let (a, b) = (UV_ONE / (2 * side), UV_ONE - UV_ONE / (2 * side));
+            let paint = Paint::Texture {
+                tex: t.plane,
+                uv: [(a, a), (b, a), (b, b), (a, b)],
+                tint: WHITE,
+            };
+            (
+                BLACK,
+                [
+                    Some(Draw::rect(0, 0, W as i32, H as i32, paint)),
+                    None,
+                    None,
+                ],
+            )
+        }
         Scene::Shifted10(du, dv) => {
             let (bg, slots) = scene(10, t);
             let slots = slots.map(|d| {
@@ -1627,7 +1650,8 @@ pub const fn order_corner(s: Scene) -> (i32, i32) {
         | Scene::KindUv(_)
         | Scene::Magnified(_)
         | Scene::Shifted10(..)
-        | Scene::Split10(..) => (0, 0),
+        | Scene::Split10(..)
+        | Scene::Upsampled10(_) => (0, 0),
     }
 }
 
@@ -2278,6 +2302,42 @@ pub const SPLIT: [Scene; 8] = [
     Scene::Split10(2, 2),
     Scene::Split10(2, 3),
     Scene::Split10(2, 4),
+];
+
+/// The plane's four corners ([`PLANE`]) enlarged to a `side` x `side`
+/// ARGB8888 texture on the CPU, word by word in its twiddled order
+/// (`put(word index, word)`): texel (i, j) the bilinear blend of the
+/// corners at (i, j) / (side - 1), each channel rounded to the nearest.
+/// Bilinear blending is linear inside a texel, so sampling these grid
+/// points and blending between them draws kind 10's surface again in
+/// exact arithmetic, magnified `side - 1` times less (run GC2BK).
+pub fn upsampled_words(side: u32, mut put: impl FnMut(u32, u32)) {
+    let s = side - 1;
+    let ch = |c: u32, k: u32| (c >> k) & 0xFF;
+    for i in 0..side * side {
+        let (x, y) = untwiddle(i);
+        let mut w = 0;
+        for k in [0, 8, 16, 24] {
+            let n = ch(PLANE[0], k) * (s - x) * (s - y)
+                + ch(PLANE[1], k) * x * (s - y)
+                + ch(PLANE[2], k) * (s - x) * y
+                + ch(PLANE[3], k) * x * y;
+            w |= ((n + s * s / 2) / (s * s)) << k;
+        }
+        put(i, w);
+    }
+}
+
+/// GC2BK's first plan: kind 10 as it is (the control) and its span on
+/// squares placing the threshold between GC2BI's 256 (clean) and GC2BJ's
+/// 320 (wrong) at 149.50 / 1.
+pub const THRESHOLD: [Scene; 6] = [
+    Scene::Kind(10),
+    Scene::Magnified(256),
+    Scene::Magnified(272),
+    Scene::Magnified(288),
+    Scene::Magnified(304),
+    Scene::Magnified(320),
 ];
 
 /// One texel of kind 10's 8 x 8 texture in [`UV_ONE`] units.
