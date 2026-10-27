@@ -7964,6 +7964,7 @@ mod image {
         || GC2_SCHEDULE
         || GC2_STRIP
         || GC2_VIDEO
+        || GC2_COMBO
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8168,6 +8169,12 @@ mod image {
     /// with the lists in SDRAM and on the die, warm. About 20 minutes,
     /// unattended.
     const GC2_VIDEO: bool = option_env!("RP_GPUBENCH_GC2_VIDEO").is_some();
+
+    /// Run GC2BF, reminder R69 (`RP_GPUBENCH_GC2_COMBO`): what the display's
+    /// reads leave once the lists are on the die: the fetch off, the wait,
+    /// the checker order, punch-through on top of the on-die lists, and the
+    /// warm ladder with them. About 25 minutes, unattended.
+    const GC2_COMBO: bool = option_env!("RP_GPUBENCH_GC2_COMBO").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9551,6 +9558,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_COMBO {
+                "the 16-bit kinds' targets inside the safe region (GC2BF, R69: no map; scene 20 with its lists on the die at 149.50 / 1 warm, the display's fetch off, 0x664's wait, the checker order and punch-through on top, and the ladder on-die against SDRAM; each target poisoned first),"
             } else if GC2_VIDEO {
                 "the 16-bit kinds' targets inside the safe region (GC2BE, R69: no map; scene 20's rows 0-319 as a 480 x 320 picture pair on the die, one shown by the video plane at 2x while the core draws the other, with the lists in SDRAM and on the die, at 149.50 / 1 warm; each target poisoned first),"
             } else if GC2_STRIP {
@@ -9753,6 +9762,8 @@ mod image {
             3 * gc2::words(gc2::FT2) as usize
         } else if GC2_VIDEO {
             2 * gc2::words(gc2::FT2) as usize
+        } else if GC2_COMBO {
+            gc2::words(gc2::FT2) as usize
         } else if GC2_REGS
             || GC2_BLOCK
             || GC2_HEAT
@@ -10143,6 +10154,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_COMBO {
+                    gc2_combo(g, &mut r, (tex, first, dsig));
                 } else if GC2_VIDEO {
                     gc2_video(g, &mut r, (tex, first, dsig));
                 } else if GC2_STRIP {
@@ -14689,6 +14702,271 @@ mod image {
         );
         if !rh.release(&mut g.pool) || !rd.release(&mut g.pool) {
             log!("  GC2BE: a renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BF's pairs a way, and its ladder pairs a step.
+    const GC2BF_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 300 };
+    const GC2BF_LADDER_PAIRS: u32 = if GC2_RENDERS < 20 { 2 } else { 150 };
+    /// GC2BF's ladder below 149.50 / 1 (13 MHz x m / n).
+    const GC2BF_LADDER: [((u32, u32), &str); 3] = [
+        ((45, 4), "146.25 / 1"),
+        ((44, 4), "143.00 / 1"),
+        ((43, 4), "139.75 / 1"),
+    ];
+
+    /// A GC2BF way on top of the lists on the die.
+    #[derive(Clone, Copy)]
+    struct Combo {
+        name: &'static str,
+        fetch_off: bool,
+        wait: bool,
+        checker: bool,
+        punch: bool,
+    }
+
+    const GC2BF_WAYS: [Combo; 5] = [
+        Combo {
+            name: "the display's fetch off",
+            fetch_off: true,
+            wait: false,
+            checker: false,
+            punch: false,
+        },
+        Combo {
+            name: "0x664 = 15",
+            fetch_off: false,
+            wait: true,
+            checker: false,
+            punch: false,
+        },
+        Combo {
+            name: "the checker order",
+            fetch_off: false,
+            wait: false,
+            checker: true,
+            punch: false,
+        },
+        Combo {
+            name: "the fetch off and 0x664 = 15",
+            fetch_off: true,
+            wait: true,
+            checker: false,
+            punch: false,
+        },
+        Combo {
+            name: "punch-through",
+            fetch_off: false,
+            wait: false,
+            checker: false,
+            punch: true,
+        },
+    ];
+
+    /// Run GC2BF (see [`GC2_COMBO`]): what the display's reads leave once
+    /// the lists are on the die. Scene 20, reversed, poisoned, its
+    /// reference at Windows Mobile's clock; ten minutes' warm-up; then at
+    /// 149.50 / 1 warm, on the renderer with its lists on the die, each of
+    /// [`GC2BF_WAYS`] in [`GC2BF_PAIRS`] pairs against the on-die baseline;
+    /// then [`GC2BF_LADDER`], the on-die renderer against the SDRAM one,
+    /// [`GC2BF_LADDER_PAIRS`] a step (the shipping clock with the lists on
+    /// the die). `TEMP0` at each part; the control at Windows Mobile's
+    /// clock after.
+    #[inline(never)]
+    fn gc2_combo(g: &mut Rig, r: &mut Renderer, (tex, first, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < words {
+            log!("  GC2BF: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        let want = &mut rest[..words];
+        log!(
+            "  GC2BF (R69): what the display's reads leave with the lists on the die: scene {GC2AY_SCENE} at 149.50 / 1 warm, {} ways in {GC2BF_PAIRS} pairs against the on-die baseline, then the ladder {} steps x {GC2BF_LADDER_PAIRS} pairs on-die against SDRAM",
+            GC2BF_WAYS.len(),
+            GC2BF_LADDER.len()
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BF TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BF: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_tile_order(tile_order(gc2::REVERSED));
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+        gc2_set_scene(g, r, scene, tex);
+        if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BF") {
+            let _ = ondie.release(&mut g.pool);
+            return;
+        }
+        ondie.core_taken();
+        gc2_set_scene(g, &mut ondie, scene, tex);
+        {
+            let mut side = Gc2Side::new(dsig);
+            let mut base = Gc2Baseline(None);
+            let w = gc2_render_at(
+                g,
+                &mut ondie,
+                (k, at),
+                want,
+                first,
+                wm,
+                &mut base,
+                &mut side,
+            );
+            log!("  GC2BF the on-die renderer at Windows Mobile's clock: {w:?} words off");
+            if w != Some(0) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+        }
+        let poison = gc2::absent16(want, &gc2::POISON);
+        let (m, n) = gc2::NIGHT_PLL;
+        let s = gc2_step(m, n, 0, 1);
+        let top_regs = gc2_clock_want(step_speed(g, s), s.div);
+        let render =
+            |g: &mut Rig, rr: &mut Renderer, want: &[u32], first: &mut [u32], regs: [u32; 5]| {
+                gc2_set_scene(g, rr, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, rr, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+        // Part 1: the warm-up on the SDRAM renderer.
+        r.core_taken();
+        {
+            let mut one =
+                |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| render(g, r, want, first, regs);
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BF", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+        }
+        // Part 2: the ways on top of the lists on the die (both sides on
+        // the on-die renderer: no switching).
+        ondie.core_taken();
+        for (wi, way) in GC2BF_WAYS.iter().enumerate() {
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "WAY {} OF {}", wi + 1, GC2BF_WAYS.len());
+            soak_label(
+                g,
+                ["GC2BF 2 OF 3 ON-DIE +", "149.50 / 1 WARM", l3.as_str()],
+                SOAK_BLUE,
+            );
+            let mut one = |g: &mut Rig, _r: &mut Renderer, ondie: &mut Renderer, is_way: bool| {
+                let w = if is_way {
+                    *way
+                } else {
+                    Combo {
+                        name: "",
+                        fetch_off: false,
+                        wait: false,
+                        checker: false,
+                        punch: false,
+                    }
+                };
+                ondie.set_tile_order(if w.checker {
+                    rp_mbx3d_render::TileOrder::Checker
+                } else {
+                    tile_order(gc2::REVERSED)
+                });
+                ondie.set_tsp_or(if w.punch { 1 << 14 } else { 0 });
+                g.over = if w.wait {
+                    Over::of(&[(0x664, 15)])
+                } else {
+                    Over::NONE
+                };
+                if w.fetch_off {
+                    let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+                }
+                let out = render(g, ondie, want, first, top_regs);
+                if w.fetch_off {
+                    let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+                    rt::delay_us(20_000);
+                    let _ = underrun_take(&mut g.e.regs);
+                }
+                g.over = Over::NONE;
+                if w.wait {
+                    g.e.regs.write32(MBX + 0x664, 0);
+                }
+                ondie.set_tsp_or(0);
+                ondie.set_tile_order(tile_order(gc2::REVERSED));
+                out
+            };
+            let (bw, bus, ww, wus, failed) = gc2_pairs(g, r, &mut ondie, GC2BF_PAIRS, &mut one);
+            let np = u64::from(GC2BF_PAIRS);
+            log!(
+                "  GC2BF on-die + {}: {ww} of {GC2BF_PAIRS} wrong at mean {} us; on-die alone beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                way.name,
+                wus / np,
+                bus / np,
+                gc2ba_temp(&mut touch)
+            );
+        }
+        // Part 3: the ladder, the on-die renderer against the SDRAM one.
+        let mut last_ondie = true;
+        for (si, ((lm, ln), name)) in GC2BF_LADDER.iter().enumerate() {
+            let step = gc2_step(*lm, *ln, 0, 1);
+            clock_restore(&mut g.e.regs);
+            let Some(lock) = clock_apply(g, step) else {
+                clock_restore(&mut g.e.regs);
+                log!("  GC2BF ladder {name}: the clock didn't take; skipped");
+                continue;
+            };
+            clock_readback(g);
+            let regs = gc2_clock_want(step_speed(g, step), step.div);
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "STEP {} OF {}", si + 1, GC2BF_LADDER.len());
+            soak_label(g, ["GC2BF 3 OF 3 LADDER", name, l3.as_str()], SOAK_BLUE);
+            let mut one = |g: &mut Rig, r: &mut Renderer, ondie: &mut Renderer, is_way: bool| {
+                let rr: &mut Renderer = if is_way { ondie } else { r };
+                if is_way != last_ondie {
+                    rr.core_taken();
+                    last_ondie = is_way;
+                }
+                render(g, rr, want, first, regs)
+            };
+            let (bw, bus, ww, wus, failed) =
+                gc2_pairs(g, r, &mut ondie, GC2BF_LADDER_PAIRS, &mut one);
+            let np = u64::from(GC2BF_LADDER_PAIRS);
+            log!(
+                "  GC2BF ladder {name} (lock {lock}): on-die {ww} of {GC2BF_LADDER_PAIRS} wrong at {} us; SDRAM lists beside it {bw} at {} us; {failed} not finished; TEMP0 {:?}",
+                wus / np,
+                bus / np,
+                gc2ba_temp(&mut touch)
+            );
+        }
+        g.over = Over::NONE;
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        r.core_taken();
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        gc2_set_scene(g, r, scene, tex);
+        let control = gc2_render_at(g, r, (k, at), want, first, wm, &mut base, &mut side);
+        log!(
+            "  GC2BF: done, TEMP0 {:?}; the control at Windows Mobile's clock after: {control:?} words off",
+            gc2ba_temp(&mut touch)
+        );
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BF: the on-die renderer's memory not given back");
         }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }

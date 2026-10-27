@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bf = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_COMBO", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2be = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5543,7 +5552,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 98] = [
+    let runs: [GpubenchRun; 99] = [
         (
             "run A",
             &run_a,
@@ -5886,6 +5895,26 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BF (R69): the levers on top of the on-die lists, shortened
+        // (10 s warm-up, two pairs a way; the emulator draws exactly).
+        (
+            "run GC2BF",
+            &run_gc2bf,
+            &[
+                "GC2BF (R69): what the display's reads leave",
+                "GC2BF reference:",
+                "GC2BF the on-die renderer at Windows Mobile's clock: Some(0) words off",
+                "GC2BF A slice 10: ",
+                "GC2BF on-die + the display's fetch off: 0 of 2 wrong",
+                "GC2BF on-die + the checker order: 0 of 2 wrong",
+                "GC2BF on-die + punch-through: 0 of 2 wrong",
+                "GC2BF ladder 139.75 / 1 (lock",
+                "the control at Windows Mobile's clock after: Some(0) words off",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
