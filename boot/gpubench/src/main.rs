@@ -17529,6 +17529,12 @@ mod image {
             GC2BB_PARAMS.at
         );
         let planes0 = Snapshot::take(&mut g.e.regs);
+        if GC2CA_FAST {
+            gc2cn_run(g, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CA_CONVERT {
             gc2cm_run(g, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -19593,6 +19599,299 @@ mod image {
             hist[5],
             hist[6]
         );
+    }
+
+    /// Run GC2CN (`RP_GPUBENCH_GC2_HALF_FAST`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R78 item 2: GC2CM's conversion (16.45 ms at Windows Mobile's clock)
+    /// cut down. Its RGB565 card converted five frames running in each of
+    /// eight ways: Windows Mobile's clock or 74.75 / 1 (the cores at full
+    /// speed); the two Y' passes as two renders or as one 120 x 640 render
+    /// (both halves in one start: a render's fixed cost paid once); each
+    /// frame finished before the next (serial) or its two 2D placements
+    /// left running while the 3D core converts the next frame
+    /// (overlapped, the buffers doubled; FT2 once saw stray pixels with the
+    /// engines together, so every word of both last frames is checked). Per
+    /// way: the time a frame (five frames' total / 5) and the check. No
+    /// photos.
+    const GC2CA_FAST: bool = option_env!("RP_GPUBENCH_GC2_HALF_FAST").is_some();
+    /// GC2CN's frames a way (after one to warm).
+    const GC2CN_FRAMES: u32 = 5;
+
+    /// GC2CN's buffers, doubled: (the UYVY output, the Y' scratch: 120 x
+    /// 640, Y0 above Y1).
+    type CnBufs = [(u32, u32); 2];
+
+    /// Run GC2CN (see [`GC2CA_FAST`]).
+    #[inline(never)]
+    fn gc2cn_run(g: &mut Rig, planes0: &Snapshot) {
+        gc2ca_card(
+            g,
+            planes0,
+            ["GC2CN: CONVERSION", "COST CUT", "NO PHOTOS NEEDED"],
+        );
+        let nudge = core::mem::replace(&mut g.nudge, 0);
+        let t0 = rt::ticks();
+        let out_bytes = u32::from(GC2CM_OW) * GC2CM_H * 4;
+        let src_bytes = 256 * 2 * GC2CM_H;
+        // The pool holds ~1 MiB here (GC2's set-up keeps the rest), one
+        // output short (the emulator's check): the second output goes in
+        // GC2CA's native picture from row 400, past the label at row 256
+        // (unused: GC2CN returns before the game frames).
+        let (ya, yb) = (
+            g.pool.alloc(2 * out_bytes, 128),
+            g.pool.alloc(2 * out_bytes, 128),
+        );
+        let src = g.pool.alloc(src_bytes, 128);
+        let mem = [ya, yb, g.pool.alloc(out_bytes, 128)];
+        let o1 = GC2CA_A + 400 * 960;
+        if let (Some(src), [Some(y0), Some(y1), Some(o0)]) = (src, mem) {
+            gc2cm_card(g, src, false);
+            let bufs: CnBufs = [(o0, y0), (o1, y1)];
+            let clocks = [
+                (None, "WM 99.67 / 2"),
+                (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
+            ];
+            log!(
+                "  GC2CN: GC2CM's RGB565 card, {GC2CN_FRAMES} frames a way after one to warm; per way the time a frame and every word of the last two frames checked"
+            );
+            let mut way = 0;
+            for (step, cname) in clocks {
+                clock_restore(&mut g.e.regs);
+                if let Some(s) = step {
+                    if clock_apply(g, s).is_none() {
+                        clock_restore(&mut g.e.regs);
+                        log!("  GC2CN {cname}: the clock didn't take; skipped");
+                        continue;
+                    }
+                    clock_readback(g);
+                }
+                for tall in [false, true] {
+                    for overlap in [false, true] {
+                        way += 1;
+                        let mut l2 = heapless_name();
+                        let _ = write!(l2, "WAY {way} OF 8");
+                        soak_label(g, ["GC2CN COST", cname, l2.as_str()], SOAK_BLUE);
+                        gc2cn_way(g, src, bufs, (tall, overlap), cname);
+                        rt::check_in();
+                    }
+                }
+            }
+            clock_restore(&mut g.e.regs);
+        } else {
+            log!("  GC2CN: no memory: card {src:x?}, buffers {mem:x?}");
+        }
+        for (b, k) in mem.into_iter().zip([2u32, 2, 1]) {
+            if let Some(b) = b {
+                let _ = g.pool.free(b, k * out_bytes);
+            }
+        }
+        if let Some(s) = src {
+            let _ = g.pool.free(s, src_bytes);
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        log!("  GC2CN done: {} ms", us_since(t0) / 1000);
+        g.nudge = nudge;
+        gc2ca_card(g, planes0, ["GC2CN DONE", "", ""]);
+    }
+
+    /// One way: a frame to warm, then [`GC2CN_FRAMES`] timed, then both
+    /// output buffers checked.
+    fn gc2cn_way(g: &mut Rig, src: u32, bufs: CnBufs, (tall, overlap): (bool, bool), cname: &str) {
+        let (w, h) = (GC2CM_OW, GC2CM_H as u16);
+        // The A pass's renderer, and the Y' passes' (one 120 x 640 when tall).
+        let Some(mut ra) = Renderer::new(&mut g.pool, w, h) else {
+            log!("  GC2CN: no renderer");
+            return;
+        };
+        let Some(mut ry) = Renderer::new(&mut g.pool, w, if tall { 2 * h } else { h }) else {
+            log!("  GC2CN: no renderer");
+            let _ = ra.release(&mut g.pool);
+            return;
+        };
+        let _ = ra.set_background(Some(BLACK));
+        let _ = ry.set_background(Some(BLACK));
+        let mut pending = false;
+        let mut ok = true;
+        let mut t_frames = 0u32;
+        for k in 0..=GC2CN_FRAMES {
+            let s = rt::ticks();
+            let set = bufs[(k % 2) as usize];
+            if !gc2cn_passes(g, (&mut ra, &mut ry), src, set, tall) {
+                ok = false;
+                break;
+            }
+            // The previous frame's placements must be done before these
+            // are queued (and before its buffers come round again).
+            if pending && g.e.finish(g.mem.0, 200_000).is_err() {
+                ok = false;
+                break;
+            }
+            if !gc2cn_place(g, set, overlap) {
+                ok = false;
+                break;
+            }
+            pending = overlap;
+            if k > 0 {
+                t_frames += us_since(s);
+            }
+        }
+        if pending {
+            let s = rt::ticks();
+            ok &= g.e.finish(g.mem.0, 200_000).is_ok();
+            t_frames += us_since(s);
+        }
+        if !ok {
+            g.e.reset(rt::delay_us);
+            let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+            cpu::drain_write_buffer();
+            log!(
+                "  GC2CN {cname}, {}, {}: a step failed or hung (reset)",
+                if tall {
+                    "Y' one tall render"
+                } else {
+                    "Y' two renders"
+                },
+                if overlap { "overlapped" } else { "serial" }
+            );
+        } else {
+            log!(
+                "  GC2CN {cname}, {}, {}: {} us a frame",
+                if tall {
+                    "Y' one tall render"
+                } else {
+                    "Y' two renders"
+                },
+                if overlap { "overlapped" } else { "serial" },
+                t_frames / GC2CN_FRAMES
+            );
+            for (i, &(out, _)) in bufs.iter().enumerate() {
+                let mut name = heapless_name();
+                let _ = write!(name, "buffer {i}");
+                gc2cm_check(g, out, false, name.as_str());
+            }
+        }
+        ra.set_header_xors([0; 5]);
+        ry.set_header_xors([0; 5]);
+        g.set(&mut ra, 0, None);
+        g.set(&mut ry, 0, None);
+        g.set(&mut ry, 1, None);
+        let _ = ry.release(&mut g.pool);
+        let _ = ra.release(&mut g.pool);
+    }
+
+    /// One frame's 3D passes into `set`: A (U', V') into the output, Y' at
+    /// 2i and 2i + 1 into the scratch (Y0 rows 0-319, Y1 rows 320-639), as
+    /// two renders or one tall one.
+    fn gc2cn_passes(
+        g: &mut Rig,
+        (ra, ry): (&mut Renderer, &mut Renderer),
+        src: u32,
+        (out, ybuf): (u32, u32),
+        tall: bool,
+    ) -> bool {
+        let tex = Texture {
+            at: src,
+            code: 5,
+            format: format::RGB565 as u8,
+            u_mode: address::CLAMP as u8,
+            v_mode: address::CLAMP as u8,
+            linear: false,
+            levels: 1,
+        };
+        let opaque = tex.words()[2];
+        let rows = 1 | (5 ^ 6) << 20;
+        let texel = UV_ONE / 256;
+        let bias = texel / 32;
+        let (w, h) = (i32::from(GC2CM_OW), GC2CM_H as i32);
+        let quad = |y: i32, u0: i32, tint: u32| {
+            let (ua, ub) = (u0 + bias, u0 + bias + 240 * texel);
+            let (va, vb) = (bias, bias + 320 * (UV_ONE / 512));
+            Draw::rect(
+                0,
+                y,
+                w,
+                h,
+                Paint::Texture {
+                    tex,
+                    uv: [(ua, va), (ub, va), (ub, vb), (ua, vb)],
+                    tint,
+                },
+            )
+        };
+        let picture = |at: u32, rows_n: u32| Target {
+            picture: Picture {
+                at,
+                stride: u32::from(GC2CM_OW) * 4,
+                w: GC2CM_OW,
+                h: rows_n as u16,
+                format: PixelFormat::Argb8888,
+            },
+            x: 0,
+            y: 0,
+        };
+        let render = |g: &mut Rig, r: &mut Renderer, t: Target| {
+            let before = g.hangs;
+            let ok = p_frame(g, r, t, 6, None);
+            if g.hangs != before || !ok {
+                log!(
+                    "  GC2CN: a pass {}",
+                    if ok {
+                        "hung (reset)"
+                    } else {
+                        "wasn't rendered"
+                    }
+                );
+                r.start_clean();
+                return false;
+            }
+            true
+        };
+        ra.set_header_xors([0, rows, 1 << 29, 0, 0]);
+        g.set(ra, 0, Some(quad(0, 0, WHITE)));
+        if !render(g, ra, picture(out, GC2CM_H)) {
+            return false;
+        }
+        ry.set_header_xors([0, rows | 0x2000, 1 << 29, opaque ^ GC2CM_DOT3, 0]);
+        if tall {
+            g.set(ry, 0, Some(quad(0, 0, GC2CM_TINT)));
+            g.set(ry, 1, Some(quad(h, texel, GC2CM_TINT)));
+            render(g, ry, picture(ybuf, 2 * GC2CM_H))
+        } else {
+            g.set(ry, 0, Some(quad(0, 0, GC2CM_TINT)));
+            if !render(g, ry, picture(ybuf, GC2CM_H)) {
+                return false;
+            }
+            g.set(ry, 0, Some(quad(0, texel, GC2CM_TINT)));
+            render(
+                g,
+                ry,
+                picture(ybuf + u32::from(GC2CM_OW) * GC2CM_H * 4, GC2CM_H),
+            )
+        }
+    }
+
+    /// One frame's two 2D placements (ROP3 `0xCA`): queued, and waited for
+    /// unless `overlap`.
+    fn gc2cn_place(g: &mut Rig, (out, ybuf): (u32, u32), overlap: bool) -> bool {
+        let stride = i32::from(GC2CM_OW) * 4;
+        let y1 = ybuf + u32::from(GC2CM_OW) * GC2CM_H * 4;
+        for (from, mask) in [(ybuf, 0x0000_FF00u32), (y1, 0xFF00_0000)] {
+            let Some((w, n)) = cmd::blit(
+                (Format::BPP32, out as usize, stride),
+                (Format::BPP32, from as usize, stride),
+                (0, 0),
+                (0, 0, GC2CM_OW, GC2CM_H as u16),
+                0xCACA,
+                0,
+                mask,
+            ) else {
+                return false;
+            };
+            if g.e.submit(&w[..n]).is_err() {
+                return false;
+            }
+        }
+        overlap || g.e.finish(g.mem.0, 200_000).is_ok()
     }
 
     /// Run GC2CI (`RP_GPUBENCH_GC2_HALF_STRIDE`, with
