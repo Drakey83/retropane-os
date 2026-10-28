@@ -17565,7 +17565,9 @@ mod image {
         gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
         let _ = underrun_take(&mut g.e.regs);
         if ok {
-            if GC2CA_RGB {
+            if GC2CA_COLOUR {
+                gc2ca_colour_run(g, &planes0);
+            } else if GC2CA_RGB {
                 gc2ca_rgb_run(g, &planes0);
             } else if GC2CA_CARD {
                 gc2ca_card_run(g, &planes0);
@@ -18165,14 +18167,16 @@ mod image {
     ];
 
     /// `text` drawn at (`x`, `y`) of a `w`-wide picture at `at` with
-    /// `bytes` a pixel (2: RGB565, 4: ARGB8888), each font pixel 2 x 2, in
-    /// yellow on black.
-    fn gc2cd_text(g: &mut Rig, (at, w, bytes): (u32, u32, u32), (x, y): (u32, u32), text: &str) {
-        let (fg, bg) = if bytes == 2 {
-            (0xFFE0u32, 0u32)
-        } else {
-            (0xFFFF_FF00, 0xFF00_0000)
-        };
+    /// `bytes` a pixel (2: RGB565 or UYVY, 4: ARGB8888), each font pixel
+    /// 2 x 2, in `fg` on `bg` (a pixel's value; UYVY: a half word whose
+    /// chroma is the same for both pixels of a pair).
+    fn gc2cd_text(
+        g: &mut Rig,
+        (at, w, bytes): (u32, u32, u32),
+        (x, y): (u32, u32),
+        (fg, bg): (u32, u32),
+        text: &str,
+    ) {
         let cols = text.len() as u32 * (WIDTH as u32 + 1) * 2 + 4;
         let rows = font::HEIGHT as u32 * 2 + 4;
         for dy in 0..rows {
@@ -18203,6 +18207,12 @@ mod image {
             }
         }
     }
+
+    /// The labels' ink, (text, ground): yellow on black.
+    const GC2CD_RGB_INK: (u32, u32) = (0xFFE0, 0);
+    const GC2CD_ARGB_INK: (u32, u32) = (0xFFFF_FF00, 0xFF00_0000);
+    /// UYVY's: white (Y 235) on black (Y 16), chroma 128.
+    const GC2CE_UYVY_INK: (u32, u32) = (0xEB80, 0x1080);
 
     /// GC2CC's card as ARGB8888 at `at` (240 x 320, 960-byte rows).
     fn gc2cd_card_argb(g: &mut Rig, at: u32) {
@@ -18236,10 +18246,10 @@ mod image {
             let argb = way == GC2CD_ARGB;
             if argb {
                 gc2cd_card_argb(g, GC2CA_B);
-                gc2cd_text(g, (GC2CA_B, 240, 4), (6, 200), label.as_str());
+                gc2cd_text(g, (GC2CA_B, 240, 4), (6, 200), GC2CD_ARGB_INK, label.as_str());
             } else {
                 gc2cc_card(g, GC2CA_A, GC2CA_B);
-                gc2cd_text(g, (GC2CA_A, 240, 2), (6, 200), label.as_str());
+                gc2cd_text(g, (GC2CA_A, 240, 2), (6, 200), GC2CD_RGB_INK, label.as_str());
             }
             g.mem.sync();
             let screen = Plane {
@@ -18318,6 +18328,99 @@ mod image {
             rp_drv_mbx_display::video_hide(&mut g.e.regs);
         }
         gc2ca_card(g, planes0, ["GC2CD DONE", "THANK YOU", ""]);
+    }
+
+    /// Run GC2CE (`RP_GPUBENCH_GC2_HALF_COLOUR`, with
+    /// `RP_GPUBENCH_GC2_HALF`): the colours of RGB through the video
+    /// plane's scaler. GC2CD (gpubench-0163, the owner's photos): the
+    /// horizontal pitch doubled (`SHCTRL` `0x800` with the vertical's
+    /// `0x400`) gives the whole card at exactly 2x, so the scaler steps an
+    /// RGB format at twice the rate it steps UYVY across (ARGB8888 the
+    /// same: not a 16-bit pairing); the colours are wrong whenever the
+    /// horizontal scaler runs (black a dark plum, green red, red pale),
+    /// nearer right with it bypassed. P9d: the scaler works after the
+    /// colour conversion. Each test the right size and one colour setting
+    /// changed, the UYVY card through the 2x last as the camera's colour
+    /// reference (proven right in GC2CC).
+    const GC2CA_COLOUR: bool = option_env!("RP_GPUBENCH_GC2_HALF_COLOUR").is_some();
+    /// GC2CE's tests: (name, `VSCTRL` bits set, bits cleared, `SPOCTRL`
+    /// bits flipped, UYVY).
+    #[allow(clippy::type_complexity)]
+    const GC2CE_TESTS: [(&str, u32, u32, u32, bool); 7] = [
+        ("RGB SH X2", 0, 0, 0, false),
+        // VSCTRL 25: the colour conversion (YUV to RGB).
+        ("RGB CONV", 1 << 25, 0, 0, false),
+        // VSCTRL 22: co-sited chroma.
+        ("RGB COSITED", 1 << 22, 0, 0, false),
+        ("RGB CONV+COSITED", 1 << 25 | 1 << 22, 0, 0, false),
+        // VSCTRL 26: the gamma.
+        ("RGB NO GAMMA", 0, 1 << 26, 0, false),
+        // SPOCTRL 29: the order of the two directions.
+        ("RGB HV ORDER", 0, 0, 1 << 29, false),
+        ("UYVY CONTROL", 0, 0, 0, true),
+    ];
+
+    /// Run GC2CE (see [`GC2CA_COLOUR`]): for each of [`GC2CE_TESTS`] a
+    /// card, the test card (RGB565 at A, UYVY at B) labelled with the
+    /// test, 2x in P9c's arrangement, RGB with GC2CD's doubled horizontal
+    /// pitch, the test's bits changed, the registers logged, held until a
+    /// button.
+    fn gc2ca_colour_run(g: &mut Rig, planes0: &Snapshot) {
+        let n = GC2CE_TESTS.len();
+        for (i, &(name, set, clear, flip, uyvy)) in GC2CE_TESTS.iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "PHOTO {} OF {n}", i + 1);
+            gc2ca_card(g, planes0, [l1.as_str(), name, "PHOTO, THEN A BUTTON"]);
+            let mut label = heapless_name();
+            let _ = write!(label, "T{} {name}", i + 1);
+            gc2cc_card(g, GC2CA_A, GC2CA_B);
+            let (at, format, ink) = if uyvy {
+                (GC2CA_B, VideoFormat::Uyvy, GC2CE_UYVY_INK)
+            } else {
+                (GC2CA_A, VideoFormat::Rgb565, GC2CD_RGB_INK)
+            };
+            gc2cd_text(g, (at, 240, 2), (6, 200), ink, label.as_str());
+            g.mem.sync();
+            let screen = Plane {
+                format: PlaneFormat::Rgb565,
+                width: 480,
+                height: 640,
+                offset: 0,
+                stride: 960,
+            };
+            rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
+            let plane = VideoPlane::new(format, 240, 320, at as usize);
+            let scale = plane.scale_to(480, 640, 0, 0);
+            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
+            // The test's change, the stream briefly off while it is made.
+            let r = &mut g.e.regs;
+            let sc = r.read32(lreg::VSCADR);
+            r.write32(lreg::VSCADR, sc & !(1 << 31));
+            if !uyvy {
+                // GC2CD test 2: SHCTRL bits 14-0, the horizontal pitch,
+                // doubled.
+                let sh = r.read32(lreg::SHCTRL);
+                r.write32(lreg::SHCTRL, sh & !0x7FFF | ((sh & 0x7FFF) * 2).min(0x7FFF));
+            }
+            let v = r.read32(lreg::VSCTRL);
+            r.write32(lreg::VSCTRL, (v | set) & !clear);
+            let sp = r.read32(lreg::SPOCTRL);
+            r.write32(lreg::SPOCTRL, sp ^ flip);
+            r.write32(lreg::VSCADR, sc);
+            log!(
+                "  GC2CE {} {name}: VSCTRL 0x{:08x} SPOCTRL 0x{:08x} SHCTRL 0x{:08x} SVCTRL 0x{:08x} VSCADR 0x{:08x}",
+                i + 1,
+                g.e.regs.read32(lreg::VSCTRL),
+                g.e.regs.read32(lreg::SPOCTRL),
+                g.e.regs.read32(lreg::SHCTRL),
+                g.e.regs.read32(lreg::SVCTRL),
+                g.e.regs.read32(lreg::VSCADR)
+            );
+            let held = gc2ca_hold_button(g, 120_000_000);
+            log!("  GC2CE {} {name}: held {} ms", i + 1, held / 1000);
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        }
+        gc2ca_card(g, planes0, ["GC2CE DONE", "THANK YOU", ""]);
     }
 
     /// GC2BY's rounds a step (the emulator 1).

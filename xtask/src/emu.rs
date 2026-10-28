@@ -5532,6 +5532,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2ce = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_COLOUR", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5806,7 +5815,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 123] = [
+    let runs: [GpubenchRun; 124] = [
         (
             "run A",
             &run_a,
@@ -6241,6 +6250,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2CD 1 RGB 2X PITCH X2: held 0 ms",
                 "GC2CD 6 ARGB8888 2X: VSCTRL 0x",
                 "GC2CD 7 RGB 2X X2 NEAREST: held 0 ms",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CE: RGB's colours through the video plane's scaler, one
+        // setting a picture, held for the owner's camera.
+        (
+            "run GC2CE",
+            &run_gc2ce,
+            &[
+                "GC2CE 1 RGB SH X2: held 0 ms",
+                "GC2CE 2 RGB CONV: VSCTRL 0x",
+                "GC2CE 7 UYVY CONTROL: held 0 ms",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
