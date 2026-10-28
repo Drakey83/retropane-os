@@ -71,6 +71,15 @@ const SPOCTRL_V_BYPASS: u32 = 1 << 30;
 /// without it when scaling down.
 // inherited: C70, Windows Mobile (SPOCTRL 0xC8030000, probe 2026-10-11)
 const SPOCTRL_VS_UR_C: u32 = 1 << 27;
+/// `SPOCTRL` bit 29, mbxfb's `SPOCTRL_HV_SC_OR` (the order of the two
+/// directions). With it clear, RGB through the horizontal scaler comes out
+/// at twice the asked size across, the vertical pitch misapplied, and
+/// the colours wrong (green shown red, black plum); UYVY is right either
+/// way (GC2CC, GC2CD, gpubench-0162/0163). With it set, RGB's colours are
+/// right and the horizontal pitch acts as written (GC2CE test 6,
+/// gpubench-0164, the owner's photos, 2026-10-28). Set for RGB whenever
+/// the horizontal scaler runs; UYVY keeps mbxfb's and Windows Mobile's 0.
+const SPOCTRL_HV_ORDER: u32 = 1 << 29;
 /// The scaler's filter as Linux mbxfb loads it at start-up (`mbxfb_setup`:
 /// `SVCTRL`'s two initial phases `1 << 10`, then `VSCOEFF0-4` and
 /// `HSCOEFF0-8`, "good for scaling up; for scaling down, the application
@@ -460,6 +469,9 @@ impl VideoPlane {
         if scale.ur_c {
             spoctrl |= SPOCTRL_VS_UR_C;
         }
+        if self.format == VideoFormat::Rgb565 && ow != w {
+            spoctrl |= SPOCTRL_HV_ORDER;
+        }
         let shctrl = if ow == w {
             PITCH_1_TO_1
         } else {
@@ -647,6 +659,30 @@ mod tests {
         let s = v.registers_scaled(Layer::SOLO, false, v.scale_to(480, 640, 0, 0));
         assert_eq!(SPOCTRL_VPITCH.extract(s[5].1), 0x400);
         assert_ne!(s[5].1 & SPOCTRL_VS_UR_C, 0);
+        // Only the height scales: the horizontal scaler bypassed, bit 29
+        // left as mbxfb has it.
+        assert_eq!(s[5].1 & SPOCTRL_HV_ORDER, 0);
+    }
+
+    #[test]
+    fn rgb_sets_the_order_bit_only_when_its_width_scales() {
+        // GC2CE: RGB through the horizontal scaler needs SPOCTRL bit 29;
+        // the pitches stay the plain ratio (GC2CD's doubled horizontal
+        // pitch was the wrong order's compensation, not the fix).
+        let v = VideoPlane::new(VideoFormat::Rgb565, 240, 320, 0xF000);
+        let s = v.registers_scaled(Layer::SOLO, false, v.scale_to(480, 640, 0, 0));
+        assert_ne!(s[5].1 & SPOCTRL_HV_ORDER, 0);
+        assert_eq!(SPOCTRL_VPITCH.extract(s[5].1), 0x400);
+        assert_eq!(SHCTRL_HPITCH.extract(s[6].1), 0x400);
+        // Across only, then 1:1: set, then not.
+        let a = v.registers_scaled(Layer::SOLO, false, v.scale_to(480, 320, 0, 0));
+        assert_ne!(a[5].1 & SPOCTRL_HV_ORDER, 0);
+        let n = v.registers_scaled(Layer::SOLO, false, v.scale_to(240, 320, 0, 0));
+        assert_eq!(n[5].1 & SPOCTRL_HV_ORDER, 0);
+        // UYVY: never (right without it, GC2CC).
+        let u = VideoPlane::new(VideoFormat::Uyvy, 240, 320, 0xF000);
+        let us = u.registers_scaled(Layer::SOLO, false, u.scale_to(480, 640, 0, 0));
+        assert_eq!(us[5].1 & SPOCTRL_HV_ORDER, 0);
     }
 
     #[test]

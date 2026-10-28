@@ -5541,6 +5541,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cf = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_FIXED", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5815,7 +5824,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 124] = [
+    let runs: [GpubenchRun; 125] = [
         (
             "run A",
             &run_a,
@@ -6265,6 +6274,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2CE 1 RGB SH X2: held 0 ms",
                 "GC2CE 2 RGB CONV: VSCTRL 0x",
                 "GC2CE 7 UYVY CONTROL: held 0 ms",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CF: the driver's fixed RGB 2x on the card, then the game
+        // frames full size, Dell's 2x and ours, each held for the camera.
+        (
+            "run GC2CF",
+            &run_gc2cf,
+            &[
+                "GC2CF 1 RGB 2X FIXED: held 0 ms",
+                "GC2CF 4 HALF SIZE: OURS 2X: held 0 ms",
+                "GC2CF 7 HALF SIZE: OURS 2X: held 0 ms",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

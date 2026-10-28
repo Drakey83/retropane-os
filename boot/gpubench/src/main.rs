@@ -17565,7 +17565,10 @@ mod image {
         gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
         let _ = underrun_take(&mut g.e.regs);
         if ok {
-            if GC2CA_COLOUR {
+            if GC2CA_FIXED {
+                gc2ca_fixed_card(g, &planes0);
+                gc2ca_watch(g, &mut cur, tex, &planes0);
+            } else if GC2CA_COLOUR {
                 gc2ca_colour_run(g, &planes0);
             } else if GC2CA_RGB {
                 gc2ca_rgb_run(g, &planes0);
@@ -17748,9 +17751,28 @@ mod image {
                 };
                 gc2ca_set_mesh(g, rr, kind, tex, size);
                 let _ = gc2ca_render(g, rr, size, GC2CA_A);
+                // The picture's own label (the owner, 2026-10-28: the
+                // photos must say what they are), at the same place on
+                // the screen for every size.
+                let mut label = heapless_name();
+                let _ = write!(label, "T{} {name}", k + GC2CF_FIRST);
+                let (w, h) = (u32::from(size.0), u32::from(size.1));
+                gc2cd_text(
+                    g,
+                    (GC2CA_A, w, 2),
+                    (4, h * 5 / 8),
+                    GC2CD_RGB_INK,
+                    label.as_str(),
+                );
+                g.mem.sync();
                 let _ = wait_scan(g, 640);
                 gc2ca_show(g, how, size, GC2CA_A, planes0);
-                gc2ca_hold(GC2CA_HOLD_US);
+                if GC2CA_FIXED {
+                    let held = gc2ca_hold_button(g, 120_000_000);
+                    log!("  GC2CF {} {name}: held {} ms", k + GC2CF_FIRST, held / 1000);
+                } else {
+                    gc2ca_hold(GC2CA_HOLD_US);
+                }
             }
             log!(
                 "  GC2CA watch frame {f}: shown full size, Dell's 2x, the video plane's 2x, each named first"
@@ -18421,6 +18443,45 @@ mod image {
             rp_drv_mbx_display::video_hide(&mut g.e.regs);
         }
         gc2ca_card(g, planes0, ["GC2CE DONE", "THANK YOU", ""]);
+    }
+
+    /// Run GC2CF (`RP_GPUBENCH_GC2_HALF_FIXED`, with `RP_GPUBENCH_GC2_HALF`):
+    /// the driver's RGB scaling as GC2CE found it right (`SPOCTRL` bit 29,
+    /// `layers::SPOCTRL_HV_ORDER`, the plain pitches), nothing poked after
+    /// it: test 1 the card at 2x, then GC2CA's comparison (the game frames
+    /// full size, through Dell's doubling and through ours), each labelled
+    /// on itself and held until a button: the owner's verdict.
+    const GC2CA_FIXED: bool = option_env!("RP_GPUBENCH_GC2_HALF_FIXED").is_some();
+    /// The comparison's first test number (after the card), or 0 without
+    /// GC2CF.
+    const GC2CF_FIRST: usize = if GC2CA_FIXED { 1 } else { 0 };
+
+    /// GC2CF test 1: the card through the driver's 2x, RGB565.
+    fn gc2ca_fixed_card(g: &mut Rig, planes0: &Snapshot) {
+        gc2ca_card(g, planes0, ["PHOTO 1 OF 7", "RGB CARD 2X FIXED", "PHOTO, THEN A BUTTON"]);
+        gc2cc_card(g, GC2CA_A, GC2CA_B);
+        gc2cd_text(g, (GC2CA_A, 240, 2), (6, 200), GC2CD_RGB_INK, "T1 RGB 2X FIXED");
+        g.mem.sync();
+        let screen = Plane {
+            format: PlaneFormat::Rgb565,
+            width: 480,
+            height: 640,
+            offset: 0,
+            stride: 960,
+        };
+        rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
+        let plane = VideoPlane::new(VideoFormat::Rgb565, 240, 320, GC2CA_A as usize);
+        let scale = plane.scale_to(480, 640, 0, 0);
+        rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
+        log!(
+            "  GC2CF 1 RGB 2X FIXED: SPOCTRL 0x{:08x} SHCTRL 0x{:08x} VSCTRL 0x{:08x}",
+            g.e.regs.read32(lreg::SPOCTRL),
+            g.e.regs.read32(lreg::SHCTRL),
+            g.e.regs.read32(lreg::VSCTRL)
+        );
+        let held = gc2ca_hold_button(g, 120_000_000);
+        log!("  GC2CF 1 RGB 2X FIXED: held {} ms", held / 1000);
+        rp_drv_mbx_display::video_hide(&mut g.e.regs);
     }
 
     /// GC2BY's rounds a step (the emulator 1).
