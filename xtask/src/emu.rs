@@ -5684,6 +5684,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_SOAK_SECS", "20"),
         ],
     )?;
+    let run_gc2cq = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_PVR2", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bw = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5940,7 +5949,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 135] = [
+    let runs: [GpubenchRun; 136] = [
         (
             "run A",
             &run_a,
@@ -6631,6 +6640,28 @@ fn variant_images_gpubench(
                 "GC2BX search done: ",
                 "GC2BX proof Reg(",
                 "GC2BX done, TEMP0",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CQ (R69): the PowerVR2's settings by value, a few trials of
+        // each part (the emulator models none of them: its map shows which
+        // fields its model draws differently, its hot part holds each to
+        // its own pictures).
+        (
+            "run GC2CQ",
+            &run_gc2cq,
+            &[
+                "GC2CQ (R69, the PowerVR2's settings): 6 trials",
+                "GC2CQ generator reference:",
+                "GC2CQ textured mesh reference:",
+                "GC2CQ map done: ",
+                "GC2CQ warm-up reference:",
+                "GC2CQ A slice 10: ",
+                "GC2CQ generator again reference:",
+                "GC2CQ hot done: 6 trials",
+                "GC2CQ done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

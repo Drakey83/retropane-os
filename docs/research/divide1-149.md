@@ -246,6 +246,17 @@ value, paired with the baseline:
 Every write read back; the picture checked word for word; hangs reset
 and logged.
 
+**Reopened for GC2CQ only, with a stop rule (the owner, 2026-10-28: "if
+its a good lead i think it makes sense to reopen it, i just dont like
+chasing my tail").** GC2CQ is one run with a yes-or-no answer: every
+candidate field set by value, on generators that fault every render, each
+held to its own picture. **If no trial is confirmed clean, these PowerVR2
+leads are closed** (the map it records stays as a finding about the
+block); the chase goes back to parked (R75) and reopens only on a lead
+that is new, not a variant of one ruled out. A confirmed trial goes
+through the full proof set (both sweeps, the kinds, the ring, the meshes)
+before anything else is built on it.
+
 ## Next, when the chase resumes
 
 **Added 2026-10-28: Intel's datasheet and REA (reminder R85, read it

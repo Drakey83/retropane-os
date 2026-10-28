@@ -8100,6 +8100,7 @@ mod image {
         || GC2_SEAL
         || GC2_MESH
         || GC2_FIXES
+        || GC2_PVR2
         || GC2_GAMES
         || GC2_664
         || GC2_TIMER
@@ -8449,6 +8450,21 @@ mod image {
     /// order, the layer; the confirmed fixes on every frame. About 30
     /// minutes, unattended.
     const GC2_FIXES: bool = option_env!("RP_GPUBENCH_GC2_FIXES").is_some();
+
+    /// Run GC2CQ, reminder R69 (`RP_GPUBENCH_GC2_PVR2`): the Dreamcast's
+    /// PowerVR2 as a map (divide1-149.md): the MBX render block descends
+    /// from the PVR2's CORE registers (`0x650` is `FB_W_CTRL` code for
+    /// code), whose manual names settings that fit divide 1's faults:
+    /// `HALF_OFFSET` (sample positions), `FPU_PARAM_CFG` (parameter burst
+    /// thresholds, never below 4), `SDRAM_CFG`'s read-to-data delay. Each
+    /// candidate field set **by value** (GC2AR and GC2BX flipped one bit at a
+    /// time), on the crack generator and the flat and textured meshes:
+    /// each trial's own pictures at Windows Mobile's clock first (a sample
+    /// position moves the whole picture, so it is held to its own, not the
+    /// plain one; the map of which fields draw differently at all), then at
+    /// 149.50 / 1 warm, a clean trial confirmed in pairs with the control.
+    /// About 30 minutes, unattended.
+    const GC2_PVR2: bool = option_env!("RP_GPUBENCH_GC2_PVR2").is_some();
 
     /// Run GC2BY, reminder R76 (`RP_GPUBENCH_GC2_GAMES`): the game frames
     /// (GC2BW's watertight meshes: flat, over a layer, textured, depth
@@ -9872,6 +9888,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2BZ, R20: no map; each tile row of the four game frames watched as it lands against the scan line, in four tile orders, started at three scan lines, at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_GAMES {
                 "the 16-bit kinds' targets inside the safe region (GC2BY, R76: no map; the game frames, watertight meshes flat, layered, textured and depth tested, on the warm ladder 149.50 down to 108.33 / 1 and 149.50 / 2 with the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_PVR2 {
+                "the 16-bit kinds' targets inside the safe region (GC2CQ, R69: no map; the PowerVR2's settings by value, 0x61C as FPU_PARAM_CFG, sample-position and delay fields, each trial's pictures at Windows Mobile's clock then held to them at 149.50 / 1 warm on the crack generator and the meshes, the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_FIXES {
                 "the 16-bit kinds' targets inside the safe region (GC2BX, R74 and R69: no map; the game test and every driver-level fix, the meshes beside scene 3 and the generator, a one-render search of every register, triangle-word bit, vertex order and the layer, the confirmed fixes on every frame, at 149.50 / 1 warm with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_MESH {
@@ -10134,6 +10152,7 @@ mod image {
             || GC2_SEAL
             || GC2_MESH
             || GC2_FIXES
+            || GC2_PVR2
             || GC2_GAMES
             || GC2_TEAR
         {
@@ -10542,6 +10561,8 @@ mod image {
                     gc2_games(g, &mut r, (tex, first, dsig));
                 } else if GC2_FIXES {
                     gc2_fixes(g, &mut r, (tex, first, dsig));
+                } else if GC2_PVR2 {
+                    gc2_pvr2(g, &mut r, (tex, first, dsig));
                 } else if GC2_MESH {
                     gc2_mesh(g, &mut r, (tex, first, dsig));
                 } else if GC2_SEAL {
@@ -22372,6 +22393,399 @@ mod image {
         }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
         log!("  GC2BX done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+    }
+
+    /// GC2CQ's `0x61C` values, read as the PowerVR2's `FPU_PARAM_CFG` (Sega's
+    /// Dev.Box manual 8.4.2: bits 20-14 the TSP parameter burst threshold,
+    /// 13-8 the ISP's, both "never below 4", default 0x1F; 7-4 the pointer
+    /// burst, 3-0 the first burst, default 7 and 7; bit 21 the region header
+    /// type). Dell's `0x0002_0004` reads TSP 8, ISP 0, bursts 0 and 4.
+    const GC2CQ_61C: [u32; 10] = [
+        0x0002_0404, // ISP threshold 4 (the manual's minimum)
+        0x0002_1F04, // ISP threshold 0x1F (the default)
+        0x0002_3F04, // ISP threshold the most
+        0x0007_C004, // TSP threshold 0x1F
+        0x001F_C004, // TSP threshold the most
+        0x0007_DF04, // both thresholds 0x1F
+        0x0002_0077, // the pointer bursts 7 and 7
+        0x0002_0007, // Dell's GLES (first burst 7)
+        0x0007_DF77, // the PowerVR2's defaults, header type 1
+        0x0027_DF77, // KallistiOS's value (header type 2)
+    ];
+    /// GC2CQ's render-block words: GC2BX's set ([`P2D_REGS`], [`GC3T_REGS`]),
+    /// each with the value the renderer leaves there.
+    const GC2CQ_RENDER: usize = P2D_REGS.len() + GC3T_REGS.len();
+    /// The trials: the `0x61C` values; every render-block word with bits 2-0
+    /// at 1-7 (a `HALF_OFFSET`-like sample-position field: three one-bit
+    /// positions, or a small count); every render-block and TA-block word
+    /// with each 4-bit field set to 15 (a read-to-data delay or burst count
+    /// raised, as the second Holly raised its delay from 3 to 5).
+    const GC2CQ_TRIALS: usize =
+        GC2CQ_61C.len() + GC2CQ_RENDER * 7 + (GC2CQ_RENDER + GC2AY_REGS.len()) * 8;
+    /// The emulator check's trials (a few of each part).
+    const GC2CQ_EMU_TRIALS: [usize; 6] = [
+        0,
+        GC2CQ_61C.len() - 1,
+        GC2CQ_61C.len(),
+        GC2CQ_61C.len() + 7,
+        GC2CQ_61C.len() + GC2CQ_RENDER * 7,
+        GC2CQ_TRIALS - 1,
+    ];
+    /// GC2CQ's frames: the crack generator (300 of 300 warm), the flat and
+    /// the textured mesh (every render wrong at 149.50 / 1, GC2BX); as
+    /// [`gc2bx_set`] numbers them.
+    const GC2CQ_FRAMES: [(usize, &str); 3] = [
+        (GC2BX_GEN, "generator"),
+        (0, "flat mesh"),
+        (2, "textured mesh"),
+    ];
+    /// A control (no trial) every this many trials at 149.50 / 1.
+    const GC2CQ_CONTROL_EVERY: usize = 32;
+    /// Pairs confirming a clean trial.
+    const GC2CQ_CONFIRM: u32 = if GC2_RENDERS < 20 { 1 } else { 5 };
+    /// The most trials logged as changing the picture at Windows Mobile's
+    /// clock (the rest counted).
+    const GC2CQ_MAP_LOG: u32 = 160;
+
+    /// Trial `i`'s register and value (`ta` the TA block as read).
+    fn gc2cq_trial(i: usize, ta: &[u32; GC2AY_REGS.len()]) -> (usize, u32) {
+        let render = |j: usize| {
+            if j < P2D_REGS.len() {
+                P2D_REGS[j]
+            } else {
+                GC3T_REGS[j - P2D_REGS.len()]
+            }
+        };
+        let a = GC2CQ_61C.len();
+        let b = a + GC2CQ_RENDER * 7;
+        if i < a {
+            return (0x61C, GC2CQ_61C[i]);
+        }
+        if i < b {
+            let (off, base) = render((i - a) / 7);
+            return (off, (base & !7) | ((i - a) % 7 + 1) as u32);
+        }
+        let j = (i - b) / 8;
+        let nib = (i - b) % 8;
+        let (off, base) = if j < GC2CQ_RENDER {
+            render(j)
+        } else {
+            (GC2AY_REGS[j - GC2CQ_RENDER], ta[j - GC2CQ_RENDER])
+        };
+        (off, base | 0xF << (4 * nib))
+    }
+
+    /// The value a trial's register goes back to.
+    fn gc2cq_base(off: usize, ta: &[u32; GC2AY_REGS.len()]) -> u32 {
+        P2D_REGS
+            .iter()
+            .chain(GC3T_REGS.iter())
+            .copied()
+            .chain(GC2AY_REGS.iter().copied().zip(ta.iter().copied()))
+            .find(|&(o, _)| o == off)
+            .map_or(0, |(_, v)| v)
+    }
+
+    /// FNV-1a over a picture's words.
+    fn gc2cq_hash(words: &[u32]) -> u32 {
+        let mut h = 0x811C_9DC5u32;
+        for w in words {
+            h = (h ^ w).wrapping_mul(0x0100_0193);
+        }
+        h
+    }
+
+    /// Run GC2CQ (see [`GC2_PVR2`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn gc2_pvr2(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let nf = GC2CQ_FRAMES.len();
+        let emu = GC2_RENDERS < 20;
+        let n = if emu {
+            GC2CQ_EMU_TRIALS.len()
+        } else {
+            GC2CQ_TRIALS
+        };
+        let trial_at = |t: usize| if emu { GC2CQ_EMU_TRIALS[t] } else { t };
+        if all.len() < (2 + nf) * words + nf * n {
+            log!("  GC2CQ: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        log!(
+            "  GC2CQ (R69, the PowerVR2's settings): {n} trials ({} 0x61C values as FPU_PARAM_CFG; bits 2-0 at 1-7 in {GC2CQ_RENDER} render-block words; each 4-bit field at 15 in those and {} TA-block words), each on the crack generator and the flat and textured meshes: its picture at Windows Mobile's clock first, then at 149.50 / 1 warm held to it; a control every {GC2CQ_CONTROL_EVERY}; a clean trial confirmed in {GC2CQ_CONFIRM} pairs",
+            GC2CQ_61C.len(),
+            GC2AY_REGS.len()
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2CQ TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let mut ta = [0u32; GC2AY_REGS.len()];
+        for (b, &off) in ta.iter_mut().zip(GC2AY_REGS.iter()) {
+            *b = g.e.regs.read32(MBX + off);
+        }
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2CQ: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.set_diagonal_flip(false);
+            gc2bx_clear(g, rr);
+            rr.start_clean();
+        }
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        g.nudge = GC2BO_NUDGE;
+        let (first, rest) = all.split_at_mut(words);
+        let (refs, hashes) = rest.split_at_mut(nf * words);
+        let hashes = &mut hashes[..nf * n];
+        // The references at Windows Mobile's clock, repeatable.
+        let mut ok = true;
+        for (fi, &(f, name)) in GC2CQ_FRAMES.iter().enumerate() {
+            gc2bx_set(g, &mut ondie, f, false, tex);
+            let want = &mut refs[fi * words..(fi + 1) * words];
+            let mut l = heapless_name();
+            let _ = write!(l, "GC2CQ {name}");
+            ok &= gc2_reference(g, &mut ondie, (k, at), want, first, dsig, l.as_str());
+        }
+        if !ok {
+            log!("  GC2CQ: a reference failed: nothing more run");
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
+        let poisons: [Option<u16>; 3] = core::array::from_fn(|fi| {
+            gc2::absent16(&refs[fi * words..(fi + 1) * words], &gc2::POISON)
+        });
+        // One render of frame `fi` under trial (off, v): (words off its
+        // reference or None, the picture's hash). The register is put back
+        // after and the renderer told its registers were taken, so no
+        // trial outlives its render.
+        let one = |g: &mut Rig,
+                   rr: &mut Renderer,
+                   fi: usize,
+                   trial: Option<(usize, u32)>,
+                   (refs, first, clock_want): (&[u32], &mut [u32], [u32; 5])|
+         -> (Option<u32>, u32) {
+            if let Some((off, v)) = trial {
+                g.over = Over::of(&[(off, v)]);
+            }
+            gc2bx_set(g, rr, GC2CQ_FRAMES[fi].0, false, tex);
+            let out = if let Some(c) = poisons[fi]
+                && !poison_fill(g, at, c)
+            {
+                (None, 0)
+            } else {
+                let want = &refs[fi * words..(fi + 1) * words];
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(
+                    g,
+                    rr,
+                    (k, at),
+                    want,
+                    first,
+                    clock_want,
+                    &mut base,
+                    &mut side,
+                );
+                (
+                    w,
+                    if w.is_some() {
+                        gc2cq_hash(&first[..words])
+                    } else {
+                        0
+                    },
+                )
+            };
+            if let Some((off, _)) = trial {
+                g.over = Over::NONE;
+                g.e.regs.write32(MBX + off, gc2cq_base(off, &ta));
+                rr.registers_taken();
+            }
+            out
+        };
+        // Part 1, at Windows Mobile's clock: each trial's own pictures (the
+        // map: which fields change the drawing at all).
+        soak_label(
+            g,
+            ["GC2CQ 1 OF 2 MAP", "WINDOWS MOBILE CLOCK", ""],
+            SOAK_BLUE,
+        );
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (mut changed, mut undrawn) = (0u32, 0u32);
+        for t in 0..n {
+            let trial = gc2cq_trial(trial_at(t), &ta);
+            let mut offs = [None; 3];
+            for fi in 0..nf {
+                let (w, h) = one(g, &mut ondie, fi, Some(trial), (refs, first, wm));
+                offs[fi] = w;
+                hashes[t * nf + fi] = h;
+            }
+            if offs.iter().any(Option::is_none) {
+                undrawn += 1;
+            }
+            if offs.iter().any(|w| *w != Some(0)) {
+                changed += 1;
+                if changed <= GC2CQ_MAP_LOG {
+                    log!(
+                        "  GC2CQ map 0x{:03x} = 0x{:08x}: words off the plain picture {offs:?} (generator, flat, textured)",
+                        trial.0,
+                        trial.1
+                    );
+                }
+            }
+            if t % 64 == 63 {
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "TRIAL {} OF {n}", t + 1);
+                soak_label(
+                    g,
+                    ["GC2CQ 1 OF 2 MAP", "WINDOWS MOBILE CLOCK", l3.as_str()],
+                    SOAK_BLUE,
+                );
+            }
+            rt::check_in();
+        }
+        log!(
+            "  GC2CQ map done: {changed} of {n} trials change the picture at Windows Mobile's clock, {undrawn} left a frame undrawn; TEMP0 {:?}",
+            gc2ba_temp(&mut touch)
+        );
+        // GC2BX's warm-up: 10 minutes drawing scene 20 at 149.50 / 1.
+        {
+            let want = &mut refs[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            g.nudge = 0;
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2CQ warm-up") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, nn) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, nn, 0, 1);
+            let mut warm = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut warm, &mut touch, s, "GC2CQ", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        }
+        // The warm-up's scene took the first reference's place: the
+        // generator's reference again, at Windows Mobile's clock.
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        g.nudge = GC2BO_NUDGE;
+        ondie.core_taken();
+        gc2bx_set(g, &mut ondie, GC2CQ_FRAMES[0].0, false, tex);
+        if !gc2_reference(
+            g,
+            &mut ondie,
+            (k, at),
+            &mut refs[..words],
+            first,
+            dsig,
+            "GC2CQ generator again",
+        ) {
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
+        // Part 2, at 149.50 / 1 warm: each trial held to its own pictures.
+        let step = gc2_step(23, 2, 0, 1);
+        clock_restore(&mut g.e.regs);
+        if clock_apply(g, step).is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2CQ: 149.50 / 1 didn't take: nothing more run");
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
+        clock_readback(g);
+        let top = gc2_clock_want(step_speed(g, step), step.div);
+        let (mut ctl_run, mut ctl_wrong) = (0u32, [0u32; 3]);
+        let (mut any_clean, mut confirmed) = (0u32, 0u32);
+        for t in 0..n {
+            if t % GC2CQ_CONTROL_EVERY == 0 {
+                ctl_run += 1;
+                for fi in 0..nf {
+                    let (w, _) = one(g, &mut ondie, fi, None, (refs, first, top));
+                    ctl_wrong[fi] += u32::from(w != Some(0));
+                }
+            }
+            let trial = gc2cq_trial(trial_at(t), &ta);
+            let mut clean = [false; 3];
+            for fi in 0..nf {
+                let (w, h) = one(g, &mut ondie, fi, Some(trial), (refs, first, top));
+                clean[fi] = w.is_some() && h == hashes[t * nf + fi] && h != 0;
+            }
+            if clean.iter().any(|&c| c) {
+                any_clean += 1;
+                // Confirm in pairs with the control, on the frames it
+                // cleaned.
+                let (mut ok_n, mut ctl_n) = (0u32, 0u32);
+                for _ in 0..GC2CQ_CONFIRM {
+                    let mut all_ok = true;
+                    let mut ctl_bad = false;
+                    for fi in (0..nf).filter(|&fi| clean[fi]) {
+                        let (w, h) = one(g, &mut ondie, fi, Some(trial), (refs, first, top));
+                        all_ok &= w.is_some() && h == hashes[t * nf + fi];
+                        let (c, _) = one(g, &mut ondie, fi, None, (refs, first, top));
+                        ctl_bad |= c != Some(0);
+                    }
+                    ok_n += u32::from(all_ok);
+                    ctl_n += u32::from(ctl_bad);
+                }
+                confirmed += u32::from(ok_n == GC2CQ_CONFIRM);
+                log!(
+                    "  GC2CQ clean 0x{:03x} = 0x{:08x}: frames clean {clean:?} (generator, flat, textured); confirmed {ok_n} of {GC2CQ_CONFIRM}, the control wrong {ctl_n} of {GC2CQ_CONFIRM} beside it",
+                    trial.0,
+                    trial.1
+                );
+            }
+            if t % 64 == 63 {
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "TRIAL {} OF {n}", t + 1);
+                soak_label(
+                    g,
+                    ["GC2CQ 2 OF 2 HOT", "149.50 / 1 WARM", l3.as_str()],
+                    SOAK_BLUE,
+                );
+                log!(
+                    "  GC2CQ hot: {} trials, {any_clean} with a clean frame, {confirmed} confirmed; controls {ctl_run} rounds, wrong {ctl_wrong:?} (generator, flat, textured); TEMP0 {:?}",
+                    t + 1,
+                    gc2ba_temp(&mut touch)
+                );
+            }
+            rt::check_in();
+        }
+        log!(
+            "  GC2CQ hot done: {n} trials, {any_clean} with a clean frame, {confirmed} confirmed; controls {ctl_run} rounds, wrong {ctl_wrong:?} (generator, flat, textured; a control right means the chip wasn't faulting then); TEMP0 {:?}",
+            gc2ba_temp(&mut touch)
+        );
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        gc2bx_clear(g, &mut ondie);
+        g.nudge = 0;
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2CQ: the on-die renderer's memory not given back");
+        }
+        log!("  GC2CQ done, TEMP0 {:?}", gc2ba_temp(&mut touch));
     }
 
     /// GC2BW's rounds: each frame and the control once a round, in turn.
