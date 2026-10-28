@@ -17565,7 +17565,9 @@ mod image {
         gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
         let _ = underrun_take(&mut g.e.regs);
         if ok {
-            if GC2CA_CARD {
+            if GC2CA_RGB {
+                gc2ca_rgb_run(g, &planes0);
+            } else if GC2CA_CARD {
                 gc2ca_card_run(g, &planes0);
             } else if GC2CA_SCALER {
                 gc2ca_scaler(g, &mut cur, tex, &planes0);
@@ -18132,6 +18134,190 @@ mod image {
             rp_drv_mbx_display::video_hide(&mut g.e.regs);
         }
         gc2ca_card(g, planes0, ["GC2CC DONE", "THANK YOU", ""]);
+    }
+
+    /// Run GC2CD (`RP_GPUBENCH_GC2_HALF_RGB`, with `RP_GPUBENCH_GC2_HALF`):
+    /// can RGB through the video plane's scaler be made right? GC2CC (the
+    /// owner's photos): UYVY 2x right, RGB565 2x about 4x with the colours
+    /// wrong, every register as written. Six ways, each a photo held until
+    /// a button, the test's number and name drawn on the picture itself
+    /// (the owner, 2026-10-28: GC2CC's pictures carried no label).
+    const GC2CA_RGB: bool = option_env!("RP_GPUBENCH_GC2_HALF_RGB").is_some();
+    /// What GC2CD changes after the set-up: the pitches doubled (if the
+    /// scaler steps RGB565 in pairs, a doubled step gives 2x), one
+    /// direction only, or ARGB8888 (format code 8, 32 bits a pixel).
+    const GC2CD_PITCH_BOTH: u8 = 0;
+    const GC2CD_PITCH_ACROSS: u8 = 1;
+    const GC2CD_PITCH_DOWN: u8 = 2;
+    const GC2CD_DOWN_ONLY: u8 = 3;
+    const GC2CD_ACROSS_ONLY: u8 = 4;
+    const GC2CD_ARGB: u8 = 5;
+    const GC2CD_PITCH_NEAREST: u8 = 6;
+    /// GC2CD's tests: (way, name on the card and the picture).
+    const GC2CD_TESTS: [(u8, &str); 7] = [
+        (GC2CD_PITCH_BOTH, "RGB 2X PITCH X2"),
+        (GC2CD_PITCH_ACROSS, "RGB 2X PITCH X2 ACR"),
+        (GC2CD_PITCH_DOWN, "RGB 2X PITCH X2 DN"),
+        (GC2CD_DOWN_ONLY, "RGB 2X DOWN ONLY"),
+        (GC2CD_ACROSS_ONLY, "RGB 2X ACROSS ONLY"),
+        (GC2CD_ARGB, "ARGB8888 2X"),
+        (GC2CD_PITCH_NEAREST, "RGB 2X X2 NEAREST"),
+    ];
+
+    /// `text` drawn at (`x`, `y`) of a `w`-wide picture at `at` with
+    /// `bytes` a pixel (2: RGB565, 4: ARGB8888), each font pixel 2 x 2, in
+    /// yellow on black.
+    fn gc2cd_text(g: &mut Rig, (at, w, bytes): (u32, u32, u32), (x, y): (u32, u32), text: &str) {
+        let (fg, bg) = if bytes == 2 {
+            (0xFFE0u32, 0u32)
+        } else {
+            (0xFFFF_FF00, 0xFF00_0000)
+        };
+        let cols = text.len() as u32 * (WIDTH as u32 + 1) * 2 + 4;
+        let rows = font::HEIGHT as u32 * 2 + 4;
+        for dy in 0..rows {
+            for dx in 0..cols {
+                let (px, py) = (x + dx, y + dy);
+                let (cx, cy) = (dx.wrapping_sub(2) / 2, dy.wrapping_sub(2) / 2);
+                let ch = (cx / (WIDTH as u32 + 1)) as usize;
+                let gx = cx % (WIDTH as u32 + 1);
+                let on = dx >= 2
+                    && dy >= 2
+                    && (cy as usize) < font::HEIGHT
+                    && gx < WIDTH as u32
+                    && text.chars().nth(ch).is_some_and(|c| {
+                        font::glyph(c)[cy as usize] & (1 << (WIDTH as u32 - 1 - gx)) != 0
+                    });
+                let v = if on { fg } else { bg };
+                let a = (at + (py * w + px) * bytes) as usize;
+                if bytes == 2 {
+                    // Read-modify-write of the word holding the pixel.
+                    let word = a & !3;
+                    let old = g.mem.load(word).unwrap_or(0);
+                    let shift = 8 * (a & 2) as u32;
+                    let new = old & !(0xFFFF << shift) | v << shift;
+                    g.mem.store(word, &[new]);
+                } else {
+                    g.mem.store(a, &[v]);
+                }
+            }
+        }
+    }
+
+    /// GC2CC's card as ARGB8888 at `at` (240 x 320, 960-byte rows).
+    fn gc2cd_card_argb(g: &mut Rig, at: u32) {
+        let mut row = [0u32; 240];
+        for y in 0..320u32 {
+            for (x, p) in row.iter_mut().enumerate() {
+                let (r, gg, b) = gc2cc_card_px(x as u32, y);
+                *p = 0xFF00_0000 | r << 16 | gg << 8 | b;
+            }
+            g.mem.store((at + y * 960) as usize, &row);
+            if y % 64 == 63 {
+                rt::check_in();
+            }
+        }
+        g.mem.sync();
+    }
+
+    /// Run GC2CD (see [`GC2CA_RGB`]): for each of [`GC2CD_TESTS`] a card,
+    /// the test card drawn (RGB565 at A, ARGB8888 at B) with the test's
+    /// number and name on it, the planes in P9c's arrangement, the
+    /// registers changed for the test and read back, the picture held
+    /// until a button.
+    fn gc2ca_rgb_run(g: &mut Rig, planes0: &Snapshot) {
+        let n = GC2CD_TESTS.len();
+        for (i, &(way, name)) in GC2CD_TESTS.iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "PHOTO {} OF {n}", i + 1);
+            gc2ca_card(g, planes0, [l1.as_str(), name, "PHOTO, THEN A BUTTON"]);
+            let mut label = heapless_name();
+            let _ = write!(label, "T{} {name}", i + 1);
+            let argb = way == GC2CD_ARGB;
+            if argb {
+                gc2cd_card_argb(g, GC2CA_B);
+                gc2cd_text(g, (GC2CA_B, 240, 4), (6, 200), label.as_str());
+            } else {
+                gc2cc_card(g, GC2CA_A, GC2CA_B);
+                gc2cd_text(g, (GC2CA_A, 240, 2), (6, 200), label.as_str());
+            }
+            g.mem.sync();
+            let screen = Plane {
+                format: PlaneFormat::Rgb565,
+                width: 480,
+                height: 640,
+                offset: 0,
+                stride: 960,
+            };
+            rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
+            let out = match way {
+                GC2CD_DOWN_ONLY => (240, 640),
+                GC2CD_ACROSS_ONLY => (480, 320),
+                _ => (480, 640),
+            };
+            let at = if argb { GC2CA_B } else { GC2CA_A };
+            let plane = VideoPlane::new(VideoFormat::Rgb565, 240, 320, at as usize);
+            let scale = plane.scale_to(out.0, out.1, 0, 0);
+            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
+            // The test's change, the stream briefly off while it is made.
+            let r = &mut g.e.regs;
+            let sc = r.read32(lreg::VSCADR);
+            r.write32(lreg::VSCADR, sc & !(1 << 31));
+            let sh = r.read32(lreg::SHCTRL);
+            let sp = r.read32(lreg::SPOCTRL);
+            if matches!(
+                way,
+                GC2CD_PITCH_BOTH | GC2CD_PITCH_ACROSS | GC2CD_PITCH_NEAREST
+            ) {
+                // SHCTRL bits 14-0, the horizontal pitch.
+                r.write32(lreg::SHCTRL, sh & !0x7FFF | ((sh & 0x7FFF) * 2).min(0x7FFF));
+            }
+            if way == GC2CD_PITCH_NEAREST {
+                // The centre weight alone (P9d step 6: crisp on UYVY): no
+                // mixing of neighbouring bytes. Each direction's half
+                // kernel ends with its centre byte (64 = one): VSCOEFF4's
+                // low byte, HSCOEFF8's.
+                for k in 0..5 {
+                    r.write32(lreg::VSCOEFF0 + 4 * k, if k == 4 { 64 } else { 0 });
+                }
+                for k in 0..9 {
+                    r.write32(lreg::HSCOEFF0 + 4 * k, if k == 8 { 64 } else { 0 });
+                }
+            }
+            if matches!(
+                way,
+                GC2CD_PITCH_BOTH | GC2CD_PITCH_DOWN | GC2CD_PITCH_NEAREST
+            ) {
+                // SPOCTRL bits 15-0, the vertical pitch.
+                r.write32(
+                    lreg::SPOCTRL,
+                    sp & !0xFFFF | ((sp & 0xFFFF) * 2).min(0xFFFF),
+                );
+            }
+            if argb {
+                // VSCTRL bits 30-27 the format (8: ARGB8888), VSADR bits
+                // 31-22 the stride in 16 bytes less one (960 bytes: 59).
+                let v = r.read32(lreg::VSCTRL);
+                r.write32(lreg::VSCTRL, v & !(0xF << 27) | 8 << 27);
+                let a = r.read32(lreg::VSADR);
+                r.write32(lreg::VSADR, a & !(0x3FF << 22) | 59 << 22);
+            }
+            r.write32(lreg::VSCADR, sc);
+            log!(
+                "  GC2CD {} {name}: VSCTRL 0x{:08x} VSADR 0x{:08x} SSSIZE 0x{:08x} SPOCTRL 0x{:08x} SHCTRL 0x{:08x} VSCADR 0x{:08x}",
+                i + 1,
+                g.e.regs.read32(lreg::VSCTRL),
+                g.e.regs.read32(lreg::VSADR),
+                g.e.regs.read32(lreg::SSSIZE),
+                g.e.regs.read32(lreg::SPOCTRL),
+                g.e.regs.read32(lreg::SHCTRL),
+                g.e.regs.read32(lreg::VSCADR)
+            );
+            let held = gc2ca_hold_button(g, 120_000_000);
+            log!("  GC2CD {} {name}: held {} ms", i + 1, held / 1000);
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        }
+        gc2ca_card(g, planes0, ["GC2CD DONE", "THANK YOU", ""]);
     }
 
     /// GC2BY's rounds a step (the emulator 1).
