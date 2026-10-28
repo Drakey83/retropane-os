@@ -664,6 +664,18 @@ struct List {
     at: u32,
 }
 
+/// A render [`Renderer::prepare`] wrote and hasn't started.
+#[derive(Clone, Copy, Debug)]
+struct Staged {
+    pic: Picture,
+    addr: u32,
+    same: bool,
+    tiles: u32,
+    quads: u32,
+    cost: u32,
+    lists: u32,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Pending {
     start: u32,
@@ -1059,6 +1071,8 @@ pub struct Renderer {
     last: usize,
     arena: u32,
     pending: Option<Pending>,
+    /// What [`Self::prepare`] wrote, waiting for [`Self::start_prepared`].
+    staged: Option<Staged>,
     mem_words: u32,
     resets: u32,
     clock_policy: ClockPolicy,
@@ -1213,6 +1227,7 @@ impl Renderer {
             last: 0,
             arena: ARENA_AT,
             pending: None,
+            staged: None,
             mem_words: 0,
             resets: 0,
             clock_policy: ClockPolicy::KeepAll,
@@ -1523,6 +1538,72 @@ impl Renderer {
         if self.pending.is_some() {
             return Err(Error::Busy);
         }
+        self.staged = None;
+        match self.stage(bus, mem, clock, target)? {
+            Some(s) => Ok(Some(self.start(bus, clock, s))),
+            None => Ok(None),
+        }
+    }
+
+    /// [`Self::render`]'s first half alone: the region array and the lists
+    /// for `target` written now and the core not started, so the CPU can
+    /// write them while the core renders another renderer's frame
+    /// (`rp-gpubench` run GC2CP: frame N's conversion overlapped with frame
+    /// N + 1's lists); [`Self::start_prepared`] starts it. Nothing may be
+    /// [`Self::set`] between the two. True if there is something to render.
+    /// Refused (`Busy`) while this renderer has a render in flight or the
+    /// core needs setting up (a reset, which would end the frame another
+    /// renderer has in flight).
+    pub fn prepare<B: RegisterBus, M: LocalMem, C: Clock>(
+        &mut self,
+        bus: &mut B,
+        mem: &mut M,
+        clock: &mut C,
+        target: Target,
+    ) -> Result<bool, Error> {
+        if self.pending.is_some() || !self.ready {
+            return Err(Error::Busy);
+        }
+        self.staged = self.stage(bus, mem, clock, target)?;
+        Ok(self.staged.is_some())
+    }
+
+    /// Starts what [`Self::prepare`] wrote: the start table's registers and
+    /// the start. Returns the time to [`Self::poll`] at, or `None` if nothing
+    /// was prepared.
+    pub fn start_prepared<B: RegisterBus, C: Clock>(
+        &mut self,
+        bus: &mut B,
+        clock: &mut C,
+    ) -> Result<Option<u32>, Error> {
+        if self.pending.is_some() {
+            return Err(Error::Busy);
+        }
+        Ok(self.staged.take().map(|s| self.start(bus, clock, s)))
+    }
+
+    /// Another renderer started frames on the core since this one's last,
+    /// and the core wasn't reset: only the start table's registers (the
+    /// region array, the parameter memory, the target) are no longer this
+    /// renderer's, so its next start writes them all again, with no reset
+    /// and no memory manager set-up (the ~4.6 ms of [`Self::core_taken`]).
+    /// Its lists must lie in their own parameter memory. Whether that is
+    /// enough on the X51v (the memory manager is left as the last set-up
+    /// wrote it) is what `rp-gpubench` run GC2CP measures, every picture
+    /// checked; the OS keeps one renderer on the core (ADR-0026 point 5).
+    pub fn registers_taken(&mut self) {
+        self.shadow.forget();
+    }
+
+    /// The region array and the lists for `target`, the core set up first
+    /// if it needs it: what a render starts, or `None` if nothing changed.
+    fn stage<B: RegisterBus, M: LocalMem, C: Clock>(
+        &mut self,
+        bus: &mut B,
+        mem: &mut M,
+        clock: &mut C,
+        target: Target,
+    ) -> Result<Option<Staged>, Error> {
         let pic = target.picture;
         if u32::from(target.x) + u32::from(self.w) > u32::from(pic.w)
             || u32::from(target.y) + u32::from(self.h) > u32::from(pic.h)
@@ -1570,7 +1651,6 @@ impl Renderer {
             // them all between frames before space runs short.
             self.forget_lists();
         }
-        let writes0 = self.shadow.writes;
         let (tiles, quads, cost, lists) = match self.write_regions(mem, &todo) {
             Some(r) => r,
             None => {
@@ -1579,22 +1659,36 @@ impl Renderer {
             }
         };
         mem.sync();
+        Ok(Some(Staged {
+            pic,
+            addr,
+            same,
+            tiles,
+            quads,
+            cost,
+            lists,
+        }))
+    }
 
+    /// Starts what [`Self::stage`] wrote (the start table and the start),
+    /// then notes which tiles each picture has. Returns the time to poll at.
+    fn start<B: RegisterBus, C: Clock>(&mut self, bus: &mut B, clock: &mut C, s: Staged) -> u32 {
+        let writes0 = self.shadow.writes;
         let t = m3::start_table(
             self.regions,
             self.params.at,
-            u32::from(pic.w),
-            u32::from(pic.h),
-            pic.stride,
+            u32::from(s.pic.w),
+            u32::from(s.pic.h),
+            s.pic.stride,
         );
         for &(off, v) in &t[..14] {
-            let v = if off == 0x650 { pic.format.code() } else { v };
+            let v = if off == 0x650 { s.pic.format.code() } else { v };
             self.shadow.write(bus, off, v);
         }
-        self.shadow.write(bus, 0x65C, addr);
+        self.shadow.write(bus, 0x65C, s.addr);
         self.shadow.write(bus, m3::START, 1);
 
-        let predicted = predict_us(tiles, cost);
+        let predicted = predict_us(s.tiles, s.cost);
         let start = clock.now_us();
         self.pending = Some(Pending {
             start,
@@ -1603,23 +1697,23 @@ impl Renderer {
             // version 19's one object (to measure).
             deadline: predicted.saturating_mul(4).saturating_add(20_000),
             stats: FrameStats {
-                tiles,
-                quads,
-                lists,
+                tiles: s.tiles,
+                quads: s.quads,
+                lists: s.lists,
                 mem_words: core::mem::take(&mut self.mem_words),
                 reg_writes: self.shadow.writes - writes0,
                 predicted_us: predicted,
                 done_us: 0,
             },
         });
-        if same {
+        if s.same {
             self.other.add_all(&self.dirty);
         } else {
             self.other = self.dirty.clone();
-            self.targets = [Some(addr), self.targets[0]];
+            self.targets = [Some(s.addr), self.targets[0]];
         }
         self.dirty.clear();
-        Ok(Some(start.wrapping_add(predicted)))
+        start.wrapping_add(predicted)
     }
 
     /// Checks on the render in flight: reads the status once if its

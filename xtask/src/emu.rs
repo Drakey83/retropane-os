@@ -5657,6 +5657,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cp = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_ROUTES", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5931,7 +5940,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 134] = [
+    let runs: [GpubenchRun; 135] = [
         (
             "run A",
             &run_a,
@@ -6549,6 +6558,34 @@ fn variant_images_gpubench(
                 "GC2CO one render, overlapped:",
                 "GC2CM set 1 check:",
                 "GC2CO done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CP: the smooth 2x's routes against native on the game
+        // frames (480 x 640; 480 x 320; 240 x 320 converted serially with
+        // a full or a registers-only renderer switch, or overlapped with the
+        // next frame's lists), at 74.75 / 1 and 143.00 / 1, every picture
+        // checked; GC2CM's card converted at each clock. The emulator's
+        // UYVY words are wrong as in GC2CM (no row order, no DOT3) and its
+        // times its own: the run's shape is what this checks.
+        (
+            "run GC2CP",
+            &run_gc2cp,
+            &[
+                "GC2CP (R78 item 2): 4 game frames",
+                "GC2CP 240 x 320 frame 3 reference:",
+                "GC2CM GC2CP card at 74.75 / 1 check:",
+                "GC2CP 74.75 / 1 (a) 480 x 640 native frame 0: 2 of 2 frames, 0 pictures wrong",
+                "GC2CP 74.75 / 1 (b) 480 x 320 frame 3: 2 of 2 frames, 0 pictures wrong",
+                "GC2CP 74.75 / 1 (c) 240 x 320 converted, serial, full switch frame 0: 2 of 2 frames;",
+                "GC2CP 74.75 / 1 (c') 240 x 320 converted, serial, registers switch frame 3: 2 of 2 frames;",
+                "GC2CM GC2CP card at 143.00 / 1 check:",
+                "GC2CP 143.00 / 1 (d) 240 x 320 converted, overlapped frame 3: 2 frames;",
+                "GC2CP 143.00 / 1 speed-up (d) 240 x 320 converted, overlapped against native",
+                "GC2CP done:",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

@@ -17529,6 +17529,12 @@ mod image {
             GC2BB_PARAMS.at
         );
         let planes0 = Snapshot::take(&mut g.e.regs);
+        if GC2CA_ROUTES {
+            gc2cp_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CA_ONE {
             gc2co_run(g, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20125,6 +20131,669 @@ mod image {
             }
         }
         true
+    }
+
+    /// Run GC2CP (`RP_GPUBENCH_GC2_HALF_ROUTES`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R78 item 2, the owner's question: is the smooth 2x worth it? GC2CA's
+    /// four game frames, each way timed whole (the CPU's lists, the renders,
+    /// the conversion) at 74.75 / 1 and 143.00 / 1: (a) native 480 x 640;
+    /// (b) 480 x 320, for the video plane's vertical-only RGB 2x (no
+    /// conversion: lossless, GC2CF); (c) 240 x 320 at a 256-pixel stride and
+    /// GC2CO's one-render conversion, serial, the renderers switched with
+    /// the full set-up (`core_taken`, a core reset each switch: the proven
+    /// way) and (c') with their registers alone (`registers_taken`, measured
+    /// here); (d) as (c'), frame N's conversion on the core while the CPU
+    /// writes frame N + 1's lists, its 2D placements while the core renders
+    /// frame N + 1. Every picture checked: (a) and (b) against references
+    /// made at Windows Mobile's clock, (c) every frame's UYVY against the
+    /// reference frame's (U' = B and V' = R exact, Y' by DOT3's rounding:
+    /// GC2CM's fit, here on every word), (d) its last frame. GC2CM's card
+    /// converted once at each clock and checked by `gc2cm_check`. No photos.
+    const GC2CA_ROUTES: bool = option_env!("RP_GPUBENCH_GC2_HALF_ROUTES").is_some();
+    /// Frames a way and game frame, after one to warm (the emulator 2).
+    const GC2CP_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 10 };
+    /// The sizes GC2CP renders: native, half height, half.
+    const GC2CP_SIZES: [(u16, u16); 3] = [(480, 640), (480, 320), (240, 320)];
+    /// GC2CP's ways.
+    const GC2CP_WAYS: [&str; 5] = [
+        "(a) 480 x 640 native",
+        "(b) 480 x 320",
+        "(c) 240 x 320 converted, serial, full switch",
+        "(c') 240 x 320 converted, serial, registers switch",
+        "(d) 240 x 320 converted, overlapped",
+    ];
+    const GC2CP_FULL: usize = 2;
+    const GC2CP_OVERLAP: usize = 4;
+    /// One plane of the conversion's set (GC2CO's: output, Y0, Y1).
+    const GC2CP_PLANE: u32 = GC2CP_OW4 * GC2CM_H;
+    /// A conversion row's bytes.
+    const GC2CP_OW4: u32 = GC2CM_OW as u32 * 4;
+    /// The half-size game picture at the row-order texture's 256-pixel
+    /// stride, and the conversion's set below it, both inside the safe
+    /// region (G20) under the lists on the die; the set reaches into the
+    /// label band below its two text lines (rows 4-37), which GC2CP's
+    /// labels keep to.
+    const GC2CP_GAME: u32 = GC2BB_PARAMS.at - 512 * GC2CM_H;
+    const GC2CP_SET: u32 = GC2CP_GAME - 3 * GC2CP_PLANE;
+    const _: () = assert!(GC2CP_SET >= 40 * 960 && GC2CP_SET.is_multiple_of(0x800));
+    /// The conversion's output poisoned before each frame (no right UYVY
+    /// word of a game frame is all of it: checked against the reference).
+    const GC2CP_POISON: u32 = 0x5A5A_5A5A;
+    /// GC2CP's reference words: each size's [`gc2::GAME_FRAMES`].
+    const GC2CP_REF_WORDS: usize = gc2::GAME_FRAMES.len()
+        * (gc2::words_of(GC2CP_SIZES[0])
+            + gc2::words_of(GC2CP_SIZES[1])
+            + gc2::words_of(GC2CP_SIZES[2]));
+
+    /// Where size `s`, frame `f`'s reference sits in GC2CP's references.
+    const fn gc2cp_ref(s: usize, f: usize) -> core::ops::Range<usize> {
+        let mut at = 0;
+        let mut i = 0;
+        while i < s {
+            at += gc2::GAME_FRAMES.len() * gc2::words_of(GC2CP_SIZES[i]);
+            i += 1;
+        }
+        let n = gc2::words_of(GC2CP_SIZES[s]);
+        at + f * n..at + (f + 1) * n
+    }
+
+    /// The UYVY word our conversion makes from a word of two RGB565 pixels
+    /// (the first in the low half): U' = B and V' = R of the first, Y0 and
+    /// Y1 by DOT3's rounding, `floor(4 sum(t c) 255 / 65536)` with tint
+    /// [`GC2CM_TINT`], the core reading 565 widened by shifting (GC2CM).
+    fn gc2cp_uyvy(w: u32) -> u32 {
+        let rgb = |h: u32| ((h >> 11 & 0x1F) << 3, (h >> 5 & 0x3F) << 2, (h & 0x1F) << 3);
+        let y = |(r, g, b): (u32, u32, u32)| ((4 * (r * 19 + g * 37 + b * 7) * 255) >> 16).min(255);
+        let (p0, p1) = (rgb(w & 0xFFFF), rgb(w >> 16));
+        y(p1) << 24 | p0.0 << 16 | y(p0) << 8 | p0.2
+    }
+
+    /// The half-size game picture as a 3D target (256-pixel stride).
+    const fn gc2cp_game_target() -> Target {
+        Target {
+            picture: Picture {
+                at: GC2CP_GAME,
+                stride: 512,
+                w: 240,
+                h: GC2CM_H as u16,
+                format: gc2::KINDS[gc2::FT2].1,
+            },
+            x: 0,
+            y: 0,
+        }
+    }
+
+    /// The conversion's set as a 3D target (GC2CO's 120 x 960).
+    const fn gc2cp_set_target() -> Target {
+        Target {
+            picture: Picture {
+                at: GC2CP_SET,
+                stride: GC2CP_OW4,
+                w: GC2CM_OW,
+                h: GC2CO_ROWS as u16,
+                format: PixelFormat::Argb8888,
+            },
+            x: 0,
+            y: 0,
+        }
+    }
+
+    /// GC2CP's game renderer for `size` (the one before released first):
+    /// set up as [`gc2ca_take`]'s, its lists on the die, the checker order.
+    #[inline(never)]
+    fn gc2cp_take<'a>(
+        g: &mut Rig,
+        cur: &'a mut Option<((u16, u16), Renderer)>,
+        size: (u16, u16),
+    ) -> Option<&'a mut Renderer> {
+        if cur.as_ref().map(|c| c.0) != Some(size) {
+            if let Some((_, rr)) = cur.take() {
+                let _ = rr.release(&mut g.pool);
+            }
+            let (w, h) = size;
+            let Some(mut rr) = Renderer::new_in(&mut g.pool, w, h, GC2BB_PARAMS, map::PM_TABLE)
+            else {
+                log!("  GC2CP: no {w} x {h} renderer");
+                return None;
+            };
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.set_diagonal_flip(false);
+            gc2bx_clear(g, &mut rr);
+            rr.start_clean();
+            rr.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+            *cur = Some((size, rr));
+        }
+        cur.as_mut().map(|c| &mut c.1)
+    }
+
+    /// A 2D fill (`stride` bytes a row), finished before the 3D core starts.
+    fn gc2cp_fill(
+        g: &mut Rig,
+        (at, stride): (u32, u32),
+        size: (u16, u16),
+        f: Format,
+        c: u32,
+    ) -> bool {
+        let w = rp_image::need(
+            cmd::fill(f, at as usize, stride as usize, (0, 0, size.0, size.1), c),
+            "a 2D rectangle",
+        );
+        g.e.submit(&w).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok()
+    }
+
+    /// Starts `r`'s render into `t`: the time to poll at, `None` (logged)
+    /// if refused.
+    fn gc2cp_kick(g: &mut Rig, r: &mut Renderer, t: Target) -> Option<u32> {
+        match r.render(&mut g.e.regs, &mut g.mem, &mut g.clock, t) {
+            Ok(Some(due)) => Some(due),
+            res => {
+                log!("    render refused: {res:?}");
+                None
+            }
+        }
+    }
+
+    /// Polls `r`'s render (as [`Rig::frame`] does after its status watch)
+    /// from `due` to its end: true when done, false (logged) if hung.
+    fn gc2cp_wait(g: &mut Rig, r: &mut Renderer, due: u32) -> bool {
+        let mut at = due;
+        loop {
+            while (g.clock.now_us().wrapping_sub(at) as i32) < 0 {}
+            match r.poll(&mut g.e.regs, &mut g.mem, &mut g.clock) {
+                Poll::Wait(t) => at = t,
+                Poll::Done(_) => return true,
+                p => {
+                    g.hangs += u32::from(p == Poll::Recovered);
+                    log!("    {p:?}");
+                    return false;
+                }
+            }
+        }
+    }
+
+    /// The 2D stream restarted if either renderer reset the core since
+    /// `before` (their core resets then).
+    fn gc2cp_resets(g: &mut Rig, before: u32, game: &Renderer, conv: &Renderer) {
+        if game.core_resets() + conv.core_resets() != before {
+            g.e.after_core_reset();
+        }
+    }
+
+    /// After a failed step: both engines reset, both renderers set up again
+    /// at their next frame, anything still in flight run out.
+    fn gc2cp_recover(g: &mut Rig, game: &mut Renderer, conv: &mut Renderer) {
+        for r in [&mut *game, &mut *conv] {
+            while let Poll::Wait(_) = r.poll(&mut g.e.regs, &mut g.mem, &mut g.clock) {}
+            r.start_clean();
+        }
+        g.e.reset(rt::delay_us);
+        let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+        cpu::drain_write_buffer();
+    }
+
+    /// Run GC2CP (see [`GC2CA_ROUTES`]).
+    #[inline(never)]
+    fn gc2cp_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        gc2ca_card(
+            g,
+            planes0,
+            ["GC2CP: SMOOTH 2X", "THREE ROUTES TIMED", "NO PHOTOS NEEDED"],
+        );
+        let full = gc2::words_of(GC2CP_SIZES[0]);
+        if all.len() < full + GC2CP_REF_WORDS {
+            log!("  GC2CP: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let (first, refs) = all.split_at_mut(full);
+        let nudge = g.nudge;
+        let t0 = rt::ticks();
+        log!(
+            "  GC2CP (R78 item 2): {} game frames at {:?}, {} ways, {GC2CP_REPS} frames each after one to warm, at 74.75 / 1 and 143.00 / 1; native at 0x{GC2CA_A:x}, the half-size picture at 0x{GC2CP_GAME:x} (256-pixel stride), the conversion's set at 0x{GC2CP_SET:x}, the game's lists on the die at 0x{:x}",
+            gc2::GAME_FRAMES.len(),
+            GC2CP_SIZES,
+            GC2CP_WAYS.len(),
+            GC2BB_PARAMS.at
+        );
+        let mut cur: Option<((u16, u16), Renderer)> = None;
+        if let Some(mut conv) = Renderer::new(&mut g.pool, GC2CM_OW, GC2CO_ROWS as u16) {
+            let _ = conv.set_background(Some(BLACK));
+            if gc2cp_references(g, &mut cur, tex, (first, refs)) {
+                let clocks = [
+                    (gc2_step(23, 4, 0, 1), "74.75 / 1"),
+                    (gc2_step(44, 4, 0, 1), "143.00 / 1"),
+                ];
+                for (step, cname) in clocks {
+                    clock_restore(&mut g.e.regs);
+                    if clock_apply(g, step).is_none() {
+                        clock_restore(&mut g.e.regs);
+                        log!("  GC2CP {cname}: the clock didn't take; skipped");
+                        continue;
+                    }
+                    clock_readback(g);
+                    gc2cp_clock(g, (&mut cur, &mut conv), tex, (first, refs), cname);
+                }
+                clock_restore(&mut g.e.regs);
+                clock_readback(g);
+            } else {
+                log!(
+                    "  GC2CP: a reference failed, isn't repeatable or has no absent colour: nothing more run"
+                );
+            }
+            conv.set_header_xors([0; 5]);
+            for slot in 0..3 {
+                g.set(&mut conv, slot, None);
+            }
+            let _ = conv.release(&mut g.pool);
+        } else {
+            log!("  GC2CP: no conversion renderer");
+        }
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        g.nudge = nudge;
+        log!("  GC2CP done: {} ms", us_since(t0) / 1000);
+        gc2ca_card(g, planes0, ["GC2CP DONE", "", ""]);
+    }
+
+    /// GC2CP's references at Windows Mobile's clock: each size's frames
+    /// rendered packed at [`GC2CA_A`], taken, rendered again and compared,
+    /// each with an absent colour to poison with. True if all hold.
+    #[inline(never)]
+    fn gc2cp_references(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+        (first, refs): (&mut [u32], &mut [u32]),
+    ) -> bool {
+        g.nudge = GC2BO_NUDGE;
+        let mut ok = true;
+        for (s, &size) in GC2CP_SIZES.iter().enumerate() {
+            let n = gc2::words_of(size);
+            for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                let Some(rr) = gc2cp_take(g, cur, size) else {
+                    return false;
+                };
+                gc2ca_set_mesh(g, rr, kind, tex, size);
+                g.resets = rr.core_resets();
+                let t = gc2ca_render(g, rr, size, GC2CA_A);
+                let want = &mut refs[gc2cp_ref(s, f)];
+                gc2_take_at(g, GC2CA_A, want);
+                let again = gc2ca_render(g, rr, size, GC2CA_A).and_then(|_| {
+                    read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n])
+                });
+                let poison = gc2::absent16(want, &gc2::POISON);
+                log!(
+                    "  GC2CP {} x {} frame {f} reference: {t:?} us (core, whole); again {again:?} words off; poison {poison:?}",
+                    size.0,
+                    size.1
+                );
+                ok &= t.is_some() && again == Some(0) && poison.is_some();
+            }
+        }
+        ok
+    }
+
+    /// GC2CP at one clock: the card, then every way's frames; each way's
+    /// fastest whole frame against native's.
+    #[inline(never)]
+    fn gc2cp_clock(
+        g: &mut Rig,
+        (cur, conv): (&mut Option<((u16, u16), Renderer)>, &mut Renderer),
+        tex: gc2::Tex,
+        (first, refs): (&mut [u32], &[u32]),
+        cname: &str,
+    ) {
+        // Nothing carried from one clock into the next (GC2's rule 5).
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        conv.start_clean();
+        // GC2CM's card through the conversion (its quads set here, the same
+        // for every frame after: the game picture is the card's place).
+        let mut l2 = heapless_name();
+        let _ = write!(l2, "{cname} TEST CARD");
+        soak_label(g, ["GC2CP SMOOTH 2X", l2.as_str(), ""], SOAK_BLUE);
+        g.nudge = 0;
+        gc2cm_card(g, GC2CP_GAME, false);
+        let before = conv.core_resets();
+        let ok = gc2co_passes(g, conv, GC2CP_GAME, GC2CP_SET, true);
+        if conv.core_resets() != before {
+            g.e.after_core_reset();
+        }
+        let mut name = heapless_name();
+        let _ = write!(name, "GC2CP card at {cname}");
+        if ok && gc2cn_place(g, (GC2CP_SET, GC2CP_SET + GC2CP_PLANE), false) {
+            gc2cm_check(g, GC2CP_SET, false, name.as_str());
+        } else {
+            log!("  {}: the conversion failed (logged above)", name.as_str());
+        }
+        g.nudge = GC2BO_NUDGE;
+        let nf = gc2::GAME_FRAMES.len();
+        let mut best = [[u32::MAX; 4]; GC2CP_WAYS.len()];
+        for wi in 0..GC2CP_WAYS.len() {
+            let mut l2 = heapless_name();
+            let _ = write!(l2, "{cname} WAY {} OF {}", wi + 1, GC2CP_WAYS.len());
+            soak_label(g, ["GC2CP SMOOTH 2X", l2.as_str(), ""], SOAK_BLUE);
+            for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                rt::check_in();
+                let job = (wi, f, kind);
+                best[wi][f] = if wi < GC2CP_FULL {
+                    gc2cp_plain(g, cur, tex, (first, refs), job, cname)
+                } else {
+                    gc2cp_converted(g, (cur, conv), tex, (first, refs), job, cname)
+                };
+            }
+        }
+        // Native's fastest whole frame against each way's, in hundredths
+        // (400: the way is four times as fast).
+        for (wi, wname) in GC2CP_WAYS.iter().enumerate().skip(1) {
+            let x: [u32; 4] = core::array::from_fn(|f| {
+                let (nat, way) = (best[0][f], best[wi][f]);
+                if f >= nf || way == 0 || way == u32::MAX || nat == u32::MAX {
+                    0
+                } else {
+                    100 * nat / way
+                }
+            });
+            log!("  GC2CP {cname} speed-up {wname} against native, x100 by frame: {x:?}");
+        }
+    }
+
+    /// Ways (a) and (b): the frame rendered packed at [`GC2CA_A`]; each
+    /// frame poisoned first and compared after. Its fastest whole frame.
+    #[inline(never)]
+    fn gc2cp_plain(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+        (first, refs): (&mut [u32], &[u32]),
+        (wi, f, kind): (usize, usize, u8),
+        cname: &str,
+    ) -> u32 {
+        let size = GC2CP_SIZES[wi];
+        let n = gc2::words_of(size);
+        let Some(rr) = gc2cp_take(g, cur, size) else {
+            return u32::MAX;
+        };
+        let want = &refs[gc2cp_ref(wi, f)];
+        let poison = gc2::absent16(want, &gc2::POISON).unwrap_or(0);
+        gc2ca_set_mesh(g, rr, kind, tex, size);
+        g.resets = rr.core_resets();
+        let _ = gc2ca_render(g, rr, size, GC2CA_A);
+        let (mut done, mut wrong) = (0u32, 0u32);
+        let (mut core_best, mut core_sum) = (u32::MAX, 0u64);
+        let (mut whole_best, mut whole_sum) = (u32::MAX, 0u64);
+        for _ in 0..GC2CP_REPS {
+            if !gc2ca_fill(g, GC2CA_A, size, poison) {
+                continue;
+            }
+            let Some((core, whole)) = gc2ca_render(g, rr, size, GC2CA_A) else {
+                continue;
+            };
+            let off = read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n]);
+            done += 1;
+            wrong += u32::from(off != Some(0));
+            core_best = core_best.min(core);
+            whole_best = whole_best.min(whole);
+            core_sum += u64::from(core);
+            whole_sum += u64::from(whole);
+        }
+        let d = u64::from(done.max(1));
+        log!(
+            "  GC2CP {cname} {} frame {f}: {done} of {GC2CP_REPS} frames, {wrong} pictures wrong; whole frame fastest {whole_best} us mean {} (core fastest {core_best} us mean {})",
+            GC2CP_WAYS[wi],
+            whole_sum / d,
+            core_sum / d
+        );
+        whole_best
+    }
+
+    /// One serial frame of ways (c) and (c'): the game frame into
+    /// [`GC2CP_GAME`], its conversion into [`GC2CP_SET`], the 2D placements;
+    /// the renderers switched by a full set-up (`full`) or their registers.
+    /// The whole frame's time and its game, conversion and placement parts
+    /// (us); `None` (logged) if a step failed.
+    #[inline(never)]
+    fn gc2cp_serial(
+        g: &mut Rig,
+        game: &mut Renderer,
+        conv: &mut Renderer,
+        full: bool,
+    ) -> Option<[u32; 4]> {
+        let before = game.core_resets() + conv.core_resets();
+        let t0 = rt::ticks();
+        if full {
+            game.core_taken();
+        } else {
+            game.registers_taken();
+        }
+        game.invalidate_all();
+        let ok = gc2cp_kick(g, game, gc2cp_game_target()).is_some_and(|d| gc2cp_wait(g, game, d));
+        let t1 = us_since(t0);
+        if ok {
+            if full {
+                conv.core_taken();
+            } else {
+                conv.registers_taken();
+            }
+            conv.invalidate_all();
+        }
+        let ok =
+            ok && gc2cp_kick(g, conv, gc2cp_set_target()).is_some_and(|d| gc2cp_wait(g, conv, d));
+        let t2 = us_since(t0);
+        gc2cp_resets(g, before, game, conv);
+        let ok = ok && gc2cn_place(g, (GC2CP_SET, GC2CP_SET + GC2CP_PLANE), false);
+        let t3 = us_since(t0);
+        if !ok {
+            log!("  GC2CP: a serial frame's step failed (reset)");
+            gc2cp_recover(g, game, conv);
+            return None;
+        }
+        Some([t3, t1, t2 - t1, t3 - t2])
+    }
+
+    /// The conversion's output (the set's first plane) against `want`: the
+    /// words off it and those with U' or V' off.
+    fn gc2cp_off(g: &Rig, want: &[u32], seen: &mut [u32]) -> (Option<u32>, u32) {
+        let off = read_compare_volatile(g.mem.0, GC2CP_SET as usize, want, seen);
+        let uv = seen
+            .iter()
+            .zip(want)
+            .filter(|&(a, b)| (a ^ b) & 0x00FF_00FF != 0)
+            .count() as u32;
+        (off, uv)
+    }
+
+    /// Ways (c), (c') and (d) for game frame `f`: the expected UYVY made from
+    /// its reference; (c) and (c') every frame poisoned (the game picture and
+    /// the output) and checked; (d) [`gc2cp_overlapped`]. The fastest whole
+    /// frame.
+    #[inline(never)]
+    fn gc2cp_converted(
+        g: &mut Rig,
+        (cur, conv): (&mut Option<((u16, u16), Renderer)>, &mut Renderer),
+        tex: gc2::Tex,
+        (first, refs): (&mut [u32], &[u32]),
+        (wi, f, kind): (usize, usize, u8),
+        cname: &str,
+    ) -> u32 {
+        let size = GC2CP_SIZES[2];
+        let n = gc2::words_of(size);
+        let Some(game) = gc2cp_take(g, cur, size) else {
+            return u32::MAX;
+        };
+        let src = &refs[gc2cp_ref(2, f)];
+        let (want, seen) = first.split_at_mut(n);
+        for (w, &p) in want.iter_mut().zip(src) {
+            *w = gc2cp_uyvy(p);
+        }
+        let poison = u32::from(gc2::absent16(src, &gc2::POISON).unwrap_or(0));
+        gc2ca_set_mesh(g, game, kind, tex, size);
+        // The game renderer's own set-up once (the registers ways switch
+        // with registers alone from here).
+        game.core_taken();
+        let wname = GC2CP_WAYS[wi];
+        if wi == GC2CP_OVERLAP {
+            return gc2cp_overlapped(g, (game, conv), (want, &mut seen[..n]), poison, (f, cname));
+        }
+        let full = wi == GC2CP_FULL;
+        let (mut done, mut wrong, mut uv_wrong) = (0u32, 0u32, 0u32);
+        let mut offs = (u32::MAX, 0u32);
+        // Fastest and total: the whole frame, the game, the conversion, 2D.
+        let mut best = [u32::MAX; 4];
+        let mut sum = [0u64; 4];
+        for k in 0..=GC2CP_REPS {
+            rt::check_in();
+            if !gc2cp_fill(g, (GC2CP_GAME, 512), (240, 320), Format::RGB565, poison)
+                || !gc2cp_fill(
+                    g,
+                    (GC2CP_SET, GC2CP_OW4),
+                    (GC2CM_OW, 320),
+                    Format::BPP32,
+                    GC2CP_POISON,
+                )
+            {
+                continue;
+            }
+            let Some(t) = gc2cp_serial(g, game, conv, full) else {
+                continue;
+            };
+            if k == 0 {
+                continue;
+            }
+            let (off, uv) = gc2cp_off(g, want, &mut seen[..n]);
+            let off = off.unwrap_or(u32::MAX);
+            done += 1;
+            offs = (offs.0.min(off), offs.1.max(off));
+            uv_wrong += u32::from(uv != 0);
+            wrong += u32::from(off != 0);
+            for i in 0..4 {
+                best[i] = best[i].min(t[i]);
+                sum[i] += u64::from(t[i]);
+            }
+        }
+        let d = u64::from(done.max(1));
+        log!(
+            "  GC2CP {cname} {wname} frame {f}: {done} of {GC2CP_REPS} frames; whole frame fastest {} us mean {}; game {} / {}, conversion {} / {}, 2D {} / {} (fastest / mean)",
+            best[0],
+            sum[0] / d,
+            best[1],
+            sum[1] / d,
+            best[2],
+            sum[2] / d,
+            best[3],
+            sum[3] / d
+        );
+        log!(
+            "    checked: {wrong} frames off the expected UYVY ({}-{} words), {uv_wrong} with U' or V' off",
+            offs.0,
+            offs.1
+        );
+        best[0]
+    }
+
+    /// Way (d) for one game frame: a serial frame (registers switch) to warm,
+    /// then [`GC2CP_REPS`] frames pipelined: frame k's lists written while
+    /// the core converts frame k - 1; frame k - 1's 2D placements and frame
+    /// k's conversion lists written while the core renders frame k. The
+    /// time from each frame's start to the next's (the last to the pipe's
+    /// end), the last frame's output checked. The fastest frame.
+    #[inline(never)]
+    fn gc2cp_overlapped(
+        g: &mut Rig,
+        (game, conv): (&mut Renderer, &mut Renderer),
+        (want, seen): (&[u32], &mut [u32]),
+        poison: u32,
+        (f, cname): (usize, &str),
+    ) -> u32 {
+        let wname = GC2CP_WAYS[GC2CP_OVERLAP];
+        let pair = (GC2CP_SET, GC2CP_SET + GC2CP_PLANE);
+        if !gc2cp_fill(g, (GC2CP_GAME, 512), (240, 320), Format::RGB565, poison)
+            || !gc2cp_fill(
+                g,
+                (GC2CP_SET, GC2CP_OW4),
+                (GC2CM_OW, 320),
+                Format::BPP32,
+                GC2CP_POISON,
+            )
+            || gc2cp_serial(g, game, conv, false).is_none()
+            || !gc2cp_fill(
+                g,
+                (GC2CP_SET, GC2CP_OW4),
+                (GC2CM_OW, 320),
+                Format::BPP32,
+                GC2CP_POISON,
+            )
+        {
+            log!("  GC2CP {cname} {wname} frame {f}: the warm-up failed");
+            return u32::MAX;
+        }
+        let before = game.core_resets() + conv.core_resets();
+        let mut starts = [0u32; GC2CP_REPS as usize + 2];
+        let mut conv_due: Option<u32> = None;
+        let mut ok = true;
+        for (k, start) in starts.iter_mut().take(GC2CP_REPS as usize + 1).enumerate() {
+            rt::check_in();
+            *start = rt::ticks();
+            game.invalidate_all();
+            let prepared =
+                game.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, gc2cp_game_target());
+            let mut placing = false;
+            if let Some(d) = conv_due.take() {
+                if !gc2cp_wait(g, conv, d) || !gc2cn_place(g, pair, true) {
+                    ok = false;
+                    break;
+                }
+                placing = true;
+            }
+            game.registers_taken();
+            let started = prepared == Ok(true);
+            let due = started.then(|| game.start_prepared(&mut g.e.regs, &mut g.clock));
+            let Some(Ok(Some(d))) = due else {
+                log!("    frame {k}: the game's render not started: {prepared:?}, {due:?}");
+                ok = false;
+                break;
+            };
+            conv.invalidate_all();
+            let prepared =
+                conv.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, gc2cp_set_target());
+            if !gc2cp_wait(g, game, d) || placing && g.e.finish(g.mem.0, 200_000).is_err() {
+                ok = false;
+                break;
+            }
+            conv.registers_taken();
+            let due =
+                (prepared == Ok(true)).then(|| conv.start_prepared(&mut g.e.regs, &mut g.clock));
+            let Some(Ok(Some(d))) = due else {
+                log!("    frame {k}: the conversion not started: {prepared:?}, {due:?}");
+                ok = false;
+                break;
+            };
+            conv_due = Some(d);
+        }
+        if ok {
+            ok = conv_due.is_some_and(|d| gc2cp_wait(g, conv, d)) && gc2cn_place(g, pair, false);
+        }
+        starts[GC2CP_REPS as usize + 1] = rt::ticks();
+        gc2cp_resets(g, before, game, conv);
+        if !ok {
+            log!("  GC2CP {cname} {wname} frame {f}: a step failed (reset)");
+            gc2cp_recover(g, game, conv);
+            return u32::MAX;
+        }
+        let us = |t: u32| t / 13 * 4;
+        let mut best = u32::MAX;
+        for w in starts[1..].windows(2) {
+            best = best.min(us(w[1].wrapping_sub(w[0])));
+        }
+        let mean = us(starts[GC2CP_REPS as usize + 1].wrapping_sub(starts[1])) / GC2CP_REPS;
+        let (off, uv) = gc2cp_off(g, want, seen);
+        log!(
+            "  GC2CP {cname} {wname} frame {f}: {GC2CP_REPS} frames; whole frame fastest {best} us mean {mean}; the last frame checked: {off:?} words off the expected UYVY, {uv} with U' or V' off"
+        );
+        best
     }
 
     /// Run GC2CI (`RP_GPUBENCH_GC2_HALF_STRIDE`, with

@@ -2162,6 +2162,95 @@ fn two_renderers_on_one_core() {
     assert!(r2.release(&mut g.pool));
 }
 
+/// GC2CP's light switch and split render (`rp-gpubench`, R78 item 2): a
+/// renderer told only that its registers were taken draws its own lists
+/// again with no core reset, and a render prepared (lists written) while
+/// another renderer's frame is in flight, started after it, draws what
+/// `render` draws. Prepare is refused while the core needs setting up.
+#[test]
+fn registers_taken_and_a_prepared_render() {
+    let small = rp_vram_map::Region {
+        name: "second renderer's lists",
+        at: 0x0034_0000,
+        size: 0x0001_0000,
+        align: 0x1000,
+    };
+    let mut g = rig(480, 640);
+    let mut r2 = Renderer::new_in(&mut g.pool, 480, 640, small, rp_vram_map::PM_TABLE).unwrap();
+    let wait = |r: &mut Renderer, g: &mut Rig, due: u32| {
+        g.clock.set(due);
+        loop {
+            match r.poll(&mut g.gpu, &mut g.mem, &mut g.clock) {
+                Poll::Done(_) => break,
+                Poll::Wait(at) => g.clock.set(at),
+                p => panic!("{p:?}"),
+            }
+        }
+    };
+    assert_eq!(
+        r2.prepare(&mut g.gpu, &mut g.mem, &mut g.clock, FULL),
+        Err(Error::Busy),
+        "the core not set up for it"
+    );
+    g.r.set_background(Some(GREY)).unwrap();
+    g.set(0, Some(square(0, 0, 64, Paint::Flat(BLUE))));
+    r2.set_background(Some(GREY)).unwrap();
+    r2.set(&mut g.mem, 0, Some(&square(400, 560, 64, Paint::Flat(RED))))
+        .unwrap();
+    g.frame();
+    let due = r2
+        .render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL)
+        .unwrap()
+        .unwrap();
+    wait(&mut r2, &mut g, due);
+    assert_eq!(g.px(410, 570) & 0xFF_FFFF, RED & 0xFF_FFFF);
+    // Back to the first, told only that its registers were taken.
+    let resets = (g.r.core_resets(), r2.core_resets());
+    g.r.registers_taken();
+    g.r.invalidate_all();
+    g.frame();
+    assert_eq!(g.px(10, 10) & 0xFF_FFFF, BLUE & 0xFF_FFFF, "its own lists");
+    assert_eq!(
+        g.px(410, 570) & 0xFF_FFFF,
+        GREY & 0xFF_FFFF,
+        "its own lists"
+    );
+    // The second's lists written while the first renders, started after.
+    g.r.invalidate_all();
+    let due =
+        g.r.render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL)
+            .unwrap()
+            .unwrap();
+    r2.invalidate_all();
+    assert_eq!(
+        r2.prepare(&mut g.gpu, &mut g.mem, &mut g.clock, FULL),
+        Ok(true)
+    );
+    g.clock.set(due);
+    while let Poll::Wait(at) = g.r.poll(&mut g.gpu, &mut g.mem, &mut g.clock) {
+        g.clock.set(at);
+    }
+    r2.registers_taken();
+    let due = r2
+        .start_prepared(&mut g.gpu, &mut g.clock)
+        .unwrap()
+        .unwrap();
+    wait(&mut r2, &mut g, due);
+    assert_eq!(g.px(410, 570) & 0xFF_FFFF, RED & 0xFF_FFFF, "prepared");
+    assert_eq!(g.px(10, 10) & 0xFF_FFFF, GREY & 0xFF_FFFF, "prepared");
+    assert_eq!(
+        (g.r.core_resets(), r2.core_resets()),
+        resets,
+        "no core set-up for either"
+    );
+    assert_eq!(
+        r2.start_prepared(&mut g.gpu, &mut g.clock),
+        Ok(None),
+        "nothing prepared"
+    );
+    assert!(r2.release(&mut g.pool));
+}
+
 #[test]
 fn diagonal_flip_splits_the_quad_the_other_way() {
     let d = square(100, 100, 200, Paint::Flat(BLUE));
