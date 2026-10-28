@@ -5621,6 +5621,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cl = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_DOT3B", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5895,7 +5904,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 130] = [
+    let runs: [GpubenchRun; 131] = [
         (
             "run A",
             &run_a,
@@ -6445,6 +6454,21 @@ fn variant_images_gpubench(
             &[
                 "GC2CK 0x86096613: red r... green .g.. blue ..b.; ff012020-ff392020",
                 "GC2CK done: 99 tries, 0 cross-channel, 0 hung;",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CL: Dell's DOT3 words with TEX0 bit 13 set as Dell's
+        // combine builder sets it, ramps read back under eight tints (no
+        // photos). The emulator's odd format codes are its own guess.
+        (
+            "run GC2CL",
+            &run_gc2cl,
+            &[
+                "GC2CL 0xc6046608 TEX0 ^ 0x0, tint 0xffffffff: red r... green .g.. blue ..b.;",
+                "GC2CL done: 27 tries, 0 cross-channel, 0 hung;",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
