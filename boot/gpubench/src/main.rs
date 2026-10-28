@@ -20156,13 +20156,14 @@ mod image {
     /// The sizes GC2CP renders: native, half height, half.
     const GC2CP_SIZES: [(u16, u16); 3] = [(480, 640), (480, 320), (240, 320)];
     /// GC2CP's ways.
-    const GC2CP_WAYS: [&str; 6] = [
+    const GC2CP_WAYS: [&str; 7] = [
         "(a) 480 x 640 native",
         "(b) 480 x 320",
         "(c) 240 x 320 converted, serial, full switch",
         "(c') 240 x 320 converted, serial, registers switch",
         "(d) 240 x 320 converted, overlapped",
         "(d') 240 x 320 converted, lists overlapped, 2D apart",
+        "(e) 480 x 320, two frames in flight",
     ];
     const GC2CP_FULL: usize = 2;
     const GC2CP_OVERLAP: usize = 4;
@@ -20170,6 +20171,20 @@ mod image {
     /// next render starts (GC2CP: the engines together left 2-72 stray
     /// words a frame), the lists still written beside the core's work.
     const GC2CP_APART: usize = 5;
+    /// Way (e): 480 x 320 with two frames in flight ([`gc2cp_inflight`]).
+    const GC2CP_INFLIGHT: usize = 6;
+    /// Way (e)'s second renderer's lists, on the die beside the 480 x 320
+    /// picture (inside the safe region, below the first's).
+    const GC2CP_PARAMS_B: rp_vram_map::Region = rp_vram_map::Region {
+        name: "GC2CP's second on-die parameter memory",
+        at: GC2CA_A + 2 * 480 * 320,
+        size: GC2BB_PARAMS.size,
+        align: 0x1000,
+    };
+    const _: () = assert!(
+        GC2CP_PARAMS_B.at.is_multiple_of(0x1000)
+            && GC2CP_PARAMS_B.at + GC2CP_PARAMS_B.size <= GC2BB_PARAMS.at
+    );
     /// One plane of the conversion's set (GC2CO's: output, Y0, Y1).
     const GC2CP_PLANE: u32 = GC2CP_OW4 * GC2CM_H;
     /// A conversion row's bytes.
@@ -20362,8 +20377,11 @@ mod image {
             GC2BB_PARAMS.at
         );
         let mut cur: Option<((u16, u16), Renderer)> = None;
-        if let Some(mut conv) = Renderer::new(&mut g.pool, GC2CM_OW, GC2CO_ROWS as u16) {
-            let _ = conv.set_background(Some(BLACK));
+        // The conversion's renderer, made at each clock and released before
+        // way (e) (three renderers alive at most: the stack, the emulator's
+        // check).
+        let mut conv: Option<Renderer> = None;
+        {
             if gc2cp_references(g, &mut cur, tex, (first, refs)) {
                 let clocks = [
                     (gc2_step(23, 4, 0, 1), "74.75 / 1"),
@@ -20386,13 +20404,7 @@ mod image {
                     "  GC2CP: a reference failed, isn't repeatable or has no absent colour: nothing more run"
                 );
             }
-            conv.set_header_xors([0; 5]);
-            for slot in 0..3 {
-                g.set(&mut conv, slot, None);
-            }
-            let _ = conv.release(&mut g.pool);
-        } else {
-            log!("  GC2CP: no conversion renderer");
+            gc2cp_conv_release(g, &mut conv);
         }
         if let Some((_, rr)) = cur.take() {
             let _ = rr.release(&mut g.pool);
@@ -20401,6 +20413,39 @@ mod image {
         g.nudge = nudge;
         log!("  GC2CP done: {} ms", us_since(t0) / 1000);
         gc2ca_card(g, planes0, ["GC2CP DONE", "", ""]);
+    }
+
+    /// GC2CP's conversion renderer (GC2CO's 120 x 960, its lists in the
+    /// parameter memory), black behind.
+    #[inline(never)]
+    fn gc2cp_conv_new(g: &mut Rig) -> Option<Renderer> {
+        let mut c = Renderer::new(&mut g.pool, GC2CM_OW, GC2CO_ROWS as u16)?;
+        let _ = c.set_background(Some(BLACK));
+        Some(c)
+    }
+
+    /// Way (e)'s second 480 x 320 renderer (its lists at
+    /// [`GC2CP_PARAMS_B`], the checker order), made in the conversion
+    /// renderer's slot.
+    #[inline(never)]
+    fn gc2cp_second_new(g: &mut Rig) -> Option<Renderer> {
+        let (w, h) = GC2CP_SIZES[1];
+        let mut b = Renderer::new_in(&mut g.pool, w, h, GC2CP_PARAMS_B, map::PM_TABLE)?;
+        b.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        gc2bx_clear(g, &mut b);
+        Some(b)
+    }
+
+    /// The conversion renderer, if any, cleared and given back.
+    #[inline(never)]
+    fn gc2cp_conv_release(g: &mut Rig, conv: &mut Option<Renderer>) {
+        if let Some(mut c) = conv.take() {
+            c.set_header_xors([0; 5]);
+            for slot in 0..3 {
+                g.set(&mut c, slot, None);
+            }
+            let _ = c.release(&mut g.pool);
+        }
     }
 
     /// GC2CP's references at Windows Mobile's clock: each size's frames
@@ -20446,7 +20491,7 @@ mod image {
     #[inline(never)]
     fn gc2cp_clock(
         g: &mut Rig,
-        (cur, conv): (&mut Option<((u16, u16), Renderer)>, &mut Renderer),
+        (cur, conv_slot): (&mut Option<((u16, u16), Renderer)>, &mut Option<Renderer>),
         tex: gc2::Tex,
         (first, refs): (&mut [u32], &[u32]),
         cname: &str,
@@ -20455,7 +20500,12 @@ mod image {
         if let Some((_, rr)) = cur.take() {
             let _ = rr.release(&mut g.pool);
         }
-        conv.start_clean();
+        gc2cp_conv_release(g, conv_slot);
+        *conv_slot = gc2cp_conv_new(g);
+        let Some(conv) = conv_slot.as_mut() else {
+            log!("  GC2CP {cname}: no conversion renderer");
+            return;
+        };
         // GC2CM's card through the conversion (its quads set here, the same
         // for every frame after: the game picture is the card's place).
         let mut l2 = heapless_name();
@@ -20479,6 +20529,10 @@ mod image {
         let nf = gc2::GAME_FRAMES.len();
         let mut best = [[u32::MAX; 4]; GC2CP_WAYS.len()];
         for wi in 0..GC2CP_WAYS.len() {
+            if wi == GC2CP_INFLIGHT {
+                // Its second renderer in the conversion's place (the stack).
+                gc2cp_conv_release(g, conv_slot);
+            }
             let mut l2 = heapless_name();
             let _ = write!(l2, "{cname} WAY {} OF {}", wi + 1, GC2CP_WAYS.len());
             soak_label(g, ["GC2CP SMOOTH 2X", l2.as_str(), ""], SOAK_BLUE);
@@ -20487,8 +20541,26 @@ mod image {
                 let job = (wi, f, kind);
                 best[wi][f] = if wi < GC2CP_FULL {
                     gc2cp_plain(g, cur, tex, (first, refs), job, cname)
-                } else {
+                } else if wi == GC2CP_INFLIGHT {
+                    let want = &refs[gc2cp_ref(1, f)];
+                    let poison = gc2::absent16(want, &gc2::POISON).unwrap_or(0);
+                    match gc2cp_take(g, cur, GC2CP_SIZES[1]) {
+                        Some(a) => {
+                            gc2ca_set_mesh(g, a, kind, tex, GC2CP_SIZES[1]);
+                            gc2cp_inflight(
+                                g,
+                                (a, &mut *conv_slot),
+                                tex,
+                                (first, want),
+                                (kind, f, cname, poison),
+                            )
+                        }
+                        None => u32::MAX,
+                    }
+                } else if let Some(conv) = conv_slot.as_mut() {
                     gc2cp_converted(g, (cur, conv), tex, (first, refs), job, cname)
+                } else {
+                    u32::MAX
                 };
             }
         }
@@ -20553,6 +20625,12 @@ mod image {
             whole_sum / d,
             core_sum / d
         );
+        let t = Target {
+            picture: Picture::packed(GC2CA_A, size.0, size.1, gc2::KINDS[gc2::FT2].1),
+            x: 0,
+            y: 0,
+        };
+        gc2cp_stats(g, rr, t, "its frame");
         whole_best
     }
 
@@ -20598,6 +20676,138 @@ mod image {
             return None;
         }
         Some([t3, t1, t2 - t1, t3 - t2])
+    }
+
+    /// Way (e) for one game frame: 480 x 320 with two frames in flight (the
+    /// parameter memory doubled, as PowerVR's tile accelerator lets the next
+    /// frame's vertices in while the last renders): two renderers alike but
+    /// for their lists' place ([`GC2BB_PARAMS`] and [`GC2CP_PARAMS_B`], both
+    /// on the die), taking turns; frame k + 1's lists written while the core
+    /// renders frame k, the renderers switched by their registers (proven by
+    /// GC2CP's first run). Frame to frame times; the last picture checked.
+    /// The fastest frame.
+    #[inline(never)]
+    fn gc2cp_inflight(
+        g: &mut Rig,
+        (a, slot): (&mut Renderer, &mut Option<Renderer>),
+        tex: gc2::Tex,
+        (first, want): (&mut [u32], &[u32]),
+        (kind, f, cname, poison): (u8, usize, &str, u16),
+    ) -> u32 {
+        let wname = GC2CP_WAYS[GC2CP_INFLIGHT];
+        let size = GC2CP_SIZES[1];
+        let n = gc2::words_of(size);
+        gc2cp_conv_release(g, slot);
+        *slot = gc2cp_second_new(g);
+        let Some(b) = slot.as_mut() else {
+            log!("  GC2CP: no second 480 x 320 renderer");
+            return u32::MAX;
+        };
+        gc2ca_set_mesh(g, b, kind, tex, size);
+        let t = Target {
+            picture: Picture::packed(GC2CA_A, size.0, size.1, gc2::KINDS[gc2::FT2].1),
+            x: 0,
+            y: 0,
+        };
+        // Both set up and warm (a full set-up each, then registers only).
+        let before = a.core_resets();
+        let mut ok = true;
+        for r in [&mut *a, &mut *b] {
+            r.core_taken();
+            r.invalidate_all();
+            ok &= gc2cp_kick(g, r, t).is_some_and(|d| gc2cp_wait(g, r, d));
+        }
+        if a.core_resets() != before || b.core_resets() != 0 {
+            g.e.after_core_reset();
+        }
+        ok &= gc2ca_fill(g, GC2CA_A, size, poison);
+        let mut starts = [0u32; GC2CP_REPS as usize + 1];
+        // Frame 0's lists (renderer a) written before the clock starts.
+        a.invalidate_all();
+        ok &= a.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, t) == Ok(true);
+        let mut k = 0;
+        while ok && k < starts.len() {
+            rt::check_in();
+            starts[k] = rt::ticks();
+            let (now, next) = if k % 2 == 0 {
+                (&mut *a, &mut *b)
+            } else {
+                (&mut *b, &mut *a)
+            };
+            now.registers_taken();
+            let Ok(Some(d)) = now.start_prepared(&mut g.e.regs, &mut g.clock) else {
+                ok = false;
+                break;
+            };
+            // The next frame's lists while the core renders this one.
+            next.invalidate_all();
+            let prepared = k + 1 == starts.len()
+                || next.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, t) == Ok(true);
+            ok = gc2cp_wait(g, now, d) && prepared;
+            k += 1;
+        }
+        let end = rt::ticks();
+        let off = read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n]);
+        b.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        if let Some(b) = slot.take() {
+            let _ = b.release(&mut g.pool);
+        }
+        if !ok {
+            log!("  GC2CP {cname} {wname} frame {f}: a step failed (reset)");
+            a.start_clean();
+            g.e.reset(rt::delay_us);
+            let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+            cpu::drain_write_buffer();
+            return u32::MAX;
+        }
+        let us = |t: u32| t / 13 * 4;
+        let mut best = u32::MAX;
+        for w in starts.windows(2) {
+            best = best.min(us(w[1].wrapping_sub(w[0])));
+        }
+        let mean = us(end.wrapping_sub(starts[0])) / starts.len() as u32;
+        log!(
+            "  GC2CP {cname} {wname} frame {f}: {} frames; whole frame fastest {best} us mean {mean}; the last picture {off:?} words off its reference",
+            starts.len()
+        );
+        best
+    }
+
+    /// One more render of what `r` holds into `t` with its statistics
+    /// logged: the tiles, the lists written and the words sent over the bus
+    /// (each word ~0.12 us at the bus's ~33 MB/s), the time predicted and
+    /// the end seen: where a frame's time goes (R80).
+    #[inline(never)]
+    fn gc2cp_stats(g: &mut Rig, r: &mut Renderer, t: Target, what: &str) {
+        r.invalidate_all();
+        let t0 = rt::ticks();
+        let Some(due) = gc2cp_kick(g, r, t) else {
+            return;
+        };
+        let set_up = us_since(t0);
+        let mut at = due;
+        let stats = loop {
+            while (g.clock.now_us().wrapping_sub(at) as i32) < 0 {}
+            match r.poll(&mut g.e.regs, &mut g.mem, &mut g.clock) {
+                Poll::Wait(next) => at = next,
+                Poll::Done(s) => break s,
+                p => {
+                    log!("    {what} stats: {p:?}");
+                    return;
+                }
+            }
+        };
+        log!(
+            "    {what}: {} tiles, {} quads, {} lists written, {} words to 2700G memory, {} register writes; the CPU's set-up {set_up} us, the render predicted {} us, seen done at {} us, whole {} us",
+            stats.tiles,
+            stats.quads,
+            stats.lists,
+            stats.mem_words,
+            stats.reg_writes,
+            stats.predicted_us,
+            stats.done_us,
+            us_since(t0)
+        );
     }
 
     /// The conversion's output (the set's first plane) against `want`: the
@@ -20703,6 +20913,12 @@ mod image {
             offs.0,
             offs.1
         );
+        if !full {
+            game.registers_taken();
+            gc2cp_stats(g, game, gc2cp_game_target(), "the game's frame");
+            conv.registers_taken();
+            gc2cp_stats(g, conv, gc2cp_set_target(), "the conversion");
+        }
         best[0]
     }
 

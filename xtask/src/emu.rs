@@ -6585,6 +6585,8 @@ fn variant_images_gpubench(
                 "GC2CM GC2CP card at 143.00 / 1 check:",
                 "GC2CP 143.00 / 1 (d) 240 x 320 converted, overlapped frame 3: 2 frames;",
                 "GC2CP 143.00 / 1 (d') 240 x 320 converted, lists overlapped, 2D apart frame 3: 2 frames;",
+                "GC2CP 143.00 / 1 (e) 480 x 320, two frames in flight frame 3: 3 frames;",
+                "    its frame: ",
                 "GC2CP 143.00 / 1 speed-up (d) 240 x 320 converted, overlapped against native",
                 "GC2CP done:",
                 "GC2CA done",
