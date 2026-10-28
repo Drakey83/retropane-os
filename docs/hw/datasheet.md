@@ -249,7 +249,11 @@ watching.
   every pixel; the row stride is 8 texels whatever the size codes say; TEX1
   bit 29 (nearest mip level) made it the declared width (32); no TEX0, TEX1,
   TEX2 or render-block bit sets it otherwise. Texels sampled at the pixel's
-  corner.
+  corner. **With TEX1 bit 29 the stride is the declared width** (across
+  code; 32-1,024 texels; GC2CI), no cost against twiddled reads (GC2CJ).
+- **TEX2 `0x86096612`** (Dell's DOT3 entry, kinds 3-4) = per-channel
+  `clamp(4 x texel x vertex colour)`, no cross-channel sum; `0xC6046608`
+  draws white (`rp-gpubench` GC2CJ, X51v, 2026-10-28).
 - **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
   2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
   ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,
