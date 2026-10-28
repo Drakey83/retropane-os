@@ -17312,13 +17312,12 @@ mod image {
     /// plane's scaler to 480 x 640 (the graphics plane's reads off), the
     /// graphics plane with `GDRCTRL`'s doubling (Dell's 2x), or the planes
     /// as found (the native screen's reads; the picture not shown).
-    /// The video plane's layer when it shows a GC2CA picture: the top
-    /// slot, opaque. In the bottom slot with the graphics plane (as the
-    /// loader leaves it, its fetch off) also there, the screen showed one
-    /// solid colour in every way, the proven 1:1 RGB565 and P9c's UYVY 2x
-    /// included (GC2CB run 1, the owner's eye, 2026-10-28); the runs that
-    /// showed pictures (P9c, run D) had the graphics plane in the middle
-    /// slot over the video plane at the bottom.
+    /// The video plane's layer when it shows a GC2CA picture with the
+    /// graphics plane's fetch off (GC2CB run 3's "ours" tests): the top
+    /// slot, opaque. Kept as the failing arrangement GC2CB compares: with
+    /// the graphics plane's fetch off the video plane's output is unstable
+    /// every frame (streaks, the owner's eye, 2026-10-28), in the bottom
+    /// slot as in the top.
     const GC2CA_VIDEO_LAYER: Layer = Layer {
         slot: Slot::Top,
         blend: Blend::Opaque,
@@ -17358,10 +17357,21 @@ mod image {
         let (w, h) = size;
         match how {
             GC2CA_VIDEO => {
-                let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+                // P9c's arrangement (GC2CB run 3, the owner's eye: 6 of 6
+                // right this way, every way with the graphics plane's
+                // fetch off streaked): the graphics plane fetching the
+                // screen, invisible, over the video plane at the bottom.
+                let screen = Plane {
+                    format: PlaneFormat::Rgb565,
+                    width: 480,
+                    height: 640,
+                    offset: 0,
+                    stride: 960,
+                };
+                rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
                 let plane = VideoPlane::new(VideoFormat::Rgb565, w, h, at as usize);
                 let scale = plane.scale_to(480, 640, 0, 0);
-                rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CA_VIDEO_LAYER, scale);
+                rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
             }
             GC2CA_NATIVE | GC2CA_DELL => {
                 rp_drv_mbx_display::video_hide(&mut g.e.regs);
