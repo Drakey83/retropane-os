@@ -17312,6 +17312,17 @@ mod image {
     /// plane's scaler to 480 x 640 (the graphics plane's reads off), the
     /// graphics plane with `GDRCTRL`'s doubling (Dell's 2x), or the planes
     /// as found (the native screen's reads; the picture not shown).
+    /// The video plane's layer when it shows a GC2CA picture: the top
+    /// slot, opaque. In the bottom slot with the graphics plane (as the
+    /// loader leaves it, its fetch off) also there, the screen showed one
+    /// solid colour in every way, the proven 1:1 RGB565 and P9c's UYVY 2x
+    /// included (GC2CB run 1, the owner's eye, 2026-10-28); the runs that
+    /// showed pictures (P9c, run D) had the graphics plane in the middle
+    /// slot over the video plane at the bottom.
+    const GC2CA_VIDEO_LAYER: Layer = Layer {
+        slot: Slot::Top,
+        blend: Blend::Opaque,
+    };
     const GC2CA_NATIVE: u8 = 0;
     const GC2CA_VIDEO: u8 = 1;
     const GC2CA_DELL: u8 = 2;
@@ -17350,7 +17361,7 @@ mod image {
                 let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
                 let plane = VideoPlane::new(VideoFormat::Rgb565, w, h, at as usize);
                 let scale = plane.scale_to(480, 640, 0, 0);
-                rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, Layer::SOLO, scale);
+                rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CA_VIDEO_LAYER, scale);
             }
             GC2CA_NATIVE | GC2CA_DELL => {
                 rp_drv_mbx_display::video_hide(&mut g.e.regs);
@@ -17860,7 +17871,7 @@ mod image {
             let plane = VideoPlane::new(format, src.0, src.1, GC2CA_A as usize);
             let mut scale = plane.scale_to(out.0, out.1, 0, 0);
             scale.taps = taps;
-            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, Layer::SOLO, scale);
+            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CA_VIDEO_LAYER, scale);
             if csc {
                 // VSCTRL bit 25, the colour conversion (layers'
                 // VSCTRL_CSC_EN), which the RGB formats leave off.
@@ -17870,12 +17881,21 @@ mod image {
             let _ = underrun_take(&mut g.e.regs);
             let (a, b) = soak_dsig(g);
             gc2ca_hold(GC2CA_HOLD_US / 2);
-            let _ = gc2ca_fill(
-                g,
-                GC2CA_A + 2 * 16 * u32::from(src.0),
-                (src.0, src.1 - 16),
-                0x07E0,
+            // Every pixel but the first two (GC2CB run 1 changed only rows
+            // 16 on, and even the proven controls read "flat": `DSIG`
+            // doesn't cover the whole frame). A flat first-pixel output
+            // keeps its signature; any picture changes in its top rows.
+            let w = rp_image::need(
+                cmd::fill(
+                    Format::RGB565,
+                    GC2CA_A as usize,
+                    2 * usize::from(src.0),
+                    (2, 0, src.0 - 2, src.1),
+                    0x07E0,
+                ),
+                "a 2D rectangle",
             );
+            let _ = g.e.submit(&w).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok();
             let (c, d) = soak_dsig(g);
             gc2ca_hold(GC2CA_HOLD_US / 2);
             let under = underrun_take(&mut g.e.regs);

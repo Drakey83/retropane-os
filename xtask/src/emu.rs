@@ -9525,7 +9525,19 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
 /// presses, answer them, write its `TR` line and return to the loader by
 /// itself. Its times are the emulator's, not the device's: not compared.
 pub fn today_replay(root: &Path) -> Result<(), String> {
-    let bin = variant_image(root, "rp-today", ("RP_TODAY_REPLAY", "1"))?;
+    today_replay_with(root, false)?;
+    // The profile (`RP_TODAY_PROFILE`, R81 item 1): the same replay with
+    // the performance monitor around four zones, a `PROFILE` line each
+    // (the fork's event counters read 0: the plumbing only).
+    today_replay_with(root, true)
+}
+
+fn today_replay_with(root: &Path, profile: bool) -> Result<(), String> {
+    let mut envs = vec![("RP_TODAY_REPLAY", "1")];
+    if profile {
+        envs.push(("RP_TODAY_PROFILE", "1"));
+    }
+    let bin = variant_image_envs(root, "rp-today", &envs)?;
     let loader = emu_dir(root)?.join("rp-loader.bin");
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let output = boot(
@@ -9561,6 +9573,30 @@ pub fn today_replay(root: &Path) -> Result<(), String> {
     if log.lines().any(|l| l.starts_with("R ")) {
         return Err(format!(
             "today replay: the recorder logged samples (it is off in the replay):{log}"
+        ));
+    }
+    if profile {
+        let zones = [
+            "PROFILE touch sample (SPI): ",
+            "PROFILE touch filter: ",
+            "PROFILE shell frame (layout and draw list): ",
+            "PROFILE compositor (2D queueing): ",
+        ];
+        for z in zones {
+            let Some(line) = log.lines().find(|l| l.starts_with(z)) else {
+                return Err(format!("today profile: no `{z}` line:{log}"));
+            };
+            if line.starts_with(&format!("{z}0 spans")) {
+                return Err(format!("today profile: a zone never ran: {line}"));
+            }
+            eprintln!("      {}", line.trim_end());
+        }
+        eprintln!("    today profile OK: four zones counted over the replay");
+        return Ok(());
+    }
+    if log.lines().any(|l| l.starts_with("PROFILE ")) {
+        return Err(format!(
+            "today replay: PROFILE lines without the profile:{log}"
         ));
     }
     eprintln!("      {}", tr.trim_end());

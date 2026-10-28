@@ -21,7 +21,7 @@ mod image {
     use rp_graphics::{Graphics, Step};
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::soc::irq;
-    use rp_hal_pxa27x::{Mmio, cpu, rt};
+    use rp_hal_pxa27x::{Mmio, cpu, pmu, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
     use rp_mbx_render::{Layout, LocalMem, Mbx2dRenderer};
@@ -123,6 +123,49 @@ mod image {
     /// on to measure what those lines cost.
     const REPLAY: bool = option_env!("RP_TODAY_REPLAY").is_some();
     const REPLAY_RECORD: bool = option_env!("RP_TODAY_REPLAY_RECORD").is_some();
+
+    /// The profile (`RP_TODAY_PROFILE`, with the replay; R81 item 1, the
+    /// owner's "measure first"): the performance monitor around each hot
+    /// path ([`Zone`]), where its cycles go (work, waiting on data, full
+    /// write buffers, instruction fetch) and why (misses a thousand
+    /// instructions), one `PROFILE` line a zone at the replay's end. Off:
+    /// no counter is touched.
+    const PROFILE: bool = option_env!("RP_TODAY_PROFILE").is_some();
+
+    /// A profiled hot path: each span counted under the next of
+    /// [`pmu::SETS`] in turn (three counters, six events: multiplexed over
+    /// the replay's repeated work). Spans never nest ([`pmu::start`] resets
+    /// the counters).
+    struct Zone {
+        tally: pmu::Tally,
+        next: usize,
+    }
+
+    impl Zone {
+        const fn new() -> Self {
+            Self {
+                tally: pmu::Tally {
+                    spans: [0; 2],
+                    cycles: [0; 2],
+                    events: [[0; 3]; 2],
+                },
+                next: 0,
+            }
+        }
+
+        /// `f`, counted when [`PROFILE`] is on.
+        fn run<R>(&mut self, f: impl FnOnce() -> R) -> R {
+            if !PROFILE {
+                return f();
+            }
+            let set = self.next % pmu::SETS.len();
+            self.next += 1;
+            let span = pmu::start(pmu::SETS[set]);
+            let r = f();
+            self.tally.add(set, pmu::read(span));
+            r
+        }
+    }
 
     static WALLPAPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.yuv"));
 
@@ -300,6 +343,9 @@ mod image {
         let mut replay_touching = false;
         let mut replay_last: Option<u32> = None;
 
+        // The profile's zones (see PROFILE).
+        let (mut z_touch, mut z_filter, mut z_shell, mut z_compositor) =
+            (Zone::new(), Zone::new(), Zone::new(), Zone::new());
         loop {
             rt::check_in();
             let t = rt::ticks();
@@ -359,7 +405,7 @@ mod image {
                 match step {
                     Some(st) => {
                         // The real sample's work, its values not used.
-                        let _ = touch.convert_traced();
+                        let _ = z_touch.run(|| touch.convert_traced());
                         if replay_touching && let Some(last) = replay_last {
                             period.add(read_at.wrapping_sub(last) / 13 * 4);
                         }
@@ -377,7 +423,7 @@ mod image {
                 }
             } else {
                 let traced = if pen_event || filter.down() || touch.pen_down() {
-                    touch.sample_traced()
+                    z_touch.run(|| touch.sample_traced())
                 } else {
                     None
                 };
@@ -390,14 +436,16 @@ mod image {
             // Whether a touch was in progress before this sample: its end
             // is recorded even when nothing was reported.
             let was_down = filter.down();
-            let ev = filter.sample(
-                raw.map(|s| Sample {
-                    x: s.x,
-                    y: s.y,
-                    z1: s.z1,
-                }),
-                (now_ms & 0xFFFF_FFFF) as u32,
-            );
+            let ev = z_filter.run(|| {
+                filter.sample(
+                    raw.map(|s| Sample {
+                        x: s.x,
+                        y: s.y,
+                        z1: s.z1,
+                    }),
+                    (now_ms & 0xFFFF_FFFF) as u32,
+                )
+            });
             // Which found this touch: the pen interrupt, or the idle check
             // of the line (diagnostics: touch went dead after a hold on the
             // device, as if the interrupt were missed). Counted once a
@@ -606,6 +654,16 @@ mod image {
                         "  {name}: {n} times, median {median} us, worst {worst} us"
                     );
                 }
+                if PROFILE {
+                    for (name, z) in [
+                        ("touch sample (SPI)", &z_touch),
+                        ("touch filter", &z_filter),
+                        ("shell frame (layout and draw list)", &z_shell),
+                        ("compositor (2D queueing)", &z_compositor),
+                    ] {
+                        let _ = writeln!(RunLog, "PROFILE {name}: {}", z.tally.split());
+                    }
+                }
                 before.restore(&mut gfx.two_d().parts().0.regs);
                 rp_image::finish()
             }
@@ -635,11 +693,11 @@ mod image {
             // Draw what changed, timing it.
             if shell.needs_frame() {
                 let t0 = rt::ticks();
-                shell.frame(frame);
+                z_shell.run(|| shell.frame(frame));
                 // One job at a time: the frame in flight finishes first (as
                 // the 2D renderer's own draw waited for it).
                 while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
-                let _ = gfx.frame(frame, &mut gclock);
+                let _ = z_compositor.run(|| gfx.frame(frame, &mut gclock));
                 let t1 = rt::ticks();
                 let us = t1.wrapping_sub(t0) / 13 * 4;
                 if core::mem::take(&mut compare_frame) {
