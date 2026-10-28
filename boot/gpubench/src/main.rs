@@ -17565,7 +17565,9 @@ mod image {
         gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
         let _ = underrun_take(&mut g.e.regs);
         if ok {
-            if GC2CA_SCALER {
+            if GC2CA_CARD {
+                gc2ca_card_run(g, &planes0);
+            } else if GC2CA_SCALER {
                 gc2ca_scaler(g, &mut cur, tex, &planes0);
             } else {
                 if !GC2CA_WATCH_ONLY {
@@ -17977,6 +17979,159 @@ mod image {
             planes0,
             ["GC2CB DONE", "WHICH TESTS SHOWED", "THE PICTURE?"],
         );
+    }
+
+    /// Run GC2CC (`RP_GPUBENCH_GC2_HALF_CARD`, with `RP_GPUBENCH_GC2_HALF`):
+    /// how the video plane's 2x reads an RGB565 picture. GC2CA's comparison
+    /// (gpubench-0161, the owner's photos) showed our RGB565 2x as a 4x
+    /// enlargement of the scene's top-left quarter (the flat frame) and as
+    /// pink pinstripes (the textured one), with every register as written
+    /// (GC2CB run 3). A known test card instead of a scene: its photo
+    /// shows the zoom, which part of the picture and the colours. Each
+    /// picture held until a button, for the owner's camera.
+    const GC2CA_CARD: bool = option_env!("RP_GPUBENCH_GC2_HALF_CARD").is_some();
+    /// GC2CC's pictures: (name on the card, format, output size; `None`:
+    /// Dell's doubling on the graphics plane).
+    #[allow(clippy::type_complexity)]
+    const GC2CC_TESTS: [(&str, Option<VideoFormat>, (u16, u16)); 5] = [
+        ("RGB CARD 1:1", Some(VideoFormat::Rgb565), (240, 320)),
+        ("RGB CARD OUR 2X", Some(VideoFormat::Rgb565), (480, 640)),
+        ("UYVY CARD 1:1", Some(VideoFormat::Uyvy), (240, 320)),
+        ("UYVY CARD OUR 2X", Some(VideoFormat::Uyvy), (480, 640)),
+        ("RGB CARD DELL 2X", None, (480, 640)),
+    ];
+
+    /// GC2CC's test card at `x`, `y` of 240 x 320, as 8-bit R, G, B: the
+    /// top half eight bars 30 wide (red, green, blue, white, yellow, cyan,
+    /// magenta, grey); the bottom half black with a white line every 16
+    /// pixels; corner squares of 24 (red top left, green top right, blue
+    /// bottom left, white bottom right); a white frame round the edge.
+    const fn gc2cc_card_px(x: u32, y: u32) -> (u32, u32, u32) {
+        const BARS: [(u32, u32, u32); 8] = [
+            (255, 0, 0),
+            (0, 255, 0),
+            (0, 0, 255),
+            (255, 255, 255),
+            (255, 255, 0),
+            (0, 255, 255),
+            (255, 0, 255),
+            (128, 128, 128),
+        ];
+        let (w, h, c) = (240, 320, 24);
+        if x == 0 || y == 0 || x == w - 1 || y == h - 1 {
+            return (255, 255, 255);
+        }
+        if x < c && y < c {
+            return (255, 0, 0);
+        }
+        if x >= w - c && y < c {
+            return (0, 255, 0);
+        }
+        if x < c && y >= h - c {
+            return (0, 0, 255);
+        }
+        if x >= w - c && y >= h - c {
+            return (255, 255, 255);
+        }
+        if y < h / 2 {
+            return BARS[(x / 30) as usize];
+        }
+        if x % 16 == 0 || y % 16 == 0 {
+            (255, 255, 255)
+        } else {
+            (0, 0, 0)
+        }
+    }
+
+    /// The card as RGB565 (two pixels a word, the even one low) at `rgb`
+    /// and as UYVY (U Y0 V Y1, BT.601 integer coefficients) at `yuv`.
+    fn gc2cc_card(g: &mut Rig, rgb: u32, yuv: u32) {
+        let mut row_rgb = [0u32; 120];
+        let mut row_yuv = [0u32; 120];
+        for y in 0..320u32 {
+            for (i, (wr, wy)) in row_rgb.iter_mut().zip(row_yuv.iter_mut()).enumerate() {
+                let x = 2 * i as u32;
+                let (r0, g0, b0) = gc2cc_card_px(x, y);
+                let (r1, g1, b1) = gc2cc_card_px(x + 1, y);
+                let p = |r: u32, g: u32, b: u32| (r >> 3) << 11 | (g >> 2) << 5 | b >> 3;
+                *wr = p(r0, g0, b0) | p(r1, g1, b1) << 16;
+                let luma = |r: u32, g: u32, b: u32| ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+                let (r, gg, b) = ((r0 + r1) / 2, (g0 + g1) / 2, (b0 + b1) / 2);
+                let (r, gg, b) = (r as i32, gg as i32, b as i32);
+                let u = (((-38 * r - 74 * gg + 112 * b + 128) >> 8) + 128) as u32;
+                let v = (((112 * r - 94 * gg - 18 * b + 128) >> 8) + 128) as u32;
+                *wy = u | luma(r0, g0, b0) << 8 | v << 16 | luma(r1, g1, b1) << 24;
+            }
+            g.mem.store((rgb + y * 480) as usize, &row_rgb);
+            g.mem.store((yuv + y * 480) as usize, &row_yuv);
+            if y % 64 == 63 {
+                rt::check_in();
+            }
+        }
+        g.mem.sync();
+    }
+
+    /// Held until a button is pressed and let go (the emulator: at once),
+    /// at most `us`, the loader's watchdog fed; the time held.
+    fn gc2ca_hold_button(g: &mut Rig, us: u32) -> u32 {
+        if GC2_RENDERS < 20 {
+            return 0;
+        }
+        g.arm_button();
+        let t0 = rt::ticks();
+        while us_since(t0) < us {
+            rt::delay_us(10_000);
+            rt::check_in();
+            if g.button() {
+                break;
+            }
+        }
+        us_since(t0)
+    }
+
+    /// Run GC2CC (see [`GC2CA_CARD`]): the card drawn as RGB565 at A and as
+    /// UYVY at B; each of [`GC2CC_TESTS`] named on a card, shown in P9c's
+    /// arrangement (GC2CB run 3) or through Dell's doubling, held until a
+    /// button (two minutes at most).
+    fn gc2ca_card_run(g: &mut Rig, planes0: &Snapshot) {
+        let n = GC2CC_TESTS.len();
+        for (i, &(name, format, out)) in GC2CC_TESTS.iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "PHOTO {} OF {n}", i + 1);
+            gc2ca_card(g, planes0, [l1.as_str(), name, "PHOTO, THEN A BUTTON"]);
+            // The label's card wrote over A: the test card again.
+            gc2cc_card(g, GC2CA_A, GC2CA_B);
+            match format {
+                Some(f) => {
+                    let at = if f == VideoFormat::Uyvy {
+                        GC2CA_B
+                    } else {
+                        GC2CA_A
+                    };
+                    let screen = Plane {
+                        format: PlaneFormat::Rgb565,
+                        width: 480,
+                        height: 640,
+                        offset: 0,
+                        stride: 960,
+                    };
+                    rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
+                    let plane = VideoPlane::new(f, 240, 320, at as usize);
+                    let scale = plane.scale_to(out.0, out.1, 0, 0);
+                    rp_drv_mbx_display::video_show(
+                        &mut g.e.regs,
+                        &plane,
+                        GC2CB_VIDEO_BOTTOM,
+                        scale,
+                    );
+                }
+                None => gc2ca_show(g, GC2CA_DELL, (240, 320), GC2CA_A, planes0),
+            }
+            let held = gc2ca_hold_button(g, 120_000_000);
+            log!("  GC2CC {} {name}: held {} ms", i + 1, held / 1000);
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        }
+        gc2ca_card(g, planes0, ["GC2CC DONE", "THANK YOU", ""]);
     }
 
     /// GC2BY's rounds a step (the emulator 1).

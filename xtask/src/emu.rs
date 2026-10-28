@@ -5514,6 +5514,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cc = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_CARD", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5788,7 +5797,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 121] = [
+    let runs: [GpubenchRun; 122] = [
         (
             "run A",
             &run_a,
@@ -6193,6 +6202,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "    GC2CB 2 VSCADR 0x",
                 "GC2CB 5 P9C WAY: RGB 2X: 240x320 to 480x640",
                 "GC2CB 6 P9C WAY: UYVY 2X: 240x320 to 480x640",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CC: the test card through the video plane's 2x, held for
+        // the owner's camera (the emulator: no hold; the shape only).
+        (
+            "run GC2CC",
+            &run_gc2cc,
+            &[
+                "GC2CC 1 RGB CARD 1:1: held 0 ms",
+                "GC2CC 4 UYVY CARD OUR 2X: held 0 ms",
+                "GC2CC 5 RGB CARD DELL 2X: held 0 ms",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
