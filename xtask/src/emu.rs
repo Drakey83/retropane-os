@@ -5603,6 +5603,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cj = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_DOT3", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5877,7 +5886,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 128] = [
+    let runs: [GpubenchRun; 129] = [
         (
             "run A",
             &run_a,
@@ -6395,6 +6404,23 @@ fn variant_images_gpubench(
                 "GC2CI bit 29, 16-bit, 256 x 512 5: twiddled;",
                 "GC2CI 256 x 512, TEX1 bits 30-29 = 2: HUNG (the core was reset)",
                 "GC2CI done: 57 tries, 0 read as rows (strides in bytes []), 56 twiddled, 0 other, 0 not rendered, 1 hung;",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CJ: DOT3's formula on read-back ramps under eight tints,
+        // then a 120 x 320 conversion-sized pass timed (no photos). The
+        // emulator draws DOT3 as it draws any unknown combine.
+        (
+            "run GC2CJ",
+            &run_gc2cj,
+            &[
+                "GC2CJ TEX2 0xd6886610 tint 0xffffffff red  : ff048080 ff248080 ff448080",
+                "GC2CJ TEX2 0x86096612 tint 0xffff0000 blue:",
+                "GC2CJ DOT3, rows (TEX0 bit 0): fastest",
+                "GC2CJ done: 0 hung;",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

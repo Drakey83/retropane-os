@@ -17529,6 +17529,12 @@ mod image {
             GC2BB_PARAMS.at
         );
         let planes0 = Snapshot::take(&mut g.e.regs);
+        if GC2CA_DOT3 {
+            gc2cj_run(g, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CA_ROWS || GC2CA_STRIDE {
             // GC2CH and GC2CI need none of the frames: the probe alone.
             gc2ch_run(g, &planes0);
@@ -18724,6 +18730,271 @@ mod image {
     /// block's 53 words (where the PowerVR2's stride lived: a register, not
     /// the texture word); a hang is reset and logged. No photos.
     const GC2CA_ROWS: bool = option_env!("RP_GPUBENCH_GC2_HALF_ROWS").is_some();
+    /// Run GC2CJ (`RP_GPUBENCH_GC2_HALF_DOT3`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R78 item 2: the maths and the cost of our own RGB-to-UYVY pass. Part
+    /// 1, the formula: a 32 x 32 ARGB8888 texture of three ramps (rows 0-10
+    /// red, 11-21 green, 22-31 blue, each `8x + 4` across, the other two
+    /// channels 128) drawn 1:1 with Dell's two DOT3 combine words
+    /// (`libGLES_CL`'s table: kinds 0-2 and 3-4) under eight tints (the
+    /// vertex colour, GL's second argument), every output read back and
+    /// logged at eight points a ramp: the weight, bias, clamping and channel
+    /// replication follow from them; MODULATE under white the control. Part
+    /// 2, the cost: a 120 x 320 ARGB8888 target (the UYVY frame of a
+    /// 240 x 320 picture, one word per two pixels) drawn whole from a
+    /// 512 x 512 RGB565 texture (240 x 320 of it, two texels a pixel across)
+    /// with MODULATE and DOT3, twiddled and in row order (TEX0 bit 0): one
+    /// render to warm, then five timed. At Windows Mobile's clock (cores at
+    /// half: GC2CA's other column). No photos.
+    const GC2CA_DOT3: bool = option_env!("RP_GPUBENCH_GC2_HALF_DOT3").is_some();
+    /// Dell's DOT3 combine words (`libGLES_CL`'s TEX2 table, unit 0): texture
+    /// kinds 0-2 and 3-4 (2700g.md "The combine word").
+    const GC2CJ_DOT3: [u32; 2] = [0xC604_6608, 0x8609_6612];
+    /// Part 1's tints (`0xAARRGGBB`): each channel high and low alone,
+    /// grey, white, and a mixed one.
+    const GC2CJ_TINTS: [u32; 8] = [
+        0xFFFF_8080,
+        0xFF80_FF80,
+        0xFF80_80FF,
+        0xFF00_8080,
+        0xFF80_8080,
+        0xFFFF_FFFF,
+        0xFFC0_A08C,
+        0xFFFF_0000,
+    ];
+    /// Part 2's target: 120 x 320, 32-bit.
+    const GC2CJ_W: u16 = 120;
+    const GC2CJ_H: u16 = 320;
+    /// Part 2's timed renders a setting.
+    const GC2CJ_RENDERS: u32 = 5;
+
+    /// Part 1's texel at `(x, y)`: the ramp `8x + 4` in red (rows 0-10),
+    /// green (11-21) or blue (22-31), the other channels 128, opaque.
+    const fn gc2cj_texel(x: u32, y: u32) -> u32 {
+        let v = 8 * x + 4;
+        let (r, gr, b) = match y / 11 {
+            0 => (v, 128, 128),
+            1 => (128, v, 128),
+            _ => (128, 128, v),
+        };
+        0xFF00_0000 | r << 16 | gr << 8 | b
+    }
+
+    /// Run GC2CJ (see [`GC2CA_DOT3`]).
+    #[inline(never)]
+    fn gc2cj_run(g: &mut Rig, planes0: &Snapshot) {
+        gc2ca_card(
+            g,
+            planes0,
+            ["GC2CJ: DOT3 MATHS", "AND COST", "NO PHOTOS NEEDED"],
+        );
+        let nudge = core::mem::replace(&mut g.nudge, 0);
+        let t0 = rt::ticks();
+        let hangs = g.hangs;
+        gc2cj_formula(g);
+        gc2cj_cost(g);
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        log!(
+            "  GC2CJ done: {} hung; {} ms",
+            g.hangs - hangs,
+            us_since(t0) / 1000
+        );
+        g.nudge = nudge;
+        gc2ca_card(g, planes0, ["GC2CJ DONE", "", ""]);
+    }
+
+    /// Part 1 (see [`GC2CA_DOT3`]).
+    fn gc2cj_formula(g: &mut Rig) {
+        let Some(area) = g.pool.alloc(P_AREA, 4096) else {
+            log!("  GC2CJ: no memory for the target");
+            return;
+        };
+        let Some(tex) = p_texture(g, 2, gc2cj_texel) else {
+            log!("  GC2CJ: no memory for the texture");
+            let _ = g.pool.free(area, P_AREA);
+            return;
+        };
+        if let Some(mut r) = Renderer::new(&mut g.pool, 32, 32) {
+            let _ = r.set_background(Some(BLACK));
+            log!(
+                "  GC2CJ part 1: ramps 8x + 4 (x = 0, 4, ... 28: 4, 36, 68, 100, 132, 164, 196, 228) in red, green, blue (the others 128); each line the output words at those points"
+            );
+            let opaque = tex.words()[2];
+            let mut tries = [(0u32, 0u32); 1 + 2 * GC2CJ_TINTS.len()];
+            tries[0] = (opaque, WHITE);
+            for (k, &tint) in GC2CJ_TINTS.iter().enumerate() {
+                tries[1 + k] = (GC2CJ_DOT3[0], tint);
+                tries[1 + GC2CJ_TINTS.len() + k] = (GC2CJ_DOT3[1], tint);
+            }
+            for (k, &(word, tint)) in tries.iter().enumerate() {
+                let mut l2 = heapless_name();
+                let _ = write!(l2, "PART 1 TRY {} OF {}", k + 1, tries.len());
+                soak_label(g, ["GC2CJ DOT3", l2.as_str(), ""], SOAK_BLUE);
+                r.set_header_xors([0, 0, 0, opaque ^ word, 0]);
+                let draw = Draw::rect(
+                    0,
+                    0,
+                    32,
+                    32,
+                    Paint::Texture {
+                        tex,
+                        uv: [(0, 0), (UV_ONE, 0), (UV_ONE, UV_ONE), (0, UV_ONE)],
+                        tint,
+                    },
+                );
+                g.set(&mut r, 0, Some(draw));
+                p_fill(g, area);
+                let before = g.hangs;
+                let ok = p_frame(g, &mut r, p_target(area, P_SQUARE), 6, None);
+                if g.hangs != before {
+                    log!("  GC2CJ TEX2 0x{word:08x} tint 0x{tint:08x}: HUNG (the core was reset)");
+                    r.start_clean();
+                    continue;
+                }
+                if !ok {
+                    log!("  GC2CJ TEX2 0x{word:08x} tint 0x{tint:08x}: not rendered");
+                    continue;
+                }
+                let at = area + P_BEFORE;
+                for (band, (name, y)) in [("red", 5u32), ("green", 16), ("blue", 27)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let px = |x: u32| p_value(&g.mem, at, y * P_SQUARE.stride + 4 * x, 4);
+                    log!(
+                        "  GC2CJ TEX2 0x{word:08x} tint 0x{tint:08x} {name}{}: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                        if band == 0 { "  " } else { "" },
+                        px(0),
+                        px(4),
+                        px(8),
+                        px(12),
+                        px(16),
+                        px(20),
+                        px(24),
+                        px(28)
+                    );
+                }
+                rt::check_in();
+            }
+            r.set_header_xors([0; 5]);
+            g.set(&mut r, 0, None);
+            let _ = r.release(&mut g.pool);
+        } else {
+            log!("  GC2CJ: no renderer");
+        }
+        p_texture_free(g, tex);
+        let _ = g.pool.free(area, P_AREA);
+    }
+
+    /// Part 2 (see [`GC2CA_DOT3`]).
+    fn gc2cj_cost(g: &mut Rig) {
+        let (w, h) = (u32::from(GC2CJ_W), u32::from(GC2CJ_H));
+        let bytes = w * h * 4;
+        let tex_bytes = 512 * 512 * 2;
+        let (Some(at), Some(tat)) = (g.pool.alloc(bytes, 4096), g.pool.alloc(tex_bytes, 128))
+        else {
+            log!("  GC2CJ part 2: no memory");
+            return;
+        };
+        // Some texels (their values don't change the time).
+        let fill = [0x7BEF_39E7u32; 256];
+        for off in (0..tex_bytes).step_by(1024) {
+            g.mem.store((tat + off) as usize, &fill);
+        }
+        g.mem.sync();
+        let tex = Texture {
+            at: tat,
+            code: 6,
+            format: format::RGB565 as u8,
+            u_mode: address::CLAMP as u8,
+            v_mode: address::CLAMP as u8,
+            linear: false,
+            levels: 1,
+        };
+        let opaque = tex.words()[2];
+        let target = Target {
+            picture: Picture {
+                at,
+                stride: w * 4,
+                w: GC2CJ_W,
+                h: GC2CJ_H,
+                format: PixelFormat::Argb8888,
+            },
+            x: 0,
+            y: 0,
+        };
+        let draw = Draw::rect(
+            0,
+            0,
+            w as i32,
+            h as i32,
+            Paint::Texture {
+                tex,
+                uv: [
+                    (0, 0),
+                    (UV_ONE / 512 * 240, 0),
+                    (UV_ONE / 512 * 240, UV_ONE / 512 * 320),
+                    (0, UV_ONE / 512 * 320),
+                ],
+                tint: 0xFFC0_A08C,
+            },
+        );
+        if let Some(mut r) = Renderer::new(&mut g.pool, GC2CJ_W, GC2CJ_H) {
+            let _ = r.set_background(Some(BLACK));
+            log!(
+                "  GC2CJ part 2: {w} x {h} ARGB8888 target from 240 x 320 of a 512 x 512 RGB565 texture, {GC2CJ_RENDERS} timed renders a setting after one to warm (whole render: set-up, core, poll)"
+            );
+            for (k, (name, tex0, tex2)) in [
+                ("MODULATE, twiddled", 0, 0),
+                ("DOT3, twiddled", 0, opaque ^ GC2CJ_DOT3[0]),
+                ("MODULATE, rows (TEX0 bit 0)", 1, 0),
+                ("DOT3, rows (TEX0 bit 0)", 1, opaque ^ GC2CJ_DOT3[0]),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut l2 = heapless_name();
+                let _ = write!(l2, "PART 2 STEP {} OF 4", k + 1);
+                soak_label(g, ["GC2CJ COST", l2.as_str(), ""], SOAK_BLUE);
+                r.set_header_xors([0, tex0, 0, tex2, 0]);
+                g.set(&mut r, 0, Some(draw));
+                let (mut min, mut sum, mut n) = (u32::MAX, 0u32, 0u32);
+                for i in 0..=GC2CJ_RENDERS {
+                    let before = g.hangs;
+                    let t = rt::ticks();
+                    let ok = p_frame(g, &mut r, target, 6, None);
+                    let us = us_since(t);
+                    if g.hangs != before {
+                        log!("  GC2CJ {name}: HUNG (the core was reset)");
+                        r.start_clean();
+                        break;
+                    }
+                    if ok && i > 0 {
+                        min = min.min(us);
+                        sum += us;
+                        n += 1;
+                    }
+                    rt::check_in();
+                }
+                if n > 0 {
+                    log!(
+                        "  GC2CJ {name}: fastest {min} us, mean {} us over {n}; 0x{:08x} at the first pixel",
+                        sum / n,
+                        g.mem.load(at as usize).unwrap_or(0)
+                    );
+                } else {
+                    log!("  GC2CJ {name}: no render finished");
+                }
+            }
+            r.set_header_xors([0; 5]);
+            g.set(&mut r, 0, None);
+            let _ = r.release(&mut g.pool);
+        } else {
+            log!("  GC2CJ part 2: no renderer");
+        }
+        let _ = g.pool.free(tat, tex_bytes);
+        let _ = g.pool.free(at, bytes);
+    }
+
     /// Run GC2CI (`RP_GPUBENCH_GC2_HALF_STRIDE`, with
     /// `RP_GPUBENCH_GC2_HALF`), R78 item 2: GC2CH's row-order mode (TEX0 bit
     /// 0) reads at a stride of 8 texels whatever the size, and with TEX1 bit
