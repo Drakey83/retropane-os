@@ -78,7 +78,42 @@ and every point up to two codes tighter in each field passed, clamped at
 the VLIO minimum; host-tested on run 1's pattern), so the any-Axim margin
 holds in all three fields at once. Emulator: `emu-cs3bus` (timing not
 modelled: all 54 pass, the soak runs, `MSC1` put back). About 2 minutes
-on the X51v, unattended. Not yet run.
+on the X51v, unattended.
+
+**Run 2 on the X51v (2026-10-27 ~10:10 PM, `local/rp-cs3bus-run2.txt`,
+card log `cs3bus-0001`, sha 840d091d, commit 45c76245): 36 of 54 points
+pass, every one with `RDF` 5 or more; a 60 s soak at `RDF` 7, `RDN` 2,
+`RRR` 0 clean.**
+
+| Point (RDF / RDN / RRR) | Clocks a beat | Flush (1.2 MB) | Read 256 KiB | Result |
+|---|---|---|---|---|
+| 8 / 4 / 2 (Windows Mobile's) | 17 | 35.5 ms, 34 MB/s | 21.5 ms, 12 MB/s | all good |
+| 8 / 4 / 0 | 17 | 34.1 ms | 20.2 ms | all good |
+| 8 / 2 / 0 | 13 | 32.0 ms | 20.2 ms | all good |
+| **7 / 2 / 0 (the soak's: the fastest with the margin)** | 12 | **28.8 ms, 42 MB/s** | 20.2 ms | all good; **soak 240 rounds in 60 s, 0 misses** |
+| 6 / 2 / 0 | 11 | 26.7 ms, 45 MB/s | 20.2 ms | all good |
+| **5 / 2 / 0 (the fastest that passed)** | 10 | **26.7 ms, 46 MB/s** | 20.2 ms | all good |
+| any with `RDF` 4 or 3 (18 points) | 8-13 | 20.9-30.5 ms | 8.5-10.2 ms (wrong data) | **reads wrong**, every word (the flush's words right at Windows Mobile's timing: a read fault); the 2D engine never finished; the register 3-5 of 5 wrong |
+
+- **`RDN` is the lever run 1 missed:** with `RDF` held at 5-8, `RDN` 4 -> 2
+  cuts the flush 8-18%; run 1 tightened `RDN` only after `RDF` had already
+  failed. **`RRR` 2 -> 0 adds 1-4% on writes and cuts reads 6%** (21.5 ->
+  20.2 ms, the only change that moved reads at all): the 2700G still
+  paces reads (12 MB/s at every passing point).
+- **The read strobe's floor holds:** every point with `RDF` 4 or 3 reads
+  wrong whatever `RDN` and `RRR` are (and reads faster, 25-30 MB/s:
+  sampled before the data is there), as run 1 found at 4 / 4; writes land
+  everywhere. Every control at Windows Mobile's timing after a point was
+  clean (0 misses in 54): a failing point leaves nothing behind.
+- **With the any-Axim margin: `RDF` 7, `RDN` 2, `RRR` 0, a full-screen flush
+  35.5 -> 28.8 ms (19% less, 1.23x)**, against run 1's ~4% at its margin.
+  Its `RDF` has two passing codes under it (6, 5); its `RDN` and `RRR` sit
+  at the PXA's VLIO minimum, so their margin is the clamp (no tighter code
+  exists to test), not a measured one: the 2700G side of those two fields
+  is proven on this unit only. Results, not a decision: the options for
+  the owner are Windows Mobile's value, `7 / 2 / 0`, a point with a measured code
+  under it in every field (7 / 3 / 1: 31.9 ms, 10% less), or a
+  per-device check at boot (R71's self-test) before a faster value is used.
 
 ## The answer in brief
 
