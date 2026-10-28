@@ -1997,6 +1997,14 @@ fn the_header_flip_changes_only_its_word() {
             assert_eq!(at(&g, w), b, "({word}, {mask}) flips nothing");
         }
     }
+    // Several words at once (run GC2CH): each word its own mask.
+    let masks = [0, 1, 1 << 3, 1 << 31, 0];
+    g.r.set_header_xors(masks);
+    g.set(0, Some(draw));
+    for (w, &b) in base.iter().enumerate() {
+        let mask = masks.get(w % m3::tex::WORDS).copied().unwrap_or(0);
+        assert_eq!(at(&g, w), b ^ mask, "masks {masks:x?}: {w}");
+    }
     // A flat slot is never flipped.
     g.r.set_header_xor(0, u32::MAX);
     let flat = Draw::rect(0, 0, 64, 64, Paint::Flat(0xFF12_3456));

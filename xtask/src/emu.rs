@@ -5028,6 +5028,32 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
     let run_a = dir.join("rp-gpubench.bin");
     crate::sdkit::raw_binary(&release.join("rp-gpubench"), &run_a)?;
+    // `RETROPANE_GPUBENCH_RUNS="run E,run FT"`: only those runs (a new
+    // run's check without the others); the card logs are numbered by the
+    // runs that ran. Their variant images alone are built (below, as each
+    // run starts).
+    let only: Option<Vec<String>> = std::env::var("RETROPANE_GPUBENCH_RUNS")
+        .ok()
+        .map(|v| v.split(',').map(|n| n.trim().to_string()).collect());
+    if only.is_some() {
+        DEFERRED.with(|d| *d.borrow_mut() = Some(Deferred::new()));
+    }
+    let variants = variant_images_gpubench(root, &dir, &run_a, only.as_deref());
+    DEFERRED.with(|d| *d.borrow_mut() = None);
+    variants
+}
+
+/// [`boot_loader_gpubench`] with its runs' images named (built, or their
+/// builds deferred).
+#[allow(clippy::too_many_lines)]
+fn variant_images_gpubench(
+    root: &Path,
+    dir: &Path,
+    run_a: &Path,
+    only: Option<&[String]>,
+) -> Result<(), String> {
+    let loader = dir.join("rp-loader.bin");
+    let run_a = run_a.to_path_buf();
     let run_b = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_PROBES", "1"))?;
     let run_c = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_PLANES", "1"))?;
     let run_d = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_VFMT", "1"))?;
@@ -5559,6 +5585,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2ch = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_ROWS", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5833,7 +5868,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 126] = [
+    let runs: [GpubenchRun; 127] = [
         (
             "run A",
             &run_a,
@@ -6313,6 +6348,27 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2CG to code 10: 8 of 16 words written; f800f800 07e007e0",
                 "GC2CG from code 31:",
                 "GC2CG done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CH: a self-addressing texture card read with TEX0 bit 0
+        // beside every other texture and render-block bit, each read-back
+        // fitted to rows or twiddled order (no photos). The emulator reads
+        // every texture twiddled: bit 0 is unmodelled.
+        (
+            "run GC2CH",
+            &run_gc2ch,
+            &[
+                "GC2CH 16-bit control (TEX0 bit 0 off), size code 2: twiddled; rows 4/1024",
+                "GC2CH 32-bit, TEX0 bit 0, size code 6: twiddled;",
+                "GC2CH TEX0 bit 0, across size code 3: twiddled;",
+                "GC2CH TEX0 bit 0, TEX1 bit 3: twiddled; rows 4/1024 (start 512,",
+                "GC2CH TEX0 bit 0, TEX1 bit 30: HUNG (the core was reset)",
+                "GC2CH render block: 0 tries read other than TEX0 bit 0 alone",
+                "GC2CH done: 1786 tries, 0 read as rows (strides in bytes []), 1784 twiddled, 1 other, 0 not rendered, 1 hung;",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
@@ -7879,18 +7935,13 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     });
     let sd = scratch(root, "sd-gpubench.img")?;
     std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
-    // `RETROPANE_GPUBENCH_RUNS="run E,run FT"`: only those runs (a new
-    // run's check without the other 29, ~25 minutes); the card logs are
-    // numbered by the runs that ran.
-    let only: Option<Vec<String>> = std::env::var("RETROPANE_GPUBENCH_RUNS")
-        .ok()
-        .map(|v| v.split(',').map(|n| n.trim().to_string()).collect());
     let mut number = 0u32;
     for (name, bin, want, needs_model, (first, every, presses)) in runs {
-        if only.as_ref().is_some_and(|o| !o.iter().any(|n| n == name)) {
+        if only.is_some_and(|o| !o.iter().any(|n| n == name)) {
             continue;
         }
         number += 1;
+        variant_built(root, bin)?;
         let payload = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
         // Named, so each run's card log is rplog/gpubench-NNNN.txt.
         let mut input = rp_loadproto::control_frame("name gpubench");
@@ -12056,13 +12107,67 @@ fn variant_image_with(
 
 /// [`variant_image`] built with every one of `envs` (named by their keys,
 /// joined: one or two keys name it as [`variant_image_with`] always did).
+/// A variant image whose build waits until a check needs it: its image
+/// and build variables, by the binary's path.
+type Deferred = std::collections::HashMap<PathBuf, (String, Vec<(String, String)>)>;
+
+std::thread_local! {
+    /// While `Some`, [`variant_image_envs`] only names the binary and
+    /// records its build here ([`variant_built`] builds it): `emu-gpubench`
+    /// with `RETROPANE_GPUBENCH_RUNS` builds only the runs it runs (all
+    /// ~127 variants rebuilt one by one took most of a one-run check).
+    static DEFERRED: std::cell::RefCell<Option<Deferred>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The binary at `bin` built now if its build was deferred (a no-op
+/// otherwise).
+fn variant_built(root: &Path, bin: &Path) -> Result<(), String> {
+    let job = DEFERRED.with(|d| d.borrow_mut().as_mut().and_then(|m| m.remove(bin)));
+    let Some((image, envs)) = job else {
+        return Ok(());
+    };
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let built = variant_image_build(root, &image, &envs)?;
+    if built != bin {
+        return Err(format!("{}: built as {}", bin.display(), built.display()));
+    }
+    Ok(())
+}
+
 fn variant_image_envs(root: &Path, image: &str, envs: &[(&str, &str)]) -> Result<PathBuf, String> {
-    let name = envs
-        .iter()
+    let deferred = DEFERRED.with(|d| {
+        d.borrow_mut().as_mut().map(|m| {
+            let out =
+                emu_dir(root).map(|dir| dir.join(format!("{image}-{}.bin", variant_name(envs))));
+            if let Ok(out) = &out {
+                let job = envs
+                    .iter()
+                    .map(|&(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+                m.insert(out.clone(), (image.to_string(), job));
+            }
+            out
+        })
+    });
+    match deferred {
+        Some(out) => out,
+        None => variant_image_build(root, image, envs),
+    }
+}
+
+/// A variant's name: its variables' names, joined.
+fn variant_name(envs: &[(&str, &str)]) -> String {
+    envs.iter()
         .map(|e| e.0)
         .collect::<Vec<_>>()
         .join("-")
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+}
+
+/// [`variant_image_envs`]'s build: the image with `envs` set, its size
+/// checked, its binary and ELF beside the other images.
+fn variant_image_build(root: &Path, image: &str, envs: &[(&str, &str)]) -> Result<PathBuf, String> {
+    let name = variant_name(envs);
     let mut cmd = Command::new("cargo");
     let dir = crate::frame_pointer_build(&mut cmd, image, &format!("target/variants/{name}"));
     crate::with_local_inputs(&mut cmd);

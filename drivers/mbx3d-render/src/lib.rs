@@ -1071,9 +1071,9 @@ pub struct Renderer {
     /// GC2L, GC2O), row order otherwise.
     tile_order: TileOrder,
     /// A measurement's bit flip in every textured object's header (run
-    /// GC2AP): the header word (0 ISP, 1-3 TEX0-2, 4 TSP) and the bits
-    /// XORed into it; (0, 0) never changes anything.
-    header_xor: (usize, u32),
+    /// GC2AP; several words at once, run GC2CH): the bits XORed into each
+    /// header word (0 ISP, 1-3 TEX0-2, 4 TSP); zeros never change anything.
+    header_xor: [u32; 5],
     /// A measurement's bits ORed into every object's TSP word, flat and
     /// textured (run GC2AQ: TSP bit 14, the punch-through object kind, and
     /// bit 15); 0 changes nothing.
@@ -1219,7 +1219,7 @@ impl Renderer {
             irq: false,
             irq_stale: false,
             tile_order: TileOrder::Rows,
-            header_xor: (0, 0),
+            header_xor: [0; 5],
             tsp_or: 0,
             diagonal_flip: false,
             vertex_rotate: 0,
@@ -1259,7 +1259,18 @@ impl Renderer {
     /// slots' hashes cover the flipped words, so a slot set again with the
     /// same draw is written again.
     pub fn set_header_xor(&mut self, word: usize, mask: u32) {
-        self.header_xor = if word < 5 { (word, mask) } else { (0, 0) };
+        let mut masks = [0; 5];
+        if let Some(m) = masks.get_mut(word) {
+            *m = mask;
+        }
+        self.header_xor = masks;
+    }
+
+    /// [`Self::set_header_xor`] for every header word at once: `masks[w]`
+    /// XORed into word `w` (run GC2CH: TEX0's bit 0 with a bit of TEX1 or
+    /// TEX2 beside it).
+    pub fn set_header_xors(&mut self, masks: [u32; 5]) {
+        self.header_xor = masks;
     }
 
     /// A measurement's bits ORed into every object's TSP word from the next
@@ -1398,10 +1409,11 @@ impl Renderer {
                         words[t * m3::TRIANGLE_WORDS + fw] ^= fmask;
                     }
                 }
-                let (hw, mask) = self.header_xor;
-                if kind == Kind::Textured && mask != 0 {
-                    for t in 0..2 {
-                        words[t * m3::tex::WORDS + hw] ^= mask;
+                if kind == Kind::Textured {
+                    for (hw, &mask) in self.header_xor.iter().enumerate() {
+                        for t in 0..2 {
+                            words[t * m3::tex::WORDS + hw] ^= mask;
+                        }
                     }
                 }
                 if self.tsp_or != 0 {
