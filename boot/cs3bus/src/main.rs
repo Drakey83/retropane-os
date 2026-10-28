@@ -47,7 +47,11 @@ pub const WM_MSC1: u32 = 0x2484_2481;
 /// CS3's timing fields as Windows Mobile leaves them: `RDF` (strobe
 /// asserted for `RDF` + 1 memory clocks), `RDN` (released for 2 x `RDN`),
 /// `RRR` (the chip select's gap after, 2 x `RRR` + 1).
-pub const WM_CS3: (u32, u32, u32) = (WM_MSC1 >> 20 & 0xF, WM_MSC1 >> 24 & 0xF, WM_MSC1 >> 28 & 0x7);
+pub const WM_CS3: (u32, u32, u32) = (
+    WM_MSC1 >> 20 & 0xF,
+    WM_MSC1 >> 24 & 0xF,
+    WM_MSC1 >> 28 & 0x7,
+);
 
 /// The PXA27x's VLIO minimum for each field (`diag::cs3_vlio`'s range).
 pub const VLIO_MIN: (u32, u32, u32) = (3, 2, 0);
@@ -93,12 +97,7 @@ pub fn with_margin(p: usize, passed: &[bool; 54]) -> bool {
     let (f, n, r) = GRID[p];
     passed[p]
         && GRID.iter().zip(passed).all(|(&(f2, n2, r2), &ok)| {
-            let inside = f2 <= f
-                && f2 + 2 >= f
-                && n2 <= n
-                && n2 + 2 >= n
-                && r2 <= r
-                && r2 + 2 >= r;
+            let inside = f2 <= f && f2 + 2 >= f && n2 <= n && n2 + 2 >= n && r2 <= r && r2 + 2 >= r;
             !inside || ok
         })
 }
@@ -303,7 +302,9 @@ mod image {
         label(
             vram,
             &plane,
-            format_args!("CS3 BUS TEST (R3)\nSTARTING: 54 POINTS, THEN A\n60 S SOAK. NOTHING TO DO."),
+            format_args!(
+                "CS3 BUS TEST (R3)\nSTARTING: 54 POINTS, THEN A\n60 S SOAK. NOTHING TO DO."
+            ),
         );
         let _ = store32_volatile(vram, FENCE_AT, 0);
         cpu::drain_write_buffer();
@@ -358,7 +359,10 @@ mod image {
                 ),
             );
             let Some(now) = diag::set_cs3_vlio(rdf, rdn, rrr) else {
-                let _ = writeln!(RunLog, "{point} {rdf} {rdn} {rrr}: refused (outside the legal range)");
+                let _ = writeln!(
+                    RunLog,
+                    "{point} {rdf} {rdn} {rrr}: refused (outside the legal range)"
+                );
                 continue;
             };
 
@@ -515,7 +519,10 @@ mod image {
                 label(
                     vram,
                     &plane,
-                    format_args!("CS3 BUS TEST (R3)\nSOAK, 60 S, AT POINT {}\nRDF {rdf} RDN {rdn} RRR {rrr}", c + 1),
+                    format_args!(
+                        "CS3 BUS TEST (R3)\nSOAK, 60 S, AT POINT {}\nRDF {rdf} RDN {rdn} RRR {rrr}",
+                        c + 1
+                    ),
                 );
                 let _ = diag::set_cs3_vlio(rdf, rdn, rrr);
                 let t0 = rt::ticks();
@@ -617,14 +624,19 @@ mod tests {
         for (i, a) in GRID.iter().enumerate() {
             assert!(GRID[i + 1..].iter().all(|b| b != a), "{a:?} twice");
             // Inside diag::cs3_vlio's range (host-tested in rp-hal-pxa27x).
-            assert!((3..=8).contains(&a.0) && (2..=4).contains(&a.1) && a.2 <= 2, "{a:?}");
+            assert!(
+                (3..=8).contains(&a.0) && (2..=4).contains(&a.1) && a.2 <= 2,
+                "{a:?}"
+            );
         }
         assert_eq!(clocks_per_beat(8, 4), 17);
         assert_eq!(clocks_per_beat(3, 2), 8);
     }
 
     fn at(f: u32, n: u32, r: u32) -> usize {
-        GRID.iter().position(|&p| p == (f, n, r)).expect("on the grid")
+        GRID.iter()
+            .position(|&p| p == (f, n, r))
+            .expect("on the grid")
     }
 
     #[test]

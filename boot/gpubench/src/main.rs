@@ -690,7 +690,11 @@ mod image {
                     }
                     let a = self.at + 2 * (y * 480 + x);
                     let w = mem.load((a & !3) as usize).unwrap_or(0);
-                    let px = if a & 2 != 0 { (w >> 16) as u16 } else { w as u16 };
+                    let px = if a & 2 != 0 {
+                        (w >> 16) as u16
+                    } else {
+                        w as u16
+                    };
                     if px != self.poison {
                         self.seen[row] |= 1 << j;
                         let l = Some((us, self.wraps, line));
@@ -17172,7 +17176,10 @@ mod image {
             g.nudge = 0;
             return;
         }
-        let clocks = [(None, "WM 99.67 / 2"), (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1")];
+        let clocks = [
+            (None, "WM 99.67 / 2"),
+            (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
+        ];
         let mut free_total = 0u32;
         let mut renders_total = 0u32;
         for (step, cname) in clocks {
@@ -17223,7 +17230,8 @@ mod image {
                             best = best.min(us);
                             let off = read_compare_volatile(g.mem.0, at as usize, want, first);
                             wrong += u32::from(off != Some(0));
-                            let shown: [Option<u8>; GC2BZ_ROWS] = core::array::from_fn(|row| t.shown(row));
+                            let shown: [Option<u8>; GC2BZ_ROWS] =
+                                core::array::from_fn(|row| t.shown(row));
                             let all_one = shown.iter().all(|s| *s == shown[0] && s.is_some());
                             free += u32::from(all_one);
                             for s in shown.iter().flatten() {
@@ -17238,7 +17246,8 @@ mod image {
                                         None => b'x',
                                     };
                                 }
-                                let firsts = t.first.iter().flatten().map(|l| l.0).min().unwrap_or(0);
+                                let firsts =
+                                    t.first.iter().flatten().map(|l| l.0).min().unwrap_or(0);
                                 let lasts = t.done.iter().flatten().map(|l| l.0).max().unwrap_or(0);
                                 span = (firsts, lasts, t.sweeps, t.start);
                             }
