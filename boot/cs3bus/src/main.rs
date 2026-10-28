@@ -1,8 +1,14 @@
 //! Test image: the 2700G's bus timing (item 68, docs/research/memory-timing.md
 //! §7, the owner's go of 2026-10-15). Windows Mobile sets the 2700G's chip
 //! select (CS3, the upper half of `MSC1`) to 17 memory clocks per 32-bit
-//! beat; the PXA27x allows 8. This image steps CS3's strobe timing from
-//! Windows Mobile's value toward that minimum ([`STEPS`]), and at each step:
+//! beat and a 5-clock gap after it; the PXA27x allows 8 and 1. Run 1
+//! (2026-10-19) stepped one strobe field at a time and stopped at the first
+//! miss; this image (run 2, the give-up audit's item 5, reminder R3) tries
+//! **every combination** of CS3's three timing fields from Windows Mobile's
+//! down to the VLIO minimum ([`GRID`]: `RDF`, `RDN` and the recovery `RRR`,
+//! which run 1 never touched), each point set from Windows Mobile's timing
+//! and followed by a control there, a miss recorded and the next point run.
+//! At each point:
 //!
 //! - times a full-screen flush (1.2 MB, SDRAM to 2700G memory, the OS's
 //!   `memcpy`) and checks every word of it;
@@ -12,17 +18,17 @@
 //! - has the 2D engine fill 480 x 64 pixels (its command words cross the
 //!   same bus) and checks every word of the fill.
 //!
-//! After the steps, a 60 s soak at the step **two looser** than the
-//! tightest that passed (the owner's rule, 2026-10-19: any setting must
-//! hold on every X51v, not this one only), repeating the flush, the fill
-//! and a pattern; any miss ends it.
+//! A point that misses has its first bad word re-read at Windows Mobile's
+//! timing (a write fault from a read fault). After the grid, a 60 s soak
+//! at the fastest point **with margin** ([`with_margin`]: every point up
+//! to two codes tighter in each field passed too; the owner's rule,
+//! 2026-10-19: any setting must hold on every X51v, not this one only),
+//! repeating the flush, the fill and a pattern; any miss ends it.
 //!
-//! It stops at the first mismatch, then re-reads the failing word at
-//! Windows Mobile's timing to tell a write fault from a read fault. Windows
-//! Mobile's `MSC1` goes back at the end, and from the fault handler (the
-//! soft watchdog's FIQ lands there too). Only CS3's two strobe fields
-//! change (`diag::set_cs3_timing` refuses anything else); the SDRAM timings
-//! and CS3's recovery time are never touched. It refuses to start unless
+//! Windows Mobile's `MSC1` goes back after every point, at the end, and
+//! from the fault handler (the soft watchdog's FIQ lands there too). Only
+//! CS3's three timing fields change (`diag::set_cs3_vlio` refuses anything
+//! else); the SDRAM timings are never touched. It refuses to start unless
 //! `MSC1` is exactly Windows Mobile's. 2700G memory used: the run-time pool
 //! only (drivers/vram-map), away from the scanned planes and the 3D blocks.
 //! Writes nothing to flash or the cards.
@@ -36,25 +42,63 @@ pub const MARKER: &str = "RETROPANE-CS3BUS-DONE";
 /// `MSC1` as Windows Mobile leaves it (probes 2026-10-11 and 2026-10-15).
 pub const WM_MSC1: u32 = 0x2484_2481;
 
-/// The steps, in order: CS3's `RDF` (strobe asserted for `RDF` + 1 memory
-/// clocks) then `RDN` (released for 2 x `RDN`). Windows Mobile's first, as
-/// the baseline; one field and one clock at a time; the last is the PXA's
-/// VLIO minimum.
-pub const STEPS: [(u32, u32); 8] = [
-    (8, 4),
-    (7, 4),
-    (6, 4),
-    (5, 4),
-    (4, 4),
-    (3, 4),
-    (3, 3),
-    (3, 2),
-];
+/// CS3's timing fields as Windows Mobile leaves them: `RDF` (strobe
+/// asserted for `RDF` + 1 memory clocks), `RDN` (released for 2 x `RDN`),
+/// `RRR` (the chip select's gap after, 2 x `RRR` + 1).
+pub const WM_CS3: (u32, u32, u32) = (WM_MSC1 >> 20 & 0xF, WM_MSC1 >> 24 & 0xF, WM_MSC1 >> 28 & 0x7);
 
-/// Memory clocks per 32-bit beat at a step, without RDY waits.
+/// The PXA27x's VLIO minimum for each field (`diag::cs3_vlio`'s range).
+pub const VLIO_MIN: (u32, u32, u32) = (3, 2, 0);
+
+/// Every point from Windows Mobile's timing down to the VLIO minimum, in
+/// every field: 6 x 3 x 3. Windows Mobile's first (the baseline), then
+/// `RRR` fastest-varying, `RDF` slowest, so the run's halves read apart.
+pub const GRID: [(u32, u32, u32); 54] = grid();
+
+const fn grid() -> [(u32, u32, u32); 54] {
+    let mut g = [(0, 0, 0); 54];
+    let mut k = 0;
+    let mut rdf = WM_CS3.0;
+    while rdf >= VLIO_MIN.0 {
+        let mut rdn = WM_CS3.1;
+        while rdn >= VLIO_MIN.1 {
+            let mut rrr = WM_CS3.2 + 1;
+            while rrr > VLIO_MIN.2 {
+                rrr -= 1;
+                g[k] = (rdf, rdn, rrr);
+                k += 1;
+            }
+            rdn -= 1;
+        }
+        rdf -= 1;
+    }
+    assert!(k == 54);
+    g
+}
+
+/// Memory clocks per 32-bit beat at a point, without RDY waits.
 #[must_use]
 pub const fn clocks_per_beat(rdf: u32, rdn: u32) -> u32 {
     rdf + 1 + 2 * rdn
+}
+
+/// Whether `p` has the any-Axim margin in `passed` (one flag per
+/// [`GRID`] point): it passed, and so did every point up to two codes
+/// tighter in each field (clamped at the VLIO minimum, below which the
+/// controller can't go).
+#[must_use]
+pub fn with_margin(p: usize, passed: &[bool; 54]) -> bool {
+    let (f, n, r) = GRID[p];
+    passed[p]
+        && GRID.iter().zip(passed).all(|(&(f2, n2, r2), &ok)| {
+            let inside = f2 <= f
+                && f2 + 2 >= f
+                && n2 <= n
+                && n2 + 2 >= n
+                && r2 <= r
+                && r2 + 2 >= r;
+            !inside || ok
+        })
 }
 
 /// A test pattern: the word each index gets.
@@ -134,7 +178,7 @@ pub const fn mix(i: u32) -> u32 {
 mod image {
     use core::fmt::Write;
 
-    use super::{MARKER, Pattern, STEPS, WM_MSC1, clocks_per_beat, mix};
+    use super::{GRID, MARKER, Pattern, WM_CS3, WM_MSC1, clocks_per_beat, mix, with_margin};
     use rp_drv_blit2d::{self as cmd, Engine, Format};
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
@@ -174,7 +218,7 @@ mod image {
     /// can call it whatever failed).
     fn restore() {
         if diag::msc1() != WM_MSC1 {
-            let _ = diag::set_cs3_timing(WM_MSC1 >> 20 & 0xF, WM_MSC1 >> 24 & 0xF);
+            let _ = diag::set_cs3_vlio(WM_CS3.0, WM_CS3.1, WM_CS3.2);
         }
     }
 
@@ -261,17 +305,21 @@ mod image {
         let _ = writeln!(RunLog, "BGCOLOR {bg_found:08X}, bits held {bg_mask:08X}");
         let _ = writeln!(
             RunLog,
-            "step RDF RDN clk/beat MSC1 | flush us MB/s miss | read256K us MB/s | patterns miss | reg miss | 2D fill miss"
+            "point RDF RDN RRR clk/beat MSC1 | flush us MB/s miss | read256K us MB/s | patterns miss | reg miss | 2D fill miss | control at WM miss"
         );
 
-        let mut verdict = "all steps passed";
-        // The tightest step that passed everything.
-        let mut passed: Option<usize> = None;
-        for (step, &(rdf, rdn)) in STEPS.iter().enumerate() {
+        let mut verdict = "every point ran";
+        let mut passed = [false; GRID.len()];
+        let mut flush_us = [u32::MAX; GRID.len()];
+        let base = 0x0C00_0000 + PATTERN_AT as u32;
+        for (point, &(rdf, rdn, rrr)) in GRID.iter().enumerate() {
             rt::check_in();
-            let Some(now) = diag::set_cs3_timing(rdf, rdn) else {
-                verdict = "refused a step (outside the legal range)";
-                break;
+            // Each point from Windows Mobile's timing, so no point inherits
+            // another's state.
+            restore();
+            let Some(now) = diag::set_cs3_vlio(rdf, rdn, rrr) else {
+                let _ = writeln!(RunLog, "{point} {rdf} {rdn} {rrr}: refused (outside the legal range)");
+                continue;
             };
 
             // Full-screen flush, best of three, then every word checked.
@@ -313,7 +361,6 @@ mod image {
 
             // Patterns over 512 KiB: written, then read back.
             let (mut pmiss, mut pcount, mut pname) = (None, 0, "");
-            let base = 0x0C00_0000 + PATTERN_AT as u32;
             for p in Pattern::ALL {
                 for k in 0..PATTERN_BYTES / 4 {
                     let _ = store32_volatile(vram, PATTERN_AT + 4 * k, p.word(base, k as u32));
@@ -345,62 +392,87 @@ mod image {
             e.regs.write32(BGCOLOR, bg_found);
 
             // The 2D engine: its commands cross this bus too.
-            let dcount = fill_check(&mut e, vram, mix(step as u32 ^ 0x2D00));
+            let dcount = fill_check(&mut e, vram, mix(point as u32 ^ 0x2D00));
+            rt::check_in();
+
+            // Windows Mobile's timing back, then the first bad word re-read
+            // there (a write fault or a read fault?) and a control pass.
+            restore();
+            let mut ccount = 0;
+            for k in 0..PATTERN_BYTES / 4 {
+                let _ = store32_volatile(vram, PATTERN_AT + 4 * k, mix(k as u32 ^ point as u32));
+            }
+            cpu::drain_write_buffer();
+            for k in 0..PATTERN_BYTES / 4 {
+                if load32_volatile(vram, PATTERN_AT + 4 * k) != Some(mix(k as u32 ^ point as u32)) {
+                    ccount += 1;
+                }
+            }
             rt::check_in();
 
             let mbs = |bytes: usize, t: u32| bytes as u32 / t.max(1);
             let _ = writeln!(
                 RunLog,
-                "{step} {rdf} {rdn} {} {now:08X} | {best} {} {fcount} | {read_us} {} | {pcount} | {rcount} | {dcount}",
+                "{point} {rdf} {rdn} {rrr} {} {now:08X} | {best} {} {fcount} | {read_us} {} | {pcount} | {rcount} | {dcount} | {ccount}",
                 clocks_per_beat(rdf, rdn),
                 mbs(FLUSH_BYTES, best),
                 mbs(READ_BYTES, read_us),
             );
-
-            if fcount + pcount + rcount > 0 || dcount != 0 {
-                // Write fault or read fault? Re-read the first bad word at
-                // Windows Mobile's timing.
-                restore();
-                if let Some((k, want, got)) = fmiss {
-                    let again = load32_volatile(vram, FLUSH_AT + 4 * k).unwrap_or(0);
-                    let _ = writeln!(
-                        RunLog,
-                        "flush miss: word {k} wanted {want:08X} read {got:08X}, at WM timing {again:08X}"
-                    );
-                }
-                if let Some((k, want, got)) = pmiss {
-                    let again = load32_volatile(vram, PATTERN_AT + 4 * k).unwrap_or(0);
-                    let _ = writeln!(
-                        RunLog,
-                        "pattern {pname} miss: word {k} wanted {want:08X} read {got:08X}, at WM timing {again:08X}"
-                    );
-                }
-                if dcount != 0 {
-                    let _ = writeln!(
-                        RunLog,
-                        "2D fill: {dcount} words wrong (u32::MAX: the engine never finished)"
-                    );
-                }
-                verdict = "stopped at the first mismatch";
+            if let Some((k, want, got)) = fmiss {
+                let again = load32_volatile(vram, FLUSH_AT + 4 * k).unwrap_or(0);
+                let _ = writeln!(
+                    RunLog,
+                    "  flush miss: word {k} wanted {want:08X} read {got:08X}, at WM timing {again:08X}"
+                );
+            }
+            if pmiss.is_some() {
+                // The region now holds the control's words: the pattern's
+                // first bad word is named, not re-read.
+                let (k, want, got) = pmiss.unwrap_or((0, 0, 0));
+                let _ = writeln!(
+                    RunLog,
+                    "  pattern {pname} miss: word {k} wanted {want:08X} read {got:08X}"
+                );
+            }
+            if dcount != 0 {
+                let _ = writeln!(
+                    RunLog,
+                    "  2D fill: {dcount} words wrong (u32::MAX: the engine never finished)"
+                );
+            }
+            if ccount != 0 {
+                // Windows Mobile's own timing no longer reads right: stop
+                // before anything else is tried.
+                verdict = "stopped: the control at Windows Mobile's timing missed";
                 break;
             }
-            passed = Some(step);
+            passed[point] = fcount + pcount + rcount == 0 && dcount == 0;
+            flush_us[point] = best;
         }
         restore();
+        let good = passed.iter().filter(|&&p| p).count();
+        let margin = (0..GRID.len()).filter(|&p| with_margin(p, &passed)).count();
+        let _ = writeln!(
+            RunLog,
+            "grid: {good} of {} points passed, {margin} with the margin",
+            GRID.len()
+        );
 
-        // The soak: two steps looser than the tightest that passed (step 0
-        // is Windows Mobile's own, so a candidate needs step 3 or tighter
-        // to have passed).
-        match passed.and_then(|t| t.checked_sub(2)).filter(|&c| c >= 1) {
+        // The soak: the fastest flush among the points with the margin,
+        // Windows Mobile's own (point 0) aside.
+        let pick = (1..GRID.len())
+            .filter(|&p| with_margin(p, &passed))
+            .min_by_key(|&p| flush_us[p]);
+        match pick {
             None => {
                 let _ = writeln!(
                     RunLog,
-                    "soak: no step two looser than the tightest pass is faster than WM's: none run"
+                    "soak: no point faster than WM's has the margin: none run"
                 );
             }
             Some(c) => {
-                let (rdf, rdn) = STEPS[c];
-                let _ = diag::set_cs3_timing(rdf, rdn);
+                let (rdf, rdn, rrr) = GRID[c];
+                let _ = diag::set_cs3_vlio(rdf, rdn, rrr);
                 let t0 = rt::ticks();
                 let (mut rounds, mut misses) = (0u32, 0u32);
                 while us(rt::ticks().wrapping_sub(t0)) < SOAK_US && misses == 0 {
@@ -415,7 +487,7 @@ mod image {
                     }
                     let d = fill_check(&mut e, vram, mix(rounds ^ 0x50AC));
                     misses = misses.saturating_add(d);
-                    let base = 0x0C00_0000 + PATTERN_AT as u32 + rounds;
+                    let base = base + rounds;
                     for k in 0..PATTERN_BYTES / 4 {
                         let _ = store32_volatile(
                             vram,
@@ -436,8 +508,10 @@ mod image {
                 restore();
                 let _ = writeln!(
                     RunLog,
-                    "soak at step {c} (RDF {rdf} RDN {rdn}, {} clk/beat): {rounds} rounds in {} s, {misses} misses",
+                    "soak at point {c} (RDF {rdf} RDN {rdn} RRR {rrr}, {} clk/beat, flush {} us against WM's {} us): {rounds} rounds in {} s, {misses} misses",
                     clocks_per_beat(rdf, rdn),
+                    flush_us[c],
+                    flush_us[0],
                     us(rt::ticks().wrapping_sub(t0)) / 1_000_000
                 );
             }
@@ -486,17 +560,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn steps_start_at_windows_mobile_and_tighten_one_field_at_a_time() {
-        assert_eq!(STEPS[0], (WM_MSC1 >> 20 & 0xF, WM_MSC1 >> 24 & 0xF));
-        for w in STEPS.windows(2) {
-            let ((f0, n0), (f1, n1)) = (w[0], w[1]);
-            let one_down = (f1 + 1 == f0 && n1 == n0) || (f1 == f0 && n1 + 1 == n0);
-            assert!(one_down, "{w:?}");
+    fn the_grid_is_every_point_from_windows_mobile_to_the_vlio_minimum() {
+        assert_eq!(WM_CS3, (8, 4, 2));
+        assert_eq!(GRID[0], WM_CS3);
+        assert_eq!(GRID[53], VLIO_MIN);
+        for (i, a) in GRID.iter().enumerate() {
+            assert!(GRID[i + 1..].iter().all(|b| b != a), "{a:?} twice");
+            // Inside diag::cs3_vlio's range (host-tested in rp-hal-pxa27x).
+            assert!((3..=8).contains(&a.0) && (2..=4).contains(&a.1) && a.2 <= 2, "{a:?}");
         }
-        // Inside the PXA27x's VLIO range: RDF >= 3, RDN >= 2.
-        assert!(STEPS.iter().all(|&(f, n)| f >= 3 && n >= 2));
         assert_eq!(clocks_per_beat(8, 4), 17);
         assert_eq!(clocks_per_beat(3, 2), 8);
+    }
+
+    fn at(f: u32, n: u32, r: u32) -> usize {
+        GRID.iter().position(|&p| p == (f, n, r)).expect("on the grid")
+    }
+
+    #[test]
+    fn the_margin_needs_every_point_two_codes_tighter() {
+        // Run 1's unit: reads fail at RDF 4 and below, whatever else.
+        let mut passed = [false; 54];
+        for (k, p) in GRID.iter().enumerate() {
+            passed[k] = p.0 >= 5;
+        }
+        // RDF 7 has 5 and 6 under it; RDF 6 has 4, which failed.
+        assert!(with_margin(at(7, 2, 0), &passed));
+        assert!(with_margin(at(8, 4, 2), &passed));
+        assert!(!with_margin(at(6, 4, 2), &passed));
+        assert!(!with_margin(at(5, 2, 0), &passed));
+        // One failing point two codes under in RRR takes the margin away.
+        passed[at(7, 3, 0)] = false;
+        assert!(!with_margin(at(7, 3, 2), &passed));
+        assert!(!with_margin(at(7, 4, 1), &passed));
+        assert!(with_margin(at(7, 2, 0), &passed));
+        // A point that failed never has it.
+        assert!(!with_margin(at(7, 3, 0), &passed));
+        // Every point passing: the VLIO minimum has it (clamped).
+        assert!(with_margin(at(3, 2, 0), &[true; 54]));
     }
 
     #[test]

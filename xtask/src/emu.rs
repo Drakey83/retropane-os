@@ -3299,7 +3299,8 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
     }
     // One of tests G-G3 alone (`RP_EMU_GLESFEAT_ONLY=g3`), for checking a
     // changed test before its device run without the half hour the others
-    // take; `cargo xtask ci` (before every push) runs them all.
+    // take; `cargo xtask emu` runs them all (`cargo xtask ci` runs no
+    // emulator check).
     match std::env::var("RP_EMU_GLESFEAT_ONLY").as_deref() {
         Ok("g") => return boot_loader_glesfeat_g(root, 1),
         Ok("g2") => return boot_loader_glesfeat_g(root, 2),
@@ -3624,6 +3625,35 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
     }
     eprintln!("    glesfeat G9 OK: both dumps whole, back at the loader");
     Ok(())
+}
+
+/// The references a glesfeat run refused for holding no quad, checked way
+/// by way against the two cases where that is the guard working (R58).
+fn glesfeat_no_quad(log: &str, name: &str, test: u8) -> Result<usize, String> {
+    let head = format!("{name} way ");
+    let mut no_quad = 0;
+    for way in log.split(format!("\n{head}").as_str()).skip(1) {
+        let n = way.split(' ').next().unwrap_or("");
+        let refused_here = way.contains("the reference holds no quad");
+        // The fork's own test (`m3_render`): a list word whose flags (bits
+        // 21-31) are neither a flat nor a textured strip ends the tile.
+        let unmodelled = way.split("list word 0x").skip(1).any(|w| {
+            let hex: String = w.chars().take_while(char::is_ascii_hexdigit).collect();
+            u32::from_str_radix(&hex, 16)
+                .map_or(true, |p| !matches!(p & 0xFFE0_0000, 0x4080_0000 | 0x4100_0000))
+        });
+        let rendered = way.contains("rendered true then true");
+        let want = (test == 4 && n == "2") || (unmodelled && rendered);
+        if refused_here != want {
+            return Err(format!(
+                "glesfeat {name}: way {n} {} for holding no quad, want {}:{log}",
+                if refused_here { "refused" } else { "not refused" },
+                if want { "refused" } else { "not refused" }
+            ));
+        }
+        no_quad += usize::from(refused_here);
+    }
+    Ok(no_quad)
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
@@ -4030,17 +4060,18 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         .count();
     let no_ta = log.matches("no repeatable reference").count();
     let ta_silent = log.matches("the TA never said done: no render").count();
-    // References the image refused for holding no quad (G4's colourless
-    // clear drawn alone first leaves the next renders white, on the X51v
-    // and in the fork alike): the guard working, not a fault. In G4 it is
-    // exactly way 2; nowhere else.
-    let no_quad = log.matches("the reference holds no quad").count();
-    let want_no_quad = usize::from(test == 4);
-    if no_quad != want_no_quad {
-        return Err(format!(
-            "glesfeat {name}: {no_quad} references refused for holding no quad, want {want_no_quad}:{log}"
-        ));
-    }
+    // References the image refused for holding no quad: the guard working,
+    // not a fault, in exactly two cases. G4's way 2, whose colourless clear
+    // drawn alone first leaves the next renders white on the X51v and in
+    // the fork alike. And a way that rendered with an object form the
+    // fork doesn't model (docs/hw/emulator.md: its 3D stage reads only list
+    // layout 4's and the textured strip's words, and ends a tile's list at
+    // any other, so the GLES clear (layout 0, list word 0x40000000) or a
+    // four-corner object (layout 5, list word 0x60A00000) leaves the tile
+    // without the quad; G2's ways 2, 4 and 6 and G3's ways 2 and 3, which
+    // drew the quad on the X51v). Judged way by way,
+    // so a modelled way losing its quad still fails (R58).
+    let no_quad = glesfeat_no_quad(&log, name, test)?;
     // Each way that stopped for want of the TA: its two reference renders.
     if (no_ta - no_quad.min(no_ta)) * 2 != ta_silent {
         return Err(format!(
@@ -4876,9 +4907,13 @@ pub fn boot_loader_cs3bus(root: &Path) -> Result<(), String> {
         );
         return Ok(());
     }
+    // The fork doesn't model bus timing, so every point passes and has the
+    // margin; the soak's point is the fastest flush, which the host's
+    // timing picks, so any point past Windows Mobile's is accepted.
     for want in [
-        "all steps passed",
-        "soak at step 5 ",
+        "every point ran",
+        "grid: 54 of 54 points passed, 54 with the margin",
+        "soak at point ",
         " 0 misses",
         "MSC1 restored 24842481",
     ] {
@@ -4886,7 +4921,7 @@ pub fn boot_loader_cs3bus(root: &Path) -> Result<(), String> {
             return Err(format!("cs3bus: the run log has no `{want}`:{log}"));
         }
     }
-    eprintln!("    cs3bus OK: every step and the soak ran, MSC1 put back");
+    eprintln!("    cs3bus OK: every point of the grid and the soak ran, MSC1 put back");
     Ok(())
 }
 
@@ -15604,6 +15639,37 @@ fn boot_loader_tabench_isolate(root: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// A reference without its quad passes only where the fork can't draw
+    /// the way's object forms (or G4's way 2); a modelled way losing its
+    /// quad fails, and an unmodelled way showing one fails too (R58).
+    #[test]
+    fn glesfeat_no_quad_is_judged_way_by_way() {
+        let modelled = "\nG2 way 1 (ours):\n    list word 0x40800000 (layout 4), object: e0000000; background: list word 0x40800000, 17 words\n  reference at Windows Mobile's clock: rendered true then true\n";
+        // G3's way 2: a four-corner background, its word logged unlabelled.
+        let quad_bg = "\nG3 way 2 (Dell's clear (a flat quad)):\n    list word 0x40800000 (layout 4), object: e0000000; background: list word 0x60a00000, 22 words\n  the reference holds no quad\n  reference at Windows Mobile's clock: rendered true then true\n";
+        assert_eq!(super::glesfeat_no_quad(&format!("test G3{quad_bg}"), "G3", 3), Ok(1));
+        let corner = "\nG2 way 2 (one 4-corner object):\n    list word 0x60a00000 (layout 5), object: e0000000; background: list word 0x40800000, 17 words\n  the reference holds no quad (its background alone)\n  reference at Windows Mobile's clock: rendered true then true\n";
+        let clear = "\nG2 way 4 (the clear underneath):\n    list word 0x40800000 (layout 4), object: e0000000; background: list word 0x40000000, 10 words\n  the reference holds no quad (its background alone)\n  reference at Windows Mobile's clock: rendered true then true\n";
+        let log = format!("test G2{modelled}{corner}{clear}");
+        assert_eq!(super::glesfeat_no_quad(&log, "G2", 2), Ok(2));
+        // A modelled way that lost its quad.
+        let lost = modelled.replace("  reference at", "  the reference holds no quad\n  reference at");
+        assert!(super::glesfeat_no_quad(&format!("test G2{lost}"), "G2", 2).is_err());
+        // An unmodelled way that showed one (the fork drew it after all).
+        let shown = corner.replace("  the reference holds no quad (its background alone)\n", "");
+        assert!(super::glesfeat_no_quad(&format!("test G2{shown}"), "G2", 2).is_err());
+        // An unmodelled way that never rendered (the TA silent): no refusal.
+        let silent = clear
+            .replace("  the reference holds no quad (its background alone)\n", "")
+            .replace("rendered true then true", "rendered false then false");
+        assert_eq!(super::glesfeat_no_quad(&format!("test G2{silent}"), "G2", 2), Ok(0));
+        // G4's way 2 on any form.
+        let g4 = modelled
+            .replace("G2 way 1", "G4 way 2")
+            .replace("  reference at", "  the reference holds no quad\n  reference at");
+        assert_eq!(super::glesfeat_no_quad(&format!("test G4{g4}"), "G4", 4), Ok(1));
+    }
+
     /// Every scratch file and raw binary goes through the helpers that
     /// create their folders: a check that built a path by hand failed in
     /// any fresh checkout ("no screenshot at ...ppm", QEMU can't make the

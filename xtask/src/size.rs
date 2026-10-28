@@ -434,8 +434,10 @@ pub const BUDGETS: &[Budget] = &[
         image: "rp-cs3bus",
         // Ratcheted 29 -> 32 KiB on 2026-10-22 (test image): rp-image's
         // finish prints the deepest stack on serial when no loader is
-        // there (quality audit C50); 29.1 KiB measured, + ~10%.
-        max_load: 32 * 1024,
+        // there (quality audit C50); 29.1 KiB measured, + ~10%. Ratcheted
+        // 32 -> 40 KiB on 2026-10-27 (test image): run 2's grid of every CS3
+        // timing combination (reminder R3); 35.2 KiB measured, + ~13%.
+        max_load: 40 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

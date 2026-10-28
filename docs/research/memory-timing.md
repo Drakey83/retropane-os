@@ -59,6 +59,27 @@ time, each step checked (a full-screen flush verified word by word,
 - Open for the owner: keep Windows Mobile's value (recommended: the gain
   is small and proven on one unit) or step 1 as a fixed value.
 
+**Run 2 built (2026-10-27, the give-up audit's item 5, reminder R3): every
+CS3 timing combination.** Run 1 stepped one strobe field at a time and
+stopped at the first miss; `RRR` (the chip select's gap after an access,
+2 x `RRR` + 1 clocks) was never touched, and a field's limit could hide
+behind another's. What a vendor does: Dell and Windows Mobile fix CS3 at
+`0x2484` (`RDF` 8, `RDN` 4, `RRR` 2) on every unit; the PXA's VLIO minimum
+is `RDF` 3, `RDN` 2, `RRR` 0. Ours: `rp-cs3bus` now tries all 54 points
+from Windows Mobile's value down to that minimum in every field
+(`GRID`: `RDF` 8-3, `RDN` 4-2, `RRR` 2-0, `diag::set_cs3_vlio`), each
+set from Windows Mobile's timing and followed by a control pass there; a
+miss is recorded (re-read at Windows Mobile's timing: write or read
+fault) and the next point runs; a control that misses stops the grid.
+The same checks as run 1 at each point (the flush, timed and verified;
+256 KiB read back, timed; six patterns; a register; a 2D fill). The soak
+(60 s) is at the fastest point **with the margin** (`with_margin`: it
+and every point up to two codes tighter in each field passed, clamped at
+the VLIO minimum; host-tested on run 1's pattern), so the any-Axim margin
+holds in all three fields at once. Emulator: `emu-cs3bus` (timing not
+modelled: all 54 pass, the soak runs, `MSC1` put back). About 2 minutes
+on the X51v, unattended. Not yet run.
+
 ## The answer in brief
 
 - **The SDRAM clock is already at the PXA270's maximum.** SDCLK2 =
