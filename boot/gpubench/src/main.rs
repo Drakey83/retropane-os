@@ -8101,6 +8101,7 @@ mod image {
         || GC2_MESH
         || GC2_FIXES
         || GC2_PVR2
+        || GC2_SCALED
         || GC2_GAMES
         || GC2_664
         || GC2_TIMER
@@ -8465,6 +8466,15 @@ mod image {
     /// 149.50 / 1 warm, a clean trial confirmed in pairs with the control.
     /// About 30 minutes, unattended.
     const GC2_PVR2: bool = option_env!("RP_GPUBENCH_GC2_PVR2").is_some();
+
+    /// Run GC2CR, reminder R80 (`RP_GPUBENCH_GC2_SCALED`): GC2CP's second
+    /// run drew the textured game frame wrong in every render at 143.00 / 1
+    /// at 480 x 320 and 240 x 320 (native right), so GC2BY's game-safe step
+    /// doesn't hold for the reduced routes. GC2BY's warm ladder, 143.00 down
+    /// to 108.33 / 1, the four game frames at 480 x 320 and 240 x 320 and
+    /// native as the control, each target poisoned: the highest step every
+    /// reduced frame is right at. About 15 minutes, unattended.
+    const GC2_SCALED: bool = option_env!("RP_GPUBENCH_GC2_SCALED").is_some();
 
     /// Run GC2BY, reminder R76 (`RP_GPUBENCH_GC2_GAMES`): the game frames
     /// (GC2BW's watertight meshes: flat, over a layer, textured, depth
@@ -9888,6 +9898,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2BZ, R20: no map; each tile row of the four game frames watched as it lands against the scan line, in four tile orders, started at three scan lines, at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_GAMES {
                 "the 16-bit kinds' targets inside the safe region (GC2BY, R76: no map; the game frames, watertight meshes flat, layered, textured and depth tested, on the warm ladder 149.50 down to 108.33 / 1 and 149.50 / 2 with the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_SCALED {
+                "the 16-bit kinds' targets inside the safe region (GC2CR, R80: no map; the game frames at 480 x 320, 240 x 320 and native on the warm ladder 143.00 down to 108.33 / 1 with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_PVR2 {
                 "the 16-bit kinds' targets inside the safe region (GC2CQ, R69: no map; the PowerVR2's settings by value, 0x61C as FPU_PARAM_CFG, sample-position and delay fields, each trial's pictures at Windows Mobile's clock then held to them at 149.50 / 1 warm on the crack generator and the meshes, the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_FIXES {
@@ -10153,6 +10165,7 @@ mod image {
             || GC2_MESH
             || GC2_FIXES
             || GC2_PVR2
+            || GC2_SCALED
             || GC2_GAMES
             || GC2_TEAR
         {
@@ -10563,6 +10576,8 @@ mod image {
                     gc2_fixes(g, &mut r, (tex, first, dsig));
                 } else if GC2_PVR2 {
                     gc2_pvr2(g, &mut r, (tex, first, dsig));
+                } else if GC2_SCALED {
+                    gc2_scaled(g, &mut r, (tex, first, dsig));
                 } else if GC2_MESH {
                     gc2_mesh(g, &mut r, (tex, first, dsig));
                 } else if GC2_SEAL {
@@ -22786,6 +22801,212 @@ mod image {
             log!("  GC2CQ: the on-die renderer's memory not given back");
         }
         log!("  GC2CQ done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+    }
+
+    /// GC2CR's sizes: the two reduced routes' renders (GC2CP), then native
+    /// as the control (GC2BY: right warm from 143.00 / 1 down).
+    const GC2CR_SIZES: [(u16, u16); 3] = [(480, 320), (240, 320), (480, 640)];
+    /// GC2CR's ladder: [`gc2::GAME_LADDER`]'s steps 143.00 down to 108.33 / 1.
+    const GC2CR_STEPS: core::ops::Range<usize> = 2..7;
+    /// Rounds of a size's four frames at each step (the emulator 1).
+    const GC2CR_ROUNDS: u32 = if GC2_RENDERS < 20 {
+        1
+    } else {
+        gc2::GAME_LADDER_ROUNDS
+    };
+
+    /// Where size `s`, frame `f`'s reference sits in GC2CR's references.
+    const fn gc2cr_ref(s: usize, f: usize) -> core::ops::Range<usize> {
+        let mut at = 0;
+        let mut i = 0;
+        while i < s {
+            at += gc2::GAME_FRAMES.len() * gc2::words_of(GC2CR_SIZES[i]);
+            i += 1;
+        }
+        let n = gc2::words_of(GC2CR_SIZES[s]);
+        at + f * n..at + (f + 1) * n
+    }
+
+    /// Run GC2CR (see [`GC2_SCALED`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn gc2_scaled(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let nf = gc2::GAME_FRAMES.len();
+        let ref_words = gc2cr_ref(GC2CR_SIZES.len() - 1, nf - 1).end;
+        if all.len() < 2 * words + ref_words {
+            log!("  GC2CR: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        log!(
+            "  GC2CR (R80): the game frames at {:?} on the warm ladder {} down to {}, {GC2CR_ROUNDS} rounds a size and step, the lists on the die, checker, the shipped texture rule; each target poisoned",
+            GC2CR_SIZES,
+            gc2::GAME_LADDER[GC2CR_STEPS.start].2,
+            gc2::GAME_LADDER[GC2CR_STEPS.end - 1].2
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2CR TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        r.set_header_xor(0, 0);
+        r.set_tsp_or(0);
+        r.set_diagonal_flip(false);
+        gc2bx_clear(g, r);
+        r.start_clean();
+        g.nudge = 0;
+        // GC2BY's warm-up: scene 20 at 149.50 / 1 for 10 minutes.
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2CR warm-up") {
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2CR", &["A"]) {
+                return;
+            }
+            r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        // The references at Windows Mobile's clock, each rendered again and
+        // held.
+        g.nudge = GC2BO_NUDGE;
+        let (first, refs) = all.split_at_mut(words);
+        let refs = &mut refs[..ref_words];
+        let mut cur: Option<((u16, u16), Renderer)> = None;
+        let mut ok = true;
+        for (s, &size) in GC2CR_SIZES.iter().enumerate() {
+            let n = gc2::words_of(size);
+            for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                let Some(rr) = gc2cp_take(g, &mut cur, size) else {
+                    ok = false;
+                    break;
+                };
+                gc2ca_set_mesh(g, rr, kind, tex, size);
+                g.resets = rr.core_resets();
+                let t = gc2ca_render(g, rr, size, GC2CA_A);
+                let want = &mut refs[gc2cr_ref(s, f)];
+                gc2_take_at(g, GC2CA_A, want);
+                let again = gc2ca_render(g, rr, size, GC2CA_A).and_then(|_| {
+                    read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n])
+                });
+                let poison = gc2::absent16(want, &gc2::POISON);
+                log!(
+                    "  GC2CR {} x {} frame {f} reference: {t:?} us (core, whole); again {again:?} words off; poison {poison:?}",
+                    size.0,
+                    size.1
+                );
+                ok &= t.is_some() && again == Some(0) && poison.is_some();
+            }
+        }
+        if !ok {
+            log!(
+                "  GC2CR: a reference failed, isn't repeatable or has no absent colour: nothing more run"
+            );
+        }
+        // The ladder, fastest first, the chip kept warm by drawing.
+        let mut right_steps = [[true; 3]; 8];
+        for si in GC2CR_STEPS.clone().filter(|_| ok) {
+            let ((m, n), div, name) = gc2::GAME_LADDER[si];
+            let step = gc2_step(m, n, 0, div);
+            clock_restore(&mut g.e.regs);
+            let Some(lock) = clock_apply(g, step) else {
+                clock_restore(&mut g.e.regs);
+                log!("  GC2CR {name}: the clock didn't take; skipped");
+                continue;
+            };
+            clock_readback(g);
+            for (s, &size) in GC2CR_SIZES.iter().enumerate() {
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "{} X {}", size.0, size.1);
+                soak_label(g, ["GC2CR SCALED LADDER", name, l3.as_str()], SOAK_BLUE);
+                let n = gc2::words_of(size);
+                let (mut wrong, mut done) = ([0u32; 4], [0u32; 4]);
+                let mut best = [u32::MAX; 4];
+                for round in 0..GC2CR_ROUNDS {
+                    for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                        let Some(rr) = gc2cp_take(g, &mut cur, size) else {
+                            continue;
+                        };
+                        let want = &refs[gc2cr_ref(s, f)];
+                        let poison = gc2::absent16(want, &gc2::POISON).unwrap_or(0);
+                        gc2ca_set_mesh(g, rr, kind, tex, size);
+                        if !gc2ca_fill(g, GC2CA_A, size, poison) {
+                            continue;
+                        }
+                        g.resets = rr.core_resets();
+                        let Some((core, _)) = gc2ca_render(g, rr, size, GC2CA_A) else {
+                            continue;
+                        };
+                        let off =
+                            read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n]);
+                        done[f] += 1;
+                        best[f] = best[f].min(core);
+                        if off != Some(0) {
+                            wrong[f] += 1;
+                            if wrong[f] <= 2 {
+                                let at_px = gc2ca_first_wrong(&first[..n], want, size.0);
+                                log!(
+                                    "  GC2CR {name} {} x {} {} wrong render {} (round {round}): {off:?} words off, the first (x, y, got, want) {at_px:x?}",
+                                    size.0,
+                                    size.1,
+                                    GC2BY_NAMES[f],
+                                    wrong[f]
+                                );
+                            }
+                        }
+                    }
+                    rt::check_in();
+                }
+                let all_right =
+                    wrong.iter().all(|&w| w == 0) && done.iter().all(|&d| d == GC2CR_ROUNDS);
+                right_steps[si][s] = all_right;
+                log!(
+                    "  GC2CR {name} {} x {} (lock {lock}): wrong of {GC2CR_ROUNDS} by frame {wrong:?}, drawn {done:?}, the core's fastest by frame {best:?} us; every frame right: {all_right}; TEMP0 {:?}",
+                    size.0,
+                    size.1,
+                    gc2ba_temp(&mut touch)
+                );
+            }
+        }
+        for (s, &size) in GC2CR_SIZES.iter().enumerate() {
+            let mut list = heapless_name();
+            for si in GC2CR_STEPS.clone().filter(|&si| ok && right_steps[si][s]) {
+                let _ = write!(list, "{}; ", gc2::GAME_LADDER[si].2);
+            }
+            log!(
+                "  GC2CR {} x {}: steps with every frame right: {}",
+                size.0,
+                size.1,
+                list.as_str()
+            );
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        g.nudge = 0;
+        log!("  GC2CR done, TEMP0 {:?}", gc2ba_temp(&mut touch));
     }
 
     /// GC2BW's rounds: each frame and the control once a round, in turn.

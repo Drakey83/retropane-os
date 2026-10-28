@@ -5684,6 +5684,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_SOAK_SECS", "20"),
         ],
     )?;
+    let run_gc2cr = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_SCALED", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2cq = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5949,7 +5958,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 136] = [
+    let runs: [GpubenchRun; 137] = [
         (
             "run A",
             &run_a,
@@ -6640,6 +6649,26 @@ fn variant_images_gpubench(
                 "GC2BX search done: ",
                 "GC2BX proof Reg(",
                 "GC2BX done, TEMP0",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CR (R80): the reduced-size game frames on the warm ladder
+        // 143.00 down to 108.33 / 1, one round a size and step (the
+        // emulator draws exactly: every step right).
+        (
+            "run GC2CR",
+            &run_gc2cr,
+            &[
+                "GC2CR (R80): the game frames at",
+                "GC2CR warm-up reference:",
+                "GC2CR A slice 10: ",
+                "GC2CR 240 x 320 frame 3 reference:",
+                "GC2CR 143.00 / 1 480 x 320 (lock ",
+                "GC2CR 108.33 / 1 480 x 640 (lock ",
+                "GC2CR 480 x 320: steps with every frame right: 143.00 / 1; 139.75 / 1; 133.25 / 1; 117.00 / 1; 108.33 / 1; ",
+                "GC2CR done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
