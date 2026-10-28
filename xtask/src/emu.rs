@@ -5550,6 +5550,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cg = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_CSC", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5824,7 +5833,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 125] = [
+    let runs: [GpubenchRun; 126] = [
         (
             "run A",
             &run_a,
@@ -6289,6 +6298,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2CF 1 RGB 2X FIXED: held 0 ms",
                 "GC2CF 4 HALF SIZE: OURS 2X: held 0 ms",
                 "GC2CF 7 HALF SIZE: OURS 2X: held 0 ms",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CG: the 2D engine's 32 format codes, RGB565 to each and
+        // UYVY from each, read back for a colour conversion (no photos).
+        (
+            "run GC2CG",
+            &run_gc2cg,
+            &[
+                "GC2CG to code 10: 8 of 16 words written; f800f800 07e007e0",
+                "GC2CG from code 31:",
+                "GC2CG done:",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

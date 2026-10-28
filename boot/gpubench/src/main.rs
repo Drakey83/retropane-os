@@ -17565,7 +17565,9 @@ mod image {
         gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
         let _ = underrun_take(&mut g.e.regs);
         if ok {
-            if GC2CA_FIXED {
+            if GC2CA_CSC {
+                gc2cg_run(g, &planes0);
+            } else if GC2CA_FIXED {
                 gc2ca_fixed_card(g, &planes0);
                 gc2ca_watch(g, &mut cur, tex, &planes0);
             } else if GC2CA_COLOUR {
@@ -18455,6 +18457,211 @@ mod image {
     /// The comparison's first test number (after the card), or 0 without
     /// GC2CF.
     const GC2CF_FIRST: usize = if GC2CA_FIXED { 1 } else { 0 };
+
+    /// Run GC2CG (`RP_GPUBENCH_GC2_HALF_CSC`, with `RP_GPUBENCH_GC2_HALF`):
+    /// does the 2D engine convert RGB to YUV? Intel's datasheet (found
+    /// 2026-10-28): the video plane takes YUV only (its RGB path,
+    /// undocumented, can't scale across: GC2CC-GC2CF), and the 2D engine
+    /// lists "CSCBLT", a colour-converting copy, never used by any of
+    /// Dell's drivers (REA, every function searched). If a destination
+    /// format code makes the engine write UYVY from RGB565, the 3D core's
+    /// frame becomes the video plane's own format on the chip, and the
+    /// scaler proven on UYVY gives the smooth 2x. Every one of the 32 codes
+    /// as the destination of an RGB565 copy, and as the source of a copy
+    /// of UYVY data into RGB565; each result read back and compared with
+    /// what a conversion would give (BT.601, studio range or full); a code
+    /// that hangs the engine is reset and logged. No photos.
+    const GC2CA_CSC: bool = option_env!("RP_GPUBENCH_GC2_HALF_CSC").is_some();
+    /// GC2CG's colours, one a pixel pair: red, green, blue, white, black,
+    /// yellow, cyan, grey.
+    const GC2CG_COLOURS: [(u32, u32, u32); 8] = [
+        (255, 0, 0),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 255),
+        (0, 0, 0),
+        (255, 255, 0),
+        (0, 255, 255),
+        (128, 128, 128),
+    ];
+    /// GC2CG's places, inside the safe region: the source row, the
+    /// destination (4 bytes a pixel at most), each two rows.
+    const GC2CG_SRC: u32 = GC2CA_B;
+    const GC2CG_DST: u32 = GC2CA_B + 0x1000;
+    /// Their strides (bytes) and the pixels across.
+    const GC2CG_STRIDE: u32 = 128;
+    const GC2CG_W: u16 = 16;
+
+    /// (Y, U, V) of a colour, BT.601: studio range (Y 16-235) or full.
+    fn gc2cg_yuv((r, g, b): (u32, u32, u32), studio: bool) -> (u32, u32, u32) {
+        let (r, g, b) = (r as i32, g as i32, b as i32);
+        let (y, u, v) = if studio {
+            (
+                ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16,
+                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128,
+                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128,
+            )
+        } else {
+            (
+                (77 * r + 150 * g + 29 * b + 128) >> 8,
+                ((-43 * r - 85 * g + 128 * b + 128) >> 8) + 128,
+                ((128 * r - 107 * g - 21 * b + 128) >> 8) + 128,
+            )
+        };
+        let c = |x: i32| x.clamp(0, 255) as u32;
+        (c(y), c(u), c(v))
+    }
+
+    /// The four packings of a pair (Y0 Y1 U V) as one word: UYVY, YUY2
+    /// (YUYV), VYUY, YVYU.
+    const GC2CG_ORDERS: [&str; 4] = ["UYVY", "YUY2", "VYUY", "YVYU"];
+    fn gc2cg_pack(order: usize, (y, u, v): (u32, u32, u32)) -> u32 {
+        match order {
+            0 => u | y << 8 | v << 16 | y << 24,
+            1 => y | u << 8 | y << 16 | v << 24,
+            2 => v | y << 8 | u << 16 | y << 24,
+            _ => y | v << 8 | y << 16 | u << 24,
+        }
+    }
+
+    /// Whether `got` (one word a pair) is the colours in `order` within
+    /// `tol` a byte, studio range or full.
+    fn gc2cg_matches(got: &[u32; 8], order: usize, studio: bool, tol: i32) -> bool {
+        GC2CG_COLOURS.iter().zip(got).all(|(&c, &w)| {
+            let want = gc2cg_pack(order, gc2cg_yuv(c, studio));
+            (0..4).all(|k| ((want >> (8 * k) & 0xFF) as i32 - (w >> (8 * k) & 0xFF) as i32).abs() <= tol)
+        })
+    }
+
+    /// RGB565 of a colour.
+    const fn gc2cg_565((r, g, b): (u32, u32, u32)) -> u32 {
+        (r >> 3) << 11 | (g >> 2) << 5 | b >> 3
+    }
+
+    /// One copy for GC2CG: `src` to `dst` (format, address), the
+    /// destination poisoned first; the first row's 16 words read back, or
+    /// `None` when the engine hung (reset).
+    fn gc2cg_copy(g: &mut Rig, dst: (Format, u32), src: (Format, u32)) -> Option<[u32; 16]> {
+        let poison = [0xA5A5_A5A5u32; 64];
+        g.mem.store(dst.1 as usize, &poison);
+        g.mem.store((dst.1 + GC2CG_STRIDE) as usize, &poison);
+        g.mem.sync();
+        let Some((w, n)) = cmd::blit(
+            (dst.0, dst.1 as usize, GC2CG_STRIDE as i32),
+            (src.0, src.1 as usize, GC2CG_STRIDE as i32),
+            (0, 0),
+            (0, 0, GC2CG_W, 2),
+            cmd::ROP_SRCCOPY,
+            cmd::OP_NO_COLOUR,
+            0,
+        ) else {
+            return None;
+        };
+        let ok = g.e.submit(&w[..n]).is_ok() && g.e.finish(g.mem.0, 50_000).is_ok();
+        if !ok {
+            g.e.reset(rt::delay_us);
+            let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+            cpu::drain_write_buffer();
+            return None;
+        }
+        let mut out = [0u32; 16];
+        for (k, o) in out.iter_mut().enumerate() {
+            *o = g.mem.load(dst.1 as usize + 4 * k).unwrap_or(0);
+        }
+        Some(out)
+    }
+
+    /// Run GC2CG (see [`GC2CA_CSC`]).
+    fn gc2cg_run(g: &mut Rig, planes0: &Snapshot) {
+        gc2ca_card(g, planes0, ["GC2CG: 2D COLOUR", "CONVERSION PROBE", "NO PHOTOS NEEDED"]);
+        // The RGB565 source: each colour twice (a pair), both rows.
+        let mut rgb = [0u32; 8];
+        for (w, &c) in rgb.iter_mut().zip(&GC2CG_COLOURS) {
+            *w = gc2cg_565(c) * 0x1_0001;
+        }
+        // The UYVY source (studio range), for the other direction.
+        let mut yuv = [0u32; 8];
+        for (w, &c) in yuv.iter_mut().zip(&GC2CG_COLOURS) {
+            *w = gc2cg_pack(0, gc2cg_yuv(c, true));
+        }
+        let yuv_at = GC2CG_SRC + 2 * GC2CG_STRIDE;
+        for row in 0..2 {
+            g.mem.store((GC2CG_SRC + row * GC2CG_STRIDE) as usize, &rgb);
+            g.mem.store((yuv_at + row * GC2CG_STRIDE) as usize, &yuv);
+        }
+        g.mem.sync();
+        let (mut hung, mut found) = (0u32, 0u32);
+        for code in 0..32u32 {
+            // RGB565 in, code n out: a YUV packing?
+            let out = gc2cg_copy(g, (Format::code(code), GC2CG_DST), (Format::RGB565, GC2CG_SRC));
+            match out {
+                None => {
+                    hung += 1;
+                    log!("  GC2CG to code {code}: hung (reset)");
+                }
+                Some(o) => {
+                    let pairs: [u32; 8] = core::array::from_fn(|k| o[k]);
+                    let changed = o.iter().filter(|&&w| w != 0xA5A5_A5A5).count();
+                    let mut verdict = heapless_name();
+                    for (order, name) in GC2CG_ORDERS.iter().enumerate() {
+                        for (studio, range) in [(true, "studio"), (false, "full")] {
+                            if gc2cg_matches(&pairs, order, studio, 12) {
+                                let _ = write!(verdict, " {name} {range}");
+                            }
+                        }
+                    }
+                    if !verdict.as_str().is_empty() {
+                        found += 1;
+                    }
+                    log!(
+                        "  GC2CG to code {code}: {changed} of 16 words written; {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x};{}",
+                        o[0],
+                        o[1],
+                        o[2],
+                        o[3],
+                        o[4],
+                        o[5],
+                        o[6],
+                        o[7],
+                        if verdict.as_str().is_empty() { " not YUV" } else { verdict.as_str() }
+                    );
+                }
+            }
+            // Code n in (the UYVY data), RGB565 out: the engine's YUV
+            // source code, if it has one (its number tells the family).
+            match gc2cg_copy(g, (Format::RGB565, GC2CG_DST), (Format::code(code), yuv_at)) {
+                None => {
+                    hung += 1;
+                    log!("  GC2CG from code {code}: hung (reset)");
+                }
+                Some(o) => {
+                    let mut close = true;
+                    for (k, &c) in GC2CG_COLOURS.iter().enumerate() {
+                        let want = gc2cg_565(c);
+                        let got = o[k] & 0xFFFF;
+                        let d = |sh: u32, m: u32| ((want >> sh & m) as i32 - (got >> sh & m) as i32).abs();
+                        close &= d(11, 31) <= 3 && d(5, 63) <= 6 && d(0, 31) <= 3;
+                    }
+                    if close {
+                        found += 1;
+                    }
+                    log!(
+                        "  GC2CG from code {code}: {:08x} {:08x} {:08x} {:08x};{}",
+                        o[0],
+                        o[1],
+                        o[2],
+                        o[3],
+                        if close { " YUV to RGB" } else { " not a conversion" }
+                    );
+                }
+            }
+            rt::check_in();
+        }
+        log!("  GC2CG done: {found} conversions found, {hung} copies hung");
+        let mut l2 = heapless_name();
+        let _ = write!(l2, "{found} FOUND, {hung} HUNG");
+        gc2ca_card(g, planes0, ["GC2CG DONE", l2.as_str(), ""]);
+    }
 
     /// GC2CF test 1: the card through the driver's 2x, RGB565.
     fn gc2ca_fixed_card(g: &mut Rig, planes0: &Snapshot) {
