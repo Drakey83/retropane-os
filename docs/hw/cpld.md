@@ -96,7 +96,7 @@ from its users.
 | `0x10` | `0x1000` | **CompactFlash slot power, stage 2** | `pcc_socket` | confirmed | D; P (the slot powers up and stays up) |
 | `0x10` | `0x2000` | Wi-Fi power sequence step 4 | `pcc_socket`, `tiacxwln` | likely | D; C |
 | `0x10` | `0x8000` | cleared by the notification driver (LED or vibration, guess) | `OemNotify` | guess | D |
-| `0x12` | `0x0001`-`0x0008` | display sequence bits (LCD power-up/down, guess) | `ddi`, `ddi_2700g` | guess | D |
+| `0x12` | `0x0001`-`0x0008` | **LCD panel supplies, sequenced**: `ddi_2700g`'s power-down (`0x1B24568`, REA 2026-10-28) clears bit 2, 1, 0 then 3, 1-30 ms apart, with GPIO 17 / 53 and the panel's serial line on GPIO 114-116 | `ddi`, `ddi_2700g` | likely (code) | D |
 | `0x14` | `0x0002` | **Speaker amplifier** (on only for the speaker; 70 ms to settle) | `wavedev` | **confirmed** | D; P (Windows Mobile measured, `rp-wmaudio`; `rp-tone` run 9 played on the speaker, 2026-10-18) |
 | `0x14` | `0x0004` | peripheral / serial (guess) | `peripheral`, `serial32` | guess | D |
 | `0x14` | `0x0008` | display (AxDroid: audio amplifier, set at boot). **Clearing this or `0x1A` bit 1 for 1 s wedged the device** (no check-ins after it; hardware watchdog into Dell's factory prompt; rp-unplug run 1, 2026-10-16, docs/hw/udc.md T4): never cleared outside a run built to find out which | `ddi`, `ddi_2700g` | guess | D; C; P (the hang) |

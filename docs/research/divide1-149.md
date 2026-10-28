@@ -295,6 +295,43 @@ before anything else is built on it.
   1's faults don't answer to any software field found; the temperature
   guard (R76) and 143.00 / 1 for games stand.
 
+## Can the 2700G's core voltage be raised? (REA pass, 2026-10-28)
+
+The owner: "REA doesn't show you how we can overvolt a little bit?" A
+static pass over every Dell driver that touches the 2700G, AxDroid's
+Linux board file and the OAL (`local/re/`), looking for anything that sets
+a supply level. **None found: nothing in Dell's software controls the
+2700G's core voltage.**
+- **Every physical region `ddi_2700g` maps** (its map helper `0x1B31C78`,
+  all callers): the 2700G's registers and memory, the PXA's memory
+  controller `0x48000000` (CS3's bus timing: `MSC1` `0x2484` / `0x2481`
+  from 99 MHz up, `0x79D4` / `0x7DF4` below) and clock manager
+  `0x41300000` (read for the CPU's clock). No GPIO block, no I2C, no
+  power manager.
+- **Its two OAL calls** (`KernelIoControl`, `0x1013E84` and `0x1013EA4`)
+  are read-only: the OAL answers the CPU's ID register (`mrc p15, c0`)
+  and its clock settings (`CCCR`, CP14). No voltage request exists.
+- **Its board-CPLD use is the LCD panel's supplies, switched on and off**:
+  `0x1B24568` clears `0x12` bits 2, 1, 0 and 3 one at a time with 1-30 ms
+  sleeps (the panel's power-down), drives GPIO 17 and 53, and talks to the
+  panel over GPIO 114-116 (a bit-banged serial line); the backlight is a
+  PWM level. On / off rails in a sequence, not a level.
+- **`libGLES_CL`, `d3d_2700g`, `pvrvadd`, the WMV9 decoder**: no OAL
+  calls, nothing mapped outside the 2700G (their `0x40000000` /
+  `0x402DF854` constants are floats: 2.0 and e).
+- **AxDroid's board file** brings the 2700G up (reset, clocks, memory,
+  `GPIOCFG` = 1) with no supply control.
+- **The only voltage control on the board** is the CPU's: three GPIO VID
+  pins (3, 4, 38) Dell sets for each PXA270 operating point, 1,050-1,574
+  mV (clocks.md); the 2700G's rated core range (1.104-1.296 V) rules out
+  that rail being its supply.
+
+**Reading it:** the 2700G's core supply is a fixed regulator on the board.
+A raise would mean changing hardware (the regulator's feedback divider),
+which the owner's rules exclude (never open the device; the any-Axim
+rule). The voltage lever is closed with proof, not from the datasheet
+alone.
+
 ## Next, when the chase resumes
 
 **Added 2026-10-28: Intel's datasheet and REA (reminder R85, read it
