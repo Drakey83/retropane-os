@@ -279,6 +279,14 @@ watching.
   words at divide 1; apart, none). The CPU's set-up costs ~2 us a tile
   (region array and list choice), about 1 word a us: CPU-bound, not the
   bus's ~33 MB/s.
+- **The MBX render block and the Dreamcast's PowerVR2** (`rp-gpubench`
+  GC2CQ, X51v, 2026-10-28): `0x650` is the PVR2's `FB_W_CTRL` (the same
+  pack-mode codes and dither bit); of 1,005 field settings (`0x61C` read as
+  `FPU_PARAM_CFG`, bits 2-0 of every render-block word at 1-7, every 4-bit
+  field of the render and TA blocks at 15) only 20 change the picture at
+  WM's clock: `0x61C`'s low nibble, `0x644` bits 0-1, `0x614` / `0x618`
+  bits 28-31 (address-like: the scene not drawn). No sample-position or
+  delay field; none cures divide 1's faults.
 - **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
   2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
   ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,

@@ -257,6 +257,44 @@ that is new, not a variant of one ruled out. A confirmed trial goes
 through the full proof set (both sweeps, the kinds, the ring, the meshes)
 before anything else is built on it.
 
+**GC2CQ on the X51v (2026-10-28 ~5:35-6:00 PM, the owner's go;
+`local/rp-gpubench-runGC2CQ.txt`, card log gpubench-0177, image sha
+8c0c387d, commit 702e6675; 9,562 renders, none hung; the stack 44,308 of
+57,344 bytes): no PowerVR2 setting cures divide 1. The leads are closed
+(the stop rule); the chase is parked again (R75).**
+- The warm-up drew scene 20 wrong in 194-195 of ~312 renders a slice
+  (`TEMP0` 866-875): the chip was in its faulting state, and every control
+  at 149.50 / 1 stayed wrong (32 of 32 rounds, all three frames).
+- **1,003 of 1,005 trials: no frame clean at 149.50 / 1 warm.** That
+  covers the ten `0x61C` values (the PVR2's parameter burst thresholds
+  raised to 4, 0x1F and the most, the bursts at 7: none changes the
+  picture even at Windows Mobile's clock, and none cures), every
+  render-block word's bits 2-0 at 1-7, and every 4-bit field of the render
+  and TA blocks at 15.
+- **The two "clean" trials are not cures:** `0x614 = 0xF0000000`
+  (confirmed 5 of 5, the control wrong 5 of 5) and `0x618 = 0xF0000000`
+  (0 of 5). At Windows Mobile's clock each already draws almost nothing
+  of the scene (153,505 / 153,600 / 153,252 words unlike the right
+  picture), so it matched its own broken picture warm. These two words
+  hold bits 31-3 only (GC2F): address-like, and pointing one at
+  `0xF0000000` stops the scene being drawn. A probe flaw to carry forward:
+  a trial whose own picture is wrong at the safe clock can't be a cure
+  and should be rejected before the hot part.
+- **The map (a finding about the block): only 20 of 1,005 settings change
+  the picture at Windows Mobile's clock:** `0x61C`'s low nibble (bit 0
+  moves 15 / 0 / 69 words; bit 1 rewrites the generator and the textured
+  mesh, ~21,000 / ~28,000 words; the PVR2's "first burst" there is a
+  drawing mode on the MBX, not a fetch size), `0x644` bits 0-1 (the known
+  write-out average), and `0x614` / `0x618` bits 28-31 (above). Every
+  other low field and nibble of the 53 render-block and 25 TA-block words
+  draws nothing different: no sample-position field (`HALF_OFFSET`) and
+  no live delay count in them.
+- **Reading it:** the MBX kept the PVR2's frame-buffer registers
+  (`0x650`), but its parameter-fetch and sample-position settings are not
+  in these blocks as fields (fixed in the silicon, or elsewhere). Divide
+  1's faults don't answer to any software field found; the temperature
+  guard (R76) and 143.00 / 1 for games stand.
+
 ## Next, when the chase resumes
 
 **Added 2026-10-28: Intel's datasheet and REA (reminder R85, read it
