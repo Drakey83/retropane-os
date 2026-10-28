@@ -21,6 +21,19 @@ were too easy a proof.** Divide 1 at 149.50 is past the core's margin
 when warm for game content. **The fallback's step is not measured for
 games:** 146.25 / 1 is clean warm on the corner scenes only.
 
+## GC2BY (2026-10-27 9:02 PM, gpubench-0151): games are right at 143.00 / 1
+
+The four game meshes, 100 rounds a step on the warm ladder (`TEMP0`
+873-875 throughout): **every frame right at 143.00, 139.75, 133.25,
+117.00 and 108.33 / 1 and at 149.50 / 2**; 146.25 / 1 wrong in 8 of 400
+(5 flat on black, 3 textured), each a single pixel at x = 255 (the same
+two pixels every time: (255, 559) and (255, 416)); 149.50 / 1 wrong in
+383 of 400. **143.00 / 1 is the game-safe step measured:** 2.87x
+Windows Mobile's clock on the flat frames, 2.24x on the textured one,
+1.91x divide 2 at 149.50, 4.5% slower than 149.50 / 1. So the
+temperature guard's step for games measures at 143.00 / 1, not 146.25
+(the owner rules on R76). Full table in 2700g.md "GC2BY on the X51v".
+
 ## Status (2026-10-27): parked, the interim plan in force
 
 The owner's last fix of this round (GC2BV's seals) didn't cure the
@@ -176,13 +189,10 @@ textured sweep 0 of 2,200, the ring 0 of 300, the 20-minute soak 0 of
 
 ## Next, when the chase resumes
 
-1. **Run GC2BY** (built and emulator-checked 2026-10-27:
-   the flag `RP_GPUBENCH_GC2_GAMES=1`,
-   `cargo xtask codegen-variant rp-gpubench gc2by`, about 25 minutes, the
-   owner's go first): the four game meshes warm at 149.50, 146.25,
-   143.00, 139.75, 133.25, 117.00, 108.33 / 1 and 149.50 / 2. The highest
-   step with every frame right is the game-safe speed and the
-   temperature guard's (R76) step. Not yet run.
+1. **Run GC2BY: done 2026-10-27** (above): 143.00 / 1 the highest step
+   with every game frame right. The single pixel at x = 255 that fails at
+   146.25 / 1 (and at 149.50) is the smallest form of the game fault
+   left: a lead for the chase, not yet chased.
 2. Start from the deterministic generator (scene 3 split TL-BR, 300 of
    300 at peak heat) for any coverage idea: one render answers it.
    Untried ideas: the ISP's own settings for edge rules or sample
