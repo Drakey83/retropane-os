@@ -623,6 +623,91 @@ mod image {
         /// at `0x0` so the die has room for its region arrays); [`gc_at`]
         /// else.
         at_override: u32,
+        /// Run GC2BZ (R20): the render's tile rows watched as they land,
+        /// against the scan line, while [`Rig::frame`] waits.
+        tear: Option<Tear>,
+    }
+
+    /// GC2BZ's tile rows (16 lines each) and the four columns sampled in
+    /// each: the last pixel of tile columns 0, 20, 40 and 59 (the pixel a
+    /// tile writes out last; odd x: the word's high half).
+    const GC2BZ_ROWS: usize = 40;
+    const GC2BZ_COLS: [u32; 4] = [7, 167, 327, 479];
+
+    /// Where the scan was when a sampled pixel landed: microseconds since
+    /// the render started, the scan frames begun since, the scan line.
+    type Landed = (u32, u8, u16);
+
+    /// Run GC2BZ's watch on one render into a 480 x 640 RGB565 target.
+    #[derive(Clone, Copy)]
+    struct Tear {
+        at: u32,
+        poison: u16,
+        /// The scan line the render started at and the last one read.
+        start: u16,
+        last: u16,
+        /// Scan frames begun since the start (the line counter wrapped).
+        wraps: u8,
+        /// Per tile row: its first and its last sampled pixel to land.
+        first: [Option<Landed>; GC2BZ_ROWS],
+        done: [Option<Landed>; GC2BZ_ROWS],
+        seen: [u8; GC2BZ_ROWS],
+        /// Sweeps of the samples made while the render ran.
+        sweeps: u32,
+    }
+
+    impl Tear {
+        fn new(at: u32, poison: u16, start: u16) -> Self {
+            Self {
+                at,
+                poison,
+                start,
+                last: start,
+                wraps: 0,
+                first: [None; GC2BZ_ROWS],
+                done: [None; GC2BZ_ROWS],
+                seen: [0; GC2BZ_ROWS],
+                sweeps: 0,
+            }
+        }
+
+        /// One sweep: the scan line `line` read at `us`, every sampled
+        /// pixel not yet seen read once.
+        fn sample(&mut self, mem: &Vram, line: u16, us: u32) {
+            if line + 100 < self.last {
+                self.wraps = self.wraps.saturating_add(1);
+            }
+            self.last = line;
+            self.sweeps += 1;
+            for row in 0..GC2BZ_ROWS {
+                if self.seen[row] == 0xF {
+                    continue;
+                }
+                let y = 16 * row as u32 + 15;
+                for (j, &x) in GC2BZ_COLS.iter().enumerate() {
+                    if self.seen[row] & 1 << j != 0 {
+                        continue;
+                    }
+                    let a = self.at + 2 * (y * 480 + x);
+                    let w = mem.load((a & !3) as usize).unwrap_or(0);
+                    let px = if a & 2 != 0 { (w >> 16) as u16 } else { w as u16 };
+                    if px != self.poison {
+                        self.seen[row] |= 1 << j;
+                        let l = Some((us, self.wraps, line));
+                        self.first[row].get_or_insert((us, self.wraps, line));
+                        if self.seen[row] == 0xF {
+                            self.done[row] = l;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// The scan frame each row is first shown in ([`gc2::row_shown`]).
+        fn shown(&self, row: usize) -> Option<u8> {
+            let at = |l: Option<Landed>| l.map(|(_, w, line)| (w, line));
+            gc2::row_shown(at(self.first[row]), at(self.done[row]), 16 * row as u32)
+        }
     }
 
     /// Up to eight 3D registers and their values, for [`Rig::over`].
@@ -767,6 +852,18 @@ mod image {
                     exact = Some(self.clock.now_us().wrapping_sub(t0));
                     break;
                 }
+                if let Some(t) = self.tear.as_mut() {
+                    let line = self.e.regs.read32(rp_drv_mbx_display::reg::DVLNUM) & 0xFFF;
+                    t.sample(&self.mem, line as u16, self.clock.now_us().wrapping_sub(t0));
+                }
+            }
+            // The rows still unseen land with the render's end (a sweep
+            // after it, so a row the last sweep missed is placed there).
+            if let Some(t) = self.tear.as_mut() {
+                let line = self.e.regs.read32(rp_drv_mbx_display::reg::DVLNUM) & 0xFFF;
+                let sweeps = t.sweeps;
+                t.sample(&self.mem, line as u16, self.clock.now_us().wrapping_sub(t0));
+                t.sweeps = sweeps;
             }
             loop {
                 while (self.clock.now_us().wrapping_sub(at) as i32) < 0 {}
@@ -7988,6 +8085,7 @@ mod image {
         || GC2_NUDGE
         || GC2_NUDGE_SIZE
         || GC2_PROVE2
+        || GC2_TEAR
         || GC2_PROVE3
         || GC2_ORDER_HOT
         || GC2_SHADE_HOT
@@ -8354,6 +8452,18 @@ mod image {
     /// (the temperature guard's step; GC2BX: every mesh render wrong at
     /// 149.50 / 1). About 25 minutes, unattended.
     const GC2_GAMES: bool = option_env!("RP_GPUBENCH_GC2_GAMES").is_some();
+
+    /// Run GC2BZ, reminder R20 (`RP_GPUBENCH_GC2_TEAR`): C's tearing design
+    /// (ADR-0034 P1 = C) measured before it is designed: when each tile row
+    /// of a frame lands against the display's scan, in each tile order (the
+    /// default rows, the last-pixel cure's reversed, the top-down
+    /// interleaved, the shipped checkerboard), each render started at scan
+    /// lines 0, 320 and 600, for GC2BY's four game frames, at Windows
+    /// Mobile's clock (the textured frame longer than one refresh there)
+    /// and Dell's 74.75 / 1 (no divide-1 step above Dell's: the chase is
+    /// parked). [`Tear`] samples four pixels a tile row while the render
+    /// runs. About 2 minutes, unattended.
+    const GC2_TEAR: bool = option_env!("RP_GPUBENCH_GC2_TEAR").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9737,6 +9847,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_TEAR {
+                "the 16-bit kinds' targets inside the safe region (GC2BZ, R20: no map; each tile row of the four game frames watched as it lands against the scan line, in four tile orders, started at three scan lines, at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_GAMES {
                 "the 16-bit kinds' targets inside the safe region (GC2BY, R76: no map; the game frames, watertight meshes flat, layered, textured and depth tested, on the warm ladder 149.50 down to 108.33 / 1 and 149.50 / 2 with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_FIXES {
@@ -10002,6 +10114,7 @@ mod image {
             || GC2_MESH
             || GC2_FIXES
             || GC2_GAMES
+            || GC2_TEAR
         {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
@@ -10398,6 +10511,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_TEAR {
+                    gc2_tear(g, &mut r, (tex, first, dsig));
                 } else if GC2_GAMES {
                     gc2_games(g, &mut r, (tex, first, dsig));
                 } else if GC2_FIXES {
@@ -16987,6 +17102,169 @@ mod image {
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
     }
 
+    /// GC2BZ's tile orders: the renderer's default, the last-pixel cure's,
+    /// the top-down form R20 named, the shipped checkerboard.
+    const GC2BZ_ORDERS: [(rp_mbx3d_render::TileOrder, &str); 4] = [
+        (rp_mbx3d_render::TileOrder::Rows, "rows"),
+        (rp_mbx3d_render::TileOrder::Reversed, "reversed"),
+        (rp_mbx3d_render::TileOrder::Interleaved, "interleaved"),
+        (rp_mbx3d_render::TileOrder::Checker, "checker"),
+    ];
+    /// The scan lines each render is started at: the top, the middle, near
+    /// the bottom (640 visible).
+    const GC2BZ_STARTS: [u32; 3] = [0, 320, 600];
+    /// Renders of each frame, order, start and clock (the emulator 1).
+    const GC2BZ_REPS: u32 = if GC2_RENDERS < 20 { 1 } else { 5 };
+
+    /// Run GC2BZ (see [`GC2_TEAR`]): the four game frames' references at
+    /// Windows Mobile's clock on the on-die renderer; then at each clock,
+    /// order, frame and start line, [`GC2BZ_REPS`] renders, each target
+    /// poisoned first and the render begun when the scan reaches the line,
+    /// [`Tear`] watching it. Each render's rows are put in the scan frame
+    /// they would first show in (0: this one, 1: the next, x: the row torn
+    /// itself), and the render is tear-free when every row shows in one
+    /// frame; logged per setting: tear-free renders, the frames spanned,
+    /// the render's time, the first render's row map.
+    #[inline(never)]
+    fn gc2_tear(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let _ = r;
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let nf = gc2::GAME_FRAMES.len();
+        if all.len() < (1 + nf) * words {
+            log!("  GC2BZ: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BZ (R20): each tile row against the scan line, {nf} game frames, {} tile orders, starts at lines {:?}, {GC2BZ_REPS} renders each, at Windows Mobile's clock and 74.75 / 1; 4 pixels sampled a tile row while the render runs",
+            GC2BZ_ORDERS.len(),
+            GC2BZ_STARTS
+        );
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BZ: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        ondie.set_header_xor(0, 0);
+        ondie.set_tsp_or(0);
+        ondie.set_diagonal_flip(false);
+        gc2bx_clear(g, &mut ondie);
+        ondie.start_clean();
+        g.nudge = GC2BO_NUDGE;
+        ondie.core_taken();
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        let (first, refs) = all.split_at_mut(words);
+        let mut ok = true;
+        for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+            gc2_set_mesh(g, &mut ondie, kind, tex);
+            let want = &mut refs[f * words..(f + 1) * words];
+            let mut name = heapless_name();
+            let _ = write!(name, "GC2BZ frame {f}");
+            ok &= gc2_reference(g, &mut ondie, (k, at), want, first, dsig, name.as_str());
+        }
+        let poisons: [Option<u16>; gc2::GAME_FRAMES.len()] = core::array::from_fn(|f| {
+            gc2::absent16(&refs[f * words..(f + 1) * words], &gc2::POISON)
+        });
+        if !ok || poisons.iter().any(Option::is_none) {
+            log!("  GC2BZ: a reference failed or has no absent colour: nothing more run");
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
+        let clocks = [(None, "WM 99.67 / 2"), (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1")];
+        let mut free_total = 0u32;
+        let mut renders_total = 0u32;
+        for (step, cname) in clocks {
+            clock_restore(&mut g.e.regs);
+            if let Some(s) = step {
+                if clock_apply(g, s).is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  GC2BZ {cname}: the clock didn't take; skipped");
+                    continue;
+                }
+                clock_readback(g);
+            }
+            for (oi, &(order, oname)) in GC2BZ_ORDERS.iter().enumerate() {
+                ondie.set_tile_order(order);
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "ORDER {} OF {}", oi + 1, GC2BZ_ORDERS.len());
+                soak_label(g, ["GC2BZ TEAR TEST", cname, l3.as_str()], SOAK_BLUE);
+                for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                    let poison = poisons[f].unwrap_or(0);
+                    let want = &refs[f * words..(f + 1) * words];
+                    for &line in &GC2BZ_STARTS {
+                        let (mut free, mut done, mut wrong) = (0u32, 0u32, 0u32);
+                        let (mut lo, mut hi, mut best) = (u8::MAX, 0u8, u32::MAX);
+                        let mut map = [b'.'; GC2BZ_ROWS];
+                        let mut span = (0u32, 0u32, 0u32, 0u16);
+                        for rep in 0..GC2BZ_REPS {
+                            rt::check_in();
+                            gc2_set_mesh(g, &mut ondie, kind, tex);
+                            if !poison_fill(g, at, poison) {
+                                continue;
+                            }
+                            ondie.invalidate_all();
+                            if !wait_scan(g, line) {
+                                log!("  GC2BZ {cname} {oname}: the scan never reached line {line}");
+                                continue;
+                            }
+                            let start = scan_line(g) as u16;
+                            g.tear = Some(Tear::new(at, poison, start));
+                            let target = Target {
+                                picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
+                                x: 0,
+                                y: 0,
+                            };
+                            let us = g.frame(&mut ondie, target);
+                            let Some(t) = g.tear.take() else { continue };
+                            let Some(us) = us else { continue };
+                            done += 1;
+                            best = best.min(us);
+                            let off = read_compare_volatile(g.mem.0, at as usize, want, first);
+                            wrong += u32::from(off != Some(0));
+                            let shown: [Option<u8>; GC2BZ_ROWS] = core::array::from_fn(|row| t.shown(row));
+                            let all_one = shown.iter().all(|s| *s == shown[0] && s.is_some());
+                            free += u32::from(all_one);
+                            for s in shown.iter().flatten() {
+                                lo = lo.min(*s);
+                                hi = hi.max(*s);
+                            }
+                            if rep == 0 {
+                                for (row, s) in shown.iter().enumerate() {
+                                    map[row] = match s {
+                                        Some(v) if *v < 10 => b'0' + v,
+                                        Some(_) => b'+',
+                                        None => b'x',
+                                    };
+                                }
+                                let firsts = t.first.iter().flatten().map(|l| l.0).min().unwrap_or(0);
+                                let lasts = t.done.iter().flatten().map(|l| l.0).max().unwrap_or(0);
+                                span = (firsts, lasts, t.sweeps, t.start);
+                            }
+                        }
+                        free_total += free;
+                        renders_total += done;
+                        log!(
+                            "  GC2BZ {cname} {oname} frame {f} from line {line}: {free} of {done} tear-free, frames {lo}-{hi}, fastest {best} us, {wrong} pictures wrong; first render's rows {} (begun at line {}, first row landed {} us, last {} us, {} sweeps)",
+                            core::str::from_utf8(&map).unwrap_or("?"),
+                            span.3,
+                            span.0,
+                            span.1,
+                            span.2
+                        );
+                    }
+                }
+            }
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        let _ = ondie.release(&mut g.pool);
+        g.nudge = 0;
+        log!("  GC2BZ done: {free_total} of {renders_total} renders tear-free");
+    }
+
     /// GC2BY's rounds a step (the emulator 1).
     const GC2BY_ROUNDS: u32 = if GC2_RENDERS < 20 {
         1
@@ -22509,6 +22787,7 @@ mod image {
             tim: None,
             quiet_us: 0,
             at_override: u32::MAX,
+            tear: None,
         };
         if START {
             start_watch(&mut g.e.regs, "N4 the keypad taken, the fence written");

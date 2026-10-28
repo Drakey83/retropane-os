@@ -5484,6 +5484,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bz = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TEAR", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5758,7 +5766,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 118] = [
+    let runs: [GpubenchRun; 119] = [
         (
             "run A",
             &run_a,
@@ -6108,6 +6116,25 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ),
         // Run GC2BY (R76): the game ladder, shortened (the emulator draws
         // exactly: every step clean).
+        // Run GC2BZ (R20): each tile row against the scan, one render a
+        // setting (the fork's scan counts from the virtual clock; its tile
+        // timing isn't the device's, so only the run's shape is checked).
+        (
+            "run GC2BZ",
+            &run_gc2bz,
+            &[
+                "GC2BZ (R20): each tile row against the scan line",
+                "GC2BZ frame 3 reference:",
+                "GC2BZ WM 99.67 / 2 rows frame 0 from line 0: ",
+                "GC2BZ WM 99.67 / 2 checker frame 3 from line 600: ",
+                "GC2BZ 74.75 / 1 rows frame 0 from line 0: ",
+                "GC2BZ 74.75 / 1 checker frame 3 from line 600: ",
+                "GC2BZ done: ",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
         (
             "run GC2BY",
             &run_gc2by,

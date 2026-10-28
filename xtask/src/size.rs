@@ -582,9 +582,13 @@ pub const BUDGETS: &[Budget] = &[
     // CPU's operating point and core voltage per way (rp-hal-pxa27x's
     // clocks, the GPIO driver, the voltage codes) beside G14; the G15
     // variant with the emulator's frame 113.2 KiB, + ~10%.
+    // Ratcheted 128 -> 140 KiB on 2026-10-27 (test image): the G17-G20
+    // variants with the emulator's frame grew past 128 (128.5 KiB at most,
+    // R58's run of every G test) as rp-mbx3d's TA set-up and quad streams
+    // moved in (audit C81, P4); + ~9%.
     Budget {
         image: "rp-glesfeat",
-        max_load: 128 * 1024,
+        max_load: 140 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

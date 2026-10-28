@@ -3480,6 +3480,26 @@ pub fn absent16(pics: &[u32], candidates: &[u16]) -> Option<u16> {
         .map(|(_, &c)| c)
 }
 
+/// Run GC2BZ (R20): the scan frame a tile row first shows in, from where
+/// the scan was when it landed (`(frames begun since the render started,
+/// scan line)`) and the row's top line `y`: written before the scan
+/// reached `y`, this frame; at or after, the next.
+#[must_use]
+pub const fn shown_in((wraps, line): (u8, u16), y: u32) -> u8 {
+    if (line as u32) < y { wraps } else { wraps + 1 }
+}
+
+/// Run GC2BZ: a row's frame from its first and last sampled pixels, or
+/// `None` if either never landed or the two fall in different frames (the
+/// row itself torn).
+#[must_use]
+pub fn row_shown(first: Option<(u8, u16)>, last: Option<(u8, u16)>, y: u32) -> Option<u8> {
+    match (first, last) {
+        (Some(a), Some(b)) if shown_in(a, y) == shown_in(b, y) => Some(shown_in(a, y)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 #[path = "gc2_tests.rs"]
 mod tests;

@@ -2942,3 +2942,19 @@ fn gc2by_game_ladder() {
     // 100 rounds: a frame wrong in 3% of renders shows with ~95%.
     assert!((1.0 - 0.03f64).powi(GAME_LADDER_ROUNDS as i32) < 0.05);
 }
+
+/// GC2BZ's row rule both ways: a row the scan hasn't reached shows this
+/// frame, one it has passed (or is on) the next; a wrap counts a frame;
+/// a row whose two ends fall either side of the scan is torn.
+#[test]
+fn gc2bz_rows_are_placed_by_the_scan() {
+    assert_eq!(shown_in((0, 100), 160), 0);
+    assert_eq!(shown_in((0, 160), 160), 1);
+    assert_eq!(shown_in((0, 639), 0), 1);
+    assert_eq!(shown_in((1, 5), 160), 1);
+    assert_eq!(shown_in((1, 600), 160), 2);
+    assert_eq!(row_shown(Some((0, 10)), Some((0, 20)), 160), Some(0));
+    assert_eq!(row_shown(Some((0, 150)), Some((0, 170)), 160), None);
+    assert_eq!(row_shown(Some((0, 10)), None, 160), None);
+    assert_eq!(row_shown(None, None, 160), None);
+}
