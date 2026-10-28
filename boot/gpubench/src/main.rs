@@ -17529,6 +17529,12 @@ mod image {
             GC2BB_PARAMS.at
         );
         let planes0 = Snapshot::take(&mut g.e.regs);
+        if GC2CA_ONE {
+            gc2co_run(g, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CA_FAST {
             gc2cn_run(g, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -19892,6 +19898,233 @@ mod image {
             }
         }
         overlap || g.e.finish(g.mem.0, 200_000).is_ok()
+    }
+
+    /// Run GC2CO (`RP_GPUBENCH_GC2_HALF_ONE`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R78 item 2. GC2CN (X51v): the conversion costs the same at 74.75 / 1
+    /// as at Windows Mobile's clock (16.0 ms: the memory, slower there,
+    /// sets it, not the cores), and overlapping the 2D placements with the
+    /// next frame's 3D passes cut it to 13.0 ms with Y' unchanged; but its
+    /// two renderers at once shared the parameter memory, so its A pass drew
+    /// the Y' quad. Here one renderer at a time, and each frame's three
+    /// quads in **one render** (a renderer of 120 x 960: the output at rows
+    /// 0-319, Y0 320-639, Y1 640-959; each quad keeps the combine words set
+    /// with it), against three renders of a 120 x 320 renderer; serial or
+    /// overlapped; at Windows Mobile's clock. Five frames a way after one to
+    /// warm, both last frames checked word for word. No photos.
+    const GC2CA_ONE: bool = option_env!("RP_GPUBENCH_GC2_HALF_ONE").is_some();
+    /// A GC2CO set's rows: the output, Y0, Y1 stacked.
+    const GC2CO_ROWS: u32 = 3 * GC2CM_H;
+
+    /// Run GC2CO (see [`GC2CA_ONE`]).
+    #[inline(never)]
+    fn gc2co_run(g: &mut Rig, planes0: &Snapshot) {
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "GC2CO: CONVERSION",
+                "ONE RENDER A FRAME",
+                "NO PHOTOS NEEDED",
+            ],
+        );
+        let nudge = core::mem::replace(&mut g.nudge, 0);
+        let t0 = rt::ticks();
+        let set_bytes = u32::from(GC2CM_OW) * 4 * GC2CO_ROWS;
+        let src_bytes = 256 * 2 * GC2CM_H;
+        let src = g.pool.alloc(src_bytes, 128);
+        let pooled = g.pool.alloc(set_bytes, 128);
+        // The second set in GC2CA's native picture (614,400 bytes from the
+        // label band's end to the lists on the die; unused, as GC2CO returns
+        // before the game frames; the label is drawn there only by the
+        // cards before and after).
+        if let (Some(src), Some(s0)) = (src, pooled) {
+            gc2cm_card(g, src, false);
+            let sets = [s0, GC2CA_A];
+            log!(
+                "  GC2CO: GC2CM's RGB565 card; sets at 0x{s0:x} and 0x{:x} (output, Y0, Y1 stacked); {GC2CN_FRAMES} frames a way after one to warm, at Windows Mobile's clock",
+                GC2CA_A
+            );
+            for (k, (one, overlap)) in [(false, false), (false, true), (true, false), (true, true)]
+                .into_iter()
+                .enumerate()
+            {
+                let mut l2 = heapless_name();
+                let _ = write!(l2, "WAY {} OF 4", k + 1);
+                soak_label(g, ["GC2CO COST", l2.as_str(), ""], SOAK_BLUE);
+                gc2co_way(g, src, sets, (one, overlap));
+                rt::check_in();
+            }
+        } else {
+            log!("  GC2CO: no memory: card {src:x?}, set {pooled:x?}");
+        }
+        if let Some(b) = pooled {
+            let _ = g.pool.free(b, set_bytes);
+        }
+        if let Some(s) = src {
+            let _ = g.pool.free(s, src_bytes);
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        log!("  GC2CO done: {} ms", us_since(t0) / 1000);
+        g.nudge = nudge;
+        gc2ca_card(g, planes0, ["GC2CO DONE", "", ""]);
+    }
+
+    /// One way, its own renderer (the only one alive).
+    fn gc2co_way(g: &mut Rig, src: u32, sets: [u32; 2], (one, overlap): (bool, bool)) {
+        let rows = if one { GC2CO_ROWS } else { GC2CM_H };
+        let Some(mut r) = Renderer::new(&mut g.pool, GC2CM_OW, rows as u16) else {
+            log!("  GC2CO: no renderer");
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        let name = match (one, overlap) {
+            (false, false) => "three renders, serial",
+            (false, true) => "three renders, overlapped",
+            (true, false) => "one render, serial",
+            (true, true) => "one render, overlapped",
+        };
+        let mut pending = false;
+        let mut ok = true;
+        let (mut t_frames, mut t_3d) = (0u32, 0u32);
+        let plane = u32::from(GC2CM_OW) * 4 * GC2CM_H;
+        for k in 0..=GC2CN_FRAMES {
+            let s = rt::ticks();
+            let base = sets[(k % 2) as usize];
+            if !gc2co_passes(g, &mut r, src, base, one) {
+                ok = false;
+                break;
+            }
+            let d3 = us_since(s);
+            if pending && g.e.finish(g.mem.0, 200_000).is_err() {
+                ok = false;
+                break;
+            }
+            if !gc2cn_place(g, (base, base + plane), overlap) {
+                ok = false;
+                break;
+            }
+            pending = overlap;
+            if k > 0 {
+                t_frames += us_since(s);
+                t_3d += d3;
+            }
+        }
+        if pending {
+            let s = rt::ticks();
+            ok &= g.e.finish(g.mem.0, 200_000).is_ok();
+            t_frames += us_since(s);
+        }
+        if ok {
+            log!(
+                "  GC2CO {name}: {} us a frame (the 3D passes {} us of it)",
+                t_frames / GC2CN_FRAMES,
+                t_3d / GC2CN_FRAMES
+            );
+            for (i, &base) in sets.iter().enumerate() {
+                let mut n = heapless_name();
+                let _ = write!(n, "set {i}");
+                gc2cm_check(g, base, false, n.as_str());
+            }
+        } else {
+            g.e.reset(rt::delay_us);
+            let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+            cpu::drain_write_buffer();
+            log!("  GC2CO {name}: a step failed or hung (reset)");
+        }
+        r.set_header_xors([0; 5]);
+        for slot in 0..3 {
+            g.set(&mut r, slot, None);
+        }
+        let _ = r.release(&mut g.pool);
+    }
+
+    /// One frame's 3D work into the set at `base`: the A quad (U', V') and
+    /// the two Y' quads, each with its own combine words; one render of all
+    /// three (`one`) or three renders of one quad each.
+    fn gc2co_passes(g: &mut Rig, r: &mut Renderer, src: u32, base: u32, one: bool) -> bool {
+        let tex = Texture {
+            at: src,
+            code: 5,
+            format: format::RGB565 as u8,
+            u_mode: address::CLAMP as u8,
+            v_mode: address::CLAMP as u8,
+            linear: false,
+            levels: 1,
+        };
+        let opaque = tex.words()[2];
+        let rows = 1 | (5 ^ 6) << 20;
+        let texel = UV_ONE / 256;
+        let bias = texel / 32;
+        let (w, h) = (i32::from(GC2CM_OW), GC2CM_H as i32);
+        let quad = |y: i32, u0: i32, tint: u32| {
+            let (ua, ub) = (u0 + bias, u0 + bias + 240 * texel);
+            let (va, vb) = (bias, bias + 320 * (UV_ONE / 512));
+            Draw::rect(
+                0,
+                y,
+                w,
+                h,
+                Paint::Texture {
+                    tex,
+                    uv: [(ua, va), (ub, va), (ub, vb), (ua, vb)],
+                    tint,
+                },
+            )
+        };
+        let plain = [0, rows, 1 << 29, 0, 0];
+        let dot3 = [0, rows | 0x2000, 1 << 29, opaque ^ GC2CM_DOT3, 0];
+        // (the quad's rows within the set, its texel offset, tint, words)
+        let quads = [
+            (0, 0, WHITE, plain),
+            (h, 0, GC2CM_TINT, dot3),
+            (2 * h, texel, GC2CM_TINT, dot3),
+        ];
+        let target = |at: u32, n: u32| Target {
+            picture: Picture {
+                at,
+                stride: u32::from(GC2CM_OW) * 4,
+                w: GC2CM_OW,
+                h: n as u16,
+                format: PixelFormat::Argb8888,
+            },
+            x: 0,
+            y: 0,
+        };
+        let render = |g: &mut Rig, r: &mut Renderer, t: Target| {
+            let before = g.hangs;
+            let ok = p_frame(g, r, t, 6, None);
+            if g.hangs != before || !ok {
+                log!(
+                    "  GC2CO: a render {}",
+                    if ok {
+                        "hung (reset)"
+                    } else {
+                        "wasn't rendered"
+                    }
+                );
+                r.start_clean();
+                return false;
+            }
+            true
+        };
+        if one {
+            for (slot, &(y, u0, tint, xor)) in quads.iter().enumerate() {
+                // The words are baked into the slot as it is set.
+                r.set_header_xors(xor);
+                g.set(r, slot, Some(quad(y, u0, tint)));
+            }
+            return render(g, r, target(base, GC2CO_ROWS));
+        }
+        let plane = u32::from(GC2CM_OW) * 4 * GC2CM_H;
+        for (k, &(_, u0, tint, xor)) in quads.iter().enumerate() {
+            r.set_header_xors(xor);
+            g.set(r, 0, Some(quad(0, u0, tint)));
+            if !render(g, r, target(base + k as u32 * plane, GC2CM_H)) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Run GC2CI (`RP_GPUBENCH_GC2_HALF_STRIDE`, with

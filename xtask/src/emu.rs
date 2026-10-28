@@ -5648,6 +5648,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2co = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_ONE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5922,7 +5931,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 133] = [
+    let runs: [GpubenchRun; 134] = [
         (
             "run A",
             &run_a,
@@ -6522,6 +6531,24 @@ fn variant_images_gpubench(
                 "GC2CN 74.75 / 1, Y' one tall render, overlapped:",
                 "GC2CM buffer 1 check:",
                 "GC2CN done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CO: the conversion's three quads in one render (each with
+        // its own combine words) against three renders, serial or with the
+        // 2D placements overlapped, timed and checked (no photos). The
+        // emulator's words are wrong as in GC2CM; its times are its own.
+        (
+            "run GC2CO",
+            &run_gc2co,
+            &[
+                "GC2CO three renders, serial:",
+                "GC2CO one render, overlapped:",
+                "GC2CM set 1 check:",
+                "GC2CO done:",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
