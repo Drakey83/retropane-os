@@ -286,6 +286,29 @@ pub fn video_show<B: RegisterBus>(
     }
 }
 
+/// [`Display::set_graphics`] on a register block held elsewhere (a test
+/// image's engine), with `GDRCTRL`'s pixel and line doubling on or off
+/// (Dell's 2x for 320 x 240 programs, R16; `rp-gpubench` GC2CA shows a
+/// 240 x 320 game frame through it). `GSCTRL`'s gamma bit is kept.
+pub fn graphics_set<B: RegisterBus>(
+    regs: &mut B,
+    plane: &Plane,
+    layer: layers::Layer,
+    double: bool,
+) {
+    let gamma = regs.read32(reg::GSCTRL) & GSCTRL_GAMMA_EN.mask();
+    for (offset, value) in plane.registers() {
+        let value = match offset {
+            reg::GSCTRL => value | gamma,
+            reg::GSCADR => layer.scadr(value),
+            reg::GBBASE => layer.bbase(value),
+            reg::GDRCTRL if double => value | blendtest::GDRCTRL_DOUBLE,
+            _ => value,
+        };
+        regs.write32(offset, value);
+    }
+}
+
 /// [`Display::hide_video`] on a register block held elsewhere.
 pub fn video_hide<B: RegisterBus>(regs: &mut B) {
     regs.modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
@@ -598,16 +621,7 @@ impl<B: RegisterBus> Display<B> {
     /// Points the graphics plane at `plane`, in `layer`, without touching
     /// the panel timing. `GSCTRL`'s gamma bit is kept.
     pub fn set_graphics(&mut self, plane: &Plane, layer: layers::Layer) {
-        let gamma = self.regs.read32(reg::GSCTRL) & GSCTRL_GAMMA_EN.mask();
-        for (offset, value) in plane.registers() {
-            let value = match offset {
-                reg::GSCTRL => value | gamma,
-                reg::GSCADR => layer.scadr(value),
-                reg::GBBASE => layer.bbase(value),
-                _ => value,
-            };
-            self.regs.write32(offset, value);
-        }
+        graphics_set(&mut self.regs, plane, layer, false);
     }
 
     /// Shows the video plane `video` in `layer`: its overlay clock on, then
@@ -716,6 +730,30 @@ pub const SAVED_REGS: &[(&str, usize)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graphics_set_doubles_only_when_asked_and_keeps_the_gamma_bit() {
+        let plane = Plane {
+            format: PixelFormat::Rgb565,
+            width: 240,
+            height: 320,
+            offset: 0xF000,
+            stride: 480,
+        };
+        for double in [false, true] {
+            let mut bus = rp_hal_mock::MockBus::new();
+            bus.write32(reg::GSCTRL, GSCTRL_GAMMA_EN.mask());
+            graphics_set(&mut bus, &plane, layers::Layer::SOLO, double);
+            let w = bus.writes();
+            let last = |r: usize| w.iter().rev().find(|(o, _)| *o == r).map(|(_, v)| *v);
+            let want = if double { 0xA0FF_FFFF } else { 0x00FF_FFFF };
+            assert_eq!(last(reg::GDRCTRL), Some(want));
+            let gsctrl = last(reg::GSCTRL).unwrap_or(0);
+            assert_ne!(gsctrl & GSCTRL_GAMMA_EN.mask(), 0);
+            assert_eq!(GSCTRL_WIDTH.extract(gsctrl), 239);
+            assert_eq!(GSCTRL_HEIGHT.extract(gsctrl), 319);
+        }
+    }
 
     #[test]
     fn the_scaler_filter_loads_only_when_the_plane_scales_and_before_it_does() {

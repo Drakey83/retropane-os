@@ -2821,6 +2821,78 @@ fn gc2bv_seals() {
     assert_eq!(SEAL_PROOF_DOUBLE[0], SEAL_FORMS[3]);
 }
 
+/// GC2CA's sizes: each frame at a size is the screen's frame with every
+/// corner scaled (so still watertight and edge to edge), the full size
+/// exactly [`mesh_frame`], the layer and back quad the target's size, the
+/// texture's repeats kept; every size whole tiles and 16-byte rows, the
+/// references' words the sum of every size's four frames.
+#[test]
+fn gc2ca_sized_mesh_frames() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    let sub = rp_mbx3d_render::SUB;
+    for kind in GAME_FRAMES {
+        assert_eq!(
+            mesh_frame_in(kind, t, (W as u16, H as u16)),
+            mesh_frame(kind, t)
+        );
+        let (_, full) = mesh_frame(kind, t);
+        for size in HALF_SIZES {
+            assert_eq!(size.0 % 8, 0);
+            assert_eq!(size.1 % 16, 0);
+            assert_eq!((2 * usize::from(size.0)) % 16, 0);
+            let (bg, f) = mesh_frame_in(kind, t, size);
+            assert_eq!(bg, BLACK);
+            for (a, b) in full.iter().zip(f.iter()) {
+                let (Some(a), Some(b)) = (a, b) else {
+                    assert_eq!(a.is_some(), b.is_some());
+                    continue;
+                };
+                if a.paint == Paint::Flat(HIDDEN_LAYER) {
+                    assert_eq!(b.paint, a.paint);
+                    assert_eq!(b.depth, a.depth);
+                    let w = i32::from(size.0) * sub;
+                    let h = i32::from(size.1) * sub;
+                    assert!(b.corners.iter().all(|p| p.x == 0 || p.x == w));
+                    assert!(b.corners.iter().all(|p| p.y == 0 || p.y == h));
+                    continue;
+                }
+                for (pa, pb) in a.corners.iter().zip(b.corners.iter()) {
+                    assert_eq!(*pb, mesh_scaled(*pa, size));
+                }
+                if let (Paint::Texture { uv: ua, .. }, Paint::Texture { uv: ub, .. }) =
+                    (a.paint, b.paint)
+                {
+                    // The same texture coordinates to within the scaling's
+                    // rounding (a sub-pixel step).
+                    for (x, y) in ua.iter().zip(ub.iter()) {
+                        assert!((x.0 - y.0).abs() <= UV_ONE * 3 / (W as i32 * sub / 4));
+                        assert!((x.1 - y.1).abs() <= UV_ONE * 4 / (H as i32 * sub / 4));
+                    }
+                }
+            }
+        }
+    }
+    // Half size: every corner exactly half (the screen's corners are whole
+    // sub-pixel steps, halved by an even scale).
+    let p = rp_mbx3d_render::Point {
+        x: 4 * sub + 6,
+        y: 10 * sub + 2,
+    };
+    assert_eq!(
+        mesh_scaled(p, (240, 320)),
+        rp_mbx3d_render::Point {
+            x: 2 * sub + 3,
+            y: 5 * sub + 1
+        }
+    );
+    assert_eq!(HALF_REF_WORDS, 4 * (480 * 640 + 360 * 480 + 240 * 320) / 2);
+}
+
 #[test]
 fn gc2bw_mesh_frames() {
     let t = Tex {

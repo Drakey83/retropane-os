@@ -2605,22 +2605,33 @@ pub const fn mesh_corner(
     rp_mbx3d_render::Point { x, y }
 }
 
-/// Mesh `seed`'s quads over `b`, each painted by `paint(cell, corners)`.
+/// Point `p` of the 480 x 640 screen scaled to a `size` target (exact
+/// for any `size` dividing it; a corner shared by two quads stays shared,
+/// so the mesh stays watertight).
+#[must_use]
+pub const fn mesh_scaled(p: rp_mbx3d_render::Point, size: (u16, u16)) -> rp_mbx3d_render::Point {
+    rp_mbx3d_render::Point {
+        x: p.x * size.0 as i32 / W as i32,
+        y: p.y * size.1 as i32 / H as i32,
+    }
+}
+
+/// Mesh `seed`'s quads over `b`, each painted by `paint(cell, corners)`,
+/// scaled from the 480 x 640 screen to `size`.
 fn mesh_into(
     out: &mut [Option<Draw>; MESH_SLOTS],
     n: &mut usize,
-    seed: u32,
-    b: (i32, i32, i32, i32),
+    (seed, b, size): (u32, (i32, i32, i32, i32), (u16, u16)),
     paint: &dyn Fn(u32, &[rp_mbx3d_render::Point; 4]) -> Paint,
     depth: Option<rp_mbx3d_render::Depth>,
 ) {
     for gy in 0..MESH_ROWS {
         for gx in 0..MESH_COLS {
             let c = [
-                mesh_corner(seed, gx, gy, b),
-                mesh_corner(seed, gx + 1, gy, b),
-                mesh_corner(seed, gx + 1, gy + 1, b),
-                mesh_corner(seed, gx, gy + 1, b),
+                mesh_scaled(mesh_corner(seed, gx, gy, b), size),
+                mesh_scaled(mesh_corner(seed, gx + 1, gy, b), size),
+                mesh_scaled(mesh_corner(seed, gx + 1, gy + 1, b), size),
+                mesh_scaled(mesh_corner(seed, gx, gy + 1, b), size),
             ];
             let mut d = Draw::rect(0, 0, 1, 1, paint((gy * MESH_COLS + gx) as u32, &c));
             d.corners = c;
@@ -2643,26 +2654,37 @@ fn mesh_colour(seed: u32, i: u32) -> u32 {
 /// [`MESH_SLOTS`] slots.
 #[must_use]
 pub fn mesh_frame(kind: u8, t: Tex) -> (u32, [Option<Draw>; MESH_SLOTS]) {
+    mesh_frame_in(kind, t, (W as u16, H as u16))
+}
+
+/// [`mesh_frame`]'s frame drawn on a `size` target: the same geometry
+/// scaled (GC2CA, R78: the game frames at fewer pixels for the video
+/// plane's scaler), the texture's repeats kept, so a smaller frame is the
+/// full one at a lower resolution.
+#[must_use]
+pub fn mesh_frame_in(kind: u8, t: Tex, size: (u16, u16)) -> (u32, [Option<Draw>; MESH_SLOTS]) {
     let mut out = [None; MESH_SLOTS];
     let mut n = 0;
     let screen = (0, 0, W as i32, H as i32);
+    let whole = |c: u32| Draw::rect(0, 0, i32::from(size.0), i32::from(size.1), Paint::Flat(c));
     let flat = |seed: u32| {
         move |i: u32, _: &[rp_mbx3d_render::Point; 4]| Paint::Flat(mesh_colour(seed, i))
     };
     match kind {
         MESH_LAYERED => {
-            out[n] = Some(flat_draw(HIDDEN_LAYER));
+            out[n] = Some(whole(HIDDEN_LAYER));
             n += 1;
-            mesh_into(&mut out, &mut n, 1, screen, &flat(1), None);
+            mesh_into(&mut out, &mut n, (1, screen, size), &flat(1), None);
         }
         MESH_TEXTURED => {
             // Three repeats of the texture across the screen's width: the
             // uv at each corner from its place, so neighbours share them.
             let uv = |p: rp_mbx3d_render::Point| {
                 let sub = rp_mbx3d_render::SUB;
+                let (w, h) = (i32::from(size.0), i32::from(size.1));
                 (
-                    (i64::from(UV_ONE) * 3 * i64::from(p.x) / i64::from(W as i32 * sub)) as i32,
-                    (i64::from(UV_ONE) * 4 * i64::from(p.y) / i64::from(H as i32 * sub)) as i32,
+                    (i64::from(UV_ONE) * 3 * i64::from(p.x) / i64::from(w * sub)) as i32,
+                    (i64::from(UV_ONE) * 4 * i64::from(p.y) / i64::from(h * sub)) as i32,
                 )
             };
             let paint = |_: u32, c: &[rp_mbx3d_render::Point; 4]| Paint::Texture {
@@ -2670,7 +2692,7 @@ pub fn mesh_frame(kind: u8, t: Tex) -> (u32, [Option<Draw>; MESH_SLOTS]) {
                 uv: [uv(c[0]), uv(c[1]), uv(c[2]), uv(c[3])],
                 tint: WHITE,
             };
-            mesh_into(&mut out, &mut n, 2, screen, &paint, None);
+            mesh_into(&mut out, &mut n, (2, screen, size), &paint, None);
         }
         MESH_DEPTH => {
             let d = |z: u16| {
@@ -2686,21 +2708,16 @@ pub fn mesh_frame(kind: u8, t: Tex) -> (u32, [Option<Draw>; MESH_SLOTS]) {
             // than the renderer's 128 cached lists, and the uncached ones
             // overflowed the 20 KiB list space on the die: `TooComplex`,
             // GC2BW's emulator check.)
-            let mut back = flat_draw(HIDDEN_LAYER);
+            let mut back = whole(HIDDEN_LAYER);
             back.depth = d(0x3000);
             out[n] = Some(back);
             n += 1;
-            mesh_into(&mut out, &mut n, 3, screen, &flat(3), d(0xB000));
+            mesh_into(&mut out, &mut n, (3, screen, size), &flat(3), d(0xB000));
         }
-        _ => mesh_into(&mut out, &mut n, 0, screen, &flat(0), None),
+        _ => mesh_into(&mut out, &mut n, (0, screen, size), &flat(0), None),
     }
     debug_assert!(n <= MESH_DRAWS);
     (BLACK, out)
-}
-
-/// A full-screen flat draw of `c` (opaque).
-fn flat_draw(c: u32) -> Draw {
-    flat(c, false)
 }
 
 /// Run GC2BY's ladder for games (the owner, 2026-10-27: "make the test
@@ -2722,6 +2739,19 @@ pub const GAME_LADDER: [((u32, u32), u32, &str); 8] = [
 pub const GAME_LADDER_ROUNDS: u32 = 100;
 /// GC2BY's game frames ([`mesh_frame`]'s four).
 pub const GAME_FRAMES: [u8; 4] = [MESH_FLAT, MESH_LAYERED, MESH_TEXTURED, MESH_DEPTH];
+
+/// GC2CA's render sizes (R78 item 2): the screen, 3/4 (a dynamic
+/// resolution step the video plane's scaler shows at 4/3) and half (its
+/// 2x), each a whole number of 8 x 16 tiles and 16-byte rows.
+pub const HALF_SIZES: [(u16, u16); 3] = [(480, 640), (360, 480), (240, 320)];
+/// Words of a 16-bit picture of `size`.
+#[must_use]
+pub const fn words_of(size: (u16, u16)) -> usize {
+    size.0 as usize * size.1 as usize / 2
+}
+/// GC2CA's reference words: each size's [`GAME_FRAMES`].
+pub const HALF_REF_WORDS: usize = GAME_FRAMES.len()
+    * (words_of(HALF_SIZES[0]) + words_of(HALF_SIZES[1]) + words_of(HALF_SIZES[2]));
 
 /// GC2BU's forms of scene 3 without its layer: as is, the depth path, the
 /// depth written only, the rectangles half a pixel over, the other

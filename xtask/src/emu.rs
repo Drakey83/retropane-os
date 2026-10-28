@@ -5497,6 +5497,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2ca = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5771,7 +5779,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 119] = [
+    let runs: [GpubenchRun; 120] = [
         (
             "run A",
             &run_a,
@@ -6135,6 +6143,31 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2BZ 74.75 / 1 rows frame 0 from line 0: ",
                 "GC2BZ 74.75 / 1 checker frame 3 from line 600: ",
                 "GC2BZ done: ",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CA (R78 item 2): the game frames at three sizes shown
+        // full screen five ways, two renders a setting (the fork doesn't
+        // model the scaler or the doubling: the registers and pictures
+        // only; its times aren't the device's).
+        (
+            "run GC2CA",
+            &run_gc2ca,
+            &[
+                "GC2CA (R78 item 2): 4 game frames at [(480, 640), (360, 480), (240, 320)]",
+                "GC2CA 240 x 320 frame 3 reference: Some(",
+                "GC2CA WM 99.67 / 2 480 x 640 native frame 0: 2 renders, 0 pictures wrong, 0 not finished",
+                "GC2CA WM 99.67 / 2 240 x 320 video plane 2x, a pair frame 2: 2 renders, 0 pictures wrong, 0 not finished",
+                "GC2CA 74.75 / 1 240 x 320 Dell's doubling, a pair frame 3: 2 renders, 0 pictures wrong, 0 not finished",
+                "GC2CA 74.75 / 1 360 x 480 video plane 4/3 frame 1: 2 renders, 0 pictures wrong, 0 not finished",
+                // The depth frame at full size: wrong in both renders when
+                // three renderers took the stack past 80% (2026-10-28).
+                "GC2CA 74.75 / 1 480 x 640 native frame 3: 2 renders, 0 pictures wrong, 0 not finished",
+                "GC2CA 74.75 / 1 speed-up 240 x 320 video plane 2x, a pair against native",
+                "GC2CA watch frame 3: shown full",
+                "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

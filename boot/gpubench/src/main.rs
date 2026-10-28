@@ -8090,6 +8090,7 @@ mod image {
         || GC2_NUDGE_SIZE
         || GC2_PROVE2
         || GC2_TEAR
+        || GC2_HALF
         || GC2_PROVE3
         || GC2_ORDER_HOT
         || GC2_SHADE_HOT
@@ -8468,6 +8469,20 @@ mod image {
     /// parked). [`Tear`] samples four pixels a tile row while the render
     /// runs. About 2 minutes, unattended.
     const GC2_TEAR: bool = option_env!("RP_GPUBENCH_GC2_TEAR").is_some();
+
+    /// Run GC2CA, reminder R78 item 2 (`RP_GPUBENCH_GC2_HALF`): the game
+    /// frames at fewer pixels, shown full screen at scan-out. GC2BY's four
+    /// meshes rendered at 480 x 640 (native, the graphics plane), 360 x 480
+    /// (the video plane's scaler at 4/3: a dynamic-resolution step) and
+    /// 240 x 320 three ways (the video plane's 2x, a pair flipped in the
+    /// blanking; Dell's `GDRCTRL` doubling, the same pair; and under the
+    /// native screen's reads, the control), every picture inside the safe
+    /// region, at Windows Mobile's clock and 74.75 / 1 (nothing above
+    /// Dell's: the chase is parked, R75); each render's core time and
+    /// whole frame (the CPU's set-up with it), its picture held to a
+    /// reference, the underruns a way. Then each frame shown four ways for
+    /// the owner's eye. About 2 minutes.
+    const GC2_HALF: bool = option_env!("RP_GPUBENCH_GC2_HALF").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9851,6 +9866,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_HALF {
+                "the 16-bit kinds' targets inside the safe region (GC2CA, R78: no map; the four game frames at 480 x 640, 360 x 480 and 240 x 320 shown full screen by the video plane's scaler, Dell's doubling and the native screen, timed at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_TEAR {
                 "the 16-bit kinds' targets inside the safe region (GC2BZ, R20: no map; each tile row of the four game frames watched as it lands against the scan line, in four tile orders, started at three scan lines, at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_GAMES {
@@ -10121,6 +10138,8 @@ mod image {
             || GC2_TEAR
         {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_HALF {
+            gc2::words(gc2::FT2) as usize + gc2::HALF_REF_WORDS
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
             gc2::words(gc2::FT2) as usize
         } else if GC2_MAGNIFY {
@@ -10515,6 +10534,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_HALF {
+                    gc2_half(g, &mut r, (tex, first, dsig));
                 } else if GC2_TEAR {
                     gc2_tear(g, &mut r, (tex, first, dsig));
                 } else if GC2_GAMES {
@@ -17272,6 +17293,426 @@ mod image {
         let _ = ondie.release(&mut g.pool);
         g.nudge = 0;
         log!("  GC2BZ done: {free_total} of {renders_total} renders tear-free");
+    }
+
+    /// GC2CA's pictures, all inside the safe region below the lists on the
+    /// die (G20: the display reading outside it corrupts the core's
+    /// renders): A at the native target's place (every size), B the second
+    /// 240 x 320 of the flipped pair.
+    const GC2CA_A: u32 = gc2::INSIDE_AT;
+    const GC2CA_B: u32 = GC2CA_A + 2 * 240 * 320;
+    const _: () = assert!(GC2CA_A + 2 * 480 * 640 <= GC2BB_PARAMS.at);
+    const _: () = assert!(GC2CA_B + 2 * 240 * 320 <= GC2BB_PARAMS.at);
+    const _: () = assert!(GC2BB_PARAMS.at + GC2BB_PARAMS.size <= gc2::SAFE_END);
+    /// Renders of each frame, way and clock (the emulator 2).
+    const GC2CA_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
+    /// Each picture held this long for the owner's eye (the emulator none).
+    const GC2CA_HOLD_US: u32 = if GC2_RENDERS < 20 { 0 } else { 3_000_000 };
+    /// How a GC2CA picture is shown: the graphics plane at 1:1, the video
+    /// plane's scaler to 480 x 640 (the graphics plane's reads off), the
+    /// graphics plane with `GDRCTRL`'s doubling (Dell's 2x), or the planes
+    /// as found (the native screen's reads; the picture not shown).
+    const GC2CA_NATIVE: u8 = 0;
+    const GC2CA_VIDEO: u8 = 1;
+    const GC2CA_DELL: u8 = 2;
+    const GC2CA_UNDER: u8 = 3;
+    /// GC2CA's ways: (size in [`gc2::HALF_SIZES`], how shown, name).
+    const GC2CA_WAYS: [(usize, u8, &str); 5] = [
+        (0, GC2CA_NATIVE, "480 x 640 native"),
+        (1, GC2CA_VIDEO, "360 x 480 video plane 4/3"),
+        (2, GC2CA_VIDEO, "240 x 320 video plane 2x, a pair"),
+        (2, GC2CA_DELL, "240 x 320 Dell's doubling, a pair"),
+        (2, GC2CA_UNDER, "240 x 320 under native reads"),
+    ];
+    /// The watched part's ways (the owner's eye): native, 3/4, Dell's 2x,
+    /// the video plane's 2x.
+    const GC2CA_WATCH: [(usize, u8); 4] = [
+        (0, GC2CA_NATIVE),
+        (1, GC2CA_VIDEO),
+        (2, GC2CA_DELL),
+        (2, GC2CA_VIDEO),
+    ];
+
+    /// Picture `at` of `size` shown the way `how` does; [`GC2CA_UNDER`]
+    /// puts the planes back as found (`planes0`).
+    fn gc2ca_show(g: &mut Rig, how: u8, size: (u16, u16), at: u32, planes0: &Snapshot) {
+        let (w, h) = size;
+        match how {
+            GC2CA_VIDEO => {
+                let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+                let plane = VideoPlane::new(VideoFormat::Rgb565, w, h, at as usize);
+                let scale = plane.scale_to(480, 640, 0, 0);
+                rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, Layer::SOLO, scale);
+            }
+            GC2CA_NATIVE | GC2CA_DELL => {
+                rp_drv_mbx_display::video_hide(&mut g.e.regs);
+                let plane = Plane {
+                    format: PlaneFormat::Rgb565,
+                    width: w,
+                    height: h,
+                    offset: at as usize,
+                    stride: 2 * usize::from(w),
+                };
+                rp_drv_mbx_display::graphics_set(
+                    &mut g.e.regs,
+                    &plane,
+                    Layer::SOLO,
+                    how == GC2CA_DELL,
+                );
+            }
+            _ => {
+                rp_drv_mbx_display::video_hide(&mut g.e.regs);
+                planes0.restore(&mut g.e.regs);
+            }
+        }
+    }
+
+    /// A 2D fill of the `size` RGB565 picture at `at` with `c`, finished
+    /// before the 3D core starts (R30).
+    fn gc2ca_fill(g: &mut Rig, at: u32, size: (u16, u16), c: u16) -> bool {
+        let w = rp_image::need(
+            cmd::fill(
+                Format::RGB565,
+                at as usize,
+                2 * usize::from(size.0),
+                (0, 0, size.0, size.1),
+                u32::from(c),
+            ),
+            "a 2D rectangle",
+        );
+        g.e.submit(&w).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok()
+    }
+
+    /// GC2CA's mesh frame `kind` at `size` set into all of `r`'s slots.
+    fn gc2ca_set_mesh(g: &mut Rig, r: &mut Renderer, kind: u8, tex: gc2::Tex, size: (u16, u16)) {
+        let (bg, slots) = gc2::mesh_frame_in(kind, tex, size);
+        let _ = r.set_background(Some(bg));
+        for (n, d) in slots.into_iter().enumerate() {
+            g.set(r, n, d);
+        }
+    }
+
+    /// One GC2CA render of what `r` holds at `size` into `at`: the core's
+    /// time and the whole frame's (the CPU's set-up, the render, the
+    /// renderer's poll to the end), `None` if refused or hung.
+    fn gc2ca_render(
+        g: &mut Rig,
+        r: &mut Renderer,
+        size: (u16, u16),
+        at: u32,
+    ) -> Option<(u32, u32)> {
+        r.invalidate_all();
+        let t = Target {
+            picture: Picture::packed(at, size.0, size.1, gc2::KINDS[gc2::FT2].1),
+            x: 0,
+            y: 0,
+        };
+        let t0 = g.clock.now_us();
+        let core = g.frame(r, t)?;
+        Some((core, g.clock.now_us().wrapping_sub(t0)))
+    }
+
+    /// Held `us` with the loader's watchdog fed.
+    fn gc2ca_hold(us: u32) {
+        for _ in 0..us / 10_000 {
+            rt::delay_us(10_000);
+            rt::check_in();
+        }
+    }
+
+    /// Where size `s`, frame `f`'s reference sits in GC2CA's references.
+    const fn gc2ca_ref(s: usize, f: usize) -> core::ops::Range<usize> {
+        let mut at = 0;
+        let mut i = 0;
+        while i < s {
+            at += gc2::GAME_FRAMES.len() * gc2::words_of(gc2::HALF_SIZES[i]);
+            i += 1;
+        }
+        let n = gc2::words_of(gc2::HALF_SIZES[s]);
+        at + f * n..at + (f + 1) * n
+    }
+
+    /// GC2CA's one renderer, made for size `s` of [`gc2::HALF_SIZES`] when
+    /// `cur` holds another size (that one released first): its lists on
+    /// the die, the shipped checker order. One at a time, not one a size:
+    /// three renderers took the image's stack past 80% (the emulator's
+    /// check, 2026-10-28). `None` (logged) if it can't be made.
+    fn gc2ca_take<'a>(
+        g: &mut Rig,
+        cur: &'a mut Option<(usize, Renderer)>,
+        s: usize,
+    ) -> Option<&'a mut Renderer> {
+        if cur.as_ref().map(|c| c.0) != Some(s) {
+            if let Some((_, rr)) = cur.take() {
+                let _ = rr.release(&mut g.pool);
+            }
+            let (w, h) = gc2::HALF_SIZES[s];
+            let Some(mut rr) = Renderer::new_in(&mut g.pool, w, h, GC2BB_PARAMS, map::PM_TABLE)
+            else {
+                log!("  GC2CA: no {w} x {h} renderer");
+                return None;
+            };
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.set_diagonal_flip(false);
+            gc2bx_clear(g, &mut rr);
+            rr.start_clean();
+            rr.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+            *cur = Some((s, rr));
+        }
+        cur.as_mut().map(|c| &mut c.1)
+    }
+
+    /// The first word of `got` unlike `want` in a 16-bit picture `w` wide:
+    /// (x, y, got, want), for a wrong render's log line.
+    fn gc2ca_first_wrong(got: &[u32], want: &[u32], w: u16) -> Option<(u32, u32, u32, u32)> {
+        let i = got.iter().zip(want).position(|(a, b)| a != b)?;
+        let p = 2 * i as u32;
+        Some((p % u32::from(w), p / u32::from(w), got[i], want[i]))
+    }
+
+    /// Run GC2CA (see [`GC2_HALF`]): the planes as found taken; a renderer
+    /// for each of [`gc2::HALF_SIZES`] with its lists on the die (the
+    /// shipped checker order and texture rule); each size's four frames'
+    /// references at Windows Mobile's clock, shown as their first way
+    /// shows them, held repeatable; then at Windows Mobile's clock and
+    /// 74.75 / 1, each of [`GC2CA_WAYS`], [`GC2CA_REPS`] renders of each
+    /// frame (one unrecorded first: the core's set-up after a switch), each
+    /// target poisoned, the pair's new picture shown in the blanking after
+    /// each render; logged a frame: the fastest and mean core time and
+    /// whole frame, pictures wrong; a way: the underruns; a clock: each
+    /// way's fastest whole frame against native's. Then [`GC2CA_WATCH`]
+    /// for each frame, held [`GC2CA_HOLD_US`] each, labelled between.
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn gc2_half(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let _ = (r, dsig);
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(gc2::HALF_SIZES[0]);
+        if all.len() < full + gc2::HALF_REF_WORDS {
+            log!("  GC2CA: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        log!(
+            "  GC2CA (R78 item 2): {nf} game frames at {:?}, shown full screen {} ways, {GC2CA_REPS} renders each, at Windows Mobile's clock and 74.75 / 1; pictures at 0x{GC2CA_A:x} and 0x{GC2CA_B:x}, the lists on the die at 0x{:x}",
+            gc2::HALF_SIZES,
+            GC2CA_WAYS.len(),
+            GC2BB_PARAMS.at
+        );
+        let planes0 = Snapshot::take(&mut g.e.regs);
+        let mut cur: Option<(usize, Renderer)> = None;
+        g.nudge = GC2BO_NUDGE;
+        let (first, refs) = all.split_at_mut(full);
+        // References: each size shown as its first way shows it.
+        let mut ok = true;
+        for (s, &size) in gc2::HALF_SIZES.iter().enumerate() {
+            let how = if s == 0 { GC2CA_NATIVE } else { GC2CA_VIDEO };
+            gc2ca_show(g, how, size, GC2CA_A, &planes0);
+            let n = gc2::words_of(size);
+            for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                let Some(rr) = gc2ca_take(g, &mut cur, s) else {
+                    ok = false;
+                    break;
+                };
+                gc2ca_set_mesh(g, rr, kind, tex, size);
+                let t0 = gc2ca_render(g, rr, size, GC2CA_A);
+                let want = &mut refs[gc2ca_ref(s, f)];
+                gc2_take_at(g, GC2CA_A, want);
+                let mut again = [None; 2];
+                for a in &mut again {
+                    *a = gc2ca_render(g, rr, size, GC2CA_A).and_then(|_| {
+                        read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n])
+                    });
+                }
+                let poison = gc2::absent16(want, &gc2::POISON);
+                log!(
+                    "  GC2CA {} x {} frame {f} reference: {t0:?} us (core, whole); again {again:?} words off; poison {poison:?}",
+                    size.0,
+                    size.1
+                );
+                ok &= t0.is_some() && again.iter().all(|a| *a == Some(0)) && poison.is_some();
+            }
+        }
+        gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+        let _ = underrun_take(&mut g.e.regs);
+        if ok {
+            gc2ca_measure(g, &mut cur, tex, (first, refs), &planes0);
+            gc2ca_watch(g, &mut cur, tex, &planes0);
+        } else {
+            log!(
+                "  GC2CA: a reference failed, isn't repeatable or has no absent colour: nothing more run"
+            );
+        }
+        gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+        rt::delay_us(50_000);
+        let _ = underrun_take(&mut g.e.regs);
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        g.nudge = 0;
+        log!("  GC2CA done");
+    }
+
+    /// GC2CA's timed part (see [`gc2_half`]), at Windows Mobile's clock
+    /// and 74.75 / 1, the clock put back after.
+    #[allow(clippy::too_many_lines)]
+    fn gc2ca_measure(
+        g: &mut Rig,
+        cur: &mut Option<(usize, Renderer)>,
+        tex: gc2::Tex,
+        (first, refs): (&mut [u32], &[u32]),
+        planes0: &Snapshot,
+    ) {
+        let nf = gc2::GAME_FRAMES.len();
+        let clocks = [
+            (None, "WM 99.67 / 2"),
+            (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
+        ];
+        for (step, cname) in clocks {
+            clock_restore(&mut g.e.regs);
+            if let Some(s) = step {
+                if clock_apply(g, s).is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  GC2CA {cname}: the clock didn't take; skipped");
+                    continue;
+                }
+                clock_readback(g);
+            }
+            // Each way's fastest whole frame, a frame.
+            let mut best_whole = [[u32::MAX; 4]; GC2CA_WAYS.len()];
+            for (wi, &(s, how, wname)) in GC2CA_WAYS.iter().enumerate() {
+                gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, planes0);
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "WAY {} OF {}", wi + 1, GC2CA_WAYS.len());
+                soak_label(g, ["GC2CA HALF-RES TEST", cname, l3.as_str()], SOAK_BLUE);
+                let size = gc2::HALF_SIZES[s];
+                let n = gc2::words_of(size);
+                let pair = s == 2 && how != GC2CA_UNDER;
+                // The picture a render goes into: the one not shown, for
+                // the pair.
+                let to = |shown: u32| {
+                    if pair && shown == GC2CA_A {
+                        GC2CA_B
+                    } else {
+                        GC2CA_A
+                    }
+                };
+                let mut shown = GC2CA_A;
+                gc2ca_show(g, how, size, shown, planes0);
+                let _ = underrun_take(&mut g.e.regs);
+                let mut underruns = 0u32;
+                for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                    let Some(rr) = gc2ca_take(g, cur, s) else {
+                        continue;
+                    };
+                    let want = &refs[gc2ca_ref(s, f)];
+                    let poison = gc2::absent16(want, &gc2::POISON).unwrap_or(0);
+                    gc2ca_set_mesh(g, rr, kind, tex, size);
+                    let _ = gc2ca_render(g, rr, size, to(shown));
+                    let (mut done, mut wrong, mut unfinished) = (0u32, 0u32, 0u32);
+                    let mut first_wrong = None;
+                    let (mut core_best, mut core_sum) = (u32::MAX, 0u64);
+                    let (mut whole_best, mut whole_sum) = (u32::MAX, 0u64);
+                    for _ in 0..GC2CA_REPS {
+                        rt::check_in();
+                        let at = to(shown);
+                        if !gc2ca_fill(g, at, size, poison) {
+                            unfinished += 1;
+                            continue;
+                        }
+                        let Some((core, whole)) = gc2ca_render(g, rr, size, at) else {
+                            unfinished += 1;
+                            continue;
+                        };
+                        let off =
+                            read_compare_volatile(g.mem.0, at as usize, want, &mut first[..n]);
+                        done += 1;
+                        if off != Some(0) {
+                            wrong += 1;
+                            if first_wrong.is_none() {
+                                first_wrong =
+                                    Some((off, gc2ca_first_wrong(&first[..n], want, size.0)));
+                            }
+                        }
+                        core_best = core_best.min(core);
+                        whole_best = whole_best.min(whole);
+                        core_sum += u64::from(core);
+                        whole_sum += u64::from(whole);
+                        if pair {
+                            // The new picture shown in the blanking (W1: a
+                            // repoint takes effect at once).
+                            let _ = wait_scan(g, 640);
+                            gc2ca_show(g, how, size, at, planes0);
+                            shown = at;
+                        }
+                    }
+                    underruns += u32::from(underrun_take(&mut g.e.regs));
+                    best_whole[wi][f] = whole_best;
+                    let d = u64::from(done.max(1));
+                    log!(
+                        "  GC2CA {cname} {wname} frame {f}: {done} renders, {wrong} pictures wrong, {unfinished} not finished; core fastest {core_best} us mean {}; whole frame fastest {whole_best} us mean {}",
+                        core_sum / d,
+                        whole_sum / d
+                    );
+                    if let Some((off, at)) = first_wrong {
+                        log!(
+                            "    the first wrong render: {off:?} words off, the first (x, y, got, want) {at:x?}"
+                        );
+                    }
+                }
+                log!("  GC2CA {cname} {wname}: an underrun seen after {underruns} of {nf} frames");
+            }
+            // Each way's fastest whole frame against native's, in
+            // hundredths (native / way: 400 is four times as fast).
+            for (wi, &(_, _, wname)) in GC2CA_WAYS.iter().enumerate().skip(1) {
+                let x: [u32; 4] = core::array::from_fn(|f| {
+                    let (nat, way) = (best_whole[0][f], best_whole[wi][f]);
+                    if way == 0 || way == u32::MAX || nat == u32::MAX {
+                        0
+                    } else {
+                        100 * nat / way
+                    }
+                });
+                log!("  GC2CA {cname} speed-up {wname} against native, x100 by frame: {x:?}");
+            }
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+    }
+
+    /// GC2CA's watched part (the owner's eye): each frame shown
+    /// [`GC2CA_WATCH`]'s four ways at Windows Mobile's clock, each held
+    /// [`GC2CA_HOLD_US`], the label between frames.
+    fn gc2ca_watch(
+        g: &mut Rig,
+        cur: &mut Option<(usize, Renderer)>,
+        tex: gc2::Tex,
+        planes0: &Snapshot,
+    ) {
+        let nf = gc2::GAME_FRAMES.len();
+        for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, planes0);
+            let mut l2 = heapless_name();
+            let _ = write!(l2, "FRAME {} OF {nf}", f + 1);
+            soak_label(
+                g,
+                ["GC2CA WATCH", l2.as_str(), "FULL 3/4 DELL OURS"],
+                SOAK_BLUE,
+            );
+            gc2ca_hold(GC2CA_HOLD_US / 2);
+            for &(s, how) in &GC2CA_WATCH {
+                let size = gc2::HALF_SIZES[s];
+                let Some(rr) = gc2ca_take(g, cur, s) else {
+                    continue;
+                };
+                gc2ca_set_mesh(g, rr, kind, tex, size);
+                let _ = gc2ca_render(g, rr, size, GC2CA_A);
+                let _ = wait_scan(g, 640);
+                gc2ca_show(g, how, size, GC2CA_A, planes0);
+                gc2ca_hold(GC2CA_HOLD_US);
+            }
+            log!("  GC2CA watch frame {f}: shown full, 3/4, Dell's 2x, the video plane's 2x");
+        }
     }
 
     /// GC2BY's rounds a step (the emulator 1).
