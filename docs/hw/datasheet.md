@@ -287,6 +287,12 @@ watching.
   WM's clock: `0x61C`'s low nibble, `0x644` bits 0-1, `0x614` / `0x618`
   bits 28-31 (address-like: the scene not drawn). No sample-position or
   delay field; none cures divide 1's faults.
+- **The divide-1 step by picture size** (`rp-gpubench` GC2CR, X51v,
+  2026-10-28, warm, 100 renders a frame): 480 x 640 right from 143.00 / 1
+  down; 480 x 320 right from 139.75 / 1 down (its textured frame wrong in
+  every render at 143.00 / 1); 240 x 320 the same, plus a one-pixel fault
+  on its flat mesh in ~1% of renders at every divide-1 step (143.00 to
+  108.33 / 1).
 - **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
   2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
   ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,
