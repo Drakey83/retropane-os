@@ -244,6 +244,13 @@ watching.
   palette entries 0/1, high bit first. All 256 ROP3s are GDI's (B10);
   8 and 24 bpp fills (24 packed, blue first); header bit 21 suppresses the
   write (fills, copies); status bit 10 isn't "commands queued".
+- **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
+  2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
+  ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,
+  5 4 bpp (another), 6 RGB332, 7 ARGB4444, 8 and 9 1555, 10 RGB565, 11
+  RGB888 packed, 12-15 ARGB8888. **No code writes or reads YUV**: the
+  datasheet's CSCBLT isn't a surface format (none of 64 copies converted,
+  none hung).
 - **MBX 3D core**: tile-based (8 x 16 px tiles at 32 bpp, 60 x 40 on the
   screen); each object carries an alpha-test word (bits 31-29 compare,
   28-21 reference), a TSP word (Gouraud bit 22, depth mode and write,
