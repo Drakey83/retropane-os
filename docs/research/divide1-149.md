@@ -8,6 +8,19 @@ the run's name; reminders R69 (the mechanism chase), R71 (the per-device
 self-test), R73 (the night soak), R74 (games) and R75 (the pause) in
 [docs/reminders.md](../reminders.md).
 
+## GC2BX (2026-10-27, gpubench-0150): games fault at 149.50 / 1 warm
+
+With every cure on, at peak heat, a watertight game-shaped mesh draws
+wrong in **every render** (200 of 200 flat, 197 over a layer, 200
+textured, 200 depth tested), in four forms at once: cracks, one-step
+colour errors on flat colour, one-step texel errors, patches in another
+object's colour. A one-render search of 2,563 levers on the generator
+found four that clear it (TSP bits 14 and 15 at 2.9-3.7x the time, and
+the vertex order rotated); none clears the meshes. **The corner scenes
+were too easy a proof.** Divide 1 at 149.50 is past the core's margin
+when warm for game content. **The fallback's step is not measured for
+games:** 146.25 / 1 is clean warm on the corner scenes only.
+
 ## Status (2026-10-27): parked, the interim plan in force
 
 The owner's last fix of this round (GC2BV's seals) didn't cure the
@@ -25,7 +38,9 @@ to 146.25 / 1 at peak heat (R76 builds it). The chase resumes from
 - **The fallback (the owner, 2026-10-27):** a temperature guard, 149.50 /
   1 that steps down to 146.25 / 1 when `TEMP0` reads peak heat. 146.25 /
   1 was clean warm in every ladder (GC2BB, GC2BF; 300 of 300 on the worst
-  scene). It costs about 2% speed, at peak heat only, and needs no
+  scene). *Corrected after GC2BX:* those ladders ran the corner scenes;
+  no game-shaped mesh has run at 146.25 or below, so the step the guard
+  drops to is not yet measured for games. It costs about 2% speed, at peak heat only, and needs no
   understanding of the crack. **It is the interim plan only if GC2BV and
   GC2BW don't pan out**, and the chase resumes after the pause; it is not
   the answer while untested fixes remain.
@@ -161,11 +176,9 @@ textured sweep 0 of 2,200, the ring 0 of 300, the 20-minute soak 0 of
 
 ## Next, when the chase resumes
 
-1. Read GC2BX (`RP_GPUBENCH_GC2_FIXES=1`, the owner's last fix of this
-   round, built 2026-10-27): the game test (GC2BW's meshes, which it
-   includes) and the one-render search of every register bit, triangle
-   word bit, vertex order and the layer on the generator. *Result:
-   pending.*
+1. **Measure the game frames on the warm ladder** (146.25, 143.00,
+   139.75, 133.25 / 1): the highest clean step for games is what the
+   temperature guard (R76) must step down to. Not yet measured.
 2. Start from the deterministic generator (scene 3 split TL-BR, 300 of
    300 at peak heat) for any coverage idea: one render answers it.
    Untried ideas: the ISP's own settings for edge rules or sample
