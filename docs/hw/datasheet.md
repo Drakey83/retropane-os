@@ -271,6 +271,14 @@ watching.
   240 x 320 converted 0.89-1.37x serial, 1.13-1.62x pipelined (stray
   words from the 2D placements beside the render). These times don't
   follow the clocks (a render waited to the renderer's predicted end).
+  **With the renderer learning the real pace (GC2CP's second run, X51v,
+  2026-10-28), at 143.00 / 1:** native 9.2-13.6 ms (was 18.7-36.0), the
+  conversion's render 3.55 ms (6.9 at 74.75 / 1), 480 x 320 with two frames
+  in flight 2.3-5.0 ms, 240 x 320 converted with its lists pipelined
+  6.4-8.1 ms and clean (the 2D placements beside the render leave stray
+  words at divide 1; apart, none). The CPU's set-up costs ~2 us a tile
+  (region array and list choice), about 1 word a us: CPU-bound, not the
+  bus's ~33 MB/s.
 - **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
   2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
   ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,
