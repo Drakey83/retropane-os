@@ -17307,7 +17307,7 @@ mod image {
     /// Renders of each frame, way and clock (the emulator 2).
     const GC2CA_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
     /// Each picture held this long for the owner's eye (the emulator none).
-    const GC2CA_HOLD_US: u32 = if GC2_RENDERS < 20 { 0 } else { 3_000_000 };
+    const GC2CA_HOLD_US: u32 = if GC2_RENDERS < 20 { 0 } else { 6_000_000 };
     /// How a GC2CA picture is shown: the graphics plane at 1:1, the video
     /// plane's scaler to 480 x 640 (the graphics plane's reads off), the
     /// graphics plane with `GDRCTRL`'s doubling (Dell's 2x), or the planes
@@ -17324,14 +17324,22 @@ mod image {
         (2, GC2CA_DELL, "240 x 320 Dell's doubling, a pair"),
         (2, GC2CA_UNDER, "240 x 320 under native reads"),
     ];
-    /// The watched part's ways (the owner's eye): native, 3/4, Dell's 2x,
-    /// the video plane's 2x.
-    const GC2CA_WATCH: [(usize, u8); 4] = [
-        (0, GC2CA_NATIVE),
-        (1, GC2CA_VIDEO),
-        (2, GC2CA_DELL),
-        (2, GC2CA_VIDEO),
+    /// The watched part's pictures (the owner's eye): (size, how shown,
+    /// its name and what to look for on its card, up to 19 characters).
+    const GC2CA_WATCH: [(usize, u8, &str, &str); 3] = [
+        (0, GC2CA_NATIVE, "FULL SIZE", "THE SHARP ORIGINAL"),
+        (2, GC2CA_DELL, "HALF SIZE: DELL 2X", "BLOCKY EDGES?"),
+        (2, GC2CA_VIDEO, "HALF SIZE: OURS 2X", "SMOOTH OR BLURRY?"),
     ];
+    /// The watched frames: the textured mesh (fine detail) and the flat
+    /// one (hard edges).
+    const GC2CA_WATCH_FRAMES: [u8; 2] = [gc2::MESH_TEXTURED, gc2::MESH_FLAT];
+    /// A card held this long before its picture (the emulator none).
+    const GC2CA_CARD_US: u32 = if GC2_RENDERS < 20 { 0 } else { 3_000_000 };
+    /// Run GC2CA's watched part only (`RP_GPUBENCH_GC2_HALF_WATCH`, with
+    /// `RP_GPUBENCH_GC2_HALF`): the references, then the named pictures,
+    /// no timing; about a minute.
+    const GC2CA_WATCH_ONLY: bool = option_env!("RP_GPUBENCH_GC2_HALF_WATCH").is_some();
 
     /// Picture `at` of `size` shown the way `how` does; [`GC2CA_UNDER`]
     /// puts the planes back as found (`planes0`).
@@ -17536,7 +17544,9 @@ mod image {
         gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
         let _ = underrun_take(&mut g.e.regs);
         if ok {
-            gc2ca_measure(g, &mut cur, tex, (first, refs), &planes0);
+            if !GC2CA_WATCH_ONLY {
+                gc2ca_measure(g, &mut cur, tex, (first, refs), &planes0);
+            }
             gc2ca_watch(g, &mut cur, tex, &planes0);
         } else {
             log!(
@@ -17680,27 +17690,27 @@ mod image {
         clock_readback(g);
     }
 
-    /// GC2CA's watched part (the owner's eye): each frame shown
-    /// [`GC2CA_WATCH`]'s four ways at Windows Mobile's clock, each held
-    /// [`GC2CA_HOLD_US`], the label between frames.
+    /// GC2CA's watched part (the owner's eye, 2026-10-28: "I dont even know
+    /// when and what i am looking for"): before every picture a card on
+    /// a black screen names it (what, number of how many, what to look
+    /// for), in the top band and again mid-screen, held
+    /// [`GC2CA_CARD_US`]; then the picture, held [`GC2CA_HOLD_US`]. The
+    /// pictures in [`GC2CA_WATCH`]'s order (full size, Dell's 2x, ours),
+    /// each frame of [`GC2CA_WATCH_FRAMES`]; an end card after.
     fn gc2ca_watch(
         g: &mut Rig,
         cur: &mut Option<(usize, Renderer)>,
         tex: gc2::Tex,
         planes0: &Snapshot,
     ) {
-        let nf = gc2::GAME_FRAMES.len();
-        for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
-            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, planes0);
-            let mut l2 = heapless_name();
-            let _ = write!(l2, "FRAME {} OF {nf}", f + 1);
-            soak_label(
-                g,
-                ["GC2CA WATCH", l2.as_str(), "FULL 3/4 DELL OURS"],
-                SOAK_BLUE,
-            );
-            gc2ca_hold(GC2CA_HOLD_US / 2);
-            for &(s, how) in &GC2CA_WATCH {
+        let views = GC2CA_WATCH.len() * GC2CA_WATCH_FRAMES.len();
+        let mut k = 0;
+        for (f, &kind) in GC2CA_WATCH_FRAMES.iter().enumerate() {
+            for &(s, how, name, hint) in &GC2CA_WATCH {
+                k += 1;
+                let mut l1 = heapless_name();
+                let _ = write!(l1, "LOOK NOW: {k} OF {views}");
+                gc2ca_card(g, planes0, [l1.as_str(), name, hint]);
                 let size = gc2::HALF_SIZES[s];
                 let Some(rr) = gc2ca_take(g, cur, s) else {
                     continue;
@@ -17711,8 +17721,27 @@ mod image {
                 gc2ca_show(g, how, size, GC2CA_A, planes0);
                 gc2ca_hold(GC2CA_HOLD_US);
             }
-            log!("  GC2CA watch frame {f}: shown full, 3/4, Dell's 2x, the video plane's 2x");
+            log!(
+                "  GC2CA watch frame {f}: shown full size, Dell's 2x, the video plane's 2x, each named first"
+            );
         }
+        gc2ca_card(
+            g,
+            planes0,
+            ["GC2CA WATCH DONE", "WHICH 2X LOOKED", "BETTER: DELL / OURS"],
+        );
+        gc2ca_hold(GC2CA_CARD_US);
+    }
+
+    /// A card: the planes as found, the picture under the label black, the
+    /// three lines in the top band and again mid-screen, held
+    /// [`GC2CA_CARD_US`].
+    fn gc2ca_card(g: &mut Rig, planes0: &Snapshot, lines: [&str; 3]) {
+        gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, planes0);
+        let _ = gc2ca_fill(g, GC2CA_A, gc2::HALF_SIZES[0], 0);
+        soak_label(g, lines, SOAK_BLUE);
+        label_at(g, GC2CA_A + 256 * 960, lines, SOAK_BLUE);
+        gc2ca_hold(GC2CA_CARD_US);
     }
 
     /// GC2BY's rounds a step (the emulator 1).

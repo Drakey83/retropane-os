@@ -6166,7 +6166,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 // three renderers took the stack past 80% (2026-10-28).
                 "GC2CA 74.75 / 1 480 x 640 native frame 3: 2 renders, 0 pictures wrong, 0 not finished",
                 "GC2CA 74.75 / 1 speed-up 240 x 320 video plane 2x, a pair against native",
-                "GC2CA watch frame 3: shown full",
+                "GC2CA watch frame 1: shown full size, Dell's 2x, the video plane's 2x, each named first",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
