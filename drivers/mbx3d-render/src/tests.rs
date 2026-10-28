@@ -131,10 +131,10 @@ fn a_frame_after_the_first_costs_the_start_one_status_read_and_its_clear() {
         [(MBX + m3::START, 1), (MBX + reg::CLEAR, m3::RENDER_DONE)]
     );
     assert_eq!(s.reg_writes, 1);
-    assert_eq!(
-        g.gpu.status_reads - reads,
-        1,
-        "polled once, at the predicted time"
+    assert!(
+        (1..=10).contains(&(g.gpu.status_reads - reads)),
+        "polled from 7/8 of the learned time in steps of 1/64: {}",
+        g.gpu.status_reads - reads
     );
     // Only the tiles the square left or reached: columns 12-38, rows 6-18.
     assert_eq!(s.tiles, 27 * 13);
@@ -2160,6 +2160,41 @@ fn two_renderers_on_one_core() {
         "the second after core_taken"
     );
     assert!(r2.release(&mut g.pool));
+}
+
+/// The pace learned (GC2CP: at divide 1 every frame waited to a
+/// prediction fitted at Windows Mobile's clock): with the core twice as
+/// fast as predicted, a few frames in the end is seen within a few percent
+/// of the real time, not at the prediction; slowed again, it follows.
+#[test]
+fn the_poll_learns_the_cores_real_pace() {
+    let mut g = rig(480, 640);
+    g.r.set_background(Some(GREY)).unwrap();
+    g.set(0, Some(square(0, 0, 480, Paint::Flat(BLUE))));
+    g.gpu.time_q8 = 128;
+    let mut s = g.frame();
+    let real = s.predicted_us / 2;
+    assert!(s.done_us >= real);
+    for _ in 0..8 {
+        g.r.invalidate_all();
+        s = g.frame();
+    }
+    assert!(
+        s.done_us >= real && s.done_us <= real + real / 16,
+        "seen done at {} us, the render {real} us",
+        s.done_us
+    );
+    g.gpu.time_q8 = 256;
+    for _ in 0..8 {
+        g.r.invalidate_all();
+        s = g.frame();
+    }
+    let real = s.predicted_us;
+    assert!(
+        s.done_us >= real && s.done_us <= real + real / 16,
+        "slowed: seen done at {} us, the render {real} us",
+        s.done_us
+    );
 }
 
 /// GC2CP's light switch and split render (`rp-gpubench`, R78 item 2): a

@@ -20144,7 +20144,8 @@ mod image {
     /// way) and (c') with their registers alone (`registers_taken`, measured
     /// here); (d) as (c'), frame N's conversion on the core while the CPU
     /// writes frame N + 1's lists, its 2D placements while the core renders
-    /// frame N + 1. Every picture checked: (a) and (b) against references
+    /// frame N + 1; (d') as (d), the 2D placements apart from the renders.
+    /// Every picture checked: (a) and (b) against references
     /// made at Windows Mobile's clock, (c) every frame's UYVY against the
     /// reference frame's (U' = B and V' = R exact, Y' by DOT3's rounding:
     /// GC2CM's fit, here on every word), (d) its last frame. GC2CM's card
@@ -20155,15 +20156,20 @@ mod image {
     /// The sizes GC2CP renders: native, half height, half.
     const GC2CP_SIZES: [(u16, u16); 3] = [(480, 640), (480, 320), (240, 320)];
     /// GC2CP's ways.
-    const GC2CP_WAYS: [&str; 5] = [
+    const GC2CP_WAYS: [&str; 6] = [
         "(a) 480 x 640 native",
         "(b) 480 x 320",
         "(c) 240 x 320 converted, serial, full switch",
         "(c') 240 x 320 converted, serial, registers switch",
         "(d) 240 x 320 converted, overlapped",
+        "(d') 240 x 320 converted, lists overlapped, 2D apart",
     ];
     const GC2CP_FULL: usize = 2;
     const GC2CP_OVERLAP: usize = 4;
+    /// Way (d'): (d) with each frame's 2D placements finished before the
+    /// next render starts (GC2CP: the engines together left 2-72 stray
+    /// words a frame), the lists still written beside the core's work.
+    const GC2CP_APART: usize = 5;
     /// One plane of the conversion's set (GC2CO's: output, Y0, Y1).
     const GC2CP_PLANE: u32 = GC2CP_OW4 * GC2CM_H;
     /// A conversion row's bytes.
@@ -20635,8 +20641,14 @@ mod image {
         // with registers alone from here).
         game.core_taken();
         let wname = GC2CP_WAYS[wi];
-        if wi == GC2CP_OVERLAP {
-            return gc2cp_overlapped(g, (game, conv), (want, &mut seen[..n]), poison, (f, cname));
+        if wi >= GC2CP_OVERLAP {
+            return gc2cp_overlapped(
+                g,
+                (game, conv),
+                (want, &mut seen[..n]),
+                poison,
+                (wi, f, cname),
+            );
         }
         let full = wi == GC2CP_FULL;
         let (mut done, mut wrong, mut uv_wrong) = (0u32, 0u32, 0u32);
@@ -20697,18 +20709,20 @@ mod image {
     /// Way (d) for one game frame: a serial frame (registers switch) to warm,
     /// then [`GC2CP_REPS`] frames pipelined: frame k's lists written while
     /// the core converts frame k - 1; frame k - 1's 2D placements and frame
-    /// k's conversion lists written while the core renders frame k. The
-    /// time from each frame's start to the next's (the last to the pipe's
-    /// end), the last frame's output checked. The fastest frame.
+    /// k's conversion lists written while the core renders frame k (way
+    /// (d'): the 2D placements finished before frame k's render starts).
+    /// The time from each frame's start to the next's (the last to the
+    /// pipe's end), the last frame's output checked. The fastest frame.
     #[inline(never)]
     fn gc2cp_overlapped(
         g: &mut Rig,
         (game, conv): (&mut Renderer, &mut Renderer),
         (want, seen): (&[u32], &mut [u32]),
         poison: u32,
-        (f, cname): (usize, &str),
+        (wi, f, cname): (usize, usize, &str),
     ) -> u32 {
-        let wname = GC2CP_WAYS[GC2CP_OVERLAP];
+        let wname = GC2CP_WAYS[wi];
+        let apart = wi == GC2CP_APART;
         let pair = (GC2CP_SET, GC2CP_SET + GC2CP_PLANE);
         if !gc2cp_fill(g, (GC2CP_GAME, 512), (240, 320), Format::RGB565, poison)
             || !gc2cp_fill(
@@ -20742,11 +20756,11 @@ mod image {
                 game.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, gc2cp_game_target());
             let mut placing = false;
             if let Some(d) = conv_due.take() {
-                if !gc2cp_wait(g, conv, d) || !gc2cn_place(g, pair, true) {
+                if !gc2cp_wait(g, conv, d) || !gc2cn_place(g, pair, !apart) {
                     ok = false;
                     break;
                 }
-                placing = true;
+                placing = !apart;
             }
             game.registers_taken();
             let started = prepared == Ok(true);

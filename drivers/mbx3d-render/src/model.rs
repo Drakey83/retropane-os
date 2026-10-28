@@ -147,6 +147,9 @@ pub struct Gpu {
     /// Render-done edges on the interrupt line (GPIO85), counted when a
     /// status read or clear notices the render finished.
     pub irqs: u32,
+    /// A render's time against [`predict_us`]'s, x 256 (256: as predicted;
+    /// 128: a core twice as fast, as at divide 1).
+    pub time_q8: u32,
 }
 
 const RENDER_DONE: u32 = m3::RENDER_DONE;
@@ -174,6 +177,7 @@ impl Gpu {
             renders: 0,
             tiles: 0,
             irqs: 0,
+            time_q8: 256,
         }
     }
 
@@ -405,7 +409,8 @@ impl RegisterBus for Gpu {
                 let (n, quads) = self.render();
                 self.tiles = n;
                 if !self.hung {
-                    self.done_at = Some(self.now.get().wrapping_add(predict_us(n, quads)));
+                    let t = predict_us(n, quads) * self.time_q8 / 256;
+                    self.done_at = Some(self.now.get().wrapping_add(t));
                 }
             }
             _ => {}

@@ -664,6 +664,13 @@ struct List {
     at: u32,
 }
 
+/// The learned pace's range, x 256: a render a sixteenth to four times
+/// [`predict_us`]'s time (the hang deadline stays on the prediction).
+const PACE_MIN: u32 = 16;
+const PACE_MAX: u32 = 1024;
+/// The shortest step between status reads, us.
+const PACE_STEP_MIN: u32 = 8;
+
 /// A render [`Renderer::prepare`] wrote and hasn't started.
 #[derive(Clone, Copy, Debug)]
 struct Staged {
@@ -680,6 +687,8 @@ struct Staged {
 struct Pending {
     start: u32,
     wait: u32,
+    /// The time between status reads after the first.
+    step: u32,
     deadline: u32,
     stats: FrameStats,
 }
@@ -1075,6 +1084,9 @@ pub struct Renderer {
     staged: Option<Staged>,
     mem_words: u32,
     resets: u32,
+    /// A render's time against [`predict_us`]'s, x 256, learned from the
+    /// ends seen ([`Self::learn_pace`]).
+    pace: u32,
     clock_policy: ClockPolicy,
     /// Render done raises the 2700G's interrupt (GPIO85).
     irq: bool,
@@ -1230,6 +1242,7 @@ impl Renderer {
             staged: None,
             mem_words: 0,
             resets: 0,
+            pace: 256,
             clock_policy: ClockPolicy::KeepAll,
             irq: false,
             irq_stale: false,
@@ -1689,10 +1702,14 @@ impl Renderer {
         self.shadow.write(bus, m3::START, 1);
 
         let predicted = predict_us(s.tiles, s.cost);
+        // The first look at 7/8 of the learned time, then a step of 1/64 of
+        // it: the end seen within ~2% of it, ~9 status reads a frame.
+        let expect = (u64::from(predicted) * u64::from(self.pace) / 256) as u32;
         let start = clock.now_us();
         self.pending = Some(Pending {
             start,
-            wait: predicted,
+            wait: expect - expect / 8,
+            step: (expect / 64).max(PACE_STEP_MIN),
             // Generous: lists with many quads take longer a tile than
             // version 19's one object (to measure).
             deadline: predicted.saturating_mul(4).saturating_add(20_000),
@@ -1713,7 +1730,7 @@ impl Renderer {
             self.targets = [Some(s.addr), self.targets[0]];
         }
         self.dirty.clear();
-        start.wrapping_add(predicted)
+        start.wrapping_add(expect - expect / 8)
     }
 
     /// Checks on the render in flight: reads the status once if its
@@ -1736,6 +1753,7 @@ impl Renderer {
             bus.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
             self.pending = None;
             p.stats.done_us = gone;
+            self.learn_pace(&p, gone);
             return Poll::Done(p.stats);
         }
         if gone >= p.deadline {
@@ -1748,9 +1766,30 @@ impl Renderer {
             let _ = self.bring_up(bus, mem, clock);
             return Poll::Recovered;
         }
-        // Not yet: look again a sixteenth of the prediction later (a status
-        // read is one bus read; a coarse step wastes the GPU's time).
-        Poll::Wait(now.wrapping_add((p.stats.predicted_us / 16).max(20)))
+        // Not yet: look again a step later (a status read is one bus read;
+        // a coarse step wastes the GPU's time).
+        Poll::Wait(now.wrapping_add(p.step))
+    }
+
+    /// The pace learned from a render seen done `gone` us after its start:
+    /// its time against [`predict_us`]'s, x 256. The prediction was fitted
+    /// at Windows Mobile's clock; at divide 1 the core takes half or less of
+    /// it (`rp-gpubench` GC2CP: every frame waited to the prediction, the
+    /// same at 74.75 / 1 and 143.00 / 1). Seen done at the first look, the
+    /// render ended some time before it, unknown how long: the pace drops
+    /// a quarter below what was seen, so a faster clock is caught up with in
+    /// a few frames; seen later, it is known to a step and averaged in.
+    fn learn_pace(&mut self, p: &Pending, gone: u32) {
+        let predicted = u64::from(p.stats.predicted_us.max(1));
+        let seen = (u64::from(gone) * 256 / predicted) as u32;
+        self.pace = if gone <= p.wait {
+            seen * 3 / 4
+        } else if seen < self.pace {
+            seen
+        } else {
+            (3 * self.pace + seen) / 4
+        }
+        .clamp(PACE_MIN, PACE_MAX);
     }
 
     /// When idle: the 3D clock off once [`CLOCK_IDLE_US`] has passed since
