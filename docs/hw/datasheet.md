@@ -258,6 +258,10 @@ watching.
   vertex colour))` over R, G, B, replicated to R, G, B and A, no bias, no
   sign (`rp-gpubench` GC2CL, X51v, 2026-10-28; Dell's builder `libGLES_CL`
   `0x02267434` sets bit 13 for DOT3).
+- **DOT3's rounding** (`rp-gpubench` GC2CM, X51v, 2026-10-28): fits
+  `floor(4 x sum(t c) x 255 / 65536)` (t, c 8-bit, read as x / 256) on every
+  logged word. Our RGB-to-UYVY (U' = B, V' = R, Y' by DOT3, 2D ROP3 `0xCA`
+  placement) exact in U' and V', 16.45 ms for 240 x 320 at WM's clock.
 - **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
   2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
   ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,
