@@ -5594,6 +5594,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2ci = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_STRIDE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5868,7 +5877,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 127] = [
+    let runs: [GpubenchRun; 128] = [
         (
             "run A",
             &run_a,
@@ -6369,6 +6378,23 @@ fn variant_images_gpubench(
                 "GC2CH TEX0 bit 0, TEX1 bit 30: HUNG (the core was reset)",
                 "GC2CH render block: 0 tries read other than TEX0 bit 0 alone",
                 "GC2CH done: 1786 tries, 0 read as rows (strides in bytes []), 1784 twiddled, 1 other, 0 not rendered, 1 hung;",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CI: GC2CH's row-order mode with TEX1 bit 29 at every size,
+        // level and LOD, each drawn 1:1 (no photos). The emulator reads
+        // every texture twiddled: bit 0 is unmodelled (emulator.md).
+        (
+            "run GC2CI",
+            &run_gc2ci,
+            &[
+                "GC2CI TEX0 bit 0 alone (control), size code 2: twiddled;",
+                "GC2CI bit 29, 16-bit, 256 x 512 5: twiddled;",
+                "GC2CI 256 x 512, TEX1 bits 30-29 = 2: HUNG (the core was reset)",
+                "GC2CI done: 57 tries, 0 read as rows (strides in bytes []), 56 twiddled, 0 other, 0 not rendered, 1 hung;",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

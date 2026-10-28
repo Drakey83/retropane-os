@@ -17529,8 +17529,8 @@ mod image {
             GC2BB_PARAMS.at
         );
         let planes0 = Snapshot::take(&mut g.e.regs);
-        if GC2CA_ROWS {
-            // GC2CH needs none of the frames: the probe alone.
+        if GC2CA_ROWS || GC2CA_STRIDE {
+            // GC2CH and GC2CI need none of the frames: the probe alone.
             gc2ch_run(g, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
             log!("  GC2CA done");
@@ -18724,6 +18724,22 @@ mod image {
     /// block's 53 words (where the PowerVR2's stride lived: a register, not
     /// the texture word); a hang is reset and logged. No photos.
     const GC2CA_ROWS: bool = option_env!("RP_GPUBENCH_GC2_HALF_ROWS").is_some();
+    /// Run GC2CI (`RP_GPUBENCH_GC2_HALF_STRIDE`, with
+    /// `RP_GPUBENCH_GC2_HALF`), R78 item 2: GC2CH's row-order mode (TEX0 bit
+    /// 0) reads at a stride of 8 texels whatever the size, and with TEX1 bit
+    /// 29 (the nearest mip level) at the declared width (32, GC2CH's one
+    /// try). The lead: the stride is the width of the mip level the core
+    /// picks. GC2CH's card and fit, every try drawn 1:1 at the sides TEX0
+    /// declares: bit 29 at each square size, each width and height apart,
+    /// each level count and LOD value, bits 30-29 together, 32-bit texels at
+    /// 256 wide (the half-size frame's stride); hangs reset and logged.
+    const GC2CA_STRIDE: bool = option_env!("RP_GPUBENCH_GC2_HALF_STRIDE").is_some();
+
+    /// The run's name in its lines: GC2CI or GC2CH.
+    const fn gc2ch_tag() -> &'static str {
+        if GC2CA_STRIDE { "GC2CI" } else { "GC2CH" }
+    }
+
     /// GC2CH's cards: texels each (16-bit: 128 KiB; 32-bit: 256 KiB),
     /// enough for 32 rows at a 2,048-texel stride.
     const GC2CH_TEXELS: u32 = 1 << 16;
@@ -18741,6 +18757,9 @@ mod image {
         wide: bool,
         xor: [u32; 5],
         extra: Option<(usize, u32, u32)>,
+        /// Drawn 1:1 at the sides TEX0 declares (GC2CI), not at the built
+        /// texture's.
+        natural: bool,
     }
 
     impl ChTry {
@@ -18750,6 +18769,14 @@ mod image {
             wide: false,
             xor: [0, 1, 0, 0, 0],
             extra: None,
+            natural: false,
+        };
+        /// GC2CI's: TEX0 bit 0 and TEX1 bit 29 (the nearest mip level, which
+        /// made GC2CH's stride the declared width), drawn 1:1.
+        const BIT29: Self = Self {
+            xor: [0, 1, 1 << 29, 0, 0],
+            natural: true,
+            ..Self::BIT0
         };
     }
 
@@ -18823,7 +18850,7 @@ mod image {
     /// the draw spans 32 / `side` of each, so pixel x samples texel
     /// `(2x + 1) w / (2 side)` of a side w, clamped at its edge); indices
     /// wrap at the card's bits (18 for the 32-bit card, 16).
-    fn gc2ch_fit(g: &Rig, at: u32, wide: bool, (tex0, side): (u32, u32)) -> ChFit {
+    fn gc2ch_fit(g: &Rig, at: u32, wide: bool, (tex0, su, sv): (u32, u32, u32)) -> ChFit {
         let bits = if wide { 18 } else { 16 };
         let m = (1u32 << bits) - 1;
         let signed = |v: u32| ((v << (32 - bits)) as i32) >> (32 - bits);
@@ -18833,7 +18860,7 @@ mod image {
         }
         let d = |x, y| gc2ch_at(g, at, wide, x, y);
         let (bu, bv) = (3 + (tex0 >> 24 & 15), 3 + (tex0 >> 20 & 15));
-        let texel = |p: u32, b: u32| (((2 * p + 1) << b) / (2 * side)).min((1 << b) - 1);
+        let texel = |p: u32, b: u32, side: u32| (((2 * p + 1) << b) / (2 * side)).min((1 << b) - 1);
         let (start, step, stride) = match (d(0, 0), d(1, 0), d(0, 1)) {
             (Some(o), Some(a), Some(b)) => (o, a.wrapping_sub(o) & m, b.wrapping_sub(o) & m),
             (o, _, _) => (o.unwrap_or(0), 0, 0),
@@ -18846,8 +18873,8 @@ mod image {
                 f.alive += 1;
                 let row = start.wrapping_add(x * step).wrapping_add(y * stride) & m;
                 f.rows += u32::from(v == row);
-                let tw = tex::twiddle_rect(texel(x, bu), texel(y, bv), bu, bv);
-                let tw0 = tex::twiddle_rect(texel(0, bu), texel(0, bv), bu, bv);
+                let tw = tex::twiddle_rect(texel(x, bu, su), texel(y, bv, sv), bu, bv);
+                let tw0 = tex::twiddle_rect(texel(0, bu, su), texel(0, bv, sv), bu, bv);
                 f.twiddled += u32::from(v == start.wrapping_add(tw).wrapping_sub(tw0) & m);
             }
         }
@@ -18874,7 +18901,16 @@ mod image {
             ..card
         };
         r.set_header_xors(t.xor);
-        let f = (i64::from(UV_ONE) * 32 / i64::from(tex.side())) as i32;
+        let tex0 = tex.words()[0] ^ t.xor[1];
+        // The sides the draw spans 32 pixels of: the declared ones (GC2CI)
+        // or the built square's.
+        let (su, sv) = if t.natural {
+            (8 << (tex0 >> 24 & 15), 8 << (tex0 >> 20 & 15))
+        } else {
+            (tex.side(), tex.side())
+        };
+        let fu = (i64::from(UV_ONE) * 32 / i64::from(su)) as i32;
+        let fv = (i64::from(UV_ONE) * 32 / i64::from(sv)) as i32;
         let draw = Draw::rect(
             0,
             0,
@@ -18882,7 +18918,7 @@ mod image {
             32,
             Paint::Texture {
                 tex,
-                uv: [(0, 0), (f, 0), (f, f), (0, f)],
+                uv: [(0, 0), (fu, 0), (fu, fv), (0, fv)],
                 tint: WHITE,
             },
         );
@@ -18894,12 +18930,7 @@ mod image {
         let seen = if g.hangs != hangs {
             ChSeen::Hung
         } else if ok {
-            ChSeen::Read(gc2ch_fit(
-                g,
-                area + P_BEFORE,
-                t.wide,
-                (tex.words()[0] ^ t.xor[1], tex.side()),
-            ))
+            ChSeen::Read(gc2ch_fit(g, area + P_BEFORE, t.wide, (tex0, su, sv)))
         } else {
             ChSeen::Missed
         };
@@ -18963,16 +18994,17 @@ mod image {
 
     /// One logged line for a try: `what` names it, `val` its value.
     fn gc2ch_log(g: &Rig, area: u32, what: &str, val: u32, t: ChTry, seen: ChSeen) {
+        let tag = gc2ch_tag();
         let f = match seen {
             ChSeen::Hung => {
                 log!(
-                    "  GC2CH {what} {}: HUNG (the core was reset)",
+                    "  {tag} {what} {}: HUNG (the core was reset)",
                     ChVal(val, t)
                 );
                 return;
             }
             ChSeen::Missed => {
-                log!("  GC2CH {what} {}: not rendered", ChVal(val, t));
+                log!("  {tag} {what} {}: not rendered", ChVal(val, t));
                 return;
             }
             ChSeen::Read(f) => f,
@@ -18992,7 +19024,7 @@ mod image {
         let at = area + P_BEFORE;
         let i = |x, y| gc2ch_at(g, at, t.wide, x, y).map_or(-1, |v| v as i32);
         log!(
-            "  GC2CH {what} {}: {verdict}; rows {}/{} (start {}, step {}, stride {} texels = {bytes} bytes), twiddled {}/{}; {} words changed; texels row 0: {} {} {} {}, column 0: {} {} {}; raw {:08x}",
+            "  {tag} {what} {}: {verdict}; rows {}/{} (start {}, step {}, stride {} texels = {bytes} bytes), twiddled {}/{}; {} words changed; texels row 0: {} {} {} {}, column 0: {} {} {}; raw {:08x}",
             ChVal(val, t),
             f.rows,
             f.alive,
@@ -19017,7 +19049,12 @@ mod image {
     fn gc2ch_label(g: &mut Rig, step: &str, k: u32, n: u32) {
         let mut l2 = heapless_name();
         let _ = write!(l2, "TRY {} OF {n}", k + 1);
-        let lines = ["GC2CH ROW TEXTURES", step, l2.as_str()];
+        let top = if GC2CA_STRIDE {
+            "GC2CI ROW WIDTH"
+        } else {
+            "GC2CH ROW TEXTURES"
+        };
+        let lines = [top, step, l2.as_str()];
         soak_label(g, lines, SOAK_BLUE);
         label_at(g, GC2CA_A + 256 * 960, lines, SOAK_BLUE);
     }
@@ -19110,6 +19147,95 @@ mod image {
         (out, n)
     }
 
+    /// GC2CI's tries (57), each TEX0 bit 0 and drawn 1:1 at the declared
+    /// sides.
+    fn gc2ci_tries() -> ([ChNamed; 90], usize) {
+        const S1: &str = "STEP 1 OF 4 SIZES";
+        const S2: &str = "STEP 2 OF 4 SIDES";
+        const S3: &str = "STEP 3 OF 4 LEVELS";
+        const S4: &str = "STEP 4 OF 4 TEX1";
+        let mut out = [("", "", 0, ChTry::BIT0); 90];
+        let mut n = 0;
+        let mut push = |step, what, val, t| {
+            out[n] = (step, what, val, t);
+            n += 1;
+        };
+        // The size codes as XORed onto the built square's (code 2).
+        let sizes = |u: u32, v: u32| (u ^ 2) << 24 | (v ^ 2) << 20;
+        let bit0 = ChTry {
+            natural: true,
+            ..ChTry::BIT0
+        };
+        push(S1, "TEX0 bit 0 alone (control), size code", 2, bit0);
+        for code in 2..8u32 {
+            let t = ChTry {
+                xor: [0, 1 | sizes(code, code), 1 << 29, 0, 0],
+                ..ChTry::BIT29
+            };
+            push(S1, "bit 29, square size code", code, t);
+        }
+        for code in 2..8u32 {
+            let t = ChTry {
+                xor: [0, 1 | sizes(code, code), 0, 0, 0],
+                ..bit0
+            };
+            push(S1, "no bit 29 (control), square size code", code, t);
+        }
+        for code in 3..8u32 {
+            let t = ChTry {
+                xor: [0, 1 | sizes(code, 2), 1 << 29, 0, 0],
+                ..ChTry::BIT29
+            };
+            push(S2, "bit 29, across code (down 2)", code, t);
+        }
+        for code in 3..8u32 {
+            let t = ChTry {
+                xor: [0, 1 | sizes(2, code), 1 << 29, 0, 0],
+                ..ChTry::BIT29
+            };
+            push(S2, "bit 29, down code (across 2)", code, t);
+        }
+        // The half-size frame's shape: 256 across (240 used), 512 down.
+        for wide in [false, true] {
+            let t = ChTry {
+                wide,
+                xor: [0, 1 | sizes(5, 6), 1 << 29, 0, 0],
+                ..ChTry::BIT29
+            };
+            let what = if wide {
+                "bit 29, 32-bit, 256 x 512"
+            } else {
+                "bit 29, 16-bit, 256 x 512"
+            };
+            push(S2, what, 5, t);
+        }
+        // Mip levels (TEX0 bits 12-9, the highest level's index) at 256 x 512.
+        for levels in 1..16u32 {
+            let t = ChTry {
+                xor: [0, 1 | sizes(5, 6) | levels << 9, 1 << 29, 0, 0],
+                ..ChTry::BIT29
+            };
+            push(S3, "bit 29, 256 x 512, level field", levels, t);
+        }
+        // TEX1's level-of-detail value (bits 28-25, Dell's 7) with bit 29.
+        for lod in (0..16u32).filter(|&l| l != 7) {
+            let t = ChTry {
+                xor: [0, 1 | sizes(5, 6), 1 << 29 | (lod ^ 7) << 25, 0, 0],
+                ..ChTry::BIT29
+            };
+            push(S4, "bit 29, 256 x 512, LOD value", lod, t);
+        }
+        // Bits 30-29 = 2 and 3 (bit 30 alone hung in GC2CH and version 25).
+        for mode in [2u32, 3] {
+            let t = ChTry {
+                xor: [0, 1 | sizes(5, 6), mode << 29, 0, 0],
+                ..ChTry::BIT29
+            };
+            push(S4, "256 x 512, TEX1 bits 30-29 =", mode, t);
+        }
+        (out, n)
+    }
+
     /// Run GC2CH (see [`GC2CA_ROWS`]): the cards written, then every try,
     /// one line each before the render block's, which log only where they
     /// read other than TEX0 bit 0 alone.
@@ -19170,6 +19296,7 @@ mod image {
     /// GC2CH's tries, the cards written.
     #[allow(clippy::too_many_lines)]
     fn gc2ch_all(g: &mut Rig, planes0: &Snapshot, (at16, at32): (u32, u32), area: u32, t0: u32) {
+        let tag = gc2ch_tag();
         let card = |at, format: u32| Texture {
             at,
             code: 2,
@@ -19185,8 +19312,16 @@ mod image {
             return;
         };
         let _ = r.set_background(Some(BLACK));
-        let (tries, n) = gc2ch_tries();
-        let words = P2D_REGS.len() + GC3T_REGS.len();
+        let (tries, n) = if GC2CA_STRIDE {
+            gc2ci_tries()
+        } else {
+            gc2ch_tries()
+        };
+        let words = if GC2CA_STRIDE {
+            0
+        } else {
+            P2D_REGS.len() + GC3T_REGS.len()
+        };
         let total = (n + 32 * words) as u32;
         log!(
             "  GC2CH: self-addressing cards at 0x{at16:x} (16-bit) and 0x{at32:x} (32-bit), {GC2CH_TEXELS} texels each; {total} tries drawn 1:1 into a 32 x 32 ARGB8888 target"
@@ -19203,43 +19338,46 @@ mod image {
             }
             rt::check_in();
         }
-        log!(
-            "  GC2CH render block: TEX0 bit 0 with each bit of {words} words flipped alone; logged only where the read differs from TEX0 bit 0 alone ({}), the first {GC2CH_DIFF_LINES}",
-            match base {
-                Some(ChSeen::Read(f)) if f.rows() => "rows",
-                Some(ChSeen::Read(f)) if f.twiddled() => "twiddled",
-                _ => "other",
-            }
-        );
-        let (mut k, mut diffs) = (n as u32, 0u32);
-        for &(reg, back) in P2D_REGS.iter().chain(GC3T_REGS.iter()) {
-            log!("  GC2CH word 0x{reg:03x} (from 0x{back:08x})");
-            for bit in 0..32 {
-                gc2ch_label(g, "STEP 5 OF 5 RENDER WORDS", k, total);
-                k += 1;
-                let v = back ^ 1 << bit;
-                let t = ChTry {
-                    extra: Some((reg, v, back)),
-                    ..ChTry::BIT0
-                };
-                let seen = gc2ch_try(g, &mut r, area, cards, t);
-                tally.add(seen, false);
-                if Some(seen) != base {
-                    diffs += 1;
-                    if diffs <= GC2CH_DIFF_LINES {
-                        gc2ch_log(g, area, "TEX0 bit 0, render word set to", v, t, seen);
-                    }
+        // GC2CH's render block (GC2CI has none).
+        if !GC2CA_STRIDE {
+            log!(
+                "  {tag} render block: TEX0 bit 0 with each bit of {words} words flipped alone; logged only where the read differs from TEX0 bit 0 alone ({}), the first {GC2CH_DIFF_LINES}",
+                match base {
+                    Some(ChSeen::Read(f)) if f.rows() => "rows",
+                    Some(ChSeen::Read(f)) if f.twiddled() => "twiddled",
+                    _ => "other",
                 }
-                rt::check_in();
+            );
+            let (mut k, mut diffs) = (n as u32, 0u32);
+            for &(reg, back) in P2D_REGS.iter().chain(GC3T_REGS.iter()) {
+                log!("  {tag} word 0x{reg:03x} (from 0x{back:08x})");
+                for bit in 0..32 {
+                    gc2ch_label(g, "STEP 5 OF 5 RENDER WORDS", k, total);
+                    k += 1;
+                    let v = back ^ 1 << bit;
+                    let t = ChTry {
+                        extra: Some((reg, v, back)),
+                        ..ChTry::BIT0
+                    };
+                    let seen = gc2ch_try(g, &mut r, area, cards, t);
+                    tally.add(seen, false);
+                    if Some(seen) != base {
+                        diffs += 1;
+                        if diffs <= GC2CH_DIFF_LINES {
+                            gc2ch_log(g, area, "TEX0 bit 0, render word set to", v, t, seen);
+                        }
+                    }
+                    rt::check_in();
+                }
             }
+            log!("  {tag} render block: {diffs} tries read other than TEX0 bit 0 alone");
         }
-        log!("  GC2CH render block: {diffs} tries read other than TEX0 bit 0 alone");
         g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
         g.set(&mut r, 0, None);
         let _ = r.release(&mut g.pool);
         let s = &tally.strides[..tally.n_strides];
         log!(
-            "  GC2CH done: {} tries, {} read as rows (strides in bytes {s:?}), {} twiddled, {} other, {} not rendered, {} hung; {} ms",
+            "  {tag} done: {} tries, {} read as rows (strides in bytes {s:?}), {} twiddled, {} other, {} not rendered, {} hung; {} ms",
             tally.tries,
             tally.rows,
             tally.twiddled,
@@ -19250,7 +19388,12 @@ mod image {
         );
         let mut l2 = heapless_name();
         let _ = write!(l2, "{} ROWS, {} HUNG", tally.rows, tally.hung);
-        gc2ca_card(g, planes0, ["GC2CH DONE", l2.as_str(), ""]);
+        let done = if GC2CA_STRIDE {
+            "GC2CI DONE"
+        } else {
+            "GC2CH DONE"
+        };
+        gc2ca_card(g, planes0, [done, l2.as_str(), ""]);
     }
 
     /// GC2CF test 1: the card through the driver's 2x, RGB565.
