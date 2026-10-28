@@ -6189,9 +6189,10 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2CB",
             &run_gc2cb,
             &[
-                "GC2CB 1 RGB 2X BOTH WAYS: 240x320 to 480x640, 4 taps",
-                "GC2CB 4 RGB 2X ACROSS ONLY: 240x640 to 480x640",
-                "GC2CB 7 UYVY 2X (P9C'S): 240x320 to 480x640",
+                "GC2CB 1 OURS: RGB 1:1: 240x320 to 240x320",
+                "    GC2CB 2 VSCADR 0x",
+                "GC2CB 5 P9C WAY: RGB 2X: 240x320 to 480x640",
+                "GC2CB 6 P9C WAY: UYVY 2X: 240x320 to 480x640",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

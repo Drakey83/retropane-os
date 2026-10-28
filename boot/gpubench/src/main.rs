@@ -17773,93 +17773,108 @@ mod image {
     /// colour (or nothing of the source) doesn't. Each named on a card
     /// first, for the owner's eye too.
     const GC2CA_SCALER: bool = option_env!("RP_GPUBENCH_GC2_HALF_SCALER").is_some();
-    /// GC2CB's configurations: (name, format, source w x h, output w x h,
-    /// taps, the colour conversion forced on).
+    /// GC2CB's tests (run 3, 2026-10-28): run 2 put the video plane in the
+    /// top slot with the graphics plane's fetch off, and the owner saw
+    /// flickering streaks of the old wallpaper's colours in every way.
+    /// The runs that showed clean pictures (P9c, run D) kept the graphics
+    /// plane fetching, in the middle slot over the video plane at the
+    /// bottom. So each format and size is shown both ways: (name, format,
+    /// source, output, the P9c arrangement).
     #[allow(clippy::type_complexity)]
-    const GC2CB_CONFIGS: [(&str, VideoFormat, (u16, u16), (u16, u16), u8, bool); 8] = [
+    const GC2CB_TESTS: [(&str, VideoFormat, (u16, u16), (u16, u16), bool); 6] = [
         (
-            "RGB 2X BOTH WAYS",
-            VideoFormat::Rgb565,
-            (240, 320),
-            (480, 640),
-            4,
-            false,
-        ),
-        (
-            "RGB 1:1 CONTROL",
+            "OURS: RGB 1:1",
             VideoFormat::Rgb565,
             (240, 320),
             (240, 320),
-            4,
             false,
         ),
         (
-            "RGB 2X DOWN ONLY",
-            VideoFormat::Rgb565,
-            (480, 320),
-            (480, 640),
-            4,
-            false,
-        ),
-        (
-            "RGB 2X ACROSS ONLY",
-            VideoFormat::Rgb565,
-            (240, 640),
-            (480, 640),
-            4,
-            false,
-        ),
-        (
-            "RGB 2X, CSC ON",
+            "OURS: RGB 2X",
             VideoFormat::Rgb565,
             (240, 320),
             (480, 640),
-            4,
-            true,
-        ),
-        (
-            "RGB 2X, 1 TAP",
-            VideoFormat::Rgb565,
-            (240, 320),
-            (480, 640),
-            1,
             false,
         ),
         (
-            "UYVY 2X (P9C'S)",
+            "OURS: UYVY 2X",
             VideoFormat::Uyvy,
             (240, 320),
             (480, 640),
-            4,
             false,
         ),
         (
-            "RGB 4/3 (3/4 SIZE)",
+            "P9C WAY: RGB 1:1",
             VideoFormat::Rgb565,
-            (360, 480),
-            (480, 640),
-            4,
-            false,
+            (240, 320),
+            (240, 320),
+            true,
         ),
+        (
+            "P9C WAY: RGB 2X",
+            VideoFormat::Rgb565,
+            (240, 320),
+            (480, 640),
+            true,
+        ),
+        (
+            "P9C WAY: UYVY 2X",
+            VideoFormat::Uyvy,
+            (240, 320),
+            (480, 640),
+            true,
+        ),
+    ];
+    /// The graphics plane in the P9c arrangement: the loader's 480 x 640
+    /// RGB565 screen at 0, fetching, in the middle slot, invisible (global
+    /// alpha 0), over the video plane.
+    const GC2CB_GRAPHICS: Layer = Layer {
+        slot: Slot::Middle,
+        blend: Blend::Global(0),
+    };
+    /// The video plane in the P9c arrangement: the bottom slot, opaque.
+    const GC2CB_VIDEO_BOTTOM: Layer = Layer {
+        slot: Slot::Bottom,
+        blend: Blend::Opaque,
+    };
+    /// The registers GC2CB reads back after each set-up: the video plane's
+    /// (the first 11 of `layers::TOUCHED`) and the graphics plane's.
+    const GC2CB_READ: [(&str, usize); 14] = [
+        ("VSCADR", lreg::VSCADR),
+        ("VOVRCLK", lreg::VOVRCLK),
+        ("VUBASE", lreg::VUBASE),
+        ("VVBASE", lreg::VVBASE),
+        ("VSCTRL", lreg::VSCTRL),
+        ("VSADR", lreg::VSADR),
+        ("VBBASE", lreg::VBBASE),
+        ("SSSIZE", lreg::SSSIZE),
+        ("SPOCTRL", lreg::SPOCTRL),
+        ("SHCTRL", lreg::SHCTRL),
+        ("SVCTRL", lreg::SVCTRL),
+        ("GSCADR", dreg::GSCADR),
+        ("GSCTRL", dreg::GSCTRL),
+        ("GBBASE", dreg::GBBASE),
     ];
 
     /// Run GC2CB (see [`GC2CA_SCALER`]): the textured frame at 240 x 320
-    /// in A and the flat one in B (so every source size reads pictures),
-    /// then each configuration: a card, the plane shown, `DSIG` twice,
-    /// the source past its first 16 rows filled green, `DSIG` again, the
-    /// pictures rendered again for the next.
+    /// in A and the flat one in B; then each of [`GC2CB_TESTS`]: a card,
+    /// the planes set, every register of [`GC2CB_READ`] read back and
+    /// logged beside what was written, `DSIG` twice, the underrun flag
+    /// polled every 10 ms through the hold, every pixel but the first two
+    /// filled green, `DSIG` again; the pictures rendered again for the
+    /// next.
     fn gc2ca_scaler(
         g: &mut Rig,
         cur: &mut Option<(usize, Renderer)>,
         tex: gc2::Tex,
         planes0: &Snapshot,
     ) {
-        let n = GC2CB_CONFIGS.len();
+        let n = GC2CB_TESTS.len();
         let half = gc2::HALF_SIZES[2];
-        for (i, &(name, format, src, out, taps, csc)) in GC2CB_CONFIGS.iter().enumerate() {
+        for (i, &(name, format, src, out, p9c)) in GC2CB_TESTS.iter().enumerate() {
             let mut l1 = heapless_name();
             let _ = write!(l1, "SCALER TEST {} OF {n}", i + 1);
-            gc2ca_card(g, planes0, [l1.as_str(), name, "SOLID OR PICTURE?"]);
+            gc2ca_card(g, planes0, [l1.as_str(), name, "PICTURE OR STREAKS?"]);
             for (at, kind) in [(GC2CA_A, gc2::MESH_TEXTURED), (GC2CA_B, gc2::MESH_FLAT)] {
                 let Some(rr) = gc2ca_take(g, cur, 2) else {
                     return;
@@ -17867,24 +17882,55 @@ mod image {
                 gc2ca_set_mesh(g, rr, kind, tex, half);
                 let _ = gc2ca_render(g, rr, half, at);
             }
-            let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
             let plane = VideoPlane::new(format, src.0, src.1, GC2CA_A as usize);
-            let mut scale = plane.scale_to(out.0, out.1, 0, 0);
-            scale.taps = taps;
-            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CA_VIDEO_LAYER, scale);
-            if csc {
-                // VSCTRL bit 25, the colour conversion (layers'
-                // VSCTRL_CSC_EN), which the RGB formats leave off.
-                let v = g.e.regs.read32(lreg::VSCTRL);
-                g.e.regs.write32(lreg::VSCTRL, v | 1 << 25);
+            let scale = plane.scale_to(out.0, out.1, 0, 0);
+            let layer = if p9c {
+                GC2CB_VIDEO_BOTTOM
+            } else {
+                GC2CA_VIDEO_LAYER
+            };
+            if p9c {
+                let screen = Plane {
+                    format: PlaneFormat::Rgb565,
+                    width: 480,
+                    height: 640,
+                    offset: 0,
+                    stride: 960,
+                };
+                rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
+            } else {
+                let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+            }
+            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, layer, scale);
+            let gamma = g.e.regs.read32(dreg::GSCTRL) & 1 << 26 != 0;
+            let written = plane.registers_scaled(layer, gamma, scale);
+            for (rname, off) in GC2CB_READ {
+                let got = g.e.regs.read32(off);
+                let want = written.iter().find(|(o, _)| *o == off).map(|(_, v)| *v);
+                match want {
+                    Some(w) if w == got => {
+                        log!("    GC2CB {} {rname} 0x{got:08x} (as written)", i + 1);
+                    }
+                    Some(w) => {
+                        log!(
+                            "    GC2CB {} {rname} 0x{got:08x} (written 0x{w:08x})",
+                            i + 1
+                        );
+                    }
+                    None => log!("    GC2CB {} {rname} 0x{got:08x}", i + 1),
+                }
             }
             let _ = underrun_take(&mut g.e.regs);
             let (a, b) = soak_dsig(g);
-            gc2ca_hold(GC2CA_HOLD_US / 2);
-            // Every pixel but the first two (GC2CB run 1 changed only rows
-            // 16 on, and even the proven controls read "flat": `DSIG`
-            // doesn't cover the whole frame). A flat first-pixel output
-            // keeps its signature; any picture changes in its top rows.
+            let mut under = 0u32;
+            for _ in 0..GC2CA_HOLD_US / 2 / 10_000 {
+                rt::delay_us(10_000);
+                rt::check_in();
+                under += u32::from(underrun_take(&mut g.e.regs));
+            }
+            // Every pixel but the first two (DSIG doesn't cover the whole
+            // frame: run 1 changed only rows 16 on and read "flat" even
+            // for the proven controls).
             let w = rp_image::need(
                 cmd::fill(
                     Format::RGB565,
@@ -17898,7 +17944,6 @@ mod image {
             let _ = g.e.submit(&w).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok();
             let (c, d) = soak_dsig(g);
             gc2ca_hold(GC2CA_HOLD_US / 2);
-            let under = underrun_take(&mut g.e.regs);
             let verdict = if a != b || c != d {
                 "unstable (the signature moves on a still picture)"
             } else if a != c {
@@ -17907,16 +17952,21 @@ mod image {
                 "flat: the source's change didn't reach the screen"
             };
             log!(
-                "  GC2CB {} {name}: {}x{} to {}x{}, {taps} taps, CSC forced {csc}; DSIG 0x{a:08x} 0x{b:08x}, after the fill 0x{c:08x} 0x{d:08x}: {verdict}; underrun {under}",
+                "  GC2CB {} {name}: {}x{} to {}x{}; DSIG 0x{a:08x} 0x{b:08x}, after the fill 0x{c:08x} 0x{d:08x}: {verdict}; underruns in {under} of {} polls",
                 i + 1,
                 src.0,
                 src.1,
                 out.0,
-                out.1
+                out.1,
+                GC2CA_HOLD_US / 2 / 10_000
             );
             rp_drv_mbx_display::video_hide(&mut g.e.regs);
         }
-        gc2ca_card(g, planes0, ["GC2CB DONE", "THANK YOU", ""]);
+        gc2ca_card(
+            g,
+            planes0,
+            ["GC2CB DONE", "WHICH TESTS SHOWED", "THE PICTURE?"],
+        );
     }
 
     /// GC2BY's rounds a step (the emulator 1).
