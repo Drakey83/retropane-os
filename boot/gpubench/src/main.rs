@@ -17529,6 +17529,12 @@ mod image {
             GC2BB_PARAMS.at
         );
         let planes0 = Snapshot::take(&mut g.e.regs);
+        if GC2CA_COMBINE {
+            gc2ck_run(g, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CA_DOT3 {
             gc2cj_run(g, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -18993,6 +18999,170 @@ mod image {
         }
         let _ = g.pool.free(tat, tex_bytes);
         let _ = g.pool.free(at, bytes);
+    }
+
+    /// Run GC2CK (`RP_GPUBENCH_GC2_HALF_COMBINE`, with
+    /// `RP_GPUBENCH_GC2_HALF`), R78 item 2: GC2CJ found Dell's DOT3 words
+    /// don't add channels on this core (`0x86096612` a per-channel 4x
+    /// modulate, `0xC6046608` white), and the RGB-to-UYVY pass needs a sum
+    /// across channels. Each bit of TEX2 flipped alone around three words
+    /// (`0x86096612`, `0xC6046608`, the opaque MODULATE `0xD6886610`), GC2CJ's
+    /// three ramps drawn under a quarter tint (`0xFF404040`, so a 4x modulate
+    /// stays in range): for each ramp, which output channels follow it (a
+    /// range over 8 across its 8 points); an output channel that follows
+    /// another channel's ramp is a cross-channel combine, flagged. No photos.
+    const GC2CA_COMBINE: bool = option_env!("RP_GPUBENCH_GC2_HALF_COMBINE").is_some();
+    /// GC2CK's base words.
+    const GC2CK_BASES: [u32; 3] = [0x8609_6612, 0xC604_6608, 0xD688_6610];
+    /// GC2CK's tint: a quarter in each channel.
+    const GC2CK_TINT: u32 = 0xFF40_4040;
+
+    /// Run GC2CK (see [`GC2CA_COMBINE`]).
+    #[inline(never)]
+    fn gc2ck_run(g: &mut Rig, planes0: &Snapshot) {
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "GC2CK: COMBINE BITS",
+                "CROSS-CHANNEL SEARCH",
+                "NO PHOTOS NEEDED",
+            ],
+        );
+        let nudge = core::mem::replace(&mut g.nudge, 0);
+        let t0 = rt::ticks();
+        let Some(area) = g.pool.alloc(P_AREA, 4096) else {
+            log!("  GC2CK: no memory for the target");
+            g.nudge = nudge;
+            return;
+        };
+        let Some(tex) = p_texture(g, 2, gc2cj_texel) else {
+            log!("  GC2CK: no memory for the texture");
+            let _ = g.pool.free(area, P_AREA);
+            g.nudge = nudge;
+            return;
+        };
+        let (mut tries, mut hung, mut cross) = (0u32, 0u32, 0u32);
+        if let Some(mut r) = Renderer::new(&mut g.pool, 32, 32) {
+            let _ = r.set_background(Some(BLACK));
+            log!(
+                "  GC2CK: ramps 8x + 4 in red, green, blue (others 128), tint 0x{GC2CK_TINT:08x}; per try, for the red, green and blue ramp, the output channels that follow it (r g b a, '.' flat), then the outputs at x = 0 and 28; CROSS where an output follows another channel's ramp"
+            );
+            let opaque = tex.words()[2];
+            let total = GC2CK_BASES.len() as u32 * 33;
+            for (bi, &base) in GC2CK_BASES.iter().enumerate() {
+                for bit in 0..=32u32 {
+                    let word = if bit == 32 { base } else { base ^ 1 << bit };
+                    let k = bi as u32 * 33 + bit;
+                    let mut l2 = heapless_name();
+                    let _ = write!(l2, "TRY {} OF {total}", k + 1);
+                    soak_label(g, ["GC2CK COMBINE", l2.as_str(), ""], SOAK_BLUE);
+                    tries += 1;
+                    r.set_header_xors([0, 0, 0, opaque ^ word, 0]);
+                    let draw = Draw::rect(
+                        0,
+                        0,
+                        32,
+                        32,
+                        Paint::Texture {
+                            tex,
+                            uv: [(0, 0), (UV_ONE, 0), (UV_ONE, UV_ONE), (0, UV_ONE)],
+                            tint: GC2CK_TINT,
+                        },
+                    );
+                    g.set(&mut r, 0, Some(draw));
+                    p_fill(g, area);
+                    let before = g.hangs;
+                    let ok = p_frame(g, &mut r, p_target(area, P_SQUARE), 6, None);
+                    if g.hangs != before {
+                        hung += 1;
+                        log!("  GC2CK 0x{word:08x}: HUNG (the core was reset)");
+                        r.start_clean();
+                        continue;
+                    }
+                    if !ok {
+                        log!("  GC2CK 0x{word:08x}: not rendered");
+                        continue;
+                    }
+                    let at = area + P_BEFORE;
+                    // Per ramp (band), which output channels move with it.
+                    let mut deps = [[false; 4]; 3];
+                    let mut ends = [[0u32; 2]; 3];
+                    let mut is_cross = false;
+                    for (band, y) in [5u32, 16, 27].into_iter().enumerate() {
+                        let px: [u32; 8] = core::array::from_fn(|i| {
+                            p_value(&g.mem, at, y * P_SQUARE.stride + 16 * i as u32, 4)
+                        });
+                        ends[band] = [px[0], px[7]];
+                        for (o, d) in deps[band].iter_mut().enumerate() {
+                            // Output channel o: red, green, blue, alpha.
+                            let sh = [16, 8, 0, 24][o];
+                            let vals = px.map(|p| (p >> sh) & 0xFF);
+                            let (lo, hi) = (
+                                vals.iter().min().copied().unwrap_or(0),
+                                vals.iter().max().copied().unwrap_or(0),
+                            );
+                            *d = hi - lo > 8;
+                            // A channel other than the ramp's (alpha too).
+                            if *d && o != band {
+                                is_cross = true;
+                            }
+                        }
+                    }
+                    cross += u32::from(is_cross);
+                    let mark = |b: usize| -> [char; 4] {
+                        core::array::from_fn(|o| {
+                            if deps[b][o] {
+                                ['r', 'g', 'b', 'a'][o]
+                            } else {
+                                '.'
+                            }
+                        })
+                    };
+                    let (mr, mg, mb) = (mark(0), mark(1), mark(2));
+                    log!(
+                        "  GC2CK 0x{word:08x}{}: red {}{}{}{} green {}{}{}{} blue {}{}{}{}; {:08x}-{:08x} {:08x}-{:08x} {:08x}-{:08x}{}",
+                        if bit == 32 { " (base)" } else { "" },
+                        mr[0],
+                        mr[1],
+                        mr[2],
+                        mr[3],
+                        mg[0],
+                        mg[1],
+                        mg[2],
+                        mg[3],
+                        mb[0],
+                        mb[1],
+                        mb[2],
+                        mb[3],
+                        ends[0][0],
+                        ends[0][1],
+                        ends[1][0],
+                        ends[1][1],
+                        ends[2][0],
+                        ends[2][1],
+                        if is_cross { " CROSS" } else { "" }
+                    );
+                    rt::check_in();
+                }
+            }
+            r.set_header_xors([0; 5]);
+            g.set(&mut r, 0, None);
+            let _ = r.release(&mut g.pool);
+        } else {
+            log!("  GC2CK: no renderer");
+        }
+        p_texture_free(g, tex);
+        let _ = g.pool.free(area, P_AREA);
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        log!(
+            "  GC2CK done: {tries} tries, {cross} cross-channel, {hung} hung; {} ms",
+            us_since(t0) / 1000
+        );
+        g.nudge = nudge;
+        let mut l2 = heapless_name();
+        let _ = write!(l2, "{cross} CROSS, {hung} HUNG");
+        gc2ca_card(g, planes0, ["GC2CK DONE", l2.as_str(), ""]);
     }
 
     /// Run GC2CI (`RP_GPUBENCH_GC2_HALF_STRIDE`, with

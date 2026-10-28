@@ -5612,6 +5612,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2ck = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_COMBINE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5886,7 +5895,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 129] = [
+    let runs: [GpubenchRun; 130] = [
         (
             "run A",
             &run_a,
@@ -6421,6 +6430,21 @@ fn variant_images_gpubench(
                 "GC2CJ TEX2 0x86096612 tint 0xffff0000 blue:",
                 "GC2CJ DOT3, rows (TEX0 bit 0): fastest",
                 "GC2CJ done: 0 hung;",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CK: each TEX2 bit around three combine words, outputs
+        // checked for a channel following another channel's ramp (no
+        // photos). The emulator models MODULATE only: nothing crosses.
+        (
+            "run GC2CK",
+            &run_gc2ck,
+            &[
+                "GC2CK 0x86096613: red r... green .g.. blue ..b.; ff012020-ff392020",
+                "GC2CK done: 99 tries, 0 cross-channel, 0 hung;",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
