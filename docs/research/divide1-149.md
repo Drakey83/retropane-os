@@ -189,6 +189,16 @@ textured sweep 0 of 2,200, the ring 0 of 300, the 20-minute soak 0 of
 
 ## Next, when the chase resumes
 
+**Added 2026-10-28: Intel's datasheet and REA (reminder R85, read it
+first).** The datasheet (`local/datasheets/intel-2700g.pdf`) rates the
+2D/3D cores to 75 MHz and documents no setting for running past it; REA
+over Dell's drivers finds no fast-clock path (Dell stays at or under 75).
+One untried lever: other PLL settings for 149.50 on the warm game meshes,
+with `PLLSTAT`'s lost-lock bit read every render (the one earlier try, at
+99.67 / 1 and 133.25 / 2 before the cures, changed nothing). Whether a
+fix is possible stays unknown; the items below remain the main paths.
+
+
 1. **Run GC2BY: done 2026-10-27** (above): 143.00 / 1 the highest step
    with every game frame right. The single pixel at x = 255 that fails at
    146.25 / 1 (and at 149.50) is the smallest form of the game fault
