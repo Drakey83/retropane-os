@@ -187,6 +187,65 @@ textured sweep 0 of 2,200, the ring 0 of 300, the 20-minute soak 0 of
 - Size: the gpubench stack is 56 KiB and its loaded budget 200 KiB (test
   image; ratchet freely). At most two renderers live at once in a run.
 
+## The Dreamcast's PowerVR2 as a map (research, 2026-10-28)
+
+The owner: "Dreamcast (the same PowerVR family): can we research this to
+fix our overclock divide 1 bug?" Nobody has published a PowerVR2 (CLX2,
+Holly) overclock; the value is Sega's own register manual, which the
+MBX's undocumented render block descends from.
+
+**The family link, proven from our own measurements:** the MBX's target
+format `0x650` is the PVR2's `FB_W_CTRL` bit for bit: bits 2-0 the pack
+mode with the same codes (0 0555, 1 565, 2 4444, 3 1555, 4 packed 888, 5
+0888, 6 8888: run P's table exactly) and bit 3 dither; `0x654` / `0x658`
+take `(size - 1) << 16` like the PVR2's `FB_X_CLIP` / `FB_Y_CLIP` (max in
+bits 26-16); `0x65C` is `FB_W_SOF1`, `0x608` / `0x60C` `REGION_BASE` /
+`PARAM_BASE`; `0x644`'s 2:1 write-out average is `SCALER_CTL`'s job. So
+the PVR2's other CORE registers likely have MBX cousins among the words we
+only know as "Dell writes this".
+
+**The PVR2 settings that match our open faults** (Sega, "Dreamcast Dev.Box
+System Architecture" section 8.4.2,
+[text copy](https://pastebin.com/raw/npt8bpF6); register offsets from
+[Flycast's pvr_regs.h](https://raw.githubusercontent.com/flyinghead/flycast/master/core/hw/pvr/pvr_regs.h);
+[KallistiOS's register list](https://cadcdev.sourceforge.net/docs/kos-2.0.0/group__pvr__regs.html)):
+
+| PVR2 register | What it sets | Our fault it fits |
+|---|---|---|
+| `HALF_OFFSET` (3 bits) | the sampling position, (0, 0) or (0.5, 0.5), separately for the FPU's pixel (edge set-up), the TSP's pixel and the TSP's texel | the texel error (+0.009 texel, one-sided) and the crack on a shared diagonal (an edge rule decided at a sample point) |
+| `FPU_PARAM_CFG` | parameter reads: the ISP and TSP parameter burst thresholds (6 and 7 bits, default 0x1F, **"never set below 0x4"**), the pointer burst size and first burst (default 7 and 7) | the tile race (the parameter fetch racing the write-out), the lists-on-the-die cure (it changes that fetch) |
+| `SDRAM_CFG` bits 28-26 | **read command to returned data delay**: 3 on the first Holly, 5 on the second; the rest SDRAM timing, "do not change" | divide 1 faulting at every clock, even 58.5 MHz (GC2D): not a speed margin but a latency count tuned for the cores at half the memory's clock |
+| `SDRAM_ARB_CFG` | the arbiter: priority or round robin, page-break latency counts | the display's fetch and the core's reads (the checker-order cure) |
+| `FB_BURSTCTRL` | the frame buffer write burst size and the read FIFO's threshold | the tile write-out held at the wrong moment |
+| `ISP_FEED_CFG` | translucency cache size, punch-through chunk size | punch-through (TSP bit 14) curing the race at 3.7x the time |
+
+**A first decode, to test, not a finding:** read as `FPU_PARAM_CFG`, Dell's
+`0x61C = 0x00020004` (from Dell's start table) is TSP threshold 8, **ISP
+threshold 0** (the PVR2 manual's minimum is 4), pointer burst 0, first
+burst 4; Dell's GLES writes 7 in the low bits (the PVR2 default), which
+changes Gouraud (GC2F). GC2AR flipped `0x61C` one bit at a time, one
+render each, on a fault whose count swings render to render; it never
+set a field to a value (the ISP threshold to 0x1F needs five bits at
+once). `0x664` (the per-tile wait) is the only field swept by value
+(GC2AS).
+
+**The probe this suggests (GC2CQ, not built):** on the deterministic
+generators (scene 3 split TL-BR, 300 of 300 at peak heat; GC2BY's x = 255
+pixel at 146.25 / 1; the game meshes at 149.50 / 1, wrong in every
+render), warm, each candidate field set **by value**, several renders a
+value, paired with the baseline:
+1. `0x61C` as `FPU_PARAM_CFG`: the ISP and TSP thresholds raised to 4,
+   0x1F and the maximum, the pointer bursts 7 / 7, Dell's GLES 7, alone
+   and together (about 12 values);
+2. a `HALF_OFFSET` search: each unknown word of the render block with
+   bits 2-0 at 0-7 (the three sample positions), on the texel-error and
+   crack generators;
+3. a read-delay search: the unknown words' 3-bit fields at higher counts
+   (the PVR2's 3 -> 5), in the render block and the manager block, on the
+   game meshes at 149.50 / 1.
+Every write read back; the picture checked word for word; hangs reset
+and logged.
+
 ## Next, when the chase resumes
 
 **Added 2026-10-28: Intel's datasheet and REA (reminder R85, read it
