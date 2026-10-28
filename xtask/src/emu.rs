@@ -5505,6 +5505,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cb = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_SCALER", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5779,7 +5788,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 120] = [
+    let runs: [GpubenchRun; 121] = [
         (
             "run A",
             &run_a,
@@ -6167,6 +6176,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2CA 74.75 / 1 480 x 640 native frame 3: 2 renders, 0 pictures wrong, 0 not finished",
                 "GC2CA 74.75 / 1 speed-up 240 x 320 video plane 2x, a pair against native",
                 "GC2CA watch frame 1: shown full size, Dell's 2x, the video plane's 2x, each named first",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CB: the video plane's scaler on RGB565, seven ways, judged
+        // by DSIG (the fork reads it 0: every way "flat" there; the shape
+        // only).
+        (
+            "run GC2CB",
+            &run_gc2cb,
+            &[
+                "GC2CB 1 RGB 2X BOTH WAYS: 240x320 to 480x640, 4 taps",
+                "GC2CB 4 RGB 2X ACROSS ONLY: 240x640 to 480x640",
+                "GC2CB 7 UYVY 2X (P9C'S): 240x320 to 480x640",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

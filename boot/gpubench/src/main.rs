@@ -17544,10 +17544,14 @@ mod image {
         gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
         let _ = underrun_take(&mut g.e.regs);
         if ok {
-            if !GC2CA_WATCH_ONLY {
-                gc2ca_measure(g, &mut cur, tex, (first, refs), &planes0);
+            if GC2CA_SCALER {
+                gc2ca_scaler(g, &mut cur, tex, &planes0);
+            } else {
+                if !GC2CA_WATCH_ONLY {
+                    gc2ca_measure(g, &mut cur, tex, (first, refs), &planes0);
+                }
+                gc2ca_watch(g, &mut cur, tex, &planes0);
             }
-            gc2ca_watch(g, &mut cur, tex, &planes0);
         } else {
             log!(
                 "  GC2CA: a reference failed, isn't repeatable or has no absent colour: nothing more run"
@@ -17742,6 +17746,157 @@ mod image {
         soak_label(g, lines, SOAK_BLUE);
         label_at(g, GC2CA_A + 256 * 960, lines, SOAK_BLUE);
         gc2ca_hold(GC2CA_CARD_US);
+    }
+
+    /// Run GC2CB (`RP_GPUBENCH_GC2_HALF_SCALER`, with
+    /// `RP_GPUBENCH_GC2_HALF`): why the video plane's 2x showed one solid
+    /// colour in GC2CA's watched part (the owner, 2026-10-28) where
+    /// Dell's doubling showed the picture. Never proven before: RGB565
+    /// through the scaler in both directions (run D proved RGB565 at 1:1,
+    /// P9c the 2x up on UYVY; GC2BE's RGB565 2x vertical was checked by
+    /// `DSIG` only, never by eye). Each [`GC2CB_CONFIGS`] shown, its
+    /// output tested without the owner by `DSIG` (the display's output
+    /// signature): read twice a frame apart (stable?), then the source
+    /// past its first 16 rows filled green and read again. A scaler that
+    /// shows the picture changes the signature; one showing a flat
+    /// colour (or nothing of the source) doesn't. Each named on a card
+    /// first, for the owner's eye too.
+    const GC2CA_SCALER: bool = option_env!("RP_GPUBENCH_GC2_HALF_SCALER").is_some();
+    /// GC2CB's configurations: (name, format, source w x h, output w x h,
+    /// taps, the colour conversion forced on).
+    #[allow(clippy::type_complexity)]
+    const GC2CB_CONFIGS: [(&str, VideoFormat, (u16, u16), (u16, u16), u8, bool); 8] = [
+        (
+            "RGB 2X BOTH WAYS",
+            VideoFormat::Rgb565,
+            (240, 320),
+            (480, 640),
+            4,
+            false,
+        ),
+        (
+            "RGB 1:1 CONTROL",
+            VideoFormat::Rgb565,
+            (240, 320),
+            (240, 320),
+            4,
+            false,
+        ),
+        (
+            "RGB 2X DOWN ONLY",
+            VideoFormat::Rgb565,
+            (480, 320),
+            (480, 640),
+            4,
+            false,
+        ),
+        (
+            "RGB 2X ACROSS ONLY",
+            VideoFormat::Rgb565,
+            (240, 640),
+            (480, 640),
+            4,
+            false,
+        ),
+        (
+            "RGB 2X, CSC ON",
+            VideoFormat::Rgb565,
+            (240, 320),
+            (480, 640),
+            4,
+            true,
+        ),
+        (
+            "RGB 2X, 1 TAP",
+            VideoFormat::Rgb565,
+            (240, 320),
+            (480, 640),
+            1,
+            false,
+        ),
+        (
+            "UYVY 2X (P9C'S)",
+            VideoFormat::Uyvy,
+            (240, 320),
+            (480, 640),
+            4,
+            false,
+        ),
+        (
+            "RGB 4/3 (3/4 SIZE)",
+            VideoFormat::Rgb565,
+            (360, 480),
+            (480, 640),
+            4,
+            false,
+        ),
+    ];
+
+    /// Run GC2CB (see [`GC2CA_SCALER`]): the textured frame at 240 x 320
+    /// in A and the flat one in B (so every source size reads pictures),
+    /// then each configuration: a card, the plane shown, `DSIG` twice,
+    /// the source past its first 16 rows filled green, `DSIG` again, the
+    /// pictures rendered again for the next.
+    fn gc2ca_scaler(
+        g: &mut Rig,
+        cur: &mut Option<(usize, Renderer)>,
+        tex: gc2::Tex,
+        planes0: &Snapshot,
+    ) {
+        let n = GC2CB_CONFIGS.len();
+        let half = gc2::HALF_SIZES[2];
+        for (i, &(name, format, src, out, taps, csc)) in GC2CB_CONFIGS.iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "SCALER TEST {} OF {n}", i + 1);
+            gc2ca_card(g, planes0, [l1.as_str(), name, "SOLID OR PICTURE?"]);
+            for (at, kind) in [(GC2CA_A, gc2::MESH_TEXTURED), (GC2CA_B, gc2::MESH_FLAT)] {
+                let Some(rr) = gc2ca_take(g, cur, 2) else {
+                    return;
+                };
+                gc2ca_set_mesh(g, rr, kind, tex, half);
+                let _ = gc2ca_render(g, rr, half, at);
+            }
+            let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+            let plane = VideoPlane::new(format, src.0, src.1, GC2CA_A as usize);
+            let mut scale = plane.scale_to(out.0, out.1, 0, 0);
+            scale.taps = taps;
+            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, Layer::SOLO, scale);
+            if csc {
+                // VSCTRL bit 25, the colour conversion (layers'
+                // VSCTRL_CSC_EN), which the RGB formats leave off.
+                let v = g.e.regs.read32(lreg::VSCTRL);
+                g.e.regs.write32(lreg::VSCTRL, v | 1 << 25);
+            }
+            let _ = underrun_take(&mut g.e.regs);
+            let (a, b) = soak_dsig(g);
+            gc2ca_hold(GC2CA_HOLD_US / 2);
+            let _ = gc2ca_fill(
+                g,
+                GC2CA_A + 2 * 16 * u32::from(src.0),
+                (src.0, src.1 - 16),
+                0x07E0,
+            );
+            let (c, d) = soak_dsig(g);
+            gc2ca_hold(GC2CA_HOLD_US / 2);
+            let under = underrun_take(&mut g.e.regs);
+            let verdict = if a != b || c != d {
+                "unstable (the signature moves on a still picture)"
+            } else if a != c {
+                "follows the picture"
+            } else {
+                "flat: the source's change didn't reach the screen"
+            };
+            log!(
+                "  GC2CB {} {name}: {}x{} to {}x{}, {taps} taps, CSC forced {csc}; DSIG 0x{a:08x} 0x{b:08x}, after the fill 0x{c:08x} 0x{d:08x}: {verdict}; underrun {under}",
+                i + 1,
+                src.0,
+                src.1,
+                out.0,
+                out.1
+            );
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        }
+        gc2ca_card(g, planes0, ["GC2CB DONE", "THANK YOU", ""]);
     }
 
     /// GC2BY's rounds a step (the emulator 1).
