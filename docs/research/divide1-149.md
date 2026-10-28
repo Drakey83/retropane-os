@@ -193,6 +193,18 @@ textured sweep 0 of 2,200, the ring 0 of 300, the 20-minute soak 0 of
    with every game frame right. The single pixel at x = 255 that fails at
    146.25 / 1 (and at 149.50) is the smallest form of the game fault
    left: a lead for the chase, not yet chased.
+2. **The refresh interval as the random "when"** (the owner's lead,
+   2026-10-26, recorded in the R69 row): a refresh landing on a tile's
+   last-row write-out could explain the intermittent tile-race residue,
+   whose rate swings 2-14% between runs at the same warmth. Vary
+   `LMREFRESH` (`0x101C`) to more frequent refresh only, never rarer
+   (rarer means data loss), and measure the fault rate against the
+   interval, on scene 3 and the tile-race residue. It fits the
+   intermittent residue better than scene 3's deterministic crack or the
+   every-render game-mesh faults. The driver already computes
+   `LMREFRESH` per clock, and Dell's value differs slightly from ours
+   (`0x490` against `0x48F` at 74.75 MHz), but the interval itself was
+   never varied as a test.
 2. Start from the deterministic generator (scene 3 split TL-BR, 300 of
    300 at peak heat) for any coverage idea: one render answers it.
    Untried ideas: the ISP's own settings for edge rules or sample
