@@ -262,6 +262,15 @@ watching.
   `floor(4 x sum(t c) x 255 / 65536)` (t, c 8-bit, read as x / 256) on every
   logged word. Our RGB-to-UYVY (U' = B, V' = R, Y' by DOT3, 2D ROP3 `0xCA`
   placement) exact in U' and V', 16.45 ms for 240 x 320 at WM's clock.
+  **Exact at divide 1 too** (`rp-gpubench` GC2CP, X51v, 2026-10-28: 74.75 /
+  1 and 143.00 / 1, Y' as at WM's clock); Y' is deterministic but not
+  exactly that formula (a fixed ~10-25k words a frame a step off). Two
+  renderers can share the core switching only the start table's registers
+  (no reset or memory-manager set-up), right at both clocks. Game frames
+  (fastest whole frame against native 480 x 640): 480 x 320 1.56-2.06x,
+  240 x 320 converted 0.89-1.37x serial, 1.13-1.62x pipelined (stray
+  words from the 2D placements beside the render). These times don't
+  follow the clocks (a render waited to the renderer's predicted end).
 - **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
   2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
   ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,
