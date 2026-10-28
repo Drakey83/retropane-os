@@ -244,6 +244,7 @@ name = "rp-cs3bus"
 version = "0.0.0"
 dependencies = [
  "rp-drv-blit2d",
+ "rp-drv-mbx-display",
  "rp-hal-api",
  "rp-hal-mem",
  "rp-hal-pxa27x",

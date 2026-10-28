@@ -15,6 +15,7 @@ rp-hal-x51v = { path = "../../hal/x51v" }
 rp-hal-mem = { path = "../../hal/mem" }
 rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-blit2d = { path = "../../drivers/blit2d" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 
 [lints]
 workspace = true

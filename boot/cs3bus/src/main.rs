@@ -31,7 +31,9 @@
 //! else); the SDRAM timings are never touched. It refuses to start unless
 //! `MSC1` is exactly Windows Mobile's. 2700G memory used: the run-time pool
 //! only (drivers/vram-map), away from the scanned planes and the 3D blocks.
-//! Writes nothing to flash or the cards.
+//! Writes nothing to flash or the cards. The screen says what runs and
+//! which point it is on (written at Windows Mobile's timing, before each
+//! point), from the first moment.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -180,9 +182,11 @@ mod image {
 
     use super::{GRID, MARKER, Pattern, WM_CS3, WM_MSC1, clocks_per_beat, mix, with_margin};
     use rp_drv_blit2d::{self as cmd, Engine, Format};
+    use rp_drv_mbx_display::{Display, Plane, console::Console};
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::{cpu, diag, rt};
+    use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
     use rp_vram_map::bench32::{POOL, SCREEN_BYTES};
 
@@ -267,6 +271,24 @@ mod image {
         bad
     }
 
+    /// The owner's label at the top of the plane on screen, or nothing if
+    /// the plane overlaps the test's pool (never, by the memory map).
+    fn label(vram: &mut [u8], plane: &Plane, args: core::fmt::Arguments) {
+        let end = plane.offset + plane.stride * usize::from(plane.height);
+        if end > vram.len() || (plane.offset < POOL.end() as usize && end > POOL.at as usize) {
+            return;
+        }
+        let mut c = Console::new(
+            &mut vram[plane.offset..end],
+            plane.stride,
+            (0, 0),
+            (480, 96),
+            2,
+            (0xFFFF, 0x0000),
+        );
+        let _ = c.write_fmt(args);
+    }
+
     fn main() -> ! {
         // A crash puts MSC1 back first (rp-image's crash order).
         rp_image::on_crash(restore);
@@ -274,6 +296,15 @@ mod image {
         let Some((regs, vram)) = rp_image::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
+        // The plane on screen, kept as found (as every image takes it).
+        let mut d = Display::new(regs);
+        let (plane, _) = d.adopt(MBX_VRAM_SIZE as usize);
+        let regs = d.into_inner();
+        label(
+            vram,
+            &plane,
+            format_args!("CS3 BUS TEST (R3)\nSTARTING: 54 POINTS, THEN A\n60 S SOAK. NOTHING TO DO."),
+        );
         let _ = store32_volatile(vram, FENCE_AT, 0);
         cpu::drain_write_buffer();
         let mut e = Engine::new(regs, FENCE_AT, rt::ticks, 3_250);
@@ -317,6 +348,15 @@ mod image {
             // Each point from Windows Mobile's timing, so no point inherits
             // another's state.
             restore();
+            label(
+                vram,
+                &plane,
+                format_args!(
+                    "CS3 BUS TEST (R3)\nPOINT {} OF {}\nRDF {rdf} RDN {rdn} RRR {rrr}",
+                    point + 1,
+                    GRID.len()
+                ),
+            );
             let Some(now) = diag::set_cs3_vlio(rdf, rdn, rrr) else {
                 let _ = writeln!(RunLog, "{point} {rdf} {rdn} {rrr}: refused (outside the legal range)");
                 continue;
@@ -472,6 +512,11 @@ mod image {
             }
             Some(c) => {
                 let (rdf, rdn, rrr) = GRID[c];
+                label(
+                    vram,
+                    &plane,
+                    format_args!("CS3 BUS TEST (R3)\nSOAK, 60 S, AT POINT {}\nRDF {rdf} RDN {rdn} RRR {rrr}", c + 1),
+                );
                 let _ = diag::set_cs3_vlio(rdf, rdn, rrr);
                 let t0 = rt::ticks();
                 let (mut rounds, mut misses) = (0u32, 0u32);
@@ -542,6 +587,11 @@ mod image {
         let _ = writeln!(
             RunLog,
             "{verdict}; MSC1 restored {after:08X}, check at WM timing: {count} misses"
+        );
+        label(
+            vram,
+            &plane,
+            format_args!("CS3 BUS TEST (R3)\nDONE: BACK TO THE LOADER"),
         );
         let _ = writeln!(RunLog, "{MARKER}");
         finish();
