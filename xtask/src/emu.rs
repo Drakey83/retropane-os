@@ -5630,6 +5630,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cm = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_CONVERT", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5904,7 +5913,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 131] = [
+    let runs: [GpubenchRun; 132] = [
         (
             "run A",
             &run_a,
@@ -6469,6 +6478,23 @@ fn variant_images_gpubench(
             &[
                 "GC2CL 0xc6046608 TEX0 ^ 0x0, tint 0xffffffff: red r... green .g.. blue ..b.;",
                 "GC2CL done: 27 tries, 0 cross-channel, 0 hung;",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CM: our RGB-to-UYVY conversion whole (three 3D passes, two
+        // 2D placements), timed and every word checked (no photos). The
+        // emulator draws DOT3 as MODULATE, so its Y check counts errors.
+        (
+            "run GC2CM",
+            &run_gc2cm,
+            &[
+                "GC2CM RGB565 card: fastest A",
+                "GC2CM RGB565 card word (60, 160): 0x",
+                "GC2CM ARGB8888 card check: U' and V' wrong in",
+                "GC2CM done:",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

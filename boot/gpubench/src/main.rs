@@ -17529,6 +17529,12 @@ mod image {
             GC2BB_PARAMS.at
         );
         let planes0 = Snapshot::take(&mut g.e.regs);
+        if GC2CA_CONVERT {
+            gc2cm_run(g, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CA_COMBINE || GC2CA_DOT3B {
             gc2ck_run(g, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -19237,6 +19243,356 @@ mod image {
             "GC2CK DONE"
         };
         gc2ca_card(g, planes0, [done, l2.as_str(), ""]);
+    }
+
+    /// Run GC2CM (`RP_GPUBENCH_GC2_HALF_CONVERT`, with
+    /// `RP_GPUBENCH_GC2_HALF`), R78 item 2: our own RGB-to-UYVY conversion,
+    /// whole, timed and checked. GC2CL: with TEX0 bit 13 the core computes
+    /// `clamp(4 (texel . tint))` into every channel, no bias, no sign; the
+    /// video plane's converter is programmable, so the transform is ours to
+    /// pick: U' = B and V' = R (already in the UYVY word's blue and red
+    /// bytes), Y' = 0.299 R + 0.587 G + 0.114 B by DOT3 (tint 19, 37, 7:
+    /// weights 4c / 255). A 240 x 320 card in plain rows at a 256-pixel
+    /// stride (the game frame's place), read as a row-order texture (TEX0
+    /// bit 0, TEX1 bit 29, 256 x 512 declared); into a 120 x 320 ARGB8888
+    /// target (one UYVY word a pixel pair): pass A MODULATE at pixel 2i
+    /// (U', V'), passes B and C DOT3 at pixels 2i and 2i + 1 into two scratch
+    /// targets, then two 2D copies with ROP3 `0xCA` (pattern ? source :
+    /// destination) placing Y0 in the green byte and Y1 in alpha. Every word
+    /// checked against the card (U', V' exact; Y against the formula, its
+    /// error counted), each step timed (one conversion to warm, five
+    /// timed), for an RGB565 card and an ARGB8888 one. At Windows Mobile's
+    /// clock. No photos; showing it through the video plane comes after the
+    /// converter's registers are read.
+    const GC2CA_CONVERT: bool = option_env!("RP_GPUBENCH_GC2_HALF_CONVERT").is_some();
+    /// Y''s weights as a DOT3 tint (`w = 4c / 255`): 19, 37, 7 for 0.298,
+    /// 0.580, 0.110 (BT.601's 0.299, 0.587, 0.114 to a step).
+    const GC2CM_TINT: u32 = 0xFF13_2507;
+    /// Dell's DOT3 word (kinds 3-4: a sum with TEX0 bit 13, GC2CL).
+    const GC2CM_DOT3: u32 = 0x8609_6612;
+    /// The card's size and the output's.
+    const GC2CM_W: u32 = 240;
+    const GC2CM_H: u32 = 320;
+    const GC2CM_OW: u16 = 120;
+    /// Timed conversions after one to warm.
+    const GC2CM_REPS: u32 = 5;
+
+    /// The card's colour at `(x, y)`, 8 bits a channel: red across, green
+    /// down, blue diagonal stripes, so every pair of pixels differs.
+    const fn gc2cm_rgb(x: u32, y: u32) -> (u32, u32, u32) {
+        (
+            x * 255 / (GC2CM_W - 1),
+            y * 255 / (GC2CM_H - 1),
+            ((x + 3 * y) * 7) & 0xFF,
+        )
+    }
+
+    /// A card colour as the core reads it: RGB565 widened by shifting (run
+    /// B), or 8 bits as stored.
+    const fn gc2cm_seen((r, g, b): (u32, u32, u32), wide: bool) -> (u32, u32, u32) {
+        if wide {
+            (r, g, b)
+        } else {
+            (r & 0xF8, g & 0xFC, b & 0xF8)
+        }
+    }
+
+    /// Y' exactly (times 255, so an error is in steps): `4 (r 19 + g 37 + b
+    /// 7) / 255`, clamped at 255.
+    const fn gc2cm_y255((r, g, b): (u32, u32, u32)) -> u32 {
+        let v = 4 * (r * 19 + g * 37 + b * 7);
+        if v > 255 * 255 { 255 * 255 } else { v }
+    }
+
+    /// GC2CM's timings of one conversion, us: passes A, B, C, the two 2D
+    /// copies.
+    type CmTimes = [u32; 5];
+
+    /// Run GC2CM (see [`GC2CA_CONVERT`]).
+    #[inline(never)]
+    fn gc2cm_run(g: &mut Rig, planes0: &Snapshot) {
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "GC2CM: RGB TO UYVY",
+                "CONVERSION, TIMED",
+                "NO PHOTOS NEEDED",
+            ],
+        );
+        let nudge = core::mem::replace(&mut g.nudge, 0);
+        let t0 = rt::ticks();
+        let (ow, h) = (u32::from(GC2CM_OW), GC2CM_H);
+        let out_bytes = ow * h * 4;
+        let src_bytes = 256 * 4 * GC2CM_H;
+        let src = g.pool.alloc(src_bytes, 0x1_0000);
+        let bufs = [
+            g.pool.alloc(out_bytes, 4096),
+            g.pool.alloc(out_bytes, 4096),
+            g.pool.alloc(out_bytes, 4096),
+        ];
+        if let (Some(src), [Some(out), Some(y0), Some(y1)]) = (src, bufs) {
+            if let Some(mut r) = Renderer::new(&mut g.pool, GC2CM_OW, GC2CM_H as u16) {
+                let _ = r.set_background(Some(BLACK));
+                log!(
+                    "  GC2CM: a 240 x 320 card in rows (stride 256 pixels) at 0x{src:x}, converted into 120 x 320 UYVY at 0x{out:x}: A MODULATE (U' = B, V' = R at pixel 2i), B and C DOT3 tint 0x{GC2CM_TINT:08x} (Y' at 2i, 2i + 1), 2D ROP3 0xCA into green and alpha; one conversion to warm, {GC2CM_REPS} timed; at Windows Mobile's clock"
+                );
+                for wide in [false, true] {
+                    gc2cm_card(g, src, wide);
+                    let mut best: CmTimes = [u32::MAX; 5];
+                    let mut ok = true;
+                    for rep in 0..=GC2CM_REPS {
+                        let mut l2 = heapless_name();
+                        let _ = write!(
+                            l2,
+                            "{} BIT, PASS {} OF {}",
+                            if wide { 32 } else { 16 },
+                            rep + 1,
+                            GC2CM_REPS + 1
+                        );
+                        soak_label(g, ["GC2CM CONVERT", l2.as_str(), ""], SOAK_BLUE);
+                        match gc2cm_convert(g, &mut r, (src, wide), (out, y0, y1)) {
+                            Some(t) if rep > 0 => {
+                                for (b, v) in best.iter_mut().zip(t) {
+                                    *b = (*b).min(v);
+                                }
+                            }
+                            Some(_) => {}
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        rt::check_in();
+                    }
+                    let name = if wide { "ARGB8888 card" } else { "RGB565 card" };
+                    if !ok {
+                        log!("  GC2CM {name}: a step failed (logged above)");
+                        continue;
+                    }
+                    let total: u32 = best.iter().sum();
+                    log!(
+                        "  GC2CM {name}: fastest A {} us, B {} us, C {} us, 2D Y0 {} us, 2D Y1 {} us: {total} us a frame",
+                        best[0],
+                        best[1],
+                        best[2],
+                        best[3],
+                        best[4]
+                    );
+                    gc2cm_check(g, out, wide, name);
+                }
+                r.set_header_xors([0; 5]);
+                g.set(&mut r, 0, None);
+                let _ = r.release(&mut g.pool);
+            } else {
+                log!("  GC2CM: no renderer");
+            }
+        } else {
+            log!("  GC2CM: no memory");
+        }
+        for b in bufs.into_iter().flatten() {
+            let _ = g.pool.free(b, out_bytes);
+        }
+        if let Some(s) = src {
+            let _ = g.pool.free(s, src_bytes);
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        log!("  GC2CM done: {} ms", us_since(t0) / 1000);
+        g.nudge = nudge;
+        gc2ca_card(g, planes0, ["GC2CM DONE", "", ""]);
+    }
+
+    /// The card written in rows at a 256-pixel stride, 16- or 32-bit.
+    fn gc2cm_card(g: &mut Rig, src: u32, wide: bool) {
+        let mut row = [0u32; 256];
+        for y in 0..GC2CM_H {
+            if wide {
+                for (x, w) in row.iter_mut().enumerate() {
+                    let (r, gr, b) = gc2cm_rgb((x as u32).min(GC2CM_W - 1), y);
+                    *w = 0xFF00_0000 | r << 16 | gr << 8 | b;
+                }
+                g.mem.store((src + y * 1024) as usize, &row);
+            } else {
+                let px = |x: u32| {
+                    let (r, gr, b) = gc2cm_rgb(x.min(GC2CM_W - 1), y);
+                    (r >> 3) << 11 | (gr >> 2) << 5 | b >> 3
+                };
+                for (j, w) in row[..128].iter_mut().enumerate() {
+                    *w = px(2 * j as u32) | px(2 * j as u32 + 1) << 16;
+                }
+                g.mem.store((src + y * 512) as usize, &row[..128]);
+            }
+        }
+        g.mem.sync();
+    }
+
+    /// One conversion: the three passes and the two placements, each
+    /// timed; `None` (logged) if one failed.
+    fn gc2cm_convert(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (src, wide): (u32, bool),
+        (out, y0, y1): (u32, u32, u32),
+    ) -> Option<CmTimes> {
+        let tex = Texture {
+            at: src,
+            code: 5,
+            format: (if wide {
+                format::ARGB8888
+            } else {
+                format::RGB565
+            }) as u8,
+            u_mode: address::CLAMP as u8,
+            v_mode: address::CLAMP as u8,
+            linear: false,
+            levels: 1,
+        };
+        let opaque = tex.words()[2];
+        // Rows (bit 0), 512 down (code 5 -> 6), the width as stride (TEX1
+        // bit 29); DOT3 adds TEX0 bit 13 and its combine word.
+        let rows = 1 | (5 ^ 6) << 20;
+        let texel = UV_ONE / 256;
+        // A 32nd of a texel past the corner, so the corner sample lands
+        // inside its texel.
+        let bias = texel / 32;
+        let mut t: CmTimes = [0; 5];
+        for (k, (at, dot3, u0)) in [(out, false, 0), (y0, true, 0), (y1, true, texel)]
+            .into_iter()
+            .enumerate()
+        {
+            let xor = if dot3 {
+                [0, rows | 0x2000, 1 << 29, opaque ^ GC2CM_DOT3, 0]
+            } else {
+                [0, rows, 1 << 29, 0, 0]
+            };
+            r.set_header_xors(xor);
+            let (ua, ub) = (u0 + bias, u0 + bias + 240 * texel);
+            let (va, vb) = (bias, bias + 320 * (UV_ONE / 512));
+            let draw = Draw::rect(
+                0,
+                0,
+                i32::from(GC2CM_OW),
+                GC2CM_H as i32,
+                Paint::Texture {
+                    tex,
+                    uv: [(ua, va), (ub, va), (ub, vb), (ua, vb)],
+                    tint: if dot3 { GC2CM_TINT } else { WHITE },
+                },
+            );
+            g.set(r, 0, Some(draw));
+            let target = Target {
+                picture: Picture {
+                    at,
+                    stride: u32::from(GC2CM_OW) * 4,
+                    w: GC2CM_OW,
+                    h: GC2CM_H as u16,
+                    format: PixelFormat::Argb8888,
+                },
+                x: 0,
+                y: 0,
+            };
+            let before = g.hangs;
+            let s = rt::ticks();
+            let ok = p_frame(g, r, target, 6, None);
+            t[k] = us_since(s);
+            if g.hangs != before || !ok {
+                log!(
+                    "  GC2CM pass {}: {}",
+                    k + 1,
+                    if ok { "HUNG (reset)" } else { "not rendered" }
+                );
+                r.start_clean();
+                return None;
+            }
+        }
+        // Y0 into green, Y1 into alpha: ROP3 0xCA, pattern (the colour
+        // word) ? source : destination.
+        for (k, (from, mask)) in [(y0, 0x0000_FF00u32), (y1, 0xFF00_0000)]
+            .into_iter()
+            .enumerate()
+        {
+            let stride = i32::from(GC2CM_OW) * 4;
+            let Some((w, n)) = cmd::blit(
+                (Format::BPP32, out as usize, stride),
+                (Format::BPP32, from as usize, stride),
+                (0, 0),
+                (0, 0, GC2CM_OW, GC2CM_H as u16),
+                0xCACA,
+                0,
+                mask,
+            ) else {
+                log!("  GC2CM 2D placement {}: not drawable", k + 1);
+                return None;
+            };
+            let s = rt::ticks();
+            let ok = g.e.submit(&w[..n]).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok();
+            t[3 + k] = us_since(s);
+            if !ok {
+                log!("  GC2CM 2D placement {}: hung (reset)", k + 1);
+                g.e.reset(rt::delay_us);
+                let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+                cpu::drain_write_buffer();
+                return None;
+            }
+        }
+        Some(t)
+    }
+
+    /// Every output word checked against the card: U' and V' exact, Y0 and
+    /// Y1 against the formula (error in steps, rounded to nearest, counted
+    /// -2 .. +2 and beyond); the first wrong word logged.
+    fn gc2cm_check(g: &Rig, out: u32, wide: bool, name: &str) {
+        let ow = u32::from(GC2CM_OW);
+        let (mut uv_wrong, mut first) = (0u32, None);
+        // Y error histogram: < -2, -2, -1, 0, +1, +2, > +2.
+        let mut hist = [0u32; 7];
+        for y in 0..GC2CM_H {
+            for i in 0..ow {
+                let w = g.mem.load((out + 4 * (y * ow + i)) as usize).unwrap_or(0);
+                let p0 = gc2cm_seen(gc2cm_rgb(2 * i, y), wide);
+                let p1 = gc2cm_seen(gc2cm_rgb(2 * i + 1, y), wide);
+                let (u, v) = (w & 0xFF, (w >> 16) & 0xFF);
+                if u != p0.2 || v != p0.0 {
+                    uv_wrong += 1;
+                    first.get_or_insert((i, y, w));
+                }
+                for (got, p) in [((w >> 8) & 0xFF, p0), (w >> 24, p1)] {
+                    // Error in steps: 255 got - 255 Y', rounded.
+                    let d = (255 * got) as i32 - gc2cm_y255(p) as i32;
+                    let e = if d >= 0 {
+                        (d + 127) / 255
+                    } else {
+                        -((-d + 127) / 255)
+                    };
+                    hist[(e.clamp(-3, 3) + 3) as usize] += 1;
+                    if e.abs() > 2 {
+                        first.get_or_insert((i, y, w));
+                    }
+                }
+            }
+        }
+        // Three words beside what they should be (U' Y0 V' Y1, Y rounded).
+        for (i, y) in [(0u32, 0u32), (60, 160), (119, 319)] {
+            let w = g.mem.load((out + 4 * (y * ow + i)) as usize).unwrap_or(0);
+            let p0 = gc2cm_seen(gc2cm_rgb(2 * i, y), wide);
+            let p1 = gc2cm_seen(gc2cm_rgb(2 * i + 1, y), wide);
+            let want = (gc2cm_y255(p1) + 127) / 255 << 24
+                | p0.0 << 16
+                | (gc2cm_y255(p0) + 127) / 255 << 8
+                | p0.2;
+            log!("  GC2CM {name} word ({i}, {y}): 0x{w:08x}, want about 0x{want:08x}");
+        }
+        log!(
+            "  GC2CM {name} check: U' and V' wrong in {uv_wrong} of {} words; Y error in steps (beyond -2, -2, -1, 0, +1, +2, beyond +2): {} {} {} {} {} {} {}; first off {first:?}",
+            ow * GC2CM_H,
+            hist[0],
+            hist[1],
+            hist[2],
+            hist[3],
+            hist[4],
+            hist[5],
+            hist[6]
+        );
     }
 
     /// Run GC2CI (`RP_GPUBENCH_GC2_HALF_STRIDE`, with
