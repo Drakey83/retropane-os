@@ -5449,6 +5449,24 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2bx = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_FIXES", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
+    let run_gc2bw = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_MESH", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bv = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5696,7 +5714,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 115] = [
+    let runs: [GpubenchRun; 117] = [
         (
             "run A",
             &run_a,
@@ -6039,6 +6057,48 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BX (R74, R69): the game test and the fix search, shortened
+        // (the emulator draws exactly: every frame right, every trial clean
+        // and confirmed, the first three proven).
+        (
+            "run GC2BX",
+            &run_gc2bx,
+            &[
+                "GC2BX (R74, R69): the game test and every driver-level fix",
+                "GC2BX warm-up reference:",
+                "GC2BX A slice 10: ",
+                "GC2BX frame 7 reference:",
+                "GC2BX games the mesh depth tested: 0 of 1 wrong",
+                "GC2BX games the generator (scene 3 split TL-BR): 0 of 1 wrong",
+                "GC2BX games done, TEMP0",
+                "GC2BX search done: ",
+                "GC2BX proof Reg(",
+                "GC2BX done, TEMP0",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BW (R74): the game-shaped frames, shortened (the emulator
+        // draws exactly: every frame right).
+        (
+            "run GC2BW",
+            &run_gc2bw,
+            &[
+                "GC2BW (R74): the crack in a game-shaped frame",
+                "GC2BW warm-up reference:",
+                "GC2BW A slice 10: ",
+                "GC2BW frame 3 reference:",
+                "GC2BW control reference:",
+                "GC2BW the textured mesh: 0 of 2 wrong at 149.50 / 1",
+                "GC2BW the mesh depth tested: 0 of 2 wrong at 149.50 / 1",
+                "GC2BW controls at Windows Mobile's clock after: 5 of 5 right",
+                "GC2BW done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

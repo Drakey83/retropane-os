@@ -705,7 +705,7 @@ fn draw_tiles(d: &Draw, cols: u32, rows: u32) -> TileRect {
 }
 
 /// A quad's two objects: the words and their kind.
-fn encode(d: &Draw, flip: bool) -> ([u32; SLOT_WORDS], usize, Kind) {
+fn encode(d: &Draw, flip: bool, rot: usize) -> ([u32; SLOT_WORDS], usize, Kind) {
     // The second word is the alpha test only; the depth mode goes in the
     // TSP (writing it here too made "less" test "alpha < 0": ADR-0026).
     let isp = match d.alpha {
@@ -748,6 +748,8 @@ fn encode(d: &Draw, flip: bool) -> ([u32; SLOT_WORDS], usize, Kind) {
             };
             let tsp = state(tsp);
             for (t, tri) in tris.iter().enumerate() {
+                let mut tri = *tri;
+                tri.rotate_left(rot % 3);
                 let v = tri.map(|k| {
                     let (x, y) = pos(k);
                     m3::Vertex {
@@ -1079,6 +1081,13 @@ pub struct Renderer {
     /// Every quad split along its other diagonal (`rp-gpubench` run
     /// GC2BU: the tile race's dropped groups sit on the diagonal).
     diagonal_flip: bool,
+    /// Each flat triangle's vertices fed this many places rotated (the same
+    /// triangle and winding; `rp-gpubench` run GC2BX: the set-up's
+    /// arithmetic starts from another corner).
+    vertex_rotate: usize,
+    /// A measurement's mask XORed into word `.0` (0 ISP, 1 TSP) of every
+    /// flat triangle (`rp-gpubench` run GC2BX's bit search).
+    flat_xor: (usize, u32),
 }
 
 /// The order the tiles are listed for the core in (the picture is the same
@@ -1213,6 +1222,8 @@ impl Renderer {
             header_xor: (0, 0),
             tsp_or: 0,
             diagonal_flip: false,
+            vertex_rotate: 0,
+            flat_xor: (0, 0),
         })
     }
 
@@ -1264,6 +1275,19 @@ impl Renderer {
     /// differ, so the slots' hashes see it.
     pub fn set_diagonal_flip(&mut self, flip: bool) {
         self.diagonal_flip = flip;
+    }
+
+    /// A measurement's rotation of every flat triangle's vertex order (0-2)
+    /// from the next [`Self::set`] on (`rp-gpubench` run GC2BX).
+    pub fn set_vertex_rotate(&mut self, k: usize) {
+        self.vertex_rotate = k % 3;
+    }
+
+    /// A measurement's bit flip in every flat triangle from the next
+    /// [`Self::set`] on: `mask` XORed into word `word` (0 ISP, 1 TSP); a word
+    /// past 1 or a zero mask flips nothing (`rp-gpubench` run GC2BX).
+    pub fn set_flat_xor(&mut self, word: usize, mask: u32) {
+        self.flat_xor = if word < 2 { (word, mask) } else { (0, 0) };
     }
 
     /// The order the tiles are listed for the core in ([`TileOrder`]).
@@ -1367,7 +1391,13 @@ impl Renderer {
         let new = match draw {
             None => Slot::default(),
             Some(d) => {
-                let (mut words, n, kind) = encode(d, self.diagonal_flip);
+                let (mut words, n, kind) = encode(d, self.diagonal_flip, self.vertex_rotate);
+                let (fw, fmask) = self.flat_xor;
+                if kind == Kind::Flat && fmask != 0 {
+                    for t in 0..2 {
+                        words[t * m3::TRIANGLE_WORDS + fw] ^= fmask;
+                    }
+                }
                 let (hw, mask) = self.header_xor;
                 if kind == Kind::Textured && mask != 0 {
                     for t in 0..2 {

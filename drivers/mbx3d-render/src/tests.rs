@@ -545,6 +545,7 @@ fn no_quad_sets_a_tsp_bit_that_hangs_the_core() {
                         ..square(0, 0, 8, paint)
                     },
                     false,
+                    0,
                 );
                 let (tsp_at, words) = match kind {
                     Kind::Textured => (4, tex::WORDS),
@@ -980,6 +981,7 @@ fn the_depth_mode_never_reaches_the_alpha_bits() {
                     z: 1,
                 }),
                 false,
+                0,
             );
             assert_eq!(w[0], m3::ISP_ALWAYS, "mode {mode}");
         }
@@ -990,6 +992,7 @@ fn the_depth_mode_never_reaches_the_alpha_bits() {
             reference: 128,
         }),
         false,
+        0,
     );
     assert_eq!(w[0], 0x9000_0000);
 }
@@ -2154,8 +2157,8 @@ fn two_renderers_on_one_core() {
 #[test]
 fn diagonal_flip_splits_the_quad_the_other_way() {
     let d = square(100, 100, 200, Paint::Flat(BLUE));
-    let (w, n, kind) = encode(&d, false);
-    let (f, nf, kindf) = encode(&d, true);
+    let (w, n, kind) = encode(&d, false, 0);
+    let (f, nf, kindf) = encode(&d, true, 0);
     assert_eq!((n, kind), (nf, kindf));
     assert_eq!(kind, Kind::Flat);
     let xy = |w: &[u32; SLOT_WORDS], t: usize, k: usize| {
@@ -2180,4 +2183,32 @@ fn diagonal_flip_splits_the_quad_the_other_way() {
         assert_eq!(w[at + 1], f[at + 1]);
         assert_eq!(w[at + 14..at + 17], f[at + 14..at + 17]);
     }
+}
+
+#[test]
+fn vertex_rotate_and_flat_xor() {
+    let d = square(100, 100, 200, Paint::Flat(BLUE));
+    let (w, _, _) = encode(&d, false, 0);
+    let (r, _, _) = encode(&d, false, 1);
+    let at = |w: &[u32; SLOT_WORDS], t: usize, k: usize| {
+        let a = t * m3::TRIANGLE_WORDS;
+        (w[a + 2 + 2 * k], w[a + 3 + 2 * k], w[a + 14 + k])
+    };
+    // Rotated one place: vertex k is the original's k + 1, both triangles.
+    for t in 0..2 {
+        for k in 0..3 {
+            assert_eq!(at(&r, t, k), at(&w, t, (k + 1) % 3));
+        }
+    }
+    let (r3, _, _) = encode(&d, false, 3);
+    assert_eq!(r3, w, "three places is none");
+    // The flat XOR reaches the slot's words through `set`.
+    let mut pool = Pool::new(POOL);
+    let mut rr = Renderer::new(&mut pool, 480, 640).unwrap();
+    rr.set_flat_xor(1, 1 << 9);
+    assert_eq!(rr.flat_xor, (1, 1 << 9));
+    rr.set_flat_xor(2, 1);
+    assert_eq!(rr.flat_xor, (0, 0), "only the ISP and TSP words");
+    rr.set_vertex_rotate(4);
+    assert_eq!(rr.vertex_rotate, 1);
 }

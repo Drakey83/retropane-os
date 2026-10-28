@@ -2820,3 +2820,92 @@ fn gc2bv_seals() {
     assert_eq!(SEAL_PROOF_BAND[0], SEAL_FORMS[2]);
     assert_eq!(SEAL_PROOF_DOUBLE[0], SEAL_FORMS[3]);
 }
+
+#[test]
+fn gc2bw_mesh_frames() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    let sub = rp_mbx3d_render::SUB;
+    let cells = (MESH_COLS * MESH_ROWS) as usize;
+    for kind in [MESH_FLAT, MESH_LAYERED, MESH_TEXTURED, MESH_DEPTH] {
+        let (bg, f) = mesh_frame(kind, t);
+        assert_eq!(bg, BLACK);
+        let draws: Vec<Draw> = f.iter().flatten().copied().collect();
+        let want = match kind {
+            MESH_LAYERED | MESH_DEPTH => 1 + cells,
+            _ => cells,
+        };
+        assert_eq!(draws.len(), want, "kind {kind}");
+        assert!(draws.len() <= MESH_DRAWS);
+        // The mesh: every cell's corners shared exactly with its neighbours
+        // (watertight), every quad convex with the rectangles' winding, the
+        // screen covered edge to edge.
+        let mesh = &draws[if kind == MESH_LAYERED || kind == MESH_DEPTH {
+            1
+        } else {
+            0
+        }..][..cells];
+        let at = |gx: i32, gy: i32| &mesh[(gy * MESH_COLS + gx) as usize];
+        for gy in 0..MESH_ROWS {
+            for gx in 0..MESH_COLS {
+                let c = at(gx, gy).corners;
+                if gx + 1 < MESH_COLS {
+                    let r = at(gx + 1, gy).corners;
+                    assert_eq!((c[1], c[2]), (r[0], r[3]));
+                }
+                if gy + 1 < MESH_ROWS {
+                    let d = at(gx, gy + 1).corners;
+                    assert_eq!((c[3], c[2]), (d[0], d[1]));
+                }
+                for i in 0..4 {
+                    let (a, b, e) = (c[i], c[(i + 1) % 4], c[(i + 2) % 4]);
+                    let cross = i64::from(b.x - a.x) * i64::from(e.y - b.y)
+                        - i64::from(b.y - a.y) * i64::from(e.x - b.x);
+                    assert!(cross > 0, "kind {kind} cell ({gx}, {gy}) corner {i}");
+                }
+            }
+        }
+        assert_eq!(at(0, 0).corners[0], rp_mbx3d_render::Point { x: 0, y: 0 });
+        assert_eq!(
+            at(MESH_COLS - 1, MESH_ROWS - 1).corners[2],
+            rp_mbx3d_render::Point {
+                x: W as i32 * sub,
+                y: H as i32 * sub
+            }
+        );
+        // The warp reaches sub-pixel places.
+        assert!(mesh.iter().any(|d| d.corners[2].x % sub != 0));
+        // No mesh colour is black or the poison (the layer is its own).
+        for d in draws
+            .iter()
+            .filter(|d| d.paint != Paint::Flat(HIDDEN_LAYER))
+        {
+            if let Paint::Flat(c) = d.paint {
+                assert_ne!(c & 0xFF_FFFF, 0);
+                assert!(c & 0xFF >= 0x40 && (c >> 8) & 0xFF >= 0x40 && (c >> 16) & 0xFF >= 0x40);
+            }
+        }
+    }
+    // The textured mesh: neighbours share uv as they share corners.
+    let (_, f) = mesh_frame(MESH_TEXTURED, t);
+    let d: Vec<Draw> = f.iter().flatten().copied().collect();
+    let (Paint::Texture { uv: a, .. }, Paint::Texture { uv: b, .. }) = (d[0].paint, d[1].paint)
+    else {
+        panic!("textured");
+    };
+    assert_eq!((a[1], a[2]), (b[0], b[3]));
+    // The depth frame: the full-screen quad far, the mesh near, both
+    // "greater" with writes.
+    let (_, f) = mesh_frame(MESH_DEPTH, t);
+    let d: Vec<Draw> = f.iter().flatten().copied().collect();
+    let z = |i: usize| d[i].depth.map(|x| (x.mode, x.z));
+    assert_eq!(d[0].paint, Paint::Flat(HIDDEN_LAYER));
+    assert_eq!(z(0), Some((rp_mbx3d_render::depth::GREATER, 0x3000)));
+    for i in 1..=cells {
+        assert_eq!(z(i), Some((rp_mbx3d_render::depth::GREATER, 0xB000)));
+    }
+}

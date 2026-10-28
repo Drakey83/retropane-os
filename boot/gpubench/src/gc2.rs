@@ -2548,6 +2548,161 @@ pub const SEAL_PROOF_DOUBLE: [Scene; 2] = [
     Scene::Corner3(S3_LAYER | S3_DOUBLE),
 ];
 
+/// Run GC2BW's game-shaped frames: a warped grid of [`MESH_COLS`] x
+/// [`MESH_ROWS`] quads whose neighbours share every corner exactly (a
+/// watertight mesh, as a game's models and terrain are), so every
+/// triangle edge inside it is shared: on black, a crack shows black.
+pub const MESH_COLS: i32 = 5;
+pub const MESH_ROWS: i32 = 6;
+/// The most draws a mesh frame takes: a full-screen quad and one mesh.
+pub const MESH_DRAWS: usize = 1 + (MESH_COLS * MESH_ROWS) as usize;
+/// The renderer's slots a mesh frame is set into (all of them, so a frame
+/// set after a smaller scene clears what that left).
+pub const MESH_SLOTS: usize = 64;
+/// GC2BW's frames: flat-coloured mesh on black; the same over a full
+/// hidden layer (a game's overdraw); a textured mesh (the 16 x 16 RGB565
+/// texture wrapping, about 10 pixels a texel, no nudge, no clamp);
+/// the mesh depth tested, "greater" with writes, near over a full-screen
+/// quad written far.
+pub const MESH_FLAT: u8 = 0;
+pub const MESH_LAYERED: u8 = 1;
+pub const MESH_TEXTURED: u8 = 2;
+pub const MESH_DEPTH: u8 = 3;
+/// A mesh's warp: each inner corner moved up to this many pixels each way
+/// (sub-pixel amounts, so its edges cross every place in a pixel).
+pub const MESH_WARP: i32 = 20;
+
+/// A deterministic hash (the warp's and the colours' source).
+const fn mesh_hash(a: u32, b: u32, c: u32) -> u32 {
+    let mut h =
+        a.wrapping_mul(0x9E37_79B1) ^ b.wrapping_mul(0x85EB_CA77) ^ c.wrapping_mul(0xC2B2_AE3D);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    h
+}
+
+/// Corner `(gx, gy)` of mesh `seed` over the pixel box `(x0, y0, w, h)`:
+/// the grid point moved by the warp, the box's border kept straight.
+#[must_use]
+pub const fn mesh_corner(
+    seed: u32,
+    gx: i32,
+    gy: i32,
+    b: (i32, i32, i32, i32),
+) -> rp_mbx3d_render::Point {
+    let sub = rp_mbx3d_render::SUB;
+    let (x0, y0, w, h) = b;
+    let mut x = (x0 * sub) + w * sub * gx / MESH_COLS;
+    let mut y = (y0 * sub) + h * sub * gy / MESH_ROWS;
+    let span = (2 * MESH_WARP * sub + 1) as u32;
+    if gx > 0 && gx < MESH_COLS {
+        x += (mesh_hash(seed, gx as u32, gy as u32) % span) as i32 - MESH_WARP * sub;
+    }
+    if gy > 0 && gy < MESH_ROWS {
+        y += (mesh_hash(seed ^ 0x55, gx as u32, gy as u32) % span) as i32 - MESH_WARP * sub;
+    }
+    rp_mbx3d_render::Point { x, y }
+}
+
+/// Mesh `seed`'s quads over `b`, each painted by `paint(cell, corners)`.
+fn mesh_into(
+    out: &mut [Option<Draw>; MESH_SLOTS],
+    n: &mut usize,
+    seed: u32,
+    b: (i32, i32, i32, i32),
+    paint: &dyn Fn(u32, &[rp_mbx3d_render::Point; 4]) -> Paint,
+    depth: Option<rp_mbx3d_render::Depth>,
+) {
+    for gy in 0..MESH_ROWS {
+        for gx in 0..MESH_COLS {
+            let c = [
+                mesh_corner(seed, gx, gy, b),
+                mesh_corner(seed, gx + 1, gy, b),
+                mesh_corner(seed, gx + 1, gy + 1, b),
+                mesh_corner(seed, gx, gy + 1, b),
+            ];
+            let mut d = Draw::rect(0, 0, 1, 1, paint((gy * MESH_COLS + gx) as u32, &c));
+            d.corners = c;
+            d.depth = depth;
+            out[*n] = Some(d);
+            *n += 1;
+        }
+    }
+}
+
+/// A flat colour for mesh cell `i` of mesh `seed`: bright (each channel at
+/// least 0x40), never black or the poison.
+fn mesh_colour(seed: u32, i: u32) -> u32 {
+    let h = mesh_hash(seed, i, 7);
+    0xFF00_0000 | ((h & 0x00BF_BFBF) + 0x0040_4040)
+}
+
+/// GC2BW's frame `kind` ([`MESH_FLAT`], [`MESH_LAYERED`],
+/// [`MESH_TEXTURED`], [`MESH_DEPTH`]): its background and the renderer's
+/// [`MESH_SLOTS`] slots.
+#[must_use]
+pub fn mesh_frame(kind: u8, t: Tex) -> (u32, [Option<Draw>; MESH_SLOTS]) {
+    let mut out = [None; MESH_SLOTS];
+    let mut n = 0;
+    let screen = (0, 0, W as i32, H as i32);
+    let flat = |seed: u32| {
+        move |i: u32, _: &[rp_mbx3d_render::Point; 4]| Paint::Flat(mesh_colour(seed, i))
+    };
+    match kind {
+        MESH_LAYERED => {
+            out[n] = Some(flat_draw(HIDDEN_LAYER));
+            n += 1;
+            mesh_into(&mut out, &mut n, 1, screen, &flat(1), None);
+        }
+        MESH_TEXTURED => {
+            // Three repeats of the texture across the screen's width: the
+            // uv at each corner from its place, so neighbours share them.
+            let uv = |p: rp_mbx3d_render::Point| {
+                let sub = rp_mbx3d_render::SUB;
+                (
+                    (i64::from(UV_ONE) * 3 * i64::from(p.x) / i64::from(W as i32 * sub)) as i32,
+                    (i64::from(UV_ONE) * 4 * i64::from(p.y) / i64::from(H as i32 * sub)) as i32,
+                )
+            };
+            let paint = |_: u32, c: &[rp_mbx3d_render::Point; 4]| Paint::Texture {
+                tex: t.t565,
+                uv: [uv(c[0]), uv(c[1]), uv(c[2]), uv(c[3])],
+                tint: WHITE,
+            };
+            mesh_into(&mut out, &mut n, 2, screen, &paint, None);
+        }
+        MESH_DEPTH => {
+            let d = |z: u16| {
+                Some(rp_mbx3d_render::Depth {
+                    mode: rp_mbx3d_render::depth::GREATER,
+                    write: true,
+                    z,
+                })
+            };
+            // A full-screen quad written far, then the mesh near over it,
+            // both "greater" with writes: every mesh pixel passes the depth
+            // test against the quad's. (Two overlapping meshes made more
+            // than the renderer's 128 cached lists, and the uncached ones
+            // overflowed the 20 KiB list space on the die: `TooComplex`,
+            // GC2BW's emulator check.)
+            let mut back = flat_draw(HIDDEN_LAYER);
+            back.depth = d(0x3000);
+            out[n] = Some(back);
+            n += 1;
+            mesh_into(&mut out, &mut n, 3, screen, &flat(3), d(0xB000));
+        }
+        _ => mesh_into(&mut out, &mut n, 0, screen, &flat(0), None),
+    }
+    debug_assert!(n <= MESH_DRAWS);
+    (BLACK, out)
+}
+
+/// A full-screen flat draw of `c` (opaque).
+fn flat_draw(c: u32) -> Draw {
+    flat(c, false)
+}
+
 /// GC2BU's forms of scene 3 without its layer: as is, the depth path, the
 /// depth written only, the rectangles half a pixel over, the other
 /// diagonal, as is again.

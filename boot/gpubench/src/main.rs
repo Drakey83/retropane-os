@@ -104,7 +104,7 @@ mod g21;
 
 #[cfg(target_os = "none")]
 mod image {
-    use core::cell::RefCell;
+    use core::cell::{Cell, RefCell};
     use core::fmt::Write;
 
     use rp_draw::{Cmd, Frame, Rect as DrawRect, Renderer as _};
@@ -7995,6 +7995,8 @@ mod image {
         || GC2_REGION
         || GC2_DIAGONAL
         || GC2_SEAL
+        || GC2_MESH
+        || GC2_FIXES
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8325,6 +8327,24 @@ mod image {
     /// the diagonal, and the rectangle drawn again split the other way,
     /// the clean seals proven. About 25 minutes, unattended.
     const GC2_SEAL: bool = option_env!("RP_GPUBENCH_GC2_SEAL").is_some();
+
+    /// Run GC2BW, reminder R74 (`RP_GPUBENCH_GC2_MESH`): the crack in a
+    /// game-shaped frame: watertight warped quad meshes (every edge
+    /// shared), flat on black, over a layer, textured and two depth
+    /// tested, with scene 3's known crack as the control, in turn. About 20
+    /// minutes, unattended.
+    const GC2_MESH: bool = option_env!("RP_GPUBENCH_GC2_MESH").is_some();
+
+    /// Run GC2BX, reminders R74 and R69 (`RP_GPUBENCH_GC2_FIXES`): the game
+    /// test and every driver-level fix in one run (the owner, 2026-10-27:
+    /// "build all of this into another test ... the fix possibilities and
+    /// the game test"): GC2BW's meshes beside scene 3 and the generator
+    /// (scene 3 split TL-BR, 300 of 300 at peak heat in GC2BV); on the
+    /// generator, one render a trial, every bit of the render and TA
+    /// blocks and of the flat triangles' ISP and TSP words, the vertex
+    /// order, the layer; the confirmed fixes on every frame. About 30
+    /// minutes, unattended.
+    const GC2_FIXES: bool = option_env!("RP_GPUBENCH_GC2_FIXES").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9708,6 +9728,10 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_FIXES {
+                "the 16-bit kinds' targets inside the safe region (GC2BX, R74 and R69: no map; the game test and every driver-level fix, the meshes beside scene 3 and the generator, a one-render search of every register, triangle-word bit, vertex order and the layer, the confirmed fixes on every frame, at 149.50 / 1 warm with the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_MESH {
+                "the 16-bit kinds' targets inside the safe region (GC2BW, R74: no map; the crack in a game-shaped frame, watertight warped quad meshes flat, layered, textured and depth tested with scene 3's crack as the control, at 149.50 / 1 warm with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_SEAL {
                 "the 16-bit kinds' targets inside the safe region (GC2BV, R69: no map; the crack on the rectangles' diagonal against the other diagonal, a band of the rectangle's grey and a copy split the other way, the clean seals proven, at 149.50 / 1 warm with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_DIAGONAL {
@@ -9964,6 +9988,8 @@ mod image {
             || GC2_REGION
             || GC2_DIAGONAL
             || GC2_SEAL
+            || GC2_MESH
+            || GC2_FIXES
         {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
@@ -10360,6 +10386,10 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_FIXES {
+                    gc2_fixes(g, &mut r, (tex, first, dsig));
+                } else if GC2_MESH {
+                    gc2_mesh(g, &mut r, (tex, first, dsig));
                 } else if GC2_SEAL {
                     gc2_seal(g, &mut r, (tex, first, dsig));
                 } else if GC2_DIAGONAL {
@@ -16941,6 +16971,703 @@ mod image {
         }
         let _ = g.pool.free(ta, bytes);
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BX's game rounds (part 1), proof rounds (part 3), and confirming
+    /// pairs for a clean trial (part 2).
+    const GC2BX_GAME_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 200 };
+    const GC2BX_PROOF_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 100 };
+    const GC2BX_CONFIRM: u32 = if GC2_RENDERS < 20 { 1 } else { 10 };
+    /// A control render of the generator every this many trials.
+    const GC2BX_CONTROL_EVERY: u32 = 32;
+    /// The most confirmed fixes carried into part 3.
+    const GC2BX_PROOF_MAX: usize = 3;
+    /// The emulator check's trials (a few of each kind; the device does all).
+    const GC2BX_EMU_BITS: u32 = 2;
+
+    /// One trial of GC2BX's search.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Fix {
+        /// Nothing changed (a control).
+        None,
+        /// A 3D register written to this value for the render.
+        Reg(usize, u32),
+        /// A flat triangle word's bit flipped (word, mask).
+        Word(usize, u32),
+        /// The flat triangles' vertex order rotated.
+        Rotate(usize),
+        /// The hidden layer under the scene.
+        Layer,
+    }
+
+    /// `fix` set on the rig and the renderer for the next scene set and
+    /// render; [`gc2bx_clear`] puts it back.
+    fn gc2bx_apply(g: &mut Rig, rr: &mut Renderer, fix: Fix) {
+        match fix {
+            Fix::Reg(off, v) => g.over = Over::of(&[(off, v)]),
+            Fix::Word(w, m) => rr.set_flat_xor(w, m),
+            Fix::Rotate(k) => rr.set_vertex_rotate(k),
+            Fix::None | Fix::Layer => {}
+        }
+    }
+
+    fn gc2bx_clear(g: &mut Rig, rr: &mut Renderer) {
+        g.over = Over::NONE;
+        rr.set_flat_xor(0, 0);
+        rr.set_vertex_rotate(0);
+    }
+
+    /// GC2BX's frames: the four meshes, scene 3 without its layer, and the
+    /// generator (scene 3 split TL-BR: 300 of 300 at peak heat, GC2BV).
+    const GC2BX_FRAMES: [&str; 6] = [
+        "the flat mesh on black",
+        "the flat mesh over a layer",
+        "the textured mesh",
+        "the mesh depth tested",
+        "scene 3 without its layer",
+        "the generator (scene 3 split TL-BR)",
+    ];
+    const GC2BX_GEN: usize = 5;
+
+    /// Frame `f` set on `rr`, with the layer if `layer` (the scene-3 forms
+    /// only).
+    fn gc2bx_set(g: &mut Rig, rr: &mut Renderer, f: usize, layer: bool, tex: gc2::Tex) {
+        let l = if layer { gc2::S3_LAYER } else { 0 };
+        match f {
+            0..=3 => gc2_set_mesh(
+                g,
+                rr,
+                [
+                    gc2::MESH_FLAT,
+                    gc2::MESH_LAYERED,
+                    gc2::MESH_TEXTURED,
+                    gc2::MESH_DEPTH,
+                ][f],
+                tex,
+            ),
+            4 => gc2_set_scene_clear(g, rr, gc2::Scene::Corner3(gc2::S3_AS_IS | l), tex),
+            _ => gc2_set_scene_clear(g, rr, gc2::Scene::Corner3(gc2::S3_FLIP | l), tex),
+        }
+    }
+
+    /// Run GC2BX (see [`GC2_FIXES`]): the game test and every driver-level
+    /// fix in one run, at 149.50 / 1 warm on the on-die checker renderer
+    /// with the shipped texture rule. GC2BQ's warm-up; (1) each of
+    /// [`GC2BX_FRAMES`] once a round for [`GC2BX_GAME_ROUNDS`]; (2) on the
+    /// generator, one render a trial: each bit of the render block
+    /// ([`GC3T_REGS`], [`P2D_REGS`]) and the TA block ([`GC2AY_REGS`]),
+    /// each bit of the flat triangles' ISP and TSP words, the vertex order
+    /// rotated one and two places, the hidden layer; a control every
+    /// [`GC2BX_CONTROL_EVERY`]; a clean trial confirmed in
+    /// [`GC2BX_CONFIRM`] pairs with the control; (3) the first
+    /// [`GC2BX_PROOF_MAX`] confirmed fixes on every frame for
+    /// [`GC2BX_PROOF_ROUNDS`].
+    #[inline(never)]
+    fn gc2_fixes(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let nf = GC2BX_FRAMES.len();
+        if all.len() < (2 + 2 * nf) * words {
+            log!("  GC2BX: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BX (R74, R69): the game test and every driver-level fix at 149.50 / 1 warm, the lists on the die, checker: {nf} frames {GC2BX_GAME_ROUNDS} rounds; the search on the generator, one render a trial (the render and TA blocks' bits, the flat ISP and TSP bits, the vertex order, the layer), a control every {GC2BX_CONTROL_EVERY}, {GC2BX_CONFIRM} pairs to confirm; the confirmed fixes on every frame, {GC2BX_PROOF_ROUNDS} rounds"
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BX TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        // The TA block's bases, read before anything changes them.
+        let mut ta_base = [0u32; GC2AY_REGS.len()];
+        for (b, &off) in ta_base.iter_mut().zip(GC2AY_REGS.iter()) {
+            *b = g.e.regs.read32(MBX + off);
+        }
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BX: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.set_diagonal_flip(false);
+            gc2bx_clear(g, rr);
+            rr.start_clean();
+        }
+        g.nudge = 0;
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BX warm-up") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BX", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        // The references at Windows Mobile's clock: every frame, and the
+        // two scene-3 forms with the layer (the layer trial's).
+        g.nudge = GC2BO_NUDGE;
+        ondie.core_taken();
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        let (first, refs) = all.split_at_mut(words);
+        let mut ok = true;
+        for f in 0..nf + 2 {
+            let (fr, layer) = if f < nf {
+                (f, false)
+            } else {
+                (f - nf + 4, true)
+            };
+            gc2bx_set(g, &mut ondie, fr, layer, tex);
+            let want = &mut refs[f * words..(f + 1) * words];
+            let mut name = heapless_name();
+            let _ = write!(name, "GC2BX frame {f}");
+            ok &= gc2_reference(g, &mut ondie, (k, at), want, first, dsig, name.as_str());
+        }
+        if !ok {
+            log!("  GC2BX: a reference failed: nothing more run");
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
+        let poisons: [Option<u16>; GC2BX_FRAMES.len() + 2] = core::array::from_fn(|f| {
+            gc2::absent16(&refs[f * words..(f + 1) * words], &gc2::POISON)
+        });
+        let step = gc2_step(23, 2, 0, 1);
+        clock_restore(&mut g.e.regs);
+        if clock_apply(g, step).is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2BX: 149.50 / 1 didn't take: nothing more run");
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
+        clock_readback(g);
+        let top_regs = gc2_clock_want(step_speed(g, step), step.div);
+        // One render of frame `f` (the layered scene-3 forms at nf, nf + 1)
+        // under `fix`: (words wrong or None, render time).
+        let one = |g: &mut Rig,
+                   rr: &mut Renderer,
+                   f: usize,
+                   fix: Fix,
+                   first: &mut [u32]|
+         -> (Option<u32>, u32) {
+            let layer = fix == Fix::Layer && f >= 4;
+            let fr = if f >= nf { f - nf + 4 } else { f };
+            let slot = if layer { nf + fr - 4 } else { f };
+            gc2bx_apply(g, rr, fix);
+            gc2bx_set(g, rr, fr, layer, tex);
+            let out = if let Some(c) = poisons[slot]
+                && !poison_fill(g, at, c)
+            {
+                (None, 0)
+            } else {
+                let want = &refs[slot * words..(slot + 1) * words];
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, rr, (k, at), want, first, top_regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            gc2bx_clear(g, rr);
+            out
+        };
+        // Part 1: the game test.
+        let mut wrong = [0u32; GC2BX_FRAMES.len()];
+        let mut done = [0u32; GC2BX_FRAMES.len()];
+        let mut best = [u32::MAX; GC2BX_FRAMES.len()];
+        for round in 0..GC2BX_GAME_ROUNDS {
+            if round % 50 == 0 {
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "ROUND {} OF {GC2BX_GAME_ROUNDS}", round + 1);
+                soak_label(
+                    g,
+                    ["GC2BX 1 OF 3 GAMES", "149.50 / 1 WARM", l3.as_str()],
+                    SOAK_BLUE,
+                );
+            }
+            for f in 0..nf {
+                let (w, us) = one(g, &mut ondie, f, Fix::None, first);
+                let Some(w) = w else { continue };
+                done[f] += 1;
+                best[f] = best[f].min(us);
+                if w != 0 {
+                    wrong[f] += 1;
+                    if wrong[f] <= 2 {
+                        let want = &refs[f * words..(f + 1) * words];
+                        let (n, b, (x, y, gp, wp)) = gc2_diff565(&first[..words], want);
+                        log!(
+                            "  GC2BX games {} wrong render {} (round {round}): {n} pixels, box ({}, {})-({}, {}), first ({x}, {y}) 0x{gp:04x} for 0x{wp:04x}",
+                            GC2BX_FRAMES[f],
+                            wrong[f],
+                            b[0],
+                            b[1],
+                            b[2],
+                            b[3]
+                        );
+                    }
+                }
+            }
+            rt::check_in();
+        }
+        for f in 0..nf {
+            log!(
+                "  GC2BX games {}: {} of {} wrong, fastest {} us",
+                GC2BX_FRAMES[f],
+                wrong[f],
+                done[f],
+                best[f]
+            );
+        }
+        log!("  GC2BX games done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+        // Part 2: the search on the generator.
+        let emu = GC2_RENDERS < 20;
+        let trials = Cell::new(0u32);
+        let controls = Cell::new((0u32, 0u32)); // (run, clean)
+        let mut found: [Fix; 8] = [Fix::None; 8];
+        let mut n_found = 0usize;
+        let try_fix = |g: &mut Rig, rr: &mut Renderer, fix: Fix, first: &mut [u32]| -> bool {
+            trials.set(trials.get() + 1);
+            if trials.get() % GC2BX_CONTROL_EVERY == 0 {
+                let (w, _) = one(g, rr, GC2BX_GEN, Fix::None, first);
+                let (run, clean) = controls.get();
+                controls.set((run + 1, clean + u32::from(w == Some(0))));
+                rt::check_in();
+            }
+            let f = if fix == Fix::Layer { nf + 1 } else { GC2BX_GEN };
+            let (w, _) = one(g, rr, f, fix, first);
+            if w != Some(0) {
+                return false;
+            }
+            // Clean once: confirm in pairs with the control.
+            let (mut ok_n, mut ctl_wrong) = (0u32, 0u32);
+            for _ in 0..GC2BX_CONFIRM {
+                let (w, _) = one(g, rr, f, fix, first);
+                ok_n += u32::from(w == Some(0));
+                let (c, _) = one(g, rr, GC2BX_GEN, Fix::None, first);
+                ctl_wrong += u32::from(c != Some(0));
+            }
+            log!(
+                "  GC2BX clean trial {fix:?}: confirmed {ok_n} of {GC2BX_CONFIRM}, the control wrong {ctl_wrong} of {GC2BX_CONFIRM} beside it"
+            );
+            ok_n == GC2BX_CONFIRM
+        };
+        soak_label(
+            g,
+            ["GC2BX 2 OF 3 SEARCH", "149.50 / 1 WARM", "REGISTERS"],
+            SOAK_BLUE,
+        );
+        let nbits = if emu { GC2BX_EMU_BITS } else { 32 };
+        let render_words = P2D_REGS.iter().chain(GC3T_REGS.iter()).copied();
+        let ta_words = GC2AY_REGS.iter().zip(ta_base.iter()).map(|(&o, &b)| (o, b));
+        for (wi, (off, base)) in render_words.chain(ta_words).enumerate() {
+            if emu && wi > 1 {
+                break;
+            }
+            for bit in 0..nbits {
+                let fix = Fix::Reg(off, base ^ (1 << bit));
+                if try_fix(g, &mut ondie, fix, first) && n_found < found.len() {
+                    found[n_found] = fix;
+                    n_found += 1;
+                }
+            }
+            if wi % 8 == 7 {
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "WORD {} TRIALS {}", wi + 1, trials.get());
+                soak_label(
+                    g,
+                    ["GC2BX 2 OF 3 SEARCH", "149.50 / 1 WARM", l3.as_str()],
+                    SOAK_BLUE,
+                );
+                log!(
+                    "  GC2BX search: {} words, {} trials, controls clean {} of {}, TEMP0 {:?}",
+                    wi + 1,
+                    trials.get(),
+                    controls.get().1,
+                    controls.get().0,
+                    gc2ba_temp(&mut touch)
+                );
+            }
+        }
+        soak_label(
+            g,
+            ["GC2BX 2 OF 3 SEARCH", "149.50 / 1 WARM", "TRIANGLE WORDS"],
+            SOAK_BLUE,
+        );
+        for w in 0..2 {
+            for bit in 0..nbits {
+                let fix = Fix::Word(w, 1 << bit);
+                if try_fix(g, &mut ondie, fix, first) && n_found < found.len() {
+                    found[n_found] = fix;
+                    n_found += 1;
+                }
+            }
+        }
+        for fix in [Fix::Rotate(1), Fix::Rotate(2), Fix::Layer] {
+            if try_fix(g, &mut ondie, fix, first) && n_found < found.len() {
+                found[n_found] = fix;
+                n_found += 1;
+            }
+        }
+        log!(
+            "  GC2BX search done: {} trials, {n_found} confirmed {:?}; controls clean {} of {} (0 means the generator held); TEMP0 {:?}",
+            trials.get(),
+            &found[..n_found],
+            controls.get().1,
+            controls.get().0,
+            gc2ba_temp(&mut touch)
+        );
+        // Part 3: the confirmed fixes on every frame (the layer is not a
+        // driver fix for meshes: its proof is the scene-3 forms only).
+        for &fix in found[..n_found].iter().take(GC2BX_PROOF_MAX) {
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "{fix:?}");
+            soak_label(
+                g,
+                ["GC2BX 3 OF 3 PROOF", "149.50 / 1 WARM", l3.as_str()],
+                SOAK_BLUE,
+            );
+            let mut wrong = [0u32; GC2BX_FRAMES.len()];
+            let mut done = [0u32; GC2BX_FRAMES.len()];
+            let mut best = [u32::MAX; GC2BX_FRAMES.len()];
+            for _ in 0..GC2BX_PROOF_ROUNDS {
+                for f in 0..nf {
+                    let ff = if fix == Fix::Layer && f >= 4 {
+                        nf + f - 4
+                    } else {
+                        f
+                    };
+                    let (w, us) = one(g, &mut ondie, ff, fix, first);
+                    let Some(w) = w else { continue };
+                    done[f] += 1;
+                    best[f] = best[f].min(us);
+                    wrong[f] += u32::from(w != 0);
+                }
+                rt::check_in();
+            }
+            for f in 0..nf {
+                log!(
+                    "  GC2BX proof {fix:?} {}: {} of {} wrong, fastest {} us",
+                    GC2BX_FRAMES[f],
+                    wrong[f],
+                    done[f],
+                    best[f]
+                );
+            }
+        }
+        if n_found == 0 {
+            log!("  GC2BX proof: no fix confirmed; nothing to prove");
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        gc2bx_clear(g, &mut ondie);
+        g.nudge = 0;
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BX: the on-die renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        log!("  GC2BX done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+    }
+
+    /// GC2BW's rounds: each frame and the control once a round, in turn.
+    const GC2BW_ROUNDS: u32 = if GC2_RENDERS < 20 { 2 } else { 500 };
+    /// GC2BW's frames, then the control (scene 3 without its layer, the
+    /// known crack, so the run shows the chip was in the faulting state).
+    const GC2BW_FRAMES: [(u8, &str); 4] = [
+        (gc2::MESH_FLAT, "the flat mesh on black"),
+        (gc2::MESH_LAYERED, "the flat mesh over a layer"),
+        (gc2::MESH_TEXTURED, "the textured mesh"),
+        (gc2::MESH_DEPTH, "the mesh depth tested"),
+    ];
+    /// How many wrong renders a frame describes.
+    const GC2BW_DESCRIBE: u32 = 4;
+
+    /// A mesh frame set into all of the renderer's slots.
+    fn gc2_set_mesh(g: &mut Rig, r: &mut Renderer, kind: u8, tex: gc2::Tex) {
+        let (bg, slots) = gc2::mesh_frame(kind, tex);
+        let _ = r.set_background(Some(bg));
+        for (n, d) in slots.into_iter().enumerate() {
+            g.set(r, n, d);
+        }
+    }
+
+    /// [`gc2_set_scene`] with the mesh slots past it cleared.
+    fn gc2_set_scene_clear(g: &mut Rig, r: &mut Renderer, scene: gc2::Scene, tex: gc2::Tex) {
+        gc2_set_scene(g, r, scene, tex);
+        for n in 2 * gc2::SLOTS..gc2::MESH_SLOTS {
+            g.set(r, n, None);
+        }
+    }
+
+    /// The wrong pixels of a 480 x 640 RGB565 picture `got` against `want`:
+    /// (count, box x0, y0, x1, y1, the first one's (x, y, got, want)).
+    fn gc2_diff565(got: &[u32], want: &[u32]) -> (u32, [u32; 4], (u32, u32, u16, u16)) {
+        let (mut n, mut b, mut f) = (0u32, [u32::MAX, u32::MAX, 0, 0], (0, 0, 0, 0));
+        for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+            if g == w {
+                continue;
+            }
+            for half in 0..2u32 {
+                let (gp, wp) = ((g >> (16 * half)) as u16, (w >> (16 * half)) as u16);
+                if gp == wp {
+                    continue;
+                }
+                let p = 2 * i as u32 + half;
+                let (x, y) = (p % 480, p / 480);
+                if n == 0 {
+                    f = (x, y, gp, wp);
+                }
+                n += 1;
+                b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+            }
+        }
+        (n, b, f)
+    }
+
+    /// Run GC2BW (see [`GC2_MESH`]): the crack in a game-shaped frame.
+    /// GC2BQ's warm-up; then on the on-die checker renderer at 149.50 / 1
+    /// with the shipped texture rule (the nudge on magnified axes), each of
+    /// [`GC2BW_FRAMES`] and the control once a round, in turn, for
+    /// [`GC2BW_ROUNDS`] rounds, every target poisoned, each frame's first
+    /// [`GC2BW_DESCRIBE`] wrong renders described (the wrong pixels' count,
+    /// box and first pixel).
+    #[inline(never)]
+    fn gc2_mesh(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let n_frames = GC2BW_FRAMES.len() + 1;
+        if all.len() < (1 + n_frames) * words {
+            log!("  GC2BW: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BW (R74): the crack in a game-shaped frame at 149.50 / 1 warm, the lists on the die, checker: {} frames of a watertight {} x {} quad mesh (flat on black, over a layer, textured, two depth tested) and scene 3 without its layer as the control, {GC2BW_ROUNDS} rounds in turn",
+            GC2BW_FRAMES.len(),
+            gc2::MESH_COLS,
+            gc2::MESH_ROWS
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BW TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BW: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.set_diagonal_flip(false);
+            rr.start_clean();
+        }
+        g.over = Over::NONE;
+        g.nudge = 0;
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BW warm-up") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BW", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        // The references at Windows Mobile's clock, on the on-die renderer.
+        g.nudge = GC2BO_NUDGE;
+        ondie.core_taken();
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        let control = gc2::Scene::Corner3(gc2::S3_AS_IS);
+        let (first, refs) = all.split_at_mut(words);
+        let set = |g: &mut Rig, rr: &mut Renderer, f: usize| {
+            if f < GC2BW_FRAMES.len() {
+                gc2_set_mesh(g, rr, GC2BW_FRAMES[f].0, tex);
+            } else {
+                gc2_set_scene_clear(g, rr, control, tex);
+            }
+        };
+        let mut ok = true;
+        for f in 0..n_frames {
+            set(g, &mut ondie, f);
+            let want = &mut refs[f * words..(f + 1) * words];
+            let mut name = heapless_name();
+            let _ = if f < GC2BW_FRAMES.len() {
+                write!(name, "GC2BW frame {f}")
+            } else {
+                write!(name, "GC2BW control")
+            };
+            ok &= gc2_reference(g, &mut ondie, (k, at), want, first, dsig, name.as_str());
+        }
+        if !ok {
+            log!("  GC2BW: a reference failed: nothing more run");
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
+        let mut poisons = [None; GC2BW_FRAMES.len() + 1];
+        for (f, p) in poisons.iter_mut().enumerate() {
+            *p = gc2::absent16(&refs[f * words..(f + 1) * words], &gc2::POISON);
+        }
+        let step = gc2_step(23, 2, 0, 1);
+        clock_restore(&mut g.e.regs);
+        if clock_apply(g, step).is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2BW: 149.50 / 1 didn't take: nothing more run");
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
+        clock_readback(g);
+        let top_regs = gc2_clock_want(step_speed(g, step), step.div);
+        let mut wrong = [0u32; GC2BW_FRAMES.len() + 1];
+        let mut done = [0u32; GC2BW_FRAMES.len() + 1];
+        let mut best = [u32::MAX; GC2BW_FRAMES.len() + 1];
+        for round in 0..GC2BW_ROUNDS {
+            if round % 50 == 0 {
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "ROUND {} OF {GC2BW_ROUNDS}", round + 1);
+                soak_label(
+                    g,
+                    ["GC2BW GAME FRAMES", "149.50 / 1 WARM", l3.as_str()],
+                    SOAK_BLUE,
+                );
+            }
+            for f in 0..n_frames {
+                set(g, &mut ondie, f);
+                if let Some(c) = poisons[f]
+                    && !poison_fill(g, at, c)
+                {
+                    continue;
+                }
+                let want = &refs[f * words..(f + 1) * words];
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(
+                    g,
+                    &mut ondie,
+                    (k, at),
+                    want,
+                    first,
+                    top_regs,
+                    &mut base,
+                    &mut side,
+                );
+                let Some(w) = w else { continue };
+                done[f] += 1;
+                best[f] = best[f].min(side.best_us);
+                if w != 0 {
+                    wrong[f] += 1;
+                    if wrong[f] <= GC2BW_DESCRIBE {
+                        let (n, b, (x, y, gp, wp)) = gc2_diff565(&first[..words], want);
+                        let name = if f < GC2BW_FRAMES.len() {
+                            GC2BW_FRAMES[f].1
+                        } else {
+                            "the control"
+                        };
+                        log!(
+                            "  GC2BW {name} wrong render {} (round {round}): {n} pixels wrong, box ({}, {})-({}, {}), first ({x}, {y}) 0x{gp:04x} for 0x{wp:04x}",
+                            wrong[f],
+                            b[0],
+                            b[1],
+                            b[2],
+                            b[3]
+                        );
+                    }
+                }
+            }
+            rt::check_in();
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        for f in 0..n_frames {
+            let name = if f < GC2BW_FRAMES.len() {
+                GC2BW_FRAMES[f].1
+            } else {
+                "the control (scene 3 without its layer)"
+            };
+            log!(
+                "  GC2BW {name}: {} of {} wrong at 149.50 / 1, fastest {} us",
+                wrong[f],
+                done[f],
+                best[f]
+            );
+        }
+        // The controls at Windows Mobile's clock after: every frame right.
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let mut right = 0;
+        for f in 0..n_frames {
+            set(g, &mut ondie, f);
+            let want = &refs[f * words..(f + 1) * words];
+            let mut side = Gc2Side::new(dsig);
+            let mut base = Gc2Baseline(None);
+            if gc2_render_at(
+                g,
+                &mut ondie,
+                (k, at),
+                want,
+                first,
+                wm,
+                &mut base,
+                &mut side,
+            ) == Some(0)
+            {
+                right += 1;
+            }
+        }
+        log!(
+            "  GC2BW controls at Windows Mobile's clock after: {right} of {n_frames} right; TEMP0 {:?}",
+            gc2ba_temp(&mut touch)
+        );
+        g.nudge = 0;
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BW: the on-die renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        log!("  GC2BW done, TEMP0 {:?}", gc2ba_temp(&mut touch));
     }
 
     const GC2BV_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 300 };
