@@ -244,6 +244,12 @@ watching.
   palette entries 0/1, high bit first. All 256 ROP3s are GDI's (B10);
   8 and 24 bpp fills (24 packed, blue first); header bit 21 suppresses the
   write (fills, copies); status bit 10 isn't "commands queued".
+- **3D texture row order** (`rp-gpubench` GC2CH, X51v, 2026-10-28):
+  TEX0 bit 0 = texels in plain rows (not twiddled), 16- and 32-bit, exact on
+  every pixel; the row stride is 8 texels whatever the size codes say; TEX1
+  bit 29 (nearest mip level) made it the declared width (32); no TEX0, TEX1,
+  TEX2 or render-block bit sets it otherwise. Texels sampled at the pixel's
+  corner.
 - **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
   2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
   ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,
