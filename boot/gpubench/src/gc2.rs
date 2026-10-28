@@ -2703,6 +2703,26 @@ fn flat_draw(c: u32) -> Draw {
     flat(c, false)
 }
 
+/// Run GC2BY's ladder for games (the owner, 2026-10-27: "make the test
+/// that test for game overclocking"): every divide-1 step GC2AK and GC2BB
+/// ran, fastest first, then 149.50 MHz with the core at divide 2; each
+/// `((m, n), divide, label)`, the system clock 13 MHz x m / n.
+pub const GAME_LADDER: [((u32, u32), u32, &str); 8] = [
+    ((23, 2), 1, "149.50 / 1"),
+    ((45, 4), 1, "146.25 / 1"),
+    ((44, 4), 1, "143.00 / 1"),
+    ((43, 4), 1, "139.75 / 1"),
+    ((41, 4), 1, "133.25 / 1"),
+    ((27, 3), 1, "117.00 / 1"),
+    ((25, 3), 1, "108.33 / 1"),
+    ((23, 2), 2, "149.50 / 2"),
+];
+/// GC2BY's rounds of the four game frames at each step (100: a frame
+/// wrong in 3% of renders shows with ~95%).
+pub const GAME_LADDER_ROUNDS: u32 = 100;
+/// GC2BY's game frames ([`mesh_frame`]'s four).
+pub const GAME_FRAMES: [u8; 4] = [MESH_FLAT, MESH_LAYERED, MESH_TEXTURED, MESH_DEPTH];
+
 /// GC2BU's forms of scene 3 without its layer: as is, the depth path, the
 /// depth written only, the rectangles half a pixel over, the other
 /// diagonal, as is again.

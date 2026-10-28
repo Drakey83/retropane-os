@@ -176,9 +176,13 @@ textured sweep 0 of 2,200, the ring 0 of 300, the 20-minute soak 0 of
 
 ## Next, when the chase resumes
 
-1. **Measure the game frames on the warm ladder** (146.25, 143.00,
-   139.75, 133.25 / 1): the highest clean step for games is what the
-   temperature guard (R76) must step down to. Not yet measured.
+1. **Run GC2BY** (built and emulator-checked 2026-10-27:
+   the flag `RP_GPUBENCH_GC2_GAMES=1`,
+   `cargo xtask codegen-variant rp-gpubench gc2by`, about 25 minutes, the
+   owner's go first): the four game meshes warm at 149.50, 146.25,
+   143.00, 139.75, 133.25, 117.00, 108.33 / 1 and 149.50 / 2. The highest
+   step with every frame right is the game-safe speed and the
+   temperature guard's (R76) step. Not yet run.
 2. Start from the deterministic generator (scene 3 split TL-BR, 300 of
    300 at peak heat) for any coverage idea: one render answers it.
    Untried ideas: the ISP's own settings for edge rules or sample

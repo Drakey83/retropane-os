@@ -2909,3 +2909,36 @@ fn gc2bw_mesh_frames() {
         assert_eq!(z(i), Some((rp_mbx3d_render::depth::GREATER, 0xB000)));
     }
 }
+
+#[test]
+fn gc2by_game_ladder() {
+    // Each step's label is its clock: 13 MHz x m / n, the divide after.
+    for ((m, n), div, label) in GAME_LADDER {
+        let khz = 13_000 * m / n;
+        let want = format!("{}.{:02} / {div}", khz / 1000, (khz % 1000 + 5) / 10);
+        assert_eq!(label, want);
+    }
+    // Fastest first at divide 1, then divide 2 last; every step a GC2AK or
+    // GC2BB step (no new clock).
+    let mhz: Vec<u32> = GAME_LADDER
+        .iter()
+        .filter(|s| s.1 == 1)
+        .map(|s| 13_000 * s.0.0 / s.0.1)
+        .collect();
+    assert!(mhz.windows(2).all(|w| w[0] > w[1]));
+    assert_eq!(
+        GAME_LADDER[GAME_LADDER.len() - 1],
+        ((23, 2), 2, "149.50 / 2")
+    );
+    for (pll, div, _) in GAME_LADDER {
+        let proven = LADDER_STEPS.iter().any(|s| s.0 == pll && s.1 == div)
+            || [(45, 4), (44, 4)].contains(&pll);
+        assert!(proven, "{pll:?}");
+    }
+    assert_eq!(
+        GAME_FRAMES,
+        [MESH_FLAT, MESH_LAYERED, MESH_TEXTURED, MESH_DEPTH]
+    );
+    // 100 rounds: a frame wrong in 3% of renders shows with ~95%.
+    assert!((1.0 - 0.03f64).powi(GAME_LADDER_ROUNDS as i32) < 0.05);
+}

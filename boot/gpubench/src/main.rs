@@ -7997,6 +7997,7 @@ mod image {
         || GC2_SEAL
         || GC2_MESH
         || GC2_FIXES
+        || GC2_GAMES
         || GC2_664
         || GC2_TIMER
         || GC2_WHERE
@@ -8345,6 +8346,14 @@ mod image {
     /// order, the layer; the confirmed fixes on every frame. About 30
     /// minutes, unattended.
     const GC2_FIXES: bool = option_env!("RP_GPUBENCH_GC2_FIXES").is_some();
+
+    /// Run GC2BY, reminder R76 (`RP_GPUBENCH_GC2_GAMES`): the game frames
+    /// (GC2BW's watertight meshes: flat, over a layer, textured, depth
+    /// tested) on the warm ladder, 149.50 down to 108.33 / 1 and 149.50 /
+    /// 2, with the shipped cures, to find the highest step clean for games
+    /// (the temperature guard's step; GC2BX: every mesh render wrong at
+    /// 149.50 / 1). About 25 minutes, unattended.
+    const GC2_GAMES: bool = option_env!("RP_GPUBENCH_GC2_GAMES").is_some();
 
     /// GC2AG's moved parameter memory: the frozen map's second 32-bit
     /// screen (`0x340000`, 1.2 MiB, unused by the GC2 runs inside the safe
@@ -9728,6 +9737,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2AU, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 = 15 against a clean control, with each of its bits 4-31, and in every tile order, at 149.50 / 1; each target poisoned first),"
             } else if GC2_664 {
                 "the 16-bit kinds' targets inside the safe region (GC2AS, R69: no map; GC2AM's every-render texel fault, the opaque path's, with 0x664 bits 0-3 at each of 16 values, 20 renders each beside a control with the value in 0x6FC, at 149.50 / 1; each target poisoned first),"
+            } else if GC2_GAMES {
+                "the 16-bit kinds' targets inside the safe region (GC2BY, R76: no map; the game frames, watertight meshes flat, layered, textured and depth tested, on the warm ladder 149.50 down to 108.33 / 1 and 149.50 / 2 with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_FIXES {
                 "the 16-bit kinds' targets inside the safe region (GC2BX, R74 and R69: no map; the game test and every driver-level fix, the meshes beside scene 3 and the generator, a one-render search of every register, triangle-word bit, vertex order and the layer, the confirmed fixes on every frame, at 149.50 / 1 warm with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_MESH {
@@ -9990,6 +10001,7 @@ mod image {
             || GC2_SEAL
             || GC2_MESH
             || GC2_FIXES
+            || GC2_GAMES
         {
             gc2::CORNER_FLAT.len() * gc2::words(gc2::FT2) as usize
         } else if GC2_NUDGE || GC2_NUDGE_SIZE {
@@ -10386,6 +10398,8 @@ mod image {
                     gc2_timer(g, &mut r, (tex, first, dsig));
                 } else if GC2_664 {
                     gc2_664(g, &mut r, (tex, first, dsig));
+                } else if GC2_GAMES {
+                    gc2_games(g, &mut r, (tex, first, dsig));
                 } else if GC2_FIXES {
                     gc2_fixes(g, &mut r, (tex, first, dsig));
                 } else if GC2_MESH {
@@ -16971,6 +16985,226 @@ mod image {
         }
         let _ = g.pool.free(ta, bytes);
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+    }
+
+    /// GC2BY's rounds a step (the emulator 1).
+    const GC2BY_ROUNDS: u32 = if GC2_RENDERS < 20 {
+        1
+    } else {
+        gc2::GAME_LADDER_ROUNDS
+    };
+    const GC2BY_NAMES: [&str; 4] = [
+        "the flat mesh on black",
+        "the flat mesh over a layer",
+        "the textured mesh",
+        "the mesh depth tested",
+    ];
+
+    /// Run GC2BY (see [`GC2_GAMES`]): the game frames on the warm ladder.
+    /// GC2BQ's warm-up; the four frames' references at Windows Mobile's
+    /// clock on the on-die checker renderer with the shipped texture rule;
+    /// then at each of [`gc2::GAME_LADDER`], fastest first, the chip kept
+    /// warm by drawing, [`GC2BY_ROUNDS`] rounds of the four frames in turn,
+    /// every target poisoned, each frame's wrong renders, fastest render
+    /// and `TEMP0` logged, its first two wrong renders described; the
+    /// steps that drew every frame right named at the end.
+    #[inline(never)]
+    fn gc2_games(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let nf = gc2::GAME_FRAMES.len();
+        if all.len() < (2 + nf) * words {
+            log!("  GC2BY: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        log!(
+            "  GC2BY (R76): the game frames on the warm ladder, the lists on the die, checker, the shipped texture rule: {nf} watertight-mesh frames, {GC2BY_ROUNDS} rounds at each of {} steps (149.50 down to 108.33 / 1, then 149.50 / 2), fastest first",
+            gc2::GAME_LADDER.len()
+        );
+        let gpio = rt::take_gpio().map(|m| RefCell::new(Gpio::new(m)));
+        let mut touch = gc2ba_touch(gpio.as_ref());
+        log!("  GC2BY TEMP0 at the start: {:?}", gc2ba_temp(&mut touch));
+        let Some(mut ondie) = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE)
+        else {
+            log!("  GC2BY: no renderer with its parameter memory on the die: nothing run");
+            return;
+        };
+        for rr in [&mut *r, &mut ondie] {
+            rr.set_header_xor(0, 0);
+            rr.set_tsp_or(0);
+            rr.set_diagonal_flip(false);
+            gc2bx_clear(g, rr);
+            rr.start_clean();
+        }
+        g.nudge = 0;
+        {
+            let (first, rest) = all.split_at_mut(words);
+            let want = &mut rest[..words];
+            r.set_tile_order(tile_order(gc2::REVERSED));
+            let scene = gc2::CORNER_FLAT[GC2AY_SCENE];
+            gc2_set_scene(g, r, scene, tex);
+            if !gc2_reference(g, r, (k, at), want, first, dsig, "GC2BY warm-up") {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            let poison = gc2::absent16(want, &gc2::POISON);
+            let (m, n) = gc2::NIGHT_PLL;
+            let s = gc2_step(m, n, 0, 1);
+            let mut one = |g: &mut Rig, r: &mut Renderer, regs: [u32; 5]| -> (Option<u32>, u32) {
+                gc2_set_scene(g, r, scene, tex);
+                if let Some(c) = poison
+                    && !poison_fill(g, at, c)
+                {
+                    return (None, 0);
+                }
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
+                (w, side.best_us)
+            };
+            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BY", &["A"]) {
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        }
+        // The references at Windows Mobile's clock.
+        g.nudge = GC2BO_NUDGE;
+        ondie.core_taken();
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        let (first, refs) = all.split_at_mut(words);
+        let mut ok = true;
+        for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+            gc2_set_mesh(g, &mut ondie, kind, tex);
+            let want = &mut refs[f * words..(f + 1) * words];
+            let mut name = heapless_name();
+            let _ = write!(name, "GC2BY frame {f}");
+            ok &= gc2_reference(g, &mut ondie, (k, at), want, first, dsig, name.as_str());
+        }
+        if !ok {
+            log!("  GC2BY: a reference failed: nothing more run");
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
+        let poisons: [Option<u16>; gc2::GAME_FRAMES.len()] = core::array::from_fn(|f| {
+            gc2::absent16(&refs[f * words..(f + 1) * words], &gc2::POISON)
+        });
+        let mut clean_steps = 0u32;
+        for (si, ((m, n), div, name)) in gc2::GAME_LADDER.iter().enumerate() {
+            let step = gc2_step(*m, *n, 0, *div);
+            clock_restore(&mut g.e.regs);
+            let Some(lock) = clock_apply(g, step) else {
+                clock_restore(&mut g.e.regs);
+                log!("  GC2BY {name}: the clock didn't take; skipped");
+                continue;
+            };
+            clock_readback(g);
+            let regs = gc2_clock_want(step_speed(g, step), step.div);
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "STEP {} OF {}", si + 1, gc2::GAME_LADDER.len());
+            soak_label(g, ["GC2BY GAME LADDER", name, l3.as_str()], SOAK_BLUE);
+            let mut wrong = [0u32; gc2::GAME_FRAMES.len()];
+            let mut done = [0u32; gc2::GAME_FRAMES.len()];
+            let mut best = [u32::MAX; gc2::GAME_FRAMES.len()];
+            for round in 0..GC2BY_ROUNDS {
+                for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                    gc2_set_mesh(g, &mut ondie, kind, tex);
+                    if let Some(c) = poisons[f]
+                        && !poison_fill(g, at, c)
+                    {
+                        continue;
+                    }
+                    let want = &refs[f * words..(f + 1) * words];
+                    let mut side = Gc2Side::new(false);
+                    let mut base = Gc2Baseline(None);
+                    let Some(w) = gc2_render_at(
+                        g,
+                        &mut ondie,
+                        (k, at),
+                        want,
+                        first,
+                        regs,
+                        &mut base,
+                        &mut side,
+                    ) else {
+                        continue;
+                    };
+                    done[f] += 1;
+                    best[f] = best[f].min(side.best_us);
+                    if w != 0 {
+                        wrong[f] += 1;
+                        if wrong[f] <= 2 {
+                            let (np, b, (x, y, gp, wp)) = gc2_diff565(&first[..words], want);
+                            log!(
+                                "  GC2BY {name} {} wrong render {} (round {round}): {np} pixels, box ({}, {})-({}, {}), first ({x}, {y}) 0x{gp:04x} for 0x{wp:04x}",
+                                GC2BY_NAMES[f],
+                                wrong[f],
+                                b[0],
+                                b[1],
+                                b[2],
+                                b[3]
+                            );
+                        }
+                    }
+                }
+                rt::check_in();
+            }
+            let all_right =
+                wrong.iter().all(|&w| w == 0) && done.iter().all(|&d| d == GC2BY_ROUNDS);
+            clean_steps |= u32::from(all_right) << si;
+            log!(
+                "  GC2BY {name} (lock {lock}): wrong of {GC2BY_ROUNDS} by frame {wrong:?}, drawn {done:?}, fastest by frame {best:?} us; every frame right: {all_right}; TEMP0 {:?}",
+                gc2ba_temp(&mut touch)
+            );
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        let mut list = Name::<256>::new();
+        for (si, (_, _, name)) in gc2::GAME_LADDER.iter().enumerate() {
+            if clean_steps & (1 << si) != 0 {
+                let _ = write!(list, "{name}; ");
+            }
+        }
+        log!(
+            "  GC2BY steps with every game frame right: {}",
+            if list.as_str().is_empty() {
+                "none"
+            } else {
+                list.as_str()
+            }
+        );
+        // The controls at Windows Mobile's clock after.
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let mut right = 0;
+        for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+            gc2_set_mesh(g, &mut ondie, kind, tex);
+            let want = &refs[f * words..(f + 1) * words];
+            let mut side = Gc2Side::new(dsig);
+            let mut base = Gc2Baseline(None);
+            if gc2_render_at(
+                g,
+                &mut ondie,
+                (k, at),
+                want,
+                first,
+                wm,
+                &mut base,
+                &mut side,
+            ) == Some(0)
+            {
+                right += 1;
+            }
+        }
+        log!("  GC2BY controls at Windows Mobile's clock after: {right} of {nf} right");
+        g.nudge = 0;
+        if !ondie.release(&mut g.pool) {
+            log!("  GC2BY: the on-die renderer's memory not given back");
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        log!("  GC2BY done, TEMP0 {:?}", gc2ba_temp(&mut touch));
     }
 
     /// GC2BX's game rounds (part 1), proof rounds (part 3), and confirming

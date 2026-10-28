@@ -5449,6 +5449,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2by = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_GAMES", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+            ("RP_GPUBENCH_SOAK_SECS", "20"),
+        ],
+    )?;
     let run_gc2bx = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5714,7 +5723,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 117] = [
+    let runs: [GpubenchRun; 118] = [
         (
             "run A",
             &run_a,
@@ -6057,6 +6066,27 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2AS 0x664 = 0: 20 of 20 renders right",
                 "GC2AS 0x664 = 15: 20 of 20 renders right, words wrong total 0 (0x6FC = 15: 20 of 20 right, total 0)",
                 "GC2AS: renders right by value [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] of 20 each; the control at Windows Mobile's clock after: Some(0) words off",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2BY (R76): the game ladder, shortened (the emulator draws
+        // exactly: every step clean).
+        (
+            "run GC2BY",
+            &run_gc2by,
+            &[
+                "GC2BY (R76): the game frames on the warm ladder",
+                "GC2BY warm-up reference:",
+                "GC2BY A slice 10: ",
+                "GC2BY frame 3 reference:",
+                "GC2BY 149.50 / 1 (lock ",
+                "GC2BY 108.33 / 1 (lock ",
+                "GC2BY 149.50 / 2 (lock ",
+                "GC2BY steps with every game frame right: 149.50 / 1; 146.25 / 1; 143.00 / 1; 139.75 / 1; 133.25 / 1; 117.00 / 1; 108.33 / 1; 149.50 / 2; ",
+                "GC2BY controls at Windows Mobile's clock after: 4 of 4 right",
+                "GC2BY done, TEMP0",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
