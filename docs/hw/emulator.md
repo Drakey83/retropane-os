@@ -149,6 +149,14 @@ each was proven on the X51v, not by the emulator.
 
 ## Known emulator issues
 
+- **A 3D render into a 16-bit screen writes one row past its area**
+  (rp-next-032, `rp-scene` R110, 2026-10-29): a scene of 480 x 448 at row 96
+  rendered into screen 0 leaves all of row 544 (960 bytes) as 32-bit colour
+  words (`0xff301010`, the scene's colours). **The X51v does not** (run 2,
+  card log scene-0002: the two screens and every reference equal band for
+  band after every compared frame). A fork bug in the 3D core's write-out
+  (likely the last tile row written at 32 bits or one row long); to fix in
+  the fork, with `rp-scene`'s band comparison as its check.
 - **Windows release only: no second enumeration after the loader's
   reconnect** (rp-v0.15.0, rp-v0.16.0 and rp-v0.17.0; Linux CI and the WSL
   build of the same tag pass). It fails every check where an image runs

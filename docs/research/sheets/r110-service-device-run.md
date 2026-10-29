@@ -102,3 +102,36 @@ the first and last differing words).
 Next (not run): log the signatures the run reads, and compare screen 0 and
 screen 1 word for word after a frame, to find whether the shown picture
 differs from the reference's (a stale part of one screen) or the reading does.
+
+## Run 2 on the X51v, 2026-10-29 (card log scene-0002, `local/rp-scene-run2.txt`)
+The judging works now: every compared one-off frame showed exactly its
+reference (24 of 24, band by band, both screens equal), each read its
+reference's `DSIG`, and the four whole pictures are distinct. **Row 544's
+stray write is the emulator's only** (the X51v's screens never differed:
+`docs/hw/emulator.md`). The service's side as in run 1: held 0, copy stalls
+0, failed 0, recovered 0, the clock step clean, stack 9,792 of 16,384.
+
+| Phase | Frames | Behind / by the copy | Refreshes judged | Torn | Of them 2D-first mixes | Never shown whole | Ask to first whole refresh |
+|---|---|---|---|---|---|---|---|
+| WM clock, rows, back to back | 150 | 113 / 37 | 753 | 226 | 37 | | |
+| WM clock, rows, one-off | 50 | 37 / 13 | 353 | 50 | 0 | 3 | median 77.4 ms, worst 85.3 |
+| 149.50 / 2, rows, back to back | 150 | 150 / 0 | 491 | 151 | 0 | | |
+| 149.50 / 2, rows, one-off | 50 | 50 / 0 | 281 | 55 | 1 | 0 | median 51.1 ms, worst 61.8 |
+| 149.50 / 2, checkerboard, back to back | 150 | 0 / 150 | 491 | **2** | 0 | | |
+| 149.50 / 2, checkerboard, one-off | 50 | 0 / 50 | 292 | **0** | 0 | 0 | median 56.3 ms, worst 61.8 |
+
+**What it means.** Frames that go by the copy (render into screen 1, copy
+into screen 0 behind the scan) are tear-free through the service: 2 torn
+refreshes in 783, as GC2DF found in the bench. **Frames started behind the
+scan on screen 0 tear about one refresh each** (151 in 150 frames back to
+back, 55 in 50 one-off at 149.50 / 2; 50 in 50 one-off at Windows Mobile's
+clock), and nearly all of those refreshes are unlike any whole picture or
+hand-off mix (each torn one a different signature), so they are real tears,
+not the 2D-first hand-off. GC2CZ in the bench had 120 of 120 such frames
+tear-free, so the difference is in the service's path (its start line, its
+window, or 2D's change copied into screen 0 while the scan reads it). At
+Windows Mobile's clock, 37 back-to-back frames went by the copy and showed
+exactly 37 2D-first mixes: there the bar reached the screen a refresh
+before the scene. Open, for the owner: where the behind-the-scan tear
+comes from (the next step is logging each frame's start line, window and
+render time against the refresh it tore), and the hand-off at that clock.
