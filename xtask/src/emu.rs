@@ -5657,6 +5657,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2ct = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_LINES", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cs = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5967,7 +5976,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 138] = [
+    let runs: [GpubenchRun; 139] = [
         (
             "run A",
             &run_a,
@@ -6585,6 +6594,22 @@ fn variant_images_gpubench(
                 "GC2CO one render, overlapped:",
                 "GC2CM set 1 check:",
                 "GC2CO done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CT: 480 x 320 with the graphics plane's line doubling
+        // alone, and as 480-wide UYVY through the video plane's vertical
+        // scale, four labelled photos (the run's shape).
+        (
+            "run GC2CT",
+            &run_gc2ct,
+            &[
+                "GC2CT 1 GDRCTRL 0x2",
+                "GC2CT 1 TEXTURED FRAME LINE DOUBLING ONLY: rendered Some(",
+                "GC2CT 4 FLAT FRAME SMOOTH DOWN AS UYVY: rendered Some(",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

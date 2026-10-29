@@ -17565,7 +17565,7 @@ mod image {
             GC2BB_PARAMS.at
         );
         let planes0 = Snapshot::take(&mut g.e.regs);
-        if GC2CA_LOOK {
+        if GC2CA_LOOK || GC2CA_LINES {
             gc2cs_run(g, tex, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
             log!("  GC2CA done");
@@ -20202,10 +20202,30 @@ mod image {
     /// Where GC2CS's UYVY picture goes: after the 240 x 320 RGB one.
     const GC2CS_UYVY: u32 = GC2CA_A + 2 * 240 * 320;
 
-    /// The 240 x 320 RGB565 picture at `rgb` as UYVY at `yuv`, GC2CC's
+    /// Run GC2CT (`RP_GPUBENCH_GC2_HALF_LINES`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R78 item 2 (the owner, 2026-10-28: "lets do that cheap test"):
+    /// GC2CS showed 480 x 320 RGB wrong through the video plane's vertical
+    /// scaler at 480 wide. Two other ways to the screen, GC2CS's method
+    /// (labelled photos, a button each), the textured and the flat frame:
+    /// the graphics plane with `GDRCTRL`'s line doubling alone (bit 29,
+    /// Intel 4.12.1.3; Dell's 2x sets bits 31 and 29): blocky down only,
+    /// sharp across, free; and the same picture as 480-wide UYVY (CPU-made,
+    /// BT.601) through the video plane's vertical-only scale: whether the
+    /// width limit is RGB's or any format's.
+    const GC2CA_LINES: bool = option_env!("RP_GPUBENCH_GC2_HALF_LINES").is_some();
+    const GC2CT_WAYS: [((u16, u16), u8, &str, &str); 2] = [
+        ((480, 320), 4, "LINE DOUBLING ONLY", "5 LINES 2X"),
+        ((480, 320), 5, "SMOOTH DOWN AS UYVY", "6 UYVY DOWN"),
+    ];
+    /// GC2CT's 480-wide UYVY: after the 480 x 320 RGB picture, to the lists.
+    const GC2CT_UYVY: u32 = GC2CA_A + 2 * 480 * 320;
+    const _: () = assert!(GC2CT_UYVY + 2 * 480 * 320 <= GC2BB_PARAMS.at);
+
+    /// The `w` x 320 RGB565 picture at `rgb` as UYVY at `yuv`, GC2CC's
     /// BT.601 integer coefficients (each pair's chroma from its mean).
-    fn gc2cs_uyvy(g: &mut Rig, rgb: u32, yuv: u32) {
-        let mut row = [0u32; 120];
+    fn gc2cs_uyvy(g: &mut Rig, rgb: u32, yuv: u32, w: u32) {
+        let mut buf = [0u32; 240];
+        let row = &mut buf[..w as usize / 2];
         let px = |w: u32| {
             let (r, gg, b) = ((w >> 11) & 0x1F, (w >> 5) & 0x3F, w & 0x1F);
             (r << 3 | r >> 2, gg << 2 | gg >> 4, b << 3 | b >> 2)
@@ -20215,7 +20235,7 @@ mod image {
             for (i, out) in row.iter_mut().enumerate() {
                 let w = g
                     .mem
-                    .load((rgb + y * 480 + 4 * i as u32) as usize)
+                    .load((rgb + y * 2 * w + 4 * i as u32) as usize)
                     .unwrap_or(0);
                 let (p0, p1) = (px(w & 0xFFFF), px(w >> 16));
                 let (r, gg, b) = (
@@ -20227,7 +20247,7 @@ mod image {
                 let v = (((112 * r - 94 * gg - 18 * b + 128) >> 8) + 128) as u32;
                 *out = u | luma(p0) << 8 | v << 16 | luma(p1) << 24;
             }
-            g.mem.store((yuv + y * 480) as usize, &row);
+            g.mem.store((yuv + y * 2 * w) as usize, row);
             if y % 64 == 63 {
                 rt::check_in();
             }
@@ -20240,7 +20260,13 @@ mod image {
     fn gc2cs_run(g: &mut Rig, tex: gc2::Tex, planes0: &Snapshot) {
         let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
         let mut cur: Option<((u16, u16), Renderer)> = None;
-        let n = GC2CA_WATCH_FRAMES.len() * GC2CS_WAYS.len();
+        let ways: &[((u16, u16), u8, &str, &str)] = if GC2CA_LINES {
+            &GC2CT_WAYS
+        } else {
+            &GC2CS_WAYS
+        };
+        let tag = if GC2CA_LINES { "GC2CT" } else { "GC2CS" };
+        let n = GC2CA_WATCH_FRAMES.len() * ways.len();
         let mut k = 0;
         for &kind in &GC2CA_WATCH_FRAMES {
             let fname = if kind == gc2::MESH_TEXTURED {
@@ -20248,7 +20274,7 @@ mod image {
             } else {
                 "FLAT FRAME"
             };
-            for &(size, how, name, label) in &GC2CS_WAYS {
+            for &(size, how, name, label) in ways {
                 k += 1;
                 let mut l1 = heapless_name();
                 let _ = write!(l1, "PHOTO {k} OF {n}");
@@ -20284,10 +20310,21 @@ mod image {
                 match how {
                     0 => gc2ca_show(g, GC2CA_NATIVE, size, GC2CA_A, planes0),
                     1 => gc2ca_show(g, GC2CA_DELL, size, GC2CA_A, planes0),
+                    4 => {
+                        // The picture on the graphics plane, its lines
+                        // doubled and its pixels not.
+                        gc2ca_show(g, GC2CA_NATIVE, size, GC2CA_A, planes0);
+                        let v = g.e.regs.read32(rp_drv_mbx_display::reg::GDRCTRL);
+                        g.e.regs
+                            .write32(rp_drv_mbx_display::reg::GDRCTRL, (v & !(1 << 31)) | 1 << 29);
+                    }
                     _ => {
                         let (f, at) = if how == 3 {
-                            gc2cs_uyvy(g, GC2CA_A, GC2CS_UYVY);
+                            gc2cs_uyvy(g, GC2CA_A, GC2CS_UYVY, 240);
                             (VideoFormat::Uyvy, GC2CS_UYVY)
+                        } else if how == 5 {
+                            gc2cs_uyvy(g, GC2CA_A, GC2CT_UYVY, 480);
+                            (VideoFormat::Uyvy, GC2CT_UYVY)
                         } else {
                             (VideoFormat::Rgb565, GC2CA_A)
                         };
@@ -20307,19 +20344,28 @@ mod image {
                         );
                     }
                 }
+                log!(
+                    "  {tag} {k} GDRCTRL 0x{:08x}",
+                    g.e.regs.read32(rp_drv_mbx_display::reg::GDRCTRL)
+                );
                 let held = gc2ca_hold_button(g, 120_000_000);
                 log!(
-                    "  GC2CS {k} {fname} {name}: rendered {drawn:?} us (core, whole); held {} ms",
+                    "  {tag} {k} {fname} {name}: rendered {drawn:?} us (core, whole); held {} ms",
                     held / 1000
                 );
                 rp_drv_mbx_display::video_hide(&mut g.e.regs);
+                let v = g.e.regs.read32(rp_drv_mbx_display::reg::GDRCTRL);
+                g.e.regs
+                    .write32(rp_drv_mbx_display::reg::GDRCTRL, v & !(1 << 31 | 1 << 29));
             }
         }
         if let Some((_, rr)) = cur.take() {
             let _ = rr.release(&mut g.pool);
         }
         g.nudge = nudge;
-        gc2ca_card(g, planes0, ["GC2CS DONE", "THANK YOU", ""]);
+        let mut done = heapless_name();
+        let _ = write!(done, "{tag} DONE");
+        gc2ca_card(g, planes0, [done.as_str(), "THANK YOU", ""]);
     }
 
     /// Run GC2CP (`RP_GPUBENCH_GC2_HALF_ROUTES`, with `RP_GPUBENCH_GC2_HALF`),
