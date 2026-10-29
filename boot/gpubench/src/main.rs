@@ -20409,6 +20409,9 @@ mod image {
     /// (two triangles at Windows Mobile's clock): wrong pictures, the core's
     /// time and the whole frame's, and each frame's set-up and words.
     const GC2CU: bool = option_env!("RP_GPUBENCH_GC2_HALF_QUADS").is_some();
+    /// GC2CU's kinds pass too (`RP_GPUBENCH_GC2_QUADS_KINDS`: the emulator's
+    /// check; on the X51v 13 of 13 the same in GC2CU's first run).
+    const GC2CU_KINDS: bool = option_env!("RP_GPUBENCH_GC2_QUADS_KINDS").is_some();
     /// Run GC2CV (`RP_GPUBENCH_GC2_HALF_QUADFIT`, with `RP_GPUBENCH_GC2_HALF`),
     /// R93 after GC2CU: how the textured four-corner object fills a warped
     /// quad (GC2CU: right as rectangles, wrong on the warped game mesh). At
@@ -20658,7 +20661,7 @@ mod image {
         };
         let (cur, conv) = (&mut held.0, &mut held.1);
         {
-            if gc2cp_references(g, cur, tex, (first, refs)) {
+            if gc2cp_references(g, cur, (tex, Objects::Triangles), (first, refs)) {
                 let clocks = [
                     (gc2_step(23, 4, 0, 1), "74.75 / 1"),
                     (gc2_step(44, 4, 0, 1), "143.00 / 1"),
@@ -20878,10 +20881,33 @@ mod image {
             &GC2CP_SIZES[..2],
             GC2BB_PARAMS.at
         );
-        let (same, differ) = gc2cu_kinds(g, kinds, tex, &mut all[..GC2CU_KIND_WORDS]);
+        // The kinds (13 of 13 the same on the X51v, GC2CU's first run)
+        // only where asked (the emulator's check).
+        let (same, differ) = if GC2CU_KINDS {
+            gc2cu_kinds(g, kinds, tex, &mut all[..GC2CU_KIND_WORDS])
+        } else {
+            (0, 0)
+        };
         let (first, refs) = all.split_at_mut(full);
-        let mut quads_wrong = 0;
-        if gc2cp_references(g, cur, tex, (first, refs)) {
+        // Each form against its own references at Windows Mobile's clock
+        // (GC2CV: the two forms differ only where a pixel's texel is an
+        // exact tie, 98 pixels of the textured mesh).
+        let forms = [
+            ("GC2CU triangles", Objects::Triangles),
+            ("GC2CU quads", Objects::Quads),
+        ];
+        let mut wrong = [u32::MAX; 2];
+        for (n, &(tag, form)) in forms.iter().enumerate() {
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+            if let Some((_, rr)) = cur.take() {
+                let _ = rr.release(&mut g.pool);
+            }
+            if !gc2cp_references(g, cur, (tex, form), (first, refs)) {
+                log!("  {tag}: a game frame's reference failed: no clock run");
+                continue;
+            }
+            wrong[n] = 0;
             let clocks = [
                 (gc2_step(23, 4, 0, 1), "74.75 / 1"),
                 (gc2_step(44, 4, 0, 1), "143.00 / 1"),
@@ -20890,27 +20916,27 @@ mod image {
                 clock_restore(&mut g.e.regs);
                 if clock_apply(g, step).is_none() {
                     clock_restore(&mut g.e.regs);
-                    log!("  GC2CU {cname}: the clock didn't take; skipped");
+                    log!("  {tag} {cname}: the clock didn't take; skipped");
                     continue;
                 }
                 clock_readback(g);
-                quads_wrong += gc2cu_clock(g, cur, tex, (first, refs), cname);
+                wrong[n] += gc2cu_clock(g, cur, (tex, tag, form), (first, refs), cname);
             }
-            clock_restore(&mut g.e.regs);
-            clock_readback(g);
-        } else {
-            log!("  GC2CU: a game frame's reference failed: no clock run");
         }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
         if let Some((_, rr)) = cur.take() {
             let _ = rr.release(&mut g.pool);
         }
         g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
         g.nudge = nudge;
         log!(
-            "  GC2CU done: {} ms; kinds drawn the same both ways at Windows Mobile's clock: {same} of {} (different: {}); four-corner game frames wrong where two triangles were right: {quads_wrong}",
+            "  GC2CU done: {} ms; kinds drawn the same both ways at Windows Mobile's clock: {same} of {} (different: {}); game frames wrong against their own form's references: triangles {}, four-corner objects {}",
             us_since(t0) / 1000,
             gc2::KINDS.len(),
-            Kinds(differ)
+            Kinds(differ),
+            wrong[0],
+            wrong[1]
         );
         gc2ca_card(g, planes0, ["GC2CU DONE", "", ""]);
     }
@@ -21027,14 +21053,13 @@ mod image {
         }
     }
 
-    /// GC2CU at one clock: the game frames at 480 x 640 and 480 x 320, two
-    /// triangles then four-corner objects. Frames wrong as four-corner
-    /// objects where two triangles drew every one right.
+    /// GC2CU at one clock: the game frames at 480 x 640 and 480 x 320 in
+    /// `form`, against references in the same form. Frames wrong.
     #[inline(never)]
     fn gc2cu_clock(
         g: &mut Rig,
         cur: &mut Option<((u16, u16), Renderer)>,
-        tex: gc2::Tex,
+        (tex, tag, form): (gc2::Tex, &str, Objects),
         (first, refs): (&mut [u32], &[u32]),
         cname: &str,
     ) -> u32 {
@@ -21043,27 +21068,18 @@ mod image {
             let _ = rr.release(&mut g.pool);
         }
         g.nudge = GC2BO_NUDGE;
-        let forms = [
-            ("GC2CU triangles", Objects::Triangles),
-            ("GC2CU quads", Objects::Quads),
-        ];
-        let mut worse = 0;
+        let mut wrong = 0;
         for wi in 0..2 {
             for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
                 rt::check_in();
                 let mut l2 = heapless_name();
                 let _ = write!(l2, "{cname} SIZE {} FRAME {}", wi + 1, f + 1);
                 soak_label(g, ["GC2CU BOTH FORMS", l2.as_str(), ""], SOAK_BLUE);
-                let mut wrong = [0u32; 2];
-                for (n, &(tag, objects)) in forms.iter().enumerate() {
-                    let job = (wi, f, kind);
-                    wrong[n] =
-                        gc2cp_plain(g, cur, tex, (first, refs), job, (tag, cname, objects)).1;
-                }
-                worse += u32::from(wrong[1] > 0 && wrong[0] == 0);
+                let job = (wi, f, kind);
+                wrong += gc2cp_plain(g, cur, tex, (first, refs), job, (tag, cname, form)).1;
             }
         }
-        worse
+        wrong
     }
 
     /// GC2CP's conversion renderer (GC2CO's 120 x 960, its lists in the
@@ -21106,7 +21122,7 @@ mod image {
     fn gc2cp_references(
         g: &mut Rig,
         cur: &mut Option<((u16, u16), Renderer)>,
-        tex: gc2::Tex,
+        (tex, objects): (gc2::Tex, Objects),
         (first, refs): (&mut [u32], &mut [u32]),
     ) -> bool {
         g.nudge = GC2BO_NUDGE;
@@ -21117,6 +21133,7 @@ mod image {
                 let Some(rr) = gc2cp_take(g, cur, size) else {
                     return false;
                 };
+                rr.set_objects(objects);
                 gc2ca_set_mesh(g, rr, kind, tex, size);
                 g.resets = rr.core_resets();
                 let t = gc2ca_render(g, rr, size, GC2CA_A);

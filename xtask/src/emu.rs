@@ -5690,6 +5690,7 @@ fn variant_images_gpubench(
         &[
             ("RP_GPUBENCH_GC2_HALF", "1"),
             ("RP_GPUBENCH_GC2_HALF_QUADS", "1"),
+            ("RP_GPUBENCH_GC2_QUADS_KINDS", "1"),
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
@@ -6725,7 +6726,7 @@ fn variant_images_gpubench(
                 // doesn't model (docs/hw/emulator.md): its first render
                 // writes 32-bit pixels at the 16-bit stride. Every other kind
                 // must draw the same; the X51v must show 13 of 13.
-                "kinds drawn the same both ways at Windows Mobile's clock: 12 of 13 (different: 1); four-corner game frames wrong where two triangles were right: 0",
+                "kinds drawn the same both ways at Windows Mobile's clock: 12 of 13 (different: 1); game frames wrong against their own form's references: triangles 0, four-corner objects 0",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
