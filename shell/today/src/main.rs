@@ -197,6 +197,33 @@ mod image {
         let mut d = Display::new(regs);
         let _ = d.adopt(MBX_VRAM_SIZE as usize);
         let before = Snapshot::take(d.regs());
+        // R105: the state the picture is shown through, for the owner's
+        // look check against the decided one (display-calibration.md,
+        // 2026-10-22: the S-curve 1.75, saturation 1.2x): the build's
+        // look, the display's gamma switch and table, the backlight.
+        {
+            use rp_drv_mbx_display::reg;
+            use rp_hal_api::RegisterBus as _;
+            let r = d.regs();
+            let gsctrl = r.read32(reg::GSCTRL);
+            let mut gam = [0u32; 17];
+            for (k, g) in gam.iter_mut().enumerate() {
+                *g = r.read32(reg::GFXGAM0 + 4 * k);
+            }
+            let pwm = rt::take_pwm0().map(|mut p| (p.read32(0), p.read32(4), p.read32(8)));
+            let _ = writeln!(
+                RunLog,
+                "look: {} (curve 1.75, saturation {}/{}); GSCTRL {gsctrl:08X}, gamma table {}; GFXGAM {gam:06X?}; backlight PWM0 (CR, DCR, PCR) {pwm:X?}",
+                if rp_draw::look::ON {
+                    "the default picture"
+                } else {
+                    "Original (RP_PICTURE_ORIGINAL)"
+                },
+                rp_draw::look::SAT_NUM,
+                rp_draw::look::SAT_DEN,
+                if gsctrl & 1 << 26 != 0 { "on" } else { "off" },
+            );
+        }
 
         // ADR-0023: the 2D engine draws; no CPU layer in SDRAM.
         let Some(two_d) = TWO_D.put_with(|| {
