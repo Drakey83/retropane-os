@@ -229,3 +229,33 @@ three for your eye in the morning.
   `target/variants/gc2da/rp-gpubench.bin`: the flat and the textured frame
   at 240 x 320, each shown three ways (mbxfb, fitted, Dell's doubling),
   each until a button (6 photos). Not shipped until you judge.
+
+## 6. R77: G9's log, fixed and run again
+
+**In plain English:** G9 failed because its register dump is bigger than
+the loader's run log. Its emulator check now reads the run's card log
+(which holds everything, as on the Axim), and it passes. On the Axim tonight
+G9 ran whole again: both dumps complete on the card. One stale value in
+the check was also wrong (it expected a clock setting Windows Mobile never
+uses); it now expects the measured one. Nothing was loosened.
+
+**Detail:**
+
+- **The class fix:** `boot_loader_glesfeat_g9` gives the emulator boot an
+  SD card image and checks the run's card log (256 KiB a run), as
+  `emu-gpubench` does; every original check kept (1,024 MBX, 56 SYS and
+  every PXA line a dump, both "ends", no frozen register read).
+- **A stale constant found by it:** the check wanted `MBXCLK 0x6` read
+  back after the run; the X51v reads `0x5` (Windows Mobile's own, run 26's
+  hand-off, and G9's device run of 2026-10-23), so the check never could
+  pass. Now `0x5`. The same `0x6` sits in the other G tests' check
+  (emu.rs, the controls' read-back); they pass on the emulators as they
+  are, so it is left for your word (it may hide the same staleness).
+- **Emulator:** `emu-glesfeat` G9 OK on the WM-clocks build ("both dumps
+  whole, back at the loader"); on the pinned release it fails only that
+  clock check (the release starts the clocks at 0).
+- **On the X51v** (`local/rp-glesfeat-G9-2.txt`, card log glesfeat-0028
+  read back to `local/rp-glesfeat-G9-2-card.txt`): read back `COREPLL
+  0xbb1 MBXCLK 0x5`, both dumps whole (2,296 lines), done, returned. G9's
+  own measurement: 797 words off its reference at 74.75 / 1 (the
+  Gouraud-at-divide-1 behaviour G9 dumps for; recorded, not analysed).

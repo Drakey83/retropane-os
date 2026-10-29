@@ -3563,16 +3563,30 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
         mon.query("sendkey ret 200")?;
         Ok(())
     };
+    // G9's two register dumps outgrow the loader's 64 KiB run log (R77):
+    // the check reads the run's card log, which holds 256 KiB (the X51v's
+    // G9 card log holds both dumps whole), as emu-gpubench's runs do.
+    let card = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 1024,
+        sectors_per_cluster: 8,
+        files: &[],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let sd = scratch(root, "sd-glesfeat-g9.img")?;
+    std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let mut input = rp_loadproto::control_frame("name glesfeat");
+    input.extend(rp_loadproto::frame(&payload));
     let output = boot(
         root,
         &Boot {
             image: &loader,
             marker: LOADER_MARKER,
             screenshot: None,
-            sd_image: None,
+            sd_image: Some(&sd),
             steps: &[],
             extra: &[],
-            input: Some((&rp_loadproto::frame(&payload), "full loader div1: ends")),
+            input: Some((&input, "RPL OK sha256")),
             during: Some(&check),
             then: Some("RPL END"),
             // The emulator writes the ~2,300 lines a dump slowly: 900 s saw
@@ -3580,10 +3594,24 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
             timeout: Duration::from_secs(2700),
         },
     )?;
-    let log = output
+    let run_log = output
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("glesfeat G9: never came back to the loader")?;
+    if crashed(run_log) || run_log.contains("did not return") {
+        return Err(format!("glesfeat G9: didn't return cleanly:{run_log}"));
+    }
+    let file = slot_file(&sd, "glesfeat", 1).map_err(|e| format!("glesfeat G9: {e}"))?;
+    let raw = card_file(&sd, &file).map_err(|e| format!("glesfeat G9: card log: {e}"))?;
+    let card_log: Vec<u8> = rp_hal_x51v::cardlog::join(Some(&raw), None).collect();
+    let card_log = String::from_utf8_lossy(&card_log).replace("
+", "
+");
+    if !card_log.contains("[card log closed: the run returned") {
+        return Err(format!("glesfeat G9: the card log wasn't closed as a run that returned:{card_log}"));
+    }
+    let log = card_log.as_str();
+
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat G9: didn't return cleanly:{log}"));
     }
@@ -3618,7 +3646,11 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
             }
         }
     }
-    if !log.contains("read back: COREPLL 0xbb1 MBXCLK 0x6") {
+    // Windows Mobile's clock as the X51v leaves it (run 26's hand-off,
+    // 2700g.md: `MBXCLK 0x5`; G9's device run read back exactly this): the
+    // emulator's WM-clocks build starts there too. (This check said `0x6`,
+    // never true on the device: R77.)
+    if !log.contains("read back: COREPLL 0xbb1 MBXCLK 0x5") {
         return Err(format!(
             "glesfeat G9: Windows Mobile's clock not read back:{log}"
         ));
