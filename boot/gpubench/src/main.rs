@@ -8107,7 +8107,18 @@ mod image {
         || GC2_TIMER
         || GC2_WHERE
         || GC2_BAND
-        || GC2_TIMER_ALL;
+        || GC2_TIMER_ALL
+        || GC2_DIV2;
+
+    /// GC2I's soak at divide 2 alone (`RP_GPUBENCH_GC2I_DIV2`; the ruling
+    /// packet of 2026-10-29, ruling 3: the ladder at divide 2 needs a soak
+    /// there with the screen in the safe region; GC2S's divide-2 results
+    /// were 20 renders a kind a setting). No map, no divide-1 render:
+    /// 149.50 / 2 then 133.25 / 2, [`SOAK_SECS`] each, every kind (the
+    /// 16-bit ones inside the safe region, the 32-bit ones where GC2S drew
+    /// them, as at GC2S's divide-2 settings), stopping at the first wrong
+    /// render.
+    const GC2_DIV2: bool = option_env!("RP_GPUBENCH_GC2I_DIV2").is_some();
 
     /// Run GC2AE, reminder R69 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -10748,10 +10759,17 @@ mod image {
     }
 
     /// Run GC2I's soak settings.
-    const GC2I_SOAK: [(ClockStep, &str); 2] = [
-        (gc2_step(23, 3, 0, 1), "99.67 / 1"),
-        (gc2_step(41, 4, 0, 1), "133.25 / 1"),
-    ];
+    const GC2I_SOAK: [(ClockStep, &str); 2] = if GC2_DIV2 {
+        [
+            (gc2_step(23, 2, 0, 2), "149.50 / 2"),
+            (gc2_step(41, 4, 0, 2), "133.25 / 2"),
+        ]
+    } else {
+        [
+            (gc2_step(23, 3, 0, 1), "99.67 / 1"),
+            (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+        ]
+    };
 
     /// Run GC2I's soak: at each of [`GC2I_SOAK`] for [`SOAK_SECS`], the
     /// clock held, the 16-bit kinds (inside the safe region) rendered in
@@ -10768,11 +10786,16 @@ mod image {
         first: &mut [u32],
         dsig: bool,
     ) {
-        let kinds = || GC2_KINDS.filter(|&k| gc2::fits_inside(k));
+        let kinds = || GC2_KINDS.filter(|&k| GC2_DIV2 || gc2::fits_inside(k));
         let minutes = SOAK_SECS.div_ceil(60);
         log!(
-            "  GC2I soak: {} kinds inside the safe region at {} settings, {minutes} min each, stopping at the first wrong render",
+            "  GC2I soak: {} kinds ({}) at {} settings, {minutes} min each, stopping at the first wrong render",
             kinds().count(),
+            if GC2_DIV2 {
+                "the 16-bit ones inside the safe region, the 32-bit ones outside"
+            } else {
+                "inside the safe region"
+            },
             GC2I_SOAK.len()
         );
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
@@ -21102,6 +21125,20 @@ mod image {
     /// overnight order 2026-10-29: the pipelined ways at no divide-1 step
     /// above 74.75).
     const GC2CP_LOW: bool = option_env!("RP_GPUBENCH_GC2_HALF_ROUTES_LOW").is_some();
+    /// Way (e) with every frame checked (`RP_GPUBENCH_GC2CP_EVERY`; the
+    /// ruling packet of 2026-10-29, G4): 100 frames a kind, each one's
+    /// picture read back against the reference after its wait (frame k + 1's
+    /// lists already written during it: the overlap under test) and the
+    /// target poisoned again before the next starts, so a pixel a frame
+    /// misses can't hide under the last frame's. Its times include the
+    /// checks: not a speed run.
+    const GC2CP_EVERY: bool = option_env!("RP_GPUBENCH_GC2CP_EVERY").is_some();
+    /// Way (e)'s frames a kind.
+    const GC2CP_FRAMES: usize = if GC2CP_EVERY {
+        100
+    } else {
+        GC2CP_REPS as usize + 1
+    };
     /// Run GC2CU (`RP_GPUBENCH_GC2_HALF_QUADS`, with `RP_GPUBENCH_GC2_HALF`),
     /// R78 item 3 (R93): each quad as one four-corner object
     /// (`Objects::Quads`) against two triangles on the X51v. At Windows
@@ -22322,7 +22359,9 @@ mod image {
             g.e.after_core_reset();
         }
         ok &= gc2ca_fill(g, GC2CA_A, size, poison);
-        let mut starts = [0u32; GC2CP_REPS as usize + 1];
+        let mut starts = [0u32; GC2CP_FRAMES];
+        // GC2CP_EVERY: frames checked, frames wrong, the most words off one.
+        let (mut checked, mut wrong, mut worst) = (0u32, 0u32, 0u32);
         // Frame 0's lists (renderer a) written before the clock starts.
         a.invalidate_all();
         ok &= a.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, t) == Ok(true);
@@ -22350,7 +22389,25 @@ mod image {
             ok = gc2cp_wait(g, now, d) && prepared;
             prep += t1.wrapping_sub(t0);
             wait += rt::ticks().wrapping_sub(t1);
+            if ok && GC2CP_EVERY {
+                match read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n]) {
+                    Some(0) => {}
+                    Some(w) => {
+                        wrong += 1;
+                        worst = worst.max(w);
+                    }
+                    None => ok = false,
+                }
+                checked += 1;
+                ok &= k + 1 == starts.len() || gc2ca_fill(g, GC2CA_A, size, poison);
+            }
             k += 1;
+        }
+        if GC2CP_EVERY {
+            log!(
+                "  GC2CP {cname} {wname} frame {f}: every frame checked: {checked} of {}, {wrong} wrong, the most words off one {worst}",
+                starts.len()
+            );
         }
         let end = rt::ticks();
         let off = read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n]);

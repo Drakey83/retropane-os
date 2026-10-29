@@ -117,6 +117,23 @@ pub const WARM_SECS: u32 = match option_env!("RP_CS3BUS_WARM_SECS") {
     None => 300,
 };
 
+/// The timing steps 2-4 try (`RP_CS3BUS_CANDIDATE`, three digits RDF RDN
+/// RRR, e.g. `420`; `buscheck::FAST` by default). A test-only negative
+/// control: run 2 read every word wrong at RDF 4 (memory-timing.md), so a
+/// check run there must report misses and keep 7/3/1, or it is blind.
+pub const CANDIDATE: (u32, u32, u32) = match option_env!("RP_CS3BUS_CANDIDATE") {
+    Some(v) => {
+        let b = v.as_bytes();
+        assert!(b.len() == 3, "RP_CS3BUS_CANDIDATE: three digits");
+        (
+            (b[0] - b'0') as u32,
+            (b[1] - b'0') as u32,
+            (b[2] - b'0') as u32,
+        )
+    }
+    None => rp_hal_pxa27x::buscheck::FAST,
+};
+
 const fn parse_secs(v: &str) -> u32 {
     let b = v.as_bytes();
     let (mut n, mut k) = (0u32, 0);
@@ -132,8 +149,8 @@ mod image {
     use core::fmt::Write;
 
     use super::{
-        GRID, MARKER, Pattern, SELFTEST, WARM_SECS, WM_CS3, WM_MSC1, clocks_per_beat, mix,
-        with_margin,
+        CANDIDATE, GRID, MARKER, Pattern, SELFTEST, WARM_SECS, WM_CS3, WM_MSC1, clocks_per_beat,
+        mix, with_margin,
     };
     use rp_drv_blit2d::{self as cmd, Engine, Format};
     use rp_drv_mbx_display::{Display, Plane, console::Console};
@@ -601,8 +618,9 @@ mod image {
             PATTERN_BYTES / 1024,
             6 * 2 * PATTERN_BYTES / 4,
             buscheck::DEFAULT,
-            buscheck::FAST
+            CANDIDATE
         );
+        let (f, n, r) = CANDIDATE;
         let set = |t: buscheck::Timing| diag::set_cs3_vlio(t.0, t.1, t.2);
         let show = |r: &buscheck::Report| (r.transfers, r.misses, r.first, r.passed());
         label(
@@ -620,15 +638,19 @@ mod image {
         label(
             vram,
             plane,
-            format_args!("CS3 BUS CHECK (R71)\nSTEP 2 OF 4: 7/2/0 COLD"),
+            format_args!("CS3 BUS CHECK (R71)\nSTEP 2 OF 4: {f}/{n}/{r} COLD"),
         );
-        let m = set(buscheck::FAST);
+        let m = set(CANDIDATE);
         let cold = bus_check(vram);
-        let _ = writeln!(RunLog, "7/2/0 cold (MSC1 {m:08X?}): {:?}", show(&cold));
+        let _ = writeln!(
+            RunLog,
+            "{f}/{n}/{r} cold (MSC1 {m:08X?}): {:?}",
+            show(&cold)
+        );
         label(
             vram,
             plane,
-            format_args!("CS3 BUS CHECK (R71)\nSTEP 3 OF 4: WARM, {WARM_SECS} S\nAT 7/2/0"),
+            format_args!("CS3 BUS CHECK (R71)\nSTEP 3 OF 4: WARM, {WARM_SECS} S\nAT {f}/{n}/{r}"),
         );
         let t0 = rt::ticks();
         let (mut rounds, mut misses) = (0u32, 0u32);
@@ -647,25 +669,29 @@ mod image {
         }
         let _ = writeln!(
             RunLog,
-            "warm traffic at 7/2/0: {rounds} rounds (flush {} KiB and 2D fill each, every word checked) in {} s, {misses} misses",
+            "warm traffic at {f}/{n}/{r}: {rounds} rounds (flush {} KiB and 2D fill each, every word checked) in {} s, {misses} misses",
             FLUSH_BYTES / 1024,
             us(rt::ticks().wrapping_sub(t0)) / 1_000_000
         );
         label(
             vram,
             plane,
-            format_args!("CS3 BUS CHECK (R71)\nSTEP 4 OF 4: 7/2/0 WARM"),
+            format_args!("CS3 BUS CHECK (R71)\nSTEP 4 OF 4: {f}/{n}/{r} WARM"),
         );
         let warm = (misses == 0).then(|| bus_check(vram));
-        let _ = writeln!(RunLog, "7/2/0 warm: {:?}", warm.as_ref().map(show));
+        let _ = writeln!(RunLog, "{f}/{n}/{r} warm: {:?}", warm.as_ref().map(show));
         let (pick, default_ok) = buscheck::pick(&d, &cold, warm.as_ref());
+        // `pick` names FAST when the candidate passed (it is FAST unless
+        // `RP_CS3BUS_CANDIDATE` set a negative control).
+        let earned = pick != buscheck::DEFAULT;
+        let pick = if earned { CANDIDATE } else { pick };
         let _ = writeln!(
             RunLog,
-            "self-test pick: {pick:?} ({}); the default {}",
-            if pick == buscheck::FAST {
-                "7/2/0 passed cold and warm"
+            "self-test pick: {pick:?} ({f}/{n}/{r} {}); the default {}",
+            if earned {
+                "passed cold and warm"
             } else {
-                "7/2/0 not earned: 7/3/1 kept"
+                "not earned: 7/3/1 kept"
             },
             if default_ok {
                 "passed"

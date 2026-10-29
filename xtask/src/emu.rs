@@ -4907,12 +4907,28 @@ fn gpubench_expect(
 /// R71's bus check (`rp-cs3bus` built with `RP_CS3BUS_SELFTEST`, two
 /// seconds of warm traffic): the fork models no bus timing, so every check
 /// passes and 7/2/0 is picked; the run's shape and the restore are checked.
+///
+/// Then the negative control (`RP_CS3BUS_CANDIDATE=420`, the ruling packet of
+/// 2026-10-29): the same check with 4/2/0 tried in place of 7/2/0. The fork
+/// reads right at any timing, so here it passes too: only its shape (the
+/// candidate named in every step and the pick) is checked; the X51v must
+/// show the misses.
 fn cs3bus_selftest(root: &Path, dir: &Path, loader: &Path) -> Result<(), String> {
-    let img = variant_image_envs(
-        root,
-        "rp-cs3bus",
-        &[("RP_CS3BUS_SELFTEST", "1"), ("RP_CS3BUS_WARM_SECS", "2")],
-    )?;
+    cs3bus_selftest_one(root, dir, loader, None)?;
+    cs3bus_selftest_one(root, dir, loader, Some("420"))
+}
+
+fn cs3bus_selftest_one(
+    root: &Path,
+    dir: &Path,
+    loader: &Path,
+    candidate: Option<&str>,
+) -> Result<(), String> {
+    let mut envs = vec![("RP_CS3BUS_SELFTEST", "1"), ("RP_CS3BUS_WARM_SECS", "2")];
+    if let Some(c) = candidate {
+        envs.push(("RP_CS3BUS_CANDIDATE", c));
+    }
+    let img = variant_image_envs(root, "rp-cs3bus", &envs)?;
     let _ = dir;
     let payload = std::fs::read(&img).map_err(|e| format!("{}: {e}", img.display()))?;
     let output = boot(
@@ -4938,12 +4954,25 @@ fn cs3bus_selftest(root: &Path, dir: &Path, loader: &Path) -> Result<(), String>
         eprintln!("    cs3bus self-test OK: MSC1 isn't Windows Mobile's here, nothing changed");
         return Ok(());
     }
+    let (cold, warm, pick) = if candidate.is_some() {
+        (
+            "4/2/0 cold (MSC1 ",
+            "warm traffic at 4/2/0: ",
+            "self-test pick: (4, 2, 0) (4/2/0 passed cold and warm); the default passed",
+        )
+    } else {
+        (
+            "7/2/0 cold (MSC1 ",
+            "warm traffic at 7/2/0: ",
+            "self-test pick: (7, 2, 0) (7/2/0 passed cold and warm); the default passed",
+        )
+    };
     for want in [
         "cs3bus self-test (R71): six patterns over 512 KiB",
         "default 7/3/1 (MSC1 ",
-        "7/2/0 cold (MSC1 ",
-        "warm traffic at 7/2/0: ",
-        "self-test pick: (7, 2, 0) (7/2/0 passed cold and warm); the default passed",
+        cold,
+        warm,
+        pick,
         "MSC1 restored 24842481",
         "RETROPANE-CS3BUS-DONE",
     ] {
@@ -4952,7 +4981,8 @@ fn cs3bus_selftest(root: &Path, dir: &Path, loader: &Path) -> Result<(), String>
         }
     }
     eprintln!(
-        "    cs3bus self-test OK: both checks clean (no bus timing modelled), 7/2/0 picked, MSC1 put back"
+        "    cs3bus self-test OK ({}): both checks clean (no bus timing modelled), the candidate picked, MSC1 put back",
+        candidate.unwrap_or("720")
     );
     Ok(())
 }
@@ -5780,6 +5810,26 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cp_every = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_ROUTES", "1"),
+            ("RP_GPUBENCH_GC2_HALF_ROUTES_LOW", "1"),
+            ("RP_GPUBENCH_GC2CP_EVERY", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
+    let run_gc2i_div2 = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2I_DIV2", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "1"),
+            ("RP_GPUBENCH_SOAK_SECS", "10"),
+        ],
+    )?;
     let run_gc2cu = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6128,7 +6178,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 146] = [
+    let runs: [GpubenchRun; 148] = [
         (
             "run A",
             &run_a,
@@ -6924,6 +6974,32 @@ fn variant_images_gpubench(
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
+            false,
+            (0, 0, 0),
+        ),
+        // GC2CP low with way (e)'s every frame checked (the ruling packet of
+        // 2026-10-29, G4): 100 frames a kind, each read back and the target
+        // poisoned again.
+        (
+            "run GC2CP every",
+            &run_gc2cp_every,
+            &[
+                "GC2CP WM 99.67 / 2 (e) 480 x 320, two frames in flight frame 0: every frame checked: 100 of 100, 0 wrong",
+                "GC2CP 74.75 / 1 (e) 480 x 320, two frames in flight frame 3: every frame checked: 100 of 100, 0 wrong",
+                "GC2CP done:",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // GC2I's soak at divide 2 alone (the ruling packet, ruling 3): no
+        // map, 149.50 / 2 and 133.25 / 2, every kind; 10 s a setting here.
+        // Runs to its end and returns (the pinned release doesn't model
+        // Windows Mobile's clock: stepped on the wm-clocks build).
+        (
+            "run GC2I divide 2",
+            &run_gc2i_div2,
+            &["RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
