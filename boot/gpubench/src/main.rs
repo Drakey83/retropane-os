@@ -19156,6 +19156,101 @@ mod image {
         Some(gc2dd_hashes(g))
     }
 
+    /// R108 run 3: the display frame now scanning, from `DVLNUM`'s wraps
+    /// ([`gc2::FrameCount`]), with the line's period measured on the X51v.
+    struct Gc2ddFrames {
+        count: gc2::FrameCount,
+        at: u32,
+        line_ns: u32,
+    }
+
+    impl Gc2ddFrames {
+        /// The line's period over 64 frames from line 0 to line 0;
+        /// `FRAME_US`'s share if the scan line doesn't run (the emulator's
+        /// can't be timed), said by the `bool`.
+        fn measured(g: &mut Rig) -> (Self, bool) {
+            const N: u32 = 64;
+            let fallback = FRAME_US * 1000 / gc2::FRAME_LINES;
+            let mut timed = gc2dc_at_line(g, 0);
+            let t0 = rt::ticks();
+            for _ in 0..N {
+                timed &= gc2dc_at_line(g, 1) && gc2dc_at_line(g, 0);
+            }
+            let ns = u64::from(us_since(t0)) * 1000 / u64::from(N * gc2::FRAME_LINES);
+            let ns = u32::try_from(ns).unwrap_or(0);
+            // Inside 10% of the panel's 60 Hz frame, or not taken.
+            timed &= ns.abs_diff(fallback) < fallback / 10;
+            let line_ns = if timed { ns } else { fallback };
+            let line = scan_line(g);
+            (
+                Self {
+                    count: gc2::FrameCount::new(line),
+                    at: rt::ticks(),
+                    line_ns,
+                },
+                timed,
+            )
+        }
+
+        /// The frame now scanning and the line.
+        fn now(&mut self, g: &mut Rig) -> (u32, u32) {
+            let line = scan_line(g);
+            let t = rt::ticks();
+            let gap = t.wrapping_sub(self.at) / 13 * 4;
+            self.at = t;
+            (self.count.observe(line, gap, self.line_ns), line)
+        }
+
+        /// `DSIG` and the frame it belongs to (the one before the frame
+        /// scanning, published at line 2): `None` before line 3 or if the
+        /// frame turned during the read.
+        fn dsig(&mut self, g: &mut Rig) -> Option<(u32, u32)> {
+            let (a, line) = self.now(g);
+            let v = g.e.regs.read32(DSIG);
+            let (b, _) = self.now(g);
+            (a == b && line >= 3).then(|| (a.wrapping_sub(1), v))
+        }
+    }
+
+    /// R108 run 3: each display frame's `DSIG` judged once, by the frame
+    /// it belongs to.
+    #[derive(Default)]
+    struct Gc2ddJudge {
+        /// The loop's first frame; earlier reads aren't its.
+        from: u32,
+        /// The last frame judged (reads come in order).
+        last: Option<u32>,
+        judged: u32,
+        whole: u32,
+        wrong_route: u32,
+        torn: u32,
+        first_torn: Option<(u32, u32)>,
+        /// First frames after a switch judged.
+        after_switch: u32,
+    }
+
+    impl Gc2ddJudge {
+        /// Frame `frame`'s signature `read` against `route`'s (`sig`),
+        /// `other` the route that isn't; a frame judged already, or before
+        /// the loop, is passed over. `true` if judged.
+        fn take(&mut self, frame: u32, read: u32, sig: &[u32; 3], route: u8, other: u8) -> bool {
+            if frame < self.from || self.last.is_some_and(|l| frame <= l) {
+                return false;
+            }
+            self.last = Some(frame);
+            self.judged += 1;
+            if read == sig[usize::from(route)] {
+                self.whole += 1;
+            } else if read == sig[usize::from(other)] {
+                self.wrong_route += 1;
+            } else {
+                self.torn += 1;
+                self.first_torn.get_or_insert((frame - self.from, read));
+            }
+            true
+        }
+    }
+
     /// Run GC2DD (see [`GC2DD`]).
     #[inline(never)]
     #[allow(clippy::too_many_lines)]
@@ -19272,12 +19367,16 @@ mod image {
             if warm.is_none() {
                 log!("  GC2DD long {}: the first renderer not set up", gi + 1);
             }
-            let (mut whole, mut wrong_route, mut torn, mut missed) = (0u32, 0u32, 0u32, 0u32);
+            let (mut frames, timed) = Gc2ddFrames::measured(g);
+            let mut judge = Gc2ddJudge::default();
+            let mut missed = 0u32;
             let (mut rendered, mut failed, mut late) = (0u32, 0u32, 0u32);
             let (mut switches, mut busy_switch, mut busy_other) = (0u32, 0u32, 0u32);
             let (mut takes, mut take_late, mut take_max) = (0u32, 0u32, 0u32);
             let (mut span_min, mut span_max, mut span_sum) = (u32::MAX, 0u32, 0u64);
-            let mut first_torn = None;
+            // The frame the route last changed on, and the route before.
+            let (mut switched_on, mut before) = (0u32, route);
+            let mut first = None;
             for f in 0..=GC2DC_LONG_FRAMES {
                 let switch = f > 0 && f % gap == 0 && f < GC2DC_LONG_FRAMES;
                 // The live renderer draws its own route's picture again (the
@@ -19298,8 +19397,13 @@ mod image {
                 if due.is_none() {
                     failed += 1;
                 }
+                let mut switched = None;
                 if gc2dc_at_line(g, 0) {
-                    let before = route;
+                    let (now, _) = frames.now(g);
+                    if first.is_none() {
+                        first = Some(now);
+                        judge.from = now;
+                    }
                     // The core still drawing as the registers are written
                     // (the run's point: counted, not assumed).
                     let busy =
@@ -19307,24 +19411,22 @@ mod image {
                     if switch {
                         switches += 1;
                         busy_switch += u32::from(busy);
+                        before = route;
                         route = other(route);
+                        switched_on = now;
+                        switched = Some(now);
                         gc2dc_way_show(g, 3, route, GC2DD_AT, planes0);
                     } else {
                         busy_other += u32::from(busy);
                     }
-                    // Line 3: frame f - 1's signature, held to the route it
-                    // showed.
+                    // Line 3: the frame before's signature, held to the
+                    // route it showed.
                     let t0 = rt::ticks();
                     while scan_line(g) < 3 && us_since(t0) < FRAME_US {}
-                    let read = g.e.regs.read32(DSIG);
-                    if f > 0 && live_sig {
-                        if read == sig[usize::from(before)] {
-                            whole += 1;
-                        } else if read == sig[usize::from(other(before))] {
-                            wrong_route += 1;
-                        } else {
-                            torn += 1;
-                            first_torn.get_or_insert((f, read));
+                    if let Some((fr, read)) = frames.dsig(g) {
+                        let r = if fr < switched_on { before } else { route };
+                        if live_sig {
+                            judge.take(fr, read, &sig, r, other(r));
                         }
                     }
                 } else {
@@ -19345,6 +19447,28 @@ mod image {
                     }
                     if scan_line(g) >= GC2DD_START {
                         late += 1;
+                    }
+                }
+                // Run 3: the first frame shown after a switch read at the
+                // next frame's line 3, before the new renderer's set-up
+                // (up to 24 ms) can pass it unread.
+                if let Some(s) = switched {
+                    let t0 = rt::ticks();
+                    loop {
+                        if let Some((fr, read)) = frames.dsig(g) {
+                            if fr >= s {
+                                if fr == s
+                                    && live_sig
+                                    && judge.take(fr, read, &sig, route, other(route))
+                                {
+                                    judge.after_switch += 1;
+                                }
+                                break;
+                            }
+                        }
+                        if us_since(t0) > 2 * FRAME_US {
+                            break;
+                        }
                     }
                 }
                 // After a switch: the new route's renderer taken and set up
@@ -19369,15 +19493,30 @@ mod image {
                     rt::check_in();
                 }
             }
+            // The frames from the loop's first to the last judged.
+            let span = match (first, judge.last) {
+                (Some(a), Some(b)) => b - a + 1,
+                _ => 0,
+            };
             let hashes = gc2dd_hashes(g);
             log!(
-                "  GC2DD long {} way C' at 149.50 / 2 a switch every {gap} frames, rendering across each: {GC2DC_LONG_FRAMES} frames: {whole} the route in place whole, {wrong_route} the other route whole, {torn} NEITHER ROUTE (first {first_torn:x?}), {missed} lines missed{}; {switches} switches, {busy_switch} written with the core drawing; {busy_other} of the other frames' line 0 with it drawing; renders {rendered} done, {failed} failed, {late} still running at line {GC2DD_START}, start to seen done fastest {} us slowest {span_max} us mean {} us; {takes} new renderers set up after a switch, the slowest {take_max} us, {take_late} past line {GC2DD_START}; the pictures afterwards {}",
+                "  GC2DD long {} way C' at 149.50 / 2 a switch every {gap} frames, rendering across each: {GC2DC_LONG_FRAMES} passes over {span} display frames (a line {} ns{}, {} frames passed between looks): {} judged by DSIG, {} not read; {} the route in place whole, {} the other route whole, {} NEITHER ROUTE (first {:x?}), {missed} lines missed{}; {switches} switches, {busy_switch} written with the core drawing, the first frame after {} of them judged; {busy_other} of the other frames' line 0 with it drawing; renders {rendered} done, {failed} failed, {late} still running at line {GC2DD_START}, start to seen done fastest {} us slowest {span_max} us mean {} us; {takes} new renderers set up after a switch, the slowest {take_max} us, {take_late} past line {GC2DD_START}; the pictures afterwards {}",
                 gi + 1,
+                frames.line_ns,
+                if timed { ", measured" } else { ", NOT MEASURED: the 60 Hz frame's" },
+                frames.count.inferred,
+                judge.judged,
+                span - judge.judged.min(span),
+                judge.whole,
+                judge.wrong_route,
+                judge.torn,
+                judge.first_torn,
                 if live_sig {
                     ""
                 } else {
                     " (not judged: no DSIG, or the signatures not steady and different)"
                 },
+                judge.after_switch,
                 if rendered == 0 { 0 } else { span_min },
                 span_sum / u64::from(rendered.max(1)),
                 if hashes == refs {

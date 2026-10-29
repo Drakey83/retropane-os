@@ -3174,3 +3174,39 @@ fn r79_frames() {
         }
     }
 }
+
+/// R108 run 3's frame count at its edges: no wrap, a wrap seen by the
+/// lines, gaps of whole frames by time (line ahead, behind and equal), the
+/// half-frame rounding both ways, and a line read past the frame's end.
+#[test]
+fn frame_count_wraps_and_gaps() {
+    const NS: u32 = 25_727;
+    let us = |lines: u32| lines * NS / 1000;
+    let mut c = FrameCount::new(600);
+    // Forward inside the frame: no wrap.
+    assert_eq!(c.observe(640, us(40), NS), 0);
+    // Across line 0 in a short gap: one wrap seen.
+    assert_eq!(c.observe(3, us(8), NS), 1);
+    assert_eq!(c.inferred, 0);
+    // A gap of a whole frame and a few lines: one by time.
+    assert_eq!(c.observe(10, us(645 + 7), NS), 2);
+    assert_eq!(c.inferred, 1);
+    // The same line a whole frame later (the lines say nothing).
+    assert_eq!(c.observe(10, us(645), NS), 3);
+    // Two and a half frames ending lower: one wrap seen, two by time.
+    assert_eq!(c.observe(5, us(2 * 645 + 640), NS), 6);
+    assert_eq!(c.inferred, 4);
+    // A time shorter than the lines (the clock's error): the lines win.
+    assert_eq!(c.observe(300, us(200), NS), 6);
+    // Rounding: just under half a frame of time beyond the lines adds
+    // nothing, just over adds one.
+    let mut c = FrameCount::new(0);
+    assert_eq!(c.observe(100, us(100 + 322), NS), 0);
+    let mut c = FrameCount::new(0);
+    assert_eq!(c.observe(100, us(100 + 324), NS), 1);
+    // A line past 644 is taken modulo the frame.
+    let mut c = FrameCount::new(645);
+    assert_eq!(c.line, 0);
+    assert_eq!(c.observe(646, us(1), NS), 0);
+    assert_eq!(c.line, 1);
+}

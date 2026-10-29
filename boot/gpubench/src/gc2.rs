@@ -3559,6 +3559,57 @@ pub const fn probe_word(route: u8, x: u32, y: u32) -> (u32, u32) {
     }
 }
 
+/// Scan lines in a frame of the panel (648 x 645, `DVLNUM` 0-644; GC2DC
+/// run 1 on the X51v).
+pub const FRAME_LINES: u32 = 645;
+
+/// R108 run 3: the display frame now scanning, counted from `DVLNUM`'s
+/// wraps (the display has no frame counter). A wrap is seen when the line
+/// reads lower than at the last look; after a gap of a frame or more the
+/// lines alone can't say how many frames passed, so the gap's time (the
+/// line's period measured on the X51v) picks the whole frames besides,
+/// counted apart in `inferred`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameCount {
+    /// The frame now scanning (0 at the first look).
+    pub frame: u32,
+    /// The line at the last look.
+    pub line: u32,
+    /// Frames passed by time alone, no look inside them.
+    pub inferred: u32,
+}
+
+impl FrameCount {
+    /// The count started at the line read now.
+    #[must_use]
+    pub const fn new(line: u32) -> Self {
+        Self {
+            frame: 0,
+            line: line % FRAME_LINES,
+            inferred: 0,
+        }
+    }
+
+    /// The frame scanning at `line`, read `gap_us` after the last look,
+    /// with a line taking `line_ns`: the lines advanced are the wrap-free
+    /// distance plus the whole frames nearest the time's count.
+    pub fn observe(&mut self, line: u32, gap_us: u32, line_ns: u32) -> u32 {
+        let line = line % FRAME_LINES;
+        let d = (line + FRAME_LINES - self.line) % FRAME_LINES;
+        let by_time = u64::from(gap_us) * 1000 / u64::from(line_ns.max(1));
+        let whole = (by_time + u64::from(FRAME_LINES / 2)).saturating_sub(u64::from(d))
+            / u64::from(FRAME_LINES);
+        let whole = u32::try_from(whole).unwrap_or(u32::MAX);
+        self.frame = self
+            .frame
+            .wrapping_add(u32::from(line < self.line))
+            .wrapping_add(whole);
+        self.inferred = self.inferred.wrapping_add(whole);
+        self.line = line;
+        self.frame
+    }
+}
+
 #[cfg(test)]
 #[path = "gc2_tests.rs"]
 mod tests;
