@@ -579,7 +579,11 @@ at build time, the shell's theme colours as constants (a translucent
 tint's look, not its blend's); `RP_PICTURE_ORIGINAL` builds the Original
 picture. **Proven on the X51v (2026-10-22, `rp-today`, the owner
 looking at the two together for the first time): "it looks great".** The
-default stays.
+default stays. **Checked again 2026-10-29 (R105, after the owner doubted
+it in R99's `rp-today`):** the Original and the default builds one after
+another on the X51v, both logging Windows Mobile's straight gamma table on
+and the backlight at 274 of 432; the owner: "picture 2 looks better" (the
+default). The look is on in the shipped build.
 
 **Decided (owner, 2026-10-17): Settings > Display gets a contrast slider
 next to the brightness slider**, so every owner can fit the picture to their
