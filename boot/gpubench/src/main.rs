@@ -18725,6 +18725,22 @@ mod image {
             gc2db_show(g, route, at[usize::from(route)], planes0);
             return;
         }
+        if way == 3 {
+            // C': the video plane reads the shown picture while hidden; the
+            // UYVY when shown (repointed first going in, last coming out).
+            let base = |g: &mut Rig, a: u32| {
+                let v = g.e.regs.read32(lreg::VSCADR);
+                g.e.regs.write32(lreg::VSCADR, (v & !0x7F_FFFF) | (a >> 4));
+            };
+            if route == gc2::ROUTE_SMOOTH {
+                base(g, at[2]);
+                gc2dc_way_show(g, 2, route, at, planes0);
+            } else {
+                gc2dc_way_show(g, 2, route, at, planes0);
+                base(g, at[usize::from(route)]);
+            }
+            return;
+        }
         let under = Layer {
             slot: Slot::Middle,
             blend: Blend::Opaque,
@@ -18896,6 +18912,155 @@ mod image {
         rp_drv_mbx_display::video_hide(&mut g.e.regs);
     }
 
+    /// The native picture at A hashed (FNV-1a over its words).
+    fn gc2dc_hash(g: &Rig) -> u32 {
+        let mut h = 0x811C_9DC5u32;
+        for i in 0..GC2DC_BYTES[0] / 4 {
+            let w = g.mem.load((GC2DB_AT[0] + 4 * i) as usize).unwrap_or(0);
+            h = (h ^ w).wrapping_mul(0x0100_0193);
+        }
+        h
+    }
+
+    /// GC2DC run 4 part A (see [`GC2DC_COST`]).
+    fn gc2dc_cost(
+        g: &mut Rig,
+        (cur, tex): (&mut Option<((u16, u16), Renderer)>, gc2::Tex),
+        at: [u32; 3],
+        planes0: &Snapshot,
+    ) {
+        gc2dc_card(
+            g,
+            (&mut *cur, tex),
+            planes0,
+            ["R101: WAY C'S COST", "PART A OF 2", "NOTHING TO DO"],
+        );
+        let size = (480u16, 640u16);
+        let mut reference = None;
+        for (k, name) in GC2DC_COST_NAMES.iter().enumerate() {
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+            gc2dc_way_show(g, 2, gc2::ROUTE_NATIVE, at, planes0);
+            if k > 0 {
+                let src = if k == 1 { at[0] } else { at[2] };
+                let plane = VideoPlane::new(VideoFormat::Uyvy, 240, 320, src as usize);
+                let scale = plane.scale_to(480, 640, 0, 0);
+                rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
+                // The graphics plane over it again (video_show doesn't move it).
+                gc2dc_way_show(g, 2, gc2::ROUTE_NATIVE, at, planes0);
+            }
+            let Some(rr) = gc2cp_take(g, cur, size) else {
+                return;
+            };
+            gc2ca_set_mesh(g, rr, gc2::MESH_TEXTURED, tex, size);
+            let (mut core, mut whole) = ((u32::MAX, 0u64), (u32::MAX, 0u64));
+            let (mut same, mut done) = (0u32, 0u32);
+            let _ = gc2ca_render(g, rr, size, GC2DB_AT[0]);
+            for _ in 0..GC2DC_COST_REPS {
+                let Some(rr) = cur.as_mut().map(|c| &mut c.1) else {
+                    return;
+                };
+                let Some((c, w)) = gc2ca_render(g, rr, size, GC2DB_AT[0]) else {
+                    continue;
+                };
+                done += 1;
+                core = (core.0.min(c), core.1 + u64::from(c));
+                whole = (whole.0.min(w), whole.1 + u64::from(w));
+                let h = gc2dc_hash(g);
+                let want = *reference.get_or_insert(h);
+                same += u32::from(h == want);
+                rt::check_in();
+            }
+            let n = u64::from(done.max(1));
+            log!(
+                "  GC2DC cost {} {name}: {done} of {GC2DC_COST_REPS} rendered, the core fastest {} us mean {} us, the whole frame fastest {} us mean {} us; {same} of {done} pictures the video-off reference's",
+                k + 1,
+                core.0,
+                core.1 / n,
+                whole.0,
+                whole.1 / n
+            );
+        }
+        rp_drv_mbx_display::video_hide(&mut g.e.regs);
+    }
+
+    /// GC2DC run 4 part B (see [`GC2DC_COST`]): way C' switched every 1
+    /// and every 8 frames on line 0, every frame judged.
+    fn gc2dc_long(
+        g: &mut Rig,
+        (cur, tex): (&mut Option<((u16, u16), Renderer)>, gc2::Tex),
+        (at, sig, live): ([u32; 3], [u32; 3], bool),
+        planes0: &Snapshot,
+    ) {
+        for (gi, &gap) in GC2DC_GAPS.iter().enumerate() {
+            let mut l2 = heapless_name();
+            let _ = write!(
+                l2,
+                "PART B: EVERY {gap} FRAME{}",
+                if gap == 1 { "" } else { "S" }
+            );
+            gc2dc_card(
+                g,
+                (&mut *cur, tex),
+                planes0,
+                ["R101: WAY C' AT LENGTH", l2.as_str(), "NOTHING TO DO"],
+            );
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+            let plane = VideoPlane::new(VideoFormat::Uyvy, 240, 320, at[2] as usize);
+            let scale = plane.scale_to(480, 640, 0, 0);
+            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
+            let mut step = 0usize;
+            let mut route = GC2DC_CYCLE[0];
+            gc2dc_way_show(g, 3, route, at, planes0);
+            let first = gc2dc_settled(g);
+            let (mut whole, mut other, mut torn, mut missed) = (0u32, 0u32, 0u32, 0u32);
+            let mut first_torn = None;
+            // One pass a frame: at frame j's line 0 the switch (if due;
+            // a line-0 write shows in frame j, runs 2 and 3), then at its
+            // line 3 frame j - 1's signature, held to the route frame j - 1
+            // showed. (Runs 2 and 3's every-frame loops waited a whole
+            // frame for each read and so judged every other frame.)
+            let mut shown = route;
+            for f in 0..=GC2DC_LONG_FRAMES {
+                if !gc2dc_at_line(g, 0) {
+                    missed += 1;
+                    continue;
+                }
+                let before = shown;
+                if f > 0 && f % gap == 0 && f < GC2DC_LONG_FRAMES {
+                    step = (step + 1) % GC2DC_CYCLE.len();
+                    route = GC2DC_CYCLE[step];
+                    gc2dc_way_show(g, 3, route, at, planes0);
+                }
+                shown = route;
+                let t0 = rt::ticks();
+                while scan_line(g) < 3 && us_since(t0) < FRAME_US {}
+                let read = g.e.regs.read32(DSIG);
+                if f == 0 {
+                    continue;
+                }
+                match Some(read) {
+                    None => missed += 1,
+                    Some(_) if !live => {}
+                    Some(v) if v == sig[usize::from(before)] => whole += 1,
+                    Some(v) if sig.contains(&v) => other += 1,
+                    Some(v) => {
+                        torn += 1;
+                        first_torn.get_or_insert((f, v));
+                    }
+                }
+                if f % 64 == 0 {
+                    rt::check_in();
+                }
+            }
+            log!(
+                "  GC2DC long {} way C' a switch every {gap} frames: {GC2DC_LONG_FRAMES} frames: {whole} the route in place whole, {other} another route whole, {torn} NEITHER ROUTE (first {first_torn:x?}), {missed} not read{}; the start {first:x?}",
+                gi + 1,
+                if live { "" } else { " (not judged: no DSIG)" }
+            );
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        }
+    }
+
     /// GC2DC's two parts on the pictures at `at`.
     #[allow(clippy::too_many_lines)]
     fn gc2dc_switches(
@@ -18925,6 +19090,11 @@ mod image {
         }
         let live =
             steady && sig[0] != 0 && sig[0] != sig[1] && sig[1] != sig[2] && sig[0] != sig[2];
+        if GC2DC_COST {
+            gc2dc_cost(g, (&mut *cur, tex), at, planes0);
+            gc2dc_long(g, (&mut *cur, tex), (at, sig, live), planes0);
+            return;
+        }
         if GC2DC_WAYS {
             for way in 0..3u8 {
                 gc2dc_way(g, (&mut *cur, tex), way, (at, sig, live), planes0);
@@ -22429,6 +22599,27 @@ mod image {
         "B DELL: STREAM BIT ONLY",
         "C OURS: VIDEO ALWAYS ON, UNDER",
     ];
+    /// GC2DC run 4 (`RP_GPUBENCH_GC2_HALF_R101_COST`, with GC2DC's): run
+    /// 3's way C (the video plane never hidden) costed and run at length.
+    /// Part A: the native textured frame rendered [`GC2DC_COST_REPS`] times
+    /// in each of [`GC2DC_COST_NAMES`] (native shown by the graphics plane
+    /// throughout), the core's time and the whole frame, every picture
+    /// hashed against the first render with the video plane off. Part B:
+    /// way C' (C with the hidden plane pointed at the shown picture, so it
+    /// reads inside the safe region, G20) switched every 1 and every 8
+    /// frames on line 0 for [`GC2DC_LONG_FRAMES`] frames each, every frame
+    /// judged (ADR-0038 G2's run).
+    const GC2DC_COST: bool = option_env!("RP_GPUBENCH_GC2_HALF_R101_COST").is_some();
+    /// Part A's video plane states.
+    const GC2DC_COST_NAMES: [&str; 3] = [
+        "video off",
+        "video on, reading the shown picture (C')",
+        "video on, reading outside the safe region (C)",
+    ];
+    /// Renders a state (the emulator 2).
+    const GC2DC_COST_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
+    /// Part B's frames a gap (the emulator 12).
+    const GC2DC_LONG_FRAMES: u32 = if GC2_RENDERS < 20 { 12 } else { 1200 };
     /// Switches of each ordered pair a way.
     const GC2DC_WAY_REPS: u32 = 4;
     /// Frames read after each.

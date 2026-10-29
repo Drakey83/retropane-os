@@ -5820,6 +5820,16 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2dc4 = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_R101_SWITCH", "1"),
+            ("RP_GPUBENCH_GC2_HALF_R101_COST", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cs = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6244,7 +6254,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 155] = [
+    let runs: [GpubenchRun; 156] = [
         (
             "run A",
             &run_a,
@@ -6936,6 +6946,24 @@ fn variant_images_gpubench(
                 "GC2DC way 1 A TODAY: CLOCK OFF, ALL REWRITTEN: pairs on line 0: 0 frames of neither route",
                 "GC2DC way 2 B DELL: STREAM BIT ONLY: pairs on line 0: 0 frames of neither route",
                 "GC2DC way 3 C OURS: VIDEO ALWAYS ON, UNDER: pairs on line 0: 0 frames of neither route, the slowest settled in frame 0; a switch every frame: 12 frames: 0 the new route whole, 0 another route whole, 0 NEITHER ROUTE, 0 not read (not judged",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // GC2DC run 4 (R101): way C's cost (renders with the video plane
+        // off, reading the shown picture, reading outside the safe region)
+        // and way C' switched every 1 and 8 frames; the fork reads DSIG 0.
+        (
+            "run GC2DC cost",
+            &run_gc2dc4,
+            &[
+                "GC2DC cost 1 video off: 2 of 2 rendered",
+                "GC2DC cost 2 video on, reading the shown picture (C'): 2 of 2 rendered",
+                "GC2DC cost 3 video on, reading outside the safe region (C): 2 of 2 rendered",
+                "GC2DC long 1 way C' a switch every 1 frames: 12 frames: 0 the route in place whole, 0 another route whole, 0 NEITHER ROUTE (first None), 0 not read (not judged",
+                "GC2DC long 2 way C' a switch every 8 frames: 12 frames:",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],
