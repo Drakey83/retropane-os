@@ -3030,3 +3030,99 @@ fn gc2bz_rows_are_placed_by_the_scan() {
     assert_eq!(row_shown(Some((0, 10)), None, 160), None);
     assert_eq!(row_shown(None, None, 160), None);
 }
+
+/// R79's training and held-out frames, rendered by the host model of the
+/// 3D core: each seed's warped mesh flat and textured at 480 x 640 and at
+/// 240 x 320 (the same geometry), RGB565, written to
+/// `target/r79/s{seed}_{flat|tex}_{480|240}.raw` for
+/// `tools/scaler-filter/fit2x.py`. Run on demand:
+/// `cargo test -p rp-gpubench r79_frames -- --ignored`.
+#[test]
+#[ignore = "writes R79's frames for the filter fit (on demand)"]
+fn r79_frames() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/r79");
+    std::fs::create_dir_all(&dir).expect("target/r79");
+    let m = memory();
+    let mut clock = SimClock::default();
+    let mut pool = Pool::new(POOL);
+    let mut mem = Mem::new(m.clone());
+    let mut gpu = Gpu::new(m, &clock);
+    let mut place = |n: usize, mem: &mut Mem| {
+        let t = TEXTURES[n];
+        let at = pool.alloc(t.bytes(), 128).expect("texture memory");
+        texture_words(n, |i, w| mem.store((at + 4 * i) as usize, &[w]));
+        Texture { at, ..t }
+    };
+    let t565 = place(0, &mut mem);
+    let at = pool.alloc(W * H * 2, 128).expect("target memory");
+    for seed in 0..24u32 {
+        for textured in [false, true] {
+            for size in [(480u16, 640u16), (240, 320)] {
+                let mut r = Renderer::new(&mut pool, size.0, size.1).expect("renderer");
+                let mut out = [None; MESH_SLOTS];
+                let mut n = 0;
+                let screen = (0, 0, W as i32, H as i32);
+                let paint = |i: u32, c: &[rp_mbx3d_render::Point; 4]| {
+                    if textured {
+                        let uv = |p: rp_mbx3d_render::Point| {
+                            let sub = rp_mbx3d_render::SUB;
+                            let (w, h) = (i32::from(size.0), i32::from(size.1));
+                            (
+                                (i64::from(UV_ONE) * 3 * i64::from(p.x) / i64::from(w * sub))
+                                    as i32,
+                                (i64::from(UV_ONE) * 4 * i64::from(p.y) / i64::from(h * sub))
+                                    as i32,
+                            )
+                        };
+                        Paint::Texture {
+                            tex: t565,
+                            uv: [uv(c[0]), uv(c[1]), uv(c[2]), uv(c[3])],
+                            tint: WHITE,
+                        }
+                    } else {
+                        Paint::Flat(mesh_colour(seed + 100, i))
+                    }
+                };
+                mesh_into(&mut out, &mut n, (seed + 100, screen, size), &paint, None);
+                r.set_background(Some(BLACK)).unwrap();
+                for (s, d) in out.iter().enumerate() {
+                    r.set(&mut mem, s, d.as_ref()).unwrap();
+                }
+                let t = Target {
+                    picture: Picture::packed(
+                        at,
+                        size.0,
+                        size.1,
+                        rp_mbx3d_render::PixelFormat::Rgb565,
+                    ),
+                    x: 0,
+                    y: 0,
+                };
+                let due = r
+                    .render(&mut gpu, &mut mem, &mut clock, t)
+                    .unwrap()
+                    .unwrap();
+                clock.set(due);
+                loop {
+                    match r.poll(&mut gpu, &mut mem, &mut clock) {
+                        Poll::Done(_) => break,
+                        Poll::Wait(t) => clock.set(t),
+                        p => panic!("{p:?}"),
+                    }
+                }
+                let words = usize::from(size.0) * usize::from(size.1) / 2;
+                let mut bytes = std::vec::Vec::with_capacity(4 * words);
+                for k in 0..words {
+                    bytes.extend(mem.load(at as usize + 4 * k).unwrap().to_le_bytes());
+                }
+                let name = format!(
+                    "s{seed}_{}_{}.raw",
+                    if textured { "tex" } else { "flat" },
+                    size.0
+                );
+                std::fs::write(dir.join(name), bytes).unwrap();
+                let _ = r.release(&mut pool);
+            }
+        }
+    }
+}

@@ -17700,6 +17700,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2DA {
+            gc2da_run(g, tex, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CY {
             gc2cy_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -17835,6 +17841,93 @@ mod image {
         }
         g.nudge = 0;
         log!("  GC2CA done");
+    }
+
+    /// GC2DA's renderer.
+    static GC2DA_HELD: rt::Slot<Option<((u16, u16), Renderer)>> = rt::Slot::new();
+
+    /// Run GC2DA (see [`GC2DA`]).
+    #[inline(never)]
+    fn gc2da_run(g: &mut Rig, tex: gc2::Tex, planes0: &Snapshot) {
+        use rp_drv_mbx_display::filter::Filter;
+        use rp_drv_mbx_display::layers::ScalerFilter;
+        let Some(cur) = GC2DA_HELD.put_with(|| None) else {
+            log!("  GC2DA: run twice in one start: nothing run");
+            return;
+        };
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        let size = (240u16, 320u16);
+        let fitted = Filter::from_2x(GC2DA_H, GC2DA_V);
+        log!(
+            "  GC2DA (R79): the flat and textured game frames at 240 x 320, each shown 2x by mbxfb's set, by the fitted set {fitted:?}, and by Dell's doubling, each until a button"
+        );
+        let screen = Plane {
+            format: PlaneFormat::Rgb565,
+            width: 480,
+            height: 640,
+            offset: 0,
+            stride: 960,
+        };
+        let ways: [(&str, u8); 3] = [
+            ("MBXFB (TODAY)", 0),
+            ("FITTED (R79)", 1),
+            ("DELL'S DOUBLING", 2),
+        ];
+        let mut k = 0;
+        for (kind, fname) in [
+            (gc2::MESH_FLAT, "FLAT FRAME"),
+            (gc2::MESH_TEXTURED, "TEXTURED FRAME"),
+        ] {
+            for &(wname, how) in &ways {
+                k += 1;
+                let mut l1 = heapless_name();
+                let _ = write!(l1, "PHOTO {k} OF 6");
+                let mut l2 = heapless_name();
+                let _ = write!(l2, "{fname}: {wname}");
+                gc2ca_card(
+                    g,
+                    planes0,
+                    [l1.as_str(), l2.as_str(), "PHOTO, THEN A BUTTON"],
+                );
+                let Some(rr) = gc2cp_take(g, cur, size) else {
+                    continue;
+                };
+                gc2ca_set_mesh(g, rr, kind, tex, size);
+                let drawn = gc2ca_render(g, rr, size, GC2CA_A);
+                if how == 2 {
+                    gc2ca_show(g, GC2CA_DELL, size, GC2CA_A, planes0);
+                } else {
+                    gc2cs_uyvy(g, GC2CA_A, GC2CS_UYVY, 240);
+                    rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
+                    let plane =
+                        VideoPlane::new(VideoFormat::Uyvy, size.0, size.1, GC2CS_UYVY as usize);
+                    let mut scale = plane.scale_to(480, 640, 0, 0);
+                    scale.filter = if how == 0 {
+                        ScalerFilter::Mbxfb
+                    } else {
+                        ScalerFilter::Given(fitted)
+                    };
+                    rp_drv_mbx_display::video_show(
+                        &mut g.e.regs,
+                        &plane,
+                        GC2CB_VIDEO_BOTTOM,
+                        scale,
+                    );
+                }
+                let held = gc2ca_hold_button(g, 120_000_000);
+                log!(
+                    "  GC2DA {k} {fname} {wname}: rendered {drawn:?} us; held {} ms",
+                    held / 1000
+                );
+                rp_drv_mbx_display::video_hide(&mut g.e.regs);
+            }
+        }
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        g.nudge = nudge;
+        log!("  GC2DA done");
+        gc2ca_card(g, planes0, ["GC2DA DONE", "", ""]);
     }
 
     /// GC2CY's renderer of the size in use.
@@ -21056,6 +21149,18 @@ mod image {
     /// end and the whole frame, with CS3 at Windows Mobile's 8 / 4 / 2 and
     /// at R3's 7 / 3 / 1 (`MSC1`), at both clocks.
     const GC2CY: bool = option_env!("RP_GPUBENCH_GC2_HALF_R80").is_some();
+    /// Run GC2DA (`RP_GPUBENCH_GC2_HALF_R79`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R79's look for the owner's eye: the flat and the textured game frame
+    /// at 240 x 320 (CPU-made UYVY, GC2CS's way), each shown 2x three ways
+    /// until a button: the video plane's scaler with mbxfb's set (today's
+    /// 2x), with R79's fitted set (`Filter::from_2x`, least squares to the
+    /// native frames, `tools/scaler-filter/fit2x.py`), and Dell's
+    /// doubling. Nothing judged by the run.
+    const GC2DA: bool = option_env!("RP_GPUBENCH_GC2_HALF_R79").is_some();
+    /// R79's fitted 2x values (fit2x.py, 2026-10-29: across 0.25 .. 3.75,
+    /// down 0.25 .. 1.75).
+    const GC2DA_H: [i8; 8] = [50, 13, 0, 0, 1, 1, -1, 0];
+    const GC2DA_V: [i8; 4] = [52, 11, 0, 1];
     /// GC2CX's morning look too (`RP_GPUBENCH_GC2_HALF_EXACT_LOOK`): the
     /// GPU's exact UYVY with our coefficients, then the CPU-made UYVY of
     /// the same card with Intel's standard ones (GC2CS's way), each shown

@@ -167,6 +167,21 @@ impl Filter {
         }
     }
 
+    /// A 2x enlarging set from the values at the two phases 2x uses: `h`
+    /// at 0.25, 0.75 ... 3.75 pixels across, `v` at 0.25 ... 1.75 down
+    /// (R79's least-squares fit, `tools/scaler-filter/fit2x.py`). The other
+    /// phases are filled by straight lines between them (the centre by the
+    /// line through the first two, the tail to 0 at the edge), then each
+    /// phase made to sum to exactly 64 on its largest weight, so the set is
+    /// right whichever phases the scaler takes.
+    #[must_use]
+    pub fn from_2x(h: [i8; 8], v: [i8; 4]) -> Self {
+        Self {
+            horizontal: fill_2x::<H_LEN>(&h),
+            vertical: fill_2x::<V_LEN>(&v),
+        }
+    }
+
     /// Both half kernels from each direction's stretch (`num / den`).
     fn built(h: (u32, u32), v: (u32, u32), v_tent: bool) -> Self {
         let mut f = Self {
@@ -187,6 +202,48 @@ impl Filter {
         }
         f
     }
+}
+
+/// One half kernel (`N` bytes, outer edge to centre) from its values at
+/// 2, 6, 10 ... eighths (see [`Filter::from_2x`]).
+fn fill_2x<const N: usize>(at: &[i8]) -> [i8; N] {
+    let n = N as i32 - 1;
+    // The value at `d` eighths, times 4 (the lines' quarter steps exact).
+    let value4 = |d: i32| -> i32 {
+        let k = at.len() as i32;
+        let pt = |i: i32| -> (i32, i32) { (2 + 4 * i, 4 * i32::from(at[i as usize])) };
+        if d <= 2 {
+            // The line through the first two, back to the centre.
+            let ((d0, v0), (d1, v1)) = (pt(0), pt(1));
+            return v0 + (v0 - v1) * (d0 - d) / (d1 - d0);
+        }
+        let i = ((d - 2) / 4).min(k - 1);
+        let (d0, v0) = pt(i);
+        let (d1, v1) = if i + 1 < k { pt(i + 1) } else { (n + 1, 0) };
+        if d >= d1 {
+            return v1;
+        }
+        v0 + (v1 - v0) * (d - d0) / (d1 - d0)
+    };
+    let mut half = [0i32; N];
+    for (j, w) in half.iter_mut().enumerate() {
+        let d = n - j as i32;
+        *w = (value4(d) + 2).div_euclid(4);
+    }
+    // Each phase to exactly 64: the remainder on the phase's largest weight.
+    for p in 0..=4 {
+        let ds: [i32; 16] = core::array::from_fn(|i| 8 * (i as i32 - 7) - p);
+        let ds = ds.iter().copied().filter(|d| d.abs() <= n);
+        let sum: i32 = ds.clone().map(|d| half[(n - d.abs()) as usize]).sum();
+        if let Some(big) = ds.max_by_key(|d| (half[(n - d.abs()) as usize], -d.abs())) {
+            let j = (n - big.abs()) as usize;
+            // Phase 4's weights (and phase 0's off the centre) sit at both
+            // +d and -d, so each counts twice in its phase's sum.
+            let times = if p == 4 || (p == 0 && big != 0) { 2 } else { 1 };
+            half[j] += (64 - sum) / times;
+        }
+    }
+    core::array::from_fn(|j| half[j].clamp(-128, 127) as i8)
 }
 
 /// Bytes `at..at + 4` of `b` (0 past its end), low byte first.

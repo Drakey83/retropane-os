@@ -243,3 +243,20 @@ fn designed_picks_never_filtering_less_than_the_scale_needs() {
     assert_eq!(mixed.horizontal, DESIGNED[0].1.horizontal);
     assert_eq!(mixed.vertical, Filter::MBXFB.vertical);
 }
+
+#[test]
+fn the_2x_fit_fills_every_phase_and_keeps_its_own_values() {
+    // R79's fitted values (tools/scaler-filter/fit2x.py, 2026-10-29).
+    let h = [50, 13, 0, 0, 1, 1, -1, 0];
+    let v = [52, 11, 0, 1];
+    let f = Filter::from_2x(h, v);
+    assert_eq!(phase_sums(&f.horizontal, 4), [ONE; 8]);
+    assert_eq!(phase_sums(&f.vertical, 2), [ONE; 8]);
+    // The two phases 2x uses hold the fit itself.
+    for (k, &want) in h.iter().enumerate() {
+        assert_eq!(f.horizontal[H_LEN - 1 - (2 + 4 * k)], want, "across at {}", 2 + 4 * k);
+    }
+    for (k, &want) in v.iter().enumerate() {
+        assert_eq!(f.vertical[V_LEN - 1 - (2 + 4 * k)], want, "down at {}", 2 + 4 * k);
+    }
+}

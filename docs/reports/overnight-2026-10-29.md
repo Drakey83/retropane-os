@@ -185,3 +185,47 @@ the self-test are not touched.
   every unit will.
 - **Not done (held, divide-1):** the self-test's ladder, sentinel scenes
   and corner sweeps (R71's other parts).
+
+## 7. R79: the fitted enlarging filter
+
+**In plain English:** I fitted the video plane's 2x enlarging filter to
+the game frames by least squares and checked it on frames it never saw.
+It is a small, honest gain over today's filter (mbxfb's): +0.3 dB on
+flat-shaded frames, +0.9 dB on textured ones. Plain bilinear does as well
+on flat frames, and on these magnified point-sampled textures Dell's
+blocky doubling is actually closest to the native picture (the native
+picture is blocky there too). Nothing is shipped: a look image shows all
+three for your eye in the morning.
+
+**Detail:**
+
+- **Rule 0:** mbxfb's set is a textbook windowed sinc; Dell doubles
+  pixels; ours fits the 12 values 2x uses (8 across at 0.25-3.75 pixels, 4
+  down at 0.25-1.75) to make each 240 x 320 frame, enlarged, match the
+  native 480 x 640 render of the same frame (RAISR's idea cut to this
+  scaler). Data: 48 frame pairs from the host model of the 3D core
+  (`rp-gpubench`'s `r79_frames`: 24 warped meshes, flat and textured);
+  seeds 0-15 train, 16-23 held out. Fitter: `tools/scaler-filter/fit2x.py`
+  (alternating constrained least squares, rounded to the scaler's signed
+  bytes, each phase summing to 64); result kept in
+  `tools/scaler-filter/fit2x-2026-10-29.json`.
+- **Held-out PSNR against native (dB):**
+
+  | Way | Flat | Textured |
+  |---|---|---|
+  | Dell's doubling | 29.39 | **53.87** |
+  | bilinear | **31.00** | 43.25 |
+  | mbxfb (today's 2x) | 30.58 | 44.00 |
+  | fitted, signed bytes | 30.92 | 44.89 |
+
+  The fit came out near-bilinear (across 50 / 13, down 52 / 11, no
+  ringing lobes), the train and held-out scores within 0.2 dB (not
+  over-fitted). Caveats: frames from the host model (its flat and 1:1
+  textured pixels match the device; GC2), the scaler's 2x phase alignment
+  assumed centred (the filled-in phases make the set right whichever it
+  is), PSNR not your eye.
+- **Built for the morning:** `Filter::from_2x` (host-tested: every phase
+  sums to 64, the fitted phases hold the fit) and the look image
+  `target/variants/gc2da/rp-gpubench.bin`: the flat and the textured frame
+  at 240 x 320, each shown three ways (mbxfb, fitted, Dell's doubling),
+  each until a button (6 photos). Not shipped until you judge.
