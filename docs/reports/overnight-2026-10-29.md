@@ -115,3 +115,42 @@ isn't shipped on these numbers (and needs this fault answered first).
 - **A finding for item 10:** GC2CA's own emulator check now peaks at 89%
   of its stack (it was under 80% before today's renderer growth); GC2CY
   runs standalone with its renderer in `.bss`.
+
+## 4. R20: the tearing scheduler, built and tested
+
+**In plain English:** the scheduler that decides, each frame, when to
+start drawing so the picture never tears is built and works on the X51v:
+120 of 120 frames it drew straight into the shown picture were tear-free,
+at Windows Mobile's clock and 74.75 / 1, including right after sudden
+slow frames. It falls back to the safe two-picture way (A) for the first
+frame and right after each spike. 120 clean frames isn't proof of zero
+tears (it bounds the rate under about 2.5%). The games path stays held
+until you judge GC2CA's picture.
+
+**Detail:**
+
+- **Built:** `rp_mbx3d_render::scan` (pure, host-tested): the start line
+  from a band of recent render times, the fastest x 4/5 to never overtake
+  the scan, twice the last frame (never under the slowest x 11/10) to
+  finish before the scan comes round, a 16-line margin each side, the
+  earliest safe line taken; A for no history, a band that doesn't fit,
+  frames past ~35 ms, or a non-top-down order (the checkerboard). Seven
+  host tests against a tile-row model of the scan (stricter than the
+  device by a tile row: it counts a tile row the scan passes through while
+  it lands as torn); every plan checked tear-free across its whole band.
+- **GC2CZ on the X51v** (`local/rp-gpubench-runGC2CZ2.txt`; GC2BZ's
+  watched renders, 40 frames a setting with textured spikes at about 2x):
+
+  | Clock | Order | Behind the scan | Tear-free | By A | Start line |
+  |---|---|---|---|---|---|
+  | WM 99.67 / 2 | interleaved | 30 | 30 | 10 | 290 |
+  | WM 99.67 / 2 | rows | 30 | 30 | 10 | 290 |
+  | 74.75 / 1 | interleaved | 30 | 30 | 10 | 412 |
+  | 74.75 / 1 | rows | 30 | 30 | 10 | 412 |
+
+  Every picture right. The first run (`...GC2CZ.txt`) doubled the slowest
+  recent frame: 20 of 20 tear-free but A for 35 of 40 (a spike kept A for
+  eight frames); the band was changed to twice the last frame.
+- **Not done:** the scheduler wired into the graphics service's shell path
+  (it is the shell's and apps' design, ADR-0034 P1 = C; the service's
+  frame loop isn't built yet); the games path held (R20).

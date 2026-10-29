@@ -63,6 +63,7 @@
 
 pub mod binner;
 pub mod fixed;
+pub mod scan;
 #[cfg(any(test, feature = "model"))]
 pub mod model;
 mod shadow;

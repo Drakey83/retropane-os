@@ -8495,6 +8495,16 @@ mod image {
     /// parked). [`Tear`] samples four pixels a tile row while the render
     /// runs. About 2 minutes, unattended.
     const GC2_TEAR: bool = option_env!("RP_GPUBENCH_GC2_TEAR").is_some();
+    /// Run GC2CZ (`RP_GPUBENCH_GC2_TEAR_SCHED`, with `RP_GPUBENCH_GC2_TEAR`),
+    /// R20's scheduler on the X51v: after GC2BZ's references, at Windows
+    /// Mobile's clock and 74.75 / 1, in the two top-down orders, 40 frames
+    /// a setting in a sequence with spikes (flat frames, then the textured
+    /// one at about twice their time), each begun where
+    /// `rp_mbx3d_render::scan::Schedule` plans from the frames before it
+    /// (C behind the scan, or A), watched as GC2BZ watches; logged: frames
+    /// drawn behind the scan, tear-free of those, A's fallbacks, the lines
+    /// used, the times.
+    const GC2_SCHED: bool = option_env!("RP_GPUBENCH_GC2_TEAR_SCHED").is_some();
 
     /// Run GC2CA, reminder R78 item 2 (`RP_GPUBENCH_GC2_HALF`): the game
     /// frames at fewer pixels, shown full screen at scan-out. GC2BY's four
@@ -17233,6 +17243,12 @@ mod image {
             g.nudge = 0;
             return;
         }
+        if GC2_SCHED {
+            gc2cz_sched(g, &mut ondie, tex, (first, refs), &poisons);
+            let _ = ondie.release(&mut g.pool);
+            g.nudge = 0;
+            return;
+        }
         let clocks = [
             (None, "WM 99.67 / 2"),
             (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
@@ -17329,6 +17345,119 @@ mod image {
         let _ = ondie.release(&mut g.pool);
         g.nudge = 0;
         log!("  GC2BZ done: {free_total} of {renders_total} renders tear-free");
+    }
+
+    /// GC2CZ's frame sequence (indices of the game frames): runs of the
+    /// fast frames, then the textured one (about twice as long), then fast.
+    const GC2CZ_SEQ: [usize; 20] = [0, 0, 1, 3, 0, 2, 0, 0, 1, 2, 2, 3, 0, 0, 0, 2, 1, 3, 0, 2];
+    /// Frames a setting (the emulator a few).
+    const GC2CZ_FRAMES: usize = if GC2_RENDERS < 20 { 6 } else { 40 };
+
+    /// Run GC2CZ (see [`GC2_SCHED`]).
+    #[inline(never)]
+    fn gc2cz_sched(
+        g: &mut Rig,
+        ondie: &mut Renderer,
+        tex: gc2::Tex,
+        (first, refs): (&mut [u32], &[u32]),
+        poisons: &[Option<u16>],
+    ) {
+        use rp_mbx3d_render::scan::{self, Plan, Schedule};
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let at = gc_at(k);
+        let target = Target {
+            picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        log!(
+            "  GC2CZ (R20): the scheduler (C behind the scan from the recent times' band, A otherwise), {GC2CZ_FRAMES} frames a setting in the sequence {GC2CZ_SEQ:?}, at Windows Mobile's clock and 74.75 / 1"
+        );
+        let clocks = [
+            (None, "WM 99.67 / 2"),
+            (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
+        ];
+        let orders = [
+            (rp_mbx3d_render::TileOrder::Interleaved, "interleaved"),
+            (rp_mbx3d_render::TileOrder::Rows, "rows"),
+        ];
+        let (mut behind_all, mut free_all) = (0u32, 0u32);
+        for (step, cname) in clocks {
+            clock_restore(&mut g.e.regs);
+            if let Some(st) = step {
+                if clock_apply(g, st).is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  GC2CZ {cname}: the clock didn't take; skipped");
+                    continue;
+                }
+                clock_readback(g);
+            }
+            for (order, oname) in orders {
+                ondie.set_tile_order(order);
+                let mut sched = Schedule::new();
+                let (mut behind, mut free, mut copies, mut wrong) = (0u32, 0u32, 0u32, 0u32);
+                let (mut lo, mut hi) = (u32::MAX, 0u32);
+                let (mut fastest, mut slowest) = (u32::MAX, 0u32);
+                let mut torn = heapless_name();
+                for i in 0..GC2CZ_FRAMES {
+                    rt::check_in();
+                    let f = GC2CZ_SEQ[i % GC2CZ_SEQ.len()];
+                    let mut l3 = heapless_name();
+                    let _ = write!(l3, "{oname} FRAME {} OF {GC2CZ_FRAMES}", i + 1);
+                    soak_label(g, ["GC2CZ TEAR SCHEDULER", cname, l3.as_str()], SOAK_BLUE);
+                    gc2_set_mesh(g, ondie, gc2::GAME_FRAMES[f], tex);
+                    let poison = poisons[f].unwrap_or(0);
+                    if !poison_fill(g, at, poison) {
+                        continue;
+                    }
+                    ondie.invalidate_all();
+                    let plan = sched.plan(&scan::X51V, true);
+                    let us = match plan {
+                        Plan::Behind { line } => {
+                            if !wait_scan(g, line) {
+                                log!("  GC2CZ {cname} {oname}: the scan never reached line {line}");
+                                continue;
+                            }
+                            let start = scan_line(g) as u16;
+                            g.tear = Some(Tear::new(at, poison, start));
+                            let us = g.frame(ondie, target);
+                            let Some(t) = g.tear.take() else { continue };
+                            let shown: [Option<u8>; GC2BZ_ROWS] =
+                                core::array::from_fn(|row| t.shown(row));
+                            let one = shown.iter().all(|s| *s == shown[0] && s.is_some());
+                            behind += 1;
+                            free += u32::from(one);
+                            (lo, hi) = (lo.min(line), hi.max(line));
+                            if !one && torn.as_str().len() < 80 {
+                                let _ = write!(torn, " {i}@{line}");
+                            }
+                            us
+                        }
+                        Plan::Copy => {
+                            copies += 1;
+                            g.frame(ondie, target)
+                        }
+                    };
+                    let Some(us) = us else { continue };
+                    sched.record(us);
+                    (fastest, slowest) = (fastest.min(us), slowest.max(us));
+                    let want = &refs[f * words..(f + 1) * words];
+                    let off = read_compare_volatile(g.mem.0, at as usize, want, first);
+                    wrong += u32::from(off != Some(0));
+                }
+                behind_all += behind;
+                free_all += free;
+                log!(
+                    "  GC2CZ {cname} {oname}: {behind} frames behind the scan, {free} tear-free; {copies} by A (no history, or the band didn't fit); lines {lo}-{hi}; renders {fastest}-{slowest} us; {wrong} pictures wrong; torn (frame@line):{}",
+                    torn.as_str()
+                );
+            }
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        log!("  GC2CZ done: {free_all} of {behind_all} frames behind the scan tear-free");
     }
 
     /// GC2CA's pictures, all inside the safe region below the lists on the

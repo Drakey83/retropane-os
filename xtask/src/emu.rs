@@ -5731,6 +5731,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cz = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TEAR", "1"),
+            ("RP_GPUBENCH_GC2_TEAR_SCHED", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6023,7 +6032,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 144] = [
+    let runs: [GpubenchRun; 145] = [
         (
             "run A",
             &run_a,
@@ -6705,6 +6714,21 @@ fn variant_images_gpubench(
                 "GC2CP 143.00 / 1 speed-up (d) 240 x 320 converted, overlapped against native",
                 "GC2CP done:",
                 "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CZ (R20's scheduler): the run's shape (the emulator's scan
+        // and render times are its own, not the X51v's).
+        (
+            "run GC2CZ",
+            &run_gc2cz,
+            &[
+                "GC2CZ (R20): the scheduler",
+                "GC2CZ WM 99.67 / 2 interleaved: ",
+                "GC2CZ 74.75 / 1 rows: ",
+                "GC2CZ done: ",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
