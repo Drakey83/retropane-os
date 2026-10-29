@@ -4259,7 +4259,11 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         }
     }
     // The control after divide 1 proves the clock was put back; the same
-    // read back as Windows Mobile's.
+    // read back as Windows Mobile's. `0x6` (divide 2, 2D + 3D), not WM's
+    // hand-off `0x5` (2D only): the X51v itself reads 0x6 once a test has
+    // switched the 3D clock on, in every G1-G21 device log (ruling 4 of
+    // docs/reports/rulings-2026-10-29.md; G9 never switches it on and
+    // reads 0x5; R98 is whether to hand back 0x5).
     if controls > 0 && !log.contains("read back: COREPLL 0xbb1 MBXCLK 0x6") {
         return Err(format!(
             "glesfeat {name}: Windows Mobile's clock not read back:{log}"

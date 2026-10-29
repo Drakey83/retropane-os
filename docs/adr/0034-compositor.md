@@ -180,6 +180,16 @@ T1, T3, T4, ticked):
   region smaller than the screen is reported and the 3D core's renders
   kept off while the display reads (G16's way) until resolved, never run
   blind.
+- **Rule 5 under P1 = C ruled: R-B (owner, 2026-10-29, ruling 2 of
+  [rulings-2026-10-29.md](../reports/rulings-2026-10-29.md);
+  [c71-screen-place.md](../design/c71-screen-place.md)).** Screen 0 at
+  `0x0`, inside the region, is the only picture shown while the 3D core
+  works; screen 1 stays outside as 2D's back picture (2D-only frames
+  flip, rule 4). In 3D frames 2D's frame reaches screen 0 first (a flip,
+  or its changed rectangles copied in by the 2D engine), the 3D core
+  draws into screen 0, and its area is copied back into screen 1. R-A
+  (one screen, +600 KiB) later only if R20's scheduling is proven on 2D
+  frames.
 
 ### In plain words
 

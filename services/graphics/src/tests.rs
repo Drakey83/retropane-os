@@ -14,7 +14,7 @@ use rp_mbx_render::model as m2;
 use rp_mbx_render::{Layout, Mbx2dRenderer};
 use rp_mbx3d_render::model::{self as m3, SimClock};
 use rp_mbx3d_render::{Picture, format};
-use rp_vram_map::POOL;
+use rp_vram_map::{POOL, SCREENS};
 
 use super::*;
 
@@ -274,9 +274,12 @@ fn the_scene_owns_its_area_and_nothing_half_drawn_reaches_the_screen() {
     // A change in the scene only: shown with no 2D frame, 2D intact.
     r.g.set(c, 0, Some(&Quad::rect(24, 16, 32, 32, Fill::texture(tex))))
         .unwrap();
-    let pic0 = r.shown();
     assert_eq!(r.frame(&scene_2d(true, None)), Step::Shown);
-    assert_ne!(r.shown(), pic0, "flipped to the other picture");
+    assert_eq!(
+        r.shown().at,
+        SCREENS[0].at,
+        "rendered into screen 0, on screen"
+    );
     assert_eq!(r.on_screen(240, 336), 0xFF_0000);
     assert_eq!(r.on_screen(218, 336), BLUE & 0xFF_FFFF, "where it was");
     assert_eq!(
@@ -288,6 +291,95 @@ fn the_scene_owns_its_area_and_nothing_half_drawn_reaches_the_screen() {
     // Nothing changed: nothing to do.
     assert_eq!(r.frame(&scene_2d(true, None)), Step::Idle);
     assert_eq!(r.frame(&scene_2d(true, None)), Step::Idle);
+}
+
+/// C71 ruling R-B: the 3D core renders only into screen 0 (inside the safe
+/// region) while screen 0 is on screen; screen 1 stays 2D's back picture,
+/// and the scene's area is carried into it, so a 2D frame flipped there
+/// shows the scene current.
+#[test]
+fn the_3d_core_draws_only_into_screen_0_on_screen() {
+    let mut r = rig();
+    let c = r.g.client(64 * 1024).unwrap();
+    let (x, y, w, h) = AREA;
+    r.g.open_scene(c, x, y, w, h).unwrap();
+    r.g.set_background(c, Some(BLUE)).unwrap();
+    let tex =
+        r.g.upload_texture(c, 0, format::RGB565, &[0xF800; 64])
+            .unwrap();
+    let both = |r: &mut Rig, px: u32, py: u32| {
+        let s0 = Picture {
+            at: SCREENS[0].at,
+            ..Picture::screen(0)
+        };
+        let s1 = Picture {
+            at: SCREENS[1].at,
+            ..Picture::screen(0)
+        };
+        (r.px(s0, px, py) & 0xFF_FFFF, r.px(s1, px, py) & 0xFF_FFFF)
+    };
+    for k in 0..6u16 {
+        // Odd frames move the quad (3D work), even ones change 2D only
+        // outside the area; every third has both.
+        let moved = k % 2 == 1 || k % 3 == 0;
+        if moved {
+            r.g.set(
+                c,
+                0,
+                Some(&Quad::rect(
+                    8 + 4 * i32::from(k),
+                    16,
+                    32,
+                    32,
+                    Fill::texture(tex),
+                )),
+            )
+            .unwrap();
+        }
+        let bar = Rect::new(0, 0, 480, 32);
+        let colour = if k % 2 == 0 { WHITE } else { 0xFF00_FF00 };
+        let mut f = Frame::new();
+        f.damage(bar);
+        f.push(Cmd::Fill {
+            r: bar,
+            color: colour,
+        });
+        assert_eq!(r.frame(&f), Step::Shown, "frame {k}");
+        if moved {
+            assert_eq!(
+                r.shown().at,
+                SCREENS[0].at,
+                "frame {k}: 3D shown from screen 0"
+            );
+        }
+        // Both screens hold the whole frame: 2D's bar, the scene's quad.
+        assert_eq!(r.on_screen(5, 5), colour & 0xFF_FFFF, "frame {k}");
+        let (a, b) = both(&mut r, 210, 310);
+        assert_eq!(
+            (a, b),
+            (BLUE & 0xFF_FFFF, BLUE & 0xFF_FFFF),
+            "frame {k}: the background"
+        );
+    }
+    // The last quad, at 8 + 4 * 5 = 28 in the area, in both screens.
+    let at = u32::from(x) + 28 + 16;
+    assert_eq!(
+        both(&mut r, at, 336),
+        (0xFF_0000, 0xFF_0000),
+        "the quad carried"
+    );
+    // A 2D frame with no 3D work may flip to screen 1: the scene is current
+    // there.
+    let bar = Rect::new(0, 0, 480, 32);
+    let mut f = Frame::new();
+    f.damage(bar);
+    f.push(Cmd::Fill {
+        r: bar,
+        color: WHITE,
+    });
+    assert_eq!(r.frame(&f), Step::Shown);
+    assert_eq!(r.on_screen(at, 336), 0xFF_0000);
+    assert_eq!(r.on_screen(210, 310), BLUE & 0xFF_FFFF);
 }
 
 #[test]

@@ -141,7 +141,10 @@ fn screen_0_alone_in_the_safe_region() {
     assert_eq!(SCREENS[0].at, 0);
     assert!(SCREENS[0].end() <= SAFE_END);
     assert_eq!(PLANES.at, SCREENS[0].end());
-    assert!(SAFE_END - SCREENS[0].end() >= 96 * 1024, "the video band's room");
+    assert!(
+        SAFE_END - SCREENS[0].end() >= 96 * 1024,
+        "the video band's room"
+    );
     assert!(safe_holds_only(&MAP, 2));
     assert!(MAP[2..].iter().all(|g| g.at >= SAFE_END));
     // The check at its edge: a region starting one word below the end is

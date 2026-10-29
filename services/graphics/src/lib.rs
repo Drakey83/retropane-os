@@ -12,11 +12,16 @@
 //!   its own memory. Refusals are reported, nothing is evicted.
 //! - **One 3D scene** (a renderer drives the core at a time), owned by one
 //!   client, with **its own area of the screen** (G1, option A, the
-//!   owner's vote): each frame, 2D draws into the picture not on screen,
-//!   the scene renders its area into the same picture (the tiles 2D drew
-//!   over included), then the picture is shown; a frame with only 3D
-//!   changes renders into the other picture (it holds the same 2D frame)
-//!   and shows it. Nothing half-drawn or stale reaches the screen.
+//!   owner's vote), the scene redrawing the tiles 2D drew over.
+//! - **The 3D core draws only into screen 0, with screen 0 on screen**
+//!   (C71, the owner's ruling R-B, 2026-10-29; ADR-0034 amendment P, P1 =
+//!   C): screen 0 lies inside the safe region, screen 1 outside it as 2D's
+//!   back picture. 2D frames flip between the two as ever (tear-free). In a
+//!   frame with 3D work, 2D's frame reaches screen 0 first (a flip if 2D
+//!   drew there, else its changed rectangles copied in by the 2D engine),
+//!   the scene renders into screen 0 on screen, and its area is copied back
+//!   into screen 1. 3D frames are seen as they draw until R20's scheduling
+//!   covers them.
 //!
 //! A library now (G4), used in one process; the display driver host's once
 //! IPC can move pages (ADR-0016).
@@ -24,7 +29,7 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-use rp_draw::{Frame, Renderer as _};
+use rp_draw::{Frame, MAX_DIRTY, Rect, Renderer as _};
 use rp_hal_api::RegisterBus;
 use rp_mbx_render::{LocalMem, Mbx2dRenderer};
 use rp_mbx3d_render::{
@@ -170,6 +175,8 @@ struct Scene {
     r: r3d::Renderer,
     x: u16,
     y: u16,
+    w: u16,
+    h: u16,
     /// Its renderer's core resets already passed on to the 2D engine.
     resets: u32,
 }
@@ -180,11 +187,9 @@ enum Job {
     None,
     /// A 2D frame, its flip held for the 3D area.
     TwoD,
-    /// The 3D area rendering; then the held frame (or the back picture)
-    /// is shown.
-    ThreeD {
-        back: bool,
-    },
+    /// The 3D area rendering into screen 0, on screen (C71 ruling R-B);
+    /// then the area carried into screen 1.
+    ThreeD,
 }
 
 /// What [`Graphics::poll`] found.
@@ -489,6 +494,8 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 r,
                 x,
                 y,
+                w,
+                h,
                 resets: 0,
             });
         }
@@ -580,21 +587,28 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             self.job = Job::TwoD;
             return Ok(self.poll(clock));
         }
-        // No 2D change: both pictures hold the same 2D frame, so the scene
-        // renders into the one not on screen, which is then shown. Nothing
-        // changed in the scene either: nothing to do (the picture not on
-        // screen catches up on the next frame drawn into it).
+        // No 2D change. Nothing changed in the scene either: nothing to do.
         if self.open().is_none_or(|s| s.r.dirty() == 0) {
             return Ok(Step::Idle);
         }
-        let Some(back) = self.two_d.back() else {
-            return Ok(Step::Idle);
-        };
-        match self.start_3d(back, clock) {
+        // The scene renders into screen 0 with screen 0 on screen (C71
+        // ruling R-B). If screen 1 is, both hold the same frame (`back`):
+        // screen 0 is shown first, a whole frame.
+        let safe = self.two_d.screens()[0];
+        let flipped = self.two_d.front() != safe;
+        if flipped {
+            if self.two_d.back() != Some(safe) {
+                return Ok(Step::Idle); // screen 0 not caught up yet
+            }
+            self.two_d.flip_back();
+            self.two_d.settle();
+        }
+        match self.start_3d(safe, clock) {
             Some(due) => {
-                self.job = Job::ThreeD { back: true };
+                self.job = Job::ThreeD;
                 Ok(Step::Wait(due))
             }
+            None if flipped => Ok(Step::Shown),
             None => Ok(Step::Idle),
         }
     }
@@ -631,36 +645,64 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     };
                 };
                 // What 2D drew afresh over the area: the scene draws it
-                // again before the flip.
-                if let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
-                    for r in self.two_d.drawn() {
-                        s.r.invalidate(
-                            i32::from(r.x) - i32::from(s.x),
-                            i32::from(r.y) - i32::from(s.y),
-                            i32::from(r.w),
-                            i32::from(r.h),
-                        );
+                // again.
+                let mut drawn = [Rect::default(); MAX_DIRTY];
+                let n = self.two_d.drawn().len();
+                drawn[..n].copy_from_slice(self.two_d.drawn());
+                let needs_3d = match self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
+                    Some(s) => {
+                        for r in &drawn[..n] {
+                            s.r.invalidate(
+                                i32::from(r.x) - i32::from(s.x),
+                                i32::from(r.y) - i32::from(s.y),
+                                i32::from(r.w),
+                                i32::from(r.h),
+                            );
+                        }
+                        s.r.dirty() != 0
                     }
+                    None => false,
+                };
+                self.job = Job::None;
+                if !needs_3d {
+                    // A 2D frame: flipped as ever, to either screen (the 3D
+                    // core is idle: amendment P rule 4).
+                    self.two_d.flip();
+                    return Step::Shown;
                 }
-                match self.start_3d(at, clock) {
+                // The 3D core draws only into screen 0, with screen 0 on
+                // screen (C71 ruling R-B: screen 1 lies outside the safe
+                // region).
+                let safe = self.two_d.screens()[0];
+                if at == safe {
+                    // 2D's frame shown whole, scan-out off screen 1.
+                    self.two_d.flip();
+                    self.two_d.settle();
+                } else {
+                    // Screen 0 is on screen: 2D's changes copied into it
+                    // (seen as they land, as the 3D area is: R20 covers
+                    // neither yet), the held frame dropped.
+                    let _ = self.two_d.copy_screens(safe, at, &drawn[..n]);
+                    self.two_d.keep_front();
+                }
+                match self.start_3d(safe, clock) {
                     Some(due) => {
-                        self.job = Job::ThreeD { back: false };
+                        self.job = Job::ThreeD;
                         Step::Wait(due)
                     }
-                    None => {
-                        self.two_d.flip();
-                        self.job = Job::None;
-                        Step::Shown
-                    }
+                    None => Step::Shown,
                 }
             }
-            Job::ThreeD { back } => {
-                let p = match self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
+            Job::ThreeD => {
+                let (p, area) = match self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
                     Some(s) => {
                         let (e, mem) = self.two_d.parts();
-                        s.r.poll(&mut e.regs, mem, clock)
+                        (
+                            s.r.poll(&mut e.regs, mem, clock),
+                            Some(Rect::new(s.x, s.y, s.w, s.h)),
+                        )
                     }
-                    None => Poll::Idle,
+                    None => (Poll::Idle, None),
                 };
                 self.after_3d();
                 let shown = match p {
@@ -668,10 +710,11 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     Poll::Recovered => Step::Recovered,
                     Poll::Done(_) | Poll::Idle => Step::Shown,
                 };
-                if back {
-                    self.two_d.flip_back();
-                } else {
-                    self.two_d.flip();
+                // The area carried into screen 1, so a later 2D frame
+                // flipped there shows it current.
+                if let Some(area) = area {
+                    let [safe, other] = self.two_d.screens();
+                    let _ = self.two_d.copy_screens(other, safe, &[area]);
                 }
                 self.job = Job::None;
                 shown

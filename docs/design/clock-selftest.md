@@ -152,3 +152,23 @@ fastest, or one step below it for margin.
    margin). B: only the two soaked (99.67 / 1 and 133.25 / 1): shorter,
    but with question 1's A the margin step is then 99.67 / 1, giving up
    most of the gain.
+
+## The bus check (R71; the owner's ruling, 2026-10-29)
+
+The CS3 bus check (`rp_hal_pxa27x::buscheck`, run on the X51v in
+`rp-cs3bus`'s self-test mode) is part of this test (R3, 2026-10-28), and
+wiring it in was adopted on 2026-10-29 (ruling 5 of
+[rulings-2026-10-29.md](../reports/rulings-2026-10-29.md)) after its
+negative control: at 4/2/0 it reported 786,431 of 786,432 reads wrong and
+kept 7/3/1. Every unit runs `7 / 3 / 1`; it moves to `7 / 2 / 0` only if
+the default, `7 / 2 / 0` cold and `7 / 2 / 0` warm all pass. On a failure
+the self-test:
+
+- stays at `7 / 3 / 1`, skipping the warm phase once the default or the
+  cold check failed;
+- logs the phase, the pattern, the first failing word, wanted against
+  read, the miss count, and a 2D engine time-out as a time-out;
+- keeps the result in the unit's self-test record, re-run only when the
+  self-test reruns (first docking, an OS update, a manual request);
+- never goes below `7 / 3 / 1` on its own: a miss at `7 / 3 / 1` is a
+  device fault to report.

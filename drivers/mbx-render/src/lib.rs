@@ -494,6 +494,67 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         }
     }
 
+    /// The two screens' addresses (screen 0 inside the safe region,
+    /// `rp-vram-map`).
+    #[must_use]
+    pub const fn screens(&self) -> [usize; 2] {
+        self.l.screens
+    }
+
+    /// The address of the picture on screen.
+    #[must_use]
+    pub fn front(&self) -> usize {
+        self.l.screens[self.front]
+    }
+
+    /// Drops the frame held by [`Self::hold`] without showing it: the caller
+    /// copied its changes into the picture on screen ([`Self::copy_screens`];
+    /// C71 ruling R-B, the graphics service's 3D frames). Both pictures then
+    /// hold the frame, so the next one is drawn into the same back picture.
+    pub fn keep_front(&mut self) {
+        self.landed = None;
+    }
+
+    /// Waits (40 ms at most) for scan-out to leave the picture it showed
+    /// before the last flip: from then on only the picture on screen is
+    /// read (C71: the 3D core starts only while the display reads inside
+    /// the safe region).
+    pub fn settle(&mut self) {
+        self.wait_scanout();
+    }
+
+    /// Copies `rects` of the screen at `src` into the one at `dst` on the 2D
+    /// engine, and waits for them (C71 ruling R-B: 2D's changes into screen
+    /// 0 before a 3D render, the 3D area back into screen 1 after it).
+    /// `false`: the engine stalled (reset on the next frame, which is then
+    /// drawn whole).
+    pub fn copy_screens(&mut self, dst: usize, src: usize, rects: &[Rect]) -> bool {
+        let mut ok = true;
+        for &r in rects {
+            self.last.px_copy += u32::from(r.w) * u32::from(r.h);
+            self.last.blits += 1;
+            match cmd::blit(
+                narrow(dst),
+                narrow(src),
+                (r.x, r.y),
+                Self::coords(r),
+                ROP_SRCCOPY,
+                0,
+                0,
+            ) {
+                Some((w, n)) => ok &= self.e.submit(&w[..n]).is_ok(),
+                None => self.refused += 1,
+            }
+        }
+        let mem = &self.mem;
+        ok &= self.e.finish_with(200_000, |at| mem.load(at)).is_ok();
+        if !ok {
+            self.stalls += 1;
+            self.fresh = 2;
+        }
+        ok
+    }
+
     /// The rectangles the last frame drew afresh (the whole screen for a
     /// whole frame), not those copied forward.
     #[must_use]

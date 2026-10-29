@@ -215,9 +215,30 @@ mod image {
         }
     }
 
+    /// A 2D fill's outcome: the words read back wrong, or `None` when the
+    /// engine never finished. A time-out is logged as one, never as a count
+    /// (the R71 negative control logged it as "4294967295 misses").
+    #[derive(Clone, Copy)]
+    struct Fill(Option<u32>);
+
+    impl Fill {
+        const fn clean(self) -> bool {
+            matches!(self.0, Some(0))
+        }
+    }
+
+    impl core::fmt::Display for Fill {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self.0 {
+                Some(n) => write!(f, "{n}"),
+                None => f.write_str("timed out"),
+            }
+        }
+    }
+
     /// The 2D engine fills the fill region with `colour` (and waits); the
     /// words that came out wrong, read back at the current timing.
-    fn fill_check(e: &mut Engine<rp_hal_pxa27x::Mmio>, vram: &mut [u8], colour: u32) -> u32 {
+    fn fill_check(e: &mut Engine<rp_hal_pxa27x::Mmio>, vram: &mut [u8], colour: u32) -> Fill {
         let words = rp_image::need(
             cmd::fill(
                 Format::BPP32,
@@ -232,7 +253,7 @@ mod image {
             .and_then(|()| e.finish(vram, 200_000))
             .is_err()
         {
-            return u32::MAX;
+            return Fill(None);
         }
         let mut bad = 0;
         for k in 0..FILL_STRIDE * FILL_ROWS / 4 {
@@ -240,7 +261,7 @@ mod image {
                 bad += 1;
             }
         }
-        bad
+        Fill(Some(bad))
     }
 
     /// The owner's label at the top of the plane on screen, or nothing if
@@ -463,11 +484,14 @@ mod image {
                     "  pattern {pname} miss: word {k} wanted {want:08X} read {got:08X}"
                 );
             }
-            if dcount != 0 {
-                let _ = writeln!(
-                    RunLog,
-                    "  2D fill: {dcount} words wrong (u32::MAX: the engine never finished)"
-                );
+            match dcount.0 {
+                Some(0) => {}
+                Some(n) => {
+                    let _ = writeln!(RunLog, "  2D fill: {n} words wrong");
+                }
+                None => {
+                    let _ = writeln!(RunLog, "  2D fill: timed out (the engine never finished)");
+                }
             }
             if ccount != 0 {
                 // Windows Mobile's own timing no longer reads right: stop
@@ -475,7 +499,7 @@ mod image {
                 verdict = "stopped: the control at Windows Mobile's timing missed";
                 break;
             }
-            passed[point] = fcount + pcount + rcount == 0 && dcount == 0;
+            passed[point] = fcount + pcount + rcount == 0 && dcount.clean();
             flush_us[point] = best;
         }
         restore();
@@ -511,8 +535,8 @@ mod image {
                 );
                 let _ = diag::set_cs3_vlio(rdf, rdn, rrr);
                 let t0 = rt::ticks();
-                let (mut rounds, mut misses) = (0u32, 0u32);
-                while us(rt::ticks().wrapping_sub(t0)) < SOAK_US && misses == 0 {
+                let (mut rounds, mut misses, mut hung) = (0u32, 0u32, false);
+                while us(rt::ticks().wrapping_sub(t0)) < SOAK_US && misses == 0 && !hung {
                     rt::check_in();
                     vram[FLUSH_AT..FLUSH_AT + FLUSH_BYTES].copy_from_slice(src);
                     cpu::drain_write_buffer();
@@ -522,8 +546,10 @@ mod image {
                             misses += 1;
                         }
                     }
-                    let d = fill_check(&mut e, vram, mix(rounds ^ 0x50AC));
-                    misses = misses.saturating_add(d);
+                    match fill_check(&mut e, vram, mix(rounds ^ 0x50AC)).0 {
+                        Some(d) => misses = misses.saturating_add(d),
+                        None => hung = true,
+                    }
                     let base = base + rounds;
                     for k in 0..PATTERN_BYTES / 4 {
                         let _ = store32_volatile(
@@ -545,11 +571,12 @@ mod image {
                 restore();
                 let _ = writeln!(
                     RunLog,
-                    "soak at point {c} (RDF {rdf} RDN {rdn} RRR {rrr}, {} clk/beat, flush {} us against WM's {} us): {rounds} rounds in {} s, {misses} misses",
+                    "soak at point {c} (RDF {rdf} RDN {rdn} RRR {rrr}, {} clk/beat, flush {} us against WM's {} us): {rounds} rounds in {} s, {misses} misses{}",
                     clocks_per_beat(rdf, rdn),
                     flush_us[c],
                     flush_us[0],
-                    us(rt::ticks().wrapping_sub(t0)) / 1_000_000
+                    us(rt::ticks().wrapping_sub(t0)) / 1_000_000,
+                    if hung { ", the 2D fill timed out" } else { "" }
                 );
             }
         }
@@ -647,38 +674,62 @@ mod image {
             "{f}/{n}/{r} cold (MSC1 {m:08X?}): {:?}",
             show(&cold)
         );
-        label(
-            vram,
-            plane,
-            format_args!("CS3 BUS CHECK (R71)\nSTEP 3 OF 4: WARM, {WARM_SECS} S\nAT {f}/{n}/{r}"),
-        );
-        let t0 = rt::ticks();
-        let (mut rounds, mut misses) = (0u32, 0u32);
-        while us(rt::ticks().wrapping_sub(t0)) < WARM_SECS * 1_000_000 && misses == 0 {
-            rt::check_in();
-            vram[FLUSH_AT..FLUSH_AT + FLUSH_BYTES].copy_from_slice(src);
-            cpu::drain_write_buffer();
-            for (k, w) in src.chunks_exact(4).enumerate() {
-                let want = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
-                if load32_volatile(vram, FLUSH_AT + 4 * k) != Some(want) {
-                    misses += 1;
+        // Warm only after the default and the cold check passed: a cold
+        // failure has already decided the pick, and five minutes of traffic
+        // at a timing that reads wrong proves nothing (the R71 negative
+        // control ran it anyway).
+        let warm = if d.passed() && cold.passed() {
+            label(
+                vram,
+                plane,
+                format_args!(
+                    "CS3 BUS CHECK (R71)\nSTEP 3 OF 4: WARM, {WARM_SECS} S\nAT {f}/{n}/{r}"
+                ),
+            );
+            let t0 = rt::ticks();
+            let (mut rounds, mut misses, mut hung) = (0u32, 0u32, false);
+            while us(rt::ticks().wrapping_sub(t0)) < WARM_SECS * 1_000_000 && misses == 0 && !hung {
+                rt::check_in();
+                vram[FLUSH_AT..FLUSH_AT + FLUSH_BYTES].copy_from_slice(src);
+                cpu::drain_write_buffer();
+                for (k, w) in src.chunks_exact(4).enumerate() {
+                    let want = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                    if load32_volatile(vram, FLUSH_AT + 4 * k) != Some(want) {
+                        misses += 1;
+                    }
                 }
+                match fill_check(e, vram, mix(rounds ^ 0x50AC)).0 {
+                    Some(n) => misses = misses.saturating_add(n),
+                    None => hung = true,
+                }
+                rounds += 1;
             }
-            misses = misses.saturating_add(fill_check(e, vram, mix(rounds ^ 0x50AC)));
-            rounds += 1;
-        }
-        let _ = writeln!(
-            RunLog,
-            "warm traffic at {f}/{n}/{r}: {rounds} rounds (flush {} KiB and 2D fill each, every word checked) in {} s, {misses} misses",
-            FLUSH_BYTES / 1024,
-            us(rt::ticks().wrapping_sub(t0)) / 1_000_000
-        );
-        label(
-            vram,
-            plane,
-            format_args!("CS3 BUS CHECK (R71)\nSTEP 4 OF 4: {f}/{n}/{r} WARM"),
-        );
-        let warm = (misses == 0).then(|| bus_check(vram));
+            let _ = writeln!(
+                RunLog,
+                "warm traffic at {f}/{n}/{r}: {rounds} rounds (flush {} KiB and 2D fill each, every word checked) in {} s, {misses} misses{}",
+                FLUSH_BYTES / 1024,
+                us(rt::ticks().wrapping_sub(t0)) / 1_000_000,
+                if hung { ", the 2D fill timed out" } else { "" }
+            );
+            label(
+                vram,
+                plane,
+                format_args!("CS3 BUS CHECK (R71)\nSTEP 4 OF 4: {f}/{n}/{r} WARM"),
+            );
+            (misses == 0 && !hung).then(|| bus_check(vram))
+        } else {
+            label(
+                vram,
+                plane,
+                format_args!("CS3 BUS CHECK (R71)\nSTEPS 3-4 OF 4: WARM SKIPPED\n7/3/1 KEPT"),
+            );
+            let _ = writeln!(
+                RunLog,
+                "warm skipped: the {} check failed",
+                if d.passed() { "cold" } else { "default" }
+            );
+            None
+        };
         let _ = writeln!(RunLog, "{f}/{n}/{r} warm: {:?}", warm.as_ref().map(show));
         let (pick, default_ok) = buscheck::pick(&d, &cold, warm.as_ref());
         // `pick` names FAST when the candidate passed (it is FAST unless

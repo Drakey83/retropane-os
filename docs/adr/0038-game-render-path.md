@@ -1,8 +1,10 @@
 # ADR-0038: The game path: three routes, chosen per frame
 
-- **Status:** **Proposed: a draft for the owner's vote** (2026-10-29,
-  written overnight from R90; nothing built). Not a decision until the
-  owner votes; nothing works until proven on the X51v.
+- **Status:** **Accepted (owner, 2026-10-29: "Adopt all six", the ruling
+  packet [rulings-2026-10-29.md](../reports/rulings-2026-10-29.md),
+  ruling 1)** with the packet's changes, recorded under "The owner's
+  ruling" below. Nothing built yet; nothing works until proven on the
+  X51v.
 - **Date:** 2026-10-29
 - Reminders: R90 (this ADR), R78 item 2 (the routes measured), R89 (the
   UYVY route's exact colours), R20 (tearing), R76 (the per-route clock
@@ -66,7 +68,30 @@ render, the poll. Fastest of 10.)
   checkerboard order (divide 1's cure) tears. Games are held from C
   until GC2CA's picture is judged (R20).
 
-## Decisions (for the owner's vote)
+## The owner's ruling (2026-10-29)
+
+- **G1: C, all three routes.** Route 3 ships only after R89's eye check
+  and with G2's ranking. Not claimed: "route 3 is faster" (on the test
+  frames it is faster only on the textured frame at 74.75 / 1, and 1%
+  on the flat one at Windows Mobile's clock; 22% slower flat at 74.75 /
+  1: 12.4 against 10.2 ms).
+- **G2: B, with three changes:** the routes ranked by their own measured
+  times for each game, not by pixel count; the 8- and 60-frame
+  thresholds provisional, fitted on the first game port; nothing ticked
+  until a device run switches routes every N frames with every frame
+  hashed whole (R101).
+- **G3: as written.**
+- **G4: two frames in flight for route 2** (way (e): 800 of 800 frames
+  right, every frame read back, at Windows Mobile's clock and 74.75 / 1,
+  2026-10-29, `local/rp-gpubench-runGC2CP-every.txt`; a count, not proof
+  of zero). Route 3 uses (d') only, never (d) (R30); its in-flight gain
+  is measured against a serial run before it is claimed (R102).
+- **G5: the field, yes; its values held** with the divide-1 work. Until
+  then every route runs the divide-2 ladder's step (ADR-0035, ruling 3 of
+  the packet).
+- **G6: as written, still held on R20's GC2CA picture check.**
+
+## Decisions (as proposed; ruled above)
 
 ### G1. Which routes
 

@@ -1,6 +1,11 @@
 # C71's class fix: what the second screen becomes (a ruling for the owner)
 
-**Status: question for the owner (2026-10-25). Nothing here is decided.**
+**Status: ruled R-B by the owner (2026-10-29, "Adopt all six": ruling 2
+of [rulings-2026-10-29.md](../reports/rulings-2026-10-29.md)). R-A later
+only if R20's scheduling is proven on 2D frames.** Built: the map merged
+(`38749002`), the graphics service's R-B frames (`rp-graphics`, host test
+`the_3d_core_draws_only_into_screen_0_on_screen`). Owed: the device check
+below (R99).
 Quality audit C71; ADR-0034 amendment P (accepted 2026-10-24, P1 changed
 to C); ADR-0023 (two screens, the flip); ADR-0027 (`rp-vram-map`).
 
