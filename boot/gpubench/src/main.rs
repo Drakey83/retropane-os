@@ -19503,7 +19503,11 @@ mod image {
                 "  GC2DD long {} way C' at 149.50 / 2 a switch every {gap} frames, rendering across each: {GC2DC_LONG_FRAMES} passes over {span} display frames (a line {} ns{}, {} frames passed between looks): {} judged by DSIG, {} not read; {} the route in place whole, {} the other route whole, {} NEITHER ROUTE (first {:x?}), {missed} lines missed{}; {switches} switches, {busy_switch} written with the core drawing, the first frame after {} of them judged; {busy_other} of the other frames' line 0 with it drawing; renders {rendered} done, {failed} failed, {late} still running at line {GC2DD_START}, start to seen done fastest {} us slowest {span_max} us mean {} us; {takes} new renderers set up after a switch, the slowest {take_max} us, {take_late} past line {GC2DD_START}; the pictures afterwards {}",
                 gi + 1,
                 frames.line_ns,
-                if timed { ", measured" } else { ", NOT MEASURED: the 60 Hz frame's" },
+                if timed {
+                    ", measured"
+                } else {
+                    ", NOT MEASURED: the 60 Hz frame's"
+                },
                 frames.count.inferred,
                 judge.judged,
                 span - judge.judged.min(span),
