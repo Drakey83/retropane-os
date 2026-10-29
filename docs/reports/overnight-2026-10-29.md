@@ -56,3 +56,18 @@ only, not exact**.
   was not run in the emulator (it waits for buttons).
 - **Not done:** the route in the game path's driver (R90's build, after
   the ADR vote).
+
+## 2. R90: the game path ADR, drafted
+
+**In plain English:** a draft decision for your vote, nothing built:
+[ADR-0038](../adr/0038-game-render-path.md). All three routes kept; the
+driver picks a route each frame from how long recent frames took (drops a
+level when slow, climbs back only after a long run of fast frames, so it
+never flickers between them), switches only in the screen's blanking, a
+per-game override, two frames in flight for the reduced routes, and each
+route's own clock step (values held for the divide-1 work). Six questions
+(G1-G6), each with a recommendation.
+
+**Detail:** the measured table is GC2CP's test frames, marked as such (not
+game performance); the 240 x 320 route's on-screen colour waits on R89's
+eye check; G4 (two in flight) waits on item 8's stray-word check.
