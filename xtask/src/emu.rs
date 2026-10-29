@@ -5693,6 +5693,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cv = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_QUADFIT", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5985,7 +5994,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 140] = [
+    let runs: [GpubenchRun; 141] = [
         (
             "run A",
             &run_a,
@@ -6666,6 +6675,28 @@ fn variant_images_gpubench(
                 "    its frame: ",
                 "GC2CP 143.00 / 1 speed-up (d) 240 x 320 converted, overlapped against native",
                 "GC2CP done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CV (R93 after GC2CU): the textured four-corner object over
+        // a warped quad. The fork draws it as its two triangles (the rule
+        // on the X51v is what the run measures), so here every way is the
+        // same and the grids are the triangles'.
+        (
+            "run GC2CV",
+            &run_gc2cv,
+            &[
+                "GC2CV mesh Triangles: Some(",
+                "GC2CV mesh Quads: Some(",
+                "GC2CV mesh: the same both ways",
+                "GC2CV warped Triangles y=13:",
+                "GC2CV warped Quads y=611:",
+                "GC2CV warped: the same both ways",
+                "GC2CV parallelogram: the same both ways",
+                "GC2CV done:",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

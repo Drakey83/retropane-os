@@ -17571,6 +17571,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2CV {
+            gc2cv_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CU {
             gc2cu_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20403,6 +20409,16 @@ mod image {
     /// (two triangles at Windows Mobile's clock): wrong pictures, the core's
     /// time and the whole frame's, and each frame's set-up and words.
     const GC2CU: bool = option_env!("RP_GPUBENCH_GC2_HALF_QUADS").is_some();
+    /// Run GC2CV (`RP_GPUBENCH_GC2_HALF_QUADFIT`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R93 after GC2CU: how the textured four-corner object fills a warped
+    /// quad (GC2CU: right as rectangles, wrong on the warped game mesh). At
+    /// Windows Mobile's clock: the textured mesh both ways, the words that
+    /// differ (how many, where, the first four pixels); one warped quad
+    /// with a texture whose texels hold their own place (RGB565: red the
+    /// column, green twice the row), a grid of samples each way, so the
+    /// core's rule is fitted on the PC; the same quad as a parallelogram (a
+    /// control: must match).
+    const GC2CV: bool = option_env!("RP_GPUBENCH_GC2_HALF_QUADFIT").is_some();
     /// Frames a way and game frame, after one to warm (the emulator 2).
     const GC2CP_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 10 };
     /// The sizes GC2CP renders: native, half height, half.
@@ -20673,6 +20689,158 @@ mod image {
         g.nudge = nudge;
         log!("  GC2CP done: {} ms", us_since(t0) / 1000);
         gc2ca_card(g, planes0, ["GC2CP DONE", "", ""]);
+    }
+
+    /// GC2CV's renderer.
+    static GC2CV_HELD: rt::Slot<Option<Renderer>> = rt::Slot::new();
+
+    /// GC2CV's warped quad (no two sides parallel) and its parallelogram
+    /// (the fourth corner from the other three), pixels.
+    const GC2CV_WARPED: [(i32, i32); 4] = [(40, 60), (420, 30), (380, 600), (70, 500)];
+    const GC2CV_PARALLEL: [(i32, i32); 4] = [(60, 40), (400, 90), (380, 560), (40, 510)];
+
+    /// Run GC2CV (see [`GC2CV`]).
+    #[inline(never)]
+    fn gc2cv_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        gc2ca_card(
+            g,
+            planes0,
+            ["GC2CV: HOW A QUAD", "IS TEXTURED", "NO PHOTOS NEEDED"],
+        );
+        let size = GC2CP_SIZES[0];
+        let n = gc2::words_of(size);
+        if all.len() < 2 * n {
+            log!("  GC2CV: not enough SDRAM: nothing run");
+            return;
+        }
+        let Some(slot) = GC2CV_HELD.put_with(|| None) else {
+            log!("  GC2CV: run twice in one start: nothing run");
+            return;
+        };
+        *slot = Renderer::new_in(&mut g.pool, size.0, size.1, GC2BB_PARAMS, map::PM_TABLE);
+        let Some(r) = slot.as_mut() else {
+            log!("  GC2CV: no renderer");
+            return;
+        };
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        r.start_clean();
+        let t0 = rt::ticks();
+        let (tri, rest) = all.split_at_mut(n);
+        let quad = &mut rest[..n];
+        let forms = [Objects::Triangles, Objects::Quads];
+        // 1: the textured game mesh both ways.
+        soak_label(g, ["GC2CV", "1 OF 3: THE MESH", ""], SOAK_BLUE);
+        for (form, into) in forms.into_iter().zip([&mut *tri, &mut *quad]) {
+            r.set_objects(form);
+            gc2ca_set_mesh(g, r, gc2::GAME_FRAMES[2], tex, size);
+            let t = gc2ca_render(g, r, size, GC2CA_A);
+            gc2_take_at(g, GC2CA_A, into);
+            log!("  GC2CV mesh {form:?}: {t:?} us (core, whole)");
+        }
+        gc2cv_diff(g, "mesh", tri, quad);
+        // 2 and 3: one quad with the coordinate texture, warped then a
+        // parallelogram; the rest of the slots empty.
+        let texels: [u16; 32 * 32] =
+            core::array::from_fn(|i| ((i % 32) << 11 | ((i / 32) << 1) << 5) as u16);
+        let Some(ct) = rp_mbx3d_render::upload(&mut g.pool, &mut g.mem, 2, format::RGB565, &texels)
+        else {
+            log!("  GC2CV: no memory for the coordinate texture");
+            return;
+        };
+        for s in 0..rp_mbx3d_render::MAX_SLOTS {
+            g.set(r, s, None);
+        }
+        let _ = r.set_background(Some(BLACK));
+        for (step, (name, corners)) in [("warped", GC2CV_WARPED), ("parallelogram", GC2CV_PARALLEL)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut l2 = heapless_name();
+            let _ = write!(l2, "{} OF 3: {name}", step + 2);
+            soak_label(g, ["GC2CV", l2.as_str(), ""], SOAK_BLUE);
+            for (form, into) in forms.into_iter().zip([&mut *tri, &mut *quad]) {
+                r.set_objects(form);
+                let mut d = Draw::rect(0, 0, 1, 1, Paint::texture(ct));
+                d.corners = corners.map(|(x, y)| rp_mbx3d_render::Point::px(x, y));
+                g.set(r, 0, Some(d));
+                let t = gc2ca_render(g, r, size, GC2CA_A);
+                gc2_take_at(g, GC2CA_A, into);
+                log!("  GC2CV {name} {form:?}: {t:?} us (core, whole)");
+                if step == 0 {
+                    gc2cv_grid(name, form, into);
+                }
+            }
+            gc2cv_diff(g, name, tri, quad);
+        }
+        let _ = rp_mbx3d_render::release(&mut g.pool, ct);
+        if let Some(r) = slot.take() {
+            let _ = r.release(&mut g.pool);
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        log!("  GC2CV done: {} ms", us_since(t0) / 1000);
+        gc2ca_card(g, planes0, ["GC2CV DONE", "", ""]);
+    }
+
+    /// The RGB565 pixel `(x, y)` of a 480-wide picture read into `words`.
+    fn gc2cv_px(words: &[u32], x: usize, y: usize) -> u16 {
+        let i = y * 480 + x;
+        (words[i / 2] >> (16 * (i % 2))) as u16
+    }
+
+    /// How two 480 x 640 RGB565 pictures differ: pixels, their box, the
+    /// first four (x, y, two triangles, four-corner), and the largest
+    /// texel step at a differing pixel (the coordinate texture: column in
+    /// red, row in green / 2).
+    fn gc2cv_diff(g: &mut Rig, name: &str, tri: &[u32], quad: &[u32]) {
+        rt::check_in();
+        let (mut count, mut x0, mut y0, mut x1, mut y1) = (0u32, 480, 640, 0, 0);
+        let mut first = heapless_name();
+        let mut step = 0i32;
+        for y in 0..640 {
+            for x in 0..480 {
+                let (a, b) = (gc2cv_px(tri, x, y), gc2cv_px(quad, x, y));
+                if a == b {
+                    continue;
+                }
+                count += 1;
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                if count <= 4 {
+                    let _ = write!(first, " ({x},{y}) {a:04x}/{b:04x}");
+                }
+                let du = i32::from(a >> 11) - i32::from(b >> 11);
+                let dv = i32::from((a >> 6) & 31) - i32::from((b >> 6) & 31);
+                step = step.max(du.abs()).max(dv.abs());
+            }
+        }
+        let _ = g;
+        if count == 0 {
+            log!("  GC2CV {name}: the same both ways");
+        } else {
+            log!(
+                "  GC2CV {name}: {count} pixels differ in ({x0},{y0})-({x1},{y1}); the largest texel step (coordinate texture) {step}; first (x,y) triangles/four-corner:{}",
+                first.as_str()
+            );
+        }
+    }
+
+    /// A grid of samples of the coordinate-textured quad: each 26 rows from
+    /// row 13, each 30 columns from column 15, the texel `u.v` taken there
+    /// (`--` where the quad isn't).
+    fn gc2cv_grid(name: &str, form: Objects, words: &[u32]) {
+        for gy in 0..24 {
+            let y = 13 + 26 * gy;
+            let mut line = heapless_name();
+            for gx in 0..16 {
+                let x = 15 + 30 * gx;
+                let p = gc2cv_px(words, x, y);
+                if p == 0 {
+                    let _ = write!(line, " --.--");
+                } else {
+                    let _ = write!(line, " {:02}.{:02}", p >> 11, (p >> 6) & 31);
+                }
+            }
+            log!("  GC2CV {name} {form:?} y={y}:{}", line.as_str());
+        }
     }
 
     /// GC2CU's renderers: the game frames' (with its size) and the kinds'.
