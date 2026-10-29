@@ -91,8 +91,15 @@ render, the poll. Fastest of 10.)
   frame and every 8 frames, 2,400 of 2,400 frames whole by `DSIG` (which
   covers the whole picture, every bit); its cost +0.25% of a native
   render (~50 us), renders exact. Today's hide-and-show and Dell's stream
-  bit each tear one frame entering the smooth route. Not yet covered:
-  the switch at 149.50 / 2 while rendering (R108).
+  bit each tear one frame entering the smooth route. **At 149.50 / 2
+  while rendering (R108, layout B: the half routes inside the safe
+  region; ticked by the owner 2026-10-29):** every switch written with
+  the 3D core drawing (1,199 of 1,199 every pass, 149 of 149 every 8),
+  the first frame after every switch read and whole (1,348 of 1,348),
+  3,748 judged frames whole, 0 torn, 0 renders failed, pictures exact,
+  no underrun (`gpubench-0214`); a pass spans 2.5 display frames with
+  today's 24 ms renderer set-up after a switch. Layout C (one shared
+  target, the switch every display frame) is R112, after R20's wiring.
 - **G3: as written.**
 - **G4: two frames in flight for route 2** (way (e): 800 of 800 frames
   right, every frame read back, at Windows Mobile's clock and 74.75 / 1,
