@@ -8760,6 +8760,68 @@ mod image {
         label_at(g, SOAK_LABEL, lines, bg);
     }
 
+    /// Rows a look photo's own tag takes at the picture's foot.
+    const LOOK_TAG_ROWS: u32 = 10;
+
+    /// A look photo's own tag (the owner, 2026-10-29: the photos had no
+    /// wording once the card before them was gone): `text` in white on a
+    /// black band over the picture's last [`LOOK_TAG_ROWS`] rows, drawn into
+    /// the picture itself so it is on screen whichever plane or scaler
+    /// shows it. `pair` makes a word of two pixels (lit or not) in the
+    /// picture's format (2 bytes a pixel, rows `2 * width` bytes apart).
+    /// `false` if the text was cut at the picture's edge (the caller logs).
+    fn look_tag(
+        g: &mut Rig,
+        at: u32,
+        (width, height): (u32, u32),
+        text: &str,
+        pair: fn(bool, bool) -> u32,
+    ) -> bool {
+        const PITCH: u32 = WIDTH as u32 + 1;
+        let mut glyphs = [None; 64];
+        for (slot, c) in glyphs.iter_mut().zip(text.chars()) {
+            *slot = Some(font::glyph(c));
+        }
+        let lit = |x: u32, y: u32| {
+            let (Some(x), Some(gy)) = (x.checked_sub(4), y.checked_sub(1)) else {
+                return false;
+            };
+            let (i, gx) = ((x / PITCH) as usize, x % PITCH);
+            gx < WIDTH as u32
+                && (gy as usize) < font::HEIGHT
+                && glyphs
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|g: &[u8; font::HEIGHT]| {
+                        g[gy as usize] & (1 << (WIDTH as u32 - 1 - gx)) != 0
+                    })
+        };
+        let words = (width / 2).min(240) as usize;
+        let mut row = [0u32; 240];
+        for y in 0..LOOK_TAG_ROWS {
+            for (k, w) in row[..words].iter_mut().enumerate() {
+                let x = 2 * k as u32;
+                *w = pair(lit(x, y), lit(x + 1, y));
+            }
+            let line = height - LOOK_TAG_ROWS + y;
+            g.mem.store((at + line * 2 * width) as usize, &row[..words]);
+        }
+        g.mem.sync();
+        4 + PITCH * text.chars().count() as u32 <= width
+    }
+
+    /// [`look_tag`]'s RGB565 pixels: white on black.
+    fn look_rgb565(a: bool, b: bool) -> u32 {
+        u32::from(if a { 0xFFFF_u16 } else { 0 }) | u32::from(if b { 0xFFFF_u16 } else { 0 }) << 16
+    }
+
+    /// [`look_tag`]'s UYVY pixels: Y 235 or 16, U and V 128 (no colour).
+    fn look_uyvy(a: bool, b: bool) -> u32 {
+        let y = |on: bool| if on { 235 } else { 16 };
+        128 | y(a) << 8 | 128 << 16 | y(b) << 24
+    }
+
     /// [`soak_label`] drawn at `at` (a 16-bit screen, 960-byte rows).
     fn label_at(g: &mut Rig, at: u32, lines: [&str; 3], bg: u16) {
         let row = [u32::from(bg) << 16 | u32::from(bg); 240];
@@ -18008,6 +18070,18 @@ mod image {
                 };
                 gc2ca_set_mesh(g, rr, kind, tex, size);
                 let drawn = gc2ca_render(g, rr, size, GC2CA_A);
+                let mut tag = heapless_name();
+                let _ = write!(tag, "{k} OF 6: {fname}, {wname}");
+                let whole = look_tag(
+                    g,
+                    GC2CA_A,
+                    (u32::from(size.0), u32::from(size.1)),
+                    tag.as_str(),
+                    look_rgb565,
+                );
+                if !whole {
+                    log!("  GC2DA {k}: the photo's tag cut at the picture's edge");
+                }
                 if how == 2 {
                     gc2ca_show(g, GC2CA_DELL, size, GC2CA_A, planes0);
                 } else {
@@ -22096,32 +22170,6 @@ mod image {
     /// with our coefficients, then the CPU's of the same RGB565 card with
     /// Intel's standard ones, each 2x on the video plane until a button.
     fn gc2cx_look(g: &mut Rig, out: u32, planes0: &Snapshot) {
-        let words = u32::from(GC2CM_OW) * GC2CM_H;
-        // The GPU's UYVY into GC2CS's place (the video plane's proven one).
-        let mut buf = [0u32; 120];
-        for y in 0..GC2CM_H {
-            for (i, w) in buf.iter_mut().enumerate() {
-                *w = g
-                    .mem
-                    .load((out + 4 * (y * 120 + i as u32)) as usize)
-                    .unwrap_or(0);
-            }
-            g.mem.store((GC2CS_UYVY + y * 480) as usize, &buf);
-        }
-        // The card as a packed 240-wide RGB565 picture for the CPU's way.
-        let mut row = [0u32; 120];
-        for y in 0..GC2CM_H {
-            for (j, w) in row.iter_mut().enumerate() {
-                let px = |x: u32| {
-                    let (r, gr, b) = gc2cm_rgb(x, y);
-                    (r >> 3) << 11 | (gr >> 2) << 5 | b >> 3
-                };
-                *w = px(2 * j as u32) | px(2 * j as u32 + 1) << 16;
-            }
-            g.mem.store((GC2CA_A + y * 480) as usize, &row);
-        }
-        g.mem.sync();
-        let _ = words;
         let csc0: [u32; 5] = core::array::from_fn(|k| g.e.regs.read32(GC2CX_CSC[k].0));
         let screen = Plane {
             format: PlaneFormat::Rgb565,
@@ -22142,6 +22190,25 @@ mod image {
                 planes0,
                 [label, "THE GC2CM CARD, 2X", "PHOTO, THEN A BUTTON"],
             );
+            // Written after the card: its label lands inside the picture
+            // GC2CS_UYVY's place (gpubench-0215's first photo).
+            gc2cx_look_pictures(g, out);
+            let tag = if gpu {
+                "1 OF 2: GPU, EXACT OFFSETS"
+            } else {
+                "2 OF 2: CPU-MADE (GC2CS)"
+            };
+            let whole = if gpu {
+                look_tag(g, GC2CS_UYVY, (240, GC2CM_H), tag, look_uyvy)
+            } else {
+                look_tag(g, GC2CA_A, (240, GC2CM_H), tag, look_rgb565)
+            };
+            if !whole {
+                log!(
+                    "  GC2CX look {}: the photo's tag cut at the picture's edge",
+                    k + 1
+                );
+            }
             if gpu {
                 for (off, v) in GC2CX_CSC {
                     g.e.regs.write32(off, v);
@@ -22163,6 +22230,34 @@ mod image {
         for (k2, (off, _)) in GC2CX_CSC.into_iter().enumerate() {
             g.e.regs.write32(off, csc0[k2]);
         }
+    }
+
+    /// GC2CX's look pictures: the GPU's UYVY into GC2CS's place (the video
+    /// plane's proven one) and the card as a packed 240-wide RGB565 picture
+    /// at GC2CA_A for the CPU's way.
+    fn gc2cx_look_pictures(g: &mut Rig, out: u32) {
+        let mut buf = [0u32; 120];
+        for y in 0..GC2CM_H {
+            for (i, w) in buf.iter_mut().enumerate() {
+                *w = g
+                    .mem
+                    .load((out + 4 * (y * 120 + i as u32)) as usize)
+                    .unwrap_or(0);
+            }
+            g.mem.store((GC2CS_UYVY + y * 480) as usize, &buf);
+        }
+        let mut row = [0u32; 120];
+        for y in 0..GC2CM_H {
+            for (j, w) in row.iter_mut().enumerate() {
+                let px = |x: u32| {
+                    let (r, gr, b) = gc2cm_rgb(x, y);
+                    (r >> 3) << 11 | (gr >> 2) << 5 | b >> 3
+                };
+                *w = px(2 * j as u32) | px(2 * j as u32 + 1) << 16;
+            }
+            g.mem.store((GC2CA_A + y * 480) as usize, &row);
+        }
+        g.mem.sync();
     }
 
     /// Every output word checked against the card: U' and V' exact, Y0 and
