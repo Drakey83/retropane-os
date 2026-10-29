@@ -236,7 +236,10 @@ mod tests {
             panic!("8.4 ms frames fit C");
         };
         assert!(tear_free(&X51V, line, 8_400));
-        assert!(tear_free(&X51V, line, 16_800), "the 2x spike from line {line}");
+        assert!(
+            tear_free(&X51V, line, 16_800),
+            "the 2x spike from line {line}"
+        );
         // And it planned with margin: later than GC2BZ's clean 320.
         assert!(line > 320, "{line}");
     }
@@ -262,7 +265,10 @@ mod tests {
         // Slowest x 2 past two refreshes: A.
         assert_eq!(with(&[18_000]).plan(&X51V, true), Plan::Copy);
         // Steady 12.5 ms (WM clock): C.
-        assert!(matches!(with(&[12_500; 4]).plan(&X51V, true), Plan::Behind { .. }));
+        assert!(matches!(
+            with(&[12_500; 4]).plan(&X51V, true),
+            Plan::Behind { .. }
+        ));
     }
 
     #[test]
