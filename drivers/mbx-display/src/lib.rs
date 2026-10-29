@@ -320,6 +320,21 @@ pub fn video_hide<B: RegisterBus>(regs: &mut B) {
     layers::video_clock(regs, false);
 }
 
+/// The scan lines of the vertical blanking on the X51v's 645-line refresh
+/// (640 shown, `rp_mbx3d_render::scan::X51V_60HZ`): a plane repoint
+/// written here shows from the next refresh, whole. R113 on the X51v
+/// (2026-10-29, gpubench-0221/0222): a `GSCADR` write takes effect at once,
+/// mid-refresh (180 of 180 flips at lines 100, 320, 600 tore), and no
+/// `DSCTRL` setting latches it to the refresh boundary (bit 24 holds it
+/// until `DUCTRL` = 1, which applies it at once just the same). Dell's
+/// flip is written at line 643, in the VEVENT0 interrupt.
+pub const BLANK_LINES: core::ops::RangeInclusive<u32> = 640..=644;
+
+/// Whether the scan is in the vertical blanking ([`BLANK_LINES`]) now.
+pub fn in_blanking<B: RegisterBus>(regs: &mut B) -> bool {
+    BLANK_LINES.contains(&(regs.read32(reg::DVLNUM) & 0xFFF))
+}
+
 /// Clears the `handled` bits of `DINTRS` the only safe way: read the
 /// status, write it back without them (Dell's way). Writing anything else
 /// sets every bit written as 1, which made an earlier probe see events

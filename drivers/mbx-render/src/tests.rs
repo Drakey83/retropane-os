@@ -34,13 +34,19 @@ fn wall(x: u16, y: u16) -> u32 {
 
 /// The renderer on the model, the wallpaper stored, shown.
 fn gpu() -> (Mbx2dRenderer<Bus, Mem>, model::Shared) {
+    gpu_ticking(1)
+}
+
+/// [`gpu`] with its clock at `ticks_per_ms` (each look at the clock one
+/// tick).
+fn gpu_ticking(ticks_per_ms: u32) -> (Mbx2dRenderer<Bus, Mem>, model::Shared) {
     let mem = model::memory();
     let mut r = Mbx2dRenderer::new(
         Bus::new(mem.clone()),
         Mem(mem.clone()),
         Layout::X51V,
         now,
-        1,
+        ticks_per_ms,
     );
     let mut row = [0u32; W as usize];
     for y in 0..H {
@@ -462,4 +468,56 @@ fn a_new_wallpaper_redraws_everything_and_no_cached_area_shows_the_old_one() {
             "frame {k}: pixels still showing the old wallpaper"
         );
     }
+}
+
+/// A frame filling `r` with `colour`, damaged.
+fn fill_frame(r: Rect, colour: u32) -> Frame {
+    let mut f = Frame::new();
+    f.damage(r);
+    f.push(Cmd::Fill { r, color: colour });
+    f
+}
+
+#[test]
+fn every_flip_is_written_in_the_blanking() {
+    // R113 on the X51v: a GSCADR write shows at once, so one written
+    // mid-refresh tears it. The scan moves 7 lines a look: the flip waits
+    // for lines 640-644 (each look at the clock 1 us).
+    let (mut r, _) = gpu_ticking(1000);
+    r.parts().0.regs.scan_step = 7;
+    r.parts().0.regs.flip_lines.clear();
+    for (i, c) in [0xFFFF_0000u32, 0xFF00_FF00, 0xFF00_00FF]
+        .into_iter()
+        .enumerate()
+    {
+        r.draw(&fill_frame(Rect::new(0, 600, 480, 40), c));
+        while !r.poll() {}
+        r.flip();
+        assert!(i < 3);
+    }
+    let lines = r.parts().0.regs.flip_lines.clone();
+    assert!(lines.len() >= 3, "{lines:?}");
+    for l in &lines {
+        // The panel's 640 shown lines end at 639 (`X51V_60HZ`): not the
+        // constant under test.
+        assert!(
+            (640..=644).contains(l),
+            "a flip written at line {l}: {lines:?}"
+        );
+    }
+    assert_eq!(r.late_flips, 0);
+}
+
+#[test]
+fn a_scan_that_never_reaches_the_blanking_flips_late_and_counts_it() {
+    // The scan stuck at line 0 (a stopped display): each flip waits a
+    // refresh at most, then is written anyway, counted.
+    let (mut r, _) = gpu();
+    r.parts().0.regs.scan_step = 645;
+    r.parts().0.regs.flip_lines.clear();
+    r.draw(&fill_frame(Rect::new(0, 600, 480, 40), 0xFFFF_0000));
+    while !r.poll() {}
+    r.flip();
+    assert!(r.late_flips >= 1);
+    assert!(!r.parts().0.regs.flip_lines.is_empty(), "written anyway");
 }

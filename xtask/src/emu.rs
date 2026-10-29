@@ -1751,6 +1751,16 @@ fn scene_log(log: &str) -> Result<(), String> {
             return Err(format!("scene: no {want:?} in the run log:{log}"));
         }
     }
+    for what in ["back to back", "one-off"] {
+        let want = format!("P4 2D flips (no scene) {what}: 60 frames;");
+        let line = log
+            .lines()
+            .find(|l| l.starts_with(&want))
+            .ok_or_else(|| format!("scene: no {want:?} line:{log}"))?;
+        if !line.contains("failed 0;") {
+            return Err(format!("scene: P4 {what}: {line:?}"));
+        }
+    }
     for p in 1..=3 {
         for (what, n) in [("back to back", 150), ("one-off", 50)] {
             let line = log

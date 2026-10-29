@@ -79,6 +79,12 @@ pub struct Bus {
     pub ops: u32,
     /// Status reads still to report the FIFO full (a slow engine).
     pub full_reads: u32,
+    /// A moving scan: `DVLNUM` advances this many lines a read (0: the
+    /// scan always in the blanking, at line 642).
+    pub scan_step: u32,
+    line: u32,
+    /// The scan line each `GSCADR` write fell on.
+    pub flip_lines: Vec<u32>,
 }
 
 impl Bus {
@@ -98,6 +104,9 @@ impl Bus {
             xy0: 0,
             ops: 0,
             full_reads: 0,
+            scan_step: 0,
+            line: 0,
+            flip_lines: Vec::new(),
         }
     }
 
@@ -301,6 +310,13 @@ impl RegisterBus for Bus {
             }
             return 0;
         }
+        if offset == rp_drv_mbx_display::reg::DVLNUM {
+            if self.scan_step == 0 {
+                return 642;
+            }
+            self.line = (self.line + self.scan_step) % 645;
+            return self.line;
+        }
         if offset == rp_drv_mbx_display::reg::DINTRS {
             // The end of a frame's active lines has always just passed.
             return self.reg(offset) | rp_drv_mbx_display::event::VEVENT0;
@@ -309,6 +325,10 @@ impl RegisterBus for Bus {
     }
 
     fn write32(&mut self, offset: usize, value: u32) {
+        if offset == rp_drv_mbx_display::reg::GSCADR {
+            let line = if self.scan_step == 0 { 642 } else { self.line };
+            self.flip_lines.push(line);
+        }
         if (PORT..PORT + PORT_SIZE).contains(&offset) {
             self.command(value);
         } else {

@@ -309,8 +309,9 @@ pub struct Mbx2dRenderer<R, M> {
     images_top: usize,
     atlases: [Option<Atlas>; ATLASES],
     glyphs_top: usize,
-    /// Runs just before the flip.
-    pub flip_wait: Option<fn()>,
+    /// Flips written after waiting [`FLIP_WAIT_US`] for the blanking
+    /// without seeing it (written anyway: a refresh may tear).
+    pub late_flips: u32,
     /// Holds a finished frame's flip until [`Self::flip`]: the graphics
     /// service draws its 3D areas into the picture first (ADR-0030 G1).
     pub hold: bool,
@@ -373,6 +374,10 @@ pub struct Mbx2dRenderer<R, M> {
     seen_at: usize,
 }
 
+/// The longest wait for the blanking before a flip, us: a refresh (16.6 ms
+/// at 60 Hz, 17.7 at Windows Mobile's 56 Hz) and a little.
+pub const FLIP_WAIT_US: u32 = 18_000;
+
 /// The whole screen.
 const SCREEN: Rect = Rect::new(0, 0, W, H);
 
@@ -396,7 +401,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             images_top: 0,
             atlases: [None; ATLASES],
             glyphs_top: 0,
-            flip_wait: None,
+            late_flips: 0,
             hold: false,
             landed: None,
             drawn: [Rect::new(0, 0, 0, 0); MAX_DIRTY],
@@ -593,9 +598,6 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     }
 
     fn show_picture(&mut self, k: usize) {
-        if let Some(w) = self.flip_wait {
-            w();
-        }
         self.present(k);
         // From now the old picture scans out until the frame's end.
         rp_drv_mbx_display::ack_events(&mut self.e.regs, rp_drv_mbx_display::event::VEVENT0);
@@ -654,8 +656,18 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         rp_drv_mbx_display::layers::Layer::SOLO.scadr(scadr)
     }
 
-    /// Points the plane at picture `k`.
+    /// Points the plane at picture `k`, in the vertical blanking (R113 on
+    /// the X51v: a `GSCADR` write shows at once, so one written mid-refresh
+    /// tore it, every time): it shows from the next refresh, whole. The
+    /// wait is at most a refresh (then late, counted, written anyway).
     fn present(&mut self, k: usize) {
+        let t = (self.now)();
+        while !rp_drv_mbx_display::in_blanking(&mut self.e.regs) {
+            if self.us_since(t) > FLIP_WAIT_US {
+                self.late_flips += 1;
+                break;
+            }
+        }
         let scadr = (1 << 31) | (self.l.screens[k] / 16) as u32;
         self.e
             .regs

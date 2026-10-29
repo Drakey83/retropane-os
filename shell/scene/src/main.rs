@@ -836,6 +836,94 @@ mod image {
         }
     }
 
+    /// R113's fix proven (the owner's go 2026-10-29): with the scene
+    /// closed, 2D frames flip between the two screens (no scene: the
+    /// service flips as ever), each flip now written in the blanking.
+    /// [`FLIPS`] frames back to back, then [`FLIPS`] one-off (asked at
+    /// [`ASK_LINES`]), every refresh judged against the four bar pictures;
+    /// the 2D renderer's late flips logged (R113 on the X51v: before the
+    /// fix every flip tore its refresh).
+    fn flips(r: &mut Run) {
+        let _ = r.gfx.close_scene(r.c);
+        r.watch = None;
+        label(r.gfx.two_d(), ["RP-SCENE 2D FLIPS", "NO SCENE"]);
+        r.gfx.two_d().wallpaper_changed();
+        let late0 = r.gfx.two_d().late_flips;
+        let mut refs = [0u32; SCENES];
+        for (b, rf) in refs.iter_mut().enumerate() {
+            bar_frame(r, b);
+            rt::check_in();
+            let a = sig::settled(r.regs(), rt::ticks, FRAME_TICKS);
+            let n = sig::next(r.regs(), rt::ticks, FRAME_TICKS);
+            *rf = if a == n { a.unwrap_or(0) } else { 0 };
+        }
+        log!("P4 2D flips (no scene): references {refs:08x?}");
+        let line = r.line();
+        r.watch = Some(Watch::new(
+            RefreshJudge::new(SCENES as u32 - 1, refs[SCENES - 1]),
+            line,
+            rt::ticks(),
+            LATE_TICKS,
+        ));
+        let mut seq = SCENES as u32;
+        for one_off in [false, true] {
+            let m = mark(r);
+            for i in 0..FLIPS {
+                rt::check_in();
+                if one_off {
+                    let ask = ASK_LINES[i as usize % ASK_LINES.len()];
+                    let t0 = rt::ticks();
+                    while !(ask..ask + 8).contains(&r.line())
+                        && rt::ticks().wrapping_sub(t0) < 2 * FRAME_TICKS
+                    {
+                        r.tick();
+                    }
+                }
+                let b = picture(seq);
+                if let Some(w) = r.watch.as_mut() {
+                    w.send(seq, refs[b]);
+                }
+                bar_frame(r, b);
+                seq += 1;
+                if one_off {
+                    settle(r, 2);
+                }
+            }
+            settle(r, 3);
+            let n = mark(r);
+            log!(
+                "P4 2D flips (no scene) {}: {FLIPS} frames; refreshes judged {}: torn {}, back {}, unread {}; failed {}; late flips {}",
+                if one_off { "one-off" } else { "back to back" },
+                n.judged - m.judged,
+                n.torn - m.torn,
+                n.back - m.back,
+                n.missed - m.missed,
+                n.failed - m.failed,
+                r.gfx.two_d().late_flips - late0
+            );
+        }
+    }
+
+    /// A 2D frame with the bar `b` (damaged), driven to its end.
+    fn bar_frame(r: &mut Run, b: usize) {
+        r.frame.clear();
+        let rect = Rect::new(BAR.0, BAR.1, BAR.2, BAR.3);
+        r.frame.damage(rect);
+        r.frame.push(Cmd::Fill {
+            r: rect,
+            color: BAR_COLOURS[b],
+        });
+        match r.gfx.frame(r.frame, &mut r.clock) {
+            Ok(s) => {
+                r.drive(s);
+            }
+            Err(_) => r.failed += 1,
+        }
+    }
+
+    /// Frames in each half of the 2D flip run.
+    const FLIPS: u32 = 60;
+
     /// Watches `n` more refreshes.
     fn settle(r: &mut Run, n: u32) {
         let t0 = rt::ticks();
@@ -1006,6 +1094,7 @@ mod image {
             );
         }
 
+        flips(&mut r);
         let a = clock::put_back(r.regs(), rt::delay_us, set_cs3);
         let under = underrun_take(r.regs());
         log!(
