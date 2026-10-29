@@ -5939,6 +5939,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r113 = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R113", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cs = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6363,7 +6372,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 159] = [
+    let runs: [GpubenchRun; 160] = [
         (
             "run A",
             &run_a,
@@ -7141,6 +7150,47 @@ fn variant_images_gpubench(
                 "GC2DF back to back blanking start, checkerboard: 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
                 "GC2DF back to back option 1 (flip, copy back, flip back): 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
                 "GC2DF done: Windows Mobile's clock put back; 0 hung in all",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R113 (flips written mid-scan, the owner's go 2026-10-29):
+        // GSCADR repointed at three lines under each DSCTRL update setting.
+        // The fork has no DSIG (every flip "not judged") and no scan-out
+        // latch: the run's shape, every line reached, every setting put
+        // back, is what this checks.
+        (
+            "run R113",
+            &run_r113,
+            &[
+                "R113 (flips written mid-scan, the owner's go 2026-10-29): GSCADR repointed between two whole pictures",
+                "R113 as found, written at line 100: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 as found, written at line 320: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 as found, written at line 600: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 as found: DSCTRL back to 0x",
+                "R113 as found, DUCTRL = 1 (Dell's flip), written at line 100: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 as found, DUCTRL = 1 (Dell's flip), written at line 320: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 as found, DUCTRL = 1 (Dell's flip), written at line 600: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 as found, DUCTRL = 1 (Dell's flip): DSCTRL back to 0x",
+                "R113 DSCTRL bit 24 (UPDCNT), DUCTRL = 1, written at line 100: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL bit 24 (UPDCNT), DUCTRL = 1, written at line 320: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL bit 24 (UPDCNT), DUCTRL = 1, written at line 600: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL bit 24 (UPDCNT), DUCTRL = 1: DSCTRL back to 0x",
+                "R113 DSCTRL bit 25 (UPDINTCNT), DUCTRL = 1, written at line 100: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL bit 25 (UPDINTCNT), DUCTRL = 1, written at line 320: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL bit 25 (UPDINTCNT), DUCTRL = 1, written at line 600: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL bit 25 (UPDINTCNT), DUCTRL = 1: DSCTRL back to 0x",
+                "R113 DSCTRL bit 26 (UPDSYNCCNT), DUCTRL = 1, written at line 100: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL bit 26 (UPDSYNCCNT), DUCTRL = 1, written at line 320: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL bit 26 (UPDSYNCCNT), DUCTRL = 1, written at line 600: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL bit 26 (UPDSYNCCNT), DUCTRL = 1: DSCTRL back to 0x",
+                "R113 DSCTRL UPDWAIT 1 (bits 16-19), DUCTRL = 1, written at line 100: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL UPDWAIT 1 (bits 16-19), DUCTRL = 1, written at line 320: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL UPDWAIT 1 (bits 16-19), DUCTRL = 1, written at line 600: 2 flips: held to the next refresh 0, torn 0, new at once 0, the next refresh not new 0, not judged 2, line missed 0",
+                "R113 DSCTRL UPDWAIT 1 (bits 16-19), DUCTRL = 1: DSCTRL back to 0x",
+                "R113 done: DSCTRL 0x",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

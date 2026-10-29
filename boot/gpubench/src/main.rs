@@ -17850,6 +17850,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R113 {
+            r113_run(g, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2DF {
             gc2df_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20184,6 +20190,151 @@ mod image {
         let a = gc2dc_settled(g);
         let b = gc2dc_next(g);
         if a == b { a } else { None }
+    }
+
+    /// R113's two pictures labelled for setting `k`, each shown and
+    /// settled: their signatures (A at screen 0's place, B at screen 1's),
+    /// `None` where one didn't read steady.
+    fn r113_pictures(g: &mut Rig, k: usize, planes0: &Snapshot) -> [Option<u32>; 2] {
+        let mut step = heapless_name();
+        let _ = write!(step, "STEP {} OF {}", k + 1, R113_SETTINGS.len());
+        let mut sig = [None; 2];
+        for (i, (at, name, bg)) in [
+            (GC2CA_A, "PICTURE A", SOAK_BLUE),
+            (GC2DE_SCREEN1, "PICTURE B", 0x8010),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let _ = gc2ca_fill(g, at, GC2DE_SIZE, bg);
+            label_at(
+                g,
+                at + 256 * 960,
+                ["R113 FLIP TIMING", step.as_str(), name],
+                bg,
+            );
+            sig[i] = gc2df_sig(g, at, planes0);
+        }
+        sig
+    }
+
+    /// Waits for scan line `line` (within 4 lines), at most two refreshes.
+    fn r113_at_line(g: &mut Rig, line: u32) -> bool {
+        let t0 = rt::ticks();
+        while !(line..line + 4).contains(&scan_line(g)) {
+            if us_since(t0) > 2 * FRAME_US {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Run R113 (see [`R113`]).
+    #[inline(never)]
+    fn r113_run(g: &mut Rig, planes0: &Snapshot) {
+        use rp_drv_mbx_display::reg::DSCTRL;
+        let found = g.e.regs.read32(DSCTRL);
+        R113_DSCTRL.with(|v| *v = found);
+        log!(
+            "  R113 (flips written mid-scan, the owner's go 2026-10-29): GSCADR repointed between two whole pictures (0x{GC2CA_A:x}, 0x{GC2DE_SCREEN1:x}) at lines {R113_LINES:?}, {R113_FLIPS} flips a line, {} settings; DSCTRL as found 0x{found:08x}, DUCTRL 0x{:08x}",
+            R113_SETTINGS.len(),
+            g.e.regs.read32(DUCTRL)
+        );
+        for (k, &setting) in R113_SETTINGS.iter().enumerate() {
+            rt::check_in();
+            let sigs = match r113_pictures(g, k, planes0) {
+                [Some(a), Some(b)] if a != b => Some((a, b)),
+                got => {
+                    log!(
+                        "  R113 {}: the pictures' DSIG {got:08x?}, not two steady different values (the emulator models none): flips made, not judged",
+                        setting.0
+                    );
+                    None
+                }
+            };
+            r113_setting(g, setting, sigs, found);
+        }
+        g.e.regs.write32(DSCTRL, found);
+        log!(
+            "  R113 done: DSCTRL 0x{:08x} (found 0x{found:08x})",
+            g.e.regs.read32(DSCTRL)
+        );
+    }
+
+    /// One R113 setting: `DSCTRL` = `found` | `bits`; at each line, flips
+    /// between A and B (`sigs`: their signatures, `None` not judged), the
+    /// refresh each write fell in and the next read; `DSCTRL` back to
+    /// `found`. One log line a line.
+    fn r113_setting(
+        g: &mut Rig,
+        (name, bits, ductrl): (&str, u32, bool),
+        sigs: Option<(u32, u32)>,
+        found: u32,
+    ) {
+        use rp_drv_mbx_display::reg::{DSCTRL, GSCADR};
+        let frame = FRAME_US * 13 / 4;
+        // A shown whole first, by its address alone (the pictures' show
+        // left B's plane set up the same way).
+        let base = g.e.regs.read32(GSCADR) & 0xFF80_0000;
+        let addr = |at: u32| base | at / 16;
+        g.e.regs.write32(GSCADR, addr(GC2CA_A));
+        g.e.regs.write32(DSCTRL, found | bits);
+        let _ = sig::settled(&mut g.e.regs, rt::ticks, frame);
+        let mut on_a = true;
+        for &line in &R113_LINES {
+            // Held to the next refresh, torn, new at once, the next not
+            // new, not judged, the line missed.
+            let mut c = [0u32; 6];
+            for _ in 0..R113_FLIPS {
+                rt::check_in();
+                if !r113_at_line(g, line) {
+                    c[5] += 1;
+                    continue;
+                }
+                g.e.regs
+                    .write32(GSCADR, addr(if on_a { GC2DE_SCREEN1 } else { GC2CA_A }));
+                if ductrl {
+                    // Dell's 0x0211d250: DUCTRL read (discarded), then 1.
+                    let _ = g.e.regs.read32(DUCTRL);
+                    g.e.regs.write32(DUCTRL, 1);
+                }
+                let w = sig::next(&mut g.e.regs, rt::ticks, frame);
+                let n = sig::next(&mut g.e.regs, rt::ticks, frame);
+                let k = match (sigs, w, n) {
+                    (Some((a, b)), Some(w), Some(n)) => {
+                        let (old, new) = if on_a { (a, b) } else { (b, a) };
+                        if n != new {
+                            3
+                        } else if w == old {
+                            0
+                        } else if w == new {
+                            2
+                        } else {
+                            1
+                        }
+                    }
+                    _ => 4,
+                };
+                c[k] += 1;
+                on_a = !on_a;
+            }
+            log!(
+                "  R113 {name}, written at line {line}: {R113_FLIPS} flips: held to the next refresh {}, torn {}, new at once {}, the next refresh not new {}, not judged {}, line missed {}",
+                c[0],
+                c[1],
+                c[2],
+                c[3],
+                c[4],
+                c[5]
+            );
+        }
+        g.e.regs.write32(DSCTRL, found);
+        let under = underrun_take(&mut g.e.regs);
+        log!(
+            "  R113 {name}: DSCTRL back to 0x{:08x}; underrun flag {}",
+            g.e.regs.read32(DSCTRL),
+            if under { "set (cleared)" } else { "clear" }
+        );
     }
 
     /// Run GC2DF (see [`GC2DF`]).
@@ -24249,6 +24400,40 @@ mod image {
     /// judged; and its tile rows' landing order sampled as GC2BZ did the
     /// core's. Unattended, about a minute.
     const GC2DF: bool = option_env!("RP_GPUBENCH_GC2_HALF_R20P").is_some();
+    /// Run R113 (`RP_GPUBENCH_R113`, with `RP_GPUBENCH_GC2_HALF`), plane
+    /// flips written mid-scan (the owner's go 2026-10-29 on its sheet,
+    /// `docs/research/sheets/r113-flip-timing.md`): two whole 16-bit
+    /// pictures (screen 0's place and screen 1's), their `DSIG` measured
+    /// settled; then `GSCADR` repointed to the other picture at lines 100,
+    /// 320 and 600, [`R113_FLIPS`] times each, the refresh the write fell in
+    /// and the next one read: whole old then new (held to the next refresh:
+    /// a latch), torn (the write took effect at once, mid-refresh), new at
+    /// once, or the next not new. First as found (`DSCTRL` 0x8000002A on the
+    /// X51v), then Dell's own flip (no update bit, `DUCTRL` = 1 after each
+    /// write, 0x0211d250), then `DSCTRL`'s update bits one at a time (24
+    /// `UPDCNT`, 25 `UPDINTCNT`, 26 `UPDSYNCCNT`, `UPDWAIT` 1: mbxfb's
+    /// names), each with `DUCTRL` = 1 after every write; `DSCTRL` put back
+    /// as found after each setting. The screen may blank while a setting is
+    /// on: the owner watching. About a minute.
+    const R113: bool = option_env!("RP_GPUBENCH_R113").is_some();
+    /// Flips at each line per setting (the emulator 2).
+    const R113_FLIPS: u32 = if GC2_RENDERS < 20 { 2 } else { 60 };
+    /// The scan lines the flips are written at: high, middle, low.
+    const R113_LINES: [u32; 3] = [100, 320, 600];
+    /// The settings: a name, `DSCTRL` bits set over the value found, and
+    /// whether `DUCTRL` = 1 follows each write.
+    const R113_SETTINGS: [(&str, u32, bool); 6] = [
+        ("as found", 0, false),
+        ("as found, DUCTRL = 1 (Dell's flip)", 0, true),
+        ("DSCTRL bit 24 (UPDCNT), DUCTRL = 1", 1 << 24, true),
+        ("DSCTRL bit 25 (UPDINTCNT), DUCTRL = 1", 1 << 25, true),
+        ("DSCTRL bit 26 (UPDSYNCCNT), DUCTRL = 1", 1 << 26, true),
+        ("DSCTRL UPDWAIT 1 (bits 16-19), DUCTRL = 1", 1 << 16, true),
+    ];
+    /// The display's update control (Dell writes 1 after every flip).
+    const DUCTRL: usize = 0x230C;
+    /// `DSCTRL` as R113 found it (the crash path puts it back; 0: not run).
+    static R113_DSCTRL: rt::Global<u32> = rt::Global::new(0);
     /// Copies timed before the window is planned (the service plans from
     /// its own recent copies: `Graphics::copies`).
     const GC2DF_TIMED: u32 = 4;
@@ -34294,6 +34479,14 @@ mod image {
     /// On a crash, first (rp-image's crash order): run G's Windows Mobile
     /// clock and bus timing back.
     fn put_back() {
+        // Run R113: DSCTRL as found.
+        let dsctrl = R113_DSCTRL.with(|v| *v);
+        if R113
+            && dsctrl != 0
+            && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx()
+        {
+            regs.write32(rp_drv_mbx_display::reg::DSCTRL, dsctrl);
+        }
         if CHANGES_CLOCK && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
             clock_restore(&mut regs);
         }
