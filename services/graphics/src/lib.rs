@@ -20,8 +20,17 @@
 //!   frame with 3D work, 2D's frame reaches screen 0 first (a flip if 2D
 //!   drew there, else its changed rectangles copied in by the 2D engine),
 //!   the scene renders into screen 0 on screen, and its area is copied back
-//!   into screen 1. 3D frames are seen as they draw until R20's scheduling
-//!   covers them.
+//!   into screen 1.
+//! - **Tear-free 3D frames** (R20, ADR-0034 P1 = C with the owner's
+//!   fallback, "Option 1", 2026-10-29): each scene frame is planned from
+//!   its recent render times (`rp_mbx3d_render::scan::Schedule`) on the
+//!   display's measured scan (R111). One the scan can lead (a top-down
+//!   order, times that fit) starts on screen 0 at a line inside its window,
+//!   behind the scan. One it can't (no history, a spike, a checkerboard, too
+//!   long) renders into screen 1 while screen 0 is shown, is flipped to and
+//!   its area copied back ([`Graphics::allow_screen1_3d`], once the soak of
+//!   3D targets at screen 1's place has passed on the X51v); until then it
+//!   starts on screen 0 once the scan has left the scene's area.
 //!
 //! A library now (G4), used in one process; the display driver host's once
 //! IPC can move pages (ADR-0016).
@@ -30,8 +39,10 @@
 #![forbid(unsafe_code)]
 
 use rp_draw::{Frame, MAX_DIRTY, Rect, Renderer as _};
+use rp_drv_mbx_display::{pll, reg as dreg};
 use rp_hal_api::RegisterBus;
 use rp_mbx_render::{LocalMem, Mbx2dRenderer};
+use rp_mbx3d_render::scan::{self, Scan, Schedule};
 use rp_mbx3d_render::{
     self as r3d, AlphaTest, Clock, Depth, Draw, Paint, Picture, Point, Poll, Target, Texture,
 };
@@ -191,10 +202,59 @@ enum Job {
     None,
     /// A 2D frame, its flip held for the 3D area.
     TwoD,
+    /// The 3D area waiting to start on screen 0, on screen, at a scan line
+    /// in `from..=to` (`to` past the refresh's last line runs into the next
+    /// refresh's first): behind the scan (`behind`), or once the scan has
+    /// left the area. `prepared`: its lists written already (else written
+    /// at the start: the core needed setting up).
+    Armed {
+        from: u32,
+        to: u32,
+        behind: bool,
+        prepared: bool,
+    },
     /// The 3D area rendering into screen 0, on screen (C71 ruling R-B);
     /// then the area carried into screen 1.
     ThreeD,
+    /// R20's option 1: the 3D area rendering into screen 1 while screen 0
+    /// is shown; `held`: 2D's frame is held in screen 1 (shown with it).
+    Aside {
+        held: bool,
+    },
+    /// Option 1: screen 1 shown from the next refresh; its area (and 2D's
+    /// changes, `held`) go into screen 0 once scan-out has left it.
+    Flipped {
+        held: bool,
+    },
 }
+
+/// How the 3D frames started (R20), for the logs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Starts {
+    /// On screen 0 behind the scan (C).
+    pub behind: u32,
+    /// On screen 0 once the scan had left the scene's area (the fallback
+    /// until screen 1's soak passes).
+    pub after_area: u32,
+    /// Into screen 1, flipped to and copied back (option 1).
+    pub screen1: u32,
+    /// The scan line the last frame on screen 0 started on.
+    pub last_line: Option<u32>,
+}
+
+/// How a scene frame starts (R20).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Start {
+    /// On screen 0 at a line in `from..=to` (`behind` the scan, or after the
+    /// area).
+    Screen0 { from: u32, to: u32, behind: bool },
+    /// Into screen 1 (option 1).
+    Screen1,
+}
+
+/// Lines after the scene's area in which a fallback frame may still start
+/// on screen 0 (two tile rows: the caller's poll may come late).
+const AFTER_AREA_LINES: u32 = 2 * scan::MARGIN;
 
 /// What [`Graphics::poll`] found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,6 +275,8 @@ pub enum Step {
 /// How long to wait before looking at the 2D engine again (it has no
 /// prediction; a full-screen 2D frame takes milliseconds).
 const TWO_D_POLL_US: u32 = 200;
+/// How long to wait before looking for the end of a flip's refresh again.
+const FLIP_POLL_US: u32 = 200;
 
 /// The service's 3D state: the scene and the texture blocks (about 5 KiB).
 /// Kept by the program and lent to the service only by programs that use
@@ -253,6 +315,11 @@ pub struct Graphics<'a, R, M> {
     clients: [ClientRec; CLIENTS],
     job: Job,
     copy_stalls: u32,
+    /// R20: the scene's recent render times.
+    sched: Schedule,
+    /// R20's option 1 allowed (screen 1's soak passed).
+    screen1_3d: bool,
+    starts: Starts,
     /// Tests: the copy (1 = the next) before which the hook runs (it makes
     /// the model engine stall).
     #[cfg(test)]
@@ -277,6 +344,14 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             clients: [ClientRec::default(); CLIENTS],
             job: Job::None,
             copy_stalls: 0,
+            sched: Schedule::new(),
+            screen1_3d: false,
+            starts: Starts {
+                behind: 0,
+                after_area: 0,
+                screen1: 0,
+                last_line: None,
+            },
             #[cfg(test)]
             before_copy: None,
         }
@@ -288,6 +363,86 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     #[must_use]
     pub const fn copy_stalls(&self) -> u32 {
         self.copy_stalls
+    }
+
+    /// R20's option 1 on or off: scene frames the scan can't lead render
+    /// into screen 1 (outside the safe region) while screen 0 is shown.
+    /// Off until the soak of 3D targets at screen 1's place (`rp-gpubench`
+    /// GC2DE) has passed on the X51v at the clock in use (ADR-0035); off,
+    /// they start on screen 0 once the scan has left the scene's area.
+    pub fn allow_screen1_3d(&mut self, on: bool) {
+        self.screen1_3d = on;
+    }
+
+    /// How the 3D frames started so far (R20).
+    #[must_use]
+    pub const fn starts(&self) -> Starts {
+        self.starts
+    }
+
+    /// The display's scan from its pixel clock (R111: each measured on the
+    /// X51v), or `None` for a clock without a measured scan: no frame then
+    /// starts behind the scan.
+    fn scan(&mut self) -> Option<Scan> {
+        match self.two_d.parts().0.regs.read32(dreg::DISPPLL) {
+            pll::SIXTY => Some(scan::X51V_60HZ),
+            pll::WM => Some(scan::X51V),
+            _ => None,
+        }
+    }
+
+    /// The scan line now.
+    fn scan_line(&mut self) -> u32 {
+        self.two_d.parts().0.regs.read32(dreg::DVLNUM) & 0xFFF
+    }
+
+    /// When the scan reaches `line` (the next time), on the clock.
+    fn when_line<C: Clock>(&mut self, line: u32, clock: &mut C) -> u32 {
+        let total = scan::X51V_60HZ.total;
+        let ns = self.scan().unwrap_or(scan::X51V_60HZ).line_ns;
+        let lines = (line % total + total - self.scan_line() % total) % total;
+        clock
+            .now_us()
+            .wrapping_add((u64::from(lines.max(1)) * u64::from(ns) / 1000) as u32)
+    }
+
+    /// How the open scene's next frame starts (R20): behind the scan where
+    /// the schedule fits it; else into screen 1 (`aside_ok`: screen 1
+    /// holds the frame, and option 1 is allowed), else on screen 0 once the
+    /// scan has left the area.
+    fn plan_3d(&mut self, aside_ok: bool) -> Option<Start> {
+        let scan = self.scan();
+        let s = self.open()?;
+        let band = (u32::from(s.y), u32::from(s.h));
+        let top_down = s.r.tile_order().top_down();
+        if let Some((from, to)) = scan.and_then(|sc| self.sched.window(&sc, top_down, band)) {
+            return Some(Start::Screen0 {
+                from,
+                to,
+                behind: true,
+            });
+        }
+        if aside_ok && self.screen1_3d {
+            return Some(Start::Screen1);
+        }
+        let from = band.0 + band.1;
+        Some(Start::Screen0 {
+            from,
+            to: from + AFTER_AREA_LINES,
+            behind: false,
+        })
+    }
+
+    /// The scene's target: its area of the picture at `at`.
+    fn target(s: &Scene, at: usize) -> Target {
+        Target {
+            picture: Picture {
+                at: at as u32,
+                ..Picture::screen(0)
+            },
+            x: s.x,
+            y: s.y,
+        }
     }
 
     /// [`Mbx2dRenderer::copy_screens`], counted when it stalls.
@@ -633,10 +788,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         if self.open().is_none_or(|s| s.r.dirty() == 0) {
             return Ok(Step::Idle);
         }
-        // The scene renders into screen 0 with screen 0 on screen (C71
-        // ruling R-B). If screen 1 is, both hold the same frame (`back`):
-        // screen 0 is shown first, a whole frame.
-        let safe = self.two_d.screens()[0];
+        // The 3D core draws only with screen 0 on screen (C71 ruling R-B).
+        // If screen 1 is, both hold the same frame (`back`): screen 0 is
+        // shown first, a whole frame.
+        let [safe, other] = self.two_d.screens();
         let flipped = self.two_d.front() != safe;
         if flipped {
             if self.two_d.back() != Some(safe) {
@@ -645,32 +800,81 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             self.two_d.flip_back();
             self.two_d.settle();
         }
-        match self.start_3d(safe, clock) {
-            Some(due) => {
-                self.job = Job::ThreeD;
-                Ok(Step::Wait(due))
-            }
-            None if flipped => Ok(Step::Shown),
-            None => Ok(Step::Idle),
-        }
+        // Screen 1 holds the same frame as screen 0 (option 1 may draw it).
+        let same = self.two_d.back() == Some(other);
+        let step = match self.plan_3d(same) {
+            Some(Start::Screen1) => self.aside(other, false, clock),
+            Some(start) => self.arm(start, clock),
+            None => Step::Idle,
+        };
+        Ok(match step {
+            Step::Idle if flipped => Step::Shown,
+            s => s,
+        })
     }
 
-    /// Renders the scene into its area of the picture at `at`: when to
-    /// poll, or `None` if there's nothing to render (or no scene).
-    fn start_3d<C: Clock>(&mut self, at: usize, clock: &mut C) -> Option<u32> {
-        let s = self.three_d.as_deref_mut()?.scene.as_mut()?;
-        let target = Target {
-            picture: Picture {
-                at: at as u32,
-                ..Picture::screen(0)
-            },
-            x: s.x,
-            y: s.y,
+    /// Readies the scene's frame to start on screen 0 (on screen) at its
+    /// window's line ([`Job::Armed`]), its lists written now where the core
+    /// allows (so the start is only the start); `Idle` if nothing changed.
+    fn arm<C: Clock>(&mut self, start: Start, clock: &mut C) -> Step {
+        let Start::Screen0 { from, to, behind } = start else {
+            return Step::Idle;
         };
+        let safe = self.two_d.screens()[0];
+        let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) else {
+            return Step::Idle;
+        };
+        let target = Self::target(s, safe);
+        let (e, mem) = self.two_d.parts();
+        let prepared = match s.r.prepare(&mut e.regs, mem, clock, target) {
+            Ok(true) => true,
+            Ok(false) => return Step::Idle,
+            // The core needs setting up: written at the start instead.
+            Err(r3d::Error::Busy) => false,
+            Err(_) => return Step::Idle,
+        };
+        self.job = Job::Armed {
+            from,
+            to,
+            behind,
+            prepared,
+        };
+        self.poll(clock)
+    }
+
+    /// Starts the scene's frame into screen 1 at `other` while screen 0 is
+    /// shown (option 1): `held`, 2D's frame is held there.
+    fn aside<C: Clock>(&mut self, other: usize, held: bool, clock: &mut C) -> Step {
+        let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) else {
+            return Step::Idle;
+        };
+        let target = Self::target(s, other);
         let (e, mem) = self.two_d.parts();
         let res = s.r.render(&mut e.regs, mem, clock, target);
         self.after_3d();
-        res.ok().flatten()
+        match res {
+            Ok(Some(due)) => {
+                self.starts.screen1 += 1;
+                self.job = Job::Aside { held };
+                Step::Wait(due)
+            }
+            _ => {
+                if held {
+                    self.two_d.flip();
+                }
+                Step::Idle
+            }
+        }
+    }
+
+    /// A render seen done (its time into the schedule) or hung (the
+    /// schedule forgets: the next frame redraws everything).
+    fn learn(&mut self, p: Poll) {
+        match p {
+            Poll::Done(st) => self.sched.record(st.done_us),
+            Poll::Recovered => self.sched.reset(),
+            Poll::Wait(_) | Poll::Idle => {}
+        }
     }
 
     /// Drives the frame in flight.
@@ -712,10 +916,25 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     self.two_d.flip();
                     return Step::Shown;
                 }
-                // The 3D core draws only into screen 0, with screen 0 on
-                // screen (C71 ruling R-B: screen 1 lies outside the safe
-                // region).
-                let safe = self.two_d.screens()[0];
+                // The 3D core draws only with screen 0 on screen (C71 ruling
+                // R-B: screen 1 lies outside the safe region).
+                let [safe, other] = self.two_d.screens();
+                let start = self.plan_3d(true);
+                if start == Some(Start::Screen1) {
+                    if at != safe {
+                        // 2D's frame held in screen 1, screen 0 shown: the
+                        // scene renders there, and the flip shows both.
+                        return self.aside(other, true, clock);
+                    }
+                    // 2D drew into screen 0: it is shown first, then its
+                    // changes go into screen 1 for the scene.
+                    self.two_d.flip();
+                    self.two_d.settle();
+                    if !self.copy_screens(other, safe, &drawn[..n]) {
+                        return Step::Recovered;
+                    }
+                    return self.aside(other, false, clock);
+                }
                 if at == safe {
                     // 2D's frame shown whole, scan-out off screen 1.
                     self.two_d.flip();
@@ -735,12 +954,123 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     self.two_d.flip();
                     return Step::Recovered;
                 }
-                match self.start_3d(safe, clock) {
-                    Some(due) => {
+                match start.map(|st| self.arm(st, clock)) {
+                    Some(Step::Idle) | None => Step::Shown,
+                    Some(step) => step,
+                }
+            }
+            Job::Armed {
+                from,
+                to,
+                behind,
+                prepared,
+            } => {
+                let total = scan::X51V_60HZ.total;
+                let line = self.scan_line();
+                let inside = if to < total {
+                    (from..=to).contains(&line)
+                } else {
+                    line >= from || line <= to - total
+                };
+                if !inside {
+                    return Step::Wait(self.when_line(from, clock));
+                }
+                let safe = self.two_d.screens()[0];
+                let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) else {
+                    self.job = Job::None;
+                    return Step::Shown;
+                };
+                let target = Self::target(s, safe);
+                let (e, mem) = self.two_d.parts();
+                let due = if prepared {
+                    s.r.start_prepared(&mut e.regs, clock)
+                } else {
+                    s.r.render(&mut e.regs, mem, clock, target)
+                };
+                self.after_3d();
+                self.starts.last_line = Some(line);
+                if behind {
+                    self.starts.behind += 1;
+                } else {
+                    self.starts.after_area += 1;
+                }
+                match due {
+                    Ok(Some(due)) => {
                         self.job = Job::ThreeD;
                         Step::Wait(due)
                     }
-                    None => Step::Shown,
+                    _ => {
+                        self.job = Job::None;
+                        Step::Shown
+                    }
+                }
+            }
+            Job::Aside { held } => {
+                let p = match self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
+                    Some(s) => {
+                        let (e, mem) = self.two_d.parts();
+                        s.r.poll(&mut e.regs, mem, clock)
+                    }
+                    None => Poll::Idle,
+                };
+                self.after_3d();
+                self.learn(p);
+                match p {
+                    Poll::Wait(t) => return Step::Wait(t),
+                    Poll::Recovered => {
+                        // Screen 0 stays on screen, whole; held, 2D's frame
+                        // goes into it instead (the area stale until the
+                        // next frame, which the hang draws whole).
+                        self.job = Job::None;
+                        if held {
+                            let mut drawn = [Rect::default(); MAX_DIRTY];
+                            let n = self.two_d.drawn().len();
+                            drawn[..n].copy_from_slice(self.two_d.drawn());
+                            let [safe, other] = self.two_d.screens();
+                            if self.copy_screens(safe, other, &drawn[..n]) {
+                                self.two_d.keep_front();
+                            } else {
+                                self.two_d.flip();
+                            }
+                        }
+                        return Step::Recovered;
+                    }
+                    Poll::Done(_) | Poll::Idle => {}
+                }
+                // Screen 1 shown from the next refresh (the core idle:
+                // amendment P rule 4).
+                if held {
+                    self.two_d.flip();
+                } else {
+                    self.two_d.flip_back();
+                }
+                self.job = Job::Flipped { held };
+                self.poll(clock)
+            }
+            Job::Flipped { held } => {
+                if !self.two_d.settled() {
+                    let at = clock.now_us().wrapping_add(FLIP_POLL_US);
+                    return Step::Wait(at);
+                }
+                let Some(area) = self.open().map(|s| Rect::new(s.x, s.y, s.w, s.h)) else {
+                    self.job = Job::None;
+                    return Step::Shown;
+                };
+                // Screen 1 on screen: its area (and 2D's changes, held)
+                // into screen 0, so both hold the frame again.
+                let mut rects = [Rect::default(); MAX_DIRTY + 1];
+                let mut n = 0;
+                if held {
+                    n = self.two_d.drawn().len();
+                    rects[..n].copy_from_slice(self.two_d.drawn());
+                }
+                rects[n] = area;
+                let [safe, other] = self.two_d.screens();
+                self.job = Job::None;
+                if self.copy_screens(safe, other, &rects[..=n]) {
+                    Step::Shown
+                } else {
+                    Step::Recovered
                 }
             }
             Job::ThreeD => {
@@ -755,6 +1085,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     None => (Poll::Idle, None),
                 };
                 self.after_3d();
+                self.learn(p);
                 let mut shown = match p {
                     Poll::Wait(t) => return Step::Wait(t),
                     Poll::Recovered => Step::Recovered,

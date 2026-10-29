@@ -523,6 +523,22 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         self.wait_scanout();
     }
 
+    /// [`Self::settle`] without waiting: whether scan-out has left the
+    /// picture it showed before the last flip (R20's option 1 copies into
+    /// that picture only then, the graphics service's frame loop never
+    /// blocked).
+    pub fn settled(&mut self) -> bool {
+        if self.vsync_due
+            && self.e.regs.read32(rp_drv_mbx_display::reg::DINTRS)
+                & rp_drv_mbx_display::event::VEVENT0
+                == 0
+        {
+            return false;
+        }
+        self.vsync_due = false;
+        true
+    }
+
     /// Copies `rects` of the screen at `src` into the one at `dst` on the 2D
     /// engine, and waits for them (C71 ruling R-B: 2D's changes into screen
     /// 0 before a 3D render, the 3D area back into screen 1 after it).

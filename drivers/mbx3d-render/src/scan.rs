@@ -33,11 +33,23 @@ pub struct Scan {
     pub line_ns: u32,
 }
 
-/// The X51v's VGA scan (GC2BZ: 645 lines, 17.7 ms a refresh).
+/// The X51v's VGA scan under Windows Mobile's 56 Hz set-up (`DISPPLL`
+/// `0xEC5`; GC2BZ: 645 lines, 17.7 ms a refresh).
 pub const X51V: Scan = Scan {
     total: 645,
     shown: 640,
     line_ns: 27_460,
+};
+
+/// The X51v's VGA scan under RetroPane's 60 Hz set-up (`DISPPLL` `0xFC5`):
+/// 25,687 ns a line, measured over 64 frames on the X51v (R108 run 3,
+/// gpubench-0214; R111). The panel timing's nominal (648 pixel clocks at
+/// 25.1875 MHz) is 25,727 ns: 0.16% off, a crystal's tolerance at most a
+/// line or two of a 1,285-line plan, inside [`MARGIN`].
+pub const X51V_60HZ: Scan = Scan {
+    total: 645,
+    shown: 640,
+    line_ns: 25_687,
 };
 
 /// Lines of margin each side: one tile row (rows land a tile row at a time).
@@ -107,32 +119,63 @@ impl Schedule {
         Some((fast, slow))
     }
 
-    /// The next frame's plan on `scan`, for a render whose tiles land top
-    /// down (`top_down`: rows, interleaved) or not (checkerboard, reversed).
+    /// The next frame's plan on `scan`, for a whole-screen render whose
+    /// tiles land top down (`top_down`: rows, interleaved) or not
+    /// (checkerboard, reversed).
     #[must_use]
     pub fn plan(&self, scan: &Scan, top_down: bool) -> Plan {
-        let Some((fast, slow)) = self.band() else {
-            return Plan::Copy;
-        };
-        if !top_down {
-            return Plan::Copy;
+        self.plan_rows(scan, top_down, (0, scan.shown))
+    }
+
+    /// [`Self::plan`] for a render of the band of screen rows `top..top +
+    /// rows` alone (a scene's area, whole tile rows): the earliest line of
+    /// [`Self::window`].
+    #[must_use]
+    pub fn plan_rows(&self, scan: &Scan, top_down: bool, band: (u32, u32)) -> Plan {
+        match self.window(scan, top_down, band) {
+            Some((line, _)) => Plan::Behind { line },
+            None => Plan::Copy,
+        }
+    }
+
+    /// The scan lines a top-down render of the band `top..top + rows` may
+    /// start on, tear-free for every render time in [`Self::band`]:
+    /// `(earliest, latest)`, or `None` (A: no history, not top down, or
+    /// the band doesn't fit). Rule 0: a whole screen's plan is the band
+    /// `0..640`; a scene's area needs the scan only past its own rows, so
+    /// a small area fits render times the whole screen's formula refuses,
+    /// and the window (not one line) leaves the caller room to start late.
+    #[must_use]
+    pub fn window(
+        &self,
+        scan: &Scan,
+        top_down: bool,
+        (top, rows): (u32, u32),
+    ) -> Option<(u32, u32)> {
+        let (fast, slow) = self.band()?;
+        if !top_down || rows == 0 {
+            return None;
         }
         let lines = |us: u32| (u64::from(us) * 1000).div_ceil(u64::from(scan.line_ns));
-        // Never overtake the scan in this refresh (the fastest render), a
-        // start in the blanking needing nothing.
-        let earliest = (u64::from(scan.shown) + u64::from(MARGIN))
-            .saturating_sub(lines(fast))
-            .min(u64::from(scan.shown));
-        // Finished before the scan comes round (the slowest render).
-        let latest = (u64::from(scan.total) + u64::from(scan.shown))
-            .checked_sub(lines(slow) + u64::from(MARGIN))
-            .map(|l| l.min(u64::from(scan.total) - 1));
-        match latest {
-            Some(l) if earliest <= l => Plan::Behind {
-                line: earliest as u32,
-            },
-            _ => Plan::Copy,
-        }
+        let (top, bottom) = (u64::from(top), u64::from(top) + u64::from(rows));
+        let (total, tile_rows) = (u64::from(scan.total), u64::from(rows).div_ceil(16));
+        // Never overtake the scan in this refresh (the fastest render): its
+        // bottom tile row lands after the scan has passed the band's bottom
+        // (the binding one when the render is faster than the scan), and
+        // its top tile row after the scan has passed that row (when
+        // slower); a start once the scan has left the band needs nothing.
+        let margin = u64::from(MARGIN);
+        let by_bottom = (bottom + margin).saturating_sub(lines(fast));
+        let by_top = (top + 16 + margin).saturating_sub(lines(fast) / tile_rows);
+        let earliest = by_bottom.max(by_top).min(bottom);
+        // Finished before the scan comes round (the slowest render): its
+        // bottom tile row before the scan reaches the band's bottom again,
+        // and its top tile row before the scan reaches the band's top (the
+        // binding one when the render is faster than the scan).
+        let by_bottom = (total + bottom).checked_sub(lines(slow) + margin)?;
+        let by_top = (total + top).checked_sub(lines(slow).div_ceil(tile_rows) + 1)?;
+        let latest = by_bottom.min(by_top).min(total - 1);
+        (earliest <= latest).then_some((earliest as u32, latest as u32))
     }
 }
 
@@ -141,13 +184,20 @@ impl Schedule {
 /// evenly (a model of GC2BZ's measurement, for tests and checks).
 #[must_use]
 pub fn tear_free(scan: &Scan, start: u32, us: u32) -> bool {
-    let rows = u64::from(scan.shown) / 16;
+    tear_free_rows(scan, (0, scan.shown), start, us)
+}
+
+/// [`tear_free`] for a render of the band of rows `first..first + rows`
+/// alone.
+#[must_use]
+pub fn tear_free_rows(scan: &Scan, (first, rows): (u32, u32), start: u32, us: u32) -> bool {
+    let tile_rows = u64::from(rows) / 16;
     let line_ns = u64::from(scan.line_ns);
     let start_ns = u64::from(start) * line_ns;
-    for j in 0..rows {
+    for j in 0..tile_rows {
         // Tile row j lands (all 16 lines) at this time after the start.
-        let land = (j + 1) * u64::from(us) * 1000 / rows;
-        let (top, bottom) = (j * 16, j * 16 + 15);
+        let land = (j + 1) * u64::from(us) * 1000 / tile_rows;
+        let (top, bottom) = (u64::from(first) + j * 16, u64::from(first) + j * 16 + 15);
         // The scan's position at `land`, in lines since this refresh's top.
         let at = (start_ns + land) / line_ns;
         let total = u64::from(scan.total);
@@ -269,6 +319,74 @@ mod tests {
             with(&[12_500; 4]).plan(&X51V, true),
             Plan::Behind { .. }
         ));
+    }
+
+    #[test]
+    fn every_line_of_every_window_is_tear_free_across_its_band() {
+        // Bands across the screen (a scene's area), steady and spiky
+        // histories: the window's first, middle and last lines hold for the
+        // band's fastest, middle and slowest render, on both scans.
+        let bands = [
+            (0, 640),
+            (0, 320),
+            (304, 64),
+            (320, 320),
+            (608, 32),
+            (16, 160),
+        ];
+        let mut windows = 0;
+        for scan in [X51V, X51V_60HZ] {
+            for band in bands {
+                for base in (300..36_000).step_by(700) {
+                    for spread in [0, base / 4, base / 2] {
+                        let s = with(&[base, base + spread, base]);
+                        let Some((first, last)) = s.window(&scan, true, band) else {
+                            continue;
+                        };
+                        windows += 1;
+                        let (fast, slow) = s.band().unwrap();
+                        for line in [first, (first + last) / 2, last] {
+                            for t in [fast, (fast + slow) / 2, slow] {
+                                assert!(
+                                    tear_free_rows(&scan, band, line, t),
+                                    "band {band:?} history {base}+{spread}: line {line} of {first}-{last}, a {t} us render tears"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(windows > 500, "{windows}");
+    }
+
+    #[test]
+    fn a_band_low_on_the_screen_waits_for_its_own_rows() {
+        // 9 ms frames, a scene's 64 rows at the foot of the screen: the
+        // whole screen's line would land its top rows before the scan
+        // reaches them and its bottom rows after (torn); the band's own
+        // window starts as the scan nears the band.
+        let s = with(&[9_000; 4]);
+        let Plan::Behind { line: whole } = s.plan(&X51V_60HZ, true) else {
+            panic!("9 ms frames fit the whole screen");
+        };
+        let band = (576, 64);
+        assert!(!tear_free_rows(&X51V_60HZ, band, whole, 7_200));
+        let (first, _) = s.window(&X51V_60HZ, true, band).unwrap();
+        assert!(first > whole + 100, "{first} against {whole}");
+        assert!(tear_free_rows(&X51V_60HZ, band, first, 7_200));
+    }
+
+    #[test]
+    fn the_whole_screen_plan_is_the_window_start() {
+        for t in (500..20_000).step_by(500) {
+            let s = with(&[t, t + t / 3]);
+            let w = s.window(&X51V, true, (0, 640));
+            assert_eq!(
+                s.plan(&X51V, true),
+                w.map_or(Plan::Copy, |(line, _)| Plan::Behind { line })
+            );
+        }
     }
 
     #[test]

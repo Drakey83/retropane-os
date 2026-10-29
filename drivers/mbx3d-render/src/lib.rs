@@ -1281,6 +1281,15 @@ pub enum TileOrder {
     Interleaved,
 }
 
+impl TileOrder {
+    /// Whether the picture fills from the top down, as the display scans
+    /// it out: what R20's scheduler ([`scan`]) can start behind the scan.
+    #[must_use]
+    pub const fn top_down(self) -> bool {
+        matches!(self, Self::Rows | Self::ColumnsReversed | Self::Interleaved)
+    }
+}
+
 /// [`TileOrder::Scrambled`]'s step: a prime above 128 (so it divides no
 /// count of at most 128 x 128 tiles) and far from any row length.
 pub const SCRAMBLE: usize = 1009;
@@ -1477,6 +1486,12 @@ impl Renderer {
     /// The order the tiles are listed for the core in ([`TileOrder`]).
     pub fn set_tile_order(&mut self, order: TileOrder) {
         self.tile_order = order;
+    }
+
+    /// The order the tiles are listed in.
+    #[must_use]
+    pub const fn tile_order(&self) -> TileOrder {
+        self.tile_order
     }
 
     /// Where its region array is (`rp-gpubench` run GC2BT logs it).

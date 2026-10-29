@@ -13,12 +13,12 @@ rp-draw = { path = "../../drivers/draw" }
 rp-mbx-render = { path = "../../drivers/mbx-render" }
 rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
 rp-vram-map = { path = "../../drivers/vram-map" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 
 [dev-dependencies]
 rp-mbx-render = { path = "../../drivers/mbx-render", features = ["model"] }
 rp-mbx3d-render = { path = "../../drivers/mbx3d-render", features = ["model"] }
 rp-drv-blit2d = { path = "../../drivers/blit2d" }
-rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 
 [lints]
 workspace = true
