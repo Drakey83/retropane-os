@@ -5848,6 +5848,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2df = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_R20P", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cs = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6272,7 +6281,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 158] = [
+    let runs: [GpubenchRun; 159] = [
         (
             "run A",
             &run_a,
@@ -7013,6 +7022,43 @@ fn variant_images_gpubench(
                 "GC2DD cost 1 video off: 2 of 2 rendered",
                 "GC2DD cost 2 video on, reading the shown picture (C'): 2 of 2 rendered",
                 "GC2DD done: Windows Mobile's clock put back",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2DF (R20's proof run, the owner's go 2026-10-29): the copy
+        // fallback against the blanking start and option 1, one-off and
+        // back to back, and audit C93's copy start lines and landing order.
+        // The fork has no DSIG (every refresh "not judged") and no timing
+        // of its own: the run's shape, every picture and every copy right,
+        // nothing failed or hung, is what this checks.
+        (
+            "run GC2DF",
+            &run_gc2df,
+            &[
+                "GC2DF (R20's proof run, the owner's go 2026-10-29): the copy fallback against the blanking start (rows, checkerboard) and option 1 at 149.50 / 2",
+                "GC2DF 149.50 / 2: lock Some(",
+                "GC2DF at 149.50 / 2: 8 of 8 pictures the references'",
+                "NOT JUDGED (not steady, zero or alike)",
+                "GC2DF the whole-screen copy ",
+                ": its window Some(",
+                "GC2DF C93 copy begun at line 400 (outside): 1 copies, begun at lines ",
+                "GC2DF C93 copy begun at line 480 (outside): 1 copies, begun at lines ",
+                "GC2DF C93 copy begun at line 520 (outside): 1 copies, begun at lines ",
+                "(inside the window): 1 copies, begun at lines ",
+                "; 0 wrong, failed or missed; refreshes not judged",
+                "GC2DF C93 landing order, 1 whole-screen copies: 0 tile rows landed before the row above",
+                "GC2DF one-off copy behind the scan (the ruling): 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
+                "GC2DF one-off blanking start, rows: 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
+                "GC2DF one-off blanking start, checkerboard: 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
+                "GC2DF one-off option 1 (flip, copy back, flip back): 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
+                "GC2DF back to back copy behind the scan (the ruling): 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
+                "GC2DF back to back blanking start, rows: 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
+                "GC2DF back to back blanking start, checkerboard: 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
+                "GC2DF back to back option 1 (flip, copy back, flip back): 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
+                "GC2DF done: Windows Mobile's clock put back; 0 hung in all",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

@@ -626,6 +626,82 @@ mod image {
         /// Run GC2BZ (R20): the render's tile rows watched as they land,
         /// against the scan line, while [`Rig::frame`] waits.
         tear: Option<Tear>,
+        /// Run GC2DF (R20's proof run): every refresh's `DSIG` judged while
+        /// the image waits, [`Rig::frame`]'s wait included.
+        refresh: Option<Refresh>,
+    }
+
+    /// Run GC2DF's watch of the display: each refresh's `DSIG`, read once
+    /// the next refresh has begun and its line passed 2 (where GC2DB saw it
+    /// published), judged by [`gc2::RefreshJudge`].
+    #[derive(Clone, Copy)]
+    struct Refresh {
+        judge: gc2::RefreshJudge,
+        /// The scan line at the last look.
+        line: u32,
+        /// `rt::ticks` when this refresh's start was seen, and the last's.
+        start: u32,
+        prev: u32,
+        /// This refresh's start seen and the last one's `DSIG` not yet read.
+        pending: bool,
+        /// The sequence number waited for, and the start of the first
+        /// refresh that showed it (or a later one) whole.
+        want: u32,
+        shown: Option<u32>,
+        /// Refreshes whose `DSIG` was never read (looks too far apart).
+        missed: u32,
+    }
+
+    impl Refresh {
+        fn new(judge: gc2::RefreshJudge, line: u32) -> Self {
+            let now = rt::ticks();
+            Self {
+                judge,
+                line,
+                start: now,
+                prev: now,
+                pending: false,
+                want: u32::MAX,
+                shown: None,
+                missed: 0,
+            }
+        }
+
+        /// One look at the scan line (and `DSIG`, once a refresh).
+        fn tick(&mut self, regs: &mut impl RegisterBus) {
+            let line = regs.read32(rp_drv_mbx_display::reg::DVLNUM) & 0xFFF;
+            if line < self.line {
+                let now = rt::ticks();
+                // A look more than a refresh and a half after the last
+                // start: a refresh passed unseen.
+                if self.pending || us_since(self.start) > FRAME_US * 3 / 2 {
+                    self.missed += 1;
+                }
+                self.prev = self.start;
+                self.start = now;
+                self.pending = true;
+            }
+            self.line = line;
+            if self.pending && line >= 3 {
+                self.pending = false;
+                let sig = regs.read32(DSIG);
+                if let Some(seq) = self.judge.judge(sig) {
+                    if seq >= self.want && self.want != u32::MAX && self.shown.is_none() {
+                        self.shown = Some(self.prev);
+                    }
+                }
+            }
+        }
+
+        /// Picture `sig` (sequence `seq`) sent towards the screen at `ask`
+        /// (`rt::ticks`): its first whole refresh is timed from there.
+        fn send(&mut self, seq: u32, sig: u32) {
+            self.judge.push(seq, sig);
+            if seq != self.want {
+                self.want = seq;
+                self.shown = None;
+            }
+        }
     }
 
     /// GC2BZ's tile rows (16 lines each) and the four columns sampled in
@@ -873,6 +949,9 @@ mod image {
                     let line = self.e.regs.read32(rp_drv_mbx_display::reg::DVLNUM) & 0xFFF;
                     t.sample(&self.mem, line as u16, self.clock.now_us().wrapping_sub(t0));
                 }
+                if let Some(w) = self.refresh.as_mut() {
+                    w.tick(&mut self.e.regs);
+                }
             }
             // The rows still unseen land with the render's end (a sweep
             // after it, so a row the last sweep missed is placed there).
@@ -883,7 +962,11 @@ mod image {
                 t.sweeps = sweeps;
             }
             loop {
-                while (self.clock.now_us().wrapping_sub(at) as i32) < 0 {}
+                while (self.clock.now_us().wrapping_sub(at) as i32) < 0 {
+                    if let Some(w) = self.refresh.as_mut() {
+                        w.tick(&mut self.e.regs);
+                    }
+                }
                 let p = r.poll(
                     &mut OverBus {
                         bus: &mut self.e.regs,
@@ -17853,6 +17936,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2DF {
+            gc2df_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2DE {
             gc2de_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20033,6 +20122,557 @@ mod image {
             let _ = rr.release(&mut g.pool);
         }
         gc2ca_card(g, planes0, ["GC2DE DONE", "", ""]);
+        g.nudge = nudge;
+    }
+
+    /// Run GC2DF's watch looked at once.
+    fn gc2df_tick(g: &mut Rig) {
+        if let Some(w) = g.refresh.as_mut() {
+            w.tick(&mut g.e.regs);
+        }
+    }
+
+    /// Waits (watching the display) for a scan line `ok` accepts, at most
+    /// two frames; `false` on the time-out.
+    fn gc2df_wait(g: &mut Rig, ok: impl Fn(u32) -> bool) -> bool {
+        let t0 = rt::ticks();
+        loop {
+            gc2df_tick(g);
+            if ok(scan_line(g)) {
+                return true;
+            }
+            if us_since(t0) > 2 * FRAME_US {
+                return false;
+            }
+        }
+    }
+
+    /// Waits (watching) `n` refreshes, or until the sequence waited for
+    /// has shown and one more refresh has been judged.
+    fn gc2df_settle(g: &mut Rig, n: u32) {
+        let t0 = rt::ticks();
+        let mut shown_at = None;
+        while us_since(t0) < n * FRAME_US {
+            gc2df_tick(g);
+            let Some(w) = g.refresh.as_ref() else { return };
+            if w.shown.is_some() {
+                let j = w.judge.judged;
+                if *shown_at.get_or_insert(j) + 1 < j {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Microseconds from `a` to `b` (`rt::ticks`).
+    fn gc2df_us(a: u32, b: u32) -> u32 {
+        b.wrapping_sub(a) / 13 * 4
+    }
+
+    /// Game frame `f` rendered native into `at` in tile order `order`: the
+    /// core's time, `None` if refused or hung.
+    fn gc2df_render(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+        (f, at, order): (usize, u32, rp_mbx3d_render::TileOrder),
+    ) -> Option<u32> {
+        let rr = gc2cp_take(g, cur, GC2DE_SIZE)?;
+        rr.set_tile_order(order);
+        gc2ca_set_mesh(g, rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+        gc2ca_render(g, rr, GC2DE_SIZE, at).map(|(c, _)| c)
+    }
+
+    /// GC2DF's whole-screen copy from screen 1 into screen 0's place,
+    /// watched before and after: its time, `None` if it didn't finish.
+    fn gc2df_copy(g: &mut Rig) -> Option<u32> {
+        gc2df_tick(g);
+        let us = gc2de_copy(g, GC2DE_SCREEN1, GC2CA_A, (0, 0, 480, 640));
+        gc2df_tick(g);
+        us
+    }
+
+    /// One GC2DF frame `n` (sequence `seq`) by fallback `p`, the display on
+    /// screen 0's place: `(render done, core free)` as `rt::ticks`, `None`
+    /// if a render or copy failed or a line was missed. `sig` the frames'
+    /// signatures in screen 0's place and in screen 1's.
+    #[allow(clippy::too_many_arguments)]
+    fn gc2df_frame(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+        (p, n, seq): (usize, usize, u32),
+        sig: &[[u32; 4]; 2],
+        copies: &mut rp_mbx3d_render::scan::Schedule,
+        window: (u32, u32),
+        planes0: &Snapshot,
+    ) -> Option<(u32, u32)> {
+        use rp_mbx3d_render::TileOrder;
+        let send = |g: &mut Rig, s: u32| {
+            if let Some(w) = g.refresh.as_mut() {
+                w.send(seq, s);
+            }
+        };
+        match p {
+            0 => {
+                gc2df_render(g, cur, tex, (n, GC2DE_SCREEN1, TileOrder::Rows))?;
+                let done = rt::ticks();
+                let (from, to) = window;
+                if !gc2df_wait(g, |l| (from..=to).contains(&l)) {
+                    return None;
+                }
+                send(g, sig[0][n]);
+                copies.record(gc2df_copy(g)?);
+                Some((done, rt::ticks()))
+            }
+            1 | 2 => {
+                let order = if p == 1 {
+                    TileOrder::Rows
+                } else {
+                    TileOrder::Checker
+                };
+                if !gc2df_wait(g, |l| l == GC2DE_BLANK) {
+                    return None;
+                }
+                send(g, sig[0][n]);
+                gc2df_render(g, cur, tex, (n, GC2CA_A, order))?;
+                let done = rt::ticks();
+                Some((done, done))
+            }
+            _ => {
+                gc2df_render(g, cur, tex, (n, GC2DE_SCREEN1, TileOrder::Rows))?;
+                let done = rt::ticks();
+                if !gc2df_wait(g, |l| l == GC2DE_BLANK) {
+                    return None;
+                }
+                send(g, sig[1][n]);
+                gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, GC2DE_SCREEN1, planes0);
+                gc2df_copy(g)?;
+                if !gc2df_wait(g, |l| l == GC2DE_BLANK) {
+                    return None;
+                }
+                send(g, sig[0][n]);
+                gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, GC2CA_A, planes0);
+                Some((done, rt::ticks()))
+            }
+        }
+    }
+
+    /// Frame `c` (sequence `seq`, signature `sig`) redrawn into screen 0's
+    /// place (shown), and the watch restarted on it, settled.
+    fn gc2df_restart(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+        (c, seq, sig): (usize, u32, u32),
+    ) -> bool {
+        if gc2df_render(g, cur, tex, (c, GC2CA_A, rp_mbx3d_render::TileOrder::Rows)).is_none() {
+            return false;
+        }
+        let line = scan_line(g);
+        g.refresh = Some(Refresh::new(gc2::RefreshJudge::new(seq, sig), line));
+        gc2df_settle(g, 3);
+        true
+    }
+
+    /// GC2DF's whole-picture signature of the picture at `at` shown
+    /// native: settled (the third refresh's), and the fourth's the same.
+    fn gc2df_sig(g: &mut Rig, at: u32, planes0: &Snapshot) -> Option<u32> {
+        gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, at, planes0);
+        let a = gc2dc_settled(g);
+        let b = gc2dc_next(g);
+        if a == b { a } else { None }
+    }
+
+    /// Run GC2DF (see [`GC2DF`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn gc2df_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        use rp_mbx3d_render::TileOrder;
+        use rp_mbx3d_render::scan::{self, Scan, Schedule};
+        let Some(cur) = GC2DA_HELD.put_with(|| None) else {
+            log!("  GC2DF: run twice in one start: nothing run");
+            return;
+        };
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf + 1) * full {
+            log!("  GC2DF: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let s1 = GC2DE_SCREEN1..GC2DE_SCREEN1 + rp_vram_map::SCREEN_BYTES;
+        for t in [tex.t565, tex.t4444, tex.t8888, tex.plane] {
+            if t.at < s1.end && t.at + GC2DE_TEX_SPAN > s1.start {
+                log!(
+                    "  GC2DF: a texture at 0x{:x} inside screen 1's place: nothing run",
+                    t.at
+                );
+                return;
+            }
+        }
+        let (refs, rest) = all.split_at_mut(nf * full);
+        let seen = &mut rest[..full];
+        let want = |f: usize| f * full..(f + 1) * full;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        let hangs0 = g.hangs;
+        log!(
+            "  GC2DF (R20's proof run, the owner's go 2026-10-29): the copy fallback against the blanking start (rows, checkerboard) and option 1 at 149.50 / 2, the {nf} game frames native, screen 0's place 0x{GC2CA_A:x}, screen 1's 0x{GC2DE_SCREEN1:x}; {GC2DF_ONE_OFF} one-off and {GC2DF_B2B} back-to-back frames each; every refresh judged by DSIG; first audit C93 (the copy's start lines, {GC2DF_C93_REPS} copies a line, and its landing order, {GC2DF_LAND_REPS} copies)"
+        );
+        gc2ca_card(
+            g,
+            planes0,
+            ["R20: PROOF RUN", "STEP 1 OF 5: DRAWING", "NOTHING TO DO"],
+        );
+        // The references at Windows Mobile's clock.
+        for f in 0..nf {
+            if gc2df_render(g, cur, tex, (f, GC2CA_A, TileOrder::Rows)).is_none() {
+                log!("  GC2DF: frame {f} not drawn at Windows Mobile's clock: nothing run");
+                g.nudge = nudge;
+                return;
+            }
+            let _ = read_compare_volatile(g.mem.0, GC2CA_A as usize, seen, &mut refs[want(f)]);
+        }
+        let lock = clock_apply(g, GC2DD_STEP);
+        if lock.is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2DF: 149.50 / 2 didn't take; Windows Mobile's clock put back: nothing run");
+            gc2ca_card(g, planes0, ["GC2DF STOPPED", "CLOCK NOT TAKEN", ""]);
+            g.nudge = nudge;
+            return;
+        }
+        // ADR-0035 rule 8: every clock change followed by the underrun
+        // flag's check and Dell's clear.
+        let short = underrun_take(&mut g.e.regs);
+        log!("  GC2DF 149.50 / 2: lock {lock:?}, the display's underrun flag {short}");
+        clock_readback(g);
+        if let Some((_, rr)) = cur.as_mut() {
+            rr.start_clean();
+        }
+
+        // Step 2: each frame's signature in both places; the copy timed and
+        // its window planned on the measured line.
+        gc2ca_card(
+            g,
+            planes0,
+            ["R20: PROOF RUN", "STEP 2 OF 5: SIGNATURES", "NOTHING TO DO"],
+        );
+        let (frames, timed) = Gc2ddFrames::measured(g);
+        let mut sig = [[0u32; 4]; 2];
+        let mut same = 0;
+        for f in 0..nf {
+            for (k, at) in [GC2CA_A, GC2DE_SCREEN1].into_iter().enumerate() {
+                if gc2df_render(g, cur, tex, (f, at, TileOrder::Rows)).is_some() {
+                    same += u32::from(gc2de_off(g, at, &refs[want(f)], seen) == 0);
+                    sig[k][f] = gc2df_sig(g, at, planes0).unwrap_or(0);
+                }
+            }
+            rt::check_in();
+        }
+        // Judged only if every signature is steady, nonzero and its frame's
+        // own (the emulator has no DSIG).
+        let live = sig.iter().flatten().all(|&s| s != 0)
+            && (0..nf).all(|a| {
+                (0..nf).all(|b| {
+                    a == b
+                        || sig[0][a] != sig[0][b]
+                            && sig[1][a] != sig[0][b]
+                            && sig[1][a] != sig[1][b]
+                })
+            });
+        log!(
+            "  GC2DF at 149.50 / 2: {same} of {} pictures the references'; the line {} ns{}; signatures in screen 0's place {:x?}, in screen 1's {:x?}: {}",
+            2 * nf,
+            frames.line_ns,
+            if timed {
+                ", measured"
+            } else {
+                ", NOT MEASURED: the 60 Hz frame's"
+            },
+            sig[0],
+            sig[1],
+            if live {
+                "every refresh judged"
+            } else {
+                "NOT JUDGED (not steady, zero or alike)"
+            }
+        );
+        let scan = Scan {
+            total: gc2::FRAME_LINES,
+            shown: 640,
+            line_ns: frames.line_ns,
+        };
+        let mut copies = Schedule::new();
+        let mut copy_t = Gc2deTimes::NEW;
+        for _ in 0..GC2DF_TIMED {
+            if let Some(us) = gc2df_copy(g) {
+                copies.record(us);
+                copy_t.take(us);
+            }
+        }
+        let window = copies
+            .band()
+            .and_then(|b| scan::copy_window(&scan, b, &[(0, 640, scan::SCREEN_PX)]));
+        log!("  GC2DF the whole-screen copy {copy_t}: its window {window:?}");
+        let Some(window) = window else {
+            log!("  GC2DF: no window for the copy: nothing more run");
+            clock_restore(&mut g.e.regs);
+            g.nudge = nudge;
+            return;
+        };
+
+        // The display on screen 0's place, frame `c` in it, the watch on.
+        gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, GC2CA_A, planes0);
+        let mut c = 0usize;
+        let mut seq = 0u32;
+
+        // Step 3: audit C93, the copy begun at lines inside its window and
+        // outside it; then its tile rows' landing order.
+        gc2ca_card(
+            g,
+            planes0,
+            ["R20: PROOF RUN", "STEP 3 OF 5: THE COPY", "NOTHING TO DO"],
+        );
+        gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, GC2CA_A, planes0);
+        let (from, to) = window;
+        let lines = [
+            GC2DF_C93_EARLY[0],
+            GC2DF_C93_EARLY[1],
+            GC2DF_C93_EARLY[2],
+            from,
+            (from + to) / 2,
+            to,
+            GC2DE_BLANK,
+        ];
+        let _ = gc2df_restart(g, cur, tex, (c, seq, sig[0][c]));
+        for (k, &line) in lines.iter().enumerate() {
+            if lines[..k].contains(&line) {
+                continue;
+            }
+            let (mut torn, mut back, mut judged, mut missed, mut bad) =
+                (0u32, 0u32, 0u32, 0u32, 0u32);
+            let (mut lo, mut hi) = (u32::MAX, 0u32);
+            for _ in 0..GC2DF_C93_REPS {
+                let n = (c + 1) % nf;
+                let before = g
+                    .refresh
+                    .map(|w| (w.judge.torn, w.judge.back, w.judge.judged, w.missed));
+                if gc2df_render(g, cur, tex, (n, GC2DE_SCREEN1, TileOrder::Rows)).is_none()
+                    || !gc2df_wait(g, |l| l == line)
+                {
+                    bad += 1;
+                    continue;
+                }
+                seq += 1;
+                if let Some(w) = g.refresh.as_mut() {
+                    w.send(seq, sig[0][n]);
+                }
+                let at = scan_line(g);
+                lo = lo.min(at);
+                hi = hi.max(at);
+                if gc2df_copy(g).is_none() {
+                    bad += 1;
+                }
+                gc2df_settle(g, 4);
+                if let (Some(b), Some(w)) = (before, g.refresh) {
+                    torn += w.judge.torn - b.0;
+                    back += w.judge.back - b.1;
+                    judged += w.judge.judged - b.2;
+                    missed += w.missed - b.3;
+                }
+                bad += u32::from(gc2de_off(g, GC2CA_A, &refs[want(n)], seen) != 0);
+                c = n;
+                rt::check_in();
+            }
+            log!(
+                "  GC2DF C93 copy begun at line {line} ({}): {} copies, begun at lines {lo}-{hi}; {bad} wrong, failed or missed; refreshes {}",
+                if (from..=to).contains(&line) {
+                    "inside the window"
+                } else {
+                    "outside"
+                },
+                GC2DF_C93_REPS,
+                if live { "judged" } else { "not judged" }
+            );
+            if live {
+                log!(
+                    "  GC2DF C93 line {line}: refreshes judged {judged}, TORN {torn}, back {back}, unread {missed}"
+                );
+            }
+        }
+        // The landing order: the display on screen 1 (the copy's source),
+        // screen 0's place poisoned and copied into, each tile row's last
+        // pixel swept until it lands.
+        let (mut unseen, mut early, mut sweeps_n) = (0u32, 0u32, 0u32);
+        let mut first: [Option<u16>; GC2BZ_ROWS] = [None; GC2BZ_ROWS];
+        for rep in 0..GC2DF_LAND_REPS {
+            let n = (c + 1) % nf;
+            if gc2df_render(g, cur, tex, (n, GC2DE_SCREEN1, TileOrder::Rows)).is_none() {
+                continue;
+            }
+            gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, GC2DE_SCREEN1, planes0);
+            if !gc2ca_fill(g, GC2CA_A, GC2DE_SIZE, GC2DE_POISON) {
+                continue;
+            }
+            let Some((w, k)) = cmd::blit(
+                (Format::RGB565, GC2CA_A as usize, 960),
+                (Format::RGB565, GC2DE_SCREEN1 as usize, 960),
+                (0, 0),
+                (0, 0, 480, 640),
+                cmd::ROP_SRCCOPY,
+                cmd::OP_NO_COLOUR,
+                0,
+            ) else {
+                continue;
+            };
+            let mut landed: [Option<u16>; GC2BZ_ROWS] = [None; GC2BZ_ROWS];
+            let t0 = rt::ticks();
+            if g.e.submit(&w[..k]).is_err() {
+                continue;
+            }
+            let mut sweep = 0u16;
+            while landed.iter().any(Option::is_none) && us_since(t0) < 20_000 {
+                for (row, l) in landed.iter_mut().enumerate() {
+                    if l.is_some() {
+                        continue;
+                    }
+                    let a = GC2CA_A + 2 * ((16 * row as u32 + 15) * 480 + 479);
+                    let px = (g.mem.load((a & !3) as usize).unwrap_or(0) >> (8 * (a & 2))) as u16;
+                    if px != GC2DE_POISON {
+                        *l = Some(sweep);
+                    }
+                }
+                sweep = sweep.saturating_add(1);
+            }
+            let ok = g.e.finish(g.mem.0, 200_000).is_ok();
+            let (u, e) = gc2::landing_out_of_order(&landed);
+            unseen += u;
+            early += e;
+            sweeps_n += u32::from(sweep);
+            if rep == 0 {
+                first = landed;
+            }
+            if !ok {
+                g.e.reset(rt::delay_us);
+            }
+            c = n;
+            rt::check_in();
+        }
+        log!(
+            "  GC2DF C93 landing order, {GC2DF_LAND_REPS} whole-screen copies: {early} tile rows landed before the row above, {unseen} never seen, {sweeps_n} sweeps in all; the first copy's rows by sweep {first:?}"
+        );
+        gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, GC2CA_A, planes0);
+
+        // Steps 4 and 5: the four fallbacks, one-off then back to back.
+        for (step, b2b) in [
+            ("STEP 4 OF 5: ONE-OFF", false),
+            ("STEP 5 OF 5: BACK TO BACK", true),
+        ] {
+            gc2ca_card(g, planes0, ["R20: PROOF RUN", step, "NOTHING TO DO"]);
+            gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, GC2CA_A, planes0);
+            for (p, name) in GC2DF_POLICIES.iter().enumerate() {
+                if !gc2df_restart(g, cur, tex, (c, seq, sig[0][c])) {
+                    log!("  GC2DF {name}: frame {c} not drawn: skipped");
+                    continue;
+                }
+                let base = g.refresh;
+                let (mut done, mut shown, mut free) =
+                    (Gc2deTimes::NEW, Gc2deTimes::NEW, Gc2deTimes::NEW);
+                let (mut failed, mut wrong, mut unshown) = (0u32, 0u32, 0u32);
+                let hangs = g.hangs;
+                let count = if b2b { GC2DF_B2B } else { GC2DF_ONE_OFF };
+                let t_first = rt::ticks();
+                let mut t_last = t_first;
+                for i in 0..count {
+                    let n = (c + 1) % nf;
+                    if !b2b {
+                        let ask = GC2DE_ASK[(i as usize / nf) % GC2DE_ASK.len()];
+                        if !gc2df_wait(g, |l| l == ask) {
+                            failed += 1;
+                            continue;
+                        }
+                    }
+                    let t_ask = rt::ticks();
+                    seq += 1;
+                    let r =
+                        gc2df_frame(g, cur, tex, (p, n, seq), &sig, &mut copies, window, planes0);
+                    let Some((d, fr)) = r else {
+                        failed += 1;
+                        // The display put back on screen 0's place, frame
+                        // `c` redrawn, the watch restarted.
+                        gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, GC2CA_A, planes0);
+                        let _ = gc2df_restart(g, cur, tex, (c, seq, sig[0][c]));
+                        continue;
+                    };
+                    done.take(gc2df_us(t_ask, d));
+                    free.take(gc2df_us(t_ask, fr));
+                    c = n;
+                    t_last = fr;
+                    if !b2b {
+                        gc2df_settle(g, 4);
+                        match g.refresh.and_then(|w| w.shown) {
+                            Some(s) => shown.take(gc2df_us(t_ask, s)),
+                            None => unshown += 1,
+                        }
+                        wrong += u32::from(gc2de_off(g, GC2CA_A, &refs[want(n)], seen) != 0);
+                    }
+                    if i % 8 == 0 {
+                        rt::check_in();
+                    }
+                }
+                if b2b {
+                    gc2df_settle(g, 4);
+                    match g.refresh.and_then(|w| w.shown) {
+                        Some(s) => t_last = s,
+                        None => unshown += 1,
+                    }
+                    wrong += u32::from(gc2de_off(g, GC2CA_A, &refs[want(c)], seen) != 0);
+                }
+                let (judged, torn, back, missed) = match (base, g.refresh) {
+                    (Some(b), Some(w)) => (
+                        w.judge.judged - b.judge.judged,
+                        w.judge.torn - b.judge.torn,
+                        w.judge.back - b.judge.back,
+                        w.missed - b.missed,
+                    ),
+                    _ => (0, 0, 0, 0),
+                };
+                let span = gc2df_us(t_first, t_last).max(1);
+                let fps = u64::from(count - failed) * 100_000_000 / u64::from(span);
+                let mut judgement = heapless_name();
+                if live {
+                    let _ = write!(
+                        judgement,
+                        "judged {judged}, TORN {torn}, back {back}, unread {missed}, {unshown} frames never seen whole"
+                    );
+                } else {
+                    let _ = write!(judgement, "not judged");
+                }
+                log!(
+                    "  GC2DF {} {name}: {count} frames; {failed} failed, {} hung, {wrong} pictures wrong; render done {done}; first whole refresh {shown}; core free {free}; {}.{:02} frames a second over {span} us; refreshes {}",
+                    if b2b { "back to back" } else { "one-off" },
+                    g.hangs - hangs,
+                    fps / 100,
+                    fps % 100,
+                    judgement.as_str()
+                );
+            }
+        }
+        g.refresh = None;
+        log!(
+            "  GC2DF the copies' times through the run: band {:?}",
+            copies.band()
+        );
+        let short = underrun_take(&mut g.e.regs);
+        clock_restore(&mut g.e.regs);
+        let back = underrun_take(&mut g.e.regs);
+        log!(
+            "  GC2DF done: Windows Mobile's clock put back; {} hung in all; the display's underrun flag at 149.50 / 2 {short}, after the change back {back}",
+            g.hangs - hangs0
+        );
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        gc2ca_card(g, planes0, ["GC2DF DONE", "", ""]);
         g.nudge = nudge;
     }
 
@@ -23689,6 +24329,44 @@ mod image {
     const GC2DE_POISON: u16 = 0xF81F;
     /// The middle quarter of the screen, as the 2D engine's rectangle.
     const GC2DE_AREA: (u16, u16, u16, u16) = (120, 160, 360, 480);
+    /// Run GC2DF (`RP_GPUBENCH_GC2_HALF_R20P`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R20's proof run (the owner's go 2026-10-29 on its sheet,
+    /// `docs/research/sheets/r20-proof-run.md`): the fallback the owner
+    /// ruled ("Yes, copy variant": render into screen 1, the 2D engine's
+    /// copy into screen 0 behind the scan, planned by
+    /// `rp_mbx3d_render::scan::copy_window`) against the blanking start
+    /// (rows and the checkerboard) and option 1 (flip, copy back, flip
+    /// back), at 149.50 / 2 on the four game frames, one-off (asked for at
+    /// three places in the refresh, the display settled between) and back
+    /// to back; every refresh judged by `DSIG` against the whole pictures
+    /// it may show (`gc2::RefreshJudge`), every one-off picture checked word
+    /// for word; the time to the render done, to the first whole refresh,
+    /// to the core free; frames a second back to back. First audit C93: the
+    /// whole-screen copy begun at lines inside its window and outside it
+    /// (the negative control: begun at 400 it should tear), each refresh
+    /// judged; and its tile rows' landing order sampled as GC2BZ did the
+    /// core's. Unattended, about a minute.
+    const GC2DF: bool = option_env!("RP_GPUBENCH_GC2_HALF_R20P").is_some();
+    /// Copies timed before the window is planned (the service plans from
+    /// its own recent copies: `Graphics::copies`).
+    const GC2DF_TIMED: u32 = 4;
+    /// Copies begun at each line for C93 (the emulator 1).
+    const GC2DF_C93_REPS: u32 = if GC2_RENDERS < 20 { 1 } else { 8 };
+    /// Lines below the window C93 begins copies at: should tear at 400.
+    const GC2DF_C93_EARLY: [u32; 3] = [400, 480, 520];
+    /// Copies whose landing order is sampled (the emulator 1).
+    const GC2DF_LAND_REPS: u32 = if GC2_RENDERS < 20 { 1 } else { 4 };
+    /// One-off frames by each fallback (the emulator 4).
+    const GC2DF_ONE_OFF: u32 = if GC2_RENDERS < 20 { 4 } else { 48 };
+    /// Back-to-back frames by each fallback (the emulator 4).
+    const GC2DF_B2B: u32 = if GC2_RENDERS < 20 { 4 } else { 48 };
+    /// The fallbacks compared.
+    const GC2DF_POLICIES: [&str; 4] = [
+        "copy behind the scan (the ruling)",
+        "blanking start, rows",
+        "blanking start, checkerboard",
+        "option 1 (flip, copy back, flip back)",
+    ];
     /// Part A's video plane states.
     const GC2DC_COST_NAMES: [&str; 3] = [
         "video off",
@@ -32115,6 +32793,7 @@ mod image {
             quiet_us: 0,
             at_override: u32::MAX,
             tear: None,
+            refresh: None,
         };
         if START {
             start_watch(&mut g.e.regs, "N4 the keypad taken, the fence written");

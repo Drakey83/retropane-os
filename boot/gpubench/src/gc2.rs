@@ -3610,6 +3610,106 @@ impl FrameCount {
     }
 }
 
+/// Run GC2DF (R20's proof run, the owner's go 2026-10-29): each
+/// refresh's `DSIG` judged against the whole pictures the display may
+/// legitimately show: the last one shown whole and the ones sent after it,
+/// in order (a frame and its sequence number). A refresh showing one of
+/// them moves the display on to it (older ones may never come back); one
+/// showing none is torn; one showing a picture already replaced is
+/// counted apart (`back`).
+#[derive(Clone, Copy, Debug)]
+pub struct RefreshJudge {
+    sigs: [u32; 4],
+    seqs: [u32; 4],
+    n: usize,
+    gone: Option<u32>,
+    /// Refreshes judged.
+    pub judged: u32,
+    /// Refreshes that showed no whole picture.
+    pub torn: u32,
+    /// Refreshes that showed a picture already replaced.
+    pub back: u32,
+}
+
+impl RefreshJudge {
+    /// The display showing picture `sig` (sequence `seq`), whole.
+    #[must_use]
+    pub const fn new(seq: u32, sig: u32) -> Self {
+        Self {
+            sigs: [sig, 0, 0, 0],
+            seqs: [seq, 0, 0, 0],
+            n: 1,
+            gone: None,
+            judged: 0,
+            torn: 0,
+            back: 0,
+        }
+    }
+
+    /// Picture `sig` (sequence `seq`) sent towards the screen: it may show
+    /// from now on (the oldest of four forgotten).
+    pub fn push(&mut self, seq: u32, sig: u32) {
+        if self.n == self.sigs.len() {
+            self.drop_first(1);
+        }
+        self.sigs[self.n] = sig;
+        self.seqs[self.n] = seq;
+        self.n += 1;
+    }
+
+    fn drop_first(&mut self, k: usize) {
+        self.gone = Some(self.sigs[k - 1]);
+        self.sigs.copy_within(k..self.n, 0);
+        self.seqs.copy_within(k..self.n, 0);
+        self.n -= k;
+    }
+
+    /// One refresh's signature: the sequence number of the whole picture
+    /// it showed, or `None` (torn, or back to a replaced one).
+    pub fn judge(&mut self, sig: u32) -> Option<u32> {
+        self.judged += 1;
+        match self.sigs[..self.n].iter().position(|&s| s == sig) {
+            Some(i) => {
+                let seq = self.seqs[i];
+                if i > 0 {
+                    self.drop_first(i);
+                }
+                Some(seq)
+            }
+            None if self.gone == Some(sig) => {
+                self.back += 1;
+                None
+            }
+            None => {
+                self.torn += 1;
+                None
+            }
+        }
+    }
+}
+
+/// Run GC2DF (audit C93): a 2D copy's tile rows, by the sweep each was
+/// first seen written in (`None`: never seen): how many rows were never
+/// seen, and how many landed before the row above them (a copy that
+/// isn't top down).
+#[must_use]
+pub fn landing_out_of_order(sweeps: &[Option<u16>]) -> (u32, u32) {
+    let mut unseen = 0;
+    let mut early = 0;
+    let mut last: Option<u16> = None;
+    for &s in sweeps {
+        match (s, last) {
+            (None, _) => unseen += 1,
+            (Some(a), Some(b)) if a < b => early += 1,
+            _ => {}
+        }
+        if s.is_some() {
+            last = s.max(last);
+        }
+    }
+    (unseen, early)
+}
+
 #[cfg(test)]
 #[path = "gc2_tests.rs"]
 mod tests;
