@@ -5792,6 +5792,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2db = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_R101", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cs = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6216,7 +6225,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 152] = [
+    let runs: [GpubenchRun; 153] = [
         (
             "run A",
             &run_a,
@@ -6850,6 +6859,26 @@ fn variant_images_gpubench(
                 "GC2CT 1 GDRCTRL 0x2",
                 "GC2CT 1 TEXTURED FRAME LINE DOUBLING ONLY: rendered Some(",
                 "GC2CT 4 FLAT FRAME SMOOTH DOWN AS UYVY: rendered Some(",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2DB (R101): DSIG's coverage on the three routes. The fork
+        // doesn't model DSIG (reads 0: docs/hw/emulator.md), so this checks
+        // the run's shape and that every probe's word was written and put
+        // back where the route shows it; the coverage is the device's.
+        (
+            "run GC2DB",
+            &run_gc2db,
+            &[
+                "GC2DB (R101): DSIG's coverage",
+                "GC2DB route 1 NATIVE 480 X 640 positions: 0 of 60 changed DSIG, 0 held a frame, 60 back to 0x00000000 when put back; words written and put back 60 of 60",
+                "GC2DB route 2 480 X 320 LINES 2X positions: 0 of 60 changed DSIG, 0 held a frame, 60 back to 0x00000000 when put back; words written and put back 60 of 60",
+                "GC2DB route 3 240 X 320 SMOOTH 2X positions: 0 of 60 changed DSIG, 0 held a frame, 60 back to 0x00000000 when put back; words written and put back 60 of 60",
+                "GC2DB route 3 240 X 320 SMOOTH 2X bits: 0 of 24 changed DSIG, 0 held, 24 back; words written and put back 24 of 24",
+                "GC2DB done: 236 probes, words written and put back 236,",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

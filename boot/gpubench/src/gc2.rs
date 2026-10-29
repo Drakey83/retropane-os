@@ -3530,6 +3530,35 @@ pub fn row_shown(first: Option<(u8, u16)>, last: Option<(u8, u16)>, y: u32) -> O
     }
 }
 
+/// R101's routes (ADR-0038): drawn at 480 x 640 and shown as it is.
+pub const ROUTE_NATIVE: u8 = 0;
+/// Drawn at 480 x 320, each line shown twice (`GDRCTRL` bit 29).
+pub const ROUTE_LINES: u8 = 1;
+/// Drawn at 240 x 320, shown 2x as UYVY by the video plane's scaler.
+pub const ROUTE_SMOOTH: u8 = 2;
+
+/// Run GC2DB (R101): the source word that `route` shows at screen pixel
+/// `(x, y)` (0..480, 0..640), as (byte offset from the route's picture,
+/// shift of the pixel's lane in the word): the RGB565 halfword (0 or 16)
+/// for the graphics plane's routes, the luma byte of the UYVY pair (8 for
+/// Y0, 24 for Y1) for the scaler's. The scaler filters, so its source
+/// pixel is the one the output pixel is centred on, not the only one it
+/// reads.
+#[must_use]
+pub const fn probe_word(route: u8, x: u32, y: u32) -> (u32, u32) {
+    match route {
+        ROUTE_NATIVE | ROUTE_LINES => {
+            let row = if route == ROUTE_LINES { y / 2 } else { y };
+            let at = 2 * (row * 480 + x);
+            (at & !3, 8 * (at & 2))
+        }
+        _ => {
+            let (sx, sy) = (x / 2, y / 2);
+            (sy * 480 + 4 * (sx / 2), if sx % 2 == 0 { 8 } else { 24 })
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "gc2_tests.rs"]
 mod tests;

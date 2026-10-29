@@ -3038,6 +3038,51 @@ fn gc2bz_rows_are_placed_by_the_scan() {
 /// `tools/scaler-filter/fit2x.py`. Run on demand:
 /// `cargo test -p rp-gpubench r79_frames -- --ignored`.
 #[test]
+fn gc2db_probe_words_at_the_edges() {
+    // Native: the first and last pixels, and each half of one word.
+    assert_eq!(probe_word(ROUTE_NATIVE, 0, 0), (0, 0));
+    assert_eq!(probe_word(ROUTE_NATIVE, 1, 0), (0, 16));
+    assert_eq!(probe_word(ROUTE_NATIVE, 479, 639), (2 * (480 * 640 - 2), 16));
+    assert_eq!(probe_word(ROUTE_NATIVE, 0, 16), (960 * 16, 0));
+    // Lines: rows 638 and 639 show source row 319, the last.
+    assert_eq!(probe_word(ROUTE_LINES, 0, 638), (960 * 319, 0));
+    assert_eq!(probe_word(ROUTE_LINES, 0, 639), (960 * 319, 0));
+    assert_eq!(probe_word(ROUTE_LINES, 479, 1), (956, 16));
+    // Smooth: 240 x 320 UYVY, 480 bytes a row, Y0 and Y1 of each pair.
+    assert_eq!(probe_word(ROUTE_SMOOTH, 0, 0), (0, 8));
+    assert_eq!(probe_word(ROUTE_SMOOTH, 2, 1), (0, 24));
+    assert_eq!(probe_word(ROUTE_SMOOTH, 479, 639), (319 * 480 + 476, 24));
+}
+
+#[test]
+fn gc2db_probe_words_cover_each_picture_exactly() {
+    // Every screen pixel lands inside its route's picture, and every
+    // source lane is shown by 1 (native), 2 (lines) or 4 (smooth) pixels.
+    for (route, bytes, lanes, each) in [
+        (ROUTE_NATIVE, 2 * 480 * 640, 480 * 640, 1),
+        (ROUTE_LINES, 2 * 480 * 320, 480 * 320, 2),
+        (ROUTE_SMOOTH, 2 * 240 * 320, 240 * 320, 4),
+    ] {
+        let mut seen = std::vec![0u8; lanes];
+        for y in 0..640 {
+            for x in 0..480 {
+                let (at, shift) = probe_word(route, x, y);
+                assert!(at % 4 == 0 && at + 4 <= bytes, "{route} {x} {y}");
+                let lane = if route == ROUTE_SMOOTH {
+                    assert!(shift == 8 || shift == 24);
+                    at / 2 + (shift - 8) / 16
+                } else {
+                    assert!(shift == 0 || shift == 16);
+                    at / 2 + shift / 16
+                };
+                seen[lane as usize] += 1;
+            }
+        }
+        assert!(seen.iter().all(|&n| n == each), "{route}");
+    }
+}
+
+#[test]
 #[ignore = "writes R79's frames for the filter fit (on demand)"]
 fn r79_frames() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/r79");

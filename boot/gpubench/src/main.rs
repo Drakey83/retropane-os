@@ -17778,6 +17778,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2DB {
+            gc2db_run(g, tex, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2DA {
             gc2da_run(g, tex, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -18011,6 +18017,334 @@ mod image {
         g.nudge = nudge;
         log!("  GC2DA done");
         gc2ca_card(g, planes0, ["GC2DA DONE", "", ""]);
+    }
+
+    /// Where each route's picture is shown from, drawn one route at a time
+    /// (the safe region, ADR-0027, holds one native screen before the lists
+    /// on the die: the three don't fit at once): native and the 480 x 320
+    /// lines at A, the 240 x 320 UYVY after the 240 x 320 RGB565 render it
+    /// is made from (GC2DA's places).
+    const GC2DB_AT: [u32; 3] = [GC2CA_A, GC2CA_A, GC2CS_UYVY];
+    /// Where the smooth route's RGB565 render goes.
+    const GC2DB_SMALL: u32 = GC2CA_A;
+    const _: () = assert!(GC2CS_UYVY + 2 * 240 * 320 <= GC2BB_PARAMS.at);
+    /// The screen rows GC2DB changes a pixel on: both edges, GC2CB's row
+    /// 16 and its neighbours, the middle seam.
+    const GC2DB_ROWS: [u32; 10] = [0, 1, 15, 16, 17, 319, 320, 321, 638, 639];
+    /// The screen columns: both edges and the middle seam.
+    const GC2DB_COLS: [u32; 6] = [0, 1, 239, 240, 478, 479];
+    /// Each route's name on its card and in the log, by [`gc2::ROUTE_NATIVE`]..
+    const GC2DB_NAMES: [&str; 3] = [
+        "NATIVE 480 X 640",
+        "480 X 320 LINES 2X",
+        "240 X 320 SMOOTH 2X",
+    ];
+
+    /// GC2DB's route `route` shown from its picture in [`GC2DB_AT`].
+    fn gc2db_show(g: &mut Rig, route: u8, planes0: &Snapshot) {
+        let at = GC2DB_AT[usize::from(route)];
+        match route {
+            gc2::ROUTE_NATIVE => gc2ca_show(g, GC2CA_NATIVE, (480, 640), at, planes0),
+            gc2::ROUTE_LINES => {
+                // GC2CT's way 4: the lines doubled, the pixels not.
+                gc2ca_show(g, GC2CA_NATIVE, (480, 320), at, planes0);
+                let v = g.e.regs.read32(rp_drv_mbx_display::reg::GDRCTRL);
+                g.e.regs
+                    .write32(rp_drv_mbx_display::reg::GDRCTRL, (v & !(1 << 31)) | 1 << 29);
+            }
+            _ => {
+                // P9c's arrangement (GC2CB run 3).
+                let screen = Plane {
+                    format: PlaneFormat::Rgb565,
+                    width: 480,
+                    height: 640,
+                    offset: 0,
+                    stride: 960,
+                };
+                rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
+                let plane = VideoPlane::new(VideoFormat::Uyvy, 240, 320, at as usize);
+                let scale = plane.scale_to(480, 640, 0, 0);
+                rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
+            }
+        }
+    }
+
+    /// The textured game frame drawn for `route` into its place (the
+    /// smooth route's made UYVY by the CPU, GC2CS's way: the display is
+    /// under test here, not the converter, R89); `false` if not drawn.
+    fn gc2db_draw(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+        route: u8,
+    ) -> bool {
+        let (size, at) = match route {
+            gc2::ROUTE_NATIVE => ((480, 640), GC2DB_AT[0]),
+            gc2::ROUTE_LINES => ((480, 320), GC2DB_AT[1]),
+            _ => ((240, 320), GC2DB_SMALL),
+        };
+        let Some(rr) = gc2cp_take(g, cur, size) else {
+            return false;
+        };
+        gc2ca_set_mesh(g, rr, gc2::MESH_TEXTURED, tex, size);
+        let drawn = gc2ca_render(g, rr, size, at).is_some();
+        if drawn && route == gc2::ROUTE_SMOOTH {
+            gc2cs_uyvy(g, GC2DB_SMALL, GC2DB_AT[2], 240);
+        }
+        drawn
+    }
+
+    /// `DSIG` read until `want` holds of it, at most three frames: the
+    /// scan line it was seen on and its value.
+    fn gc2db_watch(g: &mut Rig, want: impl Fn(u32) -> bool) -> Option<(u32, u32)> {
+        rt::check_in();
+        let t0 = rt::ticks();
+        while us_since(t0) < 3 * FRAME_US {
+            let s = g.e.regs.read32(DSIG);
+            if want(s) {
+                return Some((scan_line(g), s));
+            }
+        }
+        None
+    }
+
+    /// One GC2DB probe's result.
+    #[derive(Clone, Copy, Default)]
+    struct Gc2dbProbe {
+        /// The word read back as written, both the change and the put-back.
+        wrote: bool,
+        /// The scan line the signature was first seen changed on.
+        line: Option<u32>,
+        /// The changed signature the same a frame later (latched, not
+        /// moving).
+        held: bool,
+        /// The signature back to the base value once the word was put back.
+        back: bool,
+    }
+
+    /// One GC2DB probe: the word at `at` XORed with `mask`, `DSIG` watched
+    /// up to three frames for a change from `base`, then the word put back
+    /// and `DSIG` watched for `base` again. With the signature not `live`
+    /// (the emulator doesn't model it) only the words are written and
+    /// checked.
+    fn gc2db_probe(g: &mut Rig, at: u32, mask: u32, base: u32, live: bool) -> Gc2dbProbe {
+        let old = g.mem.load(at as usize).unwrap_or(0);
+        g.mem.store(at as usize, &[old ^ mask]);
+        g.mem.sync();
+        let mut p = Gc2dbProbe {
+            wrote: g.mem.load(at as usize) == Some(old ^ mask),
+            ..Gc2dbProbe::default()
+        };
+        let seen = if live {
+            gc2db_watch(g, |s| s != base)
+        } else {
+            None
+        };
+        if let Some((line, s)) = seen {
+            p.line = Some(line);
+            rt::delay_us(FRAME_US);
+            p.held = g.e.regs.read32(DSIG) == s;
+        }
+        g.mem.store(at as usize, &[old]);
+        g.mem.sync();
+        p.wrote &= g.mem.load(at as usize) == Some(old);
+        p.back = !live || gc2db_watch(g, |s| s == base).is_some();
+        p
+    }
+
+    /// GC2DB's tally of a set of probes: (words written and put back,
+    /// signature changed, changed and held, back to base, the first and
+    /// last scan line a change was seen on).
+    #[derive(Clone, Copy)]
+    struct Gc2dbTally {
+        n: u32,
+        wrote: u32,
+        changed: u32,
+        held: u32,
+        back: u32,
+        lines: (u32, u32),
+    }
+
+    impl Gc2dbTally {
+        const NEW: Self = Self {
+            n: 0,
+            wrote: 0,
+            changed: 0,
+            held: 0,
+            back: 0,
+            lines: (u32::MAX, 0),
+        };
+
+        fn add(&mut self, p: Gc2dbProbe) {
+            self.n += 1;
+            self.wrote += u32::from(p.wrote);
+            self.changed += u32::from(p.line.is_some());
+            self.held += u32::from(p.held);
+            self.back += u32::from(p.back);
+            if let Some(l) = p.line {
+                self.lines = (self.lines.0.min(l), self.lines.1.max(l));
+            }
+        }
+    }
+
+    /// Run GC2DB (see [`GC2DB`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn gc2db_run(g: &mut Rig, tex: gc2::Tex, planes0: &Snapshot) {
+        let Some(cur) = GC2DA_HELD.put_with(|| None) else {
+            log!("  GC2DB: run twice in one start: nothing run");
+            return;
+        };
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        log!(
+            "  GC2DB (R101): DSIG's coverage, the textured game frame shown 3 ways (native, 480 x 320 lines 2x, 240 x 320 UYVY smooth 2x); one pixel changed at rows {GC2DB_ROWS:?} x columns {GC2DB_COLS:?} of the screen and put back, then each bit of the pixel at (240, 320); at Windows Mobile's clock"
+        );
+        let mut bases = [0u32; 3];
+        let mut all = Gc2dbTally::NEW;
+        for route in [gc2::ROUTE_NATIVE, gc2::ROUTE_LINES, gc2::ROUTE_SMOOTH] {
+            let k = usize::from(route);
+            let name = GC2DB_NAMES[k];
+            let mut l2 = heapless_name();
+            let _ = write!(l2, "ROUTE {} OF 3", k + 1);
+            gc2ca_card(g, planes0, ["R101: DSIG COVERAGE", l2.as_str(), name]);
+            if !gc2db_draw(g, cur, tex, route) {
+                log!("  GC2DB route {} {name}: not drawn; skipped", k + 1);
+                continue;
+            }
+            gc2db_show(g, route, planes0);
+            let _ = underrun_take(&mut g.e.regs);
+            let (a, b) = soak_dsig(g);
+            bases[k] = a;
+            let live = a != 0 && a == b;
+            log!(
+                "  GC2DB route {} {name}: DSIG 0x{a:08x} then 0x{b:08x} a frame on: {}",
+                k + 1,
+                if a == 0 && b == 0 {
+                    "0, not live (the emulator doesn't model it, or a black picture): the words written alone"
+                } else if a != b {
+                    "MOVING on a still picture: the probes' changes not judged"
+                } else {
+                    "steady"
+                }
+            );
+            let at0 = GC2DB_AT[k];
+            let mut pos = Gc2dbTally::NEW;
+            for &y in &GC2DB_ROWS {
+                let mut missed_cols = 0u32;
+                for (c, &x) in GC2DB_COLS.iter().enumerate() {
+                    let (off, shift) = gc2::probe_word(route, x, y);
+                    let mask = if route == gc2::ROUTE_SMOOTH {
+                        0x80
+                    } else {
+                        0x8410
+                    } << shift;
+                    let p = gc2db_probe(g, at0 + off, mask, a, live);
+                    if live && p.line.is_none() {
+                        missed_cols |= 1 << c;
+                    }
+                    pos.add(p);
+                }
+                if missed_cols != 0 {
+                    let mut cols = heapless_name();
+                    for (c, &x) in GC2DB_COLS.iter().enumerate() {
+                        if missed_cols & 1 << c != 0 {
+                            let _ = write!(cols, " {x}");
+                        }
+                    }
+                    log!(
+                        "    GC2DB route {} row {y}: DSIG unchanged at columns{}",
+                        k + 1,
+                        cols.as_str()
+                    );
+                }
+            }
+            log!(
+                "  GC2DB route {} {name} positions: {} of {} changed DSIG, {} held a frame, {} back to 0x{a:08x} when put back; words written and put back {} of {}; first seen on scan lines {}..{}",
+                k + 1,
+                pos.changed,
+                pos.n,
+                pos.held,
+                pos.back,
+                pos.wrote,
+                pos.n,
+                if pos.changed == 0 { 0 } else { pos.lines.0 },
+                pos.lines.1
+            );
+            // Each bit of the middle pixel: the RGB565 halfword's 16, or
+            // the scaler's luma byte and the pair's U and V bytes.
+            let (off, shift) = gc2::probe_word(route, 240, 320);
+            let lanes: &[(&str, u32, u32)] = if route == gc2::ROUTE_SMOOTH {
+                &[("Y", shift, 8), ("U", 0, 8), ("V", 16, 8)]
+            } else {
+                &[("RGB565", shift, 16)]
+            };
+            let mut bits = Gc2dbTally::NEW;
+            for &(lname, lshift, width) in lanes {
+                let mut seen = 0u32;
+                for bit in 0..width {
+                    let p = gc2db_probe(g, at0 + off, 1 << (lshift + bit), a, live);
+                    if p.line.is_some() {
+                        seen |= 1 << bit;
+                    }
+                    bits.add(p);
+                }
+                log!(
+                    "  GC2DB route {} {name} bits of {lname} at (240, 320): 0x{seen:04x} of 0x{:04x} changed DSIG",
+                    k + 1,
+                    (1u32 << width) - 1
+                );
+            }
+            log!(
+                "  GC2DB route {} {name} bits: {} of {} changed DSIG, {} held, {} back; words written and put back {} of {}",
+                k + 1,
+                bits.changed,
+                bits.n,
+                bits.held,
+                bits.back,
+                bits.wrote,
+                bits.n
+            );
+            for t in [pos, bits] {
+                all.n += t.n;
+                all.wrote += t.wrote;
+                all.changed += t.changed;
+                all.held += t.held;
+                all.back += t.back;
+            }
+            let (c, d) = soak_dsig(g);
+            log!(
+                "  GC2DB route {} {name}: DSIG at the end 0x{c:08x} 0x{d:08x} ({})",
+                k + 1,
+                if c == a && d == a {
+                    "the base again"
+                } else {
+                    "NOT the base"
+                }
+            );
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        }
+        let distinct = bases[0] != bases[1] && bases[1] != bases[2] && bases[0] != bases[2];
+        log!(
+            "  GC2DB done: {} probes, words written and put back {}, DSIG changed {}, held {}, back {}; the routes' signatures 0x{:08x} 0x{:08x} 0x{:08x} ({})",
+            all.n,
+            all.wrote,
+            all.changed,
+            all.held,
+            all.back,
+            bases[0],
+            bases[1],
+            bases[2],
+            if distinct {
+                "all different"
+            } else {
+                "NOT all different"
+            }
+        );
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        g.nudge = nudge;
+        gc2ca_card(g, planes0, ["GC2DB DONE", "", ""]);
     }
 
     /// GC2CA's renderer of the size in use.
@@ -21266,6 +21600,22 @@ mod image {
     /// end and the whole frame, with CS3 at Windows Mobile's 8 / 4 / 2 and
     /// at R3's 7 / 3 / 1 (`MSC1`), at both clocks.
     const GC2CY: bool = option_env!("RP_GPUBENCH_GC2_HALF_R80").is_some();
+    /// Run GC2DB (`RP_GPUBENCH_GC2_HALF_R101`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R101's first step (ADR-0038 G2): how much of the screen `DSIG`, the
+    /// display's output signature, covers, before the route-switch test
+    /// leans on it. Intel's datasheet says the whole active area (a claim);
+    /// GC2CB's run 1 read it unchanged when only rows 16 on changed, but
+    /// with the graphics plane's fetch off, an arrangement since found
+    /// broken. For each route, the textured game frame drawn and shown the
+    /// route's way, the signature read twice a frame apart; then one pixel
+    /// at each of [`GC2DB_ROWS`] x [`GC2DB_COLS`] changed in the source
+    /// (each channel's top bit; the luma's top bit for the scaler's route)
+    /// and put back, and each bit of the middle pixel likewise: whether
+    /// the signature changed, the scan line it was first seen changed on,
+    /// whether it held a frame, and whether it came back to the same value
+    /// (a function of the picture alone). Unattended, about a minute; a
+    /// card names each route.
+    const GC2DB: bool = option_env!("RP_GPUBENCH_GC2_HALF_R101").is_some();
     /// Run GC2DA (`RP_GPUBENCH_GC2_HALF_R79`, with `RP_GPUBENCH_GC2_HALF`),
     /// R79's look for the owner's eye: the flat and the textured game frame
     /// at 240 x 320 (CPU-made UYVY, GC2CS's way), each shown 2x three ways
