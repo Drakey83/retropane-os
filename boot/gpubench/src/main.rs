@@ -18510,7 +18510,9 @@ mod image {
             }
         }
         let Some(i) = found else {
-            log!("  GC2DC return: NO CURE FOUND among {nc} registers: switches judged as they come");
+            log!(
+                "  GC2DC return: NO CURE FOUND among {nc} registers: switches judged as they come"
+            );
             return none;
         };
         // The last register alone, from the smooth route again.
@@ -18664,7 +18666,11 @@ mod image {
         gc2ca_card(
             g,
             planes0,
-            ["R101: ROUTE SWITCHES", "DRAWING THE 3 ROUTES", "NOTHING TO DO"],
+            [
+                "R101: ROUTE SWITCHES",
+                "DRAWING THE 3 ROUTES",
+                "NOTHING TO DO",
+            ],
         );
         // The smooth and lines routes drawn at GC2DB's place and copied out
         // (the UYVY made straight into its place); native last, staying.
@@ -18772,7 +18778,12 @@ mod image {
         let name = GC2DC_WAY_NAMES[usize::from(way)];
         let mut l2 = heapless_name();
         let _ = write!(l2, "WAY {} OF 3", way + 1);
-        gc2dc_card(g, (&mut *cur, tex), planes0, ["R101: INTO SMOOTH", l2.as_str(), name]);
+        gc2dc_card(
+            g,
+            (&mut *cur, tex),
+            planes0,
+            ["R101: INTO SMOOTH", l2.as_str(), name],
+        );
         // The video plane programmed once for B and C (A does it each show).
         rp_drv_mbx_display::video_hide(&mut g.e.regs);
         if way != 0 {
@@ -18876,7 +18887,11 @@ mod image {
         log!(
             "  GC2DC way {} {name}: pairs on line 0: {torn_all} frames of neither route, the slowest settled in frame {worst}; a switch every frame: {GC2DC_WAY_FRAMES} frames: {as_due} the new route whole, {other} another route whole, {torn} NEITHER ROUTE, {missed} not read{}",
             way + 1,
-            if live { "" } else { " (not judged: no DSIG, or a route's signature differed this way)" }
+            if live {
+                ""
+            } else {
+                " (not judged: no DSIG, or a route's signature differed this way)"
+            }
         );
         rp_drv_mbx_display::video_hide(&mut g.e.regs);
     }

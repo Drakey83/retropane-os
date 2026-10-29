@@ -3042,7 +3042,10 @@ fn gc2db_probe_words_at_the_edges() {
     // Native: the first and last pixels, and each half of one word.
     assert_eq!(probe_word(ROUTE_NATIVE, 0, 0), (0, 0));
     assert_eq!(probe_word(ROUTE_NATIVE, 1, 0), (0, 16));
-    assert_eq!(probe_word(ROUTE_NATIVE, 479, 639), (2 * (480 * 640 - 2), 16));
+    assert_eq!(
+        probe_word(ROUTE_NATIVE, 479, 639),
+        (2 * (480 * 640 - 2), 16)
+    );
     assert_eq!(probe_word(ROUTE_NATIVE, 0, 16), (960 * 16, 0));
     // Lines: rows 638 and 639 show source row 319, the last.
     assert_eq!(probe_word(ROUTE_LINES, 0, 638), (960 * 319, 0));
