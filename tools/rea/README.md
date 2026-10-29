@@ -20,3 +20,51 @@ First use, 2026-10-28: `ddi_2700g`'s doubling code (`0x021270B8`, found by hand
 with `llvm-objdump`, 2700g.md) decompiled in 28 s, the same facts as the
 hand reading and the instructions, plus the function around it
 (`0x02126c90`, the mode set), its callers and where the two flags come from.
+
+## What is decompiled (2026-10-28), and the index
+
+Every Dell / HTC driver that touches hardware is decompiled once, in
+`local/re/ghidra-c/<module>/functions/` (one C file a function): the 2700G
+drivers (`ddi_2700g` from two ROMs, `libGLES_CL`, `d3d_2700g`, `pvrvadd`,
+the WMV9 decoder), the display and game-graphics layer (`ddi`, `gx`,
+`gxdma`), Quake 3's GLES and EGL, Windows Mobile's kernel and Dell's OAL
+(`nk.exe`), and the board drivers (backlight, battery, keypad, LED,
+notification, CF socket, peripheral, SD, serial, touch, Wi-Fi, Bluetooth,
+USB, audio, HTC's display service, `AximSDK`). Questions are answered by
+searching those files, never by decompiling again.
+
+`python tools/rea/xref.py` (rerun after any new `decompile-all`) writes
+`local/re/xref.md` and `xref.json`: per module and function, the board
+CPLD registers it touches through Windows Mobile's shared shadow (with each
+set / clear helper's call sites translated to register and bits), the
+PXA270 blocks it names by address (registers in a block's first 4 KiB, or
+a block mapped by a call: float constants like `0x40490FDB`, pi, are
+left out), its `KernelIoControl` codes, and in the GPU drivers every
+literal in the 3D (`0x600`-`0x6FC`) and TA (`0x800`-`0x87C`) blocks with
+its line. Check: it reproduces the REA pass of 2026-10-28 by hand
+(`ddi_2700g` maps the clocks and memory controller only; the panel's
+`0x12` bits 1, 2, 4, 8 stepped by `0x2110568`).
+
+## Comparing two versions: `fdiff.py` (BinDiff's job, no download)
+
+BinDiff 8 needs BinExport, whose newest Ghidra plugin targets Ghidra
+11.0.3 (ours is 12.1.4). `python tools/rea/fdiff.py <module A> <module B>
+--out local/re/<name>.md` does the job on REA's output instead: every
+function normalized (REA's header dropped, every Ghidra name carrying an
+address masked, long hex literals masked), identical bodies matched first,
+the rest paired by similarity, a unified diff for each changed one. First
+use, 2026-10-28: `ddi_2700g` from ROM A08 against L16, **868 of 869
+functions identical**, the last a decompiler cast only: Dell changed
+nothing in the 2700G display driver between those ROMs.
+
+## Watching Dell's driver live: HaRET's `MMUTRACE`
+
+HaRET (on the card; source in `local/haret-src`, `ko/src/l1trace.cpp`)
+traces accesses to chosen virtual addresses while Windows Mobile runs:
+`set MMUTRACE <start> <size> rw` then `wirq <seconds>` makes every access
+in those ranges fault; HaRET emulates and logs each one (address, value,
+the instruction's PC) and returns. Section (1 MiB) mappings only unless
+`PERMISSIVEMMUTRACE` is set; every traced access costs a fault. Use: a
+GLES game under Windows Mobile with the 2700G's register window traced, to
+record the register sequences Dell's drivers write, in order (a device
+run, the owner starting HaRET).
