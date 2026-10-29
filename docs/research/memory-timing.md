@@ -115,6 +115,18 @@ pass, every one with `RDF` 5 or more; a 60 s soak at `RDF` 7, `RDN` 2,
   under it in every field (7 / 3 / 1: 31.9 ms, 10% less), or a
   per-device check at boot (R71's self-test) before a faster value is used.
 
+**R71's check, its negative control on the X51v (2026-10-29, `local/rp-cs3bus-r71-neg.txt`,
+`rp-cs3bus` `RP_CS3BUS_SELFTEST` with `RP_CS3BUS_CANDIDATE=420`, commit
+8efe9aa4):** the same check with 4 / 2 / 0 tried in place of 7 / 2 / 0.
+7 / 3 / 1: 0 misses in 1,572,864 transfers. **4 / 2 / 0 cold (`MSC1`
+`02442481`): 786,431 of 786,432 reads wrong** (pattern 0, word 0 first),
+as run 2's grid read every word wrong at `RDF` 4; the warm traffic stopped
+in its first round (the 2D fill's time-out, logged as a saturated miss
+count); pick 7 / 3 / 1; `MSC1` put back (`24842481`). The check catches a
+bus fault seen on real hardware, not only the host tests' injected ones.
+For the wiring: skip warm after a cold failure, name a 2D time-out as
+one.
+
 ## The answer in brief
 
 - **The SDRAM clock is already at the PXA270's maximum.** SDCLK2 =
