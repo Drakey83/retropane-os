@@ -293,6 +293,10 @@ watching.
   every render at 143.00 / 1); 240 x 320 the same, plus a one-pixel fault
   on its flat mesh in ~1% of renders at every divide-1 step (143.00 to
   108.33 / 1).
+- **The video plane's vertical-only scale of RGB565** (`rp-gpubench`
+  GC2CS, X51v, 2026-10-28, the owner's photos): right for a 240-wide
+  source (GC2CE), **wrong for a 480-wide one** (right over the left ~40%,
+  streaks, then nothing); 240 x 320 UYVY through the 2x both ways right.
 - **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
   2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
   ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,
