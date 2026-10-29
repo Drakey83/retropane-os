@@ -5703,6 +5703,25 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cw = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_OFFSETS", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
+    let run_gc2cx = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_CONVERT", "1"),
+            ("RP_GPUBENCH_GC2_HALF_EXACT", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5995,7 +6014,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 141] = [
+    let runs: [GpubenchRun; 143] = [
         (
             "run A",
             &run_a,
@@ -6676,6 +6695,45 @@ fn variant_images_gpubench(
                 "    its frame: ",
                 "GC2CP 143.00 / 1 speed-up (d) 240 x 320 converted, overlapped against native",
                 "GC2CP done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CX (R89): GC2CM's conversion storing the converter's
+        // offsets. The fork models neither row-order textures nor DOT3, so
+        // its words are wrong here as in GC2CM; the run's shape is what this
+        // checks (the X51v's run checks the words).
+        (
+            "run GC2CX",
+            &run_gc2cx,
+            &[
+                "GC2CX (R89): the offsets stored",
+                "GC2CX RGB565 card U: off by",
+                "GC2CX RGB565 card check: ",
+                "GC2CX ARGB8888 card check: ",
+                "GC2CM done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CW (R89): DOT3, MODULATE and the offsets blend measured on
+        // a ramp. The fork models MODULATE and blending, not DOT3: its DOT3
+        // lines are the fork's, the run's shape is what this checks.
+        (
+            "run GC2CW",
+            &run_gc2cw,
+            &[
+                "GC2CW (R89): the ramp v = 32 row + column",
+                "GC2CW try 0 DOT3 TEX2 0x86096612 tint 0xff002000",
+                "GC2CW try 8 MODULATE TEX2",
+                "GC2CW try 9 MODULATE + offsets",
+                "GC2CW try 12 DOT3 + offsets",
+                "GC2CW try 12 green v224: ",
+                "GC2CW done:",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

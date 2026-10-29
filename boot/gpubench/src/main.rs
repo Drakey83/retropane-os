@@ -17571,6 +17571,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2CW {
+            gc2cw_run(g, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CV {
             gc2cv_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -19406,6 +19412,12 @@ mod image {
         if let (Some(src), [Some(out), Some(y0), Some(y1)]) = (src, bufs) {
             if let Some(mut r) = Renderer::new(&mut g.pool, GC2CM_OW, GC2CM_H as u16) {
                 let _ = r.set_background(Some(BLACK));
+                if GC2CX_EXACT {
+                    log!(
+                        "  GC2CX (R89): the offsets stored: A the per-channel 4x multiply tint 0xFF200020 over 0x{GC2CX_UV_BIAS:08x}, the Y passes DOT3 tint 0xFF002000 over 0x{GC2CX_Y_BIAS:08x}, each blended ONE, ONE; the converter's words for it {:?}",
+                        GC2CX_CSC
+                    );
+                }
                 log!(
                     "  GC2CM: a 240 x 320 card in rows (stride 256 pixels) at 0x{src:x}, converted into 120 x 320 UYVY at 0x{out:x}: A MODULATE (U' = B, V' = R at pixel 2i), B and C DOT3 tint 0x{GC2CM_TINT:08x} (Y' at 2i, 2i + 1), 2D ROP3 0xCA into green and alpha; one conversion to warm, {GC2CM_REPS} timed; at Windows Mobile's clock"
                 );
@@ -19452,6 +19464,9 @@ mod image {
                         best[4]
                     );
                     gc2cm_check(g, out, wide, name);
+                    if GC2CX_LOOK && !wide {
+                        gc2cx_look(g, out, planes0);
+                    }
                 }
                 r.set_header_xors([0; 5]);
                 g.set(&mut r, 0, None);
@@ -19534,13 +19549,24 @@ mod image {
         {
             let xor = if dot3 {
                 [0, rows | 0x2000, 1 << 29, opaque ^ GC2CM_DOT3, 0]
+            } else if GC2CX_EXACT {
+                // Dell's DOT3 word without TEX0 bit 13: a per-channel 4x
+                // multiply (GC2CJ; the plain word ignores the tint, GC2CX's
+                // first run).
+                [0, rows, 1 << 29, opaque ^ GC2CM_DOT3, 0]
             } else {
                 [0, rows, 1 << 29, 0, 0]
             };
             r.set_header_xors(xor);
             let (ua, ub) = (u0 + bias, u0 + bias + 240 * texel);
             let (va, vb) = (bias, bias + 320 * (UV_ONE / 512));
-            let draw = Draw::rect(
+            let tint = match (GC2CX_EXACT, dot3) {
+                (false, true) => GC2CM_TINT,
+                (false, false) => WHITE,
+                (true, true) => 0xFF00_2000,
+                (true, false) => 0xFF20_0020,
+            };
+            let mut draw = Draw::rect(
                 0,
                 0,
                 i32::from(GC2CM_OW),
@@ -19548,10 +19574,23 @@ mod image {
                 Paint::Texture {
                     tex,
                     uv: [(ua, va), (ub, va), (ub, vb), (ua, vb)],
-                    tint: if dot3 { GC2CM_TINT } else { WHITE },
+                    tint,
                 },
             );
-            g.set(r, 0, Some(draw));
+            if GC2CX_EXACT {
+                // The offsets first, the pass added to them one-to-one.
+                let bias = if dot3 { GC2CX_Y_BIAS } else { GC2CX_UV_BIAS };
+                let w = i32::from(GC2CM_OW);
+                g.set(
+                    r,
+                    0,
+                    Some(Draw::rect(0, 0, w, GC2CM_H as i32, Paint::Flat(bias))),
+                );
+                draw.blend = Some((factor::ONE, factor::ONE));
+                g.set(r, 1, Some(draw));
+            } else {
+                g.set(r, 0, Some(draw));
+            }
             let target = Target {
                 picture: Picture {
                     at,
@@ -19610,10 +19649,144 @@ mod image {
         Some(t)
     }
 
+    /// GC2CX's word for the card's pixel pair `(2i, 2i + 1)` of row `y`:
+    /// U = 128 + floor(128 B / 255), Y0 = 16 + floor(128 G / 255), V the
+    /// same of R (the
+    /// pair's first pixel's chroma, as GC2CM samples it), Y1.
+    const fn gc2cx_word(i: u32, y: u32, wide: bool) -> u32 {
+        let p0 = gc2cm_seen(gc2cm_rgb(2 * i, y), wide);
+        let p1 = gc2cm_seen(gc2cm_rgb(2 * i + 1, y), wide);
+        let (y0, y1) = (16 + 128 * p0.1 / 255, 16 + 128 * p1.1 / 255);
+        y1 << 24 | (128 + 128 * p0.0 / 255) << 16 | y0 << 8 | (128 + 128 * p0.2 / 255)
+    }
+
+    /// GC2CX's check: every byte of every word exact (U, Y0, V, Y1), the
+    /// difference counted per byte (-2 .. +2 and beyond), the first wrong
+    /// word logged.
+    fn gc2cx_check(g: &Rig, out: u32, wide: bool, name: &str) {
+        let ow = u32::from(GC2CM_OW);
+        let mut hist = [[0u32; 7]; 4];
+        let mut first = None;
+        for y in 0..GC2CM_H {
+            for i in 0..ow {
+                let w = g.mem.load((out + 4 * (y * ow + i)) as usize).unwrap_or(0);
+                let want = gc2cx_word(i, y, wide);
+                for (lane, h) in hist.iter_mut().enumerate() {
+                    let d =
+                        ((w >> (8 * lane)) & 0xFF) as i32 - ((want >> (8 * lane)) & 0xFF) as i32;
+                    h[(d.clamp(-3, 3) + 3) as usize] += 1;
+                }
+                if w != want {
+                    first.get_or_insert((i, y, w, want));
+                }
+            }
+        }
+        let exact = hist.iter().all(|h| h[3] == ow * GC2CM_H);
+        for (lane, lname) in ["U", "Y0", "V", "Y1"].into_iter().enumerate() {
+            let h = hist[lane];
+            log!(
+                "  GC2CX {name} {lname}: off by (beyond -2, -2, -1, 0, +1, +2, beyond +2) {} {} {} {} {} {} {}",
+                h[0],
+                h[1],
+                h[2],
+                h[3],
+                h[4],
+                h[5],
+                h[6]
+            );
+        }
+        log!(
+            "  GC2CX {name} check: {} of {} words exact; first off (i, y, got, want) {first:?}",
+            if exact {
+                ow * GC2CM_H
+            } else {
+                hist[0][3].min(hist[1][3]).min(hist[2][3]).min(hist[3][3])
+            },
+            ow * GC2CM_H
+        );
+    }
+
+    /// GC2CX's morning look (see [`GC2CX_LOOK`]): the GPU's UYVY at `out`
+    /// with our coefficients, then the CPU's of the same RGB565 card with
+    /// Intel's standard ones, each 2x on the video plane until a button.
+    fn gc2cx_look(g: &mut Rig, out: u32, planes0: &Snapshot) {
+        let words = u32::from(GC2CM_OW) * GC2CM_H;
+        // The GPU's UYVY into GC2CS's place (the video plane's proven one).
+        let mut buf = [0u32; 120];
+        for y in 0..GC2CM_H {
+            for (i, w) in buf.iter_mut().enumerate() {
+                *w = g
+                    .mem
+                    .load((out + 4 * (y * 120 + i as u32)) as usize)
+                    .unwrap_or(0);
+            }
+            g.mem.store((GC2CS_UYVY + y * 480) as usize, &buf);
+        }
+        // The card as a packed 240-wide RGB565 picture for the CPU's way.
+        let mut row = [0u32; 120];
+        for y in 0..GC2CM_H {
+            for (j, w) in row.iter_mut().enumerate() {
+                let px = |x: u32| {
+                    let (r, gr, b) = gc2cm_rgb(x, y);
+                    (r >> 3) << 11 | (gr >> 2) << 5 | b >> 3
+                };
+                *w = px(2 * j as u32) | px(2 * j as u32 + 1) << 16;
+            }
+            g.mem.store((GC2CA_A + y * 480) as usize, &row);
+        }
+        g.mem.sync();
+        let _ = words;
+        let csc0: [u32; 5] = core::array::from_fn(|k| g.e.regs.read32(GC2CX_CSC[k].0));
+        let screen = Plane {
+            format: PlaneFormat::Rgb565,
+            width: 480,
+            height: 640,
+            offset: 0,
+            stride: 960,
+        };
+        for (k, (label, gpu)) in [
+            ("PHOTO 1 OF 2: GPU, EXACT OFFSETS", true),
+            ("PHOTO 2 OF 2: CPU-MADE (GC2CS)", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            gc2ca_card(
+                g,
+                planes0,
+                [label, "THE GC2CM CARD, 2X", "PHOTO, THEN A BUTTON"],
+            );
+            if gpu {
+                for (off, v) in GC2CX_CSC {
+                    g.e.regs.write32(off, v);
+                }
+            } else {
+                gc2cs_uyvy(g, GC2CA_A, GC2CS_UYVY, 240);
+                for (k2, (off, _)) in GC2CX_CSC.into_iter().enumerate() {
+                    g.e.regs.write32(off, csc0[k2]);
+                }
+            }
+            rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
+            let plane = VideoPlane::new(VideoFormat::Uyvy, 240, 320, GC2CS_UYVY as usize);
+            let scale = plane.scale_to(480, 640, 0, 0);
+            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
+            let held = gc2ca_hold_button(g, 120_000_000);
+            log!("  GC2CX look {}: {label}; held {} ms", k + 1, held / 1000);
+            rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        }
+        for (k2, (off, _)) in GC2CX_CSC.into_iter().enumerate() {
+            g.e.regs.write32(off, csc0[k2]);
+        }
+    }
+
     /// Every output word checked against the card: U' and V' exact, Y0 and
     /// Y1 against the formula (error in steps, rounded to nearest, counted
     /// -2 .. +2 and beyond); the first wrong word logged.
     fn gc2cm_check(g: &Rig, out: u32, wide: bool, name: &str) {
+        if GC2CX_EXACT {
+            gc2cx_check(g, out, wide, name);
+            return;
+        }
         let ow = u32::from(GC2CM_OW);
         let (mut uv_wrong, mut first) = (0u32, None);
         // Y error histogram: < -2, -2, -1, 0, +1, +2, > +2.
@@ -20422,6 +20595,47 @@ mod image {
     /// core's rule is fitted on the PC; the same quad as a parallelogram (a
     /// control: must match).
     const GC2CV: bool = option_env!("RP_GPUBENCH_GC2_HALF_QUADFIT").is_some();
+    /// Run GC2CW (`RP_GPUBENCH_GC2_HALF_OFFSETS`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R89's first step: the arithmetic the offset conversion would use,
+    /// measured whole at Windows Mobile's clock. A 32 x 32 texture of the
+    /// ramp v = 0-255 (in red, green and blue alike, rows 0-7) drawn 1:1:
+    /// DOT3 (TEX0 bit 13, Dell's word) at eight green-only tints; MODULATE
+    /// at a half tint; then each over a flat quad holding the offsets
+    /// (0x10 in alpha and green, 0x80 in red and blue) blended one-to-one
+    /// (ONE, ONE). Every output byte of the ramp logged (green, and alpha
+    /// where it differs), for the rounding to be fitted on the PC.
+    const GC2CW: bool = option_env!("RP_GPUBENCH_GC2_HALF_OFFSETS").is_some();
+    /// Run GC2CX (`RP_GPUBENCH_GC2_HALF_EXACT` with GC2CM's
+    /// `RP_GPUBENCH_GC2_HALF_CONVERT`), R89: GC2CM's conversion storing the
+    /// video plane's offsets, so its converter can give the colours back
+    /// (GC2CW's arithmetic, measured): pass A the per-channel 4x multiply
+    /// (Dell's DOT3 word without TEX0 bit 13) at red and blue tint 32,
+    /// blended one-to-one over a quad of 0x80 in red and blue (V = 128 +
+    /// floor(128 R / 255), U likewise from B); the Y passes DOT3 at green
+    /// tint 32 (`floor(128 G / 255)`, 0 of 256 off in GC2CW) over 0x10 in
+    /// green and alpha (Y = 16 + that). Every word checked exactly. The
+    /// converter then takes `CSC02` = 512 / 512 (green from Y, red from V),
+    /// `CSC04` = 512 (blue from U), the rest 0: every division exact, red
+    /// and blue back to 7 bits, green to the panel's 6 (host-checked).
+    const GC2CX_EXACT: bool = option_env!("RP_GPUBENCH_GC2_HALF_EXACT").is_some();
+    /// GC2CX's morning look too (`RP_GPUBENCH_GC2_HALF_EXACT_LOOK`): the
+    /// GPU's exact UYVY with our coefficients, then the CPU-made UYVY of
+    /// the same card with Intel's standard ones (GC2CS's way), each shown
+    /// 2x on the video plane until a button.
+    const GC2CX_LOOK: bool = option_env!("RP_GPUBENCH_GC2_HALF_EXACT_LOOK").is_some();
+    /// GC2CX's converter words (`CSC01-05`): every coefficient 0 but green
+    /// from Y, red from V and blue from U, each 512 (x2).
+    const GC2CX_CSC: [(usize, u32); 5] = [
+        (0x2330, 0),
+        (0x2334, 512 << 11 | 512),
+        (0x2338, 0),
+        (0x233C, 512 << 11),
+        (0x2340, 0),
+    ];
+    /// GC2CX's offsets: pass A's (red and blue 0x80), the Y passes' (green
+    /// and alpha 0x10).
+    const GC2CX_UV_BIAS: u32 = 0x0080_0080;
+    const GC2CX_Y_BIAS: u32 = 0x1000_1000;
     /// Frames a way and game frame, after one to warm (the emulator 2).
     const GC2CP_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 10 };
     /// The sizes GC2CP renders: native, half height, half.
@@ -20692,6 +20906,156 @@ mod image {
         g.nudge = nudge;
         log!("  GC2CP done: {} ms", us_since(t0) / 1000);
         gc2ca_card(g, planes0, ["GC2CP DONE", "", ""]);
+    }
+
+    /// GC2CW's ramp texel: v = 32 y + x (0-255 over rows 0-7) in red,
+    /// green and blue, opaque.
+    const fn gc2cw_texel(x: u32, y: u32) -> u32 {
+        let v = (32 * y + x) & 255;
+        0xFF00_0000 | v << 16 | v << 8 | v
+    }
+
+    /// GC2CW's offsets quad: alpha and green 0x10, red and blue 0x80.
+    const GC2CW_BIAS: u32 = 0x1080_1080;
+
+    /// Run GC2CW (see [`GC2CW`]).
+    #[inline(never)]
+    fn gc2cw_run(g: &mut Rig, planes0: &Snapshot) {
+        gc2ca_card(
+            g,
+            planes0,
+            ["GC2CW: OFFSET MATHS", "R89, WM CLOCK", "NO PHOTOS NEEDED"],
+        );
+        let nudge = core::mem::replace(&mut g.nudge, 0);
+        let t0 = rt::ticks();
+        let Some(area) = g.pool.alloc(P_AREA, 4096) else {
+            log!("  GC2CW: no memory for the target");
+            return;
+        };
+        let Some(tex) = p_texture(g, 2, gc2cw_texel) else {
+            log!("  GC2CW: no memory for the texture");
+            let _ = g.pool.free(area, P_AREA);
+            return;
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 32, 32) else {
+            log!("  GC2CW: no renderer");
+            p_texture_free(g, tex);
+            let _ = g.pool.free(area, P_AREA);
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        let opaque = tex.words()[2];
+        // (name, TEX0 xor, TEX2, tint, over the offsets quad)
+        let dot3 = |c: u32| (0x2000, GC2CM_DOT3, 0xFF00_0000 | c << 8);
+        let mut tries: [(&str, u32, u32, u32, bool); 13] = [("", 0, 0, 0, false); 13];
+        for (k, c) in [32u32, 40, 48, 56, 64, 96, 128, 255]
+            .into_iter()
+            .enumerate()
+        {
+            let (x, w, t) = dot3(c);
+            tries[k] = ("DOT3", x, w, t, false);
+        }
+        tries[8] = ("MODULATE", 0, opaque, 0xFF80_8080, false);
+        tries[9] = ("MODULATE + offsets", 0, opaque, 0xFF80_8080, true);
+        for (k, c) in [32u32, 64, 128].into_iter().enumerate() {
+            let (x, w, t) = dot3(c);
+            tries[10 + k] = ("DOT3 + offsets", x, w, t, true);
+        }
+        log!(
+            "  GC2CW (R89): the ramp v = 32 row + column (0-255, rows 0-7) in every channel, drawn 1:1 into 32 x 32 ARGB8888; each try's green byte at v = 0-255, 32 a line, and its alpha where any differs from green"
+        );
+        for (k, &(name, x0, word, tint, offsets)) in tries.iter().enumerate() {
+            let mut l2 = heapless_name();
+            let _ = write!(l2, "TRY {} OF {}", k + 1, tries.len());
+            soak_label(g, ["GC2CW OFFSETS", l2.as_str(), ""], SOAK_BLUE);
+            r.set_header_xors([0, x0, 0, opaque ^ word, 0]);
+            let mut draw = Draw::rect(
+                0,
+                0,
+                32,
+                32,
+                Paint::Texture {
+                    tex,
+                    uv: [(0, 0), (UV_ONE, 0), (UV_ONE, UV_ONE), (0, UV_ONE)],
+                    tint,
+                },
+            );
+            if offsets {
+                draw.blend = Some((factor::ONE, factor::ONE));
+                g.set(
+                    &mut r,
+                    0,
+                    Some(Draw::rect(0, 0, 32, 32, Paint::Flat(GC2CW_BIAS))),
+                );
+                g.set(&mut r, 1, Some(draw));
+            } else {
+                g.set(&mut r, 0, Some(draw));
+                g.set(&mut r, 1, None);
+            }
+            p_fill(g, area);
+            let before = g.hangs;
+            let ok = p_frame(g, &mut r, p_target(area, P_SQUARE), 6, None);
+            if g.hangs != before {
+                log!("  GC2CW try {k} {name}: HUNG (the core was reset)");
+                r.start_clean();
+                continue;
+            }
+            if !ok {
+                log!("  GC2CW try {k} {name}: not rendered");
+                continue;
+            }
+            let at = area + P_BEFORE;
+            let word_at =
+                |v: u32| p_value(&g.mem, at, (v / 32) * P_SQUARE.stride + 4 * (v % 32), 4);
+            let mut alpha_differs = 0;
+            let mut other_lanes = 0;
+            for v in 0..256 {
+                let w = word_at(v);
+                alpha_differs += u32::from(w >> 24 != (w >> 8) & 0xFF);
+                other_lanes += u32::from((w >> 16) & 0xFF != w & 0xFF);
+            }
+            log!(
+                "  GC2CW try {k} {name} TEX2 0x{word:08x} tint 0x{tint:08x}: alpha unlike green in {alpha_differs} of 256, red unlike blue in {other_lanes}; word at v = 0, 128, 255: 0x{:08x} 0x{:08x} 0x{:08x}",
+                word_at(0),
+                word_at(128),
+                word_at(255)
+            );
+            for lane in [8u32, 24] {
+                if lane == 24 && alpha_differs == 0 {
+                    continue;
+                }
+                for row in 0..8 {
+                    let mut line = heapless_name();
+                    for x in 0..32 {
+                        let _ = write!(line, "{:02x}", (word_at(32 * row + x) >> lane) & 0xFF);
+                    }
+                    log!(
+                        "  GC2CW try {k} {} v{:03}: {}",
+                        if lane == 8 { "green" } else { "alpha" },
+                        32 * row,
+                        line.as_str()
+                    );
+                }
+            }
+            if offsets || name == "MODULATE" {
+                for row in 0..8 {
+                    let mut line = heapless_name();
+                    for x in 0..32 {
+                        let _ = write!(line, "{:02x}", (word_at(32 * row + x) >> 16) & 0xFF);
+                    }
+                    log!("  GC2CW try {k} red v{:03}: {}", 32 * row, line.as_str());
+                }
+            }
+            rt::check_in();
+        }
+        r.set_header_xors([0; 5]);
+        let _ = r.release(&mut g.pool);
+        p_texture_free(g, tex);
+        let _ = g.pool.free(area, P_AREA);
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        g.nudge = nudge;
+        log!("  GC2CW done: {} ms", us_since(t0) / 1000);
+        gc2ca_card(g, planes0, ["GC2CW DONE", "", ""]);
     }
 
     /// GC2CV's renderer.

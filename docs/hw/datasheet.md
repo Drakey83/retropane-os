@@ -251,6 +251,12 @@ watching.
   TEX2 or render-block bit sets it otherwise. Texels sampled at the pixel's
   corner. **With TEX1 bit 29 the stride is the declared width** (across
   code; 32-1,024 texels; GC2CI), no cost against twiddled reads (GC2CJ).
+- **3D combine arithmetic** (`rp-gpubench` GC2CW, GC2CX, X51v,
+  2026-10-28): DOT3 (TEX0 bit 13, TEX2 `0x86096612`) at a single-channel
+  tint 32 = `floor(128 v / 255)`, at 64 = v (all 256 values); the plain
+  textured TEX2 `0xD6886610` ignores the tint; the per-channel 4x multiply
+  (`0x86096612` without bit 13) reads ARGB8888 texels at 5 bits; blending
+  ONE, ONE adds exactly, alpha included, clamped at 255.
 - **3D four-corner objects** (object list flags; G2 measured, layout 9
   static): list word `0x60A00000 | offset` (mask bits 30-29, layout 5) =
   one flat or Gouraud object of four corners in strip order, 22 words
