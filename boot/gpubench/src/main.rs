@@ -17571,6 +17571,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2CY {
+            gc2cy_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CW {
             gc2cw_run(g, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -17700,6 +17706,296 @@ mod image {
         }
         g.nudge = 0;
         log!("  GC2CA done");
+    }
+
+    /// GC2CY's renderer of the size in use.
+    static GC2CY_HELD: rt::Slot<Option<(usize, Renderer)>> = rt::Slot::new();
+
+    /// GC2CY's renders a frame and clock (part A).
+    const GC2CY_RENDERS: u32 = if GC2_RENDERS < 20 { 3 } else { 250 };
+    /// GC2CY's frames a setting (part B), after one to warm.
+    const GC2CY_FRAMES: u32 = if GC2_RENDERS < 20 { 2 } else { 10 };
+
+    /// Run GC2CY (see [`GC2CY`]).
+    #[inline(never)]
+    fn gc2cy_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let full = gc2::words_of(gc2::HALF_SIZES[0]);
+        if all.len() < full + gc2::HALF_REF_WORDS {
+            log!("  GC2CY: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        // Its renderer in `.bss` (the stack: GC2CA's own path is at 89%).
+        let Some(cur) = GC2CY_HELD.put_with(|| None) else {
+            log!("  GC2CY: run twice in one start: nothing run");
+            return;
+        };
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        let (first, refs) = all.split_at_mut(full);
+        // References at Windows Mobile's clock, each held repeatable.
+        let mut ok = true;
+        for (s, &size) in gc2::HALF_SIZES.iter().enumerate() {
+            let how = if s == 0 { GC2CA_NATIVE } else { GC2CA_VIDEO };
+            gc2ca_show(g, how, size, GC2CA_A, planes0);
+            let n = gc2::words_of(size);
+            for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                let Some(rr) = gc2ca_take(g, cur, s) else {
+                    ok = false;
+                    break;
+                };
+                gc2ca_set_mesh(g, rr, kind, tex, size);
+                let t = gc2ca_render(g, rr, size, GC2CA_A);
+                let want = &mut refs[gc2ca_ref(s, f)];
+                gc2_take_at(g, GC2CA_A, want);
+                let again = gc2ca_render(g, rr, size, GC2CA_A).and_then(|_| {
+                    read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n])
+                });
+                log!(
+                    "  GC2CY {} x {} frame {f} reference: {t:?} us (core, whole); again {again:?} words off",
+                    size.0,
+                    size.1
+                );
+                ok &= t.is_some() && again == Some(0);
+            }
+        }
+        if !ok {
+            log!("  GC2CY: a reference failed: nothing more run");
+            g.nudge = nudge;
+            return;
+        }
+        let refs = &*refs;
+        let t0 = rt::ticks();
+        let clocks = [
+            (None, "WM 99.67 / 2"),
+            (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
+        ];
+        // Part A: the one-pixel faults.
+        for (step, cname) in clocks {
+            clock_restore(&mut g.e.regs);
+            if let Some(st) = step {
+                if clock_apply(g, st).is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  GC2CY {cname}: the clock didn't take; skipped");
+                    continue;
+                }
+                clock_readback(g);
+            }
+            for s in 1..3 {
+                let size = gc2::HALF_SIZES[s];
+                let n = gc2::words_of(size);
+                gc2ca_show(g, GC2CA_VIDEO, size, GC2CA_A, planes0);
+                for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                    let mut l2 = heapless_name();
+                    let _ = write!(l2, "{} X {} FRAME {}", size.0, size.1, f + 1);
+                    soak_label(g, ["GC2CY R80 PIXELS", cname, l2.as_str()], SOAK_BLUE);
+                    let Some(rr) = gc2ca_take(g, cur, s) else {
+                        continue;
+                    };
+                    gc2ca_set_mesh(g, rr, kind, tex, size);
+                    let want = &refs[gc2ca_ref(s, f)];
+                    let (mut done, mut wrong, mut logged) = (0u32, 0u32, 0u32);
+                    for round in 0..GC2CY_RENDERS {
+                        let Some(_) = gc2ca_render(g, rr, size, GC2CA_A) else {
+                            continue;
+                        };
+                        let Some(off) =
+                            read_compare_volatile(g.mem.0, GC2CA_A as usize, want, &mut first[..n])
+                        else {
+                            continue;
+                        };
+                        done += 1;
+                        if off == 0 {
+                            continue;
+                        }
+                        wrong += 1;
+                        if logged < 6 {
+                            logged += gc2cy_pixels(&first[..n], want, size, (cname, f, round));
+                        }
+                        if round % 32 == 31 {
+                            rt::check_in();
+                        }
+                    }
+                    log!(
+                        "  GC2CY {cname} {} x {} frame {f}: {wrong} of {done} renders wrong",
+                        size.0,
+                        size.1
+                    );
+                }
+            }
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, planes0);
+        // Part B: the time split, and R3's bus timing.
+        let wm_cs3 = diag::msc1();
+        log!("  GC2CY part B: MSC1 as found 0x{wm_cs3:08x}");
+        for (step, cname) in clocks {
+            clock_restore(&mut g.e.regs);
+            if let Some(st) = step {
+                if clock_apply(g, st).is_none() {
+                    clock_restore(&mut g.e.regs);
+                    continue;
+                }
+                clock_readback(g);
+            }
+            for (bus, (rdf, rdn, rrr)) in [("WM 8/4/2", (8, 4, 2)), ("R3 7/3/1", (7, 3, 1))] {
+                let Some(m) = diag::set_cs3_vlio(rdf, rdn, rrr) else {
+                    log!("  GC2CY {cname} CS3 {bus}: not set");
+                    continue;
+                };
+                for (f, &kind) in gc2::GAME_FRAMES
+                    .iter()
+                    .enumerate()
+                    .filter(|(f, _)| *f == 0 || *f == 2)
+                {
+                    let mut l2 = heapless_name();
+                    let _ = write!(l2, "CS3 {bus} FRAME {}", f + 1);
+                    soak_label(g, ["GC2CY R80 TIME", cname, l2.as_str()], SOAK_BLUE);
+                    let Some(rr) = gc2ca_take(g, cur, 0) else {
+                        continue;
+                    };
+                    gc2ca_set_mesh(g, rr, kind, tex, gc2::HALF_SIZES[0]);
+                    let t = gc2cy_times(g, rr);
+                    log!(
+                        "  GC2CY {cname} CS3 {bus} (MSC1 0x{m:08x}) native frame {f}, the region array written whole: CPU set-up {} / {} us (fastest / mean), core {} us, poll's end {} us after the render's, whole {} / {} us, {} words a frame",
+                        t[0],
+                        t[1],
+                        t[2],
+                        t[3],
+                        t[4],
+                        t[5],
+                        t[6]
+                    );
+                }
+            }
+            let _ = diag::set_cs3_vlio(8, 4, 2);
+        }
+        let _ = diag::set_cs3_vlio(8, 4, 2);
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        g.nudge = nudge;
+        log!(
+            "  GC2CY done: {} ms; MSC1 put back 0x{:08x}",
+            us_since(t0) / 1000,
+            diag::msc1()
+        );
+    }
+
+    #[inline(never)]
+    /// A wrong render's first two wrong pixels with their 3 x 3
+    /// neighbourhoods (got / want, RGB565), logged; how many were logged.
+    fn gc2cy_pixels(
+        got: &[u32],
+        want: &[u32],
+        size: (u16, u16),
+        (cname, f, round): (&str, usize, u32),
+    ) -> u32 {
+        let (w, h) = (usize::from(size.0), usize::from(size.1));
+        let px =
+            |b: &[u32], x: usize, y: usize| (b[(y * w + x) / 2] >> (16 * ((y * w + x) % 2))) as u16;
+        let mut n = 0;
+        for y in 0..h {
+            for x in 0..w {
+                if px(got, x, y) == px(want, x, y) {
+                    continue;
+                }
+                let mut line = heapless_name();
+                for dy in [-1i32, 0, 1] {
+                    for dx in [-1i32, 0, 1] {
+                        let (xx, yy) = (x as i32 + dx, y as i32 + dy);
+                        if xx < 0 || yy < 0 || xx >= w as i32 || yy >= h as i32 {
+                            let _ = write!(line, " ----/----");
+                        } else {
+                            let _ = write!(
+                                line,
+                                " {:04x}/{:04x}",
+                                px(got, xx as usize, yy as usize),
+                                px(want, xx as usize, yy as usize)
+                            );
+                        }
+                    }
+                }
+                log!(
+                    "  GC2CY {cname} {} x {} frame {f} render {round}: ({x}, {y}) x mod 8 = {}, 3 x 3 got/want rows top to bottom:{}",
+                    size.0,
+                    size.1,
+                    x % 8,
+                    line.as_str()
+                );
+                n += 1;
+                if n == 2 {
+                    return n;
+                }
+            }
+        }
+        n
+    }
+
+    #[inline(never)]
+    /// GC2CY's frames of `r` (its scene set), the region array written whole
+    /// each (the tile order toggled between two top-down orders): CPU set-up
+    /// fastest and mean, the core's render (fastest), the poll's end after
+    /// the core's (mean), whole fastest and mean, words a frame (us).
+    fn gc2cy_times(g: &mut Rig, r: &mut Renderer) -> [u32; 7] {
+        let t = Target {
+            picture: Picture::packed(GC2CA_A, 480, 640, gc2::KINDS[gc2::FT2].1),
+            x: 0,
+            y: 0,
+        };
+        let (mut setup, mut setup_sum, mut core, mut late_sum) = (u32::MAX, 0u64, u32::MAX, 0u64);
+        let (mut whole, mut whole_sum, mut words) = (u32::MAX, 0u64, 0);
+        for k in 0..=GC2CY_FRAMES {
+            r.set_tile_order(if k % 2 == 0 {
+                rp_mbx3d_render::TileOrder::Rows
+            } else {
+                rp_mbx3d_render::TileOrder::Interleaved
+            });
+            r.invalidate_all();
+            let t0 = rt::ticks();
+            let Some(due) = gc2cp_kick(g, r, t) else {
+                continue;
+            };
+            let set_up = us_since(t0);
+            let mut at = due;
+            let stats = loop {
+                while (g.clock.now_us().wrapping_sub(at) as i32) < 0 {}
+                match r.poll(&mut g.e.regs, &mut g.mem, &mut g.clock) {
+                    Poll::Wait(next) => at = next,
+                    Poll::Done(s) => break Some(s),
+                    _ => break None,
+                }
+            };
+            let all = us_since(t0);
+            let Some(st) = stats else {
+                continue;
+            };
+            if k == 0 {
+                continue;
+            }
+            // The core's own time: a status watch would cost it; the poll's
+            // end less its last step bounds it (`done_us` is when seen).
+            let c = st.done_us;
+            setup = setup.min(set_up);
+            setup_sum += u64::from(set_up);
+            core = core.min(c);
+            late_sum += u64::from(all.saturating_sub(set_up).saturating_sub(c));
+            whole = whole.min(all);
+            whole_sum += u64::from(all);
+            words = st.mem_words;
+        }
+        r.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        let n = u64::from(GC2CY_FRAMES.max(1));
+        [
+            setup,
+            (setup_sum / n) as u32,
+            core,
+            (late_sum / n) as u32,
+            whole,
+            (whole_sum / n) as u32,
+            words,
+        ]
     }
 
     /// GC2CA's timed part (see [`gc2_half`]), at Windows Mobile's clock
@@ -20618,6 +20914,19 @@ mod image {
     /// `CSC04` = 512 (blue from U), the rest 0: every division exact, red
     /// and blue back to 7 bits, green to the panel's 6 (host-checked).
     const GC2CX_EXACT: bool = option_env!("RP_GPUBENCH_GC2_HALF_EXACT").is_some();
+    /// Run GC2CY (`RP_GPUBENCH_GC2_HALF_R80`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R80 at Windows Mobile's clock and 74.75 / 1 only (the owner, 2026-10-29:
+    /// nothing above 74.75 at divide 1 tonight). Part A: GC2CA's one-pixel
+    /// faults with many more renders: the 360 x 480 and 240 x 320 frames,
+    /// each shown as GC2CA showed it (the video plane scaling it), 250
+    /// renders a frame at each clock against the WM-clock reference, the
+    /// first two wrong pixels of each wrong render logged with their 3 x 3
+    /// neighbours. Part B: the time outside the core's render split, native,
+    /// the region array written whole every frame (the tile order toggled,
+    /// the picture the same): the CPU's set-up, the core's render, the poll's
+    /// end and the whole frame, with CS3 at Windows Mobile's 8 / 4 / 2 and
+    /// at R3's 7 / 3 / 1 (`MSC1`), at both clocks.
+    const GC2CY: bool = option_env!("RP_GPUBENCH_GC2_HALF_R80").is_some();
     /// GC2CX's morning look too (`RP_GPUBENCH_GC2_HALF_EXACT_LOOK`): the
     /// GPU's exact UYVY with our coefficients, then the CPU-made UYVY of
     /// the same card with Intel's standard ones (GC2CS's way), each shown

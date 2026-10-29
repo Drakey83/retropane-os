@@ -5722,6 +5722,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cy = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_R80", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6014,7 +6023,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 143] = [
+    let runs: [GpubenchRun; 144] = [
         (
             "run A",
             &run_a,
@@ -6695,6 +6704,25 @@ fn variant_images_gpubench(
                 "    its frame: ",
                 "GC2CP 143.00 / 1 speed-up (d) 240 x 320 converted, overlapped against native",
                 "GC2CP done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CY (R80 at WM clock and 74.75 / 1): the one-pixel faults
+        // with more renders, the time split, R3's bus timing. The fork draws
+        // no divide-1 fault; the run's shape and the bus switch are checked.
+        (
+            "run GC2CY",
+            &run_gc2cy,
+            &[
+                "GC2CY WM 99.67 / 2 360 x 480 frame 0: 0 of 3 renders wrong",
+                "GC2CY 74.75 / 1 240 x 320 frame 3: 0 of 3 renders wrong",
+                "GC2CY part B: MSC1 as found",
+                "GC2CY 74.75 / 1 CS3 R3 7/3/1 (MSC1 0x",
+                "native frame 2, the region array written whole: CPU set-up",
+                "GC2CY done:",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

@@ -71,3 +71,47 @@ route's own clock step (values held for the divide-1 work). Six questions
 **Detail:** the measured table is GC2CP's test frames, marked as such (not
 game performance); the 240 x 320 route's on-screen colour waits on R89's
 eye check; G4 (two in flight) waits on item 8's stray-word check.
+
+## 3. R80 at Windows Mobile's clock and 74.75 / 1
+
+**In plain English:** the rare one-pixel errors on the smaller game
+frames are real at 74.75 / 1 (Dell's own divide-1 speed) and absent at
+Windows Mobile's clock: up to 7% of renders on the flat frames have one
+wrong pixel, the textured frame none. And the time a frame spends outside
+the GPU's drawing is now all the CPU preparing it (about 1.9 ms); R3's
+faster bus timing (7/3/1) doesn't shorten it at all. The small-frame path
+isn't shipped on these numbers (and needs this fault answered first).
+
+**Detail** (`local/rp-gpubench-runGC2CY.txt`, run GC2CY, 185 s, stack 60%):
+
+- **Part A: 250 renders of each game frame at 360 x 480 and 240 x 320,
+  shown scaled as GC2CA showed them, against WM-clock references.** WM
+  clock: **0 of 2,000 wrong**. 74.75 / 1:
+
+  | Frame | 360 x 480 | 240 x 320 |
+  |---|---|---|
+  | flat | 17 of 250 | 6 of 250 |
+  | over a layer | 15 of 250 | 6 of 250 |
+  | textured | 0 of 250 | 0 of 250 |
+  | depth tested | 7 of 250 | 3 of 250 |
+
+  Every wrong render logged was **one pixel, all eight neighbours right**,
+  the wrong value another colour of the scene (e.g. `0x4F4A` for
+  `0x679F`), at every x mod 8 (0-7, not only 5 as GC2CA's two cases
+  suggested), anywhere in the frame. The renderer now draws quads (the
+  default since 55e6e220). Divide-1 analysis held for later (the owner's
+  order); the 240 x 320 fault at divide-1 speeds is out of scope.
+- **Part B: the time outside the core's render, native, the region array
+  written whole each frame (4,800 words):** CPU set-up 1,880-1,900 us
+  fastest at both clocks; **the poll sees the end 0-1 us after the
+  render** (the learned pace, a256a2a4: the schedule costs nothing now);
+  so the time outside the core is the CPU's set-up alone. **CS3 at R3's
+  7 / 3 / 1 against WM's 8 / 4 / 2: set-up 1,892 against 1,892 us (WM
+  clock), 1,900 against 1,900 (74.75 / 1): no change**; core and whole
+  within 1-2% either way (noise). With the region array kept (22 words,
+  GC2CP run 4) the set-up was 1,860 us: 4,800 posted writes cost ~30 us,
+  so the bus isn't the limit for these writes; R3's timing would matter
+  for reads (the 8 MB/s read-back), not this.
+- **A finding for item 10:** GC2CA's own emulator check now peaks at 89%
+  of its stack (it was under 80% before today's renderer growth); GC2CY
+  runs standalone with its renderer in `.bss`.
