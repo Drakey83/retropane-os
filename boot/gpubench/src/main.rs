@@ -19237,7 +19237,7 @@ mod image {
             sig[usize::from(gc2::ROUTE_LINES)],
             sig[usize::from(gc2::ROUTE_SMOOTH)],
         );
-        let live = steady && l != 0 && m != 0 && l != m;
+        let live_sig = steady && l != 0 && m != 0 && l != m;
         let other = |r: u8| {
             if r == gc2::ROUTE_LINES {
                 gc2::ROUTE_SMOOTH
@@ -19261,44 +19261,63 @@ mod image {
             let mut route = gc2::ROUTE_LINES;
             gc2dc_way_show(g, 3, route, GC2DD_AT, planes0);
             let _ = gc2dc_settled(g);
+            // The renderer alive (one at a time, GC2CN) is the shown
+            // route's, set up (run 1: a fresh renderer's first render sets
+            // the core up, ~4.6 ms of the CPU's, inside its start, so it
+            // began after line 0).
+            let mut live = route;
+            let warm = gc2dd_prepare(g, cur, tex, live)
+                .and_then(|t| gc2dd_start(g, cur, t))
+                .and_then(|d| gc2dd_finish(g, cur, d));
+            if warm.is_none() {
+                log!("  GC2DD long {}: the first renderer not set up", gi + 1);
+            }
             let (mut whole, mut wrong_route, mut torn, mut missed) = (0u32, 0u32, 0u32, 0u32);
-            let (mut rendered, mut failed, mut late, mut busy) = (0u32, 0u32, 0u32, 0u32);
-            let (mut core_min, mut core_max, mut core_sum) = (u32::MAX, 0u32, 0u64);
+            let (mut rendered, mut failed, mut late) = (0u32, 0u32, 0u32);
+            let (mut switches, mut busy_switch, mut busy_other) = (0u32, 0u32, 0u32);
+            let (mut takes, mut take_late, mut take_max) = (0u32, 0u32, 0u32);
+            let (mut span_min, mut span_max, mut span_sum) = (u32::MAX, 0u32, 0u64);
             let mut first_torn = None;
             for f in 0..=GC2DC_LONG_FRAMES {
                 let switch = f > 0 && f % gap == 0 && f < GC2DC_LONG_FRAMES;
-                let next = if switch { other(route) } else { route };
-                // Frame f's picture rendered again from frame f - 1's line
-                // GC2DD_START, so the core draws while the switch is written.
-                let t = gc2dd_prepare(g, cur, tex, next);
-                let due = match t {
-                    Some(t) if gc2dc_at_line(g, GC2DD_START) => gc2dd_start(g, cur, t),
+                // The live renderer draws its own route's picture again (the
+                // same picture) from frame f - 1's line GC2DD_START, across
+                // frame f's line 0 (where a switch away from it is written).
+                let t = gc2dd_prepare(g, cur, tex, live);
+                let (due, t_start) = match t {
+                    Some(t) if gc2dc_at_line(g, GC2DD_START) => {
+                        let t0 = rt::ticks();
+                        (gc2dd_start(g, cur, t), t0)
+                    }
                     Some(_) => {
                         missed += 1;
-                        None
+                        (None, 0)
                     }
-                    None => None,
+                    None => (None, 0),
                 };
                 if due.is_none() {
                     failed += 1;
                 }
                 if gc2dc_at_line(g, 0) {
                     let before = route;
-                    // The core still drawing as the switch is written (the
-                    // run's point: counted, not assumed).
-                    busy += u32::from(
-                        due.is_some() && g.e.regs.read32(MBX + reg::STATUS) & RENDER_DONE == 0,
-                    );
+                    // The core still drawing as the registers are written
+                    // (the run's point: counted, not assumed).
+                    let busy =
+                        due.is_some() && g.e.regs.read32(MBX + reg::STATUS) & RENDER_DONE == 0;
                     if switch {
-                        route = next;
+                        switches += 1;
+                        busy_switch += u32::from(busy);
+                        route = other(route);
                         gc2dc_way_show(g, 3, route, GC2DD_AT, planes0);
+                    } else {
+                        busy_other += u32::from(busy);
                     }
                     // Line 3: frame f - 1's signature, held to the route it
                     // showed.
                     let t0 = rt::ticks();
                     while scan_line(g) < 3 && us_since(t0) < FRAME_US {}
                     let read = g.e.regs.read32(DSIG);
-                    if f > 0 && live {
+                    if f > 0 && live_sig {
                         if read == sig[usize::from(before)] {
                             whole += 1;
                         } else if read == sig[usize::from(other(before))] {
@@ -19313,19 +19332,38 @@ mod image {
                 }
                 if let Some(d) = due {
                     match gc2dd_finish(g, cur, d) {
-                        Some(c) => {
+                        Some(_) => {
+                            // From the start to the render seen done (its
+                            // end, or the wait's start if it ended before).
+                            let span = us_since(t_start);
                             rendered += 1;
-                            core_min = core_min.min(c);
-                            core_max = core_max.max(c);
-                            core_sum += u64::from(c);
+                            span_min = span_min.min(span);
+                            span_max = span_max.max(span);
+                            span_sum += u64::from(span);
                         }
                         None => failed += 1,
                     }
-                    // A render still running at the next start line would
-                    // overlap the next frame's: counted.
                     if scan_line(g) >= GC2DD_START {
                         late += 1;
                     }
+                }
+                // After a switch: the new route's renderer taken and set up
+                // with one render of its picture (the same picture, shown
+                // now), done before the next start line.
+                if route != live {
+                    let t0 = rt::ticks();
+                    let ok = gc2dd_prepare(g, cur, tex, route)
+                        .and_then(|t| gc2dd_start(g, cur, t))
+                        .and_then(|d| gc2dd_finish(g, cur, d))
+                        .is_some();
+                    let us = us_since(t0);
+                    takes += 1;
+                    take_max = take_max.max(us);
+                    failed += u32::from(!ok);
+                    if scan_line(g) >= GC2DD_START {
+                        take_late += 1;
+                    }
+                    live = route;
                 }
                 if f % 64 == 0 {
                     rt::check_in();
@@ -19333,15 +19371,15 @@ mod image {
             }
             let hashes = gc2dd_hashes(g);
             log!(
-                "  GC2DD long {} way C' at 149.50 / 2 a switch every {gap} frames, rendering across each: {GC2DC_LONG_FRAMES} frames: {whole} the route in place whole, {wrong_route} the other route whole, {torn} NEITHER ROUTE (first {first_torn:x?}), {missed} lines missed{}; renders {rendered} done, {failed} failed, {busy} still drawing at line 0, {late} still running at line {GC2DD_START}, the core fastest {} us slowest {core_max} us mean {} us; the pictures afterwards {}",
+                "  GC2DD long {} way C' at 149.50 / 2 a switch every {gap} frames, rendering across each: {GC2DC_LONG_FRAMES} frames: {whole} the route in place whole, {wrong_route} the other route whole, {torn} NEITHER ROUTE (first {first_torn:x?}), {missed} lines missed{}; {switches} switches, {busy_switch} written with the core drawing; {busy_other} of the other frames' line 0 with it drawing; renders {rendered} done, {failed} failed, {late} still running at line {GC2DD_START}, start to seen done fastest {} us slowest {span_max} us mean {} us; {takes} new renderers set up after a switch, the slowest {take_max} us, {take_late} past line {GC2DD_START}; the pictures afterwards {}",
                 gi + 1,
-                if live {
+                if live_sig {
                     ""
                 } else {
                     " (not judged: no DSIG, or the signatures not steady and different)"
                 },
-                if rendered == 0 { 0 } else { core_min },
-                core_sum / u64::from(rendered.max(1)),
+                if rendered == 0 { 0 } else { span_min },
+                span_sum / u64::from(rendered.max(1)),
                 if hashes == refs {
                     "the references' (exact)"
                 } else {

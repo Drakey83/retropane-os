@@ -6996,6 +6996,8 @@ fn variant_images_gpubench(
                 "GC2DD long 1 way C' at 149.50 / 2 a switch every 1 frames, rendering across each: 12 frames: 0 the route in place whole, 0 the other route whole, 0 NEITHER ROUTE (first None), 0 lines missed (not judged",
                 "GC2DD long 2 way C' at 149.50 / 2 a switch every 8 frames, rendering across each: 12 frames:",
                 "renders 13 done, 0 failed,",
+                "frames: 0 the route in place whole, 0 the other route whole, 0 NEITHER ROUTE (first None), 0 lines missed (not judged: no DSIG, or the signatures not steady and different); 11 switches, ",
+                "11 new renderers set up after a switch",
                 "the pictures afterwards the references' (exact)",
                 "GC2DD cost 1 video off: 2 of 2 rendered",
                 "GC2DD cost 2 video on, reading the shown picture (C'): 2 of 2 rendered",
