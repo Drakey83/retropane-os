@@ -294,3 +294,28 @@ pipelined ways at Windows Mobile's clock and 74.75 / 1"):
   below the core's clock-up it barely beats native, and is slower than
   native on flat frames at 74.75 / 1.
 - The stack: 41,048 of 57,344 bytes (72%).
+
+## 9. The emulator's release, and what it does not do
+
+**In plain English:** the newer emulator build (with today's quad objects
+and Windows Mobile's clocks) is **not released**: one of its checks still
+hangs, and publishing it would mean a push tonight's order doesn't allow.
+Nothing relies on it as a release. Every check tonight that needed it
+was also run on the Axim. The emulator page now says plainly what the
+emulator can't show you: the scaled picture, row-order textures, divide-1
+errors, the screen's memory reads slowing the 3D core, 2D/3D overlap
+faults, and bus timing.
+
+**Detail:**
+
+- The pinned release stays rp-v0.31.0 (`xtask/src/emu.rs`
+  `QEMU_RELEASE`); CI uses it. The local build is
+  `rp-v0.31.0-2-g7fad420638` (branch `rp-next-032`); `emu-mbx3d` still
+  never returns on it (R86, audit C41; the lead, unproven, is the display
+  registers starting at 0 while rp-mbx3d's clock path waits on the
+  display).
+- emulator.md "What the emulator does not do (2026-10-29)", each point
+  read from the model's code: the video plane shown 1:1 (the scaler's
+  words stored only); textures always twiddled; renders exact at any
+  clock; render time from the render's own work, never the planes' fetch;
+  no 2D/3D interference; `MSC1` stored only.

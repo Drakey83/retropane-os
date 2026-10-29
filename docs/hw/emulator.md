@@ -95,6 +95,44 @@ names the finding, where it is written up, and the emulator's state.
 | MTP (ADR-0037, 2026-10-25; Microsoft's documents and Windows 11's `wpdmtp.inf`, not yet seen on the X51v): Windows reads string 0xEE, the extended compatible ID (16-byte header, then whole), the BOS when `bcdUSB` >= 2.01 and the OS 2.0 set, and binds the interface named "MTP" to its MTP driver; a Mac reads none of them and binds nothing to a vendor-class interface; a host aborts its bulk OUT transfer before MTP's Cancel request; a control reply that fills its request ends without a zero-length packet | `udc.md`, ADR-0037 | **Modelled (rp-v0.31.0, 2026-10-26; fork branch `rp-mtp`, now `retropane`):** the host script reads Microsoft's descriptors as Windows does (`ms-os20` off plays Windows 7, `mtp-host` off plays a Mac), finds the MTP interface from them, bridges its bulk pair and event endpoint to an `mtp` chardev (tagged frames: bulk transfers, partial transfers, control requests; IN packets, events, control replies, stalls), models interrupt endpoints and bulk halts (FST/SST), and gives each enumeration step a fresh time limit. `cargo xtask emu-mtp` passes on it (the local WSL build and the released Windows build); the driver's stray zero-length packet failed it (fixed). Not modelled yet: Windows' own operation order and timing (measured on the device run, R53 step 5) |
 | The 3D core's parameter memory (its lists and object words) placed in the on-die region below 0xA5000 (`rp-gpubench` GC2BE's first builds: 0x96000 and 0x97000, 92-96 KiB, a 480 x 320 renderer): the emulator draws every frame wrong after about 6 ms once the target before it has been drawn, while the same renderer with its lists at 0xA5000 (36 KiB) draws right, as the host model does at both places (2026-10-27) | `2700g.md` GC2BE | Not modelled right yet: the emulator's parameter-memory model at those places differs from the host model's; the X51v hasn't run lists there (GC2BB, GC2BD proved 0xA5000 only), so which is right is open; GC2BE runs with the proven place |
 
+## What the emulator does not do (2026-10-29)
+
+Read from the fork's model (`hw/display/intel-2700g.c` at `rp-next-032`,
+commit 7fad420638), not from its commit messages. A pass on the emulator
+says nothing about any of these; each needs the X51v:
+
+- **No scaler picture.** The video plane is shown 1:1 (the model's own
+  "not modelled" list: "the video scaler (the video plane is shown 1:1)");
+  `SVCTRL`, `VSCOEFF0-4` and `HSCOEFF0-8` are stored and read back, never
+  applied. Every 2x look (GC2CA, GC2CX's look, GC2DA) is the owner's eye
+  on the Axim, never an emulator screenshot.
+- **No row-order textures.** The 3D core's texture fetch is twiddled
+  always (`m3_twiddle`, `m3_twiddle_rect`); whatever bit selects row
+  order on the device draws twiddled here.
+- **No divide-1 errors.** The model draws every render exactly at any
+  `MBXCLK` and `COREPLL`; the wrong pixels, tile races and faults at
+  divide 1 (74.75 / 1 included: R80's GC2CY found single wrong pixels
+  there) are the device's alone. Clocks only gate the core (`MBXCLK` bits
+  1-0 = 2, `m3_clock_on`).
+- **No display fetch slowing the core.** A render's time comes from its
+  own work (`m3_render`'s cost), whatever the planes on screen fetch;
+  scan-out under- and overruns aren't modelled either. P9c's arrangement
+  and every DSIG check are the device's.
+- **No 2D and 3D overlap faults.** The 2D engine and the 3D core never
+  disturb each other's writes here (GC2CP's way (d) left 16-38 stray words
+  a frame at 74.75 / 1 on the X51v and none on the emulator).
+- **No bus timing.** `MSC1`'s CS3 fields are stored only: `rp-cs3bus`'s
+  self-test passes every timing here (R71).
+
+**Which build:** CI and `cargo xtask emu` use the pinned release
+`QEMU_RELEASE` = rp-v0.31.0, which starts the 2700G's clocks at 0 and has
+no four-corner objects (list layouts 5 and 9). The local build
+`rp-next-032` (`~/retropane-qemu-032` in WSL, `rp-v0.31.0-2-g7fad420638`:
+Windows Mobile's clocks and the four-corner objects) is **not released**
+(R86: `emu-mbx3d` never returns on it, audit C41); the overnight checks of
+2026-10-28/29 that needed it ran on it with `RETROPANE_QEMU_ANY=1`, and
+each was proven on the X51v, not by the emulator.
+
 ## How to add a row
 
 1. Record the fact in the block's spec (`docs/hw/<block>.md`) with its
