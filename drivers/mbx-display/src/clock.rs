@@ -272,6 +272,138 @@ fn write_speed<B: RegisterBus>(
     Some(a)
 }
 
+impl Speed {
+    /// The clock and memory registers as they read now (what the 2700G
+    /// holds, not what was written).
+    pub fn now<B: RegisterBus>(bus: &mut B) -> Self {
+        Self {
+            pll: bus.read32(COREPLL),
+            lmtype: bus.read32(LMTYPE),
+            lmtim: bus.read32(LMTIM),
+            lmrefresh: bus.read32(LMREFRESH),
+        }
+    }
+}
+
+/// The CPU's bus timing to the 2700G: CS3's VLIO fields (RDF, RDN, RRR),
+/// written by the image (`rp_hal_pxa27x::diag::set_cs3_vlio`: the PXA27x's
+/// memory controller is not this driver's).
+pub type Cs3 = (u32, u32, u32);
+/// CS3 as Windows Mobile leaves it (Dell's tier for 99 MHz and up).
+pub const CS3_WM: Cs3 = (8, 4, 2);
+/// Dell's tier for 25-99 MHz, the long one: safe at any clock, so it is
+/// set while the clock moves.
+pub const CS3_LONG: Cs3 = (13, 9, 7);
+
+/// A rung of ADR-0035's ladder: the system clock with its memory timing,
+/// and the cores' divider (1-4, `MBXCLK` bits 3-2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rung {
+    /// The system clock and memory timing.
+    pub speed: Speed,
+    /// The cores' divider.
+    pub div: u32,
+}
+
+impl Rung {
+    /// Windows Mobile's: 99.67 MHz, the cores at divide 2 (49.83 MHz).
+    pub const WM: Self = Self {
+        speed: Speed::WM,
+        div: 2,
+    };
+
+    /// ADR-0035's top rung for 16-bit targets (the owner's ruling
+    /// 2026-10-29): 13 x 23 / 2 = 149.50 MHz, the cores at divide 2 (74.75
+    /// MHz), CL2 ([`Speed::ladder`]); `rp-gpubench`'s `gc2_step(23, 2, 0, 2)`.
+    pub const TOP: Self = Self {
+        speed: Speed::ladder(23 << 7 | 2 << 4 | 1),
+        div: 2,
+    };
+
+    /// The CS3 tier for the rung's system clock (Dell's: the long one below
+    /// 99 MHz).
+    #[must_use]
+    pub const fn cs3(self) -> Cs3 {
+        if self.speed.khz() < 99_000 {
+            CS3_LONG
+        } else {
+            CS3_WM
+        }
+    }
+}
+
+/// A clock step's first half: the long bus timing (safe at any clock),
+/// the cores at divide 2, then the PLL and its memory timing by
+/// [`set_speed`] (skipped when they already read as `speed`, so a
+/// divider-only step changes nothing else). `None` if the PLL didn't lock
+/// (Windows Mobile's speed is then back); a caller treats `unwritten` as a
+/// failure too (ADR-0035 rule 4).
+pub fn begin<B: RegisterBus>(
+    bus: &mut B,
+    speed: Speed,
+    mut delay_us: impl FnMut(u32),
+    mut set_cs3: impl FnMut(Cs3),
+) -> Option<Applied> {
+    set_cs3(CS3_LONG);
+    let clk = bus.read32(MBXCLK);
+    restore(bus, (clk & 3) | 1 << 2);
+    delay_us(1_000);
+    if Speed::now(bus) == speed {
+        return Some(Applied::default());
+    }
+    set_speed(bus, speed, &mut delay_us)
+}
+
+/// A clock step's second half: the cores' divider `div`, then the bus
+/// timing of the tier `cs3` (the enable kept).
+pub fn finish<B: RegisterBus>(
+    bus: &mut B,
+    div: u32,
+    cs3: Cs3,
+    mut delay_us: impl FnMut(u32),
+    mut set_cs3: impl FnMut(Cs3),
+) {
+    let clk = bus.read32(MBXCLK);
+    restore(bus, (clk & 3) | (div.clamp(1, 4) - 1) << 2);
+    delay_us(1_000);
+    set_cs3(cs3);
+}
+
+/// Puts `rung` in place, the way every clock run has (`rp-gpubench`'s
+/// clock steps, ADR-0035): [`begin`], then [`finish`]. What [`set_speed`]
+/// did, or `None` if the PLL didn't lock (Windows Mobile's speed back, the
+/// cores at divide 2, the long bus timing kept: the caller puts everything
+/// back with [`put_back`]). Nothing else may use the 2700G meanwhile.
+pub fn step<B: RegisterBus>(
+    bus: &mut B,
+    rung: Rung,
+    mut delay_us: impl FnMut(u32),
+    mut set_cs3: impl FnMut(Cs3),
+) -> Option<Applied> {
+    let a = begin(bus, rung.speed, &mut delay_us, &mut set_cs3)?;
+    finish(bus, rung.div, rung.cs3(), delay_us, set_cs3);
+    Some(a)
+}
+
+/// Windows Mobile's clock and bus timing back, wherever a step left them
+/// (no state kept, so a crash path can call it): the long bus timing, the
+/// cores at divide 2, the PLL always written again (run G1: registers put
+/// back, the 2700G still not working until it was), Windows Mobile's bus
+/// timing. What [`set_speed`] did.
+pub fn put_back<B: RegisterBus>(
+    bus: &mut B,
+    mut delay_us: impl FnMut(u32),
+    mut set_cs3: impl FnMut(Cs3),
+) -> Option<Applied> {
+    set_cs3(CS3_LONG);
+    let clk = bus.read32(MBXCLK);
+    restore(bus, (clk & 3) | 1 << 2);
+    delay_us(1_000);
+    let a = set_speed(bus, Speed::WM, &mut delay_us);
+    set_cs3(CS3_WM);
+    a
+}
+
 /// The MBX clocks stopped (`MBXCLK` enable 0, the divider kept) by
 /// [`stop`]: it holds the register bus, so nothing can read or write an MBX
 /// register while the clocks are off (the bus would hang: C43). Dropped or
@@ -532,6 +664,69 @@ mod tests {
         let fast = Speed::rated(41 << 7 | 4 << 4 | 1);
         assert_eq!(fast.khz(), 133_250);
         assert_eq!((fast.lmtim, fast.lmtype), (0x944C2, 0xEC8));
+    }
+
+    #[test]
+    fn a_rung_step_moves_the_bus_long_first_and_sets_the_divider_last() {
+        // The sequence every clock run used (`rp-gpubench`'s
+        // `clock_apply`): CS3 long, the cores at divide 2, the PLL and its
+        // timing, the rung's divider, then the rung's CS3 tier.
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(PLLSTAT, 7).preset(MBXCLK, 0x6); // 3D on, divide 2
+        let mut cs3 = std::vec::Vec::new();
+        let a = step(&mut bus, Rung::TOP, |_| (), |c| cs3.push(c)).unwrap();
+        assert_eq!(a.unwritten, 0);
+        assert_eq!(cs3, [CS3_LONG, CS3_WM], "149.50 MHz: Dell's fast tier");
+        let w = bus.writes();
+        assert_eq!(w.first(), Some(&(MBXCLK, 0x6)), "divide 2, enable kept");
+        assert!(w.contains(&(COREPLL, 23 << 7 | 2 << 4 | 1)));
+        assert_eq!(w.last(), Some(&(MBXCLK, 0x6)), "the rung's divide 2");
+        assert_eq!(Rung::TOP.speed.khz(), 149_500);
+        assert_eq!(Rung::TOP.speed.lmtype, 0xAC8, "CL2 always (ADR-0035)");
+        // Already at the speed: only the divider moves (no PLL write).
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(PLLSTAT, 7).preset(MBXCLK, 0x6);
+        for (r, v) in [
+            (COREPLL, Speed::A75.pll),
+            (LMTYPE, Speed::A75.lmtype),
+            (LMTIM, Speed::A75.lmtim),
+            (LMREFRESH, Speed::A75.lmrefresh),
+        ] {
+            bus.preset(r, v);
+        }
+        let mut cs3 = std::vec::Vec::new();
+        let a75 = Rung {
+            speed: Speed::A75,
+            div: 1,
+        };
+        assert_eq!(
+            step(&mut bus, a75, |_| (), |c| cs3.push(c)),
+            Some(Applied::default())
+        );
+        assert_eq!(bus.writes(), [(MBXCLK, 0x6), (MBXCLK, 0x2)]);
+        assert_eq!(cs3, [CS3_LONG, CS3_LONG], "74.75 MHz: the long tier");
+    }
+
+    #[test]
+    fn put_back_always_writes_the_pll_again() {
+        // Run G1: the registers read back right and the 2700G still didn't
+        // work until the PLL was written again.
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(PLLSTAT, 7).preset(MBXCLK, 0x2);
+        for (r, v) in [
+            (COREPLL, Speed::WM.pll),
+            (LMTYPE, Speed::WM.lmtype),
+            (LMTIM, Speed::WM.lmtim),
+            (LMREFRESH, Speed::WM.lmrefresh),
+        ] {
+            bus.preset(r, v);
+        }
+        let mut cs3 = std::vec::Vec::new();
+        assert!(put_back(&mut bus, |_| (), |c| cs3.push(c)).is_some());
+        assert!(bus.writes().contains(&(COREPLL, Speed::WM.pll)));
+        assert_eq!(bus.writes().first(), Some(&(MBXCLK, 0x6)));
+        assert_eq!(cs3, [CS3_LONG, CS3_WM]);
+        assert_eq!(Rung::WM.cs3(), CS3_WM);
     }
 
     #[test]

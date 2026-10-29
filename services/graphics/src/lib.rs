@@ -809,6 +809,20 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         self.scene(c)?.r.set_background(argb).map_err(Error::Scene)
     }
 
+    /// The order client `c`'s scene lists its tiles in (with nothing in
+    /// flight): a top-down one (the default, rows) the scan can lead; any
+    /// other (the checkerboard) never starts behind the scan, so it goes by
+    /// the copy fallback (R20; R110's device run drives both).
+    pub fn set_tile_order(&mut self, c: ClientId, order: r3d::TileOrder) -> Result<(), Error> {
+        let busy = self.job != Job::None;
+        let s = self.scene(c)?;
+        if busy {
+            return Err(Error::Busy);
+        }
+        s.r.set_tile_order(order);
+        Ok(())
+    }
+
     /// Puts `q` in slot `slot` of client `c`'s scene (or empties it); its
     /// texture must be one of `c`'s. Positions are the area's.
     pub fn set(&mut self, c: ClientId, slot: usize, q: Option<&Quad>) -> Result<(), Error> {

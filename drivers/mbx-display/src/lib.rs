@@ -18,6 +18,7 @@ pub mod font;
 pub mod layers;
 pub mod pattern;
 pub mod scanout;
+pub mod sig;
 
 use rp_hal_api::{Field, RegisterBus};
 

@@ -1691,6 +1691,88 @@ pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// `rp-scene` (R110) under the loader: the graphics service drives a 3D
+/// scene beside a 2D bar through three phases (Windows Mobile's clock, the
+/// 149.50 / 2 step, the checkerboard by the copy fallback), back to back
+/// and one-off. The emulator models no `DSIG` (the references read 0, so
+/// no refresh is judged torn): this checks the shape, every frame through
+/// the service with nothing refused, recovered or stalled, the clock step
+/// and its put-back. The device run judges the refreshes.
+pub fn boot_loader_scene(root: &Path) -> Result<(), String> {
+    let release = crate::arm_release(root);
+    let dir = emu_dir(root)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-scene.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-scene"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL OK")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("scene: no run log after the image returned")?;
+    scene_log(log)?;
+    for l in log
+        .lines()
+        .filter(|l| l.starts_with('P') || l.contains("clock to"))
+    {
+        eprintln!("      {l}");
+    }
+    eprintln!(
+        "    scene OK: three phases, 600 frames through the graphics service, nothing refused, recovered or stalled; the clock stepped to 149.50 / 2 and put back"
+    );
+    Ok(())
+}
+
+/// Judges `rp-scene`'s run log (see [`boot_loader_scene`]).
+fn scene_log(log: &str) -> Result<(), String> {
+    for want in [
+        "RETROPANE-SCENE-OK (failed 0, recovered 0)",
+        "clock to 149.50 / 2: Some(",
+        "put back: Some(",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("scene: no {want:?} in the run log:{log}"));
+        }
+    }
+    for p in 1..=3 {
+        for (what, n) in [("back to back", 150), ("one-off", 50)] {
+            let line = log
+                .lines()
+                .find(|l| {
+                    l.starts_with(&format!("P{p} ")) && l.contains(&format!("{what}: {n} frames"))
+                })
+                .ok_or_else(|| format!("scene: no P{p} {what} line:{log}"))?;
+            for want in [
+                "copy stalls 0;",
+                "failed 0, recovered 0;",
+                "2D engine stalls 0",
+            ] {
+                if !line.contains(want) {
+                    return Err(format!("scene: P{p} {what}: no {want:?} in {line:?}"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Judges `rp-refresh`'s P17 ladder log: every step of `rp_refresh::LADDER`
 /// measured three times within 1 Hz of the rate its pixel clock gives (the
 /// fork models the line time from `DISPPLL`, rp-v0.29.0), no fault bits,

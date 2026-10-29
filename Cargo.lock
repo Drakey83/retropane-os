@@ -912,6 +912,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-scene"
+version = "0.0.0"
+dependencies = [
+ "rp-draw",
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-uart",
+ "rp-graphics",
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-image",
+ "rp-mbx-render",
+ "rp-mbx3d-render",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-screen-measure"
 version = "0.0.0"
 dependencies = [

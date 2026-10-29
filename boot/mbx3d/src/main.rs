@@ -503,28 +503,14 @@ mod image {
     }
 
     /// Windows Mobile's state back wherever S29 left it (no state kept, so
-    /// the fault handler can call it whatever failed): the long bus timing
-    /// first (safe at either clock), `MBXCLK` divide by 2, the PLL and
-    /// memory timing (Dell's procedure), then WM's bus timing. Nothing if
-    /// all is WM's already.
+    /// the fault handler can call it whatever failed): the shared put-back
+    /// (`clock::put_back`: the long bus timing first, `MBXCLK` divide by 2,
+    /// the PLL always written again with its memory timing, run G1's
+    /// lesson, then WM's bus timing).
     fn restore<B: RegisterBus>(regs: &mut B) {
-        let clk = regs.read32(MBXCLK);
-        let speed = Speed {
-            pll: regs.read32(clk::COREPLL),
-            lmtype: regs.read32(clk::LMTYPE),
-            lmtim: regs.read32(clk::LMTIM),
-            lmrefresh: regs.read32(clk::LMREFRESH),
-        };
-        if diag::msc1() == WM_MSC1 && speed == Speed::WM && (clk >> 2) & 3 == 1 {
-            return;
-        }
-        set_cs3(LONG_CS3);
-        rp_drv_mbx_display::clock::restore(regs, clk & !0xC | 1 << 2);
-        rt::delay_us(1_000);
-        if speed != Speed::WM {
-            let _ = clk::set_speed(regs, Speed::WM, rt::delay_us);
-        }
-        set_cs3(WM_CS3);
+        let _ = clk::put_back(regs, rt::delay_us, |c| {
+            set_cs3(c);
+        });
     }
 
     /// The pattern word at `a` for `seed`: odd seeds inverted.

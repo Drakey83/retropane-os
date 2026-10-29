@@ -502,6 +502,18 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 40 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D
+    // scene through the graphics service at two clocks, every refresh
+    // judged by DSIG. Set at its first build on 2026-10-29: 132.8 KiB
+    // loaded, + ~10%; zeroed RAM 34.8 KiB (the service, its 3D state, the
+    // 2D renderer and the frame in `.bss`, 16.0 KiB; the stack 18 KiB),
+    // + ~10%.
+    Budget {
+        image: "rp-scene",
+        max_load: 146 * 1024,
+        max_zero: 38 * 1024,
+        device: OnDevice::Returns,
+    },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),
     // with the display driver to adopt the screen and the CPU fill to time
     // against. 16.7 KiB measured (2026-10-13), + ~10%; then 19 -> 27 KiB

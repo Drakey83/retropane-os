@@ -63,6 +63,7 @@ members = [
     "boot/mbx3d-api",
     "boot/tabench",
     "boot/gpubench",
+    "boot/scene",
     "boot/cftime",
     "boot/sdtime",
     "boot/storfast",

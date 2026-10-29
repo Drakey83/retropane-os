@@ -39,6 +39,7 @@ row with every new ADR that decides an area of code.
 | boot/usb/ | 0012, 0014 |
 | boot/kernel/ | 0003, 0008, 0010 |
 | boot/gpubench/ | 0024, 0026, 0027, 0035 |
+| boot/scene/ | 0030, 0034, 0035 |
 | boot/glesfeat/ | 0024, 0026, 0035 |
 | boot/mbx3d/ | 0024, 0026 |
 | boot/mbx3d-api/ | 0024, 0026 |

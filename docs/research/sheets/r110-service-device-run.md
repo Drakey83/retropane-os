@@ -39,3 +39,33 @@ knowledge, a claim.
 
 **Asked of the owner:** the go to build the image after the proof run's
 result; a separate go for the device run.
+
+## Built (2026-10-29, the owner's go: "R110, R113, R114, in this order")
+`rp-scene` (`boot/scene`): the service opens a 480 x 448 scene under a
+label, four scenes through its quads (flat and Gouraud; the 8 x 8 texture
+magnified bilinear; three translucent quads over a Gouraud field; three
+depth-tested quads) and a 2D bar whose colour follows the frame. Three
+phases: Windows Mobile's clock (rows), then 149.50 / 2 (`clock::step`,
+`Graphics::clock_changed`), then the checkerboard (`Graphics::set_tile_order`:
+no frame the scan can lead, every one by the copy). Each phase measures
+12 references settled (the four whole pictures, and the two hand-off
+mixes per picture: 2D's change shown before the scene renders, and the
+reverse, which the service's comments say R20 doesn't cover yet), then 150
+frames back to back and 50 one-off (asked at lines 0, 213, 426), every
+refresh judged (`rp_drv_mbx_display::sig::Watch`): torn split into the two
+mixes and other, back, unread; `starts()`, `copy_times()`, `copy_stalls()`,
+failed, recovered, the 2D engine's stalls, the one-off frames' time to their
+first whole refresh and those never shown whole. 600 frames.
+
+Fixed the class on the way (no copies): the clock rung step moved into
+`rp_drv_mbx_display::clock` (`Rung`, `step`, `begin`, `finish`,
+`put_back`, `CS3_WM`, `CS3_LONG`), used by `rp-gpubench`, `rp-glesfeat`,
+`rp-mbx3d`'s put-back (which skipped the PLL rewrite when the registers
+read as Windows Mobile's: run G1's lesson broken) and `rp-scene`; the
+refresh judge, the watch and the settled signature read moved from
+`rp-gpubench` into `rp_drv_mbx_display::sig`.
+
+**Expect** (audit C94, the owner's rulings): held 0 after the start, torn
+other than the hand-off mixes 0, copy stalls 0. The mixes are counted, not
+expected 0: they measure the 2D/3D hand-off the service doesn't yet keep
+whole. The device run waits for the owner's "run it".

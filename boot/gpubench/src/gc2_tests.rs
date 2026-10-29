@@ -3212,46 +3212,6 @@ fn frame_count_wraps_and_gaps() {
 }
 
 #[test]
-fn gc2df_a_refresh_is_whole_or_torn() {
-    // Frame 1 (sig 0xA) shown; frame 2 (0xB) sent: refreshes may show 0xA
-    // until 0xB first shows, then 0xB only.
-    let mut j = RefreshJudge::new(1, 0xA);
-    j.push(2, 0xB);
-    assert_eq!(j.judge(0xA), Some(1));
-    assert_eq!(j.judge(0x5), None, "neither: torn");
-    assert_eq!(j.judge(0xB), Some(2));
-    assert_eq!(j.judge(0xA), None, "back to the replaced picture");
-    assert_eq!((j.judged, j.torn, j.back), (4, 1, 1));
-    // Back to back: frames sent faster than they show; a frame may be
-    // skipped (shown never) but the order holds.
-    j.push(3, 0xC);
-    j.push(4, 0xD);
-    assert_eq!(j.judge(0xD), Some(4), "3 skipped");
-    assert_eq!(j.judge(0xC), None);
-    assert_eq!(
-        (j.torn, j.back),
-        (1, 2),
-        "a skipped picture after its successor: replaced"
-    );
-    // The same picture at two places (option 1's screen 1, then screen 0)
-    // under one sequence number.
-    let mut j = RefreshJudge::new(7, 0x1);
-    j.push(8, 0x2);
-    j.push(8, 0x3);
-    assert_eq!(j.judge(0x2), Some(8));
-    assert_eq!(j.judge(0x3), Some(8));
-    assert_eq!(j.judge(0x3), Some(8));
-    assert_eq!(j.torn + j.back, 0);
-    // More than four sent: the oldest forgotten, never wrongly accepted.
-    let mut j = RefreshJudge::new(0, 0x10);
-    for k in 1..=5 {
-        j.push(k, 0x10 + k);
-    }
-    assert_eq!(j.judge(0x10), None);
-    assert_eq!(j.judge(0x15), Some(5));
-}
-
-#[test]
 fn gc2df_a_copy_landing_out_of_order_is_counted() {
     assert_eq!(
         landing_out_of_order(&[Some(0), Some(0), Some(1), Some(3)]),

@@ -1424,10 +1424,11 @@ mod image {
     const LABEL_TOP: usize = 24;
     const INK: u32 = 0xFFFF;
     const PAPER: u32 = 0x0010;
-    /// CS3 timing (RDF, RDN, RRR): Windows Mobile's, and Dell's tier for
-    /// 25-99 MHz (`rp-gpubench`'s `CS3_WM` and `CS3_LONG`).
-    const CS3_WM: (u32, u32, u32) = (8, 4, 2);
-    const CS3_LONG: (u32, u32, u32) = (13, 9, 7);
+    /// CS3's VLIO timing written for the shared clock steps (`clock::begin`,
+    /// `clock::put_back`).
+    fn set_cs3(c: clock::Cs3) {
+        let _ = diag::set_cs3_vlio(c.0, c.1, c.2);
+    }
 
     /// The layout the current way draws in (an index into
     /// [`super::G6_LAYOUTS`]; 0, ours, for every test but G6).
@@ -2210,11 +2211,7 @@ mod image {
     /// `clock_restore`, which every clock run has used. The PLL is always
     /// written again.
     fn clock_back<B: RegisterBus>(regs: &mut B) {
-        let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
-        let clk = regs.read32(MBXCLK);
-        clock::restore(regs, (clk & 3) | 1 << 2);
-        rt::delay_us(1_000);
-        if let Some(a) = clock::set_speed(regs, Speed::WM, rt::delay_us)
+        if let Some(a) = clock::put_back(regs, rt::delay_us, set_cs3)
             && a.rewrites + a.unwritten > 0
         {
             log!(
@@ -2223,7 +2220,6 @@ mod image {
                 a.unwritten
             );
         }
-        let _ = diag::set_cs3_vlio(CS3_WM.0, CS3_WM.1, CS3_WM.2);
         // G5 may have set NINTPW by Dell's rule: Windows Mobile's back
         // (the same rule at its clock: 28, as read under Dell).
         if TEST_G5 || TEST_G11 {
@@ -2253,11 +2249,7 @@ mod image {
     /// MBX clocks off (`MBXCLK` 0) just before it (`ddi_2700g`
     /// `0x02120370`; docs/hw/2700g.md "Dell's register writes").
     fn to_divide_1<B: RegisterBus>(regs: &mut B, speed: Speed, dell_order: bool) -> bool {
-        let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
-        let clk = regs.read32(MBXCLK);
-        clock::restore(regs, (clk & 3) | 1 << 2);
-        rt::delay_us(1_000);
-        let ok = match clock::set_speed(regs, speed, rt::delay_us) {
+        let ok = match clock::begin(regs, speed, rt::delay_us, set_cs3) {
             Some(a) => {
                 if a.rewrites + a.unwritten > 0 {
                     log!(
@@ -2284,12 +2276,7 @@ mod image {
             clock::restore(regs, clk & 3);
         }
         rt::delay_us(1_000);
-        let cs3 = if speed.khz() < 99_000 {
-            CS3_LONG
-        } else {
-            CS3_WM
-        };
-        let _ = diag::set_cs3_vlio(cs3.0, cs3.1, cs3.2);
+        set_cs3(clock::Rung { speed, div: 1 }.cs3());
         // G11: CS2's half as Dell's driver sets it at divide 1.
         if G11_CS2.with(|c| *c) {
             let _ = diag::set_cs2_half(super::DELL_CS2_DIV1);

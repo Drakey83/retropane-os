@@ -290,6 +290,9 @@ commands:
             the Axim, corrected, read again (n passes, default 2; hands-free)
   emu-refresh the refresh-rate test's check (rp-refresh: frames counted, no PLL
             switch without Windows Mobile's value): run it before `load rp-refresh`
+  emu-scene the graphics service's device run (rp-scene, R110): 600 frames of a
+            3D scene beside a 2D bar through three phases, the shape only (no
+            DSIG in the emulator): run it before `load rp-scene`
   emu-display-cal the display calibration image's check (rp-display-cal: the
             picture pixel-exact through each gamma table its dials set)
   emu-tone  the audio test image (rp-tone): the codec behind its GPIO82 gate,
@@ -366,8 +369,8 @@ fn main() -> ExitCode {
         | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect"
         | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep"
         | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh"
-        | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "emu-cardlog" | "emu-format"
-        | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-screen-measure" | "emu-scene" | "emu-unplug" | "emu-keepfed" | "emu-cardlog"
+        | "emu-format" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -819,6 +822,7 @@ fn run_step(step: &str) -> Result {
         "emu-audio-e3" => cross().and_then(|()| emu::boot_loader_audio_e3(&workspace_root())),
         "emu-silent-pc" => cross().and_then(|()| emu::boot_loader_silent_pc(&workspace_root())),
         "emu-refresh" => cross().and_then(|()| emu::boot_loader_refresh(&workspace_root())),
+        "emu-scene" => cross().and_then(|()| emu::boot_loader_scene(&workspace_root())),
         "emu-screen-measure" => {
             cross().and_then(|()| emu::boot_loader_screen_measure(&workspace_root()))
         }

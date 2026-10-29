@@ -1,0 +1,27 @@
+[package]
+name = "rp-scene"
+description = "Test image (R110): a 3D scene driven through the graphics service (rp-graphics) on the X51v, with a 2D bar beside it, at Windows Mobile's clock and at 149.50 / 2 (rows, then the checkerboard by the copy fallback); every refresh judged by DSIG, the service's counters on the card log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-graphics = { path = "../../services/graphics" }
+rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-image = { path = "../../boot/image" }
+rp-draw = { path = "../../drivers/draw" }
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-mbx-render = { path = "../../drivers/mbx-render" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+
+[lints]
+workspace = true

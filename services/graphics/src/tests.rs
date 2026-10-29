@@ -1147,3 +1147,25 @@ fn a_clock_change_forgets_both_times_and_the_next_frame_times_a_copy() {
     assert_eq!(r.g.starts().held, 0);
     both_hold(&r, 12, WHITE, "after the clock change");
 }
+
+#[test]
+fn only_the_scenes_owner_sets_its_tile_order_and_never_mid_frame() {
+    let mut r = rig();
+    let (c, _) = scene(&mut r);
+    let other = r.g.client(1024).unwrap();
+    assert_eq!(
+        r.g.set_tile_order(other, r3d::TileOrder::Checker),
+        Err(Error::NotYourScene)
+    );
+    assert_eq!(scene_r(&mut r).tile_order(), r3d::TileOrder::Rows);
+    r.g.set_tile_order(c, r3d::TileOrder::Checker).unwrap();
+    assert_eq!(scene_r(&mut r).tile_order(), r3d::TileOrder::Checker);
+    // A frame in flight: refused, the order kept.
+    r.g.job = Job::TwoD;
+    assert_eq!(
+        r.g.set_tile_order(c, r3d::TileOrder::Rows),
+        Err(Error::Busy)
+    );
+    assert_eq!(scene_r(&mut r).tile_order(), r3d::TileOrder::Checker);
+    r.g.job = Job::None;
+}

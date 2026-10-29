@@ -109,8 +109,9 @@ mod image {
 
     use rp_draw::{Cmd, Frame, Rect as DrawRect, Renderer as _};
     use rp_drv_blit2d::{self as cmd, Engine, Format, MBX, reg};
-    use rp_drv_mbx_display::clock::{self, MBXCLK, Speed as ClockSpeed};
+    use rp_drv_mbx_display::clock::{self, CS3_LONG, MBXCLK, Speed as ClockSpeed};
     use rp_drv_mbx_display::font::{self, WIDTH};
+    use rp_drv_mbx_display::sig;
     use rp_drv_mbx_display::{
         Display, PixelFormat as PlaneFormat, Plane, event,
         layers::{Blend, Layer, Slot, Snapshot, VideoFormat, VideoPlane, reg as lreg},
@@ -628,81 +629,13 @@ mod image {
         tear: Option<Tear>,
         /// Run GC2DF (R20's proof run): every refresh's `DSIG` judged while
         /// the image waits, [`Rig::frame`]'s wait included.
-        refresh: Option<Refresh>,
+        refresh: Option<sig::Watch>,
     }
 
-    /// Run GC2DF's watch of the display: each refresh's `DSIG`, read once
-    /// the next refresh has begun and its line passed 2 (where GC2DB saw it
-    /// published), judged by [`gc2::RefreshJudge`].
-    #[derive(Clone, Copy)]
-    struct Refresh {
-        judge: gc2::RefreshJudge,
-        /// The scan line at the last look.
-        line: u32,
-        /// `rt::ticks` when this refresh's start was seen, and the last's.
-        start: u32,
-        prev: u32,
-        /// This refresh's start seen and the last one's `DSIG` not yet read.
-        pending: bool,
-        /// The sequence number waited for, and the start of the first
-        /// refresh that showed it (or a later one) whole.
-        want: u32,
-        shown: Option<u32>,
-        /// Refreshes whose `DSIG` was never read (looks too far apart).
-        missed: u32,
-    }
-
-    impl Refresh {
-        fn new(judge: gc2::RefreshJudge, line: u32) -> Self {
-            let now = rt::ticks();
-            Self {
-                judge,
-                line,
-                start: now,
-                prev: now,
-                pending: false,
-                want: u32::MAX,
-                shown: None,
-                missed: 0,
-            }
-        }
-
-        /// One look at the scan line (and `DSIG`, once a refresh).
-        fn tick(&mut self, regs: &mut impl RegisterBus) {
-            let line = regs.read32(rp_drv_mbx_display::reg::DVLNUM) & 0xFFF;
-            if line < self.line {
-                let now = rt::ticks();
-                // A look more than a refresh and a half after the last
-                // start: a refresh passed unseen.
-                if self.pending || us_since(self.start) > FRAME_US * 3 / 2 {
-                    self.missed += 1;
-                }
-                self.prev = self.start;
-                self.start = now;
-                self.pending = true;
-            }
-            self.line = line;
-            if self.pending && line >= 3 {
-                self.pending = false;
-                let sig = regs.read32(DSIG);
-                if let Some(seq) = self.judge.judge(sig) {
-                    if seq >= self.want && self.want != u32::MAX && self.shown.is_none() {
-                        self.shown = Some(self.prev);
-                    }
-                }
-            }
-        }
-
-        /// Picture `sig` (sequence `seq`) sent towards the screen at `ask`
-        /// (`rt::ticks`): its first whole refresh is timed from there.
-        fn send(&mut self, seq: u32, sig: u32) {
-            self.judge.push(seq, sig);
-            if seq != self.want {
-                self.want = seq;
-                self.shown = None;
-            }
-        }
-    }
+    /// Run GC2DF's watch's "a refresh passed unseen" time: a refresh and a
+    /// half, in `rt::ticks` (the watch, `sig::Watch`, takes the caller's
+    /// units).
+    const LATE_TICKS: u32 = FRAME_US * 3 / 2 * 13 / 4;
 
     /// GC2BZ's tile rows (16 lines each) and the four columns sampled in
     /// each: the last pixel of tile columns 0, 20, 40 and 59 (the pixel a
@@ -950,7 +883,7 @@ mod image {
                     t.sample(&self.mem, line as u16, self.clock.now_us().wrapping_sub(t0));
                 }
                 if let Some(w) = self.refresh.as_mut() {
-                    w.tick(&mut self.e.regs);
+                    w.tick(&mut self.e.regs, rt::ticks());
                 }
             }
             // The rows still unseen land with the render's end (a sweep
@@ -964,7 +897,7 @@ mod image {
             loop {
                 while (self.clock.now_us().wrapping_sub(at) as i32) < 0 {
                     if let Some(w) = self.refresh.as_mut() {
-                        w.tick(&mut self.e.regs);
+                        w.tick(&mut self.e.regs, rt::ticks());
                     }
                 }
                 let p = r.poll(
@@ -7164,10 +7097,11 @@ mod image {
     // screen in large letters for the owner watching. Windows Mobile's clock
     // and bus timing go back at the end and from the fault handler.
 
-    /// CS3 timing (RDF, RDN, RRR): Windows Mobile's (Dell's tier for 99 MHz
-    /// and up) and Dell's tier for 25-99 MHz.
-    const CS3_WM: (u32, u32, u32) = (8, 4, 2);
-    const CS3_LONG: (u32, u32, u32) = (13, 9, 7);
+    /// CS3's VLIO timing written for the shared clock steps (`clock::step`
+    /// and its halves, `clock::put_back`).
+    fn set_cs3(c: clock::Cs3) {
+        let _ = diag::set_cs3_vlio(c.0, c.1, c.2);
+    }
 
     /// A clock step: the core PLL (13 MHz x M / (N x 2^P)), the cores'
     /// divider (1-4, `MBXCLK` bits 3-2; 3 and 4 first used by run GC2) and the local memory's CAS latency (`None`: Dell's
@@ -7231,12 +7165,7 @@ mod image {
 
     /// The clock and memory registers as they read now.
     fn clock_now<B: RegisterBus>(regs: &mut B) -> ClockSpeed {
-        ClockSpeed {
-            pll: regs.read32(clock::COREPLL),
-            lmtype: regs.read32(clock::LMTYPE),
-            lmtim: regs.read32(clock::LMTIM),
-            lmrefresh: regs.read32(clock::LMREFRESH),
-        }
+        ClockSpeed::now(regs)
     }
 
     /// Windows Mobile's clock and bus timing back, wherever run G left
@@ -7244,13 +7173,7 @@ mod image {
     /// always written again, even when it reads as Windows Mobile's: run
     /// G1 put the registers back and the 2700G still didn't work.
     fn clock_restore<B: RegisterBus>(regs: &mut B) {
-        let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
-        // Only the enable kept: run GC2X sets MBXCLK's reserved bits, and a
-        // crash mid-bit must not leave one set.
-        let clk = regs.read32(MBXCLK);
-        clock::restore(regs, (clk & 3) | 1 << 2);
-        rt::delay_us(1_000);
-        if let Some(a) = clock::set_speed(regs, ClockSpeed::WM, rt::delay_us)
+        if let Some(a) = clock::put_back(regs, rt::delay_us, set_cs3)
             && a.rewrites + a.unwritten > 0
         {
             log!(
@@ -7259,7 +7182,6 @@ mod image {
                 a.unwritten
             );
         }
-        let _ = diag::set_cs3_vlio(CS3_WM.0, CS3_WM.1, CS3_WM.2);
     }
 
     /// The gate's measurement runs (CH, LIM, FI2, F) at Windows Mobile's
@@ -7314,26 +7236,18 @@ mod image {
 
     fn clock_apply(g: &mut Rig, s: ClockStep) -> Option<u32> {
         let want = step_speed(g, s);
-        let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
-        let clk = g.e.regs.read32(MBXCLK);
-        clock::restore(&mut g.e.regs, (clk & 3) | 1 << 2);
-        rt::delay_us(1_000);
-        let lock = if clock_now(&mut g.e.regs) == want {
-            Some(0)
-        } else {
-            match clock::set_speed(&mut g.e.regs, want, rt::delay_us) {
-                Some(a) => {
-                    if a.rewrites + a.unwritten > 0 {
-                        log!(
-                            "    memory-controller writes: {} written again, {} never held",
-                            a.rewrites,
-                            a.unwritten
-                        );
-                    }
-                    (a.unwritten == 0).then_some(a.lock_us)
+        let lock = match clock::begin(&mut g.e.regs, want, rt::delay_us, set_cs3) {
+            Some(a) => {
+                if a.rewrites + a.unwritten > 0 {
+                    log!(
+                        "    memory-controller writes: {} written again, {} never held",
+                        a.rewrites,
+                        a.unwritten
+                    );
                 }
-                None => None,
+                (a.unwritten == 0).then_some(a.lock_us)
             }
+            None => None,
         };
         if s.restart {
             g.e.regs.write32(LMPWR, 0);
@@ -7342,11 +7256,11 @@ mod image {
                 let _ = g.mem.load(4 * k);
             }
         }
-        let clk = g.e.regs.read32(MBXCLK);
-        clock::restore(&mut g.e.regs, (clk & 3) | (s.div - 1) << 2);
-        rt::delay_us(1_000);
-        let cs3 = if s.khz() < 99_000 { CS3_LONG } else { CS3_WM };
-        let _ = diag::set_cs3_vlio(cs3.0, cs3.1, cs3.2);
+        let rung = clock::Rung {
+            speed: want,
+            div: s.div,
+        };
+        clock::finish(&mut g.e.regs, s.div, rung.cs3(), rt::delay_us, set_cs3);
         lock
     }
 
@@ -18745,24 +18659,7 @@ mod image {
     /// `DSIG` read once the line has passed 2, where GC2DB saw it
     /// published. `None` if the line didn't wrap within two frames.
     fn gc2dc_next(g: &mut Rig) -> Option<u32> {
-        let t0 = rt::ticks();
-        let mut prev = scan_line(g);
-        loop {
-            let l = scan_line(g);
-            if l < prev {
-                break;
-            }
-            prev = l;
-            if us_since(t0) > 2 * FRAME_US {
-                return None;
-            }
-        }
-        while scan_line(g) < 3 {
-            if us_since(t0) > 3 * FRAME_US {
-                return None;
-            }
-        }
-        Some(g.e.regs.read32(DSIG))
+        sig::next(&mut g.e.regs, rt::ticks, FRAME_US * 13 / 4)
     }
 
     /// One switch's three frames, from `a`'s signature to `b`'s, as one
@@ -20128,7 +20025,7 @@ mod image {
     /// Run GC2DF's watch looked at once.
     fn gc2df_tick(g: &mut Rig) {
         if let Some(w) = g.refresh.as_mut() {
-            w.tick(&mut g.e.regs);
+            w.tick(&mut g.e.regs, rt::ticks());
         }
     }
 
@@ -20270,7 +20167,12 @@ mod image {
             return false;
         }
         let line = scan_line(g);
-        g.refresh = Some(Refresh::new(gc2::RefreshJudge::new(seq, sig), line));
+        g.refresh = Some(sig::Watch::new(
+            sig::RefreshJudge::new(seq, sig),
+            line,
+            rt::ticks(),
+            LATE_TICKS,
+        ));
         gc2df_settle(g, 3);
         true
     }
