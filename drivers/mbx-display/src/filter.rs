@@ -47,6 +47,13 @@ pub struct Filter {
     pub horizontal: [i8; H_LEN],
 }
 
+/// R79's fitted 2x values across, at 0.25, 0.75 ... 3.75 pixels
+/// (`tools/scaler-filter/fit2x.py`, least squares to native game frames,
+/// 2026-10-29; [`Filter::from_2x`]).
+pub const FIT_2X_H: [i8; 8] = [50, 13, 0, 0, 1, 1, -1, 0];
+/// R79's fitted 2x values down, at 0.25 ... 1.75 pixels.
+pub const FIT_2X_V: [i8; 4] = [52, 11, 0, 1];
+
 impl Filter {
     /// mbxfb's start-up set, unpacked.
     // inherited: C73, Linux mbxfb (mbxfb_setup's VSCOEFF0-4, HSCOEFF0-8)
@@ -138,9 +145,13 @@ impl Filter {
     /// The tables computed for this hardware ([`designed::DESIGNED`],
     /// `tools/scaler-filter/design.py`) for `src` shown at `out`: each
     /// shrinking direction takes the table of the largest designed ratio
-    /// not above its own (never filtering less than its scale needs);
-    /// an enlarging or 1:1 direction keeps mbxfb's half (a near-ideal
-    /// interpolation, right on the X51v up 2x).
+    /// not above its own (never filtering less than its scale needs); a
+    /// direction enlarged exactly 2x takes R79's fitted half
+    /// ([`FIT_2X_H`], [`FIT_2X_V`]: the owner's ruling 2026-10-29, from
+    /// the labelled photos `gpubench-0218`: the cleanest edges on the
+    /// flat frame, smooth on the textured; fitted to game frames, +0.3 dB
+    /// flat and +0.9 dB textured over mbxfb's); any other enlarging or 1:1
+    /// direction keeps mbxfb's half (the fit holds only at 2x's phases).
     ///
     /// # Panics
     /// If a size is 0 or a direction shrinks past 2:1.
@@ -161,9 +172,20 @@ impl Filter {
                 .find(|((n, d), _)| u64::from(*n) * u64::from(s) <= u64::from(o) * u64::from(*d))
                 .map(|(_, f)| *f)
         };
+        let fit = Self::from_2x(FIT_2X_H, FIT_2X_V);
+        let horizontal = match pick(src.0, out.0) {
+            Some(f) => f.horizontal,
+            None if out.0 == 2 * src.0 => fit.horizontal,
+            None => Self::MBXFB.horizontal,
+        };
+        let vertical = match pick(src.1, out.1) {
+            Some(f) => f.vertical,
+            None if out.1 == 2 * src.1 => fit.vertical,
+            None => Self::MBXFB.vertical,
+        };
         Self {
-            horizontal: pick(src.0, out.0).map_or(Self::MBXFB.horizontal, |f| f.horizontal),
-            vertical: pick(src.1, out.1).map_or(Self::MBXFB.vertical, |f| f.vertical),
+            horizontal,
+            vertical,
         }
     }
 

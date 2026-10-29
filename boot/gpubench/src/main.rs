@@ -23265,8 +23265,8 @@ mod image {
     const GC2DA: bool = option_env!("RP_GPUBENCH_GC2_HALF_R79").is_some();
     /// R79's fitted 2x values (fit2x.py, 2026-10-29: across 0.25 .. 3.75,
     /// down 0.25 .. 1.75).
-    const GC2DA_H: [i8; 8] = [50, 13, 0, 0, 1, 1, -1, 0];
-    const GC2DA_V: [i8; 4] = [52, 11, 0, 1];
+    const GC2DA_H: [i8; 8] = rp_drv_mbx_display::filter::FIT_2X_H;
+    const GC2DA_V: [i8; 4] = rp_drv_mbx_display::filter::FIT_2X_V;
     /// GC2CX's morning look too (`RP_GPUBENCH_GC2_HALF_EXACT_LOOK`): the
     /// GPU's exact UYVY with our coefficients, then the CPU-made UYVY of
     /// the same card with Intel's standard ones (GC2CS's way), each shown

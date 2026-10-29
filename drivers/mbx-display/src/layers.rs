@@ -364,8 +364,9 @@ impl VideoPlane {
     /// vertical shrink tears the picture, step 10; the owner's ruling,
     /// 2026-10-24: keep bit 27 where the look needs it); the designed
     /// tables ([`Filter::designed`]: proven on the X51v by P9e, the owner's
-    /// choice 2026-10-25: no stripes, as sharp as Linux's set), which keep
-    /// mbxfb's set for enlarging.
+    /// choice 2026-10-25: no stripes, as sharp as Linux's set), which take
+    /// R79's fitted set for an exact 2x enlargement (the owner's ruling
+    /// 2026-10-29) and keep mbxfb's set for any other enlargement.
     #[must_use]
     pub fn scale_to(&self, out_w: u16, out_h: u16, x: u16, y: u16) -> Scale {
         Scale {
@@ -962,9 +963,15 @@ mod tests {
             assert!(!v.scale_to(out_w, out_h, 0, 0).ur_c, "{out_w} {out_h}");
         }
         assert_eq!(v.scale_to(240, 320, 1, 2).filter, ScalerFilter::Designed);
-        // Enlarging through scale_to loads mbxfb's set (the designed
-        // tables keep it there).
+        // Enlarging 2x through scale_to loads R79's fitted set (the
+        // owner's ruling 2026-10-29); any other enlargement mbxfb's.
         let up = v.scale_to(960, 1280, 0, 0);
+        assert_eq!(
+            v.filter_words(up),
+            Filter::from_2x(crate::filter::FIT_2X_H, crate::filter::FIT_2X_V).words()
+        );
+        assert_ne!(v.filter_words(up), SCALER_FILTER);
+        let up = v.scale_to(720, 960, 0, 0);
         assert_eq!(v.filter_words(up), SCALER_FILTER);
         assert_eq!(
             (v.scale_to(240, 320, 1, 2).x, v.scale_to(240, 320, 1, 2).y),

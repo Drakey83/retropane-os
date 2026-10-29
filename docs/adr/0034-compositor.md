@@ -140,7 +140,11 @@ T1, T3, T4, ticked):
 - **The video plane's scaler (C70, P9):** Windows Mobile's `SPOCTRL` bit
   27 is kept for scaling **if the owner's look at P9 shows the picture
   right**, dropped if it tears; free scaling is then the app-opening
-  animation's way (W3 missed its 250 ms by 105 ms in 3D).
+  animation's way (W3 missed its 250 ms by 105 ms in 3D). **Its filter
+  (the owner's rulings):** shrinking takes the designed tables (P9e,
+  2026-10-25); an exact 2x enlargement takes R79's set fitted to game
+  frames (2026-10-29, from the labelled photos `gpubench-0218`); any
+  other enlargement keeps mbxfb's set (`Filter::designed`).
 
 ## Amendment P: where the display may read while the 3D core draws (accepted, owner, 2026-10-24)
 

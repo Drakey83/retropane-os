@@ -236,19 +236,28 @@ fn designed_picks_never_filtering_less_than_the_scale_needs() {
     assert_eq!(at(359), DESIGNED[4].1.horizontal); // just under 3/4: 11/16
     assert_eq!(at(240), DESIGNED[0].1.horizontal); // 1/2
     assert_eq!(at(479), DESIGNED[8].1.horizontal); // just under 1: 15/16
-    // 1:1 and enlarging: mbxfb's half; each direction its own.
+    // 1:1 and enlarging other than 2x: mbxfb's half; exactly 2x: R79's
+    // fitted half (the owner's ruling 2026-10-29); each direction its own.
+    let fit = Filter::from_2x(FIT_2X_H, FIT_2X_V);
     assert_eq!(at(480), Filter::MBXFB.horizontal);
-    assert_eq!(at(960), Filter::MBXFB.horizontal);
+    assert_eq!(at(960), fit.horizontal);
+    assert_eq!(at(959), Filter::MBXFB.horizontal);
+    assert_eq!(at(961), Filter::MBXFB.horizontal);
+    assert_eq!(at(720), Filter::MBXFB.horizontal);
     let mixed = Filter::designed((480, 640), (240, 1280));
     assert_eq!(mixed.horizontal, DESIGNED[0].1.horizontal);
+    assert_eq!(mixed.vertical, fit.vertical);
+    let mixed = Filter::designed((480, 640), (960, 960));
+    assert_eq!(mixed.horizontal, fit.horizontal);
     assert_eq!(mixed.vertical, Filter::MBXFB.vertical);
+    // The game path's smooth route: 240 x 320 to the screen, both fitted.
+    assert_eq!(Filter::designed((240, 320), (480, 640)), fit);
 }
 
 #[test]
 fn the_2x_fit_fills_every_phase_and_keeps_its_own_values() {
     // R79's fitted values (tools/scaler-filter/fit2x.py, 2026-10-29).
-    let h = [50, 13, 0, 0, 1, 1, -1, 0];
-    let v = [52, 11, 0, 1];
+    let (h, v) = (FIT_2X_H, FIT_2X_V);
     let f = Filter::from_2x(h, v);
     assert_eq!(phase_sums(&f.horizontal, 4), [ONE; 8]);
     assert_eq!(phase_sums(&f.vertical, 2), [ONE; 8]);
