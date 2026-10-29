@@ -70,3 +70,22 @@ Host tests 31 (four new: beside an opaque scene, under it, under a
 translucent one, after a stall), 5 of 5 mutants caught. Emulator (`emu-scene`):
 2D alone draws the scene 0 times (run 3 on the X51v: every frame), every 2D
 change behind the scan.
+
+## Run 4 on the X51v, 2026-10-29 (card log scene-0004, `local/rp-scene-run4.txt`)
+**No real tear left anywhere** (torn refreshes other than a 2D/3D hand-off
+mix: 0 in 2,500+ judged): 2D alone 0 torn (run 3: 80 in 40 frames and 40
+in 40) and the scene never drawn again; 3D alone 0; the checkerboard (every
+frame by the copy) 0 back to back and one-off (run 3: 2). Every 2D change
+behind the scan, none at once; held 0, copy stalls 0, failed 0, recovered
+0; stack 11,480 of 16,384.
+
+**What's left, for the owner:** frames where both 2D and the scene change
+in rows order show **one mixed refresh each** (the new bar with the last
+scene: 150 in 150 back to back at 149.50 / 2, 113 at Windows Mobile's
+clock), because 2D's copy and the scene's render now land in two windows a
+refresh apart. Whole pictures, never split, but a refresh where 2D and 3D
+disagree in time. The two windows also cost speed: 15 frames a second back
+to back at 149.50 / 2 (run 3: 18), and at Windows Mobile's clock 26 of 50
+one-off frames weren't shown whole within six refreshes (run 3: 3). The
+checkerboard phase, where 2D's change and the scene go together in the
+copy fallback's one copy, had 0 mixed and 18 frames a second.
