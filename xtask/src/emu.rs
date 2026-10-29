@@ -5770,6 +5770,16 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cp_low = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_ROUTES", "1"),
+            ("RP_GPUBENCH_GC2_HALF_ROUTES_LOW", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cu = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6118,7 +6128,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 145] = [
+    let runs: [GpubenchRun; 146] = [
         (
             "run A",
             &run_a,
@@ -6894,6 +6904,23 @@ fn variant_images_gpubench(
                 "GC2CV warped: the same both ways",
                 "GC2CV parallelogram: the same both ways",
                 "GC2CV done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CP at Windows Mobile's clock and 74.75 / 1 (the owner's
+        // overnight order: the pipelined ways split into set-up and wait).
+        (
+            "run GC2CP low",
+            &run_gc2cp_low,
+            &[
+                "GC2CP WM 99.67 / 2 (a) 480 x 640 native frame 0: 2 of 2 frames, 0 pictures wrong",
+                "GC2CP 74.75 / 1 (d') 240 x 320 converted, lists overlapped, 2D apart frame 3: 2 frames;",
+                "GC2CP WM 99.67 / 2 (e) 480 x 320, two frames in flight frame 3: 3 frames;",
+                "waiting on the core",
+                "GC2CP done:",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

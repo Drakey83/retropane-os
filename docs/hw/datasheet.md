@@ -251,6 +251,9 @@ watching.
   TEX2 or render-block bit sets it otherwise. Texels sampled at the pixel's
   corner. **With TEX1 bit 29 the stride is the declared width** (across
   code; 32-1,024 texels; GC2CI), no cost against twiddled reads (GC2CJ).
+- **2D placements beside a 3D render** (`rp-gpubench` GC2CP low, X51v,
+  2026-10-29): clean at WM clock; 16-38 stray words a 240 x 320 frame at
+  74.75 / 1 (as at 143.00 / 1); with the 2D finished first, none.
 - **CS3 bus check** (`rp-cs3bus` self-test, R71, X51v, 2026-10-29): six
   patterns over 512 KiB of 2700G memory, 1,572,864 transfers a check, 0
   misses at 7/3/1 (`MSC1` `0x13742481`) and at 7/2/0 (`0x02742481`) cold

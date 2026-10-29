@@ -259,3 +259,38 @@ uses); it now expects the measured one. Nothing was loosened.
   0xbb1 MBXCLK 0x5`, both dumps whole (2,296 lines), done, returned. G9's
   own measurement: 797 words off its reference at 74.75 / 1 (the
   Gouraud-at-divide-1 behaviour G9 dumps for; recorded, not analysed).
+
+## 8. GC2CP's pipelined ways at Windows Mobile's clock and 74.75
+
+**In plain English:** the faster ways of drawing a game frame overlap the
+graphics chip's work with the processor's. I split each frame's time into
+the processor's set-up and the waiting on the chip: set-up is under 1 ms,
+waiting is 4-13 ms, so the chip sets the pace. The careful overlapped way
+(d') and the two-frames-at-once way (e) came out with **zero stray words**
+at both clocks. The way that also runs the 2D engine during the 3D render
+(d) is clean at Windows Mobile's clock but **leaves 16-38 wrong words a
+frame at 74.75**. Two frames at once is 12-19% faster than one at a time,
+with its picture checked only on each test's last frame.
+
+**Detail** (`local/rp-gpubench-runGC2CP-low-2.txt`; 2700g.md "GC2CP's
+pipelined ways at Windows Mobile's clock and 74.75 / 1"):
+
+- New: `RP_GPUBENCH_GC2_HALF_ROUTES_LOW` (WM clock and 74.75 / 1, no step
+  above), the set-up / wait split in (d), (d') and (e), and `emu-gpubench`
+  "run GC2CP low".
+- **A false alarm first:** the first run showed 16 U'/V' words on (d') and
+  88 on (e), on the textured frame only, at both clocks. GC2CP drew its
+  references as triangles and its ways as quads (today's default); the
+  textured mesh's edge ties differ by form (GC2CV). References now use the
+  default form; rerun: 0.
+- **Stray words:** (d') 0 at both clocks; (e) 0 on the last picture at
+  both; **(d) 0 at WM clock, 16-38 a frame at 74.75 / 1.** Not fixed
+  tonight: (d') is the fix (the 2D finished before the render), and the
+  overlap fault belongs to R30. The two-in-flight win is claimed for (d')
+  and (e) only.
+- **Times** (fastest, flat / layered / textured / depth): (e) 6.4-10.2 ms
+  at WM, 4.2-8.8 ms at 74.75 / 1, against (b) serial 7.3-11.2 and
+  5.2-9.7; native 14.3-21.3 and 10.2-17.8. (d') 14.1-16.2 and 12.4-15.0:
+  below the core's clock-up it barely beats native, and is slower than
+  native on flat frames at 74.75 / 1.
+- The stack: 41,048 of 57,344 bytes (72%).

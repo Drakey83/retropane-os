@@ -21089,6 +21089,11 @@ mod image {
     /// GC2CM's fit, here on every word), (d) its last frame. GC2CM's card
     /// converted once at each clock and checked by `gc2cm_check`. No photos.
     const GC2CA_ROUTES: bool = option_env!("RP_GPUBENCH_GC2_HALF_ROUTES").is_some();
+    /// GC2CP at Windows Mobile's clock and 74.75 / 1 instead of 74.75 / 1
+    /// and 143.00 / 1 (`RP_GPUBENCH_GC2_HALF_ROUTES_LOW`; the owner's
+    /// overnight order 2026-10-29: the pipelined ways at no divide-1 step
+    /// above 74.75).
+    const GC2CP_LOW: bool = option_env!("RP_GPUBENCH_GC2_HALF_ROUTES_LOW").is_some();
     /// Run GC2CU (`RP_GPUBENCH_GC2_HALF_QUADS`, with `RP_GPUBENCH_GC2_HALF`),
     /// R78 item 3 (R93): each quad as one four-corner object
     /// (`Objects::Quads`) against two triangles on the X51v. At Windows
@@ -21418,17 +21423,26 @@ mod image {
         };
         let (cur, conv) = (&mut held.0, &mut held.1);
         {
-            if gc2cp_references(g, cur, (tex, Objects::Triangles), (first, refs)) {
-                let clocks = [
-                    (gc2_step(23, 4, 0, 1), "74.75 / 1"),
-                    (gc2_step(44, 4, 0, 1), "143.00 / 1"),
-                ];
+            if gc2cp_references(g, cur, (tex, Objects::default()), (first, refs)) {
+                let clocks = if GC2CP_LOW {
+                    [
+                        (None, "WM 99.67 / 2"),
+                        (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
+                    ]
+                } else {
+                    [
+                        (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
+                        (Some(gc2_step(44, 4, 0, 1)), "143.00 / 1"),
+                    ]
+                };
                 for (step, cname) in clocks {
                     clock_restore(&mut g.e.regs);
-                    if clock_apply(g, step).is_none() {
-                        clock_restore(&mut g.e.regs);
-                        log!("  GC2CP {cname}: the clock didn't take; skipped");
-                        continue;
+                    if let Some(st) = step {
+                        if clock_apply(g, st).is_none() {
+                            clock_restore(&mut g.e.regs);
+                            log!("  GC2CP {cname}: the clock didn't take; skipped");
+                            continue;
+                        }
                     }
                     clock_readback(g);
                     gc2cp_clock(g, (&mut *cur, &mut *conv), tex, (first, refs), cname);
@@ -22115,7 +22129,7 @@ mod image {
                 rt::check_in();
                 let job = (wi, f, kind);
                 best[wi][f] = if wi < GC2CP_FULL {
-                    let how = ("GC2CP", cname, Objects::Triangles);
+                    let how = ("GC2CP", cname, Objects::default());
                     gc2cp_plain(g, cur, tex, (first, refs), job, how).0
                 } else if wi == GC2CP_INFLIGHT {
                     let want = &refs[gc2cp_ref(1, f)];
@@ -22305,6 +22319,7 @@ mod image {
         a.invalidate_all();
         ok &= a.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, t) == Ok(true);
         let mut k = 0;
+        let (mut prep, mut wait) = (0u32, 0u32);
         while ok && k < starts.len() {
             rt::check_in();
             starts[k] = rt::ticks();
@@ -22320,9 +22335,13 @@ mod image {
             };
             // The next frame's lists while the core renders this one.
             next.invalidate_all();
+            let t0 = rt::ticks();
             let prepared = k + 1 == starts.len()
                 || next.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, t) == Ok(true);
+            let t1 = rt::ticks();
             ok = gc2cp_wait(g, now, d) && prepared;
+            prep += t1.wrapping_sub(t0);
+            wait += rt::ticks().wrapping_sub(t1);
             k += 1;
         }
         let end = rt::ticks();
@@ -22346,8 +22365,10 @@ mod image {
         }
         let mean = us(end.wrapping_sub(starts[0])) / starts.len() as u32;
         log!(
-            "  GC2CP {cname} {wname} frame {f}: {} frames; whole frame fastest {best} us mean {mean}; the last picture {off:?} words off its reference",
-            starts.len()
+            "  GC2CP {cname} {wname} frame {f}: {} frames; whole frame fastest {best} us mean {mean}; the last picture {off:?} words off its reference; a frame's CPU set-up {} us, waiting on the core {} us (means)",
+            starts.len(),
+            us(prep) / starts.len() as u32,
+            us(wait) / starts.len() as u32
         );
         best
     }
@@ -22543,15 +22564,27 @@ mod image {
         let mut starts = [0u32; GC2CP_REPS as usize + 2];
         let mut conv_due: Option<u32> = None;
         let mut ok = true;
+        // The frames' time split (ticks, frames 1 on): the CPU's set-up (the
+        // prepares) and waiting on the core (the polls to each render's end).
+        let (mut prep, mut wait) = (0u32, 0u32);
         for (k, start) in starts.iter_mut().take(GC2CP_REPS as usize + 1).enumerate() {
             rt::check_in();
             *start = rt::ticks();
             game.invalidate_all();
+            let t = rt::ticks();
             let prepared =
                 game.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, gc2cp_game_target());
+            if k > 0 {
+                prep += rt::ticks().wrapping_sub(t);
+            }
             let mut placing = false;
             if let Some(d) = conv_due.take() {
-                if !gc2cp_wait(g, conv, d) || !gc2cn_place(g, pair, !apart) {
+                let t = rt::ticks();
+                let waited = gc2cp_wait(g, conv, d);
+                if k > 0 {
+                    wait += rt::ticks().wrapping_sub(t);
+                }
+                if !waited || !gc2cn_place(g, pair, !apart) {
                     ok = false;
                     break;
                 }
@@ -22566,9 +22599,16 @@ mod image {
                 break;
             };
             conv.invalidate_all();
+            let t = rt::ticks();
             let prepared =
                 conv.prepare(&mut g.e.regs, &mut g.mem, &mut g.clock, gc2cp_set_target());
-            if !gc2cp_wait(g, game, d) || placing && g.e.finish(g.mem.0, 200_000).is_err() {
+            let t2 = rt::ticks();
+            let waited = gc2cp_wait(g, game, d);
+            if k > 0 {
+                prep += t2.wrapping_sub(t);
+                wait += rt::ticks().wrapping_sub(t2);
+            }
+            if !waited || placing && g.e.finish(g.mem.0, 200_000).is_err() {
                 ok = false;
                 break;
             }
@@ -22600,7 +22640,9 @@ mod image {
         let mean = us(starts[GC2CP_REPS as usize + 1].wrapping_sub(starts[1])) / GC2CP_REPS;
         let (off, uv) = gc2cp_off(g, want, seen);
         log!(
-            "  GC2CP {cname} {wname} frame {f}: {GC2CP_REPS} frames; whole frame fastest {best} us mean {mean}; the last frame checked: {off:?} words off the expected UYVY, {uv} with U' or V' off"
+            "  GC2CP {cname} {wname} frame {f}: {GC2CP_REPS} frames; whole frame fastest {best} us mean {mean}; the last frame checked: {off:?} words off the expected UYVY, {uv} with U' or V' off; a frame's CPU set-up {} us, waiting on the core {} us (means)",
+            us(prep) / GC2CP_REPS,
+            us(wait) / GC2CP_REPS
         );
         best
     }
