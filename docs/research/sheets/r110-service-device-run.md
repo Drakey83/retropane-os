@@ -69,3 +69,26 @@ refresh judge, the watch and the settled signature read moved from
 other than the hand-off mixes 0, copy stalls 0. The mixes are counted, not
 expected 0: they measure the 2D/3D hand-off the service doesn't yet keep
 whole. The device run waits for the owner's "run it".
+
+## Ran on the X51v, 2026-10-29 (card log scene-0001, `local/rp-scene-run1.txt`)
+The service's side, proven: 600 frames, **held 0 in every phase** (audit
+C94's start-up copy timing works on the device), copy stalls 0, failed 0,
+recovered 0, the 2D engine's stalls 0, no underrun, the clock to 149.50 / 2
+(lock 10 us) and back clean, stack 8,920 of 16,384 bytes.
+
+| Phase | Behind the scan | By the copy | Back to back | Copy time a whole screen |
+|---|---|---|---|---|
+| Windows Mobile's clock, rows | 113 + 37 | 37 + 13 | 12.1 frames a second | 3.2-9.5 ms |
+| 149.50 / 2, rows | 150 + 50 | 0 | 18.6 frames a second | 2.2-5.5 ms |
+| 149.50 / 2, checkerboard | 0 | 150 + 50 | 18.6 frames a second | 2.5-6.3 ms |
+
+**The tear judging did not work (the test's fault, not a result):** the
+references were steady and distinct per scene, but almost every refresh in
+the run read a signature unlike all of them (750 of 753 back to back, 367 of
+367 one-off, also while the picture stood still), so the "torn" counts are
+not tears. A finding inside the references: **the bar's rows (560-607) never
+change `DSIG`** (each 2D-first mix reads as the previous whole picture, each
+3D-first mix as its own), so `DSIG` covers only part of the screen here.
+Next (not run): log the signatures the run reads, and compare screen 0 and
+screen 1 word for word after a frame, to find whether the shown picture
+differs from the reference's (a stale part of one screen) or the reading does.
