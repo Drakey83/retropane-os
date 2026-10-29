@@ -916,7 +916,9 @@ name = "rp-scene"
 version = "0.0.0"
 dependencies = [
  "rp-draw",
+ "rp-drv-blit2d",
  "rp-drv-mbx-display",
+ "rp-drv-mbx3d",
  "rp-drv-pxa-uart",
  "rp-graphics",
  "rp-hal-api",

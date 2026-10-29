@@ -691,6 +691,9 @@ fn frames_the_scan_can_lead_start_behind_it_and_never_tear() {
         let after = r.g.starts();
         if let Some((from, to)) = plan {
             let line = after.last_line.unwrap();
+            // The device run's log (R110): the window, the start, the time.
+            assert_eq!(after.last_window, Some((from, to)), "frame {k}");
+            assert!(after.last_start_us.is_some() && after.last_render_us.is_some());
             // Started inside its window, behind the scan, on screen 0.
             assert_eq!(after.behind, before.behind + 1, "frame {k}");
             assert!(

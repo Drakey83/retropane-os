@@ -9,10 +9,12 @@ mod image {
     use core::fmt::Write;
 
     use rp_draw::{Cmd, Frame, Rect};
+    use rp_drv_blit2d::{MBX, reg as blit_reg};
     use rp_drv_mbx_display::clock::{self, Rung};
     use rp_drv_mbx_display::layers::Snapshot;
     use rp_drv_mbx_display::sig::{self, RefreshJudge, Watch};
     use rp_drv_mbx_display::{Display, font, reg as dreg};
+    use rp_drv_mbx3d::RENDER_DONE;
     use rp_drv_pxa_uart::PxaUart;
     use rp_graphics::{ClientId, Graphics, Handle, Starts, Step, ThreeD};
     use rp_hal_api::RegisterBus;
@@ -149,7 +151,44 @@ mod image {
         /// Each whole picture's 16-row band hashes as the reference saw it
         /// on the screen shown.
         ref_bands: [[u32; BANDS]; SCENES],
+        /// R110 run 3: the 3D core's done bit watched by the image while
+        /// it waits (reading `STATUS` doesn't clear it): when and at which
+        /// scan line it was first seen set this frame.
+        done_seen: Option<(u32, u32)>,
+        /// The scene and bar last sent.
+        last_scene: Option<usize>,
+        last_bar: Option<usize>,
+        /// The frames' records of the run of frames being logged.
+        recs: [Rec; RECS],
+        nrecs: usize,
     }
+
+    /// One frame's record (R110 run 3, the tear's cause).
+    #[derive(Clone, Copy, Default)]
+    struct Rec {
+        /// The picture (scene, bar).
+        pic: (u8, u8),
+        /// How it started: b behind the scan, c by the copy, h held, - none.
+        how: u8,
+        /// The start line and window (behind), or the copy's line.
+        line: Option<u32>,
+        window: Option<(u32, u32)>,
+        /// The render's time seen by the image (start to the done bit, us)
+        /// and the scan line then; the service's (its poll's upper bound).
+        exact: Option<u32>,
+        done_line: Option<u32>,
+        service: Option<u32>,
+        /// The scan line when 2D's changes went into screen 0.
+        two_d: Option<u32>,
+        /// Refreshes judged torn from this frame's start to the next's.
+        torn: u32,
+    }
+
+    /// Frames recorded a run of frames (logged after it, no card write
+    /// meanwhile).
+    const RECS: usize = 24;
+    /// Frames in each isolation run (R110 run 3).
+    const ISOLATE: u32 = 40;
 
     /// Signatures a mode keeps apart in its log.
     const SEEN: usize = 8;
@@ -261,6 +300,12 @@ mod image {
         /// One look at the display: a refresh's signature judged, a torn
         /// one sorted (a hand-off mix, or other).
         fn tick(&mut self) {
+            if self.done_seen.is_none()
+                && self.regs().read32(MBX + blit_reg::STATUS) & RENDER_DONE != 0
+            {
+                let line = self.line();
+                self.done_seen = Some((self.clock.now_us(), line));
+            }
             let Some(mut w) = self.watch else { return };
             let torn = w.judge.torn + w.judge.back;
             let read = w.tick(self.regs(), rt::ticks());
@@ -300,23 +345,32 @@ mod image {
 
         /// The scene `k` (with its background) and the bar `b` asked for:
         /// one frame through the service, driven to its end.
+        /// An unchanged scene or bar isn't sent again (a quad set again
+        /// redraws its tiles: R110 run 3's 2D-alone frames must leave the
+        /// scene untouched, its 3D-alone ones the bar).
         fn compose(&mut self, k: usize, b: usize) -> Step {
-            let qs = scene(k, textured(self.tex));
-            for (slot, q) in qs.iter().enumerate().take(SLOTS) {
-                if self.gfx.set(self.c, slot, q.as_ref()).is_err() {
+            if self.last_scene != Some(k) {
+                self.last_scene = Some(k);
+                let qs = scene(k, textured(self.tex));
+                for (slot, q) in qs.iter().enumerate().take(SLOTS) {
+                    if self.gfx.set(self.c, slot, q.as_ref()).is_err() {
+                        self.failed += 1;
+                    }
+                }
+                if self
+                    .gfx
+                    .set_background(self.c, Some(BACKGROUNDS[k]))
+                    .is_err()
+                {
                     self.failed += 1;
                 }
             }
-            if self
-                .gfx
-                .set_background(self.c, Some(BACKGROUNDS[k]))
-                .is_err()
-            {
-                self.failed += 1;
-            }
             self.frame.clear();
             let r = Rect::new(BAR.0, BAR.1, BAR.2, BAR.3);
-            self.frame.damage(r);
+            if self.last_bar != Some(b) {
+                self.last_bar = Some(b);
+                self.frame.damage(r);
+            }
             self.frame.push(Cmd::Fill {
                 r,
                 color: BAR_COLOURS[b],
@@ -332,6 +386,89 @@ mod image {
                 self.recovered += 1;
             }
             s
+        }
+
+        /// [`Self::compose`] recorded (the first [`RECS`] of a run of
+        /// frames): how it started, its render's time as the image saw it
+        /// and as the service learned it; the last record's torn count
+        /// closed here (tears land in the refreshes after a frame's start).
+        fn compose_rec(&mut self, k: usize, b: usize) {
+            let torn = self.watch.map_or(0, |w| w.judge.torn);
+            let before = self.gfx.starts();
+            // Not set by a render still owed from before.
+            self.done_seen = if self.regs().read32(MBX + blit_reg::STATUS) & RENDER_DONE != 0 {
+                Some((0, 0))
+            } else {
+                None
+            };
+            let t_torn = torn;
+            self.compose(k, b);
+            let a = self.gfx.starts();
+            let how = if a.behind > before.behind {
+                b'b'
+            } else if a.screen1 > before.screen1 {
+                b'c'
+            } else if a.held > before.held {
+                b'h'
+            } else {
+                b'-'
+            };
+            // Seen before the service's poll saw it, else not this
+            // render's (a later done bit: unknown).
+            let exact = match (self.done_seen, a.last_start_us) {
+                (Some((t, _)), Some(t0)) if t != 0 && how != b'-' && how != b'h' => {
+                    Some(t.wrapping_sub(t0))
+                }
+                _ => None,
+            }
+            .filter(|&e| a.last_render_us.is_some_and(|s| e <= s));
+            if self.nrecs < RECS {
+                self.recs[self.nrecs] = Rec {
+                    pic: (k as u8, b as u8),
+                    how,
+                    line: if how == b'c' {
+                        a.last_copy_line
+                    } else {
+                        a.last_line
+                    },
+                    window: a.last_window,
+                    exact,
+                    done_line: exact.and(self.done_seen).map(|d| d.1),
+                    service: a.last_render_us,
+                    two_d: a.last_2d_line,
+                    torn: t_torn,
+                };
+                self.nrecs += 1;
+            }
+        }
+
+        /// The records of the run of frames, one line each, the torn
+        /// counts made per frame (each frame's from its start to the next
+        /// one's, the last's to now); emptied.
+        fn log_recs(&mut self, p: usize, what: &str) {
+            let now = self.watch.map_or(0, |w| w.judge.torn);
+            for i in 0..self.nrecs {
+                let next = if i + 1 < self.nrecs {
+                    self.recs[i + 1].torn
+                } else {
+                    now
+                };
+                let r = self.recs[i];
+                log!(
+                    "P{} {what} frame {i}: picture {:?}, start {} at line {:?} (window {:?}); render seen {:?} us (done at line {:?}), the service's {:?} us; 2D into screen 0 at line {:?}; torn {}",
+                    p + 1,
+                    r.pic,
+                    r.how as char,
+                    r.line,
+                    r.window,
+                    r.exact,
+                    r.done_line,
+                    r.service,
+                    r.two_d,
+                    next.wrapping_sub(r.torn)
+                );
+            }
+            self.nrecs = 0;
         }
 
         /// A frame with nothing new from 2D until a held scene is drawn
@@ -552,13 +689,14 @@ mod image {
             if let Some(w) = r.watch.as_mut() {
                 w.send(seq, r.whole[k]);
             }
-            r.compose(k, k);
+            r.compose_rec(k, k);
             seq += 1;
         }
         let span = us(rt::ticks().wrapping_sub(t0)).max(1);
         // The last frame's refreshes judged before the line.
         settle(r, 3);
         r.log_seen(p, "back to back");
+        r.log_recs(p, "back to back");
         report(
             r,
             p,
@@ -631,6 +769,9 @@ mod image {
                 to_shown.worst
             ),
         );
+        if !ph.checker {
+            isolate(r, p);
+        }
     }
 
     /// The bands where `a` and `b` differ, as bits.
@@ -639,6 +780,58 @@ mod image {
             .zip(b)
             .enumerate()
             .fold(0, |m, (i, (x, y))| m | u64::from(x != y) << i)
+    }
+
+    /// R110 run 3's isolation (a rows phase): [`ISOLATE`] frames back to
+    /// back where only the bar changes (the scene's picture 0 kept: 2D
+    /// alone), then where only the scene changes (the bar 0 kept: 3D
+    /// alone), each with its own references, every refresh judged, the
+    /// first [`RECS`] frames recorded.
+    fn isolate(r: &mut Run, p: usize) {
+        for (what, bar_only) in [
+            ("2D alone (the bar changes)", true),
+            ("3D alone (the scene changes)", false),
+        ] {
+            let pick = |j: usize| {
+                if bar_only {
+                    (0, j % SCENES)
+                } else {
+                    (j % SCENES, 0)
+                }
+            };
+            r.watch = None;
+            let mut refs = [0u32; SCENES];
+            for (j, rf) in refs.iter_mut().enumerate() {
+                let (k, b) = pick(j);
+                *rf = r.reference(k, b).unwrap_or(0);
+            }
+            log!("P{} {what}: references {refs:08x?}", p + 1);
+            let line = r.line();
+            r.watch = Some(Watch::new(
+                RefreshJudge::new(SCENES as u32 - 1, refs[SCENES - 1]),
+                line,
+                rt::ticks(),
+                LATE_TICKS,
+            ));
+            r.seen = [(0, 0); SEEN];
+            r.seen_other = 0;
+            let m = mark(r);
+            let mut seq = SCENES as u32;
+            for _ in 0..ISOLATE {
+                rt::check_in();
+                let j = picture(seq);
+                if let Some(w) = r.watch.as_mut() {
+                    w.send(seq, refs[j]);
+                }
+                let (k, b) = pick(j);
+                r.compose_rec(k, b);
+                seq += 1;
+            }
+            settle(r, 3);
+            r.log_seen(p, what);
+            r.log_recs(p, what);
+            report(r, p, what, ISOLATE, &m, format_args!("isolation"));
+        }
     }
 
     /// Watches `n` more refreshes.
@@ -767,6 +960,11 @@ mod image {
             seen_other: 0,
             last_sig: 0,
             ref_bands: [[0; BANDS]; SCENES],
+            done_seen: None,
+            last_scene: None,
+            last_bar: None,
+            recs: [Rec::default(); RECS],
+            nrecs: 0,
         };
 
         for p in 0..PHASES.len() {

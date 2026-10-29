@@ -251,6 +251,18 @@ pub struct Starts {
     pub last_line: Option<u32>,
     /// The scan line the last fallback copy started on.
     pub last_copy_line: Option<u32>,
+    /// The window the last frame on screen 0 was planned to start in.
+    pub last_window: Option<(u32, u32)>,
+    /// When the last render started (the service's clock, us), on either
+    /// screen.
+    pub last_start_us: Option<u32>,
+    /// The last render's time as the service learned it: when its poll
+    /// saw it done (an upper bound: the poll looks once the predicted time
+    /// has come), us.
+    pub last_render_us: Option<u32>,
+    /// The scan line when 2D's changes were last copied into screen 0
+    /// while it was shown (a frame with 3D work).
+    pub last_2d_line: Option<u32>,
 }
 
 /// How a scene frame starts (R20).
@@ -365,6 +377,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 screen1: 0,
                 last_line: None,
                 last_copy_line: None,
+                last_window: None,
+                last_start_us: None,
+                last_render_us: None,
+                last_2d_line: None,
             },
             #[cfg(test)]
             before_copy: None,
@@ -960,10 +976,12 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         };
         let target = Self::target(s, other);
         let (e, mem) = self.two_d.parts();
+        let t0 = clock.now_us();
         let res = s.r.render(&mut e.regs, mem, clock, target);
         self.after_3d();
         match res {
             Ok(Some(due)) => {
+                self.starts.last_start_us = Some(t0);
                 self.starts.screen1 += 1;
                 self.job = Job::Aside { held, from, to };
                 Step::Wait(due)
@@ -999,7 +1017,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// schedule forgets: the next frame redraws everything).
     fn learn(&mut self, p: Poll) {
         match p {
-            Poll::Done(st) => self.sched.record(st.done_us),
+            Poll::Done(st) => {
+                self.sched.record(st.done_us);
+                self.starts.last_render_us = Some(st.done_us);
+            }
             Poll::Recovered => self.sched.reset(),
             Poll::Wait(_) | Poll::Idle => {}
         }
@@ -1079,6 +1100,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     }
                     _ => (&drawn[..], n),
                 };
+                if at != safe {
+                    // 2D's changes go into screen 0, shown, now (R110's log).
+                    self.starts.last_2d_line = Some(self.scan_line());
+                }
                 if at == safe {
                     // The scene's last picture back into screen 0 from
                     // screen 1 (shown) before it is shown, if held.
@@ -1132,6 +1157,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 };
                 let target = Self::target(s, safe);
                 let (e, mem) = self.two_d.parts();
+                let t0 = clock.now_us();
                 let due = if prepared {
                     s.r.start_prepared(&mut e.regs, clock)
                 } else {
@@ -1139,6 +1165,8 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 };
                 self.after_3d();
                 self.starts.last_line = Some(line);
+                self.starts.last_window = Some((from, to));
+                self.starts.last_start_us = Some(t0);
                 self.starts.behind += 1;
                 match due {
                     Ok(Some(due)) => {
