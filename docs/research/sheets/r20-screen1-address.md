@@ -9,33 +9,37 @@ renders into screen 1, so this costs ~2 ms on textured fallback frames.
 ## 1. Original way (Windows Mobile / Dell's product)
 Back buffers wherever the driver's allocator puts them.
 
-## 2. Dell's way (REA): NOT FOUND, so this sheet stops here
-GLES allocates its back buffers through `ExtEscape` code 0x18800
-(100352) to the display driver (`libGLES_CL` 0x02271460, called by
-0x02270a50; the escape also in 0x0226ca40, 0x0226cb04). I searched
-`ddi_2700g` for the handler with `0x188|0x18800|100352` and
-`0x187[0-9a-f][0-9a-f]\b|0x188[0-9a-f][0-9a-f]\b|0x189[0-9a-f][0-9a-f]\b`:
-no handler found (REA log #18, #20). **Where Dell places a back buffer
-relative to the screen and textures is not found.** Per the rule, I stop
-on this item.
+## 2. Dell's way (REA): found 2026-10-29 late (REA log #25-#31)
+The earlier "not found" was a misread: GLES builds its escape codes
+`mov #100352` then `orr` (0x18A88, 0x18A8C), and the decompiled C drops
+call arguments, so the search for 0x18800 could never hit. GLES's back-
+buffer allocation (`libGLES_CL` 0x2270a50) sends escape **0x18E73**;
+`ddi_2700g`'s DrvEscape switch (0x2101cb0) calls 0x2113b80, which takes a
+block from 0x2114d30: **PowerVR services' resource allocator** (an arena
+over 2700G memory, the size rounded to its quantum) whose allocation
+(0x2116b28) is **first fit by size class**: 32 free lists by power-of-two
+size, walked from the request's class upward, the first segment that fits
+with the requested alignment taken. **Dell places a back buffer wherever
+the free list gives: no rule relative to the screen, the textures or the
+memory's banks.** So Dell's way is the textbook allocator, not a design
+for this cost; it offers nothing to copy here.
 
 ## 3. Modern way (for when it resumes)
 Place render targets and textures in different DRAM banks, or tile
 surfaces so a target's and a texture's accesses interleave across banks.
 Training knowledge, a claim.
 
-## 4. Alternatives (outline only, not proposed for building yet)
-| | What |
-|---|---|
-| A. Do nothing | Accept ~2 ms on textured fallback frames |
-| B. Dell's | Not found (above) |
-| C. Modern | A screen-1 address chosen so its banks differ from the texture region's |
-| Ours (proposed later) | A sweep: the textured frame into screen 1 at offsets of 2 KiB to 1 MiB from 0x296000 inside free 2700G memory, each timed and checked exact |
+## 4. The alternatives, and why ours wins
+| | What | Wins | Loses |
+|---|---|---|---|
+| A. Do nothing | Accept ~2 ms on textured fallback frames | No work | ~15% on every textured frame by the copy |
+| B. Dell's | Screen 1 wherever a first-fit allocator puts it | Nothing to build | Placement by chance: the cost could be worse or better by luck, never by measurement |
+| C. Modern | Targets and textures in different DRAM banks (or tiled to interleave) | Fixes the cause if it is banks | Needs the 2700G's bank mapping, which no document gives (to measure) |
+| **Ours** | A sweep: the textured frame into screen 1 at offsets of 2 KiB to 1 MiB from 0x296000 inside free 2700G memory (and the texture moved instead, the control), each render timed and checked exact; screen 1 placed (`rp_vram_map`) where the sweep says, if any offset wins | Measures the cause on this chip, fixes it in the memory map at no run-time cost; the bank size falls out of the sweep's period | One device run (about 5 minutes); a map change if it wins |
 
 ## 5. What would overturn
 - A sweep with no address faster → not banks (another lead: scan-out
   reading screen 0 while the core writes screen 1).
 
-**Asked of the owner:** either (a) more REA time to find Dell's escape
-handler (the GPE escape table in `ddi_2700g`, by its vtable), or (b) your
-go to proceed without Dell's way on this one, or (c) park it (a reminder).
+**Asked of the owner:** the go to build the sweep (an `rp-gpubench`
+stage, emulator-checked first); a separate go for the device run.
