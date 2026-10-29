@@ -5939,6 +5939,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r113b = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R113B", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r113 = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6372,7 +6381,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 160] = [
+    let runs: [GpubenchRun; 161] = [
         (
             "run A",
             &run_a,
@@ -7150,6 +7159,32 @@ fn variant_images_gpubench(
                 "GC2DF back to back blanking start, checkerboard: 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
                 "GC2DF back to back option 1 (flip, copy back, flip back): 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
                 "GC2DF done: Windows Mobile's clock put back; 0 hung in all",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // R113 run 2 (when a flip written with DSCTRL bit 24 shows): the
+        // shape only (the fork has no DSIG or update latch).
+        (
+            "run R113B",
+            &run_r113b,
+            &[
+                "R113 run 2 (when a flip written with DSCTRL bit 24 shows, the owner's go 2026-10-29)",
+                "R113 run 2 bit 24, DUCTRL = 1 after the write, written at line 100: 1 flips: B first whole in refresh",
+                "R113 run 2 bit 24, DUCTRL = 1 after the write, written at line 320: 1 flips: B first whole in refresh",
+                "R113 run 2 bit 24, DUCTRL = 1 after the write, written at line 600: 1 flips: B first whole in refresh",
+                "R113 run 2 bit 24, DUCTRL = 1 after the write: DSCTRL back to 0x",
+                "R113 run 2 bit 24, DUCTRL = 1 after the write and at each refresh, written at line 100: 1 flips: B first whole in refresh",
+                "R113 run 2 bit 24, DUCTRL = 1 after the write and at each refresh, written at line 320: 1 flips: B first whole in refresh",
+                "R113 run 2 bit 24, DUCTRL = 1 after the write and at each refresh, written at line 600: 1 flips: B first whole in refresh",
+                "R113 run 2 bit 24, DUCTRL = 1 after the write and at each refresh: DSCTRL back to 0x",
+                "R113 run 2 bit 24, no DUCTRL write, written at line 100: 1 flips: B first whole in refresh",
+                "R113 run 2 bit 24, no DUCTRL write, written at line 320: 1 flips: B first whole in refresh",
+                "R113 run 2 bit 24, no DUCTRL write, written at line 600: 1 flips: B first whole in refresh",
+                "R113 run 2 bit 24, no DUCTRL write: DSCTRL back to 0x",
+                "R113 run 2 done: DSCTRL 0x",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

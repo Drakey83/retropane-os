@@ -17850,6 +17850,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R113B {
+            r113b_run(g, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R113 {
             r113_run(g, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20227,6 +20233,120 @@ mod image {
             }
         }
         true
+    }
+
+    /// Run R113 run 2 (see [`R113B`]).
+    #[inline(never)]
+    fn r113b_run(g: &mut Rig, planes0: &Snapshot) {
+        use rp_drv_mbx_display::reg::{DSCTRL, GSCADR};
+        let found = g.e.regs.read32(DSCTRL);
+        R113_DSCTRL.with(|v| *v = found);
+        let frame = FRAME_US * 13 / 4;
+        log!(
+            "  R113 run 2 (when a flip written with DSCTRL bit 24 shows, the owner's go 2026-10-29): {} ways, lines {R113_LINES:?}, {R113B_FLIPS} flips a line, {R113B_FOLLOW} refreshes followed after each; DSCTRL as found 0x{found:08x}, DUCTRL 0x{:08x}",
+            R113B_WAYS.len(),
+            g.e.regs.read32(DUCTRL)
+        );
+        let [Some(a), Some(b)] = r113_pictures(g, 0, planes0) else {
+            log!(
+                "  R113 run 2: the pictures' DSIG not steady (the emulator models none): flips made, not judged"
+            );
+            r113b_ways(g, (0, 0), found, frame);
+            g.e.regs.write32(DSCTRL, found);
+            return;
+        };
+        if a == b {
+            log!("  R113 run 2: both pictures read DSIG 0x{a:08x}: not judged");
+        }
+        r113b_ways(g, (a, b), found, frame);
+        g.e.regs.write32(DSCTRL, found);
+        let base = g.e.regs.read32(GSCADR) & 0xFF80_0000;
+        g.e.regs.write32(GSCADR, base | GC2CA_A / 16);
+        log!(
+            "  R113 run 2 done: DSCTRL 0x{:08x} (found 0x{found:08x})",
+            g.e.regs.read32(DSCTRL)
+        );
+    }
+
+    /// R113 run 2's ways (see [`R113B`]); `sigs` A's and B's signatures.
+    fn r113b_ways(g: &mut Rig, (a, b): (u32, u32), found: u32, frame: u32) {
+        use rp_drv_mbx_display::reg::{DSCTRL, GSCADR};
+        const BIT24: u32 = 1 << 24;
+        let base = g.e.regs.read32(GSCADR) & 0xFF80_0000;
+        let addr = |at: u32| base | at / 16;
+        for &(name, ductrl, again) in &R113B_WAYS {
+            for &line in &R113_LINES {
+                // The refresh B first showed in whole (0 the write's own),
+                // counted; never; refreshes of neither picture; A back
+                // after B; the start not clean.
+                let mut first = [0u32; R113B_FOLLOW];
+                let (mut never, mut torn, mut back, mut unclean) = (0u32, 0u32, 0u32, 0u32);
+                let mut trace = heapless_name();
+                for f in 0..R113B_FLIPS {
+                    rt::check_in();
+                    // A clean start: bit 24 clear, A shown whole.
+                    g.e.regs.write32(DSCTRL, found);
+                    g.e.regs.write32(GSCADR, addr(GC2CA_A));
+                    let _ = sig::next(&mut g.e.regs, rt::ticks, frame);
+                    if sig::next(&mut g.e.regs, rt::ticks, frame) != Some(a) && a != b {
+                        unclean += 1;
+                    }
+                    g.e.regs.write32(DSCTRL, found | BIT24);
+                    if !r113_at_line(g, line) {
+                        unclean += 1;
+                        continue;
+                    }
+                    g.e.regs.write32(GSCADR, addr(GC2DE_SCREEN1));
+                    if ductrl {
+                        let _ = g.e.regs.read32(DUCTRL);
+                        g.e.regs.write32(DUCTRL, 1);
+                    }
+                    let mut shown = None;
+                    for k in 0..R113B_FOLLOW {
+                        let got = sig::next(&mut g.e.regs, rt::ticks, frame);
+                        let du = g.e.regs.read32(DUCTRL);
+                        if again {
+                            g.e.regs.write32(DUCTRL, 1);
+                        }
+                        let c = match got {
+                            Some(v) if a != b && v == b => {
+                                shown.get_or_insert(k);
+                                'B'
+                            }
+                            Some(v) if a != b && v == a => {
+                                if shown.is_some() {
+                                    back += 1;
+                                }
+                                'A'
+                            }
+                            Some(_) if a != b => {
+                                torn += 1;
+                                'X'
+                            }
+                            _ => '?',
+                        };
+                        if f == 0 {
+                            let _ = write!(trace, "{c}{du:x}");
+                        }
+                    }
+                    match shown {
+                        Some(k) => first[k] += 1,
+                        None => never += 1,
+                    }
+                }
+                log!(
+                    "  R113 run 2 {name}, written at line {line}: {R113B_FLIPS} flips: B first whole in refresh (0 = the write's own) {first:?}, never {never}; refreshes of neither {torn}, A back after B {back}, starts not clean {unclean}; the first flip's refreshes (picture, then DUCTRL read): {}",
+                    trace.as_str()
+                );
+            }
+            g.e.regs.write32(DSCTRL, found);
+            let under = underrun_take(&mut g.e.regs);
+            log!(
+                "  R113 run 2 {name}: DSCTRL back to 0x{:08x}; underrun flag {}",
+                g.e.regs.read32(DSCTRL),
+                if under { "set (cleared)" } else { "clear" }
+            );
+        }
     }
 
     /// Run R113 (see [`R113`]).
@@ -24434,6 +24554,32 @@ mod image {
     const DUCTRL: usize = 0x230C;
     /// `DSCTRL` as R113 found it (the crash path puts it back; 0: not run).
     static R113_DSCTRL: rt::Global<u32> = rt::Global::new(0);
+    /// R113 run 2 (`RP_GPUBENCH_R113B`, with `RP_GPUBENCH_GC2_HALF`; the
+    /// owner's go 2026-10-29 after run 1 on the X51v, gpubench-0221: with
+    /// `DSCTRL` bit 24 no flip tore, but none showed in the next refresh):
+    /// when, and whether, a flip written with bit 24 set is shown. Each
+    /// flip starts clean (bit 24 clear, picture A shown and read back
+    /// whole), then bit 24 is set and `GSCADR` written for B at the line;
+    /// the next [`R113B_FOLLOW`] refreshes are judged (A, B, or neither)
+    /// and `DUCTRL` read after each. Three ways: `DUCTRL` = 1 after the
+    /// write (run 1's), `DUCTRL` = 1 again at each refresh after it (a
+    /// trigger?), no `DUCTRL` write at all. About a minute.
+    const R113B: bool = option_env!("RP_GPUBENCH_R113B").is_some();
+    /// Flips at each line per way (the emulator 1).
+    const R113B_FLIPS: u32 = if GC2_RENDERS < 20 { 1 } else { 20 };
+    /// Refreshes judged after each flip.
+    const R113B_FOLLOW: usize = 10;
+    /// The ways: a name, `DUCTRL` = 1 after the write, and again at each
+    /// refresh after.
+    const R113B_WAYS: [(&str, bool, bool); 3] = [
+        ("bit 24, DUCTRL = 1 after the write", true, false),
+        (
+            "bit 24, DUCTRL = 1 after the write and at each refresh",
+            true,
+            true,
+        ),
+        ("bit 24, no DUCTRL write", false, false),
+    ];
     /// Copies timed before the window is planned (the service plans from
     /// its own recent copies: `Graphics::copies`).
     const GC2DF_TIMED: u32 = 4;
@@ -34479,9 +34625,9 @@ mod image {
     /// On a crash, first (rp-image's crash order): run G's Windows Mobile
     /// clock and bus timing back.
     fn put_back() {
-        // Run R113: DSCTRL as found.
+        // Runs R113 and R113 run 2: DSCTRL as found.
         let dsctrl = R113_DSCTRL.with(|v| *v);
-        if R113
+        if (R113 || R113B)
             && dsctrl != 0
             && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx()
         {
