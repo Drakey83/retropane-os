@@ -28,9 +28,10 @@
 //!   the core is reset and the memory manager set up again, and the next
 //!   frame redraws everything.
 //! - **The 3D clock is on only while there's work** (D8, `clock::Gate`).
-//! - **A quad as one object** on request ([`Objects::Quads`], R78 item
-//!   3): a four-corner object in place of two triangles, a third fewer
-//!   words and one list word a tile instead of two.
+//! - **A quad as one object** ([`Objects::Quads`], R78 item 3, proven on
+//!   the X51v by GC2CU): a four-corner object in place of two triangles, a
+//!   third fewer words, one list word a tile instead of two, and divide
+//!   1's texture fault gone on the game frames.
 //! - **A cheap set-up a tile** (R88): no division in the tile walk, each
 //!   tile's list from a hashed cache with its count and cost, and a whole
 //!   frame again keeps the region entries whose quads didn't change
@@ -637,11 +638,13 @@ pub fn texels16(d: &Draw) -> Option<u32> {
 pub enum Objects {
     /// Two one-triangle objects a quad (the form every device run up to
     /// 2026-10-28 drew).
-    #[default]
     Triangles,
-    /// One four-corner object a quad: flat and Gouraud drew exactly as two
-    /// triangles on the X51v (test G2); textured (layout 9, Dell's
-    /// rectangle) not yet drawn by our code on the device.
+    /// One four-corner object a quad (the default): on the X51v every
+    /// kind of GC2 drew the same as two triangles, a warped textured quad
+    /// too (GC2CU, GC2CV, 2026-10-28; a few pixels of exact texel ties
+    /// round the other way), and the game frames were right at 74.75 / 1
+    /// and 143.00 / 1 where two triangles hit divide 1's texture fault.
+    #[default]
     Quads,
 }
 
@@ -1384,7 +1387,7 @@ impl Renderer {
             diagonal_flip: false,
             vertex_rotate: 0,
             flat_xor: (0, 0),
-            objects: Objects::Triangles,
+            objects: Objects::Quads,
         })
     }
 
@@ -1462,8 +1465,8 @@ impl Renderer {
         self.flat_xor = if word < 2 { (word, mask) } else { (0, 0) };
     }
 
-    /// How each quad goes to the core from the next [`Self::set`] on: two
-    /// triangles (the default) or one four-corner object ([`Objects`]). A
+    /// How each quad goes to the core from the next [`Self::set`] on: one
+    /// four-corner object (the default) or two triangles ([`Objects`]). A
     /// slot set again in the other form is written again, and the lists
     /// naming it with it.
     pub fn set_objects(&mut self, objects: Objects) {

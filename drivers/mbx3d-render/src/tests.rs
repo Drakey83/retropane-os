@@ -143,7 +143,8 @@ fn a_frame_after_the_first_costs_the_start_one_status_read_and_its_clear() {
     // (the square now reaches column 38 alone with the background: the
     // list for "background and square" exists already).
     assert_eq!(s.lists, 0, "both lists reused");
-    assert_eq!(s.mem_words, 34 + 2 * s.tiles);
+    // One four-corner object (22 words: the default form) and the entries.
+    assert_eq!(s.mem_words, 22 + 2 * s.tiles);
     assert_eq!(g.mem.1, s.mem_words, "the count is what reached memory");
     assert_eq!(g.px(107, 150), GREY);
     assert_eq!(g.px(108, 150), BLUE);
@@ -1543,8 +1544,9 @@ fn slot_words_at_finds_the_texture_words_set_stored() {
     let words: Vec<u32> = (0..64)
         .map(|k| g.mem.load(at as usize + 4 * k).unwrap())
         .collect();
-    // Both triangles carry TEX0 (the probes change it there).
-    assert_eq!(words.iter().filter(|&&w| w == t.words()[0]).count(), 2);
+    // The four-corner object carries TEX0 once (the probes change it
+    // there).
+    assert_eq!(words.iter().filter(|&&w| w == t.words()[0]).count(), 1);
     assert_eq!(g.r.slot_words_at(MAX_SLOTS), None);
 }
 
@@ -2092,7 +2094,9 @@ fn new_tile_orders_list_every_tile_once_and_draw_the_same() {
 /// the header nothing at all.
 #[test]
 fn the_header_flip_changes_only_its_word() {
+    // The two-triangle form's layout (GC2AP's probes ran on it).
     let mut g = rig(480, 640);
+    g.r.set_objects(Objects::Triangles);
     let tex = columns(&mut g);
     let at = |g: &Rig, w: usize| {
         g.mem
@@ -2154,7 +2158,9 @@ fn the_header_flip_changes_only_its_word() {
 /// and of a textured slot, and nowhere else; 0 changes nothing.
 #[test]
 fn the_tsp_bits_land_in_every_objects_tsp() {
+    // The two-triangle form's layout (GC2AQ's probes ran on it).
     let mut g = rig(480, 640);
+    g.r.set_objects(Objects::Triangles);
     let tex = columns(&mut g);
     let word = |g: &Rig, slot: u32, w: usize| {
         g.mem
@@ -2651,6 +2657,7 @@ mod quad_objects {
     #[test]
     fn switching_forms_rewrites_the_slot_and_its_lists() {
         let mut g = rig(480, 640);
+        g.r.set_objects(Objects::Triangles);
         g.r.set_background(Some(GREY)).unwrap();
         let d = square(100, 100, 64, Paint::Flat(BLUE));
         g.set(0, Some(d));
@@ -2811,7 +2818,7 @@ mod set_up {
         // made again every frame).
         let lists = shortcuts(12, 200, 60);
         assert!(lists < LISTS, "{lists}");
-        let lists = shortcuts(64, 120, 40);
+        let lists = shortcuts(64, 180, 40);
         assert!(lists >= LISTS, "the cache must fill: {lists}");
     }
 
@@ -2951,7 +2958,7 @@ fn a_quad_off_the_screen_stores_nothing_until_it_shows() {
     // written again (its words were never overwritten, but nothing relies
     // on that).
     g.set(0, Some(square(100, 100, 64, Paint::Flat(BLUE))));
-    assert_eq!(g.r.mem_words - before, 34);
+    assert_eq!(g.r.mem_words - before, 22);
     g.frame();
     assert_eq!(
         (g.px(100, 100), g.px(163, 163), g.px(164, 100)),
