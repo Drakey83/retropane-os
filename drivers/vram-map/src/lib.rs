@@ -60,9 +60,25 @@ const fn r(name: &'static str, at: u32, size: u32, align: u32) -> Region {
     }
 }
 
-/// The loader's and Windows Mobile's display planes (below 1 MiB; the
-/// loader's at `0x60000`). Kept while the loader may still show them.
-pub const PLANES: Region = r("loader and WM planes", 0, 0x000F_C000, 4);
+/// The end of the safe region (ADR-0034 amendment P, rules 1-2; quality
+/// audit C71): while the 3D core draws, the display reads only below it,
+/// or what the core writes comes out wrong (G16-G20, C71's runs: at
+/// every clock). 696 KiB, the largest measured harmless on the owner's
+/// X51v (G19: right while the screen ends by `0xAE000`, wrong from
+/// `0xB6000`); the smallest proven until each device's self-test measures
+/// its own (amendment P, P3).
+pub const SAFE_END: u32 = 0x000A_E000;
+
+/// The loader's and Windows Mobile's display planes, after the screen:
+/// the video band inside the safe region (amendment P rule 1, ~96 KiB)
+/// and the rest of the first MiB. The loader's own picture at `0x60000`
+/// is under screen 0 from the moment an image shows its screen.
+pub const PLANES: Region = r(
+    "video band and loader planes",
+    SCREEN_BYTES,
+    0x000F_C000 - SCREEN_BYTES,
+    4,
+);
 /// 3D parameter memory manager's 16 KiB block (16 KiB aligned).
 /// **Proposed** (ADR-0026/0027): placement rules only partly known.
 pub const PM_TABLE: Region = r("3D memory manager block", 0x000F_C000, 0x4000, 0x4000);
@@ -71,8 +87,13 @@ pub const PM_TABLE: Region = r("3D memory manager block", 0x000F_C000, 0x4000, 0
 /// **Proposed.**
 pub const PARAMS: Region = r("3D parameter memory", 0x0010_0000, 0x0010_0000, 0x1000);
 /// ADR-0023's two screen pictures, RGB565 (option L1, 2026-10-21).
+/// Screen 0 at `0x0`, inside the safe region ([`SAFE_END`]): the one
+/// shown, and drawn by the 3D core, while the 3D core works (ADR-0034
+/// amendment P, P1 C; Windows Mobile's place, G17). Screen 1 outside:
+/// its job under P1 C is the owner's ruling (docs/design/c71-screen-place.md:
+/// R-A drops it, R-B keeps it as the 2D renderer's back picture).
 pub const SCREENS: [Region; 2] = [
-    r("screen 0", 0x0020_0000, SCREEN_BYTES, 0x1000),
+    r("screen 0", 0, SCREEN_BYTES, 0x1000),
     r("screen 1", 0x0029_6000, SCREEN_BYTES, 0x1000),
 ];
 /// The 2D renderer's work picture, 32-bit: each changed rectangle is
@@ -99,9 +120,28 @@ pub const FENCE: Region = r("2D fence", 0x00FF_F000, 0x1000, 4);
 
 /// Every fixed region, in address order.
 pub const MAP: [Region; 15] = [
-    PLANES, PM_TABLE, PARAMS, SCREENS[0], SCREENS[1], WORK, WALLPAPER, ROWS, IMAGES, GLYPHS,
+    SCREENS[0], PLANES, PM_TABLE, PARAMS, SCREENS[1], WORK, WALLPAPER, ROWS, IMAGES, GLYPHS,
     BACKGROUND, DITHER, CACHE, POOL, FENCE,
 ];
+
+/// Screen 0 inside the safe region, the video band after it, and nothing
+/// else of the map there (amendment P rules 1 and 5).
+const _: () = assert!(SCREENS[0].at == 0 && SCREENS[0].end() <= SAFE_END);
+const _: () = assert!(safe_holds_only(&MAP, 2));
+
+/// Whether only the first `n` regions of `map` (in address order) start
+/// below [`SAFE_END`].
+#[must_use]
+pub const fn safe_holds_only(map: &[Region], n: usize) -> bool {
+    let mut k = n;
+    while k < map.len() {
+        if map[k].at < SAFE_END {
+            return false;
+        }
+        k += 1;
+    }
+    true
+}
 
 /// The space handed out at run time (textures, the 3D core's per-tile
 /// buffer and region arrays, depth, video frames): from the area cache's
