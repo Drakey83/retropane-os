@@ -254,9 +254,19 @@ fn the_2x_fit_fills_every_phase_and_keeps_its_own_values() {
     assert_eq!(phase_sums(&f.vertical, 2), [ONE; 8]);
     // The two phases 2x uses hold the fit itself.
     for (k, &want) in h.iter().enumerate() {
-        assert_eq!(f.horizontal[H_LEN - 1 - (2 + 4 * k)], want, "across at {}", 2 + 4 * k);
+        assert_eq!(
+            f.horizontal[H_LEN - 1 - (2 + 4 * k)],
+            want,
+            "across at {}",
+            2 + 4 * k
+        );
     }
     for (k, &want) in v.iter().enumerate() {
-        assert_eq!(f.vertical[V_LEN - 1 - (2 + 4 * k)], want, "down at {}", 2 + 4 * k);
+        assert_eq!(
+            f.vertical[V_LEN - 1 - (2 + 4 * k)],
+            want,
+            "down at {}",
+            2 + 4 * k
+        );
     }
 }
