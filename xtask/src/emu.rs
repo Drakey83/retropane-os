@@ -3604,11 +3604,7 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
     let file = slot_file(&sd, "glesfeat", 1).map_err(|e| format!("glesfeat G9: {e}"))?;
     let raw = card_file(&sd, &file).map_err(|e| format!("glesfeat G9: card log: {e}"))?;
     let card_log: Vec<u8> = rp_hal_x51v::cardlog::join(Some(&raw), None).collect();
-    let card_log = String::from_utf8_lossy(&card_log).replace(
-        "
-", "
-",
-    );
+    let card_log = String::from_utf8_lossy(&card_log).replace("\r\n", "\n");
     if !card_log.contains("[card log closed: the run returned") {
         return Err(format!(
             "glesfeat G9: the card log wasn't closed as a run that returned:{card_log}"
