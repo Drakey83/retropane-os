@@ -79,7 +79,20 @@ render, the poll. Fastest of 10.)
   times for each game, not by pixel count; the 8- and 60-frame
   thresholds provisional, fitted on the first game port; nothing ticked
   until a device run switches routes every N frames with every frame
-  hashed whole (R101).
+  hashed whole (R101). **Ticked by the owner, 2026-10-29 ("Adopt C'"),
+  on R101's runs (`rp-gpubench` GC2DB and GC2DC 1-4, 2700g.md "Route
+  switches"):** the switch is **way C'**: the video plane is never hidden
+  in a game; under an opaque graphics plane for native and the lines
+  (its base pointed at the shown picture, so it reads inside the safe
+  region), the graphics plane see-through over it for the smooth route;
+  every switch is the graphics plane's registers and the video plane's
+  base, written on scan line 0 (the registers act at once; the clean
+  window is lines 643-3 of the 645-line frame). Measured: a switch every
+  frame and every 8 frames, 2,400 of 2,400 frames whole by `DSIG` (which
+  covers the whole picture, every bit); its cost +0.25% of a native
+  render (~50 us), renders exact. Today's hide-and-show and Dell's stream
+  bit each tear one frame entering the smooth route. Not yet covered:
+  the switch at 149.50 / 2 while rendering (R108).
 - **G3: as written.**
 - **G4: two frames in flight for route 2** (way (e): 800 of 800 frames
   right, every frame read back, at Windows Mobile's clock and 74.75 / 1,
