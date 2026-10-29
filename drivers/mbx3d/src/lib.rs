@@ -185,6 +185,35 @@ pub fn triangle(isp: u32, tsp: u32, v: &[Vertex; 3]) -> [u32; TRIANGLE_WORDS] {
     w
 }
 
+/// A strip pointer for a four-corner object: mask bits 30 and 29 (both
+/// triangles of a strip of four) and layout 5 (bits 24-21), the
+/// parameters' offset in words below. The tile accelerator writes it for a
+/// strip of four (`rp-glesfeat` test G, 2026-10-23: `0x60A098A0`), Dell's
+/// display driver for its flat rectangle (`ddi_2700g.dll` `0x02117d9c`:
+/// `0x60A00208`); one such object drew exactly what two [`triangle`]s draw
+/// on the X51v at Windows Mobile's clock (test G2, docs/hw/2700g.md).
+pub const STRIP_QUAD: u32 = 0x60A0_0000;
+/// Words in a four-corner object: ISP, TSP, then 20.
+pub const QUAD_WORDS: usize = 22;
+
+/// A four-corner object: `[ISP, TSP, x0, y0 .. x3, y3, z0..3, rhw0..3,
+/// colour0..3]`, the corners in strip order (the triangles `v0 v1 v2` and
+/// `v1 v2 v3`, the diagonal `v1`-`v2` shared): test G2's form.
+#[must_use]
+pub fn quad(isp: u32, tsp: u32, v: &[Vertex; 4]) -> [u32; QUAD_WORDS] {
+    let mut w = [0u32; QUAD_WORDS];
+    w[0] = isp;
+    w[1] = tsp;
+    for (k, p) in v.iter().enumerate() {
+        w[2 + 2 * k] = p.x.to_bits();
+        w[3 + 2 * k] = p.y.to_bits();
+        w[10 + k] = p.z.to_bits();
+        w[14 + k] = p.rhw.to_bits();
+        w[18 + k] = p.argb;
+    }
+    w
+}
+
 /// An object list with one triangle whose parameters are `params_offset`
 /// bytes into the parameter buffer (register `0x60C`): the strip pointer,
 /// then the end word.
@@ -384,6 +413,40 @@ pub mod tex {
             w[17 + 3 * k] = p.argb;
             w[18 + 3 * k] = p.u.to_bits();
             w[19 + 3 * k] = p.v.to_bits();
+        }
+        w
+    }
+
+    /// A strip pointer for a textured four-corner object: mask bits 30 and
+    /// 29 and layout 9 (the textured triangle's layout 8, plus the fourth
+    /// corner, as flat 4 is to 5). Dell's display driver builds its
+    /// textured rectangle so (`ddi_2700g.dll` `0x02117d9c`: list word
+    /// `0x612001DC`, the corners filled by `0x02118414`; static,
+    /// 2026-10-28). Not yet drawn by our code on the X51v.
+    pub const STRIP_QUAD: u32 = 0x6120_0000;
+    /// Words in a textured four-corner object: `ISP, TEX0, TEX1, TEX2,
+    /// TSP`, then 28 (Dell's object spans `0x21` words).
+    pub const QUAD_WORDS: usize = 33;
+
+    /// A textured four-corner object: the header as [`triangle`]'s, the
+    /// four x/y pairs, z, 1/w, then per corner its colour, u and v (Dell's
+    /// `0x02118414`: x/y from `+0x14`, colour and texture coordinates
+    /// from `+0x54`, 12 bytes a corner), the corners in strip order (the
+    /// triangles `v0 v1 v2` and `v1 v2 v3`).
+    #[must_use]
+    pub fn quad(isp: u32, texw: [u32; 3], tsp: u32, v: &[Vertex; 4]) -> [u32; QUAD_WORDS] {
+        let mut w = [0u32; QUAD_WORDS];
+        w[0] = isp;
+        w[1..4].copy_from_slice(&texw);
+        w[4] = tsp;
+        for (k, p) in v.iter().enumerate() {
+            w[5 + 2 * k] = p.x.to_bits();
+            w[6 + 2 * k] = p.y.to_bits();
+            w[13 + k] = p.z.to_bits();
+            w[17 + k] = p.rhw.to_bits();
+            w[21 + 3 * k] = p.argb;
+            w[22 + 3 * k] = p.u.to_bits();
+            w[23 + 3 * k] = p.v.to_bits();
         }
         w
     }

@@ -616,6 +616,28 @@ pub fn texels16(d: &Draw) -> Option<u32> {
     u32::try_from(a.max(b)).ok()
 }
 
+/// How a quad goes to the core (R78 item 3).
+///
+/// Dell's GLES driver sends a quad as a strip of four and its tile
+/// accelerator writes one four-corner object (`rp-glesfeat` test G); its
+/// display driver writes its rectangles as four-corner objects directly
+/// (`ddi_2700g.dll` `0x02117d9c`); the textbook (and our first renderer)
+/// splits every quad into two triangles. Ours: one four-corner object
+/// written straight into the parameter memory (no tile accelerator), a
+/// third fewer words a quad (22 for 34 flat, 33 for 52 textured) and half
+/// the list words in every tile it touches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Objects {
+    /// Two one-triangle objects a quad (the form every device run up to
+    /// 2026-10-28 drew).
+    #[default]
+    Triangles,
+    /// One four-corner object a quad: flat and Gouraud drew exactly as two
+    /// triangles on the X51v (test G2); textured (layout 9, Dell's
+    /// rectangle) not yet drawn by our code on the device.
+    Quads,
+}
+
 /// Where things sit in the parameter memory, in bytes from its start (the
 /// start table's `0x60C`; strip pointers count words from it).
 const BG_AT: u32 = 64;
@@ -637,15 +659,28 @@ enum Kind {
     Empty,
     Flat,
     Textured,
+    /// One four-corner object ([`Objects::Quads`]).
+    FlatQuad,
+    /// See [`Self::FlatQuad`].
+    TexturedQuad,
 }
 
 impl Kind {
-    /// The strip pointer flags and the words of one object.
-    const fn strip(self) -> (u32, u32) {
+    /// The strip pointer flags, the words of one object and the objects a
+    /// quad takes.
+    const fn strip(self) -> (u32, u32, u32) {
         match self {
-            Self::Textured => (tex::STRIP_GAME, tex::WORDS as u32),
-            _ => (m3::STRIP_ONE_TRIANGLE, m3::TRIANGLE_WORDS as u32),
+            Self::Textured => (tex::STRIP_GAME, tex::WORDS as u32, 2),
+            Self::FlatQuad => (m3::STRIP_QUAD, m3::QUAD_WORDS as u32, 1),
+            Self::TexturedQuad => (tex::STRIP_QUAD, tex::QUAD_WORDS as u32, 1),
+            _ => (m3::STRIP_ONE_TRIANGLE, m3::TRIANGLE_WORDS as u32, 2),
         }
+    }
+
+    /// Whether its objects carry the texture words (the header `ISP,
+    /// TEX0-2, TSP`).
+    const fn textured(self) -> bool {
+        matches!(self, Self::Textured | Self::TexturedQuad)
     }
 }
 
@@ -725,8 +760,9 @@ fn draw_tiles(d: &Draw, cols: u32, rows: u32) -> TileRect {
     )
 }
 
-/// A quad's two objects: the words and their kind.
-fn encode(d: &Draw, flip: bool, rot: usize) -> ([u32; SLOT_WORDS], usize, Kind) {
+/// A quad's objects (two triangles, or one four-corner object): the words
+/// and their kind.
+fn encode(d: &Draw, objects: Objects, flip: bool, rot: usize) -> ([u32; SLOT_WORDS], usize, Kind) {
     // The second word is the alpha test only; the depth mode goes in the
     // TSP (writing it here too made "less" test "alpha < 0": ADR-0026).
     let isp = match d.alpha {
@@ -760,7 +796,52 @@ fn encode(d: &Draw, flip: bool, rot: usize) -> ([u32; SLOT_WORDS], usize, Kind) 
     } else {
         [[0, 1, 3], [1, 2, 3]]
     };
+    // The same two triangles as one strip of four (`v0 v1 v2`, then
+    // `v1 v3 v2`, the winding kept): top left, top right, bottom left,
+    // bottom right (test G2's order); flipped, top right, bottom right, top
+    // left, bottom left. The vertex rotation is the triangles' alone (a
+    // measurement's).
+    let strip: [usize; 4] = if flip { [1, 2, 0, 3] } else { [0, 1, 3, 2] };
     let mut w = [0u32; SLOT_WORDS];
+    if objects == Objects::Quads {
+        return match d.paint {
+            Paint::Flat(_) | Paint::Gouraud(_) => {
+                let (colours, tsp) = match d.paint {
+                    Paint::Gouraud(c) => (c, m3::TSP_DELL | m3::TSP_GOURAUD),
+                    Paint::Flat(c) | Paint::Texture { tint: c, .. } => ([c; 4], m3::TSP_DELL),
+                };
+                let v = strip.map(|k| {
+                    let (x, y) = pos(k);
+                    m3::Vertex {
+                        x,
+                        y,
+                        z,
+                        rhw,
+                        argb: colours[k],
+                    }
+                });
+                w[..m3::QUAD_WORDS].copy_from_slice(&m3::quad(isp, state(tsp), &v));
+                (w, m3::QUAD_WORDS, Kind::FlatQuad)
+            }
+            Paint::Texture { tex: t, uv, tint } => {
+                let tsp = state(m3::ta::TSP_DELL_TEXTURED);
+                let v = strip.map(|k| {
+                    let (x, y) = pos(k);
+                    tex::Vertex {
+                        x,
+                        y,
+                        z,
+                        rhw,
+                        argb: tint,
+                        u: f32::from_bits(fixed::f32_bits(uv[k].0, 16)),
+                        v: f32::from_bits(fixed::f32_bits(uv[k].1, 16)),
+                    }
+                });
+                w[..tex::QUAD_WORDS].copy_from_slice(&tex::quad(isp, t.words(), tsp, &v));
+                (w, tex::QUAD_WORDS, Kind::TexturedQuad)
+            }
+        };
+    }
     match d.paint {
         Paint::Flat(_) | Paint::Gouraud(_) => {
             let (colours, tsp) = match d.paint {
@@ -1114,6 +1195,8 @@ pub struct Renderer {
     /// A measurement's mask XORed into word `.0` (0 ISP, 1 TSP) of every
     /// flat triangle (`rp-gpubench` run GC2BX's bit search).
     flat_xor: (usize, u32),
+    /// How each quad goes to the core ([`Objects`]).
+    objects: Objects,
 }
 
 /// The order the tiles are listed for the core in (the picture is the same
@@ -1252,6 +1335,7 @@ impl Renderer {
             diagonal_flip: false,
             vertex_rotate: 0,
             flat_xor: (0, 0),
+            objects: Objects::Triangles,
         })
     }
 
@@ -1327,6 +1411,14 @@ impl Renderer {
     /// past 1 or a zero mask flips nothing (`rp-gpubench` run GC2BX).
     pub fn set_flat_xor(&mut self, word: usize, mask: u32) {
         self.flat_xor = if word < 2 { (word, mask) } else { (0, 0) };
+    }
+
+    /// How each quad goes to the core from the next [`Self::set`] on: two
+    /// triangles (the default) or one four-corner object ([`Objects`]). A
+    /// slot set again in the other form is written again, and the lists
+    /// naming it with it.
+    pub fn set_objects(&mut self, objects: Objects) {
+        self.objects = objects;
     }
 
     /// The order the tiles are listed for the core in ([`TileOrder`]).
@@ -1430,29 +1522,30 @@ impl Renderer {
         let new = match draw {
             None => Slot::default(),
             Some(d) => {
-                let (mut words, n, kind) = encode(d, self.diagonal_flip, self.vertex_rotate);
+                let (mut words, n, kind) =
+                    encode(d, self.objects, self.diagonal_flip, self.vertex_rotate);
+                // Each object's header sits where a triangle's does (the
+                // four-corner forms keep it: `m3::quad`, `m3::tex::quad`).
+                let (_, per, objs) = kind.strip();
+                let (per, objs) = (per as usize, objs as usize);
                 let (fw, fmask) = self.flat_xor;
-                if kind == Kind::Flat && fmask != 0 {
-                    for t in 0..2 {
-                        words[t * m3::TRIANGLE_WORDS + fw] ^= fmask;
+                if !kind.textured() && fmask != 0 {
+                    for t in 0..objs {
+                        words[t * per + fw] ^= fmask;
                     }
                 }
-                if kind == Kind::Textured {
+                if kind.textured() {
                     for (hw, &mask) in self.header_xor.iter().enumerate() {
-                        for t in 0..2 {
-                            words[t * m3::tex::WORDS + hw] ^= mask;
+                        for t in 0..objs {
+                            words[t * per + hw] ^= mask;
                         }
                     }
                 }
                 if self.tsp_or != 0 {
-                    // The TSP: word 4 of a textured triangle, word 1 of a
+                    // The TSP: word 4 of a textured object, word 1 of a
                     // flat one (`m3::tex::triangle`, `m3::triangle`).
-                    let (per, at) = if kind == Kind::Textured {
-                        (m3::tex::WORDS, 4)
-                    } else {
-                        (m3::TRIANGLE_WORDS, 1)
-                    };
-                    for t in 0..2 {
+                    let at = if kind.textured() { 4 } else { 1 };
+                    for t in 0..objs {
                         words[t * per + at] |= self.tsp_or;
                     }
                 }
@@ -2005,11 +2098,13 @@ impl Renderer {
         while m != 0 {
             let s = m.trailing_zeros();
             m &= m - 1;
-            let (flags, words) = self.slots[s as usize].kind.strip();
+            let (flags, words, objs) = self.slots[s as usize].kind.strip();
             let base = (SLOTS_AT + s * SLOT_BYTES) / 4;
             w[n] = flags | base;
-            w[n + 1] = flags | (base + words);
-            n += 2;
+            if objs == 2 {
+                w[n + 1] = flags | (base + words);
+            }
+            n += objs as usize;
         }
         n += 1; // the end word
         let at = self.arena;

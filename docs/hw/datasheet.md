@@ -251,6 +251,16 @@ watching.
   TEX2 or render-block bit sets it otherwise. Texels sampled at the pixel's
   corner. **With TEX1 bit 29 the stride is the declared width** (across
   code; 32-1,024 texels; GC2CI), no cost against twiddled reads (GC2CJ).
+- **3D four-corner objects** (object list flags; G2 measured, layout 9
+  static): list word `0x60A00000 | offset` (mask bits 30-29, layout 5) =
+  one flat or Gouraud object of four corners in strip order, 22 words
+  (ISP, TSP, x/y x 4, z x 4, 1/w x 4, colour x 4): drew exactly what its two
+  triangles draw (`rp-glesfeat` G2, X51v, 2026-10-23). `0x61200000 |
+  offset` (layout 9) = the textured form, 33 words (ISP, TEX0-2, TSP, x/y x
+  4, z x 4, 1/w x 4, then colour, u, v a corner): Dell's display driver's
+  rectangle (`ddi_2700g.dll` `0x02117d9c`, `0x02118414`; static,
+  2026-10-28), **not yet drawn by our code on the X51v**. The renderer
+  writes both (`Objects::Quads`, R78 item 3).
 - **TEX2 `0x86096612`** (Dell's DOT3 entry, kinds 3-4) = per-channel
   `clamp(4 x texel x vertex colour)`, no cross-channel sum; `0xC6046608`
   draws white (`rp-gpubench` GC2CJ, X51v, 2026-10-28).

@@ -6,7 +6,9 @@
 //! Modelled (measured): 8 x 16 tiles written whole, uncovered pixels white;
 //! unlisted tiles untouched; the target `0x65C` at any pixel offset with
 //! the stride `0x660`; the flat (17-word) and textured (26-word) one-
-//! triangle objects behind strip pointers `0x40800000` / `0x41000000`; flat
+//! triangle objects behind strip pointers `0x40800000` / `0x41000000`, and
+//! the flat (22-word) four-corner object behind `0x60A00000` (test G2: one
+//! drew exactly what its two triangles draw); flat
 //! shading from the first vertex, Gouraud with TSP bit 22; twiddled point-
 //! sampled textures in the four decoded formats, wrap/mirror/clamp from
 //! TEX0 bits 31-28; blending with TSP bit 13 and the factors in bits 31-26
@@ -21,7 +23,10 @@
 //!
 //! Assumed (not measured; listed in docs/hw/emulator.md): pixel centres at
 //! +0.5 with a top-left fill rule (each pixel of a shared edge drawn once);
-//! Gouraud and modulate rounding; 5/6-bit texel channels widened by
+//! Gouraud and modulate rounding; the textured four-corner object (33
+//! words behind `0x61200000`, Dell's display driver's rectangle, not yet
+//! drawn by our code on the device) drawn as its strip's two triangles,
+//! as the flat one measured; 5/6-bit texel channels widened by
 //! repeating their top bits; both windings drawn; `0x654`/`0x658` not
 //! clipping; the core's state kept across the 3D clock off is measured
 //! (T9). Anything else in the words panics, so a test sees the
@@ -263,8 +268,10 @@ impl Gpu {
                 }
                 let at = params + (p & 0x001F_FFFF) * 4;
                 let o = match p & 0xFFE0_0000 {
-                    m3::STRIP_ONE_TRIANGLE => Obj::flat(&m, at),
-                    tex::STRIP_GAME => Obj::textured(&m, at),
+                    m3::STRIP_ONE_TRIANGLE => Obj::flat(&m, at, 3),
+                    tex::STRIP_GAME => Obj::textured(&m, at, 3),
+                    m3::STRIP_QUAD => Obj::flat(&m, at, 4),
+                    tex::STRIP_QUAD => Obj::textured(&m, at, 4),
                     f => panic!("strip pointer flags {f:#010x} never measured"),
                 };
                 // TEX1 bit 30 without bit 29 (mipmap "linear", no levels)
@@ -277,10 +284,13 @@ impl Gpu {
                 }
                 o.draw(&m, &mut tile);
                 // Time: every object but the tile's first (the
-                // background), each half a quad (run 2's fit).
+                // background), each half a quad (run 2's fit); a
+                // four-corner object as its two triangles (assumed: its
+                // time on the core is to measure).
                 if j > 0 {
                     // 1:1 assumed: the model doesn't keep the quad's scale.
-                    quads += quad_cost(o.tex.is_some().then_some(16), o.tsp & m3::TSP_BLEND != 0);
+                    let c = quad_cost(o.tex.is_some().then_some(16), o.tsp & m3::TSP_BLEND != 0);
+                    quads += c * (o.n as u32 - 2);
                 }
             }
             // The target's format (`0x650`, version 26 and `rp-gpubench`
@@ -440,7 +450,9 @@ struct Obj {
     isp: u32,
     tsp: u32,
     tex: Option<[u32; 3]>,
-    v: [V; 3],
+    /// The corners, in strip order; `n` of them (3 or 4).
+    v: [V; 4],
+    n: usize,
 }
 
 fn f(w: u32) -> f64 {
@@ -448,45 +460,71 @@ fn f(w: u32) -> f64 {
 }
 
 impl Obj {
-    fn flat(m: &[u8], at: u32) -> Self {
+    /// A flat object of `n` corners: ISP, TSP, the x/y pairs, then z, 1/w
+    /// and the colours, `n` words each (17 words for 3, 22 for 4).
+    fn flat(m: &[u8], at: u32, n: usize) -> Self {
         let w = |k: u32| Gpu::word(m, at + 4 * k);
-        let v = [0, 1, 2].map(|k| V {
-            x: f(w(2 + 2 * k)),
-            y: f(w(3 + 2 * k)),
-            z: f(w(8 + k)),
-            argb: w(14 + k),
-            u: 0.0,
-            v: 0.0,
+        let c = n as u32;
+        let v = [0, 1, 2, 3].map(|k: u32| {
+            let k = k.min(c - 1);
+            V {
+                x: f(w(2 + 2 * k)),
+                y: f(w(3 + 2 * k)),
+                z: f(w(2 + 2 * c + k)),
+                argb: w(2 + 4 * c + k),
+                u: 0.0,
+                v: 0.0,
+            }
         });
         Self {
             isp: w(0),
             tsp: w(1),
             tex: None,
             v,
+            n,
         }
     }
 
-    fn textured(m: &[u8], at: u32) -> Self {
+    /// A textured object of `n` corners: ISP, TEX0-2, TSP, the x/y pairs,
+    /// z, 1/w (`n` words each), then colour, u, v a corner (26 words for 3,
+    /// 33 for 4).
+    fn textured(m: &[u8], at: u32, n: usize) -> Self {
         let w = |k: u32| Gpu::word(m, at + 4 * k);
-        let v = [0, 1, 2].map(|k| V {
-            x: f(w(5 + 2 * k)),
-            y: f(w(6 + 2 * k)),
-            z: f(w(11 + k)),
-            argb: w(17 + 3 * k),
-            u: f(w(18 + 3 * k)),
-            v: f(w(19 + 3 * k)),
+        let c = n as u32;
+        let v = [0, 1, 2, 3].map(|k: u32| {
+            let k = k.min(c - 1);
+            V {
+                x: f(w(5 + 2 * k)),
+                y: f(w(6 + 2 * k)),
+                z: f(w(5 + 2 * c + k)),
+                argb: w(5 + 4 * c + 3 * k),
+                u: f(w(6 + 4 * c + 3 * k)),
+                v: f(w(7 + 4 * c + 3 * k)),
+            }
         });
         Self {
             isp: w(0),
             tsp: w(4),
             tex: Some([w(1), w(2), w(3)]),
             v,
+            n,
         }
     }
 
+    /// Draws its triangles into the tile: `v0 v1 v2`, then for a
+    /// four-corner object `v1 v3 v2` (the strip's second triangle, its
+    /// winding kept; which corner leads, and so the order the model sums
+    /// in, is assumed: our two-triangle form's, `rp-mbx3d` versions 21-23).
     fn draw(&self, m: &[u8], t: &mut Tile) {
-        let e = |a: V, b: V, x: f64, y: f64| (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
         let v = self.v;
+        self.triangle(m, t, [v[0], v[1], v[2]]);
+        if self.n == 4 {
+            self.triangle(m, t, [v[1], v[3], v[2]]);
+        }
+    }
+
+    fn triangle(&self, m: &[u8], t: &mut Tile, v: [V; 3]) {
+        let e = |a: V, b: V, x: f64, y: f64| (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
         let area = e(v[0], v[1], v[2].x, v[2].y);
         if area == 0.0 {
             return;

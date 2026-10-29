@@ -15,7 +15,7 @@
 
 use rp_drv_mbx3d::{self as m3, tex};
 
-use crate::{Draw, Error, Kind, LocalMem, Target, draw_tiles, encode, fixed};
+use crate::{Draw, Error, LocalMem, Objects, Target, draw_tiles, encode, fixed};
 
 /// Where the background object sits, in bytes from the parameter memory's
 /// start (as the renderer's).
@@ -169,6 +169,24 @@ pub fn bin_with<M: LocalMem>(
     draw: impl Fn(usize) -> Draw,
     scratch: Scratch<'_>,
 ) -> Result<Binned, Error> {
+    bin_objects(mem, l, background, (n, draw), scratch, Objects::Triangles)
+}
+
+/// [`bin_with`] with each quad written as `objects` says: two triangles
+/// (two objects and two list words a tile) or one four-corner object (one
+/// of each: R78 item 3).
+///
+/// # Errors
+///
+/// As [`bin`].
+pub fn bin_objects<M: LocalMem>(
+    mem: &mut M,
+    l: &Layout,
+    background: Option<u32>,
+    (n, draw): (usize, impl Fn(usize) -> Draw),
+    scratch: Scratch<'_>,
+    objects: Objects,
+) -> Result<Binned, Error> {
     let (cols, rows) = l.grid();
     let tiles = (cols * rows) as usize;
     if n > 1 << 16 || scratch.objects.len() < n || scratch.starts.len() <= tiles {
@@ -218,7 +236,8 @@ pub fn bin_with<M: LocalMem>(
         }
     }
 
-    // The objects, in order: the background, then each quad's two.
+    // The objects, in order: the background, then each quad's (two
+    // triangles or one four-corner object).
     let mut objs = Out::new(&mut *mem, l.params + BG_AT);
     let bg = background.map(|c| {
         objs.put_all(&background_object(c, l.w, l.h));
@@ -227,12 +246,8 @@ pub fn bin_with<M: LocalMem>(
     objs.flush();
     objs.at = l.params + OBJECTS_AT;
     for (i, d) in (0..n).map(&draw).enumerate() {
-        let (words, len, kind) = encode(&d, false, 0);
-        let flags = if kind == Kind::Textured {
-            tex::STRIP_GAME
-        } else {
-            m3::STRIP_ONE_TRIANGLE
-        };
+        let (words, len, kind) = encode(&d, objects, false, 0);
+        let (flags, _, _) = kind.strip();
         scratch.objects[i] = flags | ((objs.next_at() - l.params) / 4);
         if objs.next_at() + 4 * len as u32 > l.params + l.params_size {
             return Err(Error::TooComplex);
@@ -264,13 +279,13 @@ pub fn bin_with<M: LocalMem>(
             lists.put_all(bg.as_slice());
             for &q in &scratch.entries[begin..stop] {
                 let p = scratch.objects[usize::from(q)];
-                let words = if p & 0xFFE0_0000 == tex::STRIP_GAME {
-                    tex::WORDS as u32
-                } else {
-                    m3::TRIANGLE_WORDS as u32
-                };
                 lists.put(p);
-                lists.put(p + words);
+                // A triangle pair's second object follows its first.
+                match p & 0xFFE0_0000 {
+                    tex::STRIP_GAME => lists.put(p + tex::WORDS as u32),
+                    m3::STRIP_ONE_TRIANGLE => lists.put(p + m3::TRIANGLE_WORDS as u32),
+                    _ => {}
+                }
             }
             lists.put(m3::END);
             at

@@ -544,6 +544,7 @@ fn no_quad_sets_a_tsp_bit_that_hangs_the_core() {
                         depth: d,
                         ..square(0, 0, 8, paint)
                     },
+                    Objects::Triangles,
                     false,
                     0,
                 );
@@ -980,6 +981,7 @@ fn the_depth_mode_never_reaches_the_alpha_bits() {
                     write: true,
                     z: 1,
                 }),
+                Objects::Triangles,
                 false,
                 0,
             );
@@ -991,6 +993,7 @@ fn the_depth_mode_never_reaches_the_alpha_bits() {
             func: depth::GREATER,
             reference: 128,
         }),
+        Objects::Triangles,
         false,
         0,
     );
@@ -1747,6 +1750,52 @@ mod binner_scenes {
         assert_eq!(binned.region_words, 4800);
     }
 
+    #[test]
+    fn quads_binned_as_four_corner_objects_draw_the_same_in_fewer_words() {
+        // R78 item 3: 250 sprites (flat, Gouraud, textured, some blended)
+        // binned as two triangles, then as one four-corner object each.
+        let mut b = bench(250);
+        let t = texture(&mut b.mem);
+        let draws = scene(250, 16, t);
+        let tris = b.bin(Some(GREY), &draws).unwrap();
+        assert!(b.render());
+        let want = b.picture();
+        let quads = binner::bin_objects(
+            &mut b.mem,
+            &LAYOUT,
+            Some(GREY),
+            (draws.len(), |i| draws[i]),
+            Scratch {
+                starts: &mut b.starts,
+                entries: &mut b.entries,
+                objects: &mut b.objects,
+            },
+            Objects::Quads,
+        )
+        .unwrap();
+        assert!(b.render());
+        let got = b.picture();
+        assert_eq!(got.iter().zip(&want).filter(|(a, b)| a != b).count(), 0);
+        // Objects: 2 x 17 -> 22 flat or Gouraud, 2 x 26 -> 33 textured
+        // (the background's 17 in both); lists: one word an entry, not two.
+        let textured = draws
+            .iter()
+            .filter(|d| matches!(d.paint, Paint::Texture { .. }))
+            .count();
+        let flat = draws.len() - textured;
+        assert_eq!(
+            tris.object_words,
+            17 + 34 * flat as u32 + 52 * textured as u32
+        );
+        assert_eq!(
+            quads.object_words,
+            17 + 22 * flat as u32 + 33 * textured as u32
+        );
+        assert_eq!(tris.list_words - quads.list_words, tris.entries);
+        assert_eq!(quads.entries, tris.entries);
+        assert_eq!(quads.region_words, tris.region_words);
+    }
+
     /// Dell's way, the reference: every tile lists every object.
     fn one_list(b: &mut Bench, n: usize) {
         let mut list = std::vec![m3::STRIP_ONE_TRIANGLE | (64 / 4)];
@@ -2289,8 +2338,8 @@ fn registers_taken_and_a_prepared_render() {
 #[test]
 fn diagonal_flip_splits_the_quad_the_other_way() {
     let d = square(100, 100, 200, Paint::Flat(BLUE));
-    let (w, n, kind) = encode(&d, false, 0);
-    let (f, nf, kindf) = encode(&d, true, 0);
+    let (w, n, kind) = encode(&d, Objects::Triangles, false, 0);
+    let (f, nf, kindf) = encode(&d, Objects::Triangles, true, 0);
     assert_eq!((n, kind), (nf, kindf));
     assert_eq!(kind, Kind::Flat);
     let xy = |w: &[u32; SLOT_WORDS], t: usize, k: usize| {
@@ -2320,8 +2369,8 @@ fn diagonal_flip_splits_the_quad_the_other_way() {
 #[test]
 fn vertex_rotate_and_flat_xor() {
     let d = square(100, 100, 200, Paint::Flat(BLUE));
-    let (w, _, _) = encode(&d, false, 0);
-    let (r, _, _) = encode(&d, false, 1);
+    let (w, _, _) = encode(&d, Objects::Triangles, false, 0);
+    let (r, _, _) = encode(&d, Objects::Triangles, false, 1);
     let at = |w: &[u32; SLOT_WORDS], t: usize, k: usize| {
         let a = t * m3::TRIANGLE_WORDS;
         (w[a + 2 + 2 * k], w[a + 3 + 2 * k], w[a + 14 + k])
@@ -2332,7 +2381,7 @@ fn vertex_rotate_and_flat_xor() {
             assert_eq!(at(&r, t, k), at(&w, t, (k + 1) % 3));
         }
     }
-    let (r3, _, _) = encode(&d, false, 3);
+    let (r3, _, _) = encode(&d, Objects::Triangles, false, 3);
     assert_eq!(r3, w, "three places is none");
     // The flat XOR reaches the slot's words through `set`.
     let mut pool = Pool::new(POOL);
@@ -2343,4 +2392,248 @@ fn vertex_rotate_and_flat_xor() {
     assert_eq!(rr.flat_xor, (0, 0), "only the ISP and TSP words");
     rr.set_vertex_rotate(4);
     assert_eq!(rr.vertex_rotate, 1);
+}
+
+/// R78 item 3: each quad as one four-corner object ([`Objects::Quads`])
+/// against two triangles, through the renderer and the model.
+mod quad_objects {
+    use super::*;
+
+    /// A scene of every kind the renderer draws: a warped mesh (shared
+    /// corners, no quad a parallelogram), Gouraud, textured point sampled
+    /// and bilinear with wrap and mirror, blended, depth tested, alpha
+    /// tested.
+    fn scene(t: Texture, alpha: Texture) -> Vec<Draw> {
+        let corner = |gx: i32, gy: i32| {
+            let wobble = |a: i32, b: i32| ((a * 7 + b * 13) % 11 - 5) * SUB * 3 + (a * 5 + b) % 16;
+            let x = 480 * SUB * gx / 6 + if gx % 6 == 0 { 0 } else { wobble(gx, gy) };
+            let y = 640 * SUB * gy / 5 + if gy % 5 == 0 { 0 } else { wobble(gy, gx) };
+            Point { x, y }
+        };
+        let mut v = Vec::new();
+        for gy in 0..5 {
+            for gx in 0..6 {
+                let c = [
+                    corner(gx, gy),
+                    corner(gx + 1, gy),
+                    corner(gx + 1, gy + 1),
+                    corner(gx, gy + 1),
+                ];
+                let k = (gy * 6 + gx) as u32;
+                let col = 0xFF00_0000 | k.wrapping_mul(0x0012_3457) & 0x00FF_FFFF;
+                let paint = match k % 4 {
+                    0 => Paint::Flat(col),
+                    1 => Paint::Gouraud([col, !col | 0xFF00_0000, col ^ 0x00FF_00FF, RED]),
+                    2 => Paint::Texture {
+                        tex: t.with_modes(address::WRAP, address::MIRROR),
+                        uv: c.map(|p| (p.x * 40, p.y * 33)),
+                        tint: 0xFFFF_FFFF,
+                    },
+                    _ => Paint::Texture {
+                        tex: t.with_linear(true),
+                        uv: c.map(|p| (p.x * 9, p.y * 11)),
+                        tint: col,
+                    },
+                };
+                let mut d = Draw::rect(0, 0, 1, 1, paint);
+                d.corners = c;
+                v.push(d);
+            }
+        }
+        // Over the mesh: a translucent band, a depth-tested pair, a
+        // cut-out sprite, a slanted textured quad.
+        v.push(Draw::rect(30, 200, 420, 90, Paint::Flat(0x80FF_FFFF)).over());
+        let z = |mode, write, z| Depth { mode, write, z };
+        v.push(
+            Draw::rect(60, 400, 200, 120, Paint::Flat(BLUE)).with_depth(z(
+                depth::ALWAYS,
+                true,
+                0x8000,
+            )),
+        );
+        v.push(
+            Draw::rect(160, 450, 200, 120, Paint::Flat(RED)).with_depth(z(
+                depth::GREATER,
+                false,
+                0x4000,
+            )),
+        );
+        v.push(
+            Draw::rect(300, 60, 128, 128, Paint::texture(alpha)).with_alpha_test(AlphaTest {
+                func: depth::GREATER,
+                reference: 0x80,
+            }),
+        );
+        let mut slant = Draw::rect(0, 0, 1, 1, Paint::texture(t));
+        slant.corners = [
+            Point::px(20, 20),
+            Point::px(250, 45),
+            Point::px(230, 170),
+            Point::px(5, 140),
+        ];
+        v.push(slant.over());
+        v
+    }
+
+    fn textures(g: &mut Rig) -> (Texture, Texture) {
+        let t = columns(g);
+        let texels: Vec<u16> = (0..64u16)
+            .map(|i| {
+                if (i % 8 + i / 8) % 3 == 0 {
+                    0x0F0F
+                } else {
+                    0xF0F0 | i
+                }
+            })
+            .collect();
+        let a = upload(&mut g.pool, &mut g.mem, 0, format::ARGB4444, &texels).unwrap();
+        (t, a)
+    }
+
+    fn picture(g: &Rig) -> Vec<u32> {
+        (0..640)
+            .flat_map(|y| (0..480).map(move |x| (x, y)))
+            .map(|(x, y)| g.px(x, y))
+            .collect()
+    }
+
+    /// The scene drawn with `objects` (the diagonal flipped or not): its
+    /// picture and the frame's words.
+    fn draw(objects: Objects, flip: bool) -> (Vec<u32>, FrameStats) {
+        let mut g = rig(480, 640);
+        g.r.set_background(Some(GREY)).unwrap();
+        g.r.set_objects(objects);
+        g.r.set_diagonal_flip(flip);
+        let (t, a) = textures(&mut g);
+        for (k, d) in scene(t, a).iter().enumerate() {
+            g.set(k, Some(*d));
+        }
+        let s = g.frame();
+        (picture(&g), s)
+    }
+
+    #[test]
+    fn a_four_corner_object_draws_what_its_two_triangles_draw() {
+        for flip in [false, true] {
+            let (want, tris) = draw(Objects::Triangles, flip);
+            let (got, quads) = draw(Objects::Quads, flip);
+            let wrong = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+            // Unflipped, each triangle keeps its corners' order: exact. The
+            // flipped diagonal (a measurement's, run GC2BU) can't: a strip's
+            // diagonal is `v1`-`v2`, so its first triangle leads with
+            // another corner and the model's sums round otherwise at exact
+            // ties (10 pixels of 307,200 here).
+            let most = if flip { 16 } else { 0 };
+            assert!(wrong <= most, "flip {flip}: {wrong} pixels differ");
+            assert_eq!((quads.tiles, quads.quads), (tris.tiles, tris.quads));
+            // Fewer words: a third of each quad's objects, and one list word
+            // an entry in place of two.
+            assert!(quads.mem_words < tris.mem_words, "{quads:?} {tris:?}");
+        }
+        // The flipped diagonal draws differently (the test can see it).
+        assert_ne!(draw(Objects::Quads, false).0, draw(Objects::Quads, true).0);
+    }
+
+    #[test]
+    fn a_quad_takes_22_or_33_words_and_one_list_word() {
+        let mut g = rig(480, 640);
+        let t = columns(&mut g);
+        g.r.set_objects(Objects::Quads);
+        let before = g.r.mem_words;
+        g.set(0, Some(square(8, 16, 8, Paint::Flat(RED))));
+        assert_eq!(g.r.mem_words - before, 22);
+        g.set(1, Some(square(8, 16, 8, Paint::texture(t))));
+        assert_eq!(g.r.mem_words - before, 22 + 33);
+        g.r.set_objects(Objects::Triangles);
+        g.set(2, Some(square(8, 16, 8, Paint::Flat(RED))));
+        g.set(3, Some(square(8, 16, 8, Paint::texture(t))));
+        assert_eq!(g.r.mem_words - before, 22 + 33 + 34 + 52);
+        // Tile (1, 1)'s list: background, one word for each quad slot, two
+        // for each triangle slot, the end.
+        let s = g.frame();
+        assert_eq!(s.quads, 4);
+        let at = g.r.lists[..g.r.nlists]
+            .iter()
+            .find(|l| l.mask == 0b1111)
+            .expect("the four slots' list")
+            .at;
+        let words: Vec<u32> = (0..8)
+            .map(|k| g.mem.load((g.r.params.at + at + 4 * k) as usize).unwrap())
+            .collect();
+        let slot = |s: u32| (SLOTS_AT + s * SLOT_BYTES) / 4;
+        assert_eq!(
+            words,
+            [
+                m3::STRIP_ONE_TRIANGLE | (BG_AT / 4),
+                m3::STRIP_QUAD | slot(0),
+                tex::STRIP_QUAD | slot(1),
+                m3::STRIP_ONE_TRIANGLE | slot(2),
+                m3::STRIP_ONE_TRIANGLE | (slot(2) + 17),
+                tex::STRIP_GAME | slot(3),
+                tex::STRIP_GAME | (slot(3) + 26),
+                m3::END,
+            ]
+        );
+    }
+
+    #[test]
+    fn switching_forms_rewrites_the_slot_and_its_lists() {
+        let mut g = rig(480, 640);
+        g.r.set_background(Some(GREY)).unwrap();
+        let d = square(100, 100, 64, Paint::Flat(BLUE));
+        g.set(0, Some(d));
+        g.frame();
+        let want = picture(&g);
+        g.r.set_objects(Objects::Quads);
+        let before = g.r.mem_words;
+        g.set(0, Some(d));
+        assert_eq!(
+            g.r.mem_words - before,
+            22,
+            "the same draw in the other form is written"
+        );
+        let s = g.frame();
+        assert!(s.lists > 0, "lists naming the slot written again");
+        assert_eq!(picture(&g), want);
+    }
+
+    #[test]
+    fn the_quad_words_sit_where_dells_rectangle_has_them() {
+        // `ddi_2700g.dll` 0x02117d9c / 0x02118414 / 0x02118608: flat x/y
+        // from word 2, z 10-13, 1/w 14-17 (1.0), colours 18-21; textured
+        // TEX0-2 1-3, TSP 4, x/y from 5, z 13-16, 1/w 17-20, then colour,
+        // u, v from 21, 3 words a corner, 0x21 words in all.
+        let f = |v: f32| v.to_bits();
+        let v = |k: u32| m3::Vertex {
+            x: k as f32,
+            y: 10.0 + k as f32,
+            z: 0.5,
+            rhw: 1.0,
+            argb: 0xC0 + k,
+        };
+        let w = m3::quad(1, 2, &[v(0), v(1), v(2), v(3)]);
+        assert_eq!(w.len(), 22);
+        assert_eq!(&w[..4], &[1, 2, f(0.0), f(10.0)]);
+        assert_eq!(w[8..10], [f(3.0), f(13.0)]);
+        assert_eq!(w[10..14], [f(0.5); 4]);
+        assert_eq!(w[14..18], [f(1.0); 4]);
+        assert_eq!(w[18..22], [0xC0, 0xC1, 0xC2, 0xC3]);
+        let tv = |k: u32| tex::Vertex {
+            x: k as f32,
+            y: 10.0 + k as f32,
+            z: 0.5,
+            rhw: 1.0,
+            argb: 0xC0 + k,
+            u: 0.25 * k as f32,
+            v: 0.125 * k as f32,
+        };
+        let w = tex::quad(1, [2, 3, 4], 5, &[tv(0), tv(1), tv(2), tv(3)]);
+        assert_eq!(w.len(), 0x21);
+        assert_eq!(&w[..7], &[1, 2, 3, 4, 5, f(0.0), f(10.0)]);
+        assert_eq!(w[11..13], [f(3.0), f(13.0)]);
+        assert_eq!(w[13..17], [f(0.5); 4]);
+        assert_eq!(w[17..21], [f(1.0); 4]);
+        assert_eq!(w[21..24], [0xC0, f(0.0), f(0.0)]);
+        assert_eq!(w[30..33], [0xC3, f(0.75), f(0.375)]);
+    }
 }
