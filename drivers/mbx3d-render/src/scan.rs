@@ -152,31 +152,97 @@ impl Schedule {
         top_down: bool,
         (top, rows): (u32, u32),
     ) -> Option<(u32, u32)> {
-        let (fast, slow) = self.band()?;
-        if !top_down || rows == 0 {
+        if !top_down {
             return None;
         }
-        let lines = |us: u32| (u64::from(us) * 1000).div_ceil(u64::from(scan.line_ns));
-        let (top, bottom) = (u64::from(top), u64::from(top) + u64::from(rows));
-        let (total, tile_rows) = (u64::from(scan.total), u64::from(rows).div_ceil(16));
-        // Never overtake the scan in this refresh (the fastest render): its
-        // bottom tile row lands after the scan has passed the band's bottom
-        // (the binding one when the render is faster than the scan), and
-        // its top tile row after the scan has passed that row (when
-        // slower); a start once the scan has left the band needs nothing.
-        let margin = u64::from(MARGIN);
-        let by_bottom = (bottom + margin).saturating_sub(lines(fast));
-        let by_top = (top + 16 + margin).saturating_sub(lines(fast) / tile_rows);
-        let earliest = by_bottom.max(by_top).min(bottom);
-        // Finished before the scan comes round (the slowest render): its
-        // bottom tile row before the scan reaches the band's bottom again,
-        // and its top tile row before the scan reaches the band's top (the
-        // binding one when the render is faster than the scan).
-        let by_bottom = (total + bottom).checked_sub(lines(slow) + margin)?;
-        let by_top = (total + top).checked_sub(lines(slow).div_ceil(tile_rows) + 1)?;
-        let latest = by_bottom.min(by_top).min(total - 1);
-        (earliest <= latest).then_some((earliest as u32, latest as u32))
+        window_for(scan, self.band()?, (top, rows))
     }
+}
+
+/// [`Schedule::window`] for a top-down render of the band `top..top +
+/// rows` whose time lies between `fast` and `slow` us: the scan lines it
+/// may start on, `(earliest, latest)`, or `None` (the band doesn't fit).
+/// The latest is never past the refresh's last line, so a start inside the
+/// window is always in the refresh it was planned for.
+#[must_use]
+pub fn window_for(
+    scan: &Scan,
+    (fast, slow): (u32, u32),
+    (top, rows): (u32, u32),
+) -> Option<(u32, u32)> {
+    if rows == 0 {
+        return None;
+    }
+    let lines = |us: u32| (u64::from(us) * 1000).div_ceil(u64::from(scan.line_ns));
+    let (top, bottom) = (u64::from(top), u64::from(top) + u64::from(rows));
+    let (total, tile_rows) = (u64::from(scan.total), u64::from(rows).div_ceil(16));
+    // Never overtake the scan in this refresh (the fastest render): its
+    // bottom tile row lands after the scan has passed the band's bottom
+    // (the binding one when the render is faster than the scan), and
+    // its top tile row after the scan has passed that row (when
+    // slower); a start once the scan has left the band needs nothing.
+    let margin = u64::from(MARGIN);
+    let by_bottom = (bottom + margin).saturating_sub(lines(fast));
+    let by_top = (top + 16 + margin).saturating_sub(lines(fast) / tile_rows);
+    let earliest = by_bottom.max(by_top).min(bottom);
+    // Finished before the scan comes round (the slowest render): its
+    // bottom tile row before the scan reaches the band's bottom again,
+    // and its top tile row before the scan reaches the band's top (the
+    // binding one when the render is faster than the scan).
+    let by_bottom = (total + bottom).checked_sub(lines(slow) + margin)?;
+    let by_top = (total + top).checked_sub(lines(slow).div_ceil(tile_rows) + 1)?;
+    let latest = by_bottom.min(by_top).min(total - 1);
+    (earliest <= latest).then_some((earliest as u32, latest as u32))
+}
+
+/// Pixels of a whole screen: copy times are kept per whole screen.
+pub const SCREEN_PX: u32 = 480 * 640;
+
+/// Added to each rectangle's slowest copy time, us: the 2D engine's cost
+/// per blit beyond its pixels. GC2DE on the X51v (149.50 / 2): the whole
+/// screen 3,149 us, the middle quarter 798 us against 787 by area alone,
+/// so ~11 us a blit; four times that, the margin's side.
+pub const COPY_BLIT_US: u32 = 50;
+
+/// The scan lines a copy of `rects` (`(top, rows, pixels)`, copied in
+/// that order, each top down, by the 2D engine, from a picture not shown
+/// into the one shown) may start on, tear-free, for a whole screen's copy
+/// time between `fast` and `slow` us: `(earliest, latest)`, or `None`.
+/// R20's fallback as the owner ruled it 2026-10-29 ("Yes, copy variant",
+/// ADR-0034): the copy is a very fast top-down "render", so each
+/// rectangle's window is [`window_for`] its own share of the time, moved
+/// by the time the rectangles before it take (their fastest for the
+/// earliest line, their slowest for the latest), and the copy starts in
+/// the intersection. Every rectangle starts in the refresh the copy
+/// started in.
+#[must_use]
+pub fn copy_window(
+    scan: &Scan,
+    (fast, slow): (u32, u32),
+    rects: &[(u32, u32, u32)],
+) -> Option<(u32, u32)> {
+    let share = |t: u32, px: u32, up: bool| {
+        let n = u64::from(t) * u64::from(px);
+        let d = u64::from(SCREEN_PX);
+        (if up { n.div_ceil(d) } else { n / d }) as u32
+    };
+    let line_ns = u64::from(scan.line_ns);
+    let (mut from, mut to) = (0u32, scan.total - 1);
+    let (mut before_fast, mut before_slow) = (0u64, 0u64);
+    for &(top, rows, px) in rects {
+        let f = share(fast, px, false);
+        let sl = share(slow, px, true).saturating_add(COPY_BLIT_US);
+        let (e, l) = window_for(scan, (f, sl), (top, rows))?;
+        // Lines the earlier rectangles take: at least (earliest) and at
+        // most (latest).
+        let at_least = (before_fast * 1000 / line_ns) as u32;
+        let at_most = (before_slow * 1000).div_ceil(line_ns) as u32;
+        from = from.max(e.saturating_sub(at_least));
+        to = to.min(l.checked_sub(at_most)?);
+        before_fast += u64::from(f);
+        before_slow += u64::from(sl);
+    }
+    (from <= to).then_some((from, to))
 }
 
 /// Whether a top-down render of `us` begun at scan line `start` is
@@ -190,10 +256,17 @@ pub fn tear_free(scan: &Scan, start: u32, us: u32) -> bool {
 /// [`tear_free`] for a render of the band of rows `first..first + rows`
 /// alone.
 #[must_use]
-pub fn tear_free_rows(scan: &Scan, (first, rows): (u32, u32), start: u32, us: u32) -> bool {
+pub fn tear_free_rows(scan: &Scan, band: (u32, u32), start: u32, us: u32) -> bool {
+    tear_free_from(scan, band, u64::from(start) * u64::from(scan.line_ns), us)
+}
+
+/// [`tear_free_rows`] for a render begun `start_ns` after the refresh's
+/// top (inside a line: a copy's later rectangles).
+#[must_use]
+pub fn tear_free_from(scan: &Scan, (first, rows): (u32, u32), start_ns: u64, us: u32) -> bool {
     let tile_rows = u64::from(rows) / 16;
     let line_ns = u64::from(scan.line_ns);
-    let start_ns = u64::from(start) * line_ns;
+    let start = start_ns / line_ns;
     for j in 0..tile_rows {
         // Tile row j lands (all 16 lines) at this time after the start.
         let land = (j + 1) * u64::from(us) * 1000 / tile_rows;
@@ -204,8 +277,8 @@ pub fn tear_free_rows(scan: &Scan, (first, rows): (u32, u32), start: u32, us: u3
         // Shown in this refresh (the scan hasn't reached its top yet) or
         // the next (the scan passed its bottom this refresh and hasn't come
         // round to its top again): anything else is torn.
-        let this = at < top && u64::from(start) <= top;
-        let next = (u64::from(start) > bottom || at > bottom) && at < total + top;
+        let this = at < top && start <= top;
+        let next = (start > bottom || at > bottom) && at < total + top;
         if this {
             // Landed before the scan reached it in this refresh: shows new
             // a refresh early, while rows above it (begun below `start`)
@@ -387,6 +460,101 @@ mod tests {
                 w.map_or(Plan::Copy, |(line, _)| Plan::Behind { line })
             );
         }
+    }
+
+    /// Whether a copy of `rects` begun at `line` is tear-free when it
+    /// takes `screen_us` a whole screen (each rectangle its share, plus
+    /// `blit_us`), every rectangle landing top down in turn.
+    fn copy_tear_free(
+        scan: &Scan,
+        rects: &[(u32, u32, u32)],
+        line: u32,
+        screen_us: u32,
+        blit_us: u32,
+    ) -> bool {
+        let mut at_ns = u64::from(line) * u64::from(scan.line_ns);
+        rects.iter().all(|&(top, rows, px)| {
+            let us = (u64::from(screen_us) * u64::from(px) / u64::from(SCREEN_PX)) as u32 + blit_us;
+            let ok = tear_free_from(scan, (top, rows), at_ns, us);
+            at_ns += u64::from(us) * 1000;
+            ok
+        })
+    }
+
+    fn rect(top: u32, rows: u32, w: u32) -> (u32, u32, u32) {
+        (top, rows, rows * w)
+    }
+
+    #[test]
+    fn a_whole_screen_copy_starts_well_before_the_blanking() {
+        // GC2DE on the X51v: a whole screen copied in 3,149 us at
+        // 149.50 / 2. Planned from that time alone, the copy may start
+        // from line 557 to 637: before the blanking (640-644), not in it
+        // (begun there, twice the last copy's time would leave its top
+        // rows unwritten when the scan comes round).
+        let s = with(&[3_149]);
+        let w = copy_window(&X51V_60HZ, s.band().unwrap(), &[rect(0, 640, 480)]).unwrap();
+        assert_eq!(w, (557, 637));
+        // Started 4 tile rows before that line, it would overtake the scan.
+        assert!(!copy_tear_free(
+            &X51V_60HZ,
+            &[rect(0, 640, 480)],
+            557 - 64,
+            3_149,
+            0
+        ));
+    }
+
+    #[test]
+    fn every_line_of_a_copy_window_is_tear_free_for_every_rectangle() {
+        // Rectangles copied in turn (a scene's area, 2D's changes above and
+        // below it), at copy times from a quarter of GC2DE's to twice it,
+        // on both scans: every start line in the window is tear-free with
+        // each rectangle at its fastest and its slowest.
+        let sets: [&[(u32, u32, u32)]; 6] = [
+            &[rect(0, 640, 480)],
+            // A strip, then the rest: the second's deadline binds, moved
+            // by the strip's time.
+            &[rect(0, 32, 480), rect(32, 608, 480)],
+            &[rect(304, 64, 64)],
+            &[rect(0, 32, 480), rect(304, 64, 64)],
+            &[rect(0, 32, 480), rect(160, 320, 480), rect(576, 64, 480)],
+            &[rect(560, 80, 480)],
+        ];
+        let mut windows = 0;
+        for scan in [X51V, X51V_60HZ] {
+            for rects in sets {
+                for t in (800..8_400).step_by(400) {
+                    let s = with(&[t, t + t / 5]);
+                    let (fast, slow) = s.band().unwrap();
+                    let Some((from, to)) = copy_window(&scan, (fast, slow), rects) else {
+                        continue;
+                    };
+                    windows += 1;
+                    for line in from..=to {
+                        for (us, blit) in [(fast, 0), (slow, COPY_BLIT_US)] {
+                            assert!(
+                                copy_tear_free(&scan, rects, line, us, blit),
+                                "{rects:?}: {us} us from line {line} (window {from}-{to})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(windows > 100, "{windows}");
+    }
+
+    #[test]
+    fn a_copy_too_slow_for_a_refresh_has_no_window() {
+        // Twice the last of 20 ms: no line leaves the scan room.
+        let s = with(&[20_000]);
+        assert_eq!(
+            copy_window(&X51V_60HZ, s.band().unwrap(), &[rect(0, 640, 480)]),
+            None
+        );
+        // An empty rectangle list is any line.
+        assert_eq!(copy_window(&X51V_60HZ, (1, 2), &[]), Some((0, 644)));
     }
 
     #[test]

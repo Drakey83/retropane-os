@@ -27,10 +27,14 @@
 //!   display's measured scan (R111). One the scan can lead (a top-down
 //!   order, times that fit) starts on screen 0 at a line inside its window,
 //!   behind the scan. One it can't (no history, a spike, a checkerboard, too
-//!   long) renders into screen 1 while screen 0 is shown, is flipped to and
-//!   its area copied back ([`Graphics::allow_screen1_3d`], once the soak of
-//!   3D targets at screen 1's place has passed on the X51v); until then it
-//!   starts on screen 0 once the scan has left the scene's area.
+//!   long) renders into screen 1 while screen 0 is shown, and the 2D engine
+//!   copies its area into screen 0 behind the scan, planned like a render
+//!   from the copies' own measured times (the owner's ruling 2026-10-29,
+//!   "Yes, copy variant": no flip, so the 3D core is free once the copy
+//!   ends; [`Graphics::allow_screen1_3d`], once the soak of 3D targets at
+//!   screen 1's place has passed on the X51v). Without that, or before any
+//!   copy has been timed, it starts on screen 0 once the scan has passed
+//!   the scene's bottom row, by the refresh's last line.
 //!
 //! A library now (G4), used in one process; the display driver host's once
 //! IPC can move pages (ADR-0016).
@@ -216,15 +220,21 @@ enum Job {
     /// The 3D area rendering into screen 0, on screen (C71 ruling R-B);
     /// then the area carried into screen 1.
     ThreeD,
-    /// R20's option 1: the 3D area rendering into screen 1 while screen 0
-    /// is shown; `held`: 2D's frame is held in screen 1 (shown with it).
+    /// R20's fallback: the 3D area rendering into screen 1 while screen 0
+    /// is shown; `held`: 2D's frame is held in screen 1 (its changes go
+    /// into screen 0 with the area). The copy starts at a line in
+    /// `from..=to`.
     Aside {
         held: bool,
+        from: u32,
+        to: u32,
     },
-    /// Option 1: screen 1 shown from the next refresh; its area (and 2D's
-    /// changes, `held`) go into screen 0 once scan-out has left it.
-    Flipped {
+    /// The fallback's copy into screen 0 (on screen) behind the scan,
+    /// waiting for a line in `from..=to`.
+    Copy {
         held: bool,
+        from: u32,
+        to: u32,
     },
 }
 
@@ -233,13 +243,15 @@ enum Job {
 pub struct Starts {
     /// On screen 0 behind the scan (C).
     pub behind: u32,
-    /// On screen 0 once the scan had left the scene's area (the fallback
-    /// until screen 1's soak passes).
+    /// On screen 0 once the scan had passed the scene's bottom row (the
+    /// fallback until screen 1's soak passes and a copy has been timed).
     pub after_area: u32,
-    /// Into screen 1, flipped to and copied back (option 1).
+    /// Into screen 1, then copied into screen 0 behind the scan.
     pub screen1: u32,
     /// The scan line the last frame on screen 0 started on.
     pub last_line: Option<u32>,
+    /// The scan line the last fallback copy started on.
+    pub last_copy_line: Option<u32>,
 }
 
 /// How a scene frame starts (R20).
@@ -248,12 +260,14 @@ enum Start {
     /// On screen 0 at a line in `from..=to` (`behind` the scan, or after the
     /// area).
     Screen0 { from: u32, to: u32, behind: bool },
-    /// Into screen 1 (option 1).
-    Screen1,
+    /// Into screen 1, copied into screen 0 from a line in `from..=to`.
+    Screen1 { from: u32, to: u32 },
 }
 
 /// Lines after the scene's area in which a fallback frame may still start
-/// on screen 0 (two tile rows: the caller's poll may come late).
+/// on screen 0 (two tile rows: the caller's poll may come late), never
+/// past the refresh's last line (the owner's direction, 2026-10-29: a
+/// full-screen scene starts in lines 640-644).
 const AFTER_AREA_LINES: u32 = 2 * scan::MARGIN;
 
 /// What [`Graphics::poll`] found.
@@ -275,8 +289,10 @@ pub enum Step {
 /// How long to wait before looking at the 2D engine again (it has no
 /// prediction; a full-screen 2D frame takes milliseconds).
 const TWO_D_POLL_US: u32 = 200;
-/// How long to wait before looking for the end of a flip's refresh again.
-const FLIP_POLL_US: u32 = 200;
+/// A copy this many pixels or more is timed into the copies' schedule
+/// (an eighth of the screen: smaller ones are mostly the blit's own cost,
+/// which would overstate the per-pixel time a big copy is planned with).
+const TIMED_COPY_PX: u32 = scan::SCREEN_PX / 8;
 
 /// The service's 3D state: the scene and the texture blocks (about 5 KiB).
 /// Kept by the program and lent to the service only by programs that use
@@ -317,7 +333,9 @@ pub struct Graphics<'a, R, M> {
     copy_stalls: u32,
     /// R20: the scene's recent render times.
     sched: Schedule,
-    /// R20's option 1 allowed (screen 1's soak passed).
+    /// R20: recent copy times between the screens, per whole screen.
+    copies: Schedule,
+    /// R20's fallback into screen 1 allowed (screen 1's soak passed).
     screen1_3d: bool,
     starts: Starts,
     /// Tests: the copy (1 = the next) before which the hook runs (it makes
@@ -345,12 +363,14 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             job: Job::None,
             copy_stalls: 0,
             sched: Schedule::new(),
+            copies: Schedule::new(),
             screen1_3d: false,
             starts: Starts {
                 behind: 0,
                 after_area: 0,
                 screen1: 0,
                 last_line: None,
+                last_copy_line: None,
             },
             #[cfg(test)]
             before_copy: None,
@@ -365,11 +385,12 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         self.copy_stalls
     }
 
-    /// R20's option 1 on or off: scene frames the scan can't lead render
-    /// into screen 1 (outside the safe region) while screen 0 is shown.
-    /// Off until the soak of 3D targets at screen 1's place (`rp-gpubench`
-    /// GC2DE) has passed on the X51v at the clock in use (ADR-0035); off,
-    /// they start on screen 0 once the scan has left the scene's area.
+    /// R20's fallback into screen 1 on or off: scene frames the scan can't
+    /// lead render into screen 1 (outside the safe region) while screen 0
+    /// is shown, then are copied into screen 0 behind the scan. Off until
+    /// the soak of 3D targets at screen 1's place (`rp-gpubench` GC2DE) has
+    /// passed on the X51v at the clock in use (ADR-0035); off, they start
+    /// on screen 0 once the scan has passed the scene's bottom row.
     pub fn allow_screen1_3d(&mut self, on: bool) {
         self.screen1_3d = on;
     }
@@ -406,14 +427,17 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             .wrapping_add((u64::from(lines.max(1)) * u64::from(ns) / 1000) as u32)
     }
 
-    /// How the open scene's next frame starts (R20): behind the scan where
-    /// the schedule fits it; else into screen 1 (`aside_ok`: screen 1
-    /// holds the frame, and option 1 is allowed), else on screen 0 once the
-    /// scan has left the area.
-    fn plan_3d(&mut self, aside_ok: bool) -> Option<Start> {
+    /// How the open scene's next frame starts (R20), recomputed every
+    /// frame: behind the scan where the schedule fits it; else into screen
+    /// 1 (`aside_ok`: screen 1 holds the frame, and the fallback into it is
+    /// allowed) when the copy of the area and of `held` (2D's changes held
+    /// in screen 1) has a window; else on screen 0 once the scan has passed
+    /// the scene's bottom row, by the refresh's last line.
+    fn plan_3d(&mut self, aside_ok: bool, held: &[Rect]) -> Option<Start> {
         let scan = self.scan();
         let s = self.open()?;
         let band = (u32::from(s.y), u32::from(s.h));
+        let area = Rect::new(s.x, s.y, s.w, s.h);
         let top_down = s.r.tile_order().top_down();
         if let Some((from, to)) = scan.and_then(|sc| self.sched.window(&sc, top_down, band)) {
             return Some(Start::Screen0 {
@@ -423,14 +447,36 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             });
         }
         if aside_ok && self.screen1_3d {
-            return Some(Start::Screen1);
+            let mut rects = [Rect::default(); MAX_DIRTY + 1];
+            let n = copy_rects(&mut rects, area, held);
+            if let Some((from, to)) = self.copy_window(&rects[..n]) {
+                return Some(Start::Screen1 { from, to });
+            }
         }
         let from = band.0 + band.1;
+        let last = scan.unwrap_or(scan::X51V_60HZ).total - 1;
         Some(Start::Screen0 {
             from,
-            to: from + AFTER_AREA_LINES,
+            to: (from + AFTER_AREA_LINES).min(last).max(from),
             behind: false,
         })
+    }
+
+    /// The window a copy of `rects` (in order) may start in on the
+    /// display's scan, from the copies' recent times (`None`: no copy
+    /// timed yet, an unmeasured clock, or no window).
+    fn copy_window(&mut self, rects: &[Rect]) -> Option<(u32, u32)> {
+        let scan = self.scan()?;
+        let band = self.copies.band()?;
+        let mut spans = [(0, 0, 0); MAX_DIRTY + 1];
+        for (sp, r) in spans.iter_mut().zip(rects) {
+            *sp = (
+                u32::from(r.y),
+                u32::from(r.h),
+                u32::from(r.w) * u32::from(r.h),
+            );
+        }
+        scan::copy_window(&scan, band, &spans[..rects.len()])
     }
 
     /// The scene's target: its area of the picture at `at`.
@@ -445,8 +491,16 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         }
     }
 
-    /// [`Mbx2dRenderer::copy_screens`], counted when it stalls.
-    fn copy_screens(&mut self, dst: usize, src: usize, rects: &[Rect]) -> bool {
+    /// [`Mbx2dRenderer::copy_screens`], counted when it stalls; one of an
+    /// eighth of the screen or more is timed into the copies' schedule.
+    fn copy_screens<C: Clock>(
+        &mut self,
+        dst: usize,
+        src: usize,
+        rects: &[Rect],
+        clock: &mut C,
+    ) -> bool {
+        let t0 = clock.now_us();
         #[cfg(test)]
         if let Some((n, hook)) = self.before_copy {
             self.before_copy = if n > 1 { Some((n - 1, hook)) } else { None };
@@ -455,8 +509,13 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             }
         }
         let ok = self.two_d.copy_screens(dst, src, rects);
+        let us = clock.now_us().wrapping_sub(t0);
+        let px: u32 = rects.iter().map(|r| u32::from(r.w) * u32::from(r.h)).sum();
         if !ok {
             self.copy_stalls += 1;
+        } else if px >= TIMED_COPY_PX && us > 0 {
+            let whole = u64::from(us) * u64::from(scan::SCREEN_PX) / u64::from(px);
+            self.copies.record(u32::try_from(whole).unwrap_or(u32::MAX));
         }
         ok
     }
@@ -800,10 +859,11 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             self.two_d.flip_back();
             self.two_d.settle();
         }
-        // Screen 1 holds the same frame as screen 0 (option 1 may draw it).
+        // Screen 1 holds the same frame as screen 0 (the fallback may draw
+        // it).
         let same = self.two_d.back() == Some(other);
-        let step = match self.plan_3d(same) {
-            Some(Start::Screen1) => self.aside(other, false, clock),
+        let step = match self.plan_3d(same, &[]) {
+            Some(Start::Screen1 { from, to }) => self.aside(other, false, (from, to), clock),
             Some(start) => self.arm(start, clock),
             None => Step::Idle,
         };
@@ -843,8 +903,15 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     }
 
     /// Starts the scene's frame into screen 1 at `other` while screen 0 is
-    /// shown (option 1): `held`, 2D's frame is held there.
-    fn aside<C: Clock>(&mut self, other: usize, held: bool, clock: &mut C) -> Step {
+    /// shown (R20's fallback), its copy into screen 0 to start at a line in
+    /// `from..=to`: `held`, 2D's frame is held there.
+    fn aside<C: Clock>(
+        &mut self,
+        other: usize,
+        held: bool,
+        (from, to): (u32, u32),
+        clock: &mut C,
+    ) -> Step {
         let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) else {
             return Step::Idle;
         };
@@ -855,15 +922,33 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         match res {
             Ok(Some(due)) => {
                 self.starts.screen1 += 1;
-                self.job = Job::Aside { held };
+                self.job = Job::Aside { held, from, to };
                 Step::Wait(due)
             }
             _ => {
-                if held {
-                    self.two_d.flip();
+                if held && !self.give_held(clock) {
+                    return Step::Recovered;
                 }
                 Step::Idle
             }
+        }
+    }
+
+    /// 2D's frame held in screen 1 reaches screen 0 (on screen): its
+    /// changes copied in, the held frame dropped (both screens then hold
+    /// it); if the copy stalls, screen 1 is shown instead (whole; the 3D
+    /// core is idle: amendment P rule 4), `false`.
+    fn give_held<C: Clock>(&mut self, clock: &mut C) -> bool {
+        let mut drawn = [Rect::default(); MAX_DIRTY];
+        let n = self.two_d.drawn().len();
+        drawn[..n].copy_from_slice(self.two_d.drawn());
+        let [safe, other] = self.two_d.screens();
+        if self.copy_screens(safe, other, &drawn[..n], clock) {
+            self.two_d.keep_front();
+            true
+        } else {
+            self.two_d.flip();
+            false
         }
     }
 
@@ -919,27 +1004,30 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 // The 3D core draws only with screen 0 on screen (C71 ruling
                 // R-B: screen 1 lies outside the safe region).
                 let [safe, other] = self.two_d.screens();
-                let start = self.plan_3d(true);
-                if start == Some(Start::Screen1) {
+                // 2D's frame held in screen 1 (screen 0 shown): its changes
+                // go into screen 0 with the scene's area.
+                let held: &[Rect] = if at == safe { &[] } else { &drawn[..n] };
+                let start = self.plan_3d(true, held);
+                if let Some(Start::Screen1 { from, to }) = start {
                     if at != safe {
-                        // 2D's frame held in screen 1, screen 0 shown: the
-                        // scene renders there, and the flip shows both.
-                        return self.aside(other, true, clock);
+                        // The scene renders into screen 1 with 2D's frame,
+                        // and both are copied into screen 0.
+                        return self.aside(other, true, (from, to), clock);
                     }
                     // 2D drew into screen 0: it is shown first, then its
                     // changes go into screen 1 for the scene.
                     self.two_d.flip();
                     self.two_d.settle();
-                    if !self.copy_screens(other, safe, &drawn[..n]) {
+                    if !self.copy_screens(other, safe, &drawn[..n], clock) {
                         return Step::Recovered;
                     }
-                    return self.aside(other, false, clock);
+                    return self.aside(other, false, (from, to), clock);
                 }
                 if at == safe {
                     // 2D's frame shown whole, scan-out off screen 1.
                     self.two_d.flip();
                     self.two_d.settle();
-                } else if self.copy_screens(safe, at, &drawn[..n]) {
+                } else if self.copy_screens(safe, at, &drawn[..n], clock) {
                     // Screen 0 is on screen: 2D's changes copied into it
                     // (seen as they land, as the 3D area is: R20 covers
                     // neither yet), the held frame dropped.
@@ -1005,7 +1093,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     }
                 }
             }
-            Job::Aside { held } => {
+            Job::Aside { held, from, to } => {
                 let p = match self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
                     Some(s) => {
                         let (e, mem) = self.two_d.parts();
@@ -1023,53 +1111,50 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                         // next frame, which the hang draws whole).
                         self.job = Job::None;
                         if held {
-                            let mut drawn = [Rect::default(); MAX_DIRTY];
-                            let n = self.two_d.drawn().len();
-                            drawn[..n].copy_from_slice(self.two_d.drawn());
-                            let [safe, other] = self.two_d.screens();
-                            if self.copy_screens(safe, other, &drawn[..n]) {
-                                self.two_d.keep_front();
-                            } else {
-                                self.two_d.flip();
-                            }
+                            self.give_held(clock);
                         }
                         return Step::Recovered;
                     }
                     Poll::Done(_) | Poll::Idle => {}
                 }
-                // Screen 1 shown from the next refresh (the core idle:
-                // amendment P rule 4).
-                if held {
-                    self.two_d.flip();
-                } else {
-                    self.two_d.flip_back();
-                }
-                self.job = Job::Flipped { held };
+                // Rendered: the copy into screen 0 waits for its window.
+                self.job = Job::Copy { held, from, to };
                 self.poll(clock)
             }
-            Job::Flipped { held } => {
-                if !self.two_d.settled() {
-                    let at = clock.now_us().wrapping_add(FLIP_POLL_US);
-                    return Step::Wait(at);
+            Job::Copy { held, from, to } => {
+                let line = self.scan_line();
+                if !(from..=to).contains(&line) {
+                    return Step::Wait(self.when_line(from, clock));
                 }
                 let Some(area) = self.open().map(|s| Rect::new(s.x, s.y, s.w, s.h)) else {
                     self.job = Job::None;
                     return Step::Shown;
                 };
-                // Screen 1 on screen: its area (and 2D's changes, held)
-                // into screen 0, so both hold the frame again.
+                // Screen 0 on screen: the area (and 2D's changes, held)
+                // copied in behind the scan, in the planned order; both
+                // screens then hold the frame.
+                let mut drawn = [Rect::default(); MAX_DIRTY];
+                let n = if held { self.two_d.drawn().len() } else { 0 };
+                drawn[..n].copy_from_slice(&self.two_d.drawn()[..n]);
                 let mut rects = [Rect::default(); MAX_DIRTY + 1];
-                let mut n = 0;
-                if held {
-                    n = self.two_d.drawn().len();
-                    rects[..n].copy_from_slice(self.two_d.drawn());
-                }
-                rects[n] = area;
+                let k = copy_rects(&mut rects, area, &drawn[..n]);
                 let [safe, other] = self.two_d.screens();
                 self.job = Job::None;
-                if self.copy_screens(safe, other, &rects[..=n]) {
+                self.starts.last_copy_line = Some(line);
+                if self.copy_screens(safe, other, &rects[..k], clock) {
+                    if held {
+                        self.two_d.keep_front();
+                    }
                     Step::Shown
                 } else {
+                    // Screen 0 part-copied: screen 1, whole, is shown
+                    // instead (the 3D core idle: amendment P rule 4); the
+                    // stall draws the next frame whole.
+                    if held {
+                        self.two_d.flip();
+                    } else {
+                        self.two_d.flip_back();
+                    }
                     Step::Recovered
                 }
             }
@@ -1098,7 +1183,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 // the scene again before anything is shown from screen 1.
                 if let Some(area) = area {
                     let [safe, other] = self.two_d.screens();
-                    if !self.copy_screens(other, safe, &[area]) {
+                    if !self.copy_screens(other, safe, &[area], clock) {
                         shown = Step::Recovered;
                     }
                 }
@@ -1131,6 +1216,36 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         let (e, _) = self.two_d.parts();
         s.r.idle(&mut e.regs, now_us)
     }
+}
+
+/// The fallback's copy (R20): the scene's `area` and 2D's `held` changes,
+/// top first (each copied top down, so the whole copy runs down the
+/// screen), any one inside another left out (a whole-screen 2D frame
+/// holds the area: copied twice, the area's second copy would land after
+/// the scan came round), into `out`; how many.
+fn copy_rects(out: &mut [Rect; MAX_DIRTY + 1], area: Rect, held: &[Rect]) -> usize {
+    let held = &held[..held.len().min(MAX_DIRTY)];
+    let mut n = 0;
+    for (i, &r) in held.iter().chain([area].iter()).enumerate() {
+        let inside = |o: &Rect| {
+            o.x <= r.x
+                && o.y <= r.y
+                && u32::from(o.x) + u32::from(o.w) >= u32::from(r.x) + u32::from(r.w)
+                && u32::from(o.y) + u32::from(o.h) >= u32::from(r.y) + u32::from(r.h)
+        };
+        // Inside an earlier one, or strictly inside a later one.
+        let covered = held
+            .iter()
+            .chain([area].iter())
+            .enumerate()
+            .any(|(j, o)| j != i && inside(o) && (j < i || *o != r));
+        if !covered && r.w != 0 && r.h != 0 {
+            out[n] = r;
+            n += 1;
+        }
+    }
+    out[..n].sort_unstable_by_key(|r| (r.y, r.x));
+    n
 }
 
 #[cfg(test)]

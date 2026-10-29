@@ -207,6 +207,19 @@ T1, T3, T4, ticked):
   passes, such frames start at the blanking (line 640) on screen 0. The
   scheduler plans from the line period measured on the device (R111:
   25,687 ns under our 60 Hz set-up against the 27,460 ns built in).
+- **Option 1 replaced by the copy (owner, 2026-10-29, "Yes, copy
+  variant", after the REA survey of Dell's flip path):** a frame the
+  scheduler can't start behind the scan renders into screen 1 (off
+  screen, screen 0 shown: rules 1-2 hold), then the 2D engine copies its
+  area (and 2D's changes held in screen 1) into screen 0 behind the scan,
+  the copy planned like a render (`Schedule::window` on the copy's own
+  measured time: a whole screen from about line 557). No flip and no flip
+  back, so the 3D core is free once the copy ends (projected from GC2DE:
+  shown as soon as option 1's flip, free ~13 ms sooner, not yet
+  measured); the per-frame one-off or back-to-back choice is dropped. With
+  no copy time measured yet, or the screen-1 soak not passed, the frame
+  starts on screen 0 once the scan has passed the scene's bottom row,
+  capped at the refresh's last line.
 
 ### In plain words
 
