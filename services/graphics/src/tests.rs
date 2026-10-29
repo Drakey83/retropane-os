@@ -1077,3 +1077,73 @@ fn the_copy_runs_down_the_screen_and_copies_nothing_twice() {
     let n = copy_rects(&mut out, area, &[Rect::new(210, 310, 8, 8), area]);
     assert_eq!(&out[..n], &[area]);
 }
+
+#[test]
+fn a_copy_is_timed_before_the_first_scene_frame_so_none_is_held() {
+    // The owner's go 2026-10-29 (start-up copy timing, audit C94): a
+    // service with a scene and no copy's time times one before its first
+    // frame, so a frame the scan can't lead goes by the copy at once.
+    let mut r = rig();
+    let (c, tex) = scene(&mut r);
+    scene_r(&mut r).set_tile_order(r3d::TileOrder::Checker);
+    r.g.copies.reset();
+    r.g.before_copy = Some((1, copy_takes_a_ms));
+    let f = moved(&mut r, c, tex, 8, WHITE);
+    assert_eq!(r.frame(&f), Step::Shown);
+    assert!(r.g.copy_times().is_some(), "a copy timed");
+    let st = r.g.starts();
+    assert_eq!((st.held, st.screen1), (0, 1));
+    both_hold(&r, 8, WHITE, "the first frame");
+}
+
+#[test]
+fn the_timing_copy_goes_from_the_shown_picture_and_changes_nothing_shown() {
+    // Screen 1 shown (a 2D-only frame flipped there): the timing copy goes
+    // into screen 0, not shown; what's shown doesn't change, and the hidden
+    // picture then holds it too.
+    let mut r = rig();
+    for k in 0..3 {
+        let colour = [WHITE, BLUE, 0xFF00_FF00][k];
+        assert_eq!(
+            r.frame(&fill(Rect::new(0, 0, 480, 40), colour)),
+            Step::Shown
+        );
+    }
+    let shown = r.shown();
+    let before = (r.on_screen(5, 5), r.on_screen(240, 320));
+    assert!(r.g.time_copy(&mut r.clock));
+    assert_eq!(r.shown().at, shown.at, "nothing flipped");
+    assert_eq!((r.on_screen(5, 5), r.on_screen(240, 320)), before);
+    let hidden = SCREENS.iter().find(|s| s.at != shown.at).unwrap();
+    let pic = Picture {
+        at: hidden.at,
+        ..Picture::screen(0)
+    };
+    assert_eq!(
+        r.px(pic, 5, 5) & 0xFF_FFFF,
+        before.0,
+        "the hidden picture holds it too"
+    );
+    // Never with work in flight.
+    r.g.job = Job::TwoD;
+    assert!(!r.g.time_copy(&mut r.clock));
+    r.g.job = Job::None;
+}
+
+#[test]
+fn a_clock_change_forgets_both_times_and_the_next_frame_times_a_copy() {
+    let mut r = rig();
+    let (c, tex) = scene(&mut r);
+    let f = moved(&mut r, c, tex, 8, WHITE);
+    assert_eq!(r.frame(&f), Step::Shown);
+    assert!(r.g.sched.band().is_some() && r.g.copy_times().is_some());
+    r.g.clock_changed();
+    assert!(r.g.sched.band().is_none(), "the renders' times forgotten");
+    assert!(r.g.copy_times().is_none(), "the copies' times forgotten");
+    r.g.before_copy = Some((1, copy_takes_a_ms));
+    let f = moved(&mut r, c, tex, 12, WHITE);
+    assert_eq!(r.frame(&f), Step::Shown);
+    assert!(r.g.copy_times().is_some(), "timed again");
+    assert_eq!(r.g.starts().held, 0);
+    both_hold(&r, 12, WHITE, "after the clock change");
+}

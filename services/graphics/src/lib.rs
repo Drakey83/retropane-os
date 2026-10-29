@@ -395,6 +395,46 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         self.starts
     }
 
+    /// The band of recent copy times, per whole screen, us (`None`: none
+    /// timed yet), for the device run's log.
+    #[must_use]
+    pub fn copy_times(&self) -> Option<(u32, u32)> {
+        self.copies.band()
+    }
+
+    /// Times one whole-screen 2D copy from the picture on screen into the
+    /// one not shown (the owner's go 2026-10-29 on its sheet,
+    /// `docs/research/sheets/r20-startup-copy-timing.md`; audit C94), so the
+    /// copy fallback has a time on this unit at this clock from the first
+    /// frame. With nothing in flight the two pictures hold the same frame,
+    /// so the copy changes nothing shown, and 2D's next frame redraws its
+    /// changes over it as ever. Run by [`Self::frame`] while a scene is
+    /// open and no copy's time is known; `false` if it couldn't run (work
+    /// in flight, or a stall).
+    pub fn time_copy<C: Clock>(&mut self, clock: &mut C) -> bool {
+        if self.job != Job::None || self.two_d.landed().is_some() {
+            return false;
+        }
+        // Into the picture not shown once scan-out has left it. Its last
+        // frame's changes still owed (2D's catch-up) are the shown
+        // picture's already: copied whole, it holds the frame on screen,
+        // and the catch-up redraws the same changes.
+        self.two_d.settle();
+        let front = self.two_d.front();
+        let [s0, s1] = self.two_d.screens();
+        let back = if front == s0 { s1 } else { s0 };
+        let all = [Rect::new(0, 0, 480, 640)];
+        self.copy_screens(back, front, &all, clock)
+    }
+
+    /// The clock changed (a rung of ADR-0035's ladder): render and copy
+    /// times are the old clock's, so both are forgotten; the next frame
+    /// with a scene open times a copy again.
+    pub fn clock_changed(&mut self) {
+        self.sched.reset();
+        self.copies.reset();
+    }
+
     /// The display's scan from its pixel clock (R111: each measured on the
     /// X51v), or `None` for a clock without a measured scan: no frame then
     /// starts behind the scan.
@@ -820,6 +860,12 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     pub fn frame<C: Clock>(&mut self, frame: &Frame, clock: &mut C) -> Result<Step, Error> {
         if self.job != Job::None {
             return Err(Error::Busy);
+        }
+        // A scene open and no copy's time known (the service just started,
+        // or the clock changed): one copy timed first, so no frame waits
+        // for one (audit C94).
+        if self.open().is_some() && self.copies.band().is_none() {
+            self.time_copy(clock);
         }
         self.two_d.draw(frame);
         if self.two_d.landed().is_some() || !self.two_d.poll() {
