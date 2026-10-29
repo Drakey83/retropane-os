@@ -16,7 +16,7 @@ use core::hint::black_box;
 
 use rp_hal_api::RegisterBus;
 use rp_mbx3d_render::{
-    Clock, Draw, LocalMem, Objects, Paint, Picture, PixelFormat, Point, Poll, Renderer, SUB,
+    Clock, Depth, Draw, LocalMem, Objects, Paint, Picture, PixelFormat, Point, Poll, Renderer, SUB,
     Target, Texture, TileOrder, UV_ONE, format,
 };
 use rp_vram_map::{PARAMS, PM_TABLE, POOL, Pool};
@@ -94,8 +94,21 @@ fn corner(seed: u32, gx: i32, gy: i32, w: i32, h: i32) -> Point {
     Point { x, y }
 }
 
-/// The mesh's 30 quads, flat or textured with `tex` (three repeats across).
-fn mesh(seed: u32, w: i32, h: i32, tex: Option<Texture>, out: &mut [Option<Draw>; 30]) {
+/// The mesh's 30 quads, flat or textured with `tex` (three repeats across);
+/// with `depth`, GC2CP's depth frame: a full-screen quad written far (slot
+/// 30), the mesh "greater" with writes over it.
+fn mesh(
+    seed: u32,
+    (w, h): (i32, i32),
+    tex: Option<Texture>,
+    depth: bool,
+    out: &mut [Option<Draw>; 31],
+) {
+    let z = |z: u16| Depth {
+        mode: rp_mbx3d_render::depth::GREATER,
+        write: true,
+        z,
+    };
     for gy in 0..ROWS {
         for gx in 0..COLS {
             let c = [
@@ -119,9 +132,13 @@ fn mesh(seed: u32, w: i32, h: i32, tex: Option<Texture>, out: &mut [Option<Draw>
             };
             let mut d = Draw::rect(0, 0, 1, 1, paint);
             d.corners = c;
+            if depth {
+                d.depth = Some(z(0xB000));
+            }
             out[i as usize] = Some(d);
         }
     }
+    out[30] = depth.then(|| Draw::rect(0, 0, w, h, Paint::Flat(0xFF20_4060)).with_depth(z(0x3000)));
 }
 
 /// One frame: the renderer's set-up, then its end seen at once.
@@ -145,7 +162,7 @@ fn one(
     r: &mut Runner,
     name: &'static str,
     (size, order, objects): ((u16, u16), TileOrder, Objects),
-    tex: Option<Texture>,
+    (tex, depth): (Option<Texture>, bool),
     moving: bool,
 ) {
     let mut pool = Pool::new(POOL);
@@ -157,8 +174,10 @@ fn one(
     rr.set_tile_order(order);
     rr.set_objects(objects);
     let (mut mem, mut clock) = (Sink(0), Tick(0));
-    let mut draws = [None; 30];
-    mesh(1, i32::from(w), i32::from(h), tex, &mut draws);
+    let mut draws = [None; 31];
+    // GC2CP's depth frame is mesh 3 (`rp-gpubench`'s `mesh_frame_in`).
+    let first = if depth { 3 } else { 1 };
+    mesh(first, (i32::from(w), i32::from(h)), tex, depth, &mut draws);
     for (s, d) in draws.iter().enumerate() {
         let _ = rr.set(&mut mem, s, d.as_ref());
     }
@@ -171,7 +190,7 @@ fn one(
     let mut seed = 2;
     r.run(name, 4, &mut || {
         if moving {
-            mesh(seed, i32::from(w), i32::from(h), tex, &mut draws);
+            mesh(seed, (i32::from(w), i32::from(h)), tex, depth, &mut draws);
             seed += 1;
             for (s, d) in draws.iter().enumerate() {
                 let _ = rr.set(&mut mem, s, d.as_ref());
@@ -193,8 +212,8 @@ fn button(r: &mut Runner) {
         return;
     };
     let (mut mem, mut clock) = (Sink(0), Tick(0));
-    let mut draws = [None; 30];
-    mesh(1, 480, 640, None, &mut draws);
+    let mut draws = [None; 31];
+    mesh(1, (480, 640), None, false, &mut draws);
     for (s, d) in draws.iter().enumerate() {
         let _ = rr.set(&mut mem, s, d.as_ref());
     }
@@ -227,54 +246,22 @@ pub fn render3d(r: &mut Runner) {
     };
     let (vga, half) = ((480, 640), (480, 320));
     let (tris, quads) = (Objects::Triangles, Objects::Quads);
-    one(
-        r,
-        "r3d_still_vga_checker",
-        (vga, TileOrder::Checker, tris),
-        None,
-        false,
-    );
-    one(
-        r,
-        "r3d_still_vga_rows",
-        (vga, TileOrder::Rows, tris),
-        None,
-        false,
-    );
-    one(
-        r,
-        "r3d_still_half_checker",
-        (half, TileOrder::Checker, tris),
-        None,
-        false,
-    );
-    one(
-        r,
-        "r3d_moving_flat_tris",
-        (vga, TileOrder::Checker, tris),
-        None,
-        true,
-    );
-    one(
-        r,
-        "r3d_moving_flat_quads",
-        (vga, TileOrder::Checker, quads),
-        None,
-        true,
-    );
-    one(
-        r,
-        "r3d_moving_tex_tris",
-        (vga, TileOrder::Checker, tris),
-        Some(tex),
-        true,
-    );
-    one(
-        r,
-        "r3d_moving_tex_quads",
-        (vga, TileOrder::Checker, quads),
-        Some(tex),
-        true,
-    );
+    let (rows, checker) = (TileOrder::Rows, TileOrder::Checker);
+    let flat = (None, false);
+    // name, size, order, form, (texture, depth), every quad moved
+    #[rustfmt::skip]
+    let runs = [
+        ("r3d_still_vga_checker", vga, checker, tris, flat, false),
+        ("r3d_still_vga_rows", vga, rows, tris, flat, false),
+        ("r3d_still_vga_depth", vga, checker, tris, (None, true), false),
+        ("r3d_still_half_checker", half, checker, tris, flat, false),
+        ("r3d_moving_flat_tris", vga, checker, tris, flat, true),
+        ("r3d_moving_flat_quads", vga, checker, quads, flat, true),
+        ("r3d_moving_tex_tris", vga, checker, tris, (Some(tex), false), true),
+        ("r3d_moving_tex_quads", vga, checker, quads, (Some(tex), false), true),
+    ];
+    for (name, size, order, form, paint, moving) in runs {
+        one(r, name, (size, order, form), paint, moving);
+    }
     button(r);
 }

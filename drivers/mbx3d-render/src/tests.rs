@@ -2708,7 +2708,7 @@ mod set_up {
 
     /// A fresh renderer's frame of the same scene: its picture and stats.
     fn fresh(
-        draws: &[Option<Draw>; 12],
+        draws: &[Option<Draw>],
         bg: Option<u32>,
         order: TileOrder,
         tex: &[u32],
@@ -2722,11 +2722,30 @@ mod set_up {
             f.set(k, *d);
         }
         let s = f.frame();
+        // Then each tile row alone (60 tiles: never more sets of quads than
+        // the cache holds), so the picture compared never depends on a list
+        // given up and made again.
+        for y in 0..40 {
+            f.r.invalidate(0, y * 16, 480, 16);
+            f.frame();
+        }
         (picture(&f, FULL), s)
     }
 
     #[test]
     fn every_shortcut_draws_and_predicts_what_a_fresh_renderer_does() {
+        // A few large quads (the cache never fills), then all 64 slots of
+        // small ones (more sets of quads than it holds: lists given up and
+        // made again every frame).
+        let lists = shortcuts(12, 200, 60);
+        assert!(lists < LISTS, "{lists}");
+        let lists = shortcuts(64, 120, 40);
+        assert!(lists >= LISTS, "the cache must fill: {lists}");
+    }
+
+    /// The randomised run over `n` slots of quads up to `side` pixels,
+    /// `steps` frames; the most lists the cache held.
+    fn shortcuts(n: usize, side: u32, steps: usize) -> usize {
         let mut g = rig(480, 640);
         let t = columns(&mut g);
         let tex: Vec<u32> = (0..t.bytes() / 4)
@@ -2738,7 +2757,20 @@ mod set_up {
             TileOrder::Interleaved,
             TileOrder::Reversed,
         ];
-        let mut draws: [Option<Draw>; 12] = [None; 12];
+        let mut draws: [Option<Draw>; 64] = [None; 64];
+        let draws = &mut draws[..n];
+        let mut most = 0;
+        // Every slot filled from the start: small quads scattered over
+        // one another.
+        let mut fill = 0x2545_F491u32;
+        for (k, d) in draws.iter_mut().enumerate() {
+            fill = fill.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let h = fill >> 8;
+            let (x, y) = ((h % 470) as i32, ((h >> 9) % 630) as i32);
+            let (w, hh) = (8 + (h % side) as i32, 8 + ((h >> 4) % side) as i32);
+            *d = Some(Draw::rect(x, y, w, hh, Paint::Flat(0xFF00_0000 | h)));
+            g.set(k, *d);
+        }
         let mut bg = Some(GREY);
         g.r.set_background(bg).unwrap();
         let mut order = TileOrder::Rows;
@@ -2747,17 +2779,17 @@ mod set_up {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             (seed >> 8) % m
         };
-        for step in 0..60 {
+        for step in 0..steps {
             // A change or two, then a frame into one target or the other.
             for _ in 0..1 + next(2) {
                 match next(10) {
                     0..=5 => {
-                        let k = next(12) as usize;
+                        let k = next(n as u32) as usize;
                         draws[k] = if next(6) == 0 {
                             None
                         } else {
                             let (x, y) = (next(500) as i32 - 20, next(660) as i32 - 20);
-                            let (w, h) = (8 + next(200) as i32, 8 + next(200) as i32);
+                            let (w, h) = (8 + next(side) as i32, 8 + next(side) as i32);
                             let paint = match next(3) {
                                 0 => Paint::Flat(0xFF00_0000 | next(0x0100_0000)),
                                 1 => Paint::Gouraud([RED, BLUE, GREY, 0xFF00_FF00]),
@@ -2807,7 +2839,9 @@ mod set_up {
             g.r.invalidate_all();
             let target = if step % 3 == 2 { SECOND } else { FULL };
             let s = g.frame_into(target);
-            let (want, ws) = fresh(&draws, bg, order, &tex, t);
+            most = most.max(g.r.nlists);
+            assert!(g.r.cache_ok(), "step {step}: the list cache's chains broke");
+            let (want, ws) = fresh(draws, bg, order, &tex, t);
             let wrong = picture(&g, target)
                 .iter()
                 .zip(&want)
@@ -2820,5 +2854,6 @@ mod set_up {
                 "step {step}"
             );
         }
+        most
     }
 }

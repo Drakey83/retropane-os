@@ -20588,6 +20588,10 @@ mod image {
         cpu::drain_write_buffer();
     }
 
+    /// GC2CP's renderers: the game's (with its size) and the conversion's.
+    static GC2CP_HELD: rt::Slot<(Option<((u16, u16), Renderer)>, Option<Renderer>)> =
+        rt::Slot::new();
+
     /// Run GC2CP (see [`GC2CA_ROUTES`]).
     #[inline(never)]
     fn gc2cp_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
@@ -20611,13 +20615,17 @@ mod image {
             GC2CP_WAYS.len(),
             GC2BB_PARAMS.at
         );
-        let mut cur: Option<((u16, u16), Renderer)> = None;
-        // The conversion's renderer, made at each clock and released before
-        // way (e) (three renderers alive at most: the stack, the emulator's
-        // check).
-        let mut conv: Option<Renderer> = None;
+        // The game's renderer and the conversion's (made at each clock and
+        // released before way (e), whose second renderer takes its place),
+        // in `.bss`, not on the stack: three renderers on it took the stack
+        // to 79.9% on the X51v (R94, GC2CP's third run, 2026-10-28).
+        let Some(held) = GC2CP_HELD.put_with(|| (None, None)) else {
+            log!("  GC2CP: run twice in one start: nothing run");
+            return;
+        };
+        let (cur, conv) = (&mut held.0, &mut held.1);
         {
-            if gc2cp_references(g, &mut cur, tex, (first, refs)) {
+            if gc2cp_references(g, cur, tex, (first, refs)) {
                 let clocks = [
                     (gc2_step(23, 4, 0, 1), "74.75 / 1"),
                     (gc2_step(44, 4, 0, 1), "143.00 / 1"),
@@ -20630,7 +20638,7 @@ mod image {
                         continue;
                     }
                     clock_readback(g);
-                    gc2cp_clock(g, (&mut cur, &mut conv), tex, (first, refs), cname);
+                    gc2cp_clock(g, (&mut *cur, &mut *conv), tex, (first, refs), cname);
                 }
                 clock_restore(&mut g.e.regs);
                 clock_readback(g);
@@ -20639,7 +20647,7 @@ mod image {
                     "  GC2CP: a reference failed, isn't repeatable or has no absent colour: nothing more run"
                 );
             }
-            gc2cp_conv_release(g, &mut conv);
+            gc2cp_conv_release(g, conv);
         }
         if let Some((_, rr)) = cur.take() {
             let _ = rr.release(&mut g.pool);

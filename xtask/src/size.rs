@@ -635,9 +635,13 @@ pub const BUDGETS: &[Budget] = &[
     // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
     // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
     // writes and the sync); 74.6 KiB measured, + ~10%.
+    // Ratcheted 83 -> 91 KiB on 2026-10-28 (test image): the renderer it
+    // drives grew (R78 item 3's four-corner objects, R88's set-up: the
+    // tile walk, the hashed list cache and its eviction); 83.1 KiB
+    // measured, + ~9%.
     Budget {
         image: "rp-mbx3d-api",
-        max_load: 83 * 1024,
+        max_load: 91 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -696,10 +700,13 @@ pub const BUDGETS: &[Budget] = &[
     // seals) put the biggest variant at 201,716 B.
     // Zeroed RAM ratcheted 56 -> 64 KiB on 2026-10-27: the stack 48 -> 56
     // KiB (run GC2BT, 40,456 B deep in the emulator); 59,496 B expected.
+    // Zeroed RAM ratcheted 64 -> 76 KiB on 2026-10-28 (test image, R94):
+    // GC2CP's two long-lived renderers moved off the stack into `.bss`
+    // (its stack was 79.9% deep on the X51v); 70,448 B measured.
     Budget {
         image: "rp-gpubench",
         max_load: 200 * 1024,
-        max_zero: 64 * 1024,
+        max_zero: 76 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (docs/research/storage-speed.md): the CF socket's timings,

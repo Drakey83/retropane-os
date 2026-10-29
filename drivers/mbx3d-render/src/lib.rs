@@ -652,8 +652,12 @@ const SLOTS_AT: u32 = 256;
 /// A slot: two textured one-triangle objects (2 x 26 words) fit.
 const SLOT_BYTES: u32 = 256;
 const ARENA_AT: u32 = SLOTS_AT + MAX_SLOTS as u32 * SLOT_BYTES;
-/// Object lists kept for reuse.
-const LISTS: usize = 128;
+/// Object lists kept for reuse: more than a frame's distinct sets of quads
+/// (GC2CP's game frames: 123-142 at 480 x 640 and 480 x 320, counted from
+/// their meshes; the depth frame's 14 past 128 were written again on each
+/// of their tiles, 336 lists and 7,218 words a frame on the X51v). Past it,
+/// a list is evicted in turn (its words stay where they are).
+const LISTS: usize = 192;
 /// The longest list: the background, two triangles a slot, the end.
 const LIST_MAX: usize = 2 + 2 * MAX_SLOTS;
 /// Words of a slot's two objects, at most.
@@ -1188,6 +1192,8 @@ pub struct Renderer {
     /// The list cache's buckets: each its first list, chained by
     /// [`List::next`].
     buckets: [u8; BUCKETS],
+    /// The cache's next list to give up when it's full.
+    hand: u8,
     /// Tiles whose quads changed since the region array was last written
     /// (a set's tiles before and after; not [`Self::invalidate`]'s, whose
     /// quads are the same): only they can need another list.
@@ -1360,6 +1366,7 @@ impl Renderer {
             nlists: 0,
             last: 0,
             buckets: [NO_LIST; BUCKETS],
+            hand: 0,
             lists_changed: Tiles::new(),
             regions_full: None,
             arena: ARENA_AT,
@@ -1669,6 +1676,7 @@ impl Renderer {
         self.last = 0;
         self.arena = ARENA_AT;
         self.buckets = [NO_LIST; BUCKETS];
+        self.hand = 0;
         // Lists come back at other places: every region entry with them.
         self.regions_full = None;
     }
@@ -2139,6 +2147,28 @@ impl Renderer {
         Some((n, quads, cost, lists))
     }
 
+    /// Whether the list cache holds together (tests): every cached list
+    /// reached from its own bucket exactly once, every chain only its
+    /// bucket's lists and ending.
+    #[cfg(test)]
+    fn cache_ok(&self) -> bool {
+        let mut seen = [false; LISTS];
+        for (b, &head) in self.buckets.iter().enumerate() {
+            let mut i = head;
+            let mut steps = 0;
+            while i != NO_LIST {
+                let k = usize::from(i);
+                if k >= self.nlists || seen[k] || bucket(self.lists[k].mask) != b || steps > LISTS {
+                    return false;
+                }
+                seen[k] = true;
+                steps += 1;
+                i = self.lists[k].next;
+            }
+        }
+        seen[..self.nlists].iter().all(|&s| s)
+    }
+
     /// The list of the quads in `mask` (after the background), in the
     /// parameter memory: reused if written before. Returns its offset,
     /// whether it was written now, its quads and their cost.
@@ -2188,18 +2218,42 @@ impl Renderer {
         self.arena += 4 * n as u32;
         self.mem_words += n as u32;
         let quads = mask.count_ones();
-        if self.nlists < LISTS {
-            self.lists[self.nlists] = List {
-                mask,
-                at,
-                cost: cost as u16,
-                quads: quads as u8,
-                next: self.buckets[b],
-            };
-            self.buckets[b] = self.nlists as u8;
-            self.last = self.nlists;
+        // A place in the cache: the next free one, or when it's full the
+        // next in turn (never the one just used: the tile beside likely
+        // wants it), taken out of its bucket's chain first. A list given
+        // up so stays in the parameter memory (tiles listed with it this
+        // frame or before keep their entries); if its quads come back it is
+        // written again as new, so its tiles' entries are too.
+        let i = if self.nlists < LISTS {
             self.nlists += 1;
-        }
+            self.nlists - 1
+        } else {
+            let mut v = usize::from(self.hand) % LISTS;
+            if v == self.last {
+                v = (v + 1) % LISTS;
+            }
+            self.hand = ((v + 1) % LISTS) as u8;
+            let old = bucket(self.lists[v].mask);
+            if usize::from(self.buckets[old]) == v {
+                self.buckets[old] = self.lists[v].next;
+            } else {
+                let mut j = usize::from(self.buckets[old]);
+                while usize::from(self.lists[j].next) != v {
+                    j = usize::from(self.lists[j].next);
+                }
+                self.lists[j].next = self.lists[v].next;
+            }
+            v
+        };
+        self.lists[i] = List {
+            mask,
+            at,
+            cost: cost as u16,
+            quads: quads as u8,
+            next: self.buckets[b],
+        };
+        self.buckets[b] = i as u8;
+        self.last = i;
         Some((at, true, quads, cost))
     }
 }
