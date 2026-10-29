@@ -49,8 +49,10 @@ The rules (owner, 2026-10-22):
   claim used in code stays an open quality-audit item wherever it sits.
 - **This section is read at the start of every session (CLAUDE.md).**
 
-**Count (`cargo xtask gate`, 2026-10-25, after the owner's rulings): phases
-2, 4, 5: 26 of 30 architectural lines ticked (4 partial, 0 open; P4 ticked 2026-10-26 by `rp-tabench` run 9, the owner's ruling; V5 ticked 2026-10-25 by P9d and P9e, the owner's ruling; P9 ticked 2026-10-24 by `p9c`, V7 by `wmhop2`: phase 2 complete; P8 by the owner at divide 2 after FT3); phase 4's
+**Count (`cargo xtask gate`, re-run 2026-10-29: unchanged since 2026-10-25,
+the owner's rulings): phases 2, 4, 5: 26 of 30 architectural lines ticked
+(4 partial, 0 open; the 4 partial are phase 5's clock lines V2, V13, P1
+and P2, ADR-0035's ladder, held with the divide-1 work; P4 ticked 2026-10-26 by `rp-tabench` run 9, the owner's ruling; V5 ticked 2026-10-25 by P9d and P9e, the owner's ruling; P9 ticked 2026-10-24 by `p9c`, V7 by `wmhop2`: phase 2 complete; P8 by the owner at divide 2 after FT3); phase 4's
 only line (F6) ticked: **phase 4's gate lifted by the owner, 2026-10-24**)**; phase 7: 0 of 2; phase 9:
 2 of 11; the backlog: 24 optimizations (7 ticked, 16 partial, 1 open).
 `cargo xtask ci` prints the count every run, and every summary quotes it.

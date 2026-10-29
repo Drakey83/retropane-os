@@ -2,7 +2,96 @@
 
 Reid's overnight order: 13 items in order, device tests only at Windows
 Mobile's clock, 74.75 / 1 and divide 2; no divide-1 work. Each item: a
-plain note first, then the detail. The morning report is at the end.
+plain note first, then the detail. The morning report comes first.
+
+# Morning report
+
+**Gate: 26 of 30** architectural lines for phases 2, 4, 5 (`cargo xtask
+gate`, re-run this morning: unchanged; the 4 left are the clock ladder,
+held with the divide-1 work). Nothing at divide 1 above 74.75 was run.
+Nothing was pushed except the backup branch.
+
+## What closed (with numbers)
+
+- **R89, the colours for smooth 2x:** the GPU now stores exactly what the
+  video plane's converter expects: **38,400 of 38,400 words exact** on
+  the X51v (RGB565 card). Still **"eye-right only, never exact"** until
+  your eye check (the screen can't be read back).
+- **R20, the tearing scheduler:** built (`rp_mbx3d_render::scan`) and
+  run on the X51v: **120 of 120 frames begun behind the scan were
+  tear-free**, at WM clock and 74.75 / 1, through 2x spikes.
+- **R71, the CS3 bus check:** built (`rp_hal_pxa27x::buscheck`) and run:
+  **0 misses in 1,572,864 transfers** a check at 7/3/1, at 7/2/0 cold,
+  after 300 s of traffic, and at 7/2/0 warm. This unit earns 7/2/0;
+  `MSC1` put back. The default stays 7/3/1 for every unit.
+- **R77, G9:** fixed (its check now reads the card log, which holds the
+  whole dump) and **whole on the X51v** (2,296 dump lines, both ends). One
+  stale value in the check corrected (`MBXCLK` 0x6 -> the measured 0x5);
+  nothing loosened.
+- **Item 8, the pipelined ways:** the CPU's set-up is **under 1 ms** a
+  frame; waiting on the 3D core is 4-13 ms, so the core sets the pace.
+  **(d') and (e): 0 stray words** at both clocks. Two frames in flight is
+  **12-19% faster** than one at a time at 480 x 320.
+- **Item 10, the stack:** one test (GC2CA) had grown to 89% of its stack;
+  its renderer moved to fixed memory; **under 75%**, every check passes,
+  no budget raised.
+- **R80 at the allowed clocks:** WM clock **0 of 2,000** renders wrong;
+  the time outside the core is the CPU's set-up (~1.9 ms), not the bus;
+  7/3/1 bus timing makes no difference to it (1,892 against 1,892 us).
+
+## Still open, and why
+
+- **(d) at 74.75 / 1: 16-38 stray words a frame** when the 2D engine works
+  during the 3D render (clean at WM clock). Not fixed: (d') (2D first) is
+  the clean form; the overlap fault belongs to R30.
+- **R80 at 74.75 / 1:** single wrong pixels, rare (0-17 of 250 renders a
+  frame, never textured). Recorded only; it is divide 1, so the chase is
+  held.
+- **R79's fitted filter:** +0.3 dB flat, +0.9 dB textured over today's on
+  held-out frames; bilinear as good on flat; Dell's doubling closest on
+  magnified textures. Not shipped: your eye decides.
+- **The emulator release (R86):** not released (`emu-mbx3d` hangs on the
+  new build; publishing needs a push). Every check that needed the new
+  build was also run on the Axim.
+- **The ratchet:** 3 numbers 0.0-0.8% over their floors, and two memory
+  numbers 24-36% faster with no reason found yet (R97). No floors written.
+
+## Needs your eyes (in order)
+
+1. **R89's colours:** `cargo xtask load target/variants/gc2cx-look/rp-gpubench.bin`.
+   Photo 1 our exact GPU colours, photo 2 the CPU's standard colours, each
+   2x until a button. Are the colours right and the same?
+2. **R79's filter:** `cargo xtask load target/variants/gc2da/rp-gpubench.bin`.
+   Six photos: the flat and the textured frame, each by today's filter,
+   the fitted one, and Dell's doubling. Which looks best?
+
+## Needs your rulings (in order)
+
+1. **ADR-0038, the game path (G1-G6):** routes, per-frame choice,
+   per-game override, two in flight (now with item 8's numbers), clock
+   step per route, tearing. Each has a recommendation.
+2. **C71, the second screen:** R-A one screen, R-B 2D's back picture
+   (recommended on the design page), R-C only if divide 2 wins (item 12's
+   brief). Tonight's tearing scheduler weakens R-A's downside for 3D
+   frames only.
+3. **The gate's lift path** (item 13's brief): rule the ladder at divide
+   2, wait for divide 1, or split the four lines.
+4. **The other G tests' `MBXCLK 0x6` check:** the same stale value G9 had;
+   change it to the measured 0x5 too?
+5. **R71's pick in the real self-test:** wire "7/2/0 only after both
+   checks pass" into the per-device self-test?
+6. **The ratchet's 3 slower floors** (R97): approve or have them fixed.
+
+## Held for the divide-1 work (untouched tonight)
+
+The divide-1 chase; the tile race and scene 3's crack at 149.50; the game
+faults at 149.50 and 146.25; PowerVR2; quads on the divide-1 ladder (R95,
+R96); the R76 guard ruling; the longer hot tests at 139.75 and 143;
+amendment D; the 240 x 320 fault at divide-1 speeds. The gate's last four
+lines wait on these, or on your ruling.
+
+A clean run is not proof of zero faults: every "0" above is that run's
+count, over the transfers or frames named.
 
 ## 1. R89: exact colours for the smooth UYVY route
 
@@ -405,3 +494,71 @@ C71's W5 partial-frame scene held to a fresh render every frame (0 words
 off, against 1-3 today).
 
 Full page: `docs/design/c71-screen-place.md`; reminder R70.
+
+## 13. The gate, the ratchet, and the lift brief
+
+**In plain English:** the gate count is unchanged: **26 of 30** lines
+ticked for phases 2, 4 and 5. The 4 not done are all about the
+graphics chip's clock ladder (the divide-1 work), which is held tonight, so
+none could close. The gate stays down. The speed ratchet ran on the Axim:
+nothing got meaningfully slower (three numbers 0.0-0.8% over their floors,
+inside what one run wobbles but past the file's tolerance), and two memory
+numbers got much faster with no reason I can name yet, so I wrote no new
+floors.
+
+**Detail:**
+
+- `cargo xtask gate` (2026-10-29): phase 2 4 of 4; phase 4 1 of 1; phase 5
+  21 of 25 (4 partial: V2, V13, P1, P2, each "reopened by run GC", the
+  ADR-0035 ladder); phases 2, 4, 5 **26 of 30 (4 partial, 0 open)**; phase
+  7 0 of 2; phase 9 2 of 11; the backlog 24 (7 ticked, 16 partial, 1
+  open). ROADMAP's count line re-dated.
+- Lines closed tonight: none. Each of the 4 needs device proof on the
+  clock ladder at divide 1 above 74.75, out of scope tonight.
+- `cargo xtask perf` on the X51v (`local/perf-2026-10-29.txt`; FT at
+  Windows Mobile's clock, the probe, B7-B9, rp-today's replay): 119
+  numbers, 9 faster, **3 slower beyond noise**
+  (`probe.frames_fill_drain_1024` +0.8%, `probe.gfx_flush_vga` +0.0%,
+  `probe.memcpy_sdram_to_sram_64k` +0.5%), 20 new. **Unexplained:**
+  `probe.chase_sdram_256k` -36.2% and `probe.chase_sram_256k` -23.9%. No
+  `--update`: R97.
+- Emulator, tonight's runs: GC2CA, GC2CP, GC2CP low, GC2CU, GC2CW, GC2CX,
+  GC2CY, GC2CZ OK on the local 032 build (not a release: item 9).
+
+### The lift brief (one page; the lift is yours, nothing lifted)
+
+**What lifting means:** ROADMAP step 8: phases 2, 4 and 5's architectural
+lines all ticked and the ratchet running; you check the ledgers and lift.
+From then on performance is held by the ratchet, every day, and phase
+6+ work stops waiting on the GPU's architecture.
+
+**Where it stands:** 26 of 30. Phase 2 complete; phase 4 lifted by you
+2026-10-24; phase 5 21 of 25. The ratchet runs (tonight, on the X51v).
+
+**What's left, all one question: the 2700G's clock ladder (ADR-0035).**
+V2 (the clocks and the memory's CL setting), V13 (the cores' divide),
+P1 (3D at the chosen clock), P2 (the bus at it). Each was ticked on its
+soaks on 2026-10-22, then reopened by run GC (divide 1 draws Gouraud wrong
+at every clock). GC2S since: with the screen in the safe region, divide 2
+draws all nine kinds right at 133.25 and 149.50 / 2; divide 1 still fails
+(7 of 9 right at 74.75 / 1). Tonight's GC2CY adds: at 74.75 / 1, a few
+single wrong pixels in 250 renders (flat 17, layered 15, textured 0, depth
+7 at 360 x 480), none at Windows Mobile's clock.
+
+**Three ways the four could close (your choice; none started):**
+
+1. **Rule the ladder at divide 2.** The self-test picks among divide-2
+   steps (GC2S: right at 133.25 and 149.50 / 2), divide 1 stays off until
+   the divide-1 chase finds a fix. The four then need one proving run each
+   at divide 2 (not at divide 1), and could tick on your ruling. Fastest
+   to lift; gives up divide 1's speed until it's solved, reversible later.
+2. **Wait for the divide-1 work** (held tonight: the chase, R95/R96, the
+   R76 guard, amendment D). Lifts only when divide 1 is clean or ruled
+   out; date unknown.
+3. **Split the lines:** tick V2/P2 (memory and bus: soaked clean,
+   independent of the cores' divide) on their GS soaks, keep V13/P1 (the
+   cores' divide) partial. Only if you agree the memory lines don't depend
+   on the divide; I haven't shown that, so it would need your ruling.
+
+**Not affected by any of these:** tonight's renderer, tearing scheduler,
+bus check, filter and stack work: all measured at WM clock and 74.75.

@@ -101,7 +101,13 @@ GPU draws N (`prepare` / `start_prepared`), the 2D placements of the UYVY
 route kept apart from the render (d', no stray words). Native stays one
 frame (its set-up is already overlapped by the GPU's poll). **To prove
 first:** the stray words of the overlapped way at Windows Mobile's clock
-and 74.75 / 1 (tonight's item 8).
+and 74.75 / 1 (tonight's item 8). **Measured 2026-10-29 (X51v, GC2CP low,
+`local/rp-gpubench-runGC2CP-low-2.txt`; 2700g.md):** (d') 0 stray words at
+both clocks; (e) 0 words off on each frame's last picture at both; (d),
+the 2D placed beside the render, 0 at WM clock and 16-38 a frame at 74.75
+/ 1. Two in flight against one at a time at 480 x 320: 12-14% less a
+frame at WM clock, 15-19% at 74.75 / 1. A result for the vote, not a
+ruling.
 
 ### G5. The clock step per route
 
