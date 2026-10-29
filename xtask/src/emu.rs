@@ -5211,6 +5211,12 @@ fn variant_images_gpubench(
         ("RP_GPUBENCH_HARNESS", "1"),
         Some(("RP_GPUBENCH_C71", "1")),
     )?;
+    let run_c71_rb = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_HARNESS", "1"),
+        Some(("RP_GPUBENCH_C71_RB", "1")),
+    )?;
     let run_g21 = variant_image_with(
         root,
         "rp-gpubench",
@@ -6200,7 +6206,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 150] = [
+    let runs: [GpubenchRun; 151] = [
         (
             "run A",
             &run_a,
@@ -8619,6 +8625,23 @@ fn variant_images_gpubench(
         ),
         // Run G21 on C71's scenes: the safe screen, A against C.
         ("run G21", &run_g21, &g21_wants, true, (0, 0, 0)),
+        // R99: C71 under R-B, W5's partial frames into the shown screen at
+        // 0x0, each held to a fresh whole render: the fork draws them
+        // alike, so every frame matches.
+        (
+            "run C71 R-B",
+            &run_c71_rb,
+            &[
+                "  CH C71 R-B: W5's partial frames into the shown screen at 0x0",
+                "  CH C71 R-B the background object: 60 partial frames, 0 differ from their fresh whole render (0 words in rows 0-559, 0 with rows 560-639 off), 0 renders unfinished",
+                "  CH C71 R-B a flat quad in slot 0: 60 partial frames, 0 differ from their fresh whole render (0 words in rows 0-559, 0 with rows 560-639 off), 0 renders unfinished",
+                "  CH C71 R-B: 0 frames wrong or unfinished of 120",
+                "  CH C71 R-B: done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
         // The 3D core's limits (P14): every measurement finishes and the
         // memory is given back; the times are the device's.
         (

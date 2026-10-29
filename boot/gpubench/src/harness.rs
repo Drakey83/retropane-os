@@ -39,6 +39,13 @@ const C71: bool = option_env!("RP_GPUBENCH_C71").is_some();
 /// on Dell's frame).
 const G21: bool = option_env!("RP_GPUBENCH_G21").is_some();
 
+/// C71's device check under the owner's ruling R-B (`RP_GPUBENCH_C71_RB`,
+/// R99): W5's partial frames drawn straight into the one screen at local
+/// memory `0x0`, on screen, as the graphics service now draws 3D (ADR-0034
+/// amendment P, P1 = C), every frame held to a fresh whole render of the
+/// same scene; over the background object and over a flat quad in slot 0.
+const C71_RB: bool = option_env!("RP_GPUBENCH_C71_RB").is_some();
+
 /// The page's and the glass's lines.
 const VSTRIDE: u32 = 960;
 const GSTRIDE: u32 = 480 * 4;
@@ -323,7 +330,7 @@ pub(super) fn run(g: &mut Rig) {
         return;
     };
     let p = Planes { page, glass, atlas };
-    if !C71 && !G21 {
+    if !C71 && !G21 && !C71_RB {
         plane_frames(g, &p, &mut dma, scratch);
     }
     let _ = g.pool.free(page, VSTRIDE * PAGE_ROWS);
@@ -1012,6 +1019,116 @@ fn g21_copy_in(g: &mut Rig, from: u32) -> (bool, u32) {
     (done, us_since(t0))
 }
 
+/// C71's check under R-B ([`C71_RB`]): the screen at `0x0` shown, the video
+/// plane off; W5's [`FRAMES_3D`] frames (three cards, the fourth dragged
+/// 8 px a frame, the caption) rendered partially into it, each frame's
+/// picture kept (rows 0-559 word for word, the rest as a hash), the scene
+/// rendered whole into it again and compared: the frames and words that
+/// differ. Twice: over the background object, over a flat quad in slot 0.
+#[inline(never)]
+fn c71_rb(g: &mut Rig, r: &mut Renderer, keep: &mut [u8], cards: [Texture; 4], caption: Draw) {
+    let screen = Screens {
+        at: [g21::SCREEN_AT, g21::SCREEN_AT],
+    };
+    rp_drv_mbx_display::video_hide(&mut g.e.regs);
+    if !screen.flip(g, 0, true) {
+        log!("  CH C71 R-B: no frame event: nothing run");
+        return;
+    }
+    log!(
+        "  CH C71 R-B: W5's partial frames into the shown screen at 0x{:X} (GSCADR {:08X}), {FRAMES_3D} frames a way, each held to a fresh whole render",
+        g21::SCREEN_AT,
+        g.e.regs.read32(dreg::GSCADR)
+    );
+    let t = screen.target(0);
+    let rest_hash = |g: &Rig| {
+        let mut h = 0x811C_9DC5u32;
+        for k in KEPT / 4..480 * 640 / 2 {
+            let v = g.mem.load(4 * k).unwrap_or(0xDEAD_BEEF);
+            h = (h ^ v).wrapping_mul(0x0100_0193);
+        }
+        h
+    };
+    let mut all_bad = 0u32;
+    for quad in [false, true] {
+        for slot in 0..=6 {
+            g.set(r, slot, None);
+        }
+        if quad {
+            let _ = r.set_background(None);
+            g.set(
+                r,
+                0,
+                Some(Draw::rect(0, 0, 480, 640, Paint::Flat(0xFF20_2830))),
+            );
+        } else {
+            let _ = r.set_background(Some(0xFF20_2830));
+        }
+        for (j, &c) in cards.iter().enumerate().take(3) {
+            let (x, y) = (20 + (j as i32 % 2) * 240, 40 + (j as i32 / 2) * 300);
+            g.set(r, 1 + j, Some(textured(x, y, 200, 260, c, full_uv())));
+        }
+        g.set(r, 6, Some(caption));
+        r.invalidate_all();
+        let (mut frames_bad, mut words, mut rest_bad, mut lost) = (0u32, 0u32, 0u32, 0u32);
+        let mut first = [(0u32, 0u32, 0u32, 0u32); 3];
+        let mut nf = 0;
+        let (mut best, mut worst) = (u32::MAX, 0u32);
+        for k in 0..FRAMES_3D {
+            let x = 40 + ((k * 8) % 240) as i32;
+            g.set(r, 4, Some(textured(x, 320, 200, 260, cards[3], full_uv())));
+            let Some(us) = g.frame(r, t) else {
+                lost += 1;
+                r.invalidate_all();
+                continue;
+            };
+            best = best.min(us);
+            worst = worst.max(us);
+            keep_picture(g, t.picture.at, &mut keep[..KEPT]);
+            let rest = rest_hash(g);
+            r.invalidate_all();
+            if g.frame(r, t).is_none() {
+                lost += 1;
+                continue;
+            }
+            let mut n = 0u32;
+            for (i, wd) in keep[..KEPT].chunks_exact(4).enumerate() {
+                let a = u32::from_le_bytes([wd[0], wd[1], wd[2], wd[3]]);
+                let b = g
+                    .mem
+                    .load(t.picture.at as usize + 4 * i)
+                    .unwrap_or(0xDEAD_BEEF);
+                if a != b {
+                    n += 1;
+                    if nf < first.len() {
+                        first[nf] = ((2 * i % 480) as u32, (2 * i / 480) as u32, a, b);
+                        nf += 1;
+                    }
+                }
+            }
+            let rest_differs = rest_hash(g) != rest;
+            rest_bad += u32::from(rest_differs);
+            words += n;
+            frames_bad += u32::from(n != 0 || rest_differs);
+        }
+        all_bad += frames_bad + lost;
+        log!(
+            "  CH C71 R-B {}: {FRAMES_3D} partial frames, {frames_bad} differ from their fresh whole render ({words} words in rows 0-559, {rest_bad} with rows 560-639 off), {lost} renders unfinished; partial render {best}-{worst} us; first {:?}",
+            if quad {
+                "a flat quad in slot 0"
+            } else {
+                "the background object"
+            },
+            &first[..nf]
+        );
+    }
+    log!(
+        "  CH C71 R-B: {} frames wrong or unfinished of {}",
+        all_bad,
+        2 * FRAMES_3D
+    );
+}
+
 /// How the display reads during a C71 render (quality audit C71).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fetch {
@@ -1316,6 +1433,21 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
     .over();
     let mut step = 11;
     let cards = [c0, c1, c2, c3];
+
+    if C71_RB {
+        c71_rb(g, &mut r, keep, cards, caption);
+        for slot in 0..=6 {
+            g.set(&mut r, slot, None);
+        }
+        for t in [c0, c1, c2, c3, sky, cl1, cl2, app, cap] {
+            let _ = rp_mbx3d_render::release(&mut g.pool, t);
+        }
+        let _ = r.release(&mut g.pool);
+        let _ = g.pool.free(a, PIC);
+        let _ = g.pool.free(b, PIC);
+        log!("  CH C71 R-B: done");
+        return;
+    }
 
     if G21 {
         g21_scenes(g, &mut r, &sc, keep, (cards, cap, caption), buf);

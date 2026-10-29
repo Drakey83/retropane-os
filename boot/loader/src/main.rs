@@ -3049,6 +3049,23 @@ mod image {
         let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
         let end = plane.offset + plane.stride * usize::from(plane.height);
         let (top, rest) = vram[plane.offset..end].split_at_mut(plane.stride * STATUS_H);
+        // The status band at once: an image may have drawn over this
+        // picture (the OS's screen 0 covers it since C71's map, R99,
+        // 2026-10-29), and the first full status waits for the card log's
+        // finish below (the owner saw the old band's letters appear a
+        // second late).
+        {
+            let mut st = Console::new(
+                &mut *top,
+                plane.stride,
+                (0, 0),
+                (480, STATUS_H),
+                2,
+                (0x0000, 0x07FF),
+            );
+            let _ = writeln!(st, "RetroPane 26 loader");
+            let _ = writeln!(st, "starting");
+        }
         // The previous program's run: if it crashed or hung, the crash
         // screen goes above the log.
         // The previous run's card log first: its run log is still open.
