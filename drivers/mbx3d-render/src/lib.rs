@@ -1488,6 +1488,13 @@ impl Renderer {
         self.tile_order = order;
     }
 
+    /// The background every tile starts from (`None`: the target's own
+    /// pixels are drawn over, so what lies under the area shows through).
+    #[must_use]
+    pub const fn background(&self) -> Option<u32> {
+        self.background
+    }
+
     /// The order the tiles are listed in.
     #[must_use]
     pub const fn tile_order(&self) -> TileOrder {

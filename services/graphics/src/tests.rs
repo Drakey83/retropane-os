@@ -886,9 +886,9 @@ fn a_held_frame_keeps_the_scenes_last_picture_where_2d_drew_over_it() {
     // A frame drawn (the copy), then one held while 2D's frame paints a
     // green band across the area: the band shows outside the area, the
     // area keeps the scene's last picture (blue, the quad), never 2D's
-    // layer under it. Both ways 2D's frame can arrive (into the shown
-    // screen's partner, or into screen 0 while screen 1 is shown).
-    for k in 0..2 {
+    // layer under it. (2D's frame into screen 0 while screen 1 is shown:
+    // `after_a_stall_2d_into_screen_0_is_shown_with_the_scene_drawn_again`.)
+    for k in 0..1 {
         let mut r = rig();
         let (c, tex) = scene(&mut r);
         scene_r(&mut r).set_tile_order(r3d::TileOrder::Checker);
@@ -912,6 +912,10 @@ fn a_held_frame_keeps_the_scenes_last_picture_where_2d_drew_over_it() {
             assert_eq!(r.shown().at, SCREENS[1].at, "screen 1 shown");
         }
         r.g.copies.reset();
+        // The scene changes too (its quad moved), so its frame is held: 2D
+        // under an opaque scene alone needs no render (R110 run 3).
+        r.g.set(c, 0, Some(&Quad::rect(12, 16, 32, 32, Fill::texture(tex))))
+            .unwrap();
         let band = Rect::new(0, 300, 480, 80);
         assert_eq!(r.frame(&scene_2d(true, Some(band))), Step::Shown);
         {
@@ -1171,4 +1175,154 @@ fn only_the_scenes_owner_sets_its_tile_order_and_never_mid_frame() {
     );
     assert_eq!(scene_r(&mut r).tile_order(), r3d::TileOrder::Checker);
     r.g.job = Job::None;
+}
+
+#[test]
+fn a_2d_change_beside_an_opaque_scene_goes_in_behind_the_scan_and_never_redraws_it() {
+    // R110 run 3 on the X51v: 2D's changes copied into the shown screen as
+    // they landed tore every frame and drew the scene again for nothing.
+    let mut r = rig();
+    let (c, tex) = scene(&mut r);
+    copies_timed(&mut r);
+    for k in 0..6 {
+        let f = moved(&mut r, c, tex, 4 + 2 * k, WHITE);
+        assert_eq!(r.frame(&f), Step::Shown);
+    }
+    for (i, colour) in [GREY, WHITE, BLUE].into_iter().enumerate() {
+        let before = r.g.starts();
+        let mut step =
+            r.g.frame(&fill(Rect::new(0, 0, 480, 32), colour), &mut r.clock)
+                .unwrap();
+        let mut waited = None;
+        for _ in 0..10_000 {
+            if let Job::Copy2d { from, to, .. } = r.g.job {
+                waited = Some((from, to));
+            }
+            match step {
+                Step::Wait(t) => {
+                    r.clock.set(t);
+                    step = r.g.poll(&mut r.clock);
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(step, Step::Shown, "frame {i}");
+        let a = r.g.starts();
+        // Copied at a line inside its window (at once when the scan was
+        // already inside it).
+        let line = a.last_2d_line.unwrap();
+        if let Some((from, to)) = waited {
+            assert!(
+                (from..=to).contains(&line),
+                "frame {i}: {line} in {from}-{to}"
+            );
+        }
+        assert_eq!(a.two_d_behind, before.two_d_behind + 1, "frame {i}");
+        assert_eq!(a.two_d_now, before.two_d_now);
+        assert_eq!(
+            (a.behind, a.screen1, a.held),
+            (before.behind, before.screen1, before.held),
+            "frame {i}: the scene not drawn again"
+        );
+        assert_eq!(r.shown().at, SCREENS[0].at, "frame {i}: screen 0 shown");
+        both_hold(&r, 14, colour, &format!("2D frame {i}"));
+    }
+}
+
+#[test]
+fn two_d_drawn_under_an_opaque_scene_never_reaches_the_shown_area() {
+    let mut r = rig();
+    let (c, tex) = scene(&mut r);
+    copies_timed(&mut r);
+    for k in 0..6 {
+        let f = moved(&mut r, c, tex, 4 + 2 * k, WHITE);
+        assert_eq!(r.frame(&f), Step::Shown);
+    }
+    // A green band across the area (2D's layer under the scene).
+    let before = r.g.starts();
+    let band = Rect::new(0, 300, 480, 80);
+    assert_eq!(r.frame(&scene_2d(true, Some(band))), Step::Shown);
+    let a = r.g.starts();
+    assert_eq!(
+        (a.behind, a.screen1),
+        (before.behind, before.screen1),
+        "no render"
+    );
+    assert_eq!(r.on_screen(100, 340), 0x00_FF00, "the band beside the area");
+    // The area keeps the scene in both screens (screen 1's made current).
+    both_hold(&r, 14, WHITE, "after the band");
+}
+
+#[test]
+fn two_d_under_a_translucent_scene_draws_the_scene_again() {
+    let mut r = rig();
+    let (c, tex) = scene(&mut r);
+    r.g.set_background(c, None).unwrap();
+    copies_timed(&mut r);
+    for k in 0..6 {
+        let f = moved(&mut r, c, tex, 4 + 2 * k, WHITE);
+        assert_eq!(r.frame(&f), Step::Shown);
+    }
+    let before = r.g.starts();
+    let band = Rect::new(0, 300, 480, 80);
+    assert_eq!(r.frame(&scene_2d(true, Some(band))), Step::Shown);
+    let a = r.g.starts();
+    assert_eq!(
+        a.behind + a.screen1 + a.held,
+        before.behind + before.screen1 + before.held + 1,
+        "2D under it shows through: the scene drawn again"
+    );
+}
+
+#[test]
+fn after_a_stall_2d_into_screen_0_is_shown_with_the_scene_drawn_again() {
+    // The one way screen 1 is shown with a scene open: a stalled copy of
+    // 2D's changes. 2D's next frame goes into screen 0 (not shown): the
+    // area is put back from screen 1 before screen 0 is shown, and the
+    // scene, invalidated by the stall, is drawn again.
+    let mut r = rig();
+    let (c, tex) = scene(&mut r);
+    copies_timed(&mut r);
+    for k in 0..6 {
+        let f = moved(&mut r, c, tex, 4 + 2 * k, WHITE);
+        assert_eq!(r.frame(&f), Step::Shown);
+    }
+    r.g.before_copy = Some((1, stall));
+    assert_eq!(
+        r.frame(&fill(Rect::new(0, 0, 480, 32), GREY)),
+        Step::Recovered
+    );
+    assert_eq!(
+        r.shown().at,
+        SCREENS[1].at,
+        "screen 1 shown after the stall"
+    );
+    assert_eq!(r.g.copy_stalls(), 1);
+    r.g.two_d().parts().0.regs.two.full_reads = 0;
+    let before = r.g.starts();
+    let mut step =
+        r.g.frame(&fill(Rect::new(0, 0, 480, 32), WHITE), &mut r.clock)
+            .unwrap();
+    for _ in 0..10_000 {
+        match step {
+            Step::Wait(t) => {
+                r.clock.set(t);
+                step = r.g.poll(&mut r.clock);
+            }
+            _ => break,
+        }
+    }
+    let a = r.g.starts();
+    assert_eq!(r.shown().at, SCREENS[0].at, "screen 0 shown again");
+    assert_eq!(
+        a.behind + a.screen1,
+        before.behind + before.screen1 + 1,
+        "drawn again"
+    );
+    // On screen: the scene and 2D's bar (screen 1 catches 2D up on 2D's
+    // next frame, as ever).
+    let qx = u32::from(AREA.0) + 14 + 16;
+    assert_eq!(r.on_screen(qx, 336), 0xFF_0000, "the quad");
+    assert_eq!(r.on_screen(210, 310), BLUE & 0xFF_FFFF, "the background");
+    assert_eq!(r.on_screen(5, 5), WHITE & 0xFF_FFFF, "2D's bar");
 }

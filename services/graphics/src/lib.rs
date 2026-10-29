@@ -16,11 +16,15 @@
 //! - **The 3D core draws only into screen 0, with screen 0 on screen**
 //!   (C71, the owner's ruling R-B, 2026-10-29; ADR-0034 amendment P, P1 =
 //!   C): screen 0 lies inside the safe region, screen 1 outside it as 2D's
-//!   back picture. 2D frames flip between the two as ever (tear-free). In a
-//!   frame with 3D work, 2D's frame reaches screen 0 first (a flip if 2D
-//!   drew there, else its changed rectangles copied in by the 2D engine),
-//!   the scene renders into screen 0 on screen, and its area is copied back
-//!   into screen 1.
+//!   back picture. 2D frames with no scene open flip between the two as
+//!   ever. With a scene open, 2D's changes reach screen 0 (on screen) only
+//!   by a copy behind the scan, and never over the scene's area (R110 run 3
+//!   on the X51v: copied as they landed, 2D's layer showed over the scene
+//!   for a refresh or two every frame): where 2D drew under the area,
+//!   screen 1 first takes the scene's area from screen 0, so the copy
+//!   changes nothing there; 2D under an opaque scene never makes it draw
+//!   again (under a translucent one it does). The scene renders into
+//!   screen 0 on screen, and its area is copied back into screen 1.
 //! - **Tear-free 3D frames** (R20, ADR-0034 P1 = C with the owner's
 //!   fallback, "Option 1", 2026-10-29): each scene frame is planned from
 //!   its recent render times (`rp_mbx3d_render::scan::Schedule`) on the
@@ -229,6 +233,13 @@ enum Job {
         from: u32,
         to: u32,
     },
+    /// 2D's changes, held in screen 1 (its scene area made current),
+    /// waiting to be copied into screen 0 (on screen) behind the scan at a
+    /// line in `from..=to`.
+    Copy2d {
+        from: u32,
+        to: u32,
+    },
     /// The fallback's copy into screen 0 (on screen) behind the scan,
     /// waiting for a line in `from..=to`.
     Copy {
@@ -263,6 +274,10 @@ pub struct Starts {
     /// The scan line when 2D's changes were last copied into screen 0
     /// while it was shown (a frame with 3D work).
     pub last_2d_line: Option<u32>,
+    /// 2D's changes beside a scene copied into screen 0 behind the scan.
+    pub two_d_behind: u32,
+    /// ... copied at once (no copy timed yet: may tear).
+    pub two_d_now: u32,
 }
 
 /// How a scene frame starts (R20).
@@ -381,6 +396,8 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 last_start_us: None,
                 last_render_us: None,
                 last_2d_line: None,
+                two_d_behind: 0,
+                two_d_now: 0,
             },
             #[cfg(test)]
             before_copy: None,
@@ -995,6 +1012,52 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         }
     }
 
+    /// 2D's changes `rects` copied from screen 1 into screen 0 (shown),
+    /// both screens then holding the frame (the held frame dropped). If the
+    /// copy stalls, screen 1 is shown instead (whole: the 3D core idle,
+    /// amendment P rule 4), the scene drawn again on the next frame,
+    /// `false`.
+    fn give_2d<C: Clock>(&mut self, rects: &[Rect], clock: &mut C) -> bool {
+        let [safe, other] = self.two_d.screens();
+        let ok = self.copy_screens(safe, other, rects, clock);
+        if ok {
+            self.two_d.keep_front();
+        } else {
+            self.two_d.flip();
+            if let Some(s) = self.open_mut() {
+                s.r.invalidate_all();
+            }
+        }
+        ok
+    }
+
+    /// After 2D's changes reached screen 0: the scene's own changes, if
+    /// any, start as a frame with nothing new from 2D would (both screens
+    /// hold the frame now).
+    fn after_2d<C: Clock>(&mut self, dirty: bool, clock: &mut C) -> Step {
+        if !dirty {
+            return Step::Shown;
+        }
+        let other = self.two_d.screens()[1];
+        match self.plan_3d(true, &[]) {
+            Some(Start::Screen1 { from, to }) => {
+                match self.aside(other, false, (from, to), clock) {
+                    Step::Idle => Step::Shown,
+                    step => step,
+                }
+            }
+            Some(Start::Hold) => {
+                self.starts.held += 1;
+                Step::Shown
+            }
+            Some(st) => match self.arm(st, clock) {
+                Step::Idle => Step::Shown,
+                step => step,
+            },
+            None => Step::Shown,
+        }
+    }
+
     /// 2D's frame held in screen 1 reaches screen 0 (on screen): its
     /// changes copied in, the held frame dropped (both screens then hold
     /// it); if the copy stalls, screen 1 is shown instead (whole; the 3D
@@ -1039,105 +1102,145 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                         Step::Wait(clock.now_us().wrapping_add(TWO_D_POLL_US))
                     };
                 };
-                // What 2D drew afresh over the area: the scene draws it
-                // again.
                 let mut drawn = [Rect::default(); MAX_DIRTY];
                 let n = self.two_d.drawn().len();
                 drawn[..n].copy_from_slice(self.two_d.drawn());
-                let needs_3d = match self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
-                    Some(s) => {
-                        for r in &drawn[..n] {
-                            s.r.invalidate(
-                                i32::from(r.x) - i32::from(s.x),
-                                i32::from(r.y) - i32::from(s.y),
-                                i32::from(r.w),
-                                i32::from(r.h),
-                            );
-                        }
-                        s.r.dirty() != 0
-                    }
-                    None => false,
-                };
                 self.job = Job::None;
-                if !needs_3d {
-                    // A 2D frame: flipped as ever, to either screen (the 3D
-                    // core is idle: amendment P rule 4).
+                let Some((area, opaque)) = self
+                    .open()
+                    .map(|s| (Rect::new(s.x, s.y, s.w, s.h), s.r.background().is_some()))
+                else {
+                    // No scene: a 2D frame, flipped as ever, to either
+                    // screen.
                     self.two_d.flip();
                     return Step::Shown;
+                };
+                // 2D's layer under an opaque scene never shows (R110 run 3
+                // on the X51v: copied into the shown screen it tore every
+                // frame and the scene was drawn again for nothing); under a
+                // translucent one it shows through, so the scene is drawn
+                // again over it.
+                let under = drawn[..n].iter().any(|r| !r.intersect(&area).is_empty());
+                if under
+                    && !opaque
+                    && let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut())
+                {
+                    for r in &drawn[..n] {
+                        s.r.invalidate(
+                            i32::from(r.x) - i32::from(s.x),
+                            i32::from(r.y) - i32::from(s.y),
+                            i32::from(r.w),
+                            i32::from(r.h),
+                        );
+                    }
                 }
+                let dirty = self.open().is_some_and(|s| s.r.dirty() != 0);
                 // The 3D core draws only with screen 0 on screen (C71 ruling
                 // R-B: screen 1 lies outside the safe region).
                 let [safe, other] = self.two_d.screens();
-                // 2D's frame held in screen 1 (screen 0 shown): its changes
-                // go into screen 0 with the scene's area.
-                let held: &[Rect] = if at == safe { &[] } else { &drawn[..n] };
-                let start = self.plan_3d(true, held);
-                if let Some(Start::Screen1 { from, to }) = start {
-                    if at != safe {
-                        // The scene renders into screen 1 with 2D's frame,
-                        // and both are copied into screen 0.
+                if at == safe {
+                    // 2D drew into screen 0 while screen 1 is shown (the 3D
+                    // core idle): the scene's area back from screen 1 first,
+                    // so 2D's layer never shows there, then screen 0 shown
+                    // whole.
+                    if under && !self.copy_screens(safe, other, &[area], clock) {
+                        return Step::Recovered;
+                    }
+                    self.two_d.flip();
+                    self.two_d.settle();
+                    if !dirty {
+                        return Step::Shown;
+                    }
+                    return match self.plan_3d(true, &[]) {
+                        Some(Start::Screen1 { from, to }) => {
+                            // 2D's changes into screen 1 for the scene.
+                            if !self.copy_screens(other, safe, &drawn[..n], clock) {
+                                return Step::Recovered;
+                            }
+                            self.aside(other, false, (from, to), clock)
+                        }
+                        Some(Start::Hold) => {
+                            self.starts.held += 1;
+                            Step::Shown
+                        }
+                        Some(st) => match self.arm(st, clock) {
+                            Step::Idle => Step::Shown,
+                            step => step,
+                        },
+                        None => Step::Shown,
+                    };
+                }
+                // 2D's frame held in screen 1, screen 0 shown: its changes
+                // reach screen 0 only outside the scene's area, and only
+                // behind the scan (never as they land: R110 run 3).
+                if dirty {
+                    // The scene renders into screen 1 with 2D's frame, and
+                    // both are copied into screen 0 behind the scan.
+                    if let Some(Start::Screen1 { from, to }) = self.plan_3d(true, &drawn[..n]) {
+                        // Screen 1's area holds 2D's fresh layer where 2D
+                        // drew under it: the scene draws those tiles again.
+                        if under && let Some(s) = self.open_mut() {
+                            for r in &drawn[..n] {
+                                s.r.invalidate(
+                                    i32::from(r.x) - i32::from(s.x),
+                                    i32::from(r.y) - i32::from(s.y),
+                                    i32::from(r.w),
+                                    i32::from(r.h),
+                                );
+                            }
+                        }
                         return self.aside(other, true, (from, to), clock);
                     }
-                    // 2D drew into screen 0: it is shown first, then its
-                    // changes go into screen 1 for the scene.
-                    self.two_d.flip();
-                    self.two_d.settle();
-                    if !self.copy_screens(other, safe, &drawn[..n], clock) {
-                        return Step::Recovered;
-                    }
-                    return self.aside(other, false, (from, to), clock);
                 }
-                // Held (no tear-free start yet): 2D's frame is shown, the
-                // scene's area keeping its last picture (2D drew its own
-                // layer there, under the scene); the scene renders later.
-                let hold = start == Some(Start::Hold);
-                let area = self.open().map(|s| Rect::new(s.x, s.y, s.w, s.h));
-                let mut cut = [Rect::default(); 4 * MAX_DIRTY];
-                let (changes, k) = match area {
-                    Some(a) if hold => {
-                        let k = outside(&mut cut, &drawn[..n], a);
-                        (&cut[..], k)
-                    }
-                    _ => (&drawn[..], n),
-                };
-                if at != safe {
-                    // 2D's changes go into screen 0, shown, now (R110's log).
-                    self.starts.last_2d_line = Some(self.scan_line());
-                }
-                if at == safe {
-                    // The scene's last picture back into screen 0 from
-                    // screen 1 (shown) before it is shown, if held.
-                    if let Some(a) = area.filter(|_| hold)
-                        && !self.copy_screens(safe, other, &[a], clock)
-                    {
-                        return Step::Recovered;
-                    }
-                    // 2D's frame shown whole, scan-out off screen 1.
+                // Where 2D drew under the area, screen 1 first gets the
+                // scene's area from screen 0 (not shown, the 3D core idle),
+                // so 2D's rectangles copied whole into screen 0 change
+                // nothing there; the copy is then planned like the copy
+                // fallback's (the copy proven tear-free, R110 runs 2-3).
+                if under && !self.copy_screens(other, safe, &[area], clock) {
                     self.two_d.flip();
-                    self.two_d.settle();
-                } else if self.copy_screens(safe, at, &changes[..k], clock) {
-                    // Screen 0 is on screen: 2D's changes copied into it
-                    // (seen as they land, as the 3D area is: R20 covers
-                    // neither yet), the held frame dropped.
-                    self.two_d.keep_front();
-                } else {
-                    // The copy stalled, leaving screen 0 part-changed: the
-                    // held frame shown instead (whole, its area the last
-                    // render's), the render left to the next frame, which
-                    // the stall draws whole (so the scene renders again).
-                    // The 3D core is idle, so screen 1 may be shown
-                    // (amendment P rule 4).
-                    self.two_d.flip();
+                    if let Some(s) = self.open_mut() {
+                        s.r.invalidate_all();
+                    }
                     return Step::Recovered;
                 }
-                if hold {
-                    self.starts.held += 1;
-                    return Step::Shown;
+                let mut rects = [Rect::default(); MAX_DIRTY];
+                let k = two_d_rects(&mut rects, &drawn[..n]);
+                match self.copy_window(&rects[..k]) {
+                    Some((from, to)) => {
+                        self.job = Job::Copy2d { from, to };
+                        self.poll(clock)
+                    }
+                    None => {
+                        // No copy timed yet (or no window): at once, as
+                        // before the fix; counted.
+                        self.starts.two_d_now += 1;
+                        self.starts.last_2d_line = Some(self.scan_line());
+                        if !self.give_2d(&rects[..k], clock) {
+                            return Step::Recovered;
+                        }
+                        self.after_2d(dirty, clock)
+                    }
                 }
-                match start.map(|st| self.arm(st, clock)) {
-                    Some(Step::Idle) | None => Step::Shown,
-                    Some(step) => step,
+            }
+            Job::Copy2d { from, to } => {
+                let line = self.scan_line();
+                if !(from..=to).contains(&line) {
+                    return Step::Wait(self.when_line(from, clock));
                 }
+                self.job = Job::None;
+                let mut drawn = [Rect::default(); MAX_DIRTY];
+                let n = self.two_d.drawn().len();
+                drawn[..n].copy_from_slice(self.two_d.drawn());
+                let mut rects = [Rect::default(); MAX_DIRTY];
+                let k = two_d_rects(&mut rects, &drawn[..n]);
+                self.starts.two_d_behind += 1;
+                self.starts.last_2d_line = Some(line);
+                if !self.give_2d(&rects[..k], clock) {
+                    return Step::Recovered;
+                }
+                let dirty = self.open().is_some_and(|s| s.r.dirty() != 0);
+                self.after_2d(dirty, clock)
             }
             Job::Armed { from, to, prepared } => {
                 let total = scan::X51V_60HZ.total;
@@ -1304,31 +1407,24 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     }
 }
 
-/// The parts of `rects` outside `area`, into `out`; how many (each rectangle
-/// splits into at most four: above, below, left, right).
-fn outside(out: &mut [Rect; 4 * MAX_DIRTY], rects: &[Rect], area: Rect) -> usize {
-    let (ax0, ay0) = (u32::from(area.x), u32::from(area.y));
-    let (ax1, ay1) = (ax0 + u32::from(area.w), ay0 + u32::from(area.h));
+/// 2D's changes `drawn`, top first, any one inside another left out, into
+/// `out`; how many (R110 run 3's fix: copied into the shown screen 0
+/// behind the scan).
+fn two_d_rects(out: &mut [Rect; MAX_DIRTY], drawn: &[Rect]) -> usize {
+    let drawn = &drawn[..drawn.len().min(MAX_DIRTY)];
     let mut n = 0;
-    for r in rects.iter().take(MAX_DIRTY) {
-        let (x0, y0) = (u32::from(r.x), u32::from(r.y));
-        let (x1, y1) = (x0 + u32::from(r.w), y0 + u32::from(r.h));
-        let mut push = |x0: u32, y0: u32, x1: u32, y1: u32| {
-            if x1 > x0 && y1 > y0 {
-                out[n] = Rect::new(x0 as u16, y0 as u16, (x1 - x0) as u16, (y1 - y0) as u16);
-                n += 1;
-            }
-        };
-        if x1 <= ax0 || x0 >= ax1 || y1 <= ay0 || y0 >= ay1 {
-            push(x0, y0, x1, y1);
-            continue;
+    for (i, &r) in drawn.iter().enumerate() {
+        let inside = |o: &Rect| o.intersect(&r) == r;
+        let covered = drawn
+            .iter()
+            .enumerate()
+            .any(|(j, o)| j != i && inside(o) && (j < i || *o != r));
+        if !covered && r.w != 0 && r.h != 0 {
+            out[n] = r;
+            n += 1;
         }
-        push(x0, y0, x1, ay0.max(y0));
-        push(x0, ay1.min(y1), x1, y1);
-        let (my0, my1) = (y0.max(ay0), y1.min(ay1));
-        push(x0, my0, ax0.max(x0), my1);
-        push(ax1.min(x1), my0, x1, my1);
     }
+    out[..n].sort_unstable_by_key(|r| (r.y, r.x));
     n
 }
 

@@ -52,3 +52,21 @@ area is all that is recomposed. Training knowledge, a claim.
 - **A's risk** is measured already (run 3).
 
 **Asked of the owner:** the go to build "Ours"; a separate go for run 4.
+
+## Built (2026-10-29, the owner's "Yes, build it")
+`services/graphics` `Job::TwoD` and the new `Job::Copy2d`: with a scene
+open, 2D's changes in screen 1 reach screen 0 (shown) only by a copy
+planned behind the scan (`scan::copy_window`, as the fallback's copy);
+where 2D drew under the area, screen 1 first takes the scene's area from
+screen 0 (not shown), so the copy changes nothing there (simpler than
+copying around the area: the pieces around a whole-screen change made the
+copy too long for any window). 2D under an opaque scene no longer makes it
+draw again; under a translucent one it does, and a frame by the copy
+fallback redraws the tiles 2D drew under in screen 1. 2D into screen 0
+while screen 1 is shown (only after a stalled copy) puts the area back
+from screen 1 before screen 0 is shown. With no copy timed yet the change
+goes in at once, counted (`Starts::two_d_now`; `two_d_behind` the others).
+Host tests 31 (four new: beside an opaque scene, under it, under a
+translucent one, after a stall), 5 of 5 mutants caught. Emulator (`emu-scene`):
+2D alone draws the scene 0 times (run 3 on the X51v: every frame), every 2D
+change behind the scan.
