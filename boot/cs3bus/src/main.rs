@@ -102,88 +102,44 @@ pub fn with_margin(p: usize, passed: &[bool; 54]) -> bool {
         })
 }
 
-/// A test pattern: the word each index gets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pattern {
-    /// The word's own byte address (catches address aliasing).
-    Address,
-    /// Its complement.
-    Inverse,
-    /// Alternating `0xAAAAAAAA` / `0x55555555` (neighbouring data lines).
-    Checker,
-    /// One bit set, walking.
-    WalkOne,
-    /// One bit clear, walking.
-    WalkZero,
-    /// Hashed noise (every bit pattern, data lines switching hard).
-    Random,
-}
+/// The patterns and their hash: shared with the per-device self-test's
+/// bus check (`rp_hal_pxa27x::buscheck`, R71).
+pub use rp_hal_pxa27x::buscheck::{Pattern, mix};
 
-impl Pattern {
-    /// Every pattern, in the order run.
-    pub const ALL: [Self; 6] = [
-        Self::Address,
-        Self::Inverse,
-        Self::Checker,
-        Self::WalkOne,
-        Self::WalkZero,
-        Self::Random,
-    ];
+/// Run R71's bus check instead of the grid (`RP_CS3BUS_SELFTEST`): the
+/// per-device self-test's CS3 part, cold then warm.
+pub const SELFTEST: bool = option_env!("RP_CS3BUS_SELFTEST").is_some();
 
-    /// Its name in the log.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Address => "address",
-            Self::Inverse => "inverse",
-            Self::Checker => "checker",
-            Self::WalkOne => "walk1",
-            Self::WalkZero => "walk0",
-            Self::Random => "random",
-        }
+/// The bus check's warm traffic, seconds (`RP_CS3BUS_WARM_SECS`; five
+/// minutes by default).
+pub const WARM_SECS: u32 = match option_env!("RP_CS3BUS_WARM_SECS") {
+    Some(v) => parse_secs(v),
+    None => 300,
+};
+
+const fn parse_secs(v: &str) -> u32 {
+    let b = v.as_bytes();
+    let (mut n, mut k) = (0u32, 0);
+    while k < b.len() {
+        n = n * 10 + (b[k] - b'0') as u32;
+        k += 1;
     }
-
-    /// The word for index `i` of a region at byte address `base`.
-    #[must_use]
-    pub const fn word(self, base: u32, i: u32) -> u32 {
-        match self {
-            Self::Address => base.wrapping_add(i.wrapping_mul(4)),
-            Self::Inverse => !base.wrapping_add(i.wrapping_mul(4)),
-            Self::Checker => {
-                if i & 1 == 0 {
-                    0xAAAA_AAAA
-                } else {
-                    0x5555_5555
-                }
-            }
-            Self::WalkOne => 1 << (i % 32),
-            Self::WalkZero => !(1 << (i % 32)),
-            Self::Random => mix(i),
-        }
-    }
-}
-
-/// A stateless 32-bit hash (finaliser of MurmurHash3), so any word can be
-/// recomputed without replaying a generator.
-#[must_use]
-pub const fn mix(i: u32) -> u32 {
-    let mut x = i.wrapping_mul(0x9E37_79B9) ^ 0x5EED_C0DE;
-    x ^= x >> 16;
-    x = x.wrapping_mul(0x85EB_CA6B);
-    x ^= x >> 13;
-    x = x.wrapping_mul(0xC2B2_AE35);
-    x ^ (x >> 16)
+    n
 }
 
 #[cfg(target_os = "none")]
 mod image {
     use core::fmt::Write;
 
-    use super::{GRID, MARKER, Pattern, WM_CS3, WM_MSC1, clocks_per_beat, mix, with_margin};
+    use super::{
+        GRID, MARKER, Pattern, SELFTEST, WARM_SECS, WM_CS3, WM_MSC1, clocks_per_beat, mix,
+        with_margin,
+    };
     use rp_drv_blit2d::{self as cmd, Engine, Format};
     use rp_drv_mbx_display::{Display, Plane, console::Console};
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
+    use rp_hal_pxa27x::buscheck;
     use rp_hal_pxa27x::{cpu, diag, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
@@ -328,6 +284,18 @@ mod image {
         let back = &mut rest[..READ_BYTES];
         for (k, w) in src.chunks_exact_mut(4).enumerate() {
             w.copy_from_slice(&mix(k as u32 ^ 0xF1A5_0000).to_le_bytes());
+        }
+        if SELFTEST {
+            selftest(vram, &plane, &mut e, src);
+            restore();
+            let _ = writeln!(RunLog, "MSC1 restored {:08X}", diag::msc1());
+            label(
+                vram,
+                &plane,
+                format_args!("CS3 BUS CHECK (R71)\nDONE: BACK TO THE LOADER"),
+            );
+            let _ = writeln!(RunLog, "{MARKER}");
+            finish();
         }
         // Which BGCOLOR bits hold a value, at Windows Mobile's timing.
         let bg_found = e.regs.read32(BGCOLOR);
@@ -602,6 +570,109 @@ mod image {
         );
         let _ = writeln!(RunLog, "{MARKER}");
         finish();
+    }
+
+    /// R71's bus check over the pattern region at the timing set now.
+    fn bus_check(vram: &mut [u8]) -> buscheck::Report {
+        let base = 0x0C00_0000 + PATTERN_AT as u32;
+        let vram = core::cell::RefCell::new(vram);
+        buscheck::check(
+            base,
+            PATTERN_BYTES / 4,
+            |k, w| {
+                let _ = store32_volatile(&mut vram.borrow_mut(), PATTERN_AT + 4 * k, w);
+            },
+            |k| load32_volatile(&vram.borrow(), PATTERN_AT + 4 * k),
+            || {
+                cpu::drain_write_buffer();
+                rt::check_in();
+            },
+        )
+    }
+
+    /// The per-device self-test's CS3 part (R71): the default 7 / 3 / 1
+    /// checked, 7 / 2 / 0 checked cold, [`WARM_SECS`] of traffic at 7 / 2 / 0
+    /// (the flush, the 2D fill, a pattern pass, every word checked), then
+    /// 7 / 2 / 0 checked warm; the pick logged.
+    fn selftest(vram: &mut [u8], plane: &Plane, e: &mut Engine<rp_hal_pxa27x::Mmio>, src: &[u8]) {
+        let _ = writeln!(
+            RunLog,
+            "cs3bus self-test (R71): six patterns over {} KiB written and read back word for word ({} transfers a check), the default {:?}, then {:?} cold, {WARM_SECS} s of traffic at it, and warm",
+            PATTERN_BYTES / 1024,
+            6 * 2 * PATTERN_BYTES / 4,
+            buscheck::DEFAULT,
+            buscheck::FAST
+        );
+        let set = |t: buscheck::Timing| diag::set_cs3_vlio(t.0, t.1, t.2);
+        let show = |r: &buscheck::Report| (r.transfers, r.misses, r.first, r.passed());
+        label(
+            vram,
+            plane,
+            format_args!("CS3 BUS CHECK (R71)\nSTEP 1 OF 4: 7/3/1"),
+        );
+        let m = set(buscheck::DEFAULT);
+        let d = bus_check(vram);
+        let _ = writeln!(
+            RunLog,
+            "default 7/3/1 (MSC1 {m:08X?}): transfers, misses, first, passed {:?}",
+            show(&d)
+        );
+        label(
+            vram,
+            plane,
+            format_args!("CS3 BUS CHECK (R71)\nSTEP 2 OF 4: 7/2/0 COLD"),
+        );
+        let m = set(buscheck::FAST);
+        let cold = bus_check(vram);
+        let _ = writeln!(RunLog, "7/2/0 cold (MSC1 {m:08X?}): {:?}", show(&cold));
+        label(
+            vram,
+            plane,
+            format_args!("CS3 BUS CHECK (R71)\nSTEP 3 OF 4: WARM, {WARM_SECS} S\nAT 7/2/0"),
+        );
+        let t0 = rt::ticks();
+        let (mut rounds, mut misses) = (0u32, 0u32);
+        while us(rt::ticks().wrapping_sub(t0)) < WARM_SECS * 1_000_000 && misses == 0 {
+            rt::check_in();
+            vram[FLUSH_AT..FLUSH_AT + FLUSH_BYTES].copy_from_slice(src);
+            cpu::drain_write_buffer();
+            for (k, w) in src.chunks_exact(4).enumerate() {
+                let want = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                if load32_volatile(vram, FLUSH_AT + 4 * k) != Some(want) {
+                    misses += 1;
+                }
+            }
+            misses = misses.saturating_add(fill_check(e, vram, mix(rounds ^ 0x50AC)));
+            rounds += 1;
+        }
+        let _ = writeln!(
+            RunLog,
+            "warm traffic at 7/2/0: {rounds} rounds (flush {} KiB and 2D fill each, every word checked) in {} s, {misses} misses",
+            FLUSH_BYTES / 1024,
+            us(rt::ticks().wrapping_sub(t0)) / 1_000_000
+        );
+        label(
+            vram,
+            plane,
+            format_args!("CS3 BUS CHECK (R71)\nSTEP 4 OF 4: 7/2/0 WARM"),
+        );
+        let warm = (misses == 0).then(|| bus_check(vram));
+        let _ = writeln!(RunLog, "7/2/0 warm: {:?}", warm.as_ref().map(show));
+        let (pick, default_ok) = buscheck::pick(&d, &cold, warm.as_ref());
+        let _ = writeln!(
+            RunLog,
+            "self-test pick: {pick:?} ({}); the default {}",
+            if pick == buscheck::FAST {
+                "7/2/0 passed cold and warm"
+            } else {
+                "7/2/0 not earned: 7/3/1 kept"
+            },
+            if default_ok {
+                "passed"
+            } else {
+                "FAILED (a fault for the log)"
+            }
+        );
     }
 
     fn finish() -> ! {

@@ -154,3 +154,34 @@ until you judge GC2CA's picture.
 - **Not done:** the scheduler wired into the graphics service's shell path
   (it is the shell's and apps' design, ADR-0034 P1 = C; the service's
   frame loop isn't built yet); the games path held (R20).
+
+## 5. R71: the CS3 bus check, built and run
+
+**In plain English:** the part of the first-docking self-test that
+decides each Axim's bus speed is built and works: it writes known
+patterns to the graphics chip and reads every word back, over 1.5 million
+transfers a check, checks again after five minutes of heavy traffic, and
+moves a unit to the faster setting only if every check is clean. On your
+X51v it passed everything: this unit would run 7/2/0. Every unit still
+starts at 7/3/1, and one that fails stays there. The divide-1 parts of
+the self-test are not touched.
+
+**Detail:**
+
+- **Built:** `rp_hal_pxa27x::buscheck` (pure, host-tested: a fault of 1
+  in 1,000 transfers caught and named; a check under 100,000 transfers
+  never counts as a pass; 7/2/0 only with the default, cold and warm all
+  clean). Six patterns (address and its complement, alternating bits,
+  walking ones and zeros, hashed noise) over 512 KiB: 1,572,864 transfers
+  a check. `rp-cs3bus` gained the self-test mode (`RP_CS3BUS_SELFTEST`;
+  the grid's patterns now come from the shared module); `emu-cs3bus`
+  checks both modes.
+- **On the X51v** (`local/rp-cs3bus-selftest.txt`): MSC1 found as Windows
+  Mobile's (`0x24842481`); 7/3/1 (`0x13742481`) 0 misses in 1,572,864;
+  7/2/0 (`0x02742481`) cold 0 misses; 300 s of traffic at 7/2/0 (1,674
+  rounds of a 1.2 MB flush and a 2D fill, every word checked) 0 misses;
+  7/2/0 warm 0 misses; **pick 7/2/0**; MSC1 put back. This is one unit and
+  one run: it shows the check works and this unit earns 7/2/0, not that
+  every unit will.
+- **Not done (held, divide-1):** the self-test's ladder, sentinel scenes
+  and corner sweeps (R71's other parts).

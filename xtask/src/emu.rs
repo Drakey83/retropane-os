@@ -4872,6 +4872,59 @@ fn gpubench_expect(
 /// with `MSC1` as Windows Mobile leaves it, every step runs with its 2D
 /// fill, the soak runs at two steps looser than the tightest, and `MSC1`
 /// is put back; with any other `MSC1` it refuses and changes nothing.
+/// R71's bus check (`rp-cs3bus` built with `RP_CS3BUS_SELFTEST`, two
+/// seconds of warm traffic): the fork models no bus timing, so every check
+/// passes and 7/2/0 is picked; the run's shape and the restore are checked.
+fn cs3bus_selftest(root: &Path, dir: &Path, loader: &Path) -> Result<(), String> {
+    let img = variant_image_envs(
+        root,
+        "rp-cs3bus",
+        &[("RP_CS3BUS_SELFTEST", "1"), ("RP_CS3BUS_WARM_SECS", "2")],
+    )?;
+    let _ = dir;
+    let payload = std::fs::read(&img).map_err(|e| format!("{}: {e}", img.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RPL OK sha256")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("cs3bus self-test: never came back to the loader")?;
+    if log.contains("MSC1 not as expected: nothing changed") {
+        eprintln!("    cs3bus self-test OK: MSC1 isn't Windows Mobile's here, nothing changed");
+        return Ok(());
+    }
+    for want in [
+        "cs3bus self-test (R71): six patterns over 512 KiB",
+        "default 7/3/1 (MSC1 ",
+        "7/2/0 cold (MSC1 ",
+        "warm traffic at 7/2/0: ",
+        "self-test pick: (7, 2, 0) (7/2/0 passed cold and warm); the default passed",
+        "MSC1 restored 24842481",
+        "RETROPANE-CS3BUS-DONE",
+    ] {
+        if crashed(log) || !log.contains(want) {
+            return Err(format!("cs3bus self-test: the log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!(
+        "    cs3bus self-test OK: both checks clean (no bus timing modelled), 7/2/0 picked, MSC1 put back"
+    );
+    Ok(())
+}
+
 pub fn boot_loader_cs3bus(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-2d") {
         eprintln!("    cs3bus: skipped (this emulator release doesn't model the MBX 2D engine)");
@@ -4906,6 +4959,7 @@ pub fn boot_loader_cs3bus(root: &Path) -> Result<(), String> {
     if crashed(log) || !log.contains("RETROPANE-CS3BUS-DONE") {
         return Err(format!("cs3bus: didn't finish cleanly:{log}"));
     }
+    cs3bus_selftest(root, &dir, &loader)?;
     if log.contains("MSC1 not as expected: nothing changed") {
         eprintln!(
             "    cs3bus OK: the emulator's MSC1 isn't Windows Mobile's, and it refused to change anything"
