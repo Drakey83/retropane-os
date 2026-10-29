@@ -28,6 +28,13 @@
 //!   the core is reset and the memory manager set up again, and the next
 //!   frame redraws everything.
 //! - **The 3D clock is on only while there's work** (D8, `clock::Gate`).
+//! - **A quad as one object** on request ([`Objects::Quads`], R78 item
+//!   3): a four-corner object in place of two triangles, a third fewer
+//!   words and one list word a tile instead of two.
+//! - **A cheap set-up a tile** (R88): no division in the tile walk, each
+//!   tile's list from a hashed cache with its count and cost, and a whole
+//!   frame again keeps the region entries whose quads didn't change
+//!   (`rp-bench`'s `r3d_*`: 884 -> 353 instructions a tile).
 //!
 //! Every word reaching the chip costs ~120 ns over the bus (the real
 //! bottleneck), so the renderer counts them ([`FrameStats`]).
@@ -697,6 +704,25 @@ struct Slot {
 struct List {
     mask: u64,
     at: u32,
+    /// Its quads' [`quad_cost`]s summed (kept as slots change), and how
+    /// many: each tile listing it adds these, no loop over its slots.
+    cost: u16,
+    quads: u8,
+    /// The next list in its bucket ([`NO_LIST`] ends it).
+    next: u8,
+}
+
+/// No list (a bucket's or a chain's end).
+const NO_LIST: u8 = u8::MAX;
+/// Buckets of the list cache: a tile's list found in a step or two, not a
+/// scan of up to [`LISTS`] masks (R88).
+const BUCKETS: usize = 64;
+const _: () = assert!(LISTS < NO_LIST as usize && MAX_SLOTS <= 64 && MAX_SLOTS * 255 <= 0xFFFF);
+
+/// A mask's bucket: its two halves folded and hashed (Fibonacci).
+const fn bucket(mask: u64) -> usize {
+    let x = (mask as u32) ^ (mask >> 32) as u32;
+    (x.wrapping_mul(0x9E37_79B1) >> 26) as usize
 }
 
 /// The learned pace's range, x 256: a render a sixteenth to four times
@@ -1159,6 +1185,19 @@ pub struct Renderer {
     lists: [List; LISTS],
     nlists: usize,
     last: usize,
+    /// The list cache's buckets: each its first list, chained by
+    /// [`List::next`].
+    buckets: [u8; BUCKETS],
+    /// Tiles whose quads changed since the region array was last written
+    /// (a set's tiles before and after; not [`Self::invalidate`]'s, whose
+    /// quads are the same): only they can need another list.
+    lists_changed: Tiles,
+    /// The order of the last region array that listed every tile, while
+    /// its entries still hold (no list forgotten since): a whole frame
+    /// again in that order writes only the entries of [`Self::lists_changed`]
+    /// tiles (R88: GC2CP's full frame wrote 4,800 region words a frame for
+    /// 18 new list words).
+    regions_full: Option<TileOrder>,
     arena: u32,
     pending: Option<Pending>,
     /// What [`Self::prepare`] wrote, waiting for [`Self::start_prepared`].
@@ -1320,6 +1359,9 @@ impl Renderer {
             lists: [List::default(); LISTS],
             nlists: 0,
             last: 0,
+            buckets: [NO_LIST; BUCKETS],
+            lists_changed: Tiles::new(),
+            regions_full: None,
             arena: ARENA_AT,
             pending: None,
             staged: None,
@@ -1571,9 +1613,18 @@ impl Renderer {
         if new.kind != old.kind {
             // Lists naming this slot have the wrong strip pointers now.
             self.forget_lists_with(1 << slot);
+        } else if new.cost != old.cost {
+            // The lists naming it keep their words; their cost changes.
+            for l in &mut self.lists[..self.nlists] {
+                if l.mask & 1 << slot != 0 {
+                    l.cost = l.cost - u16::from(old.cost) + u16::from(new.cost);
+                }
+            }
         }
         self.dirty.add_rect(old.tiles, self.cols);
         self.dirty.add_rect(new.tiles, self.cols);
+        self.lists_changed.add_rect(old.tiles, self.cols);
+        self.lists_changed.add_rect(new.tiles, self.cols);
         self.slots[slot] = new;
         Ok(())
     }
@@ -1617,6 +1668,9 @@ impl Renderer {
         self.nlists = 0;
         self.last = 0;
         self.arena = ARENA_AT;
+        self.buckets = [NO_LIST; BUCKETS];
+        // Lists come back at other places: every region entry with them.
+        self.regions_full = None;
     }
 
     fn forget_lists_with(&mut self, bit: u64) {
@@ -1629,6 +1683,14 @@ impl Renderer {
         }
         self.nlists = k;
         self.last = 0;
+        // The lists kept stay where they are (their tiles' entries hold);
+        // the chains are rebuilt for their new places in the cache.
+        self.buckets = [NO_LIST; BUCKETS];
+        for i in 0..k {
+            let b = bucket(self.lists[i].mask);
+            self.lists[i].next = self.buckets[b];
+            self.buckets[b] = i as u8;
+        }
     }
 
     /// Starts rendering the changed tiles into `target` (with the changes
@@ -1853,6 +1915,7 @@ impl Renderer {
             self.pending = None;
             self.ready = false;
             self.targets = [None; 2];
+            self.regions_full = None;
             self.invalidate_all();
             // Stop the hung core now; a failure here is retried by the
             // next render's set-up.
@@ -1981,49 +2044,32 @@ impl Renderer {
     /// the quads touching it. Returns (tiles, quads listed, their
     /// [`quad_cost`]s, lists written), or `None` if the lists ran out of
     /// parameter memory.
+    ///
+    /// Per tile (R88: ~2 us a tile on the X51v before, GC2CP): the walk
+    /// gives its column and row with no division; its quads come from the
+    /// row's (built once a row); its list from the cache's bucket, with its
+    /// count and cost; and when every tile is listed again in the order of
+    /// the last full array, a tile whose quads didn't change keeps its
+    /// entry (nothing stored).
     fn write_regions<M: LocalMem>(
         &mut self,
         mem: &mut M,
         todo: &Tiles,
     ) -> Option<(u32, u32, u32, u32)> {
         let mut buf = [0u32; 64];
-        let (mut nb, mut flushed, mut n, mut lists) = (0usize, 0u32, 0u32, 0u32);
+        // `buf` holds entries from `run` on; `n` tiles listed so far.
+        let (mut nb, mut run, mut n, mut lists, mut stored) = (0usize, 0u32, 0u32, 0u32, 0u32);
         let (mut quads, mut cost) = (0, 0);
         let (mut row, mut row_mask) = (u32::MAX, 0u64);
-        let (cols, rows) = (self.cols as usize, self.rows as usize);
-        let (mut fwd, mut rev, mut cols_rev, mut other) = (None, None, None, None);
+        let (cols, rows) = (self.cols, self.rows);
         let order = self.tile_order;
-        match order {
-            TileOrder::Rows => fwd = Some(todo.iter()),
-            TileOrder::Reversed => rev = Some(todo.iter_rev()),
-            TileOrder::ColumnsReversed => cols_rev = Some(todo.iter_cols_rev(cols, rows)),
-            TileOrder::Columns
-            | TileOrder::Checker
-            | TileOrder::Scrambled
-            | TileOrder::Interleaved => {
-                other = Some(
-                    (0..2 * cols * rows)
-                        .filter_map(move |i| order_tile(order, i, cols, rows))
-                        .filter(|&k| todo.has(k)),
-                );
-            }
-        }
-        let mut next = || {
-            if let Some(f) = &mut fwd {
-                f.next()
-            } else if let Some(r) = &mut rev {
-                r.next()
-            } else if let Some(c) = &mut cols_rev {
-                c.next()
-            } else {
-                other.as_mut().and_then(Iterator::next)
-            }
-        };
-        while let Some(k) = next() {
-            let (x, y) = (k as u32 % self.cols, k as u32 / self.cols);
-            if y >= self.rows {
-                continue;
-            }
+        let full = todo.count() == cols * rows;
+        let reuse = full && self.regions_full == Some(order);
+        // The last tile's entry is in `buf` (it carries the end bit).
+        let mut last_in_buf = false;
+        let changed = core::mem::take(&mut self.lists_changed);
+        self.regions_full = None;
+        tiles::walk(order, todo, (cols, rows), |k, x, y| {
             if y != row {
                 row = y;
                 row_mask = 0;
@@ -2031,7 +2077,8 @@ impl Renderer {
                     let t = slot.tiles;
                     if slot.kind != Kind::Empty
                         && !t.is_empty()
-                        && (u32::from(t.y0)..u32::from(t.y1)).contains(&y)
+                        && y >= u32::from(t.y0)
+                        && y < u32::from(t.y1)
                     {
                         row_mask |= 1 << s;
                     }
@@ -2042,21 +2089,32 @@ impl Renderer {
             while m != 0 {
                 let s = m.trailing_zeros() as usize;
                 m &= m - 1;
-                if self.slots[s].tiles.contains(x, y) {
+                let t = self.slots[s].tiles;
+                if x >= u32::from(t.x0) && x < u32::from(t.x1) {
                     mask |= 1 << s;
                 }
             }
-            quads += mask.count_ones();
-            let mut m = mask;
-            while m != 0 {
-                cost += u32::from(self.slots[m.trailing_zeros() as usize].cost);
-                m &= m - 1;
-            }
-            let (at, new) = self.list_for(mem, mask)?;
+            let (at, new, q, c) = self.list_for(mem, mask)?;
+            quads += q;
+            cost += c;
             lists += u32::from(new);
+            if reuse && !new && !changed.has(k) {
+                // Its entry from the last full array: the same tile at the
+                // same place, the same list.
+                if nb > 0 {
+                    mem.store((self.regions + 4 * run) as usize, &buf[..nb]);
+                    stored += nb as u32;
+                    nb = 0;
+                }
+                n += 1;
+                run = 2 * n;
+                last_in_buf = false;
+                return Some(());
+            }
             if nb == buf.len() {
-                mem.store((self.regions + 4 * flushed) as usize, &buf);
-                flushed += nb as u32;
+                mem.store((self.regions + 4 * run) as usize, &buf);
+                stored += nb as u32;
+                run += nb as u32;
                 nb = 0;
             }
             let e = m3::region_entry(x, y, self.params.at + at, false);
@@ -2064,29 +2122,41 @@ impl Renderer {
             buf[nb + 1] = e[1];
             nb += 2;
             n += 1;
-        }
-        if n > 0 {
+            last_in_buf = true;
+            Some(())
+        })?;
+        if last_in_buf {
             buf[nb - 2] |= m3::LAST_REGION;
-            mem.store((self.regions + 4 * flushed) as usize, &buf[..nb]);
         }
-        self.mem_words += 2 * n;
+        if nb > 0 {
+            mem.store((self.regions + 4 * run) as usize, &buf[..nb]);
+            stored += nb as u32;
+        }
+        self.mem_words += stored;
+        if full {
+            self.regions_full = Some(order);
+        }
         Some((n, quads, cost, lists))
     }
 
     /// The list of the quads in `mask` (after the background), in the
-    /// parameter memory: reused if written before. Returns its offset and
-    /// whether it was written now.
-    fn list_for<M: LocalMem>(&mut self, mem: &mut M, mask: u64) -> Option<(u32, bool)> {
+    /// parameter memory: reused if written before. Returns its offset,
+    /// whether it was written now, its quads and their cost.
+    fn list_for<M: LocalMem>(&mut self, mem: &mut M, mask: u64) -> Option<(u32, bool, u32, u32)> {
+        let found = |l: &List| (l.at, false, u32::from(l.quads), u32::from(l.cost));
         // Neighbouring tiles mostly share their quads: try the last first.
         if self.last < self.nlists && self.lists[self.last].mask == mask {
-            return Some((self.lists[self.last].at, false));
+            return Some(found(&self.lists[self.last]));
         }
-        if let Some(i) = self.lists[..self.nlists]
-            .iter()
-            .position(|l| l.mask == mask)
-        {
-            self.last = i;
-            return Some((self.lists[i].at, false));
+        let b = bucket(mask);
+        let mut i = self.buckets[b];
+        while i != NO_LIST {
+            let l = &self.lists[usize::from(i)];
+            if l.mask == mask {
+                self.last = usize::from(i);
+                return Some(found(l));
+            }
+            i = l.next;
         }
         let mut w = [m3::END; LIST_MAX];
         let mut n = 0;
@@ -2094,11 +2164,14 @@ impl Renderer {
             w[0] = m3::STRIP_ONE_TRIANGLE | (BG_AT / 4);
             n = 1;
         }
+        let mut cost = 0u32;
         let mut m = mask;
         while m != 0 {
             let s = m.trailing_zeros();
             m &= m - 1;
-            let (flags, words, objs) = self.slots[s as usize].kind.strip();
+            let slot = self.slots[s as usize];
+            cost += u32::from(slot.cost);
+            let (flags, words, objs) = slot.kind.strip();
             let base = (SLOTS_AT + s * SLOT_BYTES) / 4;
             w[n] = flags | base;
             if objs == 2 {
@@ -2114,12 +2187,20 @@ impl Renderer {
         mem.store((self.params.at + at) as usize, &w[..n]);
         self.arena += 4 * n as u32;
         self.mem_words += n as u32;
+        let quads = mask.count_ones();
         if self.nlists < LISTS {
-            self.lists[self.nlists] = List { mask, at };
+            self.lists[self.nlists] = List {
+                mask,
+                at,
+                cost: cost as u16,
+                quads: quads as u8,
+                next: self.buckets[b],
+            };
+            self.buckets[b] = self.nlists as u8;
             self.last = self.nlists;
             self.nlists += 1;
         }
-        Some((at, true))
+        Some((at, true, quads, cost))
     }
 }
 

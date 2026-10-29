@@ -91,6 +91,7 @@ mod image {
             suite::gfx(&mut r, gfx_work, None);
             suite::layer(&mut r, layer_work, None);
         }
+        suite::render3d(&mut r);
         if let (Some(cpld), Some(mmc), Some(dma)) = (
             rp_hal_x51v::devices::take_cpld(),
             rt::take_mmc(),

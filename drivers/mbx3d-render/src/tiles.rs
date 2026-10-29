@@ -179,6 +179,137 @@ impl Tiles {
     }
 }
 
+/// `n / cols` for `n < 128 * 128` and `cols` in 1..=128, by a multiply:
+/// the XScale has no divide instruction (each `/` is a library call of
+/// tens of instructions). `recip` is [`recip`]`(cols)`.
+#[must_use]
+pub(crate) const fn div_cols(n: u32, recip: u32) -> u32 {
+    ((n as u64 * recip as u64) >> 31) as u32
+}
+
+/// The multiplier [`div_cols`] takes: `2^31 / cols`, plus one (fits 32
+/// bits for every `cols`, one included; exact while `n x cols < 2^31 /
+/// cols`, here 16,384 x 128 < 2^31 / 128).
+#[must_use]
+pub(crate) const fn recip(cols: u32) -> u32 {
+    (1u32 << 31) / cols + 1
+}
+
+/// Each tile of `todo` in `order` (of a `cols` x `rows` grid), as its
+/// number `k = y * cols + x` with `x` and `y`, given to `f` until it says
+/// stop (`None`). The order the renderer's region array lists (R88: no
+/// division per tile; the old walk did four or more, ~2 us a tile with the
+/// rest on the X51v, `rp-gpubench` GC2CP).
+pub(crate) fn walk(
+    order: crate::TileOrder,
+    todo: &Tiles,
+    (cols, rows): (u32, u32),
+    mut f: impl FnMut(usize, u32, u32) -> Option<()>,
+) -> Option<()> {
+    use crate::TileOrder as O;
+    let n = cols * rows;
+    let mut each = |x: u32, y: u32| -> Option<()> {
+        let k = (y * cols + x) as usize;
+        if todo.has(k) { f(k, x, y) } else { Some(()) }
+    };
+    match order {
+        O::Rows => {
+            // The set bits only, a word at a time (a button's few tiles
+            // cost a few steps), the row kept as the numbers rise.
+            let (mut y, mut start) = (0, 0);
+            for (i, &word) in todo.bits.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let k = i as u32 * 32 + w.trailing_zeros();
+                    w &= w - 1;
+                    if k >= n {
+                        return Some(());
+                    }
+                    while k >= start + cols {
+                        start += cols;
+                        y += 1;
+                    }
+                    f(k as usize, k - start, y)?;
+                }
+            }
+        }
+        O::Reversed => {
+            let (mut y, mut start) = (rows - 1, (rows - 1) * cols);
+            for (i, &word) in todo.bits.iter().enumerate().rev() {
+                let mut w = word;
+                while w != 0 {
+                    let b = 31 - w.leading_zeros();
+                    w &= !(1 << b);
+                    let k = i as u32 * 32 + b;
+                    if k >= n {
+                        continue;
+                    }
+                    while k < start {
+                        start -= cols;
+                        y -= 1;
+                    }
+                    f(k as usize, k - start, y)?;
+                }
+            }
+        }
+        O::ColumnsReversed => {
+            for y in 0..rows {
+                for x in (0..cols).rev() {
+                    each(x, y)?;
+                }
+            }
+        }
+        O::Columns => {
+            for x in (0..cols).rev() {
+                for y in (0..rows).rev() {
+                    each(x, y)?;
+                }
+            }
+        }
+        O::Checker => {
+            // From the last tile back, the even squares (x + y even), then
+            // the odd ones.
+            for pass in 0..2 {
+                for y in (0..rows).rev() {
+                    let mut x = cols - 1;
+                    if (x + y) & 1 != pass {
+                        if x == 0 {
+                            continue;
+                        }
+                        x -= 1;
+                    }
+                    loop {
+                        each(x, y)?;
+                        if x < 2 {
+                            break;
+                        }
+                        x -= 2;
+                    }
+                }
+            }
+        }
+        O::Scrambled => {
+            // `(n - 1 - i) * SCRAMBLE % n`, stepped down by the step mod n.
+            let step = crate::SCRAMBLE as u32 % n;
+            let mut v = ((n - 1) as u64 * crate::SCRAMBLE as u64 % u64::from(n)) as u32;
+            let r = recip(cols);
+            for _ in 0..n {
+                let y = div_cols(v, r);
+                each(v - y * cols, y)?;
+                v = if v >= step { v - step } else { v + n - step };
+            }
+        }
+        O::Interleaved => {
+            for y in 0..rows {
+                for x in (0..cols).step_by(2).chain((1..cols).step_by(2)) {
+                    each(x, y)?;
+                }
+            }
+        }
+    }
+    Some(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +393,93 @@ mod tests {
         );
         some.clear();
         assert!(some.is_empty());
+    }
+
+    #[test]
+    fn the_division_free_walk_lists_what_the_old_walks_listed() {
+        use crate::{TileOrder as O, order_tile};
+        // The old walks (row order and its reverse from the bit iterators,
+        // columns reversed from its own, the rest from `order_tile`), each
+        // tile then split by division.
+        let old =
+            |order: O, todo: &Tiles, cols: u32, rows: u32| -> std::vec::Vec<(usize, u32, u32)> {
+                let (c, r) = (cols as usize, rows as usize);
+                let ks: std::vec::Vec<usize> = match order {
+                    O::Rows => todo.iter().collect(),
+                    O::Reversed => todo.iter_rev().collect(),
+                    O::ColumnsReversed => todo.iter_cols_rev(c, r).collect(),
+                    _ => (0..2 * c * r)
+                        .filter_map(|i| order_tile(order, i, c, r))
+                        .filter(|&k| todo.has(k))
+                        .collect(),
+                };
+                ks.into_iter()
+                    .filter(|&k| k < c * r)
+                    .map(|k| (k, k as u32 % cols, k as u32 / cols))
+                    .collect()
+            };
+        let orders = [
+            O::Rows,
+            O::Reversed,
+            O::ColumnsReversed,
+            O::Columns,
+            O::Checker,
+            O::Scrambled,
+            O::Interleaved,
+        ];
+        let mut seed = 0x1234_5678u32;
+        for (cols, rows) in [
+            (60, 40),
+            (60, 20),
+            (30, 20),
+            (40, 60),
+            (15, 60),
+            (1, 1),
+            (7, 3),
+            (1, 9),
+            (9, 1),
+            (2, 2),
+        ] {
+            for density in [0, 1, 7, 32, 100] {
+                let mut todo = Tiles::new();
+                for k in 0..(cols * rows) as usize {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    if (seed >> 8) % 100 < density || density == 100 {
+                        todo.add(k);
+                    }
+                }
+                for order in orders {
+                    let mut got = std::vec::Vec::new();
+                    walk(order, &todo, (cols, rows), |k, x, y| {
+                        got.push((k, x, y));
+                        Some(())
+                    });
+                    assert_eq!(
+                        got,
+                        old(order, &todo, cols, rows),
+                        "{order:?} {cols} x {rows} at {density}%"
+                    );
+                }
+            }
+        }
+        // Stopping: `None` from the callback ends the walk there.
+        let mut all = Tiles::new();
+        all.add_first(2400);
+        let mut seen = 0;
+        let r = walk(O::Checker, &all, (60, 40), |_, _, _| {
+            seen += 1;
+            (seen < 5).then_some(())
+        });
+        assert_eq!((r, seen), (None, 5));
+    }
+
+    #[test]
+    fn division_by_multiply_is_exact_for_every_grid() {
+        for cols in 1..=128u32 {
+            let r = recip(cols);
+            for n in 0..cols * 128 {
+                assert_eq!(div_cols(n, r), n / cols, "{n} / {cols}");
+            }
+        }
     }
 }

@@ -57,6 +57,27 @@ use, 2026-10-28: `ddi_2700g` from ROM A08 against L16, **868 of 869
 functions identical**, the last a decompiler cast only: Dell changed
 nothing in the 2700G display driver between those ROMs.
 
+## Running Dell's functions on the PC: `dellrun.py` (R91)
+
+Unicorn Engine 2.1.4 (installed by `setup.sh` in `~/re/unicorn-venv`, its
+wheel checked against PyPI's SHA-256) runs one function of a driver DLL
+from `local/` at its preferred base: the DLL's imports answered by stubs
+that log each call (0 unless told otherwise), hardware windows that log
+every read and write in order with the instruction's address, the
+caller's structures built in a scratch heap. Dell's register sequences and
+the words it builds then come from its own code, not from reading C by
+hand. Run in WSL:
+
+    ~/re/unicorn-venv/bin/python -I tools/rea/dellrun.py check
+
+The self-check runs `ddi_2700g`'s `0x02118414` (the corners of Dell's
+textured rectangle) on a known rectangle and checks each word where
+`rp_drv_mbx3d::tex::quad` puts it. First run, 2026-10-28: right, corners
+bottom left, top left, bottom right, top right; TEX0 `0xA3200000` for 64
+x 32 (the rectangular size codes, bits 27-24 and 23-20). As a library,
+`Dell(path)`, `.mmio(name, base, size, reads)`, `.alloc`, `.put`, `.call`,
+`.log`. Clean room as ever: Dell's bytes stay in `local/`, logs go there.
+
 ## Watching Dell's driver live: HaRET's `MMUTRACE`
 
 HaRET (on the card; source in `local/haret-src`, `ko/src/l1trace.cpp`)
@@ -67,4 +88,7 @@ the instruction's PC) and returns. Section (1 MiB) mappings only unless
 `PERMISSIVEMMUTRACE` is set; every traced access costs a fault. Use: a
 GLES game under Windows Mobile with the 2700G's register window traced, to
 record the register sequences Dell's drivers write, in order (a device
-run, the owner starting HaRET).
+run, the owner starting HaRET). The script is ready:
+`tools/haret/trace-2700g.txt` (R92; its header says what it traces and
+why), copied to the card beside `haret.exe` with an empty
+`earlyharetlog.txt` so the log lands in `haretlog.txt`.

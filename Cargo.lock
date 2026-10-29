@@ -144,6 +144,8 @@ dependencies = [
  "rp-hal-pxa27x",
  "rp-kernel-mm",
  "rp-lz4",
+ "rp-mbx3d-render",
+ "rp-vram-map",
 ]
 
 [[package]]

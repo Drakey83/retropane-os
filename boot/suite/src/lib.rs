@@ -1926,3 +1926,8 @@ mod target {
 
 #[cfg(target_os = "none")]
 pub use target::*;
+
+#[cfg(target_os = "none")]
+mod render3d;
+#[cfg(target_os = "none")]
+pub use render3d::render3d;

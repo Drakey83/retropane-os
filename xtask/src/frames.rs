@@ -18,6 +18,11 @@ pub const REVIEWED: &[&str] = &[
     "rp-bench: rp_bench_suite::target::lz4::{closure#0}",
     "rp-probe: rp_bench_suite::target::frames",
     "rp-bench: rp_bench_suite::target::frames",
+    // The 3D renderer's set-up benchmark (R88): renderers (~5 KiB each)
+    // made and held here; the timed frames run in the renderer's own
+    // functions through `&mut self`, in their own small frames.
+    "rp-bench: rp_bench_suite::render3d::one",
+    "rp-bench: rp_bench_suite::render3d::button",
     "rp-probe: rp_probe::image::main",
     "rp-bench: rp_bench::image::main",
     "rp-mbx3d-api: rp_mbx3d_api::image::s1",

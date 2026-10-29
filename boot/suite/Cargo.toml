@@ -17,6 +17,8 @@ rp-crypto = { path = "../../kernel/crypto" }
 rp-gfx = { path = "../../drivers/gfx" }
 rp-hal-mem = { path = "../../hal/mem" }
 rp-hal-api = { path = "../../hal/api" }
+rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
+rp-vram-map = { path = "../../drivers/vram-map" }
 
 [lints]
 workspace = true

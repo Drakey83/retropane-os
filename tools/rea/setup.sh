@@ -18,3 +18,11 @@ chmod +x ghidra_12.1.4_PUBLIC/support/* ghidra_12.1.4_PUBLIC/ghidraRun \
     ghidra_12.1.4_PUBLIC/Ghidra/Features/Decompiler/os/linux_x86_64/*
 export PATH=~/re/node-v24.22.1-linux-x64/bin:$PATH
 mkdir -p rea && cd rea && npm install --no-fund --no-audit rea-agents@6.8.0
+
+# Unicorn Engine for dellrun.py (R91: Dell's driver functions run on the PC),
+# its own venv, the wheel checked against PyPI's published SHA-256.
+cd ~/re && python3 -m venv unicorn-venv
+whl=unicorn-2.1.4-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+unicorn-venv/bin/pip download --no-deps --only-binary=:all: unicorn==2.1.4 -d .
+check "$whl" 9d6e6dea140560de4ebd8446661f7ef84a357d428c14a3ef09dacd306ec8c239
+unicorn-venv/bin/pip install --no-deps -q "$whl"

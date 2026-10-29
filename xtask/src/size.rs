@@ -92,7 +92,11 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 54 -> 75 KiB on 2026-10-21 (test image): quality
         // audit C38, every crash through rp-image (the card-log line, the
         // crash box, the fault's word and SPSR). 67.8 KiB measured, +~10%.
-        max_load: 75 * 1024,
+        // Ratcheted 75 -> 104 KiB on 2026-10-28 (test image): the 3D
+        // renderer's CPU set-up benchmarked (R88, R78 item 3: `rp-mbx3d-
+        // render` whole, its frames into a stand-in bus); 96.6 KiB measured,
+        // +~8%.
+        max_load: 104 * 1024,
         // Zeroed RAM ratcheted to 32 KiB on 2026-10-22 (test image): LZ4's
         // table kept in static memory as the kernel keeps it (8 KiB, ADR-0001
         // "Why, and what was fixed"); 27.7 KiB measured, +~15%.

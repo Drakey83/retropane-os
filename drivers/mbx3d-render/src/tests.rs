@@ -2637,3 +2637,188 @@ mod quad_objects {
         assert_eq!(w[30..33], [0xC3, f(0.75), f(0.375)]);
     }
 }
+
+/// R88: the per-tile set-up's shortcuts (the hashed list cache, its kept
+/// counts and costs, region entries kept on a whole frame again) never
+/// change what is drawn or predicted.
+mod set_up {
+    use super::*;
+
+    fn picture(g: &Rig, t: Target) -> Vec<u32> {
+        let p = t.picture;
+        (0..u32::from(p.h))
+            .flat_map(|y| (0..u32::from(p.w)).map(move |x| (x, y)))
+            .map(|(x, y)| g.mem.px(p.at, p.stride, x, y))
+            .collect()
+    }
+
+    const SECOND: Target = Target {
+        picture: Picture::bench32(1),
+        x: 0,
+        y: 0,
+    };
+
+    #[test]
+    fn a_whole_frame_again_stores_no_region_word() {
+        let mut g = rig(480, 640);
+        g.r.set_tile_order(TileOrder::Checker);
+        let t = columns(&mut g);
+        for k in 0..30 {
+            let (x, y) = ((k % 5) * 96 + 3, (k / 5) * 106 + 5);
+            let p = if k % 3 == 0 {
+                Paint::texture(t)
+            } else {
+                Paint::Flat(0xFF00_0000 | (k as u32 * 0x0001_0203))
+            };
+            g.set(k, Some(Draw::rect(x as i32, y as i32, 90, 100, p)));
+        }
+        let first = g.frame();
+        assert_eq!(first.tiles, 2400);
+        let want = picture(&g, FULL);
+        // The same scene, every tile again: nothing stored at all.
+        g.r.invalidate_all();
+        let again = g.frame();
+        assert_eq!(again.tiles, 2400);
+        assert_eq!((again.mem_words, again.lists), (0, 0), "{again:?}");
+        assert_eq!(
+            (again.quads, again.predicted_us),
+            (first.quads, first.predicted_us)
+        );
+        // Drawn again over a poisoned picture: every tile right.
+        g.mem
+            .fill(SCREEN.at, SCREEN.stride, (0, 0, 480, 640), 0x5A5A_5A5A);
+        g.r.invalidate_all();
+        g.frame();
+        assert_eq!(picture(&g, FULL), want);
+        // One quad moved: only the entries of the tiles it left and reached
+        // (and its lists) stored.
+        g.set(7, Some(Draw::rect(200, 200, 40, 40, Paint::Flat(RED))));
+        g.r.invalidate_all();
+        let moved = g.frame();
+        let touched = 2 * (12 + 12 * 7); // the old rect 12 x 7 tiles, the new 6 x 3 inside it
+        assert!(moved.mem_words <= touched as u32 + 64, "{moved:?}");
+        assert!(moved.mem_words > 0);
+        // Another order: every entry again.
+        g.r.set_tile_order(TileOrder::Rows);
+        g.r.invalidate_all();
+        assert!(g.frame().mem_words >= 4800);
+        g.r.invalidate_all();
+        assert_eq!(g.frame().mem_words, 0);
+    }
+
+    /// A fresh renderer's frame of the same scene: its picture and stats.
+    fn fresh(
+        draws: &[Option<Draw>; 12],
+        bg: Option<u32>,
+        order: TileOrder,
+        tex: &[u32],
+        t: Texture,
+    ) -> (Vec<u32>, FrameStats) {
+        let mut f = rig(480, 640);
+        f.mem.store(t.at as usize, tex);
+        f.r.set_background(bg).unwrap();
+        f.r.set_tile_order(order);
+        for (k, d) in draws.iter().enumerate() {
+            f.set(k, *d);
+        }
+        let s = f.frame();
+        (picture(&f, FULL), s)
+    }
+
+    #[test]
+    fn every_shortcut_draws_and_predicts_what_a_fresh_renderer_does() {
+        let mut g = rig(480, 640);
+        let t = columns(&mut g);
+        let tex: Vec<u32> = (0..t.bytes() / 4)
+            .map(|k| g.mem.load((t.at + 4 * k) as usize).unwrap())
+            .collect();
+        let orders = [
+            TileOrder::Rows,
+            TileOrder::Checker,
+            TileOrder::Interleaved,
+            TileOrder::Reversed,
+        ];
+        let mut draws: [Option<Draw>; 12] = [None; 12];
+        let mut bg = Some(GREY);
+        g.r.set_background(bg).unwrap();
+        let mut order = TileOrder::Rows;
+        let mut seed = 0x9E37_79B9u32;
+        let mut next = |m: u32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) % m
+        };
+        for step in 0..60 {
+            // A change or two, then a frame into one target or the other.
+            for _ in 0..1 + next(2) {
+                match next(10) {
+                    0..=5 => {
+                        let k = next(12) as usize;
+                        draws[k] = if next(6) == 0 {
+                            None
+                        } else {
+                            let (x, y) = (next(500) as i32 - 20, next(660) as i32 - 20);
+                            let (w, h) = (8 + next(200) as i32, 8 + next(200) as i32);
+                            let paint = match next(3) {
+                                0 => Paint::Flat(0xFF00_0000 | next(0x0100_0000)),
+                                1 => Paint::Gouraud([RED, BLUE, GREY, 0xFF00_FF00]),
+                                // Textured at another scale: another cost.
+                                _ => Paint::Texture {
+                                    tex: t,
+                                    uv: [
+                                        (0, 0),
+                                        (UV_ONE * (1 + next(4) as i32), 0),
+                                        (UV_ONE, UV_ONE),
+                                        (0, UV_ONE),
+                                    ],
+                                    tint: 0xFFFF_FFFF,
+                                },
+                            };
+                            let d = Draw::rect(x, y, w, h, paint);
+                            Some(if next(4) == 0 { d.over() } else { d })
+                        };
+                        g.set(k, draws[k]);
+                    }
+                    6 => {
+                        order = orders[next(4) as usize];
+                        g.r.set_tile_order(order);
+                    }
+                    7 => {
+                        bg = if bg.is_some() && next(3) == 0 {
+                            None
+                        } else {
+                            Some(0xFF00_0000 | next(0x0100_0000))
+                        };
+                        g.r.set_background(bg).unwrap();
+                    }
+                    8 => g.r.set_objects(if next(2) == 0 {
+                        Objects::Quads
+                    } else {
+                        Objects::Triangles
+                    }),
+                    _ => g.r.invalidate(next(480) as i32, next(640) as i32, 40, 40),
+                }
+            }
+            if bg.is_none() {
+                // The quads must cover what's rendered: a full-screen one
+                // first.
+                draws[0] = Some(Draw::rect(0, 0, 480, 640, Paint::Flat(BLUE)));
+                g.set(0, draws[0]);
+            }
+            g.r.invalidate_all();
+            let target = if step % 3 == 2 { SECOND } else { FULL };
+            let s = g.frame_into(target);
+            let (want, ws) = fresh(&draws, bg, order, &tex, t);
+            let wrong = picture(&g, target)
+                .iter()
+                .zip(&want)
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(wrong, 0, "step {step}");
+            assert_eq!(
+                (s.tiles, s.quads, s.predicted_us),
+                (ws.tiles, ws.quads, ws.predicted_us),
+                "step {step}"
+            );
+        }
+    }
+}

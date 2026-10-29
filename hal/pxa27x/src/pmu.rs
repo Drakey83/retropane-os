@@ -139,11 +139,9 @@ impl Tally {
     #[must_use]
     pub fn split(&self) -> Split {
         let pm = |n: u64, of: u64| {
-            if of == 0 {
-                0
-            } else {
-                u32::try_from(n.saturating_mul(1000) / of).unwrap_or(u32::MAX)
-            }
+            n.saturating_mul(1000)
+                .checked_div(of)
+                .map_or(0, |v| u32::try_from(v).unwrap_or(u32::MAX))
         };
         let [data, buffer, icache] = self.events[0];
         let stalls = data + buffer + icache;

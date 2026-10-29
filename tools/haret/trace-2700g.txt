@@ -1,0 +1,22 @@
+# HaRET script (R92): watch Dell's drivers drive the 2700G's MBX core live,
+# under Windows Mobile, while a GLES game draws. Run it from HaRET's script
+# box (type trace-2700g.txt, Run), then switch to the game within 20 s.
+# With earlyharetlog.txt beside haret.exe, everything goes to haretlog.txt.
+#
+# Part 1, this script: (a) the MMU table while the game runs, to find every
+# virtual address that maps the register block (physical 0x0FFE0000: the
+# kernel's own 0xBFFE0000, and any per-process mapping libGLES_CL made);
+# (b) 20 s of every read and write of the MBX core's registers (block +
+# 0x4000: 0xBFFE4000, 4 KiB, a section mapping, no permissive mode) through
+# the kernel's mapping, each with its value and the instruction's address.
+# The TA's input window (0xBFFF4000) is not traced: each vertex word would
+# fault (the game would crawl); its words are known from capture version 6.
+#
+# Part 2 (a later script, written from part 1's log): the same through the
+# game's own mapping, if part 1 finds one (coarse pages: permissive mode).
+
+sleep 20000
+dump mmu
+set maxl1trace 200000
+set mmutrace 0xBFFE4000 0x1000 rw
+wirq 20
