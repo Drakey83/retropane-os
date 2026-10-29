@@ -149,8 +149,12 @@ watching.
   read"): `GSCADR` rewritten in the VEVENT0 interrupt (line 643, GPIO85),
   then `DUCTRL` (`0x230C`) = 1; GLES triple-buffers (`BackBuffers` 2,
   `VSyncLocked` 1). A `GSCADR` write takes effect at once with the X51v's
-  `DSCTRL` update bits (16-19, 24-26) at 0 (W1); whether they latch it is
-  untried (R113).
+  `DSCTRL` update bits (16-19, 24-26) at 0 (W1; R113 on the X51v: 180 of
+  180 writes at lines 100, 320, 600 tore their refresh, with or without
+  Dell's `DUCTRL` = 1, and with bit 25, 26 or `UPDWAIT` 1 set). **With
+  `DSCTRL` bit 24 (`UPDCNT`) set and `DUCTRL` = 1, no write tore (0 of
+  180) but none showed in the next refresh either**: the write is held at
+  least two refreshes, or until something not yet found (R113 run 2).
 - One graphics plane composed by the 2D engine (ADR-0023), double
   buffered; its interrupt line is GPIO85. Windows Mobile's 648 x 645
   frame at `DISPPLL` `0xEC5` (23.56 MHz) gives 56.46 Hz; 60.0 Hz was
