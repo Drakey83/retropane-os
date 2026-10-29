@@ -41,7 +41,7 @@ knowledge, a claim.
 result; a separate go for the device run.
 
 ## Built (2026-10-29, the owner's go: "R110, R113, R114, in this order")
-`rp-scene` (`boot/scene`): the service opens a 480 x 448 scene under a
+`rp-scene` (`shell/scene`): the service opens a 480 x 448 scene under a
 label, four scenes through its quads (flat and Gouraud; the 8 x 8 texture
 magnified bilinear; three translucent quads over a Gouraud field; three
 depth-tested quads) and a 2D bar whose colour follows the frame. Three
