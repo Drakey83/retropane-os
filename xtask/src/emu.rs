@@ -5820,6 +5820,16 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cp_r102 = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_ROUTES", "1"),
+            ("RP_GPUBENCH_GC2CP_R102", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cp_every = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6206,7 +6216,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 151] = [
+    let runs: [GpubenchRun; 152] = [
         (
             "run A",
             &run_a,
@@ -7014,6 +7024,20 @@ fn variant_images_gpubench(
             &[
                 "GC2CP WM 99.67 / 2 (e) 480 x 320, two frames in flight frame 0: every frame checked: 100 of 100, 0 wrong",
                 "GC2CP 74.75 / 1 (e) 480 x 320, two frames in flight frame 3: every frame checked: 100 of 100, 0 wrong",
+                "GC2CP done:",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // R102: route 3's pipelined way (d') against its serial (c'), every
+        // pipelined frame hashed against the serial output, at three clocks.
+        (
+            "run GC2CP R102",
+            &run_gc2cp_r102,
+            &[
+                "GC2CP WM 99.67 / 2 (d') 240 x 320 converted, lists overlapped, 2D apart frame 0: every frame checked: 101 of 101, 0 differ from the serial output",
+                "GC2CP 149.50 / 2 (d') 240 x 320 converted, lists overlapped, 2D apart frame 3: every frame checked: 101 of 101, 0 differ from the serial output",
                 "GC2CP done:",
                 "RETROPANE-GPUBENCH: done",
             ],

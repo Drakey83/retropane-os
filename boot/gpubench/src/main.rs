@@ -21188,6 +21188,18 @@ mod image {
     /// misses can't hide under the last frame's. Its times include the
     /// checks: not a speed run.
     const GC2CP_EVERY: bool = option_env!("RP_GPUBENCH_GC2CP_EVERY").is_some();
+    /// Route 3's in-flight gain, every frame checked (`RP_GPUBENCH_GC2CP_R102`,
+    /// with `RP_GPUBENCH_GC2_HALF_ROUTES`; R102, ADR-0038 G4 as the owner
+    /// ruled it: the gain measured against a serial run in the same image
+    /// before it is claimed). Ways (a), (c') and (d') only, at Windows
+    /// Mobile's clock, 74.75 / 1 and the ruled 149.50 / 2; (d') runs
+    /// [`GC2CP_OV_REPS`] frames, each frame's conversion output (after its 2D
+    /// placement) hashed against the serial (c') output of the same game
+    /// frame and poisoned again before the next conversion. Its times
+    /// include the checks: the speed is GC2CP low's.
+    const GC2CP_R102: bool = option_env!("RP_GPUBENCH_GC2CP_R102").is_some();
+    /// Way (d)'s pipelined frames.
+    const GC2CP_OV_REPS: u32 = if GC2CP_R102 { 100 } else { GC2CP_REPS };
     /// Way (e)'s frames a kind.
     const GC2CP_FRAMES: usize = if GC2CP_EVERY {
         100
@@ -21524,18 +21536,24 @@ mod image {
         let (cur, conv) = (&mut held.0, &mut held.1);
         {
             if gc2cp_references(g, cur, (tex, Objects::default()), (first, refs)) {
-                let clocks = if GC2CP_LOW {
-                    [
+                let clocks: &[(Option<ClockStep>, &str)] = if GC2CP_R102 {
+                    &[
+                        (None, "WM 99.67 / 2"),
+                        (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
+                        (Some(gc2_step(23, 2, 0, 2)), "149.50 / 2"),
+                    ]
+                } else if GC2CP_LOW {
+                    &[
                         (None, "WM 99.67 / 2"),
                         (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
                     ]
                 } else {
-                    [
+                    &[
                         (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),
                         (Some(gc2_step(44, 4, 0, 1)), "143.00 / 1"),
                     ]
                 };
-                for (step, cname) in clocks {
+                for &(step, cname) in clocks {
                     clock_restore(&mut g.e.regs);
                     if let Some(st) = step {
                         if clock_apply(g, st).is_none() {
@@ -22218,6 +22236,10 @@ mod image {
         let nf = gc2::GAME_FRAMES.len();
         let mut best = [[u32::MAX; 4]; GC2CP_WAYS.len()];
         for wi in 0..GC2CP_WAYS.len() {
+            // R102: native (the speed-ups' base), (c') and (d') only.
+            if GC2CP_R102 && !matches!(wi, 0 | 3 | GC2CP_APART) {
+                continue;
+            }
             if wi == GC2CP_INFLIGHT {
                 // Its second renderer in the conversion's place (the stack).
                 gc2cp_conv_release(g, conv_slot);
@@ -22659,7 +22681,15 @@ mod image {
     ) -> u32 {
         let wname = GC2CP_WAYS[wi];
         let apart = wi == GC2CP_APART;
+        let every = GC2CP_R102 && apart;
         let pair = (GC2CP_SET, GC2CP_SET + GC2CP_PLANE);
+        let fnv = |w: &[u32]| {
+            w.iter()
+                .fold(0x811C_9DC5u32, |h, &x| (h ^ x).wrapping_mul(0x0100_0193))
+        };
+        // The serial frame's output (its hash, its words off the model):
+        // what every pipelined frame must equal.
+        let mut serial = None;
         if !gc2cp_fill(g, (GC2CP_GAME, 512), (240, 320), Format::RGB565, poison)
             || !gc2cp_fill(
                 g,
@@ -22669,6 +22699,11 @@ mod image {
                 GC2CP_POISON,
             )
             || gc2cp_serial(g, game, conv, false).is_none()
+            || {
+                let (off, _) = gc2cp_off(g, want, seen);
+                serial = Some((fnv(seen), off));
+                false
+            }
             || !gc2cp_fill(
                 g,
                 (GC2CP_SET, GC2CP_OW4),
@@ -22681,13 +22716,20 @@ mod image {
             return u32::MAX;
         }
         let before = game.core_resets() + conv.core_resets();
-        let mut starts = [0u32; GC2CP_REPS as usize + 2];
+        let mut starts = [0u32; GC2CP_OV_REPS as usize + 2];
+        // R102: frames checked, frames that differ from the serial output,
+        // the most words off the model in one of those.
+        let (mut checked, mut wrong, mut worst) = (0u32, 0u32, 0u32);
         let mut conv_due: Option<u32> = None;
         let mut ok = true;
         // The frames' time split (ticks, frames 1 on): the CPU's set-up (the
         // prepares) and waiting on the core (the polls to each render's end).
         let (mut prep, mut wait) = (0u32, 0u32);
-        for (k, start) in starts.iter_mut().take(GC2CP_REPS as usize + 1).enumerate() {
+        for (k, start) in starts
+            .iter_mut()
+            .take(GC2CP_OV_REPS as usize + 1)
+            .enumerate()
+        {
             rt::check_in();
             *start = rt::ticks();
             game.invalidate_all();
@@ -22709,6 +22751,26 @@ mod image {
                     break;
                 }
                 placing = !apart;
+                // R102: the frame just placed against the serial output,
+                // then the output poisoned for the next conversion.
+                if every {
+                    let (off, _) = gc2cp_off(g, want, seen);
+                    checked += 1;
+                    if Some(fnv(seen)) != serial.map(|s| s.0) {
+                        wrong += 1;
+                        worst = worst.max(off.unwrap_or(u32::MAX));
+                    }
+                    if !gc2cp_fill(
+                        g,
+                        (GC2CP_SET, GC2CP_OW4),
+                        (GC2CM_OW, 320),
+                        Format::BPP32,
+                        GC2CP_POISON,
+                    ) {
+                        ok = false;
+                        break;
+                    }
+                }
             }
             game.registers_taken();
             let started = prepared == Ok(true);
@@ -22745,7 +22807,15 @@ mod image {
         if ok {
             ok = conv_due.is_some_and(|d| gc2cp_wait(g, conv, d)) && gc2cn_place(g, pair, false);
         }
-        starts[GC2CP_REPS as usize + 1] = rt::ticks();
+        starts[GC2CP_OV_REPS as usize + 1] = rt::ticks();
+        if ok && every {
+            let (off, _) = gc2cp_off(g, want, seen);
+            checked += 1;
+            if Some(fnv(seen)) != serial.map(|s| s.0) {
+                wrong += 1;
+                worst = worst.max(off.unwrap_or(u32::MAX));
+            }
+        }
         gc2cp_resets(g, before, game, conv);
         if !ok {
             log!("  GC2CP {cname} {wname} frame {f}: a step failed (reset)");
@@ -22757,13 +22827,20 @@ mod image {
         for w in starts[1..].windows(2) {
             best = best.min(us(w[1].wrapping_sub(w[0])));
         }
-        let mean = us(starts[GC2CP_REPS as usize + 1].wrapping_sub(starts[1])) / GC2CP_REPS;
+        let mean = us(starts[GC2CP_OV_REPS as usize + 1].wrapping_sub(starts[1])) / GC2CP_OV_REPS;
         let (off, uv) = gc2cp_off(g, want, seen);
         log!(
-            "  GC2CP {cname} {wname} frame {f}: {GC2CP_REPS} frames; whole frame fastest {best} us mean {mean}; the last frame checked: {off:?} words off the expected UYVY, {uv} with U' or V' off; a frame's CPU set-up {} us, waiting on the core {} us (means)",
-            us(prep) / GC2CP_REPS,
-            us(wait) / GC2CP_REPS
+            "  GC2CP {cname} {wname} frame {f}: {GC2CP_OV_REPS} frames; whole frame fastest {best} us mean {mean}; the last frame checked: {off:?} words off the expected UYVY, {uv} with U' or V' off; a frame's CPU set-up {} us, waiting on the core {} us (means)",
+            us(prep) / GC2CP_OV_REPS,
+            us(wait) / GC2CP_OV_REPS
         );
+        if every {
+            log!(
+                "  GC2CP {cname} {wname} frame {f}: every frame checked: {checked} of {}, {wrong} differ from the serial output (its {:?} words off the model), the most words off one {worst}",
+                GC2CP_OV_REPS + 1,
+                serial.map(|s| s.1)
+            );
+        }
         best
     }
 
