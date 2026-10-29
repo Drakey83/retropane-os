@@ -149,10 +149,12 @@ pub(super) fn run(g: &mut Rig) {
         if k % 2 == 0 {
             video_on(g, &vregs);
         } else {
-            g.e.regs.write32(lreg::VSCADR, 0);
+            // Off, parked out of the graphics plane's slot (GC2DC run 2).
+            g.e.regs.write32(lreg::VSCADR, 1 << 24);
         }
     });
     g.e.regs.write32(lreg::VSCADR, 0);
+    rp_drv_mbx_display::layers::park_hidden_video(&mut g.e.regs);
     phase(g, "a DMA into local memory each frame", &mut |g, _| {
         let _ = dma.arm_copy_to_device_memory(&bytes[..PIECE], CS3 + dst);
         let t = rt::ticks();

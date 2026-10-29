@@ -5810,6 +5810,16 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2dc3 = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_R101_SWITCH", "1"),
+            ("RP_GPUBENCH_GC2_HALF_R101_WAYS", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cs = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6234,7 +6244,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 154] = [
+    let runs: [GpubenchRun; 155] = [
         (
             "run A",
             &run_a,
@@ -6909,6 +6919,23 @@ fn variant_images_gpubench(
                 "not read 0, not judged ",
                 "GC2DC part 2 1 a switch every 1 frames: 12 frames read: 0 the route in place as the frame began, 0 another route whole, 0 NEITHER ROUTE (first None), 0 not read (not judged: no DSIG)",
                 "GC2DC part 2 2 a switch every 8 frames: 12 frames read: 0 the route in place as the frame began, 0 another route whole, 0 NEITHER ROUTE (first None), 0 not read (not judged: no DSIG)",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // GC2DC run 3 (R101): three ways into and out of the smooth route,
+        // each switched on line 0 and every frame; the fork reads DSIG 0,
+        // so the run's shape and every frame read on time.
+        (
+            "run GC2DC ways",
+            &run_gc2dc3,
+            &[
+                "GC2DC return: native fresh ",
+                "GC2DC way 1 A TODAY: CLOCK OFF, ALL REWRITTEN: pairs on line 0: 0 frames of neither route",
+                "GC2DC way 2 B DELL: STREAM BIT ONLY: pairs on line 0: 0 frames of neither route",
+                "GC2DC way 3 C OURS: VIDEO ALWAYS ON, UNDER: pairs on line 0: 0 frames of neither route, the slowest settled in frame 0; a switch every frame: 12 frames: 0 the new route whole, 0 another route whole, 0 NEITHER ROUTE, 0 not read (not judged",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

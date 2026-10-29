@@ -350,7 +350,7 @@ watching.
   rebuild (run Z) without a soft reset; G4's dark display was an underrun
   (`DINTRS` bit 4), G5's start-up one was not. `DSIG` (the output
   signature) reads 0 for an all-black picture (run N): it tells a stopped
-  display only with non-black pixels on screen. **It covers the whole active area, every bit, on the native, line-doubled and scaled routes, returns to the same value for the same picture, and updates once a frame at scan line 2** (`rp-gpubench` GC2DB, 2026-10-29). **Warm soak (run GS,
+  display only with non-black pixels on screen. **It covers the whole active area, every bit, on the native, line-doubled and scaled routes, returns to the same value for the same picture, and updates once a frame at scan line 2** (`rp-gpubench` GC2DB, 2026-10-29). **A video plane with its stream off still takes part in the slot order (`VSCADR` bits 24-25): left in the graphics plane's slot it changes the picture** (GC2DC run 2; the driver parks a hidden plane out of it, `layers::park_hidden_video`). **The plane registers act at once:** a route switch is whole only when written on lines 643-3 of the 645-line frame (GC2DC run 2). **Warm soak (run GS,
   2026-10-22, 20 min each, stressed, one X51v): 0 BAD at 99.67 MHz and at
   133.25 MHz CL2, the cores at divide 1** (1,320 rounds, 3D pixel-exact,
   no drift, registers held, no underrun, the display sending throughout);

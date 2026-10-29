@@ -337,6 +337,7 @@ pub(super) fn run(g: &mut Rig) {
     let _ = g.pool.free(glass, GSTRIDE * GLASS_ROWS);
     let _ = g.pool.free(atlas, ROW_BYTES as u32);
     g.e.regs.write32(lreg::VSCADR, 0);
+    rp_drv_mbx_display::layers::park_hidden_video(&mut g.e.regs);
     three_d_frames(g, scratch);
     log!("CH: done");
 }

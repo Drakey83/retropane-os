@@ -307,11 +307,15 @@ pub fn graphics_set<B: RegisterBus>(
         };
         regs.write32(offset, value);
     }
+    layers::park_hidden_video(regs);
 }
 
-/// [`Display::hide_video`] on a register block held elsewhere.
+/// [`Display::hide_video`] on a register block held elsewhere: the stream
+/// off, the plane parked out of the graphics plane's slot (while its clock
+/// still runs), then its clock off.
 pub fn video_hide<B: RegisterBus>(regs: &mut B) {
     regs.modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
+    layers::park_hidden_video(regs);
     layers::video_clock(regs, false);
 }
 
@@ -756,6 +760,34 @@ mod tests {
     }
 
     #[test]
+    fn hiding_the_video_plane_or_moving_the_graphics_plane_never_shares_a_slot() {
+        // GC2DC run 2: the video plane shown in the bottom slot, then
+        // hidden under a solo graphics plane.
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(reg::GSCADR, 0x8000_0000 | (1 << 24));
+        bus.preset(layers::reg::VSCADR, 0x8000_0000 | 0xF_4D00);
+        video_hide(&mut bus);
+        let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
+        graphics_set(&mut bus, &plane, layers::Layer::SOLO, false);
+        let slot = |v: u32| (v >> 24) & 3;
+        let (g, v) = (bus.value(reg::GSCADR), bus.value(layers::reg::VSCADR));
+        assert_eq!(v >> 31, 0, "hidden");
+        assert_ne!(slot(g), slot(v));
+        // And the graphics plane moved into a hidden plane's slot.
+        graphics_set(
+            &mut bus,
+            &plane,
+            layers::Layer {
+                slot: layers::Slot::Middle,
+                blend: layers::Blend::Global(0),
+            },
+            false,
+        );
+        let (g, v) = (bus.value(reg::GSCADR), bus.value(layers::reg::VSCADR));
+        assert_ne!(slot(g), slot(v));
+    }
+
+    #[test]
     fn the_scaler_filter_loads_only_when_the_plane_scales_and_before_it_does() {
         let v = layers::VideoPlane::new(layers::VideoFormat::Uyvy, 240, 320, 0x40_0000);
         let filter = |w: &[(usize, u32)]| {
@@ -950,8 +982,11 @@ mod tests {
         let w = d.into_inner().writes();
         assert_eq!(w.first(), Some(&(reg::DSCTRL, 0x0000_0020)));
         assert_eq!(w.last(), Some(&(reg::DSCTRL, 0x8000_0020)));
-        assert_eq!(w.len(), 2 + 9 + 5);
+        // The video plane read 0 (hidden, in the graphics plane's bottom
+        // slot): parked in the middle, one write (GC2DC run 2).
+        assert_eq!(w.len(), 2 + 9 + 5 + 1);
         assert!(w.contains(&(reg::GSCADR, 0x8000_6000)));
+        assert!(w.contains(&(layers::reg::VSCADR, 0x0100_0000)));
     }
 
     #[test]

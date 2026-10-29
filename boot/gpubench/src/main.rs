@@ -18711,6 +18711,176 @@ mod image {
         }
     }
 
+    /// Route `route` shown GC2DC run 3's way `way` (see
+    /// [`GC2DC_WAY_NAMES`]).
+    fn gc2dc_way_show(g: &mut Rig, way: u8, route: u8, at: [u32; 3], planes0: &Snapshot) {
+        use rp_drv_mbx_display::reg as dr;
+        if way == 0 {
+            gc2db_show(g, route, at[usize::from(route)], planes0);
+            return;
+        }
+        let under = Layer {
+            slot: Slot::Middle,
+            blend: Blend::Opaque,
+        };
+        if route == gc2::ROUTE_SMOOTH {
+            let screen = Plane {
+                format: PlaneFormat::Rgb565,
+                width: 480,
+                height: 640,
+                offset: 0,
+                stride: 960,
+            };
+            rp_drv_mbx_display::graphics_set(&mut g.e.regs, &screen, GC2CB_GRAPHICS, false);
+            if way == 1 {
+                let v = g.e.regs.read32(lreg::VSCADR);
+                g.e.regs
+                    .write32(lreg::VSCADR, GC2CB_VIDEO_BOTTOM.scadr(v) | 1 << 31);
+            }
+            return;
+        }
+        if way == 1 {
+            let v = g.e.regs.read32(lreg::VSCADR);
+            g.e.regs.write32(lreg::VSCADR, v & !(1 << 31));
+        }
+        let h = if route == gc2::ROUTE_LINES { 320 } else { 640 };
+        let plane = Plane {
+            format: PlaneFormat::Rgb565,
+            width: 480,
+            height: h,
+            offset: at[usize::from(route)] as usize,
+            stride: 960,
+        };
+        let layer = if way == 2 { under } else { Layer::SOLO };
+        rp_drv_mbx_display::graphics_set(&mut g.e.regs, &plane, layer, false);
+        if route == gc2::ROUTE_LINES {
+            let v = g.e.regs.read32(dr::GDRCTRL);
+            g.e.regs.write32(dr::GDRCTRL, (v & !(1 << 31)) | 1 << 29);
+        }
+    }
+
+    /// GC2DC run 3, way `way`: set up, each route's signature, the
+    /// switches of each pair on line 0, then a switch every frame.
+    #[allow(clippy::too_many_lines)]
+    fn gc2dc_way(
+        g: &mut Rig,
+        (cur, tex): (&mut Option<((u16, u16), Renderer)>, gc2::Tex),
+        way: u8,
+        (at, sig0, live0): ([u32; 3], [u32; 3], bool),
+        planes0: &Snapshot,
+    ) {
+        let name = GC2DC_WAY_NAMES[usize::from(way)];
+        let mut l2 = heapless_name();
+        let _ = write!(l2, "WAY {} OF 3", way + 1);
+        gc2dc_card(g, (&mut *cur, tex), planes0, ["R101: INTO SMOOTH", l2.as_str(), name]);
+        // The video plane programmed once for B and C (A does it each show).
+        rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        if way != 0 {
+            let plane = VideoPlane::new(VideoFormat::Uyvy, 240, 320, at[2] as usize);
+            let scale = plane.scale_to(480, 640, 0, 0);
+            rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
+        }
+        // Each route's signature this way, against GC2DB's.
+        let mut sig = [0u32; 3];
+        for r in 0..3u8 {
+            gc2dc_way_show(g, way, r, at, planes0);
+            let a = gc2dc_settled(g);
+            let b = gc2dc_next(g);
+            sig[usize::from(r)] = a.unwrap_or(0);
+            log!(
+                "  GC2DC way {} route {}: DSIG {a:x?} then {b:x?}; {}",
+                way + 1,
+                r + 1,
+                if a == Some(sig0[usize::from(r)]) && a == b {
+                    "the same as without the switch"
+                } else {
+                    "DIFFERENT from the route's own"
+                }
+            );
+        }
+        let live = live0 && sig == sig0;
+        // The switches of each pair on line 0: the frame each settles in.
+        // Settled: from that frame on every frame read is the new route's.
+        let mut torn_all = 0u32;
+        let mut worst = 0usize;
+        for a in 0..3u8 {
+            for b in 0..3u8 {
+                if a == b {
+                    continue;
+                }
+                let (ka, kb) = (usize::from(a), usize::from(b));
+                let mut settled = [b'-'; 4];
+                let mut torn = 0u32;
+                for (rep, ch) in settled.iter_mut().enumerate().take(GC2DC_WAY_REPS as usize) {
+                    gc2dc_way_show(g, way, a, at, planes0);
+                    let start = gc2dc_settled(g);
+                    let _ = gc2dc_at_line(g, 0);
+                    gc2dc_way_show(g, way, b, at, planes0);
+                    let mut seen = [None; GC2DC_WAY_READ];
+                    for s in &mut seen {
+                        *s = gc2dc_next(g);
+                    }
+                    let _ = rep;
+                    if !live || start != Some(sig[ka]) {
+                        *ch = b'?';
+                        continue;
+                    }
+                    torn += seen
+                        .iter()
+                        .filter(|s| s.is_some_and(|v| v != sig[ka] && v != sig[kb]))
+                        .count() as u32;
+                    // The first frame from which all are the new route's.
+                    let from = (0..GC2DC_WAY_READ)
+                        .find(|&k| seen[k..].iter().all(|s| *s == Some(sig[kb])));
+                    *ch = from.map_or(b'N', |k| {
+                        worst = worst.max(k);
+                        b'0' + k as u8
+                    });
+                    rt::check_in();
+                }
+                torn_all += torn;
+                log!(
+                    "    GC2DC way {} {} to {}: settled in frame {} ({} frames of neither route)",
+                    way + 1,
+                    a + 1,
+                    b + 1,
+                    core::str::from_utf8(&settled[..GC2DC_WAY_REPS as usize]).unwrap_or(""),
+                    torn
+                );
+            }
+        }
+        // A switch every frame on line 0, every frame judged: the frame
+        // read next is the one the write began (run 2: line 0's writes show
+        // in their own frame), so it should be the new route's.
+        let mut step = 0usize;
+        let mut route = GC2DC_CYCLE[0];
+        gc2dc_way_show(g, way, route, at, planes0);
+        let _ = gc2dc_settled(g);
+        let (mut as_due, mut other, mut torn, mut missed) = (0u32, 0u32, 0u32, 0u32);
+        for f in 0..GC2DC_WAY_FRAMES {
+            step = (step + 1) % GC2DC_CYCLE.len();
+            route = GC2DC_CYCLE[step];
+            let _ = gc2dc_at_line(g, 0);
+            gc2dc_way_show(g, way, route, at, planes0);
+            match gc2dc_next(g) {
+                None => missed += 1,
+                Some(_) if !live => {}
+                Some(v) if v == sig[usize::from(route)] => as_due += 1,
+                Some(v) if sig.contains(&v) => other += 1,
+                Some(_) => torn += 1,
+            }
+            if f % 64 == 0 {
+                rt::check_in();
+            }
+        }
+        log!(
+            "  GC2DC way {} {name}: pairs on line 0: {torn_all} frames of neither route, the slowest settled in frame {worst}; a switch every frame: {GC2DC_WAY_FRAMES} frames: {as_due} the new route whole, {other} another route whole, {torn} NEITHER ROUTE, {missed} not read{}",
+            way + 1,
+            if live { "" } else { " (not judged: no DSIG, or a route's signature differed this way)" }
+        );
+        rp_drv_mbx_display::video_hide(&mut g.e.regs);
+    }
+
     /// GC2DC's two parts on the pictures at `at`.
     #[allow(clippy::too_many_lines)]
     fn gc2dc_switches(
@@ -18740,6 +18910,12 @@ mod image {
         }
         let live =
             steady && sig[0] != 0 && sig[0] != sig[1] && sig[1] != sig[2] && sig[0] != sig[2];
+        if GC2DC_WAYS {
+            for way in 0..3u8 {
+                gc2dc_way(g, (&mut *cur, tex), way, (at, sig, live), planes0);
+            }
+            return;
+        }
         // The frame's lines: the highest the scan line reads over two frames.
         let t0 = rt::ticks();
         let mut lines = 0;
@@ -22216,6 +22392,34 @@ mod image {
     /// frame read, each one route's whole picture. Unattended, about two
     /// minutes; cards name each part.
     const GC2DC: bool = option_env!("RP_GPUBENCH_GC2_HALF_R101_SWITCH").is_some();
+    /// GC2DC run 3 (`RP_GPUBENCH_GC2_HALF_R101_WAYS`, with GC2DC's): run 2
+    /// found switches into the smooth route not clean on any line. After
+    /// the return test (now a check of the driver's slot fix) and the
+    /// routes' signatures, [`GC2DC_WAY_NAMES`] compared instead of the
+    /// sweep: [`GC2DC_WAY_REPS`] switches of each ordered pair on line 0
+    /// (run 2's clean line for the graphics plane), [`GC2DC_WAY_READ`]
+    /// frames read after each (the frame each settles in, frames of
+    /// neither route); then a switch every frame for [`GC2DC_WAY_FRAMES`]
+    /// frames, every frame judged.
+    const GC2DC_WAYS: bool = option_env!("RP_GPUBENCH_GC2_HALF_R101_WAYS").is_some();
+    /// GC2DC run 3's ways into and out of the smooth route: today's (the
+    /// video plane's clock off when hidden, everything rewritten when
+    /// shown); Dell's (the stream bit alone, the clock and the scaler
+    /// left as they are); ours (the video plane never hidden: under an
+    /// opaque graphics plane for native and the lines, the graphics plane
+    /// see-through for the smooth route, so every switch writes the
+    /// graphics plane alone, the kind run 2 found clean).
+    const GC2DC_WAY_NAMES: [&str; 3] = [
+        "A TODAY: CLOCK OFF, ALL REWRITTEN",
+        "B DELL: STREAM BIT ONLY",
+        "C OURS: VIDEO ALWAYS ON, UNDER",
+    ];
+    /// Switches of each ordered pair a way.
+    const GC2DC_WAY_REPS: u32 = 4;
+    /// Frames read after each.
+    const GC2DC_WAY_READ: usize = 6;
+    /// The every-frame part's frames a way (the emulator 12).
+    const GC2DC_WAY_FRAMES: u32 = if GC2_RENDERS < 20 { 12 } else { 300 };
     /// Run GC2DA (`RP_GPUBENCH_GC2_HALF_R79`, with `RP_GPUBENCH_GC2_HALF`),
     /// R79's look for the owner's eye: the flat and the textured game frame
     /// at 240 x 320 (CPU-made UYVY, GC2CS's way), each shown 2x three ways

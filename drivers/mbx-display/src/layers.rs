@@ -515,6 +515,36 @@ pub(crate) fn solo<B: RegisterBus>(regs: &mut B) {
             regs.modify(offset, field, 0);
         }
     }
+    park_hidden_video(regs);
+}
+
+/// Keeps a hidden video plane out of the graphics plane's slot: **a plane
+/// with its stream off still takes part in the slot order**, and one left
+/// in the graphics plane's slot changes the picture (`rp-gpubench` GC2DC
+/// run 2, 2026-10-29: after `video_hide` left it in the bottom slot under
+/// a solo graphics plane, native's signature came back only when `VSCADR`
+/// alone was written back). Dell's driver and Linux mbxfb hide the plane
+/// by its stream bit alone and never meet this (neither moves the video
+/// plane into the graphics plane's slot). A hidden plane sharing the slot
+/// moves to the middle, where Windows Mobile leaves it (`0x01000000`), or
+/// to the bottom when the graphics plane holds the middle (unmeasured). A
+/// shown video plane, or a hidden one in another slot, is left alone. Every
+/// path that writes a plane's slot ends with it.
+pub fn park_hidden_video<B: RegisterBus>(regs: &mut B) {
+    let v = regs.read32(reg::VSCADR);
+    if SCADR_STR_EN.extract(v) != 0 {
+        return;
+    }
+    let g = SCADR_BLEND_POS.extract(regs.read32(crate::reg::GSCADR));
+    if SCADR_BLEND_POS.extract(v) != g {
+        return;
+    }
+    let park = if g == Slot::Middle as u32 {
+        Slot::Bottom
+    } else {
+        Slot::Middle
+    };
+    regs.write32(reg::VSCADR, SCADR_BLEND_POS.insert(v, park as u32));
 }
 
 /// Switches the video stream on (with its overlay clock) or off.
@@ -868,8 +898,37 @@ mod tests {
         bus.preset(reg::HCCTRL, 0x8600_0000);
         solo(&mut bus);
         assert_eq!(bus.value(crate::reg::GSCADR), 0x8001_0000);
-        assert_eq!(bus.value(reg::VSCADR), 0x0005_0000);
+        // The hidden video plane parked out of the graphics plane's slot
+        // (it sat in the bottom one: GC2DC run 2).
+        assert_eq!(bus.value(reg::VSCADR), 0x0105_0000);
         assert_eq!(bus.value(reg::HCCTRL), 0x0600_0000);
+    }
+
+    #[test]
+    fn a_hidden_video_plane_never_shares_the_graphics_planes_slot() {
+        // Every slot of each plane, the video stream on and off.
+        for gs in 0..3u32 {
+            for vs in 0..3u32 {
+                for on in [false, true] {
+                    let mut bus = MockBus::new();
+                    let g = 0x8000_0000 | (gs << 24) | 0x1_0000;
+                    let v = (u32::from(on) << 31) | (vs << 24) | (2 << 27) | 0x5_0000;
+                    bus.preset(crate::reg::GSCADR, g);
+                    bus.preset(reg::VSCADR, v);
+                    park_hidden_video(&mut bus);
+                    let got = bus.value(reg::VSCADR);
+                    assert_eq!(bus.value(crate::reg::GSCADR), g, "graphics untouched");
+                    if on || vs != gs {
+                        assert_eq!(got, v, "{gs} {vs} {on}: left alone");
+                        assert!(bus.writes().is_empty());
+                    } else {
+                        let want = if gs == 1 { 0 } else { 1 };
+                        assert_eq!(SCADR_BLEND_POS.extract(got), want, "{gs} {vs}");
+                        assert_eq!(got & !(3 << 24), v & !(3 << 24), "only the slot moves");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

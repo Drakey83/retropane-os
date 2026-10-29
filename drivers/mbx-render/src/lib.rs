@@ -630,6 +630,8 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             };
             self.e.regs.write32(off, v);
         }
+        // A hidden video plane out of the solo plane's slot (GC2DC run 2).
+        rp_drv_mbx_display::layers::park_hidden_video(&mut self.e.regs);
     }
 
     fn solo(scadr: u32) -> u32 {
