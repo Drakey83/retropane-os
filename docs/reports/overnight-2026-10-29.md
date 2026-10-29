@@ -319,3 +319,89 @@ faults, and bus timing.
   words stored only); textures always twiddled; renders exact at any
   clock; render time from the render's own work, never the planes' fetch;
   no 2D/3D interference; `MSC1` stored only.
+
+## 10. The stack after tonight's renderer changes
+
+**In plain English:** the 3D renderer grew today (quads, the bigger list
+cache), and one test (GC2CA) now used 89% of its stack in the emulator,
+over the 80% safety line. I didn't raise the line: I moved that test's
+renderer out of the stack into fixed memory, as the other tests already
+do. It's back under 75%, and every one of tonight's test runs passes its
+stack check. The memory budget didn't change.
+
+**Detail:**
+
+- Found: `emu-gpubench` "run GC2CA" failed, "the stack went 50808 of
+  57344 bytes deep". The class: a renderer held in a run function's frame.
+  GC2CP (R94), GC2CY and GC2DA already hold theirs in `rt::Slot`s; GC2CA
+  was the last.
+- Fix: `GC2CA_HELD` (`rt::Slot<Option<(usize, Renderer)>>`). An earlier
+  try today (moving GC2CA's renderer the same way, inside a bigger change)
+  hung in the emulator; this one, alone, doesn't: the hang's cause was
+  never found and didn't come back.
+- Checked: GC2CA (under 75%: the image prints nothing below it), GC2CP,
+  GC2CP low, GC2CU, GC2CW, GC2CX, GC2CY, GC2CZ all OK on the emulator;
+  GC2CP low on the X51v 41,048 of 57,344 B (72%).
+- `size.rs`: the decision and its reasons written at rp-gpubench's budget;
+  the stack stays 56 KiB, zeroed RAM within 76 KiB (61,160 B for GC2CA's
+  variant). No guard raised.
+
+## 11. The display's fetch: P9c's arrangement kept
+
+**In plain English:** the video plane only shows a stable picture when
+the graphics plane is also reading the screen (invisible, over it). That
+arrangement (P9c's) is the one proven by your eye and the picture
+checksums, so everything tonight that shows a scaled picture uses it. Why
+the video plane needs it is still **not understood**; nothing tonight
+claims it is. No new arrangement was built, so there is no new one to
+check.
+
+**Detail:** read from the code: every scaled or converted picture tonight
+goes through `gc2ca_show` or sets the planes itself with `GC2CB_GRAPHICS`
+(the loader's 480 x 640 screen at 0, fetching, middle slot, global alpha
+0) over `GC2CB_VIDEO_BOTTOM` (the video plane, bottom slot, opaque):
+GC2CY's frames, GC2CX's look image, GC2DA's three ways. Dell's doubling
+uses the graphics plane alone (`Layer::SOLO`), as proven. The lead from
+GC2CB stays a lead (the graphics plane's fetch may pace the display's
+line timing for both planes); the emulator can't test it (item 9).
+
+## 12. C71: the one-page ruling brief
+
+**The question (yours to answer):** under amendment P's P1 = C (the 3D
+core draws straight into the shown screen, inside the first 696 KiB of
+2700G memory), what does the second screen become?
+
+**Why it matters:** C71 is the stale pixels in partial 3D frames. The cure
+is proven (the shown screen at 0x0: 0 of 100 renders wrong where up to 20
+of 20 were, and 4-5% faster), but the memory map can't move the screen
+until the second screen has a job. Only one 600 KiB screen fits in the
+safe 696 KiB.
+
+| | What it means | For | Against |
+|---|---|---|---|
+| **R-A: one screen** | screen 1 deleted, its 600 KiB back to the pool | simplest; nothing ever read outside the safe region; +600 KiB for textures | 2D frames draw into the visible picture: they tear unless the tearing scheduler covers 2D too |
+| **R-B: keep screen 1 as 2D's back picture** (the design page's recommendation) | 2D draws off screen into screen 1 and flips as today while the 3D core is idle; in 3D frames the picture lands on screen 0 first | 2D keeps today's tear-free flip; amendment P rule 4 already allows it | the graphics service's frame gets one more step (copy 2D's rectangles in, carry the 3D area back) |
+| **R-C: amendment P's A** | the 3D core draws off screen, the 2D engine copies | tear-free everywhere | contradicts P1 = C: fails at divide 1 above 74.75 (G21); only if amendment D ends at divide 2, which is held for divide-1 work |
+
+**New since the design page (2026-10-25), for your weighing, not a
+ruling:** R20's tearing scheduler now exists for 3D frames (tonight, item
+4: 120 of 120 frames begun behind the scan were tear-free on the X51v, at
+WM clock and 74.75 / 1). That weakens R-A's "against" for 3D frames.
+Covering 2D frames with it is not built or measured, so for 2D, R-A's
+tearing risk stands as written.
+
+**Ready, either way:** branch `c71-screen-place` (one commit, 34b709d1,
+2026-10-25): screen 0 at 0x0, `SAFE_END` = 0xAE000, build-time checks that
+nothing else of the map sits in the safe region, host tests. It merges
+into today's main with no conflicts (checked tonight, `git merge-tree`;
+not merged). Screen 1 stays at 0x296000 until your ruling.
+
+**After the ruling (not started):** R-A deletes screen 1 and points the 2D
+renderer at the one picture; R-B changes the 2D renderer's back picture
+and the graphics service's frame. Then the same device check either way:
+`rp-today` on the X51v (the shell right, the loader's screen right after
+it returns: the loader's picture at 0x60000 sits under screen 0), and
+C71's W5 partial-frame scene held to a fresh render every frame (0 words
+off, against 1-3 today).
+
+Full page: `docs/design/c71-screen-place.md`; reminder R70.

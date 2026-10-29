@@ -17773,7 +17773,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
-        let mut cur: Option<(usize, Renderer)> = None;
+        // The renderer of the size in use, in `.bss` (it took GC2CA's stack
+        // to 89% in the emulator, 2026-10-29, after the day's renderer growth).
+        let Some(cur) = GC2CA_HELD.put_with(|| None) else {
+            log!("  GC2CA: run twice in one start: nothing run");
+            return;
+        };
         g.nudge = GC2BO_NUDGE;
         let (first, refs) = all.split_at_mut(full);
         // References: each size shown as its first way shows it.
@@ -17783,7 +17788,7 @@ mod image {
             gc2ca_show(g, how, size, GC2CA_A, &planes0);
             let n = gc2::words_of(size);
             for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
-                let Some(rr) = gc2ca_take(g, &mut cur, s) else {
+                let Some(rr) = gc2ca_take(g, cur, s) else {
                     ok = false;
                     break;
                 };
@@ -17813,7 +17818,7 @@ mod image {
                 gc2cg_run(g, &planes0);
             } else if GC2CA_FIXED {
                 gc2ca_fixed_card(g, &planes0);
-                gc2ca_watch(g, &mut cur, tex, &planes0);
+                gc2ca_watch(g, cur, tex, &planes0);
             } else if GC2CA_COLOUR {
                 gc2ca_colour_run(g, &planes0);
             } else if GC2CA_RGB {
@@ -17821,12 +17826,12 @@ mod image {
             } else if GC2CA_CARD {
                 gc2ca_card_run(g, &planes0);
             } else if GC2CA_SCALER {
-                gc2ca_scaler(g, &mut cur, tex, &planes0);
+                gc2ca_scaler(g, cur, tex, &planes0);
             } else {
                 if !GC2CA_WATCH_ONLY {
-                    gc2ca_measure(g, &mut cur, tex, (first, refs), &planes0);
+                    gc2ca_measure(g, cur, tex, (first, refs), &planes0);
                 }
-                gc2ca_watch(g, &mut cur, tex, &planes0);
+                gc2ca_watch(g, cur, tex, &planes0);
             }
         } else {
             log!(
@@ -17929,6 +17934,9 @@ mod image {
         log!("  GC2DA done");
         gc2ca_card(g, planes0, ["GC2DA DONE", "", ""]);
     }
+
+    /// GC2CA's renderer of the size in use.
+    static GC2CA_HELD: rt::Slot<Option<(usize, Renderer)>> = rt::Slot::new();
 
     /// GC2CY's renderer of the size in use.
     static GC2CY_HELD: rt::Slot<Option<(usize, Renderer)>> = rt::Slot::new();

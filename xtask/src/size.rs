@@ -706,6 +706,14 @@ pub const BUDGETS: &[Budget] = &[
     // Zeroed RAM ratcheted 64 -> 76 KiB on 2026-10-28 (test image, R94):
     // GC2CP's two long-lived renderers moved off the stack into `.bss`
     // (its stack was 79.9% deep on the X51v); 70,448 B measured.
+    // 2026-10-29 (the owner's overnight order, item 10: growth is a budget
+    // decision, never a silent guard raise): the day's renderer growth
+    // (quads, R88's list cache 128 -> 192) took plain GC2CA's stack to
+    // 50,808 of 57,344 B (89%) in the emulator, failing its 80% check. The
+    // stack stays 56 KiB: GC2CA's renderer moved into `.bss` too
+    // (`GC2CA_HELD`), as GC2CP's, GC2CY's and GC2DA's are; GC2CA back under
+    // 75%, every GC2C run's check passing; GC2CP 41,048 B (72%) on the
+    // X51v. Zeroed RAM within 76 KiB (GC2CA's variant 61,160 B): no change.
     Budget {
         image: "rp-gpubench",
         max_load: 200 * 1024,
