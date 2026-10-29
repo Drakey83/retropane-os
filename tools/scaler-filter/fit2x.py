@@ -183,7 +183,7 @@ def main():
     if out:
         json.dump({'horizontal_eighths': H_DIST, 'horizontal': hq.tolist(),
                    'vertical_eighths': V_DIST, 'vertical': vq.tolist(),
-                   'psnr': report}, open(out, 'w'), indent=1)
+                   'psnr': report}, open(out, 'w', newline='\n'), indent=1)
 
 
 if __name__ == '__main__':
