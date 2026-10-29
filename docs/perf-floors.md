@@ -70,7 +70,7 @@ that set the floor (at least one unit of the number).
 | `probe.gfx_blend_reference_vga` | 20547537 | 0.0030 | noise 5 runs, run-1793284682 |  |
 | `probe.gfx_fill_vga` | 1569128 | 0.0392 | noise 5 runs, run-1793284682 |  |
 | `probe.gfx_flush_clock` | 114251 | 0.5386 | noise 5 runs, run-1793284682 |  |
-| `probe.gfx_flush_vga` | 17795589 | 0.0035 | noise 5 runs, run-1793284682 | re-measured, not approved slower: within the spread across runs (R97, ruling 6, 2026-10-29) |
+| `probe.gfx_flush_vga` | 17795589 | 0.1727 | noise 5 runs, run-1793284682 | tolerance between sessions: four standard deviations of the medians of the five sessions in local/perf, 2026-10-22 to 10-29 (17,792,512 to 17,808,717; sd 7,683), the tool's own 4-sd rule; five back-to-back runs (0.0035%) can't see the drift between boots and builds (code placement, R97). Floor unchanged; not approved slower (R97, ruling 6, 2026-10-29) |
 | `probe.gfx_glass_vga` | 15340768 | 0.0040 | noise 5 runs, run-1793284682 |  |
 | `probe.gfx_icon_64` | 107753 | 0.5711 | noise 5 runs, run-1793284682 |  |
 | `probe.gfx_photo_row_480` | 30183 | 2.0388 | noise 5 runs, run-1793284682 |  |

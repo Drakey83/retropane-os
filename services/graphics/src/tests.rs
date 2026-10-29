@@ -418,6 +418,69 @@ fn a_3d_hang_resets_the_mbx_and_the_2d_engine_carries_on() {
     assert_eq!(r.on_screen(202, 306), BLUE & 0xFF_FFFF);
 }
 
+/// The model engine's FIFO reported full for good: the next submit stalls.
+fn stall(two: &mut Mbx2dRenderer<Both, m2::Mem>) {
+    two.parts().0.regs.two.full_reads = u32::MAX;
+}
+
+/// A frame that moves the scene's quad to `qx` and fills the top bar.
+fn moved(r: &mut Rig, c: ClientId, tex: Handle, qx: i32, colour: u32) -> Frame {
+    r.g.set(c, 0, Some(&Quad::rect(qx, 16, 32, 32, Fill::texture(tex))))
+        .unwrap();
+    let bar = Rect::new(0, 0, 480, 32);
+    let mut f = Frame::new();
+    f.damage(bar);
+    f.push(Cmd::Fill {
+        r: bar,
+        color: colour,
+    });
+    f
+}
+
+#[test]
+fn a_stalled_copy_between_the_screens_is_reported_and_the_next_frame_whole() {
+    // The frame's first copy (2D's changes into screen 0, before the
+    // render) and its second (the area into screen 1, after it).
+    for nth in [1u8, 2] {
+        let mut r = rig();
+        let c = r.g.client(64 * 1024).unwrap();
+        let (x, y, w, h) = AREA;
+        r.g.open_scene(c, x, y, w, h).unwrap();
+        r.g.set_background(c, Some(BLUE)).unwrap();
+        let tex =
+            r.g.upload_texture(c, 0, format::RGB565, &[0xF800; 64])
+                .unwrap();
+        // Two frames so screen 0 is on screen and screen 1 drawn into.
+        let f = moved(&mut r, c, tex, 8, WHITE);
+        assert_eq!(r.frame(&f), Step::Shown);
+        let f = moved(&mut r, c, tex, 12, WHITE);
+        assert_eq!(r.frame(&f), Step::Shown);
+        assert_eq!(r.g.copy_stalls(), 0);
+        // The stalled frame is reported, never Shown.
+        let f = moved(&mut r, c, tex, 20, 0xFF00_FF00);
+        r.g.before_copy = Some((nth, stall));
+        let step = r.frame(&f);
+        r.g.two_d().parts().0.regs.two.full_reads = 0;
+        assert_eq!(step, Step::Recovered, "copy {nth}");
+        assert_eq!(r.g.copy_stalls(), 1, "copy {nth}: counted");
+        // The next frame (the client's same list) shows it all, on both
+        // screens.
+        assert_eq!(r.frame(&f), Step::Shown, "copy {nth}");
+        let qx = u32::from(x) + 20 + 16;
+        assert_eq!(r.on_screen(qx, 336), 0xFF_0000, "copy {nth}: the quad");
+        assert_eq!(r.on_screen(5, 5), 0x00_FF00, "copy {nth}: 2D's bar");
+        for s in SCREENS {
+            let pic = Picture {
+                at: s.at,
+                ..Picture::screen(0)
+            };
+            assert_eq!(r.px(pic, qx, 336) & 0xFF_FFFF, 0xFF_0000, "copy {nth}");
+            assert_eq!(r.px(pic, 5, 5) & 0xFF_FFFF, 0x00_FF00, "copy {nth}");
+        }
+        assert_eq!(r.g.copy_stalls(), 1, "copy {nth}");
+    }
+}
+
 #[test]
 fn closing_the_scene_gives_its_area_back_and_the_clock_goes_off_when_idle() {
     let mut r = rig();

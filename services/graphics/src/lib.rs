@@ -181,6 +181,10 @@ struct Scene {
     resets: u32,
 }
 
+/// Tests: run on the 2D renderer just before a copy between the screens.
+#[cfg(test)]
+type CopyHook<R, M> = fn(&mut Mbx2dRenderer<R, M>);
+
 /// The job in flight (one at a time, G2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Job {
@@ -201,8 +205,10 @@ pub enum Step {
     Wait(u32),
     /// The frame is on screen.
     Shown,
-    /// The frame is on screen, but the 3D render hung and was recovered:
-    /// its area is stale until the next frame (which redraws it all).
+    /// The frame is on screen, but the 3D render hung, or a copy between
+    /// the screens stalled the 2D engine, and was recovered: the area is
+    /// stale until the next frame (which redraws it all). Each stalled copy
+    /// is counted ([`Graphics::copy_stalls`]).
     Recovered,
 }
 
@@ -246,6 +252,11 @@ pub struct Graphics<'a, R, M> {
     pool: Pool,
     clients: [ClientRec; CLIENTS],
     job: Job,
+    copy_stalls: u32,
+    /// Tests: the copy (1 = the next) before which the hook runs (it makes
+    /// the model engine stall).
+    #[cfg(test)]
+    before_copy: Option<(u8, CopyHook<R, M>)>,
 }
 
 impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
@@ -265,7 +276,34 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             pool,
             clients: [ClientRec::default(); CLIENTS],
             job: Job::None,
+            copy_stalls: 0,
+            #[cfg(test)]
+            before_copy: None,
         }
+    }
+
+    /// Copies between the screens that stalled the 2D engine (C71 ruling
+    /// R-B's two copies): each frame it hit was reported
+    /// [`Step::Recovered`].
+    #[must_use]
+    pub const fn copy_stalls(&self) -> u32 {
+        self.copy_stalls
+    }
+
+    /// [`Mbx2dRenderer::copy_screens`], counted when it stalls.
+    fn copy_screens(&mut self, dst: usize, src: usize, rects: &[Rect]) -> bool {
+        #[cfg(test)]
+        if let Some((n, hook)) = self.before_copy {
+            self.before_copy = if n > 1 { Some((n - 1, hook)) } else { None };
+            if n == 1 {
+                hook(self.two_d);
+            }
+        }
+        let ok = self.two_d.copy_screens(dst, src, rects);
+        if !ok {
+            self.copy_stalls += 1;
+        }
+        ok
     }
 
     /// The open scene, if any.
@@ -337,7 +375,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         };
         let b = &mut three_d.blocks[k];
         if let Some(t) = b.tex.take() {
-            let _ = r3d::release(&mut self.pool, t);
+            // A false here is the service's own bookkeeping gone wrong (a
+            // block freed twice), never a run-time condition.
+            let freed = r3d::release(&mut self.pool, t);
+            debug_assert!(freed, "texture block not in the pool");
             let owner = usize::from(b.owner);
             self.clients[owner].used = self.clients[owner].used.saturating_sub(t.bytes());
             b.generation = b.generation.wrapping_add(1);
@@ -512,7 +553,8 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             return Err(Error::Busy);
         }
         if let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.take()) {
-            let _ = s.r.release(&mut self.pool);
+            let freed = s.r.release(&mut self.pool);
+            debug_assert!(freed, "the scene's regions not in the pool");
         }
         self.two_d.invalidate_all();
         Ok(())
@@ -678,12 +720,20 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     // 2D's frame shown whole, scan-out off screen 1.
                     self.two_d.flip();
                     self.two_d.settle();
-                } else {
+                } else if self.copy_screens(safe, at, &drawn[..n]) {
                     // Screen 0 is on screen: 2D's changes copied into it
                     // (seen as they land, as the 3D area is: R20 covers
                     // neither yet), the held frame dropped.
-                    let _ = self.two_d.copy_screens(safe, at, &drawn[..n]);
                     self.two_d.keep_front();
+                } else {
+                    // The copy stalled, leaving screen 0 part-changed: the
+                    // held frame shown instead (whole, its area the last
+                    // render's), the render left to the next frame, which
+                    // the stall draws whole (so the scene renders again).
+                    // The 3D core is idle, so screen 1 may be shown
+                    // (amendment P rule 4).
+                    self.two_d.flip();
+                    return Step::Recovered;
                 }
                 match self.start_3d(safe, clock) {
                     Some(due) => {
@@ -705,16 +755,21 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     None => (Poll::Idle, None),
                 };
                 self.after_3d();
-                let shown = match p {
+                let mut shown = match p {
                     Poll::Wait(t) => return Step::Wait(t),
                     Poll::Recovered => Step::Recovered,
                     Poll::Done(_) | Poll::Idle => Step::Shown,
                 };
                 // The area carried into screen 1, so a later 2D frame
-                // flipped there shows it current.
+                // flipped there shows it current. If the copy stalls, the
+                // frame on screen is still whole, but screen 1's area is
+                // old: the stall draws the next frame whole, which renders
+                // the scene again before anything is shown from screen 1.
                 if let Some(area) = area {
                     let [safe, other] = self.two_d.screens();
-                    let _ = self.two_d.copy_screens(other, safe, &[area]);
+                    if !self.copy_screens(other, safe, &[area]) {
+                        shown = Step::Recovered;
+                    }
                 }
                 self.job = Job::None;
                 shown

@@ -208,6 +208,36 @@ pub fn floors_text(floors: &BTreeMap<String, Floor>) -> String {
     s
 }
 
+/// The approval column's opening for a tolerance set from the spread
+/// between sessions (separate boots and builds), which back-to-back noise
+/// runs can't see: `perf noise` and `refloor` keep it as the least
+/// tolerance, and a faster floor keeps the reason. Without it a re-measure
+/// silently tightened `gfx_flush_vga` to 0.0035% again, inside a spread of
+/// 0.09% between sessions (rulings-2026-10-29.md, R97).
+pub const BETWEEN_SESSIONS: &str = "tolerance between sessions:";
+
+/// `new` floors written over `old`: a number whose old row holds a
+/// [`BETWEEN_SESSIONS`] tolerance keeps it (and its reason) as its least.
+pub fn keep_session_tolerances(old: &BTreeMap<String, Floor>, new: &mut BTreeMap<String, Floor>) {
+    for (name, f) in new.iter_mut() {
+        if let Some(o) = old.get(name)
+            && o.approved.starts_with(BETWEEN_SESSIONS)
+        {
+            f.tolerance = f.tolerance.max(o.tolerance);
+            if f.approved.is_empty() {
+                f.approved.clone_from(&o.approved);
+            }
+        }
+    }
+}
+
+/// The floors file's rows now, if there is one.
+fn old_floors(root: &Path) -> BTreeMap<String, Floor> {
+    std::fs::read_to_string(root.join(FLOORS))
+        .map(|t| parse_floors(&t))
+        .unwrap_or_default()
+}
+
 /// A comparison's verdict for one number.
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
@@ -425,7 +455,8 @@ pub fn noise(root: &Path, n: usize) -> Result<(), String> {
         save_run(root, &format!("{}-noise{}", stamp(), k + 1), &nums)?;
         runs.push(nums);
     }
-    let floors = floors_from_runs(&runs, &format!("noise {n} runs, {}", stamp()));
+    let mut floors = floors_from_runs(&runs, &format!("noise {n} runs, {}", stamp()));
+    keep_session_tolerances(&old_floors(root), &mut floors);
     let p = root.join(FLOORS);
     std::fs::write(&p, floors_text(&floors)).map_err(|e| format!("{}: {e}", p.display()))?;
     eprintln!("    perf: {} floors written to {FLOORS}", floors.len());
@@ -458,7 +489,8 @@ pub fn refloor(root: &Path, n: usize) -> Result<(), String> {
                 .collect::<BTreeMap<_, _>>(),
         );
     }
-    let floors = floors_from_runs(&runs, &format!("noise {n} runs, refloored"));
+    let mut floors = floors_from_runs(&runs, &format!("noise {n} runs, refloored"));
+    keep_session_tolerances(&old_floors(root), &mut floors);
     let p = root.join(FLOORS);
     std::fs::write(&p, floors_text(&floors)).map_err(|e| format!("{}: {e}", p.display()))?;
     eprintln!(
@@ -500,7 +532,9 @@ pub fn check(root: &Path, update: bool) -> Result<(), String> {
         if update && let (Some(f), Some(v)) = (floors.get_mut(name), nums.get(name)) {
             f.floor = *v;
             f.set_by = st.clone();
-            f.approved = String::new();
+            if !f.approved.starts_with(BETWEEN_SESSIONS) {
+                f.approved = String::new();
+            }
         }
     }
     if update && !faster.is_empty() {
@@ -602,6 +636,37 @@ mod tests {
         );
         assert_eq!(m.len(), 1);
         assert_eq!(m["probe.copy_1m"], 9_630_153.0);
+    }
+
+    #[test]
+    fn a_tolerance_between_sessions_outlives_a_re_measure() {
+        let row = |tol: f64, approved: &str| Floor {
+            floor: 100.0,
+            tolerance: tol,
+            set_by: "s".into(),
+            approved: approved.into(),
+        };
+        let reason = format!("{BETWEEN_SESSIONS} 4 sd of 5 sessions");
+        let old = BTreeMap::from([
+            ("held".to_string(), row(0.002, &reason)),
+            ("plain".to_string(), row(0.002, "")),
+            ("wider".to_string(), row(0.002, &reason)),
+        ]);
+        let mut new = BTreeMap::from([
+            ("held".to_string(), row(0.0001, "")),
+            ("plain".to_string(), row(0.0001, "")),
+            ("wider".to_string(), row(0.01, "")),
+        ]);
+        keep_session_tolerances(&old, &mut new);
+        assert_eq!(new["held"].tolerance, 0.002);
+        assert_eq!(new["held"].approved, reason);
+        // Only a reasoned row is kept; a wider fresh measure wins.
+        assert_eq!(new["plain"].tolerance, 0.0001);
+        assert_eq!(new["wider"].tolerance, 0.01);
+        // And it survives the file.
+        let back = parse_floors(&floors_text(&new));
+        assert_eq!(back["held"].approved, reason);
+        assert!((back["held"].tolerance - 0.002).abs() < 1e-9);
     }
 
     #[test]
