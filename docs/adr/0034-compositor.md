@@ -194,6 +194,19 @@ T1, T3, T4, ticked):
   draws into screen 0, and its area is copied back into screen 1. R-A
   (one screen, +600 KiB) later only if R20's scheduling is proven on 2D
   frames.
+- **R20's fallback under R-B (owner, 2026-10-29: "Option 1"):** a 3D
+  frame the scheduler can't start behind the scan (no history yet, right
+  after a spike, a checkerboard order, or too long for one refresh)
+  renders into screen 1 (2D's back picture, already holding the same
+  frame) while screen 0 stays on screen, is flipped to in the blanking
+  once done (the 3D core idle: rule 4), and its area is copied back into
+  screen 0. Screen 1 lies outside the safe region, so this needs its own
+  soak first: 3D targets at screen 1's place at 149.50 / 2 with the
+  display on screen 0, every render checked (ADR-0035: a target outside
+  the region runs 133.25 / 2 until it earns its soak). Until that soak
+  passes, such frames start at the blanking (line 640) on screen 0. The
+  scheduler plans from the line period measured on the device (R111:
+  25,687 ns under our 60 Hz set-up against the 27,460 ns built in).
 
 ### In plain words
 
