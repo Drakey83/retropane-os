@@ -17778,6 +17778,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2DC {
+            gc2dc_run(g, tex, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2DB {
             gc2db_run(g, tex, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -18040,9 +18046,10 @@ mod image {
         "240 X 320 SMOOTH 2X",
     ];
 
-    /// GC2DB's route `route` shown from its picture in [`GC2DB_AT`].
-    fn gc2db_show(g: &mut Rig, route: u8, planes0: &Snapshot) {
-        let at = GC2DB_AT[usize::from(route)];
+    /// Route `route` shown from its picture at `at` (GC2DB's in
+    /// [`GC2DB_AT`], GC2DC's in the pool): the registers the driver's
+    /// switch writes.
+    fn gc2db_show(g: &mut Rig, route: u8, at: u32, planes0: &Snapshot) {
         match route {
             gc2::ROUTE_NATIVE => gc2ca_show(g, GC2CA_NATIVE, (480, 640), at, planes0),
             gc2::ROUTE_LINES => {
@@ -18211,7 +18218,7 @@ mod image {
                 log!("  GC2DB route {} {name}: not drawn; skipped", k + 1);
                 continue;
             }
-            gc2db_show(g, route, planes0);
+            gc2db_show(g, route, GC2DB_AT[k], planes0);
             let _ = underrun_take(&mut g.e.regs);
             let (a, b) = soak_dsig(g);
             bases[k] = a;
@@ -18345,6 +18352,358 @@ mod image {
         }
         g.nudge = nudge;
         gc2ca_card(g, planes0, ["GC2DB DONE", "", ""]);
+    }
+
+    /// GC2DC's sweep: a switch begun at every this many scan lines.
+    const GC2DC_STEP: u32 = 8;
+    /// The most sweep points a pair (the frame's lines / [`GC2DC_STEP`]).
+    const GC2DC_POINTS: usize = 128;
+    /// GC2DC's every-frame part: frames checked a gap (the emulator 12).
+    const GC2DC_FRAMES: u32 = if GC2_RENDERS < 20 { 12 } else { 600 };
+    /// The every-frame part's gaps: a switch every frame, every 8.
+    const GC2DC_GAPS: [u32; 2] = [1, 8];
+    /// The every-frame part's route order: its six steps are the six
+    /// ordered pairs.
+    const GC2DC_CYCLE: [u8; 6] = [0, 1, 2, 0, 2, 1];
+    /// The scan line the every-frame part writes on: the blanking's first
+    /// (640 lines shown).
+    const GC2DC_BLANK: u32 = 640;
+
+    /// The signature of the frame the scan is in now, once it has
+    /// finished: the scan line seen to wrap (the next frame begun), then
+    /// `DSIG` read once the line has passed 2, where GC2DB saw it
+    /// published. `None` if the line didn't wrap within two frames.
+    fn gc2dc_next(g: &mut Rig) -> Option<u32> {
+        let t0 = rt::ticks();
+        let mut prev = scan_line(g);
+        loop {
+            let l = scan_line(g);
+            if l < prev {
+                break;
+            }
+            prev = l;
+            if us_since(t0) > 2 * FRAME_US {
+                return None;
+            }
+        }
+        while scan_line(g) < 3 {
+            if us_since(t0) > 3 * FRAME_US {
+                return None;
+            }
+        }
+        Some(g.e.regs.read32(DSIG))
+    }
+
+    /// One switch's three frames, from `a`'s signature to `b`'s, as one
+    /// character: the frame `b` first showed in whole (`0`: the frame the
+    /// write fell in, `1`, `2`), `X` a frame of neither (torn or
+    /// half-switched), `R` back to `a` after `b`, `S` still `a` after
+    /// three, `?` a frame not read.
+    fn gc2dc_class(seen: [Option<u32>; 3], a: u32, b: u32) -> u8 {
+        let mut first_b = None;
+        for (k, s) in seen.into_iter().enumerate() {
+            match s {
+                None => return b'?',
+                Some(v) if v == b => {
+                    first_b.get_or_insert(k);
+                }
+                Some(v) if v == a => {
+                    if first_b.is_some() {
+                        return b'R';
+                    }
+                }
+                Some(_) => return b'X',
+            }
+        }
+        first_b.map_or(b'S', |k| b'0' + k as u8)
+    }
+
+    /// GC2DC's picture sizes, by route.
+    const GC2DC_BYTES: [u32; 3] = [2 * 480 * 640, 2 * 480 * 320, 2 * 240 * 320];
+
+    /// GC2DC's pictures: native at GC2DB's place (the pool here holds
+    /// about 1 MB, not all three: GC2DC on the emulator, 2026-10-29), the
+    /// other two in the pool (nothing renders while they are shown, so
+    /// they needn't sit in the safe region): `None` if the pool can't hold
+    /// them.
+    fn gc2dc_places(g: &mut Rig) -> Option<[u32; 3]> {
+        let mut at = [GC2DB_AT[0], 0, 0];
+        for k in 1..3 {
+            match g.pool.alloc(GC2DC_BYTES[k], 0x1000) {
+                Some(a) => at[k] = a,
+                None => {
+                    for j in 1..k {
+                        let _ = g.pool.free(at[j], GC2DC_BYTES[j]);
+                    }
+                    return None;
+                }
+            }
+        }
+        Some(at)
+    }
+
+    /// `bytes` of 2700G memory copied by the CPU from `from` to `to`.
+    fn gc2dc_copy(g: &mut Rig, from: u32, to: u32, bytes: u32) {
+        let mut buf = [0u32; 240];
+        let mut off = 0;
+        while off < bytes {
+            let n = ((bytes - off) / 4).min(240) as usize;
+            for (i, w) in buf[..n].iter_mut().enumerate() {
+                *w = g.mem.load((from + off) as usize + 4 * i).unwrap_or(0);
+            }
+            g.mem.store((to + off) as usize, &buf[..n]);
+            off += 4 * n as u32;
+            rt::check_in();
+        }
+        g.mem.sync();
+    }
+
+    /// Run GC2DC (see [`GC2DC`]).
+    #[inline(never)]
+    fn gc2dc_run(g: &mut Rig, tex: gc2::Tex, planes0: &Snapshot) {
+        let Some(cur) = GC2DA_HELD.put_with(|| None) else {
+            log!("  GC2DC: run twice in one start: nothing run");
+            return;
+        };
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        let Some(at) = gc2dc_places(g) else {
+            log!(
+                "  GC2DC: the pool can't hold two pictures ({} bytes free, the largest block {}): nothing run",
+                g.pool.free_bytes(),
+                g.pool.largest()
+            );
+            return;
+        };
+        log!(
+            "  GC2DC (R101): route switches checked by DSIG every frame (GC2DB: it covers the whole picture, updates at line 2): the textured game frame on each route at 0x{:x}, 0x{:x}, 0x{:x} (the pool); part 1 every ordered pair switched at every {GC2DC_STEP}th scan line, three frames read after each; part 2 a switch every {GC2DC_GAPS:?} frames on line {GC2DC_BLANK}, {GC2DC_FRAMES} frames each, every frame read; at Windows Mobile's clock",
+            at[0],
+            at[1],
+            at[2]
+        );
+        gc2ca_card(
+            g,
+            planes0,
+            ["R101: ROUTE SWITCHES", "DRAWING THE 3 ROUTES", "NOTHING TO DO"],
+        );
+        // The smooth and lines routes drawn at GC2DB's place and copied out
+        // (the UYVY made straight into its place); native last, staying.
+        let mut drawn = true;
+        for route in [gc2::ROUTE_SMOOTH, gc2::ROUTE_LINES, gc2::ROUTE_NATIVE] {
+            let k = usize::from(route);
+            if !gc2db_draw(g, cur, tex, route) {
+                drawn = false;
+                break;
+            }
+            match route {
+                gc2::ROUTE_SMOOTH => gc2cs_uyvy(g, GC2DB_SMALL, at[k], 240),
+                gc2::ROUTE_LINES => gc2dc_copy(g, GC2DB_AT[k], at[k], GC2DC_BYTES[k]),
+                _ => {}
+            }
+        }
+        if drawn {
+            gc2dc_switches(g, (cur, tex), at, planes0);
+        } else {
+            log!("  GC2DC: a route not drawn: nothing run");
+        }
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        gc2ca_card(g, planes0, ["GC2DC DONE", "", ""]);
+        for k in 1..3 {
+            let _ = g.pool.free(at[k], GC2DC_BYTES[k]);
+        }
+        g.nudge = nudge;
+    }
+
+    /// A GC2DC card, then the native picture drawn again (the card is
+    /// drawn over its place).
+    fn gc2dc_card(
+        g: &mut Rig,
+        (cur, tex): (&mut Option<((u16, u16), Renderer)>, gc2::Tex),
+        planes0: &Snapshot,
+        lines: [&str; 3],
+    ) {
+        gc2ca_card(g, planes0, lines);
+        if !gc2db_draw(g, cur, tex, gc2::ROUTE_NATIVE) {
+            log!("  GC2DC: native not drawn again after a card");
+        }
+    }
+
+    /// GC2DC's two parts on the pictures at `at`.
+    #[allow(clippy::too_many_lines)]
+    fn gc2dc_switches(
+        g: &mut Rig,
+        (cur, tex): (&mut Option<((u16, u16), Renderer)>, gc2::Tex),
+        at: [u32; 3],
+        planes0: &Snapshot,
+    ) {
+        // Each route's own signature, steady over two frames.
+        let mut sig = [0u32; 3];
+        let mut steady = true;
+        for r in 0..3u8 {
+            gc2db_show(g, r, at[usize::from(r)], planes0);
+            let _ = gc2dc_next(g);
+            let a = gc2dc_next(g);
+            let b = gc2dc_next(g);
+            sig[usize::from(r)] = a.unwrap_or(0);
+            steady &= a.is_some() && a == b;
+            log!(
+                "  GC2DC route {} {}: DSIG {a:x?} then {b:x?}{}",
+                r + 1,
+                GC2DB_NAMES[usize::from(r)],
+                if a == b { "" } else { ": NOT steady" }
+            );
+        }
+        let live =
+            steady && sig[0] != 0 && sig[0] != sig[1] && sig[1] != sig[2] && sig[0] != sig[2];
+        // The frame's lines: the highest the scan line reads over two frames.
+        let t0 = rt::ticks();
+        let mut lines = 0;
+        while us_since(t0) < 2 * FRAME_US {
+            lines = lines.max(scan_line(g) + 1);
+        }
+        log!(
+            "  GC2DC: the frame {lines} lines; the signatures {}",
+            if live {
+                "steady, live and all different"
+            } else {
+                "not live or not all different (the emulator models no DSIG): the frames read, not judged"
+            }
+        );
+        let points = (lines.div_ceil(GC2DC_STEP) as usize).clamp(1, GC2DC_POINTS);
+        let mut l1_card = heapless_name();
+        let _ = write!(l1_card, "PART 1 OF 2: {} SWITCHES", 6 * points);
+        gc2dc_card(
+            g,
+            (&mut *cur, tex),
+            planes0,
+            ["R101: ROUTE SWITCHES", l1_card.as_str(), "NOTHING TO DO"],
+        );
+        // Part 1: every ordered pair, the write begun at each sweep line.
+        // Tally: whole in the write's frame, the next, the one after;
+        // neither; back; still the old; not read; not judged.
+        let mut tally = [0u32; 8];
+        let mut worst_write = 0u32;
+        for a in 0..3u8 {
+            for b in 0..3u8 {
+                if a == b {
+                    continue;
+                }
+                let (ka, kb) = (usize::from(a), usize::from(b));
+                let mut row = [b' '; GC2DC_POINTS];
+                for (p, ch) in row.iter_mut().enumerate().take(points) {
+                    let line = p as u32 * GC2DC_STEP;
+                    gc2db_show(g, a, at[ka], planes0);
+                    let _ = gc2dc_next(g);
+                    let start = gc2dc_next(g);
+                    let waited = wait_scan(g, line);
+                    let l0 = scan_line(g);
+                    gc2db_show(g, b, at[kb], planes0);
+                    let l1 = scan_line(g);
+                    let took = if l1 >= l0 { l1 - l0 } else { l1 + lines - l0 };
+                    worst_write = worst_write.max(took);
+                    let seen = [gc2dc_next(g), gc2dc_next(g), gc2dc_next(g)];
+                    *ch = if !live {
+                        b'-'
+                    } else if !waited || start != Some(sig[ka]) {
+                        b'?'
+                    } else {
+                        gc2dc_class(seen, sig[ka], sig[kb])
+                    };
+                    let slot = match *ch {
+                        b'0' => 0,
+                        b'1' => 1,
+                        b'2' => 2,
+                        b'X' => 3,
+                        b'R' => 4,
+                        b'S' => 5,
+                        b'?' => 6,
+                        _ => 7,
+                    };
+                    tally[slot] += 1;
+                    rt::check_in();
+                }
+                log!(
+                    "    GC2DC {} to {}, from line 0 every {GC2DC_STEP}: {}",
+                    a + 1,
+                    b + 1,
+                    core::str::from_utf8(&row[..points]).unwrap_or("")
+                );
+            }
+        }
+        log!(
+            "  GC2DC part 1: {} switches: whole in the write's frame {}, the next {}, the one after {}; NEITHER ROUTE {}, back to the old {}, still the old {}, not read {}, not judged {}; the switch's writes took up to {worst_write} lines",
+            tally.iter().sum::<u32>(),
+            tally[0],
+            tally[1],
+            tally[2],
+            tally[3],
+            tally[4],
+            tally[5],
+            tally[6],
+            tally[7]
+        );
+        // Part 2: a switch every N frames on the blanking's first line,
+        // every frame read: each must be one route's whole picture.
+        let blank = GC2DC_BLANK.min(lines.saturating_sub(8));
+        for (gi, &gap) in GC2DC_GAPS.iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(
+                l1,
+                "PART 2 OF 2: EVERY {gap} FRAME{}",
+                if gap == 1 { "" } else { "S" }
+            );
+            gc2dc_card(
+                g,
+                (&mut *cur, tex),
+                planes0,
+                ["R101: ROUTE SWITCHES", l1.as_str(), "NOTHING TO DO"],
+            );
+            let mut step = 0usize;
+            let mut route = GC2DC_CYCLE[0];
+            gc2db_show(g, route, at[usize::from(route)], planes0);
+            let _ = gc2dc_next(g);
+            let _ = gc2dc_next(g);
+            let (mut as_due, mut other, mut torn, mut missed) = (0u32, 0u32, 0u32, 0u32);
+            let mut first_torn = None;
+            let mut wrote_at = (u32::MAX, 0u32);
+            for f in 0..GC2DC_FRAMES {
+                let before = route;
+                if f > 0 && f % gap == 0 {
+                    step = (step + 1) % GC2DC_CYCLE.len();
+                    route = GC2DC_CYCLE[step];
+                    let _ = wait_scan(g, blank);
+                    let l0 = scan_line(g);
+                    wrote_at = (wrote_at.0.min(l0), wrote_at.1.max(l0));
+                    gc2db_show(g, route, at[usize::from(route)], planes0);
+                }
+                // The frame read next is the one whose blanking held the
+                // write: it began, and was shown whole, with `before`.
+                let due = before;
+                let s = gc2dc_next(g);
+                match s {
+                    None => missed += 1,
+                    Some(_) if !live => {}
+                    Some(v) if v == sig[usize::from(due)] => as_due += 1,
+                    Some(v) if sig.contains(&v) => other += 1,
+                    Some(v) => {
+                        torn += 1;
+                        first_torn.get_or_insert((f, v));
+                    }
+                }
+                if f % 64 == 0 {
+                    rt::check_in();
+                }
+            }
+            log!(
+                "  GC2DC part 2 {} a switch every {gap} frames: {GC2DC_FRAMES} frames read: {as_due} the route in place as the frame began, {other} another route whole, {torn} NEITHER ROUTE (first {first_torn:x?}), {missed} not read{}; written on lines {}..{}",
+                gi + 1,
+                if live { "" } else { " (not judged: no DSIG)" },
+                wrote_at.0.min(wrote_at.1),
+                wrote_at.1
+            );
+        }
     }
 
     /// GC2CA's renderer of the size in use.
@@ -21616,6 +21975,21 @@ mod image {
     /// (a function of the picture alone). Unattended, about a minute; a
     /// card names each route.
     const GC2DB: bool = option_env!("RP_GPUBENCH_GC2_HALF_R101").is_some();
+    /// Run GC2DC (`RP_GPUBENCH_GC2_HALF_R101_SWITCH`, with
+    /// `RP_GPUBENCH_GC2_HALF`), R101's switch test (ADR-0038 G2: no tick
+    /// until routes switch every N frames with every frame whole). The
+    /// three routes' pictures resident at once (the pool: nothing renders
+    /// meanwhile), each frame judged by `DSIG` alone (GC2DB: it covers the
+    /// whole picture and every bit). Part 1 maps where a switch is clean:
+    /// every ordered pair, the driver's writes begun at every
+    /// [`GC2DC_STEP`]th scan line, the three frames after classed (whole
+    /// in the write's frame, the next or the one after; a frame of neither
+    /// route; back; still the old). Writes inside the picture show whether
+    /// the check sees a torn frame (a control). Part 2 is G2's proof: a
+    /// switch every frame and every 8 on the blanking's first line, every
+    /// frame read, each one route's whole picture. Unattended, about two
+    /// minutes; cards name each part.
+    const GC2DC: bool = option_env!("RP_GPUBENCH_GC2_HALF_R101_SWITCH").is_some();
     /// Run GC2DA (`RP_GPUBENCH_GC2_HALF_R79`, with `RP_GPUBENCH_GC2_HALF`),
     /// R79's look for the owner's eye: the flat and the textured game frame
     /// at 240 x 320 (CPU-made UYVY, GC2CS's way), each shown 2x three ways
