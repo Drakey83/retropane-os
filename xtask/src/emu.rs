@@ -5839,6 +5839,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2de = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_R20", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cs = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6263,7 +6272,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 157] = [
+    let runs: [GpubenchRun; 158] = [
         (
             "run A",
             &run_a,
@@ -7004,6 +7013,36 @@ fn variant_images_gpubench(
                 "GC2DD cost 1 video off: 2 of 2 rendered",
                 "GC2DD cost 2 video on, reading the shown picture (C'): 2 of 2 rendered",
                 "GC2DD done: Windows Mobile's clock put back",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2DE (R20's option 1 soak): 3D targets at screen 1's place
+        // (outside the safe region) at 149.50 / 2 with screen 0 shown, every
+        // render read back word for word; each screen's render cost, the
+        // 2D copy back, and the two fallbacks side by side. The fork has
+        // no clock or DSIG: the run's shape, the renders and the copies are
+        // what this checks.
+        (
+            "run GC2DE",
+            &run_gc2de,
+            &[
+                "GC2DE (R20, the owner's option 1): 3D targets at screen 1's place 0x296000",
+                "GC2DE at Windows Mobile's clock into screen 1: words off the references by frame [0, 0, 0, 0]",
+                "GC2DE 149.50 / 2: lock Some(",
+                "GC2DE at 149.50 / 2 into screen 0's place (inside): 4 of 4 pictures the references'",
+                "GC2DE soak at 149.50 / 2 into screen 1 with screen 0 shown: 12 renders checked word for word, 0 WRONG (first (render, frame, words) None, the most words 0), 0 not rendered, 0 hung, 0 poison fills failed",
+                "GC2DE soak frame 3 the core: ",
+                "GC2DE cost frame 3: into screen 0 the core ",
+                ", 0 wrong; into screen 1 the core ",
+                "GC2DE the 2D copy from screen 1 back into screen 0 at 149.50 / 2: the whole screen ",
+                "; 0 wrong or not finished",
+                "GC2DE fallback blanking start (screen 0, today's until the soak passes), 4 frames asked for at lines [0, 213, 426]: from the ask to the render done ",
+                "GC2DE fallback option 1 (screen 1, flip, copy back), 4 frames asked for at lines [0, 213, 426]: from the ask to the render done ",
+                "; 0 wrong or not rendered; 0 scan lines missed in both",
+                "GC2DE done: Windows Mobile's clock put back; 0 hung in all",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

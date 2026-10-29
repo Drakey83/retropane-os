@@ -17853,6 +17853,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2DE {
+            gc2de_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2DD {
             gc2dd_run(g, tex, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -19628,6 +19634,405 @@ mod image {
         }
         rp_drv_mbx_display::video_hide(&mut g.e.regs);
         gc2ca_card(g, planes0, ["GC2DD DONE", "", ""]);
+        g.nudge = nudge;
+    }
+
+    /// GC2DE's times of one kind: how many, the fastest, the slowest, the sum.
+    #[derive(Clone, Copy)]
+    struct Gc2deTimes {
+        n: u32,
+        min: u32,
+        max: u32,
+        sum: u64,
+    }
+
+    impl Gc2deTimes {
+        const NEW: Self = Self {
+            n: 0,
+            min: u32::MAX,
+            max: 0,
+            sum: 0,
+        };
+
+        fn take(&mut self, us: u32) {
+            self.n += 1;
+            self.min = self.min.min(us);
+            self.max = self.max.max(us);
+            self.sum += u64::from(us);
+        }
+    }
+
+    impl core::fmt::Display for Gc2deTimes {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            if self.n == 0 {
+                return f.write_str("none");
+            }
+            write!(
+                f,
+                "{} us fastest, {} us mean, {} us slowest ({})",
+                self.min,
+                self.sum / u64::from(self.n),
+                self.max,
+                self.n
+            )
+        }
+    }
+
+    /// GC2DE's 2D copy of `rect` (RGB565, 960-byte rows) from the picture
+    /// at `from` into the one at `to`, the same place in both: the time from
+    /// the submit to the engine idle; `None` (the 2D stream restarted, as
+    /// GC2CG's) if it didn't finish.
+    fn gc2de_copy(g: &mut Rig, from: u32, to: u32, rect: (u16, u16, u16, u16)) -> Option<u32> {
+        let (w, n) = cmd::blit(
+            (Format::RGB565, to as usize, 960),
+            (Format::RGB565, from as usize, 960),
+            (rect.0, rect.1),
+            rect,
+            cmd::ROP_SRCCOPY,
+            cmd::OP_NO_COLOUR,
+            0,
+        )?;
+        let t0 = rt::ticks();
+        let ok = g.e.submit(&w[..n]).is_ok() && g.e.finish(g.mem.0, 200_000).is_ok();
+        let us = us_since(t0);
+        if !ok {
+            g.e.reset(rt::delay_us);
+            let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+            cpu::drain_write_buffer();
+            return None;
+        }
+        Some(us)
+    }
+
+    /// Game frame `f` rendered native into `at` by GC2DE's renderer: the
+    /// core's time and the whole frame's, `None` if refused or hung.
+    fn gc2de_render(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+        (f, at): (usize, u32),
+    ) -> Option<(u32, u32)> {
+        let rr = gc2cp_take(g, cur, GC2DE_SIZE)?;
+        gc2ca_set_mesh(g, rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+        gc2ca_render(g, rr, GC2DE_SIZE, at)
+    }
+
+    /// The words of the picture at `at` that differ from `want`, read into
+    /// `seen` (`u32::MAX` if it couldn't be read).
+    fn gc2de_off(g: &Rig, at: u32, want: &[u32], seen: &mut [u32]) -> u32 {
+        read_compare_volatile(g.mem.0, at as usize, want, seen).unwrap_or(u32::MAX)
+    }
+
+    /// `DSIG` against `sig0` for the log: how often it was off, or why it
+    /// wasn't read.
+    fn gc2de_sig_words(live: bool, sig_off: u32, checked: u32, sig0: Option<u32>) -> Name {
+        let mut s = heapless_name();
+        if live {
+            let _ = write!(s, "off its own in {sig_off} of {checked} reads");
+        } else {
+            let _ = write!(s, "not judged ({sig0:x?})");
+        }
+        s
+    }
+
+    /// Run GC2DE (see [`GC2DE`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn gc2de_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let Some(cur) = GC2DA_HELD.put_with(|| None) else {
+            log!("  GC2DE: run twice in one start: nothing run");
+            return;
+        };
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf + 1) * full {
+            log!("  GC2DE: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let s1 = GC2DE_SCREEN1..GC2DE_SCREEN1 + rp_vram_map::SCREEN_BYTES;
+        for t in [tex.t565, tex.t4444, tex.t8888, tex.plane] {
+            if t.at < s1.end && t.at + GC2DE_TEX_SPAN > s1.start {
+                log!(
+                    "  GC2DE: a texture at 0x{:x} inside screen 1's place: nothing run",
+                    t.at
+                );
+                return;
+            }
+        }
+        let (refs, rest) = all.split_at_mut(nf * full);
+        let seen = &mut rest[..full];
+        let want = |f: usize| f * full..(f + 1) * full;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        let hangs0 = g.hangs;
+        log!(
+            "  GC2DE (R20, the owner's option 1): 3D targets at screen 1's place 0x{GC2DE_SCREEN1:x} (outside the safe region, to 0x{:x}) at 149.50 / 2 with the display on screen 0; the {nf} game frames native, {GC2DE_SOAK} renders each checked word for word; then each rendered into screen 0 and screen 1 {GC2DE_REPS} times, the 2D copy back timed, and {GC2DE_CYCLES} frames by each fallback (blanking start, option 1)",
+            rp_vram_map::SAFE_END
+        );
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "R20: SCREEN 1 SOAK",
+                "STEP 1 OF 4: DRAWING",
+                "NOTHING TO DO",
+            ],
+        );
+        // The references at Windows Mobile's clock, inside the safe region;
+        // the same frames into screen 1 there.
+        let mut wm_s1 = [u32::MAX; 4];
+        for f in 0..nf {
+            if gc2de_render(g, cur, tex, (f, GC2CA_A)).is_none() {
+                log!("  GC2DE: frame {f} not drawn at Windows Mobile's clock: nothing run");
+                g.nudge = nudge;
+                return;
+            }
+            let _ = read_compare_volatile(g.mem.0, GC2CA_A as usize, seen, &mut refs[want(f)]);
+            if gc2ca_fill(g, GC2DE_SCREEN1, GC2DE_SIZE, GC2DE_POISON)
+                && gc2de_render(g, cur, tex, (f, GC2DE_SCREEN1)).is_some()
+            {
+                wm_s1[f] = gc2de_off(g, GC2DE_SCREEN1, &refs[want(f)], seen);
+            }
+        }
+        log!(
+            "  GC2DE at Windows Mobile's clock into screen 1: words off the references by frame {wm_s1:?}"
+        );
+        let lock = clock_apply(g, GC2DD_STEP);
+        if lock.is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2DE: 149.50 / 2 didn't take; Windows Mobile's clock put back: nothing run");
+            gc2ca_card(g, planes0, ["GC2DE STOPPED", "CLOCK NOT TAKEN", ""]);
+            g.nudge = nudge;
+            return;
+        }
+        // ADR-0035 rule 8: every clock change followed by the underrun
+        // flag's check and Dell's clear.
+        let short = underrun_take(&mut g.e.regs);
+        log!("  GC2DE 149.50 / 2: lock {lock:?}, the display's underrun flag {short}");
+        clock_readback(g);
+        if let Some((_, rr)) = cur.as_mut() {
+            rr.start_clean();
+        }
+        let mut same = 0;
+        for f in 0..nf {
+            if gc2de_render(g, cur, tex, (f, GC2CA_A)).is_some() {
+                same += u32::from(gc2de_off(g, GC2CA_A, &refs[want(f)], seen) == 0);
+            }
+        }
+        log!(
+            "  GC2DE at 149.50 / 2 into screen 0's place (inside): {same} of {nf} pictures the references'"
+        );
+
+        // Step 2: the soak. Screen 0 shows the card, unchanged throughout,
+        // so its DSIG holds still unless the writes outside disturb it.
+        gc2ca_card(
+            g,
+            planes0,
+            ["R20: SCREEN 1 SOAK", "STEP 2 OF 4: SOAK", "NOTHING TO DO"],
+        );
+        let (frames, timed) = Gc2ddFrames::measured(g);
+        let sig0 = gc2dc_settled(g);
+        let live = sig0.is_some_and(|s| s != 0);
+        let mut core = [Gc2deTimes::NEW; 4];
+        let (mut checked, mut wrong, mut failed, mut unpoisoned, mut sig_off) =
+            (0u32, 0u32, 0u32, 0u32, 0u32);
+        let (mut first_wrong, mut worst) = (None, 0u32);
+        for i in 0..GC2DE_SOAK * nf as u32 {
+            let f = i as usize % nf;
+            if !gc2ca_fill(g, GC2DE_SCREEN1, GC2DE_SIZE, GC2DE_POISON) {
+                unpoisoned += 1;
+                continue;
+            }
+            let Some((c, _)) = gc2de_render(g, cur, tex, (f, GC2DE_SCREEN1)) else {
+                failed += 1;
+                continue;
+            };
+            core[f].take(c);
+            let off = gc2de_off(g, GC2DE_SCREEN1, &refs[want(f)], seen);
+            checked += 1;
+            if off != 0 {
+                wrong += 1;
+                worst = worst.max(off);
+                first_wrong.get_or_insert((i, f, off));
+            }
+            if live && Some(g.e.regs.read32(DSIG)) != sig0 {
+                sig_off += 1;
+            }
+            if i % 16 == 0 {
+                rt::check_in();
+            }
+        }
+        log!(
+            "  GC2DE soak at 149.50 / 2 into screen 1 with screen 0 shown: {checked} renders checked word for word, {wrong} WRONG (first (render, frame, words) {first_wrong:?}, the most words {worst}), {failed} not rendered, {} hung, {unpoisoned} poison fills failed; screen 0's DSIG {}; the line {} ns{}",
+            g.hangs - hangs0,
+            gc2de_sig_words(live, sig_off, checked, sig0).as_str(),
+            frames.line_ns,
+            if timed {
+                ", measured"
+            } else {
+                ", NOT MEASURED: the 60 Hz frame's"
+            }
+        );
+        for (f, t) in core.iter().enumerate() {
+            log!("  GC2DE soak frame {f} the core: {t}");
+        }
+
+        // Step 3: the same frame into each screen, alternately; the copy
+        // back, the whole screen and the middle quarter.
+        gc2ca_card(
+            g,
+            planes0,
+            ["R20: SCREEN 1 SOAK", "STEP 3 OF 4: COSTS", "NOTHING TO DO"],
+        );
+        for f in 0..nf {
+            let mut t = [[Gc2deTimes::NEW; 2]; 2];
+            let mut bad = [0u32; 2];
+            for _ in 0..GC2DE_REPS {
+                for (k, at) in [GC2CA_A, GC2DE_SCREEN1].into_iter().enumerate() {
+                    match gc2de_render(g, cur, tex, (f, at)) {
+                        Some((c, w)) => {
+                            t[k][0].take(c);
+                            t[k][1].take(w);
+                            bad[k] += u32::from(gc2de_off(g, at, &refs[want(f)], seen) != 0);
+                        }
+                        None => bad[k] += 1,
+                    }
+                }
+                rt::check_in();
+            }
+            log!(
+                "  GC2DE cost frame {f}: into screen 0 the core {}, the whole frame {}, {} wrong; into screen 1 the core {}, the whole frame {}, {} wrong",
+                t[0][0],
+                t[0][1],
+                bad[0],
+                t[1][0],
+                t[1][1],
+                bad[1]
+            );
+        }
+        let last = nf - 1;
+        let (mut whole, mut area) = (Gc2deTimes::NEW, Gc2deTimes::NEW);
+        let mut copy_bad = 0u32;
+        for _ in 0..GC2DE_REPS {
+            if !gc2ca_fill(g, GC2CA_A, GC2DE_SIZE, GC2DE_POISON) {
+                copy_bad += 1;
+                continue;
+            }
+            match gc2de_copy(g, GC2DE_SCREEN1, GC2CA_A, (0, 0, 480, 640)) {
+                Some(us) => {
+                    whole.take(us);
+                    copy_bad += u32::from(gc2de_off(g, GC2CA_A, &refs[want(last)], seen) != 0);
+                }
+                None => copy_bad += 1,
+            }
+            match gc2de_copy(g, GC2DE_SCREEN1, GC2CA_A, GC2DE_AREA) {
+                Some(us) => area.take(us),
+                None => copy_bad += 1,
+            }
+            rt::check_in();
+        }
+        log!(
+            "  GC2DE the 2D copy from screen 1 back into screen 0 at 149.50 / 2: the whole screen {whole}; the middle quarter {GC2DE_AREA:?} {area}; {copy_bad} wrong or not finished"
+        );
+
+        // Step 4: the two fallbacks, a frame each way in turn, asked for at
+        // three places in the refresh.
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "R20: SCREEN 1 SOAK",
+                "STEP 4 OF 4: FALLBACKS",
+                "NOTHING TO DO",
+            ],
+        );
+        let (mut b_done, mut b_shown) = (Gc2deTimes::NEW, Gc2deTimes::NEW);
+        let (mut o_done, mut o_shown, mut o_copy, mut o_back) = (
+            Gc2deTimes::NEW,
+            Gc2deTimes::NEW,
+            Gc2deTimes::NEW,
+            Gc2deTimes::NEW,
+        );
+        let (mut b_bad, mut o_bad, mut missed) = (0u32, 0u32, 0u32);
+        for i in 0..GC2DE_CYCLES {
+            let f = i as usize % nf;
+            let ask = GC2DE_ASK[(i as usize / nf) % GC2DE_ASK.len()];
+            // The blanking start: wait for line 640, render into screen 0
+            // shown.
+            if !gc2dc_at_line(g, ask) {
+                missed += 1;
+                continue;
+            }
+            let t0 = rt::ticks();
+            if !gc2dc_at_line(g, GC2DE_BLANK) {
+                missed += 1;
+                continue;
+            }
+            if gc2de_render(g, cur, tex, (f, GC2CA_A)).is_none() {
+                b_bad += 1;
+                continue;
+            }
+            b_done.take(us_since(t0));
+            if gc2dc_at_line(g, 0) {
+                b_shown.take(us_since(t0));
+            } else {
+                missed += 1;
+            }
+            b_bad += u32::from(gc2de_off(g, GC2CA_A, &refs[want(f)], seen) != 0);
+            // Option 1: render into screen 1 at once, flip to it in the
+            // blanking, copy it back into screen 0, flip back in the next
+            // blanking (the 3D core idle while screen 1 is shown: rule 4).
+            let f = (f + 1) % nf;
+            if !gc2dc_at_line(g, ask) {
+                missed += 1;
+                continue;
+            }
+            let t0 = rt::ticks();
+            if gc2de_render(g, cur, tex, (f, GC2DE_SCREEN1)).is_none() {
+                o_bad += 1;
+                continue;
+            }
+            o_done.take(us_since(t0));
+            let ok = gc2dc_at_line(g, GC2DE_BLANK);
+            gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, GC2DE_SCREEN1, planes0);
+            if ok && gc2dc_at_line(g, 0) {
+                o_shown.take(us_since(t0));
+            } else {
+                missed += 1;
+            }
+            match gc2de_copy(g, GC2DE_SCREEN1, GC2CA_A, (0, 0, 480, 640)) {
+                Some(us) => o_copy.take(us),
+                None => o_bad += 1,
+            }
+            let ok = gc2dc_at_line(g, GC2DE_BLANK);
+            gc2ca_show(g, GC2CA_UNDER, GC2DE_SIZE, GC2CA_A, planes0);
+            if ok && gc2dc_at_line(g, 0) {
+                o_back.take(us_since(t0));
+            } else {
+                missed += 1;
+            }
+            o_bad += u32::from(
+                gc2de_off(g, GC2DE_SCREEN1, &refs[want(f)], seen) != 0
+                    || gc2de_off(g, GC2CA_A, &refs[want(f)], seen) != 0,
+            );
+            rt::check_in();
+        }
+        log!(
+            "  GC2DE fallback blanking start (screen 0, today's until the soak passes), {GC2DE_CYCLES} frames asked for at lines {GC2DE_ASK:?}: from the ask to the render done {b_done}; to the first refresh showing it whole {b_shown}; {b_bad} wrong or not rendered"
+        );
+        log!(
+            "  GC2DE fallback option 1 (screen 1, flip, copy back), {GC2DE_CYCLES} frames asked for at lines {GC2DE_ASK:?}: from the ask to the render done {o_done}; to the first refresh showing it whole {o_shown}; the copy back {o_copy}; to screen 0 shown again (the next 3D frame free to start) {o_back}; {o_bad} wrong or not rendered; {missed} scan lines missed in both"
+        );
+        let short = underrun_take(&mut g.e.regs);
+        clock_restore(&mut g.e.regs);
+        let back = underrun_take(&mut g.e.regs);
+        log!(
+            "  GC2DE done: Windows Mobile's clock put back; {} hung in all; the display's underrun flag at 149.50 / 2 {short}, after the change back {back}",
+            g.hangs - hangs0
+        );
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        gc2ca_card(g, planes0, ["GC2DE DONE", "", ""]);
         g.nudge = nudge;
     }
 
@@ -23239,6 +23644,51 @@ mod image {
     const GC2DD_START: u32 = 600;
     /// The game clock (ADR-0035's ruling, 2026-10-29).
     const GC2DD_STEP: ClockStep = gc2_step(23, 2, 0, 2);
+    /// Run GC2DE (`RP_GPUBENCH_GC2_HALF_R20`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R20's fallback soak (the owner 2026-10-29, "Option 1", ADR-0034
+    /// under rule 5): a 3D frame the scheduler can't start behind the scan
+    /// renders into screen 1 (outside the safe region) while screen 0 is
+    /// shown, is flipped to in the blanking and copied back. ADR-0035: a
+    /// target outside the region runs 133.25 / 2 until it earns its soak,
+    /// so this is that soak at 149.50 / 2. Step 1: the four game frames
+    /// native at Windows Mobile's clock into screen 0's place (the
+    /// references) and into screen 1. Step 2: [`GC2DE_SOAK`] renders of
+    /// each into screen 1's place ([`GC2DE_SCREEN1`], the OS map's), each
+    /// poisoned first and read back word for word, the display on screen 0
+    /// (inside) with its `DSIG` watched. Step 3: each frame into screen 0
+    /// and screen 1 alternately (option 1's render cost), and the 2D copy
+    /// back (the whole screen and the middle quarter). Step 4: the two
+    /// fallbacks side by side, a frame each in turn, asked for at three
+    /// places in the refresh: the blanking start on screen 0 (today's)
+    /// against option 1 (render at once, flip in the blanking, copy back,
+    /// flip back before the next 3D frame), each picture checked.
+    /// Unattended, about two minutes.
+    const GC2DE: bool = option_env!("RP_GPUBENCH_GC2_HALF_R20").is_some();
+    /// Screen 1's place in the OS's map (C71 R-B: 2D's back picture,
+    /// outside the safe region).
+    const GC2DE_SCREEN1: u32 = rp_vram_map::SCREENS[1].at;
+    const _: () = assert!(GC2DE_SCREEN1 >= rp_vram_map::SAFE_END);
+    const _: () = assert!(GC2DE_SCREEN1 >= GC2BB_PARAMS.at + GC2BB_PARAMS.size);
+    const _: () = assert!(GC2DE_SCREEN1 + rp_vram_map::SCREEN_BYTES <= map::POOL.at);
+    /// The native frame.
+    const GC2DE_SIZE: (u16, u16) = (480, 640);
+    /// A texture's most bytes (128 x 128 x 4), for the check that none
+    /// lies in screen 1's place.
+    const GC2DE_TEX_SPAN: u32 = 128 * 128 * 4;
+    /// Renders of each frame in the soak (the emulator 3).
+    const GC2DE_SOAK: u32 = if GC2_RENDERS < 20 { 3 } else { 300 };
+    /// Renders of each frame into each screen, and copies (the emulator 2).
+    const GC2DE_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
+    /// Frames by each fallback (the emulator 4).
+    const GC2DE_CYCLES: u32 = if GC2_RENDERS < 20 { 4 } else { 48 };
+    /// Where in the refresh a fallback frame is asked for.
+    const GC2DE_ASK: [u32; 3] = [0, 213, 426];
+    /// The blanking's first line.
+    const GC2DE_BLANK: u32 = 640;
+    /// The poison (magenta; every check is word for word).
+    const GC2DE_POISON: u16 = 0xF81F;
+    /// The middle quarter of the screen, as the 2D engine's rectangle.
+    const GC2DE_AREA: (u16, u16, u16, u16) = (120, 160, 360, 480);
     /// Part A's video plane states.
     const GC2DC_COST_NAMES: [&str; 3] = [
         "video off",
