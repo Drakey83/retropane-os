@@ -5657,6 +5657,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cs = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_LOOK", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cp = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5958,7 +5967,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 137] = [
+    let runs: [GpubenchRun; 138] = [
         (
             "run A",
             &run_a,
@@ -6576,6 +6585,22 @@ fn variant_images_gpubench(
                 "GC2CO one render, overlapped:",
                 "GC2CM set 1 check:",
                 "GC2CO done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CS: the smooth 2x's pictures for the owner's eye, eight
+        // labelled photos (the emulator shows each at once: no button; the
+        // fork models no scaler, so the run's shape is what this checks).
+        (
+            "run GC2CS",
+            &run_gc2cs,
+            &[
+                "GC2CS 1 TEXTURED FRAME FULL SIZE (NATIVE): rendered Some(",
+                "GC2CS 4 TEXTURED FRAME OURS: SMOOTH 2X: rendered Some(",
+                "GC2CS 8 FLAT FRAME OURS: SMOOTH 2X: rendered Some(",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

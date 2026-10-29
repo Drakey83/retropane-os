@@ -17565,6 +17565,12 @@ mod image {
             GC2BB_PARAMS.at
         );
         let planes0 = Snapshot::take(&mut g.e.regs);
+        if GC2CA_LOOK {
+            gc2cs_run(g, tex, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CA_ROUTES {
             gc2cp_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20167,6 +20173,153 @@ mod image {
             }
         }
         true
+    }
+
+    /// Run GC2CS (`RP_GPUBENCH_GC2_HALF_LOOK`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R78 item 2, the owner's eye (2026-10-28: "is the smooth 2x worth
+    /// it?"): GC2CP measured the speed; this shows the pictures. The
+    /// textured and the flat game frame, each four ways, every picture
+    /// labelled on itself and named on a card before it, held until a
+    /// button (two minutes at most): native 480 x 640; Dell's doubling of
+    /// 240 x 320 (blocky); 480 x 320 through the video plane, smoothed down
+    /// only (RGB, across 1:1: GC2CE test 6's proven path; GC2CP's fastest
+    /// route); 240 x 320 smoothed both ways through the video plane as UYVY
+    /// (the smooth 2x). The UYVY is made on the CPU with GC2CC's BT.601
+    /// coefficients (right colours, the owner's eye): the video plane's
+    /// colour converter subtracts 16 and 128 with no constant term, so our
+    /// GPU conversion (U' = B, V' = R) can't be shown exact until it stores
+    /// the offsets (a design open, R78); the picture's sharpness is the
+    /// question here. At Windows Mobile's clock (no divide-1 faults).
+    const GC2CA_LOOK: bool = option_env!("RP_GPUBENCH_GC2_HALF_LOOK").is_some();
+    /// GC2CS's ways: (render size, how shown, the card's name, the label
+    /// drawn on the picture).
+    const GC2CS_WAYS: [((u16, u16), u8, &str, &str); 4] = [
+        ((480, 640), 0, "FULL SIZE (NATIVE)", "1 NATIVE"),
+        ((240, 320), 1, "HALF: DELL 2X BLOCKY", "2 DELL 2X"),
+        ((480, 320), 2, "OURS: SMOOTH DOWN", "3 SMOOTH DOWN"),
+        ((240, 320), 3, "OURS: SMOOTH 2X", "4 SMOOTH 2X"),
+    ];
+    /// Where GC2CS's UYVY picture goes: after the 240 x 320 RGB one.
+    const GC2CS_UYVY: u32 = GC2CA_A + 2 * 240 * 320;
+
+    /// The 240 x 320 RGB565 picture at `rgb` as UYVY at `yuv`, GC2CC's
+    /// BT.601 integer coefficients (each pair's chroma from its mean).
+    fn gc2cs_uyvy(g: &mut Rig, rgb: u32, yuv: u32) {
+        let mut row = [0u32; 120];
+        let px = |w: u32| {
+            let (r, gg, b) = ((w >> 11) & 0x1F, (w >> 5) & 0x3F, w & 0x1F);
+            (r << 3 | r >> 2, gg << 2 | gg >> 4, b << 3 | b >> 2)
+        };
+        let luma = |(r, g, b): (u32, u32, u32)| ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+        for y in 0..320u32 {
+            for (i, out) in row.iter_mut().enumerate() {
+                let w = g
+                    .mem
+                    .load((rgb + y * 480 + 4 * i as u32) as usize)
+                    .unwrap_or(0);
+                let (p0, p1) = (px(w & 0xFFFF), px(w >> 16));
+                let (r, gg, b) = (
+                    ((p0.0 + p1.0) / 2) as i32,
+                    ((p0.1 + p1.1) / 2) as i32,
+                    ((p0.2 + p1.2) / 2) as i32,
+                );
+                let u = (((-38 * r - 74 * gg + 112 * b + 128) >> 8) + 128) as u32;
+                let v = (((112 * r - 94 * gg - 18 * b + 128) >> 8) + 128) as u32;
+                *out = u | luma(p0) << 8 | v << 16 | luma(p1) << 24;
+            }
+            g.mem.store((yuv + y * 480) as usize, &row);
+            if y % 64 == 63 {
+                rt::check_in();
+            }
+        }
+        g.mem.sync();
+    }
+
+    /// Run GC2CS (see [`GC2CA_LOOK`]).
+    #[inline(never)]
+    fn gc2cs_run(g: &mut Rig, tex: gc2::Tex, planes0: &Snapshot) {
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        let mut cur: Option<((u16, u16), Renderer)> = None;
+        let n = GC2CA_WATCH_FRAMES.len() * GC2CS_WAYS.len();
+        let mut k = 0;
+        for &kind in &GC2CA_WATCH_FRAMES {
+            let fname = if kind == gc2::MESH_TEXTURED {
+                "TEXTURED FRAME"
+            } else {
+                "FLAT FRAME"
+            };
+            for &(size, how, name, label) in &GC2CS_WAYS {
+                k += 1;
+                let mut l1 = heapless_name();
+                let _ = write!(l1, "PHOTO {k} OF {n}");
+                let mut l2 = heapless_name();
+                let _ = write!(l2, "{fname}: {name}");
+                gc2ca_card(
+                    g,
+                    planes0,
+                    [l1.as_str(), l2.as_str(), "PHOTO, THEN A BUTTON"],
+                );
+                let Some(rr) = gc2cp_take(g, &mut cur, size) else {
+                    continue;
+                };
+                gc2ca_set_mesh(g, rr, kind, tex, size);
+                g.resets = rr.core_resets();
+                let drawn = gc2ca_render(g, rr, size, GC2CA_A);
+                // The label on the picture itself, at its top left.
+                gc2cd_text(
+                    g,
+                    (GC2CA_A, u32::from(size.0), 2),
+                    (6, 6),
+                    GC2CD_RGB_INK,
+                    label,
+                );
+                g.mem.sync();
+                let screen = Plane {
+                    format: PlaneFormat::Rgb565,
+                    width: 480,
+                    height: 640,
+                    offset: 0,
+                    stride: 960,
+                };
+                match how {
+                    0 => gc2ca_show(g, GC2CA_NATIVE, size, GC2CA_A, planes0),
+                    1 => gc2ca_show(g, GC2CA_DELL, size, GC2CA_A, planes0),
+                    _ => {
+                        let (f, at) = if how == 3 {
+                            gc2cs_uyvy(g, GC2CA_A, GC2CS_UYVY);
+                            (VideoFormat::Uyvy, GC2CS_UYVY)
+                        } else {
+                            (VideoFormat::Rgb565, GC2CA_A)
+                        };
+                        rp_drv_mbx_display::graphics_set(
+                            &mut g.e.regs,
+                            &screen,
+                            GC2CB_GRAPHICS,
+                            false,
+                        );
+                        let plane = VideoPlane::new(f, size.0, size.1, at as usize);
+                        let scale = plane.scale_to(480, 640, 0, 0);
+                        rp_drv_mbx_display::video_show(
+                            &mut g.e.regs,
+                            &plane,
+                            GC2CB_VIDEO_BOTTOM,
+                            scale,
+                        );
+                    }
+                }
+                let held = gc2ca_hold_button(g, 120_000_000);
+                log!(
+                    "  GC2CS {k} {fname} {name}: rendered {drawn:?} us (core, whole); held {} ms",
+                    held / 1000
+                );
+                rp_drv_mbx_display::video_hide(&mut g.e.regs);
+            }
+        }
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        g.nudge = nudge;
+        gc2ca_card(g, planes0, ["GC2CS DONE", "THANK YOU", ""]);
     }
 
     /// Run GC2CP (`RP_GPUBENCH_GC2_HALF_ROUTES`, with `RP_GPUBENCH_GC2_HALF`),
