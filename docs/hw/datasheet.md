@@ -297,6 +297,9 @@ watching.
   GC2CS, X51v, 2026-10-28, the owner's photos): right for a 240-wide
   source (GC2CE), **wrong for a 480-wide one** (right over the left ~40%,
   streaks, then nothing); 240 x 320 UYVY through the 2x both ways right.
+  **480-wide UYVY through the vertical-only scale is right** (GC2CT): the
+  width limit is RGB's. **`GDRCTRL` bit 29 alone doubles lines only**
+  (480 x 320 shown right full screen, GC2CT, the owner's photos).
 - **MBX 2D engine's surface format codes** (`rp-gpubench` GC2CG, X51v,
   2026-10-28, an RGB565 copy to each code, read back): bit 4 of the code is
   ignored (16-31 repeat 0-15); 0 1 bpp, 1 2 bpp, 2 4 bpp, 3 and 4 8 bpp,
