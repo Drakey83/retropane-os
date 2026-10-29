@@ -135,3 +135,20 @@ exactly 37 2D-first mixes: there the bar reached the screen a refresh
 before the scene. Open, for the owner: where the behind-the-scan tear
 comes from (the next step is logging each frame's start line, window and
 render time against the refresh it tore), and the hand-off at that clock.
+
+## Run 3 on the X51v, 2026-10-29 (card log scene-0003, `local/rp-scene-run3.txt`): the tear found
+- **Not the schedule:** each render's real time (the 3D core's done bit,
+  watched by the image) is within 1-2% of the time the service plans with
+  (WM clock 8,765 against 8,769 us; 149.50 / 2 5,838 against 5,852).
+- **3D alone (only the scene changes): 0 torn in 80 frames** at both
+  clocks: the start behind the scan is tear-free in the service too.
+- **2D alone (only the bar changes): every frame tears** (80 torn refreshes
+  in 40 frames at Windows Mobile's clock, 40 in 40 at 149.50 / 2), and the
+  scene re-renders fully every frame though unchanged.
+- **Why** (the host model): a fill whose colour changes rebuilds
+  `rp-mbx-render`'s cached background, so 2D's drawn rectangle is the whole
+  screen; the service copies it into screen 0, shown, at once, laying 2D's
+  layer (wallpaper) over the scene's area mid-scan until the re-render
+  lands: one torn refresh, two when the render starts in the next refresh.
+  The fix's alternatives: `r110-2d-into-the-shown-screen.md` (waits for the
+  owner's go).
