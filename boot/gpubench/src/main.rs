@@ -8118,7 +8118,12 @@ mod image {
     /// 16-bit ones inside the safe region, the 32-bit ones where GC2S drew
     /// them, as at GC2S's divide-2 settings), stopping at the first wrong
     /// render.
-    const GC2_DIV2: bool = option_env!("RP_GPUBENCH_GC2I_DIV2").is_some();
+    const GC2_DIV2: bool = option_env!("RP_GPUBENCH_GC2I_DIV2").is_some() || GC2_DIV2_LOW;
+    /// The same soak a rung down (`RP_GPUBENCH_GC2I_DIV2_LOW`): 133.25 / 2
+    /// then 117.00 / 2. GC2I divide 2's first run (2026-10-29) hung one
+    /// ARGB8888 Gouraud capped render at 149.50 / 2 after 10.6 minutes, and
+    /// its 133.25 / 2 half never ran (the soak stops at the first failure).
+    const GC2_DIV2_LOW: bool = option_env!("RP_GPUBENCH_GC2I_DIV2_LOW").is_some();
 
     /// Run GC2AE, reminder R69 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -10759,7 +10764,12 @@ mod image {
     }
 
     /// Run GC2I's soak settings.
-    const GC2I_SOAK: [(ClockStep, &str); 2] = if GC2_DIV2 {
+    const GC2I_SOAK: [(ClockStep, &str); 2] = if GC2_DIV2_LOW {
+        [
+            (gc2_step(41, 4, 0, 2), "133.25 / 2"),
+            (gc2_step(27, 3, 0, 2), "117.00 / 2"),
+        ]
+    } else if GC2_DIV2 {
         [
             (gc2_step(23, 2, 0, 2), "149.50 / 2"),
             (gc2_step(41, 4, 0, 2), "133.25 / 2"),

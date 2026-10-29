@@ -5830,6 +5830,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_SOAK_SECS", "10"),
         ],
     )?;
+    let run_gc2i_div2_low = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2I_DIV2_LOW", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "1"),
+            ("RP_GPUBENCH_SOAK_SECS", "10"),
+        ],
+    )?;
     let run_gc2cu = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6178,7 +6187,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 148] = [
+    let runs: [GpubenchRun; 149] = [
         (
             "run A",
             &run_a,
@@ -6999,6 +7008,14 @@ fn variant_images_gpubench(
         (
             "run GC2I divide 2",
             &run_gc2i_div2,
+            &["RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // The same a rung down: 133.25 / 2 then 117.00 / 2.
+        (
+            "run GC2I divide 2 low",
+            &run_gc2i_div2_low,
             &["RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
