@@ -5684,6 +5684,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2cu = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_QUADS", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -5976,7 +5985,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 139] = [
+    let runs: [GpubenchRun; 140] = [
         (
             "run A",
             &run_a,
@@ -6657,6 +6666,35 @@ fn variant_images_gpubench(
                 "    its frame: ",
                 "GC2CP 143.00 / 1 speed-up (d) 240 x 320 converted, overlapped against native",
                 "GC2CP done:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2CU (R78 item 3, R93): each quad as one four-corner object
+        // against two triangles; the fork reads list layouts 5 and 9 as
+        // the host model does (drawn as the strip's two triangles), so every
+        // kind and game frame must draw the same both ways here.
+        (
+            "run GC2CU",
+            &run_gc2cu,
+            &[
+                "GC2CU (R78 item 3): each quad as one four-corner object",
+                "GC2CU kind 0 (RGB565 Gouraud): ",
+                "GC2CU kind 0 with eight quads off the screen: Some(0) words off the triangles' picture",
+                "GC2CU kind 5 (RGB565 bilinear 565 texture): ",
+                "GC2CU kind 6 (RGB565 Gouraud + blended 4444): ",
+                "GC2CP 480 x 320 frame 3 reference:",
+                "GC2CU triangles 74.75 / 1 (a) 480 x 640 native frame 0: 2 of 2 frames, 0 pictures wrong",
+                "GC2CU quads 74.75 / 1 (a) 480 x 640 native frame 2: 2 of 2 frames, 0 pictures wrong",
+                "GC2CU quads 143.00 / 1 (b) 480 x 320 frame 3: 2 of 2 frames, 0 pictures wrong",
+                "    its frame: ",
+                // Kind 1 is RGB565 dithered (0x650 code 9), which the fork
+                // doesn't model (docs/hw/emulator.md): its first render
+                // writes 32-bit pixels at the 16-bit stride. Every other kind
+                // must draw the same; the X51v must show 13 of 13.
+                "kinds drawn the same both ways at Windows Mobile's clock: 12 of 13 (different: 1); four-corner game frames wrong where two triangles were right: 0",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

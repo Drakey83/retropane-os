@@ -102,7 +102,10 @@ pub const BUDGETS: &[Budget] = &[
         // "Why, and what was fixed"); 27.7 KiB measured, +~15%.
         // Ratcheted 32 -> 48 KiB on 2026-10-26 (test image): the stack
         // 16 -> 32 KiB (it overflowed into `.bss`, quality audit C90).
-        max_zero: 48 * 1024,
+        // Ratcheted 48 -> 68 KiB on 2026-10-28 (test image): the binner's
+        // scratch for R78 item 4's off-screen scene (18.8 KiB in `.bss`,
+        // the stack holding a renderer already).
+        max_zero: 68 * 1024,
         device: OnDevice::NeverReturns,
     },
     // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table

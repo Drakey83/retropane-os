@@ -129,8 +129,8 @@ mod image {
     use rp_hal_x51v::devices::KeptRunLog;
     use rp_mbx_render::{Layout, Mbx2dRenderer};
     use rp_mbx3d_render::{
-        Clock, Draw, LocalMem, Paint, Picture, PixelFormat, Poll, Renderer, Target, Texture,
-        UV_ONE, address, factor, format, untwiddle,
+        Clock, Draw, LocalMem, Objects, Paint, Picture, PixelFormat, Poll, Renderer, Target,
+        Texture, UV_ONE, address, factor, format, untwiddle,
     };
     use rp_vram_map::{Pool, bench32 as map};
 
@@ -17571,6 +17571,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2CU {
+            gc2cu_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2CA_ROUTES {
             gc2cp_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20386,6 +20392,17 @@ mod image {
     /// GC2CM's fit, here on every word), (d) its last frame. GC2CM's card
     /// converted once at each clock and checked by `gc2cm_check`. No photos.
     const GC2CA_ROUTES: bool = option_env!("RP_GPUBENCH_GC2_HALF_ROUTES").is_some();
+    /// Run GC2CU (`RP_GPUBENCH_GC2_HALF_QUADS`, with `RP_GPUBENCH_GC2_HALF`),
+    /// R78 item 3 (R93): each quad as one four-corner object
+    /// (`Objects::Quads`) against two triangles on the X51v. At Windows
+    /// Mobile's clock, every one of GC2's kinds (Gouraud, dithered, ARGB8888,
+    /// textured point and bilinear, blended ARGB4444, planar) drawn both
+    /// ways into its own target, the target poisoned before the quads, every
+    /// word compared; then GC2CP's four game frames at 480 x 640 and 480 x
+    /// 320 at 74.75 / 1 and 143.00 / 1, both ways against GC2CP's references
+    /// (two triangles at Windows Mobile's clock): wrong pictures, the core's
+    /// time and the whole frame's, and each frame's set-up and words.
+    const GC2CU: bool = option_env!("RP_GPUBENCH_GC2_HALF_QUADS").is_some();
     /// Frames a way and game frame, after one to warm (the emulator 2).
     const GC2CP_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 10 };
     /// The sizes GC2CP renders: native, half height, half.
@@ -20658,6 +20675,229 @@ mod image {
         gc2ca_card(g, planes0, ["GC2CP DONE", "", ""]);
     }
 
+    /// GC2CU's renderers: the game frames' (with its size) and the kinds'.
+    static GC2CU_HELD: rt::Slot<(Option<((u16, u16), Renderer)>, Option<Renderer>)> =
+        rt::Slot::new();
+
+    /// Run GC2CU (see [`GC2CU`]).
+    #[inline(never)]
+    fn gc2cu_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "GC2CU: QUADS AS ONE",
+                "OBJECT, BOTH WAYS",
+                "NO PHOTOS NEEDED",
+            ],
+        );
+        let full = gc2::words_of(GC2CP_SIZES[0]);
+        if all.len() < full + GC2CP_REF_WORDS || all.len() < GC2CU_KIND_WORDS {
+            log!("  GC2CU: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let Some(held) = GC2CU_HELD.put_with(|| (None, None)) else {
+            log!("  GC2CU: run twice in one start: nothing run");
+            return;
+        };
+        let (cur, kinds) = (&mut held.0, &mut held.1);
+        let nudge = g.nudge;
+        let t0 = rt::ticks();
+        log!(
+            "  GC2CU (R78 item 3): each quad as one four-corner object against two triangles; GC2's {} kinds at Windows Mobile's clock, then {} game frames at {:?} at 74.75 / 1 and 143.00 / 1, {GC2CP_REPS} frames each way after one to warm; the lists on the die at 0x{:x}",
+            gc2::KINDS.len(),
+            gc2::GAME_FRAMES.len(),
+            &GC2CP_SIZES[..2],
+            GC2BB_PARAMS.at
+        );
+        let (same, differ) = gc2cu_kinds(g, kinds, tex, &mut all[..GC2CU_KIND_WORDS]);
+        let (first, refs) = all.split_at_mut(full);
+        let mut quads_wrong = 0;
+        if gc2cp_references(g, cur, tex, (first, refs)) {
+            let clocks = [
+                (gc2_step(23, 4, 0, 1), "74.75 / 1"),
+                (gc2_step(44, 4, 0, 1), "143.00 / 1"),
+            ];
+            for (step, cname) in clocks {
+                clock_restore(&mut g.e.regs);
+                if clock_apply(g, step).is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  GC2CU {cname}: the clock didn't take; skipped");
+                    continue;
+                }
+                clock_readback(g);
+                quads_wrong += gc2cu_clock(g, cur, tex, (first, refs), cname);
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+        } else {
+            log!("  GC2CU: a game frame's reference failed: no clock run");
+        }
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        g.nudge = nudge;
+        log!(
+            "  GC2CU done: {} ms; kinds drawn the same both ways at Windows Mobile's clock: {same} of {} (different: {}); four-corner game frames wrong where two triangles were right: {quads_wrong}",
+            us_since(t0) / 1000,
+            gc2::KINDS.len(),
+            Kinds(differ)
+        );
+        gc2ca_card(g, planes0, ["GC2CU DONE", "", ""]);
+    }
+
+    /// Words GC2CU's kinds need: the largest kind's picture (ARGB8888).
+    const GC2CU_KIND_WORDS: usize = 480 * 640;
+
+    /// GC2CU at Windows Mobile's clock: each of GC2's kinds rendered as two
+    /// triangles (twice: the reference repeats) and as four-corner objects
+    /// (twice, the target poisoned before each), every word compared.
+    /// The kinds drawn the same both ways, and a bit for each that wasn't.
+    #[inline(never)]
+    fn gc2cu_kinds(
+        g: &mut Rig,
+        slot: &mut Option<Renderer>,
+        tex: gc2::Tex,
+        want: &mut [u32],
+    ) -> (u32, u32) {
+        let (mut n_same, mut differ) = (0, 0u32);
+        for (k, &(name, format)) in gc2::KINDS.iter().enumerate() {
+            rt::check_in();
+            let mut l2 = heapless_name();
+            let _ = write!(l2, "KIND {} OF {}", k + 1, gc2::KINDS.len());
+            soak_label(g, ["GC2CU BOTH FORMS", l2.as_str(), ""], SOAK_BLUE);
+            // A fresh renderer a kind (the core set up again: rule 5).
+            if let Some(r) = slot.take() {
+                let _ = r.release(&mut g.pool);
+            }
+            *slot = Renderer::new_in(&mut g.pool, 480, 640, GC2BB_PARAMS, map::PM_TABLE);
+            let Some(r) = slot.as_mut() else {
+                log!("  GC2CU kind {k}: no renderer");
+                return (n_same, differ | !0 << k);
+            };
+            r.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+            r.start_clean();
+            let words = gc2::words(k) as usize;
+            let t = Target {
+                picture: Picture::packed(gc_at(k), 480, 640, format),
+                x: 0,
+                y: 0,
+            };
+            let rows = (words * 4 / 960) as u16;
+            // Two triangles: the reference, then again.
+            r.set_objects(Objects::Triangles);
+            gc2_scene(g, r, k, tex);
+            r.invalidate_all();
+            let tris = g.frame(r, t);
+            gc2_take(g, k, &mut want[..words]);
+            r.invalidate_all();
+            let again = g.frame(r, t).map(|_| gc2_still(g, k, &want[..words]));
+            let poison = gc2::absent16(&want[..words], &gc2::POISON).unwrap_or(0xF81F);
+            // Four-corner objects, twice, over a poisoned target.
+            r.set_objects(Objects::Quads);
+            gc2_scene(g, r, k, tex);
+            let mut quads = [None; 2];
+            let mut quad_us = None;
+            for q in &mut quads {
+                if !poison_fill_rows(g, gc_at(k), rows, poison) {
+                    continue;
+                }
+                r.invalidate_all();
+                quad_us = g.frame(r, t);
+                *q = quad_us.map(|_| gc2_still(g, k, &want[..words]));
+            }
+            // Kind 0 again with eight quads off the screen in slots 3-10
+            // (R78 item 4: never written, never listed): the same picture.
+            let mut off = None;
+            if k == 0 && poison_fill_rows(g, gc_at(k), rows, poison) {
+                for s in 3..11 {
+                    let x = if s % 2 == 0 { -400 } else { 600 };
+                    let d = Draw::rect(x, 40 * s as i32, 64, 64, Paint::Flat(0xFFFF_0000));
+                    g.set(r, s, Some(d));
+                }
+                r.invalidate_all();
+                off = g.frame(r, t).map(|_| gc2_still(g, k, &want[..words]));
+                log!(
+                    "  GC2CU kind 0 with eight quads off the screen: {off:?} words off the triangles' picture"
+                );
+            }
+            let same = tris.is_some()
+                && again == Some(0)
+                && quads == [Some(0); 2]
+                && (k != 0 || off == Some(0));
+            if same {
+                n_same += 1;
+            } else {
+                differ |= 1 << k;
+            }
+            log!(
+                "  GC2CU kind {k} ({name}): two triangles {tris:?} us, again {again:?} words off; four-corner objects {quad_us:?} us, {quads:?} words off the triangles' picture; {}",
+                if same { "the same" } else { "DIFFERENT" }
+            );
+        }
+        if let Some(r) = slot.take() {
+            let _ = r.release(&mut g.pool);
+        }
+        (n_same, differ)
+    }
+
+    /// A set of GC2's kinds (a bit each) for the log: "none" or "1, 4".
+    struct Kinds(u32);
+
+    impl core::fmt::Display for Kinds {
+        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+            if self.0 == 0 {
+                return f.write_str("none");
+            }
+            let mut sep = "";
+            for k in (0..32).filter(|k| self.0 & 1 << k != 0) {
+                write!(f, "{sep}{k}")?;
+                sep = ", ";
+            }
+            Ok(())
+        }
+    }
+
+    /// GC2CU at one clock: the game frames at 480 x 640 and 480 x 320, two
+    /// triangles then four-corner objects. Frames wrong as four-corner
+    /// objects where two triangles drew every one right.
+    #[inline(never)]
+    fn gc2cu_clock(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+        (first, refs): (&mut [u32], &[u32]),
+        cname: &str,
+    ) -> u32 {
+        // Nothing carried from one clock into the next (GC2's rule 5).
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        g.nudge = GC2BO_NUDGE;
+        let forms = [
+            ("GC2CU triangles", Objects::Triangles),
+            ("GC2CU quads", Objects::Quads),
+        ];
+        let mut worse = 0;
+        for wi in 0..2 {
+            for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                rt::check_in();
+                let mut l2 = heapless_name();
+                let _ = write!(l2, "{cname} SIZE {} FRAME {}", wi + 1, f + 1);
+                soak_label(g, ["GC2CU BOTH FORMS", l2.as_str(), ""], SOAK_BLUE);
+                let mut wrong = [0u32; 2];
+                for (n, &(tag, objects)) in forms.iter().enumerate() {
+                    let job = (wi, f, kind);
+                    wrong[n] =
+                        gc2cp_plain(g, cur, tex, (first, refs), job, (tag, cname, objects)).1;
+                }
+                worse += u32::from(wrong[1] > 0 && wrong[0] == 0);
+            }
+        }
+        worse
+    }
+
     /// GC2CP's conversion renderer (GC2CO's 120 x 960, its lists in the
     /// parameter memory), black behind.
     #[inline(never)]
@@ -20783,7 +21023,8 @@ mod image {
                 rt::check_in();
                 let job = (wi, f, kind);
                 best[wi][f] = if wi < GC2CP_FULL {
-                    gc2cp_plain(g, cur, tex, (first, refs), job, cname)
+                    let how = ("GC2CP", cname, Objects::Triangles);
+                    gc2cp_plain(g, cur, tex, (first, refs), job, how).0
                 } else if wi == GC2CP_INFLIGHT {
                     let want = &refs[gc2cp_ref(1, f)];
                     let poison = gc2::absent16(want, &gc2::POISON).unwrap_or(0);
@@ -20831,15 +21072,18 @@ mod image {
         tex: gc2::Tex,
         (first, refs): (&mut [u32], &[u32]),
         (wi, f, kind): (usize, usize, u8),
-        cname: &str,
-    ) -> u32 {
+        (tag, cname, objects): (&str, &str, Objects),
+    ) -> (u32, u32) {
         let size = GC2CP_SIZES[wi];
         let n = gc2::words_of(size);
         let Some(rr) = gc2cp_take(g, cur, size) else {
-            return u32::MAX;
+            return (u32::MAX, 0);
         };
         let want = &refs[gc2cp_ref(wi, f)];
         let poison = gc2::absent16(want, &gc2::POISON).unwrap_or(0);
+        // The form from the next set on: the mesh set below writes every
+        // slot in it.
+        rr.set_objects(objects);
         gc2ca_set_mesh(g, rr, kind, tex, size);
         g.resets = rr.core_resets();
         let _ = gc2ca_render(g, rr, size, GC2CA_A);
@@ -20863,7 +21107,7 @@ mod image {
         }
         let d = u64::from(done.max(1));
         log!(
-            "  GC2CP {cname} {} frame {f}: {done} of {GC2CP_REPS} frames, {wrong} pictures wrong; whole frame fastest {whole_best} us mean {} (core fastest {core_best} us mean {})",
+            "  {tag} {cname} {} frame {f}: {done} of {GC2CP_REPS} frames, {wrong} pictures wrong; whole frame fastest {whole_best} us mean {} (core fastest {core_best} us mean {})",
             GC2CP_WAYS[wi],
             whole_sum / d,
             core_sum / d
@@ -20874,7 +21118,7 @@ mod image {
             y: 0,
         };
         gc2cp_stats(g, rr, t, "its frame");
-        whole_best
+        (whole_best, wrong)
     }
 
     /// One serial frame of ways (c) and (c'): the game frame into

@@ -15,7 +15,7 @@
 
 use rp_drv_mbx3d::{self as m3, tex};
 
-use crate::{Draw, Error, LocalMem, Objects, Target, draw_tiles, encode, fixed};
+use crate::{Draw, Error, LocalMem, Objects, Target, TileRect, draw_tiles, encode, fixed};
 
 /// Where the background object sits, in bytes from the parameter memory's
 /// start (as the renderer's).
@@ -55,7 +55,8 @@ pub struct Scratch<'a> {
     pub starts: &'a mut [u32],
     /// One entry a (quad, tile it touches): at most 65,536 quads.
     pub entries: &'a mut [u16],
-    /// A word a quad: its first object's strip pointer.
+    /// A word a quad: its first object's strip pointer, or 0 for a quad
+    /// touching no tile (not written).
     pub objects: &'a mut [u32],
 }
 
@@ -154,9 +155,10 @@ pub fn bin<M: LocalMem>(
     bin_with(mem, l, background, draws.len(), |i| draws[i], scratch)
 }
 
-/// [`bin`] of `n` quads that `draw` gives by index (called three times for
-/// each, in order), so a scene of thousands needs no array of them: a
-/// game's or a test's quads made as they are wanted.
+/// [`bin`] of `n` quads that `draw` gives by index (called once for each,
+/// in order, and once more for each on the screen), so a scene of thousands
+/// needs no array of them: a game's or a test's quads made as they are
+/// wanted. Quads touching no tile are not written at all.
 ///
 /// # Errors
 ///
@@ -192,19 +194,21 @@ pub fn bin_objects<M: LocalMem>(
     if n > 1 << 16 || scratch.objects.len() < n || scratch.starts.len() <= tiles {
         return Err(Error::NoMemory);
     }
-    if (0..n).map(&draw).any(|d| {
-        d.depth.is_some_and(|dp| dp.mode > m3::depth::ALWAYS)
-            || d.alpha.is_some_and(|a| a.func > m3::depth::ALWAYS)
-    }) {
-        return Err(Error::Unsupported);
-    }
     let starts = &mut scratch.starts[..=tiles];
 
-    // Pass 1: each tile's quads counted (in the slot after its own).
+    // Pass 1: each quad checked and its tiles kept (in its object word
+    // until its object is written: R78 item 4, no quad made again for its
+    // tiles), each tile's quads counted (in the slot after its own).
     starts.fill(0);
     let mut total = 0usize;
-    for d in (0..n).map(&draw) {
+    for (i, d) in (0..n).map(&draw).enumerate() {
+        if d.depth.is_some_and(|dp| dp.mode > m3::depth::ALWAYS)
+            || d.alpha.is_some_and(|a| a.func > m3::depth::ALWAYS)
+        {
+            return Err(Error::Unsupported);
+        }
         let r = draw_tiles(&d, cols, rows);
+        scratch.objects[i] = u32::from_le_bytes([r.x0, r.y0, r.x1, r.y1]);
         for y in u32::from(r.y0)..u32::from(r.y1) {
             for x in u32::from(r.x0)..u32::from(r.x1) {
                 starts[(y * cols + x) as usize + 1] += 1;
@@ -225,8 +229,8 @@ pub fn bin_objects<M: LocalMem>(
     }
     // Pass 2: each quad's index into its tiles' places; after it,
     // `starts[k]` is tile k's end (tile k + 1's start).
-    for (i, d) in (0..n).map(&draw).enumerate() {
-        let r = draw_tiles(&d, cols, rows);
+    for i in 0..n {
+        let r = rect_of(scratch.objects[i]);
         for y in u32::from(r.y0)..u32::from(r.y1) {
             for x in u32::from(r.x0)..u32::from(r.x1) {
                 let k = (y * cols + x) as usize;
@@ -245,10 +249,17 @@ pub fn bin_objects<M: LocalMem>(
     });
     objs.flush();
     objs.at = l.params + OBJECTS_AT;
-    for (i, d) in (0..n).map(&draw).enumerate() {
+    for (i, obj) in scratch.objects[..n].iter_mut().enumerate() {
+        // Off the screen (no tile): never listed, so never written (R78
+        // item 4: the CPU's encoding and the bus's words saved; the core
+        // never paid for it).
+        if rect_of(*obj).is_empty() {
+            continue;
+        }
+        let d = draw(i);
         let (words, len, kind) = encode(&d, objects, false, 0);
         let (flags, _, _) = kind.strip();
-        scratch.objects[i] = flags | ((objs.next_at() - l.params) / 4);
+        *obj = flags | ((objs.next_at() - l.params) / 4);
         if objs.next_at() + 4 * len as u32 > l.params + l.params_size {
             return Err(Error::TooComplex);
         }
@@ -309,6 +320,12 @@ pub fn bin_objects<M: LocalMem>(
         region_words: 2 * tiles as u32,
         params_used: lists.at - l.params,
     })
+}
+
+/// A quad's tiles as pass 1 keeps them in its object word.
+const fn rect_of(w: u32) -> TileRect {
+    let [x0, y0, x1, y1] = w.to_le_bytes();
+    TileRect { x0, y0, x1, y1 }
 }
 
 /// Region entries buffered beside the lists' stream.

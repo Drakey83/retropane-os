@@ -1778,11 +1778,20 @@ mod binner_scenes {
         assert_eq!(got.iter().zip(&want).filter(|(a, b)| a != b).count(), 0);
         // Objects: 2 x 17 -> 22 flat or Gouraud, 2 x 26 -> 33 textured
         // (the background's 17 in both); lists: one word an entry, not two.
-        let textured = draws
+        // Only the quads on the screen have objects (R78 item 4).
+        let shown: Vec<&Draw> = draws
+            .iter()
+            .filter(|d| !draw_tiles(d, 60, 40).is_empty())
+            .collect();
+        assert!(
+            shown.len() < draws.len(),
+            "the scene has quads off the screen"
+        );
+        let textured = shown
             .iter()
             .filter(|d| matches!(d.paint, Paint::Texture { .. }))
             .count();
-        let flat = draws.len() - textured;
+        let flat = shown.len() - textured;
         assert_eq!(
             tris.object_words,
             17 + 34 * flat as u32 + 52 * textured as u32
@@ -1796,10 +1805,73 @@ mod binner_scenes {
         assert_eq!(quads.region_words, tris.region_words);
     }
 
+    #[test]
+    fn quads_off_the_screen_are_never_written() {
+        // R78 item 4: a level four screens wide and two high, 200 quads, the
+        // view in the middle; binned whole, then only the quads on screen.
+        let mut b = bench(200);
+        let t = texture(&mut b.mem);
+        let world: Vec<Draw> = (0..200u32)
+            .map(|i| {
+                let h = i.wrapping_mul(0x9E37_79B1) ^ (i << 7);
+                let x = (h % 1920) as i32 - 720;
+                let y = ((h >> 11) % 1280) as i32 - 320;
+                let p = if i % 2 == 0 {
+                    Paint::Flat(0xFF00_0000 | h)
+                } else {
+                    Paint::texture(t)
+                };
+                Draw::rect(x, y, 40, 40, p)
+            })
+            .collect();
+        let shown: Vec<Draw> = world
+            .iter()
+            .copied()
+            .filter(|d| !draw_tiles(d, 60, 40).is_empty())
+            .collect();
+        assert!((10..100).contains(&shown.len()), "{}", shown.len());
+        let all = binner::bin_objects(
+            &mut b.mem,
+            &LAYOUT,
+            Some(GREY),
+            (world.len(), |i| world[i]),
+            Scratch {
+                starts: &mut b.starts,
+                entries: &mut b.entries,
+                objects: &mut b.objects,
+            },
+            Objects::Quads,
+        )
+        .unwrap();
+        assert!(b.render());
+        let got = b.picture();
+        let off = b.objects[..world.len()].iter().filter(|&&p| p == 0).count();
+        assert_eq!(off, world.len() - shown.len());
+        let only = binner::bin_objects(
+            &mut b.mem,
+            &LAYOUT,
+            Some(GREY),
+            (shown.len(), |i| shown[i]),
+            Scratch {
+                starts: &mut b.starts,
+                entries: &mut b.entries,
+                objects: &mut b.objects,
+            },
+            Objects::Quads,
+        )
+        .unwrap();
+        assert!(b.render());
+        assert_eq!(b.picture(), got);
+        // The same words as the quads on screen alone: nothing for the rest.
+        assert_eq!(all.words(), only.words());
+        assert_eq!(all.entries, only.entries);
+    }
+
     /// Dell's way, the reference: every tile lists every object.
     fn one_list(b: &mut Bench, n: usize) {
         let mut list = std::vec![m3::STRIP_ONE_TRIANGLE | (64 / 4)];
-        for &p in &b.objects[..n] {
+        // Quads off the screen have no object (their word 0: R78 item 4).
+        for &p in b.objects[..n].iter().filter(|&&p| p != 0) {
             list.extend([p, p + object_words(p)]);
         }
         list.push(m3::END);
@@ -2856,4 +2928,39 @@ mod set_up {
         }
         most
     }
+}
+
+#[test]
+fn a_quad_off_the_screen_stores_nothing_until_it_shows() {
+    // R78 item 4: the renderer's slots.
+    let mut g = rig(480, 640);
+    g.r.set_background(Some(GREY)).unwrap();
+    g.frame();
+    let before = g.r.mem_words;
+    g.set(0, Some(square(-300, 100, 64, Paint::Flat(BLUE))));
+    g.set(1, Some(square(100, 900, 64, Paint::Flat(RED))));
+    assert_eq!(
+        g.r.mem_words, before,
+        "nothing stored for quads off the screen"
+    );
+    assert_eq!(
+        g.r.render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL),
+        Ok(None)
+    );
+    // Moved on: written, drawn; moved off and back to the same place:
+    // written again (its words were never overwritten, but nothing relies
+    // on that).
+    g.set(0, Some(square(100, 100, 64, Paint::Flat(BLUE))));
+    assert_eq!(g.r.mem_words - before, 34);
+    g.frame();
+    assert_eq!(
+        (g.px(100, 100), g.px(163, 163), g.px(164, 100)),
+        (BLUE, BLUE, GREY)
+    );
+    g.set(0, Some(square(-300, 100, 64, Paint::Flat(BLUE))));
+    g.frame();
+    assert_eq!(g.px(100, 100), GREY);
+    g.set(0, Some(square(100, 100, 64, Paint::Flat(BLUE))));
+    g.frame();
+    assert_eq!(g.px(100, 100), BLUE);
 }

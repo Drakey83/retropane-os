@@ -21,6 +21,9 @@ use rp_mbx3d_render::{
 };
 use rp_vram_map::{PARAMS, PM_TABLE, POOL, Pool};
 
+use rp_hal_pxa27x::rt;
+use rp_mbx3d_render::binner::{self, Scratch};
+
 use crate::Runner;
 
 /// Every register reads all ones (status: ready, done); writes are dropped.
@@ -263,5 +266,70 @@ pub fn render3d(r: &mut Runner) {
     for (name, size, order, form, paint, moving) in runs {
         one(r, name, (size, order, form), paint, moving);
     }
+    bin_offscreen(r, tex);
     button(r);
+}
+
+/// Quads in the binner's scene (R78 item 4).
+const BIN_QUADS: usize = 256;
+
+/// The binner's scratch, in `.bss` (the stack holds a renderer already).
+struct BinWork {
+    starts: [u32; 2401],
+    entries: [u16; 16 * BIN_QUADS],
+    objects: [u32; BIN_QUADS],
+}
+
+static BIN_WORK: rt::Slot<BinWork> = rt::Slot::new();
+
+/// A game's level larger than the screen (R78 item 4): [`BIN_QUADS`]
+/// 32-pixel quads (flat and textured in turn) over a world four screens
+/// wide and two high around the view, so about one in eight lands on the
+/// screen; binned whole every frame, the view panned 4 pixels each time.
+#[inline(never)]
+pub fn bin_offscreen(r: &mut Runner, tex: Texture) {
+    let Some(w) = BIN_WORK.put_with(|| BinWork {
+        starts: [0; 2401],
+        entries: [0; 16 * BIN_QUADS],
+        objects: [0; BIN_QUADS],
+    }) else {
+        r.check("r3d_bin_offscreen", false, "scratch taken");
+        return;
+    };
+    let l = binner::Layout {
+        params: PARAMS.at,
+        params_size: PARAMS.size,
+        regions: 0x48_0000,
+        w: 480,
+        h: 640,
+    };
+    let mut mem = Sink(0);
+    let mut pan = 0i32;
+    let quad = |i: usize, pan: i32| {
+        let h = hash(i as u32, 11, 5);
+        let x = (h % (4 * 480)) as i32 - 3 * 480 / 2 - pan;
+        let y = ((h >> 12) % (2 * 640)) as i32 - 640 / 2;
+        let paint = if i % 2 == 0 {
+            Paint::Flat(0xFF00_0000 | h)
+        } else {
+            Paint::texture(tex)
+        };
+        Draw::rect(x, y, 32, 32, paint)
+    };
+    r.run("r3d_bin_offscreen", 4, &mut || {
+        pan = (pan + 4) % 480;
+        let p = pan;
+        let _ = binner::bin_objects(
+            &mut mem,
+            &l,
+            Some(0xFF00_0000),
+            (BIN_QUADS, |i| quad(i, p)),
+            Scratch {
+                starts: &mut w.starts,
+                entries: &mut w.entries,
+                objects: &mut w.objects,
+            },
+            Objects::Quads,
+        );
+    });
 }

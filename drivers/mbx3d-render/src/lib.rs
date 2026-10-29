@@ -1608,9 +1608,14 @@ impl Renderer {
                 if s.kind == old.kind && s.hash == old.hash {
                     return Ok(());
                 }
-                let at = self.params.at + SLOTS_AT + slot as u32 * SLOT_BYTES;
-                mem.store(at as usize, &words[..n]);
-                self.mem_words += n as u32;
+                // A quad touching no tile is never listed: its words wait
+                // until it is set where it shows (R78 item 4; its hash
+                // holds its tiles, so that set writes them).
+                if !tiles.is_empty() {
+                    let at = self.params.at + SLOTS_AT + slot as u32 * SLOT_BYTES;
+                    mem.store(at as usize, &words[..n]);
+                    self.mem_words += n as u32;
+                }
                 s
             }
         };
