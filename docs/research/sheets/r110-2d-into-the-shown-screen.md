@@ -89,3 +89,14 @@ to back at 149.50 / 2 (run 3: 18), and at Windows Mobile's clock 26 of 50
 one-off frames weren't shown whole within six refreshes (run 3: 3). The
 checkerboard phase, where 2D's change and the scene go together in the
 copy fallback's one copy, had 0 mixed and 18 frames a second.
+
+## The owner's ruling after run 4 (2026-10-29): "Send them by the copy"
+Frames where 2D and the scene both change go by the copy fallback (the
+scene rendered into screen 1 with 2D's frame, one copy behind the scan),
+even where the scan could lead the render, so 2D and the scene land in the
+same refresh (run 4's checkerboard phase: 0 torn, 0 mixed, 18 frames a
+second). Built: `Job::TwoD`'s dirty case plans the one copy first. Host
+tests 33 (two new: both changing go by one copy; a stalled area copy after a
+render behind the scan), the ruling's mutant caught; emulator: rows phases
+150 of 150 such frames by the copy, 2D alone and 3D alone as before. Run 5
+on the X51v waits for the owner's run it.

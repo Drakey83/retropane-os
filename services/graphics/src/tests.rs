@@ -483,9 +483,10 @@ fn moved(r: &mut Rig, c: ClientId, tex: Handle, qx: i32, colour: u32) -> Frame {
 
 #[test]
 fn a_stalled_copy_between_the_screens_is_reported_and_the_next_frame_whole() {
-    // The frame's first copy (2D's changes into screen 0, before the
-    // render) and its second (the area into screen 1, after it).
-    for nth in [1u8, 2] {
+    // The frame's copy (2D's changes and the scene's area together into
+    // screen 0 behind the scan: a frame changing both goes by the copy).
+    // A stall in 2D's own copy: `after_a_stall_...`.
+    for nth in [1u8] {
         let mut r = rig();
         let c = r.g.client(64 * 1024).unwrap();
         let (x, y, w, h) = AREA;
@@ -663,6 +664,14 @@ fn both_hold(r: &Rig, qx: i32, bar: u32, what: &str) {
 
 /// The 2D scene `moved` draws, unchanged (no damage): a frame with the
 /// 3D scene's change only.
+/// The scene's quad moved to `qx` with 2D unchanged (`still`): a frame the
+/// scan can lead (2D's and the scene's changes together go by the copy).
+fn scene_only(r: &mut Rig, c: ClientId, tex: Handle, qx: i32) -> Frame {
+    r.g.set(c, 0, Some(&Quad::rect(qx, 16, 32, 32, Fill::texture(tex))))
+        .unwrap();
+    still(WHITE)
+}
+
 fn still(colour: u32) -> Frame {
     let mut f = Frame::new();
     f.push(Cmd::Fill {
@@ -684,12 +693,24 @@ fn frames_the_scan_can_lead_start_behind_it_and_never_tear() {
     copies_timed(&mut r);
     let mut seen_behind = 0;
     for k in 0..12 {
-        let f = moved(&mut r, c, tex, 4 + 2 * k, WHITE);
+        // The scene alone changes after the first frame (2D's and the
+        // scene's changes together go by the copy: the owner's ruling).
+        let f = if k == 0 {
+            moved(&mut r, c, tex, 4, WHITE)
+        } else {
+            r.g.set(
+                c,
+                0,
+                Some(&Quad::rect(4 + 2 * k, 16, 32, 32, Fill::texture(tex))),
+            )
+            .unwrap();
+            still(WHITE)
+        };
         let before = r.g.starts();
         let plan = r.g.sched.window(&scan::X51V_60HZ, true, band());
         assert_eq!(r.frame(&f), Step::Shown, "frame {k}");
         let after = r.g.starts();
-        if let Some((from, to)) = plan {
+        if let Some((from, to)) = plan.filter(|_| after.behind > before.behind) {
             let line = after.last_line.unwrap();
             // The device run's log (R110): the window, the start, the time.
             assert_eq!(after.last_window, Some((from, to)), "frame {k}");
@@ -715,8 +736,10 @@ fn frames_the_scan_can_lead_start_behind_it_and_never_tear() {
         assert_eq!(r.shown().at, SCREENS[0].at, "frame {k}: screen 0");
         both_hold(&r, 4 + 2 * k, WHITE, "frame");
     }
-    assert!(seen_behind >= 10, "{seen_behind}");
-    assert_eq!(r.g.starts().screen1, 1, "the first frame only");
+    assert!(seen_behind >= 9, "{seen_behind}");
+    // The first frame (no history), and the one after it while 2D catches
+    // its other screen up (a 2D change too: by the copy).
+    assert!(r.g.starts().screen1 <= 2, "{:?}", r.g.starts());
     assert_eq!(r.g.starts().held, 0);
 }
 
@@ -1008,9 +1031,12 @@ fn a_spike_takes_the_fallback_and_the_scan_is_led_again_after() {
     for _ in 0..8 {
         r.g.sched.record(6_000);
     }
-    let f = moved(&mut r, c, tex, 16, WHITE);
-    assert_eq!(r.frame(&f), Step::Shown);
-    assert_eq!(r.g.starts().behind, 1);
+    // The scene alone changing (2D caught up first): led by the scan again.
+    for qx in [14, 16] {
+        let f = scene_only(&mut r, c, tex, qx);
+        assert_eq!(r.frame(&f), Step::Shown);
+    }
+    assert!(r.g.starts().behind >= 1, "{:?}", r.g.starts());
     assert_eq!(r.shown().at, SCREENS[0].at);
     both_hold(&r, 16, WHITE, "after the spike");
 }
@@ -1035,9 +1061,11 @@ fn an_unmeasured_pixel_clock_never_starts_behind_the_scan() {
     );
     // Windows Mobile's 56 Hz has its own measured scan.
     r.g.two_d().parts().0.regs.pll = rp_drv_mbx_display::pll::WM;
-    let f = moved(&mut r, c, tex, 24, WHITE);
-    assert_eq!(r.frame(&f), Step::Shown);
-    assert_eq!(r.g.starts().behind, 1);
+    for qx in [22, 24] {
+        let f = scene_only(&mut r, c, tex, qx);
+        assert_eq!(r.frame(&f), Step::Shown);
+    }
+    assert!(r.g.starts().behind >= 1, "{:?}", r.g.starts());
 }
 
 #[test]
@@ -1325,4 +1353,72 @@ fn after_a_stall_2d_into_screen_0_is_shown_with_the_scene_drawn_again() {
     assert_eq!(r.on_screen(qx, 336), 0xFF_0000, "the quad");
     assert_eq!(r.on_screen(210, 310), BLUE & 0xFF_FFFF, "the background");
     assert_eq!(r.on_screen(5, 5), WHITE & 0xFF_FFFF, "2D's bar");
+}
+
+#[test]
+fn frames_where_2d_and_the_scene_both_change_go_by_one_copy() {
+    // The owner's ruling 2026-10-29 after R110 run 4 on the X51v: 2D's copy
+    // then a render behind the scan showed 2D a refresh before the scene;
+    // by the copy both land in the same refresh.
+    let mut r = rig();
+    let (c, tex) = scene(&mut r);
+    copies_timed(&mut r);
+    // Render history: the scene alone changing, so the scan could lead.
+    let f = moved(&mut r, c, tex, 4, WHITE);
+    assert_eq!(r.frame(&f), Step::Shown);
+    for k in 1..6 {
+        r.g.set(
+            c,
+            0,
+            Some(&Quad::rect(4 + 2 * k, 16, 32, 32, Fill::texture(tex))),
+        )
+        .unwrap();
+        assert_eq!(r.frame(&still(WHITE)), Step::Shown);
+    }
+    assert!(
+        r.g.sched.window(&scan::X51V_60HZ, true, band()).is_some(),
+        "the scan could lead"
+    );
+    for (i, colour) in [GREY, BLUE, WHITE].into_iter().enumerate() {
+        let before = r.g.starts();
+        let f = moved(&mut r, c, tex, 20 + 2 * i as i32, colour);
+        assert_eq!(r.frame(&f), Step::Shown, "frame {i}");
+        let a = r.g.starts();
+        assert_eq!(a.screen1, before.screen1 + 1, "frame {i}: by the copy");
+        assert_eq!(a.behind, before.behind, "frame {i}");
+        assert_eq!(
+            a.two_d_behind + a.two_d_now,
+            before.two_d_behind + before.two_d_now,
+            "frame {i}: one copy"
+        );
+        assert_eq!(r.shown().at, SCREENS[0].at, "frame {i}");
+        both_hold(&r, 20 + 2 * i as i32, colour, &format!("frame {i}"));
+    }
+}
+
+#[test]
+fn a_stalled_area_copy_after_a_render_behind_the_scan_is_reported() {
+    // A frame the scan leads (the scene alone changed) renders into screen
+    // 0, then its area is copied into screen 1: a stall there is reported
+    // and the next frame draws it all again.
+    let mut r = rig();
+    let (c, tex) = scene(&mut r);
+    copies_timed(&mut r);
+    let f = moved(&mut r, c, tex, 4, WHITE);
+    assert_eq!(r.frame(&f), Step::Shown);
+    for qx in [6, 8, 10] {
+        let f = scene_only(&mut r, c, tex, qx);
+        assert_eq!(r.frame(&f), Step::Shown);
+    }
+    let before = r.g.starts().behind;
+    r.g.before_copy = Some((1, stall));
+    let f = scene_only(&mut r, c, tex, 12);
+    let step = r.frame(&f);
+    r.g.two_d().parts().0.regs.two.full_reads = 0;
+    assert_eq!(r.g.starts().behind, before + 1, "rendered behind the scan");
+    assert_eq!(step, Step::Recovered);
+    assert_eq!(r.g.copy_stalls(), 1);
+    let f = scene_only(&mut r, c, tex, 14);
+    assert_eq!(r.frame(&f), Step::Shown);
+    assert_eq!(r.on_screen(u32::from(AREA.0) + 14 + 16, 336), 0xFF_0000);
 }

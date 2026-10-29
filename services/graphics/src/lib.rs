@@ -1171,12 +1171,20 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     };
                 }
                 // 2D's frame held in screen 1, screen 0 shown: its changes
-                // reach screen 0 only outside the scene's area, and only
-                // behind the scan (never as they land: R110 run 3).
-                if dirty {
-                    // The scene renders into screen 1 with 2D's frame, and
-                    // both are copied into screen 0 behind the scan.
-                    if let Some(Start::Screen1 { from, to }) = self.plan_3d(true, &drawn[..n]) {
+                // reach screen 0 only behind the scan (never as they land:
+                // R110 run 3).
+                if dirty && self.screen1_3d {
+                    // 2D and the scene both changed: the scene renders into
+                    // screen 1 with 2D's frame, and both are copied into
+                    // screen 0 in one copy behind the scan, so they show in
+                    // the same refresh (the owner's ruling 2026-10-29 after
+                    // R110 run 4: a render behind the scan after 2D's own
+                    // copy showed 2D a refresh before the scene, and ran 15
+                    // frames a second where the copy ran 18), even where
+                    // the scan could lead the render.
+                    let mut rects = [Rect::default(); MAX_DIRTY + 1];
+                    let k = copy_rects(&mut rects, area, &drawn[..n]);
+                    if let Some((from, to)) = self.copy_window(&rects[..k]) {
                         // Screen 1's area holds 2D's fresh layer where 2D
                         // drew under it: the scene draws those tiles again.
                         if under && let Some(s) = self.open_mut() {
