@@ -145,6 +145,12 @@ watching.
   (`rp-gpubench` GC2BC measures them as the fetch's burst or FIFO
   thresholds against the 3D core's divide-1 fault and the underrun
   flag). The scan line is `DVLNUM` (`0x2308`, bits 0-11).
+- Flips (Dell's driver, read 2026-10-29, `2700g.md` "Dell's flip path,
+  read"): `GSCADR` rewritten in the VEVENT0 interrupt (line 643, GPIO85),
+  then `DUCTRL` (`0x230C`) = 1; GLES triple-buffers (`BackBuffers` 2,
+  `VSyncLocked` 1). A `GSCADR` write takes effect at once with the X51v's
+  `DSCTRL` update bits (16-19, 24-26) at 0 (W1); whether they latch it is
+  untried (R113).
 - One graphics plane composed by the 2D engine (ADR-0023), double
   buffered; its interrupt line is GPIO85. Windows Mobile's 648 x 645
   frame at `DISPPLL` `0xEC5` (23.56 MHz) gives 56.46 Hz; 60.0 Hz was
