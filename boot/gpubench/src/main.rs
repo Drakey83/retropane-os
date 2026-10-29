@@ -8118,12 +8118,23 @@ mod image {
     /// 16-bit ones inside the safe region, the 32-bit ones where GC2S drew
     /// them, as at GC2S's divide-2 settings), stopping at the first wrong
     /// render.
-    const GC2_DIV2: bool = option_env!("RP_GPUBENCH_GC2I_DIV2").is_some() || GC2_DIV2_LOW;
+    const GC2_DIV2: bool =
+        option_env!("RP_GPUBENCH_GC2I_DIV2").is_some() || GC2_DIV2_LOW || GC2_DIV2_TOP;
     /// The same soak a rung down (`RP_GPUBENCH_GC2I_DIV2_LOW`): 133.25 / 2
     /// then 117.00 / 2. GC2I divide 2's first run (2026-10-29) hung one
     /// ARGB8888 Gouraud capped render at 149.50 / 2 after 10.6 minutes, and
     /// its 133.25 / 2 half never ran (the soak stops at the first failure).
     const GC2_DIV2_LOW: bool = option_env!("RP_GPUBENCH_GC2I_DIV2_LOW").is_some();
+    /// The divide-2 top rung in the shipping configuration
+    /// (`RP_GPUBENCH_GC2I_DIV2_TOP`; R103, the owner 2026-10-29: "is there
+    /// no way to get this divide 2 number higher?"). 149.50 / 2's one hang
+    /// was a 32-bit render with its target outside the safe region, which
+    /// ADR-0034 amendment P and C71's R-B never ship (the 3D core draws
+    /// only into the 16-bit screen 0 inside it). So only the kinds that fit
+    /// inside, as the OS draws: 149.50 / 2 for twice [`SOAK_SECS`], and on a
+    /// failure a ladder down (146.25, 143.00, 139.75 / 2, [`SOAK_SECS`]
+    /// each) to the first clean rung. 133.25 / 2 (ruled) needs no rerun.
+    const GC2_DIV2_TOP: bool = option_env!("RP_GPUBENCH_GC2I_DIV2_TOP").is_some();
 
     /// Run GC2AE, reminder R69 (`RP_GPUBENCH_GC2_TRACE`, see
     /// [`gc2::TRACE_SCENES`]): R36's fault traced (where each wrong colour
@@ -10764,22 +10775,39 @@ mod image {
     }
 
     /// Run GC2I's soak settings.
-    const GC2I_SOAK: [(ClockStep, &str); 2] = if GC2_DIV2_LOW {
-        [
+    const GC2I_SOAK: &[(ClockStep, &str)] = if GC2_DIV2_TOP {
+        &[
+            (gc2_step(23, 2, 0, 2), "149.50 / 2"),
+            (gc2_step(45, 4, 0, 2), "146.25 / 2"),
+            (gc2_step(44, 4, 0, 2), "143.00 / 2"),
+            (gc2_step(43, 4, 0, 2), "139.75 / 2"),
+        ]
+    } else if GC2_DIV2_LOW {
+        &[
             (gc2_step(41, 4, 0, 2), "133.25 / 2"),
             (gc2_step(27, 3, 0, 2), "117.00 / 2"),
         ]
     } else if GC2_DIV2 {
-        [
+        &[
             (gc2_step(23, 2, 0, 2), "149.50 / 2"),
             (gc2_step(41, 4, 0, 2), "133.25 / 2"),
         ]
     } else {
-        [
+        &[
             (gc2_step(23, 3, 0, 1), "99.67 / 1"),
             (gc2_step(41, 4, 0, 1), "133.25 / 1"),
         ]
     };
+
+    /// GC2I's soak length at setting `i`: the top rung's run twice as long
+    /// under [`GC2_DIV2_TOP`] (its decisive run).
+    const fn gc2i_secs(i: usize) -> u32 {
+        if GC2_DIV2_TOP && i == 0 {
+            2 * SOAK_SECS
+        } else {
+            SOAK_SECS
+        }
+    }
 
     /// Run GC2I's soak: at each of [`GC2I_SOAK`] for [`SOAK_SECS`], the
     /// clock held, the 16-bit kinds (inside the safe region) rendered in
@@ -10796,17 +10824,25 @@ mod image {
         first: &mut [u32],
         dsig: bool,
     ) {
-        let kinds = || GC2_KINDS.filter(|&k| GC2_DIV2 || gc2::fits_inside(k));
-        let minutes = SOAK_SECS.div_ceil(60);
+        let kinds = || GC2_KINDS.filter(|&k| (GC2_DIV2 && !GC2_DIV2_TOP) || gc2::fits_inside(k));
         log!(
-            "  GC2I soak: {} kinds ({}) at {} settings, {minutes} min each, stopping at the first wrong render",
+            "  GC2I soak: {} kinds ({}) at {} settings, {} min each ({} min the first), {}",
             kinds().count(),
-            if GC2_DIV2 {
+            if GC2_DIV2_TOP {
+                "inside the safe region, as the OS draws (R103)"
+            } else if GC2_DIV2 {
                 "the 16-bit ones inside the safe region, the 32-bit ones outside"
             } else {
                 "inside the safe region"
             },
-            GC2I_SOAK.len()
+            GC2I_SOAK.len(),
+            SOAK_SECS.div_ceil(60),
+            gc2i_secs(0).div_ceil(60),
+            if GC2_DIV2_TOP {
+                "a ladder down: a failure moves to the next rung, the first clean one ends it"
+            } else {
+                "stopping at the first wrong render"
+            }
         );
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         for (i, &(s, label)) in GC2I_SOAK.iter().enumerate() {
@@ -10832,7 +10868,8 @@ mod image {
                 core::array::from_fn(|_| Gc2Baseline(None));
             let (mut best, mut worst) = (u32::MAX, 0u32);
             let (mut elapsed_us, mut lines, mut rounds) = (0u64, 0u32, 0u32);
-            let end_us = u64::from(SOAK_SECS) * 1_000_000;
+            let minutes = gc2i_secs(i).div_ceil(60);
+            let end_us = u64::from(gc2i_secs(i)) * 1_000_000;
             let mut bad = None;
             'soak: while elapsed_us < end_us {
                 let t0 = rt::ticks();
@@ -10901,9 +10938,17 @@ mod image {
                 "  GC2I soak {label}: controls at Windows Mobile's clock after: {controls} of {} right",
                 kinds().count()
             );
-            if bad.is_some() {
+            // The ladder down ends at its first clean rung; every other
+            // soak at its first failure.
+            if bad.is_some() != GC2_DIV2_TOP {
+                if GC2_DIV2_TOP {
+                    log!("  GC2I soak: {label} is the highest clean rung of this run (R103)");
+                }
                 return;
             }
+        }
+        if GC2_DIV2_TOP {
+            log!("  GC2I soak: no rung above 133.25 / 2 clean in this run (R103)");
         }
     }
 

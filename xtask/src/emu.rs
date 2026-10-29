@@ -5843,6 +5843,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_SOAK_SECS", "10"),
         ],
     )?;
+    let run_gc2i_div2_top = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2I_DIV2_TOP", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "1"),
+            ("RP_GPUBENCH_SOAK_SECS", "10"),
+        ],
+    )?;
     let run_gc2cu = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6191,7 +6200,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 149] = [
+    let runs: [GpubenchRun; 150] = [
         (
             "run A",
             &run_a,
@@ -7021,6 +7030,20 @@ fn variant_images_gpubench(
             "run GC2I divide 2 low",
             &run_gc2i_div2_low,
             &["RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // R103: 149.50 / 2 in the shipping configuration (the 16-bit kinds
+        // inside the safe region), a ladder down on a failure; the
+        // emulator draws every render right, so its top rung ends it.
+        (
+            "run GC2I divide 2 top",
+            &run_gc2i_div2_top,
+            &[
+                "GC2I soak: 6 kinds (inside the safe region, as the OS draws (R103)) at 4 settings",
+                "GC2I soak: 149.50 / 2 is the highest clean rung of this run (R103)",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
