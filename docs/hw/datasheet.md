@@ -381,7 +381,7 @@ watching.
   133.25 and 149.50 MHz / 2 (7 of 9 with the screen outside) and renders
   4-5% faster (**20-minute soaks, 2026-10-29, all nine kinds: 149.50 / 2
   hung one ARGB8888 Gouraud capped render after 10.6 minutes; 133.25 / 2
-  7,866 renders and 117.00 / 2 7,587, every one right, none hung**: 2700g.md); at divide 1 only Dell's 74.75 MHz gains (7 of 9 against
+  7,866 renders and 117.00 / 2 7,587, every one right, none hung; R103: 149.50 / 2 with the six 16-bit kinds inside the safe region, 21,654 renders in 40 minutes, every one right, none hung**: 2700g.md); at divide 1 only Dell's 74.75 MHz gains (7 of 9 against
   3), and above it Gouraud stays wrong as before (3 of 9 to 133.25):
   placement isn't divide 1's whole fault.** **Test G21 (2026-10-24,
   `glesfeat-0027`): Dell's frame with its render target inside the safe
