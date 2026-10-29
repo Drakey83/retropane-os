@@ -18354,10 +18354,194 @@ mod image {
         gc2ca_card(g, planes0, ["GC2DB DONE", "", ""]);
     }
 
-    /// GC2DC's sweep: a switch begun at every this many scan lines.
-    const GC2DC_STEP: u32 = 8;
-    /// The most sweep points a pair (the frame's lines / [`GC2DC_STEP`]).
-    const GC2DC_POINTS: usize = 128;
+    /// GC2DC's sweep inside the picture: a switch begun at every this many
+    /// scan lines (the torn-frame control).
+    const GC2DC_STEP: u32 = 16;
+    /// GC2DC's sweep around the frame's start, every line: the last
+    /// [`GC2DC_FINE`] lines of the frame and the first (run 1, 2026-10-29:
+    /// a frame of 645 lines, a write at line 0 clean and at 637 torn).
+    const GC2DC_FINE: u32 = 16;
+    /// The most sweep points a pair.
+    const GC2DC_POINTS: usize = 96;
+    /// GC2DB's steady signatures of the three routes' pictures on the X51v
+    /// (gpubench-0207): the same frames drawn the same way, so a route
+    /// shown right reads the same here.
+    const GC2DC_GC2DB: [u32; 3] = [0x9D77_1278, 0xA70A_9BF7, 0x7861_9F70];
+    /// Registers left out of GC2DC's cure search: status and counters, and
+    /// the graphics plane's (written whole by every show).
+    fn gc2dc_not_cure(name: &str) -> bool {
+        name.starts_with('G')
+            || name.contains("STAT")
+            || name.contains("INT")
+            || matches!(name, "DSIG" | "DVLNUM" | "POLLFLAG")
+    }
+    /// The registers GC2DC writes after showing native or the lines: what
+    /// its return test found brings native's picture back after the smooth
+    /// route.
+    #[derive(Clone, Copy)]
+    struct Gc2dcCure {
+        regs: [(usize, u32); 16],
+        n: usize,
+    }
+
+    /// GC2DC's sweep lines: the first [`GC2DC_FINE`] lines each, then every
+    /// [`GC2DC_STEP`]th, then the last [`GC2DC_FINE`] each; and how many.
+    fn gc2dc_lines(lines: u32) -> ([u32; GC2DC_POINTS], usize) {
+        let mut out = [0u32; GC2DC_POINTS];
+        let mut n = 0;
+        let tail = lines.saturating_sub(GC2DC_FINE);
+        let mut l = 0;
+        while l < lines && n < GC2DC_POINTS {
+            out[n] = l;
+            n += 1;
+            l += if l + 1 < GC2DC_FINE || l + 1 >= tail {
+                1
+            } else if l + GC2DC_STEP < tail {
+                GC2DC_STEP
+            } else {
+                tail - l
+            };
+        }
+        (out, n)
+    }
+
+    /// Waits for the scan line to read exactly `line`, at most two frames;
+    /// `false` on the time-out.
+    fn gc2dc_at_line(g: &mut Rig, line: u32) -> bool {
+        let t0 = rt::ticks();
+        loop {
+            if scan_line(g) == line {
+                return true;
+            }
+            if us_since(t0) > 2 * FRAME_US {
+                return false;
+            }
+        }
+    }
+
+    /// Every register of [`rp_drv_mbx_display::SNAPSHOT_REGS`] read.
+    fn gc2dc_regs(g: &mut Rig) -> [u32; 146] {
+        let mut v = [0u32; 146];
+        for (k, &(_, off)) in rp_drv_mbx_display::SNAPSHOT_REGS.iter().enumerate() {
+            v[k] = g.e.regs.read32(off);
+        }
+        v
+    }
+
+    /// Route `route` shown as [`gc2db_show`] does, then `cure` written for
+    /// the graphics plane's routes.
+    fn gc2dc_show(g: &mut Rig, route: u8, at: u32, planes0: &Snapshot, cure: &Gc2dcCure) {
+        gc2db_show(g, route, at, planes0);
+        if route != gc2::ROUTE_SMOOTH {
+            for &(off, v) in &cure.regs[..cure.n] {
+                g.e.regs.write32(off, v);
+            }
+        }
+    }
+
+    /// A route's signature once shown: two frames, then the third's.
+    fn gc2dc_settled(g: &mut Rig) -> Option<u32> {
+        let _ = gc2dc_next(g);
+        let _ = gc2dc_next(g);
+        gc2dc_next(g)
+    }
+
+    /// GC2DC's return test (run 1: after the smooth route was shown once,
+    /// native and the lines never read their own signatures again):
+    /// native fresh, the smooth route, native again; every named register
+    /// that differs logged; if native's signature didn't come back, the
+    /// differing registers outside [`gc2dc_not_cure`] written back to their
+    /// fresh values one at a time, cumulatively, until it does; then the
+    /// register found checked alone from the smooth route. The cure found
+    /// (empty if none needed or none found).
+    fn gc2dc_return(g: &mut Rig, at: [u32; 3], planes0: &Snapshot) -> Gc2dcCure {
+        let none = Gc2dcCure {
+            regs: [(0, 0); 16],
+            n: 0,
+        };
+        let names = &rp_drv_mbx_display::SNAPSHOT_REGS;
+        gc2db_show(g, gc2::ROUTE_NATIVE, at[0], planes0);
+        let n0 = gc2dc_settled(g);
+        let r0 = gc2dc_regs(g);
+        gc2db_show(g, gc2::ROUTE_SMOOTH, at[2], planes0);
+        let s = gc2dc_settled(g);
+        gc2db_show(g, gc2::ROUTE_NATIVE, at[0], planes0);
+        let n1 = gc2dc_settled(g);
+        let r1 = gc2dc_regs(g);
+        log!(
+            "  GC2DC return: native fresh {n0:x?} (GC2DB's 0x{:08x}), the smooth route {s:x?}, native again {n1:x?}: {}",
+            GC2DC_GC2DB[0],
+            if n0 == n1 { "back" } else { "NOT back" }
+        );
+        let mut cand = [0usize; 32];
+        let mut nc = 0;
+        for k in 0..names.len() {
+            if r0[k] != r1[k] {
+                log!(
+                    "    GC2DC return: {} (0x{:04x}) fresh 0x{:08x}, after the smooth route 0x{:08x}",
+                    names[k].0,
+                    names[k].1,
+                    r0[k],
+                    r1[k]
+                );
+                if !gc2dc_not_cure(names[k].0) && nc < cand.len() {
+                    cand[nc] = k;
+                    nc += 1;
+                }
+            }
+        }
+        if n0 == n1 || n0.is_none() || nc == 0 {
+            log!("  GC2DC return: no cure searched ({nc} candidates)");
+            return none;
+        }
+        // Cumulative: each candidate written back in turn.
+        let mut found = None;
+        for (i, &k) in cand[..nc].iter().enumerate() {
+            g.e.regs.write32(names[k].1, r0[k]);
+            let v = gc2dc_settled(g);
+            log!(
+                "    GC2DC return: {} written back: native reads {v:x?}{}",
+                names[k].0,
+                if v == n0 { ": BACK" } else { "" }
+            );
+            if v == n0 {
+                found = Some(i);
+                break;
+            }
+        }
+        let Some(i) = found else {
+            log!("  GC2DC return: NO CURE FOUND among {nc} registers: switches judged as they come");
+            return none;
+        };
+        // The last register alone, from the smooth route again.
+        let k = cand[i];
+        gc2db_show(g, gc2::ROUTE_SMOOTH, at[2], planes0);
+        let _ = gc2dc_settled(g);
+        gc2db_show(g, gc2::ROUTE_NATIVE, at[0], planes0);
+        g.e.regs.write32(names[k].1, r0[k]);
+        let alone = gc2dc_settled(g) == n0;
+        let mut cure = none;
+        if alone {
+            cure.regs[0] = (names[k].1, r0[k]);
+            cure.n = 1;
+        } else {
+            for &kk in &cand[..=i] {
+                cure.regs[cure.n] = (names[kk].1, r0[kk]);
+                cure.n += 1;
+            }
+        }
+        log!(
+            "  GC2DC return: CURE {} = 0x{:08x} {}; written after every native or lines show from here",
+            names[k].0,
+            r0[k],
+            if alone {
+                "alone brings native back"
+            } else {
+                "not enough alone: the cure is every register written up to it"
+            }
+        );
+        cure
+    }
     /// GC2DC's every-frame part: frames checked a gap (the emulator 12).
     const GC2DC_FRAMES: u32 = if GC2_RENDERS < 20 { 12 } else { 600 };
     /// The every-frame part's gaps: a switch every frame, every 8.
@@ -18365,9 +18549,6 @@ mod image {
     /// The every-frame part's route order: its six steps are the six
     /// ordered pairs.
     const GC2DC_CYCLE: [u8; 6] = [0, 1, 2, 0, 2, 1];
-    /// The scan line the every-frame part writes on: the blanking's first
-    /// (640 lines shown).
-    const GC2DC_BLANK: u32 = 640;
 
     /// The signature of the frame the scan is in now, once it has
     /// finished: the scan line seen to wrap (the next frame begun), then
@@ -18475,7 +18656,7 @@ mod image {
             return;
         };
         log!(
-            "  GC2DC (R101): route switches checked by DSIG every frame (GC2DB: it covers the whole picture, updates at line 2): the textured game frame on each route at 0x{:x}, 0x{:x}, 0x{:x} (the pool); part 1 every ordered pair switched at every {GC2DC_STEP}th scan line, three frames read after each; part 2 a switch every {GC2DC_GAPS:?} frames on line {GC2DC_BLANK}, {GC2DC_FRAMES} frames each, every frame read; at Windows Mobile's clock",
+            "  GC2DC (R101): route switches checked by DSIG every frame (GC2DB: it covers the whole picture, updates at line 2): the textured game frame on each route at 0x{:x}, 0x{:x}, 0x{:x} (the pool); part 1 every ordered pair switched at every {GC2DC_STEP}th scan line, three frames read after each; part 2 a switch every {GC2DC_GAPS:?} frames on part 1's clean line, {GC2DC_FRAMES} frames each, every frame read; at Windows Mobile's clock",
             at[0],
             at[1],
             at[2]
@@ -18538,21 +18719,23 @@ mod image {
         at: [u32; 3],
         planes0: &Snapshot,
     ) {
+        let cure = gc2dc_return(g, at, planes0);
         // Each route's own signature, steady over two frames.
         let mut sig = [0u32; 3];
         let mut steady = true;
         for r in 0..3u8 {
-            gc2db_show(g, r, at[usize::from(r)], planes0);
+            gc2dc_show(g, r, at[usize::from(r)], planes0, &cure);
             let _ = gc2dc_next(g);
             let a = gc2dc_next(g);
             let b = gc2dc_next(g);
             sig[usize::from(r)] = a.unwrap_or(0);
             steady &= a.is_some() && a == b;
             log!(
-                "  GC2DC route {} {}: DSIG {a:x?} then {b:x?}{}",
+                "  GC2DC route {} {}: DSIG {a:x?} then {b:x?}{}; GC2DB's 0x{:08x}",
                 r + 1,
                 GC2DB_NAMES[usize::from(r)],
-                if a == b { "" } else { ": NOT steady" }
+                if a == b { "" } else { ": NOT steady" },
+                GC2DC_GC2DB[usize::from(r)]
             );
         }
         let live =
@@ -18571,7 +18754,18 @@ mod image {
                 "not live or not all different (the emulator models no DSIG): the frames read, not judged"
             }
         );
-        let points = (lines.div_ceil(GC2DC_STEP) as usize).clamp(1, GC2DC_POINTS);
+        let (sweep, points) = gc2dc_lines(lines.max(1));
+        log!(
+            "  GC2DC part 1's lines: 0..{} each, every {GC2DC_STEP}th to {}, then each to {}",
+            GC2DC_FINE - 1,
+            lines.saturating_sub(GC2DC_FINE),
+            lines.saturating_sub(1)
+        );
+        // Each sweep point clean (whole in some frame, no torn one) in
+        // every pair so far.
+        let mut clean = [true; GC2DC_POINTS];
+        // Each point's class in the first pair (1 to 2).
+        let mut agree = [b' '; GC2DC_POINTS];
         let mut l1_card = heapless_name();
         let _ = write!(l1_card, "PART 1 OF 2: {} SWITCHES", 6 * points);
         gc2dc_card(
@@ -18593,13 +18787,13 @@ mod image {
                 let (ka, kb) = (usize::from(a), usize::from(b));
                 let mut row = [b' '; GC2DC_POINTS];
                 for (p, ch) in row.iter_mut().enumerate().take(points) {
-                    let line = p as u32 * GC2DC_STEP;
-                    gc2db_show(g, a, at[ka], planes0);
+                    let line = sweep[p];
+                    gc2dc_show(g, a, at[ka], planes0, &cure);
                     let _ = gc2dc_next(g);
                     let start = gc2dc_next(g);
-                    let waited = wait_scan(g, line);
+                    let waited = gc2dc_at_line(g, line);
                     let l0 = scan_line(g);
-                    gc2db_show(g, b, at[kb], planes0);
+                    gc2dc_show(g, b, at[kb], planes0, &cure);
                     let l1 = scan_line(g);
                     let took = if l1 >= l0 { l1 - l0 } else { l1 + lines - l0 };
                     worst_write = worst_write.max(took);
@@ -18622,10 +18816,16 @@ mod image {
                         _ => 7,
                     };
                     tally[slot] += 1;
+                    // Clean: whole in the write's frame or the next, the
+                    // same in every pair (part 2 counts on which).
+                    if a == 0 && b == 1 {
+                        agree[p] = *ch;
+                    }
+                    clean[p] &= slot <= 1 && *ch == agree[p];
                     rt::check_in();
                 }
                 log!(
-                    "    GC2DC {} to {}, from line 0 every {GC2DC_STEP}: {}",
+                    "    GC2DC {} to {}, at part 1's lines: {}",
                     a + 1,
                     b + 1,
                     core::str::from_utf8(&row[..points]).unwrap_or("")
@@ -18644,9 +18844,33 @@ mod image {
             tally[6],
             tally[7]
         );
-        // Part 2: a switch every N frames on the blanking's first line,
-        // every frame read: each must be one route's whole picture.
-        let blank = GC2DC_BLANK.min(lines.saturating_sub(8));
+        // Part 2's line: the first of part 1's every-line points, from the
+        // frame's last lines on round to its first, clean in all six pairs
+        // (the latest the blanking can be begun from), else line 0.
+        let tail = lines.saturating_sub(GC2DC_FINE);
+        let pick = (0..points)
+            .filter(|&p| sweep[p] >= tail)
+            .chain((0..points).filter(|&p| sweep[p] < GC2DC_FINE))
+            .find(|&p| clean[p] && live);
+        let mut window = heapless_name();
+        for p in 0..points {
+            if clean[p] && live && (sweep[p] >= tail || sweep[p] < GC2DC_FINE) {
+                let _ = write!(window, " {}", sweep[p]);
+            }
+        }
+        let blank = pick.map_or(0, |p| sweep[p]);
+        // Whether part 1 saw the new route whole in the write's own frame
+        // at that line ('0') or in the next ('1').
+        let in_write_frame = pick.is_none_or(|p| agree[p] == b'0');
+        log!(
+            "  GC2DC part 1: clean in all six pairs at lines{}; part 2 writes on line {blank}{}",
+            window.as_str(),
+            if pick.is_some() {
+                ""
+            } else {
+                " (none clean: line 0)"
+            }
+        );
         for (gi, &gap) in GC2DC_GAPS.iter().enumerate() {
             let mut l1 = heapless_name();
             let _ = write!(
@@ -18662,7 +18886,7 @@ mod image {
             );
             let mut step = 0usize;
             let mut route = GC2DC_CYCLE[0];
-            gc2db_show(g, route, at[usize::from(route)], planes0);
+            gc2dc_show(g, route, at[usize::from(route)], planes0, &cure);
             let _ = gc2dc_next(g);
             let _ = gc2dc_next(g);
             let (mut as_due, mut other, mut torn, mut missed) = (0u32, 0u32, 0u32, 0u32);
@@ -18673,14 +18897,16 @@ mod image {
                 if f > 0 && f % gap == 0 {
                     step = (step + 1) % GC2DC_CYCLE.len();
                     route = GC2DC_CYCLE[step];
-                    let _ = wait_scan(g, blank);
+                    let _ = gc2dc_at_line(g, blank);
                     let l0 = scan_line(g);
                     wrote_at = (wrote_at.0.min(l0), wrote_at.1.max(l0));
-                    gc2db_show(g, route, at[usize::from(route)], planes0);
+                    gc2dc_show(g, route, at[usize::from(route)], planes0, &cure);
                 }
-                // The frame read next is the one whose blanking held the
-                // write: it began, and was shown whole, with `before`.
-                let due = before;
+                // A write on the frame's last lines lands before the next
+                // frame: the frame read next (the current one) began with
+                // `before`. A write on its first lines lands in the frame
+                // read next: it shows the new route.
+                let due = if in_write_frame { route } else { before };
                 let s = gc2dc_next(g);
                 match s {
                     None => missed += 1,

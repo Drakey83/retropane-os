@@ -6903,6 +6903,7 @@ fn variant_images_gpubench(
             &run_gc2dc,
             &[
                 "GC2DC (R101): route switches checked by DSIG every frame",
+                "GC2DC return: native fresh ",
                 "GC2DC: the frame ",
                 "GC2DC part 1: ",
                 "not read 0, not judged ",
