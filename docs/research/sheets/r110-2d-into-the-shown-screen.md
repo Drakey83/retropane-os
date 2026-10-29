@@ -100,3 +100,13 @@ tests 33 (two new: both changing go by one copy; a stalled area copy after a
 render behind the scan), the ruling's mutant caught; emulator: rows phases
 150 of 150 such frames by the copy, 2D alone and 3D alone as before. Run 5
 on the X51v waits for the owner's run it.
+
+## Run 5 on the X51v, 2026-10-29 (card log scene-0005, `local/rp-scene-run5.txt`): proven
+**0 torn and 0 mixed refreshes in all 3,059 judged**, every phase and mode:
+rows back to back and one-off at both clocks (every frame changing both by
+the one copy), 2D alone (behind the scan, the scene never redrawn), 3D alone
+(behind the scan), the checkerboard. 18 frames a second back to back at
+149.50 / 2 (run 4: 15), 12 at Windows Mobile's clock; one-off to the first
+whole refresh median 56.3 ms at 149.50 / 2, 78.6 ms at Windows Mobile's
+clock, where 6 of 50 didn't show whole within six refreshes (run 4: 26).
+Held 0, copy stalls 0, failed 0, recovered 0, stack 11,480 of 16,384.
