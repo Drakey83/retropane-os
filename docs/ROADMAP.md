@@ -31,11 +31,14 @@ The rules (owner, 2026-10-22):
 
 - **A phase's gate lifts** when its architectural lines are ticked (used, or
   declined with the reason written down: measured, unmeasurable, or not
-  worth the device time) **and the ratchet runs**; the owner lifts it. The
-  gate now holds **phases 2 and 5** (kernel memory, the shell and
-  compositor); **phase 4's (drawing) was lifted by the owner, 2026-10-24**:
-  its one line, F6, ticked and the ratchet running; video (phase 7) and power (phase 9) lines gate their own
-  phases when those start.
+  worth the device time) **and the ratchet runs**; the owner lifts it.
+  **Phases 2 and 5 (kernel memory, the shell and compositor) were lifted
+  by the owner, 2026-10-29** ("30/30 is now ungated"): all 30 of phases
+  2, 4 and 5's lines ticked and the ratchet running (R100's floors);
+  **phase 4's (drawing) was lifted by the owner, 2026-10-24**: its one
+  line, F6, ticked and the ratchet running. **No phase is held now.**
+  Video (phase 7) and power (phase 9) lines gate their own phases when
+  those start.
 - **Work is held back only by a named line.** Work waits only if its design
   depends on an open architectural line, and the session names that line;
   "the gate" alone is not a reason. Everything else proceeds.
@@ -49,10 +52,12 @@ The rules (owner, 2026-10-22):
   claim used in code stays an open quality-audit item wherever it sits.
 - **This section is read at the start of every session (CLAUDE.md).**
 
-**Count (`cargo xtask gate`, re-run 2026-10-29: unchanged since 2026-10-25,
-the owner's rulings): phases 2, 4, 5: 26 of 30 architectural lines ticked
-(4 partial, 0 open; the 4 partial are phase 5's clock lines V2, V13, P1
-and P2, ADR-0035's ladder, held with the divide-1 work; P4 ticked 2026-10-26 by `rp-tabench` run 9, the owner's ruling; V5 ticked 2026-10-25 by P9d and P9e, the owner's ruling; P9 ticked 2026-10-24 by `p9c`, V7 by `wmhop2`: phase 2 complete; P8 by the owner at divide 2 after FT3); phase 4's
+**Count (`cargo xtask gate`, 2026-10-29): phases 2, 4, 5: 30 of 30
+architectural lines ticked, 0 partial, 0 open: the gate lifted by the
+owner (phase 4 2026-10-24, phases 2 and 5 2026-10-29).** Phase 5's clock
+lines V2, V13, P1 and P2 (ADR-0035's ladder) ticked 2026-10-29 by the
+owner's rulings (the divide-2 ladder, top rung 149.50 / 2; divide 1 held
+for later); before that, P4 ticked 2026-10-26 by `rp-tabench` run 9, the owner's ruling; V5 ticked 2026-10-25 by P9d and P9e, the owner's ruling; P9 ticked 2026-10-24 by `p9c`, V7 by `wmhop2`: phase 2 complete; P8 by the owner at divide 2 after FT3); phase 4's
 only line (F6) ticked: **phase 4's gate lifted by the owner, 2026-10-24**)**; phase 7: 0 of 2; phase 9:
 2 of 11; the backlog: 24 optimizations (7 ticked, 16 partial, 1 open).
 `cargo xtask ci` prints the count every run, and every summary quotes it.
@@ -142,7 +147,7 @@ In order (the gate's own steps; the backlog runs alongside, top first):
   - **Next, a session's work:** C71 (the partial frames' stale pixels: find the frame, fix the class in `rp-mbx3d-render`); **P4 ticked by the owner, 2026-10-26** (`rp-tabench` run 9: the TA's speed against our lists at 100 / 1,000 / 5,000 quads, every picture the binner's, no hangs after audit C81's fix in `rp-mbx3d`; follow-ups R38, R41, R59); **the divide-1 lines (P1, P2, V2, V13): ADR-0035 amendment D proposed, the owner's votes after R36 (R39)**; P8/P15 (GC3, built); trilinear (P14, owner-present: it hung once).
 - [ ] 7. Together (phase 5): T1 (a pipeline, not turns), T3 (commands by DMA: the driver's choice), T4 (each unit's job). T1 and T4 are measured on **a minimal compositor test harness built inside the gate, as a benchmark only** (owner's vote, 2026-10-21: option a), not the real compositor; its frames are [workload-brief.md](design/workload-brief.md)'s W1-W9 and three measured-but-not-critical ones, with their targets (corrected and locked by the owner, 2026-10-22)
   - *Built and run 2026-10-24 overnight: `rp-gpubench` run CH ([compositor-harness.md](design/compositor-harness.md), checked against ADR-0023, 0030, 0034, 0035), three runs on the X51v: T1, T3, T4 partial (cpu-full-potential.md's rows). Found C71. W8 (video) left to phase 7, as the brief says.*
-- [ ] 8. Phases 2, 4 and 5's architectural lines ticked **and the ratchet running** (owner's votes, 2026-10-21 and 2026-10-22): the owner checks the ledgers and lifts the gate. From then on performance is held by the ratchet, every day. Phase 7 (P11, V8: MVED1) and phase 9 (power and clocks for battery: C1, C2, C10, T7, V3, V5, V11, P10, V6 of the 2700G; P16 and CPU V4 declined) gate those phases
+- [x] 8. Phases 2, 4 and 5's architectural lines ticked **and the ratchet running** (owner's votes, 2026-10-21 and 2026-10-22): the owner checks the ledgers and lifts the gate. *(**Done: phase 4 lifted 2026-10-24; phases 2 and 5 lifted by the owner 2026-10-29**, 30 of 30 lines ticked, the ratchet's floors re-set that morning by R100.)* From then on performance is held by the ratchet, every day. Phase 7 (P11, V8: MVED1) and phase 9 (power and clocks for battery: C1, C2, C10, T7, V3, V5, V11, P10, V6 of the 2700G; P16 and CPU V4 declined) gate those phases
 
 ---
 
@@ -203,6 +208,10 @@ months (late January to February 2027); with Wi-Fi about 4-6.
 ## Phase 2 — Kernel
 **Goal:** a real kernel with threads, memory protection and full-speed clocks.
 
+**Gate lifted (the owner, 2026-10-29):** phase 2's architectural lines
+are ticked and the ratchet runs, so phase 2's work no longer waits on the
+gate.
+
 - [x] SD loader (a Windows Mobile app that hands off to our kernel; no flashing) *(HaRET boots RetroPane on the device since 2026-10-11; the resident loader then takes every image over USB, and updates its own files on the card: ADR-0012, ADR-0013)*
 - [x] Physical frame allocator (`kernel/mm`, host-tested, benchmarked) *(2026-10-11)*; ADR-0006 (chip-specific memory design) accepted 2026-10-11
 - [ ] On-screen debug text *(boot log done 2026-10-11)* and crash screen *(done 2026-10-12 in the loader, emulator-verified)* (using the display inherited from Windows Mobile), plus a crash log that survives reboot *(crash log done 2026-10-12 for images under the resident loader: back to the loader, report to the PC and onto the card as `crashlog.txt`)*
@@ -259,6 +268,10 @@ runs, so phase 4's work no longer waits on the gate.
 
 ## Phase 5 — Shell and UI
 **Goal:** the "modern take on Windows Mobile" experience.
+
+**Gate lifted (the owner, 2026-10-29):** phase 5's architectural lines
+(the graphics, clocks and compositor lines) are ticked and the ratchet
+runs, so phase 5's work no longer waits on the gate.
 
 All design decisions (UI, apps, themes, weather, packs, game ports) are
 gathered in [design/README.md](design/README.md).

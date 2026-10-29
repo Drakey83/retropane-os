@@ -7,7 +7,9 @@
 //! - **architectural** lines (`arch N`: their answer changes a design), by
 //!   the phase whose design needs them; a phase's gate lifts when its lines
 //!   are ticked (done, or declined with the reason) and the ratchet runs.
-//!   The gate now is phases [`NOW`];
+//!   Phases [`NOW`] are counted: the owner lifted their gate (phase 4
+//!   2026-10-24, phases 2 and 5 2026-10-29), so a line not ticked there
+//!   now means one reopened since;
 //! - **optimizations** (`opt`): the backlog, worked in payoff order from
 //!   docs/research/backlog.md, which must hold every unticked one exactly
 //!   once (and an architectural line's leftovers as `<line> (rest)`);
@@ -373,11 +375,16 @@ pub fn run(root: &Path) -> Result<(), String> {
     );
     let now = all.now();
     eprintln!(
-        "    gate: {} of {} architectural lines ticked for phases 2, 4, 5 ({} partial, {} open): the gate lifts when they are and the ratchet runs (docs/ROADMAP.md)",
+        "    gate: {} of {} architectural lines ticked for phases 2, 4, 5 ({} partial, {} open): {} (docs/ROADMAP.md)",
         now.ticked,
         now.lines(),
         now.partial,
-        now.open
+        now.open,
+        if now.partial + now.open == 0 {
+            "lifted by the owner (phase 4 2026-10-24, phases 2 and 5 2026-10-29); the ratchet holds performance"
+        } else {
+            "LIFTED, BUT A LINE HAS REOPENED since: name it to the owner"
+        }
     );
     Ok(())
 }
