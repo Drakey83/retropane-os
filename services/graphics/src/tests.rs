@@ -122,7 +122,7 @@ fn rig() -> Rig {
     }
     two.show(|_| {});
     two.dither = false; // exact colours to compare
-    Rig {
+    let mut rig = Rig {
         // Leaked: a test's renderer lives as long as the test process.
         g: Graphics::new(
             std::boxed::Box::leak(std::boxed::Box::new(two)),
@@ -131,7 +131,12 @@ fn rig() -> Rig {
         ),
         mem,
         clock,
-    }
+    };
+    // The models copy in no time, so no copy is ever timed here; on the
+    // X51v each takes milliseconds. A copy's time known, as after the
+    // device's first large copy (tests of the hold clear it).
+    copies_timed(&mut rig);
+    rig
 }
 
 impl Rig {
@@ -676,6 +681,7 @@ fn band() -> (u32, u32) {
 fn frames_the_scan_can_lead_start_behind_it_and_never_tear() {
     let mut r = rig();
     let (c, tex) = scene(&mut r);
+    copies_timed(&mut r);
     let mut seen_behind = 0;
     for k in 0..12 {
         let f = moved(&mut r, c, tex, 4 + 2 * k, WHITE);
@@ -683,8 +689,8 @@ fn frames_the_scan_can_lead_start_behind_it_and_never_tear() {
         let plan = r.g.sched.window(&scan::X51V_60HZ, true, band());
         assert_eq!(r.frame(&f), Step::Shown, "frame {k}");
         let after = r.g.starts();
-        let line = after.last_line.unwrap();
         if let Some((from, to)) = plan {
+            let line = after.last_line.unwrap();
             // Started inside its window, behind the scan, on screen 0.
             assert_eq!(after.behind, before.behind + 1, "frame {k}");
             assert!(
@@ -700,40 +706,62 @@ fn frames_the_scan_can_lead_start_behind_it_and_never_tear() {
             }
             seen_behind += 1;
         } else {
-            // No history yet: the fallback, once the scan has left the area.
-            assert_eq!(after.after_area, before.after_area + 1, "frame {k}");
-            let end = band().0 + band().1;
-            assert!((end..=end + AFTER_AREA_LINES).contains(&line), "{line}");
+            // No render history yet: the copy fallback (a copy timed).
+            assert_eq!(after.screen1, before.screen1 + 1, "frame {k}");
         }
         assert_eq!(r.shown().at, SCREENS[0].at, "frame {k}: screen 0");
         both_hold(&r, 4 + 2 * k, WHITE, "frame");
     }
     assert!(seen_behind >= 10, "{seen_behind}");
-    assert_eq!(r.g.starts().screen1, 0);
+    assert_eq!(r.g.starts().screen1, 1, "the first frame only");
+    assert_eq!(r.g.starts().held, 0);
 }
 
 #[test]
-fn before_screen_1_is_proven_unplaceable_frames_start_after_the_area() {
+fn the_copy_is_on_and_option_1_and_the_blanking_start_are_gone() {
+    // The owner's ruling 2026-10-29 after GC2DF on the X51v: the copy on;
+    // a frame the scan can't lead and no copy can place is held, never
+    // started on screen 0 where it would tear.
+    let mut r = rig();
+    assert!(r.g.screen1_3d, "the copy on by default");
+    let _ = scene(&mut r);
+    scene_r(&mut r).set_tile_order(r3d::TileOrder::Checker);
+    copies_timed(&mut r);
+    assert!(matches!(
+        r.g.plan_3d(true, &[]),
+        Some(Start::Screen1 { .. })
+    ));
+    r.g.allow_screen1_3d(false);
+    assert_eq!(r.g.plan_3d(true, &[]), Some(Start::Hold));
+    r.g.allow_screen1_3d(true);
+    r.g.copies.reset();
+    assert_eq!(r.g.plan_3d(true, &[]), Some(Start::Hold));
+}
+
+#[test]
+fn with_the_copy_off_unplaceable_frames_are_held_and_2d_still_shows() {
     // A checkerboard order (the divide-1 cure) never starts behind the
-    // scan; with option 1 off, every such frame starts on screen 0 once
-    // the scan has left the area.
+    // scan; with the copy off (a clock whose soak hasn't passed), every
+    // such frame is held: 2D's changes shown, the scene not rendered.
     let mut r = rig();
     let (c, tex) = scene(&mut r);
     scene_r(&mut r).set_tile_order(r3d::TileOrder::Checker);
-    for k in 0..4 {
-        let f = moved(&mut r, c, tex, 8 + 4 * k, WHITE);
+    r.g.allow_screen1_3d(false);
+    for k in 0..4u32 {
+        let colour = [WHITE, 0xFF00_FF00][k as usize % 2];
+        let f = moved(&mut r, c, tex, 8 + 4 * k as i32, colour);
         assert_eq!(r.frame(&f), Step::Shown, "frame {k}");
-        let line = r.g.starts().last_line.unwrap();
-        let end = band().0 + band().1;
-        assert!(
-            (end..=end + AFTER_AREA_LINES).contains(&line),
-            "frame {k}: {line}"
+        assert_eq!(r.shown().at, SCREENS[0].at, "frame {k}");
+        assert_eq!(r.on_screen(5, 5), colour & 0xFF_FFFF, "frame {k}: 2D shown");
+        assert_ne!(
+            r.on_screen(232, 336),
+            0xFF_0000,
+            "frame {k}: no scene drawn"
         );
-        assert_eq!(r.shown().at, SCREENS[0].at);
-        both_hold(&r, 8 + 4 * k, WHITE, "after the area");
     }
     let st = r.g.starts();
-    assert_eq!((st.behind, st.after_area, st.screen1), (0, 4, 0));
+    assert_eq!((st.behind, st.held, st.screen1), (0, 4, 0));
+    assert_eq!(st.last_line, None, "nothing started on screen 0");
 }
 
 /// GC2DE's whole-screen copy at 149.50 / 2 (3,149 us), as the copies'
@@ -790,7 +818,7 @@ fn once_screen_1_is_proven_unplaceable_frames_render_there_and_are_copied_behind
         both_hold(&r, 8 + 4 * k, bar, &format!("copied frame {k}"));
     }
     let st = r.g.starts();
-    assert_eq!((st.behind, st.after_area, st.screen1), (0, 0, 5));
+    assert_eq!((st.behind, st.held, st.screen1), (0, 0, 5));
     assert_eq!(r.g.copy_stalls(), 0);
 }
 
@@ -829,48 +857,80 @@ fn the_copy_waits_for_its_window_and_lands_behind_the_scan() {
 }
 
 #[test]
-fn before_any_copy_is_timed_frames_start_after_the_area() {
-    // Screen 1 allowed, but no copy's time known yet: the copy can't be
-    // planned, so the frame starts on screen 0 after the area.
+fn before_any_copy_is_timed_frames_are_held_then_drawn() {
+    // The copy on, but no copy's time known yet: the frame is held (2D
+    // shown, the scene still dirty); once a copy is timed the next frame
+    // draws it.
     let mut r = rig();
     let (c, tex) = scene(&mut r);
     scene_r(&mut r).set_tile_order(r3d::TileOrder::Checker);
-    r.g.allow_screen1_3d(true);
     r.g.copies.reset();
     let f = moved(&mut r, c, tex, 8, WHITE);
     assert_eq!(r.frame(&f), Step::Shown);
     let st = r.g.starts();
-    assert_eq!((st.after_area, st.screen1), (1, 0));
-    both_hold(&r, 8, WHITE, "after the area");
+    assert_eq!((st.held, st.screen1), (1, 0));
+    assert_eq!(r.on_screen(5, 5), WHITE & 0xFF_FFFF, "2D shown");
+    assert_ne!(scene_r(&mut r).dirty(), 0, "the scene still to draw");
+    copies_timed(&mut r);
+    let f = moved(&mut r, c, tex, 12, WHITE);
+    assert_eq!(r.frame(&f), Step::Shown);
+    assert_eq!(r.g.starts().screen1, 1);
+    both_hold(&r, 12, WHITE, "after the hold");
 }
 
 #[test]
-fn the_fallback_starts_at_the_scenes_bottom_row_by_the_refreshs_last_line() {
-    // The owner's direction 2026-10-29: from the scan passing the scene's
-    // bottom row, recomputed for each scene; never past line 644.
-    for (y, h, from, to) in [
-        (304, 64, 368, 400),
-        (0, 640, 640, 644),
-        (600, 32, 632, 644),
-        (0, 160, 160, 192),
-    ] {
+fn a_held_frame_keeps_the_scenes_last_picture_where_2d_drew_over_it() {
+    // A frame drawn (the copy), then one held while 2D's frame paints a
+    // green band across the area: the band shows outside the area, the
+    // area keeps the scene's last picture (blue, the quad), never 2D's
+    // layer under it. Both ways 2D's frame can arrive (into the shown
+    // screen's partner, or into screen 0 while screen 1 is shown).
+    for k in 0..2 {
         let mut r = rig();
-        let c = r.g.client(64 * 1024).unwrap();
-        r.g.open_scene(c, 0, y, 480, h).unwrap();
-        r.g.set_background(c, Some(BLUE)).unwrap();
+        let (c, tex) = scene(&mut r);
         scene_r(&mut r).set_tile_order(r3d::TileOrder::Checker);
-        assert_eq!(
-            r.g.plan_3d(true, &[]),
-            Some(Start::Screen0 {
-                from,
-                to,
-                behind: false
-            }),
-            "rows {y}+{h}"
-        );
-        assert_eq!(r.frame(&still(WHITE)), Step::Shown);
-        let line = r.g.starts().last_line.unwrap();
-        assert!((from..=to).contains(&line), "rows {y}+{h}: {line}");
+        copies_timed(&mut r);
+        let f = moved(&mut r, c, tex, 8, WHITE);
+        assert_eq!(r.frame(&f), Step::Shown);
+        both_hold(&r, 8, WHITE, "drawn");
+        if k == 1 {
+            // A 2D-only change (outside the area) flips to screen 1: 2D's
+            // next frame goes into screen 0, not shown.
+            // (2D's first frames are drawn whole, over the area too.)
+            for _ in 0..3 {
+                if r.shown().at == SCREENS[1].at {
+                    break;
+                }
+                assert_eq!(
+                    r.frame(&fill(Rect::new(0, 600, 480, 40), WHITE)),
+                    Step::Shown
+                );
+            }
+            assert_eq!(r.shown().at, SCREENS[1].at, "screen 1 shown");
+        }
+        r.g.copies.reset();
+        let band = Rect::new(0, 300, 480, 80);
+        assert_eq!(r.frame(&scene_2d(true, Some(band))), Step::Shown);
+        {
+            assert_eq!(r.g.starts().held, 1, "case {k}");
+            assert_eq!(r.shown().at, SCREENS[0].at, "case {k}");
+            // 2D's band shown on every side of the area: left, right, above,
+            // below (the area is 200-263 x 304-367).
+            for (x, y) in [(100, 340), (400, 340), (232, 302), (232, 372)] {
+                assert_eq!(r.on_screen(x, y), 0x00_FF00, "case {k}: ({x}, {y})");
+            }
+            assert_eq!(
+                r.on_screen(100, 340),
+                0x00_FF00,
+                "the band outside the area"
+            );
+            assert_eq!(
+                r.on_screen(210, 310),
+                BLUE & 0xFF_FFFF,
+                "the scene's background kept"
+            );
+            assert_eq!(r.on_screen(232, 336), 0xFF_0000, "the scene's quad kept");
+        }
     }
 }
 
@@ -916,7 +976,7 @@ fn a_spike_takes_the_fallback_and_the_scan_is_led_again_after() {
     }
     assert!(matches!(
         r.g.plan_3d(true, &[]),
-        Some(Start::Screen0 { behind: true, .. })
+        Some(Start::Screen0 { .. })
     ));
     let (fast, slow) = r.g.sched.band().unwrap();
     assert!(slow >= 12_000, "{slow}");
@@ -926,11 +986,8 @@ fn a_spike_takes_the_fallback_and_the_scan_is_led_again_after() {
         assert!(scan::tear_free_rows(&scan::X51V_60HZ, band(), line, fast));
     }
     r.g.sched.record(30_000);
-    assert!(matches!(
-        r.g.plan_3d(true, &[]),
-        Some(Start::Screen0 { behind: false, .. })
-    ));
-    r.g.allow_screen1_3d(true);
+    r.g.copies.reset();
+    assert_eq!(r.g.plan_3d(true, &[]), Some(Start::Hold), "no copy timed");
     copies_timed(&mut r);
     assert!(matches!(
         r.g.plan_3d(true, &[]),
@@ -964,7 +1021,11 @@ fn an_unmeasured_pixel_clock_never_starts_behind_the_scan() {
         assert_eq!(r.frame(&f), Step::Shown);
     }
     let st = r.g.starts();
-    assert_eq!((st.behind, st.after_area), (0, 3));
+    assert_eq!(
+        (st.behind, st.held),
+        (0, 3),
+        "held: never behind, no copy window"
+    );
     // Windows Mobile's 56 Hz has its own measured scan.
     r.g.two_d().parts().0.regs.pll = rp_drv_mbx_display::pll::WM;
     let f = moved(&mut r, c, tex, 24, WHITE);

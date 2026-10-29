@@ -220,6 +220,14 @@ T1, T3, T4, ticked):
   no copy time measured yet, or the screen-1 soak not passed, the frame
   starts on screen 0 once the scan has passed the scene's bottom row,
   capped at the refresh's last line.
+- **The copy switched on, the blanking start dropped (owner, 2026-10-29,
+  after GC2DF on the X51v, gpubench-0220: the copy 0 torn refreshes, the
+  blanking start and option 1 48 of 48):** `allow_screen1_3d` on; option 1
+  stays off; the blanking start is not kept. Before any copy has been
+  timed, a fallback frame is **held** (no tear-free start is claimed)
+  rather than started: "correctness, no tear, outranks speed". Timing a
+  whole-screen copy at start-up is the direction, as a new fix with its
+  own rule 0 and REA sheet first.
 
 ### In plain words
 

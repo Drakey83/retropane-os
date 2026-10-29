@@ -31,10 +31,13 @@
 //!   copies its area into screen 0 behind the scan, planned like a render
 //!   from the copies' own measured times (the owner's ruling 2026-10-29,
 //!   "Yes, copy variant": no flip, so the 3D core is free once the copy
-//!   ends; [`Graphics::allow_screen1_3d`], once the soak of 3D targets at
-//!   screen 1's place has passed on the X51v). Without that, or before any
-//!   copy has been timed, it starts on screen 0 once the scan has passed
-//!   the scene's bottom row, by the refresh's last line.
+//!   ends; on since GC2DF on the X51v: 0 torn refreshes where the blanking
+//!   start and option 1 tore every frame, the owner's ruling 2026-10-29).
+//!   Before any copy has been timed (or with the copy switched off) the
+//!   frame is **held**, never started where it would tear (the owner:
+//!   "correctness, no tear, outranks speed"): its 2D part is shown, the
+//!   scene's area keeps its last picture, and the scene renders on a
+//!   later frame.
 //!
 //! A library now (G4), used in one process; the display driver host's once
 //! IPC can move pages (ADR-0016).
@@ -206,15 +209,12 @@ enum Job {
     None,
     /// A 2D frame, its flip held for the 3D area.
     TwoD,
-    /// The 3D area waiting to start on screen 0, on screen, at a scan line
-    /// in `from..=to` (`to` past the refresh's last line runs into the next
-    /// refresh's first): behind the scan (`behind`), or once the scan has
-    /// left the area. `prepared`: its lists written already (else written
-    /// at the start: the core needed setting up).
+    /// The 3D area waiting to start on screen 0, on screen, behind the scan
+    /// at a scan line in `from..=to`. `prepared`: its lists written already
+    /// (else written at the start: the core needed setting up).
     Armed {
         from: u32,
         to: u32,
-        behind: bool,
         prepared: bool,
     },
     /// The 3D area rendering into screen 0, on screen (C71 ruling R-B);
@@ -243,9 +243,8 @@ enum Job {
 pub struct Starts {
     /// On screen 0 behind the scan (C).
     pub behind: u32,
-    /// On screen 0 once the scan had passed the scene's bottom row (the
-    /// fallback until screen 1's soak passes and a copy has been timed).
-    pub after_area: u32,
+    /// Held: no tear-free start yet (no copy timed, or the copy off).
+    pub held: u32,
     /// Into screen 1, then copied into screen 0 behind the scan.
     pub screen1: u32,
     /// The scan line the last frame on screen 0 started on.
@@ -257,18 +256,13 @@ pub struct Starts {
 /// How a scene frame starts (R20).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Start {
-    /// On screen 0 at a line in `from..=to` (`behind` the scan, or after the
-    /// area).
-    Screen0 { from: u32, to: u32, behind: bool },
+    /// On screen 0 behind the scan, at a line in `from..=to`.
+    Screen0 { from: u32, to: u32 },
     /// Into screen 1, copied into screen 0 from a line in `from..=to`.
     Screen1 { from: u32, to: u32 },
+    /// Not started: no tear-free way yet (the owner, 2026-10-29).
+    Hold,
 }
-
-/// Lines after the scene's area in which a fallback frame may still start
-/// on screen 0 (two tile rows: the caller's poll may come late), never
-/// past the refresh's last line (the owner's direction, 2026-10-29: a
-/// full-screen scene starts in lines 640-644).
-const AFTER_AREA_LINES: u32 = 2 * scan::MARGIN;
 
 /// What [`Graphics::poll`] found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,10 +358,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             copy_stalls: 0,
             sched: Schedule::new(),
             copies: Schedule::new(),
-            screen1_3d: false,
+            screen1_3d: true,
             starts: Starts {
                 behind: 0,
-                after_area: 0,
+                held: 0,
                 screen1: 0,
                 last_line: None,
                 last_copy_line: None,
@@ -387,10 +381,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
 
     /// R20's fallback into screen 1 on or off: scene frames the scan can't
     /// lead render into screen 1 (outside the safe region) while screen 0
-    /// is shown, then are copied into screen 0 behind the scan. Off until
-    /// the soak of 3D targets at screen 1's place (`rp-gpubench` GC2DE) has
-    /// passed on the X51v at the clock in use (ADR-0035); off, they start
-    /// on screen 0 once the scan has passed the scene's bottom row.
+    /// is shown, then are copied into screen 0 behind the scan. On (the
+    /// owner's ruling 2026-10-29 after GC2DF on the X51v; screen 1's soak,
+    /// GC2DE, passed at 149.50 / 2, ADR-0035); off (a clock whose soak
+    /// hasn't passed), such frames are held.
     pub fn allow_screen1_3d(&mut self, on: bool) {
         self.screen1_3d = on;
     }
@@ -431,8 +425,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// frame: behind the scan where the schedule fits it; else into screen
     /// 1 (`aside_ok`: screen 1 holds the frame, and the fallback into it is
     /// allowed) when the copy of the area and of `held` (2D's changes held
-    /// in screen 1) has a window; else on screen 0 once the scan has passed
-    /// the scene's bottom row, by the refresh's last line.
+    /// in screen 1) has a window; else held.
     fn plan_3d(&mut self, aside_ok: bool, held: &[Rect]) -> Option<Start> {
         let scan = self.scan();
         let s = self.open()?;
@@ -440,11 +433,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         let area = Rect::new(s.x, s.y, s.w, s.h);
         let top_down = s.r.tile_order().top_down();
         if let Some((from, to)) = scan.and_then(|sc| self.sched.window(&sc, top_down, band)) {
-            return Some(Start::Screen0 {
-                from,
-                to,
-                behind: true,
-            });
+            return Some(Start::Screen0 { from, to });
         }
         if aside_ok && self.screen1_3d {
             let mut rects = [Rect::default(); MAX_DIRTY + 1];
@@ -453,13 +442,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 return Some(Start::Screen1 { from, to });
             }
         }
-        let from = band.0 + band.1;
-        let last = scan.unwrap_or(scan::X51V_60HZ).total - 1;
-        Some(Start::Screen0 {
-            from,
-            to: (from + AFTER_AREA_LINES).min(last).max(from),
-            behind: false,
-        })
+        Some(Start::Hold)
     }
 
     /// The window a copy of `rects` (in order) may start in on the
@@ -864,6 +847,11 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         let same = self.two_d.back() == Some(other);
         let step = match self.plan_3d(same, &[]) {
             Some(Start::Screen1 { from, to }) => self.aside(other, false, (from, to), clock),
+            Some(Start::Hold) => {
+                // The scene stays dirty: a later frame renders it.
+                self.starts.held += 1;
+                Step::Idle
+            }
             Some(start) => self.arm(start, clock),
             None => Step::Idle,
         };
@@ -877,7 +865,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// window's line ([`Job::Armed`]), its lists written now where the core
     /// allows (so the start is only the start); `Idle` if nothing changed.
     fn arm<C: Clock>(&mut self, start: Start, clock: &mut C) -> Step {
-        let Start::Screen0 { from, to, behind } = start else {
+        let Start::Screen0 { from, to } = start else {
             return Step::Idle;
         };
         let safe = self.two_d.screens()[0];
@@ -893,12 +881,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             Err(r3d::Error::Busy) => false,
             Err(_) => return Step::Idle,
         };
-        self.job = Job::Armed {
-            from,
-            to,
-            behind,
-            prepared,
-        };
+        self.job = Job::Armed { from, to, prepared };
         self.poll(clock)
     }
 
@@ -1023,11 +1006,31 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     }
                     return self.aside(other, false, (from, to), clock);
                 }
+                // Held (no tear-free start yet): 2D's frame is shown, the
+                // scene's area keeping its last picture (2D drew its own
+                // layer there, under the scene); the scene renders later.
+                let hold = start == Some(Start::Hold);
+                let area = self.open().map(|s| Rect::new(s.x, s.y, s.w, s.h));
+                let mut cut = [Rect::default(); 4 * MAX_DIRTY];
+                let (changes, k) = match area {
+                    Some(a) if hold => {
+                        let k = outside(&mut cut, &drawn[..n], a);
+                        (&cut[..], k)
+                    }
+                    _ => (&drawn[..], n),
+                };
                 if at == safe {
+                    // The scene's last picture back into screen 0 from
+                    // screen 1 (shown) before it is shown, if held.
+                    if let Some(a) = area.filter(|_| hold)
+                        && !self.copy_screens(safe, other, &[a], clock)
+                    {
+                        return Step::Recovered;
+                    }
                     // 2D's frame shown whole, scan-out off screen 1.
                     self.two_d.flip();
                     self.two_d.settle();
-                } else if self.copy_screens(safe, at, &drawn[..n], clock) {
+                } else if self.copy_screens(safe, at, &changes[..k], clock) {
                     // Screen 0 is on screen: 2D's changes copied into it
                     // (seen as they land, as the 3D area is: R20 covers
                     // neither yet), the held frame dropped.
@@ -1042,17 +1045,16 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     self.two_d.flip();
                     return Step::Recovered;
                 }
+                if hold {
+                    self.starts.held += 1;
+                    return Step::Shown;
+                }
                 match start.map(|st| self.arm(st, clock)) {
                     Some(Step::Idle) | None => Step::Shown,
                     Some(step) => step,
                 }
             }
-            Job::Armed {
-                from,
-                to,
-                behind,
-                prepared,
-            } => {
+            Job::Armed { from, to, prepared } => {
                 let total = scan::X51V_60HZ.total;
                 let line = self.scan_line();
                 let inside = if to < total {
@@ -1077,11 +1079,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 };
                 self.after_3d();
                 self.starts.last_line = Some(line);
-                if behind {
-                    self.starts.behind += 1;
-                } else {
-                    self.starts.after_area += 1;
-                }
+                self.starts.behind += 1;
                 match due {
                     Ok(Some(due)) => {
                         self.job = Job::ThreeD;
@@ -1216,6 +1214,34 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         let (e, _) = self.two_d.parts();
         s.r.idle(&mut e.regs, now_us)
     }
+}
+
+/// The parts of `rects` outside `area`, into `out`; how many (each rectangle
+/// splits into at most four: above, below, left, right).
+fn outside(out: &mut [Rect; 4 * MAX_DIRTY], rects: &[Rect], area: Rect) -> usize {
+    let (ax0, ay0) = (u32::from(area.x), u32::from(area.y));
+    let (ax1, ay1) = (ax0 + u32::from(area.w), ay0 + u32::from(area.h));
+    let mut n = 0;
+    for r in rects.iter().take(MAX_DIRTY) {
+        let (x0, y0) = (u32::from(r.x), u32::from(r.y));
+        let (x1, y1) = (x0 + u32::from(r.w), y0 + u32::from(r.h));
+        let mut push = |x0: u32, y0: u32, x1: u32, y1: u32| {
+            if x1 > x0 && y1 > y0 {
+                out[n] = Rect::new(x0 as u16, y0 as u16, (x1 - x0) as u16, (y1 - y0) as u16);
+                n += 1;
+            }
+        };
+        if x1 <= ax0 || x0 >= ax1 || y1 <= ay0 || y0 >= ay1 {
+            push(x0, y0, x1, y1);
+            continue;
+        }
+        push(x0, y0, x1, ay0.max(y0));
+        push(x0, ay1.min(y1), x1, y1);
+        let (my0, my1) = (y0.max(ay0), y1.min(ay1));
+        push(x0, my0, ax0.max(x0), my1);
+        push(ax1.min(x1), my0, x1, my1);
+    }
+    n
 }
 
 /// The fallback's copy (R20): the scene's `area` and 2D's `held` changes,
