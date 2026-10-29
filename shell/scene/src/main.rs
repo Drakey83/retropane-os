@@ -139,9 +139,117 @@ mod image {
         /// `frame` refused; frames that ended `Recovered`.
         failed: u32,
         recovered: u32,
+        /// The run's diagnosis (R110 run 1: every refresh read unlike the
+        /// references): the signatures read since the mode began, the
+        /// most common first kept, with how many times; the rest counted.
+        seen: [(u32, u32); SEEN],
+        seen_other: u32,
+        /// The last signature read.
+        last_sig: u32,
+        /// Each whole picture's 16-row band hashes as the reference saw it
+        /// on the screen shown.
+        ref_bands: [[u32; BANDS]; SCENES],
     }
 
+    /// Signatures a mode keeps apart in its log.
+    const SEEN: usize = 8;
+    /// The screen's 16-row bands (640 rows).
+    const BANDS: usize = 40;
+    /// One-off frames per phase whose shown picture is compared with its
+    /// reference band by band (each read takes ~75 ms).
+    const COMPARED: u32 = 8;
+
     impl Run {
+        /// The picture at `at` (480 x 640 RGB565) hashed in 16-row bands
+        /// (FNV-1a over the words), read by the CPU.
+        fn bands(&mut self, at: usize) -> [u32; BANDS] {
+            let mem = self.gfx.two_d().parts().1;
+            let mut h = [0u32; BANDS];
+            for (b, hb) in h.iter_mut().enumerate() {
+                let mut v = 0x811C_9DC5u32;
+                for w in 0..16 * 240 {
+                    let word = mem.load(at + b * 16 * 960 + 4 * w).unwrap_or(0);
+                    v = (v ^ word).wrapping_mul(0x0100_0193);
+                }
+                *hb = v;
+            }
+            h
+        }
+
+        /// The bands of the shown screen's picture.
+        fn shown_bands(&mut self) -> [u32; BANDS] {
+            let at = self.gfx.two_d().front();
+            self.bands(at)
+        }
+
+        /// The bands where the two screens' pictures differ (bit b: band b,
+        /// rows 16 b to 16 b + 15).
+        fn screens_differ(&mut self) -> u64 {
+            let [s0, s1] = self.gfx.two_d().screens();
+            differ(&self.bands(s0), &self.bands(s1))
+        }
+
+        /// The word at the bar's first two pixels on the shown screen
+        /// (two RGB565 pixels), and at row 552 (between the area and the
+        /// bar).
+        fn probe(&mut self) -> (u32, u32) {
+            let at = self.gfx.two_d().front();
+            let mem = self.gfx.two_d().parts().1;
+            let y = usize::from(BAR.1);
+            (
+                mem.load(at + y * 960).unwrap_or(0),
+                mem.load(at + 552 * 960).unwrap_or(0),
+            )
+        }
+
+        /// Where the two screens differ in the 16 rows from `from`: the
+        /// first word (x, y, screen 0's, screen 1's), the last word's
+        /// (x, y), and how many words, `None` if none.
+        fn first_diff(
+            &mut self,
+            from: usize,
+        ) -> Option<((usize, usize, u32, u32), (usize, usize), u32)> {
+            let [s0, s1] = self.gfx.two_d().screens();
+            let mem = self.gfx.two_d().parts().1;
+            let mut found = None;
+            for y in from..(from + 16).min(640) {
+                for w in 0..240 {
+                    let (a, b) = (
+                        mem.load(s0 + y * 960 + 4 * w).unwrap_or(0),
+                        mem.load(s1 + y * 960 + 4 * w).unwrap_or(0),
+                    );
+                    if a != b {
+                        let f = found.get_or_insert(((2 * w, y, a, b), (0, 0), 0));
+                        f.1 = (2 * w, y);
+                        f.2 += 1;
+                    }
+                }
+            }
+            found
+        }
+
+        /// Which screen is shown (0 or 1).
+        fn shown(&mut self) -> usize {
+            let two = self.gfx.two_d();
+            usize::from(two.front() != two.screens()[0])
+        }
+
+        /// The signatures read since the last call, logged; the table
+        /// emptied.
+        fn log_seen(&mut self, p: usize, what: &str) {
+            let mut seen = self.seen;
+            seen.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            let n = seen.iter().filter(|e| e.1 != 0).count();
+            log!(
+                "P{} {what}: signatures read (most first) {:08x?}, others {}",
+                p + 1,
+                &seen[..n],
+                self.seen_other
+            );
+            self.seen = [(0, 0); SEEN];
+            self.seen_other = 0;
+        }
+
         fn regs(&mut self) -> &mut Mmio {
             &mut self.gfx.two_d().parts().0.regs
         }
@@ -156,6 +264,16 @@ mod image {
             let Some(mut w) = self.watch else { return };
             let torn = w.judge.torn + w.judge.back;
             let read = w.tick(self.regs(), rt::ticks());
+            if let Some(s) = read {
+                self.last_sig = s;
+                match self.seen.iter_mut().find(|e| e.1 != 0 && e.0 == s) {
+                    Some(e) => e.1 += 1,
+                    None => match self.seen.iter_mut().find(|e| e.1 == 0) {
+                        Some(e) => *e = (s, 1),
+                        None => self.seen_other += 1,
+                    },
+                }
+            }
             if let Some(s) = read
                 && w.judge.torn + w.judge.back > torn
             {
@@ -218,10 +336,18 @@ mod image {
 
         /// A frame with nothing new from 2D until a held scene is drawn
         /// (each try a refresh later): for the references only.
-        fn draw_held(&mut self) {
+        /// `b` the bar shown: the 2D frame still carries it, undamaged
+        /// (each 2D frame is the whole 2D scene: an empty one would paint
+        /// the bar away in the renderer's catch-up, as R110's first run on
+        /// the X51v did to every reference).
+        fn draw_held(&mut self, b: usize) {
             for _ in 0..HELD_TRIES {
                 let held = self.gfx.starts().held;
                 self.frame.clear();
+                self.frame.push(Cmd::Fill {
+                    r: Rect::new(BAR.0, BAR.1, BAR.2, BAR.3),
+                    color: BAR_COLOURS[b],
+                });
                 if let Ok(s) = self.gfx.frame(self.frame, &mut self.clock) {
                     self.drive(s);
                 }
@@ -236,7 +362,7 @@ mod image {
         /// (the third refresh's, the fourth's the same), `None` if unsteady.
         fn reference(&mut self, k: usize, b: usize) -> Option<u32> {
             self.compose(k, b);
-            self.draw_held();
+            self.draw_held(b);
             rt::check_in();
             let a = sig::settled(self.regs(), rt::ticks, FRAME_TICKS);
             let n = sig::next(self.regs(), rt::ticks, FRAME_TICKS);
@@ -371,6 +497,13 @@ mod image {
         for k in 0..SCENES {
             let prev = (k + SCENES - 1) % SCENES;
             r.whole[k] = r.reference(k, k).unwrap_or(0);
+            r.ref_bands[k] = r.shown_bands();
+            let (shown, differ, (bar, gap)) = (r.shown(), r.screens_differ(), r.probe());
+            log!(
+                "P{} reference {k}: DSIG {:08x} on screen {shown}; bands where the screens differ {differ:010x}; bar pixels {bar:08x}, row 552 {gap:08x}",
+                p + 1,
+                r.whole[k]
+            );
             r.two_d_first[k] = r.reference(prev, k).unwrap_or(0);
             r.three_d_first[k] = r.reference(k, prev).unwrap_or(0);
         }
@@ -407,6 +540,8 @@ mod image {
             LATE_TICKS,
         ));
         let mut seq = SCENES as u32;
+        r.seen = [(0, 0); SEEN];
+        r.seen_other = 0;
 
         // Back to back.
         let m = mark(r);
@@ -423,6 +558,7 @@ mod image {
         let span = us(rt::ticks().wrapping_sub(t0)).max(1);
         // The last frame's refreshes judged before the line.
         settle(r, 3);
+        r.log_seen(p, "back to back");
         report(
             r,
             p,
@@ -465,7 +601,24 @@ mod image {
                 None => never += 1,
             }
             settle(r, 1);
+            if i < COMPARED {
+                let (shown, sig) = (r.shown(), r.last_sig);
+                let against = differ(&r.shown_bands(), &r.ref_bands[k]);
+                let screens = r.screens_differ();
+                let first = if screens == 0 {
+                    None
+                } else {
+                    r.first_diff(16 * screens.trailing_zeros() as usize)
+                };
+                let (bar, gap) = r.probe();
+                log!(
+                    "P{} one-off {i}: picture {k} on screen {shown}, DSIG last read {sig:08x} (reference {:08x}); bands unlike the reference {against:010x}; bands where the screens differ {screens:010x} (first band: first (x, y, screen 0, screen 1), last (x, y), words {first:?}); bar pixels {bar:08x}, row 552 {gap:08x}",
+                    p + 1,
+                    r.whole[k]
+                );
+            }
         }
+        r.log_seen(p, "one-off");
         report(
             r,
             p,
@@ -478,6 +631,14 @@ mod image {
                 to_shown.worst
             ),
         );
+    }
+
+    /// The bands where `a` and `b` differ, as bits.
+    fn differ(a: &[u32; BANDS], b: &[u32; BANDS]) -> u64 {
+        a.iter()
+            .zip(b)
+            .enumerate()
+            .fold(0, |m, (i, (x, y))| m | u64::from(x != y) << i)
     }
 
     /// Watches `n` more refreshes.
@@ -602,6 +763,10 @@ mod image {
             mixed_3d: 0,
             failed: 0,
             recovered: 0,
+            seen: [(0, 0); SEEN],
+            seen_other: 0,
+            last_sig: 0,
+            ref_bands: [[0; BANDS]; SCENES],
         };
 
         for p in 0..PHASES.len() {

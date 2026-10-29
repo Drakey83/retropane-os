@@ -86,9 +86,19 @@ recovered 0, the 2D engine's stalls 0, no underrun, the clock to 149.50 / 2
 references were steady and distinct per scene, but almost every refresh in
 the run read a signature unlike all of them (750 of 753 back to back, 367 of
 367 one-off, also while the picture stood still), so the "torn" counts are
-not tears. A finding inside the references: **the bar's rows (560-607) never
-change `DSIG`** (each 2D-first mix reads as the previous whole picture, each
-3D-first mix as its own), so `DSIG` covers only part of the screen here.
+not tears. The cause, found in the emulator the same night: the references never had
+the bar. The step that gets a held scene drawn sent an empty 2D frame, and
+the 2D renderer takes each frame as the whole 2D scene, so its catch-up
+painted the bar away (its pixels read as the wallpaper's grey). So the
+first reading here, that the bar's rows don't change `DSIG`, was wrong:
+withdrawn. Fixed: that step's frames carry the bar.
+
+**Found while fixing it (emulator, rp-next-032; to be confirmed on the
+X51v):** when the scene renders into screen 0, the whole of row 544, the
+first row under the scene's area, is overwritten with 240 32-bit colour
+words (`0xff808080`, `0xff301010`: 960 bytes, a write outside the scene's
+area). Run 2 logs it from the device (the screens compared band by band,
+the first and last differing words).
 Next (not run): log the signatures the run reads, and compare screen 0 and
 screen 1 word for word after a frame, to find whether the shown picture
 differs from the reference's (a stale part of one screen) or the reading does.
