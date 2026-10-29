@@ -5830,6 +5830,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2dd = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_GC2_HALF_R108", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2cs = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6254,7 +6263,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 156] = [
+    let runs: [GpubenchRun; 157] = [
         (
             "run A",
             &run_a,
@@ -6964,6 +6973,33 @@ fn variant_images_gpubench(
                 "GC2DC cost 3 video on, reading outside the safe region (C): 2 of 2 rendered",
                 "GC2DC long 1 way C' a switch every 1 frames: 12 frames: 0 the route in place whole, 0 another route whole, 0 NEITHER ROUTE (first None), 0 not read (not judged",
                 "GC2DC long 2 way C' a switch every 8 frames: 12 frames:",
+                "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2DD (R108 layout B): way C' at 149.50 / 2, the half
+        // routes switched every 1 and 8 frames with the next frame
+        // rendering across each switch, then native's render cost with the
+        // video plane off and reading the shown picture. The fork reads
+        // DSIG 0 (not judged) and has no clock: the run's shape and the
+        // renders are what this checks.
+        (
+            "run GC2DD",
+            &run_gc2dd,
+            &[
+                "GC2DD (R108 layout B): way C' at 149.50 / 2",
+                "GC2DD 149.50 / 2: lock Some(",
+                "), the display's underrun flag false",
+                "GC2DD at 149.50 / 2: the pictures' hashes Some(",
+                "GC2DD long 1 way C' at 149.50 / 2 a switch every 1 frames, rendering across each: 12 frames: 0 the route in place whole, 0 the other route whole, 0 NEITHER ROUTE (first None), 0 lines missed (not judged",
+                "GC2DD long 2 way C' at 149.50 / 2 a switch every 8 frames, rendering across each: 12 frames:",
+                "renders 13 done, 0 failed,",
+                "the pictures afterwards the references' (exact)",
+                "GC2DD cost 1 video off: 2 of 2 rendered",
+                "GC2DD cost 2 video on, reading the shown picture (C'): 2 of 2 rendered",
+                "GC2DD done: Windows Mobile's clock put back",
                 "GC2CA done",
                 "RETROPANE-GPUBENCH: done",
             ],

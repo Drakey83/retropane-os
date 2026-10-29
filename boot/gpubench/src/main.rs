@@ -819,6 +819,13 @@ mod image {
         /// bit, as `rp-mbx3d-api` run 2 calibrated), then the renderer's
         /// own poll to the end. `None` if refused, hung or nothing to do.
         fn frame(&mut self, r: &mut Renderer, t: Target) -> Option<u32> {
+            let at = self.start(r, t)?;
+            self.finish(r, at)
+        }
+
+        /// A render of what `r` holds into `t` started: when to poll it
+        /// ([`Self::finish`]), `None` if refused (logged) or nothing to do.
+        fn start(&mut self, r: &mut Renderer, t: Target) -> Option<u32> {
             rt::check_in();
             let over = self.over;
             let over = over.as_slice();
@@ -832,14 +839,20 @@ mod image {
                 t,
             );
             self.sync_resets(r);
-            let mut at = match res {
-                Ok(Some(at)) => at,
-                Ok(None) => return None,
+            match res {
+                Ok(at) => at,
                 Err(err) => {
                     log!("    render refused: {err:?}");
-                    return None;
+                    None
                 }
-            };
+            }
+        }
+
+        /// The render [`Self::start`] began waited for: its time (the
+        /// core's), `None` if it hung (recovered, logged).
+        fn finish(&mut self, r: &mut Renderer, mut at: u32) -> Option<u32> {
+            let over = self.over;
+            let over = over.as_slice();
             let t0 = self.clock.now_us();
             let mut exact = None;
             // Run GC2AF's quiet way: the CPU off the 2700G's bus for the
@@ -17778,6 +17791,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if GC2DD {
+            gc2dd_run(g, tex, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if GC2DC {
             gc2dc_run(g, tex, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -18922,22 +18941,20 @@ mod image {
         h
     }
 
-    /// GC2DC run 4 part A (see [`GC2DC_COST`]).
+    /// GC2DC run 4 part A (see [`GC2DC_COST`]), logged as `run`'s, over
+    /// the first `states` of [`GC2DC_COST_NAMES`] (GC2DD: the two inside
+    /// the safe region).
     fn gc2dc_cost(
         g: &mut Rig,
         (cur, tex): (&mut Option<((u16, u16), Renderer)>, gc2::Tex),
-        at: [u32; 3],
+        (at, run, states): ([u32; 3], &str, usize),
         planes0: &Snapshot,
+        card: [&str; 3],
     ) {
-        gc2dc_card(
-            g,
-            (&mut *cur, tex),
-            planes0,
-            ["R101: WAY C'S COST", "PART A OF 2", "NOTHING TO DO"],
-        );
+        gc2dc_card(g, (&mut *cur, tex), planes0, card);
         let size = (480u16, 640u16);
         let mut reference = None;
-        for (k, name) in GC2DC_COST_NAMES.iter().enumerate() {
+        for (k, name) in GC2DC_COST_NAMES.iter().take(states).enumerate() {
             rp_drv_mbx_display::video_hide(&mut g.e.regs);
             gc2dc_way_show(g, 2, gc2::ROUTE_NATIVE, at, planes0);
             if k > 0 {
@@ -18972,7 +18989,7 @@ mod image {
             }
             let n = u64::from(done.max(1));
             log!(
-                "  GC2DC cost {} {name}: {done} of {GC2DC_COST_REPS} rendered, the core fastest {} us mean {} us, the whole frame fastest {} us mean {} us; {same} of {done} pictures the video-off reference's",
+                "  {run} cost {} {name}: {done} of {GC2DC_COST_REPS} rendered, the core fastest {} us mean {} us, the whole frame fastest {} us mean {} us; {same} of {done} pictures the video-off reference's",
                 k + 1,
                 core.0,
                 core.1 / n,
@@ -19061,6 +19078,304 @@ mod image {
         }
     }
 
+    /// GC2DD's picture of `route` made ready to draw into its place: the
+    /// renderer taken for its size, its mesh set (the CPU's set-up, done
+    /// before the start line so the render starts on it): the target.
+    fn gc2dd_prepare(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+        route: u8,
+    ) -> Option<Target> {
+        let (size, at) = if route == gc2::ROUTE_LINES {
+            ((480, 320), GC2DD_AT[1])
+        } else {
+            ((240, 320), GC2DD_SMALL)
+        };
+        let rr = gc2cp_take(g, cur, size)?;
+        gc2ca_set_mesh(g, rr, gc2::MESH_TEXTURED, tex, size);
+        rr.invalidate_all();
+        Some(Target {
+            picture: Picture::packed(at, size.0, size.1, gc2::KINDS[gc2::FT2].1),
+            x: 0,
+            y: 0,
+        })
+    }
+
+    /// The render [`gc2dd_prepare`] readied, started: when to poll it
+    /// ([`Rig::finish`]); `None` if refused.
+    fn gc2dd_start(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        t: Target,
+    ) -> Option<u32> {
+        let rr = cur.as_mut().map(|c| &mut c.1)?;
+        g.start(rr, t)
+    }
+
+    /// The render [`gc2dd_start`] began, waited for: the core's time.
+    fn gc2dd_finish(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        due: u32,
+    ) -> Option<u32> {
+        let rr = cur.as_mut().map(|c| &mut c.1)?;
+        g.finish(rr, due)
+    }
+
+    /// GC2DD's two pictures hashed (FNV-1a): the lines route's, then the
+    /// smooth route's render.
+    fn gc2dd_hashes(g: &Rig) -> [u32; 2] {
+        let hash = |at: u32, bytes: u32| {
+            let mut h = 0x811C_9DC5u32;
+            for i in 0..bytes / 4 {
+                let w = g.mem.load((at + 4 * i) as usize).unwrap_or(0);
+                h = (h ^ w).wrapping_mul(0x0100_0193);
+            }
+            h
+        };
+        [
+            hash(GC2DD_AT[1], GC2DC_BYTES[1]),
+            hash(GC2DD_SMALL, GC2DC_BYTES[2]),
+        ]
+    }
+
+    /// GC2DD's pictures drawn whole (the smooth route's converted by the
+    /// CPU, GC2CS's way): their hashes, `None` if a render failed.
+    fn gc2dd_draw(
+        g: &mut Rig,
+        cur: &mut Option<((u16, u16), Renderer)>,
+        tex: gc2::Tex,
+    ) -> Option<[u32; 2]> {
+        for route in [gc2::ROUTE_SMOOTH, gc2::ROUTE_LINES] {
+            let t = gc2dd_prepare(g, cur, tex, route)?;
+            let due = gc2dd_start(g, cur, t)?;
+            gc2dd_finish(g, cur, due)?;
+        }
+        gc2cs_uyvy(g, GC2DD_SMALL, GC2DD_AT[2], 240);
+        Some(gc2dd_hashes(g))
+    }
+
+    /// Run GC2DD (see [`GC2DD`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn gc2dd_run(g: &mut Rig, tex: gc2::Tex, planes0: &Snapshot) {
+        let Some(cur) = GC2DA_HELD.put_with(|| None) else {
+            log!("  GC2DD: run twice in one start: nothing run");
+            return;
+        };
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        log!(
+            "  GC2DD (R108 layout B): way C' at 149.50 / 2 with the next frame rendering across each switch; the lines route's 480 x 320 at 0x{:x}, the smooth route's 240 x 320 render at 0x{GC2DD_SMALL:x} and UYVY at 0x{:x}, the lists at 0x{:x}: all inside the safe region (to 0x{:x}); renders start at line {GC2DD_START}; a switch every {GC2DC_GAPS:?} frames, {GC2DC_LONG_FRAMES} frames each, every frame judged by DSIG",
+            GC2DD_AT[1],
+            GC2DD_AT[2],
+            GC2BB_PARAMS.at,
+            rp_vram_map::SAFE_END
+        );
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "R108: WAY C' AT 149.50 / 2",
+                "STEP 1 OF 4: DRAWING",
+                "NOTHING TO DO",
+            ],
+        );
+        let wm = gc2dd_draw(g, cur, tex);
+        log!("  GC2DD at Windows Mobile's clock: the pictures' hashes {wm:x?}");
+        let lock = clock_apply(g, GC2DD_STEP);
+        if lock.is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2DD: 149.50 / 2 didn't take; Windows Mobile's clock put back: nothing run");
+            gc2ca_card(g, planes0, ["GC2DD STOPPED", "CLOCK NOT TAKEN", ""]);
+            g.nudge = nudge;
+            return;
+        }
+        // ADR-0035 rule 8: every clock change followed by the underrun
+        // flag's check and Dell's clear.
+        let short = underrun_take(&mut g.e.regs);
+        log!("  GC2DD 149.50 / 2: lock {lock:?}, the display's underrun flag {short}");
+        clock_readback(g);
+        if let Some((_, rr)) = cur.as_mut() {
+            rr.start_clean();
+        }
+        let refs = gc2dd_draw(g, cur, tex);
+        log!(
+            "  GC2DD at 149.50 / 2: the pictures' hashes {refs:x?}{}",
+            if refs.is_some() && refs == wm {
+                ", the same as at Windows Mobile's clock"
+            } else {
+                ": NOT the same as at Windows Mobile's clock"
+            }
+        );
+        let Some(refs) = refs else {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2DD: a picture not drawn at 149.50 / 2: nothing more run");
+            g.nudge = nudge;
+            return;
+        };
+        let plane = VideoPlane::new(VideoFormat::Uyvy, 240, 320, GC2DD_AT[2] as usize);
+        let scale = plane.scale_to(480, 640, 0, 0);
+        rp_drv_mbx_display::video_show(&mut g.e.regs, &plane, GC2CB_VIDEO_BOTTOM, scale);
+        // Each half route's own signature, steady over two frames.
+        let mut sig = [0u32; 3];
+        let mut steady = true;
+        for r in [gc2::ROUTE_LINES, gc2::ROUTE_SMOOTH] {
+            gc2dc_way_show(g, 3, r, GC2DD_AT, planes0);
+            let a = gc2dc_settled(g);
+            let b = gc2dc_next(g);
+            sig[usize::from(r)] = a.unwrap_or(0);
+            steady &= a.is_some() && a == b;
+            log!(
+                "  GC2DD route {} {}: DSIG {a:x?} then {b:x?}{}",
+                r + 1,
+                GC2DB_NAMES[usize::from(r)],
+                if a == b { "" } else { ": NOT steady" }
+            );
+        }
+        let (l, m) = (
+            sig[usize::from(gc2::ROUTE_LINES)],
+            sig[usize::from(gc2::ROUTE_SMOOTH)],
+        );
+        let live = steady && l != 0 && m != 0 && l != m;
+        let other = |r: u8| {
+            if r == gc2::ROUTE_LINES {
+                gc2::ROUTE_SMOOTH
+            } else {
+                gc2::ROUTE_LINES
+            }
+        };
+        for (gi, &gap) in GC2DC_GAPS.iter().enumerate() {
+            let mut l2 = heapless_name();
+            let _ = write!(
+                l2,
+                "STEP {} OF 4: EVERY {gap} FRAME{}",
+                gi + 2,
+                if gap == 1 { "" } else { "S" }
+            );
+            soak_label(
+                g,
+                ["R108: WAY C' AT 149.50 / 2", l2.as_str(), "NOTHING TO DO"],
+                SOAK_BLUE,
+            );
+            let mut route = gc2::ROUTE_LINES;
+            gc2dc_way_show(g, 3, route, GC2DD_AT, planes0);
+            let _ = gc2dc_settled(g);
+            let (mut whole, mut wrong_route, mut torn, mut missed) = (0u32, 0u32, 0u32, 0u32);
+            let (mut rendered, mut failed, mut late, mut busy) = (0u32, 0u32, 0u32, 0u32);
+            let (mut core_min, mut core_max, mut core_sum) = (u32::MAX, 0u32, 0u64);
+            let mut first_torn = None;
+            for f in 0..=GC2DC_LONG_FRAMES {
+                let switch = f > 0 && f % gap == 0 && f < GC2DC_LONG_FRAMES;
+                let next = if switch { other(route) } else { route };
+                // Frame f's picture rendered again from frame f - 1's line
+                // GC2DD_START, so the core draws while the switch is written.
+                let t = gc2dd_prepare(g, cur, tex, next);
+                let due = match t {
+                    Some(t) if gc2dc_at_line(g, GC2DD_START) => gc2dd_start(g, cur, t),
+                    Some(_) => {
+                        missed += 1;
+                        None
+                    }
+                    None => None,
+                };
+                if due.is_none() {
+                    failed += 1;
+                }
+                if gc2dc_at_line(g, 0) {
+                    let before = route;
+                    // The core still drawing as the switch is written (the
+                    // run's point: counted, not assumed).
+                    busy += u32::from(
+                        due.is_some() && g.e.regs.read32(MBX + reg::STATUS) & RENDER_DONE == 0,
+                    );
+                    if switch {
+                        route = next;
+                        gc2dc_way_show(g, 3, route, GC2DD_AT, planes0);
+                    }
+                    // Line 3: frame f - 1's signature, held to the route it
+                    // showed.
+                    let t0 = rt::ticks();
+                    while scan_line(g) < 3 && us_since(t0) < FRAME_US {}
+                    let read = g.e.regs.read32(DSIG);
+                    if f > 0 && live {
+                        if read == sig[usize::from(before)] {
+                            whole += 1;
+                        } else if read == sig[usize::from(other(before))] {
+                            wrong_route += 1;
+                        } else {
+                            torn += 1;
+                            first_torn.get_or_insert((f, read));
+                        }
+                    }
+                } else {
+                    missed += 1;
+                }
+                if let Some(d) = due {
+                    match gc2dd_finish(g, cur, d) {
+                        Some(c) => {
+                            rendered += 1;
+                            core_min = core_min.min(c);
+                            core_max = core_max.max(c);
+                            core_sum += u64::from(c);
+                        }
+                        None => failed += 1,
+                    }
+                    // A render still running at the next start line would
+                    // overlap the next frame's: counted.
+                    if scan_line(g) >= GC2DD_START {
+                        late += 1;
+                    }
+                }
+                if f % 64 == 0 {
+                    rt::check_in();
+                }
+            }
+            let hashes = gc2dd_hashes(g);
+            log!(
+                "  GC2DD long {} way C' at 149.50 / 2 a switch every {gap} frames, rendering across each: {GC2DC_LONG_FRAMES} frames: {whole} the route in place whole, {wrong_route} the other route whole, {torn} NEITHER ROUTE (first {first_torn:x?}), {missed} lines missed{}; renders {rendered} done, {failed} failed, {busy} still drawing at line 0, {late} still running at line {GC2DD_START}, the core fastest {} us slowest {core_max} us mean {} us; the pictures afterwards {}",
+                gi + 1,
+                if live {
+                    ""
+                } else {
+                    " (not judged: no DSIG, or the signatures not steady and different)"
+                },
+                if rendered == 0 { 0 } else { core_min },
+                core_sum / u64::from(rendered.max(1)),
+                if hashes == refs {
+                    "the references' (exact)"
+                } else {
+                    "NOT the references'"
+                }
+            );
+        }
+        rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        // Run 4's part A at the game clock: native drawn over all three.
+        gc2dc_cost(
+            g,
+            (&mut *cur, tex),
+            (GC2DD_AT, "GC2DD", 2),
+            planes0,
+            [
+                "R108: WAY C' AT 149.50 / 2",
+                "STEP 4 OF 4: RENDER COST",
+                "NOTHING TO DO",
+            ],
+        );
+        let short = underrun_take(&mut g.e.regs);
+        clock_restore(&mut g.e.regs);
+        let back = underrun_take(&mut g.e.regs);
+        log!(
+            "  GC2DD done: Windows Mobile's clock put back; the display's underrun flag at 149.50 / 2 {short}, after the change back {back}"
+        );
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        rp_drv_mbx_display::video_hide(&mut g.e.regs);
+        gc2ca_card(g, planes0, ["GC2DD DONE", "", ""]);
+        g.nudge = nudge;
+    }
+
     /// GC2DC's two parts on the pictures at `at`.
     #[allow(clippy::too_many_lines)]
     fn gc2dc_switches(
@@ -19091,7 +19406,13 @@ mod image {
         let live =
             steady && sig[0] != 0 && sig[0] != sig[1] && sig[1] != sig[2] && sig[0] != sig[2];
         if GC2DC_COST {
-            gc2dc_cost(g, (&mut *cur, tex), at, planes0);
+            gc2dc_cost(
+                g,
+                (&mut *cur, tex),
+                (at, "GC2DC", GC2DC_COST_NAMES.len()),
+                planes0,
+                ["R101: WAY C'S COST", "PART A OF 2", "NOTHING TO DO"],
+            );
             gc2dc_long(g, (&mut *cur, tex), (at, sig, live), planes0);
             return;
         }
@@ -22610,6 +22931,38 @@ mod image {
     /// frames on line 0 for [`GC2DC_LONG_FRAMES`] frames each, every frame
     /// judged (ADR-0038 G2's run).
     const GC2DC_COST: bool = option_env!("RP_GPUBENCH_GC2_HALF_R101_COST").is_some();
+    /// Run GC2DD (`RP_GPUBENCH_GC2_HALF_R108`, with
+    /// `RP_GPUBENCH_GC2_HALF`), R108 layout B (the owner 2026-10-29: "B
+    /// now, C later"): ADR-0038 G2's way C' at the game clock, 149.50 / 2
+    /// (ADR-0035's ruled top rung for 16-bit targets inside the safe
+    /// region), with the next frame rendering during each switch. Every
+    /// picture inside the safe region, as G19 and C71 require while the
+    /// core renders ([`GC2DD_AT`]: the lines route's 480 x 320, the smooth
+    /// route's 240 x 320 render, its UYVY; ending at the lists on the die).
+    /// The two half routes switched every 1 and every 8 frames on line 0
+    /// for [`GC2DC_LONG_FRAMES`] frames each; each frame's render (the
+    /// route that frame shows, into its own place: the same picture again,
+    /// so a fault in a shown picture changes `DSIG`) started at line
+    /// [`GC2DD_START`] of the frame before, across the switch; every frame
+    /// judged by `DSIG`, both pictures hashed after each part. Then run 4's
+    /// part A at that clock: the native frame's render times with the video
+    /// plane off and reading the shown picture (C'). Native to half and
+    /// back is layout C (R108 part 2, after R20's wiring). Not covered: the
+    /// smooth route's conversion (the CPU's, made once: R89 is the GPU's).
+    /// Unattended, about two minutes.
+    const GC2DD: bool = option_env!("RP_GPUBENCH_GC2_HALF_R108").is_some();
+    /// GC2DD's pictures by route (native's unused but in part A, drawn over
+    /// all three at A).
+    const GC2DD_AT: [u32; 3] = [GC2CA_A, GC2CA_A, GC2DD_SMALL + 2 * 240 * 320];
+    /// GC2DD's smooth route's RGB565 render, after the lines route's.
+    const GC2DD_SMALL: u32 = GC2CA_A + 2 * 480 * 320;
+    const _: () = assert!(GC2DD_AT[2] + 2 * 240 * 320 <= GC2BB_PARAMS.at);
+    const _: () = assert!(GC2BB_PARAMS.at + GC2BB_PARAMS.size <= rp_vram_map::SAFE_END);
+    /// The scan line a frame's render starts on: about 1.2 ms before line 0
+    /// (26 us a line), so the core is drawing when the switch is written.
+    const GC2DD_START: u32 = 600;
+    /// The game clock (ADR-0035's ruling, 2026-10-29).
+    const GC2DD_STEP: ClockStep = gc2_step(23, 2, 0, 2);
     /// Part A's video plane states.
     const GC2DC_COST_NAMES: [&str; 3] = [
         "video off",
