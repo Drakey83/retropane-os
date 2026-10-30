@@ -59,6 +59,15 @@ suggestion especially with using rule 0 mentality."
   SPB's, and apps are designed once, on interaction.md's rules, with
   rule 0 suggestions as before. Old Windows Mobile programs keep their
   own windows, as decided.
+- **RULED (owner, 2026-10-30, next message): that one design is Windows
+  Mobile's app through a retro-modern lens.** His words: "apps should all
+  have a combined "Modern/Retro" look about them, look like they do in WM
+  but with a modern/retro lens, that includes look and functionality." So
+  each app starts from its Windows Mobile 5 layout, flow and functions
+  (the finding), and is modernised in both look (the smoked glass, type,
+  motion) and function (rule 0's better ways, proposed beside WM's for
+  the owner to pick). An app WM never had (Weather) is designed as WM5
+  would have shipped it, through the same lens.
 - **First real program: Weather** (the default home). Its interaction
   foundations come first, decided once for every app:
   [interaction.md](interaction.md), then
