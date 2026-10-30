@@ -521,3 +521,176 @@ fn a_scan_that_never_reaches_the_blanking_flips_late_and_counts_it() {
     assert!(r.late_flips >= 1);
     assert!(!r.parts().0.regs.flip_lines.is_empty(), "written anyway");
 }
+
+/// Glass sliding sideways (the Weather page's entrance, a dragged list):
+/// the background is made again only where the moved panel was and is,
+/// the frame after isn't drawn whole, and every frame matches the
+/// reference (2026-10-30: each such frame rebuilt the whole screen's
+/// background and forced two whole frames, 53-58 ms of CPU on the X51v).
+#[test]
+fn moving_glass_rebuilds_only_its_old_and_new_places() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    let mut f = Frame::new();
+    scene(&mut f, 0);
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    assert_eq!(r.last.background_px, u32::from(W) * u32::from(H));
+    same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
+    for (k, shift) in [6u16, 12, 18, 18, 30, 0].into_iter().enumerate() {
+        scene(&mut f, shift);
+        f.damage(Rect::new(0, 50, 300, 140));
+        r.draw(&f);
+        assert!(r.poll());
+        let moved = k != 3;
+        assert_eq!(r.last.background, moved, "frame {k}");
+        if moved {
+            // The fill and the outline, old and new: well under a screen.
+            assert!(
+                r.last.background_px > 0 && r.last.background_px < 80_000,
+                "frame {k}: {} px rebuilt",
+                r.last.background_px
+            );
+        }
+        assert!(r.last.rects <= 2, "frame {k}: drawn whole");
+        same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap_or_else(|e| panic!("frame {k}: {e}"));
+    }
+}
+
+/// Two hoisted panels swapping order where they overlap: the overlap is
+/// made again (each one's key carries the keys it lies over).
+#[test]
+fn glass_changing_order_is_rebuilt_where_it_overlaps() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    let a = Cmd::Fill {
+        r: Rect::new(50, 50, 100, 100),
+        color: 0x80FF_0000,
+    };
+    let b = Cmd::Fill {
+        r: Rect::new(100, 100, 100, 100),
+        color: 0x8000_00FF,
+    };
+    for (k, order) in [[a, b], [b, a]].into_iter().enumerate() {
+        let mut f = Frame::new();
+        for c in order {
+            f.push(c);
+        }
+        f.damage(Rect::new(0, 0, W, H));
+        r.draw(&f);
+        assert!(r.poll());
+        assert!(r.last.background, "frame {k}");
+        same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap_or_else(|e| panic!("frame {k}: {e}"));
+    }
+}
+
+/// The same gradient on many rows and frames is written into the ring
+/// once; a different one never reuses it.
+#[test]
+fn a_gradient_row_is_written_once_and_reused_only_for_the_same_colours() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    let rows = |f: &mut Frame, right: u32, dy: u16| {
+        f.clear();
+        // Text first, so the glass after it isn't hoisted: drawn each frame.
+        f.text(5, 8, &FONT, 0xFFFF_FFFF, b"A");
+        f.push(Cmd::Fill {
+            r: Rect::new(0, 0, 40, 640),
+            color: 0x40FF_FFFF,
+        });
+        for k in 0..10u16 {
+            f.push(Cmd::HGradient {
+                r: Rect::new(16, 20 + dy + k * 45, 448, 42),
+                left: 0xB810_1418,
+                right,
+            });
+        }
+    };
+    let mut f = Frame::new();
+    rows(&mut f, 0x8C4C_545C, 0);
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    assert_eq!(r.last.rows_written, 2, "one fill row, one gradient row");
+    same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
+    rows(&mut f, 0x8C4C_545C, 3);
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    assert_eq!(r.last.rows_written, 0, "the next frame reuses them");
+    same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
+    rows(&mut f, 0x8C4C_5460, 3);
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    assert_eq!(r.last.rows_written, 1, "another colour: a row of its own");
+    same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
+}
+
+/// More distinct rows than the ring holds in one frame: rows still read
+/// by the engine are never overwritten (the frame waits first).
+#[test]
+fn a_full_ring_waits_before_overwriting_a_row_in_use() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    let mut f = Frame::new();
+    f.text(5, 8, &FONT, 0xFFFF_FFFF, b"A");
+    for k in 0..150u16 {
+        f.push(Cmd::Fill {
+            r: Rect::new(k * 3, k * 4, 30, 8),
+            color: 0x2000_0000 | (u32::from(k) * 0x0103),
+        });
+    }
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    assert!(r.last.waits > 0);
+    same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
+}
+
+/// A clip limits everything after it, glass, pictures and text, and the
+/// background honours it too.
+#[test]
+fn a_clip_limits_the_commands_after_it() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    for dy in [0u16, 17, 33] {
+        let mut f = Frame::new();
+        f.clip(Some(Rect::new(0, 60, W, 150)));
+        for k in 0..6u16 {
+            let y = 40 + dy + k * 40;
+            f.push(Cmd::HGradient {
+                r: Rect::new(16, y, 448, 36),
+                left: 0xB810_1418,
+                right: 0x8C4C_545C,
+            });
+            f.push(Cmd::Image {
+                x: 30,
+                y: y + 2,
+                img: &ICON,
+            });
+            f.text(60, y + 6, &FONT, 0xFFFF_FFFF, b"ABBA");
+        }
+        f.clip(None);
+        f.push(Cmd::Fill {
+            r: Rect::new(0, 300, W, 20),
+            color: 0x8000_0000,
+        });
+        f.damage(Rect::new(0, 0, W, H));
+        r.draw(&f);
+        assert!(r.poll());
+        let got = shown(&mut r, &mem);
+        same(&got, &cpu.draw(&f), 2).unwrap_or_else(|e| panic!("dy {dy}: {e}"));
+        // Nothing of the rows outside the clip: the wallpaper there.
+        for y in (40..60).chain(210..300) {
+            for x in [20usize, 200, 400] {
+                assert_eq!(
+                    got[y * 480 + x],
+                    wall(x as u16, y as u16) & 0xFF_FFFF,
+                    "dy {dy}: ({x}, {y})"
+                );
+            }
+        }
+    }
+}

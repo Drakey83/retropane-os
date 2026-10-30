@@ -77,6 +77,7 @@ impl<'a> CpuRenderer<'a> {
     fn command(&mut self, frame: &Frame, cmd: &Cmd, clip: Rect) {
         match *cmd {
             Cmd::Fill { r, color } => self.layer.fill(rect(r).intersect(&clip), color),
+            Cmd::Clip { .. } => {}
             Cmd::HGradient { r, left, right } => {
                 let full = rect(r);
                 let to = full.intersect(&clip);
@@ -156,7 +157,8 @@ impl Renderer for CpuRenderer<'_> {
                 continue;
             }
             self.layer.fill(clip, CLEAR);
-            for cmd in frame.cmds() {
+            for (cmd, own) in frame.cmds_clipped() {
+                let clip = rect(own).intersect(&clip);
                 if rect(cmd.bounds(frame)).intersect(&clip).is_empty() {
                     continue;
                 }

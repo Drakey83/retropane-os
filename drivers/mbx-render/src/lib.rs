@@ -194,6 +194,19 @@ struct Atlas {
     at: [u16; GLYPHS],
 }
 
+/// What a row of the ring holds, exactly: `w` columns of `gradient_at(a,
+/// b, first + k, span)` (a single colour is `a == b`, `first` 0, `span`
+/// 1). Compared whole, never by a hash, so a row is reused only for the
+/// same colours.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct RowKey {
+    a: Argb,
+    b: Argb,
+    first: u32,
+    span: u32,
+    w: u16,
+}
+
 /// What one frame cost, for the run log (microseconds).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameStats {
@@ -207,8 +220,15 @@ pub struct FrameStats {
     pub engine_us: u32,
     /// Rectangles redrawn.
     pub rects: u32,
-    /// Whether the background was rebuilt.
+    /// Whether the background was rebuilt (whole or in part).
     pub background: bool,
+    /// Pixels of the background rebuilt (the whole screen: 307,200).
+    pub background_px: u32,
+    /// Gradient and translucent rows written by the CPU, and reused from
+    /// the ring instead.
+    pub rows_written: u32,
+    /// See [`Self::rows_written`].
+    pub rows_reused: u32,
     /// Text atlases built (a font in a colour not cached).
     pub atlases: u32,
     /// Pictures uploaded to the image cache.
@@ -352,6 +372,26 @@ pub struct Mbx2dRenderer<R, M> {
     vsync_due: bool,
     /// The background's hash (None: not built).
     bg_hash: Option<u32>,
+    /// The hoisted commands the background holds: each one's key (its
+    /// kind, place, colours, clip, and the keys of the hoisted commands
+    /// before it that it overlaps, so a change of order counts) and
+    /// bounds. A frame whose glass differs rebuilds only where the
+    /// differing ones were and are (2026-10-30: a sliding row rebuilt the
+    /// whole screen's background, 53-58 ms of CPU a frame on the X51v).
+    bg_keys: [(u32, Rect); MAX_CMDS],
+    bg_n: usize,
+    /// Per command: its key if hoisted (scratch for `draw`).
+    keys: [u32; MAX_CMDS],
+    /// Per command: the clip it is drawn in (scratch for `draw`).
+    clips: [Rect; MAX_CMDS],
+    /// What each row of the ring holds, kept across frames so a row of
+    /// the same colours is written once ([`RowKey`]), and the use stamp
+    /// that says whether the engine may still read it.
+    row_keys: [Option<RowKey>; ROWS],
+    row_used: [u32; ROWS],
+    /// Bumped at each frame's start and each full wait: a row stamped
+    /// with an older value is no longer read by the engine.
+    epoch: u32,
     /// Bumped by [`Self::wallpaper_changed`]: part of the background's hash,
     /// so the background and every cached area made over the old wallpaper
     /// are made again.
@@ -419,6 +459,13 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             pending: None,
             vsync_due: false,
             bg_hash: None,
+            bg_keys: [(0, Rect::new(0, 0, 0, 0)); MAX_CMDS],
+            bg_n: 0,
+            keys: [0; MAX_CMDS],
+            clips: [Rect::new(0, 0, 0, 0); MAX_CMDS],
+            row_keys: [None; ROWS],
+            row_used: [0; ROWS],
+            epoch: 1,
             wall_gen: 0,
             front_whole: false,
             pending_whole: false,
@@ -464,6 +511,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     pub fn wallpaper_changed(&mut self) {
         self.wall_gen = self.wall_gen.wrapping_add(1);
         self.bg_hash = None;
+        self.row_keys = [None; ROWS];
         self.fresh = 2;
     }
 
@@ -471,6 +519,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// was another engine's comes back).
     pub fn invalidate_all(&mut self) {
         self.fresh = 2;
+        self.row_keys = [None; ROWS];
     }
 
     /// Shows the frame held by [`Self::hold`].
@@ -761,25 +810,48 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         }
     }
 
-    /// One row of colours, column `k` of `r` being `col(k)`, drawn down `r`
-    /// (blended if `blend`).
-    fn row(&mut self, dst: usize, r: Rect, col: impl Fn(u32) -> Argb, blend: bool) {
-        if self.row == ROWS {
-            self.wait();
-            self.row = 0;
+    /// Where the ring holds the row `key`, writing it if it isn't there:
+    /// a row already written (this frame or an earlier one: the ring is
+    /// kept) is reused. A slot is overwritten only once the engine can no
+    /// longer read it (stamped before the last frame start or full wait),
+    /// else everything queued finishes first.
+    fn row_at(&mut self, key: RowKey) -> usize {
+        if let Some(k) = self.row_keys.iter().position(|r| *r == Some(key)) {
+            self.row_used[k] = self.epoch;
+            self.last.rows_reused += 1;
+            return self.l.rows + k * ROW_BYTES;
         }
-        let at = self.l.rows + self.row * ROW_BYTES;
-        self.row += 1;
-        let w = usize::from(r.w).min(ROW_BYTES / 4);
+        let k = self.row % ROWS;
+        self.row = (k + 1) % ROWS;
+        if self.row_used[k] == self.epoch {
+            self.wait();
+        }
+        self.row_used[k] = self.epoch;
+        self.row_keys[k] = Some(key);
+        self.last.rows_written += 1;
+        let at = self.l.rows + k * ROW_BYTES;
+        let w = usize::from(key.w).min(ROW_BYTES / 4);
         let mut buf = [0u32; CHUNK];
         for k0 in (0..w).step_by(CHUNK) {
             let n = CHUNK.min(w - k0);
             for (i, p) in buf[..n].iter_mut().enumerate() {
-                *p = col((k0 + i) as u32);
+                *p = rp_gfx::render::gradient_at(
+                    key.a,
+                    key.b,
+                    key.first + (k0 + i) as u32,
+                    key.span,
+                );
             }
             self.mem.store(at + 4 * k0, &buf[..n]);
         }
         self.mem.sync();
+        at
+    }
+
+    /// One row of colours (`key`, `r.w` wide) drawn down `r` (blended if
+    /// `blend`).
+    fn row(&mut self, dst: usize, r: Rect, key: RowKey, blend: bool) {
+        let at = self.row_at(key);
         let a = u32::from(r.w) * u32::from(r.h);
         if blend {
             self.last.px_blend += a;
@@ -808,7 +880,18 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             _ if r.is_empty() => {}
             0 => {}
             255 => self.fill(dst, r, c),
-            _ => self.row(dst, r, |_| c, true),
+            _ => self.row(
+                dst,
+                r,
+                RowKey {
+                    a: c,
+                    b: c,
+                    first: 0,
+                    span: 1,
+                    w: r.w,
+                },
+                true,
+            ),
         }
     }
 
@@ -890,6 +973,8 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             self.stalls += 1;
             self.fresh = 2;
         }
+        // Everything queued so far is read: every row is free again.
+        self.epoch = self.epoch.wrapping_add(1);
         ok
     }
 
@@ -991,11 +1076,15 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         for w in rect(clip).into_iter().chain([u32::from(self.dither)]) {
             h = fnv(h, w);
         }
-        for (i, c) in frame.cmds().take(cmds).enumerate() {
+        for (i, (c, own)) in frame.cmds_clipped().take(cmds).enumerate() {
             if self.hoist[i] || self.bounds[i].intersect(&clip).is_empty() {
                 continue;
             }
+            for w in rect(own) {
+                h = fnv(h, w);
+            }
             let words: [u32; 5] = match *c {
+                Cmd::Clip { .. } => continue,
                 Cmd::Fill { r, color } => {
                     let [a, b] = rect(r);
                     [1, a, b, color, 0]
@@ -1110,6 +1199,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
 
     fn command(&mut self, frame: &Frame, c: &Cmd, clip: Rect, dst: usize) {
         match *c {
+            Cmd::Clip { .. } => {}
             Cmd::Fill { r, color } => {
                 let t = r.intersect(&clip);
                 if t.is_empty() {
@@ -1131,9 +1221,24 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 if !opaque {
                     self.wallpaper(dst, t);
                 }
-                let span = u32::from(r.w);
-                let col = |k| rp_gfx::render::gradient_at(left, right, first + k, span);
-                self.row(dst, t, col, !opaque);
+                let key = if left == right {
+                    RowKey {
+                        a: left,
+                        b: left,
+                        first: 0,
+                        span: 1,
+                        w: t.w,
+                    }
+                } else {
+                    RowKey {
+                        a: left,
+                        b: right,
+                        first,
+                        span: u32::from(r.w),
+                        w: t.w,
+                    }
+                };
+                self.row(dst, t, key, !opaque);
             }
             Cmd::Outline { r, color } => {
                 if r.is_empty() {
@@ -1226,53 +1331,135 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let t0 = (self.now)();
         let stalls0 = self.stalls;
         // Which commands go in the background, and has it changed?
-        let cmds = frame.cmds().count().min(MAX_CMDS);
-        let mut hash = fnv(0x811C_9DC5u32, self.wall_gen);
-        for (i, c) in frame.cmds().take(MAX_CMDS).enumerate() {
-            let b = c.bounds(frame);
+        // The previous frame has landed: no row of the ring is read now.
+        self.epoch = self.epoch.wrapping_add(1);
+        let mut cmds = 0;
+        for (i, (c, clip)) in frame.cmds_clipped().take(MAX_CMDS).enumerate() {
+            cmds = i + 1;
+            let b = c.bounds(frame).intersect(&clip);
             self.bounds[i] = b;
+            self.clips[i] = clip;
             let glass = matches!(
                 c,
                 Cmd::Fill { .. } | Cmd::HGradient { .. } | Cmd::Outline { .. }
             );
             let covers_earlier =
                 (0..i).any(|j| !self.hoist[j] && !self.bounds[j].intersect(&b).is_empty());
-            self.hoist[i] = glass && !covers_earlier;
+            self.hoist[i] = glass && !covers_earlier && !b.is_empty();
             if self.hoist[i] {
-                let (kind, a, b2) = match *c {
-                    Cmd::Fill { color, .. } => (1, color, 0),
-                    Cmd::HGradient { left, right, .. } => (2, left, right),
-                    Cmd::Outline { color, .. } => (3, color, 0),
-                    _ => (0, 0, 0),
+                let (kind, a, b2, r) = match *c {
+                    Cmd::Fill { color, r } => (1, color, 0, r),
+                    Cmd::HGradient { left, right, r } => (2, left, right, r),
+                    Cmd::Outline { color, r } => (3, color, 0, r),
+                    _ => (0, 0, 0, b),
                 };
+                let mut key = fnv(0x811C_9DC5u32, self.wall_gen);
                 for w in [
                     kind,
-                    u32::from(b.x) << 16 | u32::from(b.y),
-                    u32::from(b.w) << 16 | u32::from(b.h),
+                    u32::from(r.x) << 16 | u32::from(r.y),
+                    u32::from(r.w) << 16 | u32::from(r.h),
                     a,
                     b2,
+                    u32::from(clip.x) << 16 | u32::from(clip.y),
+                    u32::from(clip.w) << 16 | u32::from(clip.h),
                 ] {
-                    hash = fnv(hash, w);
+                    key = fnv(key, w);
                 }
+                // Order matters only where hoisted glass overlaps.
+                for j in 0..i {
+                    if self.hoist[j] && !self.bounds[j].intersect(&b).is_empty() {
+                        key = fnv(key, self.keys[j]);
+                    }
+                }
+                self.keys[i] = key;
             }
         }
-        self.row = 0;
         let mut state = [0u32; 6];
         state[0] = cmd::SCALE_1_TO_1;
         state[1..4].copy_from_slice(&cmd::key(0, 0));
         state[4..].copy_from_slice(&cmd::blend(BLEND_DELL_TEXT));
         self.submit(&state);
-        if self.bg_hash != Some(hash) {
-            let bg = self.l.background;
-            self.wallpaper(bg, SCREEN);
-            for (i, c) in frame.cmds().take(cmds).enumerate() {
-                if self.hoist[i] {
-                    self.command(frame, c, SCREEN, bg);
+        // Where the background must be made again: everywhere if it was
+        // never made (or the wallpaper changed), else only where hoisted
+        // glass came, went or changed (its old and new places).
+        let mut redo = [Rect::default(); MAX_DIRTY];
+        let mut nr = 0;
+        let whole = self.bg_hash.is_none();
+        if whole {
+            redo[0] = SCREEN;
+            nr = 1;
+        } else {
+            let mut add = |r: Rect| {
+                let mut r = r.intersect(&SCREEN);
+                let area = |r: &Rect| u32::from(r.w) * u32::from(r.h);
+                // Overlapping places merge when their union costs no more
+                // than the two (a panel's old and new place, nudged).
+                while let Some(k) = (0..nr).find(|&k| {
+                    area(&redo[k].union(&r)) <= area(&redo[k]) + area(&r)
+                        && !redo[k].intersect(&r).is_empty()
+                }) {
+                    r = redo[k].union(&r);
+                    nr -= 1;
+                    redo[k] = redo[nr];
+                }
+                if r.is_empty() {
+                    return;
+                }
+                if nr < MAX_DIRTY {
+                    redo[nr] = r;
+                    nr += 1;
+                } else {
+                    let best = (0..nr)
+                        .min_by_key(|&k| area(&redo[k].union(&r)) - area(&redo[k]))
+                        .unwrap_or(0);
+                    redo[best] = redo[best].union(&r);
+                }
+            };
+            for &(k, r) in &self.bg_keys[..self.bg_n] {
+                if !(0..cmds).any(|i| self.hoist[i] && self.keys[i] == k) {
+                    add(r);
                 }
             }
-            self.bg_hash = Some(hash);
-            self.fresh = 2;
+            for i in 0..cmds {
+                if self.hoist[i]
+                    && !self.bg_keys[..self.bg_n]
+                        .iter()
+                        .any(|&(k, _)| k == self.keys[i])
+                {
+                    add(self.bounds[i]);
+                }
+            }
+        }
+        if nr > 0 {
+            let bg = self.l.background;
+            for &area in &redo[..nr] {
+                self.wallpaper(bg, area);
+                for (i, (c, _)) in frame.cmds_clipped().take(cmds).enumerate() {
+                    if self.hoist[i] && !self.bounds[i].intersect(&area).is_empty() {
+                        let clip = self.clips[i].intersect(&area);
+                        self.command(frame, c, clip, bg);
+                    }
+                }
+                self.last.background_px += u32::from(area.w) * u32::from(area.h);
+            }
+            self.bg_n = 0;
+            for i in 0..cmds {
+                if self.hoist[i] {
+                    self.bg_keys[self.bg_n] = (self.keys[i], self.bounds[i]);
+                    self.bg_n += 1;
+                }
+            }
             self.last.background = true;
+        }
+        // The area cache's keys start from the background's: any change
+        // to it makes every cached area over it new.
+        let hash = self.bg_keys[..self.bg_n]
+            .iter()
+            .fold(fnv(0x811C_9DC5, self.wall_gen), |h, &(k, _)| fnv(h, k));
+        self.bg_hash = Some(hash);
+        if whole {
+            // Both pictures' contents are unknown: drawn whole.
+            self.fresh = 2;
         }
         // What this frame changed is drawn; what the previous frame changed
         // (the picture drawn into is two frames old) is copied forward from
@@ -1347,11 +1534,11 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             // converted into the screen (ADR-0023 Q1 A).
             let bg = self.l.background;
             self.copy(work, bg, clip);
-            for (i, c) in frame.cmds().take(cmds).enumerate() {
+            for (i, (c, own)) in frame.cmds_clipped().take(cmds).enumerate() {
                 if self.hoist[i] || self.bounds[i].intersect(&clip).is_empty() {
                     continue;
                 }
-                self.command(frame, c, clip, work);
+                self.command(frame, c, own.intersect(&clip), work);
                 drawn.cmds += 1;
             }
             if self.dither {

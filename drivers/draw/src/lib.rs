@@ -219,7 +219,18 @@ pub enum Cmd {
         /// The bytes, in the frame's text store.
         text: TextRef,
     },
+    /// Every later command is drawn only inside `r` (until the next
+    /// `Clip`; [`NO_CLIP`] ends it): a list moved by the pixel inside its
+    /// viewport. Draws nothing itself; renderers read it through
+    /// [`Frame::cmds_clipped`].
+    Clip {
+        /// Where later commands may draw.
+        r: Rect,
+    },
 }
+
+/// A clip that clips nothing (`Cmd::Clip`'s end).
+pub const NO_CLIP: Rect = Rect::new(0, 0, u16::MAX, u16::MAX);
 
 impl Cmd {
     /// The pixels the command may touch: a renderer skips it for a dirty
@@ -228,6 +239,7 @@ impl Cmd {
     pub fn bounds(&self, frame: &Frame) -> Rect {
         match *self {
             Cmd::Fill { r, .. } | Cmd::HGradient { r, .. } | Cmd::Outline { r, .. } => r,
+            Cmd::Clip { .. } => Rect::new(0, 0, 0, 0),
             Cmd::Image { x, y, img } => Rect::new(x, y, img.w, img.h),
             // The line box with a margin: glyphs may overhang their advance
             // (italics, `left` < 0) by a few pixels.
@@ -362,9 +374,33 @@ impl Frame {
         self.dirty[best] = self.dirty[best].union(&r);
     }
 
-    /// The commands, in drawing order.
+    /// The commands, in drawing order (`Clip`s included).
     pub fn cmds(&self) -> impl Iterator<Item = &Cmd> {
         self.cmds[..self.n].iter().flatten()
+    }
+
+    /// Limits every later command to `r` (`None`: the whole screen again).
+    pub fn clip(&mut self, r: Option<Rect>) {
+        self.push(Cmd::Clip {
+            r: r.unwrap_or(NO_CLIP),
+        });
+    }
+
+    /// The drawing commands in order, each with the clip it is drawn in
+    /// ([`NO_CLIP`] outside any): what a renderer draws. `Clip`s
+    /// themselves are left out.
+    pub fn cmds_clipped(&self) -> impl Iterator<Item = (&Cmd, Rect)> {
+        self.cmds()
+            .scan(NO_CLIP, |clip, c| {
+                Some(match *c {
+                    Cmd::Clip { r } => {
+                        *clip = r;
+                        None
+                    }
+                    _ => Some((c, *clip)),
+                })
+            })
+            .flatten()
     }
 
     /// The changed rectangles.
