@@ -27,8 +27,7 @@ mod image {
     use rp_mbx3d_render::{Clock, TileOrder, format};
     use rp_scene::{
         AREA, ASK_LINES, B2B, BACKGROUNDS, BAR, BAR_COLOURS, Clock as PhaseClock, LABEL_ROWS,
-        MARKER, ONE_OFF, PHASES, Phase, SCENES, SLOTS, Times, picture, plan, scene, texels,
-        textured,
+        MARKER, ONE_OFF, Phase, SCENES, SLOTS, Times, picture, plan, scene, texels, textured,
     };
     use rp_vram_map::{POOL, Pool};
 
