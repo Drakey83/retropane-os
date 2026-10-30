@@ -20455,7 +20455,11 @@ mod image {
         log!(
             "  R23E done: the planes as found, the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
             g.e.regs.read32(clock::COREPLL),
-            if underrun_take(&mut g.e.regs) { "set (cleared)" } else { "clear" }
+            if underrun_take(&mut g.e.regs) {
+                "set (cleared)"
+            } else {
+                "clear"
+            }
         );
     }
 
