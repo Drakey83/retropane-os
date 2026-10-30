@@ -14,6 +14,8 @@ still in design.
 | `today-night-clear.jpg` | Clear night |
 | `today-thunderstorm.jpg` | Thunderstorm |
 | `vclouds-icons.jpg` | The 22 icons the Today screen uses, each at its own size, at 96 px and at 48 px |
+| `weather-sheet.jpg` | The Weather proposal (2026-10-30): the approved Modern home, the app's seven screens, the Classic desktop and app on one sheet ([../weather-flows.md](../weather-flows.md)) |
+| `weather-app-*.jpg`, `weather-classic-*.jpg` | Each of those screens at 2x, with its caption |
 | `optional-packs.jpg` | The five optional icon packs (not on the front page): six of the 22 icons each |
 
 The look is the smoked-glass design in [../ui.md](../ui.md); the weather

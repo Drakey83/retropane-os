@@ -9,6 +9,95 @@ hero, the sky is the wallpaper, VClouds' icons keyed by WMO codes, US
 units, "sample data" shown until the network exists ([ui.md](ui.md),
 [weather.md](weather.md), [today-screen-plan.md](today-screen-plan.md)).
 
+## The owner's direction (2026-10-30, later the same day)
+
+His words: "these are going to need to be pretty unique as there is not
+really an SPB or WM equivalent." His direction, to confirm screen by screen
+on the mock-ups (thinking aloud is not yet a vote):
+
+- **Modern:** the home page already mocked up (`mockups/today-clear.jpg`)
+  is the default home; tapping its weather opens the full-screen app.
+- **The app:** modern features, data from popular open sources and from
+  hyperlocal ones such as Tempest; at least a 10-day forecast, an hourly
+  forecast and a radar view; American and European formats selectable.
+- **Classic:** a desktop-skin style weather widget (as Rainmeter skins
+  look on a Windows desktop: our own art) over the top half of a Windows
+  Mobile-style desktop, customisable icons below it; tapping the widget
+  opens the same Weather app.
+
+This replaces WF1 and WF2's options below, and the sketches under "The
+screens" are kept only as the earlier draft. **The mock-ups of the
+proposal** (sheet `mockups/weather-sheet.jpg`, each screen
+`mockups/weather-*.jpg`):
+
+<img src="mockups/weather-sheet.jpg" width="900" alt="Ten screens: the approved Modern home, the Weather app's Now page and Now scrolled, Hourly, 10 Day, Radar, the European format, settings, the Classic desktop with its weather widget, and the Classic app">
+
+### The full-screen app, proposed (screens 1-7)
+
+- **One app, two skins.** Classic and Modern open the same app with the
+  same four views; Modern draws it as smoked glass over the sky at
+  finger scale, Classic as a light Windows Mobile 5-style window at
+  stylus scale (screen 9). One set of data, one set of flows, two
+  layouts: the theme engine carrying layout, as decided.
+- **Four views in a tab row: Now, Hourly, 10 Day, Radar.** Tabs rather
+  than one endless page, because the D-pad and the stylus both need a
+  short way to each, and each view fills the screen when it is chosen.
+  Places by swiping sideways (Modern) or the place line (Classic);
+  softkeys Places and Menu (Modern), Refresh and Menu (Classic).
+- **Now** (screens 1-2): the reading large; **the next hour's rain
+  minute by minute** ("Rain starting in 25 min"); the hourly strip; an
+  alert chip; scrolled down: the next 10 days with range bars, a live
+  radar thumbnail, **your station** (Tempest), wind, air and UV, sun and
+  moon. Each card can be hidden or moved.
+- **Hourly** (screen 3): 48 hours as one graph (temperature, rain
+  chance, wind) panned sideways, an hour picked by dragging or by the
+  D-pad filling a card below. One picture panned is what option D's
+  display panning does for free.
+- **10 Day** (screen 4): a row a day with low and high on one shared
+  scale, so a cold snap shows as a bar out of line; a row opens its
+  hours.
+- **Radar** (screen 5): the past hour and the next as a loop with a
+  scrubber, rain and lightning layers. **The panel feels one point**, so
+  no pinch: zoom by + and &minus;, a double tap, or the D-pad.
+- **Formats** (screens 6-7): one switch, American (&deg;F, mph, in,
+  12-hour, month/day) or European (&deg;C, m/s or km/h, mm, hPa, km,
+  24-hour, day.month), then any unit on its own.
+
+### Sources (proposed)
+
+Open, no account, in order of trust, each piece of the screen from the
+best source that has it:
+
+| Source | What it gives | Where |
+|---|---|---|
+| **Tempest station, its hub on the home Wi-Fi** | now: temperature, wind, rain, pressure, lightning distance, every minute or so | the hub's local broadcast (a finding: Tempest hubs announce readings on the local network; to check against its published local API), so no account and no internet; Tempest's own web service, with the owner's token, as the fallback away from home |
+| National Weather Service | forecast, alerts, radar for US places | keyless, US government data |
+| Open-Meteo | hourly, 10 days, next-hour rain (15-minute steps), air quality, WMO codes everywhere | keyless for non-commercial use (its terms to check) |
+| MET Norway | forecast for European places | keyless with an identifying User-Agent |
+
+**Ours, beyond the original:**
+- **Your station corrects the forecast's next hours.** When the
+  station reads 2&deg; warmer than the model's "now", the next hours are
+  moved by that difference, fading to the model's own values over a few
+  hours: a cheap correction that makes the hourly line right for your
+  own yard.
+- **Lightning from your own station** in the radar's layer and as a
+  notice ("Lightning 6 mi"), which no 2005 device could have.
+- **Radar pictures arrive as PNG images**, so the app needs the same
+  validating PNG reader weather.md already plans for user icon packs (no
+  second decoder); every reply is still hostile input (security.md).
+- The source choice is its own ADR (WF5): privacy, terms, security.
+
+### Pushback, for the owner to weigh
+
+- **The softkeys on the Classic desktop:** Calendar and Edit Today
+  (decided 2026-10-12), against interaction.md's rule I6 (right softkey
+  = Menu). Proposed: home screens keep the decided pair as an exception
+  named in I6.
+- **Radar costs the most of anything here:** a loop of 12-24 map
+  pictures per refresh over 802.11b. Proposed: fetched only while the
+  Radar view or its thumbnail is on screen, never in the background.
+
 ## What the finding is
 
 - **Windows Mobile 5 had no weather program** (weather.md). Its nearest
