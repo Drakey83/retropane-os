@@ -114,8 +114,24 @@ X51v.
 - **Step 2, movement:** four ways recorded from the preview's real frames
   (Stagger, Rise, Expand, None) and the live drag, for the owner's pick
   (R131); Stagger stays until he picks.
-- **Open:** every step's proof on the X51v (the owner's run), his pick of
-  the movement, I6 (the right softkey opens Settings, not a Menu: a vote).
+- **Device run 2 (2026-10-30, `local/rp-today-weather-run2.txt`):**
+  entrances ~20 fps (from ~10), an Hourly drag ~14 fps, radar frames
+  6-15 fps. **The owner, after it:** "This is the whole reason I wanted to
+  have GPU figured out before i moved to UI/UX": movement goes on the
+  GPU path decided in ADR-0034 (option D: panned pages on the planes,
+  glass over them, 3D layers where those don't fit), not more 2D
+  redrawing. Round 2's 2D sheet (`research/sheets/weather-drag-speed.md`)
+  is set aside for it. **Next:** a sheet mapping each Weather movement
+  (list drag and fling, page turns, entrance, radar loop) to ADR-0034's
+  modes and what of the graphics service is proven on the X51v (R121's
+  overlay, the 3D compositor harness), then the build.
+- **Also from run 2:** Tempest can't fetch (no network on the device:
+  proposed, a PC fetch over the dock's USB link first); the settings
+  need a redesign as mock-ups (each one working or saying why not,
+  Tempest's own options on a page of its own); the Night map is the
+  default (30ca144c).
+- **Open:** the owner's pick of the movement, I6 (the right softkey opens
+  Settings, not a Menu: a vote).
 
 ## Built on the proposed answers (each one cheap to change later)
 
