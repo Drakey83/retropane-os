@@ -46,6 +46,36 @@ to start on the wallpaper theme customization too." **A plan for his go
   (softkeys say "Not yet"), live data. rp-today is at the loader's image
   limit: R129 before the next screen goes in.
 
+## The owner's verdict on the first device run (2026-10-30) and the next steps
+
+He tried it on the X51v: "i dont love the animation, i cant drag any list up
+and down, it doesnt do anything. it doesnt feel very polished or modern
+(the animation and functionality is not there) there is no setting, no
+easy way to get back home, and I dont see radar, or no way to put in my
+api key". The first slice was short of the ask (memory: build the owner's
+ask in full). Next, in this order:
+
+1. **Live touch:** `Pen::Move` already comes from the touch driver
+   (shell/today/src/main.rs drops it); add `Input::PenMove`, lists that
+   follow the finger 1:1, fling with momentum and an edge bounce, press
+   states, swipes measured live. Proven on the X51v before anything else.
+2. **Movement the owner picks:** moving mock-ups (GIFs from the preview's
+   real frames) of at least three ways, e.g. the hero card expanding into
+   the app (shared element), pages pushed sideways as one with depth, a
+   living sky behind the app (ui.md's ideas); on the 3D compositor where
+   that is smoother (ADR-0034, option D).
+3. **A clear way back:** a back control in the app's header and on the
+   left softkey (vote I7's proposal), Home as now.
+4. **Settings:** units and region, places, the data source (sample,
+   Open-Meteo, the owner's Tempest), refresh, icon pack.
+5. **The Tempest key:** entered on the PC and sent over USB (no keyboard
+   on the device yet) or typed on an on-screen keyboard: the owner picks;
+   either way stored by the device's own key store, never in the repo or
+   typed by Claude. His key can already be checked from the PC
+   (Tempest's REST API, his own PowerShell window).
+6. **Radar:** the loop on our base maps (tools/mockups/radar_basemaps.py),
+   sample frames until the network.
+
 ## Built on the proposed answers (each one cheap to change later)
 
 **37 votes are open:** I1-I12, WF1-WF10, L1-L5, D1-D4, and the verdicts on the
