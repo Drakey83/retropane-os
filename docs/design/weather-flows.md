@@ -38,7 +38,11 @@ the app, differs. So the app is screens 1-7 in both looks, and screen 9
 (Classic's own app skin) is set aside.
 **The WM-lens ruling (owner, 2026-10-30, ui.md) doesn't apply here:**
 "there is no default WM weather app", so Weather keeps its own design,
-screens 1-7, the same under both desktops. Classic reaches the app from its
+screens 1-7, the same under both desktops. **For comparison only (the
+owner asked what Claude would draw):** Weather as a WM5 program in the
+retro-modern look, `mockups/weather-wmlens-sheet.jpg` (Now as a details
+list, Hourly as a list of hours, 10 Day, Radar with Play on the left
+softkey, the Menu open); it replaces nothing. Classic reaches the app from its
 desktop widget (screen 8), Modern from the home page (screen 0).
 
 ### The full-screen app, proposed (screens 1-7)
