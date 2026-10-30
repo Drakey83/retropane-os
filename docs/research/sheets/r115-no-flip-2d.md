@@ -183,3 +183,16 @@ P1-P3 were unchanged (0 torn).
     small change (the copy band's spread, 3.3-8.1 ms, narrows windows);
   - frame and queueing's median, up 0.1 ms (+36% against its floor).
 - The floors are the owner's to set.
+
+## The chase of the 7 windowless copies (the owner, 2026-10-30: "2 more test to chase the 7")
+**Stop rule (written first): two device runs.** If the second doesn't
+copy the small changes the first shows windowless, the 7 stay as they
+are, recorded, and the floors go to the owner.
+- **Test 1 (diagnosis, no change in behaviour):** `rp-today` keeps each
+  windowless frame (its scan line at the decision, its rectangles, the
+  copies' band) and prints them after the replay. One `cargo xtask perf`.
+- **Test 2:** the fix that test 1 points to, measured by `perf`.
+- **Leading guess (not measured):** the copies' band is planned like a
+  3D render's: twice the last copy for a spike, so 3.3-8.1 ms per whole
+  screen. But a copy is memory bandwidth, not a render that can spike, so
+  that doubling may close windows that a copy's real time leaves open.

@@ -294,6 +294,9 @@ pub struct Starts {
     /// ... because no copy had a window (no copy timed, an unmeasured
     /// display clock, or no tear-free start).
     pub flips_no_window: u32,
+    /// The scan line when the last of those was decided (R115's chase of
+    /// the windowless copies, the owner 2026-10-30: "2 more test").
+    pub last_no_window_line: Option<u32>,
 }
 
 /// How a scene frame starts (R20).
@@ -440,6 +443,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 flips_slipped: 0,
                 flips_large: 0,
                 flips_no_window: 0,
+                last_no_window_line: None,
             },
             #[cfg(test)]
             before_copy: None,
@@ -595,6 +599,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             let w = self.copy_window(&rects[..k]);
             if w.is_none() {
                 self.starts.flips_no_window += 1;
+                self.starts.last_no_window_line = Some(self.scan_line());
             }
             w
         };

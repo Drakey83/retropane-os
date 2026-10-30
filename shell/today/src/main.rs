@@ -360,6 +360,13 @@ mod image {
         let mut pending: Option<u32> = None; // when the input being answered was read
         // An answered input whose frame is with the engine, not yet shown.
         let mut showing: Option<u32> = None;
+        // R115's chase (the owner, 2026-10-30: "2 more test to chase the
+        // 7"): each 2D frame flipped for want of a copy window, kept for
+        // the summary (no card write mid-run, C59): the scan line, its
+        // rectangles (top, rows, pixels), the copies' band.
+        let mut windowless = [(0u32, [(0u16, 0u16, 0u32); 3], 0usize, None::<(u32, u32)>); 16];
+        let mut windowless_n = 0usize;
+        let mut no_window_seen = 0u32;
         // When the frame in flight next wants a poll (the service's clock,
         // us): its flip's deadline, or the engine's next look (R115).
         let mut flip_due: Option<u32> = None;
@@ -395,6 +402,21 @@ mod image {
                 Step::Wait(t) => Some(t),
                 _ => None,
             };
+            let nw = gfx.starts().flips_no_window;
+            if nw != no_window_seen {
+                no_window_seen = nw;
+                if windowless_n < windowless.len() {
+                    let line = gfx.starts().last_no_window_line.unwrap_or(0);
+                    let band = gfx.copy_times();
+                    let drawn = gfx.two_d().drawn();
+                    let mut rects = [(0u16, 0u16, 0u32); 3];
+                    for (o, r) in rects.iter_mut().zip(drawn) {
+                        *o = (r.y, r.h, u32::from(r.w) * u32::from(r.h));
+                    }
+                    windowless[windowless_n] = (line, rects, drawn.len(), band);
+                    windowless_n += 1;
+                }
+            }
             if flip_due.is_none()
                 && let Some(at) = showing.take()
             {
@@ -709,6 +731,13 @@ mod image {
                     gfx.starts().flips_no_window,
                     gfx.copy_times()
                 );
+                for (line, rects, n, band) in &windowless[..windowless_n] {
+                    let _ = writeln!(
+                        RunLog,
+                        "windowless copy: at line {line}, {n} rectangles (top, rows, pixels) {:?}, the copies' band {band:?} us",
+                        &rects[..(*n).min(3)]
+                    );
+                }
                 // Typical values (medians) of each part of a tap's answer.
                 for (name, l) in [
                     ("touch landing to the filter's verdict", &mut *settle),
