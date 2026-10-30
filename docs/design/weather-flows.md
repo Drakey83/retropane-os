@@ -53,8 +53,9 @@ graph, cards, the 10-day bars). The radar on three real base maps drawn
 on the PC from Natural Earth (public domain) and open elevation tiles:
 Night (dark), Ink (black water, white land), Relief (tinted by height);
 the look is a Menu choice. Map drawing script:
-`tools/mockups/radar_basemaps.py` (data in `local/maps/`, not committed). Awaiting the
-owner's verdict. Classic reaches the app from its
+`tools/mockups/radar_basemaps.py` (data in `local/maps/`, not committed). The owner likes the real-data
+maps (2026-10-30); proposed: Ink in light mode, Night in dark mode
+(ui.md "Light and dark, from the start"). Classic reaches the app from its
 desktop widget (screen 8), Modern from the home page (screen 0).
 
 ### The full-screen app, proposed (screens 1-7)

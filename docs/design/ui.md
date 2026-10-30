@@ -76,6 +76,65 @@ suggestion especially with using rule 0 mentality."
   [weather-flows.md](weather-flows.md) (both drafts for a vote,
   2026-10-30).
 
+## Light and dark, from the start (owner, 2026-10-30)
+
+The owner: "lets think about light mode and dark mode being built into the
+design language from the very beginning. Have it so you can toggle light
+and dark mode, and have it auto change based on the time of day." Mock-up,
+the same screens in both: `mockups/weather-light-dark-sheet.jpg`.
+
+<img src="mockups/weather-light-dark-sheet.jpg" width="900" alt="The Weather app's Now, Hourly, 10 Day, Radar and Menu screens in dark mode (top) and light mode (bottom)">
+
+**Decided by the owner:** both modes, a toggle, and an automatic change
+with the time of day. **Proposed, for his vote (L1-L5):**
+
+- **Built in, not painted on:** every colour on screen is a named role
+  (text, second text, glass, glass edge, bar, focus, accent, warning,
+  rain blue...) with a light and a dark value; no app or screen writes a
+  raw colour. The shell already sends every colour through one place
+  (`rp_draw::look::theme`); this grows it into the role table, and a
+  build check refuses a raw colour outside it, so a screen can't be
+  "forgotten" in one mode.
+- **Three settings: Light, Dark, Auto.** Auto (the default) follows
+  **sunrise and sunset at your home place, worked out on the device**
+  (the same sun sums Weather uses, no network), instead of fixed clock
+  times: dark comes when it actually gets dark, in December and in June.
+  A fixed schedule is offered beside it. Phones do much the same; WM had
+  no dark mode at all.
+- **One day/night clock for the whole system:** the same switch drives
+  the night light's backlight schedule (decided, hw/backlight.md), the
+  wallpaper's night dimming (ui.md) and the radar map, so nothing
+  disagrees about whether it is night.
+- **The toggle:** in Settings, and one tap in the notification shade.
+- **The change:** a 250 ms cross-fade drawn by the 3D core, never in the
+  middle of a touch (it waits for the stylus or finger to lift).
+- **The two glasses:** dark mode is the smoked glass as chosen; light
+  mode is frosted white glass with dark text over the same photo, a
+  light veil over the wallpaper instead of a dark one. Same layout, same
+  type, same art.
+- **The radar map follows the mode:** Ink by day, Night by night (the
+  owner likes the real-data maps: weather-flows.md); the Menu can pin
+  either.
+- **Old Windows Mobile programs:** those that ask the system for its
+  colours (the usual way) get the mode for free, by our answering those
+  calls from the role table; programs that paint their own colours stay
+  as they were (legacy not locked out).
+- **Cost:** the pre-drawn chrome is kept only for the mode in use and
+  redrawn once at a switch, so RAM doesn't double. Honest note: on this
+  LCD the backlight lights every pixel, so dark mode saves no battery; it
+  is for comfort at night, light mode for reading in daylight.
+- **Checks:** every text role's contrast is checked by the build on the
+  lightest and darkest spot of every shipped wallpaper in both modes.
+  The faint icons (fog, clear night: weather.md) get a look on the light
+  glass.
+
+Votes: **L1** the role table plus the build check (recommended yes);
+**L2** Auto by sunrise and sunset at the home place as the default
+(recommended) or a fixed schedule; **L3** one day/night clock for mode,
+night light, wallpaper and map (recommended yes); **L4** the toggle in
+Settings and the shade (recommended yes); **L5** old programs' system
+colours follow the mode (recommended yes).
+
 ## SPB Mobile Shell's philosophy (owner, 2026-10-19)
 
 **The scope (owner, 2026-10-19, later the same day): the whole
