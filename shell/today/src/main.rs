@@ -701,9 +701,13 @@ mod image {
                 );
                 let _ = writeln!(
                     RunLog,
-                    "gpu frames: worst CPU queueing {queue_worst} us, worst wait for the previous frame and scan-out {wait_worst} us, worst queue-to-flip {engine_worst} us, background rebuilt {rebuilds} times; flips waited for the blanking {}, slipped a refresh {}",
+                    "gpu frames: worst CPU queueing {queue_worst} us, worst wait for the previous frame and scan-out {wait_worst} us, worst queue-to-flip {engine_worst} us, background rebuilt {rebuilds} times; flips waited for the blanking {}, slipped a refresh {}; copied behind the scan {}, flipped as large {}, flipped with no copy window {}; copy times {:?} us",
                     gfx.starts().flips_waited,
-                    gfx.starts().flips_slipped
+                    gfx.starts().flips_slipped,
+                    gfx.starts().two_d_behind,
+                    gfx.starts().flips_large,
+                    gfx.starts().flips_no_window,
+                    gfx.copy_times()
                 );
                 // Typical values (medians) of each part of a tap's answer.
                 for (name, l) in [

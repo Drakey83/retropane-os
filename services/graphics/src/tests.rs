@@ -587,6 +587,9 @@ fn a_2d_change_with_no_scene_is_copied_into_the_shown_screen_behind_the_scan() {
     assert_eq!(r.frame(&tap(Rect::new(0, 0, 480, 32), WHITE)), Step::Shown);
     assert_eq!(r.frame(&tap(Rect::new(0, 0, 480, 32), BLUE)), Step::Shown);
     let st0 = r.g.starts();
+    // The first frame (the whole screen) flipped; from then on the
+    // picture shown, whichever it is, takes every change by the copy.
+    let shown = r.shown().at;
     let mut drawn_at = 0;
     for (k, (y, colour)) in [(100u16, BLUE), (420, WHITE), (560, BLUE)]
         .into_iter()
@@ -598,8 +601,8 @@ fn a_2d_change_with_no_scene_is_copied_into_the_shown_screen_behind_the_scan() {
         for _ in 0..100 {
             assert_eq!(
                 r.shown().at,
-                screen0,
-                "change {k}: screen 0 shown throughout"
+                shown,
+                "change {k}: the same picture shown throughout"
             );
             match step {
                 Step::Wait(t) => {
@@ -656,14 +659,22 @@ fn a_2d_change_with_no_scene_is_copied_into_the_shown_screen_behind_the_scan() {
         r.clock.0.get() - t0 < FLIP_LEAD_US,
         "waited only the few lines"
     );
-    assert_eq!(r.shown().at, screen0);
+    assert_eq!(r.shown().at, shown);
     // A large change (over a quarter of the screen) flips instead.
     let before = r.g.starts();
     let _ = r.frame(&tap(Rect::new(0, 0, 480, 400), BLUE));
     let after = r.g.starts();
     assert_eq!(after.two_d_behind, before.two_d_behind, "not copied");
     assert_eq!(after.flips_waited, before.flips_waited + 1, "flipped");
-    // A scene opened now starts with screen 0 already shown.
+    assert_eq!(after.flips_large, before.flips_large + 1, "as large");
+    // A small change right after a flip copies into the picture the flip
+    // showed (it doesn't flip back: today-0015's every-frame flips).
+    let shown = r.shown().at;
+    let before = r.g.starts();
+    let _ = r.frame(&tap(Rect::new(40, 100, 160, 48), WHITE));
+    assert_eq!(r.shown().at, shown, "no flip back");
+    assert_eq!(r.g.starts().two_d_behind, before.two_d_behind + 1);
+    // A scene opened now is drawn with screen 0 shown (C71 R-B).
     let _ = scene(&mut r);
     let _ = r.frame(&Frame::new());
     assert_eq!(r.shown().at, screen0);

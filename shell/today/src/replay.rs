@@ -139,6 +139,54 @@ mod tests {
         }
     }
 
+    /// Each replayed answer's changed area, printed (R115 part 2,
+    /// 2026-10-30: presses 1-3% of the screen, the Start menu's opening
+    /// and closing about half): `cargo test -p rp-today
+    /// the_replays_changed_areas -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "exploration: prints each answer's changed area"]
+    fn the_replays_changed_areas() {
+        let cal = Calibration::X51V_DEFAULT;
+        let mut shell = Shell::new(crate::shell_fonts(), crate::icons(), true);
+        let mut filter = Filter::new();
+        let mut frame = rp_draw::Frame::new();
+        let mut now = 0u32;
+        shell.frame(&mut frame);
+        for st in steps(DATA) {
+            now += u32::from(st.wait_ms).max(7);
+            shell.tick(now);
+            let ev = filter.sample(st.sample, now);
+            let map = |x, y| cal.to_screen(x, y, (crate::W as u16, crate::H as u16));
+            let what = match ev {
+                Pen::Down(x, y) => {
+                    let (x, y) = map(x, y);
+                    shell.input(Input::PenDown { x, y });
+                    format!("down {x},{y}")
+                }
+                Pen::Up(x, y) => {
+                    let (x, y) = map(x, y);
+                    shell.input(Input::PenUp { x, y });
+                    format!("up {x},{y}")
+                }
+                _ => String::new(),
+            };
+            if shell.needs_frame() {
+                shell.frame(&mut frame);
+                let px: u32 = frame
+                    .dirty()
+                    .iter()
+                    .map(|r| u32::from(r.w) * u32::from(r.h))
+                    .sum();
+                std::println!(
+                    "{now} {what}: {} rects {px} px ({}%) {:?}",
+                    frame.dirty().len(),
+                    px * 100 / (480 * 640),
+                    frame.dirty()
+                );
+            }
+        }
+    }
+
     /// The scenario through the image's filter and the shell (the same
     /// calls as `main`'s loop, without the drawing): it must stay a run
     /// of the Today screen: no return to the loader, no align screen, and

@@ -139,3 +139,22 @@ P1-P3 were unchanged (0 torn).
 - **Next, to find out:** log each frame's changed area and the copies in
   `rp-today`, to see why its tap answers are large (the glass panels'
   redraw?) and whether shrinking them lets them go by the copy.
+
+## Why the Today screen flipped (looked into, the owner's "Yes, look into it")
+- **The replay's answers are mostly small**, measured on the PC: a press
+  changes 1-3% of the screen, a dock tap's lift 3-4%. Opening and closing
+  the Start menu change about half (its 280 x 528 panel).
+  `cargo test -p rp-today the_replays_changed_areas -- --ignored
+  --nocapture` prints them.
+- **A flaw found:** after any flip, screen 1 is shown and the next frame
+  is drawn into screen 0. The build flipped that frame back, so every flip
+  forced another, and the menu-heavy replay ping-ponged.
+  - **Fixed:** a change is now copied into whichever picture is shown
+    (screen 0 whenever a scene is open, as C71 R-B requires).
+  - A host test checks that a small change right after a flip doesn't flip
+    back; a mutant is caught.
+- **Each flip now has its reason logged** in `rp-today`'s gpu line (too
+  large, or no copy window), with the copies and the copy times, so the
+  next perf run shows where each frame went.
+- Still large by design: the menu's open and close (about half the
+  screen) flip.

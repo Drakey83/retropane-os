@@ -288,6 +288,12 @@ pub struct Starts {
     /// ... of them, flipped more than a refresh after they were ready (the
     /// caller polled too late for the blanking it was due at).
     pub flips_slipped: u32,
+    /// 2D frames (no scene) flipped because their change was over
+    /// `COPY_MAX_PX` (R115 part 2).
+    pub flips_large: u32,
+    /// ... because no copy had a window (no copy timed, an unmeasured
+    /// display clock, or no tear-free start).
+    pub flips_no_window: u32,
 }
 
 /// How a scene frame starts (R20).
@@ -432,6 +438,8 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 two_d_now: 0,
                 flips_waited: 0,
                 flips_slipped: 0,
+                flips_large: 0,
+                flips_no_window: 0,
             },
             #[cfg(test)]
             before_copy: None,
@@ -563,7 +571,6 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// it is flipped in the blanking instead ([`Job::Flip`]), after which
     /// screen 0 is shown and the frames after it go by the copy.
     fn two_d_alone<C: Clock>(&mut self, at: usize, drawn: &[Rect], clock: &mut C) -> Step {
-        let other = self.two_d.screens()[1];
         let mut rects = [Rect::default(); MAX_DIRTY];
         let k = two_d_rects(&mut rects, drawn);
         let px: u32 = rects[..k]
@@ -574,10 +581,24 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         // engine after a narrow window (emu-today, 2026-10-30: whole-screen
         // frames by the copy answered in up to 1.8 s); the flip costs
         // nothing once its blanking comes.
-        if at == other
-            && px <= COPY_MAX_PX
-            && let Some((from, to)) = self.copy_window(&rects[..k])
-        {
+        // Into whichever picture is shown: after a flip that is screen 1,
+        // and flipping back would make every frame after a flip flip too
+        // (today-0015: 53 of ~54 frames flipped).
+        let window = if px > COPY_MAX_PX {
+            self.starts.flips_large += 1;
+            None
+        } else if at == self.two_d.front() {
+            // Drawn into the picture shown (never, as the 2D renderer draws
+            // into the other): nothing to copy from, so flipped as before.
+            None
+        } else {
+            let w = self.copy_window(&rects[..k]);
+            if w.is_none() {
+                self.starts.flips_no_window += 1;
+            }
+            w
+        };
+        if let Some((from, to)) = window {
             self.job = Job::Copy2d { from, to };
             return self.poll(clock);
         }
@@ -1192,14 +1213,17 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         }
     }
 
-    /// 2D's changes `rects` copied from screen 1 into screen 0 (shown),
-    /// both screens then holding the frame (the held frame dropped). If the
-    /// copy stalls, screen 1 is shown instead (whole: the 3D core idle,
-    /// amendment P rule 4), the scene drawn again on the next frame,
-    /// `false`.
+    /// 2D's changes `rects` copied from the picture not shown into the
+    /// one shown (screen 0 whenever a scene is open: C71 R-B; either with
+    /// none, R115 part 2), both screens then holding the frame (the held
+    /// frame dropped). If the copy stalls, the other picture is shown
+    /// instead (whole: the 3D core idle, amendment P rule 4), the scene
+    /// drawn again on the next frame, `false`.
     fn give_2d<C: Clock>(&mut self, rects: &[Rect], clock: &mut C) -> bool {
-        let [safe, other] = self.two_d.screens();
-        let ok = self.copy_screens(safe, other, rects, clock);
+        let [s0, s1] = self.two_d.screens();
+        let shown = self.two_d.front();
+        let held = if shown == s0 { s1 } else { s0 };
+        let ok = self.copy_screens(shown, held, rects, clock);
         if ok {
             self.two_d.keep_front();
         } else {
