@@ -36,14 +36,9 @@ proposal** (sheet `mockups/weather-sheet.jpg`, each screen
 the same in Classic and Modern; only the desktop, and so the way into
 the app, differs. So the app is screens 1-7 in both looks, and screen 9
 (Classic's own app skin) is set aside.
-**And (owner, next message, for every app):** apps look like Windows
-Mobile's through a retro-modern lens, in look and function (ui.md). So
-screens 1-7 (an SPB-like glass page) are not yet that: Weather's app is
-to be redrawn as a WM5 program would have been (title bar with ok, a
-details list, a tab row, Refresh and Menu softkeys: screen 9's
-structure) in the retro-modern look (the smoked glass over the sky, the
-modern type, the features of screens 1-7: next-hour rain, the hourly
-graph, the 10-day range bars, radar, your station). Classic reaches the app from its
+**The WM-lens ruling (owner, 2026-10-30, ui.md) doesn't apply here:**
+"there is no default WM weather app", so Weather keeps its own design,
+screens 1-7, the same under both desktops. Classic reaches the app from its
 desktop widget (screen 8), Modern from the home page (screen 0).
 
 ### The full-screen app, proposed (screens 1-7)

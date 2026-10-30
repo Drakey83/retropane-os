@@ -66,8 +66,10 @@ suggestion especially with using rule 0 mentality."
   each app starts from its Windows Mobile 5 layout, flow and functions
   (the finding), and is modernised in both look (the smoked glass, type,
   motion) and function (rule 0's better ways, proposed beside WM's for
-  the owner to pick). An app WM never had (Weather) is designed as WM5
-  would have shipped it, through the same lens.
+  the owner to pick). **An app Windows Mobile never had is designed on
+  its own** (owner: "no, not weather", "there is no default WM weather
+  app"): Weather keeps the unique design he directed (weather-flows.md,
+  mock-ups 1-7), in the same retro-modern look.
 - **First real program: Weather** (the default home). Its interaction
   foundations come first, decided once for every app:
   [interaction.md](interaction.md), then
