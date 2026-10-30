@@ -17850,6 +17850,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R114 {
+            r114_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R113B {
             r113b_run(g, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20233,6 +20239,133 @@ mod image {
             }
         }
         true
+    }
+
+    /// Run R114 (see [`R114`]).
+    #[inline(never)]
+    fn r114_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let Some(cur) = GC2DA_HELD.put_with(|| None) else {
+            log!("  R114: run twice in one start: nothing run");
+            return;
+        };
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf + 1) * full {
+            log!("  R114: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        // Every place used must miss the textures (in the pool) and each
+        // other: the targets up to 0x396000 + a screen, the moved textures
+        // at R114_TEX_BASE.
+        let last = GC2DE_SCREEN1 + R114_OFFSETS[R114_OFFSETS.len() - 1] + rp_vram_map::SCREEN_BYTES;
+        let tex_end = R114_TEX_BASE + 4 * 0x2_0000 + R114_OFFSETS[R114_OFFSETS.len() - 1];
+        let ts = [tex.t565, tex.t4444, tex.t8888, tex.plane];
+        if last > R114_TEX_BASE
+            || tex_end > rp_vram_map::POOL.at
+            || ts.iter().any(|t| t.at < rp_vram_map::POOL.at)
+        {
+            log!(
+                "  R114: the places clash (targets to 0x{last:x}, textures moved to 0x{tex_end:x}, the pool from 0x{:x}): nothing run",
+                rp_vram_map::POOL.at
+            );
+            return;
+        }
+        let (refs, rest) = all.split_at_mut(nf * full);
+        let seen = &mut rest[..full];
+        let want = |f: usize| f * full..(f + 1) * full;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            ["R114: SCREEN 1 PLACE", "ADDRESS SWEEP", "NOTHING TO DO"],
+        );
+        let Some(_) = clock_apply(g, GC2DD_STEP) else {
+            clock_restore(&mut g.e.regs);
+            log!("  R114: 149.50 / 2 didn't take; Windows Mobile's clock put back: nothing run");
+            g.nudge = nudge;
+            return;
+        };
+        let under = underrun_take(&mut g.e.regs);
+        log!(
+            "  R114 (the screen-1 address sweep, the owner's go 2026-10-29): the {nf} game frames at 149.50 / 2 into 0x{GC2DE_SCREEN1:x} + each of {} offsets, {R114_REPS} renders each, then the textures moved instead; the underrun flag {}",
+            R114_OFFSETS.len(),
+            if under { "set (cleared)" } else { "clear" }
+        );
+        // The references: each frame into 0x296000.
+        for f in 0..nf {
+            if gc2de_render(g, cur, tex, (f, GC2DE_SCREEN1)).is_none() {
+                log!("  R114: frame {f} not drawn: nothing more run");
+                if let Some((_, rr)) = cur.take() {
+                    let _ = rr.release(&mut g.pool);
+                }
+                clock_restore(&mut g.e.regs);
+                g.nudge = nudge;
+                return;
+            }
+            let _ =
+                read_compare_volatile(g.mem.0, GC2DE_SCREEN1 as usize, seen, &mut refs[want(f)]);
+        }
+        for moved_tex in [false, true] {
+            for &off in &R114_OFFSETS {
+                rt::check_in();
+                let (at, t) = if moved_tex {
+                    (GC2DE_SCREEN1, r114_move(g, tex, off))
+                } else {
+                    (GC2DE_SCREEN1 + off, tex)
+                };
+                for f in 0..nf {
+                    let mut times = Gc2deTimes::NEW;
+                    let mut wrong = 0u32;
+                    for k in 0..R114_REPS {
+                        match gc2de_render(g, cur, t, (f, at)) {
+                            Some((c, _)) => {
+                                times.take(c);
+                                if k == 0 {
+                                    wrong += u32::from(gc2de_off(g, at, &refs[want(f)], seen) != 0);
+                                }
+                            }
+                            None => wrong += 1,
+                        }
+                    }
+                    log!(
+                        "  R114 {} +0x{off:x}, frame {f}: the core {times}; {wrong} wrong",
+                        if moved_tex { "textures" } else { "target" }
+                    );
+                }
+            }
+        }
+        clock_restore(&mut g.e.regs);
+        let under = underrun_take(&mut g.e.regs);
+        g.nudge = nudge;
+        if let Some((_, rr)) = cur.take() {
+            let _ = rr.release(&mut g.pool);
+        }
+        log!(
+            "  R114 done: Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if under { "set (cleared)" } else { "clear" }
+        );
+    }
+
+    /// The textures of `tex` copied (by the CPU, word for word) to
+    /// [`R114_TEX_BASE`] + `off`, 128 KiB apart: the moved set.
+    fn r114_move(g: &mut Rig, tex: gc2::Tex, off: u32) -> gc2::Tex {
+        let mut moved = [tex.t565, tex.t4444, tex.t8888, tex.plane];
+        for (i, t) in moved.iter_mut().enumerate() {
+            let to = R114_TEX_BASE + off + 0x2_0000 * i as u32;
+            for w in 0..t.bytes() / 4 {
+                let v = g.mem.load((t.at + 4 * w) as usize).unwrap_or(0);
+                g.mem.store((to + 4 * w) as usize, &[v]);
+            }
+            t.at = to;
+        }
+        g.mem.sync();
+        gc2::Tex {
+            t565: moved[0],
+            t4444: moved[1],
+            t8888: moved[2],
+            plane: moved[3],
+        }
     }
 
     /// Run R113 run 2 (see [`R113B`]).
@@ -24565,6 +24698,28 @@ mod image {
     /// write (run 1's), `DUCTRL` = 1 again at each refresh after it (a
     /// trigger?), no `DUCTRL` write at all. About a minute.
     const R113B: bool = option_env!("RP_GPUBENCH_R113B").is_some();
+    /// Run R114 (`RP_GPUBENCH_R114`, with `RP_GPUBENCH_GC2_HALF`; the
+    /// owner's go 2026-10-29 on its sheet, `docs/research/sheets/r20-screen1-address.md`):
+    /// GC2DE found the textured game frame 15% slower into screen 1
+    /// (0x296000) than into screen 0; Dell places back buffers wherever a
+    /// first-fit allocator gives (REA #25-#31). At 149.50 / 2, each of the
+    /// four game frames rendered into screen 1's place moved by each of
+    /// [`R114_OFFSETS`] (free 2700G memory in this image), [`R114_REPS`]
+    /// times, the core's time kept and the first render checked word for
+    /// word against the frame at 0x296000; then the control: the target
+    /// kept at 0x296000 and the textures moved by the same offsets. A bank
+    /// clash shows as a time that falls at some offsets and comes back at
+    /// the bank's period. About two minutes, unattended.
+    const R114: bool = option_env!("RP_GPUBENCH_R114").is_some();
+    /// The offsets from 0x296000, bytes.
+    const R114_OFFSETS: [u32; 11] = [
+        0, 0x800, 0x1000, 0x2000, 0x4000, 0x8000, 0x1_0000, 0x2_0000, 0x4_0000, 0x8_0000, 0x10_0000,
+    ];
+    /// Renders of each frame at each place (the emulator 2).
+    const R114_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 8 };
+    /// Where the control's moved textures go (free in this image, below
+    /// the pool), 128 KiB apart, plus the offset.
+    const R114_TEX_BASE: u32 = 0x0060_0000;
     /// Flips at each line per way (the emulator 1).
     const R113B_FLIPS: u32 = if GC2_RENDERS < 20 { 1 } else { 20 };
     /// Refreshes judged after each flip.

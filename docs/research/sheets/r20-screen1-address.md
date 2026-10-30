@@ -43,3 +43,14 @@ Training knowledge, a claim.
 
 **Asked of the owner:** the go to build the sweep (an `rp-gpubench`
 stage, emulator-checked first); a separate go for the device run.
+
+## Built (2026-10-29, the owner's "Build R114")
+`rp-gpubench` run R114 (`RP_GPUBENCH_R114`, with `RP_GPUBENCH_GC2_HALF`):
+at 149.50 / 2, the four game frames rendered into 0x296000 + each of 0,
+2 KiB, 4, 8, 16, 32, 64, 128, 256, 512 KiB and 1 MiB, 8 renders each, the
+core's time kept and the first checked word for word against the frame at
+0x296000; then the control, the target kept and the textures (copied to
+0x600000 + the same offsets) moved instead. Places checked clear of the
+pool and each other before anything runs. Emulator-checked ("run R114":
+every render right, everything given back); the device run waits for the
+owner's run it.
