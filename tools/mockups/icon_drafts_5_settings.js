@@ -142,7 +142,8 @@ ${orb('sa-o', 184, 168, 46, C.blue, 0)}
 <defs><clipPath id="sa-cl"><circle cx="184" cy="168" r="42"/></clipPath></defs>
 <g clip-path="url(#sa-cl)">${person('sa-p', 184, 164, .5, ['#ffffff', '#e6f2ff', '#8fb6e8'])}</g>`;
 
-ICONS.Packs = `
+// The first take, hand-drawn pieces (not liked by the owner).
+ICONS['Packs: first'] = `
 ${shadow(128, 228, 96, 13, 'sk2-sh')}
 <defs>${lin('sk2-a', [[0, '#c9f4ee'], [.5, '#3fb3a4'], [1, '#11574e']], 1, 1)}${lin('sk2-b', [[0, '#ffe0b0'], [.5, '#f58020'], [1, '#a03c02']], 1, 1)}</defs>
 <path d="M30 40 H90 Q84 20 104 18 Q124 20 118 40 H178 V100 Q198 94 200 114 Q198 134 178 128 V188 H118 Q124 208 104 210 Q84 208 90 188 H30 Z" fill="url(#sk2-a)" stroke="#0e4a42" stroke-width="3" stroke-linejoin="round" transform="rotate(-8 104 114)"/>

@@ -49,3 +49,6 @@ ${piece('pk4-a', 28, 120, 92, [-1, 1, 0, 0], C.teal)}
 ${piece('pk4-b', 120, 120, 92, [1, 0, 0, -1], C.blue)}
 ${piece('pk4-c', 28, 28, 92, [0, 0, 1, 0], C.teal)}
 ${piece('pk4-d', 136, 22, 92, [0, 0, -1, 1], C.orange, 14)}`;
+
+// The owner's pick (2026-10-30): "Pack set".
+ICONS.Packs = ICONS['Packs: set'];
