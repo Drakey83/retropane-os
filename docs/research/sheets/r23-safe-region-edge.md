@@ -82,3 +82,10 @@ Read: 0xB0000 clean at 143.00 / 1 and the places past it wrong supports
 raising SAFE_END for divide 1 too; 0xB0000 wrong there means divide 1 needs
 the smaller region (or keeps 0xAE000), whatever divide 2 gets. About two
 minutes.
+
+### Run 2's result (gpubench-0227)
+74.75 / 1 and 149.50 / 2 repeated run 1 (0, 0, 1, 5, 11 and none). At
+143.00 / 1 the references, display fetch off, were 23 words off
+74.75 / 1's: a frame drawn into SDRAM with its lists in SDRAM is wrong at
+143.00 / 1 with nothing reading (GC2BY's right frames had both on die).
+The edge at 143.00 / 1 isn't measured; the next step is the owner's.
