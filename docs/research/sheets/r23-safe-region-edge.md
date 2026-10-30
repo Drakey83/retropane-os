@@ -89,3 +89,11 @@ minutes.
 74.75 / 1's: a frame drawn into SDRAM with its lists in SDRAM is wrong at
 143.00 / 1 with nothing reading (GC2BY's right frames had both on die).
 The edge at 143.00 / 1 isn't measured; the next step is the owner's.
+
+## Run 3 (2026-10-29 night, gpubench-0233)
+74.75 / 1 and 149.50 / 2 a third time alike (0xB0000 clean, past it
+wrong at 74.75 / 1). At 143.00 / 1 (R118's underlay on) every place draws
+wrong with the display fetching, 0xAE000 included, so the edge isn't
+readable there: at divide 1 a render into SDRAM is disturbed by the
+display's scan-out even from on-die memory. For divide 2 (shipped) the
+three runs agree: SAFE_END can be 0xB0000. The owner rules.
