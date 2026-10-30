@@ -60,3 +60,11 @@ when. Training knowledge, a claim.
 **Asked of the owner:** given in his message ("chase flat frame but do it
 smartly ... stop at 3 tests"); each device run still waits for his
 "run it".
+
+## Test 1 (2026-10-29, gpubench-0229): the underlay cures it
+143.00 / 1 as R117: 19 of 20 wrong, every wrong pixel in a tile's rows
+14-15; **a full-screen black quad under the mesh: 0 of 20** (+0.8 ms in
+SDRAM); 139.75 and 133.25 / 1: 2 and 1 single last-row pixels (not a
+margin). Test 2 next: Dell's clear form in place of our background
+triangle (the quad instead of the extra object: the fix without the 0.8 ms,
+if it holds), against the underlay, more renders, all four frames.
