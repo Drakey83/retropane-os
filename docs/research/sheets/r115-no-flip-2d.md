@@ -110,3 +110,32 @@ each device check (step 4).
   the emulator, and the P4 line counts copies and flips.
 - Host tests 37 (the copy, a late wake, a large change, the flip
   fallback); 4 new mutants caught.
+
+## The device checks (2026-10-30, the owner's "Run both")
+**Tear check, `rp-scene` (scene-0010, `local/rp-scene-run10.txt`):**
+P4's 2D changes with no scene were copied into the shown screen behind
+the scan, 120 of 120 (none flipped): **0 torn of 218 refreshes judged**.
+P1-P3 were unchanged (0 torn).
+
+**Touch speed, `cargo xtask perf` (today-0015,
+`local/perf-2026-10-30-R115e.txt`):**
+
+| | R115b (blocking flip) | R115d (deadline flip) | **R115e (this build)** |
+|---|---|---|---|
+| touch to flush, median | 19,924 us | 22,212 | **20,408** |
+| touch to flush, worst | 49,384 | 50,712 | **49,076** |
+| pen-down period, worst | 23,336 | 12,648 | **11,592** |
+| flips / copies | all flips | all flips | **53 flips** (copies not counted in `rp-today`'s log) |
+
+**Reading it (results, not decisions):**
+- The copy is tear-free on the X51v.
+- `rp-today`'s replay still flipped 53 of its ~54 frames, so its taps'
+  changes were over a quarter of the screen, or had no copy window.
+  **This run doesn't measure the copy's speed.**
+- The numbers are the best of the three builds together: worst inside the
+  50 ms promise again, pen gaps the shortest yet. But the median is 0.5
+  ms over the blocking flip's, and the gap to R115d may be run-to-run
+  spread.
+- **Next, to find out:** log each frame's changed area and the copies in
+  `rp-today`, to see why its tap answers are large (the glass panels'
+  redraw?) and whether shrinking them lets them go by the copy.
