@@ -547,6 +547,129 @@ fn closing_the_scene_gives_its_area_back_and_the_clock_goes_off_when_idle() {
     r.g.open_scene(d, x, y, w, h).unwrap();
 }
 
+/// One opaque pixel: a command that is never part of the background.
+static DOT: rp_draw::Image = rp_draw::Image {
+    w: 1,
+    h: 1,
+    px: &[0xFF00_0000],
+};
+
+/// A tap's answer as the shell draws one: the screen's base (unchanged, so
+/// the background is kept), something drawn over it (a dot: an icon, text),
+/// and `r` filled over that, damaged. A fill over nothing but the
+/// background would be part of it, and a change to it redraws everything.
+fn tap(r: Rect, c: u32) -> Frame {
+    let mut f = Frame::new();
+    f.damage(r);
+    f.push(Cmd::Fill {
+        r: Rect::new(0, 0, 480, 640),
+        color: GREY,
+    });
+    f.push(Cmd::Image {
+        x: r.x,
+        y: r.y,
+        img: &DOT,
+    });
+    f.push(Cmd::Fill { r, color: c });
+    f
+}
+
+#[test]
+fn a_2d_change_with_no_scene_is_copied_into_the_shown_screen_behind_the_scan() {
+    // R115 part 2 (the owner's go 2026-10-30): no flip and no wait for the
+    // blanking. The frame is drawn into screen 1, its changed rectangles
+    // copied into screen 0 (shown) at a line the copy stays behind the
+    // scan; screen 0 never leaves the screen, both screens hold the frame,
+    // and a scene opened afterwards needs no flip back.
+    let mut r = rig();
+    let screen0 = SCREENS[0].at;
+    // The first frame (the whole screen) and a tap-sized change after it.
+    assert_eq!(r.frame(&tap(Rect::new(0, 0, 480, 32), WHITE)), Step::Shown);
+    assert_eq!(r.frame(&tap(Rect::new(0, 0, 480, 32), BLUE)), Step::Shown);
+    let st0 = r.g.starts();
+    let mut drawn_at = 0;
+    for (k, (y, colour)) in [(100u16, BLUE), (420, WHITE), (560, BLUE)]
+        .into_iter()
+        .enumerate()
+    {
+        r.clock.set(at_line(&r, 300 + 100 * k as u64));
+        let rect = Rect::new(40, y, 160, 48);
+        let mut step = r.g.frame(&tap(rect, colour), &mut r.clock).unwrap();
+        for _ in 0..100 {
+            assert_eq!(
+                r.shown().at,
+                screen0,
+                "change {k}: screen 0 shown throughout"
+            );
+            match step {
+                Step::Wait(t) => {
+                    r.clock.set(t);
+                    step = r.g.poll(&mut r.clock);
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(step, Step::Shown, "change {k}");
+        let line = r.g.starts().last_2d_line.expect("copied");
+        // Only the tap's rectangle drawn (the background kept), so only it
+        // copied, from a line inside its own window (behind the scan).
+        assert_eq!(r.g.two_d().drawn(), &[rect], "change {k}");
+        let (from, to) = r.g.copy_window(&[rect]).unwrap();
+        assert!(
+            (from..=to).contains(&line),
+            "change {k}: {line} in {from}-{to}"
+        );
+        for s in SCREENS.iter().take(2) {
+            let pic = Picture {
+                at: s.at,
+                ..Picture::screen(0)
+            };
+            assert_eq!(
+                r.px(pic, 100, u32::from(y) + 10) & 0xFF_FFFF,
+                colour & 0xFF_FFFF,
+                "change {k}: both screens hold it"
+            );
+        }
+        drawn_at += 1;
+    }
+    let st = r.g.starts();
+    assert_eq!(
+        st.two_d_behind - st0.two_d_behind,
+        drawn_at,
+        "each by the copy"
+    );
+    assert_eq!(st.flips_waited, st0.flips_waited, "no flip");
+    assert_eq!(st.two_d_now, st0.two_d_now, "none at once");
+    // Polled a few lines before its window opens (a caller waking late):
+    // the copy waits those lines on the CPU and lands now, not a refresh
+    // later.
+    let rect = Rect::new(40, 100, 160, 48);
+    let (from, _) = r.g.copy_window(&[rect]).unwrap();
+    r.clock
+        .set(at_line(&r, u64::from(from) - 8) - 645 * LINE_NS as u32 / 1000 - 1);
+    let t0 = r.clock.0.get();
+    assert_eq!(
+        r.g.frame(&tap(rect, WHITE), &mut r.clock).unwrap(),
+        Step::Shown
+    );
+    assert!(
+        r.clock.0.get() - t0 < FLIP_LEAD_US,
+        "waited only the few lines"
+    );
+    assert_eq!(r.shown().at, screen0);
+    // A large change (over a quarter of the screen) flips instead.
+    let before = r.g.starts();
+    let _ = r.frame(&tap(Rect::new(0, 0, 480, 400), BLUE));
+    let after = r.g.starts();
+    assert_eq!(after.two_d_behind, before.two_d_behind, "not copied");
+    assert_eq!(after.flips_waited, before.flips_waited + 1, "flipped");
+    // A scene opened now starts with screen 0 already shown.
+    let _ = scene(&mut r);
+    let _ = r.frame(&Frame::new());
+    assert_eq!(r.shown().at, screen0);
+    assert_eq!(r.on_screen(210, 310), BLUE & 0xFF_FFFF, "the scene drawn");
+}
+
 /// The clock (us) at which the modelled scan reaches `line` of the
 /// refresh after the clock's own.
 fn at_line(r: &Rig, line: u64) -> u32 {
@@ -563,7 +686,10 @@ fn a_2d_flip_waits_for_the_blanking_without_the_cpu() {
     // the scan isn't flipped by spinning until the blanking: the poll
     // returns at once with a wait until the scan is FLIP_LEAD_US (86 lines)
     // from it, the flip still written only in the blanking.
+    // With no copy timed (the flip is the copy path's fallback, R115 part
+    // 2).
     let mut r = rig();
+    r.g.copies.reset();
     r.clock.set(at_line(&r, 100));
     let before = r.shown().at;
     let late = r.g.two_d().late_flips;
@@ -600,6 +726,7 @@ fn a_2d_flip_waits_for_the_blanking_without_the_cpu() {
     assert_eq!(r.on_screen(5, 5), WHITE & 0xFF_FFFF);
     // A caller that polls only a refresh and more later: flipped then, in
     // its blanking, and counted as slipped.
+    r.g.copies.reset();
     let before = r.shown().at;
     r.clock.set(at_line(&r, 100));
     let _ =

@@ -11565,6 +11565,10 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("today: never came back to the loader")?;
+    // The whole run log on request (a slow answer's line, a counter).
+    if std::env::var_os("RETROPANE_TODAY_LOG").is_some() {
+        eprintln!("{log}");
+    }
     if crashed(log) || log.contains("did not return") {
         return Err(format!("today: didn't return cleanly:{log}"));
     }

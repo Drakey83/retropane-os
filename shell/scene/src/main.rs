@@ -1027,14 +1027,16 @@ mod image {
             settle(r, 3);
             let n = mark(r);
             log!(
-                "P4 2D flips (no scene) {}: {FLIPS} frames; refreshes judged {}: torn {}, back {}, unread {}; failed {}; late flips {}",
+                "P4 2D flips (no scene) {}: {FLIPS} frames; refreshes judged {}: torn {}, back {}, unread {}; failed {}; late flips {}; copied behind the scan {}, flipped {}",
                 if one_off { "one-off" } else { "back to back" },
                 n.judged - m.judged,
                 n.torn - m.torn,
                 n.back - m.back,
                 n.missed - m.missed,
                 n.failed - m.failed,
-                r.gfx.two_d().late_flips - late0
+                r.gfx.two_d().late_flips - late0,
+                n.starts.two_d_behind - m.starts.two_d_behind,
+                n.starts.flips_waited - m.starts.flips_waited
             );
         }
     }
@@ -1044,6 +1046,16 @@ mod image {
         r.frame.clear();
         let rect = Rect::new(BAR.0, BAR.1, BAR.2, BAR.3);
         r.frame.damage(rect);
+        // A dot under the bar, so the bar isn't part of the background (a
+        // fill over nothing else is, and changing it redraws the whole
+        // screen): the bar changes as a tap's answer does, a small change
+        // the service copies into the shown screen behind the scan (R115
+        // part 2), which these refreshes then judge.
+        r.frame.push(Cmd::Image {
+            x: rect.x,
+            y: rect.y,
+            img: &DOT,
+        });
         r.frame.push(Cmd::Fill {
             r: rect,
             color: BAR_COLOURS[b],
@@ -1055,6 +1067,13 @@ mod image {
             Err(_) => r.failed += 1,
         }
     }
+
+    /// One opaque pixel (see [`bar_frame`]).
+    static DOT: rp_draw::Image = rp_draw::Image {
+        w: 1,
+        h: 1,
+        px: &[0xFF00_0000],
+    };
 
     /// Frames in each half of the 2D flip run.
     const FLIPS: u32 = 60;

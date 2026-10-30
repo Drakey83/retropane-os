@@ -94,3 +94,19 @@ pen still read evenly. That is a prediction to measure, not a promise.
 
 **Asked of the owner:** the go to build (steps 1-3); a separate go for
 each device check (step 4).
+
+## Built (the owner's go 2026-10-30, "Yes, build it")
+- **`Graphics::two_d_alone`:** a 2D frame with no scene, drawn into
+  screen 1 with screen 0 shown, goes by `Job::Copy2d`. A change over a
+  quarter of the screen (`COPY_MAX_PX`), or one with no window, flips
+  (`Job::Flip`). Copies are timed without a scene too.
+- **`reach_line`:** found by `emu-today`. A copy waiting on a wake for a
+  few lines' window missed refresh after refresh, so answers took up to
+  1.8 s in the emulator. Now the copy's last stretch waits on the CPU, at
+  most `FLIP_LEAD_US`. With that, the emulator's interactive answers had
+  a median of 8.4 ms.
+- **`rp-scene`'s P4:** the bar has a dot under it, so it isn't part of
+  the background. Every frame is a tap-like change: 120 of 120 copied in
+  the emulator, and the P4 line counts copies and flips.
+- Host tests 37 (the copy, a late wake, a large change, the flip
+  fallback); 4 new mutants caught.

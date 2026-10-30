@@ -330,6 +330,11 @@ const FLIP_LEAD_US: u32 = 2_200;
 /// A refresh at 60 Hz (645 lines of R111's 25,687 ns), us: a flip later
 /// than this after it was ready slipped a blanking.
 const REFRESH_US: u32 = 16_569;
+/// The largest 2D change (no scene) copied into the shown screen rather
+/// than flipped (R115 part 2): a quarter of the screen, whose copy takes
+/// ~0.6-1.6 ms (a whole screen's 2.5-6.3 ms, scene-0008) and whose window
+/// is wide; anything larger flips.
+const COPY_MAX_PX: u32 = 480 * 640 / 4;
 /// A copy this many pixels or more is timed into the copies' schedule
 /// (an eighth of the screen: smaller ones are mostly the blit's own cost,
 /// which would overstate the per-pixel time a big copy is planned with).
@@ -547,6 +552,66 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     }
 
     /// The scan line now.
+    /// A 2D frame with no scene open, held in the picture at `at` (R115
+    /// part 2, the owner's go 2026-10-30 on
+    /// `docs/research/sheets/r115-no-flip-2d.md`): drawn into screen 1
+    /// with screen 0 shown, only its changed rectangles are copied into
+    /// screen 0, at a line the copy stays behind the scan ([`Job::Copy2d`],
+    /// the path 2D beside a scene takes: no wait for the blanking). With no
+    /// window for the copy (no copy timed yet, or a change too large for
+    /// its rows' time), or drawn into screen 0 while screen 1 is shown,
+    /// it is flipped in the blanking instead ([`Job::Flip`]), after which
+    /// screen 0 is shown and the frames after it go by the copy.
+    fn two_d_alone<C: Clock>(&mut self, at: usize, drawn: &[Rect], clock: &mut C) -> Step {
+        let other = self.two_d.screens()[1];
+        let mut rects = [Rect::default(); MAX_DIRTY];
+        let k = two_d_rects(&mut rects, drawn);
+        let px: u32 = rects[..k]
+            .iter()
+            .map(|r| u32::from(r.w) * u32::from(r.h))
+            .sum();
+        // A large change flips: its copy would take milliseconds of the
+        // engine after a narrow window (emu-today, 2026-10-30: whole-screen
+        // frames by the copy answered in up to 1.8 s); the flip costs
+        // nothing once its blanking comes.
+        if at == other
+            && px <= COPY_MAX_PX
+            && let Some((from, to)) = self.copy_window(&rects[..k])
+        {
+            self.job = Job::Copy2d { from, to };
+            return self.poll(clock);
+        }
+        self.job = Job::Flip {
+            since: clock.now_us(),
+        };
+        self.poll(clock)
+    }
+
+    /// `None` once the scan is in `from..=to`; if it gets there within
+    /// [`FLIP_LEAD_US`], it waits for it on the CPU first (a few us at a
+    /// time, at most about that long); else a wait until then. A caller
+    /// waking a millisecond or two late still meets a narrow window
+    /// (emu-today, 2026-10-30: copies waiting on a wake for a few lines'
+    /// window missed refresh after refresh).
+    fn reach_line<C: Clock>(&mut self, from: u32, to: u32, clock: &mut C) -> Option<Step> {
+        let total = scan::X51V_60HZ.total;
+        let ns = self.scan().unwrap_or(scan::X51V_60HZ).line_ns;
+        let lead = FLIP_LEAD_US.saturating_mul(1000).div_ceil(ns);
+        let t0 = clock.now_us();
+        loop {
+            let line = self.scan_line();
+            if (from..=to).contains(&line) {
+                return None;
+            }
+            let until = (from % total + total - line % total) % total;
+            if until > lead || clock.now_us().wrapping_sub(t0) > 2 * FLIP_LEAD_US {
+                let early = (from % total + total - lead.min(until)) % total;
+                return Some(Step::Wait(self.when_line(early, clock)));
+            }
+            clock.delay_us(5);
+        }
+    }
+
     /// The held 2D frame (no scene) flipped once the scan is within
     /// [`FLIP_LEAD_US`] of the blanking (the renderer's flip waits the
     /// rest, at most that), else a wait until then: the CPU doesn't wait a
@@ -1021,10 +1086,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         if self.job != Job::None {
             return Err(Error::Busy);
         }
-        // A scene open and no copy's time known (the service just started,
-        // or the clock changed): one copy timed first, so no frame waits
-        // for one (audit C94).
-        if self.open().is_some() && self.copies.band().is_none() {
+        // No copy's time known (the service just started, or the clock
+        // changed): one copy timed first, so no frame waits for one (audit
+        // C94); 2D frames with no scene go by the copy too (R115 part 2).
+        if self.copies.band().is_none() {
             self.time_copy(clock);
         }
         self.two_d.draw(frame);
@@ -1226,12 +1291,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     .open()
                     .map(|s| (Rect::new(s.x, s.y, s.w, s.h), s.r.background().is_some()))
                 else {
-                    // No scene: a 2D frame, flipped to either screen in
-                    // the blanking, the CPU free until just before it.
-                    self.job = Job::Flip {
-                        since: clock.now_us(),
-                    };
-                    return self.poll(clock);
+                    return self.two_d_alone(at, &drawn[..n], clock);
                 };
                 // 2D's layer under an opaque scene never shows (R110 run 3
                 // on the X51v: copied into the shown screen it tore every
@@ -1350,10 +1410,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 }
             }
             Job::Copy2d { from, to } => {
-                let line = self.scan_line();
-                if !(from..=to).contains(&line) {
-                    return Step::Wait(self.when_line(from, clock));
+                if let Some(wait) = self.reach_line(from, to, clock) {
+                    return wait;
                 }
+                let line = self.scan_line();
                 self.job = Job::None;
                 let mut drawn = [Rect::default(); MAX_DIRTY];
                 let n = self.two_d.drawn().len();
