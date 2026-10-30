@@ -68,4 +68,7 @@ display's reads.
     ms (flat, layered, textured, depth).
   - R120's switch, at 143.00 / 2, took 9.18 / 11.28 / 15.53 / 11.34 ms.
   - **The overlay is faster on every frame and changes no clock.**
-- The owner picks which ships. Both are soaked an hour overnight.
+- **Soaks, an hour each:** the switch (R117T, gpubench-0240) 0 of
+  16,572 round trips wrong; the overlay (R121S, gpubench-0241) 0 of
+  32,592 renders wrong, no underruns.
+- The owner picks which ships.
