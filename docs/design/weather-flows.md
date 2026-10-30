@@ -139,6 +139,25 @@ then the device offers to delete it) or from the PC companion
 development the owner keeps his in `local/` (never committed), and only
 he types or copies it, never Claude.
 
+**Which ones, and how each is proven (owner, 2026-10-30):** "I would like
+to add any of the large ones that we can that are easy enough, but I will
+only be able to test out tempest." So the first set is the large, open
+ones: **Tempest, Davis WeatherLink Live, Ecowitt, Ambient Weather,
+Netatmo, Weather Underground stations**, plus **Home Assistant and generic
+JSON** as the catch-all for everything else (most brands reach Home
+Assistant). Proof comes in three levels, and the app says which level a
+station has reached, so nobody is misled:
+
+| Level | How it's proven | Stations |
+|---|---|---|
+| **Proven** | the owner's own station, on the X51v (the proven-on-hardware rule) | Tempest |
+| **Checked with live data** | real stations' public data, read on the X51v (no account of ours needed) | Weather Underground public stations, PurpleAir public sensors, NWS observations |
+| **Checked against the maker's documents** | the maker's published sample replies played to the app on the PC and in the emulator, and a stand-in that answers like the station's local interface | Davis, Ecowitt, Ambient, Netatmo, Home Assistant |
+
+A station at the third level shows "Not yet tried with a real station" in
+Settings beside it, and the first user with one is asked to send a
+report (a log line, no keys in it).
+
 **Several stations at once, ours beyond the original:**
 - Each station gets its own card (yours, a neighbour's on Weather
   Underground, the official one); "now" comes from the freshest station
