@@ -12657,6 +12657,18 @@ fn cardlog_checks(root: &Path) -> Result<(), String> {
         std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))
     };
 
+    // rp-clocks' stage C2b (C2 test 1): its card log on the X51v kept only
+    // its first sector twice (clocks-0002, -0003, 2026-10-30), the run hung
+    // later; here the whole log must reach the cards as it goes.
+    let c2b = variant_image_envs(
+        root,
+        "rp-clocks",
+        &[("RP_CLOCKS_OC", "1"), ("RP_CLOCKS_OC_SHORT", "1")],
+    )?;
+    let c2b = std::fs::read(&c2b).map_err(|e| format!("{}: {e}", c2b.display()))?;
+    let out = run("clocks", &c2b, None, "RPL END")?;
+    check("clocks", 1, &out, "returned")?;
+
     let out = run("light", &image("rp-light")?, None, "RPL END")?;
     check("light", 41, &out, "returned")?;
     if card_file(&cf, &slot_file(&cf, "light", 41)?)?

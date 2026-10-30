@@ -92,6 +92,10 @@ mod image {
     } else {
         60
     };
+    /// C2b reads the touch controller's `TEMP0` (`RP_CLOCKS_OC_TEMP`): off
+    /// since C2b runs 1-2 hung at or right after the first read, before
+    /// any clock change (R123).
+    const OC_TEMP: bool = option_env!("RP_CLOCKS_OC_TEMP").is_some();
     /// The touch controller's chip select and pen line (touch.md).
     const TS_CS: u8 = 24;
     const TS_PENIRQ: u8 = 94;
@@ -136,6 +140,26 @@ mod image {
                 let c = COLOURS[step as usize % COLOURS.len()].to_le_bytes();
                 let top = 40 * step as usize + 8;
                 for y in top..top + 24 {
+                    if let Some(row) = px.get_mut(y * *stride..y * *stride + 480 * 2) {
+                        for p in row.chunks_exact_mut(2) {
+                            p.copy_from_slice(&c);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    impl Crumbs<'_> {
+        /// C2b's progress: thin stripe `n` (10 px apart from row 300, in
+        /// turn white and orange), so the stripes counted on the screen say
+        /// which sub-step a hang stopped at, without the card log (C2b runs
+        /// 1-2 kept only its first sector).
+        fn tick(&mut self, n: u32) {
+            if let Some((px, stride)) = self.screen.as_mut() {
+                let c = if n % 2 == 0 { 0xFFFFu16 } else { 0xFC00 }.to_le_bytes();
+                let top = 300 + 10 * n as usize;
+                for y in top..top + 6 {
                     if let Some(row) = px.get_mut(y * *stride..y * *stride + 480 * 2) {
                         for p in row.chunks_exact_mut(2) {
                             p.copy_from_slice(&c);
@@ -389,10 +413,14 @@ mod image {
                 top.0
             );
         }
+        crumbs.tick(0);
         rp_hal_x51v::cardsink::flush();
-        let mut touch = c2b_touch(gpio);
+        crumbs.tick(1);
+        let mut touch = if OC_TEMP { c2b_touch(gpio) } else { None };
+        crumbs.tick(2);
         // The answers, worked out at the clock as found (624).
         let refs = [int_work(1), int_work(2), int_work(3), int_work(4)];
+        crumbs.tick(3);
         let at624 = POINTS[6].1;
         let steps = [
             ("624 (the control)", at624),
@@ -403,12 +431,14 @@ mod image {
         for (i, (name, p)) in steps.into_iter().enumerate() {
             rt::check_in();
             log!("C2b {name} MHz");
-            crumbs.mark(10 + i as u32, p.cccr(clocks::read().cccr));
             // On the card before the change: a hang keeps this line (run
             // 1 lost every line after the first sector).
             rp_hal_x51v::cardsink::flush();
+            let base = 4 + 5 * i as u32;
+            crumbs.tick(base);
             let before = touch.as_mut().map(temp0);
             let ok = clocks::change_past_rating(p);
+            crumbs.tick(base + 1);
             let now = clocks::read();
             log_raw("  now", now);
             if !ok {
@@ -425,6 +455,7 @@ mod image {
                 continue;
             }
             let khz = clocks::measure_core_khz(20);
+            crumbs.tick(base + 2);
             let speed = khz.abs_diff(p.core_khz()) <= p.core_khz() / 50;
             log!("  core counted {khz} kHz");
             g.expect("core clock counted (2%)", speed);
@@ -454,6 +485,7 @@ mod image {
                 }
             }
             let secs = rt::ticks().wrapping_sub(t0) / 3_250_000;
+            crumbs.tick(base + 3);
             let lost = verify(keep, 0x5EED_0001);
             let after = touch.as_mut().map(temp0);
             log!(
@@ -461,6 +493,7 @@ mod image {
             );
             g.expect("every check right", errors == 0 && lost == 0);
             clocks::change(at624);
+            crumbs.tick(base + 4);
             if errors != 0 || lost != 0 || !speed {
                 log!("  the first error: the stage ends here");
                 break;
