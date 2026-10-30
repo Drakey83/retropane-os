@@ -141,6 +141,11 @@ X51v.
   while idle is to measure: R133). Order: the 3D design pass (sheet), the
   USB internet pass-through (sheet, R132), then UI work back on the
   device with the fps known.
+- **The 3D design pass, written (2026-10-30):** sheet
+  `research/sheets/weather-gpu-movement.md`: each movement mapped to
+  ADR-0034's modes (the page's glass on the video plane over a still
+  screen 0, repointed; 2D only for Stagger and the radar's cells; 3D only
+  for Expand), device tests M1-M7, votes V1-V3. Awaits the owner's go.
 - **Open:** the owner's pick of the movement, I6 (the right softkey opens
   Settings, not a Menu: a vote).
 
