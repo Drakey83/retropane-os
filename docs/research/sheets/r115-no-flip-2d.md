@@ -215,3 +215,19 @@ later rectangles may start past the refresh's end (`window_past_end`).
 - A mutant is caught.
 - `emu-today`: 0 windowless (8 copied); `emu-scene` P4: 120 of 120
   copied, 0 torn.
+
+**Test 2 (perf, today-0018, `local/perf-2026-10-30-R115h.txt`):** the
+replay's frames went:
+- **34 copied behind the scan, 20 flipped as large (the Start menu), 0
+  windowless** (test 1: 27 / 20 / 7);
+- touch to flush median 16,204 us (test 1: 16,212), worst 46,312 (test 1:
+  49,864; R115f 43,624);
+- pen-down worst 11,612 us; frame and queueing median 380 us.
+
+**Reading it (results, not decisions):**
+- The 7 now copy. The stop rule is met: the chase closes.
+- The median didn't move: the bottom-bar taps' answers sit above it.
+- The worst moved within the run-to-run spread (43.6-49.9 ms over three
+  runs of this build).
+- The 20 menu frames stay on the flip, by design.
+- The floors are the owner's to set.
