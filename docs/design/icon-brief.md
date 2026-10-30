@@ -39,14 +39,14 @@ for the shared glass parts and the first twelve, then
 direction is liked; the Calendar was redrawn without its see-through
 stand, "Deleted Items" is called the **Trash can**, and Programs gets
 other takes (`icon-drafts-programs-alt.jpg`: windows, folder, box; the
-tile grid was not liked); asked for "a new one", Claude drew a cube, a rocket and a toolbox (`icon-drafts-programs-new.jpg`). Sources of
+tile grid was not liked); asked for "a new one", Claude drew a cube, a rocket and a toolbox (`icon-drafts-programs-new.jpg`). **Ruled (owner, 2026-10-30): Programs is the folder take** ("lets use Program folder"). Not loved: Themes & desktop (the palette), Storage (the stacked drums) and the oval in Sound's speaker; Sound's oval is removed and three new takes each for the other two are on `icon-drafts-settings-redo.jpg`, his pick to come. Sources of
 the list: the Start menu and quick buttons (ui.md), every WM5 default app
 (apps-and-packs.md), File Explorer's folders and file types, Settings'
 groups, the status bar and the shade.
 
 | Group | Icons |
 |---|---|
-| Programs (apps-and-packs.md) | Today/home, Calendar, Contacts, Tasks, Notes, Inbox, Browser, Documents (Word), Spreadsheet (Excel), Presentation (PowerPoint), Media player, Pictures & Videos, File Explorer, Calculator, Solitaire, Bubble Breaker, Games folder, Clock & Alarms, Weather, Reader, Record (voice), Search, Help, LegacySync, Remote desktop, Programs (look open), Settings |
+| Programs (apps-and-packs.md) | Today/home, Calendar, Contacts, Tasks, Notes, Inbox, Browser, Documents (Word), Spreadsheet (Excel), Presentation (PowerPoint), Media player, Pictures & Videos, File Explorer, Calculator, Solitaire, Bubble Breaker, Games folder, Clock & Alarms, Weather, Reader, Record (voice), Search, Help, LegacySync, Remote desktop, Programs (the folder take, ruled), Settings |
 | Device and places | My Device, SD card and CF card (Juanje's, in the base: not redrawn), Main memory/flash, Network (Wi-Fi), Bluetooth, USB/PC connection, Trash can empty and full, Desktop, Start (the button's mark: three candidates for R127) |
 | Folders (teal glass) | Folder, open folder, Documents, Pictures, Music, Video, Downloads, Games, Programs, Shared/network, Favorites, Recent |
 | File types | Text, Document, Spreadsheet, Presentation, PDF, Picture, Music, Video, Archive (zip), Program (.exe), Install package (.cab), Font, Web page, Contact card (vCard), Calendar file (iCal), Note, Unknown |

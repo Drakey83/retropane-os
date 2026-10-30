@@ -21,10 +21,9 @@ ${sunAt('sd-sun', 186, 168, 36)}`;
 
 ICONS.Sound = `
 ${shadow(120, 228, 94, 12, 'sn-sh')}
-<defs>${lin('sn-bx', [[0, '#9aa6b6'], [.3, '#3c4450'], [1, '#14181e']], 1, 0)}${rad('sn-cn', [[0, '#e6ebf0'], [.4, '#8592a2'], [.75, '#3c4450'], [1, '#1c2026']], .45, .4, .6)}${lin('sn-w', [[0, '#c6ecff'], [.5, '#2a7fe0'], [1, '#0b3a80']])}</defs>
+<defs>${lin('sn-bx', [[0, '#9aa6b6'], [.3, '#3c4450'], [1, '#14181e']], 1, 0)}${lin('sn-w', [[0, '#c6ecff'], [.5, '#2a7fe0'], [1, '#0b3a80']])}</defs>
 <path d="M24 92 H62 L120 40 V208 L62 156 H24 Z" fill="url(#sn-bx)" stroke="#05060a" stroke-width="3" stroke-linejoin="round"/>
 <path d="M28 96 H62 L116 48 V96 Q70 120 28 116 Z" fill="#fff" opacity=".35"/>
-<ellipse cx="66" cy="124" rx="16" ry="30" fill="url(#sn-cn)"/>
 ${[44, 80, 116].map((r, i) => { const P = a => `${(116 + r * Math.cos(a * Math.PI / 180)).toFixed(1)} ${(124 + r * Math.sin(a * Math.PI / 180)).toFixed(1)}`; return `<path d="M${P(-48)} A${r} ${r} 0 0 1 ${P(48)}" fill="none" stroke="#0a2a60" stroke-width="20" stroke-linecap="round" opacity="${1 - i * .2}"/><path d="M${P(-48)} A${r} ${r} 0 0 1 ${P(48)}" fill="none" stroke="url(#sn-w)" stroke-width="14" stroke-linecap="round" opacity="${1 - i * .2}"/>`; }).join('')}`;
 
 ICONS.Buttons = `

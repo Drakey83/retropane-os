@@ -237,7 +237,8 @@ ${lines(66, 90, 80, 3, 14)}
 ${orb('rm-b', 194, 176, 34, C.orange, .5)}
 <path d="M176 190 Q176 166 200 166 L200 154 L220 174 L200 194 L200 182 Q188 182 176 190 Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>`;
 
-ICONS.Programs = `
+// The first take, a tile grid (not liked by the owner).
+ICONS['Programs: tiles'] = `
 ${shadow(128, 230, 104, 14, 'pg-sh')}
 <defs>${lin('pg-tr', [[0, '#d6f8f3', .75], [.5, '#6fd0c2', .55], [1, '#1d8a7c', .85]], 1, 1)}</defs>
 <rect x="24" y="24" width="208" height="204" rx="26" fill="url(#pg-tr)" stroke="#11574e" stroke-width="3"/>
@@ -259,6 +260,8 @@ ${win('pw2', 56, 62, 150, 110, C.orange)}
 ${win('pw3', 92, 102, 148, 116, C.blue, `${lines(106, 146, 96, 3, 18)}`)}
 ${shine('M94 134 H238 V170 Q170 186 94 176 Z', 'pw-gl', .4)}`;
 ICONS['Programs: folder'] = folder('pf', `${mini('Games', 46, 26, .42)}${mini('Calculator', 96, 12, .42)}${mini('Browser', 142, 30, .42)}`);
+// The owner's pick (2026-10-30): "lets use Program folder".
+ICONS.Programs = ICONS['Programs: folder'];
 ICONS['Programs: box'] = `
 ${shadow(128, 230, 110, 14, 'px-sh')}
 <defs>
