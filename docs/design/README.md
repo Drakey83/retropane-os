@@ -10,6 +10,13 @@ Engineering decisions (kernel, drivers, memory) live in the ADRs and
 before code (ROADMAP Phase 5), and "imitation is the last resort": Windows
 Mobile's feature list is kept on purpose, but its look and behaviour are
 only kept where they measurably win. Own artwork only (`CLEANROOM.md`).
+**International from the start (owner, 2026-10-30):** "other countries
+might download this ... we have to have international support, that
+should be a rule for all things like this." Every feature that touches
+places, units, dates, times, data sources, alerts, names or words works
+for any country: US defaults (the owner's), a region setting for the
+rest, sources and alerts chosen per country, every on-screen word from a
+strings table, names in their own script.
 
 ## The pages in this area
 

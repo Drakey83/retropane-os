@@ -349,6 +349,25 @@ warning's text. Waits on the source's design (WF5).
 | Hourly, Days lists | by row | previous / next place | a day: open it |
 | Places | by row | nothing (I8: never out of the list) | open that place |
 
+## International (the owner's standing rule, 2026-10-30, design README)
+
+- **Places anywhere:** search by any city or postcode worldwide; the
+  place's own time zone for its hours, sunrise and sunset.
+- **Sources by country:** Open-Meteo covers the world; each country's
+  own national service is used where it is open (the US's NWS, Norway's
+  MET, Germany's DWD, Environment Canada and others, each checked under
+  R125), the best available winning, as in the US.
+- **Alerts by country:** NWS in the US, MeteoAlarm across Europe, each
+  national service's warnings elsewhere where open; a place with no open
+  alert source says so instead of showing nothing.
+- **Formats:** American and European presets, then every unit on its
+  own; the date order and 12- or 24-hour clock from the region setting.
+- **Names in any script:** place and station names in their own
+  writing; where the base font lacks a script, a font pack supplies it
+  (ui.md "Fonts the same way").
+- **Words:** every word on screen comes from a strings table, so a
+  translation is a file, not a code change (English ships first).
+
 ## Ours, beyond the original (rule 0)
 
 - **"Now" between refreshes, from the forecast already held.** The
