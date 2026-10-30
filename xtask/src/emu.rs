@@ -5958,6 +5958,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r117 = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R117", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r23e = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6427,7 +6436,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 165] = [
+    let runs: [GpubenchRun; 166] = [
         (
             "run A",
             &run_a,
@@ -7235,6 +7244,43 @@ fn variant_images_gpubench(
                 "R116G lists on die, frame 3, target 0x000000: the core ",
                 "R116G lists on die, frame 3, target 0x296000: the core ",
                 "R116G done: the display's fetch on, Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R117 (divide 1 and the copy path): the shape, every render
+        // right (the fork models no divide-1 fault).
+        (
+            "run R117",
+            &run_r117,
+            &[
+                "R117 (divide 1 and the copy path, the owner's go 2026-10-29)",
+                "R117 references at 74.75 / 1: drawn true, the second drawing 0 words off the first",
+                "R117 143.00 / 1, target SDRAM, lists SDRAM, rows, frame 0: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists SDRAM, rows, frame 1: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists SDRAM, rows, frame 2: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists SDRAM, rows, frame 3: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists on die, rows, frame 0: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists on die, rows, frame 1: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists on die, rows, frame 2: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists on die, rows, frame 3: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target on die, lists SDRAM, rows, frame 0: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target on die, lists SDRAM, rows, frame 1: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target on die, lists SDRAM, rows, frame 2: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target on die, lists SDRAM, rows, frame 3: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target on die, lists on die, rows, frame 0: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target on die, lists on die, rows, frame 1: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target on die, lists on die, rows, frame 2: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target on die, lists on die, rows, frame 3: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists on die, checker, frame 0: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists on die, checker, frame 1: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists on die, checker, frame 2: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "R117 143.00 / 1, target SDRAM, lists on die, checker, frame 3: 0 of 2 renders wrong, 0 words (worst 0); the core ",
+                "renders wrong after: at divide 2 0, back at divide 1 0; steps refused 0",
+                "R117 done: the display's fetch on, Windows Mobile's clock put back",
                 "GC2CA done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",

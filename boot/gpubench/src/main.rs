@@ -17856,6 +17856,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R117 {
+            r117_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R23E {
             r23e_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20352,6 +20358,171 @@ mod image {
         g.nudge = nudge;
         log!(
             "  R116G done: the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if under { "set (cleared)" } else { "clear" }
+        );
+    }
+
+    /// An R117 renderer: its lists on die or in SDRAM, the tile order.
+    fn r117_renderer(g: &mut Rig, on_die_lists: bool, checker: bool) -> Option<Renderer> {
+        let params = if on_die_lists {
+            rp_vram_map::LISTS_ON_DIE
+        } else {
+            rp_vram_map::PARAMS
+        };
+        let mut rr = Renderer::new_in(
+            &mut g.pool,
+            GC2DE_SIZE.0,
+            GC2DE_SIZE.1,
+            params,
+            rp_vram_map::PM_TABLE,
+        )?;
+        rr.set_tile_order(if checker {
+            rp_mbx3d_render::TileOrder::Checker
+        } else {
+            rp_mbx3d_render::TileOrder::Rows
+        });
+        Some(rr)
+    }
+
+    /// Run R117 (see [`R117`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn r117_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf + 1) * full {
+            log!("  R117: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let (refs, rest) = all.split_at_mut(nf * full);
+        let seen = &mut rest[..full];
+        let want = |f: usize| f * full..(f + 1) * full;
+        let sdram = rp_vram_map::SCREENS[1].at;
+        let on_die = rp_vram_map::SCREENS[0].at;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "R117: DIVIDE 1 + COPY",
+                "THE SCREEN GOES DARK",
+                "FOR TWO MINUTES",
+            ],
+        );
+        let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+        log!(
+            "  R117 (divide 1 and the copy path, the owner's go 2026-10-29): the {nf} game frames, references at 74.75 / 1, then {} ways at 143.00 / 1 ({R117_REPS} renders each, every one checked), then {R117_SWITCHES} divider-only round trips; targets 0x{on_die:x} (on die) and 0x{sdram:x} (SDRAM), lists 0x{:x} (on die) and 0x{:x} (SDRAM); the display's fetch off (was {})",
+            R117_WAYS.len(),
+            rp_vram_map::LISTS_ON_DIE.at,
+            rp_vram_map::PARAMS.at,
+            if was { "on" } else { "off" }
+        );
+        // The references: 74.75 / 1, the first way's set-up, drawn twice.
+        let mut ok = clock_apply(g, R23E_STEPS[0].0).is_some();
+        let _ = underrun_take(&mut g.e.regs);
+        let mut again = 0u32;
+        if ok {
+            if let Some(mut rr) = r117_renderer(g, false, false) {
+                for f in 0..nf {
+                    gc2ca_set_mesh(g, &mut rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+                    ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, sdram).is_some();
+                    let _ =
+                        read_compare_volatile(g.mem.0, sdram as usize, seen, &mut refs[want(f)]);
+                    ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, sdram).is_some();
+                    again = again.saturating_add(gc2de_off(g, sdram, &refs[want(f)], seen));
+                }
+                let _ = rr.release(&mut g.pool);
+            } else {
+                ok = false;
+            }
+        }
+        ok &= again == 0;
+        log!(
+            "  R117 references at 74.75 / 1: drawn {ok}, the second drawing {again} words off the first"
+        );
+        clock_restore(&mut g.e.regs);
+        if ok && clock_apply(g, R117_FAST).is_some() {
+            for &(name, target_on_die, lists_on_die, checker) in &R117_WAYS {
+                rt::check_in();
+                let at = if target_on_die { on_die } else { sdram };
+                let Some(mut rr) = r117_renderer(g, lists_on_die, checker) else {
+                    log!("  R117 143.00 / 1, {name}: no renderer");
+                    continue;
+                };
+                for f in 0..nf {
+                    gc2ca_set_mesh(g, &mut rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+                    let mut times = Gc2deTimes::NEW;
+                    let (mut bad, mut words, mut worst) = (0u32, 0u32, 0u32);
+                    for _ in 0..R117_REPS {
+                        let off = match gc2ca_render(g, &mut rr, GC2DE_SIZE, at) {
+                            Some((c, _)) => {
+                                times.take(c);
+                                gc2de_off(g, at, &refs[want(f)], seen)
+                            }
+                            None => u32::MAX,
+                        };
+                        bad += u32::from(off != 0);
+                        words = words.saturating_add(off);
+                        worst = worst.max(off);
+                    }
+                    log!(
+                        "  R117 143.00 / 1, {name}, frame {f}: {bad} of {R117_REPS} renders wrong, {words} words (worst {worst}); the core {times}; spills {}",
+                        rr.spills()
+                    );
+                }
+                let _ = rr.release(&mut g.pool);
+            }
+            // The divider alone, GC2BY's set-up (target and lists on die,
+            // checker): each switch timed whole, a render checked after.
+            if let Some(mut rr) = r117_renderer(g, true, true) {
+                let (mut down, mut up) = (Gc2deTimes::NEW, Gc2deTimes::NEW);
+                let (mut bad_slow, mut bad_fast, mut failed) = (0u32, 0u32, 0u32);
+                for k in 0..R117_SWITCHES {
+                    rt::check_in();
+                    let f = k as usize % nf;
+                    gc2ca_set_mesh(g, &mut rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+                    for (slow, step) in [(true, R117_SLOW), (false, R117_FAST)] {
+                        let t0 = g.clock.now_us();
+                        let took = clock_apply(g, step);
+                        let us = g.clock.now_us().wrapping_sub(t0);
+                        if took.is_none() {
+                            failed += 1;
+                            continue;
+                        }
+                        if slow {
+                            down.take(us);
+                        } else {
+                            up.take(us);
+                        }
+                        rr.core_taken();
+                        let off = match gc2ca_render(g, &mut rr, GC2DE_SIZE, on_die) {
+                            Some(_) => gc2de_off(g, on_die, &refs[want(f)], seen),
+                            None => u32::MAX,
+                        };
+                        if slow {
+                            bad_slow += u32::from(off != 0);
+                        } else {
+                            bad_fast += u32::from(off != 0);
+                        }
+                    }
+                }
+                log!(
+                    "  R117 divider-only switch at 143.00 ({R117_SWITCHES} round trips, target and lists on die, checker): 1 -> 2 {down}; 2 -> 1 {up}; renders wrong after: at divide 2 {bad_slow}, back at divide 1 {bad_fast}; steps refused {failed}"
+                );
+                let _ = rr.release(&mut g.pool);
+            } else {
+                log!("  R117 divider-only switch: no renderer");
+            }
+        } else {
+            log!("  R117: the references or 143.00 / 1 failed: the ways not run");
+        }
+        clock_restore(&mut g.e.regs);
+        rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+        let under = underrun_take(&mut g.e.regs);
+        g.nudge = nudge;
+        log!(
+            "  R117 done: the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
             g.e.regs.read32(clock::COREPLL),
             if under { "set (cleared)" } else { "clear" }
         );
@@ -25079,6 +25250,35 @@ mod image {
             i += 1;
         }
     };
+    /// Run R117 (`RP_GPUBENCH_R117`, with `RP_GPUBENCH_GC2_HALF`; the
+    /// owner's go 2026-10-29, sheet `docs/research/sheets/r117-divide1-sdram-render.md`):
+    /// R23E run 2 drew the game frames wrong at 143.00 / 1 into SDRAM with
+    /// their lists in SDRAM, the display's fetch off; GC2BY's right ones had
+    /// both on die. References at 74.75 / 1 (drawn twice, held equal); then
+    /// at 143.00 / 1 each of [`R117_WAYS`] (the target's place, the lists'
+    /// place, the tile order), [`R117_REPS`] renders of each frame, every
+    /// render checked; then the cores' divider alone switched 1 -> 2 -> 1
+    /// at 143.00 (no PLL relock) [`R117_SWITCHES`] times, each switch timed
+    /// and a render checked after it. The display's fetch off throughout.
+    /// About two minutes, the screen dark.
+    const R117: bool = option_env!("RP_GPUBENCH_R117").is_some();
+    /// R117's ways: a name, the target on die (0x0) or in SDRAM (screen 1),
+    /// the lists on die, the checker order.
+    const R117_WAYS: [(&str, bool, bool, bool); 5] = [
+        ("target SDRAM, lists SDRAM, rows", false, false, false),
+        ("target SDRAM, lists on die, rows", false, true, false),
+        ("target on die, lists SDRAM, rows", true, false, false),
+        ("target on die, lists on die, rows", true, true, false),
+        ("target SDRAM, lists on die, checker", false, true, true),
+    ];
+    /// Renders of each frame a way (the emulator 2).
+    const R117_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
+    /// Divider round trips (the emulator 2).
+    const R117_SWITCHES: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
+    /// 143.00 / 1, and the same PLL at divide 2 (a divider-only step).
+    const R117_FAST: ClockStep = gc2_step(44, 4, 0, 1);
+    const R117_SLOW: ClockStep = gc2_step(44, 4, 0, 2);
+
     /// Renders of each frame at each place (the emulator 2).
     const R23E_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
     /// Run R116G (`RP_GPUBENCH_R116G`, with `RP_GPUBENCH_GC2_HALF`; the
