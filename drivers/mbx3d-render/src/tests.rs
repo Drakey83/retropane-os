@@ -492,10 +492,12 @@ fn depth_larger_z_is_nearer() {
 }
 
 #[test]
-fn the_underlay_lists_the_background_twice_and_draws_the_same_picture() {
-    // R118 (gpubench-0230): a second full-screen object under the scene
-    // cures divide 1's last-rows fault into SDRAM. Listed twice, the
-    // background costs one list word a tile's list and changes no pixel.
+fn the_underlay_is_a_full_screen_slot_quad_under_the_scene_and_changes_no_pixel() {
+    // R118 (gpubench-0230): a full-screen quad of the background's colour
+    // under the scene cures divide 1's last-rows fault into SDRAM. The
+    // renderer's underlay must be that very object (a full-screen rect in
+    // a slot), listed right after the background in every tile, and the
+    // picture must not change.
     let mut g = rig(480, 640);
     g.set(0, Some(square(40, 40, 200, Paint::Flat(BLUE))));
     g.set(1, Some(square(300, 400, 120, Paint::Flat(RED))));
@@ -512,15 +514,51 @@ fn the_underlay_lists_the_background_twice_and_draws_the_same_picture() {
     assert!(g.r.underlay());
     let on = g.frame();
     assert_eq!(sample(&g), want, "the same picture");
+    let base = rp_vram_map::PARAMS.at;
+    let under: Vec<u32> = (0..SLOT_WORDS as u32)
+        .map(|w| {
+            g.mem
+                .load((base + UNDER_AT) as usize + 4 * w as usize)
+                .unwrap()
+        })
+        .collect();
+    // The object a slot holds for the same rect, word for word.
+    let mut s = rig(480, 640);
+    s.set(
+        5,
+        Some(Draw::rect(0, 0, 480, 640, Paint::Flat(0xFF00_0000))),
+    );
+    let _ = s.frame();
+    let slot: Vec<u32> = (0..SLOT_WORDS as u32)
+        .map(|w| {
+            s.mem
+                .load((base + SLOTS_AT + 5 * SLOT_BYTES) as usize + 4 * w as usize)
+                .unwrap()
+        })
+        .collect();
+    let n = slot.iter().rposition(|&w| w != 0).map_or(0, |k| k + 1);
+    assert!(n > 0);
+    assert_eq!(
+        under[..n],
+        slot[..n],
+        "the underlay is a full-screen slot quad"
+    );
+    // Every tile's list: the background, the underlay, then the scene.
+    let lists = (base + ARENA_AT) as usize;
+    let first = g.mem.load(lists).unwrap();
+    let second = g.mem.load(lists + 4).unwrap();
+    assert_eq!(first & 0x001F_FFFF, BG_AT / 4, "the background first");
+    assert_eq!(second & 0x001F_FFFF, UNDER_AT / 4, "the underlay second");
     g.r.set_underlay(false).unwrap();
     let off = g.frame();
     assert_eq!(sample(&g), want);
     assert_eq!(on.tiles, off.tiles, "every tile drawn again each time");
     assert_eq!(on.lists, off.lists, "the same lists");
-    assert_eq!(
-        on.mem_words,
-        off.mem_words + on.lists,
-        "one more word a list: the background's second listing"
+    let first_off = g.mem.load(lists + 4).unwrap();
+    assert_ne!(
+        first_off & 0x001F_FFFF,
+        UNDER_AT / 4,
+        "no underlay listed when off"
     );
 }
 

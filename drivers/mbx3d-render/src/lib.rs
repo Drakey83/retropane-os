@@ -655,7 +655,9 @@ const BG_AT: u32 = 64;
 const SLOTS_AT: u32 = 256;
 /// A slot: two textured one-triangle objects (2 x 26 words) fit.
 const SLOT_BYTES: u32 = 256;
-const ARENA_AT: u32 = SLOTS_AT + MAX_SLOTS as u32 * SLOT_BYTES;
+/// The underlay's object ([`Renderer::set_underlay`]), a slot's size.
+const UNDER_AT: u32 = SLOTS_AT + MAX_SLOTS as u32 * SLOT_BYTES;
+const ARENA_AT: u32 = UNDER_AT + SLOT_BYTES;
 /// Object lists kept for reuse: more than a frame's distinct sets of quads
 /// (GC2CP's game frames: 123-142 at 480 x 640 and 480 x 320, counted from
 /// their meshes; the depth frame's 14 past 128 were written again on each
@@ -663,7 +665,7 @@ const ARENA_AT: u32 = SLOTS_AT + MAX_SLOTS as u32 * SLOT_BYTES;
 /// a list is evicted in turn (its words stay where they are).
 const LISTS: usize = 192;
 /// The longest list: the background, two triangles a slot, the end.
-const LIST_MAX: usize = 3 + 2 * MAX_SLOTS;
+const LIST_MAX: usize = 4 + 2 * MAX_SLOTS;
 /// Words of a slot's two objects, at most.
 const SLOT_WORDS: usize = 2 * tex::WORDS;
 const _: () = assert!(SLOT_WORDS * 4 <= SLOT_BYTES as usize);
@@ -1184,8 +1186,10 @@ pub struct Renderer {
     ready: bool,
     background: Option<u32>,
     bg_stale: bool,
-    /// The background listed twice in every tile ([`Self::set_underlay`]).
+    /// A full-screen quad of the background's colour under the scene in
+    /// every tile ([`Self::set_underlay`]): its object's kind once written.
     underlay: bool,
+    under_kind: Kind,
     slots: [Slot; MAX_SLOTS],
     dirty: Tiles,
     /// Tiles changed since the other picture was last rendered.
@@ -1380,6 +1384,7 @@ impl Renderer {
             background: Some(0xFF00_0000),
             bg_stale: true,
             underlay: false,
+            under_kind: Kind::Empty,
             slots: [Slot::default(); MAX_SLOTS],
             dirty,
             other: Tiles::new(),
@@ -1586,6 +1591,38 @@ impl Renderer {
         Ok(())
     }
 
+    /// `d`'s object words as a slot holds them (the renderer's object form,
+    /// flips and the set-up's XORs applied).
+    fn object_words(&self, d: &Draw) -> ([u32; SLOT_WORDS], usize, Kind) {
+        let (mut words, n, kind) = encode(d, self.objects, self.diagonal_flip, self.vertex_rotate);
+        // Each object's header sits where a triangle's does (the
+        // four-corner forms keep it: `m3::quad`, `m3::tex::quad`).
+        let (_, per, objs) = kind.strip();
+        let (per, objs) = (per as usize, objs as usize);
+        let (fw, fmask) = self.flat_xor;
+        if !kind.textured() && fmask != 0 {
+            for t in 0..objs {
+                words[t * per + fw] ^= fmask;
+            }
+        }
+        if kind.textured() {
+            for (hw, &mask) in self.header_xor.iter().enumerate() {
+                for t in 0..objs {
+                    words[t * per + hw] ^= mask;
+                }
+            }
+        }
+        if self.tsp_or != 0 {
+            // The TSP: word 4 of a textured object, word 1 of a
+            // flat one (`m3::tex::triangle`, `m3::triangle`).
+            let at = if kind.textured() { 4 } else { 1 };
+            for t in 0..objs {
+                words[t * per + at] |= self.tsp_or;
+            }
+        }
+        (words, n, kind)
+    }
+
     /// Puts `draw` in `slot` (drawn in slot order: higher over lower), or
     /// empties it. Writes the quad's words only if they changed, and marks
     /// the tiles it touched before and after.
@@ -1608,33 +1645,7 @@ impl Renderer {
         let new = match draw {
             None => Slot::default(),
             Some(d) => {
-                let (mut words, n, kind) =
-                    encode(d, self.objects, self.diagonal_flip, self.vertex_rotate);
-                // Each object's header sits where a triangle's does (the
-                // four-corner forms keep it: `m3::quad`, `m3::tex::quad`).
-                let (_, per, objs) = kind.strip();
-                let (per, objs) = (per as usize, objs as usize);
-                let (fw, fmask) = self.flat_xor;
-                if !kind.textured() && fmask != 0 {
-                    for t in 0..objs {
-                        words[t * per + fw] ^= fmask;
-                    }
-                }
-                if kind.textured() {
-                    for (hw, &mask) in self.header_xor.iter().enumerate() {
-                        for t in 0..objs {
-                            words[t * per + hw] ^= mask;
-                        }
-                    }
-                }
-                if self.tsp_or != 0 {
-                    // The TSP: word 4 of a textured object, word 1 of a
-                    // flat one (`m3::tex::triangle`, `m3::triangle`).
-                    let at = if kind.textured() { 4 } else { 1 };
-                    for t in 0..objs {
-                        words[t * per + at] |= self.tsp_or;
-                    }
-                }
+                let (words, n, kind) = self.object_words(d);
                 let tiles = draw_tiles(d, self.cols, self.rows);
                 let s = Slot {
                     kind,
@@ -1729,27 +1740,31 @@ impl Renderer {
         self.spills += 1;
     }
 
-    /// Lists the background object twice in every tile it renders (R118,
+    /// Draws a full-screen quad of the background's colour under the scene
+    /// in every tile it renders (R118,
     /// `docs/research/sheets/r118-flat-frame-sdram.md`): at divide 1
     /// (143.00 / 1 on the X51v) a tile with little to draw, rendered into
-    /// SDRAM, comes out with wrong pixels in its last rows; a second
-    /// full-screen object under the scene in every tile cured all four
-    /// game frames (gpubench-0230). One list word a tile, no geometry; the
-    /// picture is the same. Changing it forgets the cached lists and
-    /// redraws everything. Refused while a render is in flight.
+    /// SDRAM, comes out with wrong pixels in its last rows. This quad (the
+    /// same object a full-screen [`Draw::rect`] in a slot is) cured all four
+    /// game frames, 0 of 100 flat renders (gpubench-0230); the background
+    /// listed twice didn't quite (2 of 100, gpubench-0231). The picture is
+    /// the same; it costs ~0.1-1.1 ms a frame there. Only with a background.
+    /// Changing it forgets the cached lists and redraws everything. Refused
+    /// while a render is in flight.
     pub fn set_underlay(&mut self, on: bool) -> Result<(), Error> {
         if self.pending.is_some() {
             return Err(Error::Busy);
         }
         if on != self.underlay {
             self.underlay = on;
+            self.bg_stale = true;
             self.forget_lists();
             self.invalidate_all();
         }
         Ok(())
     }
 
-    /// Whether the background is listed twice ([`Self::set_underlay`]).
+    /// Whether the underlay is drawn ([`Self::set_underlay`]).
     #[must_use]
     pub const fn underlay(&self) -> bool {
         self.underlay
@@ -2168,6 +2183,16 @@ impl Renderer {
             let words = m3::triangle(m3::ISP_ALWAYS, tsp, &v);
             mem.store((self.params.at + BG_AT) as usize, &words);
             self.mem_words += words.len() as u32;
+            if self.underlay {
+                let d = Draw::rect(0, 0, i32::from(self.w), i32::from(self.h), Paint::Flat(c));
+                let (words, n, kind) = self.object_words(&d);
+                mem.store((self.params.at + UNDER_AT) as usize, &words[..n]);
+                self.mem_words += n as u32;
+                if kind != self.under_kind {
+                    self.under_kind = kind;
+                    self.forget_lists();
+                }
+            }
         }
         self.bg_stale = false;
     }
@@ -2317,9 +2342,14 @@ impl Renderer {
         if self.background.is_some() {
             w[0] = m3::STRIP_ONE_TRIANGLE | (BG_AT / 4);
             n = 1;
-            if self.underlay {
-                w[1] = w[0];
-                n = 2;
+            if self.underlay && self.under_kind != Kind::Empty {
+                let (flags, words, objs) = self.under_kind.strip();
+                let base = UNDER_AT / 4;
+                w[1] = flags | base;
+                if objs == 2 {
+                    w[2] = flags | (base + words);
+                }
+                n += objs as usize;
             }
         }
         let mut cost = 0u32;

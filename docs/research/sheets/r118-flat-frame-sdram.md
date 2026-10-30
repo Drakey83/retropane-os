@@ -88,3 +88,16 @@ second full-screen object in every tile, not the clear's shape. Two tests
 used. Test 3 (the last): the cure built into the renderer for frames
 drawn into SDRAM, proven on the four frames; the owner's go first, as it
 changes the shipped renderer (ADR-0027).
+
+## Test 3 and the proof of the shipped cure (2026-10-29 night)
+Test 3 (gpubench-0231): the renderer listing the background twice, 2 of
+100 flat renders wrong (one pixel): close, not a cure. The cure test 2
+proved (a full-screen quad under the scene) was then built into the
+renderer as `Renderer::set_underlay` (the same object words as a slot's
+full-screen rect: host test, 2 mutants caught) and proven on the X51v
+(gpubench-0232): 0 of 100 renders wrong on each of the four game frames
+at 143.00 / 1 into SDRAM, +0.08 to +1.12 ms a frame. **The chase ends
+inside its three tests with a cure; the speed-switch plan isn't needed**
+(it stays R117's measured fallback: ~2 ms each way). The proof run is the
+shipped code's device check (the proven-on-hardware rule), not a fourth
+search.
