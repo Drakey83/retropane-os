@@ -1244,3 +1244,28 @@ fn the_radar_timeline_picks_a_frame_and_play_pauses() {
     assert_eq!(s.weather_page(), (weather_app::RADAR, 0));
     assert!(!drawn(&mut s).overflowed());
 }
+
+#[test]
+fn every_entrance_ends_in_place_and_none_has_no_entrance() {
+    use weather_app::Motion;
+    let settled = {
+        let mut s = weather(0);
+        texts(&drawn(&mut s))
+    };
+    for m in [Motion::Stagger, Motion::Rise, Motion::Expand, Motion::None] {
+        let mut s = shell(false);
+        s.set_motion(m);
+        s.tick(1_000);
+        drawn(&mut s);
+        tap(&mut s, HERO);
+        assert_eq!(s.animating(), m != Motion::None, "{m:?}");
+        for k in 1..=20 {
+            s.tick(1_000 + 20 * k);
+            let f = drawn(&mut s);
+            assert!(!f.overflowed(), "{m:?} at {k}");
+        }
+        s.tick(1_000 + weather_app::ANIM_MS);
+        assert!(!s.animating(), "{m:?}");
+        assert_eq!(texts(&drawn(&mut s)), settled, "{m:?}: in place");
+    }
+}

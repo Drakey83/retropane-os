@@ -74,8 +74,8 @@ const TRACK: Argb = rp_draw::look::theme(0x30FF_FFFF);
 /// The selected tab: a lighter piece of the bar itself (a translucent white
 /// fill over the bar would be blended against the wallpaper by the 2D
 /// engine, not against the bar, and wash the label out).
-const SELECTED_LEFT: Argb = rp_draw::look::theme(0xD830_3840);
-const SELECTED_RIGHT: Argb = rp_draw::look::theme(0xC84A_5460);
+const SELECTED_LEFT: Argb = rp_draw::look::theme(0xE830_3840);
+const SELECTED_RIGHT: Argb = rp_draw::look::theme(0xDC4A_5460);
 /// The temperature scale's ends: cold to warm.
 const COLD: Argb = 0xFF4F_A8FF;
 const WARM: Argb = 0xFFFF_A040;
@@ -103,6 +103,25 @@ fn frame_x(k: u8) -> u16 {
 const fn row(k: usize) -> Rect {
     Rect::new(16, ROW_Y + k as u16 * ROW_STEP, 448, ROW_H)
 }
+
+/// How a page arrives (step 2 of build-ui-foundation.md: the owner picks
+/// one from moving mock-ups; until then the first build's stays).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Motion {
+    /// Rows slide in from the right one after another (the first build).
+    Stagger,
+    /// The whole page rises a little into place, as one.
+    Rise,
+    /// From the Today screen, the hero card grows into the app's big
+    /// panel (a shared element), the rest following it; pages rise.
+    Expand,
+    /// No entrance: pages appear (the owner's rule for a movement that
+    /// measures too slow).
+    None,
+}
+
+/// How far a rising page starts below its place.
+const RISE: u32 = 40;
 
 /// `a` to `b` by `t` of 1024, channel by channel.
 fn mix(a: Argb, b: Argb, t: u32) -> Argb {
@@ -134,7 +153,49 @@ impl Shell {
 
     /// How far right item `i` still is.
     fn slide(&self, i: u32) -> u16 {
+        if self.motion != Motion::Stagger {
+            return 0;
+        }
         ((1024 - self.ease(i)) * SLIDE / 1024) as u16
+    }
+
+    /// How far below its place the page still is (Rise and Expand).
+    fn rise(&self) -> i32 {
+        match self.motion {
+            Motion::Rise | Motion::Expand if self.anim.is_some() => {
+                // The whole page eases as one (item 0's curve, stretched).
+                let Some(start) = self.anim else { return 0 };
+                let t = self.now.wrapping_sub(start).min(ANIM_MS);
+                let r = 1024 - t * 1024 / ANIM_MS;
+                ((r * r / 1024 * r / 1024) * RISE / 1024) as i32
+            }
+            _ => 0,
+        }
+    }
+
+    /// Expand's share of the way from the hero card to the page, 0-1024
+    /// (1024 when not expanding).
+    fn grow(&self) -> u32 {
+        if self.motion != Motion::Expand || !self.expanding {
+            return 1024;
+        }
+        self.ease(0)
+    }
+
+    /// What an entrance redraws: the page, or from the title bar's foot
+    /// down while the hero card grows (it starts above the page).
+    pub(crate) fn page_area(&self) -> Rect {
+        if self.grow() < 1024 {
+            Rect::new(0, HEAD.y, W, PAGE.y + PAGE.h - HEAD.y)
+        } else {
+            PAGE
+        }
+    }
+
+    /// Sets how pages arrive (the preview's mock-ups; the device keeps the
+    /// build's until the owner picks).
+    pub fn set_motion(&mut self, m: Motion) {
+        self.motion = m;
     }
 
     /// Opens the Weather app on its Now page.
@@ -147,7 +208,8 @@ impl Shell {
         if self.focus.is_some() {
             self.focus = Some(Target::Tab(0));
         }
-        self.anim = Some(self.now);
+        self.anim = (self.motion != Motion::None).then_some(self.now);
+        self.expanding = true;
         self.dirty(Rect::new(0, 0, W, H));
     }
 
@@ -159,7 +221,8 @@ impl Shell {
         }
         self.tab = t;
         self.scroll = super::motion::Scroll::new(max_scroll(t));
-        self.anim = Some(self.now);
+        self.anim = (self.motion != Motion::None).then_some(self.now);
+        self.expanding = false;
         self.dirty(PAGE);
         self.dirty(TABS);
     }
@@ -177,7 +240,7 @@ impl Shell {
     /// Where content laid out at `y` is drawn, scrolled (may be negative
     /// or past the page: the clip keeps it in).
     fn sy(&self, y: u16) -> i32 {
-        i32::from(y) - self.scroll.offset()
+        i32::from(y) - self.scroll.offset() + self.rise()
     }
 
     /// A glass panel at a scrolled `y`, cut at the screen's top (the clip
@@ -239,8 +302,9 @@ impl Shell {
         let w = ui.width(now.as_bytes());
         f.text(W - 16 - w, HEAD.y + 37, ui, TEXT, now.as_bytes());
 
-        // The page scrolls inside its own rectangle.
-        f.clip(Some(PAGE));
+        // The page scrolls inside its own rectangle (an expanding hero card
+        // may still reach above it).
+        f.clip(Some(self.page_area()));
         match self.tab {
             0 => self.now_page(f),
             1 => self.hourly_page(f),
@@ -287,6 +351,19 @@ impl Shell {
         // The big panel: the temperature counting up, the sky, the day.
         let dx = self.slide(0);
         let (px, py) = (16 + dx, self.sy(104));
+        let g = self.grow();
+        if g < 1024 {
+            // The hero card (16, 52, 448 x 196) growing into the panel
+            // (16, 104, 448 x 206): the card alone until it is in place.
+            let lerp = |a: i32, b: i32| a + (b - a) * g as i32 / 1024;
+            let (y, h) = (lerp(52, 104), lerp(196, 206));
+            Self::glass_at(f, 16, y, 448, h as u16);
+            let t = Line::new().num(rg.degrees(wx.now.temp)).push(&[DEG_BIG]);
+            Self::text_at(f, 36, y + lerp(116, 104), big, TEXT, t.as_bytes());
+            if g < 700 {
+                return;
+            }
+        }
         Self::glass_at(f, px, py, 448, 206);
         let shown = rg.degrees(wx.now.temp) * self.ease(0) as i32 / 1024;
         let t = Line::new().num(shown).push(&[DEG_BIG]);
@@ -402,7 +479,7 @@ impl Shell {
         let first = ((off - i32::from(ROW_H)).max(0) / i32::from(ROW_STEP)) as usize;
         for i in first..HOURS {
             let Some(h) = wx.hours.get(i) else { break };
-            let y = i32::from(ROW_Y) + i as i32 * i32::from(ROW_STEP) - off;
+            let y = i32::from(ROW_Y) + i as i32 * i32::from(ROW_STEP) - off + self.rise();
             if y >= i32::from(PAGE.y + PAGE.h) {
                 break;
             }

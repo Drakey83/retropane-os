@@ -11303,6 +11303,32 @@ pub(crate) fn today_motion(
     every_ms: u32,
     n: u32,
 ) -> Vec<Vec<u8>> {
+    today_live(
+        wall,
+        map,
+        rp_shell::Motion::Stagger,
+        steps,
+        &[],
+        every_ms,
+        n,
+    )
+}
+
+/// The movement of a live stroke: `setup` applied and settled, then each
+/// of `live` one `every_ms` after the other (the pen's samples, a frame
+/// after each), then `n` more frames as it moves by itself (a fling, a
+/// rebound, an entrance); pages arrive as `motion`. With `live` empty,
+/// the last of `setup` starts the movement.
+pub(crate) fn today_live(
+    wall: &[u8],
+    map: Option<&[u8]>,
+    motion: rp_shell::Motion,
+    setup: &[rp_shell::Input],
+    live: &[rp_shell::Input],
+    every_ms: u32,
+    n: u32,
+) -> Vec<Vec<u8>> {
+    let steps = setup;
     use rp_draw::{Frame, Renderer};
     use rp_mbx_render::model::{self, Bus, Mem};
     use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
@@ -11341,23 +11367,38 @@ pub(crate) fn today_motion(
             .flat_map(|p| shown_565(u16::from_le_bytes(*p)))
             .collect::<Vec<u8>>()
     };
+    shell.set_motion(motion);
     let t0 = 10_000;
     shell.tick(t0);
-    let Some((last, before)) = steps.split_last() else {
-        return vec![show(&mut shell)];
+    let (before, last) = if live.is_empty() {
+        let Some((last, before)) = steps.split_last() else {
+            return vec![show(&mut shell)];
+        };
+        (before, Some(*last))
+    } else {
+        (steps, None)
     };
     for &e in before {
         shell.input(e);
         shell.settle();
         show(&mut shell);
     }
-    shell.input(*last);
-    (0..n)
-        .map(|k| {
-            shell.tick(t0 + k * every_ms);
-            show(&mut shell)
-        })
-        .collect()
+    let mut frames = Vec::new();
+    let mut t = t0;
+    if let Some(e) = last {
+        shell.input(e);
+    }
+    for &e in live {
+        t += every_ms;
+        shell.tick(t);
+        shell.input(e);
+        frames.push(show(&mut shell));
+    }
+    for k in 0..n {
+        shell.tick(t + k * every_ms);
+        frames.push(show(&mut shell));
+    }
+    frames
 }
 
 /// The Today image's pictures, unpacked on the PC as the image unpacks them,

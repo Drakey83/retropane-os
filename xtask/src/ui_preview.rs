@@ -190,7 +190,7 @@ pub fn run(root: &Path) -> Result<(), String> {
         ),
         (
             "10day",
-            [hero, vec![Input::Key(Key::Right)], swipe].concat(),
+            [hero.clone(), vec![Input::Key(Key::Right)], swipe].concat(),
         ),
     ] {
         let frames = crate::emu::today_motion(&wall, map.as_deref(), &steps, 30, 20);
@@ -199,6 +199,60 @@ pub fn run(root: &Path) -> Result<(), String> {
             std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
                 .map_err(|e| format!("{file}: {e}"))?;
         }
+    }
+    // The owner's pick (step 2 of build-ui-foundation.md): each way a page
+    // can arrive, opened from the hero then turned to Hourly, every 30 ms
+    // (choice-<way>-NN.png); and a live drag with its fling and rebound
+    // (drag-NN.png: the pen's samples 7 ms apart, as on the X51v).
+    let right = Input::Key(Key::Right);
+    for (name, m) in [
+        ("stagger", rp_shell::Motion::Stagger),
+        ("rise", rp_shell::Motion::Rise),
+        ("expand", rp_shell::Motion::Expand),
+        ("none", rp_shell::Motion::None),
+    ] {
+        let mut frames = crate::emu::today_live(&wall, map.as_deref(), m, &hero, &[], 30, 14);
+        frames.extend(crate::emu::today_live(
+            &wall,
+            map.as_deref(),
+            m,
+            &[hero.clone(), vec![right]].concat(),
+            &[],
+            30,
+            14,
+        ));
+        for (k, rgb) in frames.iter().enumerate() {
+            let file = format!("choice-{name}-{k:02}.png");
+            std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
+                .map_err(|e| format!("{file}: {e}"))?;
+        }
+    }
+    let mut pen: Vec<Input> = vec![Input::PenDown { x: 240, y: 520 }];
+    pen.extend((1..=14u16).map(|k| Input::PenMove {
+        x: 240,
+        y: 520 - k * 22,
+    }));
+    pen.push(Input::PenUp { x: 240, y: 212 });
+    // Then pulled down past the top and let go: the rebound.
+    pen.push(Input::PenDown { x: 240, y: 150 });
+    pen.extend((1..=10u16).map(|k| Input::PenMove {
+        x: 240,
+        y: 150 + k * 40,
+    }));
+    pen.push(Input::PenUp { x: 240, y: 550 });
+    let frames = crate::emu::today_live(
+        &wall,
+        map.as_deref(),
+        rp_shell::Motion::Stagger,
+        &[hero.clone(), vec![right]].concat(),
+        &pen,
+        7,
+        60,
+    );
+    for (k, rgb) in frames.iter().enumerate().step_by(2) {
+        let file = format!("drag-{:02}.png", k / 2);
+        std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
+            .map_err(|e| format!("{file}: {e}"))?;
     }
     std::fs::write(out.join("index.html"), page).map_err(|e| format!("index.html: {e}"))?;
     eprintln!(

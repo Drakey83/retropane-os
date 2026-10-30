@@ -29,6 +29,8 @@ pub mod motion;
 mod weather_app;
 mod weather_settings;
 
+pub use weather_app::Motion;
+
 use rp_draw::{Argb, Cmd, Font, Frame, Image, Rect};
 pub use rp_touch_cal::Calibration;
 use rp_weather::{Forecast, Icon, Line, Region};
@@ -282,7 +284,7 @@ const WALLPAPER_COMPARE: &str = "Wallpaper compare";
 const SHOWING_DITHERED: &str = "16-bit dithered";
 const SHOWING_PLAIN: &str = "16-bit plain";
 /// The notice's backing in the wallpaper-only view (readable on any picture).
-const NOTICE_BACK: Argb = rp_draw::look::theme(0xB000_0000);
+const NOTICE_BACK: Argb = rp_draw::look::theme(0xD000_0000);
 /// The test image's extra Start menu entries, after the OS's.
 const DEV_MENU: [&str; 3] = [WALLPAPER_COMPARE, ALIGN_SCREEN, BACK_TO_LOADER];
 const MENU_X: u16 = 0;
@@ -292,13 +294,18 @@ const MENU_ROW: u16 = 40;
 
 // ---- Colours (the smoked glass, docs/design/ui.md) -------------
 
-const GLASS_LEFT: Argb = rp_draw::look::theme(0xB810_1418);
-const GLASS_RIGHT: Argb = rp_draw::look::theme(0x8C4C_545C);
+// Every glass made denser (the owner, 2026-10-30: "make this glass
+// background a little more opaque, it makes it too hard to read the
+// letters, do it for all of the glass"): panels 72-55% to 85-74%, bars
+// 85-69% to 91-82%, menus 88-82% to 93-88%.
+
+const GLASS_LEFT: Argb = rp_draw::look::theme(0xD810_1418);
+const GLASS_RIGHT: Argb = rp_draw::look::theme(0xBC4C_545C);
 const GLASS_EDGE: Argb = rp_draw::look::theme(0x50FF_FFFF);
-const BAR_LEFT: Argb = rp_draw::look::theme(0xD800_0000);
-const BAR_RIGHT: Argb = rp_draw::look::theme(0xB020_2428);
-const MENU_LEFT: Argb = rp_draw::look::theme(0xE008_0A0C);
-const MENU_RIGHT: Argb = rp_draw::look::theme(0xD02C_3238);
+const BAR_LEFT: Argb = rp_draw::look::theme(0xE800_0000);
+const BAR_RIGHT: Argb = rp_draw::look::theme(0xD020_2428);
+const MENU_LEFT: Argb = rp_draw::look::theme(0xEE08_0A0C);
+const MENU_RIGHT: Argb = rp_draw::look::theme(0xE02C_3238);
 const TEXT: Argb = rp_draw::look::theme(0xFFF0_F2F4);
 const DIM: Argb = rp_draw::look::theme(0xFFA8_B0B8);
 const FOCUS: Argb = rp_draw::look::theme(0xFF7F_D0FF);
@@ -380,6 +387,9 @@ pub struct Shell {
     gesture: Gesture,
     /// When the page's entrance started (none: everything in place).
     anim: Option<u32>,
+    /// How pages arrive, and whether this entrance came from the hero.
+    motion: weather_app::Motion,
+    expanding: bool,
     /// The Weather app's settings (RAM until the settings store exists).
     wset: rp_weather::settings::Settings,
     /// The key being typed (zeroed when done or left).
@@ -421,6 +431,8 @@ impl Shell {
             scroll: motion::Scroll::new(0),
             gesture: Gesture::None,
             anim: None,
+            motion: weather_app::Motion::Stagger,
+            expanding: false,
             wset: rp_weather::settings::Settings::DEFAULT,
             typed: [0; rp_weather::settings::KEY_MAX],
             typed_n: 0,
@@ -639,10 +651,12 @@ impl Shell {
         }
         if let Some(start) = self.anim {
             // A page arriving: redraw it every pass until it's in place.
+            let area = self.page_area();
             if now_ms.wrapping_sub(start) >= weather_app::ANIM_MS {
                 self.anim = None;
+                self.expanding = false;
             }
-            self.dirty(weather_app::PAGE);
+            self.dirty(area);
             if self.notice.is_none() {
                 return Action::Redraw;
             }

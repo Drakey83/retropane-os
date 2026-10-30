@@ -90,6 +90,33 @@ X51v.
 6. **Radar:** the loop on our base maps (tools/mockups/radar_basemaps.py),
    sample frames until the network.
 
+### Built since the verdict (2026-10-30, the owner's go on two sheets)
+
+- **Step 0, speed** (sheet `research/sheets/weather-frame-speed.md`,
+  9e7bad7e): the 53-58 ms frames were the 2D renderer rebuilding its
+  whole-screen background whenever glass moved, then drawing two frames
+  whole. Now it rebuilds only where glass changed, keeps gradient rows
+  across frames, and has a clip command for lists. Host model: a sliding
+  panel rebuilds < 80k px instead of 307k. **Device fps: not measured
+  yet** (one run-log line per movement now says it).
+- **Room** (sheet `research/sheets/today-image-room.md`, 0251653c): the
+  wallpaper packed losslessly (460,800 -> 137,537 bytes, rp-inflate),
+  unpacked at start into the RAM pool.
+- **Step 1, live touch** (ca2ce776): lists follow the pen 1:1, fling and
+  spring back past either end; press states; the swipe's underline follows
+  the pen.
+- **Steps 3-5** (625fea21): back in the header and on the left softkey,
+  Settings (region, units, place, source, Tempest key, refresh, icon pack,
+  radar map), Places, and the key typed on an on-screen keyboard (masked,
+  last four shown; RAM only until the key store: R130).
+- **Step 6, radar**: the fourth page, the sample's rain over our Night map
+  (Ink made from it by day), a loop with play, pause and a timeline.
+- **Step 2, movement:** four ways recorded from the preview's real frames
+  (Stagger, Rise, Expand, None) and the live drag, for the owner's pick
+  (R131); Stagger stays until he picks.
+- **Open:** every step's proof on the X51v (the owner's run), his pick of
+  the movement, I6 (the right softkey opens Settings, not a Menu: a vote).
+
 ## Built on the proposed answers (each one cheap to change later)
 
 **37 votes are open:** I1-I12, WF1-WF10, L1-L5, D1-D4, and the verdicts on the
