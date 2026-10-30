@@ -139,7 +139,8 @@ ${shadow(128, 226, 100, 13, 'sa-sh')}
 ${cloud('sa-c', 'transform="translate(-14 -26)"')}
 <circle cx="184" cy="168" r="50" fill="#fff" opacity=".9"/>
 ${orb('sa-o', 184, 168, 46, C.blue, 0)}
-${person('sa-p', 184, 168, .62, ['#ffffff', '#e6f2ff', '#8fb6e8'])}`;
+<defs><clipPath id="sa-cl"><circle cx="184" cy="168" r="42"/></clipPath></defs>
+<g clip-path="url(#sa-cl)">${person('sa-p', 184, 164, .5, ['#ffffff', '#e6f2ff', '#8fb6e8'])}</g>`;
 
 ICONS.Packs = `
 ${shadow(128, 228, 96, 13, 'sk2-sh')}
