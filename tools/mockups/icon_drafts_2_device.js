@@ -119,36 +119,47 @@ ${[152, 166, 182].map((y, i) => `<rect x="${104 - i * 10}" y="${y}" width="${48 
 <circle cx="128" cy="122" r="94" fill="none" stroke="#fff" stroke-width="3" opacity=".6"/>
 <ellipse cx="112" cy="66" rx="62" ry="32" fill="#fff" opacity=".4" transform="rotate(-12 112 66)"/>`;
 
-// Flash memory as a chip: the owner's reference (2026-10-30, a black flash package
-// with pins all round) drawn in the style of Juanje's SD and CF cards, at his request:
-// flat bold colour, a thick black outline, the same three-quarter view (top and right
-// edges seen as solid strips), and a blue banner in white condensed italic capitals.
+// Flash storage as a chip: the owner's reference (2026-10-30, a black flash package
+// with pins all round), redrawn to Juanje's SD and CF cards at the owner's request
+// ("look at the shine and reflection, highlights, the lettering"). His rules, read off
+// assets/cards: no outline, edges by tone (a lighter top strip, a darker right side,
+// a thin white line where the face meets each); the face in perspective, top edge
+// falling to the right, verticals upright, lettering and lines following the slope;
+// a flat blue banner with plain condensed white capitals; restrained shine (a sideways
+// gradient on the body, a white-to-grey fade on the label).
 ICONS['Flash storage'] = (() => {
-  const M = 'matrix(1 .14 0 1 34 50)', W = 168, Hh = 148, d = [16, -10];
-  // a pin: a silver tab out of one side, in the face's own frame
-  const tab = (x, y, w, h) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="1.5" fill="url(#fl-pn)" stroke="#000" stroke-width="2.5"/>`;
-  const n = 8, step = (len) => (len - 24) / (n - 1);
-  const pinsTB = (y, h) => [...Array(n)].map((_, i) => tab(12 + i * step(W) - 5, y, 10, h)).join('');
-  const pinsLR = (x, w) => [...Array(n)].map((_, i) => tab(x, 12 + i * step(Hh) - 5, w, 10)).join('');
+  const X = 32, Y = 40, W = 176, Hh = 148, k = .24, D = [16, -9];
+  const F = (u, v) => [X + u, Y + k * u + v], add = (p, q) => [p[0] + q[0], p[1] + q[1]];
+  const half = [D[0] / 2, D[1] / 2];
+  const P = a => 'M' + a.map(p => p.map(v => v.toFixed(1)).join(' ')).join(' L') + ' Z';
+  const pin = q => `<path d="${P(q)}" fill="url(#fs-pin)"/>`;
+  const n = 8, at = (len, i) => 14 + i * (len - 28) / (n - 1);
+  const pins = [...Array(n)].map((_, i) => {
+    const u = at(W, i), v = at(Hh, i), w = 4;
+    return pin([F(u - w, Hh), F(u + w, Hh), F(u + w, Hh + 15), F(u - w, Hh + 15)].map(p => add(p, half)))  // bottom
+      + pin([F(u - w, -15), F(u + w, -15), F(u + w, 0), F(u - w, 0)].map(p => add(p, half)))               // top
+      + pin([F(-15, v - w), F(0, v - w), F(0, v + w), F(-15, v + w)].map(p => add(p, half)))               // left
+      + pin([F(W, v - w), F(W + 16, v - w), F(W + 16, v + w), F(W, v + w)].map(p => add(p, D)));          // right, out of the side
+  }).join('');
   return `
+${shadow(130, 238, 108, 12, 'fs-sh')}
 <defs>
-${lin('fl-fc', [[0, '#3c424c'], [.5, '#1e2228'], [1, '#121418']], 1, 1)}
-${lin('fl-pn', [[0, '#ffffff'], [.5, '#c4ccd6'], [1, '#7c8696']], 1, 1)}
-${lin('fl-bn', [[0, '#3a7fe8'], [1, '#1048b8']])}
+${lin('fs-pin', [[0, '#f4f6f8'], [.5, '#c4cad2'], [1, '#8a929c']])}
+${lin('fs-fc', [[0, '#26292e'], [1, '#4c5158']], 1, 0)}
+${lin('fs-tp', [[0, '#8a9098'], [1, '#b4bac2']], 1, 0)}
+${lin('fs-sd', [[0, '#3a3e44'], [1, '#202328']])}
+${lin('fs-bn', [[0, '#1f80ff'], [1, '#0b62e6']])}
 </defs>
-<g transform="${M}">
-<g transform="translate(${d[0] / 2} ${d[1] / 2})">${pinsTB(-18, 18)}${pinsLR(W, 18)}</g>
-${pinsTB(Hh, 16)}${pinsLR(-16, 16)}
+${pins}
+<path d="${P([F(0, 0), add(F(0, 0), D), add(F(W, 0), D), F(W, 0)])}" fill="url(#fs-tp)"/>
+<path d="${P([F(W, 0), add(F(W, 0), D), add(F(W, Hh), D), F(W, Hh)])}" fill="url(#fs-sd)"/>
+<path d="${P([F(0, 0), F(W, 0), F(W, Hh), F(0, Hh)])}" fill="url(#fs-fc)"/>
+<g transform="matrix(1 ${k} 0 1 ${X} ${Y})">
+<rect x="10" y="12" width="${W - 20}" height="40" fill="url(#fs-bn)"/>
+<text x="${W / 2}" y="45" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="37" fill="#fff" textLength="${W - 30}" lengthAdjust="spacingAndGlyphs">FLASH MEMORY</text>
+<g fill="#5c626a">${[76, 94, 112].map(v => `<rect x="40" y="${v}" width="${W - 54}" height="3.5"/>`).join('')}</g>
+<circle cx="22" cy="${Hh - 18}" r="7" fill="#121418"/><path d="M16 ${Hh - 21} A7 7 0 0 1 28 ${Hh - 21}" fill="none" stroke="#6a7078" stroke-width="1.5"/>
 </g>
-<path d="M34 50 L${34 + d[0]} ${50 + d[1]} L${34 + W + d[0]} ${50 + W * .14 + d[1]} L${34 + W} ${50 + W * .14} Z" fill="#8a9098" stroke="#000" stroke-width="3" stroke-linejoin="round"/>
-<path d="M${34 + W} ${50 + W * .14} L${34 + W + d[0]} ${50 + W * .14 + d[1]} L${34 + W + d[0]} ${50 + W * .14 + Hh + d[1]} L${34 + W} ${50 + W * .14 + Hh} Z" fill="#3a3f46" stroke="#000" stroke-width="3" stroke-linejoin="round"/>
-<g transform="${M}">
-<rect x="0" y="0" width="${W}" height="${Hh}" fill="url(#fl-fc)" stroke="#000" stroke-width="4"/>
-<rect x="8" y="12" width="${W - 16}" height="44" fill="url(#fl-bn)" stroke="#0a2a70" stroke-width="2"/>
-<text x="${W / 2}" y="46" text-anchor="middle" font-family="Arial Narrow, Arial, sans-serif" font-weight="bold" font-style="italic" font-size="34" fill="#fff" textLength="${W - 30}" lengthAdjust="spacingAndGlyphs">FLASH MEMORY</text>
-<rect x="8" y="12" width="${W - 16}" height="14" fill="#fff" opacity=".22"/>
-<circle cx="28" cy="${Hh - 26}" r="10" fill="#08090c" stroke="#4a525e" stroke-width="2"/>
-<path d="M6 64 H${W - 6}" stroke="#fff" stroke-width="2" opacity=".18"/>
-<path d="M4 4 H${W * .55} L4 ${Hh * .5} Z" fill="#fff" opacity=".07"/>
-</g>`;
+<path d="${P([F(0, 0), F(W, 0), add(F(W, 0), [0, 0])])}" fill="none"/>
+<path d="M${F(0, 0).join(' ')} L${F(W, 0).join(' ')} L${F(W, Hh).join(' ')}" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round"/>`;
 })();

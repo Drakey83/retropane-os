@@ -85,8 +85,9 @@ ${shadow(128, 226, 92, 13, 'sl-sh')}
 ${lin('sl-day', [[0, '#7cc6ff'], [1, '#d8f0ff']])}${lin('sl-nt', [[0, '#0b1a40'], [1, '#2a3f7a']])}</defs>
 <circle cx="128" cy="122" r="96" fill="url(#sl-day)" clip-path="url(#sl-l)"/>
 <circle cx="128" cy="122" r="96" fill="url(#sl-nt)" clip-path="url(#sl-r)"/>
-<g clip-path="url(#sl-l)">${sunAt('sl-sun', 92, 122, 26)}</g>
-<g clip-path="url(#sl-r)"><path d="M172 80 A44 44 0 1 0 186 160 A36 36 0 1 1 172 80 Z" fill="#fff4c8" stroke="#c0a040" stroke-width="2"/>
+<g clip-path="url(#sl-l)">${sunAt('sl-sun', 82, 122, 25)}</g>
+<g clip-path="url(#sl-r)"><mask id="sl-m"><rect x="128" y="0" width="128" height="256" fill="#fff"/><circle cx="190" cy="108" r="30" fill="#000"/></mask>
+<circle cx="172" cy="122" r="34" fill="#fff4c8" stroke="#c0a040" stroke-width="2" mask="url(#sl-m)"/>
 ${[[154, 70], [204, 104], [200, 64], [160, 190]].map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3" fill="#fff"/>`).join('')}</g>
 <circle cx="128" cy="122" r="96" fill="none" stroke="#0a2a60" stroke-width="4"/>
 <path d="M128 26 V218" stroke="#fff" stroke-width="3" opacity=".7"/>
