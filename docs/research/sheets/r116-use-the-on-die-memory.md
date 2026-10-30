@@ -64,3 +64,22 @@ doesn't draw. Nothing else changed: 0 torn in every phase, 0 spills, the
 2D flips 0 torn. The owner decides: keep C (no cost seen, may pay on game
 meshes), measure it on the game frames through the service first, or put
 the lists back in SDRAM.
+
+## The game frames on the X51v, 2026-10-29 (R116G, gpubench-0225): C kept
+One run, the display's fetch off for both ways, 149.50 / 2, the core's
+mean (us), every render right, no spill:
+
+| Frame | Target on die: lists SDRAM | lists on die | Target SDRAM: lists SDRAM | lists on die |
+|---|---|---|---|---|
+| 0 | 8,360 | 8,360 | 8,368 | 8,361 (-7) |
+| 1 | 8,702 | 8,701 | 8,747 | 8,702 (-45) |
+| 2 (textured) | 13,043 | **12,812 (-231)** | 15,283 | **14,758 (-525)** |
+| 3 | 8,737 | 8,736 | 8,769 | 8,737 (-32) |
+
+The lists on die save **0.23 ms on the textured game frame drawn behind
+the scan and 0.53 ms (3.4%) on one drawn by the copy** (into SDRAM), up to
+45 us on the others: over the sheet's 0.1 ms where it was meant to pay, so
+**C stays** (built, f1090515). rp-scene's light scenes gained nothing (run
+7), and lose nothing. D waits for real shell scenes, as the owner ruled.
+The underrun flag was set once at the end (after the clock went back and
+the fetch on; cleared, ADR-0035 rule 8), clear at the start.
