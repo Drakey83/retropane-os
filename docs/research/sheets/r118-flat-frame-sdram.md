@@ -79,3 +79,12 @@ background triangle, on all four frames (100 flat, 20 the others). The
 emulator draws frames without our background object white (every word;
 the host model and C71's device runs draw them), so a way whose picture
 at 74.75 / 1 isn't ours is logged and skipped, never stops the run.
+
+## Test 2 (2026-10-29, gpubench-0230): the underlay holds on every frame
+Quad under our background: flat 0 of 100, layered, textured, depth 0 of 20
+each (+0.09 to +1.12 ms a frame into SDRAM). Dell's quad in place of our
+background: flat 62 of 100 wrong (and a textured fault), so the cure is a
+second full-screen object in every tile, not the clear's shape. Two tests
+used. Test 3 (the last): the cure built into the renderer for frames
+drawn into SDRAM, proven on the four frames; the owner's go first, as it
+changes the shipped renderer (ADR-0027).
