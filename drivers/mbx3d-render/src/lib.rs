@@ -663,7 +663,7 @@ const ARENA_AT: u32 = SLOTS_AT + MAX_SLOTS as u32 * SLOT_BYTES;
 /// a list is evicted in turn (its words stay where they are).
 const LISTS: usize = 192;
 /// The longest list: the background, two triangles a slot, the end.
-const LIST_MAX: usize = 2 + 2 * MAX_SLOTS;
+const LIST_MAX: usize = 3 + 2 * MAX_SLOTS;
 /// Words of a slot's two objects, at most.
 const SLOT_WORDS: usize = 2 * tex::WORDS;
 const _: () = assert!(SLOT_WORDS * 4 <= SLOT_BYTES as usize);
@@ -1184,6 +1184,8 @@ pub struct Renderer {
     ready: bool,
     background: Option<u32>,
     bg_stale: bool,
+    /// The background listed twice in every tile ([`Self::set_underlay`]).
+    underlay: bool,
     slots: [Slot; MAX_SLOTS],
     dirty: Tiles,
     /// Tiles changed since the other picture was last rendered.
@@ -1377,6 +1379,7 @@ impl Renderer {
             ready: false,
             background: Some(0xFF00_0000),
             bg_stale: true,
+            underlay: false,
             slots: [Slot::default(); MAX_SLOTS],
             dirty,
             other: Tiles::new(),
@@ -1724,6 +1727,32 @@ impl Renderer {
         self.ready = false;
         self.targets = [None; 2];
         self.spills += 1;
+    }
+
+    /// Lists the background object twice in every tile it renders (R118,
+    /// `docs/research/sheets/r118-flat-frame-sdram.md`): at divide 1
+    /// (143.00 / 1 on the X51v) a tile with little to draw, rendered into
+    /// SDRAM, comes out with wrong pixels in its last rows; a second
+    /// full-screen object under the scene in every tile cured all four
+    /// game frames (gpubench-0230). One list word a tile, no geometry; the
+    /// picture is the same. Changing it forgets the cached lists and
+    /// redraws everything. Refused while a render is in flight.
+    pub fn set_underlay(&mut self, on: bool) -> Result<(), Error> {
+        if self.pending.is_some() {
+            return Err(Error::Busy);
+        }
+        if on != self.underlay {
+            self.underlay = on;
+            self.forget_lists();
+            self.invalidate_all();
+        }
+        Ok(())
+    }
+
+    /// Whether the background is listed twice ([`Self::set_underlay`]).
+    #[must_use]
+    pub const fn underlay(&self) -> bool {
+        self.underlay
     }
 
     /// Where the parameter memory moves if a frame's lists outgrow it
@@ -2288,6 +2317,10 @@ impl Renderer {
         if self.background.is_some() {
             w[0] = m3::STRIP_ONE_TRIANGLE | (BG_AT / 4);
             n = 1;
+            if self.underlay {
+                w[1] = w[0];
+                n = 2;
+            }
         }
         let mut cost = 0u32;
         let mut m = mask;

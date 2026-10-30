@@ -5958,6 +5958,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r118c = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R118C", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r118b = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6454,7 +6463,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 168] = [
+    let runs: [GpubenchRun; 169] = [
         (
             "run A",
             &run_a,
@@ -7262,6 +7271,30 @@ fn variant_images_gpubench(
                 "R116G lists on die, frame 3, target 0x000000: the core ",
                 "R116G lists on die, frame 3, target 0x296000: the core ",
                 "R116G done: the display's fetch on, Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R118 test 3 (the renderer's underlay): the shape, every
+        // render right, the underlay's picture ours.
+        (
+            "run R118C",
+            &run_r118c,
+            &[
+                "R118 test 3 (the renderer's underlay, the owner's go 2026-10-29)",
+                "R118C references at 74.75 / 1: drawn true, the second drawings 0 words off the first, the underlay's 0",
+                "R118C 143.00 / 1, underlay, frame 0: 0 of 2 renders wrong, 0 words; the core ",
+                "R118C 143.00 / 1, underlay, frame 1: 0 of 2 renders wrong, 0 words; the core ",
+                "R118C 143.00 / 1, underlay, frame 2: 0 of 2 renders wrong, 0 words; the core ",
+                "R118C 143.00 / 1, underlay, frame 3: 0 of 2 renders wrong, 0 words; the core ",
+                "R118C 143.00 / 1, no underlay (control), frame 0: 0 of 2 renders wrong, 0 words; the core ",
+                "R118C 143.00 / 1, no underlay (control), frame 1: 0 of 2 renders wrong, 0 words; the core ",
+                "R118C 143.00 / 1, no underlay (control), frame 2: 0 of 2 renders wrong, 0 words; the core ",
+                "R118C 143.00 / 1, no underlay (control), frame 3: 0 of 2 renders wrong, 0 words; the core ",
+                "R118C done: the display's fetch on, Windows Mobile's clock put back",
                 "GC2CA done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",

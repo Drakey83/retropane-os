@@ -17856,6 +17856,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R118C {
+            r118c_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R118B {
             r118b_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20457,6 +20463,128 @@ mod image {
         }
     }
 
+    /// Run R118 test 3 (see [`R118C`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn r118c_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf + 1) * full {
+            log!("  R118C: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let (refs, rest) = all.split_at_mut(nf * full);
+        let seen = &mut rest[..full];
+        let want = |k: u8| usize::from(k) * full..(usize::from(k) + 1) * full;
+        let at = rp_vram_map::SCREENS[1].at;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "R118: FLAT FRAME TEST 3",
+                "THE SCREEN GOES DARK",
+                "FOR TWO MINUTES",
+            ],
+        );
+        let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+        log!(
+            "  R118 test 3 (the renderer's underlay, the owner's go 2026-10-29): the {nf} game frames at 143.00 / 1 into 0x{at:x}, lists on die, rows, {R118B_REPS} renders each with the underlay, {R117_REPS} without; the display's fetch off (was {})",
+            if was { "on" } else { "off" }
+        );
+        let Some(mut rr) = r117_renderer(g, true, false) else {
+            log!("  R118C: no renderer: nothing run");
+            rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+            g.nudge = nudge;
+            return;
+        };
+        // The references at 74.75 / 1: no underlay, drawn twice; the
+        // underlay's picture held to them.
+        let mut ok = clock_apply(g, R23E_STEPS[0].0).is_some();
+        let (mut again, mut under_off) = (0u32, 0u32);
+        if ok {
+            for &k in &gc2::GAME_FRAMES {
+                let _ = rr.set_underlay(false);
+                r118_set(g, &mut rr, tex, k, R118_OURS);
+                ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+                let _ = read_compare_volatile(g.mem.0, at as usize, seen, &mut refs[want(k)]);
+                ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+                again = again.saturating_add(gc2de_off(g, at, &refs[want(k)], seen));
+                let _ = rr.set_underlay(true);
+                ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+                under_off = under_off.saturating_add(gc2de_off(g, at, &refs[want(k)], seen));
+            }
+        }
+        ok &= again == 0 && under_off == 0;
+        log!(
+            "  R118C references at 74.75 / 1: drawn {ok}, the second drawings {again} words off the first, the underlay's {under_off}"
+        );
+        clock_restore(&mut g.e.regs);
+        if ok && clock_apply(g, R117_FAST).is_some() {
+            for underlay in [true, false] {
+                let _ = rr.set_underlay(underlay);
+                let way = if underlay {
+                    "underlay"
+                } else {
+                    "no underlay (control)"
+                };
+                let reps = if underlay { R118B_REPS } else { R117_REPS };
+                for &k in &gc2::GAME_FRAMES {
+                    rt::check_in();
+                    r118_set(g, &mut rr, tex, k, R118_OURS);
+                    let mut times = Gc2deTimes::NEW;
+                    let (mut bad, mut words) = (0u32, 0u32);
+                    let mut rows = [0u32; 16];
+                    let mut first = ([(0u32, 0u32, 0u16, 0u16); R118_SHOW], 0usize);
+                    for n in 0..reps {
+                        if n % 20 == 19 {
+                            rt::check_in();
+                        }
+                        let off = match gc2ca_render(g, &mut rr, GC2DE_SIZE, at) {
+                            Some((c, _)) => {
+                                times.take(c);
+                                gc2de_off(g, at, &refs[want(k)], seen)
+                            }
+                            None => u32::MAX,
+                        };
+                        if off != 0 && off != u32::MAX {
+                            r118_place(
+                                seen,
+                                &refs[want(k)],
+                                u32::from(GC2DE_SIZE.0),
+                                &mut rows,
+                                &mut first,
+                            );
+                        }
+                        bad += u32::from(off != 0);
+                        words = words.saturating_add(off);
+                    }
+                    log!(
+                        "  R118C 143.00 / 1, {way}, frame {k}: {bad} of {reps} renders wrong, {words} words; the core {times}; wrong pixels by row in the tile {rows:?}"
+                    );
+                    for &(x, y, got, w) in &first.0[..first.1] {
+                        log!(
+                            "    R118C {way}, frame {k}: ({x}, {y}) row {} of its tile: 0x{got:04x} for 0x{w:04x}",
+                            y % 16
+                        );
+                    }
+                }
+            }
+        } else {
+            log!("  R118C: the references or 143.00 / 1 failed: the ways not run");
+        }
+        clock_restore(&mut g.e.regs);
+        let _ = rr.release(&mut g.pool);
+        rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+        let under = underrun_take(&mut g.e.regs);
+        g.nudge = nudge;
+        log!(
+            "  R118C done: the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if under { "set (cleared)" } else { "clear" }
+        );
+    }
+
     /// Run R118 test 2 (see [`R118B`]).
     #[inline(never)]
     #[allow(clippy::too_many_lines)]
@@ -20905,6 +21033,10 @@ mod image {
                 log!("  R23E {name}: didn't take; Windows Mobile's clock put back: not run");
                 continue;
             }
+            // Divide 1 above 74.75 into SDRAM needs the underlay (R118,
+            // gpubench-0230: a light tile's last rows otherwise); the
+            // picture is the same.
+            let _ = rr.set_underlay(step.div == 1 && name != R23E_STEPS[0].1);
             // The references: the display's fetch off, nothing contending;
             // taken at the first setting, held to them at the others.
             let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
@@ -25699,6 +25831,17 @@ mod image {
         ),
         ("depth, Dell's quad", gc2::MESH_DEPTH, R118_QUAD, R117_REPS),
     ];
+
+    /// Run R118 test 3, the last (`RP_GPUBENCH_R118C`, with
+    /// `RP_GPUBENCH_GC2_HALF`; the owner's "finish this", 2026-10-29): the
+    /// cure built into the renderer (`Renderer::set_underlay`: the
+    /// background listed twice in every tile) proven at 143.00 / 1 into
+    /// SDRAM, lists on die, row order, the display's fetch off: each game
+    /// frame [`R118B_REPS`] renders with the underlay, and the same frames
+    /// without it as the control (20 each); references our pictures at
+    /// 74.75 / 1. Every wrong pixel placed. About two minutes, the screen
+    /// dark.
+    const R118C: bool = option_env!("RP_GPUBENCH_R118C").is_some();
 
     /// Renders of each frame at each place (the emulator 2).
     const R23E_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };

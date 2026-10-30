@@ -492,6 +492,39 @@ fn depth_larger_z_is_nearer() {
 }
 
 #[test]
+fn the_underlay_lists_the_background_twice_and_draws_the_same_picture() {
+    // R118 (gpubench-0230): a second full-screen object under the scene
+    // cures divide 1's last-rows fault into SDRAM. Listed twice, the
+    // background costs one list word a tile's list and changes no pixel.
+    let mut g = rig(480, 640);
+    g.set(0, Some(square(40, 40, 200, Paint::Flat(BLUE))));
+    g.set(1, Some(square(300, 400, 120, Paint::Flat(RED))));
+    let sample = |g: &Rig| -> Vec<u32> {
+        (0..640)
+            .step_by(7)
+            .flat_map(|y| (0..480).step_by(5).map(move |x| (x, y)))
+            .map(|(x, y)| g.px(x, y))
+            .collect()
+    };
+    let _ = g.frame();
+    let want = sample(&g);
+    g.r.set_underlay(true).unwrap();
+    assert!(g.r.underlay());
+    let on = g.frame();
+    assert_eq!(sample(&g), want, "the same picture");
+    g.r.set_underlay(false).unwrap();
+    let off = g.frame();
+    assert_eq!(sample(&g), want);
+    assert_eq!(on.tiles, off.tiles, "every tile drawn again each time");
+    assert_eq!(on.lists, off.lists, "the same lists");
+    assert_eq!(
+        on.mem_words,
+        off.mem_words + on.lists,
+        "one more word a list: the background's second listing"
+    );
+}
+
+#[test]
 fn depth_needs_something_to_write_it_first() {
     // Run 1 on the device: with the background not writing depth, "greater"
     // failed wherever only the background was under it (a tile's depth
