@@ -20382,14 +20382,14 @@ mod image {
             [
                 "R23: SAFE REGION EDGE",
                 "THE SCREEN FLICKERS",
-                "FOR A MINUTE",
+                "FOR TWO MINUTES",
             ],
         );
         log!(
             "  R23E (the safe region's end, the owner's go 2026-10-29): the {nf} game frames into 0x{target:x} (SDRAM), lists in SDRAM, a 480 x 640 screen shown ending at {R23E_ENDS:x?}, {R23E_REPS} renders each, every render checked; at {} settings",
             R23E_STEPS.len()
         );
-        for &(step, name) in &R23E_STEPS {
+        for (si, &(step, name)) in R23E_STEPS.iter().enumerate() {
             rt::check_in();
             let lock = clock_apply(g, step);
             let under = underrun_take(&mut g.e.regs);
@@ -20398,17 +20398,26 @@ mod image {
                 log!("  R23E {name}: didn't take; Windows Mobile's clock put back: not run");
                 continue;
             }
-            // The references: the display's fetch off, nothing contending.
+            // The references: the display's fetch off, nothing contending;
+            // taken at the first setting, held to them at the others.
             let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
             let mut ok = true;
+            let mut against = 0u32;
             for f in 0..nf {
                 gc2ca_set_mesh(g, &mut rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
                 ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, target).is_some();
-                let _ = read_compare_volatile(g.mem.0, target as usize, seen, &mut refs[want(f)]);
+                if si == 0 {
+                    let _ =
+                        read_compare_volatile(g.mem.0, target as usize, seen, &mut refs[want(f)]);
+                } else {
+                    against = against.saturating_add(gc2de_off(g, target, &refs[want(f)], seen));
+                }
             }
+            ok &= against == 0;
             log!(
-                "  R23E {name}: references drawn {ok} with the display's fetch off (was {}); the underrun flag {}",
+                "  R23E {name}: references drawn {ok} with the display's fetch off (was {}), {against} words off {}'s; the underrun flag {}",
                 if was { "on" } else { "off" },
+                R23E_STEPS[0].1,
                 if under { "set (cleared)" } else { "clear" }
             );
             if ok {
@@ -25044,13 +25053,21 @@ mod image {
     /// every render checked word for word; the underrun flag read around
     /// each place. 0xB6000 is the control that must show wrong (G19's first
     /// wrong place); 74.75 / 1 is G19's own setting, where the clash shows
-    /// strongest (C71: rarer at divide 2). Nothing is written on die: the
-    /// screens show whatever is there. About a minute, the screen flickers.
+    /// strongest (C71: rarer at divide 2); 143.00 / 1, the fastest step
+    /// measured right for game frames (GC2BY), on the owner's pick
+    /// 2026-10-29 (run 2), to see the edge where divide 1 would ship. The
+    /// references are 74.75 / 1's; each later setting's own (fetch off)
+    /// are checked against them, so a wrong render at a fast clock isn't
+    /// taken for the picture. Nothing is written on die: the screens show
+    /// whatever is there. About two minutes, the screen flickers.
     const R23E: bool = option_env!("RP_GPUBENCH_R23E").is_some();
-    /// The settings: G19's (the clash strongest) and the shipped one.
-    const R23E_STEPS: [(ClockStep, &str); 2] = [
+    /// The settings: G19's (the clash strongest), the shipped one, and
+    /// divide 1's fastest game-safe step (GC2BY). The first takes the
+    /// references.
+    const R23E_STEPS: [(ClockStep, &str); 3] = [
         (gc2_step(23, 4, 0, 1), "74.75 / 1"),
         (GC2DD_STEP, "149.50 / 2"),
+        (gc2_step(44, 4, 0, 1), "143.00 / 1"),
     ];
     /// Where the shown screens end: G19's last right place, the on-die
     /// edge, 1 and 8 KiB past it, and G19's first wrong place (the control).

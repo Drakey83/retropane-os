@@ -71,3 +71,14 @@ the control included. Against the rule: 0xB0000 clean at both, 0xB6000
 wrong (at 74.75 / 1), 0xB0400 and 0xB2000 wrong at 74.75 / 1: **met**.
 The 149.50 / 2 half saw nothing, so it neither supports nor overturns.
 Raising `SAFE_END` to 0xB0000 (lists on die 104 KiB) waits for the owner.
+
+## Run 2 on the owner's pick (2026-10-29: "run R23E at 143.00 / 1 first, then decide")
+The edge was measured at 74.75 / 1 and 149.50 / 2 only; divide 1 would
+ship at 143.00 / 1 (GC2BY's fastest game-safe step), where the clash may
+be stronger. R23E gains 143.00 / 1 as a third setting. The references are
+now 74.75 / 1's alone; each later setting's own (fetch off) are held to
+them and logged, so a fast clock's wrong render can't become the picture.
+Read: 0xB0000 clean at 143.00 / 1 and the places past it wrong supports
+raising SAFE_END for divide 1 too; 0xB0000 wrong there means divide 1 needs
+the smaller region (or keeps 0xAE000), whatever divide 2 gets. About two
+minutes.
