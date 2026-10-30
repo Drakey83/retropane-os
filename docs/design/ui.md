@@ -134,7 +134,12 @@ Proposed, for his vote (D1-D5):
   `icon-drafts-small.jpg`; source `tools/mockups/icon_drafts.js` (256 px
   masters). Whether they ship is his verdict. He liked the direction, so
   Claude drew the whole set the same day (icon-brief.md "The full set":
-  `icon-drafts-<group>.jpg`). Names: the bin is the **Trash can**
+  `icon-drafts-<group>.jpg`). **Ruled (owner, 2026-10-30): Claude's set ships
+  as the stand-in base set** ("lets go with this, we can replace with new
+  ones if i find a set i like better with the correct license"), which
+  replaces the "not those drawings" note above; and **custom icons are part
+  of the OS** (one item, one file type, whole packs, legacy programs):
+  [icons.md](icons.md). Names: the bin is the **Trash can**
   (owner, 2026-10-30), not WM's "Deleted Items".
 
 ## Light and dark, from the start (owner, 2026-10-30)

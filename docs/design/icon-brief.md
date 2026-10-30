@@ -30,6 +30,8 @@ based on Microsoft's or anyone else's icons.**
 
 ## The full set (owner, 2026-10-30: "make sure we have an entire set of icons that will cover everything we will need")
 
+**Ruled (owner, 2026-10-30): these drafts ship as the stand-in base set** until he finds a set he likes better with the right licence; custom icons and packs: [icons.md](icons.md).
+
 Every icon the OS draws, grouped. **Claude has drafted all of them**
 (2026-10-30, in six batches by group: sources `tools/mockups/icon_drafts.js`
 for the shared glass parts and the first twelve, then
