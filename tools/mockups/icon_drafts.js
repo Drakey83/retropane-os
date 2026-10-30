@@ -1,7 +1,8 @@
 // RetroPane icon drafts in the Crystal / Vista glass spirit: 256x256 masters.
 // Each entry is SVG content for a 256 viewBox; ids are prefixed per icon.
 // Glass recipe: a translucent body, a dark outline, a white inner rim, a
-// strong gloss over the top, a soft light along the bottom edge.
+// strong gloss over the top, a soft light along the bottom edge; since recipe 2,
+// a computed bevel, inner shade and soft drop shadow (FX_DEFS below).
 const lin = (id, stops, x2 = 0, y2 = 1, x1 = 0, y1 = 0) =>
   `<linearGradient id="${id}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">${stops.map(([o, c, a]) => `<stop offset="${o}" stop-color="${c}"${a !== undefined ? ` stop-opacity="${a}"` : ''}/>`).join('')}</linearGradient>`;
 const rad = (id, stops, cx = .5, cy = .5, r = .5, fx, fy) =>
@@ -11,6 +12,37 @@ const shine = (d, id, o = .85) => `<defs>${lin(id, [[0, '#fff', o], [.6, '#fff',
 const glow = (d, id, o = .5) => `<defs>${lin(id, [[0, '#fff', 0], [1, '#fff', o]])}</defs><path d="${d}" fill="url(#${id})"/>`;
 const rim = (d, w = 3, o = .7) => `<path d="${d}" fill="none" stroke="#fff" stroke-opacity="${o}" stroke-width="${w}"/>`;
 const streak = (x, y, h, r = -18) => `<rect x="${x}" y="${y}" width="10" height="${h}" rx="5" fill="#fff" opacity=".55" transform="rotate(${r} ${x} ${y})"/>`;
+
+// Glass recipe 2 (the owner, 2026-10-30, "Roll it out"): SVG filter effects on top of the
+// gradients. glassFx: a real bevel (specular light from the top left, low at 30 degrees,
+// on the shape's own blurred edge) and an inner shade along the bottom and right edges;
+// dropFx: a soft drop shadow; softFx: a blur. One shared set, ids fx-*, goes into every
+// icon (icon_drafts_zz_finish.js); the shared parts below refer to it by id.
+const glassFx = (id, { tint = '#063a34', shade = .5, depth = 6, spec = .8, shine = 40, scale = 4, elev = 30 } = {}) => `<filter id="${id}" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+<feGaussianBlur in="SourceAlpha" stdDeviation="${depth}" result="b"/>
+<feOffset in="b" dx="${(-depth * .35).toFixed(1)}" dy="${(-depth * .5).toFixed(1)}" result="bo"/>
+<feComposite in="SourceAlpha" in2="bo" operator="arithmetic" k2="1" k3="-1" result="edge"/>
+<feFlood flood-color="${tint}" flood-opacity="${shade}"/>
+<feComposite in2="edge" operator="in" result="ish"/>
+<feGaussianBlur in="SourceAlpha" stdDeviation="${(scale * .75).toFixed(1)}" result="bump"/>
+<feSpecularLighting in="bump" surfaceScale="${scale}" specularConstant="${spec}" specularExponent="${shine}" lighting-color="#fff" result="sp"><feDistantLight azimuth="225" elevation="${elev}"/></feSpecularLighting>
+<feComposite in="sp" in2="SourceAlpha" operator="in" result="spi"/>
+<feMerge result="m"><feMergeNode in="SourceGraphic"/><feMergeNode in="ish"/></feMerge>
+<feComposite in="m" in2="spi" operator="arithmetic" k2="1" k3="1"/>
+</filter>`;
+const dropFx = (id, dy = 7, blur = 5, o = .35) => `<filter id="${id}" x="-20%" y="-20%" width="140%" height="150%">
+<feGaussianBlur in="SourceAlpha" stdDeviation="${blur}"/><feOffset dx="${dy * .4}" dy="${dy}" result="o"/>
+<feComponentTransfer in="o" result="s"><feFuncA type="linear" slope="${o}"/></feComponentTransfer>
+<feMerge><feMergeNode in="s"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+const softFx = (id, s) => `<filter id="${id}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${s}"/></filter>`;
+
+const FX_DEFS = `<defs>
+${glassFx('fx-glass', { tint: '#000', shade: .32, depth: 7, spec: .9, scale: 4 })}
+${glassFx('fx-front', { tint: '#000', shade: .3, depth: 9, spec: .95, scale: 5 })}
+${glassFx('fx-paper', { tint: '#23344a', shade: .2, depth: 5, spec: .4, scale: 2 })}
+${glassFx('fx-small', { tint: '#000', shade: .3, depth: 3, spec: 1, scale: 2.5 })}
+${dropFx('fx-drop')}${softFx('fx-bloom', 7)}${softFx('fx-blur1', 1.2)}
+</defs>`;
 
 var ICONS = {};
 
@@ -27,15 +59,15 @@ const C = {
 // keeps a nested drawing inside what holds it, where corner offsets drifted.
 const place = (svg, cx, cy, s) => `<g transform="translate(${cx} ${cy}) scale(${s}) translate(-128 -128)">${svg}</g>`;
 // A glossy ball: radial body, outline, highlight cap.
-const orb = (id, cx, cy, r, [c0, c1, c2] = C.blue, o = .6) => `<defs>${rad(id, [[0, c0], [.55, c1], [1, c2]], .38, .3, .75)}</defs><circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${id})" stroke="${c2}" stroke-width="${Math.max(1.5, r / 16).toFixed(1)}"/><ellipse cx="${cx - r * .14}" cy="${cy - r * .46}" rx="${r * .62}" ry="${r * .34}" fill="#fff" opacity="${o}"/>`;
+const orb = (id, cx, cy, r, [c0, c1, c2] = C.blue, o = .6) => `<defs>${rad(id, [[0, c0], [.55, c1], [1, c2]], .38, .3, .75)}</defs><circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${id})" stroke="${c2}" stroke-width="${Math.max(1.5, r / 16).toFixed(1)}" filter="url(#${r < 30 ? 'fx-small' : 'fx-glass'})"/><ellipse cx="${cx - r * .14}" cy="${cy - r * .46}" rx="${r * .62}" ry="${r * .34}" fill="#fff" opacity="${o}"/>`;
 // A glossy rounded box (keys, tiles, buttons).
-const key = (id, x, y, w, h, [c0, c1, c2] = C.silver, rx = 6) => (x = +x, y = +y, w = +w, h = +h, `<defs>${lin(id, [[0, c0], [.5, c1], [1, c2]])}</defs><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}" fill="url(#${id})" stroke="${c2}" stroke-width="1.5"/><rect x="${x + 3}" y="${y + 2}" width="${w - 6}" height="${h * .42}" rx="${rx * .7}" fill="#fff" opacity=".5"/>`);
+const key = (id, x, y, w, h, [c0, c1, c2] = C.silver, rx = 6) => (x = +x, y = +y, w = +w, h = +h, `<defs>${lin(id, [[0, c0], [.5, c1], [1, c2]])}</defs><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}" fill="url(#${id})" stroke="${c2}" stroke-width="1.5" filter="url(#fx-small)"/><rect x="${x + 3}" y="${y + 2}" width="${w - 6}" height="${h * .42}" rx="${rx * .7}" fill="#fff" opacity=".5"/>`);
 // A sheet of paper with a folded corner; inner is drawn on the page.
 const page = (p, inner = '', x = 52, y = 22, w = 152, h = 208) => {
   const f = 40;
   return `${shadow(x + w / 2, y + h + 6, w * .62, 12, p + '-sh')}
 <defs>${lin(p + '-pg', [[0, '#ffffff'], [.7, '#f0f4f8'], [1, '#cfd9e4']], 1, 1)}${lin(p + '-fd', [[0, '#ffffff'], [1, '#b6c3d2']], 1, 1)}</defs>
-<path d="M${x} ${y + 6} Q${x} ${y} ${x + 6} ${y} L${x + w - f} ${y} L${x + w} ${y + f} L${x + w} ${y + h - 6} Q${x + w} ${y + h} ${x + w - 6} ${y + h} L${x + 6} ${y + h} Q${x} ${y + h} ${x} ${y + h - 6} Z" fill="url(#${p}-pg)" stroke="#7d8896" stroke-width="2.5"/>
+<path d="M${x} ${y + 6} Q${x} ${y} ${x + 6} ${y} L${x + w - f} ${y} L${x + w} ${y + f} L${x + w} ${y + h - 6} Q${x + w} ${y + h} ${x + w - 6} ${y + h} L${x + 6} ${y + h} Q${x} ${y + h} ${x} ${y + h - 6} Z" fill="url(#${p}-pg)" stroke="#7d8896" stroke-width="2.5" filter="url(#fx-paper)"/>
 ${inner}
 <path d="M${x + w - f} ${y} L${x + w - f} ${y + f - 6} Q${x + w - f} ${y + f} ${x + w - f + 6} ${y + f} L${x + w} ${y + f} Z" fill="url(#${p}-fd)" stroke="#7d8896" stroke-width="2" stroke-linejoin="round"/>
 ${shine(`M${x + 3} ${y + 3} L${x + w - f} ${y + 3} L${x + w - f + 12} ${y + 44} Q${x + w / 2} ${y + 76} ${x + 3} ${y + 66} Z`, p + '-gl', .5)}`;
@@ -45,7 +77,7 @@ const lines = (x, y, w, n, gap = 18, c = '#b4bdc8') => `<g fill="${c}">${[...Arr
 // A magnifying glass: lens centre, radius; the handle runs to the lower right.
 const lens = (p, cx, cy, r) => `<defs>${rad(p + '-ln', [[0, '#ffffff', .9], [.55, '#9fd8ff', .5], [1, '#2a7fe0', .8]], .38, .32, .75)}${lin(p + '-rm', [[0, '#ffffff'], [.5, '#a6b0bc'], [1, '#4c5662']], 1, 1)}${lin(p + '-hd', [[0, '#6a7480'], [.5, '#2c323c'], [1, '#0e1116']], 1, 0)}</defs>
 <g transform="rotate(-45 ${cx} ${cy})"><rect x="${cx - r * .2}" y="${cy + r * .95}" width="${r * .4}" height="${r * 1.25}" rx="${r * .18}" fill="url(#${p}-hd)" stroke="#05060a" stroke-width="2"/><rect x="${cx - r * .13}" y="${cy + r}" width="${r * .1}" height="${r * 1.1}" rx="${r * .05}" fill="#fff" opacity=".4"/></g>
-<circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${p}-ln)" stroke="url(#${p}-rm)" stroke-width="${r * .2}"/>
+<circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${p}-ln)" stroke="url(#${p}-rm)" stroke-width="${r * .2}" filter="url(#fx-glass)"/>
 <circle cx="${cx}" cy="${cy}" r="${r * 1.1}" fill="none" stroke="#3a4250" stroke-width="2"/><circle cx="${cx}" cy="${cy}" r="${r * .9}" fill="none" stroke="#3a4250" stroke-width="1.5"/>
 <ellipse cx="${cx - r * .25}" cy="${cy - r * .38}" rx="${r * .5}" ry="${r * .26}" fill="#fff" opacity=".7" transform="rotate(-30 ${cx - r * .25} ${cy - r * .38})"/>`;
 // A curved arrow along a circle (centre cx, cy, radius r) from angle a0 to a1 (degrees, clockwise).
@@ -133,19 +165,18 @@ ${streak(48, 92, 92, -4)}
 <text x="204" y="83" text-anchor="middle" font-family="Arial, sans-serif" font-weight="bold" font-size="36" fill="#fff">3</text>`;
 
 const folder = (p, inner = '') => `
-${shadow(128, 226, 110, 14, p + '-sh')}
 <defs>
 ${lin(p + '-bk', [[0, '#a8ece2', .95], [.5, '#3fb3a4', .9], [1, '#18786c', .95]])}
-${lin(p + '-fr', [[0, '#d6f8f3', .7], [.45, '#6fd0c2', .55], [1, '#1d8a7c', .85]])}
+${lin(p + '-fr', [[0, '#c8f4ee', .72], [.45, '#5cc6b8', .58], [1, '#1d8a7c', .86]])}
+${lin(p + '-gl', [[0, '#fff', .92], [1, '#fff', .12]])}
 </defs>
-<path d="M30 52 Q30 42 40 42 L100 42 Q108 42 112 50 L120 62 L214 62 Q224 62 224 72 L224 206 L30 206 Z" fill="url(#${p}-bk)" stroke="#11574e" stroke-width="3"/>
-${rim('M36 52 Q36 48 42 48 L98 48 Q104 48 107 54 L114 68 L212 68 Q218 68 218 74', 2.5, .8)}
+${shadow(128, 226, 110, 14, p + '-sh')}
+<path d="M30 52 Q30 42 40 42 L100 42 Q108 42 112 50 L120 62 L214 62 Q224 62 224 72 L224 206 L30 206 Z" fill="url(#${p}-bk)" stroke="#11574e" stroke-width="3" filter="url(#fx-glass)"/>
 ${inner}
-<path d="M22 100 Q22 92 30 92 L226 92 Q234 92 233 100 L222 208 Q221 216 213 216 L40 216 Q32 216 31 208 Z" fill="url(#${p}-fr)" stroke="#11574e" stroke-width="3"/>
-${rim('M28 98 L228 98 L218 208 L38 208 Z', 2.5, .75)}
-${shine('M26 96 L230 96 L227 128 Q128 144 28 128 Z', p + '-gl', .9)}
-${glow('M34 186 L222 186 L220 210 L38 210 Z', p + '-gw', .5)}
-${streak(196, 104, 92, 6)}`;
+<path d="M22 100 Q22 92 30 92 L226 92 Q234 92 233 100 L222 208 Q221 216 213 216 L40 216 Q32 216 31 208 Z" fill="url(#${p}-fr)" stroke="#11574e" stroke-width="3" filter="url(#fx-front)"/>
+<ellipse cx="128" cy="198" rx="78" ry="13" fill="#eafffb" opacity=".6" filter="url(#fx-bloom)"/>
+<path d="M27 97 L229 97 L226 124 Q128 136 29 124 Z" fill="url(#${p}-gl)" filter="url(#fx-blur1)"/>
+<rect x="196" y="104" width="9" height="88" rx="4.5" fill="#fff" opacity=".5" transform="rotate(6 196 104)" filter="url(#fx-blur1)"/>`;
 
 ICONS.Folder = folder('fo', `<rect x="56" y="54" width="132" height="70" rx="3" fill="#fff" stroke="#9aa6b4" stroke-width="2" transform="rotate(-4 120 90)"/>`);
 
@@ -246,7 +277,7 @@ ${lin(p + '-gl', [[0, '#e4fbf8', .75], [.5, '#76d0c4', .5], [1, '#2a9486', .82]]
 ${lin(p + '-rm', [[0, '#ffffff', .95], [1, '#7fc9be', .9]])}
 </defs>
 ${inner}
-<path d="M50 52 L206 52 L188 220 Q186 228 178 228 L78 228 Q70 228 68 220 Z" fill="url(#${p}-gl)" stroke="#155e55" stroke-width="3"/>
+<path d="M50 52 L206 52 L188 220 Q186 228 178 228 L78 228 Q70 228 68 220 Z" fill="url(#${p}-gl)" stroke="#155e55" stroke-width="3" filter="url(#fx-front)"/>
 ${rim('M58 62 L198 62 L181 218 L75 218 Z', 2.5, .7)}
 <ellipse cx="128" cy="52" rx="80" ry="15" fill="url(#${p}-rm)" stroke="#155e55" stroke-width="3"/>
 <ellipse cx="128" cy="54" rx="67" ry="8" fill="#2a9486" opacity=".35"/>

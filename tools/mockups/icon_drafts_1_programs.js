@@ -249,8 +249,8 @@ ${shine('M28 28 L228 28 L228 92 Q128 124 28 104 Z', 'pg-gl', .45)}`;
 // Programs, other takes (the owner, 2026-10-30: "So far I dont love Programs", the tile grid above).
 const mini = (n, x, y, s) => `<g transform="translate(${x} ${y}) scale(${s})">${ICONS[n]}</g>`;
 const win = (p, x, y, w, h, c, inner = '') => `<defs>${lin(p + '-tb', [[0, c[0]], [.5, c[1]], [1, c[2]]])}${lin(p + '-bd', [[0, '#ffffff', .95], [1, '#d8e2ec', .92]])}</defs>
-<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" fill="url(#${p}-bd)" stroke="${c[2]}" stroke-width="3"/>
-<path d="M${x} ${y + 10} Q${x} ${y} ${x + 10} ${y} H${x + w - 10} Q${x + w} ${y} ${x + w} ${y + 10} V${y + 30} H${x} Z" fill="url(#${p}-tb)" stroke="${c[2]}" stroke-width="3"/>
+<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" fill="url(#${p}-bd)" stroke="${c[2]}" stroke-width="3" filter="url(#fx-paper)"/>
+<path d="M${x} ${y + 10} Q${x} ${y} ${x + 10} ${y} H${x + w - 10} Q${x + w} ${y} ${x + w} ${y + 10} V${y + 30} H${x} Z" fill="url(#${p}-tb)" stroke="${c[2]}" stroke-width="3" filter="url(#fx-small)"/>
 <rect x="${x + 4}" y="${y + 3}" width="${w - 8}" height="12" rx="6" fill="#fff" opacity=".55"/>
 ${[0, 1, 2].map(i => `<circle cx="${x + w - 16 - i * 16}" cy="${y + 15}" r="5" fill="#fff" opacity=".8"/>`).join('')}${inner}`;
 ICONS['Programs: windows'] = `

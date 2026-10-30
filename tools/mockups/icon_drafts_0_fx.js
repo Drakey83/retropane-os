@@ -1,34 +1,9 @@
-// Glass recipe, version 2 (the owner, 2026-10-30, "Yes, try it"): SVG filter effects on
-// top of the gradients the first drafts used. Loaded after icon_drafts.js, before the groups.
-//  - glassFx: a real bevel (specular light from the top left on the shape's own blurred
-//    edge; lit low, at 30 degrees, with a tight highlight, so flat faces stay their own
-//    colour and only edges turned to the light shine), plus an inner shade along the bottom and right edges (glass thickness).
-//  - dropFx: a soft drop shadow under a whole object.
-//  - softFx: a plain blur, for glows, blooms and the light pooled inside glass.
+// Calendar and My Device, redrawn with glass recipe 2 (the owner, 2026-10-30: tried on
+// three icons, then "Roll it out"); they replace the first drafts in icon_drafts.js.
+// The recipe itself (glassFx, dropFx, softFx, FX_DEFS) lives in icon_drafts.js.
 
-const glassFx = (id, { tint = '#063a34', shade = .5, depth = 6, spec = .8, shine = 40, scale = 4, elev = 30 } = {}) => `<filter id="${id}" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
-<feGaussianBlur in="SourceAlpha" stdDeviation="${depth}" result="b"/>
-<feOffset in="b" dx="${(-depth * .35).toFixed(1)}" dy="${(-depth * .5).toFixed(1)}" result="bo"/>
-<feComposite in="SourceAlpha" in2="bo" operator="arithmetic" k2="1" k3="-1" result="edge"/>
-<feFlood flood-color="${tint}" flood-opacity="${shade}"/>
-<feComposite in2="edge" operator="in" result="ish"/>
-<feGaussianBlur in="SourceAlpha" stdDeviation="${(scale * .75).toFixed(1)}" result="bump"/>
-<feSpecularLighting in="bump" surfaceScale="${scale}" specularConstant="${spec}" specularExponent="${shine}" lighting-color="#fff" result="sp"><feDistantLight azimuth="225" elevation="${elev}"/></feSpecularLighting>
-<feComposite in="sp" in2="SourceAlpha" operator="in" result="spi"/>
-<feMerge result="m"><feMergeNode in="SourceGraphic"/><feMergeNode in="ish"/></feMerge>
-<feComposite in="m" in2="spi" operator="arithmetic" k2="1" k3="1"/>
-</filter>`;
-const dropFx = (id, dy = 7, blur = 5, o = .35) => `<filter id="${id}" x="-20%" y="-20%" width="140%" height="150%">
-<feGaussianBlur in="SourceAlpha" stdDeviation="${blur}"/><feOffset dx="${dy * .4}" dy="${dy}" result="o"/>
-<feComponentTransfer in="o" result="s"><feFuncA type="linear" slope="${o}"/></feComponentTransfer>
-<feMerge><feMergeNode in="s"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
-const softFx = (id, s) => `<filter id="${id}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${s}"/></filter>`;
-
-// --- The three test icons (the artist brief's first step), drawn with the new recipe ---
-
-ICONS['Calendar v2'] = `
+ICONS.Calendar = `
 <defs>
-${dropFx('c2-dr')}
 ${glassFx('c2-hdf', { tint: '#5a0a02', shade: .5, depth: 5, spec: 1, scale: 3 })}
 ${glassFx('c2-pgf', { tint: '#2a3a4c', shade: .22, depth: 5, spec: .45, scale: 2 })}
 ${glassFx('c2-rgf', { tint: '#14181e', shade: .45, depth: 2, spec: 1.2, scale: 2 })}
@@ -40,7 +15,7 @@ ${lin('c2-ring', [[0, '#ffffff'], [.5, '#a9b4c0'], [1, '#5d6874']], 1, 0)}
 ${lin('c2-gl', [[0, '#fff', .9], [1, '#fff', .15]])}
 </defs>
 ${shadow(128, 232, 100, 14, 'c2-sh')}
-<g filter="url(#c2-dr)">
+<g>
 <rect x="46" y="48" width="176" height="178" rx="10" fill="url(#c2-bk)" stroke="#6d7886" stroke-width="2" filter="url(#c2-pgf)"/>
 <rect x="40" y="42" width="176" height="178" rx="10" fill="#eef2f6" stroke="#7d8896" stroke-width="2" filter="url(#c2-pgf)"/>
 <rect x="34" y="36" width="176" height="178" rx="10" fill="url(#c2-pg)" stroke="#6d7886" stroke-width="2.5" filter="url(#c2-pgf)"/>
@@ -54,36 +29,8 @@ ${shadow(128, 232, 100, 14, 'c2-sh')}
 <g filter="url(#c2-rgf)">${[66, 98, 146, 178].map(x => `<rect x="${x - 6}" y="20" width="12" height="36" rx="6" fill="url(#c2-ring)" stroke="#4a5460"/>`).join('')}</g>
 </g>`;
 
-// The teal glass folder, with the new recipe. inner = what stands inside.
-const folder2 = (p, inner = '') => `
+ICONS['My Device'] = `
 <defs>
-${dropFx(p + '-dr')}
-${glassFx(p + '-gb', { tint: '#063a34', shade: .45, depth: 6, spec: .7, scale: 4 })}
-${glassFx(p + '-gf', { tint: '#063a34', shade: .5, depth: 9, spec: .95, scale: 5 })}
-${softFx(p + '-sf', 7)}${softFx(p + '-sf1', 1.2)}
-${lin(p + '-bk', [[0, '#a8ece2', .95], [.5, '#3fb3a4', .9], [1, '#18786c', .95]])}
-${lin(p + '-fr', [[0, '#c8f4ee', .72], [.45, '#5cc6b8', .58], [1, '#1d8a7c', .86]])}
-${lin(p + '-gl', [[0, '#fff', .92], [1, '#fff', .12]])}
-</defs>
-${shadow(128, 226, 110, 14, p + '-sh')}
-<g filter="url(#${p}-dr)">
-<path d="M30 52 Q30 42 40 42 L100 42 Q108 42 112 50 L120 62 L214 62 Q224 62 224 72 L224 206 L30 206 Z" fill="url(#${p}-bk)" stroke="#11574e" stroke-width="3" filter="url(#${p}-gb)"/>
-${inner}
-<path d="M22 100 Q22 92 30 92 L226 92 Q234 92 233 100 L222 208 Q221 216 213 216 L40 216 Q32 216 31 208 Z" fill="url(#${p}-fr)" stroke="#11574e" stroke-width="3" filter="url(#${p}-gf)"/>
-<ellipse cx="128" cy="198" rx="78" ry="13" fill="#eafffb" opacity=".6" filter="url(#${p}-sf)"/>
-<path d="M27 97 L229 97 L226 124 Q128 136 29 124 Z" fill="url(#${p}-gl)" filter="url(#${p}-sf1)"/>
-<rect x="196" y="104" width="9" height="88" rx="4.5" fill="#fff" opacity=".5" transform="rotate(6 196 104)" filter="url(#${p}-sf1)"/>
-</g>`;
-
-ICONS['Music v2'] = folder2('m2', `
-<defs>${lin('m2-nt', [[0, '#9ad4ff'], [.5, '#2a7fe0'], [1, '#0c3c88']])}
-${glassFx('m2-ntf', { tint: '#06204a', shade: .5, depth: 4, spec: 1.1, scale: 3 })}</defs>
-<path d="M118 56 L190 38 L190 150 A22 17 0 1 1 172 134 L172 72 L136 81 L136 168 A22 17 0 1 1 118 152 Z" fill="url(#m2-nt)" stroke="#0a2a60" stroke-width="3" filter="url(#m2-ntf)"/>
-<path d="M124 62 L184 47 L184 56 L124 71 Z" fill="#fff" opacity=".6" filter="url(#m2-sf1)"/>`);
-
-ICONS['My Device v2'] = `
-<defs>
-${dropFx('d2-dr')}
 ${glassFx('d2-bdf', { tint: '#000', shade: .55, depth: 5, spec: 1, scale: 4 })}
 ${glassFx('d2-scf', { tint: '#000', shade: .75, depth: 4, spec: 0, scale: 1 })}
 ${glassFx('d2-btf', { tint: '#1c2026', shade: .4, depth: 3, spec: 1.1, scale: 3 })}
@@ -95,7 +42,7 @@ ${rad('d2-bt', [[0, '#ffffff'], [.6, '#c4ccd6'], [1, '#6c7886']], .4, .3, .7)}
 ${lin('d2-rf', [[0, '#fff', .55], [1, '#fff', .05]], 1, 1)}
 </defs>
 ${shadow(128, 236, 72, 12, 'd2-sh')}
-<g filter="url(#d2-dr)">
+<g>
 <rect x="66" y="18" width="124" height="208" rx="18" fill="url(#d2-bd)" stroke="#0a0c10" stroke-width="3" filter="url(#d2-bdf)"/>
 <g filter="url(#d2-scf)"><rect x="80" y="38" width="96" height="124" rx="3" fill="url(#d2-sc)"/>
 <path d="M80 128 Q128 100 176 118 L176 162 L80 162 Z" fill="url(#d2-hl)"/>
