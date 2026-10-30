@@ -111,12 +111,15 @@ The weather packs' rules, extended to named icons:
 
 ## Votes for the owner
 
+**Ruled (owner, 2026-10-30, "Yes, as proposed"): IC2, IC3, IC4 and IC5 as
+proposed below.** IC1 had two options and no proposal, so it is still open.
+
 - **IC1, the stand-in's licence:** the OS's own (GPL-2.0-or-later, simplest),
   or CC BY 4.0 (lets anyone reuse the icons elsewhere with credit).
 - **IC2, legacy program icons:** shown as the program's own by default, with
-  a pack able to replace them (proposed), or always the program's own.
-- **IC3, user pictures:** PNG and ICO (proposed), or PNG only.
-- **IC4, where Icons lives in Settings:** under Themes & desktop (proposed),
-  or a page of its own.
+  a pack able to replace them. **Ruled.**
+- **IC3, user pictures:** PNG and ICO. **Ruled.**
+- **IC4, where Icons lives in Settings:** under Themes & desktop. **Ruled.**
 - **IC5, a live Calendar icon:** the Calendar icon shows today's date
   (drawn over the icon at the atlas's draw time) instead of a fixed "30".
+  **Ruled.**
