@@ -42,7 +42,19 @@ screens 1-7, the same under both desktops. **For comparison only (the
 owner asked what Claude would draw):** Weather as a WM5 program in the
 retro-modern look, `mockups/weather-wmlens-sheet.jpg` (Now as a details
 list, Hourly as a list of hours, 10 Day, Radar with Play on the left
-softkey, the Menu open); it replaces nothing. Classic reaches the app from its
+softkey, the Menu open); it replaces nothing.
+**The mix (owner asked, 2026-10-30: "a mixture of your modern and classic
+ideas? I like the different buttons being at the bottom"):**
+`mockups/weather-mix-sheet.jpg`: Windows Mobile's frame (title bar with
+ok; a header strip with the place, its dots, any alert and the data's
+time; the view tabs and the softkeys together at the bottom) around the
+modern content (the big reading, next-hour rain, the hourly strip and
+graph, cards, the 10-day bars). The radar on three real base maps drawn
+on the PC from Natural Earth (public domain) and open elevation tiles:
+Night (dark), Ink (black water, white land), Relief (tinted by height);
+the look is a Menu choice. Map drawing script:
+`tools/mockups/radar_basemaps.py` (data in `local/maps/`, not committed). Awaiting the
+owner's verdict. Classic reaches the app from its
 desktop widget (screen 8), Modern from the home page (screen 0).
 
 ### The full-screen app, proposed (screens 1-7)
