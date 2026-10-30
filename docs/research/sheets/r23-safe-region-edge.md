@@ -63,3 +63,11 @@ inconclusive; if 0xB0000 is wrong anywhere, keep 0xAE000. The references
 are rendered with the display's fetch off; every render is checked word for
 word; nothing is written to on-die memory (the screens show whatever is
 there). It takes about a minute and the screen flickers.
+
+## The run (2026-10-29, gpubench-0226; 2700g.md "R23E on the X51v")
+At 74.75 / 1, renders wrong of 80: 0xAE000 0, **0xB0000 0**, 0xB0400 1
+(1 word), 0xB2000 6 (8), 0xB6000 10 (23); at 149.50 / 2 none anywhere,
+the control included. Against the rule: 0xB0000 clean at both, 0xB6000
+wrong (at 74.75 / 1), 0xB0400 and 0xB2000 wrong at 74.75 / 1: **met**.
+The 149.50 / 2 half saw nothing, so it neither supports nor overturns.
+Raising `SAFE_END` to 0xB0000 (lists on die 104 KiB) waits for the owner.
