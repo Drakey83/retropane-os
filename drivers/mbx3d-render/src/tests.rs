@@ -521,6 +521,7 @@ fn the_overlay_is_an_alpha_0_slot_quad_over_the_scene_listed_last_and_redraws_no
         "switching the overlay on redraws nothing by itself"
     );
     g.r.set_underlay(true).unwrap();
+    g.r.invalidate_all();
     let on = g.frame();
     assert_eq!(sample(&g), want, "the same picture");
     assert_eq!(on.tiles, plain.tiles);

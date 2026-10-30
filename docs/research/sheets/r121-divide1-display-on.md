@@ -87,3 +87,23 @@ Built (knob off until a divide-1 rung ships, ADR-0035 amendment D):
 - **Owed:** the device check through the service at 143.00 / 1 with
   fallback frames forced, every frame checked (the proven-on-hardware
   rule); it needs the owner's go.
+
+## The device check through the service (proposed; waits for the owner's go)
+- **What R110 did (the finding):** `rp-scene` drives the shipped graphics
+  service on the X51v and judges every refresh by the display's own
+  signature (`DSIG`). It ran at Windows Mobile's clock and 149.50 / 2.
+- **Ours:** an `rp-scene` variant (`RP_SCENE_DIVIDE1`, the default image
+  unchanged) adds three phases at 143.00 / 1 after R110's three:
+  - checkerboard order, `sdram_cures` on: every frame goes by the copy
+    path into SDRAM, the case R121 cured;
+  - rows, cures on: frames led behind the scan into screen 0 (cures off)
+    mixed with copy-path frames (cures on), so the switching is proven;
+  - checkerboard, cures off: the control. Some frames should come out
+    wrong, which shows the check can see the fault.
+  - Each phase's references are compared with 149.50 / 2's, so a wrong
+    reference can't hide a fault.
+- **Why it wins over a bench run:** the code that ships is what's tested,
+  every refresh judged, on the real display.
+- **Length:** about 10 minutes, unattended once loaded.
+- **What would overturn it:** any wrongly judged refresh in the first two
+  phases. The cure isn't enough through the service: back to the sheet.
