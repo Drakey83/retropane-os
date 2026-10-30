@@ -97,3 +97,27 @@ the device check (step 4).
   meanwhile.
 - Host test plus two mutants; `emu-today` passes.
 - The interrupt (B) is left for later, as recommended.
+
+## The device check (2026-10-30 7:47 AM, `cargo xtask perf`, today-0013, `local/perf-2026-10-30-R115c.txt`)
+| | before R113 (tearing flips) | R115b (blocking wait) | R115c (this build) |
+|---|---|---|---|
+| pen-down period, worst | 12,664 us | 23,336 us | **12,644 us** |
+| pen-down period, median | 6,952 | 6,952 | 6,952 |
+| touch to flush, median | ~10.4-13.3 ms | 19,924 us | **24,208 us** |
+| touch to flush, worst | 42,804-44,260 | 49,384 | **57,972 (over the 50 ms promise)** |
+| queue to flip, median | 5,593 | 5,585 | 5,574 |
+
+**Reading it (results, not decisions):**
+- **The pen is sampled evenly again:** the worst gap is back to before
+  R113.
+- **Touch to flush got worse**, by 4.3 ms at the median and 8.6 ms at
+  the worst. This build doesn't log its slip counter in `rp-today`, so the
+  cause isn't measured yet. The likely one is a pass of the loop (a pen
+  sample is ~2 ms) running past the 2.2 ms lead, so the flip misses that
+  blanking and waits a whole refresh.
+- **This sheet's expectation was wrong.** The pre-R113 10.4-13.3 ms was a
+  flip written at once, mid-scan, which tore. A flip that waits for the
+  blanking adds half a refresh on average (~8 ms) however the CPU waits.
+  So R115b's 19.9 ms was mostly the blanking itself, not the spin. The
+  overturn criterion ("back within ~1 ms of 10.4 ms") can't be met by any
+  flip timed to the blanking.
