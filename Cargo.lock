@@ -590,6 +590,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-inflate"
+version = "0.0.0"
+
+[[package]]
 name = "rp-kernel"
 version = "0.0.0"
 dependencies = [
@@ -1036,6 +1040,7 @@ dependencies = [
  "rp-hal-pxa27x",
  "rp-hal-x51v",
  "rp-image",
+ "rp-inflate",
  "rp-mbx-render",
  "rp-mbx3d-render",
  "rp-shell",

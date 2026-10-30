@@ -50,6 +50,17 @@ fn main() {
         }
     };
     println!("cargo:rustc-env=RP_TODAY_WALLPAPER_NAME={name}");
+    // Packed for the image (sheet today-image-room.md): each plane through
+    // PNG's Paeth filter, then zlib; unpacked once at start into the RAM
+    // pool (`rp_today::unpack_wallpaper`). The raw planes stay beside it
+    // for the PC's checks.
+    let packed = pack_wallpaper(&wall);
+    println!(
+        "cargo:warning=wallpaper ({name}) packed {} -> {} bytes",
+        wall.len(),
+        packed.len()
+    );
+    std::fs::write(Path::new(&out).join("wallpaper.zz"), packed).expect("OUT_DIR writable");
     std::fs::write(Path::new(&out).join("wallpaper.yuv"), wall).expect("OUT_DIR writable");
 
     // The weather pictures: `local/icons/icons.rs` (made by
@@ -139,6 +150,17 @@ fn utc_offset_minutes() -> i64 {
             Some(sign * (h * 60 + m))
         })
         .unwrap_or(0)
+}
+
+/// The planes (Y, then U and V at half size) each Paeth-filtered, then
+/// zlib: what `rp_today::unpack_wallpaper` undoes.
+fn pack_wallpaper(wall: &[u8]) -> Vec<u8> {
+    let (y, uv) = wall.split_at(W * H);
+    let (u, v) = uv.split_at(W * H / 4);
+    let mut f = rp_inflate::pack::paeth_filter(y, W, H);
+    f.extend(rp_inflate::pack::paeth_filter(u, W / 2, H / 2));
+    f.extend(rp_inflate::pack::paeth_filter(v, W / 2, H / 2));
+    rp_inflate::pack::zlib(&f)
 }
 
 /// A dusk sky as planar 4:2:0: deep blue at the top to warm low light.

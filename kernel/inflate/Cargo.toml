@@ -1,0 +1,15 @@
+[package]
+name = "rp-inflate"
+description = "Deflate and zlib decoding, safe and bounded, plus PNG's Paeth filter undone: assets packed on the PC (the wallpaper, maps), unpacked once on the device"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# The packer, for build scripts on the PC (needs std).
+pack = []
+
+[lints]
+workspace = true

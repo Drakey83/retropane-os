@@ -502,10 +502,16 @@ pub const BUDGETS: &[Budget] = &[
     // vector page (it never took the screen in the emulator; the end-of-area
     // check below came from that). The pictures are now run-length packed
     // and unpacked at start into the RAM pool (R129): -48 KiB loaded.
+    // 2026-10-30, the Weather app's speed and room sheets: the wallpaper is
+    // packed (460,800 -> ~137,500 bytes, unpacked into the RAM pool at
+    // start), 586 KB loaded; zeroed RAM 40 -> 48 KiB for the 2D renderer's
+    // per-command background keys and clips (~5.6 KiB in `.bss`): 42.9
+    // KiB measured, + ~12%. The load budget stays 900 KiB: the room is for
+    // settings, the keyboard and the radar.
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 40 * 1024,
+        max_zero: 48 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D

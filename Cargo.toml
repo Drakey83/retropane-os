@@ -37,6 +37,7 @@ members = [
     "kernel/mm",
     "kernel/pe",
     "kernel/lz4",
+    "kernel/inflate",
     "kernel/sched",
     "kernel/fat",
     "kernel/crypto",

@@ -169,7 +169,9 @@ mod image {
         }
     }
 
-    static WALLPAPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.yuv"));
+    /// The wallpaper, packed by the build (sheet today-image-room.md: 460
+    /// KB of planes in ~140 KB); unpacked at start into the RAM pool.
+    static WALLPAPER_PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.zz"));
 
     /// Start of the clock, in local minutes since 1970 (from the build).
     fn start_minutes() -> i64 {
@@ -242,8 +244,27 @@ mod image {
         let Some(wall) = WALL.put_with(WallScratch::new) else {
             crash(format_args!("started twice"))
         };
+        // The RAM pool (SDRAM outside the image area, unused by this image
+        // otherwise): the weather pictures, then the wallpaper's planes.
+        let Some(pool) = rp_hal_x51v::devices::take_ram_pool() else {
+            crash(format_args!("no RAM pool"))
+        };
+        let (icon_px, rest) = pool.split_at_mut(rp_today::ICON_WORDS);
+        let wall_bytes = &mut rp_hal_mem::words_as_bytes_mut(rest)[..rp_today::WALLPAPER_BYTES];
         let t0 = rt::ticks();
-        rp_today::show_gpu(two_d, WALLPAPER, rt::delay_us, wall);
+        if let Err(e) = rp_today::unpack_wallpaper(WALLPAPER_PACKED, wall_bytes) {
+            crash(format_args!("wallpaper unpacking: {e:?}"))
+        }
+        let unpacked_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
+        let wallpaper: &'static [u8] = wall_bytes;
+        let _ = writeln!(
+            RunLog,
+            "wallpaper unpacked: {} -> {} bytes in {unpacked_us} us",
+            WALLPAPER_PACKED.len(),
+            wallpaper.len()
+        );
+        let t0 = rt::ticks();
+        rp_today::show_gpu(two_d, wallpaper, rt::delay_us, wall);
         let shown_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
         // The 16-bit comparison's fact: how the engine widens a 16-bit
         // source into 32 bits (in the pool, which this 2D-only image leaves
@@ -278,12 +299,9 @@ mod image {
         let mut compare_frame = false;
         // The pictures unpacked once into the RAM pool (SDRAM outside the
         // image area, unused by this image): R129, the lean rule.
-        let icons = match (
-            rp_hal_x51v::devices::take_ram_pool(),
-            ICON_IMGS.put_with(|| [rp_today::NO_IMAGE; rp_today::ICON_COUNT]),
-        ) {
-            (Some(pool), Some(imgs)) => rp_today::icons_into(pool, imgs),
-            _ => rp_shell::Icons::NONE,
+        let icons = match ICON_IMGS.put_with(|| [rp_today::NO_IMAGE; rp_today::ICON_COUNT]) {
+            Some(imgs) => rp_today::icons_into(icon_px, imgs),
+            None => rp_shell::Icons::NONE,
         };
         let (Some(shell), Some(frame)) = (
             SHELL.put_with(|| Shell::new(rp_today::shell_fonts(), icons, true)),
@@ -662,7 +680,7 @@ mod image {
                     while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
                     let t0 = rt::ticks();
                     let depth = if dithered { Depth::Rgb565 } else { Depth::Full };
-                    rp_today::load_wallpaper(gfx.two_d(), WALLPAPER, depth, wall);
+                    rp_today::load_wallpaper(gfx.two_d(), wallpaper, depth, wall);
                     gfx.two_d().wallpaper_changed();
                     let _ = writeln!(
                         RunLog,

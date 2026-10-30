@@ -110,6 +110,28 @@ pub fn icons_into(
     set
 }
 
+/// Bytes of the wallpaper's planes (4:2:0, `W` x `H`).
+pub const WALLPAPER_BYTES: usize = W * H * 3 / 2;
+
+/// Unpacks the image's packed wallpaper (zlib of the Paeth-filtered Y, U
+/// and V planes, made by the build: sheet today-image-room.md) into `dst`
+/// ([`WALLPAPER_BYTES`]; the image's is in the RAM pool). The checksum is
+/// checked; damage is an error, never a fault.
+///
+/// # Errors
+/// `packed` damaged, or `dst` the wrong size.
+pub fn unpack_wallpaper(packed: &[u8], dst: &mut [u8]) -> Result<(), rp_inflate::Error> {
+    if rp_inflate::zlib(packed, dst)? != WALLPAPER_BYTES || dst.len() != WALLPAPER_BYTES {
+        return Err(rp_inflate::Error::Bad);
+    }
+    let (y, uv) = dst.split_at_mut(W * H);
+    let (u, v) = uv.split_at_mut(W * H / 4);
+    rp_inflate::unpaeth(y, W, H);
+    rp_inflate::unpaeth(u, W / 2, H / 2);
+    rp_inflate::unpaeth(v, W / 2, H / 2);
+    Ok(())
+}
+
 /// Room for [`icons_into`]'s descriptions.
 pub const NO_IMAGE: Image = Image {
     w: 0,
@@ -400,6 +422,22 @@ mod tests {
             Box::leak(vec![0; ICON_WORDS].into_boxed_slice()),
             Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
         )
+    }
+
+    /// The image's own packed wallpaper unpacks to the planes it was made
+    /// from, byte for byte; damage is refused.
+    #[test]
+    fn the_packed_wallpaper_unpacks_to_its_planes() {
+        let packed = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.zz"));
+        let raw = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.yuv"));
+        let mut out = vec![0u8; WALLPAPER_BYTES];
+        assert_eq!(unpack_wallpaper(packed, &mut out), Ok(()));
+        assert!(out == raw[..], "unpacked planes differ");
+        let mut bad = packed.to_vec();
+        let mid = bad.len() / 2;
+        bad[mid] ^= 0x10;
+        assert!(unpack_wallpaper(&bad, &mut out).is_err());
+        assert!(unpack_wallpaper(packed, &mut out[..1000]).is_err());
     }
 
     #[test]
