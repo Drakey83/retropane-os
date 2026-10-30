@@ -89,6 +89,11 @@ mod image {
     /// queue to flip; then the loop's period while the pen is down (the
     /// replay's: the first 256 of its ~530 count towards the median).
     static LATENCY: rt::Slot<[Latency; 5]> = rt::Slot::new();
+    /// One movement's frames (an entrance, a drag, a fling: frames less
+    /// than [`BURST_GAP_MS`] apart): CPU, queue to flip, and the period
+    /// between frames, summed up in one run-log line when it ends (the
+    /// first device run's per-frame lines filled the 64 KiB log).
+    static BURST: rt::Slot<[Latency; 3]> = rt::Slot::new();
     /// The wallpaper's conversion rows (the 16-bit comparison's dither).
     static WALL: rt::Slot<WallScratch> = rt::Slot::new();
     // The weather pictures' descriptions (their pixels are in the RAM pool).
@@ -101,6 +106,8 @@ mod image {
     const TS_PENIRQ: u8 = 94;
     /// OS timer ticks per millisecond.
     const TICKS_MS: u32 = 3250;
+    /// Frames further apart than this end a movement (its summary line).
+    const BURST_GAP_MS: u64 = 250;
     /// An answer to a touch slower than this gets its own log line.
     const SLOW_ANSWER_US: u32 = 40_000;
     /// A frame (after the first, which builds the background: ~54 ms)
@@ -373,6 +380,15 @@ mod image {
         }) else {
             crash(format_args!("started twice"))
         };
+        let Some([burst_cpu, burst_engine, burst_period]) =
+            BURST.put_with(|| [Latency::new(), Latency::new(), Latency::new()])
+        else {
+            crash(format_args!("started twice"))
+        };
+        // The movement in progress: when its first and last frames were
+        // queued (ms), and its background pixels and rows written.
+        let mut burst: Option<(u64, u64)> = None;
+        let (mut burst_bg_px, mut burst_rows, mut burst_reused) = (0u64, 0u32, 0u32);
         let mut frames = 0u32;
         let mut draw_us_worst = 0u32;
         // The CPU time of the frame last queued (for the slow-answer line).
@@ -464,6 +480,9 @@ mod image {
                 }
                 engine_worst = engine_worst.max(s.engine_us);
                 to_flip.add(s.engine_us);
+                if burst.is_some() {
+                    burst_engine.add(s.engine_us);
+                }
             }
 
             // The clock: once a minute.
@@ -473,6 +492,8 @@ mod image {
                 let time: Time = clock::time_at(minute);
                 shell.set_time(time);
             }
+            // Movement by itself (an entrance, a fling, a rebound) marks
+            // what changed; it is drawn below, not counted as an answer.
             shell.tick(now_ms as u32);
 
             // Buttons, as Windows Mobile programs see them.
@@ -644,7 +665,12 @@ mod image {
                         let (x, y) = map(rx, ry);
                         shell.input(Input::PenUp { x, y })
                     }
-                    _ => Action::Nothing,
+                    // Lists follow the pen; swipes are measured as it goes.
+                    Pen::Move(rx, ry) => {
+                        let (x, y) = map(rx, ry);
+                        shell.input(Input::PenMove { x, y })
+                    }
+                    Pen::Hold(..) | Pen::Nothing => Action::Nothing,
                 }
             };
             // Latency: the first answer to a touch counts from the touch
@@ -813,7 +839,26 @@ mod image {
                 queueing.add(us);
                 last_frame_us = us;
                 let s = gfx.two_d().last;
-                if us > SLOW_FRAME_US && frames > 0 && !REPLAY {
+                // The movement this frame belongs to (or starts).
+                burst = match burst {
+                    Some((first, last)) if now_ms - last <= BURST_GAP_MS => {
+                        burst_period.add(((now_ms - last) * 1000) as u32);
+                        Some((first, now_ms))
+                    }
+                    _ => {
+                        *burst_cpu = Latency::new();
+                        *burst_engine = Latency::new();
+                        *burst_period = Latency::new();
+                        (burst_bg_px, burst_rows, burst_reused) = (0, 0, 0);
+                        Some((now_ms, now_ms))
+                    }
+                };
+                burst_cpu.add(us);
+                burst_bg_px += u64::from(s.background_px);
+                burst_rows += s.rows_written;
+                burst_reused += s.rows_reused;
+                let moving = shell.animating() || burst_cpu.summary().0 > 1;
+                if us > SLOW_FRAME_US && frames > 0 && !REPLAY && !moving {
                     let _ = writeln!(
                         RunLog,
                         "slow frame {} at {} ms: {us} us (queueing {} us, wait {} us, background {})",
@@ -844,6 +889,28 @@ mod image {
                 }
             }
 
+            // A movement over (no frame for a while): its one summary line.
+            if let Some((first, last)) = burst
+                && now_ms - last > BURST_GAP_MS
+                && showing.is_none()
+                && !REPLAY
+            {
+                burst = None;
+                let (n, cpu_med, cpu_worst) = burst_cpu.summary();
+                if n > 1 {
+                    let (_, eng_med, eng_worst) = burst_engine.summary();
+                    let (_, per_med, per_worst) = burst_period.summary();
+                    let fps10 = if per_med > 0 { 10_000_000 / per_med } else { 0 };
+                    let _ = writeln!(
+                        RunLog,
+                        "movement at {first} ms: {n} frames in {} ms, period median {per_med} us (~{}.{} fps), worst {per_worst} us; CPU median {cpu_med} us, worst {cpu_worst} us; queue to flip median {eng_med} us, worst {eng_worst} us; background rebuilt {burst_bg_px} px, rows written {burst_rows}, reused {burst_reused}",
+                        last - first,
+                        fps10 / 10,
+                        fps10 % 10
+                    );
+                }
+            }
+
             // Sleep until the next reason to wake.
             // Never a loop without a pause (2026-10-13: sampling back to
             // back while the pen-detect line read "down" hung touch on the
@@ -858,6 +925,10 @@ mod image {
             let wait_ms: u32 = if showing.is_some() || gfx.busy() {
                 // A frame is with the engine or waiting for the blanking:
                 // flip it as soon as it's due.
+                1
+            } else if shell.animating() {
+                // A fling, a rebound or an entrance: the next frame as soon
+                // as the last is on the screen.
                 1
             } else if REPLAY && !replay_touching {
                 // The pause before the next touch.

@@ -609,6 +609,11 @@ fn every_page_fits_a_frame_even_with_the_menu_open_and_while_moving() {
         s.set_tab((page + 1) % 3);
         s.tick(s.now + 100);
         assert!(!drawn(&mut s).overflowed());
+        // Pulled past the end and scrolled: still every command.
+        s.input(Input::PenDown { x: 240, y: 200 });
+        s.input(Input::PenMove { x: 240, y: 560 });
+        assert!(!drawn(&mut s).overflowed());
+        s.input(Input::PenUp { x: 240, y: 560 });
     }
 }
 
@@ -675,24 +680,190 @@ fn tabs_turn_by_tap_d_pad_and_swipe_and_stop_at_the_ends() {
 #[test]
 fn the_hourly_list_scrolls_both_ways_and_stays_within_the_day() {
     let mut s = weather(1);
+    let max = i32::from(weather_app::max_scroll(1));
+    assert!(max > 400, "24 rows don't fit: {max}");
     s.input(Input::Key(Key::Up));
     assert_eq!(s.weather_page().1, 0);
     for _ in 0..30 {
         s.input(Input::Key(Key::Down));
     }
-    assert_eq!(s.weather_page().1, weather_app::MAX_SCROLL);
+    assert_eq!(s.weather_page().1, max);
     assert!(!drawn(&mut s).overflowed());
-    // Dragging down shows earlier hours, three rows for a long drag.
+    // A quick stroke with no moves reported: the list follows it 1:1.
     s.input(Input::PenDown { x: 200, y: 150 });
     s.input(Input::PenUp { x: 205, y: 290 });
-    assert_eq!(s.weather_page().1, weather_app::MAX_SCROLL - 3);
+    assert_eq!(s.weather_page().1, max - 140);
     s.input(Input::PenDown { x: 200, y: 400 });
-    s.input(Input::PenUp { x: 200, y: 100 });
-    assert_eq!(s.weather_page().1, weather_app::MAX_SCROLL);
-    // The other pages don't scroll; up and down move the focus there.
+    s.input(Input::PenUp { x: 200, y: 260 });
+    assert_eq!(s.weather_page().1, max);
+    // The pages that fit don't scroll by the D-pad; up and down move the
+    // focus there.
     s.set_tab(2);
     s.input(Input::Key(Key::Down));
     assert_eq!(s.weather_page().1, 0);
+}
+
+/// The pen's samples, `step_ms` apart from `t0`, from `y0` to `y1` at `x`.
+fn stroke(s: &mut Shell, t0: u32, x: u16, ys: &[u16], step_ms: u32) -> u32 {
+    let mut t = t0;
+    s.tick(t);
+    s.input(Input::PenDown { x, y: ys[0] });
+    for &y in &ys[1..] {
+        t += step_ms;
+        s.tick(t);
+        s.input(Input::PenMove { x, y });
+    }
+    s.input(Input::PenUp {
+        x,
+        y: *ys.last().unwrap_or(&ys[0]),
+    });
+    t
+}
+
+#[test]
+fn a_dragged_list_follows_the_pen_one_to_one_and_redraws_only_the_page() {
+    let mut s = weather(1);
+    s.tick(1_000);
+    drawn(&mut s);
+    s.input(Input::PenDown { x: 240, y: 400 });
+    // Inside the slop it may still be a tap: nothing moves.
+    s.input(Input::PenMove { x: 241, y: 395 });
+    assert_eq!(s.weather_page().1, 0);
+    assert!(!s.needs_frame());
+    // Past it, 1:1 from where the pen went down (no jump).
+    for (k, y) in [380u16, 352, 300].into_iter().enumerate() {
+        s.tick(1_000 + 7 * (k as u32 + 1));
+        s.input(Input::PenMove { x: 241, y });
+        assert_eq!(s.weather_page().1, i32::from(400 - y), "sample {k}");
+        let f = drawn(&mut s);
+        assert_eq!(f.dirty(), &[weather_app::PAGE][..], "sample {k}");
+    }
+    // Held still and lifted: no fling.
+    s.tick(1_200);
+    s.input(Input::PenUp { x: 241, y: 300 });
+    s.tick(1_400);
+    assert_eq!(s.weather_page().1, 100);
+    assert!(!s.animating());
+}
+
+#[test]
+fn a_flick_flings_on_slows_down_and_stops_inside() {
+    let mut s = weather(1);
+    // ~2 px/ms upwards: later hours.
+    let t = stroke(&mut s, 1_000, 240, &[500, 486, 472, 458, 444, 430], 7);
+    let at_lift = s.weather_page().1;
+    assert_eq!(at_lift, 70);
+    assert!(s.animating(), "it carries on");
+    s.tick(t + 100);
+    let a = s.weather_page().1;
+    assert!(a > at_lift + 100, "fast at first: {a}");
+    s.tick(t + 200);
+    let b = s.weather_page().1;
+    assert!(b - a < a - at_lift, "slowing: {at_lift} {a} {b}");
+    for k in 1..100 {
+        s.tick(t + 200 + 50 * k);
+    }
+    assert!(!s.animating(), "it stops");
+    let end = s.weather_page().1;
+    assert!(end > b && end <= i32::from(weather_app::max_scroll(1)));
+    // A touch catches a moving list.
+    let t = stroke(&mut s, 20_000, 240, &[100, 130, 160, 190, 220], 7);
+    assert!(s.animating());
+    s.tick(t + 30);
+    let moving = s.weather_page().1;
+    s.input(Input::PenDown { x: 240, y: 300 });
+    s.tick(t + 200);
+    assert_eq!(s.weather_page().1, moving, "held where it was caught");
+    assert_eq!(s.screen(), Screen::Weather, "the catch was no tap");
+    s.input(Input::PenUp { x: 240, y: 300 });
+}
+
+#[test]
+fn pulled_past_either_end_it_gives_way_then_springs_back() {
+    let mut s = weather(1);
+    // Down at the top: a third as far, then back to 0.
+    s.tick(1_000);
+    s.input(Input::PenDown { x: 240, y: 150 });
+    s.tick(1_010);
+    s.input(Input::PenMove { x: 240, y: 300 });
+    assert_eq!(s.weather_page().1, -50);
+    s.tick(1_400);
+    s.input(Input::PenUp { x: 240, y: 300 });
+    assert!(s.animating());
+    let mut last = s.weather_page().1;
+    for k in 1..=60 {
+        s.tick(1_400 + 10 * k);
+        let now = s.weather_page().1;
+        assert!(
+            now >= last && now <= 0,
+            "no wobble past the end: {last} -> {now}"
+        );
+        last = now;
+    }
+    assert_eq!(s.weather_page().1, 0);
+    assert!(!s.animating());
+    // A page that fits gives way too (the owner missed the rebound).
+    s.set_tab(2);
+    s.tick(5_000);
+    s.input(Input::PenDown { x: 240, y: 400 });
+    s.tick(5_010);
+    s.input(Input::PenMove { x: 240, y: 250 });
+    assert_eq!(s.weather_page().1, 50);
+    s.tick(5_300);
+    s.input(Input::PenUp { x: 240, y: 250 });
+    for k in 1..=60 {
+        s.tick(5_300 + 10 * k);
+    }
+    assert_eq!(s.weather_page().1, 0);
+    // The band never shows more than 120 px however far it's pulled.
+    s.tick(9_000);
+    s.input(Input::PenDown { x: 240, y: 100 });
+    s.tick(9_010);
+    s.input(Input::PenMove { x: 240, y: 600 });
+    assert!(s.weather_page().1 >= -120);
+    s.input(Input::PenUp { x: 240, y: 600 });
+}
+
+#[test]
+fn a_press_that_moves_is_no_tap_and_loses_its_press_state() {
+    let mut s = weather(1);
+    // Down on a tab, slid off it: unpressed, the lift does nothing.
+    let tab = weather_app::tab_rect(2);
+    s.input(Input::PenDown {
+        x: tab.x + 20,
+        y: tab.y + 10,
+    });
+    assert_eq!(s.pressed, Some(Target::Tab(2)));
+    s.input(Input::PenMove {
+        x: tab.x + 20,
+        y: tab.y - 30,
+    });
+    assert_eq!(s.pressed, None);
+    s.input(Input::PenUp {
+        x: tab.x + 20,
+        y: tab.y + 10,
+    });
+    assert_eq!(s.weather_page().0, 1);
+}
+
+#[test]
+fn a_swipe_moves_the_underline_as_it_goes_and_turns_the_page_on_lift() {
+    let mut s = weather(1);
+    s.tick(1_000);
+    drawn(&mut s);
+    s.input(Input::PenDown { x: 400, y: 300 });
+    s.input(Input::PenMove { x: 350, y: 302 });
+    assert_eq!(s.swipe_dx(), -50);
+    let f = drawn(&mut s);
+    assert!(f.dirty().contains(&weather_app::TABS));
+    // Short of the turn, back: nothing turns, nothing scrolled.
+    s.input(Input::PenMove { x: 380, y: 300 });
+    s.input(Input::PenUp { x: 380, y: 300 });
+    assert_eq!(s.weather_page(), (1, 0));
+    s.input(Input::PenDown { x: 400, y: 300 });
+    s.input(Input::PenMove { x: 330, y: 305 });
+    s.input(Input::PenUp { x: 300, y: 305 });
+    assert_eq!(s.weather_page(), (2, 0));
 }
 
 #[test]

@@ -523,11 +523,14 @@ pub const BUDGETS: &[Budget] = &[
     // tear diagnosis (runs 2-3: signatures read, pictures compared band by
     // band, each frame's render seen by the core's done bit), the 2D flip
     // phase (R113) and the lists-on-die comparison (R116); 149.6 KiB
-    // measured, + ~10%.
+    // measured, + ~10%. Zeroed RAM 38 -> 44 KiB on 2026-10-30 (test
+    // image): the 2D renderer's per-command background keys and its kept
+    // row ring (the Weather app's speed sheet), ~4.2 KiB in `.bss`; 40.9
+    // KiB measured, + ~8%.
     Budget {
         image: "rp-scene",
         max_load: 165 * 1024,
-        max_zero: 38 * 1024,
+        max_zero: 44 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),

@@ -382,8 +382,6 @@ pub struct Mbx2dRenderer<R, M> {
     bg_n: usize,
     /// Per command: its key if hoisted (scratch for `draw`).
     keys: [u32; MAX_CMDS],
-    /// Per command: the clip it is drawn in (scratch for `draw`).
-    clips: [Rect; MAX_CMDS],
     /// What each row of the ring holds, kept across frames so a row of
     /// the same colours is written once ([`RowKey`]), and the use stamp
     /// that says whether the engine may still read it.
@@ -462,7 +460,6 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             bg_keys: [(0, Rect::new(0, 0, 0, 0)); MAX_CMDS],
             bg_n: 0,
             keys: [0; MAX_CMDS],
-            clips: [Rect::new(0, 0, 0, 0); MAX_CMDS],
             row_keys: [None; ROWS],
             row_used: [0; ROWS],
             epoch: 1,
@@ -1338,7 +1335,6 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             cmds = i + 1;
             let b = c.bounds(frame).intersect(&clip);
             self.bounds[i] = b;
-            self.clips[i] = clip;
             let glass = matches!(
                 c,
                 Cmd::Fill { .. } | Cmd::HGradient { .. } | Cmd::Outline { .. }
@@ -1434,9 +1430,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             let bg = self.l.background;
             for &area in &redo[..nr] {
                 self.wallpaper(bg, area);
-                for (i, (c, _)) in frame.cmds_clipped().take(cmds).enumerate() {
+                for (i, (c, own)) in frame.cmds_clipped().take(cmds).enumerate() {
                     if self.hoist[i] && !self.bounds[i].intersect(&area).is_empty() {
-                        let clip = self.clips[i].intersect(&area);
+                        let clip = own.intersect(&area);
                         self.command(frame, c, clip, bg);
                     }
                 }

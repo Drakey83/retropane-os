@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 pub mod align;
+pub mod motion;
 mod weather_app;
 
 use rp_draw::{Argb, Cmd, Font, Frame, Image, Rect};
@@ -107,6 +108,14 @@ pub enum Input {
     },
     /// The stylus left the screen (where it last was).
     PenUp {
+        /// Screen x.
+        x: u16,
+        /// Screen y.
+        y: u16,
+    },
+    /// The stylus moved while down (every sample the touch filter calls a
+    /// move): lists follow it, swipes are measured as it goes.
+    PenMove {
         /// Screen x.
         x: u16,
         /// Screen y.
@@ -285,6 +294,37 @@ const NOTICE_MS: u32 = 2000;
 /// Dirty rectangles the shell gathers between frames.
 const MAX_DAMAGE: usize = 8;
 
+/// What a stroke on the Weather app's page has turned out to be.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Gesture {
+    /// No stroke on the page.
+    None,
+    /// Down, not yet moved past the slop: may still be a tap.
+    Pending {
+        /// Where it went down.
+        x0: u16,
+        /// See `x0`.
+        y0: u16,
+    },
+    /// Up or down: the list follows the pen.
+    Scroll,
+    /// Across: turns the page when it lifts far enough; the tab's
+    /// underline follows it meanwhile.
+    Swipe {
+        /// Where it went down.
+        x0: u16,
+        /// How far it has gone (negative: left).
+        dx: i16,
+    },
+}
+
+/// How far the pen may move before a press stops being a tap (px): a
+/// first draft for R124's measurement (the panel's jitter at rest is 2-3
+/// px after the filter).
+const SLOP: i32 = 8;
+/// A swipe this far across turns the page.
+const SWIPE_TURN: i32 = 60;
+
 /// The shell's state.
 pub struct Shell {
     fonts: Fonts,
@@ -314,12 +354,12 @@ pub struct Shell {
     region: Region,
     /// The Weather app's page: 0 Now, 1 Hourly, 2 10 Day.
     tab: u8,
-    /// The Hourly page's first row.
-    scroll: u8,
+    /// The page's scroll (each page starts at its top).
+    scroll: motion::Scroll,
+    /// What the pen is doing on the Weather app's page.
+    gesture: Gesture,
     /// When the page's entrance started (none: everything in place).
     anim: Option<u32>,
-    /// Where the pen went down (a swipe is measured to where it lifts).
-    down: Option<(u16, u16)>,
 }
 
 impl Shell {
@@ -345,9 +385,9 @@ impl Shell {
             wx: rp_weather::sample(),
             region: Region::US,
             tab: 0,
-            scroll: 0,
+            scroll: motion::Scroll::new(0),
+            gesture: Gesture::None,
             anim: None,
-            down: None,
         };
         s.dirty(Rect::new(0, 0, W, H));
         s
@@ -371,17 +411,18 @@ impl Shell {
         self.screen
     }
 
-    /// The Weather app's page (0 Now, 1 Hourly, 2 10 Day) and the Hourly
-    /// page's first row.
+    /// The Weather app's page (0 Now, 1 Hourly, 2 10 Day) and how far it
+    /// is scrolled (px; negative or past its end while pulled).
     #[must_use]
-    pub fn weather_page(&self) -> (u8, u8) {
-        (self.tab, self.scroll)
+    pub fn weather_page(&self) -> (u8, i32) {
+        (self.tab, self.scroll.offset())
     }
 
-    /// Whether a page's entrance is still moving.
+    /// Whether something moves by itself (a page's entrance, a fling or a
+    /// rebound): the caller keeps drawing frames.
     #[must_use]
     pub fn animating(&self) -> bool {
-        self.anim.is_some()
+        self.anim.is_some() || self.scroll.moving()
     }
 
     /// Ends any movement at once, everything in place (pictures for the
@@ -389,6 +430,11 @@ impl Shell {
     pub fn settle(&mut self) {
         if self.anim.take().is_some() {
             self.dirty(Rect::new(0, 0, W, H));
+        }
+        if self.scroll.moving() {
+            let at = self.scroll.offset().clamp(0, self.scroll.max());
+            self.scroll.set(at);
+            self.dirty(weather_app::PAGE);
         }
     }
 
@@ -526,6 +572,12 @@ impl Shell {
     /// notice past its time goes.
     pub fn tick(&mut self, now_ms: u32) -> Action {
         self.now = now_ms;
+        if self.screen == Screen::Weather && self.scroll.step(now_ms) {
+            self.dirty(weather_app::PAGE);
+            if self.anim.is_none() && self.notice.is_none() {
+                return Action::Redraw;
+            }
+        }
         if let Some(start) = self.anim {
             // A page arriving: redraw it every pass until it's in place.
             if now_ms.wrapping_sub(start) >= weather_app::ANIM_MS {
@@ -686,34 +738,95 @@ impl Shell {
         }
     }
 
-    /// A stroke on the Weather app's page, from where the pen went down to
-    /// where it lifted: across turns the page, up or down scrolls the hours.
-    /// Short strokes are taps (none of this happens).
-    fn swipe(&mut self, x: u16, y: u16) -> Option<Action> {
-        let (x0, y0) = self.down.take()?;
-        if self.screen != Screen::Weather
-            || self.menu_open
-            || !weather_app::PAGE.contains_point(x0, y0)
+    /// Whether a stroke from `(x, y)` is the Weather page's.
+    fn on_page(&self, x: u16, y: u16) -> bool {
+        self.screen == Screen::Weather && !self.menu_open && weather_app::PAGE.contains_point(x, y)
+    }
+
+    /// The pen moved: a press slid off its target loses its press state;
+    /// on the Weather page, past the slop a stroke becomes a scroll (up or
+    /// down) or a swipe (across), and stops being a tap.
+    fn pen_move(&mut self, x: u16, y: u16) {
+        if let Some(p) = self.pressed
+            && !self.rect_of(p).contains_point(x, y)
         {
-            return None;
+            self.set_pressed(None);
         }
-        let (dx, dy) = (i32::from(x) - i32::from(x0), i32::from(y) - i32::from(y0));
-        if dx.abs() >= 60 && dx.abs() > 2 * dy.abs() {
-            let t = if dx < 0 {
-                self.tab + 1
-            } else {
-                self.tab.saturating_sub(1)
-            };
-            self.set_tab(t);
-            return Some(Action::Redraw);
+        match self.gesture {
+            Gesture::None => {}
+            Gesture::Pending { x0, y0 } => {
+                let (dx, dy) = (i32::from(x) - i32::from(x0), i32::from(y) - i32::from(y0));
+                if dy.abs() >= SLOP && dy.abs() >= dx.abs() {
+                    self.gesture = Gesture::Scroll;
+                    self.set_pressed(None);
+                    self.scroll_to_pen(y);
+                } else if dx.abs() >= SLOP {
+                    self.gesture = Gesture::Swipe { x0, dx: 0 };
+                    self.set_pressed(None);
+                    self.pen_move(x, y);
+                }
+            }
+            Gesture::Scroll => self.scroll_to_pen(y),
+            Gesture::Swipe { x0, dx } => {
+                let d = (i32::from(x) - i32::from(x0)).clamp(-i32::from(W), i32::from(W)) as i16;
+                if d != dx {
+                    self.gesture = Gesture::Swipe { x0, dx: d };
+                    self.dirty(weather_app::TABS);
+                }
+            }
         }
-        if self.tab == 1 && dy.abs() >= 30 && dy.abs() > dx.abs() {
-            // The list follows the pen: up shows later hours.
-            let n = (dy.abs() / 45).clamp(1, 10) as i16;
-            self.scroll_by(if dy < 0 { n } else { -n });
-            return Some(Action::Redraw);
+    }
+
+    /// The list follows the pen to `y`.
+    fn scroll_to_pen(&mut self, y: u16) {
+        let before = self.scroll.offset();
+        self.scroll.drag(y, self.now);
+        if self.scroll.offset() != before {
+            self.dirty(weather_app::PAGE);
         }
-        None
+    }
+
+    /// The pen lifted at `(x, y)` from a stroke on the page: `Some` if it
+    /// was a scroll or a swipe (not a tap).
+    fn pen_lift(&mut self, x: u16, y: u16) -> Option<Action> {
+        if let Gesture::Pending { .. } = self.gesture {
+            // No moves reported between down and up (a quick stroke): the
+            // lift point is the move.
+            self.pen_move(x, y);
+        }
+        let g = core::mem::replace(&mut self.gesture, Gesture::None);
+        match g {
+            Gesture::Scroll => {
+                self.scroll.release(self.now);
+                Some(Action::Redraw)
+            }
+            Gesture::Swipe { dx, .. } => {
+                self.dirty(weather_app::TABS);
+                if i32::from(dx).abs() >= SWIPE_TURN {
+                    let t = if dx < 0 {
+                        self.tab + 1
+                    } else {
+                        self.tab.saturating_sub(1)
+                    };
+                    self.set_tab(t);
+                }
+                Some(Action::Redraw)
+            }
+            Gesture::None | Gesture::Pending { .. } => {
+                // Still a tap: the scroll lets go where it is.
+                self.scroll.release(self.now);
+                None
+            }
+        }
+    }
+
+    /// How far a swipe in progress has gone (px, negative: left), for the
+    /// tabs' underline.
+    pub(crate) fn swipe_dx(&self) -> i16 {
+        match self.gesture {
+            Gesture::Swipe { dx, .. } => dx,
+            _ => 0,
+        }
     }
 
     /// Starts the align screen (over everything until it finishes or Home).
@@ -788,7 +901,17 @@ impl Shell {
         let before = self.damaged;
         let act = match e {
             Input::PenDown { x, y } => {
-                self.down = Some((x, y));
+                self.gesture = Gesture::None;
+                if self.on_page(x, y) {
+                    // A touch catches a moving list; it may still be a tap.
+                    let moving = self.scroll.moving();
+                    self.scroll.press(y, self.now);
+                    self.gesture = if moving {
+                        Gesture::Scroll
+                    } else {
+                        Gesture::Pending { x0: x, y0: y }
+                    };
+                }
                 let t = self.hit(x, y);
                 if t.is_none() && self.menu_open && !self.menu_rect().contains_point(x, y) {
                     // A tap outside the open menu closes it.
@@ -797,12 +920,17 @@ impl Shell {
                 self.set_pressed(t);
                 Action::Nothing
             }
+            Input::PenMove { x, y } => {
+                self.pen_move(x, y);
+                Action::Nothing
+            }
             Input::PenUp { x, y } => {
-                let t = self.pressed;
-                self.set_pressed(None);
-                if let Some(a) = self.swipe(x, y) {
+                if let Some(a) = self.pen_lift(x, y) {
+                    self.set_pressed(None);
                     return a;
                 }
+                let t = self.pressed;
+                self.set_pressed(None);
                 match t {
                     Some(t) if self.rect_of(t).contains_point(x, y) => self.activate(t),
                     _ => Action::Nothing,
@@ -841,7 +969,7 @@ impl Shell {
                 Action::Nothing
             }
             Input::Key(k @ (Key::Up | Key::Down))
-                if self.screen == Screen::Weather && self.tab == 1 && !self.menu_open =>
+                if self.screen == Screen::Weather && self.scroll.max() > 0 && !self.menu_open =>
             {
                 self.scroll_by(if k == Key::Up { -1 } else { 1 });
                 Action::Nothing

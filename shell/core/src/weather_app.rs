@@ -37,8 +37,17 @@ const ROWS: usize = 10;
 const ROW_Y: u16 = 102;
 const ROW_STEP: u16 = 45;
 const ROW_H: u16 = 42;
-/// The furthest the Hourly page scrolls.
-pub(crate) const MAX_SCROLL: u8 = (HOURS - ROWS) as u8;
+/// How far page `tab` scrolls (px): the Hourly list's last row up to the
+/// page's bottom; the pages that fit, 0 (they still give way and spring
+/// back).
+pub(crate) const fn max_scroll(tab: u8) -> u16 {
+    let bottom = PAGE.y + PAGE.h;
+    let end = match tab {
+        1 => ROW_Y + HOURS as u16 * ROW_STEP + 4,
+        _ => 0,
+    };
+    end.saturating_sub(bottom)
+}
 
 /// One item's entrance: how long it moves, how far, and the gap before the
 /// next item starts.
@@ -106,7 +115,7 @@ impl Shell {
     pub(crate) fn open_weather(&mut self) {
         self.screen = super::Screen::Weather;
         self.tab = 0;
-        self.scroll = 0;
+        self.scroll = super::motion::Scroll::new(max_scroll(0));
         self.menu_open = false;
         self.pressed = None;
         if self.focus.is_some() {
@@ -123,18 +132,55 @@ impl Shell {
             return;
         }
         self.tab = t;
-        self.scroll = 0;
+        self.scroll = super::motion::Scroll::new(max_scroll(t));
         self.anim = Some(self.now);
         self.dirty(PAGE);
         self.dirty(TABS);
     }
 
-    /// Scrolls the Hourly page by `rows` (clamped).
+    /// Scrolls the page by `rows` rows (the D-pad; clamped).
     pub(crate) fn scroll_by(&mut self, rows: i16) {
-        let s = (i16::from(self.scroll) + rows).clamp(0, i16::from(MAX_SCROLL)) as u8;
-        if s != self.scroll {
-            self.scroll = s;
+        let before = self.scroll.offset();
+        self.scroll
+            .set(before + i32::from(rows) * i32::from(ROW_STEP));
+        if self.scroll.offset() != before {
             self.dirty(PAGE);
+        }
+    }
+
+    /// Where content laid out at `y` is drawn, scrolled (may be negative
+    /// or past the page: the clip keeps it in).
+    fn sy(&self, y: u16) -> i32 {
+        i32::from(y) - self.scroll.offset()
+    }
+
+    /// A glass panel at a scrolled `y`, cut at the screen's top (the clip
+    /// does the rest; the tint runs across, so a cut keeps it).
+    fn glass_at(f: &mut Frame, x: u16, y: i32, w: u16, h: u16) {
+        let top = y.max(0);
+        let bottom = y + i32::from(h);
+        if bottom <= top {
+            return;
+        }
+        let r = Rect::new(x, top as u16, w, (bottom - top) as u16);
+        f.push(Cmd::HGradient {
+            r,
+            left: GLASS_LEFT,
+            right: GLASS_RIGHT,
+        });
+        // Cut too: its top edge then sits at the screen's top, outside
+        // every page's clip.
+        f.push(Cmd::Outline {
+            r,
+            color: super::GLASS_EDGE,
+        });
+    }
+
+    /// Text whose baseline is at a scrolled `y` (left out when its line is
+    /// above the screen: the page's clip hides it anyway).
+    fn text_at(f: &mut Frame, x: u16, y: i32, font: &'static rp_draw::Font, c: Argb, t: &[u8]) {
+        if y - i32::from(font.ascent) >= 0 && y < i32::from(H) + 64 {
+            f.text(x, y as u16, font, c, t);
         }
     }
 
@@ -166,11 +212,14 @@ impl Shell {
         let w = ui.width(now.as_bytes());
         f.text(W - 16 - w, HEAD.y + 37, ui, TEXT, now.as_bytes());
 
+        // The page scrolls inside its own rectangle.
+        f.clip(Some(PAGE));
         match self.tab {
             0 => self.now_page(f),
             1 => self.hourly_page(f),
             _ => self.days_page(f),
         }
+        f.clip(None);
 
         // Tabs.
         f.push(Cmd::HGradient {
@@ -187,8 +236,13 @@ impl Shell {
                     left: SELECTED_LEFT,
                     right: SELECTED_RIGHT,
                 });
+                // The underline follows a swipe live: a full tab's width
+                // for a swipe of the turning distance and more, the way the
+                // page will go (a swipe left moves on).
+                let lead = -i32::from(self.swipe_dx()) * i32::from(r.w) / 180;
+                let x = (i32::from(r.x) + 40 + lead).clamp(0, i32::from(W) - i32::from(r.w - 80));
                 f.push(Cmd::Fill {
-                    r: Rect::new(r.x + 40, r.y + r.h - 4, r.w - 80, 3),
+                    r: Rect::new(x as u16, r.y + r.h - 4, r.w - 80, 3),
                     color: FOCUS,
                 });
             }
@@ -204,40 +258,43 @@ impl Shell {
 
         // The big panel: the temperature counting up, the sky, the day.
         let dx = self.slide(0);
-        let p = Rect::new(16 + dx, 104, 448, 206);
-        Self::glass(f, p, GLASS_LEFT, GLASS_RIGHT);
+        let (px, py) = (16 + dx, self.sy(104));
+        Self::glass_at(f, px, py, 448, 206);
         let shown = rg.degrees(wx.now.temp) * self.ease(0) as i32 / 1024;
         let t = Line::new().num(shown).push(&[DEG_BIG]);
-        f.text(p.x + 20, p.y + 104, big, TEXT, t.as_bytes());
+        Self::text_at(f, px + 20, py + 104, big, TEXT, t.as_bytes());
         let pic = match (icon, self.icons.hero) {
             (Icon::PartlyDay, Some(h)) => Some(h),
             _ => self.icons.card[usize::from(icon.id() - 1)],
         };
         if let Some(img) = pic {
-            let drop = ((1024 - self.ease(1)) * 24 / 1024) as u16;
-            f.push(Cmd::Image {
-                x: p.x + p.w - img.w - 6,
-                y: (p.y + p.h.saturating_sub(img.h) / 2).saturating_sub(18 + drop),
-                img,
-            });
+            let drop = ((1024 - self.ease(1)) * 24 / 1024) as i32;
+            let y = py + i32::from(206u16.saturating_sub(img.h) / 2) - 18 - drop;
+            if y >= 0 {
+                f.push(Cmd::Image {
+                    x: px + 448 - img.w - 6,
+                    y: y as u16,
+                    img,
+                });
+            }
         }
-        f.text(p.x + 20, p.y + 140, ui, TEXT, icon.words().as_bytes());
+        Self::text_at(f, px + 20, py + 140, ui, TEXT, icon.words().as_bytes());
         let feels = Line::new()
             .push(b"Feels like ")
             .push(rg.temp(wx.now.feels).as_bytes());
-        f.text(p.x + 20, p.y + 166, ui, DIM, feels.as_bytes());
+        Self::text_at(f, px + 20, py + 166, ui, DIM, feels.as_bytes());
         let d = &wx.days[0];
         let hl = Line::new()
             .push(b"High ")
             .push(rg.temp(d.high).as_bytes())
             .push(b"   Low ")
             .push(rg.temp(d.low).as_bytes());
-        f.text(p.x + 20, p.y + 192, ui, DIM, hl.as_bytes());
+        Self::text_at(f, px + 20, py + 192, ui, DIM, hl.as_bytes());
 
         // The summary strip.
-        let s = Rect::new(16 + self.slide(1), 318, 448, 40);
-        Self::glass(f, s, GLASS_LEFT, GLASS_RIGHT);
-        f.text(s.x + 16, s.y + 27, ui, TEXT, wx.summary(rg).as_bytes());
+        let (sx, sy) = (16 + self.slide(1), self.sy(318));
+        Self::glass_at(f, sx, sy, 448, 40);
+        Self::text_at(f, sx + 16, sy + 27, ui, TEXT, wx.summary(rg).as_bytes());
 
         // Four cards, each with a bar.
         let minutes = u32::from(self.time.hour) * 60 + u32::from(self.time.minute);
@@ -277,16 +334,15 @@ impl Shell {
         ];
         for (i, (name, value, amount, scale)) in cards.iter().enumerate() {
             let e = self.ease(2 + i as u32);
-            let c = Rect::new(
-                16 + (i as u16 % 2) * 232 + self.slide(2 + i as u32),
-                366 + (i as u16 / 2) * 92,
-                216,
-                84,
-            );
-            Self::glass(f, c, GLASS_LEFT, GLASS_RIGHT);
-            f.text(c.x + 14, c.y + 26, label, DIM, name);
-            f.text(c.x + 14, c.y + 54, ui, TEXT, value.as_bytes());
-            let track = Rect::new(c.x + 14, c.y + 66, 188, 6);
+            let cx = 16 + (i as u16 % 2) * 232 + self.slide(2 + i as u32);
+            let cy = self.sy(366 + (i as u16 / 2) * 92);
+            Self::glass_at(f, cx, cy, 216, 84);
+            Self::text_at(f, cx + 14, cy + 26, label, DIM, name);
+            Self::text_at(f, cx + 14, cy + 54, ui, TEXT, value.as_bytes());
+            if cy + 66 < 0 {
+                continue;
+            }
+            let track = Rect::new(cx + 14, (cy + 66) as u16, 188, 6);
             f.push(Cmd::Fill {
                 r: track,
                 color: TRACK,
@@ -313,13 +369,23 @@ impl Shell {
         let (lo, hi) = wx.hours.iter().fold((i16::MAX, i16::MIN), |(a, b), h| {
             (a.min(h.temp), b.max(h.temp))
         });
-        for k in 0..ROWS {
-            let i = usize::from(self.scroll) + k;
+        // Only the rows on the page (and the one or two cut at its edges).
+        let off = self.scroll.offset();
+        let first = ((off - i32::from(ROW_H)).max(0) / i32::from(ROW_STEP)) as usize;
+        for i in first..HOURS {
             let Some(h) = wx.hours.get(i) else { break };
-            let e = self.ease(k as u32);
-            let mut r = row(k);
-            r.x += self.slide(k as u32);
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            let y = i32::from(ROW_Y) + i as i32 * i32::from(ROW_STEP) - off;
+            if y >= i32::from(PAGE.y + PAGE.h) {
+                break;
+            }
+            // The entrance staggers the rows on screen, not the list's.
+            let k = (i - first) as u32;
+            let e = self.ease(k);
+            let r = Rect::new(16 + self.slide(k), y.max(0) as u16, 448, ROW_H);
+            Self::glass_at(f, r.x, y, r.w, r.h);
+            if y < 0 {
+                continue;
+            }
             let when = if i == 0 {
                 Line::new().push(b"NOW")
             } else {
@@ -364,8 +430,10 @@ impl Shell {
             r: track,
             color: TRACK,
         });
+        let max = i32::from(max_scroll(1)).max(1);
         let thumb_h = track.h * ROWS as u16 / HOURS as u16;
-        let y = track.y + (track.h - thumb_h) * u16::from(self.scroll) / u16::from(MAX_SCROLL);
+        let at = off.clamp(0, max);
+        let y = track.y + ((i32::from(track.h - thumb_h) * at) / max) as u16;
         f.push(Cmd::Fill {
             r: Rect::new(track.x, y, 3, thumb_h),
             color: FOCUS,
@@ -379,9 +447,15 @@ impl Shell {
         let (lo, hi) = wx.range();
         for (k, d) in wx.days.iter().enumerate().take(DAYS.min(ROWS)) {
             let e = self.ease(k as u32);
-            let mut r = row(k);
-            r.x += self.slide(k as u32);
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            let y = self.sy(row(k).y);
+            if y + i32::from(ROW_H) <= 0 || y >= i32::from(PAGE.y + PAGE.h) {
+                continue;
+            }
+            let r = Rect::new(16 + self.slide(k as u32), y.max(0) as u16, 448, ROW_H);
+            Self::glass_at(f, r.x, y, r.w, r.h);
+            if y < 0 {
+                continue;
+            }
             let name: &[u8] = if k == 0 {
                 b"TODAY"
             } else {
