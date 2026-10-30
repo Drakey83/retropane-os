@@ -121,3 +121,31 @@ the device check (step 4).
   So R115b's 19.9 ms was mostly the blanking itself, not the spin. The
   overturn criterion ("back within ~1 ms of 10.4 ms") can't be met by any
   flip timed to the blanking.
+
+## The follow-up's device check (2026-10-30, perf, today-0014, `local/perf-2026-10-30-R115d.txt`)
+The flip polled first after waking, at its own deadline, with slips
+counted (the owner's "Yes, fix and re-run"):
+
+| | R115b (blocking) | R115c | **R115d (this build)** |
+|---|---|---|---|
+| pen-down period, worst | 23,336 us | 12,644 | **12,648** |
+| touch to flush, median | 19,924 | 24,208 | **22,212** |
+| touch to flush, worst | 49,384 | 57,972 | **50,712** |
+| queue to flip, median | 5,585 | 5,574 | **4,950** |
+| flips waited / slipped | - | not counted | **54 / 0** |
+
+**Reading it (results, not decisions):**
+- No flip missed its blanking (0 of 54), so slips don't explain this
+  build's cost.
+- Against the blocking wait, the pen is sampled evenly (worst gap halved)
+  and the engine's part is 0.6 ms shorter. But touch to flush is 2.3 ms
+  longer at the median, and its worst is 1.3 ms longer (0.7 ms over the
+  50 ms promise).
+- **Not measured, a hypothesis:** the blocking wait left the loop
+  phase-locked to the blanking, so frames landed at a steady place in the
+  scan; free-running, they land anywhere.
+- **Either way, the blanking itself is most of the cost:** landing to
+  verdict 8.9 ms + frame 0.3 + engine 5.0 leaves ~8 ms waiting for the
+  blanking. Only a 2D change made without a flip (copied into the shown
+  screen behind the scan, as the 3D service already does for scenes)
+  removes it.
