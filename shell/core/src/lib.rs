@@ -13,16 +13,23 @@
 //! is, Enter acts. Keys keep their Windows Mobile jobs: Home goes to the
 //! Today screen.
 //!
-//! Placeholders say so: weather is a fixed reading, and entries without a
-//! program yet show "Not yet" in the softkey bar.
+//! Placeholders say so: weather is the sample forecast (`rp-weather`) until
+//! there is a network, and entries without a program yet show "Not yet" in
+//! the softkey bar.
+//!
+//! Two screens so far: the Today screen (the home, the weather hero on top)
+//! and the Weather app ([`weather_app`]), which the hero opens; both read
+//! the same forecast.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 pub mod align;
+mod weather_app;
 
 use rp_draw::{Argb, Cmd, Font, Frame, Image, Rect};
 pub use rp_touch_cal::Calibration;
+use rp_weather::{Forecast, Icon, Line, Region};
 
 /// Screen width.
 pub const W: u16 = 480;
@@ -39,22 +46,36 @@ pub struct Fonts {
     pub big: &'static Font,
 }
 
-/// The weather pictures the Today screen draws (made from the icon pack on
-/// the PC; none yet means an outline where each goes).
-#[derive(Clone, Copy, Default)]
+/// The weather pictures (made from the icon pack on the PC; a missing one
+/// is an outline where it goes). Indexed by pack id less one
+/// ([`rp_weather::Icon::id`]).
+#[derive(Clone, Copy)]
 pub struct Icons {
-    /// The big one in the hero panel.
+    /// The big one in the hero panel and the app's Now page: the reading
+    /// now's (partly cloudy, day, in the sample).
     pub hero: Option<&'static Image>,
-    /// The five in the forecast row.
-    pub forecast: [Option<&'static Image>; 5],
+    /// The forecast cards' size (66 px).
+    pub card: [Option<&'static Image>; 22],
+    /// The Weather app's rows (40 px).
+    pub row: [Option<&'static Image>; 22],
 }
 
 impl Icons {
     /// No pictures.
     pub const NONE: Self = Self {
         hero: None,
-        forecast: [None; 5],
+        card: [None; 22],
+        row: [None; 22],
     };
+}
+
+/// Which screen is up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Screen {
+    /// The Today screen (the home).
+    Today,
+    /// The Weather app.
+    Weather,
 }
 
 /// The keys the shell reacts to.
@@ -154,6 +175,10 @@ pub enum Target {
     SoftRight,
     /// A Start menu entry.
     Menu(u8),
+    /// The Today screen's weather hero (opens the Weather app).
+    Hero,
+    /// A tab of the Weather app.
+    Tab(u8),
 }
 
 // ---- Layout (480 x 640, portrait) --------------------------------------
@@ -185,7 +210,7 @@ const SOFT_RIGHT: Rect = Rect::new(W - 160, H - 40, 160, 40);
 /// Where the "Not yet" notice and the title clock sit.
 const NOTICE: Rect = Rect::new(160, H - 40, 160, 40);
 /// The title bar's clock and status (depends on the time).
-pub const TITLE_CLOCK: Rect = Rect::new(W - 140, 0, 140, 36);
+pub const TITLE_CLOCK: Rect = Rect::new(W - 170, 0, 170, 36);
 /// The quick buttons (docs/design/ui.md "A PDA, proudly").
 const QUICK: [&str; 5] = ["Note", "Record", "Reader", "Media", "Games"];
 const QUICK_Y: u16 = 532;
@@ -196,16 +221,9 @@ fn quick_rect(i: u8) -> Rect {
     Rect::new(16 + u16::from(i) * 91, QUICK_Y, QUICK_W, QUICK_H)
 }
 
-/// The degree sign in the small fonts (DEL's slot, tools/shell-assets/fonts.py);
-/// the big font has it at the Latin-1 place.
-const DEG: u8 = 0x7F;
+/// The degree sign in the big font (Latin-1's place; the small fonts have it
+/// at DEL's slot, [`rp_weather::DEG`]).
 const DEG_BIG: u8 = 0xB0;
-
-/// Placeholder weather until there is a network: today's reading and a
-/// five-day forecast as (high, low), drawn with "sample data" beside them.
-const SAMPLE_NOW: u8 = 72;
-const SAMPLE_HIGH_LOW: (u8, u8) = (75, 52);
-const SAMPLE_FORECAST: [(u8, u8); 5] = [(73, 52), (63, 48), (61, 48), (59, 46), (70, 50)];
 
 /// The Start menu (docs/design/ui.md), "Back to loader" only in test images.
 const MENU: [&str; 10] = [
@@ -288,6 +306,20 @@ pub struct Shell {
     wall_plain: bool,
     /// The test image's comparison: the wallpaper alone, nothing over it.
     bare: bool,
+    /// The screen up.
+    screen: Screen,
+    /// The forecast every screen reads (the sample until there is a network).
+    wx: Forecast,
+    /// How numbers and times are shown (US customary by default).
+    region: Region,
+    /// The Weather app's page: 0 Now, 1 Hourly, 2 10 Day.
+    tab: u8,
+    /// The Hourly page's first row.
+    scroll: u8,
+    /// When the page's entrance started (none: everything in place).
+    anim: Option<u32>,
+    /// Where the pen went down (a swipe is measured to where it lifts).
+    down: Option<(u16, u16)>,
 }
 
 impl Shell {
@@ -309,6 +341,13 @@ impl Shell {
             align: None,
             wall_plain: false,
             bare: false,
+            screen: Screen::Today,
+            wx: rp_weather::sample(),
+            region: Region::US,
+            tab: 0,
+            scroll: 0,
+            anim: None,
+            down: None,
         };
         s.dirty(Rect::new(0, 0, W, H));
         s
@@ -324,6 +363,33 @@ impl Shell {
     #[must_use]
     pub fn menu_open(&self) -> bool {
         self.menu_open
+    }
+
+    /// The screen up.
+    #[must_use]
+    pub fn screen(&self) -> Screen {
+        self.screen
+    }
+
+    /// The Weather app's page (0 Now, 1 Hourly, 2 10 Day) and the Hourly
+    /// page's first row.
+    #[must_use]
+    pub fn weather_page(&self) -> (u8, u8) {
+        (self.tab, self.scroll)
+    }
+
+    /// Whether a page's entrance is still moving.
+    #[must_use]
+    pub fn animating(&self) -> bool {
+        self.anim.is_some()
+    }
+
+    /// Ends any movement at once, everything in place (pictures for the
+    /// preview; the device lets it run).
+    pub fn settle(&mut self) {
+        if self.anim.take().is_some() {
+            self.dirty(Rect::new(0, 0, W, H));
+        }
     }
 
     /// The notice showing, if any.
@@ -426,6 +492,8 @@ impl Shell {
             Target::SoftLeft => SOFT_LEFT,
             Target::SoftRight => SOFT_RIGHT,
             Target::Menu(i) => Self::menu_entry(i),
+            Target::Hero => HERO,
+            Target::Tab(i) => weather_app::tab_rect(i),
         }
     }
 
@@ -434,9 +502,15 @@ impl Shell {
         let menu = (0..self.menu_len())
             .filter(|_| self.menu_open)
             .map(Target::Menu);
+        let (hero, quick, tabs) = match self.screen {
+            Screen::Today => (1, QUICK.len() as u8, 0),
+            Screen::Weather => (0, 0, weather_app::TAB_NAMES.len() as u8),
+        };
         let today = [Target::Start]
             .into_iter()
-            .chain((0..QUICK.len() as u8).map(Target::Quick))
+            .chain((0..hero).map(|_| Target::Hero))
+            .chain((0..quick).map(Target::Quick))
+            .chain((0..tabs).map(Target::Tab))
             .chain([Target::SoftLeft, Target::SoftRight])
             // With the menu open only Start (to close it) and the menu act.
             .filter(|t| !self.menu_open || *t == Target::Start);
@@ -452,6 +526,16 @@ impl Shell {
     /// notice past its time goes.
     pub fn tick(&mut self, now_ms: u32) -> Action {
         self.now = now_ms;
+        if let Some(start) = self.anim {
+            // A page arriving: redraw it every pass until it's in place.
+            if now_ms.wrapping_sub(start) >= weather_app::ANIM_MS {
+                self.anim = None;
+            }
+            self.dirty(weather_app::PAGE);
+            if self.notice.is_none() {
+                return Action::Redraw;
+            }
+        }
         match self.notice {
             Some((_, until)) if now_ms.wrapping_sub(until) < 1 << 31 => {
                 self.notice = None;
@@ -471,6 +555,13 @@ impl Shell {
             (t.weekday, t.day, t.month) != (self.time.weekday, self.time.day, self.time.month);
         self.time = t;
         self.dirty(TITLE_CLOCK);
+        if self.screen == Screen::Weather {
+            // The header's "read at" time; the Now page's sunset bar.
+            self.dirty(weather_app::HEAD);
+            if self.tab == 0 {
+                self.dirty(weather_app::PAGE);
+            }
+        }
         if date_changed {
             self.dirty(DATE_BOX);
             self.dirty(FORECAST_ROW);
@@ -535,8 +626,16 @@ impl Shell {
             Target::Quick(i) => {
                 self.show_notice(not_yet(QUICK[usize::from(i).min(QUICK.len() - 1)]))
             }
-            Target::SoftLeft => self.show_notice(not_yet("Calendar")),
-            Target::SoftRight => self.show_notice(not_yet("Edit")),
+            Target::SoftLeft => {
+                let (l, _) = self.softkeys();
+                self.show_notice(not_yet(l));
+            }
+            Target::SoftRight => {
+                let (_, r) = self.softkeys();
+                self.show_notice(not_yet(r));
+            }
+            Target::Hero => self.open_weather(),
+            Target::Tab(i) => self.set_tab(i),
             Target::Menu(i) => {
                 let label = self.menu_label(i);
                 if label == BACK_TO_LOADER {
@@ -556,12 +655,65 @@ impl Shell {
                     return Action::Redraw;
                 }
                 self.set_menu(false);
-                if label != "Today" {
+                if label == "Today" {
+                    self.go_today();
+                } else {
                     self.show_notice(not_yet(label));
                 }
             }
         }
         Action::Redraw
+    }
+
+    /// Back to the Today screen (from anywhere).
+    fn go_today(&mut self) {
+        if self.screen != Screen::Today {
+            self.screen = Screen::Today;
+            self.anim = None;
+            self.pressed = None;
+            if self.focus.is_some() {
+                self.focus = Some(Target::Hero);
+            }
+            self.dirty(Rect::new(0, 0, W, H));
+        }
+    }
+
+    /// The softkeys' names on the screen up.
+    fn softkeys(&self) -> (&'static str, &'static str) {
+        match self.screen {
+            Screen::Today => ("Calendar", "Edit"),
+            Screen::Weather => ("Places", "Menu"),
+        }
+    }
+
+    /// A stroke on the Weather app's page, from where the pen went down to
+    /// where it lifted: across turns the page, up or down scrolls the hours.
+    /// Short strokes are taps (none of this happens).
+    fn swipe(&mut self, x: u16, y: u16) -> Option<Action> {
+        let (x0, y0) = self.down.take()?;
+        if self.screen != Screen::Weather
+            || self.menu_open
+            || !weather_app::PAGE.contains_point(x0, y0)
+        {
+            return None;
+        }
+        let (dx, dy) = (i32::from(x) - i32::from(x0), i32::from(y) - i32::from(y0));
+        if dx.abs() >= 60 && dx.abs() > 2 * dy.abs() {
+            let t = if dx < 0 {
+                self.tab + 1
+            } else {
+                self.tab.saturating_sub(1)
+            };
+            self.set_tab(t);
+            return Some(Action::Redraw);
+        }
+        if self.tab == 1 && dy.abs() >= 30 && dy.abs() > dx.abs() {
+            // The list follows the pen: up shows later hours.
+            let n = (dy.abs() / 45).clamp(1, 10) as i16;
+            self.scroll_by(if dy < 0 { n } else { -n });
+            return Some(Action::Redraw);
+        }
+        None
     }
 
     /// Starts the align screen (over everything until it finishes or Home).
@@ -636,6 +788,7 @@ impl Shell {
         let before = self.damaged;
         let act = match e {
             Input::PenDown { x, y } => {
+                self.down = Some((x, y));
                 let t = self.hit(x, y);
                 if t.is_none() && self.menu_open && !self.menu_rect().contains_point(x, y) {
                     // A tap outside the open menu closes it.
@@ -647,6 +800,9 @@ impl Shell {
             Input::PenUp { x, y } => {
                 let t = self.pressed;
                 self.set_pressed(None);
+                if let Some(a) = self.swipe(x, y) {
+                    return a;
+                }
                 match t {
                     Some(t) if self.rect_of(t).contains_point(x, y) => self.activate(t),
                     _ => Action::Nothing,
@@ -655,6 +811,7 @@ impl Shell {
             Input::Key(Key::Home) => {
                 self.set_menu(false);
                 self.set_focus(None);
+                self.go_today();
                 Action::Nothing
             }
             // Raw readings matter only to the align screen.
@@ -666,6 +823,29 @@ impl Shell {
                     Action::Nothing
                 }
             },
+            // In the Weather app left and right turn the page, and up and
+            // down scroll the Hourly list (WM's keys: the D-pad moves within
+            // what is shown).
+            Input::Key(k @ (Key::Left | Key::Right))
+                if self.screen == Screen::Weather && !self.menu_open =>
+            {
+                let t = if k == Key::Left {
+                    self.tab.saturating_sub(1)
+                } else {
+                    self.tab + 1
+                };
+                self.set_tab(t);
+                if self.focus.is_some() {
+                    self.set_focus(Some(Target::Tab(self.tab)));
+                }
+                Action::Nothing
+            }
+            Input::Key(k @ (Key::Up | Key::Down))
+                if self.screen == Screen::Weather && self.tab == 1 && !self.menu_open =>
+            {
+                self.scroll_by(if k == Key::Up { -1 } else { 1 });
+                Action::Nothing
+            }
             Input::Key(k) => {
                 let next = match self.focus {
                     None => Some(if self.menu_open {
@@ -694,14 +874,29 @@ impl Shell {
             )
         };
         let (fx, fy) = c(self.rect_of(from));
+        // How far a point is from a span: 0 inside it. Up and down measure
+        // a wide target (the hero) from its nearest edge, so it is reachable
+        // straight down or up from anything above or below it.
+        let off = |p: i32, a: u16, w: u16| {
+            let (a, b) = (i32::from(a), i32::from(a) + i32::from(w));
+            if p < a {
+                a - p
+            } else if p > b {
+                b - p
+            } else {
+                0
+            }
+        };
         self.targets()
             .filter(|&t| t != from)
             .filter_map(|t| {
-                let (x, y) = c(self.rect_of(t));
+                let r = self.rect_of(t);
+                let (x, y) = c(r);
                 let (dx, dy) = (x - fx, y - fy);
                 let (along, across) = match k {
-                    Key::Up => (-dy, dx),
-                    Key::Down => (dy, dx),
+                    Key::Up => (-dy, off(fx, r.x, r.w)),
+                    Key::Down => (dy, off(fx, r.x, r.w)),
+                    // Left and right stay on their row: centres, as before.
                     Key::Left => (-dx, dy),
                     Key::Right => (dx, dy),
                     _ => return None,
@@ -846,8 +1041,7 @@ impl Shell {
             }
             return;
         }
-        let (ui, label, big) = (self.fonts.ui, self.fonts.label, self.fonts.big);
-        let mut buf = [0u8; 32];
+        let ui = self.fonts.ui;
 
         // Title bar: Start, the clock and status at the right.
         f.push(Cmd::HGradient {
@@ -857,9 +1051,9 @@ impl Shell {
         });
         f.text(14, 25, ui, TEXT, b"Start");
         self.decorate(f, Target::Start);
-        let hm = hh_mm(&mut buf, self.time);
-        let w = ui.width(hm);
-        f.text(W - 64 - w, 25, ui, TEXT, hm);
+        let hm = self.region.time(self.time.hour, self.time.minute, true);
+        let w = ui.width(hm.as_bytes());
+        f.text(W - 64 - w, 25, ui, TEXT, hm.as_bytes());
         // Battery: not read yet, drawn as an outline.
         f.push(Cmd::Outline {
             r: Rect::new(W - 46, 12, 30, 14),
@@ -870,24 +1064,70 @@ impl Shell {
             color: DIM,
         });
 
-        // The weather hero.
+        match self.screen {
+            Screen::Today => self.today_scene(f),
+            Screen::Weather => self.weather_scene(f),
+        }
+
+        // Softkeys and the notice between them.
+        f.push(Cmd::HGradient {
+            r: SOFTKEYS,
+            left: BAR_LEFT,
+            right: BAR_RIGHT,
+        });
+        let (l, r) = self.softkeys();
+        self.centred(f, SOFT_LEFT, H - 14, ui, TEXT, l.as_bytes());
+        self.centred(f, SOFT_RIGHT, H - 14, ui, TEXT, r.as_bytes());
+        self.decorate(f, Target::SoftLeft);
+        self.decorate(f, Target::SoftRight);
+        if let Some(n) = self.notice() {
+            self.centred(f, NOTICE, H - 14, ui, FOCUS, n.as_bytes());
+        }
+
+        // The Start menu over everything.
+        if self.menu_open {
+            let r = self.menu_rect();
+            Self::glass(f, r, MENU_LEFT, MENU_RIGHT);
+            for i in 0..self.menu_len() {
+                let e = Self::menu_entry(i);
+                f.text(e.x + 16, e.y + 27, ui, TEXT, self.menu_label(i).as_bytes());
+                self.decorate(f, Target::Menu(i));
+            }
+        }
+    }
+
+    /// The Today screen under the title bar: the weather hero and the next
+    /// five days (from the shell's forecast), the calendar, the quick
+    /// buttons.
+    fn today_scene(&self, f: &mut Frame) {
+        let (ui, label, big) = (self.fonts.ui, self.fonts.label, self.fonts.big);
+        let (wx, rg) = (&self.wx, &self.region);
+        let mut buf = [0u8; 32];
+
+        // The weather hero (a tap opens the Weather app).
         Self::glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
-        f.text(
-            HERO.x + 20,
-            HERO.y + 34,
-            label,
-            DIM,
-            b"YOUR CITY - SAMPLE DATA",
-        );
-        let temp = [b'0' + SAMPLE_NOW / 10, b'0' + SAMPLE_NOW % 10, DEG_BIG];
-        f.text(HERO.x + 20, HERO.y + 116, big, TEXT, &temp);
-        f.text(HERO.x + 20, HERO.y + 146, ui, TEXT, b"Partly cloudy");
-        let (hi, lo) = SAMPLE_HIGH_LOW;
-        let n = high_low(&mut buf, hi, lo);
-        f.text(HERO.x + 20, HERO.y + 174, ui, DIM, &buf[..n]);
+        let head = upper(wx.place)
+            .push(b" - ")
+            .push(upper(wx.source).as_bytes());
+        f.text(HERO.x + 20, HERO.y + 34, label, DIM, head.as_bytes());
+        let temp = Line::new().num(rg.degrees(wx.now.temp)).push(&[DEG_BIG]);
+        f.text(HERO.x + 20, HERO.y + 116, big, TEXT, temp.as_bytes());
+        let icon = Icon::of(wx.now.sky);
+        f.text(HERO.x + 20, HERO.y + 146, ui, TEXT, icon.words().as_bytes());
+        let d = &wx.days[0];
+        let hl = Line::new()
+            .push(b"High ")
+            .push(rg.temp(d.high).as_bytes())
+            .push(b"   Low ")
+            .push(rg.temp(d.low).as_bytes());
+        f.text(HERO.x + 20, HERO.y + 174, ui, DIM, hl.as_bytes());
         // The icon, or its outline until the pictures exist
         // (docs/design/today-screen-plan.md).
-        match self.icons.hero {
+        let pic = match (icon, self.icons.hero) {
+            (Icon::PartlyDay, Some(h)) => Some(h),
+            _ => self.icons.card[usize::from(icon.id() - 1)],
+        };
+        match pic {
             Some(img) => f.push(Cmd::Image {
                 x: HERO_ICON.x + HERO_ICON.w.saturating_sub(img.w),
                 y: HERO_ICON.y + HERO_ICON.h.saturating_sub(img.h) / 2,
@@ -907,10 +1147,12 @@ impl Shell {
             TEXT,
             date,
         );
+        self.decorate(f, Target::Hero);
 
-        // The five-day forecast: the card, its icon over the card's top edge,
+        // The next five days: the card, its icon over the card's top edge,
         // the day name and the high and low.
-        for (i, (hi, lo)) in SAMPLE_FORECAST.iter().enumerate() {
+        const DAYS: [&[u8]; 7] = [b"MON", b"TUE", b"WED", b"THU", b"FRI", b"SAT", b"SUN"];
+        for (i, d) in wx.days[1..6].iter().enumerate() {
             let r = Rect::new(
                 FORECAST_ROW.x + i as u16 * FORECAST_STEP,
                 FORECAST_TOP,
@@ -919,7 +1161,7 @@ impl Shell {
             );
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             // The icon's 66 px box reaches 30 px above the card (as in the mock-ups).
-            match self.icons.forecast[i] {
+            match self.icons.card[usize::from(Icon::of(d.sky).id() - 1)] {
                 Some(img) => f.push(Cmd::Image {
                     x: r.x + r.w.saturating_sub(img.w) / 2,
                     y: (r.y + 36).saturating_sub(66) + 66u16.saturating_sub(img.h) / 2,
@@ -930,10 +1172,16 @@ impl Shell {
                     color: 0x30FF_FFFF,
                 }),
             }
-            let day = day_name(self.time.weekday, i as u8 + 1);
-            self.centred(f, r, r.y + 44, label, DIM, day);
-            let n = high_low_short(&mut buf, *hi, *lo);
-            self.centred(f, r, r.y + r.h - 8, ui, TEXT, &buf[..n]);
+            self.centred(
+                f,
+                r,
+                r.y + 44,
+                label,
+                DIM,
+                DAYS[usize::from(d.weekday.min(6))],
+            );
+            let hl = rg.temp(d.high).push(b" ").push(rg.temp(d.low).as_bytes());
+            self.centred(f, r, r.y + r.h - 8, ui, TEXT, hl.as_bytes());
         }
 
         // The calendar: sample lines until there is a calendar.
@@ -952,16 +1200,14 @@ impl Shell {
             DIM,
             b"sample data",
         );
-        for (k, (when, what)) in [
-            (&b"11:30"[..], &b"Team call"[..]),
-            (b"16:00", b"Pick up parts"),
-        ]
-        .iter()
-        .enumerate()
+        for (k, (h, m, what)) in [(11u8, 30u8, &b"Team call"[..]), (16, 0, b"Pick up parts")]
+            .iter()
+            .enumerate()
         {
             let y = CALENDAR_PANEL.y + 58 + k as u16 * 28;
-            f.text(CALENDAR_PANEL.x + 16, y, ui, DIM, when);
-            f.text(CALENDAR_PANEL.x + 80, y, ui, TEXT, what);
+            let when = rg.time(*h, *m, true);
+            f.text(CALENDAR_PANEL.x + 16, y, ui, DIM, when.as_bytes());
+            f.text(CALENDAR_PANEL.x + 112, y, ui, TEXT, what);
         }
 
         // Quick buttons.
@@ -972,32 +1218,16 @@ impl Shell {
             self.centred(f, r, r.y + r.h - 14, ui, TEXT, name.as_bytes());
             self.decorate(f, t);
         }
-
-        // Softkeys and the notice between them.
-        f.push(Cmd::HGradient {
-            r: SOFTKEYS,
-            left: BAR_LEFT,
-            right: BAR_RIGHT,
-        });
-        self.centred(f, SOFT_LEFT, H - 14, ui, TEXT, b"Calendar");
-        self.centred(f, SOFT_RIGHT, H - 14, ui, TEXT, b"Edit");
-        self.decorate(f, Target::SoftLeft);
-        self.decorate(f, Target::SoftRight);
-        if let Some(n) = self.notice() {
-            self.centred(f, NOTICE, H - 14, ui, FOCUS, n.as_bytes());
-        }
-
-        // The Start menu over everything.
-        if self.menu_open {
-            let r = self.menu_rect();
-            Self::glass(f, r, MENU_LEFT, MENU_RIGHT);
-            for i in 0..self.menu_len() {
-                let e = Self::menu_entry(i);
-                f.text(e.x + 16, e.y + 27, ui, TEXT, self.menu_label(i).as_bytes());
-                self.decorate(f, Target::Menu(i));
-            }
-        }
     }
+}
+
+/// Text in capitals (the label font's spaced capitals).
+pub(crate) fn upper(s: &str) -> Line {
+    let mut l = Line::new();
+    for b in s.bytes() {
+        l = l.push(&[b.to_ascii_uppercase()]);
+    }
+    l
 }
 
 /// "Not yet: <name>" for the entries without a program yet.
@@ -1017,60 +1247,10 @@ fn not_yet(name: &str) -> &'static str {
         "Browser" => "Not yet: Browser",
         "Programs" => "Not yet: Programs",
         "Settings" => "Not yet: Settings",
+        "Places" => "Not yet: Places",
+        "Menu" => "Not yet: Menu",
         _ => "Not yet",
     }
-}
-
-/// `HH:MM` into `buf`.
-fn hh_mm(buf: &mut [u8; 32], t: Time) -> &[u8] {
-    let (h, m) = (t.hour.min(23), t.minute.min(59));
-    buf[..5].copy_from_slice(&[
-        b'0' + h / 10,
-        b'0' + h % 10,
-        b':',
-        b'0' + m / 10,
-        b'0' + m % 10,
-    ]);
-    &buf[..5]
-}
-
-/// "High 75° Low 52°" into `buf` (the degree sign is the small fonts' own).
-fn high_low(buf: &mut [u8; 32], hi: u8, lo: u8) -> usize {
-    let mut n = 0;
-    for part in [
-        &b"High "[..],
-        &two(hi),
-        &[DEG],
-        b"   Low ",
-        &two(lo),
-        &[DEG],
-    ] {
-        buf[n..n + part.len()].copy_from_slice(part);
-        n += part.len();
-    }
-    n
-}
-
-/// "73° 52°" into `buf` (a forecast card).
-fn high_low_short(buf: &mut [u8; 32], hi: u8, lo: u8) -> usize {
-    let mut n = 0;
-    for part in [&two(hi)[..], &[DEG, b' '], &two(lo), &[DEG]] {
-        buf[n..n + part.len()].copy_from_slice(part);
-        n += part.len();
-    }
-    n
-}
-
-/// Two digits of `n` (0..=99).
-fn two(n: u8) -> [u8; 2] {
-    let n = n.min(99);
-    [b'0' + n / 10, b'0' + n % 10]
-}
-
-/// The name of the weekday `ahead` days after `weekday` (0 Monday).
-fn day_name(weekday: u8, ahead: u8) -> &'static [u8] {
-    const DAYS: [&[u8]; 7] = [b"MON", b"TUE", b"WED", b"THU", b"FRI", b"SAT", b"SUN"];
-    DAYS[usize::from((weekday.min(6) + ahead) % 7)]
 }
 
 /// `MON 13 OCTOBER` into `buf` (spaced capitals are the label font's job).

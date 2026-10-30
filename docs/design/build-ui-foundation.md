@@ -19,6 +19,33 @@ to start on the wallpaper theme customization too." **A plan for his go
   direction), [weather.md](weather.md) (packs), [icons.md](icons.md),
   [today-screen-plan.md](today-screen-plan.md) (T3/T4 wallpaper).
 
+## Progress
+
+- **2026-10-30, the owner's go, scoped:** "start building the foundation of
+  it and how they all work together, i am mostly wanting the weather
+  app/homescreen page/widget right now"; then "make this lean, modern,
+  attractive, and functional ... animation where we can get away with it".
+- **Built (step 6 first, on the shared pieces it needs):**
+  - `rp-weather` (shell/weather): the one weather model the home screen's
+    hero, the widget and the app all read (WMO codes to pack icons, units
+    and regions, 12-hour clock, the sample forecast); 11 tests.
+  - The Weather app in `rp-shell` (shell/core/src/weather_app.rs): the
+    "mix" frame (header strip, tabs and softkeys at the bottom); Now (big
+    temperature, sky, feels like, summary, wind, humidity, UV and sunset
+    cards with bars), Hourly (24 hours, a temperature bar per hour,
+    scrolling by D-pad or drag), 10 Day (each day's range on the week's
+    scale). Opened from the Today hero (tap or D-pad), Home or the Start
+    menu's Today back; pages by tab, D-pad or swipe.
+  - Movement: each page arrives with its rows sliding in one after another
+    (eased out), bars growing and the temperature counting up; frames 30 ms
+    apart in `mockups/weather-motion-*.gif` (the preview records them).
+  - The Today screen reads the same forecast; the title clock is 12-hour;
+    temperatures may be negative or above 99 (they couldn't before).
+- **Not yet:** theme roles and light/dark (step 1), wallpaper choice (2),
+  the Classic desktop's widget placement (4), Places and the app's Menu
+  (softkeys say "Not yet"), live data. rp-today is at the loader's image
+  limit: R129 before the next screen goes in.
+
 ## Built on the proposed answers (each one cheap to change later)
 
 **37 votes are open:** I1-I12, WF1-WF10, L1-L5, D1-D4, and the verdicts on the

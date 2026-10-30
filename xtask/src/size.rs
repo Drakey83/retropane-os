@@ -496,9 +496,16 @@ pub const BUDGETS: &[Budget] = &[
     // programs that use 3D: 27.9 KiB, + ~11%. Then 31 -> 40 KiB: the owner's
     // 16-bit wallpaper comparison keeps its dither rows in `.bss` (7.5 KiB,
     // off the 12 KiB stack): 35.4 KiB, + ~13%.
+    // 900 -> 928 KiB (2026-10-30, the owner's ask for the Weather app and its
+    // home page): the app's three pages, the shared weather model, and the
+    // seven icons the sample uses at row size plus five at card size; 919.1
+    // KiB measured after building rp-shell and rp-weather for size (the scene
+    // was 33 KB at opt-level 3). 928 KiB is the loader's whole image area
+    // (IMAGE_MAX), so this image has no more room: R129 moves its icons out
+    // of 32-bit pictures before the next screen lands.
     Budget {
         image: "rp-today",
-        max_load: 900 * 1024,
+        max_load: 928 * 1024,
         max_zero: 40 * 1024,
         device: OnDevice::Returns,
     },

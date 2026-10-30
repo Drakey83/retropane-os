@@ -62,7 +62,8 @@ fn main() {
         let empty = "Image { w: 0, h: 0, px: &[] }";
         format!(
             "pub static HERO: Image = {empty};
-pub static SMALL: [Image; 5] = [{empty}, {empty}, {empty}, {empty}, {empty}];
+pub static CARD: [Option<&Image>; 22] = [None; 22];
+pub static ROW: [Option<&Image>; 22] = [None; 22];
 "
         )
     });

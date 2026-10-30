@@ -968,6 +968,7 @@ dependencies = [
  "rp-draw",
  "rp-gfx",
  "rp-touch-cal",
+ "rp-weather",
 ]
 
 [[package]]
@@ -1106,6 +1107,10 @@ dependencies = [
 
 [[package]]
 name = "rp-vram-map"
+version = "0.0.0"
+
+[[package]]
+name = "rp-weather"
 version = "0.0.0"
 
 [[package]]

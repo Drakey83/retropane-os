@@ -18,10 +18,13 @@ struct Shot {
 }
 
 /// The screens previewed: the Today screen, the D-pad's focus moving, the
-/// Start menu opened by a tap, and Home back.
+/// Start menu opened by a tap, Home back, then the Weather app's pages.
 fn shots() -> Vec<Shot> {
     let start = rp_shell::START;
     let (sx, sy) = (start.x + start.w / 2, start.y + start.h / 2);
+    // The weather hero's middle (it opens the Weather app).
+    let (hx, hy) = (240, 150);
+    let tap = |x, y| vec![Input::PenDown { x, y }, Input::PenUp { x, y }];
     vec![
         Shot {
             name: "01-today",
@@ -51,6 +54,37 @@ fn shots() -> Vec<Shot> {
             what: "Home: back to Today",
             steps: vec![Input::Key(Key::Home)],
         },
+        Shot {
+            name: "06-weather-now",
+            what: "A tap on the weather hero: the Weather app, Now",
+            steps: tap(hx, hy),
+        },
+        Shot {
+            name: "07-weather-hourly",
+            what: "D-pad right: Hourly",
+            steps: vec![Input::Key(Key::Right)],
+        },
+        Shot {
+            name: "08-weather-hourly-scrolled",
+            what: "Hourly, dragged up: later hours",
+            steps: vec![
+                Input::PenDown { x: 240, y: 420 },
+                Input::PenUp { x: 240, y: 150 },
+            ],
+        },
+        Shot {
+            name: "09-weather-10day",
+            what: "A swipe left: 10 Day",
+            steps: vec![
+                Input::PenDown { x: 400, y: 300 },
+                Input::PenUp { x: 260, y: 300 },
+            ],
+        },
+        Shot {
+            name: "10-weather-menu",
+            what: "The Start menu over the Weather app",
+            steps: tap(sx, sy),
+        },
     ]
 }
 
@@ -61,7 +95,7 @@ pub fn run(root: &Path) -> Result<(), String> {
     let wall = crate::emu::today_wallpaper(&release)?;
     let shots = shots();
     let steps: Vec<Input> = shots.iter().flat_map(|s| s.steps.iter().copied()).collect();
-    let all = crate::emu::today_screens(&wall, &steps);
+    let all = crate::emu::today_screens(&wall, &steps, true);
     let out = root.join("target").join("ui-preview");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     // Screen k of `all` is after k inputs; each shot shows the screen after
@@ -85,6 +119,34 @@ pub fn run(root: &Path) -> Result<(), String> {
             "<figure><img src=\"{file}\" alt=\"{w}\"><figcaption>{w}</figcaption></figure>\n",
             w = s.what
         ));
+    }
+    // The movement: each entrance as frames every 30 ms (motion-<name>-NN.png),
+    // which a GIF tool can join; the device draws the same frames.
+    let hero = vec![
+        Input::PenDown { x: 240, y: 150 },
+        Input::PenUp { x: 240, y: 150 },
+    ];
+    let swipe = vec![
+        Input::PenDown { x: 400, y: 300 },
+        Input::PenUp { x: 260, y: 300 },
+    ];
+    for (name, steps) in [
+        ("open", hero.clone()),
+        (
+            "hourly",
+            [hero.clone(), vec![Input::Key(Key::Right)]].concat(),
+        ),
+        (
+            "10day",
+            [hero, vec![Input::Key(Key::Right)], swipe].concat(),
+        ),
+    ] {
+        let frames = crate::emu::today_motion(&wall, &steps, 30, 20);
+        for (k, rgb) in frames.iter().enumerate() {
+            let file = format!("motion-{name}-{k:02}.png");
+            std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
+                .map_err(|e| format!("{file}: {e}"))?;
+        }
     }
     std::fs::write(out.join("index.html"), page).map_err(|e| format!("index.html: {e}"))?;
     eprintln!(
@@ -185,6 +247,7 @@ mod tests {
     fn the_shots_open_the_start_menu_and_come_home() {
         let s = shots();
         assert!(s.iter().any(|s| s.name.contains("start-menu")));
-        assert_eq!(s.last().unwrap().steps, vec![Input::Key(Key::Home)]);
+        assert!(s.iter().any(|s| s.steps == vec![Input::Key(Key::Home)]));
+        assert!(s.iter().any(|s| s.name.contains("weather")));
     }
 }

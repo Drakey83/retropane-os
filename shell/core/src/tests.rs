@@ -141,8 +141,14 @@ fn the_d_pad_reaches_every_target() {
     // The first key press shows the focus on Start.
     s.input(Input::Key(Key::Down));
     assert_eq!(s.focus(), Some(Target::Start));
-    // Down to the quick row, across it, down to the softkeys.
+    // Down to the weather hero (straight below, though wide), down to the
+    // quick row under its middle, across it, down to the softkeys.
     s.input(Input::Key(Key::Down));
+    assert_eq!(s.focus(), Some(Target::Hero));
+    s.input(Input::Key(Key::Down));
+    assert_eq!(s.focus(), Some(Target::Quick(2)));
+    s.input(Input::Key(Key::Left));
+    s.input(Input::Key(Key::Left));
     assert_eq!(s.focus(), Some(Target::Quick(0)));
     for i in 1..5 {
         s.input(Input::Key(Key::Right));
@@ -205,17 +211,6 @@ fn a_new_minute_redraws_only_the_clocks() {
 #[test]
 fn text_formats() {
     let mut b = [0; 32];
-    assert_eq!(
-        hh_mm(
-            &mut b,
-            Time {
-                hour: 7,
-                minute: 5,
-                ..Time::default()
-            }
-        ),
-        b"07:05"
-    );
     let t = Time {
         hour: 0,
         minute: 0,
@@ -239,7 +234,6 @@ fn text_formats() {
         day: 0,
         month: 0,
     };
-    assert_eq!(hh_mm(&mut b, bad), b"23:59");
     assert_eq!(date_line(&mut b, bad), b"SUN 1 JANUARY");
 }
 
@@ -514,17 +508,200 @@ fn a_new_day_redraws_the_date_and_forecast_names_not_the_screen() {
     assert!(!f.dirty().contains(&DATE_BOX) && !f.dirty().contains(&FORECAST_ROW));
 }
 
+/// Every text the frame draws.
+fn texts(f: &Frame) -> Vec<Vec<u8>> {
+    f.cmds()
+        .filter_map(|c| match *c {
+            Cmd::Text { text, .. } => Some(f.text_of(text).to_vec()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn temperatures_and_day_names_format() {
-    let mut b = [0; 32];
-    let n = high_low(&mut b, 75, 52);
-    assert_eq!(&b[..n], b"High 75\x7f   Low 52\x7f");
-    let n = high_low_short(&mut b, 73, 5);
-    assert_eq!(&b[..n], b"73\x7f 05\x7f");
-    assert_eq!(two(250), *b"99");
-    assert_eq!(day_name(6, 1), b"MON");
-    assert_eq!(day_name(4, 5), b"WED");
-    assert_eq!(day_name(9, 1), b"MON"); // a weekday out of range is clamped to Sunday
+fn the_title_clock_is_twelve_hour_with_am_and_pm() {
+    let mut s = shell(false);
+    s.set_time(Time {
+        hour: 14,
+        minute: 5,
+        ..Time::default()
+    });
+    assert!(texts(&drawn(&mut s)).contains(&b"2:05 PM".to_vec()));
+}
+
+#[test]
+fn the_hero_and_days_read_the_forecast_including_frost_and_heat() {
+    let mut s = shell(false);
+    let f = drawn(&mut s);
+    let t = texts(&f);
+    assert!(t.contains(&b"72\xb0".to_vec()), "{t:?}");
+    assert!(t.contains(&b"High 75\x7f   Low 52\x7f".to_vec()));
+    assert!(t.contains(&b"73\x7f 52\x7f".to_vec()));
+    // A winter morning and a desert afternoon: no leading zeros, no caps.
+    s.wx.now.temp = -70;
+    s.wx.days[1].high = 463;
+    s.wx.days[1].low = 50;
+    s.dirty(Rect::new(0, 0, W, H));
+    let t = texts(&drawn(&mut s));
+    assert!(t.contains(&b"19\xb0".to_vec()), "{t:?}");
+    assert!(t.contains(&b"115\x7f 41\x7f".to_vec()), "{t:?}");
+    s.region = Region::METRIC;
+    s.wx.now.temp = -70;
+    s.dirty(Rect::new(0, 0, W, H));
+    assert!(texts(&drawn(&mut s)).contains(&b"-7\xb0".to_vec()));
+}
+
+fn weather(page: u8) -> Shell {
+    let mut s = shell(true);
+    drawn(&mut s);
+    tap(&mut s, HERO);
+    assert_eq!(s.screen(), Screen::Weather);
+    s.settle();
+    if page > 0 {
+        tap(&mut s, weather_app::tab_rect(page));
+        s.settle();
+    }
+    s
+}
+
+#[test]
+fn the_hero_opens_weather_and_home_comes_back() {
+    let mut s = weather(0);
+    assert_eq!(s.weather_page(), (0, 0));
+    assert_eq!(s.input(Input::Key(Key::Home)), Action::Redraw);
+    assert_eq!(s.screen(), Screen::Today);
+    // The D-pad reaches the hero from Start, and Enter opens it.
+    s.input(Input::Key(Key::Enter));
+    s.input(Input::Key(Key::Down));
+    assert_eq!(s.focus(), Some(Target::Hero));
+    s.input(Input::Key(Key::Enter));
+    assert_eq!(
+        (s.screen(), s.focus()),
+        (Screen::Weather, Some(Target::Tab(0)))
+    );
+    // The Start menu's Today entry also comes home.
+    tap(&mut s, START);
+    tap(&mut s, Shell::menu_entry(0));
+    assert_eq!(s.screen(), Screen::Today);
+}
+
+#[test]
+fn every_page_fits_a_frame_even_with_the_menu_open_and_while_moving() {
+    for page in 0..3 {
+        let mut s = weather(page);
+        let f = drawn(&mut s);
+        assert!(
+            !f.overflowed(),
+            "page {page}: {} commands",
+            f.cmds().count()
+        );
+        assert!(f.cmds().count() < MAX_CMDS);
+        tap(&mut s, START);
+        let f = drawn(&mut s);
+        assert!(
+            !f.overflowed(),
+            "page {page} with the menu: {}",
+            f.cmds().count()
+        );
+        tap(&mut s, START);
+        drawn(&mut s);
+        // Mid-entrance, every command is still drawn.
+        s.set_tab((page + 1) % 3);
+        s.tick(s.now + 100);
+        assert!(!drawn(&mut s).overflowed());
+    }
+}
+
+#[test]
+fn the_entrance_runs_redraws_the_page_and_ends_in_place() {
+    let mut s = shell(false);
+    s.tick(1_000);
+    drawn(&mut s);
+    tap(&mut s, HERO);
+    assert!(s.animating());
+    assert_eq!(s.ease(0), 0, "it starts from the side");
+    drawn(&mut s);
+    assert_eq!(s.tick(1_100), Action::Redraw);
+    let f = drawn(&mut s);
+    assert!(f.dirty().contains(&weather_app::PAGE));
+    let mid = s.ease(0);
+    assert!(mid > 0 && mid < 1024, "{mid}");
+    // Later items start later.
+    assert!(s.ease(5) < mid);
+    s.tick(1_000 + weather_app::ANIM_MS);
+    assert!(!s.animating());
+    assert_eq!(s.ease(9), 1024);
+    // The count-up ends on the reading.
+    assert!(texts(&drawn(&mut s)).contains(&b"72\xb0".to_vec()));
+    // The clock wrapping round mid-entrance doesn't stick it.
+    s.now = u32::MAX - 50;
+    s.set_tab(1);
+    s.tick((u32::MAX - 50).wrapping_add(weather_app::ANIM_MS));
+    assert!(!s.animating());
+}
+
+#[test]
+fn tabs_turn_by_tap_d_pad_and_swipe_and_stop_at_the_ends() {
+    let mut s = weather(0);
+    s.input(Input::Key(Key::Right));
+    assert_eq!(s.weather_page().0, 1);
+    s.input(Input::Key(Key::Right));
+    s.input(Input::Key(Key::Right));
+    assert_eq!(s.weather_page().0, 2);
+    s.input(Input::Key(Key::Left));
+    assert_eq!(s.weather_page().0, 1);
+    // A swipe left on the page turns forward; a short one is a tap.
+    s.input(Input::PenDown { x: 400, y: 300 });
+    s.input(Input::PenUp { x: 320, y: 310 });
+    assert_eq!(s.weather_page().0, 2);
+    s.input(Input::PenDown { x: 300, y: 300 });
+    s.input(Input::PenUp { x: 260, y: 300 });
+    assert_eq!(s.weather_page().0, 2);
+    s.input(Input::PenDown { x: 100, y: 300 });
+    s.input(Input::PenUp { x: 200, y: 300 });
+    assert_eq!(s.weather_page().0, 1);
+    // A stroke starting on the tabs is not a swipe.
+    s.input(Input::PenDown {
+        x: 400,
+        y: weather_app::TABS.y + 10,
+    });
+    s.input(Input::PenUp {
+        x: 200,
+        y: weather_app::TABS.y + 10,
+    });
+    assert_eq!(s.weather_page().0, 1);
+}
+
+#[test]
+fn the_hourly_list_scrolls_both_ways_and_stays_within_the_day() {
+    let mut s = weather(1);
+    s.input(Input::Key(Key::Up));
+    assert_eq!(s.weather_page().1, 0);
+    for _ in 0..30 {
+        s.input(Input::Key(Key::Down));
+    }
+    assert_eq!(s.weather_page().1, weather_app::MAX_SCROLL);
+    assert!(!drawn(&mut s).overflowed());
+    // Dragging down shows earlier hours, three rows for a long drag.
+    s.input(Input::PenDown { x: 200, y: 150 });
+    s.input(Input::PenUp { x: 205, y: 290 });
+    assert_eq!(s.weather_page().1, weather_app::MAX_SCROLL - 3);
+    s.input(Input::PenDown { x: 200, y: 400 });
+    s.input(Input::PenUp { x: 200, y: 100 });
+    assert_eq!(s.weather_page().1, weather_app::MAX_SCROLL);
+    // The other pages don't scroll; up and down move the focus there.
+    s.set_tab(2);
+    s.input(Input::Key(Key::Down));
+    assert_eq!(s.weather_page().1, 0);
+}
+
+#[test]
+fn the_weather_softkeys_say_what_is_not_built_yet() {
+    let mut s = weather(0);
+    tap(&mut s, SOFT_LEFT);
+    assert_eq!(s.notice(), Some("Not yet: Places"));
+    tap(&mut s, SOFT_RIGHT);
+    assert_eq!(s.notice(), Some("Not yet: Menu"));
 }
 
 static PX: [u32; 4] = [0xFFFF_FFFF; 4];
@@ -544,7 +721,8 @@ fn pictures_replace_the_outlines_and_still_fit_a_frame() {
         },
         Icons {
             hero: Some(&PIC),
-            forecast: [Some(&PIC); 5],
+            card: [Some(&PIC); 22],
+            row: [Some(&PIC); 22],
         },
         true,
     );

@@ -55,19 +55,10 @@ mod icon_data {
 /// The icons for the shell: none when the pictures weren't made.
 #[must_use]
 pub fn icons() -> rp_shell::Icons {
-    if icon_data::HERO.w == 0 {
-        return rp_shell::Icons::NONE;
-    }
-    let s = &icon_data::SMALL;
     rp_shell::Icons {
-        hero: Some(&icon_data::HERO),
-        forecast: [
-            Some(&s[0]),
-            Some(&s[1]),
-            Some(&s[2]),
-            Some(&s[3]),
-            Some(&s[4]),
-        ],
+        hero: (icon_data::HERO.w > 0).then_some(&icon_data::HERO),
+        card: icon_data::CARD,
+        row: icon_data::ROW,
     }
 }
 

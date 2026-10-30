@@ -92,6 +92,7 @@ members = [
     "services/audio-x51v",
     "shell/core",
     "shell/today",
+    "shell/weather",
     "shell/scene",
     "personality/ce/cab",
     "personality/ce/setup",
@@ -131,6 +132,13 @@ panic = "abort"
 # ADR-0005 rule 8: cold code is built for size. The bring-up image runs once;
 # hot paths (hal/mem, display fills) keep opt-level 3 in their own crates.
 [profile.release.package.rp-hello]
+opt-level = "s"
+# The shell describes frames (layout, text, a few hundred commands a frame);
+# the renderers draw them at opt-level 3. Built for size: rp-shell's scene
+# was 33 KB at 3 (2026-10-30, the Weather app), the lean rule.
+[profile.release.package.rp-shell]
+opt-level = "s"
+[profile.release.package.rp-weather]
 opt-level = "s"
 [profile.release.package.rp-drv-sdcard]
 opt-level = "s"

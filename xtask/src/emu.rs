@@ -11220,8 +11220,10 @@ pub(crate) fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
 /// the 2D engine, frame after frame; the emulator's own model of the
 /// engine must draw the same pictures. `steps` are applied between
 /// screens; the first screen is before any. The clock's time is
-/// arbitrary: the check masks it.
-pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
+/// arbitrary: the check masks it. `settle` ends any movement before each
+/// picture (the preview's pictures show pages in place; the emulator check
+/// keeps the image's own timing).
+pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input], settle: bool) -> Vec<Vec<u8>> {
     use rp_draw::{Frame, Renderer};
     use rp_mbx_render::model::{self, Bus, Mem};
     use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
@@ -11249,6 +11251,9 @@ pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u
         if let Some(&e) = step {
             shell.input(e);
         }
+        if settle {
+            shell.settle();
+        }
         shell.frame(&mut frame);
         gpu.draw(&frame);
         while !gpu.poll() {}
@@ -11264,6 +11269,71 @@ pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u
         screens.push(out);
     }
     screens
+}
+
+/// The movement after the last of `steps` (the others applied and settled):
+/// a screen every `every_ms` from the moment of that input, `n` of them,
+/// through the same set-up, shell and 2D engine model as [`today_screens`].
+/// For the preview's moving pictures; the device runs the same frames.
+pub(crate) fn today_motion(
+    wall: &[u8],
+    steps: &[rp_shell::Input],
+    every_ms: u32,
+    n: u32,
+) -> Vec<Vec<u8>> {
+    use rp_draw::{Frame, Renderer};
+    use rp_mbx_render::model::{self, Bus, Mem};
+    use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
+
+    let mem = model::memory();
+    let mut gpu = Mbx2dRenderer::new(
+        Bus::new(mem.clone()),
+        Mem(mem.clone()),
+        Layout::X51V,
+        || 0,
+        1,
+    );
+    rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), rp_today::icons(), true);
+    shell.set_time(rp_shell::Time {
+        hour: 12,
+        minute: 0,
+        weekday: 3,
+        day: 30,
+        month: 10,
+    });
+    let mut frame = Frame::new();
+    let mut show = |shell: &mut rp_shell::Shell| {
+        shell.frame(&mut frame);
+        gpu.draw(&frame);
+        while !gpu.poll() {}
+        let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
+        let base = ((scadr & 0x7F_FFFF) * 16) as usize;
+        let m = mem.borrow();
+        m[base..base + SCREEN_BYTES]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| shown_565(u16::from_le_bytes(*p)))
+            .collect::<Vec<u8>>()
+    };
+    let t0 = 10_000;
+    shell.tick(t0);
+    let Some((last, before)) = steps.split_last() else {
+        return vec![show(&mut shell)];
+    };
+    for &e in before {
+        shell.input(e);
+        shell.settle();
+        show(&mut shell);
+    }
+    shell.input(*last);
+    (0..n)
+        .map(|k| {
+            shell.tick(t0 + k * every_ms);
+            show(&mut shell)
+        })
+        .collect()
 }
 
 /// A screen pixel (RGB565) as the emulator's screendump shows it: each
@@ -11402,6 +11472,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
             Input::PenDown { x: sx, y: sy },
             Input::PenUp { x: sx, y: sy },
         ],
+        false,
     );
     let bare = compare_screens(&wall);
     let wsl = matches!(emulator(root)?, Emulator::Wsl);

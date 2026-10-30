@@ -1,0 +1,11 @@
+[package]
+name = "rp-weather"
+description = "The weather model the shell shares (docs/design/weather-flows.md): places, the current reading, 24 hours and 10 days keyed by WMO codes, icon-pack ids, units and regions, and the sample forecast used until there is a network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

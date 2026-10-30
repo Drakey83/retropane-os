@@ -2,7 +2,7 @@
 
     python -I tools/shell-assets/icons.py <assets/weather/vclouds> <out.rs>
 
-The Today screen shows one big icon and five small ones, as in the mock-ups
+The Today screen shows one big icon and small ones, as in the mock-ups
 (docs/design/mockups): each picture is cropped to what is drawn in it (its
 visible part plus a 3% margin), then scaled uniformly, never stretched, to the
 largest size that fits its box: 250 x 176 for the big one, 66 x 66 for the
@@ -20,13 +20,25 @@ import sys
 
 from PIL import Image
 
-# The pictures the sample Today screen shows: the hero, then the forecast row
-# (their order is the order of the sample data in shell/core: partly cloudy
-# now; then light rain, cloudy, rain showers, clear and partly cloudy).
+# The pictures the screens show: the big one for the reading now, and every
+# icon the sample forecast uses (shell/weather's SAMPLE_ICONS, read from the
+# source below so the two can't drift) at two sizes: the forecast cards'
+# (66 px) and the Weather app's rows (40 px). Only those, not all 22: the lean
+# rule; the OS's packs go through the icon atlas instead (docs/design/icons.md).
 HERO = "03"
-FORECAST = ["09", "05", "12", "01", "03"]
 BIG = (250, 176)
-SMALL = (66, 66)
+CARD = (66, 66)
+ROW = (40, 40)
+
+
+def sample_icons():
+    import pathlib
+    import re
+    src = (pathlib.Path(__file__).resolve().parents[2] / "shell/weather/src/lib.rs").read_text(encoding="utf-8")
+    def ids(name):
+        m = re.search(name + r": \[u8; \d+\] = \[([0-9, ]+)\]", src)
+        return [int(x) for x in m.group(1).split(",")]
+    return ids("SAMPLE_CARD_ICONS"), ids("SAMPLE_ICONS")
 
 
 def subject(img):
@@ -65,15 +77,18 @@ def main():
         f"pub static HERO: Image = Image {{ w: {hero.width}, h: {hero.height}, px: &HERO_PX }};",
     ]
     names = []
-    for i, name in enumerate(FORECAST):
-        small = fit(load(name), SMALL)
-        lines.append(
-            f"static SMALL_PX_{i}: [u32; {small.width * small.height}] = [{words(small)}];"
-        )
-        names.append(f"Image {{ w: {small.width}, h: {small.height}, px: &SMALL_PX_{i} }}")
-    lines.append(f"pub static SMALL: [Image; {len(FORECAST)}] = [{', '.join(names)}];")
+    cards, rows = sample_icons()
+    for kind, size, which in (("CARD", CARD, cards), ("ROW", ROW, rows)):
+        slots = ["None"] * 22
+        for i in which:
+            img = fit(load(f"{i:02}"), size)
+            lines.append(f"static {kind}_PX_{i}: [u32; {img.width * img.height}] = [{words(img)}];")
+            lines.append(f"static {kind}_{i}: Image = Image {{ w: {img.width}, h: {img.height}, px: &{kind}_PX_{i} }};")
+            slots[i - 1] = f"Some(&{kind}_{i})"
+            names.append(f"{kind.lower()} {i:02} {img.width}x{img.height}")
+        lines.append(f"pub static {kind}: [Option<&Image>; 22] = [{', '.join(slots)}];")
     open(out, "w", encoding="utf-8").write("\n".join(lines) + "\n")
-    print(f"{out}: hero {hero.width}x{hero.height}, small " + ", ".join(n.split('w: ')[1].split(',')[0] + 'x' + n.split('h: ')[1].split(',')[0] for n in names))
+    print(f"{out}: hero {hero.width}x{hero.height}, " + ", ".join(names))
 
 
 main()
