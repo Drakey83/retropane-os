@@ -20,6 +20,7 @@ still in design.
 | `weather-mix-sheet.jpg`, `weather-mix-*.jpg` | The mix the owner asked for: WM's frame with the buttons at the bottom around the modern content; radar on three base maps drawn from Natural Earth (public domain) and open elevation tiles (Night, Ink, Relief) |
 | `weather-light-dark-sheet.jpg`, `weather-light-*.jpg` | Light and dark mode (2026-10-30): the mix's Now, Hourly, 10 Day, Radar and Menu in both; radar on Night (dark) and Ink (light) |
 | `classic-desktop-sheet.jpg`, `classic-desktop-*.jpg` | The Classic desktop (2026-10-30): the weather widget over editable XP/Vista-style desktop icons; an icon's menu, moving an icon, the desktop's menu. Icons are mock-up placeholders |
+| `icon-drafts-128.jpg`, `icon-drafts-desktop.jpg`, `icon-drafts-small.jpg` | Claude's icon drafts in the Crystal / Vista glass style (the owner asked, 2026-10-30): twelve icons large, on the Classic desktop, and small on light |
 | `optional-packs.jpg` | The five optional icon packs (not on the front page): six of the 22 icons each |
 
 The look is the smoked-glass design in [../ui.md](../ui.md); the weather

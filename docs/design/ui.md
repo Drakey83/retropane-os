@@ -127,6 +127,12 @@ Proposed, for his vote (D1-D5):
   as optional packs. The set to draw: every program in the Start menu
   and on the desktops, folders, the common file types, My Device, the
   cards (SD, CF: Juanje's icons are already in the base).
+  **Then (owner, 2026-10-30, after the open sets): "can you make your own
+  set of icons that look like this"** (Crystal Diamond's look). Claude's
+  drafts, twelve icons drawn as vector art in that style:
+  `mockups/icon-drafts-128.jpg`, `icon-drafts-desktop.jpg`,
+  `icon-drafts-small.jpg`; source `tools/mockups/icon_drafts.js` (256 px
+  masters). Whether they ship is his verdict.
 
 ## Light and dark, from the start (owner, 2026-10-30)
 
