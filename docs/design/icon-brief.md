@@ -30,24 +30,32 @@ based on Microsoft's or anyone else's icons.**
 
 ## The full set (owner, 2026-10-30: "make sure we have an entire set of icons that will cover everything we will need")
 
-Every icon the OS draws, grouped; **done** marks the twelve Claude drafts
-(`tools/mockups/icon_drafts.js`, mock-ups `icon-drafts-*.jpg`). Sources of
+Every icon the OS draws, grouped. **Claude has drafted all of them**
+(2026-10-30, in six batches by group: sources `tools/mockups/icon_drafts.js`
+for the shared glass parts and the first twelve, then
+`icon_drafts_1_programs.js` to `icon_drafts_6_status.js`; mock-ups
+`mockups/icon-drafts-<group>.jpg`, rendered by
+`local/mockups/icons/shoot-icons.py`). Owner verdicts so far: the
+direction is liked; the Calendar was redrawn without its see-through
+stand, "Deleted Items" is called the **Trash can**, and Programs gets
+other takes (`icon-drafts-programs-alt.jpg`: windows, folder, box; the
+tile grid was not liked). Sources of
 the list: the Start menu and quick buttons (ui.md), every WM5 default app
 (apps-and-packs.md), File Explorer's folders and file types, Settings'
 groups, the status bar and the shade.
 
 | Group | Icons |
 |---|---|
-| Programs (apps-and-packs.md) | Today/home, Calendar **done**, Contacts, Tasks **done**, Notes **done**, Inbox **done**, Browser **done**, Documents (Word), Spreadsheet (Excel), Presentation (PowerPoint), Media player **done**, Pictures & Videos, File Explorer, Calculator, Solitaire, Bubble Breaker, Games folder **done**, Clock & Alarms, Weather, Reader, Record (voice), Search, Help, LegacySync, Remote desktop, Programs, Settings **done** |
-| Device and places | My Device **done**, SD card and CF card (Juanje's, in the base), Main memory/flash, Network (Wi-Fi), Bluetooth, USB/PC connection, Deleted items empty **done** and full, Desktop, Start (the button's mark: R127) |
-| Folders (teal glass) | Folder **done**, open folder, Documents, Pictures, Music **done**, Video, Downloads, Games, Programs, Shared/network, Favorites, Recent |
+| Programs (apps-and-packs.md) | Today/home, Calendar, Contacts, Tasks, Notes, Inbox, Browser, Documents (Word), Spreadsheet (Excel), Presentation (PowerPoint), Media player, Pictures & Videos, File Explorer, Calculator, Solitaire, Bubble Breaker, Games folder, Clock & Alarms, Weather, Reader, Record (voice), Search, Help, LegacySync, Remote desktop, Programs (look open), Settings |
+| Device and places | My Device, SD card and CF card (Juanje's, in the base: not redrawn), Main memory/flash, Network (Wi-Fi), Bluetooth, USB/PC connection, Trash can empty and full, Desktop, Start (the button's mark: three candidates for R127) |
+| Folders (teal glass) | Folder, open folder, Documents, Pictures, Music, Video, Downloads, Games, Programs, Shared/network, Favorites, Recent |
 | File types | Text, Document, Spreadsheet, Presentation, PDF, Picture, Music, Video, Archive (zip), Program (.exe), Install package (.cab), Font, Web page, Contact card (vCard), Calendar file (iCal), Note, Unknown |
 | Settings (each applet) | Display and brightness, Sound, Buttons, Power and battery, Memory, Storage, Clock/date and region, Owner info, Themes and desktop, Light/dark mode, Touch alignment, Keyboard and input, Wireless (Wi-Fi, Bluetooth), Security and keys, Sources and accounts, Packs, About, Updates |
 | Status and shade | Battery (levels, charging), Wi-Fi strength, Bluetooth on, Volume (levels, mute), Alarm set, Notification, Sync running, Card inserted, Lock |
 | Badges (overlays) | Shortcut arrow, Check, Lock, Magnifier, Plus, Minus, Warning, Error, Info, Sync, Download, Star |
 | Weather | VClouds' pack (the base); the five optional packs |
 
-About 110 icons in all, of which 12 are drawn. Masters at **256 x 256** with transparency (PNG, or SVG/PSD sources if
+About 110 icons in all, all drafted (plus the status variants: four battery levels and charging, three Wi-Fi strengths and off, two volume levels and mute). Masters at **256 x 256** with transparency (PNG, or SVG/PSD sources if
 you work that way); we make every smaller size and the light and dark
 variants on the PC, and send them back to you for approval.
 

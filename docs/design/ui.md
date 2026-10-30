@@ -132,7 +132,10 @@ Proposed, for his vote (D1-D5):
   drafts, twelve icons drawn as vector art in that style:
   `mockups/icon-drafts-128.jpg`, `icon-drafts-desktop.jpg`,
   `icon-drafts-small.jpg`; source `tools/mockups/icon_drafts.js` (256 px
-  masters). Whether they ship is his verdict.
+  masters). Whether they ship is his verdict. He liked the direction, so
+  Claude drew the whole set the same day (icon-brief.md "The full set":
+  `icon-drafts-<group>.jpg`). Names: the bin is the **Trash can**
+  (owner, 2026-10-30), not WM's "Deleted Items".
 
 ## Light and dark, from the start (owner, 2026-10-30)
 
