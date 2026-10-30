@@ -109,6 +109,13 @@ Proposed, for his vote (D1-D5):
   artist's with permission (as VClouds'), or an open set in that glossy
   style (candidates to check: Everaldo's Crystal Clear and Nuvola, both
   LGPL as remembered: R126). Icon packs swap them, as weather packs do.
+  **Checked (R126):** Crystal Clear and Nuvola are LGPL (Nuvola's own
+  README; Crystal Clear per Commons), Oxygen LGPL 3, all from 2003-08; no
+  maintained glossy open set exists. Any of them would ship as an
+  optional pack (third-party art never in the base), so the base needs
+  its own set in this style regardless; the owner liked the look of the
+  mock-up's own icons (2026-10-30). The Start button's mark needs its own
+  design (R127).
 
 ## Light and dark, from the start (owner, 2026-10-30)
 
