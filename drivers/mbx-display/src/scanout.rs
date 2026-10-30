@@ -163,10 +163,14 @@ fn plane(read: &impl Fn(usize) -> u32, vram_len: usize, video: bool) -> Option<P
         gamma: (!video && sctrl >> 26 & 1 != 0)
             .then(|| core::array::from_fn(|i| read(reg::GFXGAM0 + 4 * i))),
     };
+    // YUV formats are the video plane's alone; the video plane also takes
+    // the graphics plane's RGB formats (run D on the X51v, 2026-10-19:
+    // `VSCTRL` 7 showed an RGB565 card exactly, 4, 5, 6 and 8 read as
+    // ARGB4444, ARGB1555, RGB888 and ARGB8888).
     let video_fmt = fmt == 9 || fmt >= 0xC;
     let on = scadr >> 31 != 0
         && p.bpp != 0
-        && video_fmt == video
+        && (video || !video_fmt)
         && (!video || read(lreg::VOVRCLK) & 1 != 0)
         && p.base + (p.height - 1) * p.stride + p.width * p.bpp <= vram_len;
     if !on {
@@ -397,6 +401,45 @@ mod tests {
             ]
         );
         assert!(shot(&regs)[1] < 128);
+    }
+
+    #[test]
+    fn the_video_plane_takes_rgb_and_its_per_pixel_alpha_over_the_graphics_plane() {
+        // Weather sheet L2: an RGB565 screen (graphics, slot 0, opaque) and
+        // a 2 x 1 ARGB8888 window on the video plane above it (slot 1,
+        // per-pixel alpha) at x 1: one clear pixel, one half-alpha red.
+        let mut vram = vec![0u8; 64];
+        for px in 0..3 {
+            vram[px * 2..px * 2 + 2].copy_from_slice(&0x001Fu16.to_le_bytes()); // blue
+        }
+        vram[16..20].copy_from_slice(&[0, 0, 0, 0]); // clear
+        vram[20..24].copy_from_slice(&[0, 0, 255, 128]); // B G R A: red, half
+        let mut regs = [0u32; 0x4000 / 4];
+        regs[reg::GSCTRL / 4] = 7 << 27 | 2 << 11; // RGB565, 3 x 1
+        regs[reg::GSCADR / 4] = 1 << 31; // slot 0, opaque
+        regs[lreg::VSCTRL / 4] = 8 << 27 | 1 << 11; // ARGB8888, 2 x 1
+        regs[lreg::VSCADR / 4] = 1 << 31 | 3 << 27 | 1 << 24 | 1; // per-pixel, slot 1, at byte 16
+        regs[lreg::VSADR / 4] = 1 << 11; // stride 16 bytes, x 1
+        regs[lreg::VOVRCLK / 4] = 1;
+        regs[reg::DSCTRL / 4] = 1 << 31;
+        let mut out = [0u8; 9];
+        compose(|o| regs[o / 4], &vram, &mut out);
+        assert_eq!(&out[0..3], &[0, 0, 248], "outside the window: the screen");
+        assert_eq!(
+            &out[3..6],
+            &[0, 0, 248],
+            "alpha 0: the screen shows through"
+        );
+        assert_eq!(
+            &out[6..9],
+            &[mix(255, 0, 128), 0, mix(0, 248, 128)],
+            "half alpha: mixed"
+        );
+        // A YUV format stays the video plane's alone.
+        regs[reg::GSCTRL / 4] = 0xC << 27 | 2 << 11;
+        assert!(plane(&|o| regs[o / 4], vram.len(), false).is_none());
+        regs[lreg::VSCTRL / 4] = 0xC << 27 | 1 << 11;
+        assert!(plane(&|o| regs[o / 4], vram.len(), true).is_some());
     }
 
     #[test]
