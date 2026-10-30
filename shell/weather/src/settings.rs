@@ -263,7 +263,7 @@ impl Default for Settings {
 
 impl Settings {
     /// The defaults: United States, US customary, Seattle, sample data,
-    /// every 3 hours, VClouds, the map by the time of day.
+    /// every 3 hours, VClouds, the Night map.
     pub const DEFAULT: Self = Self {
         region: 0,
         metric: false,
@@ -271,7 +271,9 @@ impl Settings {
         source: Source::Sample,
         refresh: 3,
         pack: 0,
-        radar: RadarMap::Auto,
+        // The owner, 2026-10-30, after the X51v run: "the dark map looks
+        // way better then the ink map".
+        radar: RadarMap::Night,
         tempest_key: Secret::NONE,
     };
 

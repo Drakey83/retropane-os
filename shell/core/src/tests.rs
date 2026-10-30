@@ -1183,6 +1183,8 @@ fn every_notice_shown_is_listed() {
 fn the_radar_loops_its_frames_and_holds_on_the_last() {
     use rp_weather::radar::FRAMES;
     let mut s = weather(weather_app::RADAR);
+    assert_eq!(s.backdrop(), Some(false), "Night by default (the owner's pick)");
+    s.wset.radar = rp_weather::settings::RadarMap::Auto;
     s.set_time(Time {
         hour: 12,
         ..Time::default()
