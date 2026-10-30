@@ -24,6 +24,7 @@ mod size;
 mod spot;
 mod symbols;
 mod trace;
+mod ui_preview;
 mod usb;
 mod usbbench;
 mod userimg;
@@ -793,6 +794,7 @@ fn run_step(step: &str) -> Result {
         "emu-mved" => cross().and_then(|()| emu::boot_loader_mved(&workspace_root())),
         "emu-clocks" => cross().and_then(|()| emu::boot_loader_clocks(&workspace_root())),
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
+        "ui-preview" => cross().and_then(|()| ui_preview::run(&workspace_root())),
         "emu-today" => cross()
             .and_then(|()| emu::boot_loader_today(&workspace_root()))
             .and_then(|()| emu::today_replay(&workspace_root())),

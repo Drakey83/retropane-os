@@ -10912,7 +10912,7 @@ const fn rp_mbx_blend_tries() -> usize {
 /// newest `wallpaper.yuv` under the release build folder in an `rp-today`
 /// folder (Cargo's layout is `build/rp-today-<hash>/out` or, newer,
 /// `build/rp-today/<hash>/out`: both are searched).
-fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
     fn find(dir: &Path, depth: u32, in_today: bool, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -10942,7 +10942,7 @@ fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
 /// engine must draw the same pictures. `steps` are applied between
 /// screens; the first screen is before any. The clock's time is
 /// arbitrary: the check masks it.
-fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
+pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
     use rp_draw::{Frame, Renderer};
     use rp_mbx_render::model::{self, Bus, Mem};
     use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};

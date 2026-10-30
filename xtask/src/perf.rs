@@ -376,11 +376,15 @@ fn build(root: &Path, step: &Step) -> Result<PathBuf, String> {
     Ok(bin)
 }
 
-/// The newest saved card log of `image` in `local/cardlog`.
+/// The newest saved card log of `image` in `local/cardlog`: the one saved
+/// last, not the highest number (the card's numbering starts again after
+/// it is wiped or swapped, so an old log can carry a higher number: perf
+/// run 2026-10-30 read `mbx-blend-0067` from an older card for the
+/// `-0050` just saved). Ties go to the higher number.
 fn newest_cardlog(root: &Path, image: &str) -> Result<String, String> {
     let name = crate::usb::card_log_name(image);
     let dir = root.join("local/cardlog");
-    let mut best: Option<(u32, PathBuf)> = None;
+    let mut best: Option<((std::time::SystemTime, u32), PathBuf)> = None;
     for e in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         let p = e.map_err(|e| e.to_string())?.path();
         let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
@@ -392,8 +396,13 @@ fn newest_cardlog(root: &Path, image: &str) -> Result<String, String> {
         else {
             continue;
         };
-        if best.as_ref().is_none_or(|(b, _)| n > *b) {
-            best = Some((n, p));
+        let saved = p
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let key = (saved, n);
+        if best.as_ref().is_none_or(|(b, _)| key > *b) {
+            best = Some((key, p));
         }
     }
     let (_, p) = best.ok_or(format!("no saved card log of {name}"))?;
