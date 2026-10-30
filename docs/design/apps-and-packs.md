@@ -65,7 +65,8 @@ language (DESIGN.md §6, `docs/design/`). Owned art only, no WM artwork.
 
 ## 3. Themes and customization: pushed hard
 
-The theme engine (DESIGN.md §6: *Modern* default, *Classic* homage) grows
+Modern and Classic are desktops; every app has one design under either
+(owner, 2026-10-30, [ui.md](ui.md)). The theme engine (DESIGN.md §6: *Modern* default, *Classic* homage) grows
 into real customization: colour schemes, wallpapers, icon sets, fonts,
 sounds, Today screen layouts, and themes installed from the card or the
 pack location (§5). Themes are data (no code), so they can't harm the

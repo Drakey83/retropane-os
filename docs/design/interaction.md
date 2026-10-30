@@ -6,8 +6,9 @@ numbered I1-I12 at the end, each with a recommendation. Decided once here,
 they hold for every app in both looks, so Weather ([weather-flows.md](weather-flows.md))
 and every app after it is designed on them instead of deciding them again.
 
-**Owner, 2026-10-30 (later, to confirm as a ruling): apps look the
-same in both looks;** only the desktop and the way into an app differ. So
+**Ruled by the owner, 2026-10-30: every app looks the same in both
+looks;** Classic and Modern are desktops (how you navigate the desktop
+and what it looks like), not app skins (ui.md). So
 every rule below applies to apps once, with no Classic or Modern column;
 where a rule still gives two values (the bars in §2, I2), the Classic
 value applies to Classic's desktop only.

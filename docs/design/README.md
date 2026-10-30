@@ -104,7 +104,8 @@ A running list; each line points to where the detail is.
   kept running, woken early by a touch or a key so clicks stay instant.
 - **2026-10-19:** the UI follows SPB Mobile Shell's whole experience with
   our own take: two looks, Modern (the default, SPB-shaped; the finger for
-  navigation only) and Classic (WM5, stylus), switchable; the weather
+  navigation only) and Classic (WM5, stylus), switchable (**2026-10-30:
+  they are desktops; every app has one design under either**); the weather
   screen the default home; everything customisable, themes included; the
   carousel ([ui.md](ui.md)). Proposals waiting for a vote: 3D acceleration
   for the whole UI (A planes only = ADR-0022 as accepted, B a 3D compositor,

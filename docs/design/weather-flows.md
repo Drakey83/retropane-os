@@ -32,7 +32,7 @@ proposal** (sheet `mockups/weather-sheet.jpg`, each screen
 
 <img src="mockups/weather-sheet.jpg" width="900" alt="Ten screens: the approved Modern home, the Weather app's Now page and Now scrolled, Hourly, 10 Day, Radar, the European format, settings, the Classic desktop with its weather widget, and the Classic app">
 
-**Owner, later the same day (to confirm as a ruling):** the apps look
+**Ruled by the owner, later the same day, for every app (ui.md):** the apps look
 the same in Classic and Modern; only the desktop, and so the way into
 the app, differs. So the app is screens 1-7 in both looks, and screen 9
 (Classic's own app skin) is set aside. Classic reaches the app from its

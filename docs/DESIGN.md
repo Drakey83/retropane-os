@@ -361,7 +361,9 @@ Rust API, so legacy support never constrains the native design.
   (a faithful WM5-style homage, using our own artwork). Modern takes SPB
   Mobile Shell's finger-friendly shape, Classic stays at stylus scale, and the
   user switches between them at any time, so a theme carries layout as well as
-  skin (owner, 2026-10-19: `docs/design/ui.md`).
+  skin (owner, 2026-10-19: `docs/design/ui.md`). **The two are desktops, not
+  app skins** (owner, 2026-10-30): they set the home screen, launcher and Start
+  menu and how you move around them; every app has one design under either.
 - Design spec lives in `docs/design/` (start at its README: everything in one place), with mock-ups before code.
 
 ---
