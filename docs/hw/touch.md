@@ -272,3 +272,37 @@ QEMU's simplified ads7846), on SSP1 with GPIO24 chip select and GPIO94 pen
 interrupt. Touches come from the emulator's absolute pointer (mouse button =
 pen down), mapped linearly to raw values 200..3900 on both axes, with X and Y
 swapped like the real panel.
+
+## The AUX input and the temperature channels (REA #35, 2026-10-30)
+
+**Claims from Dell's battery driver and TI's datasheet, not yet measured
+on the X51v.**
+- **AUX is switched between five board signals** by CPLD `0x1E` bits
+  `0x1`/`0x2`/`0x4` (cpld.md). Windows Mobile's `battdrvr` reads AUX
+  through SSP1 (its `0xA9000008`/`0x10` are `SSSR`/`SSDR`), 12-bit
+  single-ended, 3-4 samples a reading. It does this for:
+  - the battery thermistor;
+  - the battery voltage;
+  - the battery current;
+  - a battery-type resistor;
+  - one signal whose use wasn't found.
+- **The battery thermistor** (switch `0,1,0`). Dell's conversion
+  (`0x023dfa3c`-`0x023dfae8`) runs in its own order:
+  - the reading in mV is `raw x 30000 / 4096`;
+  - `r = (mV x 220.47 - 104568) / (222486 - mV) x 0.1`;
+  - `T = 1 / (1/298.15 + ln(r) / 3174) - 273.15` °C;
+  - x 10 into the battery status's `BatteryTemperature` (tenths of a
+    degree; offset `0x2C` of the driver's status at `0xAC006100`).
+
+  So it is a B = 3174 K thermistor, normalised at 25 °C. The exact
+  divider (what `r` stands for) is to check against a reading. Dell also
+  compares it with 250 (25.0 °C) to correct the charge estimate below
+  that temperature.
+- **The TSC2046's own temperature sensors** (TI's datasheet: `TEMP0`,
+  channel `000`, and `TEMP1`, channel `111`: the chip's diode, read at
+  two currents for an absolute reading without calibration). No Dell
+  driver uses them: `touch.dll` and `battdrvr` send no `0x84`-`0x87` or
+  `0xF4`-`0xF7`.
+- **Together, three temperature readings exist on this board beyond the
+  2700G's `TEMP0`:** the battery's thermistor, and the touch controller's
+  die. Both are reachable through the touch controller we already drive.

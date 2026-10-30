@@ -113,7 +113,7 @@ from its users.
 | `0x1C` | `0x0001` | Wi-Fi power sequence step 2 | `pcc_socket`, `tiacxwln` | likely | D; C |
 | `0x1C` | `0x0002` | **Audio codec (WM8750) power** | `wavedev` | **confirmed** | D; P (set by Windows Mobile while audio plays; RetroPane's sound with it set, 2026-10-18) |
 | `0x1C` | `0x0008` | **USB / dock** (AxDroid: "USB power?"): Windows Mobile's shadow read `0x1C` = `000F` docked and `0007` out of the dock, the same session (`rp-wmtones` runs 2 and 3, 2026-10-18) | `usbfndrv` | likely (one observation) | D; C; P |
-| `0x1E` | `0x0001`-`0x0004` | battery / charger (guess) | `battdrvr` | guess | D |
+| `0x1E` | `0x0001`-`0x0004` | **the TSC2046 AUX input's analog switch** (REA #35, 2026-10-30): `battdrvr` sets these three bits (shadow slot 8, `0x023e2d18`, read from the machine code: the decompiler dropped the masks), waits 100 ms, then reads AUX (`0xE4`/`0xE5`). Its five settings, by what Dell does with each: `0,1,0` (bits 1, 2, 4 = 0, 1, 0) **the battery thermistor**; `0,0,0` the battery voltage (x 1.5); `1,0,0` the battery current; `1,1,0` the battery-type resistor (three types and "none"); `0,1,1` read, use not found | `battdrvr` | likely (Dell's use; not yet measured) | D |
 | `0x1E` | `0x0008` | write 1 to enable the LCD-type readout | `AximSDK`, `Backlight`, `battdrvr`, `ddi` | likely | C; D |
 | `0x1E` (read) | `0x0003` | **LCD type**: 0 = 3.7" Sharp, 1 = 3.5" Sharp, 2 = 3.7" Samsung, 3 = 3.5" Sharp. Even = VGA (X50v/X51v), odd = QVGA | `AximSDK` | confirmed | C; A; P (reads 3.7" Sharp VGA on the owner's X51v) |
 

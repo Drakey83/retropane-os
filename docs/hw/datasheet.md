@@ -123,6 +123,7 @@ Windows Mobile's drivers share one shadow copy per register (RAM
 | `0x1C` | 1 | **audio codec power** | confirmed |
 | `0x1C` | 3 | **USB / dock**: on in the dock, off out of it (Windows Mobile's shadow, one observation) | likely |
 | `0x1E` | 3 (write) / 1-0 (read) | **LCD type readout**: 0 = 3.7" Sharp VGA (the owner's), 1 and 3 = 3.5" Sharp QVGA, 2 = 3.7" Samsung VGA | confirmed |
+| `0x1E` | 2-0 (write) | **the touch controller's AUX switch** (REA #35): `0,1,0` the battery's thermistor (B = 3174 K, 25 °C), `0,0,0` battery voltage, `1,0,0` battery current, `1,1,0` battery type, `0,1,1` unknown; Windows Mobile's battery driver reads each through TSC2046 AUX ([touch.md](touch.md)) | likely (Dell's use) |
 
 Other bits with a likely or guessed owner (Wi-Fi's power sequence,
 Bluetooth/serial, USB, battery, notification LED, display sequence) are in
