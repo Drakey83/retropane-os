@@ -54,3 +54,11 @@ core's time kept and the first checked word for word against the frame at
 pool and each other before anything runs. Emulator-checked ("run R114":
 every render right, everything given back); the device run waits for the
 owner's run it.
+
+## Ran on the X51v, 2026-10-29 (gpubench-0223): overturned, as section 5 foresaw
+No address is faster: every target place and every texture place gave the
+same times within 0.1% (the textured frame 14.97 ms at all 22). So the 15%
+is not banks, and no placement in SDRAM wins (Dell's first-fit loses
+nothing here either). The lead left: screen 0 sits in the first 704 KiB
+(on-die memory, by the public source; R23), screen 1 in SDRAM: to prove
+with a target crossing 0xB0000 (R23's run), the owner's call.
