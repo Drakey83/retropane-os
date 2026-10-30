@@ -6,6 +6,12 @@ numbered I1-I12 at the end, each with a recommendation. Decided once here,
 they hold for every app in both looks, so Weather ([weather-flows.md](weather-flows.md))
 and every app after it is designed on them instead of deciding them again.
 
+**Owner, 2026-10-30 (later, to confirm as a ruling): apps look the
+same in both looks;** only the desktop and the way into an app differ. So
+every rule below applies to apps once, with no Classic or Modern column;
+where a rule still gives two values (the bars in §2, I2), the Classic
+value applies to Classic's desktop only.
+
 What is already decided and not asked again here ([ui.md](ui.md)): the two
 looks, **Classic** (Windows Mobile's layouts, modernised, stylus scale) and
 **Modern** (mostly SPB Mobile Shell, the owner's changes, the default);

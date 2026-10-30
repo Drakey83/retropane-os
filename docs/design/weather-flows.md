@@ -32,9 +32,16 @@ proposal** (sheet `mockups/weather-sheet.jpg`, each screen
 
 <img src="mockups/weather-sheet.jpg" width="900" alt="Ten screens: the approved Modern home, the Weather app's Now page and Now scrolled, Hourly, 10 Day, Radar, the European format, settings, the Classic desktop with its weather widget, and the Classic app">
 
+**Owner, later the same day (to confirm as a ruling):** the apps look
+the same in Classic and Modern; only the desktop, and so the way into
+the app, differs. So the app is screens 1-7 in both looks, and screen 9
+(Classic's own app skin) is set aside. Classic reaches the app from its
+desktop widget (screen 8), Modern from the home page (screen 0).
+
 ### The full-screen app, proposed (screens 1-7)
 
-- **One app, two skins.** Classic and Modern open the same app with the
+- *(Superseded by the owner's direction above: one app, one design.)*
+  **One app, two skins.** Classic and Modern open the same app with the
   same four views; Modern draws it as smoked glass over the sky at
   finger scale, Classic as a light Windows Mobile 5-style window at
   stylus scale (screen 9). One set of data, one set of flows, two

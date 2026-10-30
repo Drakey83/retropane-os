@@ -45,6 +45,14 @@ suggestion especially with using rule 0 mentality."
   each inherited choice. What WM or SPB does is the finding; where a
   better way exists (measured or argued), it is proposed beside it, and
   the owner picks.
+- **Apps look the same in both looks (owner, 2026-10-30, later the
+  same day, to confirm as a ruling):** "i think the apps should look the
+  same whether they are in modern or classic view. the only difference
+  should be in the way you access the desktop and hence access the app."
+  So Classic and Modern differ in the desktop (home screen, launcher,
+  Start menu) and how an app is reached; an app itself has one design.
+  This replaces the first bullet's "each default app keeps Windows
+  Mobile's layout" for apps (Classic's desktop still follows WM's).
 - **First real program: Weather** (the default home). Its interaction
   foundations come first, decided once for every app:
   [interaction.md](interaction.md), then
