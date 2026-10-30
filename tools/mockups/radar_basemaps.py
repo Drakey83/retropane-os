@@ -1,10 +1,17 @@
 """Draws three radar base-map looks for the Seattle area from Natural Earth and
-open elevation tiles (args: maps dir, font file, out dir)."""
-import json, math, sys, pathlib
+open elevation tiles (args: maps dir, font file, out dir).
+
+With RADAR_DEVICE=1 it also writes what the X51v's Weather app shows under
+its radar page: each look without the mock-up's rain (the device draws its
+own), at the screen's scale, cropped to the page (rows 94-555), as raw RGB
+`radar-<look>-480x462.rgb` for rp-today's build to pack."""
+import json, math, os, sys, pathlib
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 maps, fontp, out = map(pathlib.Path, sys.argv[1:4])
+DEVICE = os.environ.get('RADAR_DEVICE') == '1'
+PAGE_Y, PAGE_H = 94, 462          # the Weather app's page (shell/core weather_app.rs PAGE)
 S = 2                     # draw at 2x, like the mock-up screenshots
 Z = 9                     # web mercator zoom: 480 px ~ 100 km across
 W, H = 480 * S, 640 * S
@@ -126,13 +133,17 @@ def finish(base, line_col, road_col, river_col, state_col, text_col, halo_col, n
     # coastline: the land mask's edge
     edge = Image.fromarray((landm * 255).astype(np.uint8)).filter(ImageFilter.FIND_EDGES)
     base.paste(Image.new('RGBA', (W, H), line_col), (0, 0), edge.point(lambda v: 255 if v > 0 else 0))
-    base.alpha_composite(rain_img)
+    if not DEVICE:
+        base.alpha_composite(rain_img)
     d = ImageDraw.Draw(base, 'RGBA')
     for k, (_, n, x, y) in enumerate(places):
         f = font if k < 3 else small
         d.ellipse((x - 4 * S, y - 4 * S, x + 4 * S, y + 4 * S) if k == 0 else (x - 3 * S, y - 3 * S, x + 3 * S, y + 3 * S), fill=text_col)
         d.text((x + 8 * S, y - 9 * S), n, font=f, fill=text_col, stroke_width=2 * S, stroke_fill=halo_col)
     base.convert('RGB').save(out / f'radar-{name}.png')
+    if DEVICE:
+        page = base.convert('RGB').resize((480, 640), Image.LANCZOS).crop((0, PAGE_Y, 480, PAGE_Y + PAGE_H))
+        (out / f'radar-{name}-480x{PAGE_H}.rgb').write_bytes(page.tobytes())
 
 def rgb(a): return np.asarray(a, np.float64)
 

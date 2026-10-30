@@ -30,7 +30,19 @@ pub(crate) const PAGE: Rect = Rect::new(0, 94, W, 462);
 /// The tab strip above the softkeys.
 pub(crate) const TABS: Rect = Rect::new(0, H - 84, W, 44);
 /// The pages.
-pub(crate) const TAB_NAMES: [&[u8]; 3] = [b"NOW", b"HOURLY", b"10 DAY"];
+pub(crate) const TAB_NAMES: [&[u8]; 4] = [b"NOW", b"HOURLY", b"10 DAY", b"RADAR"];
+/// The radar's page.
+pub(crate) const RADAR: u8 = 3;
+/// The radar's timeline panel, its play control and its track.
+const TIME_PANEL: Rect = Rect::new(16, 468, 448, 80);
+pub(crate) const PLAY: Rect = Rect::new(20, 474, 56, 68);
+pub(crate) const TIMELINE: Rect = Rect::new(80, 468, 384, 80);
+const TRACK_X: u16 = 96;
+const TRACK_W: u16 = 352;
+/// How long a radar frame shows (ms), and the last one before the loop
+/// starts again.
+const RADAR_FRAME_MS: u32 = 400;
+const RADAR_HOLD_MS: u32 = 1200;
 
 /// Rows on the Hourly and 10 Day pages.
 const ROWS: usize = 10;
@@ -70,7 +82,21 @@ const WARM: Argb = 0xFFFF_A040;
 
 /// Where tab `i` is.
 pub(crate) const fn tab_rect(i: u8) -> Rect {
-    Rect::new(i as u16 * 160, TABS.y, 160, TABS.h)
+    let w = W / TAB_NAMES.len() as u16;
+    Rect::new(i as u16 * w, TABS.y, w, TABS.h)
+}
+
+/// The radar frame nearest screen x on the timeline.
+pub(crate) fn frame_at(x: u16) -> u8 {
+    let last = u32::from(rp_weather::radar::FRAMES - 1);
+    let at = u32::from(x.clamp(TRACK_X, TRACK_X + TRACK_W) - TRACK_X);
+    ((at * last + u32::from(TRACK_W) / 2) / u32::from(TRACK_W)) as u8
+}
+
+/// Where frame `k` sits on the timeline.
+fn frame_x(k: u8) -> u16 {
+    let last = u16::from(rp_weather::radar::FRAMES - 1);
+    TRACK_X + TRACK_W * u16::from(k) / last
 }
 
 /// A row on the Hourly and 10 Day pages.
@@ -218,7 +244,8 @@ impl Shell {
         match self.tab {
             0 => self.now_page(f),
             1 => self.hourly_page(f),
-            _ => self.days_page(f),
+            2 => self.days_page(f),
+            _ => self.radar_page(f),
         }
         f.clip(None);
 
@@ -439,6 +466,148 @@ impl Shell {
             r: Rect::new(track.x, y, 3, thumb_h),
             color: FOCUS,
         });
+    }
+
+    /// Moves the radar loop on to `now`: true if its frame changed.
+    pub(crate) fn radar_step(&mut self, now: u32) -> bool {
+        if self.screen != super::Screen::Weather || self.tab != RADAR || !self.radar_play {
+            self.radar_at = now;
+            return false;
+        }
+        let last = rp_weather::radar::FRAMES - 1;
+        let wait = if self.radar_frame == last {
+            RADAR_HOLD_MS
+        } else {
+            RADAR_FRAME_MS
+        };
+        if now.wrapping_sub(self.radar_at) < wait {
+            return false;
+        }
+        self.radar_at = now;
+        self.radar_frame = if self.radar_frame >= last {
+            0
+        } else {
+            self.radar_frame + 1
+        };
+        self.dirty(PAGE);
+        true
+    }
+
+    /// Whether the radar's map is under the page, and which look: `Some(true)`
+    /// Ink, `Some(false)` Night (Auto: Ink between sunrise and sunset). The
+    /// caller puts the map into the wallpaper under the page while it is.
+    #[must_use]
+    pub fn backdrop(&self) -> Option<bool> {
+        if self.screen != super::Screen::Weather || self.tab != RADAR {
+            return None;
+        }
+        let m = u16::from(self.time.hour) * 60 + u16::from(self.time.minute);
+        Some(match self.wset.radar {
+            rp_weather::settings::RadarMap::Ink => true,
+            rp_weather::settings::RadarMap::Night => false,
+            rp_weather::settings::RadarMap::Auto => m >= self.wx.sun.0 && m < self.wx.sun.1,
+        })
+    }
+
+    /// The radar: the rain cells over the map (the backdrop), a chip naming
+    /// the layer, and the timeline with play and pause.
+    fn radar_page(&self, f: &mut Frame) {
+        use rp_weather::radar::{FRAMES, NOW_FRAME, STEP_MIN, STEPS, TRACKS};
+        let (ui, label) = (self.fonts.ui, self.fonts.label);
+        for t in TRACKS {
+            let Some(img) = self.icons.radar[usize::from(t.cell)] else {
+                continue;
+            };
+            let (x, y) = t.at(self.radar_frame);
+            if x >= 0 && y >= 0 && x as u16 + img.w <= W {
+                f.push(Cmd::Image {
+                    x: x as u16,
+                    y: y as u16,
+                    img,
+                });
+            }
+        }
+        let chip = Rect::new(16, 104, 220, 40);
+        // The menus' denser glass: readable over the light Ink map too.
+        Self::glass(f, chip, super::MENU_LEFT, super::MENU_RIGHT);
+        f.text(chip.x + 14, chip.y + 27, label, TEXT, b"RAIN  SAMPLE");
+        Self::glass(f, TIME_PANEL, super::MENU_LEFT, super::MENU_RIGHT);
+        // Play or pause: a triangle of steps, or two bars.
+        let (px, py) = (PLAY.x + 20, PLAY.y + 20);
+        if self.radar_play {
+            for k in 0..8u16 {
+                f.push(Cmd::Fill {
+                    r: Rect::new(px + 2 * k, py + k, 2, 28 - 2 * k),
+                    color: TEXT,
+                });
+            }
+        } else {
+            for dx in [0u16, 12] {
+                f.push(Cmd::Fill {
+                    r: Rect::new(px + dx, py, 6, 28),
+                    color: TEXT,
+                });
+            }
+        }
+        self.decorate(f, Target::Play);
+        // The frame's time and whether it is past or forecast.
+        let k = i16::from(self.radar_frame) - i16::from(NOW_FRAME);
+        let m = (i16::from(self.time.hour) * 60 + i16::from(self.time.minute) + k * STEP_MIN)
+            .rem_euclid(24 * 60);
+        let when = self
+            .region
+            .time((m / 60) as u8, (m % 60) as u8, true)
+            .push(match k {
+                0 => b"  now",
+                k if k < 0 => b"  past",
+                _ => b"  forecast",
+            });
+        f.text(TRACK_X, TIME_PANEL.y + 28, ui, TEXT, when.as_bytes());
+        let ends = b"-1 h       +1 h";
+        f.text(
+            TRACK_X + TRACK_W - ui.width(ends),
+            TIME_PANEL.y + 28,
+            ui,
+            DIM,
+            ends,
+        );
+        let ty = TIME_PANEL.y + 44;
+        f.push(Cmd::Fill {
+            r: Rect::new(TRACK_X, ty, TRACK_W, 4),
+            color: TRACK,
+        });
+        for i in 0..FRAMES {
+            let h = if i == NOW_FRAME { 12 } else { 6 };
+            f.push(Cmd::Fill {
+                r: Rect::new(frame_x(i), ty + 2 - h / 2, 2, h),
+                color: if i == NOW_FRAME { WARM } else { DIM },
+            });
+        }
+        f.push(Cmd::Fill {
+            r: Rect::new(frame_x(self.radar_frame).saturating_sub(5), ty - 7, 12, 18),
+            color: FOCUS,
+        });
+        // The scale: light to heavy.
+        for (i, (c, _)) in STEPS.iter().enumerate() {
+            f.push(Cmd::Fill {
+                r: Rect::new(TRACK_X + 64 + i as u16 * 48, TIME_PANEL.y + 62, 44, 6),
+                color: rp_draw::look::theme(0xFF00_0000 | c),
+            });
+        }
+        f.text(TRACK_X, TIME_PANEL.y + 72, label, DIM, b"LIGHT");
+        f.text(
+            TRACK_X + 64 + 5 * 48 + 6,
+            TIME_PANEL.y + 72,
+            label,
+            DIM,
+            b"HEAVY",
+        );
+        if self.focus == Some(Target::Timeline) {
+            f.push(Cmd::Outline {
+                r: TIMELINE,
+                color: FOCUS,
+            });
+        }
     }
 
     fn days_page(&self, f: &mut Frame) {

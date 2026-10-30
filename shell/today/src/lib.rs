@@ -110,6 +110,101 @@ pub fn icons_into(
     set
 }
 
+/// The radar map's place on the screen (the Weather app's page) and its
+/// bytes unpacked (three planes of 5, 6 and 5 bits).
+pub const MAP_TOP: u16 = 94;
+/// See [`MAP_TOP`].
+pub const MAP_H: usize = 462;
+/// See [`MAP_TOP`].
+pub const MAP_BYTES: usize = W * MAP_H * 3;
+
+/// Unpacks the image's radar map into `dst` ([`MAP_BYTES`]).
+///
+/// # Errors
+/// `packed` damaged, or `dst` the wrong size.
+pub fn unpack_map(packed: &[u8], dst: &mut [u8]) -> Result<(), rp_inflate::Error> {
+    if rp_inflate::zlib(packed, dst)? != MAP_BYTES || dst.len() != MAP_BYTES {
+        return Err(rp_inflate::Error::Bad);
+    }
+    for plane in dst.chunks_mut(W * MAP_H) {
+        rp_inflate::unpaeth(plane, W, MAP_H);
+    }
+    Ok(())
+}
+
+/// Row `y` of the map as XRGB8888: the Night look, or Ink made from it
+/// (black water, light land shaded by the Night's relief, its light roads
+/// and labels turned dark: no second map in the image).
+pub fn map_row(map: &[u8], y: usize, ink: bool, row: &mut [u32; W]) {
+    let n = W * MAP_H;
+    for (x, p) in row.iter_mut().enumerate() {
+        let i = y * W + x;
+        let (r5, g6, b5) = (
+            u32::from(*map.get(i).unwrap_or(&0)),
+            u32::from(*map.get(n + i).unwrap_or(&0)),
+            u32::from(*map.get(2 * n + i).unwrap_or(&0)),
+        );
+        let (r, g, b) = (r5 << 3 | r5 >> 2, g6 << 2 | g6 >> 4, b5 << 3 | b5 >> 2);
+        *p = if !ink {
+            r << 16 | g << 8 | b
+        } else if 4 * b > 7 * r.max(1) {
+            // Water (and the coast's line): black.
+            0x18_1818
+        } else {
+            let l = (r * 77 + g * 150 + b * 29) >> 8;
+            let v = (250 - 2 * l.saturating_sub(30) as i32).clamp(16, 250) as u32;
+            v << 16 | v << 8 | v
+        };
+    }
+}
+
+/// The wallpaper under the Weather app's page: the radar map (`Some(ink)`)
+/// or the wallpaper itself again (`None`, the whole of it converted
+/// afresh); then the renderer makes its background again.
+pub fn show_backdrop<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
+    r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
+    wallpaper: &[u8],
+    map: Option<(&[u8], bool)>,
+    s: &mut WallScratch,
+) {
+    match map {
+        Some((m, ink)) => {
+            let mut row = [0u32; W];
+            for y in 0..MAP_H {
+                map_row(m, y, ink, &mut row);
+                r.wallpaper_row(MAP_TOP + y as u16, &row);
+            }
+        }
+        None => load_wallpaper(r, wallpaper, Depth::Rgb565, s),
+    }
+    r.wallpaper_changed();
+}
+
+/// Pixels [`radar_into`] needs.
+pub const RADAR_WORDS: usize = rp_weather::radar::CELL_PX;
+
+/// The radar's rain cells drawn into `px` (at least [`RADAR_WORDS`]), their
+/// descriptions in `imgs`: the shell's set. Too little room: none (the
+/// radar shows the map alone).
+#[must_use]
+pub fn radar_into(
+    px: &'static mut [u32],
+    imgs: &'static mut [Image; 3],
+) -> [Option<&'static Image>; 3] {
+    if px.len() < RADAR_WORDS {
+        return [None; 3];
+    }
+    let mut rest = px;
+    for (k, (slot, &(w, h))) in imgs.iter_mut().zip(&rp_weather::radar::CELLS).enumerate() {
+        let (mine, more) = rest.split_at_mut(usize::from(w) * usize::from(h));
+        rest = more;
+        rp_weather::radar::cell(mine, k);
+        *slot = Image { w, h, px: mine };
+    }
+    let imgs: &'static [Image; 3] = imgs;
+    [Some(&imgs[0]), Some(&imgs[1]), Some(&imgs[2])]
+}
+
 /// Bytes of the wallpaper's planes (4:2:0, `W` x `H`).
 pub const WALLPAPER_BYTES: usize = W * H * 3 / 2;
 
@@ -422,6 +517,35 @@ mod tests {
             Box::leak(vec![0; ICON_WORDS].into_boxed_slice()),
             Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
         )
+    }
+
+    /// The image's radar map unpacks; Night shows it as built, Ink turns
+    /// its water black and its land light; damage is refused.
+    #[test]
+    fn the_radar_map_unpacks_and_ink_is_made_from_night() {
+        let packed = include_bytes!(concat!(env!("OUT_DIR"), "/radar.zz"));
+        let mut map = vec![0u8; MAP_BYTES];
+        assert_eq!(unpack_map(packed, &mut map), Ok(()));
+        let (mut night, mut ink) = ([0u32; W], [0u32; W]);
+        let (mut water, mut land) = (0, 0);
+        for y in (0..MAP_H).step_by(7) {
+            map_row(&map, y, false, &mut night);
+            map_row(&map, y, true, &mut ink);
+            for (n, i) in night.iter().zip(&ink) {
+                let (r, b) = ((n >> 16) & 0xFF, n & 0xFF);
+                if 4 * b > 7 * r.max(1) {
+                    assert_eq!(*i, 0x18_1818);
+                    water += 1;
+                } else {
+                    land += 1;
+                }
+            }
+        }
+        assert!(water > 1000 && land > 1000, "both: {water} {land}");
+        let mut bad = packed.to_vec();
+        let mid = bad.len() / 3;
+        bad[mid] ^= 0x40;
+        assert!(unpack_map(&bad, &mut map).is_err());
     }
 
     /// Every notice fits its area in the real font (a wider one is drawn

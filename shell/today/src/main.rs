@@ -98,6 +98,11 @@ mod image {
     static WALL: rt::Slot<WallScratch> = rt::Slot::new();
     // The weather pictures' descriptions (their pixels are in the RAM pool).
     static ICON_IMGS: rt::Slot<[rp_draw::Image; rp_today::ICON_COUNT]> = rt::Slot::new();
+    // The radar's rain cells' descriptions (their pixels are in the RAM pool).
+    static RADAR_IMGS: rt::Slot<[rp_draw::Image; 3]> = rt::Slot::new();
+    /// The radar's base map, packed by the build (the Night look; Ink is
+    /// made from it), unpacked at start into the RAM pool.
+    static MAP_PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/radar.zz"));
     /// The wallpaper this image was built with (`RP_TODAY_WALLPAPER`).
     const WALL_NAME: &str = env!("RP_TODAY_WALLPAPER_NAME");
 
@@ -257,13 +262,34 @@ mod image {
             crash(format_args!("no RAM pool"))
         };
         let (icon_px, rest) = pool.split_at_mut(rp_today::ICON_WORDS);
-        let wall_bytes = &mut rp_hal_mem::words_as_bytes_mut(rest)[..rp_today::WALLPAPER_BYTES];
+        let (wall_words, rest) = rest.split_at_mut(rp_today::WALLPAPER_BYTES.div_ceil(4));
+        let (radar_px, rest) = rest.split_at_mut(rp_today::RADAR_WORDS);
+        let (map_words, _) = rest.split_at_mut(rp_today::MAP_BYTES.div_ceil(4));
+        let wall_bytes =
+            &mut rp_hal_mem::words_as_bytes_mut(wall_words)[..rp_today::WALLPAPER_BYTES];
+        let map_bytes = &mut rp_hal_mem::words_as_bytes_mut(map_words)[..rp_today::MAP_BYTES];
         let t0 = rt::ticks();
         if let Err(e) = rp_today::unpack_wallpaper(WALLPAPER_PACKED, wall_bytes) {
             crash(format_args!("wallpaper unpacking: {e:?}"))
         }
         let unpacked_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
         let wallpaper: &'static [u8] = wall_bytes;
+        // The radar's map: a damaged one leaves the radar on the wallpaper.
+        let t0 = rt::ticks();
+        let radar_map: Option<&'static [u8]> = match rp_today::unpack_map(MAP_PACKED, map_bytes) {
+            Ok(()) => Some(map_bytes),
+            Err(e) => {
+                let _ = writeln!(RunLog, "radar map unpacking: {e:?}");
+                None
+            }
+        };
+        let _ = writeln!(
+            RunLog,
+            "radar map unpacked: {} -> {} bytes in {} us",
+            MAP_PACKED.len(),
+            rp_today::MAP_BYTES,
+            rt::ticks().wrapping_sub(t0) / 13 * 4
+        );
         let _ = writeln!(
             RunLog,
             "wallpaper unpacked: {} -> {} bytes in {unpacked_us} us",
@@ -306,10 +332,19 @@ mod image {
         let mut compare_frame = false;
         // The pictures unpacked once into the RAM pool (SDRAM outside the
         // image area, unused by this image): R129, the lean rule.
-        let icons = match ICON_IMGS.put_with(|| [rp_today::NO_IMAGE; rp_today::ICON_COUNT]) {
+        let mut icons = match ICON_IMGS.put_with(|| [rp_today::NO_IMAGE; rp_today::ICON_COUNT]) {
             Some(imgs) => rp_today::icons_into(icon_px, imgs),
             None => rp_shell::Icons::NONE,
         };
+        let t0 = rt::ticks();
+        if let Some(imgs) = RADAR_IMGS.put_with(|| [rp_today::NO_IMAGE; 3]) {
+            icons.radar = rp_today::radar_into(radar_px, imgs);
+        }
+        let _ = writeln!(
+            RunLog,
+            "radar cells drawn in {} us",
+            rt::ticks().wrapping_sub(t0) / 13 * 4
+        );
         let (Some(shell), Some(frame)) = (
             SHELL.put_with(|| Shell::new(rp_today::shell_fonts(), icons, true)),
             FRAME.put_with(Frame::new),
@@ -388,6 +423,9 @@ mod image {
         // The movement in progress: when its first and last frames were
         // queued (ms), and its background pixels and rows written.
         let mut burst: Option<(u64, u64)> = None;
+        // What is under the Weather app's page: the wallpaper (None) or the
+        // radar map (Some(ink)).
+        let mut backdrop_shown: Option<bool> = None;
         let (mut burst_bg_px, mut burst_rows, mut burst_reused) = (0u64, 0u32, 0u32);
         let mut frames = 0u32;
         let mut draw_us_worst = 0u32;
@@ -817,6 +855,31 @@ mod image {
                 }
                 before.restore(&mut gfx.two_d().parts().0.regs);
                 rp_image::finish()
+            }
+
+            // The radar's map under the page while Radar is open, the
+            // wallpaper again after (the frame in flight may read it).
+            let want = shell.backdrop().filter(|_| radar_map.is_some());
+            if want != backdrop_shown {
+                while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
+                let t0 = rt::ticks();
+                rp_today::show_backdrop(
+                    gfx.two_d(),
+                    wallpaper,
+                    want.zip(radar_map).map(|(ink, m)| (m, ink)),
+                    wall,
+                );
+                let _ = writeln!(
+                    RunLog,
+                    "backdrop: {} in {} us",
+                    match want {
+                        Some(true) => "radar map, Ink",
+                        Some(false) => "radar map, Night",
+                        None => "wallpaper",
+                    },
+                    rt::ticks().wrapping_sub(t0) / 13 * 4
+                );
+                backdrop_shown = want;
             }
 
             // Draw what changed, timing it. One job at a time: with a frame

@@ -126,6 +126,16 @@ fn shots() -> Vec<Shot> {
             what: "Back (left softkey): the app again, Metric and Oslo",
             steps: tap(80, 620),
         },
+        Shot {
+            name: "17-weather-radar",
+            what: "Radar: the sample's rain over our Night map, the loop at its start",
+            steps: tap(420, 578),
+        },
+        Shot {
+            name: "18-weather-radar-now",
+            what: "The timeline tapped at now: paused there",
+            steps: tap(96 + 176, 512),
+        },
     ]
 }
 
@@ -134,9 +144,10 @@ fn shots() -> Vec<Shot> {
 pub fn run(root: &Path) -> Result<(), String> {
     let release = crate::arm_release(root);
     let wall = crate::emu::today_wallpaper(&release)?;
+    let map = crate::emu::today_map(&release);
     let shots = shots();
     let steps: Vec<Input> = shots.iter().flat_map(|s| s.steps.iter().copied()).collect();
-    let all = crate::emu::today_screens(&wall, &steps, true);
+    let all = crate::emu::today_screens(&wall, map.as_deref(), &steps, true);
     let out = root.join("target").join("ui-preview");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     // Screen k of `all` is after k inputs; each shot shows the screen after
@@ -182,7 +193,7 @@ pub fn run(root: &Path) -> Result<(), String> {
             [hero, vec![Input::Key(Key::Right)], swipe].concat(),
         ),
     ] {
-        let frames = crate::emu::today_motion(&wall, &steps, 30, 20);
+        let frames = crate::emu::today_motion(&wall, map.as_deref(), &steps, 30, 20);
         for (k, rgb) in frames.iter().enumerate() {
             let file = format!("motion-{name}-{k:02}.png");
             std::fs::write(out.join(&file), png_rgb(480, 640, rgb))

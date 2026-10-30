@@ -20,7 +20,12 @@
 /// The `local/` folders the build scripts read; every watched file must be
 /// under one (`watch_local` checks), or `RP_LOCAL_INPUTS` wouldn't see it.
 #[allow(dead_code)]
-const LOCAL_INPUT_DIRS: &[&str] = &["local/concept", "local/icons", "local/wallpapers"];
+const LOCAL_INPUT_DIRS: &[&str] = &[
+    "local/concept",
+    "local/icons",
+    "local/maps",
+    "local/wallpapers",
+];
 
 /// The variable `cargo xtask` sets to the inputs' fingerprint.
 #[allow(dead_code)]

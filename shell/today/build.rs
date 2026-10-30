@@ -63,6 +63,25 @@ fn main() {
     std::fs::write(Path::new(&out).join("wallpaper.zz"), packed).expect("OUT_DIR writable");
     std::fs::write(Path::new(&out).join("wallpaper.yuv"), wall).expect("OUT_DIR writable");
 
+    // The radar's base map (the Night look; Ink is made from it on the
+    // device): `local/maps/radar-night-480x462.rgb`, made by
+    // `RADAR_DEVICE=1 tools/mockups/radar_basemaps.py` from Natural Earth
+    // (`local/` is never committed), else a plain stand-in. Packed at the
+    // screen's depth (5, 6, 5 bits a plane), Paeth, zlib.
+    let map_src = Path::new(&dir).join("../../local/maps/radar-night-480x462.rgb");
+    watch_local(&map_src);
+    let map = match std::fs::read(&map_src) {
+        Ok(m) if m.len() == W * MAP_H * 3 => m,
+        _ => stand_in_map(),
+    };
+    let packed = pack_map(&map);
+    println!(
+        "cargo:warning=radar map packed {} -> {} bytes",
+        map.len(),
+        packed.len()
+    );
+    std::fs::write(Path::new(&out).join("radar.zz"), packed).expect("OUT_DIR writable");
+
     // The weather pictures: `local/icons/icons.rs` (made by
     // `tools/shell-assets/icons.py` from assets/weather/vclouds; `local/` is
     // never committed) or, when absent, empty pictures: the screen then
@@ -161,6 +180,34 @@ fn pack_wallpaper(wall: &[u8]) -> Vec<u8> {
     f.extend(rp_inflate::pack::paeth_filter(u, W / 2, H / 2));
     f.extend(rp_inflate::pack::paeth_filter(v, W / 2, H / 2));
     rp_inflate::pack::zlib(&f)
+}
+
+/// The radar map's rows (the Weather app's page).
+const MAP_H: usize = 462;
+
+/// The map's R, G and B planes at 5, 6 and 5 bits, each Paeth-filtered,
+/// then zlib: what `rp_today::unpack_map` undoes.
+fn pack_map(rgb: &[u8]) -> Vec<u8> {
+    let mut f = Vec::new();
+    for (c, shift) in [(0, 3), (1, 2), (2, 3)] {
+        let plane: Vec<u8> = rgb.chunks(3).map(|p| p[c] >> shift).collect();
+        f.extend(rp_inflate::pack::paeth_filter(&plane, W, MAP_H));
+    }
+    rp_inflate::pack::zlib(&f)
+}
+
+/// A plain map when the real one isn't built: water with a coast running
+/// down the middle (CI, and anyone without the map data).
+fn stand_in_map() -> Vec<u8> {
+    let mut m = Vec::with_capacity(W * MAP_H * 3);
+    for y in 0..MAP_H {
+        for x in 0..W {
+            let coast = 200 + (y * 7 % 60);
+            let p = if x > coast { [34, 40, 46] } else { [6, 14, 24] };
+            m.extend(p);
+        }
+    }
+    m
 }
 
 /// A dusk sky as planar 4:2:0: deep blue at the top to warm low light.

@@ -253,3 +253,41 @@ fn a_secret_is_never_shown_or_debugged_in_full() {
     assert!(Secret::new(&[b'a'; KEY_MAX + 1]).is_none());
     assert!(Secret::new(&[b'a'; KEY_MAX]).is_some());
 }
+
+#[test]
+fn rain_cells_are_clear_at_their_edges_heavy_inside_and_every_step_used() {
+    use crate::radar::{ALPHA, CELLS, STEPS, cell};
+    let mut seen = [false; 5];
+    for (k, &(w, h)) in CELLS.iter().enumerate() {
+        let mut px = vec![0u32; usize::from(w) * usize::from(h)];
+        cell(&mut px, k);
+        let (w, h) = (usize::from(w), usize::from(h));
+        for x in 0..w {
+            assert_eq!(px[x], 0, "cell {k}: top edge clear");
+            assert_eq!(px[(h - 1) * w + x], 0, "cell {k}: bottom edge clear");
+        }
+        assert_ne!(px[h / 2 * w + w / 2], 0, "cell {k}: rain at the centre");
+        for p in &px {
+            if *p != 0 {
+                assert_eq!(p >> 24, ALPHA);
+                let i = STEPS.iter().position(|(c, _)| *c == p & 0xFF_FFFF);
+                seen[i.expect("one of the steps")] = true;
+            }
+        }
+        // Too small a buffer: left alone.
+        let mut short = vec![7u32; 10];
+        cell(&mut short, k);
+        assert!(short.iter().all(|&p| p == 7));
+    }
+    assert!(seen.iter().all(|&s| s), "every step appears: {seen:?}");
+}
+
+#[test]
+fn the_loop_moves_each_cell_with_the_wind_through_now() {
+    use crate::radar::{FRAMES, NOW_FRAME, TRACKS};
+    for t in TRACKS {
+        assert_eq!(t.at(NOW_FRAME), t.at);
+        let (a, b) = (t.at(0), t.at(FRAMES - 1));
+        assert!(b.0 > a.0 && b.1 < a.1, "east and north: {a:?} {b:?}");
+    }
+}

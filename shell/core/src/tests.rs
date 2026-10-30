@@ -725,9 +725,11 @@ fn tabs_turn_by_tap_d_pad_and_swipe_and_stop_at_the_ends() {
     let mut s = weather(0);
     s.input(Input::Key(Key::Right));
     assert_eq!(s.weather_page().0, 1);
-    s.input(Input::Key(Key::Right));
-    s.input(Input::Key(Key::Right));
-    assert_eq!(s.weather_page().0, 2);
+    for _ in 0..3 {
+        s.input(Input::Key(Key::Right));
+    }
+    assert_eq!(s.weather_page().0, weather_app::RADAR, "the last page");
+    s.input(Input::Key(Key::Left));
     s.input(Input::Key(Key::Left));
     assert_eq!(s.weather_page().0, 1);
     // A swipe left on the page turns forward; a short one is a tap.
@@ -1095,6 +1097,7 @@ fn pictures_replace_the_outlines_and_still_fit_a_frame() {
             hero: Some(&PIC),
             card: [Some(&PIC); 22],
             row: [Some(&PIC); 22],
+            radar: [Some(&PIC); 3],
         },
         true,
     );
@@ -1174,4 +1177,70 @@ fn every_notice_shown_is_listed() {
             assert!(NOTICES.contains(&n.as_str()), "{n} not listed");
         }
     }
+}
+
+#[test]
+fn the_radar_loops_its_frames_and_holds_on_the_last() {
+    use rp_weather::radar::FRAMES;
+    let mut s = weather(weather_app::RADAR);
+    s.set_time(Time {
+        hour: 12,
+        ..Time::default()
+    });
+    assert_eq!(s.backdrop(), Some(true), "noon: Ink under the page");
+    s.set_time(Time {
+        hour: 22,
+        ..Time::default()
+    });
+    assert_eq!(s.backdrop(), Some(false), "night: Night");
+    s.radar_frame = 0;
+    s.radar_at = 10_000;
+    s.tick(10_000);
+    s.tick(10_399);
+    assert_eq!(s.radar_frame, 0);
+    assert_eq!(s.tick(10_400), Action::Redraw);
+    assert_eq!(s.radar_frame, 1);
+    let mut t = 10_400;
+    while s.radar_frame < FRAMES - 1 {
+        t += 400;
+        s.tick(t);
+    }
+    // The last frame holds longer, then the loop starts again.
+    s.tick(t + 1_000);
+    assert_eq!(s.radar_frame, FRAMES - 1);
+    s.tick(t + 1_200);
+    assert_eq!(s.radar_frame, 0);
+    // Night by the setting; nothing under any other page.
+    s.wset.radar = rp_weather::settings::RadarMap::Night;
+    assert_eq!(s.backdrop(), Some(false));
+    s.set_tab(0);
+    assert_eq!(s.backdrop(), None);
+}
+
+#[test]
+fn the_radar_timeline_picks_a_frame_and_play_pauses() {
+    use rp_weather::radar::{FRAMES, NOW_FRAME};
+    let mut s = weather(weather_app::RADAR);
+    let tl = weather_app::TIMELINE;
+    // The track's middle is now; its ends the first and last frames.
+    for (x, want) in [
+        (96 + 176, NOW_FRAME),
+        (96, 0),
+        (tl.x + tl.w - 1, FRAMES - 1),
+    ] {
+        tap(&mut s, Rect::new(x, tl.y + 40, 1, 1));
+        assert_eq!(s.radar_frame, want, "x {x}");
+        assert!(!s.radar_play, "a pick pauses");
+    }
+    s.tick(50_000);
+    s.tick(60_000);
+    assert_eq!(s.radar_frame, FRAMES - 1, "paused: it stays");
+    tap_t(&mut s, Target::Play);
+    assert!(s.radar_play);
+    // A vertical stroke on the map moves nothing.
+    s.input(Input::PenDown { x: 240, y: 300 });
+    s.input(Input::PenMove { x: 240, y: 380 });
+    s.input(Input::PenUp { x: 240, y: 380 });
+    assert_eq!(s.weather_page(), (weather_app::RADAR, 0));
+    assert!(!drawn(&mut s).overflowed());
 }

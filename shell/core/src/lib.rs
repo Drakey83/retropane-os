@@ -60,6 +60,8 @@ pub struct Icons {
     pub card: [Option<&'static Image>; 22],
     /// The Weather app's rows (40 px).
     pub row: [Option<&'static Image>; 22],
+    /// The radar's rain cells ([`rp_weather::radar::CELLS`]), made at start.
+    pub radar: [Option<&'static Image>; 3],
 }
 
 impl Icons {
@@ -68,6 +70,7 @@ impl Icons {
         hero: None,
         card: [None; 22],
         row: [None; 22],
+        radar: [None; 3],
     };
 }
 
@@ -201,6 +204,10 @@ pub enum Target {
     Row(u8),
     /// A key of the on-screen keyboard.
     Cap(u8),
+    /// The radar's play and pause.
+    Play,
+    /// The radar's timeline (a tap picks the frame).
+    Timeline,
 }
 
 // ---- Layout (480 x 640, portrait) --------------------------------------
@@ -381,6 +388,11 @@ pub struct Shell {
     /// The keyboard's shift, and whether the key is shown as typed.
     shift: bool,
     show_key: bool,
+    /// The radar loop: the frame shown, whether it plays, when it last
+    /// moved on (ms).
+    radar_frame: u8,
+    radar_play: bool,
+    radar_at: u32,
 }
 
 impl Shell {
@@ -414,6 +426,9 @@ impl Shell {
             typed_n: 0,
             shift: false,
             show_key: false,
+            radar_frame: 0,
+            radar_play: true,
+            radar_at: 0,
         };
         s.dirty(Rect::new(0, 0, W, H));
         s
@@ -567,6 +582,8 @@ impl Shell {
             Target::Hero => HERO,
             Target::Tab(i) => weather_app::tab_rect(i),
             Target::Back | Target::Row(_) | Target::Cap(_) => self.settings_rect(t),
+            Target::Play => weather_app::PLAY,
+            Target::Timeline => weather_app::TIMELINE,
         }
     }
 
@@ -581,6 +598,7 @@ impl Shell {
             _ => (0, 0, 0),
         };
         let back = u8::from(self.screen != Screen::Today);
+        let radar = u8::from(self.screen == Screen::Weather && self.tab == weather_app::RADAR);
         let caps = if self.screen == Screen::KeyEntry {
             weather_settings::CAPS
         } else {
@@ -594,6 +612,7 @@ impl Shell {
             .chain((0..tabs).map(Target::Tab))
             .chain((0..self.rows()).map(Target::Row))
             .chain((0..caps).map(Target::Cap))
+            .chain((0..radar).flat_map(|_| [Target::Play, Target::Timeline]))
             .chain([Target::SoftLeft, Target::SoftRight])
             // With the menu open only Start (to close it) and the menu act.
             .filter(|t| !self.menu_open || *t == Target::Start);
@@ -609,6 +628,9 @@ impl Shell {
     /// notice past its time goes.
     pub fn tick(&mut self, now_ms: u32) -> Action {
         self.now = now_ms;
+        if self.radar_step(now_ms) && self.anim.is_none() && self.notice.is_none() {
+            return Action::Redraw;
+        }
         if self.screen == Screen::Weather && self.scroll.step(now_ms) {
             self.dirty(weather_app::PAGE);
             if self.anim.is_none() && self.notice.is_none() {
@@ -732,6 +754,17 @@ impl Shell {
             Target::Back => self.go_back(),
             Target::Row(i) => self.row_tapped(i),
             Target::Cap(i) => self.cap_tapped(i),
+            Target::Play => {
+                self.radar_play = !self.radar_play;
+                self.radar_at = self.now;
+                self.dirty(weather_app::PAGE);
+            }
+            Target::Timeline => {
+                // A pick by the D-pad's Enter keeps the frame; a tap's x is
+                // taken in `PenUp`.
+                self.radar_play = false;
+                self.dirty(weather_app::PAGE);
+            }
             Target::Menu(i) => {
                 let label = self.menu_label(i);
                 if label == BACK_TO_LOADER {
@@ -805,7 +838,11 @@ impl Shell {
             Gesture::None => {}
             Gesture::Pending { x0, y0 } => {
                 let (dx, dy) = (i32::from(x) - i32::from(x0), i32::from(y) - i32::from(y0));
-                if dy.abs() >= SLOP && dy.abs() >= dx.abs() {
+                if dy.abs() >= SLOP && dy.abs() >= dx.abs() && self.tab == weather_app::RADAR {
+                    // The map doesn't scroll: a stroke there is nothing.
+                    self.gesture = Gesture::None;
+                    self.scroll.release(self.now);
+                } else if dy.abs() >= SLOP && dy.abs() >= dx.abs() {
                     self.gesture = Gesture::Scroll;
                     self.set_pressed(None);
                     self.scroll_to_pen(y);
@@ -980,6 +1017,9 @@ impl Shell {
                 }
                 let t = self.pressed;
                 self.set_pressed(None);
+                if t == Some(Target::Timeline) && weather_app::TIMELINE.contains_point(x, y) {
+                    self.radar_frame = weather_app::frame_at(x);
+                }
                 match t {
                     Some(t) if self.rect_of(t).contains_point(x, y) => self.activate(t),
                     _ => Action::Nothing,

@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 rp-draw = { path = "../../drivers/draw" }
 rp-shell = { path = "../core" }
+rp-weather = { path = "../weather" }
 # Also on the host: the emulator check builds its reference screen with
 # the same set-up code (`show`).
 rp-hal-api = { path = "../../hal/api" }

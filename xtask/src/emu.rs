@@ -11192,7 +11192,21 @@ const fn rp_mbx_blend_tries() -> usize {
 /// folder (Cargo's layout is `build/rp-today-<hash>/out` or, newer,
 /// `build/rp-today/<hash>/out`: both are searched).
 pub(crate) fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
-    fn find(dir: &Path, depth: u32, in_today: bool, out: &mut Vec<PathBuf>) {
+    today_output(release, "wallpaper.yuv")
+}
+
+/// The radar map rp-today was built with, unpacked as the image unpacks
+/// it (`radar.zz` beside the wallpaper), or `None` if it isn't there.
+pub(crate) fn today_map(release: &Path) -> Option<Vec<u8>> {
+    let packed = today_output(release, "radar.zz").ok()?;
+    let mut map = vec![0u8; rp_today::MAP_BYTES];
+    rp_today::unpack_map(&packed, &mut map).ok()?;
+    Some(map)
+}
+
+/// The newest `name` among rp-today's build outputs.
+fn today_output(release: &Path, name: &str) -> Result<Vec<u8>, String> {
+    fn find(dir: &Path, depth: u32, in_today: bool, name: &str, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
@@ -11200,18 +11214,18 @@ pub(crate) fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
             let p = e.path();
             let today = in_today || e.file_name().to_string_lossy().starts_with("rp-today");
             if p.is_dir() && depth > 0 {
-                find(&p, depth - 1, today, out);
-            } else if today && e.file_name() == "wallpaper.yuv" {
+                find(&p, depth - 1, today, name, out);
+            } else if today && e.file_name() == name {
                 out.push(p);
             }
         }
     }
     let mut found = Vec::new();
-    find(&release.join("build"), 4, false, &mut found);
+    find(&release.join("build"), 4, false, name, &mut found);
     let newest = found
         .into_iter()
         .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
-        .ok_or("today: no wallpaper.yuv from rp-today's build")?;
+        .ok_or_else(|| format!("today: no {name} from rp-today's build"))?;
     std::fs::read(&newest).map_err(|e| format!("{}: {e}", newest.display()))
 }
 
@@ -11223,7 +11237,12 @@ pub(crate) fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
 /// arbitrary: the check masks it. `settle` ends any movement before each
 /// picture (the preview's pictures show pages in place; the emulator check
 /// keeps the image's own timing).
-pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input], settle: bool) -> Vec<Vec<u8>> {
+pub(crate) fn today_screens(
+    wall: &[u8],
+    map: Option<&[u8]>,
+    steps: &[rp_shell::Input],
+    settle: bool,
+) -> Vec<Vec<u8>> {
     use rp_draw::{Frame, Renderer};
     use rp_mbx_render::model::{self, Bus, Mem};
     use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
@@ -11247,6 +11266,7 @@ pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input], settle: bool
     });
     let mut frame = Frame::new();
     let mut screens = Vec::new();
+    let mut shown = None;
     for step in std::iter::once(None).chain(steps.iter().map(Some)) {
         if let Some(&e) = step {
             shell.input(e);
@@ -11254,6 +11274,7 @@ pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input], settle: bool
         if settle {
             shell.settle();
         }
+        backdrop(&mut gpu, &shell, wall, map, &mut shown);
         shell.frame(&mut frame);
         gpu.draw(&frame);
         while !gpu.poll() {}
@@ -11277,6 +11298,7 @@ pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input], settle: bool
 /// For the preview's moving pictures; the device runs the same frames.
 pub(crate) fn today_motion(
     wall: &[u8],
+    map: Option<&[u8]>,
     steps: &[rp_shell::Input],
     every_ms: u32,
     n: u32,
@@ -11303,7 +11325,9 @@ pub(crate) fn today_motion(
         month: 10,
     });
     let mut frame = Frame::new();
+    let mut shown = None;
     let mut show = |shell: &mut rp_shell::Shell| {
+        backdrop(&mut gpu, shell, wall, map, &mut shown);
         shell.frame(&mut frame);
         gpu.draw(&frame);
         while !gpu.poll() {}
@@ -11336,12 +11360,39 @@ pub(crate) fn today_motion(
         .collect()
 }
 
-/// The Today image's pictures, unpacked on the PC as the image unpacks them.
+/// The Today image's pictures, unpacked on the PC as the image unpacks them,
+/// and the radar's rain cells drawn as it draws them.
 fn today_icons() -> rp_shell::Icons {
-    rp_today::icons_into(
+    let mut icons = rp_today::icons_into(
         Box::leak(vec![0; rp_today::ICON_WORDS].into_boxed_slice()),
         Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::ICON_COUNT])),
-    )
+    );
+    icons.radar = rp_today::radar_into(
+        Box::leak(vec![0; rp_today::RADAR_WORDS].into_boxed_slice()),
+        Box::leak(Box::new([rp_today::NO_IMAGE; 3])),
+    );
+    icons
+}
+
+/// The radar's map under the Weather page while Radar is open, the
+/// wallpaper after, as the image does (`rp_today::show_backdrop`).
+fn backdrop(
+    gpu: &mut rp_mbx_render::Mbx2dRenderer<rp_mbx_render::model::Bus, rp_mbx_render::model::Mem>,
+    shell: &rp_shell::Shell,
+    wall: &[u8],
+    map: Option<&[u8]>,
+    shown: &mut Option<bool>,
+) {
+    let want = shell.backdrop().filter(|_| map.is_some());
+    if want != *shown {
+        rp_today::show_backdrop(
+            gpu,
+            wall,
+            want.zip(map).map(|(ink, m)| (m, ink)),
+            &mut rp_today::WallScratch::new(),
+        );
+        *shown = want;
+    }
 }
 
 /// A screen pixel (RGB565) as the emulator's screendump shows it: each
@@ -11472,10 +11523,12 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     crate::sdkit::raw_binary(&release.join("rp-today"), &bin)?;
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let wall = today_wallpaper(&release)?;
+    let map = today_map(&release);
     let start = rp_shell::START;
     let (sx, sy) = (start.x + start.w / 2, start.y + start.h / 2);
     let want = today_screens(
         &wall,
+        map.as_deref(),
         &[
             Input::PenDown { x: sx, y: sy },
             Input::PenUp { x: sx, y: sy },
