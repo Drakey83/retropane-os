@@ -657,15 +657,18 @@ const SLOTS_AT: u32 = 256;
 const SLOT_BYTES: u32 = 256;
 /// The underlay's object ([`Renderer::set_underlay`]), a slot's size.
 const UNDER_AT: u32 = SLOTS_AT + MAX_SLOTS as u32 * SLOT_BYTES;
-const ARENA_AT: u32 = UNDER_AT + SLOT_BYTES;
+/// The overlay's object ([`Renderer::set_overlay`]), a slot's size.
+const OVER_AT: u32 = UNDER_AT + SLOT_BYTES;
+const ARENA_AT: u32 = OVER_AT + SLOT_BYTES;
 /// Object lists kept for reuse: more than a frame's distinct sets of quads
 /// (GC2CP's game frames: 123-142 at 480 x 640 and 480 x 320, counted from
 /// their meshes; the depth frame's 14 past 128 were written again on each
 /// of their tiles, 336 lists and 7,218 words a frame on the X51v). Past it,
 /// a list is evicted in turn (its words stay where they are).
 const LISTS: usize = 192;
-/// The longest list: the background, two triangles a slot, the end.
-const LIST_MAX: usize = 4 + 2 * MAX_SLOTS;
+/// The longest list: the background, the underlay, two triangles a slot,
+/// the overlay, the end.
+const LIST_MAX: usize = 6 + 2 * MAX_SLOTS;
 /// Words of a slot's two objects, at most.
 const SLOT_WORDS: usize = 2 * tex::WORDS;
 const _: () = assert!(SLOT_WORDS * 4 <= SLOT_BYTES as usize);
@@ -1190,6 +1193,10 @@ pub struct Renderer {
     /// every tile ([`Self::set_underlay`]): its object's kind once written.
     underlay: bool,
     under_kind: Kind,
+    /// An alpha-0 full-screen quad blended over the scene in every tile
+    /// ([`Self::set_overlay`]): its object's kind once written.
+    overlay: bool,
+    over_kind: Kind,
     slots: [Slot; MAX_SLOTS],
     dirty: Tiles,
     /// Tiles changed since the other picture was last rendered.
@@ -1385,6 +1392,8 @@ impl Renderer {
             bg_stale: true,
             underlay: false,
             under_kind: Kind::Empty,
+            overlay: false,
+            over_kind: Kind::Empty,
             slots: [Slot::default(); MAX_SLOTS],
             dirty,
             other: Tiles::new(),
@@ -1749,8 +1758,10 @@ impl Renderer {
     /// game frames, 0 of 100 flat renders (gpubench-0230); the background
     /// listed twice didn't quite (2 of 100, gpubench-0231). The picture is
     /// the same; it costs ~0.1-1.1 ms a frame there. Only with a background.
-    /// Changing it forgets the cached lists and redraws everything. Refused
-    /// while a render is in flight.
+    /// Changing it rewrites the lists but redraws nothing (the picture is
+    /// the same, so a tile drawn without it needn't be drawn again; the
+    /// graphics service switches it per render target). Refused while a
+    /// render is in flight.
     pub fn set_underlay(&mut self, on: bool) -> Result<(), Error> {
         if self.pending.is_some() {
             return Err(Error::Busy);
@@ -1759,7 +1770,6 @@ impl Renderer {
             self.underlay = on;
             self.bg_stale = true;
             self.forget_lists();
-            self.invalidate_all();
         }
         Ok(())
     }
@@ -1768,6 +1778,39 @@ impl Renderer {
     #[must_use]
     pub const fn underlay(&self) -> bool {
         self.underlay
+    }
+
+    /// Blends a full-screen quad of alpha 0 over the scene in every tile it
+    /// renders (R121, `docs/research/sheets/r121-divide1-display-on.md`;
+    /// the owner's pick 2026-10-30 over R120's speed switch): at divide 1
+    /// (143.00 / 1 on the X51v) with the display scanning out, a render
+    /// into SDRAM still misses a pixel of a tile's last row now and then
+    /// with the underlay alone (2 of 100 light frames, gpubench-0238); this
+    /// quad (the same object as a full-screen [`Draw::rect`] of
+    /// `Paint::Flat(0)` drawn [`Draw::over`] in the last slot) paces the
+    /// tile's write-out, and with the underlay every render was right: 0 of
+    /// 400 (gpubench-0239), 0 of 32,592 in an hour (gpubench-0241), each
+    /// light frame ~8.7 ms where the divide-2 switch took 9.2-11.3. The
+    /// picture is the same (alpha 0 leaves every pixel as it was). Unlike
+    /// the underlay it is drawn without a background too. Changing it
+    /// rewrites the lists but redraws nothing: a render that changes no
+    /// tile draws none. Refused while a render is in flight.
+    pub fn set_overlay(&mut self, on: bool) -> Result<(), Error> {
+        if self.pending.is_some() {
+            return Err(Error::Busy);
+        }
+        if on != self.overlay {
+            self.overlay = on;
+            self.bg_stale = true;
+            self.forget_lists();
+        }
+        Ok(())
+    }
+
+    /// Whether the overlay is drawn ([`Self::set_overlay`]).
+    #[must_use]
+    pub const fn overlay(&self) -> bool {
+        self.overlay
     }
 
     /// Where the parameter memory moves if a frame's lists outgrow it
@@ -2194,6 +2237,16 @@ impl Renderer {
                 }
             }
         }
+        if self.overlay {
+            let d = Draw::rect(0, 0, i32::from(self.w), i32::from(self.h), Paint::Flat(0)).over();
+            let (words, n, kind) = self.object_words(&d);
+            mem.store((self.params.at + OVER_AT) as usize, &words[..n]);
+            self.mem_words += n as u32;
+            if kind != self.over_kind {
+                self.over_kind = kind;
+                self.forget_lists();
+            }
+        }
         self.bg_stale = false;
     }
 
@@ -2366,6 +2419,16 @@ impl Renderer {
                 w[n + 1] = flags | (base + words);
             }
             n += objs as usize;
+        }
+        if self.overlay && self.over_kind != Kind::Empty {
+            let (flags, words, objs) = self.over_kind.strip();
+            let base = OVER_AT / 4;
+            w[n] = flags | base;
+            if objs == 2 {
+                w[n + 1] = flags | (base + words);
+            }
+            n += objs as usize;
+            cost += quad_cost(None, true);
         }
         n += 1; // the end word
         let at = self.arena;

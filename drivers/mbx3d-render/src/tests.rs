@@ -492,6 +492,86 @@ fn depth_larger_z_is_nearer() {
 }
 
 #[test]
+fn the_overlay_is_an_alpha_0_slot_quad_over_the_scene_listed_last_and_redraws_nothing() {
+    // R121 (gpubench-0239, -0241): an alpha-0 full-screen quad blended over
+    // the scene, with the underlay, cures divide 1's write-out fault into
+    // SDRAM with the display on. The renderer's overlay must be that very
+    // object (the full-screen rect a slot holds, drawn over), listed last
+    // in every tile, after the underlay and the scene; the picture must
+    // not change; switching it must redraw nothing by itself; its cost
+    // must count in the prediction.
+    let mut g = rig(480, 640);
+    g.set(0, Some(square(40, 40, 200, Paint::Flat(BLUE))));
+    g.set(1, Some(square(300, 400, 120, Paint::Flat(RED))));
+    let sample = |g: &Rig| -> Vec<u32> {
+        (0..640)
+            .step_by(7)
+            .flat_map(|y| (0..480).step_by(5).map(move |x| (x, y)))
+            .map(|(x, y)| g.px(x, y))
+            .collect()
+    };
+    let plain = g.frame();
+    let want = sample(&g);
+    g.r.set_overlay(true).unwrap();
+    assert!(g.r.overlay());
+    let r = g.r.render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL);
+    assert_eq!(r, Ok(None), "switching the overlay on redraws nothing by itself");
+    g.r.set_underlay(true).unwrap();
+    let on = g.frame();
+    assert_eq!(sample(&g), want, "the same picture");
+    assert_eq!(on.tiles, plain.tiles);
+    assert!(
+        on.predicted_us > plain.predicted_us,
+        "the overlay's blend counts: {} against {}",
+        on.predicted_us,
+        plain.predicted_us
+    );
+    let base = rp_vram_map::PARAMS.at;
+    let load = |m: &Mem, at: u32| -> Vec<u32> {
+        (0..SLOT_WORDS as u32)
+            .map(|w| m.load(at as usize + 4 * w as usize).unwrap())
+            .collect()
+    };
+    let over = load(&g.mem, base + OVER_AT);
+    // The object a slot holds for the same rect drawn over, word for word.
+    let mut s = rig(480, 640);
+    s.set(5, Some(Draw::rect(0, 0, 480, 640, Paint::Flat(0)).over()));
+    let _ = s.frame();
+    let slot = load(&s.mem, base + SLOTS_AT + 5 * SLOT_BYTES);
+    let n = slot.iter().rposition(|&w| w != 0).map_or(0, |k| k + 1);
+    assert!(n > 0);
+    assert_eq!(over[..n], slot[..n], "the overlay is a full-screen slot quad, drawn over");
+    // A tile's list: the background, the underlay, the scene, the overlay,
+    // the end (the arena's first list is the first tile's: the background
+    // alone with the two extra objects).
+    let lists = (base + ARENA_AT) as usize;
+    let words: Vec<u32> = (0..8).map(|i| g.mem.load(lists + 4 * i).unwrap()).collect();
+    let end = words.iter().position(|&w| w == m3::END).expect("an end word");
+    assert_eq!(words[0] & 0x001F_FFFF, BG_AT / 4, "the background first");
+    assert_eq!(words[1] & 0x001F_FFFF, UNDER_AT / 4, "the underlay second");
+    assert!(
+        (OVER_AT / 4..ARENA_AT / 4).contains(&(words[end - 1] & 0x001F_FFFF)),
+        "the overlay last"
+    );
+    // Without a background the overlay is still listed (the underlay
+    // isn't: it is the background's colour).
+    g.r.set_background(None).unwrap();
+    g.r.invalidate_all();
+    let _ = g.frame();
+    let first = g.mem.load(lists).unwrap();
+    assert_eq!(first & 0x001F_FFFF, OVER_AT / 4, "the overlay alone in an empty tile");
+    // Off again: nothing redrawn, and no overlay listed.
+    g.r.set_overlay(false).unwrap();
+    assert!(!g.r.overlay());
+    let r = g.r.render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL);
+    assert_eq!(r, Ok(None), "switching it off redraws nothing by itself");
+    g.r.invalidate_all();
+    let _ = g.frame();
+    let first = g.mem.load(lists).unwrap();
+    assert_ne!(first & 0x001F_FFFF, OVER_AT / 4, "no overlay listed when off");
+}
+
+#[test]
 fn the_underlay_is_a_full_screen_slot_quad_under_the_scene_and_changes_no_pixel() {
     // R118 (gpubench-0230): a full-screen quad of the background's colour
     // under the scene cures divide 1's last-rows fault into SDRAM. The
@@ -512,6 +592,9 @@ fn the_underlay_is_a_full_screen_slot_quad_under_the_scene_and_changes_no_pixel(
     let want = sample(&g);
     g.r.set_underlay(true).unwrap();
     assert!(g.r.underlay());
+    let r = g.r.render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL);
+    assert_eq!(r, Ok(None), "switching the underlay redraws nothing by itself");
+    g.r.invalidate_all();
     let on = g.frame();
     assert_eq!(sample(&g), want, "the same picture");
     let base = rp_vram_map::PARAMS.at;
@@ -550,6 +633,7 @@ fn the_underlay_is_a_full_screen_slot_quad_under_the_scene_and_changes_no_pixel(
     assert_eq!(first & 0x001F_FFFF, BG_AT / 4, "the background first");
     assert_eq!(second & 0x001F_FFFF, UNDER_AT / 4, "the underlay second");
     g.r.set_underlay(false).unwrap();
+    g.r.invalidate_all();
     let off = g.frame();
     assert_eq!(sample(&g), want);
     assert_eq!(on.tiles, off.tiles, "every tile drawn again each time");

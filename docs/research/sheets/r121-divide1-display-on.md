@@ -72,3 +72,18 @@ display's reads.
   16,572 round trips wrong; the overlay (R121S, gpubench-0241) 0 of
   32,592 renders wrong, no underruns.
 - The owner picks which ships.
+
+## The owner's pick (2026-10-30 morning): "Invisible layer"
+Built (knob off until a divide-1 rung ships, ADR-0035 amendment D):
+- `Renderer::set_overlay(on)`: the alpha-0 full-screen quad, drawn over,
+  listed last in every tile (after the underlay and the scene), drawn
+  with or without a background, its blend counted in the prediction.
+  Switching it (and now the underlay) rewrites the lists and redraws
+  nothing: the picture is the same, and ADR-0026 rule 1 renders only
+  changed tiles.
+- `Graphics::sdram_cures(on)`: both cures on for each render into screen
+  1 (SDRAM), off for each into screen 0 (on die, where the overlay would
+  cost ~3 ms for nothing).
+- **Owed:** the device check through the service at 143.00 / 1 with
+  fallback frames forced, every frame checked (the proven-on-hardware
+  rule); it needs the owner's go.

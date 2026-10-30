@@ -687,6 +687,42 @@ fn band() -> (u32, u32) {
 }
 
 #[test]
+fn the_divide_1_cures_are_on_for_renders_into_screen_1_alone_and_off_by_default() {
+    // R121 (the owner's pick 2026-10-30): at divide 1 a render into SDRAM
+    // (screen 1, the copy fallback) needs the underlay and the alpha-0
+    // overlay; a render into screen 0 (on die) needs neither, and the
+    // overlay would cost ~3 ms there. The pictures are the same either way.
+    for on in [false, true] {
+        let mut r = rig();
+        let (c, tex) = scene(&mut r);
+        copies_timed(&mut r);
+        r.g.sdram_cures(on);
+        let (mut aside, mut behind) = (0, 0);
+        for k in 0..12 {
+            let f = if k == 0 {
+                moved(&mut r, c, tex, 4, WHITE)
+            } else {
+                scene_only(&mut r, c, tex, 4 + 2 * k)
+            };
+            let before = r.g.starts();
+            assert_eq!(r.frame(&f), Step::Shown, "frame {k}");
+            let after = r.g.starts();
+            let (under, over) = (scene_r(&mut r).underlay(), scene_r(&mut r).overlay());
+            if after.screen1 > before.screen1 {
+                assert_eq!((under, over), (on, on), "frame {k}: into screen 1");
+                aside += 1;
+            } else {
+                assert_eq!(after.behind, before.behind + 1, "frame {k}");
+                assert_eq!((under, over), (false, false), "frame {k}: into screen 0");
+                behind += 1;
+            }
+            both_hold(&r, 4 + 2 * k, WHITE, "frame");
+        }
+        assert!(aside >= 1 && behind >= 9, "{aside} {behind}");
+    }
+}
+
+#[test]
 fn frames_the_scan_can_lead_start_behind_it_and_never_tear() {
     let mut r = rig();
     let (c, tex) = scene(&mut r);

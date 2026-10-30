@@ -361,6 +361,8 @@ pub struct Graphics<'a, R, M> {
     /// R116: the next scene's parameter memory on die (spilling to SDRAM
     /// if a frame's lists outgrow it), else in SDRAM.
     lists_on_die: bool,
+    /// R119/R121: the divide-1 cures on renders into screen 1 (SDRAM).
+    sdram_cures: bool,
     starts: Starts,
     /// Tests: the copy (1 = the next) before which the hook runs (it makes
     /// the model engine stall).
@@ -390,6 +392,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             copies: Schedule::new(),
             screen1_3d: true,
             lists_on_die: true,
+            sdram_cures: false,
             starts: Starts {
                 behind: 0,
                 held: 0,
@@ -434,6 +437,20 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// Takes effect at the next `open_scene`.
     pub fn lists_on_die(&mut self, on: bool) {
         self.lists_on_die = on;
+    }
+
+    /// The divide-1 cures on R20's fallback renders into screen 1 (SDRAM):
+    /// the underlay (R118/R119) and the alpha-0 overlay (R121, the owner's
+    /// pick 2026-10-30 over R120's speed switch), switched on for each
+    /// render into screen 1 and off for each into screen 0 (on die, where
+    /// neither is needed and the overlay would cost ~3 ms). At 143.00 / 1
+    /// with the display scanning out, renders into SDRAM with both were
+    /// right 32,592 times in an hour (gpubench-0241). Off by default:
+    /// ADR-0035 holds the divide-1 rungs (amendment D); whoever sets a
+    /// divide-1 rung above 74.75 MHz turns it on. Switching redraws
+    /// nothing (the picture is the same).
+    pub fn sdram_cures(&mut self, on: bool) {
+        self.sdram_cures = on;
     }
 
     /// Times the open scene's lists outgrew the on die and moved to SDRAM.
@@ -553,6 +570,14 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             );
         }
         scan::copy_window(&scan, band, &spans[..rects.len()])
+    }
+
+    /// The divide-1 cures for the next render: on into screen 1 when
+    /// [`Self::sdram_cures`] is on, else off (the renderer is idle here:
+    /// a frame's render starts only with none in flight).
+    fn cures(s: &mut Scene, on: bool) {
+        let _ = s.r.set_underlay(on);
+        let _ = s.r.set_overlay(on);
     }
 
     /// The scene's target: its area of the picture at `at`.
@@ -999,6 +1024,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) else {
             return Step::Idle;
         };
+        Self::cures(s, false);
         let target = Self::target(s, safe);
         let (e, mem) = self.two_d.parts();
         let prepared = match s.r.prepare(&mut e.regs, mem, clock, target) {
@@ -1025,6 +1051,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) else {
             return Step::Idle;
         };
+        Self::cures(s, self.sdram_cures);
         let target = Self::target(s, other);
         let (e, mem) = self.two_d.parts();
         let t0 = clock.now_us();
@@ -1300,6 +1327,9 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     self.job = Job::None;
                     return Step::Shown;
                 };
+                if !prepared {
+                    Self::cures(s, false);
+                }
                 let target = Self::target(s, safe);
                 let (e, mem) = self.two_d.parts();
                 let t0 = clock.now_us();
