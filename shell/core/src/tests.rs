@@ -283,7 +283,36 @@ fn incremental_frames_match_full_redraws() {
         seed
     };
     let mut now = 0;
+    // Every text run of the whole scene, placed: one that appears (new
+    // words, or old ones moved) must lie inside what the frame marks
+    // changed, even where the test font draws no pixels for it (the
+    // key-entry count once didn't, 2026-10-30).
+    let placed = |s: &Shell| {
+        let mut g = Frame::new();
+        s.scene(&mut g);
+        g.cmds_clipped()
+            .filter_map(|(c, clip)| match *c {
+                Cmd::Text {
+                    x, baseline, text, ..
+                } => {
+                    // The line box, without the bounds' 4 px overhang
+                    // margin, inside its clip (what can show).
+                    let b = c.bounds(&g);
+                    let b = Rect::new(
+                        b.x + 4,
+                        b.y + 4,
+                        b.w.saturating_sub(8),
+                        b.h.saturating_sub(8),
+                    )
+                    .intersect(&clip);
+                    Some((x, baseline, g.text_of(text).to_vec(), b))
+                }
+                _ => None,
+            })
+            .collect::<std::vec::Vec<_>>()
+    };
     for step in 0..300 {
+        let before = placed(&s);
         let r = next();
         let (x, y) = ((r % u32::from(W)) as u16, ((r >> 10) % u32::from(H)) as u16);
         match r % 7 {
@@ -310,6 +339,28 @@ fn incremental_frames_match_full_redraws() {
                 now += 700;
                 s.tick(now);
             }
+            // Into the Weather app's lower screens and their keys (the
+            // key-entry count once sat outside what it marked changed).
+            6 if r & 0x100 == 0 => {
+                s.input(Input::Key(Key::Home));
+                let cap = |k: u32| Target::Cap(((r >> k) % 41) as u8);
+                for t in [
+                    Target::Hero,
+                    Target::SoftRight,
+                    Target::Row(if r & 0x1000 == 0 {
+                        4
+                    } else {
+                        ((r >> 13) % 8) as u8
+                    }),
+                    cap(15),
+                    cap(20),
+                ] {
+                    let rr = s.rect_of(t);
+                    let (x, y) = (rr.x + rr.w / 2, rr.y + rr.h / 2);
+                    s.input(Input::PenDown { x, y });
+                    s.input(Input::PenUp { x, y });
+                }
+            }
             _ => {
                 let t = Time {
                     hour: (r >> 4) as u8 % 24,
@@ -322,6 +373,22 @@ fn incremental_frames_match_full_redraws() {
             }
         }
         s.frame(&mut f);
+        for (x, y, t, b) in placed(&s) {
+            if t.is_empty()
+                || b.is_empty()
+                || before
+                    .iter()
+                    .any(|(x0, y0, t0, _)| (*x0, *y0, t0) == (x, y, &t))
+            {
+                continue;
+            }
+            assert!(
+                f.dirty().iter().any(|d| d.intersect(&b) == b),
+                "step {step} ({:?}): {:?} at ({x}, {y}) is new but not marked changed",
+                s.screen(),
+                std::string::String::from_utf8_lossy(&t)
+            );
+        }
         inc.draw(&f);
         // The same state, drawn in full on a fresh plane.
         let mut px2 = vec![0; (w * h) as usize];
@@ -336,9 +403,17 @@ fn incremental_frames_match_full_redraws() {
         s.scene(&mut g);
         g.damage(Rect::new(0, 0, W, H));
         full.draw(&g);
+        let first = inc
+            .plane()
+            .iter()
+            .zip(full.plane())
+            .position(|(a, b)| a != b)
+            .map(|i| ((i / 4) % W as usize, (i / 4) / W as usize));
         assert!(
-            inc.plane() == full.plane(),
-            "step {step}: incremental differs from full"
+            first.is_none(),
+            "step {step} ({:?}, input {}): incremental differs from full at {first:?}",
+            s.screen(),
+            r % 7
         );
     }
 }
@@ -867,12 +942,138 @@ fn a_swipe_moves_the_underline_as_it_goes_and_turns_the_page_on_lift() {
 }
 
 #[test]
-fn the_weather_softkeys_say_what_is_not_built_yet() {
-    let mut s = weather(0);
+fn back_goes_up_a_screen_by_softkey_header_or_home() {
+    let mut s = weather(1);
+    // The left softkey and the header's control both go back.
     tap(&mut s, SOFT_LEFT);
-    assert_eq!(s.notice(), Some("Not yet: Places"));
+    assert_eq!(s.screen(), Screen::Today);
+    let mut s = weather(1);
+    tap(&mut s, weather_settings::BACK);
+    assert_eq!(s.screen(), Screen::Today);
+    // Settings, then a place, then back up one at a time.
+    let mut s = weather(0);
     tap(&mut s, SOFT_RIGHT);
-    assert_eq!(s.notice(), Some("Not yet: Menu"));
+    assert_eq!(s.screen(), Screen::WeatherSettings);
+    tap_t(&mut s, Target::Row(2));
+    assert_eq!(s.screen(), Screen::WeatherPlaces);
+    tap(&mut s, weather_settings::BACK);
+    assert_eq!(s.screen(), Screen::WeatherSettings);
+    tap(&mut s, SOFT_LEFT);
+    assert_eq!(s.screen(), Screen::Weather);
+    // Home from anywhere.
+    tap(&mut s, SOFT_RIGHT);
+    s.input(Input::Key(Key::Home));
+    assert_eq!(s.screen(), Screen::Today);
+}
+
+#[test]
+fn settings_rows_change_what_every_screen_shows() {
+    let mut s = weather(0);
+    tap(&mut s, SOFT_RIGHT);
+    // Units: US customary to Metric, every number redrawn.
+    drawn(&mut s);
+    tap_t(&mut s, Target::Row(1));
+    assert_eq!(s.region.temp, rp_weather::Temp::C);
+    assert!(drawn(&mut s).dirty().contains(&Rect::new(0, 0, W, H)));
+    // A place: picked from the list, named in the app's header.
+    tap_t(&mut s, Target::Row(2));
+    tap_t(&mut s, Target::Row(6));
+    assert_eq!(s.wx.place, "Oslo");
+    assert_eq!(s.screen(), Screen::WeatherSettings);
+    // The source: kept, the sample still shown and saying so.
+    tap_t(&mut s, Target::Row(3));
+    assert_eq!(s.wset.source, rp_weather::settings::Source::OpenMeteo);
+    assert_eq!(s.wx.source, "Sample (no network yet)");
+    // Region: the next one brings its own units.
+    tap_t(&mut s, Target::Row(0));
+    assert_eq!(s.wset.region_info().name, "Canada");
+    assert!(s.wset.metric);
+    tap(&mut s, SOFT_LEFT);
+    assert!(texts(&drawn(&mut s)).contains(&b"OSLO".to_vec()));
+}
+
+/// Taps target `t`.
+fn tap_t(s: &mut Shell, t: Target) -> Action {
+    let r = s.rect_of(t);
+    tap(s, r)
+}
+
+/// Taps the keys for `text` on the key-entry screen (shift before a
+/// capital).
+fn type_keys(s: &mut Shell, text: &[u8]) {
+    for &c in text {
+        let i = weather_settings::cap_of(c).expect("a key for every character");
+        if c.is_ascii_uppercase() {
+            tap_t(s, Target::Cap(weather_settings::cap_of(0x0E).unwrap_or(0)));
+        }
+        tap_t(s, Target::Cap(i));
+    }
+}
+
+#[test]
+fn the_tempest_key_is_typed_masked_kept_and_never_drawn_in_full() {
+    let key = b"0a1B2c3d-4e5f-6789-abcd-ef0123456789";
+    let mut s = weather(0);
+    tap(&mut s, SOFT_RIGHT);
+    tap_t(&mut s, Target::Row(4));
+    assert_eq!(s.screen(), Screen::KeyEntry);
+    type_keys(&mut s, key);
+    assert_eq!(&s.typed[..s.typed_n], key);
+    // Masked as typed: only the last four characters drawn.
+    let shown = texts(&drawn(&mut s));
+    assert!(
+        shown
+            .iter()
+            .all(|t| !t.windows(8).any(|w| key.windows(8).any(|k| k == w)))
+    );
+    assert!(shown.iter().any(|t| t.ends_with(b"6789")));
+    // Done keeps it and zeroes the typed copy.
+    tap(&mut s, SOFT_RIGHT);
+    assert_eq!(s.screen(), Screen::WeatherSettings);
+    assert_eq!(s.wset.tempest_key.expose(), key);
+    assert!(s.typed.iter().all(|&b| b == 0) && s.typed_n == 0);
+    assert!(texts(&drawn(&mut s)).contains(&b"**** 6789".to_vec()));
+    // Typed again and cancelled: the kept key stays, the typed one goes.
+    tap_t(&mut s, Target::Row(4));
+    type_keys(&mut s, b"abc");
+    tap(&mut s, SOFT_LEFT);
+    assert_eq!(s.wset.tempest_key.expose(), key);
+    assert!(s.typed.iter().all(|&b| b == 0));
+    // Home half way through forgets it too.
+    tap_t(&mut s, Target::Row(4));
+    type_keys(&mut s, b"xyz");
+    s.input(Input::Key(Key::Home));
+    assert!(s.typed.iter().all(|&b| b == 0) && s.typed_n == 0);
+}
+
+#[test]
+fn every_new_screen_fits_a_frame_and_the_d_pad_reaches_its_targets() {
+    for (row, screen) in [
+        (None, Screen::WeatherSettings),
+        (Some(2), Screen::WeatherPlaces),
+        (Some(4), Screen::KeyEntry),
+    ] {
+        let mut s = weather(0);
+        tap(&mut s, SOFT_RIGHT);
+        if let Some(r) = row {
+            tap_t(&mut s, Target::Row(r));
+        }
+        assert_eq!(s.screen(), screen);
+        let f = drawn(&mut s);
+        assert!(!f.overflowed(), "{screen:?}: {}", f.cmds().count());
+        // The D-pad walks from Start to every row or key and back.
+        s.input(Input::Key(Key::Enter));
+        let mut seen = std::vec::Vec::new();
+        for k in [Key::Down; 12].into_iter().chain([Key::Right; 10]) {
+            s.input(Input::Key(k));
+            seen.extend(s.focus());
+        }
+        assert!(
+            seen.iter()
+                .any(|t| matches!(t, Target::Row(_) | Target::Cap(_))),
+            "{screen:?}: {seen:?}"
+        );
+    }
 }
 
 static PX: [u32; 4] = [0xFFFF_FFFF; 4];
@@ -956,4 +1157,21 @@ fn the_wallpaper_comparison_switches_depth_and_shows_the_wallpaper_alone() {
     assert!(!s.wallpaper_only());
     assert_eq!(s.notice(), Some(SHOWING_PLAIN));
     assert!(drawn(&mut s).cmds().count() > 20);
+}
+
+/// Every notice the shell's code can show is in NOTICES (the width check
+/// runs over that list, in rp-today, with the real font).
+#[test]
+fn every_notice_shown_is_listed() {
+    let src = [include_str!("lib.rs"), include_str!("weather_settings.rs")];
+    for text in src {
+        for part in text.split("show_notice(\"").skip(1) {
+            let n = part.split('"').next().unwrap_or("");
+            assert!(NOTICES.contains(&n), "{n} not listed");
+        }
+        for part in text.split("=> \"Not yet: ").skip(1) {
+            let n = std::format!("Not yet: {}", part.split('"').next().unwrap_or(""));
+            assert!(NOTICES.contains(&n.as_str()), "{n} not listed");
+        }
+    }
 }

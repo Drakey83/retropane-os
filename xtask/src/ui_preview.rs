@@ -85,6 +85,47 @@ fn shots() -> Vec<Shot> {
             what: "The Start menu over the Weather app",
             steps: tap(sx, sy),
         },
+        Shot {
+            name: "11-weather-settings",
+            what: "Start closed, the right softkey: Weather settings",
+            steps: [tap(sx, sy), tap(400, 620)].concat(),
+        },
+        Shot {
+            name: "12-weather-metric",
+            what: "Units tapped: Metric, every number with it",
+            steps: tap(240, 104 + 58 + 26),
+        },
+        Shot {
+            name: "13-weather-places",
+            what: "Place: the list, the current one marked",
+            steps: tap(240, 104 + 2 * 58 + 26),
+        },
+        Shot {
+            name: "14-weather-key",
+            what: "Oslo picked; then the Tempest key, typed (masked, last four shown)",
+            steps: [
+                tap(240, 104 + 6 * 58 + 26),
+                tap(240, 104 + 4 * 58 + 26),
+                // "ab12": keys a, b, 1, 2 on the on-screen keyboard.
+                tap(24, 330 + 2 * 54 + 26),
+                tap(5 * 48 - 24, 330 + 3 * 54 + 26),
+                tap(24, 330 + 26),
+                tap(72, 330 + 26),
+                tap(312, 330 + 3 * 54 + 26),
+                tap(360, 330 + 3 * 54 + 26),
+            ]
+            .concat(),
+        },
+        Shot {
+            name: "15-weather-key-kept",
+            what: "Done: the key kept, shown masked in the settings",
+            steps: tap(400, 620),
+        },
+        Shot {
+            name: "16-weather-back",
+            what: "Back (left softkey): the app again, Metric and Oslo",
+            steps: tap(80, 620),
+        },
     ]
 }
 

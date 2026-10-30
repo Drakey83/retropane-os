@@ -424,6 +424,17 @@ mod tests {
         )
     }
 
+    /// Every notice fits its area in the real font (a wider one is drawn
+    /// past what it marks changed and left behind).
+    #[test]
+    fn every_notice_fits_between_the_softkeys() {
+        let ui = shell_fonts().ui;
+        for n in rp_shell::NOTICES {
+            let w = ui.width(n.as_bytes());
+            assert!(w <= rp_shell::NOTICE_W, "{n}: {w} px");
+        }
+    }
+
     /// The image's own packed wallpaper unpacks to the planes it was made
     /// from, byte for byte; damage is refused.
     #[test]

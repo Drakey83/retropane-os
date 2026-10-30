@@ -208,3 +208,48 @@ fn the_icons_the_sample_uses_are_the_ones_baked_into_the_test_image() {
     cards.dedup();
     assert_eq!(cards, crate::SAMPLE_CARD_ICONS);
 }
+
+#[test]
+fn a_region_sets_its_units_and_clock_and_the_system_switch_overrides() {
+    use crate::settings::{REGIONS, Settings};
+    let mut s = Settings::DEFAULT;
+    assert_eq!(s.units(), Region::US, "US customary by default");
+    let names: Vec<&str> = (0..REGIONS.len())
+        .map(|_| {
+            s.next_region();
+            s.region_info().name
+        })
+        .collect();
+    assert_eq!(names.last(), Some(&"United States"), "it cycles round");
+    s.region = 2; // the United Kingdom: Celsius with mph, 24-hour
+    s.metric = true;
+    assert_eq!(
+        s.units(),
+        Region {
+            temp: Temp::C,
+            wind: Wind::Mph,
+            clock12: false
+        }
+    );
+    s.metric = false;
+    assert_eq!(s.units().temp, Temp::F);
+    assert!(!s.units().clock12, "the clock stays the region's");
+}
+
+#[test]
+fn a_secret_is_never_shown_or_debugged_in_full() {
+    use crate::settings::{KEY_MAX, Secret};
+    let key = b"0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+    let mut s = Secret::new(key).expect("printable");
+    assert_eq!(s.masked().as_bytes(), b"**** 6789");
+    let dbg = format!("{s:?}");
+    assert!(!dbg.contains("0a1b") && dbg.contains("36"), "{dbg}");
+    assert_eq!(s.expose(), key);
+    s.clear();
+    assert!(!s.is_set());
+    assert_eq!(s.masked().as_bytes(), b"Not set");
+    assert!(Secret::new(b"").is_none());
+    assert!(Secret::new(b"has space").is_none());
+    assert!(Secret::new(&[b'a'; KEY_MAX + 1]).is_none());
+    assert!(Secret::new(&[b'a'; KEY_MAX]).is_some());
+}

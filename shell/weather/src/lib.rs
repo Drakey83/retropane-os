@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 mod sample;
+pub mod settings;
 pub use sample::sample;
 
 /// The pack icons the sample forecast uses, sorted: the test image bakes

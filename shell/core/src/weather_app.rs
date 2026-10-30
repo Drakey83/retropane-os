@@ -200,14 +200,15 @@ impl Shell {
             r: Rect::new(0, HEAD.y + HEAD.h - 1, W, 1),
             color: super::GLASS_EDGE,
         });
+        self.back_arrow(f);
         let place = super::upper(wx.place);
-        f.text(16, HEAD.y + 25, label, TEXT, place.as_bytes());
+        f.text(72, HEAD.y + 25, label, TEXT, place.as_bytes());
         let read = Line::new().push(wx.source.as_bytes()).push(b", ").push(
             self.region
                 .time(self.time.hour, self.time.minute, true)
                 .as_bytes(),
         );
-        f.text(16, HEAD.y + 49, ui, DIM, read.as_bytes());
+        f.text(72, HEAD.y + 49, ui, DIM, read.as_bytes());
         let now = self.region.temp(wx.now.temp);
         let w = ui.width(now.as_bytes());
         f.text(W - 16 - w, HEAD.y + 37, ui, TEXT, now.as_bytes());

@@ -27,6 +27,7 @@
 pub mod align;
 pub mod motion;
 mod weather_app;
+mod weather_settings;
 
 use rp_draw::{Argb, Cmd, Font, Frame, Image, Rect};
 pub use rp_touch_cal::Calibration;
@@ -77,6 +78,12 @@ pub enum Screen {
     Today,
     /// The Weather app.
     Weather,
+    /// The Weather app's settings.
+    WeatherSettings,
+    /// The Weather app's places.
+    WeatherPlaces,
+    /// The station key, typed on the on-screen keyboard.
+    KeyEntry,
 }
 
 /// The keys the shell reacts to.
@@ -188,6 +195,12 @@ pub enum Target {
     Hero,
     /// A tab of the Weather app.
     Tab(u8),
+    /// The header's back control (the Weather app and the screens below it).
+    Back,
+    /// A row of a settings or places list.
+    Row(u8),
+    /// A key of the on-screen keyboard.
+    Cap(u8),
 }
 
 // ---- Layout (480 x 640, portrait) --------------------------------------
@@ -360,6 +373,14 @@ pub struct Shell {
     gesture: Gesture,
     /// When the page's entrance started (none: everything in place).
     anim: Option<u32>,
+    /// The Weather app's settings (RAM until the settings store exists).
+    wset: rp_weather::settings::Settings,
+    /// The key being typed (zeroed when done or left).
+    typed: [u8; rp_weather::settings::KEY_MAX],
+    typed_n: usize,
+    /// The keyboard's shift, and whether the key is shown as typed.
+    shift: bool,
+    show_key: bool,
 }
 
 impl Shell {
@@ -388,6 +409,11 @@ impl Shell {
             scroll: motion::Scroll::new(0),
             gesture: Gesture::None,
             anim: None,
+            wset: rp_weather::settings::Settings::DEFAULT,
+            typed: [0; rp_weather::settings::KEY_MAX],
+            typed_n: 0,
+            shift: false,
+            show_key: false,
         };
         s.dirty(Rect::new(0, 0, W, H));
         s
@@ -540,6 +566,7 @@ impl Shell {
             Target::Menu(i) => Self::menu_entry(i),
             Target::Hero => HERO,
             Target::Tab(i) => weather_app::tab_rect(i),
+            Target::Back | Target::Row(_) | Target::Cap(_) => self.settings_rect(t),
         }
     }
 
@@ -551,12 +578,22 @@ impl Shell {
         let (hero, quick, tabs) = match self.screen {
             Screen::Today => (1, QUICK.len() as u8, 0),
             Screen::Weather => (0, 0, weather_app::TAB_NAMES.len() as u8),
+            _ => (0, 0, 0),
+        };
+        let back = u8::from(self.screen != Screen::Today);
+        let caps = if self.screen == Screen::KeyEntry {
+            weather_settings::CAPS
+        } else {
+            0
         };
         let today = [Target::Start]
             .into_iter()
+            .chain((0..back).map(|_| Target::Back))
             .chain((0..hero).map(|_| Target::Hero))
             .chain((0..quick).map(Target::Quick))
             .chain((0..tabs).map(Target::Tab))
+            .chain((0..self.rows()).map(Target::Row))
+            .chain((0..caps).map(Target::Cap))
             .chain([Target::SoftLeft, Target::SoftRight])
             // With the menu open only Start (to close it) and the menu act.
             .filter(|t| !self.menu_open || *t == Target::Start);
@@ -678,16 +715,23 @@ impl Shell {
             Target::Quick(i) => {
                 self.show_notice(not_yet(QUICK[usize::from(i).min(QUICK.len() - 1)]))
             }
-            Target::SoftLeft => {
-                let (l, _) = self.softkeys();
-                self.show_notice(not_yet(l));
-            }
-            Target::SoftRight => {
-                let (_, r) = self.softkeys();
-                self.show_notice(not_yet(r));
-            }
+            Target::SoftLeft => match self.screen {
+                Screen::Today => self.show_notice(not_yet(self.softkeys().0)),
+                // Back (Cancel on the keyboard), I7: the left softkey and
+                // the header's control do the same.
+                _ => self.go_back(),
+            },
+            Target::SoftRight => match self.screen {
+                Screen::Today => self.show_notice(not_yet(self.softkeys().1)),
+                Screen::Weather => self.open(Screen::WeatherSettings),
+                Screen::KeyEntry => self.key_done(),
+                Screen::WeatherSettings | Screen::WeatherPlaces => {}
+            },
             Target::Hero => self.open_weather(),
             Target::Tab(i) => self.set_tab(i),
+            Target::Back => self.go_back(),
+            Target::Row(i) => self.row_tapped(i),
+            Target::Cap(i) => self.cap_tapped(i),
             Target::Menu(i) => {
                 let label = self.menu_label(i);
                 if label == BACK_TO_LOADER {
@@ -720,6 +764,9 @@ impl Shell {
     /// Back to the Today screen (from anywhere).
     fn go_today(&mut self) {
         if self.screen != Screen::Today {
+            // A key half typed is forgotten on the way.
+            self.typed = [0; rp_weather::settings::KEY_MAX];
+            self.typed_n = 0;
             self.screen = Screen::Today;
             self.anim = None;
             self.pressed = None;
@@ -734,7 +781,9 @@ impl Shell {
     fn softkeys(&self) -> (&'static str, &'static str) {
         match self.screen {
             Screen::Today => ("Calendar", "Edit"),
-            Screen::Weather => ("Places", "Menu"),
+            Screen::Weather => ("Back", "Settings"),
+            Screen::WeatherSettings | Screen::WeatherPlaces => ("Back", ""),
+            Screen::KeyEntry => ("Cancel", "Done"),
         }
     }
 
@@ -1195,6 +1244,9 @@ impl Shell {
         match self.screen {
             Screen::Today => self.today_scene(f),
             Screen::Weather => self.weather_scene(f),
+            Screen::WeatherSettings => self.settings_scene(f),
+            Screen::WeatherPlaces => self.places_scene(f),
+            Screen::KeyEntry => self.key_scene(f),
         }
 
         // Softkeys and the notice between them.
@@ -1357,6 +1409,36 @@ pub(crate) fn upper(s: &str) -> Line {
     }
     l
 }
+
+/// Every notice the shell shows: each must fit the notice's area between
+/// the softkeys in the real font (rp-today's test; 2026-10-30: two
+/// settings notices ran past it and were left on screen).
+pub const NOTICES: [&str; 21] = [
+    "64 at most",
+    "Base pack only",
+    "Key forgotten",
+    "Key kept",
+    "No spaces",
+    "Not yet: Browser",
+    "Not yet: Calendar",
+    "Not yet: Documents",
+    "Not yet: Edit",
+    "Not yet: Files",
+    "Not yet: Games",
+    "Not yet: Inbox",
+    "Not yet: Media",
+    "Not yet: Menu",
+    "Not yet: Notes",
+    "Not yet: Places",
+    "Not yet: Programs",
+    "Not yet: Reader",
+    "Not yet: Record",
+    "Not yet: Settings",
+    "Not yet: Tasks",
+];
+
+/// The notice's area's width.
+pub const NOTICE_W: u16 = NOTICE.w;
 
 /// "Not yet: <name>" for the entries without a program yet.
 fn not_yet(name: &str) -> &'static str {
