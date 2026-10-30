@@ -115,8 +115,8 @@ pub enum Motion {
     /// From the Today screen, the hero card grows into the app's big
     /// panel (a shared element), the rest following it; pages rise.
     Expand,
-    /// No entrance: pages appear (the owner's rule for a movement that
-    /// measures too slow).
+    /// No entrance: pages appear (the owner's rule for a movement under
+    /// 30 fps that can't be optimized to run faster).
     None,
 }
 

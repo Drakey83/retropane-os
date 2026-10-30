@@ -78,9 +78,10 @@ them". Read with the numbers: the 53 ms was the renderer's whole-screen
 rebuild (a bug in what it caches), not the cost of movement itself. After
 E, the priorities are the ones he named on the device: the list
 following the pen, the fling and the rebound. The entrance (rows sliding
-in) stays only if it measures at 30 fps or better; otherwise it goes and
-pages simply appear (his rule above). Nothing here is a ruling until he
-says so.
+in) stays if it measures at 30 fps or better; below that it is optimized
+first, and it goes (pages simply appear) only if it can't be made to run
+faster (the owner, 2026-10-30: "if it cant be optimized to run faster").
+Nothing here is a ruling until he says so.
 
 ## Room in the image (needed by steps 3-6, not part of this sheet's go)
 
