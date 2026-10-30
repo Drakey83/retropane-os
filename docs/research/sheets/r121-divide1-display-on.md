@@ -55,3 +55,17 @@ display's reads.
 - The fetch-off control comes out wrong: something else changed.
 - A cure that costs more per frame than R120's switch saves isn't one:
   the measured times go to the owner.
+
+## Results (2026-10-30 night, gpubench-0237 to -0239; 2700g.md "R121 test 1-3")
+- **Test 1:** the shipped layout was wrong once in 80; every other way 0
+  of 80. R23E run 3's 18 of 20 had the lists in SDRAM.
+- **Test 2:** the shipped layout's flat frame was wrong in 2 of 100 (one
+  pixel, a tile's last row). Without the underlay it was 100 of 100;
+  with the lists in SDRAM, 78 of 100.
+- **Test 3:**
+  - Both cures were 0 of 400.
+  - The alpha-0 overlay at 143.00 / 1 took 8.70 / 8.73 / 15.30 / 8.73
+    ms (flat, layered, textured, depth).
+  - R120's switch, at 143.00 / 2, took 9.18 / 11.28 / 15.53 / 11.34 ms.
+  - **The overlay is faster on every frame and changes no clock.**
+- The owner picks which ships. Both are soaked an hour overnight.

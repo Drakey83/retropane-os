@@ -5994,6 +5994,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r121s = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R121S", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r117t = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6508,7 +6517,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 174] = [
+    let runs: [GpubenchRun; 175] = [
         (
             "run A",
             &run_a,
@@ -7429,6 +7438,25 @@ fn variant_images_gpubench(
                 "R121C 143.00 / 1, an alpha-0 quad blended over the frame (the write-out paced), frame 3: 0 of 2 renders wrong",
                 "R121C an alpha-0 quad blended over the frame (the write-out paced): the underrun flag ",
                 "R121C done: Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R121S (the overlay's soak): the shape, two renders right.
+        (
+            "run R121S",
+            &run_r121s,
+            &[
+                "R121S (R121C's overlay proven, the owner's go 2026-10-30)",
+                "R121S references at 74.75 / 1 (with the overlay): drawn and repeatable true",
+                "R121S 1 renders",
+                "R121S 2 renders",
+                "R121S end: 2 renders in ",
+                "wrong 0 of 2; not finished 0; underruns 0",
+                "R121S done: Windows Mobile's clock put back",
                 "GC2CA done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",

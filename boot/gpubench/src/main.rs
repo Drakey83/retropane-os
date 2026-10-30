@@ -17879,6 +17879,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R121S {
+            r121s_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R117T {
             r117t_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20798,6 +20804,93 @@ mod image {
         log!(
             "  {tag} done: Windows Mobile's clock put back (COREPLL 0x{:x})",
             g.e.regs.read32(clock::COREPLL)
+        );
+    }
+
+    /// Run R121S (see [`R121S`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn r121s_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf + 1) * full {
+            log!("  R121S: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let (refs, rest) = all.split_at_mut(nf * full);
+        let seen = &mut rest[..full];
+        let at = rp_vram_map::SCREENS[1].at;
+        let on_die = rp_vram_map::SCREENS[0].at;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            ["R121: OVERLAY SOAK", "THE SCREEN CHANGES", "FOR AN HOUR"],
+        );
+        let Some(mut rr) = r117_renderer(g, true, false) else {
+            log!("  R121S: no renderer: nothing run");
+            g.nudge = nudge;
+            return;
+        };
+        let _ = rr.set_underlay(true);
+        log!(
+            "  R121S (R121C's overlay proven, the owner's go 2026-10-30): {R117T_SECS} s at 143.00 / 1, the display scanning out screen 0 (0x{on_die:x}); the {nf} game frames in turn into SDRAM (0x{at:x}) with the alpha-0 overlay, lists on die, the underlay, rows, each checked against 74.75 / 1's"
+        );
+        let ok = r121_refs(g, &mut rr, tex, (&mut *refs, &mut *seen, at), true);
+        log!("  R121S references at 74.75 / 1 (with the overlay): drawn and repeatable {ok}");
+        gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, on_die, planes0);
+        let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+        if ok && clock_apply(g, R117_FAST).is_some() {
+            let _ = underrun_take(&mut g.e.regs);
+            let mut mark = g.clock.now_us();
+            let mut times = Gc2deTimes::NEW;
+            let (mut n, mut bad, mut lost, mut unders, mut secs) = (0u32, 0u32, 0u32, 0u32, 0u32);
+            loop {
+                rt::check_in();
+                let k = gc2::GAME_FRAMES[n as usize % nf];
+                let want = usize::from(k) * full..(usize::from(k) + 1) * full;
+                r121_set(g, &mut rr, tex, k, true);
+                match gc2ca_render(g, &mut rr, GC2DE_SIZE, at) {
+                    Some((c, _)) => {
+                        times.take(c);
+                        bad += u32::from(gc2de_off(g, at, &refs[want], seen) != 0);
+                    }
+                    None => lost += 1,
+                }
+                n += 1;
+                if n % 100 == 0 {
+                    unders += u32::from(underrun_take(&mut g.e.regs));
+                }
+                let whole = g.clock.now_us().wrapping_sub(mark) / 1_000_000;
+                secs += whole;
+                mark = mark.wrapping_add(whole * 1_000_000);
+                if n % R117T_LINE == 0 {
+                    log!(
+                        "  R121S {n} renders, {secs} s: wrong {bad}; not finished {lost}; underruns {unders}; the core {times}"
+                    );
+                }
+                if (R117T_SECS == 0 && n >= 2) || (R117T_SECS != 0 && secs >= R117T_SECS) {
+                    break;
+                }
+            }
+            unders += u32::from(underrun_take(&mut g.e.regs));
+            log!(
+                "  R121S end: {n} renders in {secs} s: wrong {bad} of {n}; not finished {lost}; underruns {unders}; the core {times}"
+            );
+        } else {
+            log!("  R121S: the references or 143.00 / 1 failed: not run");
+        }
+        clock_restore(&mut g.e.regs);
+        let _ = rr.release(&mut g.pool);
+        g.nudge = nudge;
+        log!(
+            "  R121S done: Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if underrun_take(&mut g.e.regs) {
+                "set (cleared)"
+            } else {
+                "clear"
+            }
         );
     }
 
@@ -26423,6 +26516,13 @@ mod image {
     /// frame at 143.00 / 2); the control and a quarter of the display's
     /// reads beside them. About fifteen minutes, unattended.
     const R121C: bool = option_env!("RP_GPUBENCH_R121C").is_some();
+    /// Run R121S (`RP_GPUBENCH_R121S`, with `RP_GPUBENCH_GC2_HALF`; the
+    /// proof of R121C's overlay beside R117T's of the switch, the owner's
+    /// "do all tests that you want", 2026-10-30): the shipped layout at
+    /// 143.00 / 1 with the display scanning out screen 0, the four game
+    /// frames in turn into SDRAM with the alpha-0 overlay, every render
+    /// checked, for [`R117T_SECS`]. An hour, unattended.
+    const R121S: bool = option_env!("RP_GPUBENCH_R121S").is_some();
     /// R121C's ways.
     const R121C_WAYS: [R121Way; 4] = [
         (
