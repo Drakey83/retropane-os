@@ -68,7 +68,8 @@ X51v.
 
 1. **Live touch:** `Pen::Move` already comes from the touch driver
    (shell/today/src/main.rs drops it); add `Input::PenMove`, lists that
-   follow the finger 1:1, fling with momentum and an edge bounce, press
+   follow the finger 1:1 when pulled up and down, fling with momentum and
+   a rebound at each end (the owner missed both, 2026-10-30), press
    states, swipes measured live. Proven on the X51v before anything else.
 2. **Movement the owner picks:** moving mock-ups (GIFs from the preview's
    real frames) of at least three ways, e.g. the hero card expanding into
@@ -79,8 +80,10 @@ X51v.
    left softkey (vote I7's proposal), Home as now.
 4. **Settings:** units and region, places, the data source (sample,
    Open-Meteo, the owner's Tempest), refresh, icon pack.
-5. **The Tempest key:** entered on the PC and sent over USB (no keyboard
-   on the device yet) or typed on an on-screen keyboard: the owner picks;
+5. **The Tempest key:** typed on an on-screen keyboard (**owner,
+   2026-10-30:** "for now I will need to do it manually with a keyboard";
+   pasting it from the browser is the optimal way once copy and paste and
+   multitasking exist, now on the ROADMAP's Phase 5 list);
    either way stored by the device's own key store, never in the repo or
    typed by Claude. His key can already be checked from the PC
    (Tempest's REST API, his own PowerShell window).
