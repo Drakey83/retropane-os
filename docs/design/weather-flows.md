@@ -19,7 +19,8 @@ on the mock-ups (thinking aloud is not yet a vote):
   is the default home; tapping its weather opens the full-screen app.
 - **The app:** modern features, data from popular open sources and from
   hyperlocal ones such as Tempest; at least a 10-day forecast, an hourly
-  forecast and a radar view; American and European formats selectable.
+  forecast and a radar view; American and European formats selectable
+  (his later correction: no country names as labels, below).
 - **Classic:** a desktop-skin style weather widget (as Rainmeter skins
   look on a Windows desktop: our own art) over the top half of a Windows
   Mobile-style desktop, customisable icons below it; tapping the widget
@@ -30,7 +31,7 @@ screens" are kept only as the earlier draft. **The mock-ups of the
 proposal** (sheet `mockups/weather-sheet.jpg`, each screen
 `mockups/weather-*.jpg`):
 
-<img src="mockups/weather-sheet.jpg" width="900" alt="Ten screens: the approved Modern home, the Weather app's Now page and Now scrolled, Hourly, 10 Day, Radar, the European format, settings, the Classic desktop with its weather widget, and the Classic app">
+<img src="mockups/weather-sheet.jpg" width="900" alt="Ten screens: the approved Modern home, the Weather app's Now page and Now scrolled, Hourly, 10 Day, Radar, metric units with Norway as the region, settings, the Classic desktop with its weather widget, and the Classic app">
 
 **Ruled by the owner, later the same day, for every app (ui.md):** the apps look
 the same in Classic and Modern; only the desktop, and so the way into
@@ -86,9 +87,14 @@ desktop widget (screen 8), Modern from the home page (screen 0).
 - **Radar** (screen 5): the past hour and the next as a loop with a
   scrubber, rain and lightning layers. **The panel feels one point**, so
   no pinch: zoom by + and &minus;, a double tap, or the D-pad.
-- **Formats** (screens 6-7): one switch, American (&deg;F, mph, in,
-  12-hour, month/day) or European (&deg;C, m/s or km/h, mm, hPa, km,
-  24-hour, day.month), then any unit on its own.
+- **Units and region** (screens 6-7): the **region** (a country, as
+  phones do) sets every default: units, date order, 12- or 24-hour
+  clock, the first day of the week. Then one switch, **US customary**
+  (&deg;F, mph, in) or **Metric** (&deg;C, km/h or m/s, mm, hPa, km),
+  then any unit on its own (the UK region gives &deg;C with mph and
+  miles). **No country names as labels** (owner, 2026-10-30: "American"
+  and "European" "feels a little exclusionary"): units are named for the
+  system, formats come from the region.
 
 ### Sources (proposed)
 
@@ -360,8 +366,8 @@ warning's text. Waits on the source's design (WF5).
 - **Alerts by country:** NWS in the US, MeteoAlarm across Europe, each
   national service's warnings elsewhere where open; a place with no open
   alert source says so instead of showing nothing.
-- **Formats:** American and European presets, then every unit on its
-  own; the date order and 12- or 24-hour clock from the region setting.
+- **Formats:** the region sets the defaults; US customary or Metric,
+  then every unit on its own; never labelled by a country.
 - **Names in any script:** place and station names in their own
   writing; where the base font lacks a script, a font pack supplies it
   (ui.md "Fonts the same way").

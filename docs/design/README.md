@@ -16,7 +16,9 @@ should be a rule for all things like this." Every feature that touches
 places, units, dates, times, data sources, alerts, names or words works
 for any country: US defaults (the owner's), a region setting for the
 rest, sources and alerts chosen per country, every on-screen word from a
-strings table, names in their own script.
+strings table, names in their own script. Choices are named for what they
+are ("Metric", "US customary", "24-hour"), never for a country or a
+continent (owner, 2026-10-30).
 
 ## The pages in this area
 
