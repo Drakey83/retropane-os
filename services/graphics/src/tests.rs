@@ -547,6 +547,70 @@ fn closing_the_scene_gives_its_area_back_and_the_clock_goes_off_when_idle() {
     r.g.open_scene(d, x, y, w, h).unwrap();
 }
 
+/// The clock (us) at which the modelled scan reaches `line` of the
+/// refresh after the clock's own.
+fn at_line(r: &Rig, line: u64) -> u32 {
+    let now = u64::from(r.clock.0.get());
+    let refresh = (now * 1000 / LINE_NS) / 645;
+    ((refresh + 1) * 645 + line)
+        .saturating_mul(LINE_NS)
+        .div_ceil(1000) as u32
+}
+
+#[test]
+fn a_2d_flip_waits_for_the_blanking_without_the_cpu() {
+    // R115 (the owner's go 2026-10-30): a 2D frame (no scene) done early in
+    // the scan isn't flipped by spinning until the blanking: the poll
+    // returns at once with a wait until the scan is FLIP_LEAD_US (86 lines)
+    // from it, the flip still written only in the blanking.
+    let mut r = rig();
+    r.clock.set(at_line(&r, 100));
+    let before = r.shown().at;
+    let late = r.g.two_d().late_flips;
+    let step =
+        r.g.frame(&fill(Rect::new(0, 0, 480, 32), WHITE), &mut r.clock)
+            .unwrap();
+    let lead = u64::from(FLIP_LEAD_US * 1000).div_ceil(LINE_NS);
+    assert_eq!(lead, 86);
+    let from = at_line(&r, 640 - lead) - 645 * LINE_NS as u32 / 1000 - 1;
+    let Step::Wait(t) = step else {
+        panic!("{step:?}: the flip spun the CPU");
+    };
+    assert!(
+        t.abs_diff(from) <= 1,
+        "{t} against {from}: a wait until line 554"
+    );
+    assert!(r.g.busy());
+    assert_eq!(r.shown().at, before, "not flipped yet");
+    assert_eq!(r.g.two_d().late_flips, late);
+    // Polled again before line 554 (a pass of the caller's loop): still
+    // waiting, nothing written.
+    r.clock.set(t - 1_000);
+    assert!(matches!(r.g.poll(&mut r.clock), Step::Wait(_)));
+    assert_eq!(r.shown().at, before);
+    // Polled in the blanking: flipped at once, not late, not slipped.
+    r.clock
+        .set(at_line(&r, 641) - 645 * LINE_NS as u32 / 1000 - 1);
+    assert_eq!(r.g.poll(&mut r.clock), Step::Shown);
+    assert_ne!(r.shown().at, before, "flipped");
+    assert_eq!(r.g.two_d().late_flips, late, "in the blanking");
+    assert!(!r.g.busy());
+    let st = r.g.starts();
+    assert_eq!((st.flips_waited, st.flips_slipped), (1, 0));
+    assert_eq!(r.on_screen(5, 5), WHITE & 0xFF_FFFF);
+    // A caller that polls only a refresh and more later: flipped then, in
+    // its blanking, and counted as slipped.
+    let before = r.shown().at;
+    r.clock.set(at_line(&r, 100));
+    let _ =
+        r.g.frame(&fill(Rect::new(0, 0, 480, 32), BLUE), &mut r.clock)
+            .unwrap();
+    r.clock.set(at_line(&r, 642));
+    assert_eq!(r.g.poll(&mut r.clock), Step::Shown);
+    assert_ne!(r.shown().at, before);
+    assert_eq!(r.g.starts().flips_slipped, 1);
+}
+
 #[test]
 fn the_service_stays_small() {
     // It lives next to the 2D renderer and a frame (rp-today overflowed its

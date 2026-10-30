@@ -334,6 +334,25 @@ alone.
 
 ## Next, when the chase resumes
 
+**Added 2026-10-30 (R118, R121, after the chase was parked): two cures
+for tile write-out faults, never tried past 143.00 / 1.**
+- **The underlay** (`Renderer::set_underlay`, R118): a full-screen quad
+  of the background colour under the scene; it cured light tiles' last
+  rows into SDRAM at 143.00 / 1 with the display off.
+- **The alpha-0 overlay** (`Renderer::set_overlay`, R121): a full-screen
+  quad of alpha 0 blended over the scene. It paces the write-out, changes
+  no pixel (scene-0009), and with the underlay cured the last-row fault
+  with the display on: 0 of 32,592 in an hour (gpubench-0241), and 0 of
+  709 through the service (scene-0009).
+- A quarter of the display's reads changed nothing at 143.00 / 1: the
+  display isn't the lever there.
+
+**First run when it resumes:** GC2BY's warm game-mesh ladder (143.00,
+146.25, 149.50 / 1) with both on. One run, under the stop rule. It
+could clear the x = 255 pixel at 146.25 and the tile-race residues
+(write-out faults). It isn't expected to touch GC2BX's cracks or texel
+errors, which aren't write-out faults.
+
 **Added 2026-10-28: Intel's datasheet and REA (reminder R85, read it
 first).** The datasheet (`local/datasheets/intel-2700g.pdf`) rates the
 2D/3D cores to 75 MHz and documents no setting for running past it; REA

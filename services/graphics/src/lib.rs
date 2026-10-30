@@ -213,6 +213,11 @@ enum Job {
     None,
     /// A 2D frame, its flip held for the 3D area.
     TwoD,
+    /// A 2D frame (no scene) done, its flip waiting for the scan to near
+    /// the blanking (R115): queued since `since` (the service's clock).
+    Flip {
+        since: u32,
+    },
     /// The 3D area waiting to start on screen 0, on screen, behind the scan
     /// at a scan line in `from..=to`. `prepared`: its lists written already
     /// (else written at the start: the core needed setting up).
@@ -278,6 +283,11 @@ pub struct Starts {
     pub two_d_behind: u32,
     /// ... copied at once (no copy timed yet: may tear).
     pub two_d_now: u32,
+    /// 2D flips that waited for the blanking without the CPU (R115).
+    pub flips_waited: u32,
+    /// ... of them, flipped more than a refresh after they were ready (the
+    /// caller polled too late for the blanking it was due at).
+    pub flips_slipped: u32,
 }
 
 /// How a scene frame starts (R20).
@@ -310,6 +320,16 @@ pub enum Step {
 /// How long to wait before looking at the 2D engine again (it has no
 /// prediction; a full-screen 2D frame takes milliseconds).
 const TWO_D_POLL_US: u32 = 200;
+/// How long before the blanking a 2D flip waits on the CPU (R115, the
+/// owner's go 2026-10-30 on `docs/research/sheets/r115-flip-without-waiting.md`):
+/// the flip waits for the blanking without the CPU until then, and the
+/// rest (at most this) on it. One pass of `rp-today`'s loop as it samples
+/// the pen (~2 ms a sample, `PEN_DOWN_SLEEP_MS`'s note) plus a margin, so
+/// a caller polling once a pass still meets the blanking.
+const FLIP_LEAD_US: u32 = 2_200;
+/// A refresh at 60 Hz (645 lines of R111's 25,687 ns), us: a flip later
+/// than this after it was ready slipped a blanking.
+const REFRESH_US: u32 = 16_569;
 /// A copy this many pixels or more is timed into the copies' schedule
 /// (an eighth of the screen: smaller ones are mostly the blit's own cost,
 /// which would overstate the per-pixel time a big copy is planned with).
@@ -405,6 +425,8 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 last_2d_line: None,
                 two_d_behind: 0,
                 two_d_now: 0,
+                flips_waited: 0,
+                flips_slipped: 0,
             },
             #[cfg(test)]
             before_copy: None,
@@ -457,6 +479,14 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     #[must_use]
     pub fn list_spills(&self) -> u32 {
         self.open().map_or(0, |s| s.r.spills())
+    }
+
+    /// A frame is in flight ([`Self::poll`] has work to drive, and
+    /// [`Self::frame`] would be refused as busy): a caller with a new frame
+    /// lets it wait a pass instead of spinning on `poll` (R115).
+    #[must_use]
+    pub fn busy(&self) -> bool {
+        self.job != Job::None
     }
 
     /// How the 3D frames started so far (R20).
@@ -517,6 +547,30 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     }
 
     /// The scan line now.
+    /// The held 2D frame (no scene) flipped once the scan is within
+    /// [`FLIP_LEAD_US`] of the blanking (the renderer's flip waits the
+    /// rest, at most that), else a wait until then: the CPU doesn't wait a
+    /// refresh for it (R115). A clock with no measured scan flips at once,
+    /// as before.
+    fn flip_2d<C: Clock>(&mut self, since: u32, clock: &mut C) -> Step {
+        if let Some(sc) = self.scan() {
+            let lead = FLIP_LEAD_US.saturating_mul(1000).div_ceil(sc.line_ns);
+            let start = *rp_drv_mbx_display::BLANK_LINES.start();
+            let from = start.saturating_sub(lead);
+            let line = self.scan_line();
+            if !(from..=*rp_drv_mbx_display::BLANK_LINES.end()).contains(&line) {
+                return Step::Wait(self.when_line(from, clock));
+            }
+        }
+        self.job = Job::None;
+        self.two_d.flip();
+        self.starts.flips_waited += 1;
+        if clock.now_us().wrapping_sub(since) > REFRESH_US {
+            self.starts.flips_slipped += 1;
+        }
+        Step::Shown
+    }
+
     fn scan_line(&mut self) -> u32 {
         self.two_d.parts().0.regs.read32(dreg::DVLNUM) & 0xFFF
     }
@@ -1154,6 +1208,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     pub fn poll<C: Clock>(&mut self, clock: &mut C) -> Step {
         match self.job {
             Job::None => Step::Idle,
+            Job::Flip { since } => self.flip_2d(since, clock),
             Job::TwoD => {
                 let Some(at) = self.two_d.landed() else {
                     let _ = self.two_d.poll();
@@ -1171,10 +1226,12 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     .open()
                     .map(|s| (Rect::new(s.x, s.y, s.w, s.h), s.r.background().is_some()))
                 else {
-                    // No scene: a 2D frame, flipped as ever, to either
-                    // screen.
-                    self.two_d.flip();
-                    return Step::Shown;
+                    // No scene: a 2D frame, flipped to either screen in
+                    // the blanking, the CPU free until just before it.
+                    self.job = Job::Flip {
+                        since: clock.now_us(),
+                    };
+                    return self.poll(clock);
                 };
                 // 2D's layer under an opaque scene never shows (R110 run 3
                 // on the X51v: copied into the shown screen it tore every

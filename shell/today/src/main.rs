@@ -717,13 +717,13 @@ mod image {
                 to_flip.add(s.engine_us);
             }
 
-            // Draw what changed, timing it.
-            if shell.needs_frame() {
+            // Draw what changed, timing it. One job at a time: with a frame
+            // still in flight (its flip waiting for the blanking, R115) the
+            // new one waits a pass, the pen sampled meanwhile, rather than
+            // the CPU spinning until the flip.
+            if shell.needs_frame() && !gfx.busy() {
                 let t0 = rt::ticks();
                 z_shell.run(|| shell.frame(frame));
-                // One job at a time: the frame in flight finishes first (as
-                // the 2D renderer's own draw waited for it).
-                while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
                 let _ = z_compositor.run(|| gfx.frame(frame, &mut gclock));
                 let t1 = rt::ticks();
                 let us = t1.wrapping_sub(t0) / 13 * 4;
@@ -779,8 +779,9 @@ mod image {
             if !filter.down() && raw.is_none() && touch.pen_down() {
                 phantom = phantom.saturating_add(1);
             }
-            let wait_ms: u32 = if showing.is_some() {
-                // A frame is with the engine: flip it as soon as it's done.
+            let wait_ms: u32 = if showing.is_some() || gfx.busy() {
+                // A frame is with the engine or waiting for the blanking:
+                // flip it as soon as it's due.
                 1
             } else if REPLAY && !replay_touching {
                 // The pause before the next touch.

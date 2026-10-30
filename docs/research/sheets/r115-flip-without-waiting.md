@@ -82,3 +82,18 @@ the device, and keeps every flip in the blanking.
 
 **Asked of the owner:** the go to build C (steps 1-3); a separate go for
 the device check (step 4).
+
+## Built (the owner's go 2026-10-30, "Yes, build it")
+- **Where the wait was:** the graphics service, not the renderer's
+  callers. With no scene, the service flipped the landed 2D frame from
+  its `poll` (the renderer's `present` spun there).
+- **`Job::Flip`:** the service now returns a wait until the scan is
+  `FLIP_LEAD_US` (2.2 ms, 86 lines at 60 Hz) from the blanking, then
+  flips. The renderer's own wait (in the blanking only) covers the rest.
+  `Starts::flips_waited` and `flips_slipped` count each flip, and each
+  one that came more than a refresh late.
+- **`Graphics::busy`:** `rp-today` lets a new frame wait a pass while one
+  is in flight, instead of spinning on `poll`. It wakes every 1 ms
+  meanwhile.
+- Host test plus two mutants; `emu-today` passes.
+- The interrupt (B) is left for later, as recommended.
