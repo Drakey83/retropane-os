@@ -360,6 +360,9 @@ mod image {
         let mut pending: Option<u32> = None; // when the input being answered was read
         // An answered input whose frame is with the engine, not yet shown.
         let mut showing: Option<u32> = None;
+        // When the frame in flight next wants a poll (the service's clock,
+        // us): its flip's deadline, or the engine's next look (R115).
+        let mut flip_due: Option<u32> = None;
         // The GPU renderer's costs (rp_mbx_render::FrameStats), worst seen.
         let (mut queue_worst, mut wait_worst, mut engine_worst, mut rebuilds) =
             (0u32, 0u32, 0u32, 0u32);
@@ -380,6 +383,37 @@ mod image {
             last_ticks = t;
             now_ms += u64::from(sub_ms / TICKS_MS);
             sub_ms %= TICKS_MS;
+
+            // A frame the engine finished goes on the screen; the latency
+            // counts to then (the flip), not to the end of queueing. First
+            // thing after waking (R115): a flip waiting for the blanking is
+            // due now, before this pass's pen sample (~2 ms) could carry the
+            // scan past it (today-0013: touch to flush +4.3 ms median with
+            // the poll after the sample).
+            let step = gfx.poll(&mut gclock);
+            flip_due = match step {
+                Step::Wait(t) => Some(t),
+                _ => None,
+            };
+            if flip_due.is_none()
+                && let Some(at) = showing.take()
+            {
+                let total = rt::ticks().wrapping_sub(at) / 13 * 4;
+                latency.add(total);
+                let s = gfx.two_d().last;
+                // A slow answer, taken apart (2026-10-14: one of 57 took
+                // 101 ms on the device, every part's worst far less).
+                // Not in the replay: a line mid-run is a card write in the loop (C59).
+                if total > SLOW_ANSWER_US && !REPLAY {
+                    let _ = writeln!(
+                        RunLog,
+                        "slow answer at {} ms: {total} us; its frame's CPU {last_frame_us} us, wait {} us, engine {} us",
+                        now_ms, s.wait_us, s.engine_us
+                    );
+                }
+                engine_worst = engine_worst.max(s.engine_us);
+                to_flip.add(s.engine_us);
+            }
 
             // The clock: once a minute.
             let minute = start_min + (now_ms / 60_000) as i64;
@@ -667,7 +701,9 @@ mod image {
                 );
                 let _ = writeln!(
                     RunLog,
-                    "gpu frames: worst CPU queueing {queue_worst} us, worst wait for the previous frame and scan-out {wait_worst} us, worst queue-to-flip {engine_worst} us, background rebuilt {rebuilds} times"
+                    "gpu frames: worst CPU queueing {queue_worst} us, worst wait for the previous frame and scan-out {wait_worst} us, worst queue-to-flip {engine_worst} us, background rebuilt {rebuilds} times; flips waited for the blanking {}, slipped a refresh {}",
+                    gfx.starts().flips_waited,
+                    gfx.starts().flips_slipped
                 );
                 // Typical values (medians) of each part of a tap's answer.
                 for (name, l) in [
@@ -693,28 +729,6 @@ mod image {
                 }
                 before.restore(&mut gfx.two_d().parts().0.regs);
                 rp_image::finish()
-            }
-
-            // A frame the engine finished goes on the screen; the latency
-            // counts to then (the flip), not to the end of queueing.
-            if !matches!(gfx.poll(&mut gclock), Step::Wait(_))
-                && let Some(at) = showing.take()
-            {
-                let total = rt::ticks().wrapping_sub(at) / 13 * 4;
-                latency.add(total);
-                let s = gfx.two_d().last;
-                // A slow answer, taken apart (2026-10-14: one of 57 took
-                // 101 ms on the device, every part's worst far less).
-                // Not in the replay: a line mid-run is a card write in the loop (C59).
-                if total > SLOW_ANSWER_US && !REPLAY {
-                    let _ = writeln!(
-                        RunLog,
-                        "slow answer at {} ms: {total} us; its frame's CPU {last_frame_us} us, wait {} us, engine {} us",
-                        now_ms, s.wait_us, s.engine_us
-                    );
-                }
-                engine_worst = engine_worst.max(s.engine_us);
-                to_flip.add(s.engine_us);
             }
 
             // Draw what changed, timing it. One job at a time: with a frame
@@ -807,7 +821,16 @@ mod image {
             // Never past the next check-in: sleeping through the loader's
             // run limit returns us to it (or worse, the watchdog resets).
             let wait_ms = wait_ms.min(rt::check_in_every_ms()).max(1);
-            if rt::set_alarm(rt::ticks().wrapping_add(wait_ms * TICKS_MS)) {
+            let mut wait_ticks = wait_ms * TICKS_MS;
+            // The frame in flight's own time, if sooner (R115: woken at its
+            // flip's deadline, not up to a millisecond after).
+            if let Some(due) = flip_due.filter(|_| gfx.busy()) {
+                let until = due.wrapping_sub(gclock.now_us()) as i32;
+                wait_ticks = wait_ticks
+                    .min((until.max(1) as u32).saturating_mul(13) / 4)
+                    .max(1);
+            }
+            if rt::set_alarm(rt::ticks().wrapping_add(wait_ticks)) {
                 rt::wait_any_signal();
             }
         }
