@@ -116,6 +116,15 @@ Proposed, for his vote (D1-D5):
   its own set in this style regardless; the owner liked the look of the
   mock-up's own icons (2026-10-30). The Start button's mark needs its own
   design (R127).
+  **Decided by the owner (2026-10-30, D5): the base set is our own, in the
+  style of the mock-up's icons** (asked which look he meant: "Your mock-up
+  icons"). Drawn as vector sources in the repository, rendered on the PC
+  at build time to each size the shell uses, for both light and dark
+  mode, so the device decodes nothing (as the weather icons:
+  today-screen-plan.md). Open sets (Crystal Clear, Nuvola) stay possible
+  as optional packs. The set to draw: every program in the Start menu
+  and on the desktops, folders, the common file types, My Device, the
+  cards (SD, CF: Juanje's icons are already in the base).
 
 ## Light and dark, from the start (owner, 2026-10-30)
 
