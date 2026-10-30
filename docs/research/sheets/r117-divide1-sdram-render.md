@@ -46,3 +46,13 @@ Training knowledge, a claim.
 
 **Asked of the owner:** the go to build C (`rp-gpubench` run R117 with
 an emulator check); a separate go for the device run.
+
+## The run (2026-10-29, gpubench-0228; 2700g.md "R117 on the X51v")
+Only target and lists both on die is clean at 143.00 / 1. Lists on die
+cure the layered, textured and depth frames rendered into SDRAM (and
+speed them 17-21%), not the flat one (18 of 20 wrong). The divider-only
+switch is clean and takes ~2.0 ms each way (two 1 ms driver waits).
+So C's first branch (lists on die fix SDRAM targets) holds for three
+frames of four, not all; the second (B, a divider step around copy-path
+frames) is clean and costs ~4 ms a copy-path frame as the driver waits
+today. The owner picks the next step.
