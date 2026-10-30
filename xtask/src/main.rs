@@ -255,6 +255,8 @@ commands:
             emulator's timing is the PC's): run it before `load rp-noise`
   emu-clocks the clocks test (rp-clocks: every operating point visited,
             the clocks and voltage put back): run it before `load rp-clocks`
+  ui-preview the shell's screens drawn on the PC by the image's own shell and 2D
+            renderer code: PNGs and an index page in target/ui-preview/
   emu-today the shell's Today screen (ADR-0021): pixel-exact, a tap on
             Start opens the menu, Back to loader returns with latencies
   emu-crash only the crash path check (an image's crash box on the plane
@@ -364,8 +366,8 @@ fn main() -> ExitCode {
         | "coverage" | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale"
         | "emu-blend-filter" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat"
         | "emu-mbx3d-api" | "emu-tabench" | "emu-gpubench" | "emu-cs3bus" | "emu-cpldbus"
-        | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-probe"
-        | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace"
+        | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "ui-preview" | "emu-crash"
+        | "emu-probe" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace"
         | "emu-fullsize" | "emu-usb" | "emu-mtp" | "emu-stale" | "emu-drive" | "emu-usb-suite"
         | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect"
         | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep"
