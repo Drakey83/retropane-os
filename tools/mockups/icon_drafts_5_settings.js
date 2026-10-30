@@ -47,7 +47,8 @@ ${shadow(128, 232, 70, 11, 'sp-sh')}
 
 ICONS['Memory settings'] = ICONS.Memory;
 
-ICONS.Storage = `
+// The first take, stacked drums (not liked by the owner).
+ICONS['Storage: drums'] = `
 ${shadow(128, 226, 104, 13, 'sg-sh')}
 <defs>${lin('sg-tp', [[0, '#e4fbf8'], [1, '#3fb3a4']])}${lin('sg-fr', [[0, '#e6ebf0'], [.5, '#a9b4c0'], [1, '#4c5664']])}</defs>
 ${[0, 1, 2].map(i => { const y = 150 - i * 50; return `<path d="M30 ${y} V${y + 40} Q30 ${y + 62} 128 ${y + 62} Q226 ${y + 62} 226 ${y + 40} V${y} Z" fill="url(#sg-fr)" stroke="#3a4250" stroke-width="3"/><ellipse cx="128" cy="${y}" rx="98" ry="22" fill="url(#sg-tp)" stroke="#11574e" stroke-width="3"/><ellipse cx="108" cy="${y - 6}" rx="56" ry="9" fill="#fff" opacity=".55"/><circle cx="196" cy="${y + 40}" r="5" fill="#36e02a" stroke="#126810"/>`; }).join('')}`;

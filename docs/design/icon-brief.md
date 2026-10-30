@@ -39,7 +39,7 @@ for the shared glass parts and the first twelve, then
 direction is liked; the Calendar was redrawn without its see-through
 stand, "Deleted Items" is called the **Trash can**, and Programs gets
 other takes (`icon-drafts-programs-alt.jpg`: windows, folder, box; the
-tile grid was not liked); asked for "a new one", Claude drew a cube, a rocket and a toolbox (`icon-drafts-programs-new.jpg`). **Ruled (owner, 2026-10-30): Programs is the folder take** ("lets use Program folder"). Not loved: Themes & desktop (the palette), Storage (the stacked drums) and the oval in Sound's speaker; Sound's oval is removed and three new takes each for the other two are on `icon-drafts-settings-redo.jpg`, his pick to come. Sources of
+tile grid was not liked); asked for "a new one", Claude drew a cube, a rocket and a toolbox (`icon-drafts-programs-new.jpg`). **Ruled (owner, 2026-10-30): Programs is the folder take** ("lets use Program folder"). Not loved: Themes & desktop (the palette), Storage (the stacked drums) and the oval in Sound's speaker; Sound's oval is removed and three new takes each for the other two are on `icon-drafts-settings-redo.jpg`. **Ruled (owner, 2026-10-30): Storage is the card with a usage bar** (blue end squared off flush with the green, his note); Sound as redrawn is liked. Themes & desktop: none of the palette, swatches, roller or colour wheel liked; a new round (wallpaper swap, prism, paint drops, paint can) on `icon-drafts-themes-new.jpg`. Sources of
 the list: the Start menu and quick buttons (ui.md), every WM5 default app
 (apps-and-packs.md), File Explorer's folders and file types, Settings'
 groups, the status bar and the shade.
@@ -50,7 +50,7 @@ groups, the status bar and the shade.
 | Device and places | My Device, SD card and CF card (Juanje's, in the base: not redrawn), Main memory/flash, Network (Wi-Fi), Bluetooth, USB/PC connection, Trash can empty and full, Desktop, Start (the button's mark: three candidates for R127) |
 | Folders (teal glass) | Folder, open folder, Documents, Pictures, Music, Video, Downloads, Games, Programs, Shared/network, Favorites, Recent |
 | File types | Text, Document, Spreadsheet, Presentation, PDF, Picture, Music, Video, Archive (zip), Program (.exe), Install package (.cab), Font, Web page, Contact card (vCard), Calendar file (iCal), Note, Unknown |
-| Settings (each applet) | Display and brightness, Sound, Buttons, Power and battery, Memory, Storage, Clock/date and region, Owner info, Themes and desktop, Light/dark mode, Touch alignment, Keyboard and input, Wireless (Wi-Fi, Bluetooth), Security and keys, Sources and accounts, Packs, About, Updates |
+| Settings (each applet) | Display and brightness, Sound, Buttons, Power and battery, Memory, Storage (card and bar, ruled), Clock/date and region, Owner info, Themes and desktop, Light/dark mode, Touch alignment, Keyboard and input, Wireless (Wi-Fi, Bluetooth), Security and keys, Sources and accounts, Packs, About, Updates |
 | Status and shade | Battery (levels, charging), Wi-Fi strength, Bluetooth on, Volume (levels, mute), Alarm set, Notification, Sync running, Card inserted, Lock |
 | Badges (overlays) | Shortcut arrow, Check, Lock, Magnifier, Plus, Minus, Warning, Error, Info, Sync, Download, Star |
 | Weather | VClouds' pack (the base); the five optional packs |

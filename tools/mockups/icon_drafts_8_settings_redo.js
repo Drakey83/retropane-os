@@ -66,5 +66,7 @@ ${shadow(128, 232, 104, 12, 'sb2-sh')}
 <g transform="rotate(-8 128 110) translate(0 -12) scale(.86) translate(20 0)">${ICONS['Card inserted'].replace(/ci-/g, 'sbc-').replace(/<ellipse[^>]*>/, '')}</g>
 <defs>${lin('sb2-gl', [[0, '#ffffff', .9], [1, '#a9b4c0', .8]])}</defs>
 <rect x="18" y="176" width="220" height="44" rx="14" fill="url(#sb2-gl)" stroke="#2a3038" stroke-width="4"/>
-${[['blue', 26, 70], ['green', 96, 44], ['orange', 140, 30]].map(([c, x, w], i) => `<defs>${lin('sb2-' + i, [[0, C[c][0]], [.5, C[c][1]], [1, C[c][2]]])}</defs><rect x="${x}" y="184" width="${w}" height="28" ${i == 0 ? 'rx="8"' : ''} fill="url(#sb2-${i})"/>`).join('')}
+${[['blue', 26, 70], ['green', 96, 44], ['orange', 140, 30]].map(([c, x, w], i) => `<defs>${lin('sb2-' + i, [[0, C[c][0]], [.5, C[c][1]], [1, C[c][2]]])}</defs>${i == 0 ? `<path d="M${x + 8} 184 H${x + w} V212 H${x + 8} Q${x} 212 ${x} 204 V192 Q${x} 184 ${x + 8} 184 Z" fill="url(#sb2-${i})"/>` : `<rect x="${x}" y="184" width="${w}" height="28" fill="url(#sb2-${i})"/>`}`).join('')}
 <rect x="24" y="182" width="208" height="12" rx="6" fill="#fff" opacity=".5"/>`;
+// The owner's pick (2026-10-30), the blue end squared off against the green.
+ICONS.Storage = ICONS['Storage: card and bar'];
