@@ -389,6 +389,7 @@ mod image {
                 top.0
             );
         }
+        rp_hal_x51v::cardsink::flush();
         let mut touch = c2b_touch(gpio);
         // The answers, worked out at the clock as found (624).
         let refs = [int_work(1), int_work(2), int_work(3), int_work(4)];
@@ -403,6 +404,9 @@ mod image {
             rt::check_in();
             log!("C2b {name} MHz");
             crumbs.mark(10 + i as u32, p.cccr(clocks::read().cccr));
+            // On the card before the change: a hang keeps this line (run
+            // 1 lost every line after the first sector).
+            rp_hal_x51v::cardsink::flush();
             let before = touch.as_mut().map(temp0);
             let ok = clocks::change_past_rating(p);
             let now = clocks::read();
@@ -571,6 +575,7 @@ mod image {
             let p = &p;
             rt::check_in();
             log!("C2 {name} MHz");
+            rp_hal_x51v::cardsink::flush();
             if p.mem_khz() != sp.mem_khz() {
                 log!("  skipped (changes the memory clock: a later run)");
                 continue;

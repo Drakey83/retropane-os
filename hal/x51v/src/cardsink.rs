@@ -216,6 +216,35 @@ pub fn settle() {
     }
 }
 
+/// Everything logged so far onto the cards, programmed, before the
+/// program goes on: a step that may hang the device (a clock past its
+/// rating) calls it first, so the card log holds the line naming the step
+/// (`rp-clocks` C2b run 1, 2026-10-30: a watchdog reset kept only the
+/// first sector, the lines after it held back while the card programmed,
+/// and the step that hung was lost). A few rounds at most: each writes
+/// what was held back, then waits for the card.
+// One copy for every caller (ADR-0005 rule 8: size).
+#[inline(never)]
+pub fn flush() {
+    if in_loader() {
+        return;
+    }
+    for _ in 0..4 {
+        let Some(s) = current() else { return };
+        if s.busy != 0 {
+            return;
+        }
+        crate::cardlog::settle(s, &mut Program::of(s));
+        if (s.synced as usize) >= len() {
+            return;
+        }
+        sync(s, &mut Program::of(s), sector());
+    }
+    if let Some(s) = current() {
+        crate::cardlog::settle(s, &mut Program::of(s));
+    }
+}
+
 /// The loader's sync: `io`'s stream is the same, its cards its own.
 pub fn sync_with(io: &mut dyn LoaderCards) {
     let Some(s) = current() else { return };
