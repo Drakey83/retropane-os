@@ -300,9 +300,15 @@ on the X51v.**
   that temperature.
 - **The TSC2046's own temperature sensors** (TI's datasheet: `TEMP0`,
   channel `000`, and `TEMP1`, channel `111`: the chip's diode, read at
-  two currents for an absolute reading without calibration). No Dell
-  driver uses them: `touch.dll` and `battdrvr` send no `0x84`-`0x87` or
-  `0xF4`-`0xF7`.
-- **Together, three temperature readings exist on this board beyond the
-  2700G's `TEMP0`:** the battery's thermistor, and the touch controller's
-  die. Both are reachable through the touch controller we already drive.
+  two currents for an absolute reading without calibration).
+  - **RetroPane already reads `TEMP0`:** it is the thermometer of
+    `rp-gpubench`'s warm runs and the temperature guard (R76), and of
+    entropy.md. It is not a 2700G register: the "TEMP0" in 2700g.md is
+    this one.
+  - **`TEMP1` isn't read yet.** With `TEMP0` it gives the absolute
+    temperature without calibration.
+  - No Dell driver reads either: `touch.dll` and `battdrvr` send no
+    `0x84`-`0x87` or `0xF4`-`0xF7`.
+- **So, beyond the touch controller's `TEMP0` we already read:** the
+  battery's thermistor (new, through AUX) and `TEMP1` (unused). No
+  temperature register was found for the 2700G or the PXA270.

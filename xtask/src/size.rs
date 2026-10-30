@@ -821,7 +821,12 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 41 -> 51 KiB on 2026-10-21 (test image): quality
         // audit C38, every crash through rp-image (the card-log line, the
         // crash box, the fault's word and SPSR). 46.3 KiB measured, +~10%.
-        max_load: 51 * 1024,
+        // Ratcheted 51 -> 71 KiB on 2026-10-30 (test image): stage C2b
+        // (`RP_CLOCKS_OC`, the core past 624 MHz, the owner's go): its
+        // checks and the touch controller as a thermometer (SSP and the
+        // TSC2046 driver). 64.2 KiB measured with it, + ~10%; the default
+        // build stays at 48 KiB (the stage compiled out).
+        max_load: 71 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

@@ -56,6 +56,11 @@ pub const SDCLK_MAX_KHZ: u32 = 104_000;
 pub const BUS_MAX_KHZ: u32 = 208_000;
 /// Fastest core clock, in kHz.
 pub const CORE_MAX_KHZ: u32 = 624_000;
+/// The fastest turbo PLL a test past Intel's rating may ask for, in kHz:
+/// L 16 x 2N 8 (cpu-full-potential.md C2, `rp-clocks`' stage C2b;
+/// `docs/research/sheets/c2-cpu-overclock-test1.md`). Nothing ships past
+/// [`CORE_MAX_KHZ`] (ADR-0031) until the per-device self-test is decided.
+pub const PAST_RATING_MAX_KHZ: u32 = 832_000;
 
 /// An operating point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,6 +153,21 @@ impl Point {
             && self.n2 >= 2
             && self.n2 <= 6
             && self.turbo_khz() <= CORE_MAX_KHZ
+            && self.bus_khz() <= BUS_MAX_KHZ
+            && self.mem_khz() <= BUS_MAX_KHZ
+    }
+
+    /// [`Self::legal`] with the turbo multiplier allowed up to 2N 8 and the
+    /// turbo PLL up to [`PAST_RATING_MAX_KHZ`] (C2's test past Intel's
+    /// rating, the owner's go 2026-10-30): the bus and memory limits are
+    /// kept, so only the core's turbo clock leaves the rating.
+    #[must_use]
+    pub const fn legal_past_rating(self) -> bool {
+        self.l >= 2
+            && self.l <= 31
+            && self.n2 >= 2
+            && self.n2 <= 8
+            && self.turbo_khz() <= PAST_RATING_MAX_KHZ
             && self.bus_khz() <= BUS_MAX_KHZ
             && self.mem_khz() <= BUS_MAX_KHZ
     }
@@ -382,6 +402,21 @@ pub const fn plan(now: Raw, to: Point) -> Option<Plan> {
     if !to.legal() {
         return None;
     }
+    plan_any(now, to)
+}
+
+/// [`plan`] for a point past Intel's core rating
+/// ([`Point::legal_past_rating`]): test images only (ADR-0031).
+#[must_use]
+pub const fn plan_past_rating(now: Raw, to: Point) -> Option<Plan> {
+    if !to.legal_past_rating() {
+        return None;
+    }
+    plan_any(now, to)
+}
+
+/// [`plan`] without the legality check (its callers make it).
+const fn plan_any(now: Raw, to: Point) -> Option<Plan> {
     if !now.point().needs_relock(to) {
         return Some(Plan {
             relock: false,
@@ -416,7 +451,7 @@ pub const fn khz_from_cycles(cycles: u32, ticks: u32) -> u32 {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod target {
-    use super::{CCCR, CCSR, MDCNFG, MDREFR, Point, Raw, clkcfg, plan};
+    use super::{CCCR, CCSR, MDCNFG, MDREFR, Plan, Point, Raw, clkcfg, plan};
     use crate::devmap::va;
 
     fn rd(phys: usize) -> u32 {
@@ -489,6 +524,22 @@ mod target {
     /// The caller answers for the core voltage: `to.min_mv()` must be met.
     #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
     pub fn change(to: Point) -> bool {
+        change_by(to, plan)
+    }
+
+    /// [`change`] to a point past Intel's core rating
+    /// ([`Point::legal_past_rating`]: the turbo multiplier up to 2N 8, the
+    /// bus and memory clocks within their limits). **Test images only**
+    /// (`rp-clocks`' C2b, the owner's go 2026-10-30): nothing ships past
+    /// 624 MHz (ADR-0031). The PLL may not take such a multiplier: `CCSR`
+    /// afterwards says what it runs.
+    #[cfg(feature = "past-rating")]
+    pub fn change_past_rating(to: Point) -> bool {
+        change_by(to, super::plan_past_rating)
+    }
+
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+    fn change_by(to: Point, plan: fn(Raw, Point) -> Option<Plan>) -> bool {
         let was = crate::rt::irqs_enabled_now();
         crate::rt::irq_disable();
         let Some(p) = plan(read(), to) else {
@@ -750,6 +801,46 @@ mod tests {
         ); // bus 312
         assert!(!pt(1, 2, false).legal());
         assert!(!pt(8, 7, true).legal());
+    }
+
+    #[test]
+    fn past_the_rating_only_the_core_leaves_it() {
+        // C2's test (the owner's go 2026-10-30): L 16 x 2N 7 and 8 (728 and
+        // 832 MHz) with the run, bus and memory clocks as at 624.
+        for (n2, khz) in [(7, 728_000), (8, 832_000)] {
+            let p = pt(16, n2, true);
+            assert!(!p.legal(), "{n2}: past Intel's rating");
+            assert!(p.legal_past_rating(), "{n2}");
+            assert_eq!(p.core_khz(), khz);
+            assert_eq!(
+                (p.run_khz(), p.bus_khz(), p.mem_khz(), p.sdclk_khz()),
+                (208_000, 208_000, 208_000, 104_000),
+                "{n2}: the memory and bus as Dell set them"
+            );
+            // From 624 the change relocks the PLL; the SDRAM dividers stay
+            // and the refresh interval is the rule's for the same memory
+            // clock (49 where Windows Mobile's is 48), nothing settled after.
+            let now = raw(POINTS[6].1, WM_MDREFR);
+            let pl = plan_past_rating(now, p).unwrap();
+            assert!(pl.relock);
+            assert_eq!(pl.cccr & 0xFFF, 16 | u32::from(n2) << 7);
+            let keep = !MDREFR_DRI;
+            assert_eq!(pl.first & keep, WM_MDREFR & keep);
+            assert_eq!(pl.first & MDREFR_DRI, dri(208_000, sdram_rows(WM_MDCNFG)));
+            assert_eq!(pl.settle, None);
+            assert_eq!(plan(now, p), None, "the shipped path refuses it");
+        }
+        // Still refused: 2N 9 and up, a turbo past 832, a bus or memory past
+        // its limit.
+        assert!(!pt(16, 9, true).legal_past_rating());
+        assert!(!pt(17, 8, true).legal_past_rating()); // 884 MHz
+        assert!(
+            !Point {
+                b: true,
+                ..pt(24, 2, false)
+            }
+            .legal_past_rating()
+        ); // bus 312
     }
 
     #[test]

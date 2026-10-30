@@ -11,11 +11,13 @@ publish.workspace = true
 
 [target.'cfg(target_os = "none")'.dependencies]
 rp-image = { path = "../../boot/image" }
-rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x", features = ["past-rating"] }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-bench-suite = { path = "../suite" }
 rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
+rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 

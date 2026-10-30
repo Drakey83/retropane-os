@@ -27,6 +27,27 @@ are made, and links the concept mock-ups.
   were mocked for comparison: A clean flat, dark-first; B glassy accents;
   C retro-modern (concept canvas, private to the owner).
 
+## The two looks' layouts (owner, 2026-10-30)
+
+The owner, on how the apps' flows and layouts are decided: "I want them
+to look like WM just modernized in both look and funtionality ... the
+layout should be mostly the same, that is for classic mode. modern look
+should follow SPB mobile shell mostly but this is where I might do some
+more modifications, also I am counting on you to help me alot with
+suggestion especially with using rule 0 mentality."
+
+- **Classic:** each default app keeps Windows Mobile's layout and flow
+  (the same screens, menus and softkeys), modernised in look and
+  function.
+- **Modern:** follows SPB Mobile Shell mostly, with the owner's own
+  changes.
+- **Claude's part:** suggestions on every screen, with rule 0 applied to
+  each inherited choice. What WM or SPB does is the finding; where a
+  better way exists (measured or argued), it is proposed beside it, and
+  the owner picks.
+- **First real program: Weather** (the default home). Its interaction
+  foundations come first, decided once for every app.
+
 ## SPB Mobile Shell's philosophy (owner, 2026-10-19)
 
 **The scope (owner, 2026-10-19, later the same day): the whole

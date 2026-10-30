@@ -16,6 +16,11 @@ rp-hal-api = { path = "../api" }
 rp-hal-mem = { path = "../mem" }
 rp-hal-simd = { path = "../simd" }
 
+[features]
+# `clocks::change_past_rating`: the core past Intel's 624 MHz, for the
+# overclock test image only (rp-clocks' C2b; ADR-0031: nothing ships there).
+past-rating = []
+
 [dev-dependencies]
 rp-hal-mock = { path = "../mock" }
 

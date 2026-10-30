@@ -4911,7 +4911,63 @@ pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
     } else {
         eprintln!("    clocks: returned cleanly; run log:{log}");
     }
-    clocks_fault_path(root, &loader, modelled)
+    clocks_fault_path(root, &loader, modelled)?;
+    clocks_past_rating(root, &loader, modelled)
+}
+
+/// `rp-clocks` stage C2b (`RP_CLOCKS_OC`, C2's test past 624 MHz, one
+/// second of checks a step here): it returns cleanly with every step
+/// logged and the clocks put back; on a fork that models the clocks, every
+/// check passes.
+fn clocks_past_rating(root: &Path, loader: &Path, modelled: bool) -> Result<(), String> {
+    let bin = variant_image_envs(
+        root,
+        "rp-clocks",
+        &[("RP_CLOCKS_OC", "1"), ("RP_CLOCKS_OC_SHORT", "1")],
+    )?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-CLOCKS: ")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("clocks C2b: never came back to the loader")?;
+    if crashed(log) || log.contains("did not return") {
+        return Err(format!("clocks C2b: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "C2b (the owner's go 2026-10-30)",
+        "C2b 624 (the control) MHz",
+        "end: CCCR",
+        " checks, ",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("clocks C2b: the run log has no `{want}`:{log}"));
+        }
+    }
+    if log.contains("C2 624 MHz") {
+        return Err(format!("clocks C2b: C2 ran too:{log}"));
+    }
+    if modelled && !log.contains(" checks, 0 BAD") {
+        return Err(format!(
+            "clocks C2b: the modelled clocks must pass every check:{log}"
+        ));
+    }
+    eprintln!("    clocks C2b OK: the stage ran, returned cleanly, the clocks put back");
+    Ok(())
 }
 
 /// `rp-clocks` run F (quality audit C31): `CCCR` asking for another point,

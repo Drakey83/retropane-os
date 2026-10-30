@@ -42,8 +42,10 @@ fail, as it needs the owner's ruling on the RAM rule.
 - **Built on `rp-clocks`:** its proven switching (one I-cache line, IRQs
   off), breadcrumbs (a screen stripe and `RPCK` in 2700G memory before
   each step), the cycle-counter check and the put-back.
-- **The voltage code is never changed:** it stays at the top pattern, as
-  found under Windows Mobile at 624. No board bits are touched.
+- **The voltage code goes no higher than Dell's own for 624** (the top
+  pattern). If Windows Mobile left a lower one (it boots at 520 or 624),
+  it is raised to that, as `rp-clocks`' C2 already does, and put back at
+  the end. No board bits are touched.
 - **Steps, lowest risk first:** 624 (the control), 2N 7 (728), 2N 8
   (832). Each step:
   - **the latch:** write `CCCR` and `CLKCFG`, then read back `CCSR`. If
@@ -53,8 +55,9 @@ fail, as it needs the owner's ruling on the RAM rule.
     answers), memory patterns over 3 MiB of SDRAM (walking ones and
     address-in-address), I-cache and D-cache thrash with checks, a DMA
     copy checked;
-  - **the record:** temperature where readable (the 2700G's `TEMP0`; the
-    battery thermistor waits for R122). Then Dell's 624 is put back.
+  - **the record:** the board's temperature from the touch controller's
+    `TEMP0`, as the GPU's warm runs read it (the battery thermistor waits
+    for R122). Then Dell's 624 is put back.
 - **Stop at the first error.** A hang is the watchdog's: the breadcrumb
   shows the step, and the card log (rp-cardlog) has the lines so far.
   **The owner watches the first run** (a new clock region).

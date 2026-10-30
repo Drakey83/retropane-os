@@ -29,6 +29,16 @@
 //!   crash report), checked, then the starting voltage code (after the
 //!   clock, as any slow-down; a fault leaves the higher code: safe).
 //!
+//! **Stage C2b** (`RP_CLOCKS_OC`, the owner's go 2026-10-30 on
+//! `docs/research/sheets/c2-cpu-overclock-test1.md`): instead of C2 and C3,
+//! the core past Intel's 624 MHz by the turbo multiplier alone (L 16 x 2N 7
+//! and 8: 728 and 832 MHz; run, bus and memory clocks as at 624, the
+//! voltage code never changed), 624 first as the control. Each step:
+//! whether the PLL took it (`CCSR`), the core counted, then [`OC_SECS`] of
+//! known-answer integer work, SDRAM patterns and cache sweeps, the touch
+//! controller's `TEMP0` before and after; the first error ends the stage.
+//! Dell's 624 is put back after each step and at the end.
+//!
 //! **Run F** (`RP_CLOCKS_FAULT`, quality audit C31) changes no clock: it
 //! writes `CCCR` asking for the same point with turbo at 1x (2N 2, a lower
 //! core clock and the same memory clock, in case anything applies it),
@@ -46,13 +56,16 @@ pub const MARKER: &str = "RETROPANE-CLOCKS";
 
 #[cfg(target_os = "none")]
 mod image {
+    use core::cell::RefCell;
     use core::fmt::Write;
     use core::hint::black_box;
 
     use rp_bench_suite as suite;
     use rp_drv_mbx_display::{Display, PixelFormat, Plane};
-    use rp_drv_pxa_gpio::Gpio;
+    use rp_drv_pxa_gpio::{Gpio, GpioPin};
+    use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
+    use rp_drv_tsc2046::{Tsc2046, channel, single};
     use rp_hal_pxa27x::Mmio;
     use rp_hal_pxa27x::clocks::{self, POINTS, POWER_REGS, Point, Raw};
     use rp_hal_pxa27x::{diag, rt};
@@ -71,6 +84,19 @@ mod image {
 
     /// Run F instead (see the crate's docs).
     const FAULT: bool = option_env!("RP_CLOCKS_FAULT").is_some();
+    /// Stage C2b instead of C2 and C3 (see the crate's docs).
+    const OC: bool = option_env!("RP_CLOCKS_OC").is_some();
+    /// Seconds of checks at each C2b step (the emulator's check: 1).
+    const OC_SECS: u32 = if option_env!("RP_CLOCKS_OC_SHORT").is_some() {
+        1
+    } else {
+        60
+    };
+    /// The touch controller's chip select and pen line (touch.md).
+    const TS_CS: u8 = 24;
+    const TS_PENIRQ: u8 = 94;
+    /// The touch controller as a thermometer.
+    type Touch<'a> = Tsc2046<Ssp<Mmio>, GpioPin<'a, Mmio>, GpioPin<'a, Mmio>>;
 
     /// Run F: the clocks as found (`CCCR`, `CCSR`, `CLKCFG`) and the core
     /// counted, for the put-back's checks; checks and BADs before the
@@ -258,6 +284,189 @@ mod image {
         }
     }
 
+    /// Known-answer integer work (shifts, multiplies, a 64-bit product,
+    /// rotates): the same `seed` gives the same answer at any clock.
+    #[inline(never)]
+    fn int_work(seed: u32) -> u32 {
+        let (mut x, mut acc) = (seed | 1, 0u32);
+        for i in 0..200_000u32 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            acc = acc.wrapping_mul(0x0100_0193).wrapping_add(x ^ i);
+            acc = acc.rotate_left(7) ^ ((u64::from(x) * u64::from(acc)) >> 32) as u32;
+        }
+        black_box(acc)
+    }
+
+    /// `buf` read a cache line (32 bytes) at a time, four times over (the
+    /// D-cache filled and evicted): the sum of the lines' first words.
+    #[inline(never)]
+    fn sweep(buf: &[u8]) -> u32 {
+        let mut sum = 0u32;
+        for _ in 0..4 {
+            for line in buf.chunks_exact(32) {
+                sum = sum.wrapping_add(u32::from_le_bytes([line[0], line[1], line[2], line[3]]));
+            }
+            black_box(&buf);
+        }
+        sum
+    }
+
+    /// [`sweep`]'s answer for `bytes` filled by [`fill`] with `seed`,
+    /// worked out from the pattern rather than read.
+    fn sweep_want(bytes: usize, seed: u32) -> u32 {
+        let one = (0..bytes / 4)
+            .step_by(8)
+            .fold(0u32, |a, i| a.wrapping_add(word(i, seed)));
+        one.wrapping_mul(4)
+    }
+
+    /// The touch controller borrowed as a thermometer (as `rp-gpubench`'s
+    /// warm runs: GPIO24 a plain GPIO, the pen line an input). `None`: no
+    /// SSP to borrow.
+    fn c2b_touch(gpio: &RefCell<Gpio<Mmio>>) -> Option<Touch<'_>> {
+        let ssp = rt::take_ssp1()?;
+        gpio.borrow_mut().make_output(TS_CS, true);
+        gpio.borrow_mut().set_function(TS_CS, 0);
+        gpio.borrow_mut().make_input(TS_PENIRQ);
+        let mut ssp = Ssp::new(ssp);
+        ssp.configure_spi(2_600_000);
+        Some(Tsc2046::new(
+            ssp,
+            GpioPin::new(gpio, TS_CS),
+            GpioPin::new(gpio, TS_PENIRQ),
+        ))
+    }
+
+    /// `TEMP0`, 64 conversions after 64 to settle, averaged (the chip's
+    /// diode: it falls as the board warms).
+    fn temp0(t: &mut Touch<'_>) -> u32 {
+        for _ in 0..64 {
+            t.read_single(single::TEMP0);
+        }
+        let sum: u32 = (0..64)
+            .map(|_| u32::from(t.read_single(single::TEMP0)))
+            .sum();
+        // A differential conversion re-arms the pen line, as the touch
+        // driver leaves it.
+        t.read(channel::Y);
+        sum / 64
+    }
+
+    /// Stage C2b (see the crate's docs): the core past 624 MHz by the turbo
+    /// multiplier alone, 624 first as the control; the first error ends it.
+    /// `keep` holds [`fill`]'s pattern with seed `0x5EED_0001`. The
+    /// voltage code is raised to Dell's own for 624 MHz if Windows Mobile
+    /// left a lower one (as C2 does; never past it), and returned for the
+    /// put-back.
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn c2b(
+        g: &mut Rig,
+        gpio: &RefCell<Gpio<Mmio>>,
+        (mut code, ours): (Code, bool),
+        crumbs: &mut Crumbs<'_>,
+        (work, keep): (&mut [u8], &[u8]),
+    ) -> Code {
+        log!(
+            "C2b (the owner's go 2026-10-30): the core past 624 MHz by the turbo multiplier (L 16, run, bus and memory as at 624), {OC_SECS} s of checks a step; the voltage code 0b{:03b} as found, never past Dell's for 624",
+            code.0
+        );
+        let top = Code::for_turbo_khz(624_000);
+        if !code.covers(top) {
+            if !ours {
+                log!(
+                    "  skipped: the voltage code is below Dell's for 624 MHz and the pins aren't ours"
+                );
+                return code;
+            }
+            set_vcode(&mut gpio.borrow_mut(), top);
+            rt::delay_us(vcore::RAISE_SETTLE_US);
+            code = top;
+            log!(
+                "  voltage code raised to Dell's for 624 MHz, 0b{:03b}",
+                top.0
+            );
+        }
+        let mut touch = c2b_touch(gpio);
+        // The answers, worked out at the clock as found (624).
+        let refs = [int_work(1), int_work(2), int_work(3), int_work(4)];
+        let at624 = POINTS[6].1;
+        let steps = [
+            ("624 (the control)", at624),
+            ("728", Point { n2: 7, ..at624 }),
+            ("832", Point { n2: 8, ..at624 }),
+        ];
+        let bytes = (1024 * 1024).min(work.len()) & !31;
+        for (i, (name, p)) in steps.into_iter().enumerate() {
+            rt::check_in();
+            log!("C2b {name} MHz");
+            crumbs.mark(10 + i as u32, p.cccr(clocks::read().cccr));
+            let before = touch.as_mut().map(temp0);
+            let ok = clocks::change_past_rating(p);
+            let now = clocks::read();
+            log_raw("  now", now);
+            if !ok {
+                g.expect("the change planned", false);
+                break;
+            }
+            if now.point() != p {
+                log!(
+                    "  the PLL didn't take 2N {} (CCSR shows 2N {}): the step skipped",
+                    p.n2,
+                    now.point().n2
+                );
+                clocks::change(at624);
+                continue;
+            }
+            let khz = clocks::measure_core_khz(20);
+            let speed = khz.abs_diff(p.core_khz()) <= p.core_khz() / 50;
+            log!("  core counted {khz} kHz");
+            g.expect("core clock counted (2%)", speed);
+            let t0 = rt::ticks();
+            let (mut rounds, mut errors) = (0u32, 0u32);
+            let mut first = None;
+            while rt::ticks().wrapping_sub(t0) < OC_SECS * 3_250_000 {
+                rt::check_in();
+                let k = (rounds % 4) as usize;
+                if int_work(k as u32 + 1) != refs[k] {
+                    errors += 1;
+                    first.get_or_insert("integer");
+                }
+                let seed = 0xC2B0_0000 | rounds;
+                fill(&mut work[..bytes], seed);
+                if verify(&work[..bytes], seed) != 0 {
+                    errors += 1;
+                    first.get_or_insert("SDRAM pattern");
+                }
+                if sweep(&work[..bytes / 4]) != sweep_want(bytes / 4, seed) {
+                    errors += 1;
+                    first.get_or_insert("cache sweep");
+                }
+                rounds += 1;
+                if errors != 0 {
+                    break;
+                }
+            }
+            let secs = rt::ticks().wrapping_sub(t0) / 3_250_000;
+            let lost = verify(keep, 0x5EED_0001);
+            let after = touch.as_mut().map(temp0);
+            log!(
+                "  {rounds} rounds in {secs} s: errors {errors} (first: {first:?}); kept 3 MiB: {lost} words differ; TEMP0 {before:?} -> {after:?} (falls as it warms)"
+            );
+            g.expect("every check right", errors == 0 && lost == 0);
+            clocks::change(at624);
+            if errors != 0 || lost != 0 || !speed {
+                log!("  the first error: the stage ends here");
+                break;
+            }
+        }
+        let back = clocks::read();
+        g.expect("back at 624 after the stage", back.point() == at624);
+        code
+    }
+
     fn main() -> ! {
         rt::init_mmu();
         if FAULT {
@@ -285,8 +494,8 @@ mod image {
         let Some(gpio) = rt::take_gpio() else {
             crash(format_args!("no GPIO"))
         };
-        let mut gpio = Gpio::new(gpio);
-        let (code0, ours) = vcode(&mut gpio);
+        let gpio = RefCell::new(Gpio::new(gpio));
+        let (code0, ours) = vcode(&mut gpio.borrow_mut());
         log!(
             "  voltage code 0b{:03b} (Dell's label {:?} mV), pins plain outputs: {ours}; Dell's code for this point 0b{:03b}",
             code0.0,
@@ -336,17 +545,30 @@ mod image {
         fill(keep, 0x5EED_0001);
         benches("start", work, sram.as_deref_mut(), vram.as_deref_mut());
 
+        if OC {
+            code = c2b(&mut g, &gpio, (code, ours), &mut crumbs, (work, &*keep));
+        }
+
         // C2: the points that keep the memory clock, lowest risk first.
-        let pts = [
-            ("turbo off", sp.with_turbo(false)),
-            ("416", POINTS[4].1),
-            ("312", POINTS[3].1),
-            ("208", POINTS[2].1),
-            ("520", POINTS[5].1),
-            ("624", POINTS[6].1),
-        ];
+        let pts = if OC {
+            [None; 6]
+        } else {
+            [
+                Some(("turbo off", sp.with_turbo(false))),
+                Some(("416", POINTS[4].1)),
+                Some(("312", POINTS[3].1)),
+                Some(("208", POINTS[2].1)),
+                Some(("520", POINTS[5].1)),
+                Some(("624", POINTS[6].1)),
+            ]
+        };
         let mut top = None;
-        for (i, (name, p)) in pts.iter().enumerate() {
+        for (i, (name, p)) in pts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, x)| x.map(|x| (i, x)))
+        {
+            let p = &p;
             rt::check_in();
             log!("C2 {name} MHz");
             if p.mem_khz() != sp.mem_khz() {
@@ -360,7 +582,7 @@ mod image {
                     log!("  skipped (needs code 0b{:03b}, pins not ours)", need.0);
                     continue;
                 }
-                set_vcode(&mut gpio, need);
+                set_vcode(&mut gpio.borrow_mut(), need);
                 rt::delay_us(vcore::RAISE_SETTLE_US);
                 code = need;
                 log!("  voltage code raised to 0b{:03b}", need.0);
@@ -434,9 +656,12 @@ mod image {
         crumbs.mark(8, start.cccr);
         g.expect("put back", clocks::restore(start));
         if code != code0 {
-            set_vcode(&mut gpio, code0);
+            set_vcode(&mut gpio.borrow_mut(), code0);
         }
-        g.expect("voltage code as found", vcode(&mut gpio).0 == code0);
+        g.expect(
+            "voltage code as found",
+            vcode(&mut gpio.borrow_mut()).0 == code0,
+        );
         let end = clocks::read();
         log_raw("end", end);
         g.expect(
