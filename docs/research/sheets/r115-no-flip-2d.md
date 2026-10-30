@@ -196,3 +196,22 @@ are, recorded, and the floors go to the owner.
   3D render's: twice the last copy for a spike, so 3.3-8.1 ms per whole
   screen. But a copy is memory bandwidth, not a render that can spike, so
   that doubling may close windows that a copy's real time leaves open.
+
+**Test 1 (perf, today-0017, `local/perf-2026-10-30-R115g.txt`):** all 7
+windowless frames were bottom-bar taps' answers, at scan lines 105-474:
+the button (rows 532-586) and the bar's label (600-640), or two bar
+buttons. The cause was the planner itself:
+- A band down to the last row can only start in the blanking (640-644).
+- The rectangle copied before it pushes its start (at the slowest time)
+  a few lines past 644.
+- `window_for` capped every rectangle's start at the refresh's last line.
+
+But a later rectangle starting in the next refresh is still behind the
+scan for rows 600-640: the scan doesn't come round to them for ~15 ms.
+**The fix (test 2):** `scan::copy_window` caps only the copy's start; its
+later rectangles may start past the refresh's end (`window_past_end`).
+- The scan tests that check every start line of a window for tearing now
+  include these rectangle pairs, and a test fixes today-0017's case.
+- A mutant is caught.
+- `emu-today`: 0 windowless (8 copied); `emu-scene` P4: 120 of 120
+  copied, 0 torn.

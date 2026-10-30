@@ -170,6 +170,23 @@ pub fn window_for(
     (fast, slow): (u32, u32),
     (top, rows): (u32, u32),
 ) -> Option<(u32, u32)> {
+    let (e, l) = window_past_end(scan, (fast, slow), (top, rows))?;
+    let l = l.min(scan.total - 1);
+    (e <= l).then_some((e, l))
+}
+
+/// [`window_for`] without its cap at the refresh's last line: the latest
+/// start may lie in the next refresh (`total` and over), still tear-free
+/// for this band (the scan passed its rows this refresh and hasn't come
+/// round to them). A later rectangle of a copy may start there (R115's
+/// chase, today-0017: a bottom-bar tap's two rectangles, rows 532-586 and
+/// 600-640, had no window, as the second could only start in the blanking
+/// and the cap kept it from starting a few lines after).
+fn window_past_end(
+    scan: &Scan,
+    (fast, slow): (u32, u32),
+    (top, rows): (u32, u32),
+) -> Option<(u32, u32)> {
     if rows == 0 {
         return None;
     }
@@ -191,7 +208,7 @@ pub fn window_for(
     // binding one when the render is faster than the scan).
     let by_bottom = (total + bottom).checked_sub(lines(slow) + margin)?;
     let by_top = (total + top).checked_sub(lines(slow).div_ceil(tile_rows) + 1)?;
-    let latest = by_bottom.min(by_top).min(total - 1);
+    let latest = by_bottom.min(by_top);
     (earliest <= latest).then_some((earliest as u32, latest as u32))
 }
 
@@ -213,8 +230,10 @@ pub const COPY_BLIT_US: u32 = 50;
 /// rectangle's window is [`window_for`] its own share of the time, moved
 /// by the time the rectangles before it take (their fastest for the
 /// earliest line, their slowest for the latest), and the copy starts in
-/// the intersection. Every rectangle starts in the refresh the copy
-/// started in.
+/// the intersection. The copy starts in the refresh it was planned for (no
+/// later than its last line); a later rectangle may start in the next
+/// one where that is still behind the scan for its rows (R115's chase,
+/// 2026-10-30).
 #[must_use]
 pub fn copy_window(
     scan: &Scan,
@@ -232,7 +251,7 @@ pub fn copy_window(
     for &(top, rows, px) in rects {
         let f = share(fast, px, false);
         let sl = share(slow, px, true).saturating_add(COPY_BLIT_US);
-        let (e, l) = window_for(scan, (f, sl), (top, rows))?;
+        let (e, l) = window_past_end(scan, (f, sl), (top, rows))?;
         // Lines the earlier rectangles take: at least (earliest) and at
         // most (latest).
         let at_least = (before_fast * 1000 / line_ns) as u32;
@@ -242,6 +261,7 @@ pub fn copy_window(
         before_fast += u64::from(f);
         before_slow += u64::from(sl);
     }
+    let to = to.min(scan.total - 1);
     (from <= to).then_some((from, to))
 }
 
@@ -511,7 +531,7 @@ mod tests {
         // below it), at copy times from a quarter of GC2DE's to twice it,
         // on both scans: every start line in the window is tear-free with
         // each rectangle at its fastest and its slowest.
-        let sets: [&[(u32, u32, u32)]; 6] = [
+        let sets: [&[(u32, u32, u32)]; 8] = [
             &[rect(0, 640, 480)],
             // A strip, then the rest: the second's deadline binds, moved
             // by the strip's time.
@@ -520,6 +540,10 @@ mod tests {
             &[rect(0, 32, 480), rect(304, 64, 64)],
             &[rect(0, 32, 480), rect(160, 320, 480), rect(576, 64, 480)],
             &[rect(560, 80, 480)],
+            // A bottom-bar tap's answer (today-0017): its button, then the
+            // bar's label down to the last row; and two bar buttons.
+            &[rect(532, 54, 84), rect(600, 40, 160)],
+            &[rect(600, 40, 160), rect(600, 40, 160)],
         ];
         let mut windows = 0;
         for scan in [X51V, X51V_60HZ] {
@@ -543,6 +567,27 @@ mod tests {
             }
         }
         assert!(windows > 100, "{windows}");
+    }
+
+    #[test]
+    fn a_bottom_bar_tap_has_a_window_in_the_blanking() {
+        // today-0017 on the X51v: the copies' band (3,256, 8,142) us, a
+        // tap on the bottom bar changing its button (rows 532-586) and the
+        // bar's label (600-640) had no window at any line; the label can
+        // only start once the scan has left it, in the blanking, and the
+        // button's copy before it pushes that start a few lines into the
+        // next refresh, which is still behind the scan for those rows.
+        let rects = [rect(532, 54, 84), rect(600, 40, 160)];
+        let (from, to) = copy_window(&X51V_60HZ, (3_256, 8_142), &rects).unwrap();
+        assert!(from <= 640 && to <= 644, "{from}-{to}");
+        for line in from..=to {
+            for (us, blit) in [(3_256, 0), (8_142, COPY_BLIT_US)] {
+                assert!(
+                    copy_tear_free(&X51V_60HZ, &rects, line, us, blit),
+                    "line {line}"
+                );
+            }
+        }
     }
 
     #[test]
