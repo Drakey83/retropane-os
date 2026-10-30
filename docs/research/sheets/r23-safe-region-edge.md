@@ -18,8 +18,11 @@ Windows Mobile's primary at 0x0 (G17); Dell's code keeps no such region
 ## 2. Dell's way (REA)
 None: no reference to 0xAE000, 0xB0000 or an on-die limit in
 `ddi_2700g`, `libGLES_CL` or `d3d_2700g` (REA #1, #13, #20 searched the
-display and memory registers and constants; to search `0xb0000|0xb000[0-9a-f]`
-in the asm too before the run, logged).
+display and memory registers and constants). The asm search owed before
+the run, done 2026-10-29 (REA #32-#33, `local/re/rea-search-log.md`):
+`0xb0000|0xb000[0-9a-f]` and the building and literal-pool forms of
+0xAE000, 0xB0000 and 0xB0400 in `ddi_2700g.asm` and `libGLES_CL.asm`
+found nothing. Dell's code holds no on-die limit; the edge is ours to measure.
 
 ## 3. Modern way
 Arbitrate the display's fetch and the GPU's writes in the memory
