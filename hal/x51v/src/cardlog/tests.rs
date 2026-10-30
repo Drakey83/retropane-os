@@ -36,6 +36,8 @@ struct Prog {
     busy_polls: u32,
     /// Polls left before the card's current programming ends.
     busy_left: [u32; 2],
+    /// OS timer ticks each poll of a busy card takes (a real status read).
+    busy_ticks: u32,
 }
 
 impl Run {
@@ -121,6 +123,7 @@ impl Io for Run {
     fn poll(&mut self, unit: usize) -> Option<bool> {
         if self.prog.busy_left[unit] > 0 {
             self.prog.busy_left[unit] -= 1;
+            self.clock = self.clock.wrapping_add(self.prog.busy_ticks);
             return None;
         }
         self.clock += 1000;
@@ -613,6 +616,29 @@ fn lines_logged_while_the_card_programs_go_on_with_the_next_write() {
     sync(&mut s, &mut run, &mut [0; SECTOR]);
     settle(&mut s, &mut run);
     assert_eq!(run.joined(&s), run.stream);
+}
+
+#[test]
+fn a_stuck_card_is_given_up_on_within_a_second() {
+    // rp-clocks C2b runs 1-3 on the X51v (2026-10-30): a card stuck busy
+    // after the first sector held the program in these waits past the
+    // loader's 30 s run limit. With each status read taking ~1 us (3
+    // ticks), 20 M polls are a minute; the wait now ends at one second.
+    let mut run = Run::new();
+    let mut s = Run::state([true, true]);
+    run.log(
+        &mut s, b"a line
+",
+    );
+    run.prog.busy_left[SD] = u32::MAX;
+    run.prog.busy_ticks = 3;
+    let t0 = run.clock;
+    settle(&mut s, &mut run);
+    let took = run.clock.wrapping_sub(t0);
+    assert!(took <= SETTLE_TICKS + 3, "{took} ticks");
+    assert!(took >= SETTLE_TICKS, "{took} ticks: not given up early");
+    assert_ne!(s.off & 0x100, 0, "the SD card given up on");
+    assert_eq!(s.noted & PENDING, 0);
 }
 
 #[test]

@@ -267,7 +267,7 @@ pub fn settle(state: &mut State, io: &mut dyn Io) {
     let mut tries = SETTLE_POLLS;
     while !poll(state, io) {
         tries -= 1;
-        if tries == 0 {
+        if tries == 0 || io.ticks().wrapping_sub(t0) > SETTLE_TICKS {
             // A card that never finishes: given up on, as a failure.
             for unit in [SD, CF] {
                 if state.noted & (PENDING << unit) != 0 {
@@ -279,6 +279,16 @@ pub fn settle(state: &mut State, io: &mut dyn Io) {
     }
     state.worst = state.worst.max(io.ticks().wrapping_sub(t0));
 }
+
+/// The longest [`settle`] waits for a card, in OS timer ticks (3.25 MHz):
+/// one second, eleven times the slowest programming seen (90 ms) and far
+/// under the loader's 30 s run limit. A card still busy then is given up
+/// on (the rest of the log goes to the other card, or waits for the
+/// loader), so a stuck card can't hold a program past its run limit
+/// (`rp-clocks` C2b runs 1-3, 2026-10-30: the card log stuck after its
+/// first sector, and its waits, of up to 20 M polls each, ended in the run
+/// limit and a watchdog reset).
+pub const SETTLE_TICKS: u32 = 3_250_000;
 
 /// Polls [`settle`] makes before it gives a card up (each a status read:
 /// seconds on the X51v, longer than any programming seen, 90 ms).
