@@ -210,6 +210,8 @@ pub fn run(root: &Path) -> Result<(), String> {
         ("rise", rp_shell::Motion::Rise),
         ("expand", rp_shell::Motion::Expand),
         ("none", rp_shell::Motion::None),
+        ("cascade", rp_shell::Motion::Cascade),
+        ("reveal", rp_shell::Motion::Reveal),
     ] {
         let mut frames = crate::emu::today_live(&wall, map.as_deref(), m, &hero, &[], 30, 14);
         frames.extend(crate::emu::today_live(

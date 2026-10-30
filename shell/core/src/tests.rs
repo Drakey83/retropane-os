@@ -1183,7 +1183,11 @@ fn every_notice_shown_is_listed() {
 fn the_radar_loops_its_frames_and_holds_on_the_last() {
     use rp_weather::radar::FRAMES;
     let mut s = weather(weather_app::RADAR);
-    assert_eq!(s.backdrop(), Some(false), "Night by default (the owner's pick)");
+    assert_eq!(
+        s.backdrop(),
+        Some(false),
+        "Night by default (the owner's pick)"
+    );
     s.wset.radar = rp_weather::settings::RadarMap::Auto;
     s.set_time(Time {
         hour: 12,
@@ -1254,7 +1258,14 @@ fn every_entrance_ends_in_place_and_none_has_no_entrance() {
         let mut s = weather(0);
         texts(&drawn(&mut s))
     };
-    for m in [Motion::Stagger, Motion::Rise, Motion::Expand, Motion::None] {
+    for m in [
+        Motion::Stagger,
+        Motion::Rise,
+        Motion::Expand,
+        Motion::None,
+        Motion::Cascade,
+        Motion::Reveal,
+    ] {
         let mut s = shell(false);
         s.set_motion(m);
         s.tick(1_000);
@@ -1270,4 +1281,46 @@ fn every_entrance_ends_in_place_and_none_has_no_entrance() {
         assert!(!s.animating(), "{m:?}");
         assert_eq!(texts(&drawn(&mut s)), settled, "{m:?}: in place");
     }
+}
+
+#[test]
+fn reveal_opens_from_the_card_and_cascade_grows_down_with_nothing_inside_moving() {
+    use weather_app::{Motion, PAGE};
+    // Reveal: the window starts on the Today card and grows to the screen;
+    // the app is final inside it from the first frame.
+    let mut s = shell(false);
+    s.set_motion(Motion::Reveal);
+    s.tick(1_000);
+    drawn(&mut s);
+    tap(&mut s, HERO);
+    let (first, shift) = s.reveal().expect("revealing");
+    assert_eq!(first, HERO, "it starts as the card");
+    assert_eq!(HERO.y + shift, 104, "the big panel read where the card was");
+    assert_eq!(s.ease(0), 1024, "nothing inside counts up");
+    let mut last = first;
+    for k in 1..=20 {
+        s.tick(1_000 + 25 * k);
+        if let Some((r, _)) = s.reveal() {
+            assert!(r.w >= last.w && r.h >= last.h, "it only grows, at {k}");
+            assert!(r.y >= TITLE.h, "never over the title bar, at {k}");
+            last = r;
+        }
+        assert!(!drawn(&mut s).overflowed(), "at {k}");
+    }
+    s.tick(1_000 + weather_app::ANIM_MS);
+    assert_eq!(s.reveal(), None, "open");
+
+    // Its pages then cascade: the page's window grows down from its top.
+    s.set_tab(1);
+    let opened = s.now;
+    let mut h = 0;
+    for k in 0..=20 {
+        s.tick(opened + 27 * k);
+        let a = s.page_area();
+        assert_eq!((a.x, a.y, a.w), (PAGE.x, PAGE.y, PAGE.w));
+        assert!(a.h >= h, "it only grows, at {k}");
+        h = a.h;
+    }
+    assert_eq!(s.page_area(), PAGE);
+    assert_eq!(s.reveal(), None, "a page turn never reveals");
 }

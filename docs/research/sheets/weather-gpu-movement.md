@@ -410,6 +410,22 @@ do 5 if its just as good, 4 i like cascade":
   frames like the others, so he sees them before the device build.
   Stagger and Expand are not built for the device; M5's Stagger part and
   M6 drop out of the run.
+- **The mock-ups (made the same night):**
+  `docs/design/mockups/weather-choice-reveal.gif` and
+  `weather-choice-cascade.gif`, from the shell's own frames.
+  - **Reveal, one free refinement:** the app is read lower inside the
+    growing window (the start address offset by up to 52 rows), so the
+    card turns into the app's big panel in place and eases up with it.
+    It is the shared-element feel of Expand, without scaling. The window
+    stops under the title bar, which both screens share.
+  - **Composed as the planes will show it:** the Today screen around the
+    window, the app inside it (`reveal_over` in `xtask/src/emu.rs`).
+  - **The 2D renderer's fallback,** until the plane path exists: the app
+    inside the window over the wallpaper.
+  - **Cascade:** the page's window grows down from the tabs while the page
+    rises 40 px; nothing inside it moves or counts up.
+  - The build keeps Stagger as the device default until the owner has
+    seen these.
 - **V1: L2** (the owner, the same evening: "Yes, L2"). Written into
   ADR-0034 as a change to C4, with C4 as first voted the fallback if M1
   fails.

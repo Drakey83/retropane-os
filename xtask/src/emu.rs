@@ -11319,6 +11319,28 @@ pub(crate) fn today_motion(
 /// after each), then `n` more frames as it moves by itself (a fling, a
 /// rebound, an entrance); pages arrive as `motion`. With `live` empty,
 /// the last of `setup` starts the movement.
+/// What the display shows while Reveal's video window grows: `today`
+/// (RGB, 480 x 640) around the window, `app` inside it read `shift` rows
+/// lower (the shell's `reveal_window`; on the plane path, an offset in
+/// the picture's start address). Unchanged without both.
+fn reveal_over(
+    today: Option<&[u8]>,
+    app: Vec<u8>,
+    window: Option<(rp_draw::Rect, u16)>,
+) -> Vec<u8> {
+    let (Some(today), Some((r, shift))) = (today, window) else {
+        return app;
+    };
+    let mut out = today.to_vec();
+    for y in r.y..r.bottom().min(640) {
+        let from = (usize::from(y) + usize::from(shift)).min(639);
+        let (x0, x1) = (usize::from(r.x), usize::from(r.right().min(480)));
+        let (d, s) = ((usize::from(y) * 480 + x0) * 3, (from * 480 + x0) * 3);
+        out[d..d + (x1 - x0) * 3].copy_from_slice(&app[s..s + (x1 - x0) * 3]);
+    }
+    out
+}
+
 pub(crate) fn today_live(
     wall: &[u8],
     map: Option<&[u8]>,
@@ -11385,6 +11407,10 @@ pub(crate) fn today_live(
     }
     let mut frames = Vec::new();
     let mut t = t0;
+    // Reveal's look on the plane path: the app's picture shown through a
+    // growing window over the Today screen (sheet weather-gpu-movement.md),
+    // composed here from the Today frame and the app's frames.
+    let today = (motion == rp_shell::Motion::Reveal).then(|| show(&mut shell));
     if let Some(e) = last {
         shell.input(e);
     }
@@ -11392,11 +11418,13 @@ pub(crate) fn today_live(
         t += every_ms;
         shell.tick(t);
         shell.input(e);
-        frames.push(show(&mut shell));
+        let rgb = show(&mut shell);
+        frames.push(reveal_over(today.as_deref(), rgb, shell.reveal_window()));
     }
     for k in 0..n {
         shell.tick(t + k * every_ms);
-        frames.push(show(&mut shell));
+        let rgb = show(&mut shell);
+        frames.push(reveal_over(today.as_deref(), rgb, shell.reveal_window()));
     }
     frames
 }

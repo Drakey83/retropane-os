@@ -118,7 +118,19 @@ pub enum Motion {
     /// No entrance: pages appear (the owner's rule for a movement under
     /// 30 fps that can't be optimized to run faster).
     None,
+    /// The page shown from the top down, its window growing, while it
+    /// rises as one (sheet weather-gpu-movement.md: the video plane's
+    /// window and address moved in the blanking, no engine a frame).
+    Cascade,
+    /// From the Today screen the app opens out of the hero card: a window
+    /// growing from the card to the screen, the app in place behind it,
+    /// revealed, not scaled; pages then cascade (the owner's pick of the
+    /// sheet's recommendation, 2026-10-30).
+    Reveal,
 }
+
+/// The Now page's big panel's top (the hero card becomes it).
+const PANEL_Y: u16 = 104;
 
 /// How far a rising page starts below its place.
 const RISE: u32 = 40;
@@ -142,6 +154,12 @@ fn frac(v: i16, lo: i16, hi: i16) -> u32 {
 impl Shell {
     /// Item `i`'s entrance, eased out: 0 just started, 1024 in place.
     pub(crate) fn ease(&self, i: u32) -> u32 {
+        // Cascade and Reveal move the page's window and place only: its
+        // content is drawn once, final (the plane path draws nothing a
+        // frame), so nothing inside it counts up or slides.
+        if matches!(self.motion, Motion::Cascade | Motion::Reveal) {
+            return 1024;
+        }
         let Some(start) = self.anim else {
             return 1024;
         };
@@ -159,18 +177,55 @@ impl Shell {
         ((1024 - self.ease(i)) * SLIDE / 1024) as u16
     }
 
-    /// How far below its place the page still is (Rise and Expand).
+    /// How much of the whole entrance is still to come, eased out: 1024
+    /// just started, 0 in place (item 0's curve, stretched).
+    fn whole_left(&self) -> u32 {
+        let Some(start) = self.anim else { return 0 };
+        let t = self.now.wrapping_sub(start).min(ANIM_MS);
+        let r = 1024 - t * 1024 / ANIM_MS;
+        r * r / 1024 * r / 1024
+    }
+
+    /// Whether this page arrives by cascading (Cascade, and Reveal's pages
+    /// once the app is open).
+    fn cascading(&self) -> bool {
+        self.anim.is_some()
+            && (self.motion == Motion::Cascade || self.motion == Motion::Reveal && !self.expanding)
+    }
+
+    /// How far below its place the page still is (Rise, Expand, Cascade).
     fn rise(&self) -> i32 {
         match self.motion {
-            Motion::Rise | Motion::Expand if self.anim.is_some() => {
-                // The whole page eases as one (item 0's curve, stretched).
-                let Some(start) = self.anim else { return 0 };
-                let t = self.now.wrapping_sub(start).min(ANIM_MS);
-                let r = 1024 - t * 1024 / ANIM_MS;
-                ((r * r / 1024 * r / 1024) * RISE / 1024) as i32
-            }
+            Motion::Rise | Motion::Expand => (self.whole_left() * RISE / 1024) as i32,
+            _ if self.cascading() => (self.whole_left() * RISE / 1024) as i32,
             _ => 0,
         }
+    }
+
+    /// While the app opens by Reveal: the window it shows through, from
+    /// the Today screen's hero card to everything under the title bar
+    /// (the bar is the same on both screens), and how many rows lower the
+    /// app is read inside it, so its big panel starts where the card was
+    /// and eases into place (on the plane path, the window and an offset
+    /// in the picture's start address).
+    pub(crate) fn reveal(&self) -> Option<(Rect, u16)> {
+        if self.motion != Motion::Reveal || !self.expanding || self.anim.is_none() {
+            return None;
+        }
+        let left = self.whole_left() as i32;
+        let lerp =
+            |a: u16, b: u16| (i32::from(b) + (i32::from(a) - i32::from(b)) * left / 1024) as u16;
+        let (card, top) = (super::HERO, super::TITLE.h);
+        let shift = lerp(PANEL_Y - card.y, 0);
+        Some((
+            Rect::new(
+                lerp(card.x, 0),
+                lerp(card.y, top),
+                lerp(card.w, W),
+                lerp(card.h, H - top),
+            ),
+            shift,
+        ))
     }
 
     /// Expand's share of the way from the hero card to the page, 0-1024
@@ -185,6 +240,14 @@ impl Shell {
     /// What an entrance redraws: the page, or from the title bar's foot
     /// down while the hero card grows (it starts above the page).
     pub(crate) fn page_area(&self) -> Rect {
+        if self.reveal().is_some() {
+            return Rect::new(0, 0, W, H);
+        }
+        if self.cascading() {
+            // The page's window grows down from its top.
+            let h = u32::from(PAGE.h) * (1024 - self.whole_left()) / 1024;
+            return Rect::new(PAGE.x, PAGE.y, PAGE.w, (h as u16).max(1));
+        }
         if self.grow() < 1024 {
             Rect::new(0, HEAD.y, W, PAGE.y + PAGE.h - HEAD.y)
         } else {
@@ -274,8 +337,9 @@ impl Shell {
     }
 
     /// The Weather app's header, page and tabs (the title bar and softkeys
-    /// are the shell's).
-    pub(crate) fn weather_scene(&self, f: &mut Frame) {
+    /// are the shell's), inside `outer` when Reveal shows it through a
+    /// window.
+    pub(crate) fn weather_scene(&self, f: &mut Frame, outer: Option<Rect>) {
         let (ui, label) = (self.fonts.ui, self.fonts.label);
         let wx = &self.wx;
 
@@ -304,14 +368,19 @@ impl Shell {
 
         // The page scrolls inside its own rectangle (an expanding hero card
         // may still reach above it).
-        f.clip(Some(self.page_area()));
+        let page = if self.reveal().is_some() {
+            PAGE
+        } else {
+            self.page_area()
+        };
+        f.clip(Some(outer.map_or(page, |o| page.intersect(&o))));
         match self.tab {
             0 => self.now_page(f),
             1 => self.hourly_page(f),
             2 => self.days_page(f),
             _ => self.radar_page(f),
         }
-        f.clip(None);
+        f.clip(outer);
 
         // Tabs.
         f.push(Cmd::HGradient {

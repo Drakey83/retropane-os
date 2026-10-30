@@ -471,6 +471,14 @@ impl Shell {
         (self.tab, self.scroll.offset())
     }
 
+    /// While the Weather app opens by Reveal, the window it shows through
+    /// and how many rows lower the app is read inside it (the plane path's
+    /// video window and start offset; the preview composes that look).
+    #[must_use]
+    pub fn reveal_window(&self) -> Option<(Rect, u16)> {
+        self.reveal().filter(|_| self.screen == Screen::Weather)
+    }
+
     /// Whether something moves by itself (a page's entrance, a fling or a
     /// rebound): the caller keeps drawing frames.
     #[must_use]
@@ -822,6 +830,20 @@ impl Shell {
             }
             self.dirty(Rect::new(0, 0, W, H));
         }
+    }
+
+    /// The softkey bar with labels `(l, r)`.
+    fn softkey_bar(&self, f: &mut Frame, (l, r): (&'static str, &'static str)) {
+        let ui = self.fonts.ui;
+        f.push(Cmd::HGradient {
+            r: SOFTKEYS,
+            left: BAR_LEFT,
+            right: BAR_RIGHT,
+        });
+        self.centred(f, SOFT_LEFT, H - 14, ui, TEXT, l.as_bytes());
+        self.centred(f, SOFT_RIGHT, H - 14, ui, TEXT, r.as_bytes());
+        self.decorate(f, Target::SoftLeft);
+        self.decorate(f, Target::SoftRight);
     }
 
     /// The softkeys' names on the screen up.
@@ -1295,25 +1317,30 @@ impl Shell {
             color: DIM,
         });
 
+        let reveal = self.reveal_window().map(|(r, _)| r);
         match self.screen {
             Screen::Today => self.today_scene(f),
-            Screen::Weather => self.weather_scene(f),
+            Screen::Weather => {
+                // Reveal on the 2D renderer: the app inside the opening
+                // window over the wallpaper. On the X51v's plane path the
+                // window shows the app's picture over the Today screen
+                // (sheet weather-gpu-movement.md); the preview composes
+                // that look from these frames.
+                if reveal.is_some() {
+                    f.clip(reveal);
+                }
+                self.weather_scene(f, reveal);
+            }
             Screen::WeatherSettings => self.settings_scene(f),
             Screen::WeatherPlaces => self.places_scene(f),
             Screen::KeyEntry => self.key_scene(f),
         }
 
         // Softkeys and the notice between them.
-        f.push(Cmd::HGradient {
-            r: SOFTKEYS,
-            left: BAR_LEFT,
-            right: BAR_RIGHT,
-        });
-        let (l, r) = self.softkeys();
-        self.centred(f, SOFT_LEFT, H - 14, ui, TEXT, l.as_bytes());
-        self.centred(f, SOFT_RIGHT, H - 14, ui, TEXT, r.as_bytes());
-        self.decorate(f, Target::SoftLeft);
-        self.decorate(f, Target::SoftRight);
+        self.softkey_bar(f, self.softkeys());
+        if reveal.is_some() {
+            f.clip(None);
+        }
         if let Some(n) = self.notice() {
             self.centred(f, NOTICE, H - 14, ui, FOCUS, n.as_bytes());
         }
