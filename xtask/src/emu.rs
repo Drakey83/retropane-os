@@ -5976,6 +5976,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r121b = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R121B", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r117t = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6490,7 +6499,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 172] = [
+    let runs: [GpubenchRun; 173] = [
         (
             "run A",
             &run_a,
@@ -7311,7 +7320,7 @@ fn variant_images_gpubench(
             "run R121A",
             &run_r121a,
             &[
-                "R121A (test 1 of 3, the owner 2026-10-30)",
+                "R121A (R121, the owner 2026-10-30)",
                 "R121A references at 74.75 / 1: drawn and repeatable true",
                 "R121A 143.00 / 1, screen 0 shown (as in use; the control, wrong in run 3), frame 0: 0 of 2 renders wrong",
                 "R121A 143.00 / 1, screen 0 shown (as in use; the control, wrong in run 3), frame 1: 0 of 2 renders wrong",
@@ -7340,6 +7349,41 @@ fn variant_images_gpubench(
                 "R121A 143.00 / 1, the display's fetch off (the control, right in R118C), frame 3: 0 of 2 renders wrong",
                 "R121A the display's fetch off (the control, right in R118C): the underrun flag ",
                 "R121A done: Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R121B (R121's test 2): the shape, every way's renders right.
+        (
+            "run R121B",
+            &run_r121b,
+            &[
+                "R121B (R121, the owner 2026-10-30)",
+                "R121B references at 74.75 / 1: drawn and repeatable true",
+                "R121B 143.00 / 1, as in use: lists on die, the underlay, rows, frame 0: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, as in use: lists on die, the underlay, rows, frame 1: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, as in use: lists on die, the underlay, rows, frame 2: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, as in use: lists on die, the underlay, rows, frame 3: 0 of 2 renders wrong",
+                "R121B as in use: lists on die, the underlay, rows: the underrun flag ",
+                "R121B 143.00 / 1, as in use, checker order, frame 0: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, as in use, checker order, frame 1: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, as in use, checker order, frame 2: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, as in use, checker order, frame 3: 0 of 2 renders wrong",
+                "R121B as in use, checker order: the underrun flag ",
+                "R121B 143.00 / 1, as in use without the underlay, frame 0: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, as in use without the underlay, frame 1: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, as in use without the underlay, frame 2: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, as in use without the underlay, frame 3: 0 of 2 renders wrong",
+                "R121B as in use without the underlay: the underrun flag ",
+                "R121B 143.00 / 1, lists in SDRAM (run 3's), the underlay, rows, frame 0: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, lists in SDRAM (run 3's), the underlay, rows, frame 1: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, lists in SDRAM (run 3's), the underlay, rows, frame 2: 0 of 2 renders wrong",
+                "R121B 143.00 / 1, lists in SDRAM (run 3's), the underlay, rows, frame 3: 0 of 2 renders wrong",
+                "R121B lists in SDRAM (run 3's), the underlay, rows: the underrun flag ",
+                "R121B done: Windows Mobile's clock put back",
                 "GC2CA done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",

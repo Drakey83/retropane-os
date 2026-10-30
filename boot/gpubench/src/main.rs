@@ -17856,8 +17856,18 @@ mod image {
             log!("  GC2CA done");
             return;
         }
-        if R121A {
-            r121a_run(g, tex, all, &planes0);
+        if R121A || R121B {
+            let run = if R121B {
+                (
+                    "R121B",
+                    &R121B_WAYS[..],
+                    R121B_REPS,
+                    "R121: DIVIDE 1 TEST 2",
+                )
+            } else {
+                ("R121A", &R121_WAYS[..], R117_REPS, "R121: DIVIDE 1 TEST 1")
+            };
+            r121a_run(g, tex, all, &planes0, run);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
             log!("  GC2CA done");
             return;
@@ -20659,18 +20669,21 @@ mod image {
     fn r121_frame(
         g: &mut Rig,
         rr: &mut Renderer,
-        (tex, k, overlay, name): (gc2::Tex, u8, bool, &str),
+        (tex, k, overlay, name, tag, reps): (gc2::Tex, u8, bool, &str, &str, u32),
         (want, seen, at): (&[u32], &mut [u32], u32),
     ) {
         if !r121_set(g, rr, tex, k, overlay) {
-            log!("  R121A {name}, frame {k}: the last slot is the frame's: not run");
+            log!("  {tag} {name}, frame {k}: the last slot is the frame's: not run");
             return;
         }
         let mut times = Gc2deTimes::NEW;
         let (mut bad, mut words) = (0u32, 0u32);
         let mut rows = [0u32; 16];
         let mut first = ([(0u32, 0u32, 0u16, 0u16); R118_SHOW], 0usize);
-        for _ in 0..R117_REPS {
+        for n in 0..reps {
+            if n % 20 == 19 {
+                rt::check_in();
+            }
             let off = match gc2ca_render(g, rr, GC2DE_SIZE, at) {
                 Some((c, _)) => {
                     times.take(c);
@@ -20685,11 +20698,11 @@ mod image {
             words = words.saturating_add(off);
         }
         log!(
-            "  R121A 143.00 / 1, {name}, frame {k}: {bad} of {R117_REPS} renders wrong, {words} words; the core {times}; wrong pixels by row in the tile {rows:?}"
+            "  {tag} 143.00 / 1, {name}, frame {k}: {bad} of {reps} renders wrong, {words} words; the core {times}; wrong pixels by row in the tile {rows:?}"
         );
         for &(x, y, got, w) in &first.0[..first.1] {
             log!(
-                "    R121A frame {k}: ({x}, {y}) row {} of its tile: 0x{got:04x} for 0x{w:04x}",
+                "    {tag} frame {k}: ({x}, {y}) row {} of its tile: 0x{got:04x} for 0x{w:04x}",
                 y % 16
             );
         }
@@ -20698,11 +20711,17 @@ mod image {
     /// Run R121A (see [`R121A`]).
     #[inline(never)]
     #[allow(clippy::too_many_lines)]
-    fn r121a_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+    fn r121a_run(
+        g: &mut Rig,
+        tex: gc2::Tex,
+        all: &mut [u32],
+        planes0: &Snapshot,
+        (tag, ways, reps, card): (&str, &[R121Way], u32, &str),
+    ) {
         let nf = gc2::GAME_FRAMES.len();
         let full = gc2::words_of(GC2DE_SIZE);
         if all.len() < (nf + 1) * full {
-            log!("  R121A: not enough SDRAM for the references: nothing run");
+            log!("  {tag}: not enough SDRAM for the references: nothing run");
             return;
         }
         let (refs, rest) = all.split_at_mut(nf * full);
@@ -20710,78 +20729,62 @@ mod image {
         let at = rp_vram_map::SCREENS[1].at;
         let on_die = rp_vram_map::SCREENS[0].at;
         let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
-        gc2ca_card(
-            g,
-            planes0,
-            [
-                "R121: DIVIDE 1 TEST 1",
-                "THE SCREEN CHANGES",
-                "FOR THREE MINUTES",
-            ],
-        );
+        gc2ca_card(g, planes0, [card, "THE SCREEN CHANGES", "UNATTENDED"]);
         log!(
-            "  R121A (test 1 of 3, the owner 2026-10-30): at 143.00 / 1 the {nf} game frames into SDRAM (0x{at:x}), lists on die, the underlay on, {R117_REPS} renders each a way, each checked against 74.75 / 1's references; {} ways",
-            R121_WAYS.len()
+            "  {tag} (R121, the owner 2026-10-30): at 143.00 / 1 the {nf} game frames into SDRAM (0x{at:x}), {reps} renders each a way, each checked against 74.75 / 1's references; {} ways",
+            ways.len()
         );
-        let Some(mut rr) = r117_renderer(g, true, false) else {
-            log!("  R121A: no renderer: nothing run");
-            g.nudge = nudge;
-            return;
-        };
-        let _ = rr.set_underlay(true);
         let mut refs_overlay = None;
-        for (name, display, checker, overlay) in R121_WAYS {
+        for &(name, display, checker, overlay, on_die_lists, underlay) in ways {
             rt::check_in();
-            rr.set_tile_order(if checker {
-                rp_mbx3d_render::TileOrder::Checker
-            } else {
-                rp_mbx3d_render::TileOrder::Rows
-            });
+            let Some(mut rr) = r117_renderer(g, on_die_lists, checker) else {
+                log!("  {tag} {name}: no renderer: not run");
+                continue;
+            };
+            let _ = rr.set_underlay(underlay);
             // References for this way's picture (the overlay's own once).
             if refs_overlay != Some(overlay) {
                 let ok = r121_refs(g, &mut rr, tex, (&mut *refs, &mut *seen, at), overlay);
                 log!(
-                    "  R121A references at 74.75 / 1{}: drawn and repeatable {ok}",
+                    "  {tag} references at 74.75 / 1{}: drawn and repeatable {ok}",
                     if overlay { " (with the overlay)" } else { "" }
                 );
-                if !ok {
-                    refs_overlay = None;
-                    continue;
+                refs_overlay = ok.then_some(overlay);
+            }
+            if refs_overlay == Some(overlay) {
+                match display {
+                    R121_QUARTER => gc2ca_show(g, GC2CA_DELL, gc2::HALF_SIZES[2], on_die, planes0),
+                    _ => gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, on_die, planes0),
                 }
-                refs_overlay = Some(overlay);
-            }
-            match display {
-                R121_QUARTER => gc2ca_show(g, GC2CA_DELL, gc2::HALF_SIZES[2], on_die, planes0),
-                _ => gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, on_die, planes0),
-            }
-            let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, display != R121_OFF);
-            let _ = underrun_take(&mut g.e.regs);
-            if clock_apply(g, R117_FAST).is_none() {
-                log!("  R121A {name}: 143.00 / 1 failed: not run");
-            } else {
-                for &k in &gc2::GAME_FRAMES {
-                    rt::check_in();
-                    let want = usize::from(k) * full..(usize::from(k) + 1) * full;
-                    r121_frame(
-                        g,
-                        &mut rr,
-                        (tex, k, overlay, name),
-                        (&refs[want], &mut *seen, at),
-                    );
+                let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, display != R121_OFF);
+                let _ = underrun_take(&mut g.e.regs);
+                if clock_apply(g, R117_FAST).is_none() {
+                    log!("  {tag} {name}: 143.00 / 1 failed: not run");
+                } else {
+                    for &k in &gc2::GAME_FRAMES {
+                        rt::check_in();
+                        let want = usize::from(k) * full..(usize::from(k) + 1) * full;
+                        r121_frame(
+                            g,
+                            &mut rr,
+                            (tex, k, overlay, name, tag, reps),
+                            (&refs[want], &mut *seen, at),
+                        );
+                    }
                 }
+                clock_restore(&mut g.e.regs);
+                let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+                gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, on_die, planes0);
+                log!(
+                    "  {tag} {name}: the underrun flag {}",
+                    underrun_take(&mut g.e.regs)
+                );
             }
-            clock_restore(&mut g.e.regs);
-            let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
-            gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, on_die, planes0);
-            log!(
-                "  R121A {name}: the underrun flag {}",
-                underrun_take(&mut g.e.regs)
-            );
+            let _ = rr.release(&mut g.pool);
         }
-        let _ = rr.release(&mut g.pool);
         g.nudge = nudge;
         log!(
-            "  R121A done: Windows Mobile's clock put back (COREPLL 0x{:x})",
+            "  {tag} done: Windows Mobile's clock put back (COREPLL 0x{:x})",
             g.e.regs.read32(clock::COREPLL)
         );
     }
@@ -26312,26 +26315,34 @@ mod image {
     /// (the fetch off), wrong pixels placed by row in the tile. About three
     /// minutes, unattended.
     const R121A: bool = option_env!("RP_GPUBENCH_R121A").is_some();
-    /// R121A's ways: (name, the display's state, checker order, the
-    /// alpha-0 overlay).
-    const R121_WAYS: [(&str, u8, bool, bool); 5] = [
+    /// An R121 way: its name, the display's state, checker order, the
+    /// alpha-0 overlay, the lists on die (else in SDRAM), the underlay.
+    type R121Way = (&'static str, u8, bool, bool, bool, bool);
+    /// R121A's ways (lists on die, the underlay on).
+    const R121_WAYS: [R121Way; 5] = [
         (
             "screen 0 shown (as in use; the control, wrong in run 3)",
             R121_SHOWN,
             false,
             false,
+            true,
+            true,
         ),
         (
             "a quarter of the reads (240 x 320 at 0x0, Dell's doubling)",
             R121_QUARTER,
             false,
             false,
+            true,
+            true,
         ),
-        ("checker tile order", R121_SHOWN, true, false),
+        ("checker tile order", R121_SHOWN, true, false, true, true),
         (
             "an alpha-0 quad blended over the frame (the write-out paced)",
             R121_SHOWN,
             false,
+            true,
+            true,
             true,
         ),
         (
@@ -26339,8 +26350,56 @@ mod image {
             R121_OFF,
             false,
             false,
+            true,
+            true,
         ),
     ];
+    /// Run R121B (`RP_GPUBENCH_R121B`, with `RP_GPUBENCH_GC2_HALF`; R121's
+    /// test 2 of 3): test 1 (gpubench-0237) found the as-in-use layout
+    /// (screen 0 at 0x0, lists on die) wrong in 1 of 80 renders (one
+    /// pixel, a tile's last row), every other way 0 of 80, where R23E run
+    /// 3 (lists in SDRAM) had the flat frame 18 of 20 wrong. [`R121B_WAYS`]
+    /// at [`R121B_REPS`] renders a frame: how often the shipped layout is
+    /// wrong, whether checker order or the underlay matters there, and
+    /// run 3's lists in SDRAM beside it. About fifteen minutes, unattended.
+    const R121B: bool = option_env!("RP_GPUBENCH_R121B").is_some();
+    /// R121B's ways.
+    const R121B_WAYS: [R121Way; 4] = [
+        (
+            "as in use: lists on die, the underlay, rows",
+            R121_SHOWN,
+            false,
+            false,
+            true,
+            true,
+        ),
+        (
+            "as in use, checker order",
+            R121_SHOWN,
+            true,
+            false,
+            true,
+            true,
+        ),
+        (
+            "as in use without the underlay",
+            R121_SHOWN,
+            false,
+            false,
+            true,
+            false,
+        ),
+        (
+            "lists in SDRAM (run 3's), the underlay, rows",
+            R121_SHOWN,
+            false,
+            false,
+            false,
+            true,
+        ),
+    ];
+    /// Renders of each frame a way (the emulator 2).
+    const R121B_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 100 };
     const R121_SHOWN: u8 = 0;
     const R121_QUARTER: u8 = 1;
     const R121_OFF: u8 = 2;
