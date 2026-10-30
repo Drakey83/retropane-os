@@ -1698,14 +1698,20 @@ pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
 /// no refresh is judged torn): this checks the shape, every frame through
 /// the service with nothing refused, recovered or stalled, the clock step
 /// and its put-back. The device run judges the refreshes.
-pub fn boot_loader_scene(root: &Path) -> Result<(), String> {
+pub fn boot_loader_scene(root: &Path, divide1: bool) -> Result<(), String> {
     let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
-    let image = dir.join("rp-scene.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
-    crate::sdkit::raw_binary(&release.join("rp-scene"), &image)?;
+    let image = if divide1 {
+        // R121's device check: three more phases at 143.00 / 1.
+        variant_image_build(root, "rp-scene", &[("RP_SCENE_DIVIDE1", "1")])?
+    } else {
+        let image = dir.join("rp-scene.bin");
+        crate::sdkit::raw_binary(&release.join("rp-scene"), &image)?;
+        image
+    };
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let frame = rp_loadproto::frame(&payload);
     let output = boot(
@@ -1727,26 +1733,46 @@ pub fn boot_loader_scene(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("scene: no run log after the image returned")?;
-    scene_log(log)?;
+    scene_log(log, divide1)?;
     for l in log
         .lines()
         .filter(|l| l.starts_with('P') || l.contains("clock to"))
     {
         eprintln!("      {l}");
     }
-    eprintln!(
-        "    scene OK: three phases, 600 frames through the graphics service, nothing refused, recovered or stalled; the clock stepped to 149.50 / 2 and put back"
-    );
+    if divide1 {
+        eprintln!(
+            "    scene OK (divide 1): four phases, 800 frames through the graphics service, nothing refused, recovered or stalled; the clock stepped to 149.50 / 2, then 143.00 / 1, and put back"
+        );
+    } else {
+        eprintln!(
+            "    scene OK: three phases, 600 frames through the graphics service, nothing refused, recovered or stalled; the clock stepped to 149.50 / 2 and put back"
+        );
+    }
     Ok(())
 }
 
-/// Judges `rp-scene`'s run log (see [`boot_loader_scene`]).
-fn scene_log(log: &str) -> Result<(), String> {
-    for want in [
+/// Judges `rp-scene`'s run log (see [`boot_loader_scene`]); `divide1`:
+/// the variant's phases P5-P7 at 143.00 / 1 too.
+fn scene_log(log: &str, divide1: bool) -> Result<(), String> {
+    let d1: &[&str] = if divide1 {
+        &[
+            "clock to 143.00 / 1: Some(",
+            "P5 references against the last phase's: the same",
+            "P6 references against the last phase's: the same",
+            "P7 done; underrun flag",
+        ]
+    } else {
+        &[]
+    };
+    for &want in [
         "RETROPANE-SCENE-OK (failed 0, recovered 0)",
         "clock to 149.50 / 2: Some(",
         "put back: Some(",
-    ] {
+    ]
+    .iter()
+    .chain(d1)
+    {
         if !log.contains(want) {
             return Err(format!("scene: no {want:?} in the run log:{log}"));
         }
@@ -1761,7 +1787,8 @@ fn scene_log(log: &str) -> Result<(), String> {
             return Err(format!("scene: P4 {what}: {line:?}"));
         }
     }
-    for p in 1..=3 {
+    let phases: &[usize] = if divide1 { &[3, 5, 6, 7] } else { &[1, 2, 3] };
+    for &p in phases {
         for (what, n) in [("back to back", 150), ("one-off", 50)] {
             let line = log
                 .lines()

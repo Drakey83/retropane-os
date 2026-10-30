@@ -26,8 +26,9 @@ mod image {
     use rp_mbx_render::{Layout, LocalMem, Mbx2dRenderer};
     use rp_mbx3d_render::{Clock, TileOrder, format};
     use rp_scene::{
-        AREA, ASK_LINES, B2B, BACKGROUNDS, BAR, BAR_COLOURS, LABEL_ROWS, MARKER, ONE_OFF, PHASES,
-        Phase, SCENES, SLOTS, Times, picture, scene, texels, textured,
+        AREA, ASK_LINES, B2B, BACKGROUNDS, BAR, BAR_COLOURS, Clock as PhaseClock, LABEL_ROWS,
+        MARKER, ONE_OFF, PHASES, Phase, SCENES, SLOTS, Times, picture, plan, scene, texels,
+        textured,
     };
     use rp_vram_map::{POOL, Pool};
 
@@ -37,6 +38,26 @@ mod image {
         ($($a:tt)*) => {{
             let _ = writeln!(RunLog, $($a)*);
         }};
+    }
+
+    /// The phases this build runs (`RP_SCENE_DIVIDE1`: R121's device check,
+    /// three more at 143.00 / 1).
+    const PLAN: &[Phase] = plan(option_env!("RP_SCENE_DIVIDE1").is_some());
+    /// 143.00 / 1: 13 x 44 / 4 MHz, the cores at divide 1 (`rp-gpubench`'s
+    /// `gc2_step(44, 4, 0, 1)`, R117_FAST; held by ADR-0035 amendment D, so
+    /// only in the variant).
+    const DIVIDE1: Rung = Rung {
+        speed: clock::Speed::ladder(44 << 7 | 4 << 4 | 1),
+        div: 1,
+    };
+
+    /// A phase's rung and its name for the log.
+    const fn rung(c: PhaseClock) -> (Rung, &'static str) {
+        match c {
+            PhaseClock::Wm => (Rung::WM, "99.67 / 2"),
+            PhaseClock::Top => (Rung::TOP, "149.50 / 2"),
+            PhaseClock::Divide1 => (DIVIDE1, "143.00 / 1"),
+        }
     }
 
     /// OS timer ticks per millisecond.
@@ -285,7 +306,7 @@ mod image {
             let n = seen.iter().filter(|e| e.1 != 0).count();
             log!(
                 "P{} {what}: signatures read (most first) {:08x?}, others {}",
-                p + 1,
+                PLAN[p].n,
                 &seen[..n],
                 self.seen_other
             );
@@ -463,7 +484,7 @@ mod image {
                 let r = self.recs[i];
                 log!(
                     "P{} {what} frame {i}: picture {:?}, start {} at line {:?} (window {:?}); render seen {:?} us (done at line {:?}), the service's {:?} us; 2D into screen 0 at line {:?}; torn {}",
-                    p + 1,
+                    PLAN[p].n,
                     r.pic,
                     r.how as char,
                     r.line,
@@ -598,8 +619,8 @@ mod image {
         let s = n.starts;
         log!(
             "P{} {} {what}: {frames} frames; starts behind {} screen1 {} held {}, 2D behind the scan {} at once {} (last line {:?}, last copy line {:?}); copy times {:?} us; copy stalls {}; refreshes judged {}: torn {} (of them 2D-first mixes {}, 3D-first mixes {}), back {}, unread {}; failed {}, recovered {}; 2D engine stalls {}, FIFO full {}; {extra}",
-            p + 1,
-            PHASES[p].name,
+            PLAN[p].n,
+            PLAN[p].name,
             s.behind - m.starts.behind,
             s.screen1 - m.starts.screen1,
             s.held - m.starts.held,
@@ -622,12 +643,43 @@ mod image {
         );
     }
 
+    /// Steps the clock to `c`'s rung (ADR-0035 rule 8: inside a test's own
+    /// run; rule 5: on the card first), the service told to forget the old
+    /// clock's times; `false` if the step failed (Windows Mobile's clock
+    /// put back). Its own frame: the log lines' arguments off `main`'s
+    /// stack (the emulator's 80% check).
+    #[inline(never)]
+    fn step_to(r: &mut Run, c: PhaseClock) -> bool {
+        let (to, name) = rung(c);
+        log!("  clock to {name}: stepping");
+        let a = clock::step(r.regs(), to, rt::delay_us, set_cs3);
+        let under = underrun_take(r.regs());
+        r.gfx.clock_changed();
+        let regs = r.regs();
+        log!(
+            "  clock to {name}: {a:?}; read back COREPLL {:08x} MBXCLK {:08x} LMTYPE {:08x} LMTIM {:08x} LMREFRESH {:08x}; underrun flag {} (cleared)",
+            regs.read32(clock::COREPLL),
+            regs.read32(clock::MBXCLK),
+            regs.read32(clock::LMTYPE),
+            regs.read32(clock::LMTIM),
+            regs.read32(clock::LMREFRESH),
+            if under { "set" } else { "clear" }
+        );
+        if a.is_none_or(|a| a.unwritten > 0) {
+            let _ = clock::put_back(r.regs(), rt::delay_us, set_cs3);
+            log!("  the clock step failed: Windows Mobile's clock put back, the run stops here");
+            return false;
+        }
+        true
+    }
+
     /// Phase `p`: the label, the references, frames back to back, then
     /// one-off frames asked for at [`ASK_LINES`].
+    #[inline(never)]
     fn phase(r: &mut Run, p: usize) {
-        let ph: Phase = PHASES[p];
+        let ph: Phase = PLAN[p];
         let mut step = heapless_label();
-        let _ = write!(step, "RP-SCENE STEP {} OF {}", p + 1, PHASES.len());
+        let _ = write!(step, "RP-SCENE STEP {} OF {}", PLAN[p].n, PLAN.len());
         r.watch = None;
         label(r.gfx.two_d(), [step.as_str(), ph.label]);
         r.gfx.two_d().wallpaper_changed();
@@ -639,6 +691,8 @@ mod image {
         if r.gfx.set_tile_order(r.c, order).is_err() {
             r.failed += 1;
         }
+        r.gfx.sdram_cures(ph.cures);
+        let before = r.whole;
         // The references: whole, then the two hand-off mixes.
         for k in 0..SCENES {
             let prev = (k + SCENES - 1) % SCENES;
@@ -647,7 +701,7 @@ mod image {
             let (shown, differ, (bar, gap)) = (r.shown(), r.screens_differ(), r.probe());
             log!(
                 "P{} reference {k}: DSIG {:08x} on screen {shown}; bands where the screens differ {differ:010x}; bar pixels {bar:08x}, row 552 {gap:08x}",
-                p + 1,
+                PLAN[p].n,
                 r.whole[k]
             );
             r.two_d_first[k] = r.reference(prev, k).unwrap_or(0);
@@ -655,6 +709,19 @@ mod image {
         }
         // The last shown is the whole picture 3 (shown again).
         r.reference(SCENES - 1, SCENES - 1);
+        if ph.clock == PhaseClock::Divide1 {
+            // The same pictures as at 149.50 / 2 (P3): a reference drawn
+            // wrong would hide a fault, so its DSIGs are compared first.
+            log!(
+                "P{} references against the last phase's: {}",
+                PLAN[p].n,
+                if r.whole == before {
+                    "the same"
+                } else {
+                    "DIFFERENT"
+                }
+            );
+        }
         let mut distinct = true;
         for (i, a) in r.whole.iter().enumerate() {
             for b in r.whole[i + 1..]
@@ -667,7 +734,7 @@ mod image {
         }
         log!(
             "P{} {}: references (DSIG) whole {:08x?}, 2D first {:08x?}, 3D first {:08x?}: {}",
-            p + 1,
+            PLAN[p].n,
             ph.name,
             r.whole,
             r.two_d_first,
@@ -760,7 +827,7 @@ mod image {
                 let (bar, gap) = r.probe();
                 log!(
                     "P{} one-off {i}: picture {k} on screen {shown}, DSIG last read {sig:08x} (reference {:08x}); bands unlike the reference {against:010x}; bands where the screens differ {screens:010x} (first band: first (x, y, screen 0, screen 1), last (x, y), words {first:?}); bar pixels {bar:08x}, row 552 {gap:08x}",
-                    p + 1,
+                    PLAN[p].n,
                     r.whole[k]
                 );
             }
@@ -778,7 +845,7 @@ mod image {
                 to_shown.worst
             ),
         );
-        if !ph.checker {
+        if !ph.checker && ph.clock != PhaseClock::Divide1 {
             isolate(r, p);
         }
     }
@@ -853,7 +920,7 @@ mod image {
                 let (k, b) = pick(j);
                 *rf = r.reference(k, b).unwrap_or(0);
             }
-            log!("P{} {what}: references {refs:08x?}", p + 1);
+            log!("P{} {what}: references {refs:08x?}", PLAN[p].n);
             let line = r.line();
             r.watch = Some(Watch::new(
                 RefreshJudge::new(SCENES as u32 - 1, refs[SCENES - 1]),
@@ -904,6 +971,7 @@ mod image {
     /// [`ASK_LINES`]), every refresh judged against the four bar pictures;
     /// the 2D renderer's late flips logged (R113 on the X51v: before the
     /// fix every flip tore its refresh).
+    #[inline(never)]
     fn flips(r: &mut Run) {
         let _ = r.gfx.close_scene(r.c);
         r.watch = None;
@@ -1121,47 +1189,44 @@ mod image {
             crash(format_args!("started twice"))
         };
 
-        for p in 0..PHASES.len() {
-            // The clock moves once, between the first two phases, and the
-            // service forgets the old clock's times.
-            if PHASES[p].top && (p == 0 || !PHASES[p - 1].top) {
-                // On the card first (ADR-0035 rule 5): a step that froze
-                // the device is on record.
-                log!("  clock to 149.50 / 2: stepping");
-                let a = clock::step(r.regs(), Rung::TOP, rt::delay_us, set_cs3);
-                let under = underrun_take(r.regs());
-                r.gfx.clock_changed();
-                let regs = r.regs();
-                log!(
-                    "  clock to 149.50 / 2: {a:?}; read back COREPLL {:08x} MBXCLK {:08x} LMTYPE {:08x} LMTIM {:08x} LMREFRESH {:08x}; underrun flag {} (cleared)",
-                    regs.read32(clock::COREPLL),
-                    regs.read32(clock::MBXCLK),
-                    regs.read32(clock::LMTYPE),
-                    regs.read32(clock::LMTIM),
-                    regs.read32(clock::LMREFRESH),
-                    if under { "set" } else { "clear" }
-                );
-                if a.is_none_or(|a| a.unwritten > 0) {
-                    let _ = clock::put_back(r.regs(), rt::delay_us, set_cs3);
-                    log!(
-                        "  the clock step failed: Windows Mobile's clock put back, the run stops here"
-                    );
-                    break;
-                }
+        for p in 0..PLAN.len() {
+            // The clock moves where the phase's differs from the last's
+            // (ADR-0035 rule 8: inside a test's own run), and the service
+            // forgets the old clock's times.
+            let last = if p == 0 {
+                PhaseClock::Wm
+            } else {
+                PLAN[p - 1].clock
+            };
+            if PLAN[p].clock != last && !step_to(r, PLAN[p].clock) {
+                break;
             }
             phase(r, p);
-            if PHASES[p].top && !PHASES[p].checker {
+            if PLAN[p].clock == PhaseClock::Top && !PLAN[p].checker {
                 compare_lists(r, p);
             }
             let under = underrun_take(r.regs());
             log!(
                 "P{} done; underrun flag {}",
-                p + 1,
+                PLAN[p].n,
                 if under { "set" } else { "clear" }
             );
+            // The 2D flips (P4) at 149.50 / 2, after R110's phases, before
+            // any at divide 1.
+            if PLAN[p].n == 3 {
+                flips(r);
+                // The flips close the scene: open it again for the phases
+                // after them (the divide-1 variant's), its quads sent anew.
+                if p + 1 < PLAN.len() {
+                    let (x, y, w, h) = AREA;
+                    if r.gfx.open_scene(r.c, x, y, w, h).is_err() {
+                        r.failed += 1;
+                    }
+                    r.last_scene = None;
+                }
+            }
         }
-
-        flips(r);
+        r.gfx.sdram_cures(false);
         let a = clock::put_back(r.regs(), rt::delay_us, set_cs3);
         let under = underrun_take(r.regs());
         log!(

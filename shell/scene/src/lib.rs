@@ -44,40 +44,107 @@ pub const SLOTS: usize = 6;
 /// The label's rows at the top of the wallpaper.
 pub const LABEL_ROWS: u16 = 80;
 
+/// A phase's clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clock {
+    /// Windows Mobile's (99.67 / 2).
+    Wm,
+    /// ADR-0035's top rung (149.50 / 2).
+    Top,
+    /// 143.00 / 1 (R121's device check: divide 1, held by ADR-0035
+    /// amendment D, so only in the [`DIVIDE1`] variant).
+    Divide1,
+}
+
 /// One run of frames at one clock and tile order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Phase {
+    /// Its number in the log (`P{n}`; the 2D flips are P4).
+    pub n: u8,
     /// For the log.
     pub name: &'static str,
     /// For the label (capitals: the font's).
     pub label: &'static str,
-    /// ADR-0035's top rung (149.50 / 2), else Windows Mobile's clock.
-    pub top: bool,
+    /// Its clock.
+    pub clock: Clock,
     /// The checkerboard tile order, else rows (top down).
     pub checker: bool,
+    /// `Graphics::sdram_cures` (R121: the underlay and the alpha-0 overlay
+    /// on renders into screen 1).
+    pub cures: bool,
 }
 
 /// The phases, in order: the clock moves once, between the first two.
 pub const PHASES: [Phase; 3] = [
     Phase {
+        n: 1,
         name: "Windows Mobile's clock (99.67 / 2), rows",
         label: "WM CLOCK, ROWS",
-        top: false,
+        clock: Clock::Wm,
         checker: false,
+        cures: false,
     },
     Phase {
+        n: 2,
         name: "149.50 / 2, rows",
         label: "149.50 / 2, ROWS",
-        top: true,
+        clock: Clock::Top,
         checker: false,
+        cures: false,
     },
     Phase {
+        n: 3,
         name: "149.50 / 2, checkerboard (every frame by the copy)",
         label: "149.50 / 2, CHECKER",
-        top: true,
+        clock: Clock::Top,
         checker: true,
+        cures: false,
     },
 ];
+
+/// The `RP_SCENE_DIVIDE1` variant's phases (R121's device check through
+/// the service, the owner's go 2026-10-30; the sheet
+/// `docs/research/sheets/r121-divide1-display-on.md`): R110's P3 (149.50
+/// / 2, every frame by the copy: the references P5 is compared with; P1
+/// and P2 are proven by R110's runs, and the run log holds four phases),
+/// then (after the 2D flips, P4) three at 143.00 / 1: every frame by the copy
+/// into SDRAM with the cures; rows, frames led behind the scan (cures off,
+/// on die) mixed with the copy's (cures on); the copy without the cures
+/// (the control: some refreshes should come out wrong).
+pub const DIVIDE1: [Phase; 4] = [
+    PHASES[2],
+    Phase {
+        n: 5,
+        name: "143.00 / 1, checkerboard, the cures on (every frame by the copy into SDRAM)",
+        label: "143 / 1, CHECKER, CURES",
+        clock: Clock::Divide1,
+        checker: true,
+        cures: true,
+    },
+    Phase {
+        n: 6,
+        name: "143.00 / 1, rows, the cures on (behind the scan and by the copy)",
+        label: "143 / 1, ROWS, CURES",
+        clock: Clock::Divide1,
+        checker: false,
+        cures: true,
+    },
+    Phase {
+        n: 7,
+        name: "143.00 / 1, checkerboard, the cures off (the control)",
+        label: "143 / 1, CHECKER, NO CURE",
+        clock: Clock::Divide1,
+        checker: true,
+        cures: false,
+    },
+];
+
+/// The phases a build runs: [`DIVIDE1`]'s with `divide1`, else
+/// [`PHASES`].
+#[must_use]
+pub const fn plan(divide1: bool) -> &'static [Phase] {
+    if divide1 { &DIVIDE1 } else { &PHASES }
+}
 
 /// Frames back to back per phase.
 pub const B2B: u32 = 150;
@@ -333,12 +400,44 @@ mod tests {
     #[test]
     fn the_plan_moves_the_clock_once_and_ends_on_the_checkerboard() {
         assert_eq!(
-            PHASES.map(|p| (p.top, p.checker)),
-            [(false, false), (true, false), (true, true)]
+            PHASES.map(|p| (p.clock, p.checker, p.cures)),
+            [
+                (Clock::Wm, false, false),
+                (Clock::Top, false, false),
+                (Clock::Top, true, false)
+            ]
         );
+        assert_eq!(plan(false), &PHASES[..]);
         // The sheet's 600 frames.
         assert_eq!(PHASES.len() as u32 * (B2B + ONE_OFF), 600);
         assert!(ASK_LINES.iter().all(|&l| l < 645));
+    }
+
+    #[test]
+    fn the_divide_1_plan_adds_the_cured_copy_the_switching_and_the_control() {
+        // R121's sheet: R110's P3 (the references), then at 143.00 / 1 the
+        // copy with the cures, rows with the cures (both targets), and the
+        // copy without (the control); numbered after the flips (P4).
+        let d = plan(true);
+        assert_eq!(d[0], PHASES[2]);
+        assert_eq!(
+            d[1..]
+                .iter()
+                .map(|p| (p.clock, p.checker, p.cures))
+                .collect::<std::vec::Vec<_>>(),
+            [
+                (Clock::Divide1, true, true),
+                (Clock::Divide1, false, true),
+                (Clock::Divide1, true, false)
+            ]
+        );
+        assert_eq!(
+            d.iter().map(|p| p.n).collect::<std::vec::Vec<_>>(),
+            [3, 5, 6, 7]
+        );
+        assert_eq!(PHASES.map(|p| p.n), [1, 2, 3]);
+        // The label: 3x glyphs of 6 pixels from x 12 across 480: 26 a line.
+        assert!(d.iter().all(|p| p.label.len() <= 26), "the label fits");
     }
 
     #[test]

@@ -93,14 +93,18 @@ Built (knob off until a divide-1 rung ships, ADR-0035 amendment D):
   service on the X51v and judges every refresh by the display's own
   signature (`DSIG`). It ran at Windows Mobile's clock and 149.50 / 2.
 - **Ours:** an `rp-scene` variant (`RP_SCENE_DIVIDE1`, the default image
-  unchanged) adds three phases at 143.00 / 1 after R110's three:
+  unchanged; the owner's go 2026-10-30, "build the next thing"): R110's P3
+  (149.50 / 2, every frame by the copy; P1 and P2 are proven by R110's
+  runs, and the emulator showed six phases overflow the run log), the 2D
+  flips (P4), then three phases at 143.00 / 1 (P5-P7):
   - checkerboard order, `sdram_cures` on: every frame goes by the copy
     path into SDRAM, the case R121 cured;
   - rows, cures on: frames led behind the scan into screen 0 (cures off)
     mixed with copy-path frames (cures on), so the switching is proven;
   - checkerboard, cures off: the control. Some frames should come out
     wrong, which shows the check can see the fault.
-  - Each phase's references are compared with 149.50 / 2's, so a wrong
+  - Each phase's references are compared with the phase before's (P5's
+    with 149.50 / 2's), so a wrong
     reference can't hide a fault.
 - **Why it wins over a bench run:** the code that ships is what's tested,
   every refresh judged, on the real display.
