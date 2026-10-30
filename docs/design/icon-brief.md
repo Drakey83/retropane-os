@@ -39,7 +39,7 @@ for the shared glass parts and the first twelve, then
 direction is liked; the Calendar was redrawn without its see-through
 stand, "Deleted Items" is called the **Trash can**, and Programs gets
 other takes (`icon-drafts-programs-alt.jpg`: windows, folder, box; the
-tile grid was not liked). Sources of
+tile grid was not liked); asked for "a new one", Claude drew a cube, a rocket and a toolbox (`icon-drafts-programs-new.jpg`). Sources of
 the list: the Start menu and quick buttons (ui.md), every WM5 default app
 (apps-and-packs.md), File Explorer's folders and file types, Settings'
 groups, the status bar and the shade.
