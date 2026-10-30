@@ -5949,6 +5949,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r23t = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R23T", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r114 = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6400,7 +6409,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 162] = [
+    let runs: [GpubenchRun; 163] = [
         (
             "run A",
             &run_a,
@@ -7179,6 +7188,49 @@ fn variant_images_gpubench(
                 "GC2DF back to back option 1 (flip, copy back, flip back): 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
                 "GC2DF done: Windows Mobile's clock put back; 0 hung in all",
                 "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R23T (on-die targets): the shape, every render right (the
+        // fork has no on-die timing).
+        (
+            "run R23T",
+            &run_r23t,
+            &[
+                "R23T (on-die targets, the owner's go 2026-10-29)",
+                "R23T target 0x000000 (0 KiB of 600 past 0xB0000), frame 0: the core ",
+                "R23T target 0x000000 (0 KiB of 600 past 0xB0000), frame 1: the core ",
+                "R23T target 0x000000 (0 KiB of 600 past 0xB0000), frame 2: the core ",
+                "R23T target 0x000000 (0 KiB of 600 past 0xB0000), frame 3: the core ",
+                "R23T target 0x01a000 (0 KiB of 600 past 0xB0000), frame 0: the core ",
+                "R23T target 0x01a000 (0 KiB of 600 past 0xB0000), frame 1: the core ",
+                "R23T target 0x01a000 (0 KiB of 600 past 0xB0000), frame 2: the core ",
+                "R23T target 0x01a000 (0 KiB of 600 past 0xB0000), frame 3: the core ",
+                "R23T target 0x030000 (88 KiB of 600 past 0xB0000), frame 0: the core ",
+                "R23T target 0x030000 (88 KiB of 600 past 0xB0000), frame 1: the core ",
+                "R23T target 0x030000 (88 KiB of 600 past 0xB0000), frame 2: the core ",
+                "R23T target 0x030000 (88 KiB of 600 past 0xB0000), frame 3: the core ",
+                "R23T target 0x050000 (216 KiB of 600 past 0xB0000), frame 0: the core ",
+                "R23T target 0x050000 (216 KiB of 600 past 0xB0000), frame 1: the core ",
+                "R23T target 0x050000 (216 KiB of 600 past 0xB0000), frame 2: the core ",
+                "R23T target 0x050000 (216 KiB of 600 past 0xB0000), frame 3: the core ",
+                "R23T target 0x066000 (304 KiB of 600 past 0xB0000), frame 0: the core ",
+                "R23T target 0x066000 (304 KiB of 600 past 0xB0000), frame 1: the core ",
+                "R23T target 0x066000 (304 KiB of 600 past 0xB0000), frame 2: the core ",
+                "R23T target 0x066000 (304 KiB of 600 past 0xB0000), frame 3: the core ",
+                "R23T target 0x200000 (600 KiB of 600 past 0xB0000), frame 0: the core ",
+                "R23T target 0x200000 (600 KiB of 600 past 0xB0000), frame 1: the core ",
+                "R23T target 0x200000 (600 KiB of 600 past 0xB0000), frame 2: the core ",
+                "R23T target 0x200000 (600 KiB of 600 past 0xB0000), frame 3: the core ",
+                "R23T target 0x296000 (600 KiB of 600 past 0xB0000), frame 0: the core ",
+                "R23T target 0x296000 (600 KiB of 600 past 0xB0000), frame 1: the core ",
+                "R23T target 0x296000 (600 KiB of 600 past 0xB0000), frame 2: the core ",
+                "R23T target 0x296000 (600 KiB of 600 past 0xB0000), frame 3: the core ",
+                "R23T done: the display's fetch on, Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

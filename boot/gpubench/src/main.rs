@@ -17850,6 +17850,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R23T {
+            r23t_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R114 {
             r114_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20239,6 +20245,97 @@ mod image {
             }
         }
         true
+    }
+
+    /// Run R23T (see [`R23T`]).
+    #[inline(never)]
+    fn r23t_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf + 1) * full {
+            log!("  R23T: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let Some(mut rr) = Renderer::new(&mut g.pool, GC2DE_SIZE.0, GC2DE_SIZE.1) else {
+            log!("  R23T: no renderer: nothing run");
+            return;
+        };
+        rr.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        let (refs, rest) = all.split_at_mut(nf * full);
+        let seen = &mut rest[..full];
+        let want = |f: usize| f * full..(f + 1) * full;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "R23: ON-DIE TARGETS",
+                "THE SCREEN GOES DARK",
+                "FOR A MINUTE",
+            ],
+        );
+        let lock = clock_apply(g, GC2DD_STEP);
+        let under = underrun_take(&mut g.e.regs);
+        if lock.is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  R23T: 149.50 / 2 didn't take; Windows Mobile's clock put back: nothing run");
+            let _ = rr.release(&mut g.pool);
+            g.nudge = nudge;
+            return;
+        }
+        let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+        log!(
+            "  R23T (on-die targets, the owner's go 2026-10-29): the {nf} game frames at 149.50 / 2 into {} places, {R114_REPS} renders each, lists in SDRAM, the display's fetch off (was {}); the underrun flag {}",
+            R23T_PLACES.len(),
+            if was { "on" } else { "off" },
+            if under { "set (cleared)" } else { "clear" }
+        );
+        // The references: each frame in SDRAM (the last place).
+        let ref_at = R23T_PLACES[R23T_PLACES.len() - 1];
+        let mut ok = true;
+        for f in 0..nf {
+            gc2ca_set_mesh(g, &mut rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+            ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, ref_at).is_some();
+            let _ = read_compare_volatile(g.mem.0, ref_at as usize, seen, &mut refs[want(f)]);
+        }
+        if ok {
+            for &at in &R23T_PLACES {
+                rt::check_in();
+                let off_die = (at + rp_vram_map::SCREEN_BYTES).saturating_sub(0xB_0000.max(at));
+                for f in 0..nf {
+                    gc2ca_set_mesh(g, &mut rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+                    let mut times = Gc2deTimes::NEW;
+                    let mut wrong = 0u32;
+                    for k in 0..R114_REPS {
+                        match gc2ca_render(g, &mut rr, GC2DE_SIZE, at) {
+                            Some((c, _)) => {
+                                times.take(c);
+                                if k == 0 {
+                                    wrong += u32::from(gc2de_off(g, at, &refs[want(f)], seen) != 0);
+                                }
+                            }
+                            None => wrong += 1,
+                        }
+                    }
+                    log!(
+                        "  R23T target 0x{at:06x} ({} KiB of 600 past 0xB0000), frame {f}: the core {times}; {wrong} wrong",
+                        off_die / 1024
+                    );
+                }
+            }
+        } else {
+            log!("  R23T: a reference not drawn: nothing more run");
+        }
+        rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+        clock_restore(&mut g.e.regs);
+        let under = underrun_take(&mut g.e.regs);
+        let _ = rr.release(&mut g.pool);
+        g.nudge = nudge;
+        log!(
+            "  R23T done: the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if under { "set (cleared)" } else { "clear" }
+        );
     }
 
     /// Run R114 (see [`R114`]).
@@ -24711,6 +24808,21 @@ mod image {
     /// clash shows as a time that falls at some offsets and comes back at
     /// the bank's period. About two minutes, unattended.
     const R114: bool = option_env!("RP_GPUBENCH_R114").is_some();
+    /// Run R23T (`RP_GPUBENCH_R23T`, with `RP_GPUBENCH_GC2_HALF`; the
+    /// owner's go 2026-10-29, sheet `docs/research/sheets/r23-on-die-target.md`):
+    /// whether the target's memory being on die (the first 704 KiB, by the
+    /// public source) is why screen 0 renders faster. At 149.50 / 2 the four
+    /// game frames into targets at [`R23T_PLACES`], [`R114_REPS`] renders
+    /// each, a renderer with its lists in SDRAM (the on die kept free), the
+    /// display's fetch off meanwhile; every first render checked against the
+    /// one in SDRAM. About a minute, the screen dark.
+    const R23T: bool = option_env!("RP_GPUBENCH_R23T").is_some();
+    /// The targets (480 x 640 RGB565, 600 KiB each): wholly on die, ending
+    /// at 0xB0000 exactly, crossing it by 88, 216 and 304 KiB (to 0xFC000,
+    /// the memory manager's block), and two wholly in SDRAM.
+    const R23T_PLACES: [u32; 7] = [
+        0x0, 0x1_A000, 0x3_0000, 0x5_0000, 0x6_6000, 0x20_0000, 0x29_6000,
+    ];
     /// The offsets from 0x296000, bytes.
     const R114_OFFSETS: [u32; 11] = [
         0, 0x800, 0x1000, 0x2000, 0x4000, 0x8000, 0x1_0000, 0x2_0000, 0x4_0000, 0x8_0000, 0x10_0000,
