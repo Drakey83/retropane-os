@@ -9,7 +9,9 @@ The look is in [ui.md](ui.md) ("Weather and icons", "The smoked-glass design lan
 - **The Today screen's hero:** the current conditions large, front and
   centre, the sky as the wallpaper, the icon breaking out of its glass tile
   ([ui.md](ui.md)).
-- **A Weather app:** now, hourly, days ahead, saved places.
+- **A Weather app:** now, hourly, days ahead, saved places. Its screens
+  and flows, both looks: [weather-flows.md](weather-flows.md) (a draft
+  for a vote, 2026-10-30).
 - **Forecast data** over the network once networking lands (ROADMAP
   Phase 6): source, privacy and caching are a design to come; every feed
   is parsed as hostile input (`docs/security.md`).

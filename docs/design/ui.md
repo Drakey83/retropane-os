@@ -46,7 +46,10 @@ suggestion especially with using rule 0 mentality."
   better way exists (measured or argued), it is proposed beside it, and
   the owner picks.
 - **First real program: Weather** (the default home). Its interaction
-  foundations come first, decided once for every app.
+  foundations come first, decided once for every app:
+  [interaction.md](interaction.md), then
+  [weather-flows.md](weather-flows.md) (both drafts for a vote,
+  2026-10-30).
 
 ## SPB Mobile Shell's philosophy (owner, 2026-10-19)
 

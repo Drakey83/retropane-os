@@ -1,0 +1,228 @@
+# Weather: screens and flows
+
+Part of the design area: [README.md](README.md). **A draft for the owner's
+vote (2026-10-30), nothing decided yet.** The choices are numbered
+WF1-WF10 at the end. It builds on the interaction foundations
+([interaction.md](interaction.md), their votes I1-I12) and on what is
+decided: the weather screen is the default home, the weather is the
+hero, the sky is the wallpaper, VClouds' icons keyed by WMO codes, US
+units, "sample data" shown until the network exists ([ui.md](ui.md),
+[weather.md](weather.md), [today-screen-plan.md](today-screen-plan.md)).
+
+## What the finding is
+
+- **Windows Mobile 5 had no weather program** (weather.md). Its nearest
+  pattern for a program with several views is Calendar (Agenda, Day,
+  Week, Month, Year; left softkey New, right softkey Menu, views from the
+  menu and a row at the bottom: a claim, to check on the owner's X51v,
+  R124). Classic's Weather is designed as "what WM5 would have shipped",
+  in that pattern.
+- **SPB Mobile Shell** had a weather panel among its swiped home panels
+  (titled "Weather" in its demo video, ui.md); its details are not in our
+  notes yet: the owner's screenshots, or the demo stepped through again,
+  fill them in before Modern's mock-up (WF10).
+- **What every modern weather app converged on** (a finding, not a
+  template): now at a glance, an hourly strip, a list of days, several
+  places swiped between, the age of the data shown.
+
+## Where the weather appears
+
+1. **The home screen** (the default home, decided): the hero (place, now,
+   condition, high and low, the icon breaking out of the glass), the
+   five-day row, the sky as the wallpaper. Built as T1/T2 for Classic's
+   arrangement (`rp-today`).
+2. **The Weather program:** now in detail, hourly, days, places,
+   settings.
+3. **The lock screen:** the sky behind it, if chosen (decided, ui.md).
+
+## The screens
+
+### Classic (WM5's pattern, modernised)
+
+```
++------------------------------------------+
+| Start   Weather          9:41 AM  W  BAT |  title bar (36)
++------------------------------------------+
+| Seattle                          < 1/3 > |  place, which of how many
+|  [icon]   72°   Partly cloudy            |
+|           Feels like 70°  H 75° L 52°    |
+|  "Rain from 3 PM"                        |  the one-line summary
+|------------------------------------------|
+| Wind 8 mph NW      Humidity 64%          |  details: two columns
+| Rain chance 40%    UV 3                  |
+| Sunrise 7:52 AM    Sunset 5:58 PM        |
+| Pressure 30.02 in  Visibility 10 mi      |
+|------------------------------------------|
+| Updated 9:40 AM · sample data            |
++------------------------------------------+
+|  Now  |  Hourly  |  Days  |  Places      |  view tabs (WM5's tab row)
++------------------------------------------+
+| Refresh                           Menu   |  softkeys (40)
++------------------------------------------+
+```
+
+- **Views** as a tab row above the softkeys (WM5's Settings pages used
+  this row): Now, Hourly (48 rows, one an hour, scrolled), Days (10 rows),
+  Places. Tap or Left/Right on the tab row.
+- **Left softkey: Refresh.** **Right: Menu** (Add place, Set as home
+  place, Units, Icon pack, About, with VClouds' credit).
+- **A day's row opens that day** (its hours, sunrise and sunset); **ok**
+  at the title bar's right goes back (I7).
+
+### Modern (SPB's shape, our take)
+
+```
++------------------------------------------+
+| 9:41 AM                         W  BAT   |  status (36), pull for the shade
+|                                          |
+|  SEATTLE              • o o              |  place, dots: 1 of 3
+|                                          |
+|        [ big icon breaking out ]         |  the sky behind everything
+|              72°                         |  Display 76
+|         Partly cloudy                    |
+|        H 75°   L 52°                     |
+|      "Rain from 3 PM"                    |
+|                                          |
+|  9AM 10AM 11AM 12PM 1PM 2PM 3PM 4PM ->   |  hourly strip, flicked sideways
+|  ---------------------------------       |
+|  MON  [i]  73° 52°                       |  days, flicked up from here
+|  TUE  [i]  63° 48°                       |
++------------------------------------------+
+|  Places                        Menu      |  softkeys (56)
++------------------------------------------+
+```
+
+- **One page per place, swiped sideways** (as SPB's panels); the dots
+  say which.
+- **Scroll up** for the days and the details (now's details as glass
+  cards under the days).
+- **The hourly strip** scrolls sideways on its own (the one sideways
+  scroller inside a sideways-swiped page: it takes sideways drags that
+  start on it, the page takes the rest).
+- **Left softkey: Places** (the list, add, reorder). **Right: Menu**
+  (Refresh, Units, Icon pack, About). Refresh is also a pull down at the
+  top of the page, as phones do, since the finger is there.
+- **The living sky** (W6, decided for v1): the clouds drift at the
+  forecast's wind speed and direction, rain or snow at its strength.
+
+## The flows
+
+**F1 First start, no place yet.** The home hero shows sample data
+labelled as such and a line "Add your place" (a target). It opens the
+Places screen's search: type a city or a US ZIP code (the keyboard, stylus
+sized), a list of matches, pick one: it becomes the home place, the
+hero shows it. No location finding: the X51v has no GPS, and finding
+a place from nearby Wi-Fi sends the networks' names to a company (a
+privacy cost we don't take by default).
+
+**F2 The glance (the most common use, by far).** Wake the device or press
+Home: the home screen shows now, the five days and the one-line summary.
+Nothing to tap. Its job is answered in under a second: do I need a
+jacket or an umbrella.
+
+**F3 More detail.** Tap the hero (or Enter on it): the Weather program at
+Now for that place. Hourly and Days from the tabs (Classic) or by scrolling
+(Modern). A day opens its hours. Back returns to where you came from
+(the home screen, if you came from there).
+
+**F4 Places.** Add (F1's search); remove (removed at once, Undo for 5 s:
+I6); reorder (Classic: Menu, Move up / Move down, as WM5's lists did;
+Modern: drag by a handle, stylus or finger); set the home place (the one
+the home screen shows). Up to 10 places *provisional* (memory: each
+place's cached forecast is small, below).
+
+**F5 Refresh.** Automatic, on a schedule (WF4), and when the program is
+opened if the data is older than the schedule. By hand: Refresh. Never
+blocks anything: the old data stays on screen with its age until the new
+arrives, and a failure leaves the old data and says so.
+
+**F6 Stale, offline, failed.**
+
+| Situation | What the screen shows |
+|---|---|
+| Fresh | "Updated 9:40 AM" in DIM |
+| Older than 3 h *provisional* | the age in amber, "Updated 6:40 AM" |
+| Older than the forecast covers | "No current forecast. Connect to refresh" instead of numbers; never a stale "now" shown as now |
+| No network | the data with its age, plus "Offline" |
+| The source failed | the data with its age, plus "Couldn't refresh. Try again" (a target) |
+| A code with no icon | the pack's `22` (unknown) icon, never a blank |
+| Before the network exists | "sample data" (decided) |
+
+**F7 Settings, from Menu:** units (US by default: °F, mph, inches, 12-hour;
+metric later, decided), the icon pack (T4), refresh schedule, the sky's
+motion on or off (every effect can be turned off, decided).
+
+**F8 Alerts (later, if the source has them):** a severe-weather warning
+shows as a band on the hero and a notification; tapping it shows the
+warning's text. Waits on the source's design (WF5).
+
+## The D-pad, screen by screen (I8's rules)
+
+| Screen | Up / Down | Left / Right | Enter |
+|---|---|---|---|
+| Home | between the hero, the five days, the rest of the home screen | along the five days | hero: open Weather; a day: open that day |
+| Weather, Now (Classic) | through the details, then the tabs, then the softkeys | on the place line: previous / next place; on the tabs: the views | on a detail: nothing; on a tab: that view |
+| Weather (Modern) | scroll the page by focus: the hourly strip, each day, the details | previous / next place, except inside the hourly strip, where they move along the hours | a day: open it |
+| Hourly, Days lists | by row | previous / next place | a day: open it |
+| Places | by row | nothing (I8: never out of the list) | open that place |
+
+## Ours, beyond the original (rule 0)
+
+- **"Now" between refreshes, from the forecast already held.** The
+  hourly forecast holds each hour's temperature, wind and rain chance;
+  between fetches the screen shows the hour's value moved toward the
+  next hour's as time passes, so "now" stays current for hours without
+  using the radio. Wi-Fi is the battery's biggest drain on the Axim (a
+  claim: power measurements are phase 9's), so fewer fetches is longer
+  battery, and an offline device still shows a sensible "now". The
+  screen says "Updated ..." from the real fetch, never from the
+  estimate.
+- **The sun and moon worked out on the device.** Sunrise, sunset, day or
+  night icons, the sun's arc in the living sky and the moon's phase come
+  from the place's position and the date, with no network: the sky is
+  right at 5:58 PM even if the last fetch was at noon.
+- **The one-line summary written on the device** from the hourly numbers
+  ("Rain from 3 PM", "Colder than yesterday", "Windy this afternoon"): a
+  handful of rules over the cached data, nothing sent anywhere.
+- **Cached small:** one place's 10 days and 48 hours as packed numbers
+  is about 1-2 KB, so 10 places cost about 20 KB of flash and RAM, kept
+  through a restart (memory-first rule).
+- **The source keyed by WMO codes,** as the icon packs already are
+  (weather.md): feeds that send WMO codes (Open-Meteo's does, keyless:
+  a finding, the source's choice is its own ADR with privacy and
+  security) need no translation table; every reply parsed as hostile
+  input (security.md).
+- **Fetch when the radio is already on** (when Wi-Fi is up for another
+  reason, refresh rides along), so a scheduled refresh rarely wakes the
+  radio by itself.
+
+## The votes
+
+- **WF1 Classic's views:** A a tab row (Now, Hourly, Days, Places) above
+  the softkeys, Refresh / Menu softkeys (recommended); B views only from
+  the Menu (WM5 Calendar's way, one less row).
+- **WF2 Modern's layout:** A one page per place swiped sideways, scroll
+  up for days and details, hourly strip sideways (recommended); B one
+  page with a place picker at the top.
+- **WF3 Place finding:** A search by city or US ZIP, no location finding
+  (recommended); B also from nearby Wi-Fi networks (sends their names to
+  a company).
+- **WF4 Refresh schedule:** A every 3 h *provisional*, plus when opened
+  if older, plus riding along when Wi-Fi is up (recommended); B every
+  hour; C by hand only.
+- **WF5 The data source:** decided later in its own ADR (privacy,
+  security, WMO codes, US units); this page assumes only hourly and
+  daily forecasts with WMO codes. Agree to defer? (recommended: yes).
+- **WF6 "Now" from the held forecast between fetches:** A yes, labelled
+  by the real fetch's time (recommended); B show only what was fetched.
+- **WF7 The one-line summary:** A on the hero and the program
+  (recommended); B leave it out.
+- **WF8 Places:** A up to 10, one home place (recommended); B a
+  different number.
+- **WF9 Weather in the Start menu:** A add it after Today (it's the
+  home program, and the decided list predates it) (recommended); B leave
+  it in Programs.
+- **WF10 Next step for the look:** A mock-ups of both looks' screens
+  (Now, Hourly, Days, Places, the stale and offline states) drawn by the
+  real shell code in `cargo xtask ui-preview` once I1-I12 are voted
+  (recommended); B mock-ups as pictures first, code after.
