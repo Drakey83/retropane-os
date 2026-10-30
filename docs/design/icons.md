@@ -19,7 +19,8 @@ every other icon the OS draws.
   SD and CF cards stay his.
 - **Swapping it later costs nothing but the art:** the base set is just the
   first pack in the format below, so a better set replaces it file for file.
-- **Its licence is the owner's call** (vote IC1 below).
+- **Its licence: CC BY 4.0** (owner, 2026-10-30, vote IC1), the same terms
+  the artist brief asks of any replacement set.
 
 ## What a user can change
 
@@ -112,10 +113,12 @@ The weather packs' rules, extended to named icons:
 ## Votes for the owner
 
 **Ruled (owner, 2026-10-30, "Yes, as proposed"): IC2, IC3, IC4 and IC5 as
-proposed below.** IC1 had two options and no proposal, so it is still open.
+proposed below.** IC1 had two options and no proposal; **the owner then ruled CC BY 4.0** (2026-10-30).
 
 - **IC1, the stand-in's licence:** the OS's own (GPL-2.0-or-later, simplest),
   or CC BY 4.0 (lets anyone reuse the icons elsewhere with credit).
+  **Ruled: CC BY 4.0** (the notice: `tools/mockups/ICONS-LICENSE.md`; the
+  drawing code stays GPL-2.0-or-later).
 - **IC2, legacy program icons:** shown as the program's own by default, with
   a pack able to replace them. **Ruled.**
 - **IC3, user pictures:** PNG and ICO. **Ruled.**
