@@ -158,3 +158,28 @@ P1-P3 were unchanged (0 torn).
   next perf run shows where each frame went.
 - Still large by design: the menu's open and close (about half the
   screen) flip.
+
+## After the ping-pong fix (2026-10-30, perf, today-0016, `local/perf-2026-10-30-R115f.txt`)
+| | before R113 (tearing) | R115b (blocking flip) | R115e | **R115f (this build)** |
+|---|---|---|---|---|
+| touch to flush, median | 10.4-13.3 ms | 19.9 | 20.4 | **16.2** |
+| touch to flush, worst | 42.8-44.3 | 49.4 | 49.1 | **43.6** |
+| pen-down period, worst | 12.7 | 23.3 | 11.6 | **12.7** |
+| frame and queueing, median | ~0.29 | 0.30 | 0.34 | **0.39** |
+
+**Where the replay's 54 frames went:**
+- 27 copied behind the scan;
+- 20 flipped as large (the Start menu opening and closing, as designed);
+- 7 flipped with no copy window;
+- 0 slipped;
+- copy times 3.3-8.1 ms per whole screen.
+
+**Reading it (results, not decisions):**
+- Touch to flush is 3.7 ms faster at the median than the blocking flip,
+  with no tearing, and its worst is back inside the pre-R113 range. The
+  pen is sampled evenly.
+- Two things are left:
+  - the 7 frames with no copy window: why the window was closed for a
+    small change (the copy band's spread, 3.3-8.1 ms, narrows windows);
+  - frame and queueing's median, up 0.1 ms (+36% against its floor).
+- The floors are the owner's to set.
