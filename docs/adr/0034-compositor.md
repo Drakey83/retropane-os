@@ -1,6 +1,6 @@
 # ADR-0034: The compositor: layers, frame modes and the frame budget
 
-- **Status:** **Accepted (owner, 2026-10-19): C1 A, C2 A (with draw-time
+- **Status:** **C4 changed for glass-over-wallpaper pages: L2 (owner, 2026-10-30, below C5).** **Accepted (owner, 2026-10-19): C1 A, C2 A (with draw-time
   dithering), C3 A, C4 A, C5 A**, with the owner's review fixes (Gap 1,
   the pan-to-partial seam; Gap 2, the price table bounded) written in
   below and in [docs/design/compositor.md](../design/compositor.md).
@@ -32,6 +32,22 @@ decisions.
 | C3. Full-screen 3D effects at today's clock | **A: designed as moving panels or short (~0.3 s) effects at ~20-35 fps**; 60 for everything else | Honest to the measured cost (a full-screen textured layer 25-29 ms); SPB's own effects weren't all 60 fps either |
 | C4. The video plane | **A: the panned page, its wallpaper drawn into it**; the graphics plane the glass and chrome | Every pan stays a free repoint at 60 Hz; a wallpaper change redraws the page pictures once |
 | C5. Text and glass over 3D content | **A: yes, as layers** (replaces ADR-0030 G1's areas) | Sheets over the carousel and the clock over the weather sky are the SPB look's defining moments; the GPU's single owner and the per-client quotas don't change; translucency is priced per tile, so it's bounded |
+
+**C4 changed for pages with glass over a still wallpaper (owner,
+2026-10-30: "Yes, L2"; sheet
+[weather-gpu-movement.md](../research/sheets/weather-gpu-movement.md)).**
+The planes are swapped for such pages: screen 0 (RGB565, the graphics
+plane, the bottom slot) holds the wallpaper and the chrome and stays
+still; the page's glass and text are drawn once into a per-pixel-alpha
+picture on the **video plane** (the slot above, its window the page's
+rectangle), panned and turned by repointing it in the blanking. The
+wallpaper no longer scrolls with the page and no page holds its own copy
+of it. Rests on device tests M1-M4 of the sheet (the video plane's
+per-pixel alpha, a partial window, horizontal steps, hand-offs); if M1
+fails, C4 as first voted (the wallpaper in an opaque RGB565 page) is the
+fallback. Its depth (ARGB8888 or ARGB4444 + dither, C2) is the owner's
+after M1's look. Every rule of amendment P holds: the video plane is off
+in every frame the 3D core draws.
 
 ## The review's fixes
 

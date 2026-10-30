@@ -410,7 +410,10 @@ do 5 if its just as good, 4 i like cascade":
   frames like the others, so he sees them before the device build.
   Stagger and Expand are not built for the device; M5's Stagger part and
   M6 drop out of the run.
-- **V1 (L2) and V3 (depth):** open. V3 waits for M1's side-by-side look.
+- **V1: L2** (the owner, the same evening: "Yes, L2"). Written into
+  ADR-0034 as a change to C4, with C4 as first voted the fallback if M1
+  fails.
+- **V3 (depth):** open, waiting for M1's side-by-side look.
 
 ## Votes needed (results are not decisions)
 
