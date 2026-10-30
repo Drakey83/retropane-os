@@ -5967,6 +5967,24 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r121a = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R121A", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
+    let run_r117t = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R117T", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r118c = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6472,7 +6490,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 170] = [
+    let runs: [GpubenchRun; 172] = [
         (
             "run A",
             &run_a,
@@ -7280,6 +7298,67 @@ fn variant_images_gpubench(
                 "R116G lists on die, frame 3, target 0x000000: the core ",
                 "R116G lists on die, frame 3, target 0x296000: the core ",
                 "R116G done: the display's fetch on, Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R121A (R121's test 1): the shape, every way's renders right (the
+        // fork models no divide-1 fault).
+        (
+            "run R121A",
+            &run_r121a,
+            &[
+                "R121A (test 1 of 3, the owner 2026-10-30)",
+                "R121A references at 74.75 / 1: drawn and repeatable true",
+                "R121A 143.00 / 1, screen 0 shown (as in use; the control, wrong in run 3), frame 0: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, screen 0 shown (as in use; the control, wrong in run 3), frame 1: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, screen 0 shown (as in use; the control, wrong in run 3), frame 2: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, screen 0 shown (as in use; the control, wrong in run 3), frame 3: 0 of 2 renders wrong",
+                "R121A screen 0 shown (as in use; the control, wrong in run 3): the underrun flag ",
+                "R121A 143.00 / 1, a quarter of the reads (240 x 320 at 0x0, Dell's doubling), frame 0: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, a quarter of the reads (240 x 320 at 0x0, Dell's doubling), frame 1: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, a quarter of the reads (240 x 320 at 0x0, Dell's doubling), frame 2: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, a quarter of the reads (240 x 320 at 0x0, Dell's doubling), frame 3: 0 of 2 renders wrong",
+                "R121A a quarter of the reads (240 x 320 at 0x0, Dell's doubling): the underrun flag ",
+                "R121A 143.00 / 1, checker tile order, frame 0: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, checker tile order, frame 1: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, checker tile order, frame 2: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, checker tile order, frame 3: 0 of 2 renders wrong",
+                "R121A checker tile order: the underrun flag ",
+                "R121A references at 74.75 / 1 (with the overlay): drawn and repeatable true",
+                "R121A 143.00 / 1, an alpha-0 quad blended over the frame (the write-out paced), frame 0: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, an alpha-0 quad blended over the frame (the write-out paced), frame 1: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, an alpha-0 quad blended over the frame (the write-out paced), frame 2: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, an alpha-0 quad blended over the frame (the write-out paced), frame 3: 0 of 2 renders wrong",
+                "R121A an alpha-0 quad blended over the frame (the write-out paced): the underrun flag ",
+                "R121A 143.00 / 1, the display's fetch off (the control, right in R118C), frame 0: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, the display's fetch off (the control, right in R118C), frame 1: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, the display's fetch off (the control, right in R118C), frame 2: 0 of 2 renders wrong",
+                "R121A 143.00 / 1, the display's fetch off (the control, right in R118C), frame 3: 0 of 2 renders wrong",
+                "R121A the display's fetch off (the control, right in R118C): the underrun flag ",
+                "R121A done: Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R117T (R120's soak): the shape, two round trips right.
+        (
+            "run R117T",
+            &run_r117t,
+            &[
+                "R117T (R120's soak, the owner's go 2026-10-30)",
+                "R117T references at 74.75 / 1: drawn and repeatable true",
+                "R117T 1 round trips",
+                "R117T 2 round trips",
+                "R117T end: 2 round trips in ",
+                "renders wrong into SDRAM at divide 2 0 of 2, into screen 0 at divide 1 0 of 2; not finished 0; underruns 0",
+                "R117T done: Windows Mobile's clock put back",
                 "GC2CA done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
