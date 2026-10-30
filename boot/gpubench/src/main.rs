@@ -17856,6 +17856,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R23E {
+            r23e_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R23T {
             r23t_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20348,6 +20354,108 @@ mod image {
             "  R116G done: the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
             g.e.regs.read32(clock::COREPLL),
             if under { "set (cleared)" } else { "clear" }
+        );
+    }
+
+    /// Run R23E (see [`R23E`]).
+    #[inline(never)]
+    fn r23e_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf + 1) * full {
+            log!("  R23E: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let Some(mut rr) = Renderer::new(&mut g.pool, GC2DE_SIZE.0, GC2DE_SIZE.1) else {
+            log!("  R23E: no renderer: nothing run");
+            return;
+        };
+        rr.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+        let (refs, rest) = all.split_at_mut(nf * full);
+        let seen = &mut rest[..full];
+        let want = |f: usize| f * full..(f + 1) * full;
+        let target = rp_vram_map::SCREENS[1].at;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "R23: SAFE REGION EDGE",
+                "THE SCREEN FLICKERS",
+                "FOR A MINUTE",
+            ],
+        );
+        log!(
+            "  R23E (the safe region's end, the owner's go 2026-10-29): the {nf} game frames into 0x{target:x} (SDRAM), lists in SDRAM, a 480 x 640 screen shown ending at {R23E_ENDS:x?}, {R23E_REPS} renders each, every render checked; at {} settings",
+            R23E_STEPS.len()
+        );
+        for &(step, name) in &R23E_STEPS {
+            rt::check_in();
+            let lock = clock_apply(g, step);
+            let under = underrun_take(&mut g.e.regs);
+            if lock.is_none() {
+                clock_restore(&mut g.e.regs);
+                log!("  R23E {name}: didn't take; Windows Mobile's clock put back: not run");
+                continue;
+            }
+            // The references: the display's fetch off, nothing contending.
+            let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+            let mut ok = true;
+            for f in 0..nf {
+                gc2ca_set_mesh(g, &mut rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+                ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, target).is_some();
+                let _ = read_compare_volatile(g.mem.0, target as usize, seen, &mut refs[want(f)]);
+            }
+            log!(
+                "  R23E {name}: references drawn {ok} with the display's fetch off (was {}); the underrun flag {}",
+                if was { "on" } else { "off" },
+                if under { "set (cleared)" } else { "clear" }
+            );
+            if ok {
+                for &end in &R23E_ENDS {
+                    rt::check_in();
+                    let at = end - rp_vram_map::SCREEN_BYTES;
+                    gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, at, planes0);
+                    let before = underrun_take(&mut g.e.regs);
+                    for f in 0..nf {
+                        gc2ca_set_mesh(g, &mut rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+                        let mut times = Gc2deTimes::NEW;
+                        let (mut bad, mut words, mut worst) = (0u32, 0u32, 0u32);
+                        for _ in 0..R23E_REPS {
+                            let off = match gc2ca_render(g, &mut rr, GC2DE_SIZE, target) {
+                                Some((c, _)) => {
+                                    times.take(c);
+                                    gc2de_off(g, target, &refs[want(f)], seen)
+                                }
+                                None => u32::MAX,
+                            };
+                            bad += u32::from(off != 0);
+                            words = words.saturating_add(off);
+                            worst = worst.max(off);
+                        }
+                        log!(
+                            "  R23E {name}, screen 0x{at:05x}-0x{end:05x}, frame {f}: {bad} of {R23E_REPS} renders wrong, {words} words (worst {worst}); the core {times}",
+                        );
+                    }
+                    log!(
+                        "  R23E {name}, screen ending 0x{end:05x}: the underrun flag before {before}, after {}",
+                        underrun_take(&mut g.e.regs)
+                    );
+                }
+            } else {
+                log!("  R23E {name}: a reference not drawn: its places not run");
+            }
+            gc2ca_show(g, GC2CA_UNDER, GC2DE_SIZE, GC2CA_A, planes0);
+            rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+            clock_restore(&mut g.e.regs);
+            let _ = underrun_take(&mut g.e.regs);
+        }
+        let _ = rr.release(&mut g.pool);
+        g.nudge = nudge;
+        log!(
+            "  R23E done: the planes as found, the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if underrun_take(&mut g.e.regs) { "set (cleared)" } else { "clear" }
         );
     }
 
@@ -24921,6 +25029,37 @@ mod image {
     /// display's fetch off meanwhile; every first render checked against the
     /// one in SDRAM. About a minute, the screen dark.
     const R23T: bool = option_env!("RP_GPUBENCH_R23T").is_some();
+    /// Run R23E (`RP_GPUBENCH_R23E`, with `RP_GPUBENCH_GC2_HALF`; the
+    /// owner's go 2026-10-29, sheet `docs/research/sheets/r23-safe-region-edge.md`):
+    /// where the safe region ends (the display reading there never disturbs
+    /// the 3D core; G19: right ending at 0xAE000, wrong from 0xB6000). At
+    /// each of [`R23E_STEPS`], the four game frames' references rendered
+    /// into screen 1's place (SDRAM) with the display's fetch off; then a
+    /// 480 x 640 RGB565 screen shown ending at each of [`R23E_ENDS`] while
+    /// the core renders the frames there again, [`R23E_REPS`] renders each,
+    /// every render checked word for word; the underrun flag read around
+    /// each place. 0xB6000 is the control that must show wrong (G19's first
+    /// wrong place); 74.75 / 1 is G19's own setting, where the clash shows
+    /// strongest (C71: rarer at divide 2). Nothing is written on die: the
+    /// screens show whatever is there. About a minute, the screen flickers.
+    const R23E: bool = option_env!("RP_GPUBENCH_R23E").is_some();
+    /// The settings: G19's (the clash strongest) and the shipped one.
+    const R23E_STEPS: [(ClockStep, &str); 2] = [
+        (gc2_step(23, 4, 0, 1), "74.75 / 1"),
+        (GC2DD_STEP, "149.50 / 2"),
+    ];
+    /// Where the shown screens end: G19's last right place, the on-die
+    /// edge, 1 and 8 KiB past it, and G19's first wrong place (the control).
+    const R23E_ENDS: [u32; 5] = [0xA_E000, 0xB_0000, 0xB_0400, 0xB_2000, 0xB_6000];
+    const _: () = {
+        let mut i = 0;
+        while i < R23E_ENDS.len() {
+            assert!((R23E_ENDS[i] - rp_vram_map::SCREEN_BYTES).is_multiple_of(16));
+            i += 1;
+        }
+    };
+    /// Renders of each frame at each place (the emulator 2).
+    const R23E_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
     /// Run R116G (`RP_GPUBENCH_R116G`, with `RP_GPUBENCH_GC2_HALF`; the
     /// owner's "Measure on games" 2026-10-29, sheet
     /// `docs/research/sheets/r116-use-the-on-die-memory.md`): the shipped

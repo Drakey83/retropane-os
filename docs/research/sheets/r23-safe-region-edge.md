@@ -42,3 +42,24 @@ memory. Training knowledge, a claim.
 - The run also reads the underrun flag around each place.
 
 **Asked of the owner:** the go to build; a separate go for the run.
+
+## Built (the owner's go 2026-10-29): run R23E, two controls added
+`rp-gpubench` run R23E (`RP_GPUBENCH_GC2_HALF` + `RP_GPUBENCH_R23E`;
+emulator "run R23E"). Added while building, for the owner to accept or
+drop before the run:
+- **A control that must fail: a screen ending at 0xB6000** (G19's first
+  wrong place). If it comes out clean too, the run can't see the clash
+  and proves nothing about 0xB0400.
+- **G19's own setting, 74.75 / 1, beside 149.50 / 2.** C71 and GC2S show
+  the clash much rarer at divide 2 (7 of 9 kinds right with the screen
+  wholly outside), and 0xB0400 puts only 1 KiB of 600 outside: at
+  149.50 / 2 alone a clean 0xB0400 would likely mean "too small to see",
+  not "the region isn't on die".
+
+So the rule becomes: **SAFE_END = 0xB0000 if 0xB0000 is clean at both
+settings, 0xB6000 is wrong (the run sees the clash), and 0xB0400 or
+0xB2000 is wrong at 74.75 / 1.** If 0xB6000 is clean, the run is
+inconclusive; if 0xB0000 is wrong anywhere, keep 0xAE000. The references
+are rendered with the display's fetch off; every render is checked word for
+word; nothing is written to on-die memory (the screens show whatever is
+there). It takes about a minute and the screen flickers.
