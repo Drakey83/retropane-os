@@ -17850,6 +17850,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R116G {
+            r116g_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R23T {
             r23t_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20245,6 +20251,104 @@ mod image {
             }
         }
         true
+    }
+
+    /// Run R116G (see [`R116G`]).
+    #[inline(never)]
+    fn r116g_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf * 2 + 1) * full {
+            log!("  R116G: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let (refs, rest) = all.split_at_mut(nf * 2 * full);
+        let seen = &mut rest[..full];
+        let want = |f: usize, t: usize| (2 * f + t) * full..(2 * f + t + 1) * full;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            ["R116: LISTS ON DIE", "THE SCREEN GOES DARK", "FOR A MINUTE"],
+        );
+        let lock = clock_apply(g, GC2DD_STEP);
+        let under = underrun_take(&mut g.e.regs);
+        if lock.is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  R116G: 149.50 / 2 didn't take; Windows Mobile's clock put back: nothing run");
+            g.nudge = nudge;
+            return;
+        }
+        let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+        let targets = [rp_vram_map::SCREENS[0].at, rp_vram_map::SCREENS[1].at];
+        log!(
+            "  R116G (lists on die on the game frames, the owner's go 2026-10-29): the {nf} game frames at 149.50 / 2, lists in SDRAM (0x{:x}) then on die (0x{:x}, {} KiB), each into targets {targets:x?}, {R114_REPS} renders each, the display's fetch off (was {}); the underrun flag {}",
+            rp_vram_map::PARAMS.at,
+            rp_vram_map::LISTS_ON_DIE.at,
+            rp_vram_map::LISTS_ON_DIE.size / 1024,
+            if was { "on" } else { "off" },
+            if under { "set (cleared)" } else { "clear" }
+        );
+        for (way, params) in [
+            ("lists in SDRAM", rp_vram_map::PARAMS),
+            ("lists on die", rp_vram_map::LISTS_ON_DIE),
+        ] {
+            rt::check_in();
+            let Some(mut rr) = Renderer::new_in(
+                &mut g.pool,
+                GC2DE_SIZE.0,
+                GC2DE_SIZE.1,
+                params,
+                rp_vram_map::PM_TABLE,
+            ) else {
+                log!("  R116G {way}: no renderer");
+                continue;
+            };
+            rr.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
+            for f in 0..nf {
+                gc2ca_set_mesh(g, &mut rr, gc2::GAME_FRAMES[f], tex, GC2DE_SIZE);
+                for (t, &at) in targets.iter().enumerate() {
+                    let mut times = Gc2deTimes::NEW;
+                    let mut wrong = 0u32;
+                    for k in 0..R114_REPS {
+                        match gc2ca_render(g, &mut rr, GC2DE_SIZE, at) {
+                            Some((c, _)) => {
+                                times.take(c);
+                                if k == 0 {
+                                    if params.at == rp_vram_map::PARAMS.at {
+                                        let _ = read_compare_volatile(
+                                            g.mem.0,
+                                            at as usize,
+                                            seen,
+                                            &mut refs[want(f, t)],
+                                        );
+                                    } else {
+                                        wrong += u32::from(
+                                            gc2de_off(g, at, &refs[want(f, t)], seen) != 0,
+                                        );
+                                    }
+                                }
+                            }
+                            None => wrong += 1,
+                        }
+                    }
+                    log!(
+                        "  R116G {way}, frame {f}, target 0x{at:06x}: the core {times}; {wrong} wrong; spills {}",
+                        rr.spills()
+                    );
+                }
+            }
+            let _ = rr.release(&mut g.pool);
+        }
+        rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+        clock_restore(&mut g.e.regs);
+        let under = underrun_take(&mut g.e.regs);
+        g.nudge = nudge;
+        log!(
+            "  R116G done: the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if under { "set (cleared)" } else { "clear" }
+        );
     }
 
     /// Run R23T (see [`R23T`]).
@@ -24817,6 +24921,17 @@ mod image {
     /// display's fetch off meanwhile; every first render checked against the
     /// one in SDRAM. About a minute, the screen dark.
     const R23T: bool = option_env!("RP_GPUBENCH_R23T").is_some();
+    /// Run R116G (`RP_GPUBENCH_R116G`, with `RP_GPUBENCH_GC2_HALF`; the
+    /// owner's "Measure on games" 2026-10-29, sheet
+    /// `docs/research/sheets/r116-use-the-on-die-memory.md`): the shipped
+    /// renderer's lists in SDRAM (`PARAMS`) against on die
+    /// (`LISTS_ON_DIE`, as the graphics service now keeps them), on the four
+    /// game frames, each into a target on die (0x0) and in SDRAM
+    /// (0x296000), [`R114_REPS`] renders each, at 149.50 / 2, the display's
+    /// fetch off throughout (one condition for all: R114 and R23T, the runs
+    /// the ~0.31 ms came from, differed in it). Every first render checked
+    /// against the first way's. About a minute, the screen dark.
+    const R116G: bool = option_env!("RP_GPUBENCH_R116G").is_some();
     /// The targets (480 x 640 RGB565, 600 KiB each): wholly on die, ending
     /// at 0xB0000 exactly, crossing it by 88, 216 and 304 KiB (to 0xFC000,
     /// the memory manager's block), and two wholly in SDRAM.

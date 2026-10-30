@@ -5949,6 +5949,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r116g = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R116G", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r23t = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6409,7 +6418,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 163] = [
+    let runs: [GpubenchRun; 164] = [
         (
             "run A",
             &run_a,
@@ -7188,6 +7197,37 @@ fn variant_images_gpubench(
                 "GC2DF back to back option 1 (flip, copy back, flip back): 4 frames; 0 failed, 0 hung, 0 pictures wrong; render done ",
                 "GC2DF done: Windows Mobile's clock put back; 0 hung in all",
                 "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R116G (lists on die on the game frames): the shape, every
+        // render right (the fork has no on-die timing).
+        (
+            "run R116G",
+            &run_r116g,
+            &[
+                "R116G (lists on die on the game frames, the owner's go 2026-10-29)",
+                "R116G lists in SDRAM, frame 0, target 0x000000: the core ",
+                "R116G lists in SDRAM, frame 0, target 0x296000: the core ",
+                "R116G lists in SDRAM, frame 1, target 0x000000: the core ",
+                "R116G lists in SDRAM, frame 1, target 0x296000: the core ",
+                "R116G lists in SDRAM, frame 2, target 0x000000: the core ",
+                "R116G lists in SDRAM, frame 2, target 0x296000: the core ",
+                "R116G lists in SDRAM, frame 3, target 0x000000: the core ",
+                "R116G lists in SDRAM, frame 3, target 0x296000: the core ",
+                "R116G lists on die, frame 0, target 0x000000: the core ",
+                "R116G lists on die, frame 0, target 0x296000: the core ",
+                "R116G lists on die, frame 1, target 0x000000: the core ",
+                "R116G lists on die, frame 1, target 0x296000: the core ",
+                "R116G lists on die, frame 2, target 0x000000: the core ",
+                "R116G lists on die, frame 2, target 0x296000: the core ",
+                "R116G lists on die, frame 3, target 0x000000: the core ",
+                "R116G lists on die, frame 3, target 0x296000: the core ",
+                "R116G done: the display's fetch on, Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
