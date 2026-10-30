@@ -17856,6 +17856,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R118 {
+            r118_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R117 {
             r117_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20358,6 +20364,162 @@ mod image {
         g.nudge = nudge;
         log!(
             "  R116G done: the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if under { "set (cleared)" } else { "clear" }
+        );
+    }
+
+    /// The flat game frame set into `r`, with a full-screen quad of the
+    /// background's colour under the mesh when `under` (the same picture).
+    fn r118_set_flat(g: &mut Rig, r: &mut Renderer, tex: gc2::Tex, under: bool) {
+        let (bg, slots) = gc2::mesh_frame_in(gc2::MESH_FLAT, tex, GC2DE_SIZE);
+        let _ = r.set_background(Some(bg));
+        let first = usize::from(under);
+        if under {
+            let d = Draw::rect(
+                0,
+                0,
+                i32::from(GC2DE_SIZE.0),
+                i32::from(GC2DE_SIZE.1),
+                Paint::Flat(bg),
+            );
+            g.set(r, 0, Some(d));
+        }
+        for (n, d) in slots.into_iter().enumerate().take(gc2::MESH_SLOTS - first) {
+            g.set(r, n + first, d);
+        }
+    }
+
+    /// The wrong pixels of `got` against `want` (a 16-bit `w`-wide
+    /// picture): each wrong pixel's row in its 16-row tile counted into
+    /// `rows`, the first [`R118_SHOW`] kept as (x, y, got, want).
+    fn r118_place(
+        got: &[u32],
+        want: &[u32],
+        w: u32,
+        rows: &mut [u32; 16],
+        first: &mut ([(u32, u32, u16, u16); R118_SHOW], usize),
+    ) {
+        for (i, (&a, &b)) in got.iter().zip(want).enumerate() {
+            if a == b {
+                continue;
+            }
+            for half in 0..2u32 {
+                let (pa, pb) = ((a >> (16 * half)) as u16, (b >> (16 * half)) as u16);
+                if pa == pb {
+                    continue;
+                }
+                let p = 2 * i as u32 + half;
+                let (x, y) = (p % w, p / w);
+                rows[(y % 16) as usize] += 1;
+                if first.1 < R118_SHOW {
+                    first.0[first.1] = (x, y, pa, pb);
+                    first.1 += 1;
+                }
+            }
+        }
+    }
+
+    /// Run R118 test 1 (see [`R118`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn r118_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < 2 * full {
+            log!("  R118: not enough SDRAM for the reference: nothing run");
+            return;
+        }
+        let (want, rest) = all.split_at_mut(full);
+        let seen = &mut rest[..full];
+        let at = rp_vram_map::SCREENS[1].at;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "R118: FLAT FRAME TEST 1",
+                "THE SCREEN GOES DARK",
+                "FOR A MINUTE",
+            ],
+        );
+        let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+        log!(
+            "  R118 test 1 (the flat frame into SDRAM, the owner's chase 2026-10-29): {} ways, {R117_REPS} renders each into 0x{at:x}, lists on die (0x{:x}), rows, every wrong pixel placed; the display's fetch off (was {})",
+            R118_WAYS.len(),
+            rp_vram_map::LISTS_ON_DIE.at,
+            if was { "on" } else { "off" }
+        );
+        let Some(mut rr) = r117_renderer(g, true, false) else {
+            log!("  R118: no renderer: nothing run");
+            rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+            g.nudge = nudge;
+            return;
+        };
+        // The reference at 74.75 / 1: drawn twice, then the underlaid form.
+        let mut ok = clock_apply(g, R23E_STEPS[0].0).is_some();
+        let (mut again, mut under_off) = (0u32, 0u32);
+        if ok {
+            r118_set_flat(g, &mut rr, tex, false);
+            ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+            let _ = read_compare_volatile(g.mem.0, at as usize, seen, want);
+            ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+            again = gc2de_off(g, at, want, seen);
+            r118_set_flat(g, &mut rr, tex, true);
+            ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+            under_off = gc2de_off(g, at, want, seen);
+        }
+        ok &= again == 0 && under_off == 0;
+        log!(
+            "  R118 reference at 74.75 / 1: drawn {ok}, the second drawing {again} words off the first, the underlaid form {under_off}"
+        );
+        clock_restore(&mut g.e.regs);
+        if ok {
+            for &(name, step, under) in &R118_WAYS {
+                rt::check_in();
+                if clock_apply(g, step).is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  R118 {name}: the clock didn't take; skipped");
+                    continue;
+                }
+                r118_set_flat(g, &mut rr, tex, under);
+                let mut times = Gc2deTimes::NEW;
+                let (mut bad, mut words) = (0u32, 0u32);
+                let mut rows = [0u32; 16];
+                let mut first = ([(0u32, 0u32, 0u16, 0u16); R118_SHOW], 0usize);
+                for _ in 0..R117_REPS {
+                    let off = match gc2ca_render(g, &mut rr, GC2DE_SIZE, at) {
+                        Some((c, _)) => {
+                            times.take(c);
+                            gc2de_off(g, at, want, seen)
+                        }
+                        None => u32::MAX,
+                    };
+                    if off != 0 && off != u32::MAX {
+                        r118_place(seen, want, u32::from(GC2DE_SIZE.0), &mut rows, &mut first);
+                    }
+                    bad += u32::from(off != 0);
+                    words = words.saturating_add(off);
+                }
+                log!(
+                    "  R118 {name}: {bad} of {R117_REPS} renders wrong, {words} words; the core {times}; wrong pixels by row in the tile {rows:?}"
+                );
+                for &(x, y, got, w) in &first.0[..first.1] {
+                    log!(
+                        "    R118 {name}: ({x}, {y}) row {} of its tile: 0x{got:04x} for 0x{w:04x}",
+                        y % 16
+                    );
+                }
+                clock_restore(&mut g.e.regs);
+            }
+        } else {
+            log!("  R118: the reference failed: the ways not run");
+        }
+        let _ = rr.release(&mut g.pool);
+        rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+        let under = underrun_take(&mut g.e.regs);
+        g.nudge = nudge;
+        log!(
+            "  R118 done: the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
             g.e.regs.read32(clock::COREPLL),
             if under { "set (cleared)" } else { "clear" }
         );
@@ -25278,6 +25440,32 @@ mod image {
     /// 143.00 / 1, and the same PLL at divide 2 (a divider-only step).
     const R117_FAST: ClockStep = gc2_step(44, 4, 0, 1);
     const R117_SLOW: ClockStep = gc2_step(44, 4, 0, 2);
+
+    /// Run R118 test 1 (`RP_GPUBENCH_R118`, with `RP_GPUBENCH_GC2_HALF`;
+    /// the owner's chase 2026-10-29, three tests at most, sheet
+    /// `docs/research/sheets/r118-flat-frame-sdram.md`): R117's flat game
+    /// frame drew wrong into SDRAM at 143.00 / 1 with its lists on die.
+    /// The flat frame's reference at 74.75 / 1 (drawn twice, held equal;
+    /// the underlaid form held to it too); then each of [`R118_WAYS`],
+    /// [`R117_REPS`] renders into SDRAM (screen 1's place), lists on die,
+    /// row order, the display's fetch off, every wrong pixel placed: its
+    /// row in the 16-row tile counted, the first few logged. About a
+    /// minute, the screen dark.
+    const R118: bool = option_env!("RP_GPUBENCH_R118").is_some();
+    /// R118's ways: a name, the clock, a full-screen black quad under the
+    /// mesh (the layered frame's form, the same picture).
+    const R118_WAYS: [(&str, ClockStep, bool); 4] = [
+        ("143.00 / 1, as R117", gc2_step(44, 4, 0, 1), false),
+        (
+            "143.00 / 1, black quad under the mesh",
+            gc2_step(44, 4, 0, 1),
+            true,
+        ),
+        ("139.75 / 1, as R117", gc2_step(43, 4, 0, 1), false),
+        ("133.25 / 1, as R117", gc2_step(41, 4, 0, 1), false),
+    ];
+    /// Wrong pixels logged a way, first found first.
+    const R118_SHOW: usize = 6;
 
     /// Renders of each frame at each place (the emulator 2).
     const R23E_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };

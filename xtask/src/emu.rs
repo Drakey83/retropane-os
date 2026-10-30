@@ -5958,6 +5958,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r118 = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R118", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r117 = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6436,7 +6445,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 166] = [
+    let runs: [GpubenchRun; 167] = [
         (
             "run A",
             &run_a,
@@ -7244,6 +7253,26 @@ fn variant_images_gpubench(
                 "R116G lists on die, frame 3, target 0x000000: the core ",
                 "R116G lists on die, frame 3, target 0x296000: the core ",
                 "R116G done: the display's fetch on, Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R118 test 1 (the flat frame into SDRAM): the shape, every
+        // render right (the fork models no divide-1 fault).
+        (
+            "run R118",
+            &run_r118,
+            &[
+                "R118 test 1 (the flat frame into SDRAM, the owner's chase 2026-10-29)",
+                "R118 reference at 74.75 / 1: drawn true, the second drawing 0 words off the first, the underlaid form 0",
+                "R118 143.00 / 1, as R117: 0 of 2 renders wrong, 0 words; the core ",
+                "R118 143.00 / 1, black quad under the mesh: 0 of 2 renders wrong, 0 words; the core ",
+                "R118 139.75 / 1, as R117: 0 of 2 renders wrong, 0 words; the core ",
+                "R118 133.25 / 1, as R117: 0 of 2 renders wrong, 0 words; the core ",
+                "R118 done: the display's fetch on, Windows Mobile's clock put back",
                 "GC2CA done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
