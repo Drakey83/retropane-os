@@ -52,3 +52,15 @@ Xbox One's ESRAM, mobile SoCs' system caches). Training knowledge, a claim.
 
 **Asked of the owner:** pick C, D, both, or neither; then the go to build
 and a separate go for the run.
+
+## Built and run on the X51v, 2026-10-29 (rp-scene run 7, scene-0007): C shows no gain on these scenes
+The same 40 scene-only frames at 149.50 / 2, every render timed by the
+core's done bit: **lists in SDRAM median 5,838 us (worst 9,078), lists on
+die 5,844 us (9,078)**: no difference, under the 0.1 ms the sheet set, so
+by its own rule C is overturned **for scenes like these** (a few quads, a
+few lists a tile). The ~0.31 ms of R114 against R23T came from the game
+frames' meshes (hundreds of lists, 7,218 words a frame), which rp-scene
+doesn't draw. Nothing else changed: 0 torn in every phase, 0 spills, the
+2D flips 0 torn. The owner decides: keep C (no cost seen, may pay on game
+meshes), measure it on the game frames through the service first, or put
+the lists back in SDRAM.
