@@ -76,6 +76,40 @@ suggestion especially with using rule 0 mentality."
   [weather-flows.md](weather-flows.md) (both drafts for a vote,
   2026-10-30).
 
+## The Classic desktop (owner, 2026-10-30)
+
+The owner kept the Classic weather widget (weather-flows.md, screen 8)
+and corrected the icons under it: the boxed tiles "looks too much like
+windows 8" (Metro, ruled out 2026-10-12); the icons "should look more
+like windows icons ... they should be editable, think more like windows
+XP/Vista." Mock-up: `mockups/classic-desktop-sheet.jpg`.
+
+<img src="mockups/classic-desktop-sheet.jpg" width="900" alt="The Classic desktop: the weather widget above free desktop icons; an icon's menu; an icon being moved with the grid shown; the desktop's own menu with Arrange icons by">
+
+Proposed, for his vote (D1-D5):
+- **Desktop icons, not tiles:** full-colour, glossy icons straight on
+  the wallpaper, labels in white with a soft shadow, as on an XP or Vista
+  desktop. A shortcut can point at a program, a folder, a file or a web
+  page; folders on the desktop too.
+- **Tap opens** (Windows Mobile's rule, one tap, not XP's double-click);
+  **tap and hold** opens the icon's menu (Open, Rename, Change icon,
+  Remove from desktop, Properties); the D-pad walks the icons and Enter
+  held gives the same menu.
+- **Moving:** hold, the icon lifts, drag anywhere; Align to grid (on by
+  default) shows the grid and snaps on release; Auto arrange keeps them
+  packed. The D-pad moves an icon by Move in its menu, then the arrows.
+- **The desktop's own menu** (tap and hold on empty wallpaper, or Edit
+  Today): New shortcut, New folder, Arrange icons by name, type or most
+  used, Auto arrange, Align to grid, Icon size, the weather widget
+  (large, small, hidden, or moved like a Vista sidebar gadget), Change
+  wallpaper, Properties.
+- **Icon art:** our own, in the XP/Vista spirit, never Microsoft's
+  (CLEANROOM.md). The mock-up's icons are placeholders drawn for the
+  picture. Who makes the real set is the owner's call (D5): his own, an
+  artist's with permission (as VClouds'), or an open set in that glossy
+  style (candidates to check: Everaldo's Crystal Clear and Nuvola, both
+  LGPL as remembered: R126). Icon packs swap them, as weather packs do.
+
 ## Light and dark, from the start (owner, 2026-10-30)
 
 The owner: "lets think about light mode and dark mode being built into the
