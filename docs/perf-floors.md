@@ -113,13 +113,13 @@ that set the floor (at least one unit of the number).
 | `probe.wmmx_memcpy_256k` | 2409306 | 0.0255 | noise 5 runs, run-1793284682 |  |
 | `probe.wmmx_mix_128k` | 1807614 | 0.0340 | noise 5 runs, run-1793284682 |  |
 | `probe.wmmx_mix_8k` | 12792 | 4.8107 | noise 5 runs, run-1793284682 |  |
-| `tr_touch_replay.frame_and_queueing_median` | 288 | 2.7778 | noise 5 runs, run-1793284682 |  |
-| `tr_touch_replay.frame_and_queueing_worst` | 58320 | 0.0897 | noise 5 runs, run-1793284682 |  |
-| `tr_touch_replay.landing_to_verdict_median` | 8916 | 0.0897 | noise 5 runs, run-1793284682 |  |
+| `tr_touch_replay.frame_and_queueing_median` | 380 | 3.1579 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
+| `tr_touch_replay.frame_and_queueing_worst` | 62388 | 0.0192 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
+| `tr_touch_replay.landing_to_verdict_median` | 8920 | 0.0448 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
 | `tr_touch_replay.landing_to_verdict_worst` | 15884 | 0.0504 | noise 5 runs, run-1793284682 |  |
 | `tr_touch_replay.pen_down_period_median` | 6952 | 0.1151 | noise 5 runs, run-1793284682 |  |
 | `tr_touch_replay.pen_down_period_worst` | 12664 | 0.3832 | noise 5 runs, run-1793284682 |  |
 | `tr_touch_replay.queue_to_flip_median` | 5593 | 12.0200 | noise 5 runs, run-1793284682 |  |
 | `tr_touch_replay.queue_to_flip_worst` | 18325 | 0.6697 | noise 5 runs, run-1793284682 |  |
-| `tr_touch_replay.touch_to_flush_median` | 10388 | 0.0770 | noise 5 runs, run-1793284682 |  |
-| `tr_touch_replay.touch_to_flush_worst` | 42804 | 0.0487 | noise 5 runs, run-1793284682 |  |
+| `tr_touch_replay.touch_to_flush_median` | 16204 | 0.0494 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
+| `tr_touch_replay.touch_to_flush_worst` | 43624 | 14.3041 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
