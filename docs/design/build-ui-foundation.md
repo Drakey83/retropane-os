@@ -130,6 +130,17 @@ X51v.
   need a redesign as mock-ups (each one working or saying why not,
   Tempest's own options on a page of its own); the Night map is the
   default (30ca144c).
+- **The owner's direction, later the same evening:** "one more design
+  pass with 3d to get that working"; "I want full pass through of
+  internet because we will use it a lot for testing if we are going to
+  wait till the end to do wifi"; design work stays in mock-ups "until we
+  have it more nailed down once we have 3d fully working and we can tell
+  what kinda fps we are going to get"; and the GPU used only while the
+  screen moves, idle when it is still, for battery (ADR-0034 already
+  composes a still screen with nothing; the 3D core's clock or power off
+  while idle is to measure: R133). Order: the 3D design pass (sheet), the
+  USB internet pass-through (sheet, R132), then UI work back on the
+  device with the fps known.
 - **Open:** the owner's pick of the movement, I6 (the right softkey opens
   Settings, not a Menu: a vote).
 
