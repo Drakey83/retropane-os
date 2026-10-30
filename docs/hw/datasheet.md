@@ -391,7 +391,11 @@ watching.
   for it.** **Run GC2S (2026-10-24, `gpubench-0082`): with the scan-out
   buffer inside the safe region (offset 0, C71; with the 3D target the screen at 0, the 2D engine and the 3D core at once are exact at Windows Mobile's clock and 149.50 / 2, ~380 words wrong at 108.33 / 1 with 2D copies behind the render, FT3 2026-10-24; the safe region's ~704 KiB
   matches the 2700G5's on-die memory as Wikipedia gives it, 384 kB on the
-  2700G3: 2700g.md, source W), every kind is right at
+  2700G3: 2700g.md, source W; **measured 2026-10-29, R23T, gpubench-0224:
+  a 3D target is faster wholly inside 0x0-0xB0000 (to the edge) and slows
+  by ~3.7 us a KiB of target past 0xB0000, the textured game frame 13.04 ms
+  on die against 15.28 ms in SDRAM at 149.50 / 2: the first 704 KiB are
+  faster memory, its edge at 0xB0000**), every kind is right at
   133.25 and 149.50 MHz / 2 (7 of 9 with the screen outside) and renders
   4-5% faster (**20-minute soaks, 2026-10-29, all nine kinds: 149.50 / 2
   hung one ARGB8888 Gouraud capped render after 10.6 minutes; 133.25 / 2

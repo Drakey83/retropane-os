@@ -37,3 +37,11 @@ knowledge, a claim.
 
 **Asked of the owner:** the go (given 2026-10-29, "Yes, build it"); a
 separate go for the run.
+
+## Ran on the X51v, 2026-10-29 (gpubench-0224): proven
+The textured frame 13.04 ms with its target wholly in 0x0-0xB0000, rising
+3.7 us for every KiB of target past 0xB0000 to 15.29 ms wholly in SDRAM
+(`docs/hw/2700g.md` "R23T"). The on-die memory is the cause of GC2DE's 15%,
+and its edge is 0xB0000. What to do with it (screen 1's fallback frames
+render in SDRAM; only ~104 KiB of the on die is left beside screen 0) is
+the owner's: R116.
