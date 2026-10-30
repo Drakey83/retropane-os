@@ -276,17 +276,133 @@ position.
 - radar steps within a frame;
 - no 2700G core clocked while a page simply moves.
 
+## Rule 0 for the choices left (the owner, 2026-10-30: "rule 0 2-4 making sure you give me the cheapest most clever options")
+
+### V2: the GPU guard against R133
+
+**What the guard is for:** ADR-0035 rule 6. A 2700G that starts failing at
+our raised clock (149.50 / 2, above Windows Mobile's 99.67 / 2) is caught
+within ~1 s while idle and ~10 s in a game, and the clock drops to Windows
+Mobile's.
+
+- **Windows Mobile and Dell (a finding):** no guard. They never run above
+  their own clock (REA #34), and the 3D clock stays on for a context's
+  life (#40).
+- **The modern way:** nothing runs test pictures on a timer. Errors are
+  caught as they happen:
+  - hang detection and reset (Windows' TDR, Linux's GPU scheduler
+    timeout);
+  - memory error counters;
+  - thermal and voltage monitors that lower the clock.
+- **The fact that makes it cheap:** a failing chip harms only frames it
+  draws, and **a still screen draws nothing**. A check while idle can't
+  protect a frame; only a check near real work can.
+
+| | What | Wakes a still screen | Catches a failure | Cost |
+|---|---|---|---|---|
+| A. Rule 6 as it stands | One 64 x 64 check a second while idle | **yes, every second** (3D clock on, ~1 ms) | within ~1 s idle, ~10 s in a game | ~0.1% GPU, but the clock never stays off: fights R133 |
+| B. Check on wake | One check before the first real frame after idle | no | before the first frame drawn | adds ~1-2 ms to the first moving frame's latency |
+| C. Only frames that already exist | Compare real frames against a reference | no | **can't**: a real frame has no known answer, except the screen's own `DSIG` for pictures shown twice (rare) | none, but it protects nothing new |
+| **D. Ours: check in the tail** | The 3D clock already stays on 100 ms after the last render (D8). One rotating check runs inside those 100 ms, after each burst of work, then the clock gates. A game: one every 10 s as now. The CPU's hang detection and the underrun flag stay as they are | **no** | after every burst of work, before the next; all kinds covered within ~10 bursts | ~1 ms of GPU inside a window already paid for; **zero latency, zero extra wakes** |
+| D+. D, plus temperature | D, and when the battery's thermistor (REA #35, the R76 temperature guard) shows a rise since the last check, the next burst starts with a check | no | as D, and earlier when it heats up | as D |
+
+**Recommended: D now, D+ when the battery temperature reading exists.**
+And at Windows Mobile's own clock the guard isn't needed at all. **What
+overturns D:** a failure that appears while idle and spoils the first
+frame of the next burst. The guard's history has none (every failure seen
+was immediate; ADR-0035's review, point 2). **The test:** none extra. It
+is host logic over the built clock gate, and its effect shows in M7's
+clock log.
+
+### The device run itself (the fast-tests rule)
+
+- **Dell and Windows Mobile (a finding):** no test of this kind.
+- **The modern way:** automated display CRCs per frame (Linux's IGT `kms`
+  tests, the pipe's CRC), people only for what a CRC can't judge. **Ours
+  already has that:** the display's own `DSIG` per refresh (R110, R115).
+
+How the run is cut to the fewest minutes that answer it:
+
+1. **The emulator first.** Fix the scan-out model's video-plane RGB
+   formats and window (the fork too), and run the whole image there.
+   Wiring mistakes cost no device time.
+2. **Ask R131 before building the image.** Only the chosen entrance is
+   tested: Rise, None and the new free options below need no extra test
+   beyond M2's window. **M6 (Expand on the 3D core) and M5's Stagger part
+   drop out** unless the owner picks one of them.
+3. **Unattended first, by hashes.** M1-M5's pictures are each checked by
+   `DSIG` against the model's picture, every refresh, with the times
+   logged to the card. That takes about 2 minutes, and the owner doesn't
+   need to watch.
+4. **One watched block of about 2 minutes at the end.** The owner's eyes
+   for only what a hash can't judge:
+   - M1's text at the two depths, side by side on one screen (not two
+     steps);
+   - M3's slow 4 px drag;
+   - M4's hand-off at full speed.
+5. **M7 apart and last.** A clock switched off could hang a register read
+   (`DSIG` included), so M7 writes its hang marker first (ADR-0035 rule 5)
+   and the owner says whether the screen holds. It runs after everything
+   else is safely on the card, so a hang there loses nothing.
+
+**Estimate:** about 5 minutes on the device instead of ~10, one load.
+**What overturns it:** the emulator can't model `DSIG`'s exact value
+(docs/hw/emulator.md). Then the unattended checks compare `DSIG` between
+two showings of the same picture (repeatability), as R110 did, and not
+against the model.
+
+### R131: how a page arrives
+
+- **Windows Mobile (a finding):** no transition; the new screen appears.
+- **SPB Mobile Shell:** not checked for its page entrances. Its own videos
+  would answer it (the owner's reference, ui-spb scope).
+- **The modern way:**
+  - Material's motion system: "container transform" for a card that
+    becomes a page, which is Expand; "shared axis" (slide and fade) for
+    sibling pages; staggered lists as an option.
+  - iOS: the app grows out of its icon; lists appear whole.
+  - Both honour "reduce motion" (None, or a plain fade).
+- **What's new for us:** under L2, the video plane's **window** (its place
+  and size, `VSADR` and `VSCTRL`) is as cheap to change in the blanking as
+  its address. Two new entrances come from it, both free:
+
+| Entrance | How it runs under L2 | Engines a frame | fps | Looks like |
+|---|---|---|---|---|
+| None | the layer switched on | none | n/a | instant |
+| Rise (the mock-up) | the address moved through the margin | none | 60 | the page eases up 40 px |
+| **Reveal (new)** | **the window grows from the tapped card's rectangle to the page's**, the page in place behind it, revealed, not scaled (a clip, as container transforms often do) | **none** | 60 | Expand's feel: the card opens into the app |
+| **Cascade (new)** | **the window's height grows downward**, rows appearing top to bottom, plus Rise's ease | **none** | 60 | Stagger's top-to-bottom order, without per-row slides |
+| Stagger (the mock-up) | 2D copies of each row into the back picture | 2D, ~190k px | ~60 if M5's copies fit | rows slide in one by one |
+| Expand (the mock-up) | 3D: the card and the page scaled | 3D + a ~35 ms upload first | ~30-40 | the card grows, content scaled |
+| Fade (only if M1 shows it) | per-pixel alpha with the global alpha on top; one mode field may not allow both | none | 60 | a fade-in |
+
+- **Recommended:** Reveal from the Today screen's card, and Rise or
+  Cascade between pages. Every one is free and holds 60 fps.
+- **Stagger and Expand stay choices,** at the costs shown; the owner
+  picks.
+- **The mock-ups:** Reveal and Cascade need adding to the preview before
+  he judges them. That is a small change in `rp-shell`'s `Motion`,
+  recorded as GIFs like the others, and waits for his go.
+- **What overturns them:** the window's size and place not changing
+  cleanly in the blanking (tears, or a frame with the old size and the
+  new place). M2 adds that check: the window grown and shrunk every
+  frame, `DSIG` per refresh. If it fails, Reveal falls back to Expand on
+  the 3D core and Cascade to Rise. Fade's extra check is one setting in
+  M1.
+
 ## Votes needed (results are not decisions)
 
 - **V1: the page layer.** L2 (ours: the glass over a still wallpaper on
   the video plane; this changes ADR-0034 C4) or B (C4 as voted: the
   wallpaper scrolls with the page).
-- **V2: ADR-0035 rule 6's idle guard against R133.** Either keep one
-  check a second while still (the 3D clock wakes ~1 ms a second), or run
-  the check on the next frame that already wakes the GPU, plus one every
-  ~10 s while still.
+- **V2: ADR-0035 rule 6's idle guard against R133.** Recommended D (the
+  check in the clock's 100 ms tail after each burst, no wakes), D+ with
+  the battery temperature later; the table above has A-C.
 - **V3: the page layer's depth**, after M1's look: ARGB8888 (2.4 MiB for
   Hourly) or ARGB4444 + dither (1.2 MiB).
-- **R131 (pending): the entrance.** None and Rise cost nothing under L2;
-  Stagger costs 2D copies (M5); Expand costs a 3D effect (M6).
-- **The go** for M1-M7 as one device image (~10 minutes, watched).
+- **R131 (pending): the entrance.** None, Rise and the new Reveal and
+  Cascade cost nothing under L2; Stagger costs 2D copies (M5); Expand a
+  3D effect (M6). Mock-ups of Reveal and Cascade first, on the go.
+- **The go** for the device image as cut above (~5 minutes, one load, a
+  2-minute watched block), after R131 so only the chosen entrance is
+  tested.
