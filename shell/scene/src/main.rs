@@ -691,7 +691,7 @@ mod image {
             r.failed += 1;
         }
         r.gfx.sdram_cures(ph.cures);
-        let before = r.whole;
+        let before = r.ref_bands;
         // The references: whole, then the two hand-off mixes.
         for k in 0..SCENES {
             let prev = (k + SCENES - 1) % SCENES;
@@ -709,16 +709,20 @@ mod image {
         // The last shown is the whole picture 3 (shown again).
         r.reference(SCENES - 1, SCENES - 1);
         if ph.clock == PhaseClock::Divide1 {
-            // The same pictures as at 149.50 / 2 (P3): a reference drawn
-            // wrong would hide a fault, so its DSIGs are compared first.
+            // The same pictures as the phase before's (P5: 149.50 / 2's):
+            // a reference drawn wrong would hide a fault. Compared by the
+            // screen's bands below the label (its DSIG covers the label,
+            // which names the phase: scene-0008 compared DSIGs and every
+            // phase differed by its label alone).
+            let below = !((1u64 << (LABEL_ROWS / 16)) - 1);
+            let mut off = 0u64;
+            for (a, b) in r.ref_bands.iter().zip(&before) {
+                off |= differ(a, b) & below;
+            }
             log!(
-                "P{} references against the last phase's: {}",
+                "P{} references against the last phase's (below the label): {}; bands that differ {off:010x}",
                 PLAN[p].n,
-                if r.whole == before {
-                    "the same"
-                } else {
-                    "DIFFERENT"
-                }
+                if off == 0 { "the same" } else { "DIFFERENT" }
             );
         }
         let mut distinct = true;
@@ -844,7 +848,10 @@ mod image {
                 to_shown.worst
             ),
         );
-        if !ph.checker && ph.clock != PhaseClock::Divide1 {
+        if !ph.checker {
+            // 3D-alone frames: the only ones the scan can lead (2D's and
+            // the scene's changes together go by the copy), so the divide-1
+            // rows phase switches between the targets here.
             isolate(r, p);
         }
     }

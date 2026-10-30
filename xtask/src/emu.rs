@@ -1758,8 +1758,8 @@ fn scene_log(log: &str, divide1: bool) -> Result<(), String> {
     let d1: &[&str] = if divide1 {
         &[
             "clock to 143.00 / 1: Some(",
-            "P5 references against the last phase's: the same",
-            "P6 references against the last phase's: the same",
+            "P5 references against the last phase's (below the label): the same",
+            "P6 references against the last phase's (below the label): the same",
             "P7 done; underrun flag",
         ]
     } else {
