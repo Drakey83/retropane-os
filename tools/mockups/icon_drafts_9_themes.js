@@ -58,3 +58,6 @@ ${lin('tk2-hd', [[0, '#ffffff'], [.5, '#a9b4c0'], [1, '#4c5664']])}
 <path d="M62 102 Q60 126 66 138 Q72 146 74 132 Q74 116 80 108 Z" fill="url(#tk2-pt)" stroke="#11574e" stroke-width="1.5"/>
 <ellipse cx="108" cy="92" rx="30" ry="6" fill="#fff" opacity=".6"/>
 <rect x="60" y="102" width="14" height="112" rx="7" fill="#fff" opacity=".45"/>`;
+
+// The owner's pick (2026-10-30): "Wallpaper swap".
+ICONS['Themes & desktop'] = ICONS['Themes: wallpaper swap'];

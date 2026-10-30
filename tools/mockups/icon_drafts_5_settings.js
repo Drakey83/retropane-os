@@ -68,7 +68,8 @@ ${shadow(128, 228, 96, 13, 'so2-sh')}
 ${person('so2-p', 112, 96, 1.5)}
 <g transform="rotate(-6 186 182)"><rect x="140" y="152" width="96" height="60" rx="8" fill="#fbfdff" stroke="#6d7886" stroke-width="2.5"/><rect x="140" y="152" width="96" height="18" rx="8" fill="#e3321e"/><rect x="140" y="162" width="96" height="8" fill="#e3321e"/>${lines(152, 180, 72, 2, 14)}</g>`;
 
-ICONS['Themes & desktop'] = `
+// The first take, a palette (not liked by the owner).
+ICONS['Themes: palette'] = `
 ${shadow(128, 226, 104, 13, 'sm-sh')}
 <defs>${lin('sm-pl', [[0, '#fff2d8'], [.6, '#e8c890'], [1, '#a87a3a']], 1, 1)}${lin('sm-br', [[0, '#ffe0a0'], [.5, '#c07a10'], [1, '#6a3a04']], 1, 0)}</defs>
 <path d="M128 30 Q228 30 232 116 Q236 172 188 168 Q160 166 164 192 Q168 222 128 222 Q24 222 24 126 Q24 30 128 30 Z" fill="url(#sm-pl)" stroke="#6a4a1a" stroke-width="3"/>
