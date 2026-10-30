@@ -79,6 +79,21 @@ pub const PLANES: Region = r(
     0x000F_C000 - SCREEN_BYTES,
     4,
 );
+/// The 3D parameter memory (objects, lists) on die while a scene is open
+/// (R116, the owner's pick C, 2026-10-29): the first 704 KiB are faster
+/// memory (R23T on the X51v: a target there renders 15% faster; the lists
+/// there save ~0.31 ms a render, R114 against R23T). The video band's
+/// place inside the safe region, which the display doesn't read while the
+/// 3D core draws (ADR-0034 amendment P), so time-shared with [`PLANES`]
+/// and not in [`MAP`]: a program showing the video band with a scene open
+/// keeps the lists in [`PARAMS`] (`Graphics::lists_on_die(false)`).
+pub const LISTS_ON_DIE: Region = r(
+    "3D parameter memory on die (the video band's place)",
+    SCREEN_BYTES,
+    SAFE_END - SCREEN_BYTES,
+    0x1000,
+);
+
 /// 3D parameter memory manager's 16 KiB block (16 KiB aligned).
 /// **Proposed** (ADR-0026/0027): placement rules only partly known.
 pub const PM_TABLE: Region = r("3D memory manager block", 0x000F_C000, 0x4000, 0x4000);

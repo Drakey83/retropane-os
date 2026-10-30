@@ -107,6 +107,8 @@ mod image {
     static THREE_D: rt::Slot<ThreeD> = rt::Slot::new();
     static GFX: rt::Slot<Graphics<'static, Mmio, Vram>> = rt::Slot::new();
     static FRAME: rt::Slot<Frame> = rt::Slot::new();
+    /// The run's state (~2.5 KiB of records: off `main`'s stack).
+    static RUN: rt::Slot<Run> = rt::Slot::new();
 
     /// CS3's VLIO timing for the shared clock steps.
     fn set_cs3(c: clock::Cs3) {
@@ -160,6 +162,8 @@ mod image {
         last_bar: Option<usize>,
         /// The frames' records of the run of frames being logged.
         recs: [Rec; RECS],
+        /// Every render's time the image saw this run of frames (R116).
+        render_times: Times,
         nrecs: usize,
     }
 
@@ -422,6 +426,9 @@ mod image {
                 _ => None,
             }
             .filter(|&e| a.last_render_us.is_some_and(|s| e <= s));
+            if let Some(e) = exact {
+                self.render_times.add(e);
+            }
             if self.nrecs < RECS {
                 self.recs[self.nrecs] = Rec {
                     pic: (k as u8, b as u8),
@@ -790,10 +797,49 @@ mod image {
     /// alone), each with its own references, every refresh judged, the
     /// first [`RECS`] frames recorded.
     fn isolate(r: &mut Run, p: usize) {
-        for (what, bar_only) in [
-            ("2D alone (the bar changes)", true),
-            ("3D alone (the scene changes)", false),
+        isolate_modes(
+            r,
+            p,
+            &[
+                ("2D alone (the bar changes)", true),
+                ("3D alone (the scene changes)", false),
+            ],
+        );
+    }
+
+    /// R116 (the owner's pick C): the same 3D-alone frames with the lists
+    /// in SDRAM, then on die, at phase `p`'s clock. Called from `main`'s
+    /// own level: opening a scene builds the large renderer, which nested
+    /// inside a phase took the stack past 80% (the emulator's check).
+    #[inline(never)]
+    fn compare_lists(r: &mut Run, p: usize) {
+        for (what, on_die) in [
+            ("3D alone, lists in SDRAM", false),
+            ("3D alone, lists on die", true),
         ] {
+            reopen(r, on_die);
+            isolate_modes(r, p, &[(what, false)]);
+        }
+    }
+
+    /// The scene closed and opened again, its lists on die or in SDRAM
+    /// (R116), the tile order rows; the next frame sends it all again.
+    fn reopen(r: &mut Run, on_die: bool) {
+        let _ = r.gfx.close_scene(r.c);
+        r.gfx.lists_on_die(on_die);
+        let (x, y, w, h) = AREA;
+        if r.gfx.open_scene(r.c, x, y, w, h).is_err() {
+            r.failed += 1;
+        }
+        let _ = r.gfx.set_tile_order(r.c, TileOrder::Rows);
+        r.last_scene = None;
+        r.last_bar = None;
+    }
+
+    /// [`isolate`]'s runs of frames, each a name and whether only the bar
+    /// changes (else only the scene).
+    fn isolate_modes(r: &mut Run, p: usize, modes: &[(&str, bool)]) {
+        for &(what, bar_only) in modes {
             let pick = |j: usize| {
                 if bar_only {
                     (0, j % SCENES)
@@ -817,6 +863,7 @@ mod image {
             ));
             r.seen = [(0, 0); SEEN];
             r.seen_other = 0;
+            r.render_times = Times::new();
             let m = mark(r);
             let mut seq = SCENES as u32;
             for _ in 0..ISOLATE {
@@ -832,7 +879,21 @@ mod image {
             settle(r, 3);
             r.log_seen(p, what);
             r.log_recs(p, what);
-            report(r, p, what, ISOLATE, &m, format_args!("isolation"));
+            let t = r.render_times;
+            report(
+                r,
+                p,
+                what,
+                ISOLATE,
+                &m,
+                format_args!(
+                    "isolation; renders seen {}: median {:?} us, worst {} us; list spills {}",
+                    t.count,
+                    t.median(),
+                    t.worst,
+                    r.gfx.list_spills()
+                ),
+            );
         }
     }
 
@@ -1028,7 +1089,7 @@ mod image {
         if let Err(e) = gfx.open_scene(c, x, y, w, h) {
             crash(format_args!("scene: {e:?}"));
         }
-        let mut r = Run {
+        let Some(r) = RUN.put_with(|| Run {
             gfx,
             clock: TickClock {
                 last: rt::ticks(),
@@ -1054,7 +1115,10 @@ mod image {
             last_scene: None,
             last_bar: None,
             recs: [Rec::default(); RECS],
+            render_times: Times::new(),
             nrecs: 0,
+        }) else {
+            crash(format_args!("started twice"))
         };
 
         for p in 0..PHASES.len() {
@@ -1085,7 +1149,10 @@ mod image {
                     break;
                 }
             }
-            phase(&mut r, p);
+            phase(r, p);
+            if PHASES[p].top && !PHASES[p].checker {
+                compare_lists(r, p);
+            }
             let under = underrun_take(r.regs());
             log!(
                 "P{} done; underrun flag {}",
@@ -1094,7 +1161,7 @@ mod image {
             );
         }
 
-        flips(&mut r);
+        flips(r);
         let a = clock::put_back(r.regs(), rt::delay_us, set_cs3);
         let under = underrun_take(r.regs());
         log!(

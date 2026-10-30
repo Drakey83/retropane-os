@@ -358,6 +358,9 @@ pub struct Graphics<'a, R, M> {
     copies: Schedule,
     /// R20's fallback into screen 1 allowed (screen 1's soak passed).
     screen1_3d: bool,
+    /// R116: the next scene's parameter memory on die (spilling to SDRAM
+    /// if a frame's lists outgrow it), else in SDRAM.
+    lists_on_die: bool,
     starts: Starts,
     /// Tests: the copy (1 = the next) before which the hook runs (it makes
     /// the model engine stall).
@@ -386,6 +389,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             sched: Schedule::new(),
             copies: Schedule::new(),
             screen1_3d: true,
+            lists_on_die: true,
             starts: Starts {
                 behind: 0,
                 held: 0,
@@ -420,6 +424,22 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// hasn't passed), such frames are held.
     pub fn allow_screen1_3d(&mut self, on: bool) {
         self.screen1_3d = on;
+    }
+
+    /// Where the next scene keeps its 3D lists (R116, the owner's pick C
+    /// 2026-10-29): on die (the default: the first 704 KiB are faster
+    /// memory, R23T; ~0.31 ms a render saved), in the video band's place,
+    /// which the display doesn't read while the 3D core draws; off (in
+    /// SDRAM) for a program that shows the video band with a scene open.
+    /// Takes effect at the next `open_scene`.
+    pub fn lists_on_die(&mut self, on: bool) {
+        self.lists_on_die = on;
+    }
+
+    /// Times the open scene's lists outgrew the on die and moved to SDRAM.
+    #[must_use]
+    pub fn list_spills(&self) -> u32 {
+        self.open().map_or(0, |s| s.r.spills())
     }
 
     /// How the 3D frames started so far (R20).
@@ -798,7 +818,21 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         {
             return Err(Error::Scene(r3d::Error::BadTarget));
         }
-        let r = r3d::Renderer::new(&mut self.pool, w, h).ok_or(Error::NoMemory)?;
+        // One renderer built (it is large: two in one frame doubled the
+        // stack's depth), its lists on die or in SDRAM.
+        let params = if self.lists_on_die {
+            rp_vram_map::LISTS_ON_DIE
+        } else {
+            rp_vram_map::PARAMS
+        };
+        let mut r = r3d::Renderer::new_in(&mut self.pool, w, h, params, rp_vram_map::PM_TABLE)
+            .ok_or(Error::NoMemory)?;
+        if self.lists_on_die {
+            // A frame whose lists outgrow the on die moves them to SDRAM
+            // once, counted (`list_spills`).
+            r.set_spill(Some(rp_vram_map::PARAMS))
+                .map_err(Error::Scene)?;
+        }
         if let Some(t) = self.three_d.as_deref_mut() {
             t.scene = Some(Scene {
                 owner: c.0,

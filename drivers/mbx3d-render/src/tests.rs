@@ -751,6 +751,35 @@ fn lists_are_reclaimed_between_frames_and_too_much_is_refused() {
         frame(&mut r, &mut mem, &mut gpu, &mut clock),
         Err(Error::TooComplex)
     );
+    // With a spill region (R116: lists on die, SDRAM behind them): the
+    // parameter memory moves there once, the frame is drawn, every square
+    // in place, and the next frame stays there.
+    let big = Region {
+        name: "spill",
+        at: rp_vram_map::PARAMS.at + 0x8_0000,
+        size: 0x8_0000,
+        align: 0x1000,
+    };
+    assert_eq!(r.set_spill(Some(small)), Ok(()));
+    r.set_spill(Some(big)).unwrap();
+    frame(&mut r, &mut mem, &mut gpu, &mut clock).expect("spilled and drawn");
+    assert_eq!((r.spills(), r.params().at), (1, big.at));
+    for s in 0..MAX_SLOTS as u32 {
+        let (x, y) = (8 * s % 480, 16 * (s / 8));
+        assert_eq!(
+            mem.px(SCREEN.at, SCREEN.stride, x + 1, y + 1),
+            BLUE,
+            "square {s}"
+        );
+    }
+    r.set(&mut mem, 0, Some(&square(0, 0, 8, Paint::Flat(RED))))
+        .unwrap();
+    frame(&mut r, &mut mem, &mut gpu, &mut clock).expect("drawn");
+    assert_eq!(mem.px(SCREEN.at, SCREEN.stride, 1, 1), RED);
+    assert_eq!(r.spills(), 1, "moved once");
+    // A spill region too small for the objects is refused.
+    let tiny = Region { size: 64, ..big };
+    assert_eq!(r.set_spill(Some(tiny)), Err(Error::BadTarget));
 }
 
 #[test]

@@ -1208,6 +1208,12 @@ pub struct Renderer {
     /// tiles (R88: GC2CP's full frame wrote 4,800 region words a frame for
     /// 18 new list words).
     regions_full: Option<TileOrder>,
+    /// Where the parameter memory moves if a frame's lists don't fit it
+    /// even after it reclaims them all (R116: lists on die, SDRAM behind
+    /// them); `None`: the frame is refused (`TooComplex`).
+    spill: Option<Region>,
+    /// Times the parameter memory moved to [`Self::spill`].
+    spills: u32,
     arena: u32,
     pending: Option<Pending>,
     /// What [`Self::prepare`] wrote, waiting for [`Self::start_prepared`].
@@ -1382,6 +1388,8 @@ impl Renderer {
             hand: 0,
             lists_changed: Tiles::new(),
             regions_full: None,
+            spill: None,
+            spills: 0,
             arena: ARENA_AT,
             pending: None,
             staged: None,
@@ -1702,6 +1710,48 @@ impl Renderer {
         self.dirty.count()
     }
 
+    /// The parameter memory moved to `to`: its slots' and background's
+    /// words copied (the lists, relative to its start, are written again
+    /// as needed), the core to be set up again over it.
+    fn move_params<M: LocalMem>(&mut self, mem: &mut M, to: Region) {
+        for w in 0..ARENA_AT / 4 {
+            let v = mem.load((self.params.at + 4 * w) as usize).unwrap_or(0);
+            mem.store((to.at + 4 * w) as usize, &[v]);
+        }
+        mem.sync();
+        self.params = to;
+        self.forget_lists();
+        self.ready = false;
+        self.targets = [None; 2];
+        self.spills += 1;
+    }
+
+    /// Where the parameter memory moves if a frame's lists outgrow it
+    /// (see [`Self::spills`]): set once, used once. A region too small to
+    /// hold the renderer's own objects is refused (`BadTarget`).
+    pub fn set_spill(&mut self, to: Option<Region>) -> Result<(), Error> {
+        if to.is_some_and(|r| {
+            r.size < ARENA_AT + 4 * LIST_MAX as u32
+                || r.at as usize + r.size as usize > m3::PM_REACH
+        }) {
+            return Err(Error::BadTarget);
+        }
+        self.spill = to;
+        Ok(())
+    }
+
+    /// Times the parameter memory moved to the spill region.
+    #[must_use]
+    pub const fn spills(&self) -> u32 {
+        self.spills
+    }
+
+    /// Where the parameter memory is now.
+    #[must_use]
+    pub const fn params(&self) -> Region {
+        self.params
+    }
+
     fn forget_lists(&mut self) {
         self.nlists = 0;
         self.last = 0;
@@ -1862,7 +1912,21 @@ impl Renderer {
             Some(r) => r,
             None => {
                 self.forget_lists();
-                self.write_regions(mem, &todo).ok_or(Error::TooComplex)?
+                match self.write_regions(mem, &todo) {
+                    Some(r) => r,
+                    None => {
+                        // Too many lists for this parameter memory even
+                        // reclaimed: moved to the spill region once (the
+                        // core set up again there), and the frame tried
+                        // again whole.
+                        let to = self.spill.take().ok_or(Error::TooComplex)?;
+                        self.move_params(mem, to);
+                        self.bring_up(bus, mem, clock)?;
+                        self.write_background(mem);
+                        todo.add_first((self.cols * self.rows) as usize);
+                        self.write_regions(mem, &todo).ok_or(Error::TooComplex)?
+                    }
+                }
             }
         };
         mem.sync();

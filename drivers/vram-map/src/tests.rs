@@ -155,3 +155,20 @@ fn screen_0_alone_in_the_safe_region() {
     // G19's measured edge: harmless to 0xAE000, wrong from 0xB6000.
     assert_eq!(SAFE_END, 0xAE000);
 }
+
+#[test]
+fn the_lists_on_die_lie_inside_the_safe_region_after_screen_0() {
+    // R116: the parameter memory on die while a scene is open, in the
+    // video band's place (time-shared with PLANES, never with a screen).
+    let l = LISTS_ON_DIE;
+    assert_eq!(l.at, SCREENS[0].end(), "right after screen 0");
+    assert!(l.end() <= SAFE_END, "inside the safe region");
+    assert!(l.end() <= 0xB_0000, "inside the on-die memory (R23T)");
+    assert!(
+        l.at >= PLANES.at && l.end() <= PLANES.end(),
+        "the video band's place"
+    );
+    assert!(l.end() <= PM_TABLE.at && l.end() <= PARAMS.at);
+    assert_eq!(l.at % l.align, 0);
+    assert!(l.size >= 64 * 1024, "room for a frame's lists: {}", l.size);
+}

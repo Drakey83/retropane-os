@@ -507,10 +507,14 @@ pub const BUDGETS: &[Budget] = &[
     // judged by DSIG. Set at its first build on 2026-10-29: 132.8 KiB
     // loaded, + ~10%; zeroed RAM 34.8 KiB (the service, its 3D state, the
     // 2D renderer and the frame in `.bss`, 16.0 KiB; the stack 18 KiB),
-    // + ~10%.
+    // + ~10%. Ratcheted 146 -> 165 KiB on 2026-10-29 (test image): the
+    // tear diagnosis (runs 2-3: signatures read, pictures compared band by
+    // band, each frame's render seen by the core's done bit), the 2D flip
+    // phase (R113) and the lists-on-die comparison (R116); 149.6 KiB
+    // measured, + ~10%.
     Budget {
         image: "rp-scene",
-        max_load: 146 * 1024,
+        max_load: 165 * 1024,
         max_zero: 38 * 1024,
         device: OnDevice::Returns,
     },

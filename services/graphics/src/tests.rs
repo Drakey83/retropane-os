@@ -1422,3 +1422,17 @@ fn a_stalled_area_copy_after_a_render_behind_the_scan_is_reported() {
     assert_eq!(r.frame(&f), Step::Shown);
     assert_eq!(r.on_screen(u32::from(AREA.0) + 14 + 16, 336), 0xFF_0000);
 }
+
+#[test]
+fn a_scene_keeps_its_lists_on_die_unless_told_not_to() {
+    // R116 (the owner's pick C): the first 704 KiB are faster memory.
+    let mut r = rig();
+    let (c, _) = scene(&mut r);
+    assert_eq!(scene_r(&mut r).params(), rp_vram_map::LISTS_ON_DIE);
+    assert_eq!(r.g.list_spills(), 0);
+    r.g.close_scene(c).unwrap();
+    r.g.lists_on_die(false);
+    let (x, y, w, h) = AREA;
+    r.g.open_scene(c, x, y, w, h).unwrap();
+    assert_eq!(scene_r(&mut r).params(), rp_vram_map::PARAMS);
+}

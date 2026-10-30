@@ -73,6 +73,20 @@ the start), and the game's own sits low (`0x2B4000`). The only space below
 roughly 8,000 textured triangles (26 words each plus lists); DoomGLES's
 frames used about 320 KiB.
 
+### The on-die memory (2026-10-29: R23T, R116)
+The first 704 KiB (`0x0-0xB0000`) are faster memory (R23T on the X51v:
+a 3D target there renders the textured game frame in 13.04 ms against
+15.29 ms in SDRAM, 3.7 us a KiB past the edge), and the safe region ends
+with it. Screen 0 fills 600 KiB of it; **the 3D parameter memory (objects
+and lists) of an open scene goes in the remaining 96 KiB to the safe
+region's end** (`rp_vram_map::LISTS_ON_DIE`, `0x96000`, the owner's pick C
+of `docs/research/sheets/r116-use-the-on-die-memory.md`): the video band's
+place, which the display doesn't read while the 3D core draws (ADR-0034
+amendment P), so time-shared with the planes and kept out of the overlap
+check; a frame whose lists outgrow it moves them to `PARAMS` once
+(`Renderer::set_spill`, counted); a program showing the video band with a
+scene open keeps them in `PARAMS` (`Graphics::lists_on_die(false)`).
+
 ## The pool
 
 `rp_vram_map::Pool`: first fit, any power-of-two alignment (the 3D
