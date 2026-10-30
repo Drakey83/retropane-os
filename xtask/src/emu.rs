@@ -5958,6 +5958,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r118b = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R118B", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r118 = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6445,7 +6454,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 167] = [
+    let runs: [GpubenchRun; 168] = [
         (
             "run A",
             &run_a,
@@ -7253,6 +7262,28 @@ fn variant_images_gpubench(
                 "R116G lists on die, frame 3, target 0x000000: the core ",
                 "R116G lists on die, frame 3, target 0x296000: the core ",
                 "R116G done: the display's fetch on, Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R118 test 2 (Dell's clear's shape): the shape, every render
+        // right, every form's picture equal to ours (the fork models no
+        // divide-1 fault).
+        (
+            "run R118B",
+            &run_r118b,
+            &[
+                "R118 test 2 (Dell's clear's shape, the owner's chase 2026-10-29)",
+                "R118B references at 74.75 / 1: drawn true, the second drawings 0 words off the first; ",
+                "R118B 143.00 / 1, flat, our background (control): 0 of 2 renders wrong, 0 words; the core ",
+                "R118B 143.00 / 1, flat, our background + quad under: 0 of 2 renders wrong, 0 words; the core ",
+                "R118B 143.00 / 1, layered, quad under: 0 of 2 renders wrong, 0 words; the core ",
+                "R118B 143.00 / 1, textured, quad under: 0 of 2 renders wrong, 0 words; the core ",
+                "R118B 143.00 / 1, depth, quad under: 0 of 2 renders wrong, 0 words; the core ",
+                "R118B done: the display's fetch on, Windows Mobile's clock put back",
                 "GC2CA done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",

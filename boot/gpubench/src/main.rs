@@ -17856,6 +17856,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R118B {
+            r118b_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R118 {
             r118_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20372,17 +20378,48 @@ mod image {
     /// The flat game frame set into `r`, with a full-screen quad of the
     /// background's colour under the mesh when `under` (the same picture).
     fn r118_set_flat(g: &mut Rig, r: &mut Renderer, tex: gc2::Tex, under: bool) {
-        let (bg, slots) = gc2::mesh_frame_in(gc2::MESH_FLAT, tex, GC2DE_SIZE);
-        let _ = r.set_background(Some(bg));
+        r118_set(
+            g,
+            r,
+            tex,
+            gc2::MESH_FLAT,
+            if under { R118_UNDER } else { R118_OURS },
+        );
+    }
+
+    /// Our background object (one large triangle) under the frame.
+    const R118_OURS: u8 = 0;
+    /// Ours, and a full-screen quad of its colour under the frame (test 1).
+    const R118_UNDER: u8 = 1;
+    /// Dell's clear's shape (2700g.md "Dell's colour clear"): no background
+    /// object, a full-screen quad of its colour in the first slot instead.
+    const R118_QUAD: u8 = 2;
+
+    /// Game frame `kind` set into `r` over the background form `form`
+    /// ([`R118_OURS`], [`R118_UNDER`], [`R118_QUAD`]): the same picture.
+    fn r118_set(g: &mut Rig, r: &mut Renderer, tex: gc2::Tex, kind: u8, form: u8) {
+        let (bg, slots) = gc2::mesh_frame_in(kind, tex, GC2DE_SIZE);
+        let _ = r.set_background((form != R118_QUAD).then_some(bg));
+        let under = form != R118_OURS;
         let first = usize::from(under);
         if under {
-            let d = Draw::rect(
+            let mut d = Draw::rect(
                 0,
                 0,
                 i32::from(GC2DE_SIZE.0),
                 i32::from(GC2DE_SIZE.1),
                 Paint::Flat(bg),
             );
+            // Dell's clear writes the clear depth (ISP 0xE0000000: always):
+            // a tile's depth starts undefined without our background, which
+            // writes z 0 (the renderer's run 1).
+            if form == R118_QUAD {
+                d.depth = Some(rp_mbx3d_render::Depth {
+                    mode: rp_mbx3d_render::depth::ALWAYS,
+                    write: true,
+                    z: 0,
+                });
+            }
             g.set(r, 0, Some(d));
         }
         for (n, d) in slots.into_iter().enumerate().take(gc2::MESH_SLOTS - first) {
@@ -20418,6 +20455,143 @@ mod image {
                 }
             }
         }
+    }
+
+    /// Run R118 test 2 (see [`R118B`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn r118b_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let nf = gc2::GAME_FRAMES.len();
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < (nf + 1) * full {
+            log!("  R118B: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let (refs, rest) = all.split_at_mut(nf * full);
+        let seen = &mut rest[..full];
+        let want = |k: u8| usize::from(k) * full..(usize::from(k) + 1) * full;
+        let at = rp_vram_map::SCREENS[1].at;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            [
+                "R118: FLAT FRAME TEST 2",
+                "THE SCREEN GOES DARK",
+                "FOR TWO MINUTES",
+            ],
+        );
+        let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+        log!(
+            "  R118 test 2 (Dell's clear's shape, the owner's chase 2026-10-29): {} ways at 143.00 / 1 into 0x{at:x}, lists on die, rows; every form's picture held to our reference at 74.75 / 1; the display's fetch off (was {})",
+            R118B_WAYS.len(),
+            if was { "on" } else { "off" }
+        );
+        let Some(mut rr) = r117_renderer(g, true, false) else {
+            log!("  R118B: no renderer: nothing run");
+            rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+            g.nudge = nudge;
+            return;
+        };
+        // The references at 74.75 / 1: our form drawn twice; every other
+        // form held to it.
+        let mut ok = clock_apply(g, R23E_STEPS[0].0).is_some();
+        let (mut again, mut forms_off) = (0u32, 0u32);
+        // A way whose form doesn't draw our picture at 74.75 / 1 is logged
+        // and skipped (the emulator draws frames without our background
+        // white): the other ways still run.
+        let mut usable = [false; R118B_WAYS.len()];
+        if ok {
+            for &k in &gc2::GAME_FRAMES {
+                r118_set(g, &mut rr, tex, k, R118_OURS);
+                ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+                let _ = read_compare_volatile(g.mem.0, at as usize, seen, &mut refs[want(k)]);
+                ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+                again = again.saturating_add(gc2de_off(g, at, &refs[want(k)], seen));
+            }
+            for (w, &(name, k, form, _)) in R118B_WAYS.iter().enumerate() {
+                r118_set(g, &mut rr, tex, k, form);
+                let drawn = gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+                let off = gc2de_off(g, at, &refs[want(k)], seen);
+                if !drawn || off != 0 {
+                    let fw = gc2ca_first_wrong(seen, &refs[want(k)], GC2DE_SIZE.0);
+                    let again = gc2ca_render(g, &mut rr, GC2DE_SIZE, at).is_some();
+                    let off2 = gc2de_off(g, at, &refs[want(k)], seen);
+                    log!(
+                        "  R118B reference {name}: drawn {drawn}, {off} words off ours, the first (x, y, got, want) {fw:x?}; drawn again {again}: {off2} off"
+                    );
+                }
+                usable[w] = drawn && off == 0;
+                forms_off = forms_off.saturating_add(off);
+            }
+        }
+        ok &= again == 0 && usable[0];
+        log!(
+            "  R118B references at 74.75 / 1: drawn {ok}, the second drawings {again} words off the first; {} of {} ways' pictures ours ({forms_off} words off in the rest)",
+            usable.iter().filter(|&&u| u).count(),
+            R118B_WAYS.len()
+        );
+        clock_restore(&mut g.e.regs);
+        if ok && clock_apply(g, R117_FAST).is_some() {
+            for (w, &(name, k, form, reps)) in R118B_WAYS.iter().enumerate() {
+                rt::check_in();
+                if !usable[w] {
+                    log!(
+                        "  R118B 143.00 / 1, {name}: not run (its picture at 74.75 / 1 isn't ours)"
+                    );
+                    continue;
+                }
+                r118_set(g, &mut rr, tex, k, form);
+                let mut times = Gc2deTimes::NEW;
+                let (mut bad, mut words) = (0u32, 0u32);
+                let mut rows = [0u32; 16];
+                let mut first = ([(0u32, 0u32, 0u16, 0u16); R118_SHOW], 0usize);
+                for n in 0..reps {
+                    if n % 20 == 19 {
+                        rt::check_in();
+                    }
+                    let off = match gc2ca_render(g, &mut rr, GC2DE_SIZE, at) {
+                        Some((c, _)) => {
+                            times.take(c);
+                            gc2de_off(g, at, &refs[want(k)], seen)
+                        }
+                        None => u32::MAX,
+                    };
+                    if off != 0 && off != u32::MAX {
+                        r118_place(
+                            seen,
+                            &refs[want(k)],
+                            u32::from(GC2DE_SIZE.0),
+                            &mut rows,
+                            &mut first,
+                        );
+                    }
+                    bad += u32::from(off != 0);
+                    words = words.saturating_add(off);
+                }
+                log!(
+                    "  R118B 143.00 / 1, {name}: {bad} of {reps} renders wrong, {words} words; the core {times}; wrong pixels by row in the tile {rows:?}"
+                );
+                for &(x, y, got, w) in &first.0[..first.1] {
+                    log!(
+                        "    R118B {name}: ({x}, {y}) row {} of its tile: 0x{got:04x} for 0x{w:04x}",
+                        y % 16
+                    );
+                }
+            }
+        } else {
+            log!("  R118B: the references or 143.00 / 1 failed: the ways not run");
+        }
+        clock_restore(&mut g.e.regs);
+        let _ = rr.release(&mut g.pool);
+        rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+        let under = underrun_take(&mut g.e.regs);
+        g.nudge = nudge;
+        log!(
+            "  R118B done: the display's fetch on, Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if under { "set (cleared)" } else { "clear" }
+        );
     }
 
     /// Run R118 test 1 (see [`R118`]).
@@ -25466,6 +25640,65 @@ mod image {
     ];
     /// Wrong pixels logged a way, first found first.
     const R118_SHOW: usize = 6;
+    /// Run R118 test 2 (`RP_GPUBENCH_R118B`, with `RP_GPUBENCH_GC2_HALF`;
+    /// test 1, gpubench-0229: a full-screen quad under the flat mesh drew
+    /// it right at 143.00 / 1, 0.8 ms dearer): Dell's clear's shape (a
+    /// screen-sized quad in place of our background triangle) against the
+    /// underlay, [`R118B_REPS`] renders of the flat frame each, then the
+    /// quad form on every game frame; at 143.00 / 1 into SDRAM, lists on
+    /// die, row order, the display's fetch off; every form's picture first
+    /// held to our reference at 74.75 / 1. About two minutes, the screen
+    /// dark.
+    const R118B: bool = option_env!("RP_GPUBENCH_R118B").is_some();
+    /// Renders of the flat frame a form (the emulator 2).
+    const R118B_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 100 };
+    /// Test 2's ways: a name, the frame, the background form, renders.
+    const R118B_WAYS: [(&str, u8, u8, u32); 9] = [
+        (
+            "flat, our background (control)",
+            gc2::MESH_FLAT,
+            R118_OURS,
+            R117_REPS,
+        ),
+        (
+            "flat, our background + quad under",
+            gc2::MESH_FLAT,
+            R118_UNDER,
+            R118B_REPS,
+        ),
+        (
+            "layered, quad under",
+            gc2::MESH_LAYERED,
+            R118_UNDER,
+            R117_REPS,
+        ),
+        (
+            "textured, quad under",
+            gc2::MESH_TEXTURED,
+            R118_UNDER,
+            R117_REPS,
+        ),
+        ("depth, quad under", gc2::MESH_DEPTH, R118_UNDER, R117_REPS),
+        (
+            "flat, Dell's quad in place of ours",
+            gc2::MESH_FLAT,
+            R118_QUAD,
+            R118B_REPS,
+        ),
+        (
+            "layered, Dell's quad",
+            gc2::MESH_LAYERED,
+            R118_QUAD,
+            R117_REPS,
+        ),
+        (
+            "textured, Dell's quad",
+            gc2::MESH_TEXTURED,
+            R118_QUAD,
+            R117_REPS,
+        ),
+        ("depth, Dell's quad", gc2::MESH_DEPTH, R118_QUAD, R117_REPS),
+    ];
 
     /// Renders of each frame at each place (the emulator 2).
     const R23E_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };

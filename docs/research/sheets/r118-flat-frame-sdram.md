@@ -68,3 +68,14 @@ SDRAM); 139.75 and 133.25 / 1: 2 and 1 single last-row pixels (not a
 margin). Test 2 next: Dell's clear form in place of our background
 triangle (the quad instead of the extra object: the fix without the 0.8 ms,
 if it holds), against the underlay, more renders, all four frames.
+
+### Test 2 as built (`rp-gpubench` run R118B)
+At 143.00 / 1 into SDRAM, lists on die, rows, every form's picture first
+held to ours at 74.75 / 1: the flat frame with our background (control,
+20) and with the quad under (100); the quad under on the layered,
+textured and depth frames (20 each: the fix on every game frame); Dell's
+clear's shape, a screen-sized quad writing depth "always" in place of our
+background triangle, on all four frames (100 flat, 20 the others). The
+emulator draws frames without our background object white (every word;
+the host model and C71's device runs draw them), so a way whose picture
+at 74.75 / 1 isn't ours is logged and skipped, never stops the run.
