@@ -395,7 +395,7 @@ watching.
   a 3D target is faster wholly inside 0x0-0xB0000 (to the edge) and slows
   by ~3.7 us a KiB of target past 0xB0000, the textured game frame 13.04 ms
   on die against 15.28 ms in SDRAM at 149.50 / 2: the first 704 KiB are
-  faster memory, its edge at 0xB0000**; **the safe region's end measured at the same edge, 2026-10-29, R23E, gpubench-0226: with the display reading a screen ending at 0xAE000 or 0xB0000 no render of 160 is wrong at 74.75 / 1 and 149.50 / 2; ending at 0xB0400, 0xB2000, 0xB6000, 1, 6 and 10 of 80 renders wrong at 74.75 / 1 (none at 149.50 / 2): the safe region is the on-die memory, 0x0-0xB0000**), every kind is right at
+  faster memory, its edge at 0xB0000**; **the safe region's end measured at the same edge, 2026-10-29, R23E, gpubench-0226: with the display reading a screen ending at 0xAE000 or 0xB0000 no render of 160 is wrong at 74.75 / 1 and 149.50 / 2; ending at 0xB0400, 0xB2000, 0xB6000, 1, 6 and 10 of 80 renders wrong at 74.75 / 1 (none at 149.50 / 2): the safe region is the on-die memory, 0x0-0xB0000** (`SAFE_END` raised to 0xB0000 by the owner, 2026-10-30; runs 2-3, gpubench-0227/-0233, agree at divide 2)), every kind is right at
   133.25 and 149.50 MHz / 2 (7 of 9 with the screen outside) and renders
   4-5% faster (**20-minute soaks, 2026-10-29, all nine kinds: 149.50 / 2
   hung one ARGB8888 Gouraud capped render after 10.6 minutes; 133.25 / 2

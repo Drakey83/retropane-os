@@ -97,3 +97,8 @@ wrong with the display fetching, 0xAE000 included, so the edge isn't
 readable there: at divide 1 a render into SDRAM is disturbed by the
 display's scan-out even from on-die memory. For divide 2 (shipped) the
 three runs agree: SAFE_END can be 0xB0000. The owner rules.
+
+## The ruling (owner, 2026-10-30: "Yes, raise it")
+`rp_vram_map::SAFE_END` = 0xB0000 (704 KiB); the 3D lists on die
+(`LISTS_ON_DIE`) 96 -> 104 KiB; recorded in ADR-0034 amendment P. For
+divide 2; divide 1 revisits the edge once R120 is answered.

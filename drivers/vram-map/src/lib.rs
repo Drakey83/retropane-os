@@ -63,14 +63,18 @@ const fn r(name: &'static str, at: u32, size: u32, align: u32) -> Region {
 /// The end of the safe region (ADR-0034 amendment P, rules 1-2; quality
 /// audit C71): while the 3D core draws, the display reads only below it,
 /// or what the core writes comes out wrong (G16-G20, C71's runs: at
-/// every clock). 696 KiB, the largest measured harmless on the owner's
-/// X51v (G19: right while the screen ends by `0xAE000`, wrong from
-/// `0xB6000`); the smallest proven until each device's self-test measures
+/// every clock). 704 KiB, the 2700G5's on-die memory: R23E measured the
+/// edge three times on the X51v (gpubench-0226, -0227, -0233: a shown
+/// screen ending at `0xB0000` right at 74.75 / 1 and 149.50 / 2, one
+/// ending at `0xB0400` wrong at 74.75 / 1), the same edge where render
+/// targets turn slower (R23T); raised from G19's `0xAE000` by the owner,
+/// 2026-10-30. Ruled for divide 2: at 143.00 / 1 the edge isn't readable
+/// yet (R120). The smallest proven until each device's self-test measures
 /// its own (amendment P, P3).
-pub const SAFE_END: u32 = 0x000A_E000;
+pub const SAFE_END: u32 = 0x000B_0000;
 
 /// The loader's and Windows Mobile's display planes, after the screen:
-/// the video band inside the safe region (amendment P rule 1, ~96 KiB)
+/// the video band inside the safe region (amendment P rule 1, 104 KiB)
 /// and the rest of the first MiB. The loader's own picture at `0x60000`
 /// is under screen 0 from the moment an image shows its screen.
 pub const PLANES: Region = r(

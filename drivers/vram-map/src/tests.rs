@@ -152,8 +152,10 @@ fn screen_0_alone_in_the_safe_region() {
     let edge = |at| [SCREENS[0], r("x", at, 4, 4)];
     assert!(!safe_holds_only(&edge(SAFE_END - 4), 1));
     assert!(safe_holds_only(&edge(SAFE_END), 1));
-    // G19's measured edge: harmless to 0xAE000, wrong from 0xB6000.
-    assert_eq!(SAFE_END, 0xAE000);
+    // R23E's measured edge, the on-die memory's end: right to 0xB0000,
+    // wrong from 0xB0400 (the owner raised it from G19's 0xAE000,
+    // 2026-10-30).
+    assert_eq!(SAFE_END, 0xB_0000);
 }
 
 #[test]
@@ -171,4 +173,6 @@ fn the_lists_on_die_lie_inside_the_safe_region_after_screen_0() {
     assert!(l.end() <= PM_TABLE.at && l.end() <= PARAMS.at);
     assert_eq!(l.at % l.align, 0);
     assert!(l.size >= 64 * 1024, "room for a frame's lists: {}", l.size);
+    // The whole on-die rest after screen 0: 104 KiB (R23, 2026-10-30).
+    assert_eq!(l.size, 104 * 1024);
 }

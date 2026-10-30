@@ -184,6 +184,18 @@ T1, T3, T4, ticked):
   region smaller than the screen is reported and the 3D core's renders
   kept off while the display reads (G16's way) until resolved, never run
   blind.
+- **The smallest proven end raised to `0xB0000` (owner, 2026-10-30: "Yes,
+  raise it").** R23E (gpubench-0226, -0227, -0233; sheet
+  [r23-safe-region-edge.md](../research/sheets/r23-safe-region-edge.md))
+  measured the edge three times on the X51v: a shown screen ending at
+  `0xB0000` drew every render right at 74.75 / 1 and 149.50 / 2, one
+  ending at `0xB0400` didn't (74.75 / 1). The edge is the 2700G5's on-die
+  memory (R23T: the same `0xB0000` is where render targets turn slower),
+  so the region is one fact, not two. `rp_vram_map::SAFE_END` = `0xB0000`
+  (704 KiB); the 3D lists on die (R116) grow 96 -> 104 KiB. Ruled for
+  divide 2, which ships; at 143.00 / 1 the edge couldn't be read (every
+  place wrong with the display fetching, R120), so divide 1 revisits it
+  when R120 is answered. P3's per-device measurement still replaces it.
 - **Rule 5 under P1 = C ruled: R-B (owner, 2026-10-29, ruling 2 of
   [rulings-2026-10-29.md](../reports/rulings-2026-10-29.md);
   [c71-screen-place.md](../design/c71-screen-place.md)).** Screen 0 at
@@ -261,7 +273,8 @@ the blanking"; `rp-vram-map` keeps two screens at `0x200000` and
 ### The rules proposed (option A)
 
 1. **The safe region** is local memory `0x0`-`0xAE000` (696 KiB: the
-   largest measured harmless; G19). It holds **the visible screen**, one
+   largest measured harmless; G19; raised to `0xB0000`, the on-die
+   memory's end, 2026-10-30: see amendment P). It holds **the visible screen**, one
    480 x 640 RGB565 picture (600 KiB) at `0x0`, and at most ~96 KiB more
    for a small video-plane band (G20's way 3).
 2. **While the 3D core draws, the display reads only the safe region**:
