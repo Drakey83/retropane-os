@@ -55,6 +55,17 @@ easy way to get back home, and I dont see radar, or no way to put in my
 api key". The first slice was short of the ask (memory: build the owner's
 ask in full). Next, in this order:
 
+**What the run measured (local/rp-today-weather-run1.txt):** every Weather
+page frame took 85-100 ms to the screen: about 53-56 ms of CPU building
+and queueing it and 29 ms in the 2D engine (a Today screen change: under
+10 ms of CPU). The entrance therefore ran near 10 frames a second, which is
+most of why it felt rough. The run log filled (64 KiB, per-touch lines) and
+dropped the rest. Before any new movement: find where the 53 ms goes
+(`PROFILE` zones; the many translucent gradients and text runs a page
+redraws each frame), then move the page as a layer on the 3D compositor or
+redraw only what changes, so movement reaches 30-60 fps, measured on the
+X51v.
+
 1. **Live touch:** `Pen::Move` already comes from the touch driver
    (shell/today/src/main.rs drops it); add `Input::PenMove`, lists that
    follow the finger 1:1, fling with momentum and an edge bounce, press
