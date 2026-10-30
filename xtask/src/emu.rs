@@ -5958,6 +5958,15 @@ fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_r117s = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_HALF", "1"),
+            ("RP_GPUBENCH_R117S", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_r118c = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6463,7 +6472,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 169] = [
+    let runs: [GpubenchRun; 170] = [
         (
             "run A",
             &run_a,
@@ -7271,6 +7280,30 @@ fn variant_images_gpubench(
                 "R116G lists on die, frame 3, target 0x000000: the core ",
                 "R116G lists on die, frame 3, target 0x296000: the core ",
                 "R116G done: the display's fetch on, Windows Mobile's clock put back",
+                "GC2CA done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run R117S (the speed switch's price): the shape, every render
+        // right at every wait (the fork models no divide-1 fault).
+        (
+            "run R117S",
+            &run_r117s,
+            &[
+                "R117S (the speed switch's price, the owner's fallback 2026-10-29)",
+                "R117S references at 74.75 / 1: drawn and repeatable true",
+                "R117S wait 1000 us: 1 -> 2 ",
+                "R117S wait 300 us: 1 -> 2 ",
+                "R117S wait 100 us: 1 -> 2 ",
+                "R117S wait 30 us: 1 -> 2 ",
+                "R117S wait 10 us: 1 -> 2 ",
+                "R117S wait 3 us: 1 -> 2 ",
+                "R117S wait 0 us: 1 -> 2 ",
+                "renders wrong into SDRAM at divide 2 0 of 2, into screen 0 at divide 1 0 of 2; not finished 0",
+                "R117S done: Windows Mobile's clock put back",
                 "GC2CA done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",

@@ -17856,6 +17856,12 @@ mod image {
             log!("  GC2CA done");
             return;
         }
+        if R117S {
+            r117s_run(g, tex, all, &planes0);
+            gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
+            log!("  GC2CA done");
+            return;
+        }
         if R118C {
             r118c_run(g, tex, all, &planes0);
             gc2ca_show(g, GC2CA_UNDER, gc2::HALF_SIZES[0], GC2CA_A, &planes0);
@@ -20461,6 +20467,115 @@ mod image {
                 }
             }
         }
+    }
+
+    /// The cores' divider set to `div`, the PLL and bus timing kept, then
+    /// `wait_us`: R117S's divider-only switch (`clock::finish`'s write
+    /// without its fixed 1 ms).
+    fn r117s_divider(g: &mut Rig, div: u32, wait_us: u32) {
+        let clk = g.e.regs.read32(MBXCLK);
+        clock::restore(&mut g.e.regs, (clk & 3) | (div.clamp(1, 4) - 1) << 2);
+        if wait_us > 0 {
+            rt::delay_us(wait_us);
+        }
+    }
+
+    /// Run R117S (see [`R117S`]).
+    #[inline(never)]
+    #[allow(clippy::too_many_lines)]
+    fn r117s_run(g: &mut Rig, tex: gc2::Tex, all: &mut [u32], planes0: &Snapshot) {
+        let full = gc2::words_of(GC2DE_SIZE);
+        if all.len() < 3 * full {
+            log!("  R117S: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let (refs, rest) = all.split_at_mut(2 * full);
+        let seen = &mut rest[..full];
+        let kinds = [gc2::MESH_FLAT, gc2::MESH_TEXTURED];
+        let want = |i: usize| i * full..(i + 1) * full;
+        let sdram = rp_vram_map::SCREENS[1].at;
+        let on_die = rp_vram_map::SCREENS[0].at;
+        let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
+        gc2ca_card(
+            g,
+            planes0,
+            ["R117S: SPEED SWITCH", "THE SCREEN FLICKERS", "FOR A MINUTE"],
+        );
+        let Some(mut rr) = r117_renderer(g, true, true) else {
+            log!("  R117S: no renderer: nothing run");
+            g.nudge = nudge;
+            return;
+        };
+        log!(
+            "  R117S (the speed switch's price, the owner's fallback 2026-10-29): the display scanning out screen 0 (0x{on_die:x}); at 143.00 the divider alone 1 -> 2 -> 1, waits {R117S_WAITS:?} us after each write, {R117_SWITCHES} round trips a wait; after the switch down a frame into SDRAM (0x{sdram:x}), after the switch up one into screen 0, each checked; lists on die, checker"
+        );
+        // The references at 74.75 / 1, the display's fetch off, into SDRAM.
+        let mut ok = clock_apply(g, R23E_STEPS[0].0).is_some();
+        if ok {
+            let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+            for (i, &k) in kinds.iter().enumerate() {
+                gc2ca_set_mesh(g, &mut rr, k, tex, GC2DE_SIZE);
+                ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, sdram).is_some();
+                let _ = read_compare_volatile(g.mem.0, sdram as usize, seen, &mut refs[want(i)]);
+                ok &= gc2ca_render(g, &mut rr, GC2DE_SIZE, sdram).is_some();
+                ok &= gc2de_off(g, sdram, &refs[want(i)], seen) == 0;
+            }
+            rp_drv_mbx_display::graphics_stream(&mut g.e.regs, was);
+        }
+        log!("  R117S references at 74.75 / 1: drawn and repeatable {ok}");
+        clock_restore(&mut g.e.regs);
+        // Screen 0 shown, the display fetching, from here on.
+        gc2ca_show(g, GC2CA_NATIVE, GC2DE_SIZE, on_die, planes0);
+        let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, true);
+        if ok && clock_apply(g, R117_FAST).is_some() {
+            let _ = underrun_take(&mut g.e.regs);
+            for &wait in &R117S_WAITS {
+                rt::check_in();
+                let (mut down, mut up) = (Gc2deTimes::NEW, Gc2deTimes::NEW);
+                let (mut bad_copy, mut bad_die, mut lost) = (0u32, 0u32, 0u32);
+                for n in 0..R117_SWITCHES {
+                    let i = n as usize % kinds.len();
+                    gc2ca_set_mesh(g, &mut rr, kinds[i], tex, GC2DE_SIZE);
+                    // Down to divide 2, a copy-path frame into SDRAM.
+                    let t0 = g.clock.now_us();
+                    r117s_divider(g, 2, wait);
+                    down.take(g.clock.now_us().wrapping_sub(t0));
+                    rr.core_taken();
+                    match gc2ca_render(g, &mut rr, GC2DE_SIZE, sdram) {
+                        Some(_) => {
+                            bad_copy += u32::from(gc2de_off(g, sdram, &refs[want(i)], seen) != 0)
+                        }
+                        None => lost += 1,
+                    }
+                    // Back up to divide 1, a frame into screen 0.
+                    let t0 = g.clock.now_us();
+                    r117s_divider(g, 1, wait);
+                    up.take(g.clock.now_us().wrapping_sub(t0));
+                    rr.core_taken();
+                    match gc2ca_render(g, &mut rr, GC2DE_SIZE, on_die) {
+                        Some(_) => {
+                            bad_die += u32::from(gc2de_off(g, on_die, &refs[want(i)], seen) != 0)
+                        }
+                        None => lost += 1,
+                    }
+                }
+                log!(
+                    "  R117S wait {wait} us: 1 -> 2 {down}; 2 -> 1 {up}; renders wrong into SDRAM at divide 2 {bad_copy} of {R117_SWITCHES}, into screen 0 at divide 1 {bad_die} of {R117_SWITCHES}; not finished {lost}; the underrun flag {}",
+                    underrun_take(&mut g.e.regs)
+                );
+            }
+        } else {
+            log!("  R117S: the references or 143.00 / 1 failed: not run");
+        }
+        clock_restore(&mut g.e.regs);
+        let _ = rr.release(&mut g.pool);
+        let under = underrun_take(&mut g.e.regs);
+        g.nudge = nudge;
+        log!(
+            "  R117S done: Windows Mobile's clock put back (COREPLL 0x{:x}); the underrun flag {}",
+            g.e.regs.read32(clock::COREPLL),
+            if under { "set (cleared)" } else { "clear" }
+        );
     }
 
     /// Run R118 test 3 (see [`R118C`]).
@@ -25842,6 +25957,23 @@ mod image {
     /// 74.75 / 1. Every wrong pixel placed. About two minutes, the screen
     /// dark.
     const R118C: bool = option_env!("RP_GPUBENCH_R118C").is_some();
+
+    /// Run R117S (`RP_GPUBENCH_R117S`, with `RP_GPUBENCH_GC2_HALF`; the
+    /// owner's fallback, 2026-10-29: "if you can't figure it out in 3
+    /// tests do the speed switch plan"; R120: at 143.00 / 1 with the display
+    /// on, renders into SDRAM stay wrong): the speed switch's price. With
+    /// the display scanning out screen 0 (as in use), the cores' divider
+    /// alone switched 1 -> 2 -> 1 at 143.00, the wait after each write
+    /// stepped down through [`R117S_WAITS`]; after the switch down a game
+    /// frame rendered into SDRAM (the copy path's place) and checked, after
+    /// the switch up one rendered into screen 0 (on die) and checked;
+    /// [`R117_SWITCHES`] round trips a wait, the flat and textured frames
+    /// in turn. The shortest wait with every render right is the switch's
+    /// price. About a minute.
+    const R117S: bool = option_env!("RP_GPUBENCH_R117S").is_some();
+    /// The waits after a divider write, microseconds (the clock driver's
+    /// today: 1,000 after each of its two writes).
+    const R117S_WAITS: [u32; 7] = [1_000, 300, 100, 30, 10, 3, 0];
 
     /// Renders of each frame at each place (the emulator 2).
     const R23E_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
