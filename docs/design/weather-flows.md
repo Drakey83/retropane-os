@@ -97,10 +97,58 @@ best source that has it:
 
 | Source | What it gives | Where |
 |---|---|---|
-| **Tempest station, its hub on the home Wi-Fi** | now: temperature, wind, rain, pressure, lightning distance, every minute or so | the hub's local broadcast (a finding: Tempest hubs announce readings on the local network; to check against its published local API), so no account and no internet; Tempest's own web service, with the owner's token, as the fallback away from home |
+| **Your own stations** (Tempest and the rest: below) | now: temperature, wind, rain, pressure, lightning, every minute or so | on the home network directly; away from home through the maker's web service with your own key |
 | National Weather Service | forecast, alerts, radar for US places | keyless, US government data |
 | Open-Meteo | hourly, 10 days, next-hour rain (15-minute steps), air quality, WMO codes everywhere | keyless for non-commercial use (its terms to check) |
 | MET Norway | forecast for European places | keyless with an identifying User-Agent |
+
+### Your own weather stations (owner, 2026-10-30)
+
+The owner: "I want this to be as incorporated as possible and the people
+that are going to side load this will be pretty techy anyways. Also lets
+add any other weather station integration that is available." So every
+station with an open way in is supported, **local first, cloud second**:
+on the home Wi-Fi the device reads the station directly (faster, private,
+works with the internet down); away from home it reads the maker's web
+service with the owner's own key. The switch is automatic.
+
+What each brand offers (as remembered, every row to check before code:
+R125):
+
+| Station | On the home network | Through the maker's web service |
+|---|---|---|
+| **Tempest (WeatherFlow)** | the hub's UDP broadcast, readings every minute, rain and lightning as events | REST and a live WebSocket, with a personal access token made in the Tempest web app |
+| **Ambient Weather** | some consoles push to a local server address (custom upload) | AmbientWeather.net REST and realtime, an API key plus an application key |
+| **Ecowitt** (and stations sold under other names on its gateways) | the gateway's local HTTP API, and its "customized upload" push | Ecowitt's cloud API, an application key plus an API key |
+| **Davis** (WeatherLink Live / Console) | WeatherLink Live's local HTTP and UDP live data | WeatherLink v2 API, a key and a secret |
+| **Netatmo** | none known | its web API, signed in with OAuth (the one sign-in flow here) |
+| **Weather Underground stations** (any brand that uploads there, including your own) | none | the station owner's PWS API key |
+| **PurpleAir** (air quality) | the sensor's local JSON page | PurpleAir's API key (also public sensors near you) |
+| **Home Assistant** (anything it knows: most brands, rtl_433 radio sensors, homemade) | its REST API with a long-lived token, on the home network or the owner's Tailscale (apps-and-packs.md §7c) | the same, through Tailscale |
+| **WeeWX, Cumulus, Weather Display** (station software on a home PC) | their live data files over HTTP | |
+| **Generic** | any URL returning JSON, with the fields mapped once in Settings | |
+| Nearby official stations (NWS observations) | | keyless, US, already a forecast source |
+
+**Keys, done safely** (security.md): a key is entered once and stored in
+the device's protected store, never shown again in full, sent only to its
+own service over TLS, and listed in Settings with what it can see and a
+"forget" button. **Typing a 40-character key on a PDA keyboard is the
+weak spot**, so keys also arrive by a file on the SD card (read once,
+then the device offers to delete it) or from the PC companion
+(LegacySync, ADR-0028). No key ever goes in this repository; for
+development the owner keeps his in `local/` (never committed), and only
+he types or copies it, never Claude.
+
+**Several stations at once, ours beyond the original:**
+- Each station gets its own card (yours, a neighbour's on Weather
+  Underground, the official one); "now" comes from the freshest station
+  nearest the place.
+- **A sensor reading off is caught:** each station is compared with its
+  neighbours and the forecast's "now"; a thermometer in the sun reading
+  8&deg; high, or a rain gauge stuck at zero in a storm, is flagged on its
+  card and left out of "now" until it agrees again.
+- The station's readings move the forecast's next hours (above), and its
+  lightning and rain-rate feed the radar and alerts.
 
 **Ours, beyond the original:**
 - **Your station corrects the forecast's next hours.** When the
