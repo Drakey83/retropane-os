@@ -17856,8 +17856,15 @@ mod image {
             log!("  GC2CA done");
             return;
         }
-        if R121A || R121B {
-            let run = if R121B {
+        if R121A || R121B || R121C {
+            let run = if R121C {
+                (
+                    "R121C",
+                    &R121C_WAYS[..],
+                    R121B_REPS,
+                    "R121: DIVIDE 1 TEST 3",
+                )
+            } else if R121B {
                 (
                     "R121B",
                     &R121B_WAYS[..],
@@ -20669,7 +20676,7 @@ mod image {
     fn r121_frame(
         g: &mut Rig,
         rr: &mut Renderer,
-        (tex, k, overlay, name, tag, reps): (gc2::Tex, u8, bool, &str, &str, u32),
+        (tex, k, overlay, name, (tag, reps, clk)): (gc2::Tex, u8, bool, &str, (&str, u32, &str)),
         (want, seen, at): (&[u32], &mut [u32], u32),
     ) {
         if !r121_set(g, rr, tex, k, overlay) {
@@ -20698,7 +20705,7 @@ mod image {
             words = words.saturating_add(off);
         }
         log!(
-            "  {tag} 143.00 / 1, {name}, frame {k}: {bad} of {reps} renders wrong, {words} words; the core {times}; wrong pixels by row in the tile {rows:?}"
+            "  {tag} {clk}, {name}, frame {k}: {bad} of {reps} renders wrong, {words} words; the core {times}; wrong pixels by row in the tile {rows:?}"
         );
         for &(x, y, got, w) in &first.0[..first.1] {
             log!(
@@ -20758,8 +20765,13 @@ mod image {
                 }
                 let _ = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, display != R121_OFF);
                 let _ = underrun_take(&mut g.e.regs);
-                if clock_apply(g, R117_FAST).is_none() {
-                    log!("  {tag} {name}: 143.00 / 1 failed: not run");
+                let (step, clk) = if display == R121_SLOW {
+                    (R117_SLOW, "143.00 / 2")
+                } else {
+                    (R117_FAST, "143.00 / 1")
+                };
+                if clock_apply(g, step).is_none() {
+                    log!("  {tag} {name}: {clk} failed: not run");
                 } else {
                     for &k in &gc2::GAME_FRAMES {
                         rt::check_in();
@@ -20767,7 +20779,7 @@ mod image {
                         r121_frame(
                             g,
                             &mut rr,
-                            (tex, k, overlay, name, tag, reps),
+                            (tex, k, overlay, name, (tag, reps, clk)),
                             (&refs[want], &mut *seen, at),
                         );
                     }
@@ -26400,9 +26412,57 @@ mod image {
     ];
     /// Renders of each frame a way (the emulator 2).
     const R121B_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 100 };
+    /// Run R121C (`RP_GPUBENCH_R121C`, with `RP_GPUBENCH_GC2_HALF`; R121's
+    /// test 3 of 3, the last by the stop rule): test 2 (gpubench-0238)
+    /// found the shipped layout wrong in 2 of 100 flat frames (one pixel in
+    /// a tile's last row; checker 4 of 100; the other frames 0), without
+    /// the underlay 100 of 100, with run 3's lists in SDRAM 78. Test 1's
+    /// alpha-0 overlay was 0 of 80 at +57% on the flat frame. The two
+    /// cures side by side at [`R121B_REPS`] renders a frame, their costs
+    /// measured: the overlay at 143.00 / 1, and R120's switch (the same
+    /// frame at 143.00 / 2); the control and a quarter of the display's
+    /// reads beside them. About fifteen minutes, unattended.
+    const R121C: bool = option_env!("RP_GPUBENCH_R121C").is_some();
+    /// R121C's ways.
+    const R121C_WAYS: [R121Way; 4] = [
+        (
+            "as in use (the control)",
+            R121_SHOWN,
+            false,
+            false,
+            true,
+            true,
+        ),
+        (
+            "a quarter of the reads (240 x 320 at 0x0, Dell's doubling)",
+            R121_QUARTER,
+            false,
+            false,
+            true,
+            true,
+        ),
+        (
+            "R120's switch: as in use at 143.00 / 2",
+            R121_SLOW,
+            false,
+            false,
+            true,
+            true,
+        ),
+        (
+            "an alpha-0 quad blended over the frame (the write-out paced)",
+            R121_SHOWN,
+            false,
+            true,
+            true,
+            true,
+        ),
+    ];
     const R121_SHOWN: u8 = 0;
     const R121_QUARTER: u8 = 1;
     const R121_OFF: u8 = 2;
+    /// Screen 0 shown, the cores at divide 2 (R120's switch).
+    const R121_SLOW: u8 = 3;
 
     /// Renders of each frame at each place (the emulator 2).
     const R23E_REPS: u32 = if GC2_RENDERS < 20 { 2 } else { 20 };
