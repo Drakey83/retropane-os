@@ -24,7 +24,7 @@ ${lin('pk-bd', [[0, '#8592a2'], [.25, '#ffffff'], [.6, '#d4dbe3'], [1, '#5c6672'
 ${lin('pk-rd', [[0, '#ff9c8a'], [.5, '#e3321e'], [1, '#8a1004']], 1, 0)}
 ${lin('pk-fl', [[0, '#fff6c0'], [.4, '#ffb020'], [1, '#e3321e', 0]])}
 </defs>
-<g transform="rotate(38 128 128) translate(0 -6)">
+<g transform="translate(128 128) scale(.88) translate(-128 -128) rotate(38 128 128) translate(0 -6)">
 <path d="M104 186 Q128 262 152 186 Z" fill="url(#pk-fl)"/>
 <path d="M116 186 Q128 228 140 186 Z" fill="#fffbe0" opacity=".9"/>
 <path d="M92 132 L56 186 Q54 194 62 192 L96 180 Z" fill="url(#pk-rd)" stroke="#6a0a02" stroke-width="3" stroke-linejoin="round"/>

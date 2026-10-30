@@ -45,7 +45,8 @@ ${shadow(128, 232, 70, 11, 'sp-sh')}
 <path d="M140 52 L96 140 H126 L112 204 L162 108 H130 Z" fill="url(#sp-bl)" stroke="#8a5a04" stroke-width="3" stroke-linejoin="round"/>
 <rect x="76" y="36" width="20" height="184" rx="10" fill="#fff" opacity=".5"/>`;
 
-ICONS['Memory settings'] = ICONS.Memory;
+// Memory means RAM; flash and cards are under Storage.
+ICONS['Memory settings'] = ICONS.RAM;
 
 // The first take, stacked drums (not liked by the owner).
 ICONS['Storage: drums'] = `
@@ -55,7 +56,7 @@ ${[0, 1, 2].map(i => { const y = 150 - i * 50; return `<path d="M30 ${y} V${y + 
 
 ICONS['Clock & region'] = `
 ${shadow(120, 228, 92, 13, 'sr-sh')}
-<g transform="translate(-14 -6)">${ICONS.Browser.replace(/br-/g, 'srg-').replace(/<ellipse cx="128" cy="228"[^>]*>/, '')}</g>
+<g transform="translate(6 4) scale(.86)">${ICONS.Browser.replace(/br-/g, 'srg-').replace(/<ellipse cx="128" cy="228"[^>]*>/, '')}</g>
 <circle cx="190" cy="180" r="48" fill="#fff"/>
 <defs>${rad('sr-fc', [[0, '#ffffff'], [.85, '#eef3f8'], [1, '#c2ccd8']], .45, .4, .6)}</defs>
 <circle cx="190" cy="180" r="42" fill="url(#sr-fc)" stroke="#0b3a80" stroke-width="6"/>
@@ -105,8 +106,14 @@ ICONS['Keyboard & input'] = `
 ${shadow(128, 214, 112, 13, 'sk-sh')}
 <defs>${lin('sk-bd', [[0, '#9aa6b6'], [.3, '#3c4450'], [1, '#14181e']])}</defs>
 <path d="M30 92 L226 92 L246 196 Q248 206 238 206 L18 206 Q8 206 10 196 Z" fill="url(#sk-bd)" stroke="#05060a" stroke-width="3" stroke-linejoin="round"/>
-${[0, 1, 2].map(r => [...Array(9 - r)].map((_, c) => { const w = 18 + r * 1, x = 36 - r * 6 + c * (200 + r * 12) / (9 - r), y = 100 + r * 30; return key(`sk-${r}-${c}`, x.toFixed(1), y, 20, 24, C.silver, 4); }).join('')).join('')}
-${key('sk-sp', 70, 188, 116, 12, C.silver, 4)}
+${(() => {
+  // Keys follow the body's slanted sides (x 30..226 at y 92, 10..246 at y 196), inset 12, rows centred.
+  const L = y => 30 - 20 * (y - 92) / 104, R = y => 226 + 20 * (y - 92) / 104, g = 4;
+  return [[100, 10], [126, 10], [152, 9]].map(([y, n], r) => {
+    const x0 = L(y + 22) + 12, x1 = R(y + 22) - 12, w = (x1 - x0 - (n - 1) * g) / n;
+    return [...Array(n)].map((_, c) => key(`sk-${r}-${c}`, x0 + c * (w + g), y, w, 22, C.silver, 4)).join('');
+  }).join('') + key('sk-sp', 128 - 64, 178, 128, 12, C.silver, 4);
+})()}
 <path d="M30 94 L226 94 L232 120 Q128 132 24 122 Z" fill="#fff" opacity=".25"/>`;
 
 ICONS.Wireless = `<g transform="translate(-20 -16) scale(.92)">${ICONS.Network.replace(/nw-/g, 'swn-')}</g>

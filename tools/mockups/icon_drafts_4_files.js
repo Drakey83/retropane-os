@@ -50,8 +50,8 @@ ICONS['Video file'] = page('fvi', `<defs>${lin('fvi-f', [[0, '#4a525e'], [1, '#1
 ICONS['Archive (zip)'] = page('fzp', `<defs>${lin('fzp-z', [[0, '#e6ebf0'], [.5, '#8592a2'], [1, '#3c4450']], 1, 0)}${lin('fzp-b', [[0, '#c9f4ee'], [.5, '#3fb3a4'], [1, '#11574e']])}</defs>
 <rect x="112" y="22" width="30" height="190" fill="#e8eef4"/>${[...Array(11)].map((_, i) => `<rect x="${i % 2 ? 127 : 113}" y="${26 + i * 12}" width="14" height="8" rx="2" fill="url(#fzp-z)" stroke="#3c4450" stroke-width="1"/>`).join('')}
 <rect x="113" y="158" width="28" height="36" rx="5" fill="url(#fzp-z)" stroke="#3c4450" stroke-width="2"/><rect x="120" y="190" width="14" height="22" rx="5" fill="none" stroke="#3c4450" stroke-width="4"/>
-<rect x="40" y="100" width="176" height="36" rx="6" fill="url(#fzp-b)" stroke="#0e4a42" stroke-width="3"/><rect x="44" y="103" width="168" height="12" rx="5" fill="#fff" opacity=".5"/>`);
-ICONS['Program file'] = `${shadow(128, 228, 104, 13, 'fex-sh')}${win('fex', 26, 36, 204, 176, C.blue)}<g transform="translate(-6 18) scale(.84) translate(30 26)">${ICONS.Settings.replace(/st-/g, 'fexg-')}</g>`;
+<rect x="52" y="100" width="152" height="36" fill="url(#fzp-b)" stroke="#0e4a42" stroke-width="3"/><rect x="55" y="103" width="146" height="12" rx="5" fill="#fff" opacity=".5"/>`);
+ICONS['Program file'] = `${shadow(128, 228, 104, 13, 'fex-sh')}${win('fex', 26, 36, 204, 176, C.blue)}${place(ICONS.Settings.replace(/st-/g, 'fexg-'), 128, 140, .6)}`;
 ICONS['Install package (.cab)'] = `
 ${shadow(128, 230, 106, 14, 'fcb-sh')}
 <defs>${lin('fcb-fr', [[0, '#d6f8f3', .8], [.45, '#6fd0c2', .65], [1, '#1d8a7c', .9]])}${lin('fcb-tp', [[0, '#e4fbf8'], [1, '#3fb3a4']])}${lin('fcb-sd', [[0, '#3fb3a4'], [1, '#11574e']])}</defs>
@@ -63,7 +63,7 @@ ${rim('M46 110 H198 V214 H46 Z', 2.5, .7)}
 ${shine('M43 107 H201 V140 Q122 152 43 140 Z', 'fcb-gl', .8)}
 ${badge('download', 'fcb-d', 184, 70, 44)}`;
 ICONS['Font file'] = page('ffn', `<text x="122" y="168" text-anchor="middle" font-family="Georgia, serif" font-size="100" fill="#2b3644">Aa</text><path d="M68 190 H184" stroke="#b4bdc8" stroke-width="5"/>`);
-ICONS['Web page'] = page('fwb', `${lines(68, 60, 80, 3, 18)}<g transform="translate(78 92) scale(.54)">${ICONS.Browser.replace(/br-/g, 'fwbg-')}</g>`);
+ICONS['Web page'] = page('fwb', `${lines(68, 60, 80, 3, 18)}${place(ICONS.Browser.replace(/br-/g, 'fwbg-'), 128, 160, .54)}`);
 ICONS['Contact card (vCard)'] = `
 ${shadow(128, 214, 108, 13, 'fvc-sh')}
 <defs>${lin('fvc-c', [[0, '#ffffff'], [1, '#dce5ee']])}${rad('fvc-p', [[0, '#d8f0ff'], [.5, '#3a92ea'], [1, '#0b3a80']], .38, .3, .8)}</defs>

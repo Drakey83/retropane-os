@@ -23,10 +23,13 @@ const C = {
   teal: ['#c9f4ee', '#3fb3a4', '#11574e'], silver: ['#ffffff', '#a9b4c0', '#4c5664'],
   graphite: ['#9aa6b6', '#3c4450', '#14181e'],
 };
+// Places another icon (its 256 box) centred on cx, cy at scale s: placing by centre
+// keeps a nested drawing inside what holds it, where corner offsets drifted.
+const place = (svg, cx, cy, s) => `<g transform="translate(${cx} ${cy}) scale(${s}) translate(-128 -128)">${svg}</g>`;
 // A glossy ball: radial body, outline, highlight cap.
 const orb = (id, cx, cy, r, [c0, c1, c2] = C.blue, o = .6) => `<defs>${rad(id, [[0, c0], [.55, c1], [1, c2]], .38, .3, .75)}</defs><circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${id})" stroke="${c2}" stroke-width="${Math.max(1.5, r / 16).toFixed(1)}"/><ellipse cx="${cx - r * .14}" cy="${cy - r * .46}" rx="${r * .62}" ry="${r * .34}" fill="#fff" opacity="${o}"/>`;
 // A glossy rounded box (keys, tiles, buttons).
-const key = (id, x, y, w, h, [c0, c1, c2] = C.silver, rx = 6) => `<defs>${lin(id, [[0, c0], [.5, c1], [1, c2]])}</defs><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}" fill="url(#${id})" stroke="${c2}" stroke-width="1.5"/><rect x="${x + 3}" y="${y + 2}" width="${w - 6}" height="${h * .42}" rx="${rx * .7}" fill="#fff" opacity=".5"/>`;
+const key = (id, x, y, w, h, [c0, c1, c2] = C.silver, rx = 6) => (x = +x, y = +y, w = +w, h = +h, `<defs>${lin(id, [[0, c0], [.5, c1], [1, c2]])}</defs><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}" fill="url(#${id})" stroke="${c2}" stroke-width="1.5"/><rect x="${x + 3}" y="${y + 2}" width="${w - 6}" height="${h * .42}" rx="${rx * .7}" fill="#fff" opacity=".5"/>`);
 // A sheet of paper with a folded corner; inner is drawn on the page.
 const page = (p, inner = '', x = 52, y = 22, w = 152, h = 208) => {
   const f = 40;
@@ -100,9 +103,7 @@ ${shadow(124, 232, 98, 14, 'nt-sh')}
 ${lin('nt-pp', [[0, '#fffbc8'], [.6, '#ffe45a'], [1, '#e9b81c']])}
 ${lin('nt-sp', [[0, '#ffffff'], [.5, '#9aa4b0'], [1, '#4c5662']], 1, 0)}
 ${lin('nt-pc', [[0, '#ffe0a0'], [.45, '#f28b1c'], [1, '#a84a08']], 1, 0)}
-${lin('nt-bs', [[0, '#d9f6f2', .75], [1, '#2a9486', .85]], 1, 1)}
 </defs>
-<path d="M30 198 L214 198 L228 222 L16 222 Z" fill="url(#nt-bs)" stroke="#155e55" stroke-width="2"/>
 <path d="M46 44 L196 44 Q206 44 206 54 L206 210 L46 210 Z" fill="#d79f12"/>
 <path d="M40 36 L190 36 Q200 36 200 46 L200 202 Q200 208 194 208 L46 208 Q40 208 40 202 Z" fill="url(#nt-pp)" stroke="#a87a0a" stroke-width="2"/>
 <g stroke="#d7a52a" stroke-width="3">${[86, 112, 138, 164, 188].map(y => `<path d="M58 ${y} H184"/>`).join('')}</g>

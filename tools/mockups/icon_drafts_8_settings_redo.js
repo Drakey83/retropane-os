@@ -4,7 +4,7 @@
 // Themes & desktop
 ICONS['Themes: swatches'] = `
 ${shadow(128, 230, 100, 13, 'tw-sh')}
-${[['purple', -36], ['orange', -12], ['blue', 12], ['teal', 36]].map(([c, r], i) => `<defs>${lin('tw-' + i, [[0, C[c][0]], [.45, C[c][1]], [1, C[c][2]]], 1, 1)}</defs>
+${[['purple', -30], ['orange', -10], ['blue', 10], ['teal', 30]].map(([c, r], i) => `<defs>${lin('tw-' + i, [[0, C[c][0]], [.45, C[c][1]], [1, C[c][2]]], 1, 1)}</defs>
 <g transform="rotate(${r} 128 206)"><rect x="98" y="20" width="60" height="196" rx="12" fill="url(#tw-${i})" stroke="${C[c][2]}" stroke-width="3"/>
 <rect x="104" y="150" width="48" height="56" rx="6" fill="#fbfdff" opacity=".92"/><rect x="110" y="162" width="36" height="7" rx="3" fill="#a9b4c0"/><rect x="110" y="176" width="24" height="7" rx="3" fill="#c6ced8"/>
 <rect x="102" y="24" width="16" height="120" rx="8" fill="#fff" opacity=".45"/></g>`).join('')}
@@ -63,7 +63,7 @@ ${glow('M46 208 H210 V228 H46 Z', 'sw-gw', .45)}`;
 
 ICONS['Storage: card and bar'] = `
 ${shadow(128, 232, 104, 12, 'sb2-sh')}
-<g transform="rotate(-8 128 110) translate(0 -12) scale(.86) translate(20 0)">${ICONS['Card inserted'].replace(/ci-/g, 'sbc-').replace(/<ellipse[^>]*>/, '')}</g>
+<g transform="rotate(-8 128 110) translate(0 -2) scale(.82) translate(28 0)">${ICONS['Card inserted'].replace(/ci-/g, 'sbc-').replace(/<ellipse[^>]*>/, '')}</g>
 <defs>${lin('sb2-gl', [[0, '#ffffff', .9], [1, '#a9b4c0', .8]])}</defs>
 <rect x="18" y="176" width="220" height="44" rx="14" fill="url(#sb2-gl)" stroke="#2a3038" stroke-width="4"/>
 ${[['blue', 26, 70], ['green', 96, 44], ['orange', 140, 30]].map(([c, x, w], i) => `<defs>${lin('sb2-' + i, [[0, C[c][0]], [.5, C[c][1]], [1, C[c][2]]])}</defs>${i == 0 ? `<path d="M${x + 8} 184 H${x + w} V212 H${x + 8} Q${x} 212 ${x} 204 V192 Q${x} 184 ${x + 8} 184 Z" fill="url(#sb2-${i})"/>` : `<rect x="${x}" y="184" width="${w}" height="28" fill="url(#sb2-${i})"/>`}`).join('')}

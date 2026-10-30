@@ -37,18 +37,18 @@ ${[['#f58020', 52], ['#36b02a', 90], ['#3fb3a4', 128], ['#e3321e', 166]].map(([c
 <g>${[44, 76, 108, 140, 172, 204].map(y => `<rect x="26" y="${y - 6}" width="22" height="12" rx="6" fill="#d6dce4" stroke="#4a5460"/>`).join('')}</g>
 ${shine('M37 29 L204 29 L204 80 Q120 104 37 90 Z', 'ct-gl', .45)}`;
 
-ICONS.Documents = page('dc', `
+ICONS.Documents = `<g transform="translate(12 0)">` + page('dc', `
 <rect x="70" y="58" width="80" height="12" rx="5" fill="#2a7fe0"/>
 ${lines(70, 84, 116, 6, 18)}
 <defs>${lin('dc-bd', [[0, '#c6ecff'], [.5, '#2a7fe0'], [1, '#0b3a80']])}</defs>
 <rect x="120" y="138" width="96" height="96" rx="18" fill="url(#dc-bd)" stroke="#0a2a60" stroke-width="3"/>
 <rect x="125" y="142" width="86" height="38" rx="14" fill="#fff" opacity=".45"/>
-<text x="168" y="212" text-anchor="middle" font-family="Georgia, serif" font-weight="bold" font-size="72" fill="#fff">A</text>`, 34, 22);
+<text x="168" y="212" text-anchor="middle" font-family="Georgia, serif" font-weight="bold" font-size="72" fill="#fff">A</text>`, 34, 22) + '</g>';
 
-ICONS.Spreadsheet = page('ss', `
+ICONS.Spreadsheet = `<g transform="translate(14 0)">` + page('ss', `
 <g stroke="#b4bdc8" stroke-width="2">${[0, 1, 2, 3, 4, 5, 6].map(i => `<path d="M70 ${70 + i * 22} H170"/>`).join('')}${[0, 1, 2, 3].map(i => `<path d="M${70 + i * 33.3} 70 V202"/>`).join('')}</g>
 <rect x="70" y="70" width="100" height="22" fill="#36b02a" opacity=".85"/>
-${key('ss-b1', 120, 168, 26, 58, C.green, 4)}${key('ss-b2', 152, 136, 26, 90, C.green, 4)}${key('ss-b3', 184, 100, 26, 126, C.green, 4)}`, 34, 22);
+${key('ss-b1', 120, 168, 26, 58, C.green, 4)}${key('ss-b2', 152, 136, 26, 90, C.green, 4)}${key('ss-b3', 184, 100, 26, 126, C.green, 4)}`, 34, 22) + '</g>';
 
 ICONS.Presentation = `
 ${shadow(128, 234, 88, 12, 'pr-sh')}
@@ -259,7 +259,7 @@ ${win('pw1', 20, 22, 150, 110, C.green)}
 ${win('pw2', 56, 62, 150, 110, C.orange)}
 ${win('pw3', 92, 102, 148, 116, C.blue, `${lines(106, 146, 96, 3, 18)}`)}
 ${shine('M94 134 H238 V170 Q170 186 94 176 Z', 'pw-gl', .4)}`;
-ICONS['Programs: folder'] = folder('pf', `${mini('Games', 46, 26, .42)}${mini('Calculator', 96, 12, .42)}${mini('Browser', 142, 30, .42)}`);
+ICONS['Programs: folder'] = folder('pf', `${place(ICONS.Games, 80, 80, .38)}${place(ICONS.Calculator, 128, 66, .38)}${place(ICONS.Browser, 176, 82, .34)}`);
 // The owner's pick (2026-10-30): "lets use Program folder".
 ICONS.Programs = ICONS['Programs: folder'];
 ICONS['Programs: box'] = `
