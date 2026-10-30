@@ -390,6 +390,28 @@ against the model.
   the 3D core and Cascade to Rise. Fade's extra check is one setting in
   M1.
 
+## The owner's rulings (2026-10-30, evening)
+
+"2 do recommended, 3 you can do the whole 10 min test if itll be better,
+do 5 if its just as good, 4 i like cascade":
+
+- **V2: D.** The guard's check runs in the 3D clock's 100 ms tail after
+  each burst, never on a timer while still; D+ (temperature) when the
+  battery temperature reading exists. Written into ADR-0035 rule 6.
+- **The device run: the ~5 minute cut.** It answers the same questions
+  for what will ship: the tests it drops (M5's Stagger part, M6) only
+  measure entrances not chosen, and the window check Cascade rests on
+  stays in M2. If the owner later picks Stagger or Expand, those two
+  run then.
+- **R131: the recommendation (the owner, then: "4, do what you
+  reccomend").** **Reveal** when the app opens from the Today screen's
+  card, **Cascade** between pages (his "i like cascade" picks it over
+  Rise). The moving mock-ups of both come first, from the preview's real
+  frames like the others, so he sees them before the device build.
+  Stagger and Expand are not built for the device; M5's Stagger part and
+  M6 drop out of the run.
+- **V1 (L2) and V3 (depth):** open. V3 waits for M1's side-by-side look.
+
 ## Votes needed (results are not decisions)
 
 - **V1: the page layer.** L2 (ours: the glass over a still wallpaper on
