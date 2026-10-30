@@ -147,7 +147,7 @@ mod tests {
     #[ignore = "exploration: prints each answer's changed area"]
     fn the_replays_changed_areas() {
         let cal = Calibration::X51V_DEFAULT;
-        let mut shell = Shell::new(crate::shell_fonts(), crate::icons(), true);
+        let mut shell = Shell::new(crate::shell_fonts(), rp_shell::Icons::NONE, true);
         let mut filter = Filter::new();
         let mut frame = rp_draw::Frame::new();
         let mut now = 0u32;
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn the_scenario_stays_on_the_today_screen() {
         let cal = Calibration::X51V_DEFAULT;
-        let mut shell = Shell::new(crate::shell_fonts(), crate::icons(), true);
+        let mut shell = Shell::new(crate::shell_fonts(), rp_shell::Icons::NONE, true);
         let mut filter = Filter::new();
         let (mut now, mut downs, mut redraws) = (0u32, 0, 0);
         for st in steps(DATA) {

@@ -496,16 +496,15 @@ pub const BUDGETS: &[Budget] = &[
     // programs that use 3D: 27.9 KiB, + ~11%. Then 31 -> 40 KiB: the owner's
     // 16-bit wallpaper comparison keeps its dither rows in `.bss` (7.5 KiB,
     // off the 12 KiB stack): 35.4 KiB, + ~13%.
-    // 900 -> 928 KiB (2026-10-30, the owner's ask for the Weather app and its
-    // home page): the app's three pages, the shared weather model, and the
-    // seven icons the sample uses at row size plus five at card size; 919.1
-    // KiB measured after building rp-shell and rp-weather for size (the scene
-    // was 33 KB at opt-level 3). 928 KiB is the loader's whole image area
-    // (IMAGE_MAX), so this image has no more room: R129 moves its icons out
-    // of 32-bit pictures before the next screen lands.
+    // Kept at 900 KiB with the Weather app (2026-10-30): the app, the shared
+    // weather model and the sample's icons (seven at row size, five at card
+    // size) came to 919 KiB, and with its .bss and stack ran over the
+    // vector page (it never took the screen in the emulator; the end-of-area
+    // check below came from that). The pictures are now run-length packed
+    // and unpacked at start into the RAM pool (R129): -48 KiB loaded.
     Budget {
         image: "rp-today",
-        max_load: 928 * 1024,
+        max_load: 900 * 1024,
         max_zero: 40 * 1024,
         device: OnDevice::Returns,
     },
@@ -1148,6 +1147,11 @@ pub fn check_allotments(
     Ok(())
 }
 
+/// Where the loader puts every image, and where its area ends (the vector
+/// page): `rp_hal_x51v::devices::IMAGE_BASE` and `IMAGE_MAX`, docs/hw/memory-map.md.
+const IMAGE_BASE: u64 = 0xA800_8000;
+const IMAGE_END: u64 = 0xA80F_0000;
+
 /// Loaded and zero-initialised byte counts of an ELF32 image.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Sizes {
@@ -1155,6 +1159,8 @@ pub struct Sizes {
     pub load: u64,
     /// NOBITS sections that occupy memory (.bss, stack).
     pub zero: u64,
+    /// The lowest and highest address the allocated sections cover.
+    pub span: Option<(u64, u64)>,
 }
 
 const SHF_ALLOC: u32 = 0x2;
@@ -1174,14 +1180,23 @@ pub fn measure(elf: &[u8]) -> Result<Sizes, String> {
     let shoff = u32_at(0x20).ok_or("truncated ELF header")? as usize;
     let shentsize = usize::from(u16_at(0x2E).ok_or("truncated ELF header")?);
     let shnum = usize::from(u16_at(0x30).ok_or("truncated ELF header")?);
-    let mut sizes = Sizes { load: 0, zero: 0 };
+    let mut sizes = Sizes {
+        load: 0,
+        zero: 0,
+        span: None,
+    };
     for i in 0..shnum {
         let sh = shoff + i * shentsize;
         let kind = u32_at(sh + 4).ok_or("truncated section header")?;
         let flags = u32_at(sh + 8).ok_or("truncated section header")?;
+        let addr = u64::from(u32_at(sh + 12).ok_or("truncated section header")?);
         let size = u64::from(u32_at(sh + 20).ok_or("truncated section header")?);
         if flags & SHF_ALLOC == 0 {
             continue;
+        }
+        if size > 0 {
+            let (lo, hi) = sizes.span.unwrap_or((addr, addr + size));
+            sizes.span = Some((lo.min(addr), hi.max(addr + size)));
         }
         if kind == SHT_NOBITS {
             sizes.zero += size;
@@ -1288,6 +1303,22 @@ pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
         if s.load > b.max_load || s.zero > b.max_zero {
             over.push(b.image);
         }
+        // An image loaded where the loader puts every image must end, zeroed
+        // data and stacks included, before the reserved vector page (2026-10-30:
+        // rp-today's code fit its budget but its .bss and stack ran over the
+        // vector page, and it never took the screen in the emulator).
+        if let Some((lo, hi)) = s.span
+            && lo == IMAGE_BASE
+            && hi > IMAGE_END
+        {
+            return Err(format!(
+                "{}: ends at {hi:#x}, past the image area's end {IMAGE_END:#x} (the vector page): loaded {} B + zeroed RAM and stacks {} B must fit {} B",
+                b.image,
+                s.load,
+                s.zero,
+                IMAGE_END - IMAGE_BASE
+            ));
+        }
         let floats = float_helpers(&elf)?;
         if !floats.is_empty() && FLOAT_ALLOWED.iter().all(|(i, _)| *i != b.image) {
             return Err(format!(
@@ -1365,7 +1396,8 @@ mod tests {
             measure(&d).unwrap(),
             Sizes {
                 load: 1000,
-                zero: 500
+                zero: 500,
+                span: Some((0, 1000)),
             }
         );
     }

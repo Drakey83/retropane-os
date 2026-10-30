@@ -31,6 +31,8 @@ pub mod clock;
 pub mod fonts;
 pub mod replay;
 
+use rp_draw::Image;
+
 /// Printed in the run log once the Today screen is up.
 pub const MARKER: &str = "RETROPANE-TODAY-UP";
 
@@ -44,23 +46,76 @@ pub fn shell_fonts() -> rp_shell::Fonts {
     }
 }
 
-/// The weather pictures the Today screen shows, from `local/icons/icons.rs`
-/// (made by `tools/shell-assets/icons.py` from the default pack; without it
-/// the pictures are empty and the screen draws outlines).
+/// The weather pictures, from `local/icons/icons.rs` (made by
+/// `tools/shell-assets/icons.py` from the default pack, run-length packed;
+/// without it there are none and the screens draw outlines).
 mod icon_data {
-    use rp_draw::Image;
     include!(concat!(env!("OUT_DIR"), "/icons.rs"));
 }
 
-/// The icons for the shell: none when the pictures weren't made.
-#[must_use]
-pub fn icons() -> rp_shell::Icons {
-    rp_shell::Icons {
-        hero: (icon_data::HERO.w > 0).then_some(&icon_data::HERO),
-        card: icon_data::CARD,
-        row: icon_data::ROW,
+/// How many pictures are baked in.
+pub const ICON_COUNT: usize = icon_data::COUNT;
+/// Words the unpacked pictures need.
+pub const ICON_WORDS: usize = icon_data::WORDS;
+
+/// Unpacks one picture's runs into `out` (R129: kept packed in the image so
+/// it fits the loader's image area). Nothing is trusted: a run past the
+/// picture's end stops there, and what the runs don't reach stays clear.
+fn unpack(packed: &[u32], out: &mut [u32]) {
+    out.fill(0);
+    let (mut at, mut i) = (0usize, 0usize);
+    while let Some(&head) = packed.get(i) {
+        i += 1;
+        at = at.saturating_add((head >> 16) as usize);
+        for _ in 0..(head & 0xFFFF) {
+            let (Some(&p), Some(slot)) = (packed.get(i), out.get_mut(at)) else {
+                return;
+            };
+            *slot = p;
+            i += 1;
+            at += 1;
+        }
     }
 }
+
+/// Unpacks the baked pictures into `px` (at least [`ICON_WORDS`] words; the
+/// image's comes from SDRAM outside the image area) with their
+/// descriptions in `imgs`, and returns the shell's set. Too little room
+/// gives no pictures (outlines), never a fault.
+#[must_use]
+pub fn icons_into(
+    px: &'static mut [u32],
+    imgs: &'static mut [Image; ICON_COUNT],
+) -> rp_shell::Icons {
+    let mut set = rp_shell::Icons::NONE;
+    if px.len() < ICON_WORDS {
+        return set;
+    }
+    let mut rest = px;
+    for (slot, &(_, _, w, h, packed)) in imgs.iter_mut().zip(&icon_data::PACKED) {
+        let (mine, more) = rest.split_at_mut(usize::from(w) * usize::from(h));
+        rest = more;
+        unpack(packed, mine);
+        *slot = Image { w, h, px: mine };
+    }
+    let imgs: &'static [Image; ICON_COUNT] = imgs;
+    for (img, &(kind, id, ..)) in imgs.iter().zip(&icon_data::PACKED) {
+        let i = usize::from(id.clamp(1, 22) - 1);
+        match kind {
+            0 => set.hero = Some(img),
+            1 => set.card[i] = Some(img),
+            _ => set.row[i] = Some(img),
+        }
+    }
+    set
+}
+
+/// Room for [`icons_into`]'s descriptions.
+pub const NO_IMAGE: Image = Image {
+    w: 0,
+    h: 0,
+    px: &[],
+};
 
 /// Screen width and height.
 pub const W: usize = 480;
@@ -339,6 +394,43 @@ impl Latency {
 mod tests {
     use super::*;
 
+    /// The pictures unpacked into memory that lives for the test.
+    fn host_icons() -> rp_shell::Icons {
+        icons_into(
+            Box::leak(vec![0; ICON_WORDS].into_boxed_slice()),
+            Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
+        )
+    }
+
+    #[test]
+    fn packed_pictures_unpack_and_damaged_ones_stay_inside() {
+        let mut out = [7u32; 6];
+        unpack(
+            &[
+                (2 << 16) | 2,
+                0xFF00_0001,
+                0xFF00_0002,
+                1 << 16 | 1,
+                0xFF00_0003,
+            ],
+            &mut out,
+        );
+        assert_eq!(out, [0, 0, 0xFF00_0001, 0xFF00_0002, 0, 0xFF00_0003]);
+        // Runs past the end, a header promising more than there is, nothing.
+        let mut out = [7u32; 3];
+        unpack(&[(1 << 16) | 9, 1, 2, 3, 4], &mut out);
+        assert_eq!(out, [0, 1, 2]);
+        unpack(&[0xFFFF_0005, 1], &mut out);
+        assert_eq!(out, [0, 0, 0]);
+        unpack(&[], &mut out);
+        // Too little room: outlines, not a fault.
+        let small = icons_into(
+            Box::leak(vec![0; ICON_WORDS.saturating_sub(1)].into_boxed_slice()),
+            Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
+        );
+        assert!(ICON_WORDS == 0 || small.hero.is_none());
+    }
+
     #[test]
     fn the_probe_tells_repeating_from_zeros() {
         // Repeating the top bits: white stays white; zeros: it doesn't.
@@ -494,7 +586,7 @@ mod tests {
         gpu.dither = false;
         let mut work = vec![0u8; PICTURE_BYTES];
         let mut plane = vec![0u8; PICTURE_BYTES];
-        let mut shell = Shell::new(shell_fonts(), icons(), true);
+        let mut shell = Shell::new(shell_fonts(), host_icons(), true);
         // The emulator's run showed this; frames differ by their text.
         shell.set_time(rp_shell::Time {
             hour: 12,
@@ -597,7 +689,7 @@ mod tests {
             1,
         );
         show_gpu(&mut gpu, &wall, |_| {}, &mut WallScratch::new());
-        let mut shell = Shell::new(shell_fonts(), icons(), true);
+        let mut shell = Shell::new(shell_fonts(), host_icons(), true);
         let mut f = Frame::new();
         let s = rp_shell::START;
         let (sx, sy) = (s.x + s.w / 2, s.y + s.h / 2);
@@ -643,7 +735,7 @@ mod tests {
     #[test]
     fn the_real_fonts_fit_the_shell() {
         // Every frame of the real Today screen fits, menu open included.
-        let mut s = rp_shell::Shell::new(shell_fonts(), icons(), true);
+        let mut s = rp_shell::Shell::new(shell_fonts(), host_icons(), true);
         let mut f = rp_draw::Frame::new();
         s.frame(&mut f);
         assert!(!f.overflowed());

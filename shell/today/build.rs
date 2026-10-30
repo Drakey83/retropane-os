@@ -59,13 +59,11 @@ fn main() {
     let icons = Path::new(&dir).join("../../local/icons/icons.rs");
     watch_local(&icons);
     let data = std::fs::read_to_string(&icons).unwrap_or_else(|_| {
-        let empty = "Image { w: 0, h: 0, px: &[] }";
-        format!(
-            "pub static HERO: Image = {empty};
-pub static CARD: [Option<&Image>; 22] = [None; 22];
-pub static ROW: [Option<&Image>; 22] = [None; 22];
+        "pub const COUNT: usize = 0;
+pub const WORDS: usize = 0;
+pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = [];
 "
-        )
+        .to_string()
     });
     // The owner's default picture (`rp_draw::look`, 2026-10-22) on every
     // icon pixel (non-premultiplied ARGB: the colour changes, alpha not),

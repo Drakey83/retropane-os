@@ -11237,7 +11237,7 @@ pub(crate) fn today_screens(wall: &[u8], steps: &[rp_shell::Input], settle: bool
         1,
     );
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
-    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), rp_today::icons(), true);
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     shell.set_time(rp_shell::Time {
         hour: 12,
         minute: 0,
@@ -11294,7 +11294,7 @@ pub(crate) fn today_motion(
         1,
     );
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
-    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), rp_today::icons(), true);
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     shell.set_time(rp_shell::Time {
         hour: 12,
         minute: 0,
@@ -11336,6 +11336,14 @@ pub(crate) fn today_motion(
         .collect()
 }
 
+/// The Today image's pictures, unpacked on the PC as the image unpacks them.
+fn today_icons() -> rp_shell::Icons {
+    rp_today::icons_into(
+        Box::leak(vec![0; rp_today::ICON_WORDS].into_boxed_slice()),
+        Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::ICON_COUNT])),
+    )
+}
+
 /// A screen pixel (RGB565) as the emulator's screendump shows it: each
 /// channel shifted up, its low bits 0 (the fork's scan-out, docs/hw/2700g.md
 /// "Plane composition": "RGB565 shifted up without bit replication").
@@ -11369,7 +11377,7 @@ fn compare_screens(wall: &[u8]) -> [Vec<u8>; 2] {
     );
     let mut scratch = rp_today::WallScratch::new();
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut scratch);
-    let mut shell = Shell::new(rp_today::shell_fonts(), rp_today::icons(), true);
+    let mut shell = Shell::new(rp_today::shell_fonts(), today_icons(), true);
     let mut frame = Frame::new();
     let mut step = |shell: &mut Shell, gpu: &mut Mbx2dRenderer<Bus, Mem>| -> Vec<u8> {
         shell.frame(&mut frame);

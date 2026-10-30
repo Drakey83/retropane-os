@@ -91,6 +91,8 @@ mod image {
     static LATENCY: rt::Slot<[Latency; 5]> = rt::Slot::new();
     /// The wallpaper's conversion rows (the 16-bit comparison's dither).
     static WALL: rt::Slot<WallScratch> = rt::Slot::new();
+    // The weather pictures' descriptions (their pixels are in the RAM pool).
+    static ICON_IMGS: rt::Slot<[rp_draw::Image; rp_today::ICON_COUNT]> = rt::Slot::new();
     /// The wallpaper this image was built with (`RP_TODAY_WALLPAPER`).
     const WALL_NAME: &str = env!("RP_TODAY_WALLPAPER_NAME");
 
@@ -274,8 +276,17 @@ mod image {
         );
         // The comparison's frame after a depth switch: its time is logged.
         let mut compare_frame = false;
+        // The pictures unpacked once into the RAM pool (SDRAM outside the
+        // image area, unused by this image): R129, the lean rule.
+        let icons = match (
+            rp_hal_x51v::devices::take_ram_pool(),
+            ICON_IMGS.put_with(|| [rp_today::NO_IMAGE; rp_today::ICON_COUNT]),
+        ) {
+            (Some(pool), Some(imgs)) => rp_today::icons_into(pool, imgs),
+            _ => rp_shell::Icons::NONE,
+        };
         let (Some(shell), Some(frame)) = (
-            SHELL.put_with(|| Shell::new(rp_today::shell_fonts(), rp_today::icons(), true)),
+            SHELL.put_with(|| Shell::new(rp_today::shell_fonts(), icons, true)),
             FRAME.put_with(Frame::new),
         ) else {
             crash(format_args!("started twice"))
