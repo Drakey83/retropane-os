@@ -515,7 +515,11 @@ fn the_overlay_is_an_alpha_0_slot_quad_over_the_scene_listed_last_and_redraws_no
     g.r.set_overlay(true).unwrap();
     assert!(g.r.overlay());
     let r = g.r.render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL);
-    assert_eq!(r, Ok(None), "switching the overlay on redraws nothing by itself");
+    assert_eq!(
+        r,
+        Ok(None),
+        "switching the overlay on redraws nothing by itself"
+    );
     g.r.set_underlay(true).unwrap();
     let on = g.frame();
     assert_eq!(sample(&g), want, "the same picture");
@@ -540,13 +544,20 @@ fn the_overlay_is_an_alpha_0_slot_quad_over_the_scene_listed_last_and_redraws_no
     let slot = load(&s.mem, base + SLOTS_AT + 5 * SLOT_BYTES);
     let n = slot.iter().rposition(|&w| w != 0).map_or(0, |k| k + 1);
     assert!(n > 0);
-    assert_eq!(over[..n], slot[..n], "the overlay is a full-screen slot quad, drawn over");
+    assert_eq!(
+        over[..n],
+        slot[..n],
+        "the overlay is a full-screen slot quad, drawn over"
+    );
     // A tile's list: the background, the underlay, the scene, the overlay,
     // the end (the arena's first list is the first tile's: the background
     // alone with the two extra objects).
     let lists = (base + ARENA_AT) as usize;
     let words: Vec<u32> = (0..8).map(|i| g.mem.load(lists + 4 * i).unwrap()).collect();
-    let end = words.iter().position(|&w| w == m3::END).expect("an end word");
+    let end = words
+        .iter()
+        .position(|&w| w == m3::END)
+        .expect("an end word");
     assert_eq!(words[0] & 0x001F_FFFF, BG_AT / 4, "the background first");
     assert_eq!(words[1] & 0x001F_FFFF, UNDER_AT / 4, "the underlay second");
     assert!(
@@ -559,7 +570,11 @@ fn the_overlay_is_an_alpha_0_slot_quad_over_the_scene_listed_last_and_redraws_no
     g.r.invalidate_all();
     let _ = g.frame();
     let first = g.mem.load(lists).unwrap();
-    assert_eq!(first & 0x001F_FFFF, OVER_AT / 4, "the overlay alone in an empty tile");
+    assert_eq!(
+        first & 0x001F_FFFF,
+        OVER_AT / 4,
+        "the overlay alone in an empty tile"
+    );
     // Off again: nothing redrawn, and no overlay listed.
     g.r.set_overlay(false).unwrap();
     assert!(!g.r.overlay());
@@ -568,7 +583,11 @@ fn the_overlay_is_an_alpha_0_slot_quad_over_the_scene_listed_last_and_redraws_no
     g.r.invalidate_all();
     let _ = g.frame();
     let first = g.mem.load(lists).unwrap();
-    assert_ne!(first & 0x001F_FFFF, OVER_AT / 4, "no overlay listed when off");
+    assert_ne!(
+        first & 0x001F_FFFF,
+        OVER_AT / 4,
+        "no overlay listed when off"
+    );
 }
 
 #[test]
@@ -593,7 +612,11 @@ fn the_underlay_is_a_full_screen_slot_quad_under_the_scene_and_changes_no_pixel(
     g.r.set_underlay(true).unwrap();
     assert!(g.r.underlay());
     let r = g.r.render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL);
-    assert_eq!(r, Ok(None), "switching the underlay redraws nothing by itself");
+    assert_eq!(
+        r,
+        Ok(None),
+        "switching the underlay redraws nothing by itself"
+    );
     g.r.invalidate_all();
     let on = g.frame();
     assert_eq!(sample(&g), want, "the same picture");
