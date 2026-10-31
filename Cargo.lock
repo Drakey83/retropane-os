@@ -1123,6 +1123,9 @@ version = "0.0.0"
 [[package]]
 name = "rp-weather"
 version = "0.0.0"
+dependencies = [
+ "rp-inflate",
+]
 
 [[package]]
 name = "serde"

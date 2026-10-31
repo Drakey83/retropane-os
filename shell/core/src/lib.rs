@@ -437,6 +437,8 @@ pub struct Shell {
     /// The dock's questions wanted (bits of [`Ask`]) and the one in flight.
     wants: u8,
     asking: Option<Ask>,
+    /// The hour Hourly's card shows.
+    hour_pick: u8,
     /// The station's instruments and when they came (ms).
     station: Option<rp_weather::tempest::StationNow>,
     station_at: u32,
@@ -509,6 +511,7 @@ impl Shell {
             // The stored settings first, then the forecast they name.
             wants: 1 << Ask::Load as u8,
             asking: None,
+            hour_pick: 0,
             station: None,
             station_at: 0,
             fetched_at: None,
@@ -1098,6 +1101,12 @@ impl Shell {
             Gesture::None | Gesture::Pending { .. } => {
                 // Still a tap: the scroll lets go where it is.
                 self.scroll.release(self.now);
+                // On Hourly's graph: that hour into the card.
+                if let Some(h) = self.hour_at(x, y) {
+                    self.hour_pick = h;
+                    self.dirty(weather_app::PAGE);
+                    return Some(Action::Redraw);
+                }
                 None
             }
         }

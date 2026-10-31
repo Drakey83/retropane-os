@@ -716,6 +716,8 @@ mod image {
         // and given back once nothing shows it.
         let mut shown_tab: Option<u8> = None;
         let mut revealing = false;
+        // The opening runs on the page layer (no hand-off at its end).
+        let mut reveal_on_page = false;
         // Reveal's window has shown (its clock restarted then).
         let mut reveal_shown = false;
         // The app's screen as Reveal leaves it, composed ahead (its picture
@@ -1522,17 +1524,44 @@ mod image {
                                     "held still (the window grows, the app in place)"
                                 }
                             );
-                            commit = Some(match app_pic {
-                                // Composed ahead: the window at the next
-                                // refresh, no 2D work on the tap.
-                                Some((h, _)) => {
-                                    let mut st = reveal_state(r, shift);
-                                    st.src = Source::Picture(h);
-                                    (Some(st), false, false)
+                            // On the page layer when the app's screen and
+                            // page are ready: the screen plane on the app's
+                            // screen and the window over its page, in one
+                            // commit at the next refresh; the opening then
+                            // ends as the app rests, with no hand-off (the
+                            // owner's run, 2026-10-31: the end's hand-off
+                            // changed the picture twice in 80 ms).
+                            let on_page =
+                                chrome_pic
+                                    .zip(shell.reveal_page())
+                                    .and_then(|((ch, _), v)| {
+                                        pages[usize::from(v.tab)].map(|(h, _)| (ch, h, v))
+                                    });
+                            if let Some((ch, h, v)) = on_page {
+                                if gfx.commit_screen(pc, ch, Some(page_state(h, v))).is_ok() {
+                                    revealing = true;
+                                    reveal_on_page = true;
+                                    reveal_shown = true;
+                                    shown_tab = None;
+                                    reveal_t0 = now_ms;
+                                    reveal_c0 = gfx.commits().done;
+                                    trace_n = 0;
+                                    trace_on = true;
+                                    trace_tail = 30;
                                 }
-                                // Not ready: composed now, aside.
-                                None => (Some(reveal_state(r, shift)), true, true),
-                            });
+                            } else {
+                                commit = Some(match app_pic {
+                                    // Composed ahead: the window at the next
+                                    // refresh, no 2D work on the tap.
+                                    Some((h, _)) => {
+                                        let mut st = reveal_state(r, shift);
+                                        st.src = Source::Picture(h);
+                                        (Some(st), false, false)
+                                    }
+                                    // Not ready: composed now, aside.
+                                    None => (Some(reveal_state(r, shift)), true, true),
+                                });
+                            }
                             reveal_t0 = now_ms;
                             reveal_c0 = gfx.commits().done;
                             trace_n = 0;
@@ -1550,7 +1579,13 @@ mod image {
                         // trace, 2026-10-31: drawing that screen during
                         // Reveal froze it two refreshes). The renderer's own
                         // screens come back with the next frame.
-                        let _ = gfx.commit_screen(pc, ch, Some(page_state(h, v)));
+                        if reveal_on_page {
+                            // Already as it rests: the window to the page's.
+                            let _ = gfx.move_layer(pc, page_state(h, v).win);
+                        } else {
+                            let _ = gfx.commit_screen(pc, ch, Some(page_state(h, v)));
+                        }
+                        reveal_on_page = false;
                         shown_tab = Some(v.tab);
                         screen_on_pic = true;
                         shell.redraw_all();
@@ -1635,7 +1670,13 @@ mod image {
                         // app was still composing showed it part-open, then
                         // the restart snapped it back to the card (the
                         // owner's second run, today-0022, his photos).
-                        if reveal_shown && let Some((r, shift)) = shell.reveal_plane() {
+                        if reveal_on_page {
+                            if let Some(v) = shell.reveal_page()
+                                && let Some((h, _)) = pages[usize::from(v.tab)]
+                            {
+                                let _ = gfx.move_layer(pc, page_state(h, v).win);
+                            }
+                        } else if reveal_shown && let Some((r, shift)) = shell.reveal_plane() {
                             let _ = gfx.move_layer(pc, reveal_state(r, shift).win);
                         }
                     } else if let Some(v) = shell.page_layer()

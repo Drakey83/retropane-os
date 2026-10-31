@@ -56,12 +56,10 @@ const ROW_H: u16 = 42;
 /// page's bottom; the pages that fit, 0 (they still give way and spring
 /// back).
 pub(crate) const fn max_scroll(tab: u8) -> u16 {
-    let bottom = PAGE.y + PAGE.h;
-    let end = match tab {
-        1 => ROW_Y + HOURS as u16 * ROW_STEP + 4,
-        _ => 0,
-    };
-    end.saturating_sub(bottom)
+    // Every page fits since Hourly became a graph and a card (R140); they
+    // still give way and spring back.
+    let _ = tab;
+    0
 }
 
 /// One item's entrance: how long it moves, how far, and the gap before the
@@ -73,6 +71,19 @@ const SLIDE: u32 = 56;
 pub(crate) const ANIM_MS: u32 = ITEM_MS + STAGGER_MS * ROWS as u32;
 
 const RAIN: Argb = rp_draw::look::theme(0xFF7F_C8FF);
+/// Hourly's graph and the picked hour's card (R140, the mix mock-up X2).
+pub(crate) const HOURLY_GRAPH: Rect = Rect::new(16, 102, 448, 240);
+const HOURLY_CARD: Rect = Rect::new(16, 350, 448, 196);
+/// The graph's hours: 24 across, each a column.
+const GRAPH_X0: u16 = 26;
+const HOUR_W: u16 = 17;
+/// Half an hour's column (the second half takes what is left).
+const HALF_W: u16 = 8;
+const fn hour_x(i: u8) -> u16 {
+    GRAPH_X0 + i as u16 * HOUR_W
+}
+const CURVE: Argb = rp_draw::look::theme(0xFFF2_B45A);
+const CURVE_FILL: Argb = rp_draw::look::theme(0x50F2_B45A);
 const TRACK: Argb = rp_draw::look::theme(0x30FF_FFFF);
 /// The selected tab: a lighter piece of the bar itself (a translucent white
 /// fill over the bar would be blended against the wallpaper by the 2D
@@ -426,6 +437,34 @@ impl Shell {
         })
     }
 
+    /// Reveal on the page layer (the owner's run, 2026-10-31: the end's
+    /// hand-off from the 2D-composed app to the layer's mix changed the
+    /// picture twice in 80 ms, DSIG): the opening's window over the page's
+    /// own picture, so the opening ends already as the app rests. The
+    /// window is the card's rectangle inside the page area, the picture
+    /// read as at rest, `shift` rows lower for the glide.
+    #[must_use]
+    pub fn reveal_page(&self) -> Option<PageView> {
+        let (r, shift) = self.reveal_plane()?;
+        let a = PAGE;
+        let top = r.y.max(a.y);
+        let bottom = (r.y + r.h).min(a.y + a.h);
+        if bottom <= top + 2 {
+            return None;
+        }
+        let x = r.x & !7;
+        let w = ((r.w + (r.x - x)).min(W - x)) & !1;
+        let h = (bottom - top) & !1;
+        let tab = self.tab;
+        let row = LAYER_MARGIN + (top - a.y) + shift;
+        let last = picture_rows(tab).saturating_sub(h);
+        Some(PageView {
+            tab,
+            win: Rect::new(x, top, w.max(2), h.max(2)),
+            row: row.min(last),
+        })
+    }
+
     /// While the app opens by Reveal on the plane path: the window and how
     /// many rows lower the app is read inside it.
     #[must_use]
@@ -455,7 +494,7 @@ impl Shell {
     /// on the planes only the scroll bar there (the layer moves).
     pub(crate) fn page_moved(&mut self) {
         match self.layer_tab() {
-            Some(1) => self.dirty(THUMB_TRACK),
+            Some(1) if max_scroll(1) > 0 => self.dirty(THUMB_TRACK),
             Some(_) => {}
             None => self.dirty(PAGE),
         }
@@ -505,7 +544,7 @@ impl Shell {
         // On the planes the page's picture changes, not screen 0 (only the
         // scroll bar, Hourly's alone).
         if self.layer_tab().is_some() {
-            if was == 1 || t == 1 {
+            if (was == 1 || t == 1) && max_scroll(1) > 0 {
                 self.dirty(THUMB_TRACK);
             }
         } else {
@@ -798,77 +837,155 @@ impl Shell {
         let (lo, hi) = wx.hours.iter().fold((i16::MAX, i16::MIN), |(a, b), h| {
             (a.min(h.temp), b.max(h.temp))
         });
-        // Only the rows on the page (and the one or two cut at its edges),
-        // or in the picture's band.
-        let off = self.scroll.offset();
-        let first = if self.band.is_some() {
-            0
-        } else {
-            ((off - i32::from(ROW_H)).max(0) / i32::from(ROW_STEP)) as usize
+        let dy = -self.view_off();
+        let grow = self.ease(0);
+        // The graph: 24 hours across, the temperature as a filled curve
+        // with its line, the chance of rain as bars below it.
+        let g = HOURLY_GRAPH;
+        let gy = i32::from(g.y) + dy;
+        Self::glass_at(f, g.x, gy, g.w, g.h);
+        if gy + i32::from(g.h) <= 0 {
+            return;
+        }
+        let y0 = |v: i32| (v + gy).max(0) as u16;
+        let curve_top = 40;
+        let curve_h = 96;
+        let base = curve_top + curve_h + 8;
+        // The curve every half hour (the second half interpolated to the
+        // next hour), a soft fill under a 3 px line.
+        let level = |t: i32| {
+            let top = curve_top + curve_h - curve_h * t / 1024;
+            base - (base - top) * grow as i32 / 1024
         };
-        let (top, bottom) = self.view_rows();
-        for i in first..HOURS {
-            let Some(h) = wx.hours.get(i) else { break };
-            let y = i32::from(ROW_Y) + i as i32 * i32::from(ROW_STEP) - self.view_off();
-            if y >= bottom {
-                break;
+        for (i, h) in wx.hours.iter().enumerate().take(HOURS) {
+            let x = hour_x(i as u8);
+            let a = frac(h.temp, lo, hi) as i32;
+            let b = wx
+                .hours
+                .get(i + 1)
+                .map_or(a, |n| (a + frac(n.temp, lo, hi) as i32) / 2);
+            // One fill an hour (to the higher half: the line sits on it),
+            // the line in two halves (the frame holds 160 commands).
+            let top = level(a.max(b));
+            f.push(Cmd::Fill {
+                r: Rect::new(x, y0(top), HOUR_W, (base - top).max(1) as u16),
+                color: CURVE_FILL,
+            });
+            for (k, t) in [a, b].into_iter().enumerate() {
+                let w = if k == 0 { HALF_W } else { HOUR_W - HALF_W };
+                f.push(Cmd::Fill {
+                    r: Rect::new(x + k as u16 * HALF_W, y0(level(t)), w, 3),
+                    color: CURVE,
+                });
             }
-            if y + i32::from(ROW_H) <= top {
-                continue;
+            // Rain under 10 % is under 6 px: not drawn (the frame's room).
+            if h.precip >= 10 {
+                let bh = (i32::from(h.precip) * 52 / 100).max(2) * grow as i32 / 1024;
+                f.push(Cmd::Fill {
+                    r: Rect::new(x + 3, y0(i32::from(g.h) - 14 - bh), HOUR_W - 6, bh as u16),
+                    color: RAIN,
+                });
             }
-            // The entrance staggers the rows on screen, not the list's.
-            let k = (i - first) as u32;
-            let e = self.ease(k);
-            let r = Rect::new(16 + self.slide(k), y.max(0) as u16, 448, ROW_H);
-            Self::glass_at(f, r.x, y, r.w, r.h);
-            if y < 0 {
-                continue;
-            }
-            let when = if i == 0 {
+        }
+        // Times along the top, every four hours.
+        for i in (0..HOURS).step_by(4) {
+            let t = if i == 0 {
                 Line::new().push(b"NOW")
             } else {
-                rg.time(h.hour, 0, false)
+                rg.time(wx.hours[i].hour, 0, false)
             };
-            f.text(r.x + 14, r.y + 28, label, TEXT, when.as_bytes());
-            let icon = Icon::of(h.sky);
-            if let Some(img) = self.icons.row[usize::from(icon.id() - 1)] {
-                f.push(Cmd::Image {
-                    x: r.x + 96 + (40 - img.w.min(40)) / 2,
-                    y: r.y + (r.h.saturating_sub(img.h)) / 2,
-                    img,
-                });
-            }
-            if h.precip >= 10 {
-                let p = Line::new().num(i32::from(h.precip)).push(b"%");
-                f.text(r.x + 146, r.y + 28, ui, RAIN, p.as_bytes());
-            }
-            // The temperature on the day's scale: a bar from the coldest
-            // hour to this one, coloured cold to warm.
-            let track = Rect::new(r.x + 200, r.y + 18, 168, 6);
-            f.push(Cmd::Fill {
-                r: track,
-                color: TRACK,
-            });
-            let at = frac(h.temp, lo, hi);
-            let w = (12 + 156 * at / 1024) * e / 1024;
-            if w > 0 {
-                f.push(Cmd::HGradient {
-                    r: Rect::new(track.x, track.y, w as u16, track.h),
-                    left: mix(COLD, WARM, 0),
-                    right: mix(COLD, WARM, at),
-                });
-            }
-            let t = rg.temp(h.temp);
-            let tw = ui.width(t.as_bytes());
-            f.text(r.x + r.w - 14 - tw, r.y + 28, ui, TEXT, t.as_bytes());
+            f.text(hour_x(i as u8), y0(24), label, DIM, t.as_bytes());
         }
-        if self.band.is_none() {
-            self.hourly_thumb(f);
+        // The day's high and low on the curve's scale.
+        let hi_t = rg.temp(hi);
+        let lo_t = rg.temp(lo);
+        f.text(
+            g.x + g.w - 8 - ui.width(hi_t.as_bytes()),
+            y0(curve_top + 18),
+            ui,
+            TEXT,
+            hi_t.as_bytes(),
+        );
+        f.text(
+            g.x + g.w - 8 - ui.width(lo_t.as_bytes()),
+            y0(curve_top + curve_h - 4),
+            ui,
+            DIM,
+            lo_t.as_bytes(),
+        );
+        f.text(
+            g.x + 12,
+            y0(i32::from(g.h) - 72),
+            label,
+            RAIN,
+            b"RAIN CHANCE",
+        );
+        // The hour picked: a line through the graph.
+        let pick = usize::from(self.hour_pick).min(HOURS - 1);
+        f.push(Cmd::Fill {
+            r: Rect::new(hour_x(pick as u8) + HOUR_W / 2 - 1, y0(30), 2, g.h - 36),
+            color: FOCUS,
+        });
+        // Its card: the time, the picture, what it will be like.
+        let c = HOURLY_CARD;
+        let cy = i32::from(c.y) + dy;
+        Self::glass_at(f, c.x, cy, c.w, c.h);
+        let h = wx.hours[pick];
+        let when = if pick == 0 {
+            Line::new().push(b"NOW")
+        } else {
+            rg.time(h.hour, 0, false)
+        };
+        let cy0 = |v: i32| (v + cy).max(0) as u16;
+        f.text(c.x + 16, cy0(30), label, TEXT, when.as_bytes());
+        let icon = Icon::of(h.sky);
+        if let Some(img) = self.icons.card[usize::from(icon.id() - 1)] {
+            f.push(Cmd::Image {
+                x: c.x + 16 + 66u16.saturating_sub(img.w) / 2,
+                y: cy0(52 + i32::from(66u16.saturating_sub(img.h) / 2)),
+                img,
+            });
+        }
+        let lines: [Line; 4] = [
+            rg.temp(h.temp).push(b"  ").push(icon.words().as_bytes()),
+            Line::new()
+                .push(b"Rain chance ")
+                .num(i32::from(h.precip))
+                .push(b"%"),
+            Line::new()
+                .push(b"Wind ")
+                .num(rg.wind_speed(h.sky.wind))
+                .push(match rg.wind {
+                    rp_weather::Wind::Mph => b" mph",
+                    rp_weather::Wind::Kmh => b" km/h",
+                    rp_weather::Wind::Ms => b" m/s",
+                }),
+            Line::new()
+                .push(b"Cloud cover ")
+                .num(i32::from(h.sky.cover))
+                .push(b"%"),
+        ];
+        for (k, l) in lines.iter().enumerate() {
+            let color = if k == 0 { TEXT } else { DIM };
+            f.text(c.x + 104, cy0(62 + 34 * k as i32), ui, color, l.as_bytes());
         }
     }
 
-    /// Where the Hourly list is: a thin bar at the right edge.
+    /// The hour at screen x on Hourly's graph, if it is on it.
+    pub(crate) fn hour_at(&self, x: u16, y: u16) -> Option<u8> {
+        if self.tab != 1 || !HOURLY_GRAPH.contains_point(x, y) {
+            return None;
+        }
+        let i = (x.saturating_sub(GRAPH_X0) / HOUR_W).min(HOURS as u16 - 1);
+        Some(i as u8)
+    }
+
+    /// Where the Hourly list is: a thin bar at the right edge (none since
+    /// the page fits).
     fn hourly_thumb(&self, f: &mut Frame) {
+        if max_scroll(1) == 0 {
+            return;
+        }
         let track = THUMB_TRACK;
         f.push(Cmd::Fill {
             r: track,

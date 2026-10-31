@@ -382,6 +382,8 @@ impl Shell {
             return src.push(b", updating");
         }
         match self.fetched_at {
+            // The built-in sample says so itself.
+            None if self.wx.source == "Sample data" => src,
             None => src.push(b", sample"),
             Some(at) => {
                 let min = self.now.wrapping_sub(at) / 60_000;

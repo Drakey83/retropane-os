@@ -502,12 +502,13 @@ impl Shell {
     /// The back control: a chevron, its press state and focus.
     pub(crate) fn back_arrow(&self, f: &mut Frame) {
         // A chevron of steps (no glyph needed): 12 rows to the point and
-        // back, 3 px thick.
+        // back, 3 px thick, in 2-row steps (6 commands a side, was 12:
+        // Hourly's graph needed the frame's room, 2026-10-31).
         let (cx, cy) = (26u16, BACK.y + BACK.h / 2);
-        for k in 0..12u16 {
-            for y in [cy - k, cy + k] {
+        for k in (0..12u16).step_by(2) {
+            for y in [cy - k - 1, cy + k] {
                 f.push(Cmd::Fill {
-                    r: Rect::new(cx + k, y, 3, 1),
+                    r: Rect::new(cx + k, y, 4, 2),
                     color: TEXT,
                 });
             }

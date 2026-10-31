@@ -23,11 +23,13 @@
 
 mod json;
 pub mod open_meteo;
+pub mod png;
 pub mod radar;
 mod sample;
 pub mod settings;
 pub mod store;
 pub mod tempest;
+pub mod tiles;
 pub use sample::sample;
 
 /// The pack icons the sample forecast uses, sorted: the test image bakes

@@ -756,50 +756,32 @@ fn tabs_turn_by_tap_d_pad_and_swipe_and_stop_at_the_ends() {
 }
 
 #[test]
-fn the_hourly_list_scrolls_both_ways_and_stays_within_the_day() {
+fn the_hourly_graph_fits_and_a_tap_on_it_picks_the_hour_for_the_card() {
     let mut s = weather(1);
-    let max = i32::from(weather_app::max_scroll(1));
-    assert!(max > 400, "24 rows don't fit: {max}");
-    s.input(Input::Key(Key::Up));
-    assert_eq!(s.weather_page().1, 0);
-    for _ in 0..30 {
-        s.input(Input::Key(Key::Down));
-    }
-    assert_eq!(s.weather_page().1, max);
-    assert!(!drawn(&mut s).overflowed());
-    // A quick stroke with no moves reported: the list follows it 1:1.
-    s.input(Input::PenDown { x: 200, y: 150 });
-    s.input(Input::PenUp { x: 205, y: 290 });
-    assert_eq!(s.weather_page().1, max - 140);
-    s.input(Input::PenDown { x: 200, y: 400 });
-    s.input(Input::PenUp { x: 200, y: 260 });
-    assert_eq!(s.weather_page().1, max);
-    // The pages that fit don't scroll by the D-pad; up and down move the
-    // focus there.
-    s.set_tab(2);
-    s.input(Input::Key(Key::Down));
-    assert_eq!(s.weather_page().1, 0);
-}
-
-/// The pen's samples, `step_ms` apart from `t0`, from `y0` to `y1` at `x`.
-fn stroke(s: &mut Shell, t0: u32, x: u16, ys: &[u16], step_ms: u32) -> u32 {
-    let mut t = t0;
-    s.tick(t);
-    s.input(Input::PenDown { x, y: ys[0] });
-    for &y in &ys[1..] {
-        t += step_ms;
-        s.tick(t);
-        s.input(Input::PenMove { x, y });
-    }
-    s.input(Input::PenUp {
-        x,
-        y: *ys.last().unwrap_or(&ys[0]),
-    });
-    t
+    assert_eq!(
+        weather_app::max_scroll(1),
+        0,
+        "the graph and card fit the page"
+    );
+    assert_eq!(s.hour_pick, 0);
+    let g = weather_app::HOURLY_GRAPH;
+    // The seventh hour's column.
+    tap(&mut s, Rect::new(26 + 6 * 17, g.y + 60, 17, 10));
+    assert_eq!(s.hour_pick, 6);
+    let f = drawn(&mut s);
+    assert!(!f.overflowed(), "{}", f.cmds().count());
+    let rain = rp_weather::Line::new()
+        .push(b"Rain chance ")
+        .num(i32::from(s.wx.hours[6].precip))
+        .push(b"%");
+    assert!(texts(&f).contains(&rain.as_bytes().to_vec()));
+    // Off the graph, a tap changes nothing.
+    tap(&mut s, Rect::new(240, 450, 2, 2));
+    assert_eq!(s.hour_pick, 6);
 }
 
 #[test]
-fn a_dragged_list_follows_the_pen_one_to_one_and_redraws_only_the_page() {
+fn a_drag_on_a_page_redraws_only_the_page_and_springs_back() {
     let mut s = weather(1);
     s.tick(1_000);
     drawn(&mut s);
@@ -808,52 +790,21 @@ fn a_dragged_list_follows_the_pen_one_to_one_and_redraws_only_the_page() {
     s.input(Input::PenMove { x: 241, y: 395 });
     assert_eq!(s.weather_page().1, 0);
     assert!(!s.needs_frame());
-    // Past it, 1:1 from where the pen went down (no jump).
+    // Past it, the page gives way (it fits: a rubber band).
     for (k, y) in [380u16, 352, 300].into_iter().enumerate() {
         s.tick(1_000 + 7 * (k as u32 + 1));
         s.input(Input::PenMove { x: 241, y });
-        assert_eq!(s.weather_page().1, i32::from(400 - y), "sample {k}");
+        assert!(s.weather_page().1 > 0, "sample {k}");
         let f = drawn(&mut s);
         assert_eq!(f.dirty(), &[weather_app::PAGE][..], "sample {k}");
     }
-    // Held still and lifted: no fling.
     s.tick(1_200);
     s.input(Input::PenUp { x: 241, y: 300 });
-    s.tick(1_400);
-    assert_eq!(s.weather_page().1, 100);
-    assert!(!s.animating());
-}
-
-#[test]
-fn a_flick_flings_on_slows_down_and_stops_inside() {
-    let mut s = weather(1);
-    // ~2 px/ms upwards: later hours.
-    let t = stroke(&mut s, 1_000, 240, &[500, 486, 472, 458, 444, 430], 7);
-    let at_lift = s.weather_page().1;
-    assert_eq!(at_lift, 70);
-    assert!(s.animating(), "it carries on");
-    s.tick(t + 100);
-    let a = s.weather_page().1;
-    assert!(a > at_lift + 100, "fast at first: {a}");
-    s.tick(t + 200);
-    let b = s.weather_page().1;
-    assert!(b - a < a - at_lift, "slowing: {at_lift} {a} {b}");
-    for k in 1..100 {
-        s.tick(t + 200 + 50 * k);
+    for k in 1..60 {
+        s.tick(1_200 + 50 * k);
     }
-    assert!(!s.animating(), "it stops");
-    let end = s.weather_page().1;
-    assert!(end > b && end <= i32::from(weather_app::max_scroll(1)));
-    // A touch catches a moving list.
-    let t = stroke(&mut s, 20_000, 240, &[100, 130, 160, 190, 220], 7);
-    assert!(s.animating());
-    s.tick(t + 30);
-    let moving = s.weather_page().1;
-    s.input(Input::PenDown { x: 240, y: 300 });
-    s.tick(t + 200);
-    assert_eq!(s.weather_page().1, moving, "held where it was caught");
-    assert_eq!(s.screen(), Screen::Weather, "the catch was no tap");
-    s.input(Input::PenUp { x: 240, y: 300 });
+    assert_eq!(s.weather_page().1, 0, "back in place");
+    assert!(!s.animating());
 }
 
 #[test]
@@ -1585,7 +1536,7 @@ fn on_the_planes_screen_0_carries_only_the_chrome_and_a_drag_only_the_bar() {
         .cmds_clipped()
         .filter(|(c, clip)| !c.bounds(&f).intersect(clip).intersect(&page).is_empty())
         .count();
-    assert_eq!(inside, 2, "the bar's track and thumb only");
+    assert_eq!(inside, 0, "nothing of the page (it fits: no scroll bar)");
     let v = s.page_layer().expect("the layer shows Hourly");
     assert_eq!((v.tab, v.win, v.row), (1, page, LAYER_MARGIN));
     // A drag moves the layer's row; screen 0 redraws only the bar.
@@ -1594,13 +1545,9 @@ fn on_the_planes_screen_0_carries_only_the_chrome_and_a_drag_only_the_bar() {
     s.input(Input::PenMove { x, y: y - 20 });
     s.input(Input::PenMove { x, y: y - 60 });
     let f = drawn(&mut s);
-    assert!(
-        f.dirty().iter().all(|d| d.x >= W - 9 && d.w <= 3),
-        "{:?}",
-        f.dirty()
-    );
+    assert!(f.dirty().is_empty(), "{:?}", f.dirty());
     let v = s.page_layer().unwrap();
-    assert!(v.row > LAYER_MARGIN, "scrolled down: {}", v.row);
+    assert!(v.row > LAYER_MARGIN, "pulled up: {}", v.row);
     s.input(Input::PenUp { x, y: y - 60 });
 }
 
@@ -1659,18 +1606,8 @@ fn on_the_planes_entrances_move_the_window_and_draw_nothing() {
     let v0 = s.page_layer().unwrap();
     assert!(v0.win.h < weather_app::PAGE.h && v0.win.h.is_multiple_of(2));
     drawn(&mut s);
-    // Into Hourly: its scroll bar on screen 0 is drawn whole at once, not
-    // clipped to Cascade's window (the emulator found it missing).
     tap(&mut s, weather_app::tab_rect(1));
-    let f = drawn(&mut s);
-    let bar = f
-        .cmds_clipped()
-        .filter(|(c, clip)| {
-            let b = c.bounds(&f).intersect(clip);
-            b.x >= W - 9 && b.h > 100
-        })
-        .count();
-    assert_eq!(bar, 2, "the bar's track and thumb, whole");
+    drawn(&mut s);
     tap(&mut s, weather_app::tab_rect(2));
     let v0 = s.page_layer().unwrap();
     let now = s.now;
