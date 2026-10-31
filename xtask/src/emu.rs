@@ -11326,12 +11326,14 @@ pub(crate) fn today_output(release: &Path, name: &str) -> Result<Vec<u8>, String
 /// screens; the first screen is before any. The clock's time is
 /// arbitrary: the check masks it. `settle` ends any movement before each
 /// picture (the preview's pictures show pages in place; the emulator check
-/// keeps the image's own timing).
+/// keeps the image's own timing). `alerts` is an alerts answer as the
+/// relay brings it (the previews'; the emulator's image has no relay).
 pub(crate) fn today_screens(
     wall: &[u8],
     map: Option<&[u8]>,
     steps: &[rp_shell::Input],
     settle: bool,
+    alerts: Option<&[u8]>,
 ) -> Vec<Vec<u8>> {
     use rp_draw::{Frame, Renderer};
     use rp_mbx_render::model::{self, Bus, Mem};
@@ -11347,6 +11349,7 @@ pub(crate) fn today_screens(
     );
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
+    shell.set_curve(today_curve());
     shell.set_time(rp_shell::Time {
         hour: 12,
         minute: 0,
@@ -11354,6 +11357,9 @@ pub(crate) fn today_screens(
         day: 1,
         month: 1,
     });
+    if let Some(a) = alerts {
+        shell.set_alerts_from_nws(a);
+    }
     let mut frame = Frame::new();
     let mut screens = Vec::new();
     let mut shown = None;
@@ -11380,6 +11386,108 @@ pub(crate) fn today_screens(
         screens.push(out);
     }
     screens
+}
+
+/// Hourly as the X51v shows it on the plane path (the preview's device
+/// shot): screen 0 the app's chrome through the 2D engine model, the page
+/// the CPU's picture (bands of the page, Hourly's line painted per pixel,
+/// out to ARGB4444 dithered as the image writes it) blended over it in the
+/// page's window, at rest (ARGB8888, as the image writes its pages).
+pub(crate) fn today_hourly_on_planes(wall: &[u8], icons: Option<rp_shell::Icons>) -> Vec<u8> {
+    use rp_draw::{Frame, Renderer};
+    use rp_gfx::layer::{Layer, PlaneFormat};
+    use rp_gfx::render::CpuRenderer;
+    use rp_mbx_render::model::{self, Bus, Mem};
+    use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
+
+    let mem = model::memory();
+    let mut gpu = Mbx2dRenderer::new(
+        Bus::new(mem.clone()),
+        Mem(mem.clone()),
+        Layout::X51V,
+        || 0,
+        1,
+    );
+    rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
+    shell.set_curve(today_curve());
+    shell.set_time(rp_shell::Time {
+        hour: 12,
+        minute: 0,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    });
+    shell.use_planes(true);
+    if let Some(icons) = icons {
+        shell.set_icons(icons);
+    }
+    shell.set_alerts_from_nws(NWS_ALERTS);
+    for e in [
+        rp_shell::Input::PenDown { x: 240, y: 150 },
+        rp_shell::Input::PenUp { x: 240, y: 150 },
+        rp_shell::Input::Key(rp_shell::Key::Right),
+    ] {
+        shell.input(e);
+        shell.settle();
+    }
+    let mut frame = Frame::new();
+    shell.frame(&mut frame);
+    gpu.draw(&frame);
+    while !gpu.poll() {}
+    let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
+    let base = ((scadr & 0x7F_FFFF) * 16) as usize;
+    let mut out: Vec<u8> = {
+        let m = mem.borrow();
+        m[base..base + SCREEN_BYTES]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| shown_565(u16::from_le_bytes(*p)))
+            .collect()
+    };
+    // The page's picture, as the image builds it.
+    let rows = u32::from(rp_shell::picture_rows(1));
+    let mut px = vec![0u32; 480 * rows as usize];
+    let mut plane = vec![0u8; 480 * 4 * rows as usize];
+    {
+        let mut cpu = CpuRenderer::new(
+            Layer::new(&mut px, 480, rows, 480).expect("the layer"),
+            &mut plane,
+            480 * 4,
+            PlaneFormat::Argb8888,
+        );
+        let mut f = Frame::new();
+        let mut top = 0u16;
+        while u32::from(top) < rows {
+            let n = rp_today::PAGE_BAND.min(rows as u16 - top);
+            shell.page_band(1, &mut f, top, n);
+            let _ = cpu.draw(&f);
+            let band = (i32::from(top), i32::from(top + n));
+            cpu.paint(
+                rp_gfx::Rect::new(0, u32::from(top), 480, u32::from(n)),
+                |p, stride| shell.paint_hourly(p, stride, band),
+            );
+            top += n;
+        }
+    }
+    // Over screen 0 in the page's window (at rest: row LAYER_MARGIN at its
+    // top), each 4444 pixel by its alpha.
+    let v = shell.page_layer().expect("Hourly on the layer");
+    for y in 0..usize::from(v.win.h) {
+        for x in 0..usize::from(v.win.w) {
+            let at = (usize::from(v.row) + y) * 480 * 4 + (usize::from(v.win.x) + x) * 4;
+            let p = u32::from_le_bytes([plane[at], plane[at + 1], plane[at + 2], plane[at + 3]]);
+            let a = p >> 24;
+            let c = [(p >> 16) & 255, (p >> 8) & 255, p & 255];
+            let o = ((usize::from(v.win.y) + y) * 480 + usize::from(v.win.x) + x) * 3;
+            for k in 0..3 {
+                let d = u32::from(out[o + k]);
+                out[o + k] = ((c[k] * a + d * (255 - a)) / 255) as u8;
+            }
+        }
+    }
+    out
 }
 
 /// The movement after the last of `steps` (the others applied and settled):
@@ -11455,6 +11563,7 @@ pub(crate) fn today_live(
     );
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
+    shell.set_curve(today_curve());
     shell.set_time(rp_shell::Time {
         hour: 12,
         minute: 0,
@@ -11531,6 +11640,31 @@ fn today_icons() -> rp_shell::Icons {
         Box::leak(Box::new([rp_today::NO_IMAGE; 3])),
     );
     icons
+}
+
+/// The relay's canned alerts answer (`ALERTS`), for the previews.
+pub(crate) const NWS_ALERTS: &[u8] =
+    include_bytes!("../../shell/weather/tests/data/nws-alerts-two.json");
+
+/// Icon pack `n` as the image unpacks it from the card, if the build made it.
+pub(crate) fn today_pack(release: &Path, n: usize) -> Option<rp_shell::Icons> {
+    let pack = today_output(release, &format!("rp-icons{n}.pak")).ok()?;
+    let words = rp_today::pack_words(&pack)?;
+    rp_today::pack_into(
+        &pack,
+        Box::leak(vec![0; words].into_boxed_slice()),
+        Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::PACK_MAX])),
+    )
+}
+
+/// Hourly's line pieces as the image makes them.
+fn today_curve() -> [Option<&'static rp_draw::Image>; rp_shell::weather_app::CURVE_SPRITES] {
+    rp_today::curve_into(
+        Box::leak(vec![0; rp_shell::weather_app::CURVE_WORDS].into_boxed_slice()),
+        Box::leak(Box::new(
+            [rp_today::NO_IMAGE; rp_shell::weather_app::CURVE_SPRITES],
+        )),
+    )
 }
 
 /// The radar's map under the Weather page while Radar is open, the
@@ -11740,6 +11874,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
             Input::PenUp { x: sx, y: sy },
         ],
         false,
+        None,
     );
     let bare = compare_screens(&wall);
     // The Weather app as the 2D path draws it, for the plane path's check
@@ -11750,6 +11885,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         map.as_deref(),
         &[tap_at(240, 150), tap_at(180, 578)].concat(),
         true,
+        None,
     );
     let wsl = matches!(emulator(root)?, Emulator::Wsl);
     let dump = |name: &str| -> Result<Vec<u8>, String> {

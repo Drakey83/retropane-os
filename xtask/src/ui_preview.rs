@@ -154,6 +154,11 @@ fn shots() -> Vec<Shot> {
             what: "The timeline tapped at now: paused there",
             steps: tap(96 + 176, 512),
         },
+        Shot {
+            name: "22-weather-alert",
+            what: "The header's alert tapped: the alert in full (the relay's canned NWS answer)",
+            steps: tap(220, 53),
+        },
     ]
 }
 
@@ -165,7 +170,13 @@ pub fn run(root: &Path) -> Result<(), String> {
     let map = crate::emu::today_map(&release);
     let shots = shots();
     let steps: Vec<Input> = shots.iter().flat_map(|s| s.steps.iter().copied()).collect();
-    let all = crate::emu::today_screens(&wall, map.as_deref(), &steps, true);
+    let all = crate::emu::today_screens(
+        &wall,
+        map.as_deref(),
+        &steps,
+        true,
+        Some(crate::emu::NWS_ALERTS),
+    );
     let out = root.join("target").join("ui-preview");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     // Screen k of `all` is after k inputs; each shot shows the screen after
@@ -190,6 +201,19 @@ pub fn run(root: &Path) -> Result<(), String> {
             w = s.what
         ));
     }
+    // Hourly as the X51v shows it on the plane path: the app's chrome on
+    // screen 0 and the page's picture (drawn by the CPU, its line painted
+    // per pixel, ARGB4444 dithered) blended over it.
+    // With the default icon pack (the 100 px card pictures are the card's)
+    // and the relay's canned alert, as the X51v shows it after a refresh.
+    let rgb = crate::emu::today_hourly_on_planes(&wall, crate::emu::today_pack(&release, 0));
+    std::fs::write(
+        out.join("07b-weather-hourly-device.png"),
+        png_rgb(480, 640, &rgb),
+    )
+    .map_err(|e| format!("07b: {e}"))?;
+    page.push_str("<figure><img src=\"07b-weather-hourly-device.png\" alt=\"Hourly on the device\"><figcaption>Hourly as the X51v shows it: the page's picture on the layer over the chrome</figcaption></figure>
+");
     // The movement: each entrance as frames every 30 ms (motion-<name>-NN.png),
     // which a GIF tool can join; the device draws the same frames.
     let hero = vec![

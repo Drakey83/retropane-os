@@ -105,6 +105,8 @@ mod image {
     static WALL: rt::Slot<WallScratch> = rt::Slot::new();
     // The weather pictures' descriptions (their pixels are in the RAM pool).
     static ICON_IMGS: rt::Slot<[rp_draw::Image; rp_today::ICON_COUNT]> = rt::Slot::new();
+    static CURVE_IMGS: rt::Slot<[rp_draw::Image; rp_shell::weather_app::CURVE_SPRITES]> =
+        rt::Slot::new();
     /// The card's picture packs' descriptions, one set per pack (each read
     /// once, then kept: switching back is instant).
     static PACK_IMGS: [rt::Slot<[rp_draw::Image; rp_today::PACK_MAX]>; PACKS] =
@@ -115,9 +117,6 @@ mod image {
     static CARD: rt::Slot<Option<(Card, u32)>> = rt::Slot::new();
     // The radar's rain cells' descriptions (their pixels are in the RAM pool).
     static RADAR_IMGS: rt::Slot<[rp_draw::Image; 3]> = rt::Slot::new();
-    /// The radar's base map, packed by the build (the Night look; Ink is
-    /// made from it), unpacked at start into the RAM pool.
-    static MAP_PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/radar.zz"));
     /// The wallpaper this image was built with (`RP_TODAY_WALLPAPER`).
     const WALL_NAME: &str = env!("RP_TODAY_WALLPAPER_NAME");
 
@@ -209,7 +208,9 @@ mod image {
     const PIC_ROWS: usize = rp_shell::picture_rows(1) as usize;
     /// The pages' 2700G memory: three pictures and one being rebuilt (~3.9
     /// MiB of the pool's ~8.4).
-    const PAGES_QUOTA: u32 = 6 << 20;
+    // Hourly at 32 bits (4.6 MB), Now and 10 Day at 16, the app and its
+    // chrome composed ahead (0.6 MB each): within the 8.4 MB pool.
+    const PAGES_QUOTA: u32 = 15 << 19;
 
     /// A page's picture and the key of the draw list it was drawn from.
     type Page = Option<(Handle, u32)>;
@@ -249,12 +250,27 @@ mod image {
             shell.page_band(tab, f, top, n);
             key = rp_today::frame_key(f, key);
             let _ = cpu.draw(f);
+            // Hourly's line and band, painted per pixel into these rows.
+            if tab == 1 {
+                let r = rp_gfx::Rect::new(0, u32::from(top), W as u32, u32::from(n));
+                let rows = (i32::from(top), i32::from(top + n));
+                cpu.paint(r, |px, stride| shell.paint_hourly(px, stride, rows));
+            }
             top += n;
             rt::check_in();
         }
         let drawn_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
         let t1 = rt::ticks();
-        let h = match gfx.picture(pc, W as u16, rows) {
+        // Hourly at 32 bits (ARGB8888): its anti-aliased line stays smooth
+        // (at ARGB4444 it banded and dithered: the owner, 2026-10-31). The
+        // others at 16: nothing on them needs it, and Hourly's tall picture
+        // (4.6 MB) leaves the pool no room for three at 32.
+        let wide = tab == 1;
+        let h = match if wide {
+            gfx.picture_argb8888(pc, W as u16, rows)
+        } else {
+            gfx.picture(pc, W as u16, rows)
+        } {
             Ok(h) => h,
             Err(e) => {
                 let _ = writeln!(RunLog, "page {tab}: no picture ({e:?})");
@@ -262,13 +278,40 @@ mod image {
             }
         };
         let bytes = cpu.plane();
-        let mut row = [0u32; W / 2];
+        // The CPU's plane is the page at 32 bits; a 16-bit page's rows go
+        // through the dithered conversion on the way out.
+        let bpp = if wide { 4 } else { 2 };
+        let mut row = [0u32; W];
+        let mut half = [0u8; W * 2];
+        let words = W * bpp / 4;
         for y in 0..usize::from(rows) {
-            for (k, w) in row.iter_mut().enumerate() {
-                let a = y * W * 2 + 4 * k;
-                *w = u32::from_le_bytes([bytes[a], bytes[a + 1], bytes[a + 2], bytes[a + 3]]);
+            if wide {
+                for (k, w) in row.iter_mut().enumerate() {
+                    let a = y * W * 4 + 4 * k;
+                    *w = u32::from_le_bytes([bytes[a], bytes[a + 1], bytes[a + 2], bytes[a + 3]]);
+                }
+            } else {
+                let r = rp_gfx::Rect::new(0, y as u32, W as u32, 1);
+                let _ = rp_gfx::layer::flush(
+                    &cpu.layer().view(),
+                    PlaneFormat::Argb4444Dithered,
+                    &mut half,
+                    0,
+                    &[r],
+                );
+                for (k, w) in row[..words].iter_mut().enumerate() {
+                    *w = u32::from_le_bytes([
+                        half[4 * k],
+                        half[4 * k + 1],
+                        half[4 * k + 2],
+                        half[4 * k + 3],
+                    ]);
+                }
             }
-            if gfx.write_picture(pc, h, (y * W * 2) as u32, &row).is_err() {
+            if gfx
+                .write_picture(pc, h, (y * W * bpp) as u32, &row[..words])
+                .is_err()
+            {
                 let _ = gfx.free_picture(pc, h);
                 return None;
             }
@@ -278,7 +321,8 @@ mod image {
         }
         let _ = writeln!(
             RunLog,
-            "page {tab}: its picture (480 x {rows}, ARGB4444) drawn by the CPU in {drawn_us} us, written in {} us",
+            "page {tab}: its picture (480 x {rows}, {}) drawn by the CPU in {drawn_us} us, written in {} us",
+            if wide { "ARGB8888" } else { "ARGB4444" },
             rt::ticks().wrapping_sub(t1) / 13 * 4
         );
         Some((h, key))
@@ -401,29 +445,21 @@ mod image {
         Some((card, start))
     }
 
-    /// Pack `n` from the card's root into `out`: its parts
-    /// (`RPIC<n>A.PAK`, `B`, ...: the loader takes files up to its image
+    /// The card file `stem` from the card's root into `out`: its parts
+    /// (`<stem>A.PAK`, `B`, ...: the loader takes files up to its image
     /// area's size, a pack is 1.2-1.6 MB) joined, up to the first missing
     /// or empty one; the length, or `None` (no card, no part, too big).
+    /// Icon pack `n` is `RPIC<n>`, the radar's base map `RPMAP`.
     /// Nothing is logged while it reads (a log line would send the card
     /// log's sector mid-read).
-    fn read_pack(card: &mut Card, start: u32, n: usize, out: &mut [u8]) -> Option<usize> {
+    fn read_pack(card: &mut Card, start: u32, stem: [u8; 5], out: &mut [u8]) -> Option<usize> {
         rp_hal_x51v::cardsink::settle();
         let mut vol = Volume::mount(&mut *card, start).ok()?;
         let mut scratch = [0u8; 2 * BLOCK];
         let (mut at, mut over) = (0usize, false);
         for part in b'A'..=b'Z' {
             let name = [
-                b'R',
-                b'P',
-                b'I',
-                b'C',
-                b'0' + n as u8,
-                part,
-                b'.',
-                b'P',
-                b'A',
-                b'K',
+                stem[0], stem[1], stem[2], stem[3], stem[4], part, b'.', b'P', b'A', b'K',
             ];
             let Ok(file) = vol.find(core::str::from_utf8(&name).ok()?) else {
                 break;
@@ -468,6 +504,8 @@ mod image {
         hn: usize,
         len: Option<usize>,
         got: usize,
+        /// The tile being fetched: where it goes.
+        tile: Option<(Option<u8>, u8, rp_weather::tiles::View)>,
     }
 
     impl Net {
@@ -479,6 +517,7 @@ mod image {
             self.hn = 0;
             self.len = None;
             self.got = 0;
+            self.tile = None;
         }
     }
 
@@ -561,11 +600,12 @@ mod image {
         let (icon_px, rest) = pool.split_at_mut(rp_today::ICON_WORDS);
         let (wall_words, rest) = rest.split_at_mut(rp_today::WALLPAPER_BYTES.div_ceil(4));
         let (radar_px, rest) = rest.split_at_mut(rp_today::RADAR_WORDS);
+        let (curve_px, rest) = rest.split_at_mut(rp_shell::weather_app::CURVE_WORDS);
         let (map_words, rest) = rest.split_at_mut(rp_today::MAP_BYTES.div_ceil(4));
         // The plane path's page drawing: the CPU's layer (ARGB8888) and the
         // picture it is flushed into (ARGB4444), the tallest page's size.
         let (layer_px, rest) = rest.split_at_mut(W * PIC_ROWS);
-        let (plane_words, rest) = rest.split_at_mut(W * PIC_ROWS / 2);
+        let (plane_words, rest) = rest.split_at_mut(W * PIC_ROWS);
         // The openings' trace, in the RAM pool (not the image's RAM budget).
         let (trace_words, rest) = rest.split_at_mut(TRACE * 10);
         // The relay's answer (the dock's dev relay).
@@ -574,6 +614,16 @@ mod image {
         // pictures unpacked (22 conditions at three sizes, ~3.9 MB).
         let (pack_file_words, rest) = rest.split_at_mut(PACK_FILE / 4);
         let pack_file = rp_hal_mem::words_as_bytes_mut(pack_file_words);
+        // The real radar: the map's view, eight rain frames, a tile, and
+        // the PNG reader's scratch.
+        let view_px = rp_weather::tiles::VIEW_W * rp_weather::tiles::VIEW_H;
+        let (radar_view_map, rest) = rest.split_at_mut(view_px);
+        let (rain_all, rest) = rest.split_at_mut(view_px * 8);
+        let (tile_px, rest) = rest.split_at_mut(256 * 256);
+        let (png_data_w, rest) = rest.split_at_mut(256 * 1024 / 4);
+        let (png_raw_w, rest) = rest.split_at_mut((256usize * (1 + 256 * 4)).div_ceil(4));
+        let png_data = rp_hal_mem::words_as_bytes_mut(png_data_w);
+        let png_raw = rp_hal_mem::words_as_bytes_mut(png_raw_w);
         // What is left of the pool, taken pack by pack as each is first
         // chosen (each unpacks to its own size, about 4 MB; all seven fit).
         let mut pack_room: &'static mut [u32] = rest;
@@ -581,29 +631,20 @@ mod image {
         let plane_bytes = rp_hal_mem::words_as_bytes_mut(plane_words);
         let wall_bytes =
             &mut rp_hal_mem::words_as_bytes_mut(wall_words)[..rp_today::WALLPAPER_BYTES];
-        let map_bytes = &mut rp_hal_mem::words_as_bytes_mut(map_words)[..rp_today::MAP_BYTES];
+        let map_bytes: &'static mut [u8] =
+            &mut rp_hal_mem::words_as_bytes_mut(map_words)[..rp_today::MAP_BYTES];
         let t0 = rt::ticks();
         if let Err(e) = rp_today::unpack_wallpaper(WALLPAPER_PACKED, wall_bytes) {
             crash(format_args!("wallpaper unpacking: {e:?}"))
         }
         let unpacked_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
         let wallpaper: &'static [u8] = wall_bytes;
-        // The radar's map: a damaged one leaves the radar on the wallpaper.
-        let t0 = rt::ticks();
-        let radar_map: Option<&'static [u8]> = match rp_today::unpack_map(MAP_PACKED, map_bytes) {
-            Ok(()) => Some(map_bytes),
-            Err(e) => {
-                let _ = writeln!(RunLog, "radar map unpacking: {e:?}");
-                None
-            }
-        };
-        let _ = writeln!(
-            RunLog,
-            "radar map unpacked: {} -> {} bytes in {} us",
-            MAP_PACKED.len(),
-            rp_today::MAP_BYTES,
-            rt::ticks().wrapping_sub(t0) / 13 * 4
-        );
+        // The radar's built-in base map (the Night look; Ink is made from
+        // it) is on the card (`RPMAPA.PAK`, put there by `cargo xtask
+        // load`), read the first time the radar shows without the real
+        // tiles: none, or a damaged one, leaves the radar on the wallpaper.
+        let mut map_bytes = Some(map_bytes);
+        let mut radar_map: Option<&'static [u8]> = None;
         let _ = writeln!(
             RunLog,
             "wallpaper unpacked: {} -> {} bytes in {unpacked_us} us",
@@ -654,6 +695,12 @@ mod image {
         if let Some(imgs) = RADAR_IMGS.put_with(|| [rp_today::NO_IMAGE; 3]) {
             icons.radar = rp_today::radar_into(radar_px, imgs);
         }
+        let curve = match CURVE_IMGS
+            .put_with(|| [rp_today::NO_IMAGE; rp_shell::weather_app::CURVE_SPRITES])
+        {
+            Some(imgs) => rp_today::curve_into(curve_px, imgs),
+            None => [None; rp_shell::weather_app::CURVE_SPRITES],
+        };
         let _ = writeln!(
             RunLog,
             "radar cells drawn in {} us",
@@ -665,6 +712,7 @@ mod image {
         };
         let mut pack_tried = [false; PACKS];
         let mut pack_shown = u8::MAX;
+        let mut radar_shown: Option<Option<u8>> = None;
         let mut pack_announced: Option<usize> = None;
         let Some(card) = CARD.put_with(|| None) else {
             crash(format_args!("started twice"))
@@ -676,6 +724,7 @@ mod image {
         ) else {
             crash(format_args!("started twice"))
         };
+        shell.set_curve(curve);
 
         // The plane path: the pages' client and their pictures, drawn once
         // now (rebuilt only when a page's draw list changes).
@@ -687,8 +736,7 @@ mod image {
         let Some(cpu_layer) = Layer::new(layer_px, W as u32, PIC_ROWS as u32, W) else {
             crash(format_args!("page layer"))
         };
-        let mut cpu =
-            CpuRenderer::new(cpu_layer, plane_bytes, W * 2, PlaneFormat::Argb4444Dithered);
+        let mut cpu = CpuRenderer::new(cpu_layer, plane_bytes, W * 4, PlaneFormat::Argb8888);
         let mut pages: [Page; 3] = [None; 3];
         if let Some(pc) = pc {
             shell.use_planes(true);
@@ -803,6 +851,7 @@ mod image {
                             hn: 0,
                             len: None,
                             got: 0,
+                            tile: None,
                         });
                     }
                     Err(e) => {
@@ -1320,9 +1369,14 @@ mod image {
                         *card = take_card();
                     }
                     let t0 = rt::ticks();
-                    let got = card
-                        .as_mut()
-                        .and_then(|(c, start)| read_pack(c, *start, n, pack_file));
+                    let got = card.as_mut().and_then(|(c, start)| {
+                        read_pack(
+                            c,
+                            *start,
+                            [b'R', b'P', b'I', b'C', b'0' + n as u8],
+                            pack_file,
+                        )
+                    });
                     let read_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
                     let t1 = rt::ticks();
                     packs[n] = got.and_then(|len| {
@@ -1388,6 +1442,7 @@ mod image {
                         n.out_n += b.len();
                     }
                     n.out_at = 0;
+                    n.tile = q.tile;
                     n.waiting = true;
                     n.asked_ms = now_ms;
                     let _ = writeln!(
@@ -1446,7 +1501,30 @@ mod image {
                     && n.got == l
                 {
                     let before = *shell.forecast();
-                    shell.net_answer(true, &net_buf[..l]);
+                    // A tile: decoded here into the map or its rain frame
+                    // (the shell only moves on to the next).
+                    if let Some((rain, k, v)) = n.tile {
+                        let ok = rp_weather::png::decode(&net_buf[..l], tile_px, png_data, png_raw)
+                            == Ok((256, 256));
+                        if ok {
+                            let dst: &mut [u32] = match rain {
+                                None => radar_view_map,
+                                Some(f) => {
+                                    let f = usize::from(f).min(7);
+                                    &mut rain_all[f * view_px..(f + 1) * view_px]
+                                }
+                            };
+                            v.place(usize::from(k), tile_px, dst);
+                        } else {
+                            let _ = writeln!(RunLog, "net: a radar tile ({l} bytes) wasn't read");
+                        }
+                        shell.net_answer(ok, &[]);
+                        if k == 8 {
+                            radar_shown = None;
+                        }
+                    } else {
+                        shell.net_answer(true, &net_buf[..l]);
+                    }
                     let after = shell.forecast();
                     if *after != before {
                         pages_check = true;
@@ -1474,8 +1552,56 @@ mod image {
 
             // The radar's map under the page while Radar is open, the
             // wallpaper again after (the frame in flight may read it).
+            // The real radar once its map is in: the frame shown blended
+            // over it.
+            let real = shell.backdrop().and(shell.radar_real());
+            if real.is_some() && real != radar_shown {
+                while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
+                let t0 = rt::ticks();
+                let f = real.flatten().map(|f| {
+                    let f = usize::from(f).min(7);
+                    &rain_all[f * view_px..(f + 1) * view_px]
+                });
+                rp_today::show_radar(gfx.two_d(), radar_view_map, f);
+                radar_shown = real;
+                backdrop_shown = shell.backdrop();
+                let _ = writeln!(
+                    RunLog,
+                    "radar: frame {:?} over the map in {} us",
+                    real.flatten(),
+                    rt::ticks().wrapping_sub(t0) / 13 * 4
+                );
+            } else if real.is_none() {
+                radar_shown = None;
+            }
+            // The map, from the card, the first time the radar wants it.
+            if shell.backdrop().is_some()
+                && real.is_none()
+                && let Some(out) = map_bytes.take()
+            {
+                if !card_tried {
+                    card_tried = true;
+                    *card = take_card();
+                }
+                let t0 = rt::ticks();
+                let got = card
+                    .as_mut()
+                    .and_then(|(c, start)| read_pack(c, *start, *b"RPMAP", pack_file));
+                let read_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
+                let t1 = rt::ticks();
+                let unpacked = got.map(|len| rp_today::unpack_map(&pack_file[..len], out));
+                let _ = writeln!(
+                    RunLog,
+                    "radar map: read {} bytes in {read_us} us, unpacked {unpacked:?} in {} us",
+                    got.unwrap_or(0),
+                    rt::ticks().wrapping_sub(t1) / 13 * 4
+                );
+                if unpacked == Some(Ok(())) {
+                    radar_map = Some(out);
+                }
+            }
             let want = shell.backdrop().filter(|_| radar_map.is_some());
-            if want != backdrop_shown {
+            if want != backdrop_shown && real.is_none() {
                 while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
                 let t0 = rt::ticks();
                 rp_today::show_backdrop(

@@ -22,7 +22,7 @@ pub static UI: Font = Font {
     first: 32,
     glyphs: &UI_GLYPHS,
 };
-static UI_GLYPHS: [Glyph; 96] = [
+static UI_GLYPHS: [Glyph; 97] = [
     g(0, 0, 0, 0, 4, &[]),
     g(
         3,
@@ -1284,6 +1284,7 @@ static UI_GLYPHS: [Glyph; 96] = [
             9, 159, 141, 0, 78, 242, 255, 206, 22, 0, 0, 6, 26, 0, 0,
         ],
     ),
+    g(2, 2, 1, 6, 4, &[201, 192, 193, 186]),
 ];
 
 /// Didact Gothic 15 px, tracking +2.
@@ -1293,7 +1294,7 @@ pub static LABEL: Font = Font {
     first: 32,
     glyphs: &LABEL_GLYPHS,
 };
-static LABEL_GLYPHS: [Glyph; 96] = [
+static LABEL_GLYPHS: [Glyph; 97] = [
     g(0, 0, 0, 0, 5, &[]),
     g(
         3,
@@ -2410,6 +2411,7 @@ static LABEL_GLYPHS: [Glyph; 96] = [
             0, 121, 225, 198, 37, 37, 192, 8, 71, 171, 38, 191, 7, 68, 174, 0, 124, 226, 201, 41,
         ],
     ),
+    g(3, 2, 0, 5, 5, &[6, 190, 50, 11, 231, 70]),
 ];
 
 /// Didact Gothic 76 px.

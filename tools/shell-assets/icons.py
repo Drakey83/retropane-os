@@ -32,6 +32,8 @@ HERO = "03"
 BIG = (250, 176)
 CARD = (66, 66)
 ROW = (40, 40)
+# The Hourly card's picture (the mix mock-up X2): the card packs only.
+MID = (100, 100)
 
 
 def sample_icons():
@@ -103,6 +105,7 @@ def main():
         items = [(0, i, fit(load(f"{i:02}"), BIG)) for i in ids]
         items += [(1, i, fit(load(f"{i:02}"), CARD)) for i in ids]
         items += [(2, i, fit(load(f"{i:02}"), ROW)) for i in ids]
+        items += [(3, i, fit(load(f"{i:02}"), MID)) for i in ids]
     else:
         cards, rows = sample_icons()
         items = [(0, int(HERO), fit(load(HERO), BIG))]
@@ -115,7 +118,7 @@ def main():
         lines.append(f"static P{k}: [u32; {len(p)}] = [{','.join(p)}];")
         table.append(f"({kind}, {i}, {img.width}, {img.height}, &P{k})")
         words += img.width * img.height
-        names.append(f"{('hero', 'card', 'row')[kind]} {i:02} {img.width}x{img.height}")
+        names.append(f"{('hero', 'card', 'row', 'mid')[kind]} {i:02} {img.width}x{img.height}")
     lines.append(f"pub const COUNT: usize = {len(items)};")
     lines.append(f"pub const WORDS: usize = {words};")
     lines.append(f"/// (0 hero, 1 card, 2 row; pack id; width; height; packed pixels)")

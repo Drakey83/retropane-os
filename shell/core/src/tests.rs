@@ -758,22 +758,24 @@ fn tabs_turn_by_tap_d_pad_and_swipe_and_stop_at_the_ends() {
 #[test]
 fn the_hourly_graph_fits_and_a_tap_on_it_picks_the_hour_for_the_card() {
     let mut s = weather(1);
-    assert_eq!(
-        weather_app::max_scroll(1),
-        0,
-        "the graph and card fit the page"
+    assert!(
+        weather_app::max_scroll(1) > 300,
+        "the 24-hour grid to scroll to"
     );
     assert_eq!(s.hour_pick, 0);
     let g = weather_app::HOURLY_GRAPH;
-    // The seventh hour's column.
-    tap(&mut s, Rect::new(26 + 6 * 17, g.y + 60, 17, 10));
+    // The seventh hour's column (12 hours, 35 px each from x 30).
+    tap(&mut s, Rect::new(30 + 6 * 35, g.y + 60, 35, 10));
     assert_eq!(s.hour_pick, 6);
     let f = drawn(&mut s);
     assert!(!f.overflowed(), "{}", f.cmds().count());
     let rain = rp_weather::Line::new()
-        .push(b"Rain chance ")
-        .num(i32::from(s.wx.hours[6].precip))
-        .push(b"%");
+        .push(b"Humidity ")
+        .num(i32::from(s.wx.hours[6].humidity))
+        .push(b"%")
+        .push(weather_app::SEP)
+        .push(b"dew point ")
+        .push(s.region.temp(s.wx.hours[6].dew).as_bytes());
     assert!(texts(&f).contains(&rain.as_bytes().to_vec()));
     // Off the graph, a tap changes nothing.
     tap(&mut s, Rect::new(240, 450, 2, 2));
@@ -782,7 +784,8 @@ fn the_hourly_graph_fits_and_a_tap_on_it_picks_the_hour_for_the_card() {
 
 #[test]
 fn a_drag_on_a_page_redraws_only_the_page_and_springs_back() {
-    let mut s = weather(1);
+    // 10 Day fits its page: a drag gives way and springs back.
+    let mut s = weather(2);
     s.tick(1_000);
     drawn(&mut s);
     s.input(Input::PenDown { x: 240, y: 400 });
@@ -1109,10 +1112,10 @@ fn the_dock_flow_loads_fetches_searches_adds_and_refreshes() {
     let q = s.next_ask().expect("the forecast");
     assert_eq!(q.line(), b"RPNET OPENMETEO 47.606 -122.332\n");
     s.net_answer(true, SEATTLE_JSON);
-    assert_eq!((s.wx.now.temp, s.wx.source), (32, "Open-Meteo"));
-    assert_eq!(s.data_age().as_bytes(), b"Open-Meteo, just now");
+    assert_eq!((s.wx.now.temp, s.wx.source), (61, "Open-Meteo"));
+    assert_eq!(s.read_at().as_bytes(), b"12:00 AM");
     s.tick(s.now + 5 * 60_000);
-    assert_eq!(s.data_age().as_bytes(), b"Open-Meteo, 5 min ago");
+    assert_eq!(s.read_at().as_bytes(), b"11:55 PM");
     // Add a place: typed, searched once typing pauses, a match tapped.
     tap(&mut s, SOFT_RIGHT);
     tap_item(&mut s, Item::AddPlace);
@@ -1207,6 +1210,7 @@ fn pictures_replace_the_outlines_and_still_fit_a_frame() {
             hero: [Some(&PIC); 22],
             card: [Some(&PIC); 22],
             row: [Some(&PIC); 22],
+            mid: [Some(&PIC); 22],
             radar: [Some(&PIC); 3],
         },
         true,
@@ -1405,7 +1409,7 @@ fn reveal_opens_from_the_card_and_cascade_grows_down_with_nothing_inside_moving(
     tap(&mut s, HERO);
     let (first, shift) = s.reveal().expect("revealing");
     assert_eq!(first, HERO, "it starts as the card");
-    assert_eq!(HERO.y + shift, 104, "the big panel read where the card was");
+    assert_eq!(HERO.y + shift, 80, "the big panel read where the card was");
     assert_eq!(s.ease(0), 1024, "nothing inside counts up");
     let mut last = first;
     for k in 1..=20 {
@@ -1464,6 +1468,13 @@ fn picture_of(s: &mut Shell, tab: u8) -> Vec<u32> {
             s.page_band(tab, &mut f, top, n);
             assert!(!f.overflowed(), "band {top}: {} commands", f.cmds().count());
             r.draw(&f);
+            if tab == 1 {
+                let rows = (i32::from(top), i32::from(top + n));
+                r.paint(
+                    rp_gfx::Rect::new(0, u32::from(top), 480, u32::from(n)),
+                    |px, stride| s.paint_hourly(px, stride, rows),
+                );
+            }
             top += n;
         }
     }
@@ -1514,6 +1525,13 @@ fn each_pages_picture_is_the_page_the_2d_path_draws() {
             let p = weather_app::PAGE;
             for y in p.y..p.y + p.h {
                 let row = u32::from(LAYER_MARGIN) + u32::from(y - p.y) + scroll as u32;
+                // Hourly's graph: painted per pixel in the picture, pieces
+                // on the 2D path (alike, not equal: checked by eye).
+                let content = i32::from(y) + scroll;
+                let g = weather_app::HOURLY_GRAPH;
+                if tab == 1 && (i32::from(g.y)..i32::from(g.y + g.h)).contains(&content) {
+                    continue;
+                }
                 for x in 0..W - 10 {
                     let a = flat[usize::from(y) * 480 + usize::from(x)];
                     let b = pic[row as usize * 480 + usize::from(x)];
@@ -1536,7 +1554,7 @@ fn on_the_planes_screen_0_carries_only_the_chrome_and_a_drag_only_the_bar() {
         .cmds_clipped()
         .filter(|(c, clip)| !c.bounds(&f).intersect(clip).intersect(&page).is_empty())
         .count();
-    assert_eq!(inside, 0, "nothing of the page (it fits: no scroll bar)");
+    assert_eq!(inside, 2, "the bar's track and thumb only");
     let v = s.page_layer().expect("the layer shows Hourly");
     assert_eq!((v.tab, v.win, v.row), (1, page, LAYER_MARGIN));
     // A drag moves the layer's row; screen 0 redraws only the bar.
@@ -1545,7 +1563,11 @@ fn on_the_planes_screen_0_carries_only_the_chrome_and_a_drag_only_the_bar() {
     s.input(Input::PenMove { x, y: y - 20 });
     s.input(Input::PenMove { x, y: y - 60 });
     let f = drawn(&mut s);
-    assert!(f.dirty().is_empty(), "{:?}", f.dirty());
+    assert!(
+        f.dirty().iter().all(|d| d.x >= W - 9 && d.w <= 3),
+        "{:?}",
+        f.dirty()
+    );
     let v = s.page_layer().unwrap();
     assert!(v.row > LAYER_MARGIN, "pulled up: {}", v.row);
     s.input(Input::PenUp { x, y: y - 60 });
@@ -1644,7 +1666,7 @@ fn a_long_swipe_moves_the_tab_line_one_tab_at_most() {
         })
         .expect("the tab line");
     let next = weather_app::tab_rect(2);
-    assert_eq!(line.x, next.x + 40, "{line:?}: on 10 Day, not past it");
+    assert_eq!(line.x, next.x + 1, "{line:?}: on 10 Day, not past it");
 }
 
 #[test]
@@ -1707,4 +1729,62 @@ fn a_connected_station_becomes_the_place_shown_and_home() {
     tap_item(&mut s, Item::Place(0));
     assert_eq!(s.wset.n_places, 1);
     assert_eq!(s.wset.place().name.as_str(), "Liberty Hill Station");
+}
+
+#[test]
+fn the_radar_asks_its_frames_then_the_map_then_each_rain_frame_tile_by_tile() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    // A place: Liberty Hill (the sample tiles' place).
+    s.wset.places[0].lat = 30_664;
+    s.wset.places[0].lon = -97_922;
+    s.set_tab(weather_app::RADAR);
+    s.tick(s.now + 10);
+    let q = s.next_ask().expect("the frames");
+    assert_eq!(q.line(), b"RPNET FRAMES\n");
+    s.net_answer(true, b"1793457000 1793457600 1793458200");
+    assert_eq!(s.radar_real(), None, "no map yet");
+    let mut lines = std::vec::Vec::new();
+    while let Some(q) = s.next_ask() {
+        assert_eq!(q.ask, Ask::Tile);
+        lines.push(q.line().to_vec());
+        s.net_answer(true, b"");
+    }
+    assert_eq!(
+        lines.len(),
+        9 * 4,
+        "the map and three frames, nine tiles each"
+    );
+    assert_eq!(lines[0], b"RPNET TILE MAP 7 28 51\n");
+    assert_eq!(lines[4], b"RPNET TILE MAP 7 29 52\n");
+    assert_eq!(lines[9], b"RPNET TILE RAIN 0 7 28 51\n");
+    assert_eq!(lines[35], b"RPNET TILE RAIN 2 7 30 53\n");
+    assert_eq!(s.radar_frames(), 3);
+    assert_eq!(s.radar_real(), Some(Some(0)));
+    let f = drawn(&mut s);
+    assert!(!f.overflowed());
+    assert!(texts(&f).contains(&b"RAINVIEWER  CARTO  OSM".to_vec()));
+}
+
+#[test]
+fn an_alert_in_force_shows_in_the_header_and_opens_in_full() {
+    let mut s = weather(1);
+    let f = drawn(&mut s);
+    assert!(!texts(&f).iter().any(|t| t.as_slice() == b"Winter Weather Advisory"));
+    s.set_alerts_from_nws(include_bytes!("../../weather/tests/data/nws-alerts-two.json"));
+    let f = drawn(&mut s);
+    assert!(!f.overflowed(), "{}", f.cmds().count());
+    assert!(texts(&f).iter().any(|t| t.as_slice() == b"Winter Weather Advisory"));
+    let chip = s.alert_rect();
+    tap(&mut s, chip);
+    assert_eq!(s.screen(), Screen::Alert);
+    let f = drawn(&mut s);
+    let meta = rp_weather::Line::new()
+        .push(b"MODERATE  UNTIL 2 NOVEMBER ")
+        .push(s.region.time(11, 0, true).as_bytes());
+    assert!(texts(&f).contains(&meta.as_bytes().to_vec()));
+    tap(&mut s, SOFT_LEFT);
+    assert_eq!(s.screen(), Screen::Weather);
 }

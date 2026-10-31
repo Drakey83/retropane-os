@@ -231,6 +231,12 @@ impl<'a> Layer<'a> {
         fits(px.len(), w, h, stride).then_some(Self { px, w, h, stride })
     }
 
+    /// The pixels and the row stride, to paint what commands can't (Hourly's
+    /// curve, drawn per pixel on the CPU: ADR-0021's CPU path).
+    pub fn pixels_mut(&mut self) -> (&mut [Argb], usize) {
+        (self.px, self.stride)
+    }
+
     /// A `w` x `h` layer in a byte region (scratch RAM), rows packed; `None`
     /// if it's too small or not word aligned.
     #[must_use]

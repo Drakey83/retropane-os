@@ -21,6 +21,7 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod alerts;
 mod json;
 pub mod open_meteo;
 pub mod png;
@@ -138,42 +139,7 @@ impl Name {
     #[must_use]
     pub fn from_text(raw: &[u8]) -> Self {
         let mut out = Self::EMPTY;
-        let mut i = 0;
-        while i < raw.len() {
-            let c = raw[i];
-            let (fold, step) = match c {
-                b'\\' => match raw.get(i + 1) {
-                    Some(b'u') => {
-                        let cp = raw
-                            .get(i + 2..i + 6)
-                            .and_then(|h| core::str::from_utf8(h).ok())
-                            .and_then(|h| u32::from_str_radix(h, 16).ok());
-                        (cp.and_then(fold_latin), 6)
-                    }
-                    Some(&e @ (b'"' | b'/')) => (Some(e), 2),
-                    _ => (None, 2),
-                },
-                0x20..=0x7E => (Some(c), 1),
-                0xC2 | 0xC3 => (
-                    raw.get(i + 1).and_then(|&n| {
-                        fold_latin((u32::from(c & 0x1F) << 6) | u32::from(n & 0x3F))
-                    }),
-                    2,
-                ),
-                // Any other UTF-8 sequence: its lead byte and continuations.
-                0xC4..=0xDF => (None, 2),
-                0xE0..=0xEF => (None, 3),
-                0xF0..=0xF7 => (None, 4),
-                _ => (None, 1),
-            };
-            if let Some(b) = fold
-                && (out.n as usize) < out.buf.len()
-            {
-                out.buf[out.n as usize] = b;
-                out.n += 1;
-            }
-            i += step;
-        }
+        out.n = fold_into(raw, &mut out.buf) as u8;
         // No leading or trailing spaces.
         let t = out.as_str().trim();
         Self::new_bytes(t.as_bytes())
@@ -205,6 +171,51 @@ impl Name {
     pub const fn is_empty(&self) -> bool {
         self.n == 0
     }
+}
+
+/// `raw` (a JSON string's raw bytes) folded into `out` as printable ASCII:
+/// escapes undone (a line break a space), UTF-8 Latin letters to their
+/// plain letter, anything else dropped; the bytes written.
+pub(crate) fn fold_into(raw: &[u8], out: &mut [u8]) -> usize {
+    let mut n = 0;
+    let mut i = 0;
+    while i < raw.len() {
+        let c = raw[i];
+        let (fold, step) = match c {
+            b'\\' => match raw.get(i + 1) {
+                Some(b'u') => {
+                    let cp = raw
+                        .get(i + 2..i + 6)
+                        .and_then(|h| core::str::from_utf8(h).ok())
+                        .and_then(|h| u32::from_str_radix(h, 16).ok());
+                    (cp.and_then(fold_latin), 6)
+                }
+                Some(&e @ (b'"' | b'/')) => (Some(e), 2),
+                Some(b'n' | b't') => (Some(b' '), 2),
+                _ => (None, 2),
+            },
+            0x20..=0x7E => (Some(c), 1),
+            0xC2 | 0xC3 => (
+                raw.get(i + 1)
+                    .and_then(|&n| fold_latin((u32::from(c & 0x1F) << 6) | u32::from(n & 0x3F))),
+                2,
+            ),
+            0xC4..=0xDF => (None, 2),
+            0xE0..=0xEF => (None, 3),
+            0xF0..=0xF7 => (None, 4),
+            _ => (None, 1),
+        };
+        if let Some(b) = fold
+            && n < out.len()
+            // Runs of spaces kept to one.
+            && !(b == b' ' && n > 0 && out[n - 1] == b' ')
+        {
+            out[n] = b;
+            n += 1;
+        }
+        i += step;
+    }
+    n
 }
 
 /// A Latin-1 letter (U+00C0..U+00FF) as its plain ASCII letter; ASCII
@@ -556,6 +567,22 @@ pub struct Hour {
     pub sky: Sky,
     /// Chance of rain or snow, percent.
     pub precip: u8,
+    /// Feels like, tenths of °C.
+    pub feels: i16,
+    /// Relative humidity, percent.
+    pub humidity: u8,
+    /// Dew point, tenths of °C.
+    pub dew: i16,
+    /// Wind gusts, tenths of km/h.
+    pub gust: u16,
+    /// Wind from, degrees.
+    pub wind_from: u16,
+    /// Rain or snow that hour, tenths of a mm.
+    pub rain: u16,
+    /// UV index.
+    pub uv: u8,
+    /// Visibility, tenths of a km.
+    pub vis: u16,
 }
 
 /// One day ahead.

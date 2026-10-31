@@ -28,7 +28,7 @@ pub mod align;
 mod keyboard;
 pub mod motion;
 mod station;
-mod weather_app;
+pub mod weather_app;
 mod weather_net;
 mod weather_settings;
 pub use weather_net::{Ask, Question};
@@ -65,6 +65,8 @@ pub struct Icons {
     pub card: [Option<&'static Image>; 22],
     /// The Weather app's rows (40 px).
     pub row: [Option<&'static Image>; 22],
+    /// Hourly's card (100 px; the card packs only).
+    pub mid: [Option<&'static Image>; 22],
     /// The radar's rain cells ([`rp_weather::radar::CELLS`]), made at start.
     pub radar: [Option<&'static Image>; 3],
 }
@@ -83,6 +85,7 @@ impl Icons {
         hero: [None; 22],
         card: [None; 22],
         row: [None; 22],
+        mid: [None; 22],
         radar: [None; 3],
     };
 }
@@ -106,6 +109,8 @@ pub enum Screen {
     KeyEntry,
     /// Your weather station's instruments now.
     Station,
+    /// A weather alert in full.
+    Alert,
 }
 
 /// The keys the shell reacts to.
@@ -229,13 +234,26 @@ pub enum Target {
     Timeline,
     /// The Weather header's Station button (a station connected).
     Station,
+    /// The title bar's ok: back, as Windows Mobile's.
+    Ok,
+    /// The Weather header's place: its menu of places.
+    PlaceMenu,
+    /// A place in that menu.
+    PlaceItem(u8),
+    /// The Weather header's alert: the alert in full.
+    Alert,
 }
 
 // ---- Layout (480 x 640, portrait) --------------------------------------
 
 const TITLE: Rect = Rect::new(0, 0, W, 36);
 /// Start, top left.
-pub const START: Rect = Rect::new(0, 0, 96, 36);
+pub const START: Rect = Rect::new(0, 0, 104, 36);
+/// The Start button's box and the ok box (the mix mock-up's title bar).
+const START_BOX: Rect = Rect::new(6, 4, 92, 28);
+const OK_BOX: Rect = Rect::new(W - 46, 4, 40, 28);
+/// The title bar's box lines.
+const EDGE_LIGHT: Argb = rp_draw::look::theme(0x70FF_FFFF);
 /// The weather hero panel: the place, the temperature, the condition, today's
 /// high and low, and the date (docs/design/ui.md "Weather and icons").
 const HERO: Rect = Rect::new(16, 52, 448, 196);
@@ -322,15 +340,22 @@ const MENU_ROW: u16 = 40;
 // letters, do it for all of the glass"): panels 72-55% to 85-74%, bars
 // 85-69% to 91-82%, menus 88-82% to 93-88%.
 
-const GLASS_LEFT: Argb = rp_draw::look::theme(0xEC10_1418);
-const GLASS_RIGHT: Argb = rp_draw::look::theme(0xE238_3E46);
+const GLASS_LEFT: Argb = rp_draw::look::theme(0xE010_1418);
+const GLASS_RIGHT: Argb = rp_draw::look::theme(0xC844_4C54);
 const GLASS_EDGE: Argb = rp_draw::look::theme(0x50FF_FFFF);
 const BAR_LEFT: Argb = rp_draw::look::theme(0xE800_0000);
 const BAR_RIGHT: Argb = rp_draw::look::theme(0xD020_2428);
+/// The apps' chrome, the agreed mix mock-up's colours (read from its
+/// pixels): the title bar, the softkeys and their divider, opaque.
+const APP_TITLE_LEFT: Argb = rp_draw::look::theme(0xFF12_171D);
+const APP_TITLE_RIGHT: Argb = rp_draw::look::theme(0xFF1D_262F);
+const APP_SOFT_LEFT: Argb = rp_draw::look::theme(0xFF02_0305);
+const APP_SOFT_RIGHT: Argb = rp_draw::look::theme(0xFF1A_1D22);
+const APP_SOFT_DIVIDER: Argb = rp_draw::look::theme(0xFF59_5D60);
 const MENU_LEFT: Argb = rp_draw::look::theme(0xEE08_0A0C);
 const MENU_RIGHT: Argb = rp_draw::look::theme(0xE02C_3238);
 const TEXT: Argb = rp_draw::look::theme(0xFFF0_F2F4);
-const DIM: Argb = rp_draw::look::theme(0xFFA8_B0B8);
+const DIM: Argb = rp_draw::look::theme(0xFFCC_D3DA);
 const FOCUS: Argb = rp_draw::look::theme(0xFF7F_D0FF);
 const PRESSED: Argb = rp_draw::look::theme(0x40FF_FFFF);
 /// A pressed card that opens an app: darkened, not lit.
@@ -435,10 +460,28 @@ pub struct Shell {
     search_at: Option<u32>,
     find_status: &'static str,
     /// The dock's questions wanted (bits of [`Ask`]) and the one in flight.
-    wants: u8,
+    wants: u16,
     asking: Option<Ask>,
     /// The hour Hourly's card shows.
     hour_pick: u8,
+    /// The header's place menu is open.
+    place_menu: bool,
+    /// The weather alerts in force for the place shown.
+    alerts: [rp_weather::alerts::Alert; rp_weather::alerts::ALERTS_MAX],
+    n_alerts: u8,
+    /// Hourly's line pieces for the 2D path ([`weather_app::curve_sprite`]),
+    /// made at start; kept once here, not in every icon pack's set.
+    curve: [Option<&'static Image>; weather_app::CURVE_SPRITES],
+    /// The real radar: its frames' times (Unix), how many, the place it
+    /// was asked for, the next tile to ask, whether the map is in and how
+    /// many rain frames are complete.
+    radar_times: [u32; 8],
+    radar_n: u8,
+    radar_for: Option<(i32, i32)>,
+    tile_k: u16,
+    radar_map: bool,
+    radar_done: u8,
+    radar_asked: u32,
     /// The station's instruments and when they came (ms).
     station: Option<rp_weather::tempest::StationNow>,
     station_at: u32,
@@ -509,9 +552,20 @@ impl Shell {
             search_at: None,
             find_status: "",
             // The stored settings first, then the forecast they name.
-            wants: 1 << Ask::Load as u8,
+            wants: 1 << Ask::Load as u16,
             asking: None,
             hour_pick: 0,
+            place_menu: false,
+            alerts: [rp_weather::alerts::Alert::NONE; rp_weather::alerts::ALERTS_MAX],
+            n_alerts: 0,
+            curve: [None; weather_app::CURVE_SPRITES],
+            radar_times: [0; 8],
+            radar_n: 0,
+            radar_for: None,
+            tile_k: 0,
+            radar_map: false,
+            radar_done: 0,
+            radar_asked: 0,
             station: None,
             station_at: 0,
             fetched_at: None,
@@ -631,6 +685,169 @@ impl Shell {
         self.dirty(Rect::new(0, 0, W, H));
     }
 
+    /// The first alert in force's name (the header's chip).
+    pub(crate) fn alert_name(&self) -> Option<&[u8]> {
+        (self.n_alerts > 0).then(|| self.alerts[0].event.as_bytes())
+    }
+
+    /// Where the header's alert chip is (after the place and its dots).
+    pub(crate) fn alert_rect(&self) -> Rect {
+        let (ui, label) = (self.fonts.ui, self.fonts.label);
+        let mx = weather_app::PLACE_BTN.x + 14 + ui.width(self.wx.place.as_bytes());
+        let x = mx + 22 + 14 * u16::from(self.wset.n_places.min(10));
+        let w = self.alert_name().map_or(0, |a| label.width(a) + 34);
+        Rect::new(x + 8, weather_app::HEAD.y + 5, w, 24)
+    }
+
+    /// When the forecast was read, as a clock time ("sample" before any).
+    pub(crate) fn read_at(&self) -> Line {
+        match self.fetched_at {
+            None if self.wants(Ask::Forecast) => Line::new().push(b"updating"),
+            None => Line::new().push(b"sample"),
+            Some(at) => {
+                let ago = (self.now.wrapping_sub(at) / 60_000) as i32;
+                let m = (i32::from(self.time.hour) * 60 + i32::from(self.time.minute) - ago)
+                    .rem_euclid(24 * 60);
+                self.region.time((m / 60) as u8, (m % 60) as u8, true)
+            }
+        }
+    }
+
+    /// Place `i` in the header's menu.
+    const fn place_item(i: u8) -> Rect {
+        Rect::new(
+            8,
+            weather_app::HEAD.y + weather_app::HEAD.h + i as u16 * 42,
+            280,
+            42,
+        )
+    }
+
+    /// The header's place menu over the page.
+    pub(crate) fn place_menu_scene(&self, f: &mut Frame) {
+        let ui = self.fonts.ui;
+        let n = self.wset.n_places;
+        let r = Rect::new(
+            8,
+            weather_app::HEAD.y + weather_app::HEAD.h,
+            280,
+            u16::from(n) * 42,
+        );
+        Self::glass(f, r, MENU_LEFT, MENU_RIGHT);
+        for i in 0..n {
+            let e = Self::place_item(i);
+            let p = self.wset.places()[usize::from(i)];
+            let color = if i == self.wset.current { FOCUS } else { TEXT };
+            f.text(e.x + 16, e.y + 28, ui, color, p.name.as_bytes());
+            self.decorate(f, Target::PlaceItem(i));
+        }
+    }
+
+    /// An alert in full: its name, how severe and until when, the headline
+    /// and its text, wrapped to the screen.
+    pub(crate) fn alert_scene(&self, f: &mut Frame) {
+        let (ui, label) = (self.fonts.ui, self.fonts.label);
+        let r = Rect::new(12, 46, 456, H - 40 - 56);
+        Self::glass(f, r, MENU_LEFT, MENU_RIGHT);
+        let Some(a) = self.alerts.get(0).filter(|_| self.n_alerts > 0) else {
+            f.text(r.x + 16, r.y + 34, ui, TEXT, b"No alerts in force");
+            return;
+        };
+        f.text(
+            r.x + 16,
+            r.y + 34,
+            ui,
+            weather_app::ALERT_TEXT,
+            a.event.as_bytes(),
+        );
+        let sev: &[u8] = match a.severity {
+            rp_weather::alerts::Severity::Extreme => b"EXTREME",
+            rp_weather::alerts::Severity::Severe => b"SEVERE",
+            rp_weather::alerts::Severity::Moderate => b"MODERATE",
+            rp_weather::alerts::Severity::Minor => b"MINOR",
+            rp_weather::alerts::Severity::Unknown => b"",
+        };
+        // Until "2 NOVEMBER 11:00 AM", from the service's local ISO time
+        // ("2026-11-02T11:00:00-07:00"); anything else as it came.
+        let u = a.until.as_bytes();
+        let num = |r: core::ops::Range<usize>| {
+            u.get(r)?
+                .iter()
+                .try_fold(0u8, |n, &c| c.is_ascii_digit().then(|| n * 10 + (c - b'0')))
+        };
+        let until = match (num(5..7), num(8..10), num(11..13), num(14..16)) {
+            (Some(mo @ 1..=12), Some(d @ 1..=31), Some(h @ 0..=23), Some(mi @ 0..=59)) => {
+                Line::new()
+                    .num(i32::from(d))
+                    .push(b" ")
+                    .push(MONTHS[usize::from(mo - 1)])
+                    .push(b" ")
+                    .push(self.region.time(h, mi, true).as_bytes())
+            }
+            _ => Line::new().push(u.get(..16).unwrap_or(u)),
+        };
+        let meta = Line::new()
+            .push(sev)
+            .push(b"  UNTIL ")
+            .push(until.as_bytes());
+        f.text(r.x + 16, r.y + 58, label, DIM, meta.as_bytes());
+        let mut y = r.y + 92;
+        for (text, font, color) in [
+            (a.headline.as_bytes(), ui, TEXT),
+            (a.text.as_bytes(), ui, DIM),
+        ] {
+            let mut rest = text;
+            while !rest.is_empty() && y + 8 < r.y + r.h {
+                // Words to the line's width.
+                let mut end = rest.len();
+                while font.width(&rest[..end]) > r.w - 32 {
+                    end = rest[..end]
+                        .iter()
+                        .rposition(|&b| b == b' ')
+                        .unwrap_or(end - 1);
+                }
+                f.text(r.x + 16, y, font, color, &rest[..end]);
+                rest = rest[end..].strip_prefix(b" ").unwrap_or(&rest[end..]);
+                y += 26;
+            }
+            y += 12;
+        }
+        if self.n_alerts > 1 {
+            let more = Line::new()
+                .num(i32::from(self.n_alerts - 1))
+                .push(b" more in force");
+            f.text(r.x + 16, r.y + r.h - 12, label, DIM, more.as_bytes());
+        }
+    }
+
+    /// The app's name in the title bar.
+    fn title(&self) -> &'static str {
+        match self.screen {
+            Screen::Today => "",
+            Screen::Weather => "Weather",
+            Screen::WeatherSettings => "Weather settings",
+            Screen::WeatherPlaces => "Places",
+            Screen::AddPlace => "Add a place",
+            Screen::WeatherFrom => "Weather from",
+            Screen::KeyEntry => "Station key",
+            Screen::Station => "Your station",
+            Screen::Alert => "Weather alert",
+        }
+    }
+
+    /// The alerts in force as the service answers them (NWS GeoJSON), as
+    /// the dock's relay brings them: for the PC's previews, which have no
+    /// relay.
+    pub fn set_alerts_from_nws(&mut self, json: &[u8]) {
+        self.n_alerts = rp_weather::alerts::from_nws(json, &mut self.alerts) as u8;
+        self.dirty(weather_app::HEAD);
+    }
+
+    /// Hourly's line pieces (made at start by the device).
+    pub fn set_curve(&mut self, c: [Option<&'static Image>; weather_app::CURVE_SPRITES]) {
+        self.curve = c;
+    }
+
     /// An icon pack is being read from the card (about two seconds the
     /// first time): said at once, so the tap is seen to have worked.
     pub fn icons_loading(&mut self) {
@@ -735,6 +952,10 @@ impl Shell {
             Target::Back | Target::Row(_) | Target::Cap(_) => self.settings_rect(t),
             Target::Play => weather_app::PLAY,
             Target::Station => weather_app::STATION_BTN,
+            Target::Ok => OK_BOX,
+            Target::PlaceMenu => weather_app::PLACE_BTN,
+            Target::PlaceItem(i) => Self::place_item(i),
+            Target::Alert => self.alert_rect(),
             Target::Timeline => weather_app::TIMELINE,
         }
     }
@@ -758,6 +979,7 @@ impl Shell {
         };
         let today = [Target::Start]
             .into_iter()
+            .chain((self.screen != Screen::Today).then_some(Target::Ok))
             .chain((0..back).map(|_| Target::Back))
             .chain((0..hero).map(|_| Target::Hero))
             .chain((0..quick).map(Target::Quick))
@@ -765,6 +987,16 @@ impl Shell {
             .chain(
                 (self.screen == Screen::Weather && self.station.is_some())
                     .then_some(Target::Station),
+            )
+            .chain((self.screen == Screen::Weather).then_some(Target::PlaceMenu))
+            .chain(
+                (self.screen == Screen::Weather && self.alert_name().is_some())
+                    .then_some(Target::Alert),
+            )
+            .chain(
+                (0..self.wset.n_places)
+                    .filter(|_| self.place_menu && self.screen == Screen::Weather)
+                    .map(Target::PlaceItem),
             )
             .chain((0..self.rows()).map(Target::Row))
             .chain((0..caps).map(Target::Cap))
@@ -921,11 +1153,25 @@ impl Shell {
                     self.removing = !self.removing;
                     self.dirty(Rect::new(0, 0, W, H));
                 }
-                Screen::WeatherSettings | Screen::WeatherFrom => {}
+                Screen::WeatherSettings | Screen::WeatherFrom | Screen::Alert => {}
                 Screen::Station => self.refresh(),
             },
             Target::Hero => self.open_weather(),
             Target::Station => self.open(Screen::Station),
+            Target::Ok => self.go_back(),
+            Target::PlaceMenu => {
+                self.place_menu = !self.place_menu;
+                self.dirty(Rect::new(0, 0, W, H));
+            }
+            Target::PlaceItem(i) => {
+                self.place_menu = false;
+                if i != self.wset.current {
+                    self.wset.current = i;
+                    self.settings_changed(true);
+                }
+                self.dirty(Rect::new(0, 0, W, H));
+            }
+            Target::Alert => self.open(Screen::Alert),
             Target::Tab(i) => self.set_tab(i),
             Target::Back => self.go_back(),
             Target::Row(i) => self.row_tapped(i),
@@ -989,11 +1235,18 @@ impl Shell {
     /// The softkey bar with labels `(l, r)`.
     fn softkey_bar(&self, f: &mut Frame, (l, r): (&'static str, &'static str)) {
         let ui = self.fonts.ui;
+        let app = self.screen != Screen::Today;
         f.push(Cmd::HGradient {
             r: SOFTKEYS,
-            left: BAR_LEFT,
-            right: BAR_RIGHT,
+            left: if app { APP_SOFT_LEFT } else { BAR_LEFT },
+            right: if app { APP_SOFT_RIGHT } else { BAR_RIGHT },
         });
+        if app && !r.is_empty() {
+            f.push(Cmd::Fill {
+                r: Rect::new(W / 2, SOFTKEYS.y + 6, 1, SOFTKEYS.h - 12),
+                color: APP_SOFT_DIVIDER,
+            });
+        }
         self.centred(f, SOFT_LEFT, H - 14, ui, TEXT, l.as_bytes());
         self.centred(f, SOFT_RIGHT, H - 14, ui, TEXT, r.as_bytes());
         self.decorate(f, Target::SoftLeft);
@@ -1013,6 +1266,7 @@ impl Shell {
             Screen::AddPlace => ("Cancel", "Add"),
             Screen::KeyEntry => ("Cancel", "Done"),
             Screen::Station => ("Back", "Refresh"),
+            Screen::Alert => ("Back", ""),
         }
     }
 
@@ -1224,7 +1478,7 @@ impl Shell {
                 let t = self.pressed;
                 self.set_pressed(None);
                 if t == Some(Target::Timeline) && weather_app::TIMELINE.contains_point(x, y) {
-                    self.radar_frame = weather_app::frame_at(x);
+                    self.radar_frame = weather_app::frame_at(x, self.radar_frames());
                 }
                 match t {
                     Some(t) if self.rect_of(t).contains_point(x, y) => self.activate(t),
@@ -1481,26 +1735,71 @@ impl Shell {
         }
         let ui = self.fonts.ui;
 
-        // Title bar: Start, the clock and status at the right.
+        // Title bar (the agreed mix mock-up's, Windows Mobile's layout): a
+        // boxed Start, the app's name, the status and time, and ok (back)
+        // in an app.
+        let app = self.screen != Screen::Today;
         f.push(Cmd::HGradient {
             r: TITLE,
-            left: BAR_LEFT,
-            right: BAR_RIGHT,
+            left: if app { APP_TITLE_LEFT } else { BAR_LEFT },
+            right: if app { APP_TITLE_RIGHT } else { BAR_RIGHT },
         });
-        f.text(14, 25, ui, TEXT, b"Start");
+        let label = self.fonts.label;
+        f.push(Cmd::Outline {
+            r: START_BOX,
+            color: EDGE_LIGHT,
+        });
+        f.push(Cmd::Outline {
+            r: Rect::new(START_BOX.x + 6, START_BOX.y + 5, 16, 16),
+            color: TEXT,
+        });
+        keyboard::centre_in(
+            f,
+            Rect::new(START_BOX.x + 6, START_BOX.y + 5, 16, 16),
+            label,
+            TEXT,
+            b"R",
+        );
+        f.text(START_BOX.x + 30, 25, ui, TEXT, b"Start");
         self.decorate(f, Target::Start);
+        if app {
+            f.text(
+                START_BOX.x + START_BOX.w + 16,
+                25,
+                ui,
+                TEXT,
+                self.title().as_bytes(),
+            );
+            f.push(Cmd::Outline {
+                r: OK_BOX,
+                color: EDGE_LIGHT,
+            });
+            keyboard::centre_in(f, OK_BOX, ui, TEXT, b"ok");
+            self.decorate(f, Target::Ok);
+        }
+        let right = if app { OK_BOX.x - 10 } else { W - 10 };
         let hm = self.region.time(self.time.hour, self.time.minute, true);
         let w = ui.width(hm.as_bytes());
-        f.text(W - 64 - w, 25, ui, TEXT, hm.as_bytes());
+        f.text(right - w, 25, ui, TEXT, hm.as_bytes());
         // Battery: not read yet, drawn as an outline.
+        let bx = right - w - 44;
         f.push(Cmd::Outline {
-            r: Rect::new(W - 46, 12, 30, 14),
+            r: Rect::new(bx, 12, 28, 13),
             color: DIM,
         });
         f.push(Cmd::Fill {
-            r: Rect::new(W - 16, 16, 3, 6),
+            r: Rect::new(bx + 28, 16, 3, 5),
             color: DIM,
         });
+        // Online through the dock: a ring with a dot (only when it is).
+        if self.dock {
+            let c = Rect::new(bx - 26, 11, 15, 15);
+            f.push(Cmd::Outline { r: c, color: TEXT });
+            f.push(Cmd::Fill {
+                r: Rect::new(c.x + 5, c.y + 5, 5, 5),
+                color: TEXT,
+            });
+        }
 
         // On the plane path the app is drawn whole (aside) and the window
         // is the video plane's.
@@ -1520,6 +1819,10 @@ impl Shell {
                     f.clip(reveal);
                 }
                 self.weather_scene(f, reveal);
+                if self.place_menu {
+                    f.clip(None);
+                    self.place_menu_scene(f);
+                }
             }
             Screen::WeatherSettings | Screen::WeatherPlaces | Screen::WeatherFrom => {
                 self.settings_scene(f);
@@ -1527,6 +1830,7 @@ impl Shell {
             Screen::AddPlace => self.add_place_scene(f),
             Screen::KeyEntry => self.key_scene(f),
             Screen::Station => self.station_scene(f),
+            Screen::Alert => self.alert_scene(f),
         }
 
         // Softkeys and the notice between them.
@@ -1739,23 +2043,25 @@ fn not_yet(name: &str) -> &'static str {
     }
 }
 
+/// The months' names (the label font spaces capitals).
+const MONTHS: [&[u8]; 12] = [
+    b"JANUARY",
+    b"FEBRUARY",
+    b"MARCH",
+    b"APRIL",
+    b"MAY",
+    b"JUNE",
+    b"JULY",
+    b"AUGUST",
+    b"SEPTEMBER",
+    b"OCTOBER",
+    b"NOVEMBER",
+    b"DECEMBER",
+];
+
 /// `MON 13 OCTOBER` into `buf` (spaced capitals are the label font's job).
 fn date_line(buf: &mut [u8; 32], t: Time) -> &[u8] {
     const DAYS: [&[u8]; 7] = [b"MON", b"TUE", b"WED", b"THU", b"FRI", b"SAT", b"SUN"];
-    const MONTHS: [&[u8]; 12] = [
-        b"JANUARY",
-        b"FEBRUARY",
-        b"MARCH",
-        b"APRIL",
-        b"MAY",
-        b"JUNE",
-        b"JULY",
-        b"AUGUST",
-        b"SEPTEMBER",
-        b"OCTOBER",
-        b"NOVEMBER",
-        b"DECEMBER",
-    ];
     let day = DAYS[usize::from(t.weekday.min(6))];
     let month = MONTHS[usize::from(t.month.clamp(1, 12) - 1)];
     let d = t.day.clamp(1, 31);

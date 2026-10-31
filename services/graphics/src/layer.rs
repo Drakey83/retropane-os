@@ -107,6 +107,18 @@ pub(crate) struct Pic {
     h: u16,
     /// RGB565 and opaque (an app composed ahead), else ARGB4444 glass.
     rgb565: bool,
+    /// ARGB8888 glass: 4 bytes a pixel, its edges kept smooth (a page whose
+    /// anti-aliased drawing ARGB4444 would band and dither: Hourly's line,
+    /// the owner, 2026-10-31).
+    argb8888: bool,
+}
+
+impl Pic {
+    /// Bytes a row.
+    const fn stride(&self) -> u32 {
+        let bpp = if self.argb8888 { 4 } else { 2 };
+        (self.w as u32 * bpp).div_ceil(16) * 16
+    }
 }
 
 /// The next commit: the layer as it should be from the next blanking (its
@@ -184,12 +196,26 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             w,
             h,
             rgb565: false,
+            argb8888: false,
         };
         self.clients[usize::from(c.0)].used += bytes;
         Ok(Handle {
             slot: k as u16,
             generation: p.generation,
         })
+    }
+
+    /// A `w` x `h` ARGB8888 page picture for client `c` (4 bytes a pixel,
+    /// `VSCTRL` code 8 with per-pixel alpha: proven on the X51v, run WG),
+    /// within its quota.
+    pub fn picture_argb8888(&mut self, c: ClientId, w: u16, h: u16) -> Result<Handle, Error> {
+        // Allocated as a 16-bit picture twice as wide: the same bytes.
+        let wide = w.checked_mul(2).ok_or(Error::BadWindow)?;
+        let h2 = self.picture(c, wide, h)?;
+        let p = &mut self.layer.pics[usize::from(h2.slot)];
+        p.w = w;
+        p.argb8888 = true;
+        Ok(h2)
     }
 
     /// A 480 x 640 RGB565 picture for client `c` (an app composed ahead by
@@ -262,7 +288,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
     /// A picture's size and stride (bytes a line).
     pub fn picture_size(&self, c: ClientId, h: Handle) -> Result<(u16, u16, u32), Error> {
         let p = self.pic(c.0, h)?;
-        Ok((p.w, p.h, stride(p.w)))
+        Ok((p.w, p.h, p.stride()))
     }
 
     /// Writes `words` (two ARGB4444 pixels each, the left one low) into
@@ -277,7 +303,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
     ) -> Result<(), Error> {
         let p = self.pic(c.0, h)?;
         let end = u64::from(offset) + 4 * words.len() as u64;
-        if !offset.is_multiple_of(4) || end > u64::from(stride(p.w)) * u64::from(p.h) {
+        if !offset.is_multiple_of(4) || end > u64::from(p.stride()) * u64::from(p.h) {
             return Err(Error::BadWindow);
         }
         let (_, mem) = self.two_d.parts();
@@ -297,7 +323,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         if uses(self.layer.shown) || self.layer.staged.is_some_and(|s| uses(s.layer)) {
             return Err(Error::Busy);
         }
-        let bytes = stride(p.w) * u32::from(p.h);
+        let bytes = p.stride() * u32::from(p.h);
         let freed = self.pool.free(p.at, bytes);
         debug_assert!(freed, "page picture not in the pool");
         let owner = usize::from(c.0);
@@ -337,10 +363,12 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
                 let p = self.pic(owner, h)?;
                 let (fmt, blend) = if p.rgb565 {
                     (VideoFormat::Rgb565, Blend::Opaque)
+                } else if p.argb8888 {
+                    (VideoFormat::Argb8888, Blend::PixelAlpha)
                 } else {
                     (VideoFormat::Argb4444, Blend::PixelAlpha)
                 };
-                Ok((p.at, stride(p.w), p.w, p.h, fmt, blend))
+                Ok((p.at, p.stride(), p.w, p.h, fmt, blend))
             }
             Source::Aside => {
                 let at = match self.two_d.landed() {
@@ -365,6 +393,12 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
     fn registers(&mut self, owner: u8, st: LayerState) -> Result<[(usize, u32); 9], Error> {
         let (base, stride, pw, ph, fmt, blend) = self.source(owner, st.src)?;
         let w = st.win;
+        // Bytes a pixel of the source (32-bit pages: 4).
+        let bpp = if matches!(fmt, VideoFormat::Argb8888) {
+            4
+        } else {
+            2
+        };
         let fits = (2..=480).contains(&w.w)
             && (2..=640).contains(&w.h)
             && w.w.is_multiple_of(2)
@@ -373,7 +407,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             && u32::from(w.y) + u32::from(w.h) <= 640
             && u32::from(w.col) + u32::from(w.w) <= u32::from(pw)
             && u32::from(w.row) + u32::from(w.h) <= u32::from(ph)
-            && (u32::from(w.col) * 2).is_multiple_of(16);
+            && (u32::from(w.col) * bpp).is_multiple_of(16);
         if !fits {
             return Err(Error::BadWindow);
         }
@@ -391,7 +425,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             & 1
             != 0;
         let mut v = VideoPlane::new(fmt, w.w, w.h, 0);
-        v.offset = (base + u32::from(w.row) * stride + 2 * u32::from(w.col)) as usize;
+        v.offset = (base + u32::from(w.row) * stride + bpp * u32::from(w.col)) as usize;
         v.stride = stride as usize;
         let scale = Scale {
             x: w.x,

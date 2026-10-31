@@ -512,10 +512,12 @@ pub const BUDGETS: &[Budget] = &[
     // tables, 66 a pack, ~5.5 KiB) and the dock link's question buffer:
     // 52.2 KiB measured, + ~7%. Then 56 -> 64 KiB: the stack 12 -> 20
     // KiB (the card read; 54.3 KiB with the pack tables in `.bss` + 8).
+    // Then 64 -> 72 KiB: Hourly's 49 curve pieces' table, the station's and
+    // the real radar's state (64.5 KiB measured, + ~11%).
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 64 * 1024,
+        max_zero: 72 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D

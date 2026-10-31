@@ -98,15 +98,16 @@ pub fn icons_into(
 /// id and width and height (little-endian), then the zlib stream as the
 /// built-in set's.
 pub const PACK_MAGIC: &[u8; 4] = b"RPIK";
-/// The most pictures a pack holds (22 conditions at three sizes).
-pub const PACK_MAX: usize = 66;
+/// The most pictures a pack holds (22 conditions at four sizes).
+pub const PACK_MAX: usize = 88;
 
 /// The words a pack's pictures unpack to, from its header (`None` if it
 /// isn't a pack).
 #[must_use]
 pub fn pack_words(file: &[u8]) -> Option<usize> {
     let h = file.get(..12)?;
-    (&h[..4] == PACK_MAGIC && h[4] == 1).then(|| u32::from_le_bytes([h[8], h[9], h[10], h[11]]) as usize)
+    (&h[..4] == PACK_MAGIC && h[4] == 1)
+        .then(|| u32::from_le_bytes([h[8], h[9], h[10], h[11]]) as usize)
 }
 
 /// The card's pack unpacked into `px` (its pictures described in `imgs`),
@@ -137,7 +138,10 @@ pub fn pack_into(
         )
     });
     // The pictures' sizes must add up to the words it says.
-    let sum: usize = desc.clone().map(|(_, _, w, h)| usize::from(w) * usize::from(h)).sum();
+    let sum: usize = desc
+        .clone()
+        .map(|(_, _, w, h)| usize::from(w) * usize::from(h))
+        .sum();
     if sum != words {
         return None;
     }
@@ -166,7 +170,11 @@ fn fill(
     for (slot, (_, _, w, h)) in imgs.iter_mut().zip(desc.clone()) {
         let (mine, more) = rest.split_at_mut(usize::from(w) * usize::from(h));
         rest = more;
-        unpaeth4(rp_hal_mem::words_as_bytes_mut(mine), usize::from(w), usize::from(h));
+        unpaeth4(
+            rp_hal_mem::words_as_bytes_mut(mine),
+            usize::from(w),
+            usize::from(h),
+        );
         *slot = Image { w, h, px: mine };
     }
     let imgs: &'static [Image] = imgs;
@@ -175,7 +183,8 @@ fn fill(
         match kind {
             0 => set.hero[i] = Some(img),
             1 => set.card[i] = Some(img),
-            _ => set.row[i] = Some(img),
+            2 => set.row[i] = Some(img),
+            _ => set.mid[i] = Some(img),
         }
     }
     Some(set)
@@ -183,7 +192,7 @@ fn fill(
 
 /// The radar map's place on the screen (the Weather app's page) and its
 /// bytes unpacked (three planes of 5, 6 and 5 bits).
-pub const MAP_TOP: u16 = 94;
+pub const MAP_TOP: u16 = 70;
 /// See [`MAP_TOP`].
 pub const MAP_H: usize = 462;
 /// See [`MAP_TOP`].
@@ -249,6 +258,72 @@ pub fn show_backdrop<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
         None => load_wallpaper(r, wallpaper, Depth::Rgb565, s),
     }
     r.wallpaper_changed();
+}
+
+/// The real radar as the page's background (the radar built for real,
+/// 2026-10-31): the map's view (CARTO's tiles around the place, decoded on
+/// the device) with a rain frame (RainViewer's) blended over it by its
+/// alpha, row by row into the renderer's wallpaper under the page.
+pub fn show_radar<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
+    r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
+    map: &[u32],
+    rain: Option<&[u32]>,
+) {
+    let mut row = [0u32; W];
+    for y in 0..MAP_H {
+        let at = y * W;
+        for (x, p) in row.iter_mut().enumerate() {
+            let m = map.get(at + x).copied().unwrap_or(0);
+            *p = match rain.and_then(|f| f.get(at + x)) {
+                Some(&c) if c >> 24 != 0 => blend(m, c),
+                _ => m,
+            } | 0xFF00_0000;
+        }
+        r.wallpaper_row(MAP_TOP + y as u16, &row);
+    }
+    r.wallpaper_changed();
+}
+
+/// `c` (ARGB, straight alpha) over `m`.
+fn blend(m: u32, c: u32) -> u32 {
+    let a = c >> 24;
+    let ch = |s: u32| {
+        let (mv, cv) = ((m >> s) & 0xFF, (c >> s) & 0xFF);
+        ((mv * (255 - a) + cv * a + 127) / 255) << s
+    };
+    ch(16) | ch(8) | ch(0)
+}
+
+/// Hourly's line pieces drawn into `px` (at least
+/// [`rp_shell::weather_app::CURVE_WORDS`]), described in `imgs`: the
+/// shell's set; too little room gives none (a stepped line).
+#[must_use]
+pub fn curve_into(
+    px: &'static mut [u32],
+    imgs: &'static mut [Image; rp_shell::weather_app::CURVE_SPRITES],
+) -> [Option<&'static Image>; rp_shell::weather_app::CURVE_SPRITES] {
+    use rp_shell::weather_app::{CURVE_SPRITES, CURVE_W, CURVE_WORDS, curve_h, curve_sprite};
+    let mut set = [None; CURVE_SPRITES];
+    if px.len() < CURVE_WORDS {
+        return set;
+    }
+    let mut rest = px;
+    for (k, slot) in imgs.iter_mut().enumerate() {
+        let h = curve_h(k);
+        let (mine, more) = rest.split_at_mut(usize::from(CURVE_W) * usize::from(h));
+        rest = more;
+        curve_sprite(mine, k);
+        *slot = Image {
+            w: CURVE_W,
+            h,
+            px: mine,
+        };
+    }
+    let imgs: &'static [Image; CURVE_SPRITES] = imgs;
+    for (s, img) in set.iter_mut().zip(imgs.iter()) {
+        *s = Some(img);
+    }
+    set
 }
 
 /// Pixels [`radar_into`] needs.

@@ -24,11 +24,20 @@ const fn sky(wmo: u8, night: bool, cover: u8) -> Sky {
 const fn hour(hour: u8, f: i32, wmo: u8, cover: u8, precip: u8) -> Hour {
     // Sun up 7:52 AM to 6:02 PM (Seattle, end of October).
     let night = hour < 8 || hour >= 18;
+    let s = sky(wmo, night, cover);
     Hour {
         hour,
         temp: c10(f),
-        sky: sky(wmo, night, cover),
+        sky: s,
         precip,
+        feels: c10(f - 2),
+        humidity: 60 + precip / 4,
+        dew: c10(f - 12),
+        gust: s.wind * 16 / 10,
+        wind_from: 315,
+        rain: precip as u16 / 4,
+        uv: if night { 0 } else { 2 },
+        vis: 160,
     }
 }
 

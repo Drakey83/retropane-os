@@ -1110,23 +1110,29 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
 /// big", 2026-10-31).
 const PACK_PART: usize = 800_000;
 
-/// rp-today's icon packs onto the SD card, each in parts (`RPIC<n>A.PAK`,
-/// `B`, ...) and an empty part after the last (the image joins parts up to
-/// the first missing or empty one); a part already sent with the same
-/// contents (its SHA-256 kept in `target/load/sent-<name>.txt`) isn't sent
-/// again. Packs the build didn't make (no art in local/) are skipped.
+/// rp-today's card files onto the SD card: its icon packs (`RPIC<n>`) and
+/// the radar's built-in base map (`RPMAP`, 214 KB that no longer fit the
+/// image area, 2026-10-31), each in parts (`<stem>A.PAK`, `B`, ...) and an
+/// empty part after the last (the image joins parts up to the first missing
+/// or empty one); a part already sent with the same contents (its SHA-256
+/// kept in `target/load/sent-<name>.txt`) isn't sent again. Packs the build
+/// didn't make (no art in local/) are skipped.
 fn icon_packs(root: &Path) -> Result<(), String> {
     let release = crate::arm_release(root);
     let dir = root.join("target/load");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    for n in 0..rp_weather::settings::PACKS.len() {
-        let Ok(pack) = crate::emu::today_output(&release, &format!("rp-icons{n}.pak")) else {
+    let packs = rp_weather::settings::PACKS.iter().enumerate();
+    let files = packs
+        .map(|(n, what)| (format!("rp-icons{n}.pak"), format!("RPIC{n}"), *what))
+        .chain([("radar.zz".to_string(), "RPMAP".to_string(), "radar map")]);
+    for (out, stem, what) in files {
+        let Ok(pack) = crate::emu::today_output(&release, &out) else {
             continue;
         };
         let mut parts: Vec<&[u8]> = pack.chunks(PACK_PART).collect();
         parts.push(&[]);
         for (p, part) in parts.iter().enumerate() {
-            let name = format!("RPIC{n}{}.PAK", (b'A' + p as u8) as char);
+            let name = format!("{stem}{}.PAK", (b'A' + p as u8) as char);
             let digest = rp_crypto::hex(&rp_crypto::Sha256::digest(part));
             let stamp = dir.join(format!("sent-{name}.txt"));
             if std::fs::read(&stamp).is_ok_and(|s| s == digest) {
@@ -1134,11 +1140,7 @@ fn icon_packs(root: &Path) -> Result<(), String> {
             }
             let file = dir.join(&name);
             std::fs::write(&file, part).map_err(|e| format!("{}: {e}", file.display()))?;
-            eprintln!(
-                "    icon pack {n} ({}): {name}, {} bytes",
-                rp_weather::settings::PACKS[n],
-                part.len()
-            );
+            eprintln!("    card file ({what}): {name}, {} bytes", part.len());
             let sent = put(root, &file.to_string_lossy(), Some(&name));
             // The empty end marker matters only after a pack shrank: a
             // loader that refuses an empty file is told, not fatal.
@@ -1881,6 +1883,11 @@ function Fetch($url) {{
     $r = Invoke-WebRequest -UseBasicParsing -UserAgent $ua $url
     [Text.Encoding]::UTF8.GetBytes($r.Content)
 }}
+# A picture as it came (bytes, not text).
+function FetchRaw($url) {{
+    $r = Invoke-WebRequest -UseBasicParsing -UserAgent $ua $url
+    $r.RawContentStream.ToArray()
+}}
 # A position the device sent: a number in range, three decimals at most.
 function Degrees($v, $max) {{
     if ($v -notmatch '^-?\d{{1,3}}(\.\d{{1,3}})?$') {{ return $null }}
@@ -1954,7 +1961,7 @@ while ($true) {{
                 $lat = Degrees $w[2] 90; $lon = Degrees $w[3] 180
                 if (-not $lat -or -not $lon) {{ Refuse 400 'not a position'; continue }}
                 if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\open-meteo-seattle.json")); continue }}
-                $b = Fetch "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,is_day,cloud_cover,wind_speed_10m,wind_direction_10m,uv_index&hourly=temperature_2m,weather_code,precipitation_probability,is_day,cloud_cover,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset&forecast_days=10&forecast_hours=24&timezone=auto&timeformat=unixtime"
+                $b = Fetch "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,is_day,cloud_cover,wind_speed_10m,wind_direction_10m,uv_index&hourly=temperature_2m,weather_code,precipitation_probability,is_day,cloud_cover,wind_speed_10m,apparent_temperature,relative_humidity_2m,dew_point_2m,wind_gusts_10m,wind_direction_10m,precipitation,uv_index,visibility&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset&forecast_days=10&forecast_hours=24&timezone=auto&timeformat=unixtime"
                 "FORECAST Open-Meteo: $($b.Length) bytes"
                 Answer $b
             }}
@@ -1964,6 +1971,48 @@ while ($true) {{
                 $b = Fetch "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=$lat&lon=$lon"
                 "FORECAST MET Norway: $($b.Length) bytes"
                 Answer $b
+            }}
+            'ALERTS' {{
+                # The US National Weather Service's alerts in force at a
+                # point (outside the US it answers an error: none shown).
+                $lat = Degrees $w[2] 90; $lon = Degrees $w[3] 180
+                if (-not $lat -or -not $lon) {{ Refuse 400 'not a position'; continue }}
+                if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\nws-alerts-two.json")); continue }}
+                $b = Fetch "https://api.weather.gov/alerts/active?point=$lat,$lon"
+                "ALERTS: $($b.Length) bytes"
+                Answer $b
+            }}
+            'FRAMES' {{
+                # RainViewer's radar frames: the last eight, kept for the
+                # tiles that follow; their times (Unix) to the device.
+                if ($canned) {{ $script:rv = @(); Answer ([Text.Encoding]::ASCII.GetBytes('1793457000 1793457600')); continue }}
+                $m = Invoke-RestMethod -UserAgent $ua 'https://api.rainviewer.com/public/weather-maps.json'
+                $script:rvHost = $m.host
+                $script:rv = @($m.radar.past | Select-Object -Last 8)
+                $t = ($script:rv | ForEach-Object {{ $_.time }}) -join ' '
+                "RADAR $($script:rv.Count) frames"
+                Answer ([Text.Encoding]::ASCII.GetBytes($t))
+            }}
+            'TILE' {{
+                # A map tile (CARTO's dark base map) or a rain frame's
+                # (RainViewer's): every number checked, the URL fixed.
+                $isRain = $w[2] -eq 'RAIN'
+                $o = if ($isRain) {{ 4 }} else {{ 3 }}
+                $nums = $w[$o..($o + 2)]
+                if ($w[2] -notin @('MAP', 'RAIN') -or $nums.Count -ne 3 -or ($nums | Where-Object {{ $_ -notmatch '^\d{{1,4}}$' }})) {{ Refuse 400 'not a tile'; continue }}
+                $z = [int]$nums[0]; $x = [int]$nums[1]; $y = [int]$nums[2]
+                if ($z -gt 10 -or $x -ge (1 -shl $z) -or $y -ge (1 -shl $z)) {{ Refuse 400 'not a tile'; continue }}
+                if ($canned) {{
+                    $f = if ($isRain) {{ 'rainviewer-7-29-52.png' }} else {{ 'carto-dark-7-29-52.png' }}
+                    Answer ([IO.File]::ReadAllBytes("$data\$f")); continue
+                }}
+                if ($isRain) {{
+                    if ($w[3] -notmatch '^\d$' -or [int]$w[3] -ge $script:rv.Count) {{ Refuse 404 'no such frame'; continue }}
+                    $url = "$($script:rvHost)$($script:rv[[int]$w[3]].path)/256/$z/$x/$y/2/1_1.png"
+                }} else {{
+                    $url = "https://a.basemaps.cartocdn.com/dark_all/$z/$x/$y.png"
+                }}
+                Answer (FetchRaw $url)
             }}
             'TEMPEST' {{
                 if ($canned) {{

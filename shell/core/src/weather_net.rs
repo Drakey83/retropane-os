@@ -35,9 +35,15 @@ pub enum Ask {
     Forecast,
     /// The Tempest station's readings.
     Tempest,
+    /// The weather alerts in force for the place shown.
+    Alerts,
+    /// The radar's frames (their times).
+    Frames,
+    /// A radar tile: the map's or a rain frame's ([`Question::tile`]).
+    Tile,
 }
 
-const ORDER: [Ask; 7] = [
+const ORDER: [Ask; 10] = [
     Ask::Load,
     Ask::Save,
     Ask::Find,
@@ -45,9 +51,12 @@ const ORDER: [Ask; 7] = [
     Ask::Clip,
     Ask::Forecast,
     Ask::Tempest,
+    Ask::Alerts,
+    Ask::Frames,
+    Ask::Tile,
 ];
 
-const fn bit(a: Ask) -> u8 {
+const fn bit(a: Ask) -> u16 {
     1 << a as u8
 }
 
@@ -60,6 +69,9 @@ pub struct Question {
     n: usize,
     /// Save's record.
     pub body: Option<[u8; store::LEN]>,
+    /// A tile's place: the rain frame (`None`: the map), the tile's index
+    /// in the view's 3 x 3 grid, and the view.
+    pub tile: Option<(Option<u8>, u8, rp_weather::tiles::View)>,
 }
 
 impl Question {
@@ -133,6 +145,7 @@ impl Shell {
             line: [0; 96],
             n: 0,
             body: None,
+            tile: None,
         };
         q.push(b"RPNET ");
         match a {
@@ -174,6 +187,44 @@ impl Shell {
             Ask::Tempest => {
                 q.push(b"TEMPEST");
                 self.push_key(&mut q);
+            }
+            Ask::Frames => q.push(b"FRAMES"),
+            Ask::Alerts => {
+                let p = self.wset.place();
+                q.push(b"ALERTS ");
+                q.push(degrees(p.lat).as_bytes());
+                q.push(b" ");
+                q.push(degrees(p.lon).as_bytes());
+            }
+            Ask::Tile => {
+                let v = self.radar_view();
+                let total = 9 * (1 + u16::from(self.radar_n));
+                // The next tile on the map (past the poles: none).
+                while self.tile_k < total && v.tile(usize::from(self.tile_k % 9)).is_none() {
+                    self.tile_k += 1;
+                }
+                let Some((tx, ty)) = v
+                    .tile(usize::from(self.tile_k % 9))
+                    .filter(|_| self.tile_k < total)
+                else {
+                    return None;
+                };
+                let kind = (self.tile_k / 9) as u8;
+                let rain = kind.checked_sub(1);
+                q.push(b"TILE ");
+                match rain {
+                    None => q.push(b"MAP"),
+                    Some(f) => q.push(Line::new().push(b"RAIN ").num(i32::from(f)).as_bytes()),
+                }
+                let z = Line::new()
+                    .push(b" ")
+                    .num(i32::from(rp_weather::tiles::ZOOM))
+                    .push(b" ")
+                    .num(tx as i32)
+                    .push(b" ")
+                    .num(ty as i32);
+                q.push(z.as_bytes());
+                q.tile = Some((rain, (self.tile_k % 9) as u8, v));
             }
         }
         q.push(b"\n");
@@ -225,6 +276,13 @@ impl Shell {
                 // No stored settings: the defaults' forecast.
                 Ask::Load => self.want(Ask::Forecast),
                 Ask::Save => {}
+                Ask::Frames => self.radar_for = None,
+                // None (outside the US, or no answer): none shown.
+                Ask::Alerts => {
+                    self.n_alerts = 0;
+                    self.dirty(super::weather_app::HEAD);
+                }
+                Ask::Tile => self.tile_done(),
             }
             return;
         }
@@ -291,12 +349,43 @@ impl Shell {
                 if let Some(f) = f {
                     self.set_forecast(f);
                     self.fetched_at = Some(self.now);
+                    // The alerts for the place, with each forecast.
+                    self.want(Ask::Alerts);
                 }
                 if self.wset.station == Station::Tempest && self.wset.provider != Provider::Tempest
                 {
                     self.want(Ask::Tempest);
                 }
             }
+            Ask::Alerts => {
+                self.n_alerts = rp_weather::alerts::from_nws(body, &mut self.alerts) as u8;
+                self.dirty(super::weather_app::HEAD);
+            }
+            Ask::Frames => {
+                // "t1 t2 ... tn", oldest first, up to eight.
+                let mut n = 0;
+                for t in body.split(|c| *c == b' ').filter(|t| !t.is_empty()) {
+                    let Some(v) = core::str::from_utf8(t)
+                        .ok()
+                        .and_then(|t| t.trim().parse::<u32>().ok())
+                    else {
+                        continue;
+                    };
+                    if n < 8 {
+                        self.radar_times[n] = v;
+                        n += 1;
+                    }
+                }
+                self.radar_n = n as u8;
+                self.tile_k = 0;
+                self.radar_map = false;
+                self.radar_done = 0;
+                self.radar_frame = 0;
+                self.want(Ask::Tile);
+                self.dirty(super::weather_app::PAGE);
+            }
+            // The device placed the tile; the next one.
+            Ask::Tile => self.tile_done(),
             Ask::Tempest => {
                 self.adopt_station(body);
                 // The station's reading is "now"; the forecast stays.
@@ -349,6 +438,54 @@ impl Shell {
         }
     }
 
+    /// A tile answered (or not): on to the next; the map or a rain frame
+    /// complete at each ninth.
+    fn tile_done(&mut self) {
+        self.tile_k += 1;
+        if self.tile_k.is_multiple_of(9) {
+            let kind = self.tile_k / 9;
+            if kind == 1 {
+                self.radar_map = true;
+            } else {
+                self.radar_done = (kind - 1) as u8;
+            }
+            self.dirty(Rect::new(0, 0, W, super::H));
+        }
+        if self.tile_k < 9 * (1 + u16::from(self.radar_n)) {
+            self.want(Ask::Tile);
+        }
+    }
+
+    /// The radar's view: centred on the place shown.
+    #[must_use]
+    pub fn radar_view(&self) -> rp_weather::tiles::View {
+        let p = self.wset.place();
+        rp_weather::tiles::View::centred(p.lat, p.lon)
+    }
+
+    /// The real radar for the device's backdrop: `None` until its map is
+    /// in; then the rain frame shown, if complete.
+    #[must_use]
+    pub fn radar_real(&self) -> Option<Option<u8>> {
+        self.radar_map
+            .then(|| Some(self.radar_frame).filter(|f| *f < self.radar_done))
+    }
+
+    /// Frames on the timeline: the real ones once the map is in, else the
+    /// sample's.
+    pub(crate) fn radar_frames(&self) -> u8 {
+        if self.radar_map && self.radar_n > 0 {
+            self.radar_n
+        } else {
+            rp_weather::radar::FRAMES
+        }
+    }
+
+    /// Whether radar tiles are still coming.
+    pub(crate) fn radar_loading(&self) -> bool {
+        self.radar_for.is_some() && self.tile_k < 9 * (1 + u16::from(self.radar_n))
+    }
+
     /// The match list's area on T2.
     fn dirty_matches(&mut self) {
         if self.screen == Screen::AddPlace {
@@ -359,6 +496,22 @@ impl Shell {
     /// Each frame: the search when typing paused, the refresh when due.
     pub(crate) fn net_tick(&mut self) {
         self.search_due();
+        // The radar open on a place it hasn't been asked for: its frames
+        // (then its tiles), again every ten minutes.
+        let p = self.wset.place();
+        if self.screen == Screen::Weather
+            && self.tab == super::weather_app::RADAR
+            && (self.radar_for != Some((p.lat, p.lon))
+                || (self.radar_map && self.now.wrapping_sub(self.radar_asked) > 600_000))
+            && !self.wants(Ask::Frames)
+            && !self.wants(Ask::Tile)
+        {
+            self.radar_for = Some((p.lat, p.lon));
+            self.radar_asked = self.now;
+            self.radar_map = false;
+            self.radar_done = 0;
+            self.want(Ask::Frames);
+        }
         let every = u32::from(self.wset.refresh_minutes()) * 60_000;
         if let Some(at) = self.fetched_at
             && every > 0
@@ -373,27 +526,6 @@ impl Shell {
     pub(crate) fn refresh(&mut self) {
         self.want(Ask::Forecast);
         self.show_notice("Refreshing");
-    }
-
-    /// The header's line about the data: where from and how old.
-    pub(crate) fn data_age(&self) -> Line {
-        let src = Line::new().push(self.wx.source.as_bytes());
-        if self.wants(Ask::Forecast) {
-            return src.push(b", updating");
-        }
-        match self.fetched_at {
-            // The built-in sample says so itself.
-            None if self.wx.source == "Sample data" => src,
-            None => src.push(b", sample"),
-            Some(at) => {
-                let min = self.now.wrapping_sub(at) / 60_000;
-                if min == 0 {
-                    src.push(b", just now")
-                } else {
-                    src.push(b", ").num(min as i32).push(b" min ago")
-                }
-            }
-        }
     }
 }
 
@@ -433,31 +565,18 @@ mod tests {
 
     #[test]
     fn a_tempest_question_carries_the_key_and_its_log_never_does() {
-        let mut q = Question {
-            ask: Ask::Tempest,
+        let q0 = |ask| Question {
+            ask,
             line: [0; 96],
             n: 0,
             body: None,
+            tile: None,
         };
-        q.push(
-            b"RPNET TEMPEST abcd-1234
-",
-        );
+        let mut q = q0(Ask::Tempest);
+        q.push(b"RPNET TEMPEST abcd-1234\n");
         assert_eq!(q.logged(), b"RPNET TEMPEST");
-        let mut f = Question {
-            ask: Ask::Forecast,
-            line: [0; 96],
-            n: 0,
-            body: None,
-        };
-        f.push(
-            b"RPNET OPENMETEO 1.000 2.000
-",
-        );
-        assert_eq!(
-            f.logged(),
-            b"RPNET OPENMETEO 1.000 2.000
-"
-        );
+        let mut f = q0(Ask::Forecast);
+        f.push(b"RPNET OPENMETEO 1.000 2.000\n");
+        assert_eq!(f.logged(), b"RPNET OPENMETEO 1.000 2.000\n");
     }
 }

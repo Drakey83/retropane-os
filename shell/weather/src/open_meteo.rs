@@ -119,6 +119,34 @@ pub fn forecast(json: &[u8], base: &Forecast, place: Name) -> Option<Forecast> {
                             h.sky.wind =
                                 tenths(v.number(), 0, 5000).map_or(h.sky.wind, |w| w as u16);
                         }
+                        b"apparent_temperature" => {
+                            h.feels = tenths(v.number(), -900, 700).unwrap_or(h.feels);
+                        }
+                        b"relative_humidity_2m" => {
+                            h.humidity = whole(v.number(), 0, 100).map_or(h.humidity, |x| x as u8);
+                        }
+                        b"dew_point_2m" => h.dew = tenths(v.number(), -900, 700).unwrap_or(h.dew),
+                        b"wind_gusts_10m" => {
+                            h.gust = tenths(v.number(), 0, 5000).map_or(h.gust, |w| w as u16);
+                        }
+                        b"wind_direction_10m" => {
+                            h.wind_from =
+                                whole(v.number(), 0, 360).map_or(h.wind_from, |d| d as u16);
+                        }
+                        b"precipitation" => {
+                            h.rain = tenths(v.number(), 0, 5000).map_or(h.rain, |r| r as u16);
+                        }
+                        b"uv_index" => {
+                            h.uv = v
+                                .number()
+                                .and_then(|u| whole(Some(u + 500), 0, 20))
+                                .map_or(h.uv, |u| u as u8);
+                        }
+                        // Metres, kept in tenths of a km.
+                        b"visibility" => {
+                            h.vis =
+                                whole(v.number(), 0, 200_000).map_or(h.vis, |m| (m / 100) as u16);
+                        }
                         _ => {}
                     }
                 });
@@ -232,16 +260,24 @@ mod tests {
         let base = crate::sample();
         let f = forecast(SEATTLE, &base, Name::new("Seattle")).expect("a forecast");
         assert_eq!((f.place.as_str(), f.source), ("Seattle", "Open-Meteo"));
-        // Recorded 2026-10-31 (UTC-7): 3.2 C, feels 1.0, 89 %, code 1, day.
-        assert_eq!((f.now.temp, f.now.feels, f.now.humidity), (32, 10, 89));
+        // Recorded 2026-10-31 (UTC-7), the hour card's fields included:
+        // 6.1 C, feels 3.8, 86 %, code 0, day, 16 % cloud, 6.2 km/h from
+        // 85, UV 1.0.
+        assert_eq!((f.now.temp, f.now.feels, f.now.humidity), (61, 38, 86));
         assert_eq!(
             (f.now.sky.wmo, f.now.sky.night, f.now.sky.cover),
-            (1, false, 38)
+            (0, false, 16)
         );
-        assert_eq!((f.now.sky.wind, f.now.wind_from, f.now.uv), (25, 75, 0));
-        // 1793458800 is 2026-10-31 08:00 local (UTC-7), a Saturday.
-        assert_eq!(f.hours[0].hour, 8);
-        assert_eq!(f.hours[1].hour, 9);
+        assert_eq!((f.now.sky.wind, f.now.wind_from, f.now.uv), (62, 85, 1));
+        // The first hour is 09:00 local, a Saturday: feels 2.7, 95 %, dew
+        // 4.2, gusts 9.4 from 64, no rain, UV 0.25 (0), 12.2 km.
+        assert_eq!((f.hours[0].hour, f.hours[1].hour), (9, 10));
+        let h = f.hours[0];
+        assert_eq!(
+            (h.feels, h.humidity, h.dew, h.gust, h.wind_from),
+            (27, 95, 42, 94, 64)
+        );
+        assert_eq!((h.rain, h.uv, h.vis), (0, 0, 122));
         assert_eq!(f.days[0].weekday, 5);
         assert_eq!(f.days[1].weekday, 6);
         // Every hour and day came from the answer, none left the sample's.

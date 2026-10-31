@@ -68,6 +68,20 @@ impl<'a> CpuRenderer<'a> {
         &self.layer
     }
 
+    /// Paints `r` of the layer with `paint(pixels, stride)` (what the
+    /// draw commands can't: Hourly's curve, a line per pixel), then flushes
+    /// `r` out to the plane as a draw does.
+    pub fn paint(&mut self, r: Rect, paint: impl FnOnce(&mut [Argb], usize)) {
+        let r = r.intersect(&self.layer.bounds());
+        if r.is_empty() {
+            return;
+        }
+        let (px, stride) = self.layer.pixels_mut();
+        paint(px, stride);
+        let out = [crate::dirty::widen(r).intersect(&self.layer.bounds())];
+        let _ = layer::flush(&self.layer.view(), self.fmt, self.plane, self.stride, &out);
+    }
+
     /// The plane's bytes (tests).
     #[must_use]
     pub fn plane(&self) -> &[u8] {
