@@ -249,7 +249,14 @@ impl Shell {
         let lerp =
             |a: u16, b: u16| (i32::from(b) + (i32::from(a) - i32::from(b)) * left / 1024) as u16;
         let (card, top) = (super::HERO, super::TITLE.h);
-        let shift = lerp(PANEL_Y - card.y, 0);
+        // The app read lower so its panel starts where the card was, or
+        // held still (`reveal_glide` off: the device run telling apart the
+        // glide and the hand-over, 2026-10-30).
+        let shift = if self.reveal_glide {
+            lerp(PANEL_Y - card.y, 0)
+        } else {
+            0
+        };
         Some((
             Rect::new(
                 lerp(card.x, 0),
@@ -292,6 +299,12 @@ impl Shell {
     /// build's until the owner picks).
     pub fn set_motion(&mut self, m: Motion) {
         self.motion = m;
+    }
+
+    /// Whether Reveal's content glides up into place (the mock-up's) or is
+    /// held still while the window grows.
+    pub fn set_reveal_glide(&mut self, on: bool) {
+        self.reveal_glide = on;
     }
 
     /// The plane path on (the device): the Weather pages on the page layer,

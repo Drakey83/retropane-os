@@ -415,6 +415,8 @@ pub struct Shell {
     /// While a page is drawn into its picture: the picture's rows drawn
     /// (top, bottom), in picture rows.
     band: Option<(i32, i32)>,
+    /// Reveal's content glides up into place (the mock-up's way).
+    reveal_glide: bool,
 }
 
 impl Shell {
@@ -456,6 +458,7 @@ impl Shell {
             planes: false,
             layer_was: false,
             band: None,
+            reveal_glide: true,
         };
         s.dirty(Rect::new(0, 0, W, H));
         s

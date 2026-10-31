@@ -516,6 +516,8 @@ mod image {
         let mut revealing = false;
         // Reveal's window has shown (its clock restarted then).
         let mut reveal_shown = false;
+        // Openings so far (the glide's alternation).
+        let mut opens = 0u32;
         let mut retire: Option<Handle> = None;
         // The pages' draw lists to check against their pictures (a new
         // minute), rebuilt ahead while the screen is still.
@@ -1068,7 +1070,22 @@ mod image {
                     if let Some((r, shift)) = shell.reveal_plane() {
                         if !gfx.aside_held() && !revealing {
                             // The app drawn whole aside, shown through the
-                            // card's window.
+                            // card's window. Opens alternate the glide (odd)
+                            // and a still app (even), to tell apart the
+                            // glide on this panel and the hand-over (the
+                            // owner's run, 2026-10-30).
+                            opens += 1;
+                            shell.set_reveal_glide(opens % 2 == 1);
+                            let (r, shift) = shell.reveal_plane().unwrap_or((r, shift));
+                            let _ = writeln!(
+                                RunLog,
+                                "open {opens}: Reveal {}",
+                                if opens % 2 == 1 {
+                                    "with the glide (the app read 52 rows lower, easing up)"
+                                } else {
+                                    "held still (the window grows, the app in place)"
+                                }
+                            );
                             commit = Some((Some(reveal_state(r, shift)), true));
                         }
                     } else if gfx.aside_held() {
