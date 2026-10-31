@@ -211,4 +211,3 @@ pub(crate) fn local(epoch: i64, offset: i64) -> (i64, u16) {
     let s = epoch + offset * 60;
     (s.div_euclid(86_400), (s.rem_euclid(86_400) / 60) as u16)
 }
-

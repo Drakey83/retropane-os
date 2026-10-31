@@ -222,7 +222,10 @@ impl Shell {
             Ask::Clip => {
                 if self.has_keyboard() {
                     // One line, printable ASCII only.
-                    let line = body.split(|b| *b == b'\n' || *b == b'\r').next().unwrap_or(b"");
+                    let line = body
+                        .split(|b| *b == b'\n' || *b == b'\r')
+                        .next()
+                        .unwrap_or(b"");
                     self.type_bytes(line);
                     self.field_changed();
                 }
@@ -238,7 +241,8 @@ impl Shell {
                     self.set_forecast(f);
                     self.fetched_at = Some(self.now);
                 }
-                if self.wset.station == Station::Tempest && self.wset.provider != Provider::Tempest {
+                if self.wset.station == Station::Tempest && self.wset.provider != Provider::Tempest
+                {
                     self.want(Ask::Tempest);
                 }
             }

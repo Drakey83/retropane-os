@@ -153,8 +153,9 @@ impl Name {
                 },
                 0x20..=0x7E => (Some(c), 1),
                 0xC2 | 0xC3 => (
-                    raw.get(i + 1)
-                        .and_then(|&n| fold_latin((u32::from(c & 0x1F) << 6) | u32::from(n & 0x3F))),
+                    raw.get(i + 1).and_then(|&n| {
+                        fold_latin((u32::from(c & 0x1F) << 6) | u32::from(n & 0x3F))
+                    }),
                     2,
                 ),
                 // Any other UTF-8 sequence: its lead byte and continuations.

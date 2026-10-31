@@ -55,13 +55,21 @@ pub fn forecast(json: &[u8], base: &Forecast, place: Name) -> Option<Forecast> {
                             have_now = true;
                         }
                     }
-                    b"apparent_temperature" => n.feels = tenths(v.number(), -900, 700).unwrap_or(n.feels),
+                    b"apparent_temperature" => {
+                        n.feels = tenths(v.number(), -900, 700).unwrap_or(n.feels)
+                    }
                     b"relative_humidity_2m" => {
                         n.humidity = whole(v.number(), 0, 100).map_or(n.humidity, |h| h as u8);
                     }
-                    b"weather_code" => n.sky.wmo = whole(v.number(), 0, 99).map_or(n.sky.wmo, |c| c as u8),
-                    b"is_day" => n.sky.night = whole(v.number(), 0, 1).map_or(n.sky.night, |d| d == 0),
-                    b"cloud_cover" => n.sky.cover = whole(v.number(), 0, 100).map_or(n.sky.cover, |c| c as u8),
+                    b"weather_code" => {
+                        n.sky.wmo = whole(v.number(), 0, 99).map_or(n.sky.wmo, |c| c as u8)
+                    }
+                    b"is_day" => {
+                        n.sky.night = whole(v.number(), 0, 1).map_or(n.sky.night, |d| d == 0)
+                    }
+                    b"cloud_cover" => {
+                        n.sky.cover = whole(v.number(), 0, 100).map_or(n.sky.cover, |c| c as u8)
+                    }
                     b"wind_speed_10m" => {
                         n.sky.wind = tenths(v.number(), 0, 5000).map_or(n.sky.wind, |w| w as u16);
                     }
@@ -92,15 +100,24 @@ pub fn forecast(json: &[u8], base: &Forecast, place: Name) -> Option<Forecast> {
                                 h.hour = (local(e, offset).1 / 60) as u8;
                             }
                         }
-                        b"temperature_2m" => h.temp = tenths(v.number(), -900, 700).unwrap_or(h.temp),
-                        b"weather_code" => h.sky.wmo = whole(v.number(), 0, 99).map_or(h.sky.wmo, |c| c as u8),
+                        b"temperature_2m" => {
+                            h.temp = tenths(v.number(), -900, 700).unwrap_or(h.temp)
+                        }
+                        b"weather_code" => {
+                            h.sky.wmo = whole(v.number(), 0, 99).map_or(h.sky.wmo, |c| c as u8)
+                        }
                         b"precipitation_probability" => {
                             h.precip = whole(v.number(), 0, 100).map_or(h.precip, |p| p as u8);
                         }
-                        b"is_day" => h.sky.night = whole(v.number(), 0, 1).map_or(h.sky.night, |d| d == 0),
-                        b"cloud_cover" => h.sky.cover = whole(v.number(), 0, 100).map_or(h.sky.cover, |c| c as u8),
+                        b"is_day" => {
+                            h.sky.night = whole(v.number(), 0, 1).map_or(h.sky.night, |d| d == 0)
+                        }
+                        b"cloud_cover" => {
+                            h.sky.cover = whole(v.number(), 0, 100).map_or(h.sky.cover, |c| c as u8)
+                        }
                         b"wind_speed_10m" => {
-                            h.sky.wind = tenths(v.number(), 0, 5000).map_or(h.sky.wind, |w| w as u16);
+                            h.sky.wind =
+                                tenths(v.number(), 0, 5000).map_or(h.sky.wind, |w| w as u16);
                         }
                         _ => {}
                     }
@@ -128,8 +145,12 @@ pub fn forecast(json: &[u8], base: &Forecast, place: Name) -> Option<Forecast> {
                                 d.sky.night = false;
                             }
                         }
-                        b"temperature_2m_max" => d.high = tenths(v.number(), -900, 700).unwrap_or(d.high),
-                        b"temperature_2m_min" => d.low = tenths(v.number(), -900, 700).unwrap_or(d.low),
+                        b"temperature_2m_max" => {
+                            d.high = tenths(v.number(), -900, 700).unwrap_or(d.high)
+                        }
+                        b"temperature_2m_min" => {
+                            d.low = tenths(v.number(), -900, 700).unwrap_or(d.low)
+                        }
                         b"precipitation_probability_max" => {
                             d.precip = whole(v.number(), 0, 100).map_or(d.precip, |p| p as u8);
                         }
@@ -179,7 +200,11 @@ pub fn found(json: &[u8], out: &mut [Found; FOUND_MAX]) -> usize {
             if let (false, Some(lat), Some(lon)) = (name.is_empty(), lat, lon) {
                 let area = crate::Line::new()
                     .push(admin.as_bytes())
-                    .push(if admin.is_empty() || cc.is_empty() { b"" } else { b", " })
+                    .push(if admin.is_empty() || cc.is_empty() {
+                        b""
+                    } else {
+                        b", "
+                    })
                     .push(cc.as_bytes());
                 out[n] = Found {
                     name,
@@ -209,7 +234,10 @@ mod tests {
         assert_eq!((f.place.as_str(), f.source), ("Seattle", "Open-Meteo"));
         // Recorded 2026-10-31 (UTC-7): 3.2 C, feels 1.0, 89 %, code 1, day.
         assert_eq!((f.now.temp, f.now.feels, f.now.humidity), (32, 10, 89));
-        assert_eq!((f.now.sky.wmo, f.now.sky.night, f.now.sky.cover), (1, false, 38));
+        assert_eq!(
+            (f.now.sky.wmo, f.now.sky.night, f.now.sky.cover),
+            (1, false, 38)
+        );
         assert_eq!((f.now.sky.wind, f.now.wind_from, f.now.uv), (25, 75, 0));
         // 1793458800 is 2026-10-31 08:00 local (UTC-7), a Saturday.
         assert_eq!(f.hours[0].hour, 8);
@@ -248,7 +276,13 @@ mod tests {
     #[test]
     fn hostile_answers_are_refused_or_ignored() {
         let base = crate::sample();
-        for bad in [&b""[..], b"{}", b"[1,2]", b"{\"current\":{\"temperature_2m\":1e9}}", b"{\"current\":"] {
+        for bad in [
+            &b""[..],
+            b"{}",
+            b"[1,2]",
+            b"{\"current\":{\"temperature_2m\":1e9}}",
+            b"{\"current\":",
+        ] {
             assert!(forecast(bad, &base, Name::EMPTY).is_none());
         }
         // Out of range: ignored, the base's kept; a code past 99 too.
@@ -258,7 +292,10 @@ mod tests {
             Name::EMPTY,
         )
         .unwrap();
-        assert_eq!((f.now.temp, f.now.humidity, f.now.sky.wmo), (50, base.now.humidity, base.now.sky.wmo));
+        assert_eq!(
+            (f.now.temp, f.now.humidity, f.now.sky.wmo),
+            (50, base.now.humidity, base.now.sky.wmo)
+        );
         // A name with control bytes and escapes is folded, positions checked.
         let mut out = [Found {
             name: Name::EMPTY,
@@ -270,6 +307,9 @@ mod tests {
             br#"{"results":[{"name":"Z\u00fcrich\n\u0007","latitude":47.37,"longitude":8.54,"country_code":"CH"},{"name":"Nowhere","latitude":91,"longitude":0}]}"#,
             &mut out,
         );
-        assert_eq!((n, out[0].name.as_str(), out[0].area.as_str()), (1, "Zurich", "CH"));
+        assert_eq!(
+            (n, out[0].name.as_str(), out[0].area.as_str()),
+            (1, "Zurich", "CH")
+        );
     }
 }

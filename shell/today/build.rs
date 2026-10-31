@@ -300,9 +300,22 @@ fn pack_icons(text: &str) -> (String, Vec<u8>) {
         .unwrap_or("];");
     let mut desc = Vec::new();
     let mut stream = Vec::new();
-    for t in list.trim_end_matches("];").split("),").filter(|t| t.contains('&')) {
-        let f: Vec<&str> = t.trim_start_matches([' ', '(']).split(',').map(str::trim).collect();
-        let (kind, id, w, h) = (f[0], f[1], f[2].parse::<usize>().unwrap(), f[3].parse::<usize>().unwrap());
+    for t in list
+        .trim_end_matches("];")
+        .split("),")
+        .filter(|t| t.contains('&'))
+    {
+        let f: Vec<&str> = t
+            .trim_start_matches([' ', '('])
+            .split(',')
+            .map(str::trim)
+            .collect();
+        let (kind, id, w, h) = (
+            f[0],
+            f[1],
+            f[2].parse::<usize>().unwrap(),
+            f[3].parse::<usize>().unwrap(),
+        );
         let runs = &arrays[f[4].trim_start_matches('&').trim_end_matches(')')];
         let mut px = vec![0u32; w * h];
         let (mut at, mut i) = (0usize, 0usize);
@@ -348,7 +361,11 @@ fn paeth4(px: &[u8], w: usize, h: usize) -> Vec<u8> {
             let i = (y * stride + x) as isize;
             let a = if x >= 4 { at(i - 4) } else { 0 };
             let b = if y > 0 { at(i - stride as isize) } else { 0 };
-            let c = if x >= 4 && y > 0 { at(i - stride as isize - 4) } else { 0 };
+            let c = if x >= 4 && y > 0 {
+                at(i - stride as isize - 4)
+            } else {
+                0
+            };
             f[i as usize] = px[i as usize].wrapping_sub(rp_inflate::paeth(a, b, c));
         }
     }

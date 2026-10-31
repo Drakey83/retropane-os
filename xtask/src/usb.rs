@@ -1791,7 +1791,11 @@ pub fn net(root: &std::path::Path, canned: bool) -> Result<(), String> {
     // `--canned` gives.
     let key = root.join("local").join("tempest-key.txt");
     let store = root.join("local").join("weather-settings.bin");
-    let data = root.join("shell").join("weather").join("tests").join("data");
+    let data = root
+        .join("shell")
+        .join("weather")
+        .join("tests")
+        .join("data");
     // The image's own port: its serial-only entry (no `MI_` interface in
     // the device id, unlike the loader's composite one), present now. The
     // first entry with the id was the loader's stale COM4 once (2026-10-31).

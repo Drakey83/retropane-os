@@ -95,7 +95,11 @@ impl Keyboard {
                 8 => (Cap::Delete, Rect::new(W - 66, y, 60, KH)),
                 _ => {
                     let (x, kw) = spread(70, 340, 7, k - 1);
-                    let low = if self.symbols { LOW_SYMBOLS } else { LOW_LETTERS };
+                    let low = if self.symbols {
+                        LOW_SYMBOLS
+                    } else {
+                        LOW_LETTERS
+                    };
                     let mut c = low[usize::from(k - 1)];
                     if self.shift && !self.symbols {
                         c = c.to_ascii_uppercase();
@@ -173,7 +177,9 @@ impl Keyboard {
             color: GLASS_EDGE,
         });
         for i in 0..CAPS {
-            let Some((cap, r)) = self.cap(i) else { continue };
+            let Some((cap, r)) = self.cap(i) else {
+                continue;
+            };
             let lit = (cap == Cap::Shift && self.shift) || (cap == Cap::Symbols && self.symbols);
             let fill = if cap == Cap::Done {
                 accent
@@ -212,11 +218,13 @@ impl Keyboard {
             && let Some((Cap::Char(c), r)) = self.cap(i)
             && c != b' '
         {
-            let pop = Rect::new((r.x + r.w / 2).saturating_sub(22), r.y.saturating_sub(48), 44, 54);
-            f.push(Cmd::Fill {
-                r: pop,
-                color: POP,
-            });
+            let pop = Rect::new(
+                (r.x + r.w / 2).saturating_sub(22),
+                r.y.saturating_sub(48),
+                44,
+                54,
+            );
+            f.push(Cmd::Fill { r: pop, color: POP });
             f.push(Cmd::Outline {
                 r: pop,
                 color: GLASS_EDGE,
@@ -274,11 +282,17 @@ mod tests {
             let caps: Vec<Rect> = (0..CAPS).map(|i| kb.cap(i).expect("every key").1).collect();
             assert!(kb.cap(CAPS).is_none());
             for (i, a) in caps.iter().enumerate() {
-                assert!(a.x + a.w <= W && a.y >= PANEL.y && a.y + a.h <= PANEL.y + PANEL.h, "{i}: {a:?}");
+                assert!(
+                    a.x + a.w <= W && a.y >= PANEL.y && a.y + a.h <= PANEL.y + PANEL.h,
+                    "{i}: {a:?}"
+                );
                 // 10 px clear of the softkey bar (the owner's mark, 2026-10-31).
                 assert!(a.y + a.h + 10 <= super::super::H - 40, "{i}");
                 for b in &caps[i + 1..] {
-                    assert!(a.intersect(b).w == 0 || a.intersect(b).h == 0, "{a:?} {b:?}");
+                    assert!(
+                        a.intersect(b).w == 0 || a.intersect(b).h == 0,
+                        "{a:?} {b:?}"
+                    );
                 }
             }
         }

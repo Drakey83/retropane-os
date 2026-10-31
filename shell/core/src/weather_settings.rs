@@ -17,7 +17,9 @@
 
 use rp_draw::{Cmd, Frame, Rect};
 use rp_weather::Line;
-use rp_weather::settings::{Appearance, KEY_MAX, PLACES_MAX, Provider, STATION_KINDS, Secret, Station};
+use rp_weather::settings::{
+    Appearance, KEY_MAX, PLACES_MAX, Provider, STATION_KINDS, Secret, Station,
+};
 
 use super::keyboard::{self, Cap, centre_in};
 use super::{DIM, FOCUS, GLASS_EDGE, GLASS_LEFT, GLASS_RIGHT, H, Screen, Shell, TEXT, Target, W};
@@ -95,11 +97,7 @@ impl Shell {
                     add(Item::Place(self.wset.current));
                     // And home, or the first other one.
                     let (c, h) = (self.wset.current, self.wset.home);
-                    add(Item::Place(if h != c {
-                        h
-                    } else {
-                        u8::from(c == 0)
-                    }));
+                    add(Item::Place(if h != c { h } else { u8::from(c == 0) }));
                     add(Item::AllPlaces);
                 }
                 if n < 4 {
@@ -166,10 +164,13 @@ impl Shell {
     /// The section label a row sits under (drawn above its first row).
     fn section(&self, it: Item) -> Option<&'static [u8]> {
         Some(match (self.screen, it) {
-            (Screen::WeatherSettings, Item::Place(_) | Item::AllPlaces | Item::AddPlace) => b"PLACES",
-            (Screen::WeatherSettings, Item::Forecast | Item::Station | Item::Radar | Item::Updates) => {
-                b"WEATHER FROM"
+            (Screen::WeatherSettings, Item::Place(_) | Item::AllPlaces | Item::AddPlace) => {
+                b"PLACES"
             }
+            (
+                Screen::WeatherSettings,
+                Item::Forecast | Item::Station | Item::Radar | Item::Updates,
+            ) => b"WEATHER FROM",
             (Screen::WeatherSettings, Item::Appearance | Item::Units | Item::Icons) => b"LOOK",
             (Screen::WeatherFrom, Item::Provider(_)) => b"FORECAST",
             (Screen::WeatherFrom, Item::StationKind(_)) => b"YOUR WEATHER STATION",
@@ -274,12 +275,16 @@ impl Shell {
                 self.settings_changed(false);
             }
             (_, Item::Updates) => {
-                self.wset.refresh = (self.wset.refresh + 1) % rp_weather::settings::REFRESH.len() as u8;
+                self.wset.refresh =
+                    (self.wset.refresh + 1) % rp_weather::settings::REFRESH.len() as u8;
                 self.settings_changed(false);
             }
             (_, Item::Appearance) => {
                 let a = Appearance::ALL;
-                let i = a.iter().position(|x| *x == self.wset.appearance).unwrap_or(0);
+                let i = a
+                    .iter()
+                    .position(|x| *x == self.wset.appearance)
+                    .unwrap_or(0);
                 self.wset.appearance = a[(i + 1) % a.len()];
                 self.settings_changed(false);
                 self.dirty(Rect::new(0, 0, W, H));
@@ -311,7 +316,9 @@ impl Shell {
 
     /// Match `i` kept as a place, and shown.
     pub(crate) fn add_found(&mut self, i: u8) {
-        let Some(m) = self.found.get(usize::from(i)).copied() else { return };
+        let Some(m) = self.found.get(usize::from(i)).copied() else {
+            return;
+        };
         let p = rp_weather::settings::Place {
             name: m.name,
             area: m.area,
@@ -352,7 +359,9 @@ impl Shell {
 
     /// A key on the keyboard.
     pub(crate) fn cap_tapped(&mut self, i: u8) {
-        let Some((cap, r)) = self.kb.cap(i) else { return };
+        let Some((cap, r)) = self.kb.cap(i) else {
+            return;
+        };
         let before = self.kb;
         match self.kb.press(cap) {
             Cap::Char(c) => self.type_bytes(&[c]),
@@ -375,10 +384,18 @@ impl Shell {
 
     /// Bytes into the field (printable ASCII, as many as fit).
     pub(crate) fn type_bytes(&mut self, b: &[u8]) {
-        let max = if self.screen == Screen::KeyEntry { KEY_MAX } else { 40 };
+        let max = if self.screen == Screen::KeyEntry {
+            KEY_MAX
+        } else {
+            40
+        };
         for &c in b.iter().filter(|c| (0x20..0x7F).contains(*c)) {
             if self.typed_n >= max {
-                self.show_notice(if max == KEY_MAX { "64 at most" } else { "40 at most" });
+                self.show_notice(if max == KEY_MAX {
+                    "64 at most"
+                } else {
+                    "40 at most"
+                });
                 break;
             }
             self.typed[self.typed_n] = c;
@@ -397,7 +414,12 @@ impl Shell {
             if self.typed_n < 2 {
                 self.n_found = 0;
                 self.find_status = "";
-                self.dirty(Rect::new(0, HERE.y + HERE.h, W, keyboard::PANEL.y - HERE.y - HERE.h));
+                self.dirty(Rect::new(
+                    0,
+                    HERE.y + HERE.h,
+                    W,
+                    keyboard::PANEL.y - HERE.y - HERE.h,
+                ));
             }
         }
     }
@@ -443,7 +465,12 @@ impl Shell {
             self.search_at = None;
             self.want(super::weather_net::Ask::Find);
             self.find_status = "Searching";
-            self.dirty(Rect::new(0, HERE.y + HERE.h, W, keyboard::PANEL.y - HERE.y - HERE.h));
+            self.dirty(Rect::new(
+                0,
+                HERE.y + HERE.h,
+                W,
+                keyboard::PANEL.y - HERE.y - HERE.h,
+            ));
         }
     }
 
@@ -486,7 +513,9 @@ impl Shell {
         let (items, n) = self.items();
         let mut last = None;
         for k in 0..n {
-            let Some((it, r)) = self.item(k) else { continue };
+            let Some((it, r)) = self.item(k) else {
+                continue;
+            };
             let sec = self.section(it);
             if sec.is_some() && sec != last {
                 let s = sec.unwrap_or(b"");
@@ -503,7 +532,13 @@ impl Shell {
     }
 
     /// One row's text.
-    fn row_body(&self, f: &mut Frame, it: Item, r: Rect, (ui, label): (&'static rp_draw::Font, &'static rp_draw::Font)) {
+    fn row_body(
+        &self,
+        f: &mut Frame,
+        it: Item,
+        r: Rect,
+        (ui, label): (&'static rp_draw::Font, &'static rp_draw::Font),
+    ) {
         let s = &self.wset;
         let base = r.y + (r.h + u16::from(ui.ascent) * 7 / 10) / 2;
         let right = |f: &mut Frame, text: &[u8], color| {
@@ -533,7 +568,17 @@ impl Shell {
                 right(f, note, DIM);
             }
             Item::AllPlaces => {
-                f.text(r.x + 36, base, ui, TEXT, Line::new().push(b"All ").num(i32::from(s.n_places)).push(b" places").as_bytes());
+                f.text(
+                    r.x + 36,
+                    base,
+                    ui,
+                    TEXT,
+                    Line::new()
+                        .push(b"All ")
+                        .num(i32::from(s.n_places))
+                        .push(b" places")
+                        .as_bytes(),
+                );
                 chevron(f);
             }
             Item::AddPlace => {
@@ -571,13 +616,20 @@ impl Shell {
                 for a in Appearance::ALL {
                     let seg = Rect::new(x, r.y + 7, 58, r.h - 14);
                     if a == s.appearance {
-                        f.push(Cmd::Fill { r: seg, color: FOCUS });
+                        f.push(Cmd::Fill {
+                            r: seg,
+                            color: FOCUS,
+                        });
                     }
                     f.push(Cmd::Outline {
                         r: seg,
                         color: GLASS_EDGE,
                     });
-                    let c = if a == s.appearance { keyboard::DONE_TEXT } else { DIM };
+                    let c = if a == s.appearance {
+                        keyboard::DONE_TEXT
+                    } else {
+                        DIM
+                    };
                     centre_in(f, seg, label, c, a.name().as_bytes());
                     x += 58;
                 }
@@ -585,9 +637,13 @@ impl Shell {
             Item::Units => {
                 f.text(r.x + 12, base, ui, TEXT, b"Units");
                 let u = s.units();
-                let t = Line::new()
-                    .push(s.region_info().name.as_bytes())
-                    .push(if u.temp == rp_weather::Temp::F { b": F, mph" } else { b": C" });
+                let t = Line::new().push(s.region_info().name.as_bytes()).push(
+                    if u.temp == rp_weather::Temp::F {
+                        b": F, mph"
+                    } else {
+                        b": C"
+                    },
+                );
                 right(f, t.as_bytes(), DIM);
             }
             Item::Icons => {
@@ -603,7 +659,13 @@ impl Shell {
                         color: FOCUS,
                     });
                 }
-                f.text(r.x + 12, r.y + 22, ui, if on { FOCUS } else { DIM }, if on { b"(*)" } else { b"( )" });
+                f.text(
+                    r.x + 12,
+                    r.y + 22,
+                    ui,
+                    if on { FOCUS } else { DIM },
+                    if on { b"(*)" } else { b"( )" },
+                );
                 f.text(r.x + 50, r.y + 22, ui, TEXT, p.name().as_bytes());
                 f.text(r.x + 50, r.y + 44, label, DIM, p.note().as_bytes());
             }
@@ -612,7 +674,13 @@ impl Shell {
                 let tempest = i == 0;
                 let on = tempest && s.station == Station::Tempest;
                 f.text(r.x + 12, base, ui, FOCUS, if on { b"*" } else { b"+" });
-                f.text(r.x + 36, base, ui, if on { TEXT } else { FOCUS }, name.as_bytes());
+                f.text(
+                    r.x + 36,
+                    base,
+                    ui,
+                    if on { TEXT } else { FOCUS },
+                    name.as_bytes(),
+                );
                 let v: &[u8] = if on && self.station_live {
                     b"live"
                 } else if on {
@@ -628,7 +696,13 @@ impl Shell {
             Item::Here => {
                 f.text(r.x + 12, r.y + 21, ui, FOCUS, b"o");
                 f.text(r.x + 34, r.y + 21, ui, TEXT, b"Near your dock PC");
-                f.text(r.x + 34, r.y + 41, label, DIM, b"From the PC's own location service");
+                f.text(
+                    r.x + 34,
+                    r.y + 41,
+                    label,
+                    DIM,
+                    b"From the PC's own location service",
+                );
             }
             Item::Match(i) => {
                 if let Some(m) = self.found.get(usize::from(i)) {
@@ -652,7 +726,13 @@ impl Shell {
         if self.screen == Screen::WeatherFrom {
             let r = Rect::new(16, H - 40 - 34, 448, 28);
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
-            centre_in(f, r, self.fonts.label, TEXT, b"A station's readings replace the forecast's now");
+            centre_in(
+                f,
+                r,
+                self.fonts.label,
+                TEXT,
+                b"A station's readings replace the forecast's now",
+            );
         }
     }
 
@@ -732,8 +812,20 @@ impl Shell {
         Self::glass(f, help, GLASS_LEFT, GLASS_RIGHT);
         let count = Line::new().num(self.typed_n as i32).push(b" characters");
         f.text(28, help.y + 22, label, TEXT, count.as_bytes());
-        f.text(28, help.y + 44, label, DIM, b"tempestwx.com, Settings, Data Authorizations");
-        f.text(28, help.y + 66, label, DIM, b"Kept on this device (in memory for now)");
+        f.text(
+            28,
+            help.y + 44,
+            label,
+            DIM,
+            b"tempestwx.com, Settings, Data Authorizations",
+        );
+        f.text(
+            28,
+            help.y + 66,
+            label,
+            DIM,
+            b"Kept on this device (in memory for now)",
+        );
         self.keyboard_scene(f);
     }
 }

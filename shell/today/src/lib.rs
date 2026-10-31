@@ -68,7 +68,11 @@ fn unpaeth4(px: &mut [u8], w: usize, h: usize) {
             let i = y * stride + x;
             let a = if x >= 4 { px[i - 4] } else { 0 };
             let b = if y > 0 { px[i - stride] } else { 0 };
-            let c = if x >= 4 && y > 0 { px[i - stride - 4] } else { 0 };
+            let c = if x >= 4 && y > 0 {
+                px[i - stride - 4]
+            } else {
+                0
+            };
             px[i] = px[i].wrapping_add(rp_inflate::paeth(a, b, c));
         }
     }
@@ -98,7 +102,11 @@ pub fn icons_into(
     for (slot, &(_, _, w, h)) in imgs.iter_mut().zip(&icon_data::DESC) {
         let (mine, more) = rest.split_at_mut(usize::from(w) * usize::from(h));
         rest = more;
-        unpaeth4(rp_hal_mem::words_as_bytes_mut(mine), usize::from(w), usize::from(h));
+        unpaeth4(
+            rp_hal_mem::words_as_bytes_mut(mine),
+            usize::from(w),
+            usize::from(h),
+        );
         *slot = Image { w, h, px: mine };
     }
     let imgs: &'static [Image; ICON_COUNT] = imgs;
@@ -677,7 +685,11 @@ mod tests {
             let (x, y) = (i % stride, i / stride);
             let a = if x >= 4 { px[i - 4] } else { 0 };
             let b = if y > 0 { px[i - stride] } else { 0 };
-            let c = if x >= 4 && y > 0 { px[i - stride - 4] } else { 0 };
+            let c = if x >= 4 && y > 0 {
+                px[i - stride - 4]
+            } else {
+                0
+            };
             f[i] = px[i].wrapping_sub(rp_inflate::paeth(a, b, c));
         }
         unpaeth4(&mut f, w, h);

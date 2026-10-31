@@ -1,7 +1,7 @@
 use rp_draw::{Glyph, MAX_CMDS};
 
-use super::*;
 use super::weather_settings::Item;
+use super::*;
 
 static G: Glyph = Glyph {
     w: 1,
@@ -1028,7 +1028,10 @@ fn settings_rows_change_what_every_screen_shows_and_are_kept() {
     }
     let q = q.expect("a save");
     assert_eq!(q.line(), b"RPNET SAVE 760\n");
-    let back = rp_weather::store::decode(&q.body.expect("the record"), rp_weather::settings::Secret::NONE);
+    let back = rp_weather::store::decode(
+        &q.body.expect("the record"),
+        rp_weather::settings::Secret::NONE,
+    );
     assert_eq!(back.provider, rp_weather::settings::Provider::MetNo);
     assert_eq!(back.region, 1);
 }
@@ -1116,7 +1119,11 @@ fn every_new_screen_fits_a_frame_and_the_d_pad_reaches_its_targets() {
         // Every row on the screen, above the keyboard and the softkeys.
         for k in 0..s.rows() {
             let r = s.rect_of(Target::Row(k));
-            let floor = if s.has_keyboard() { keyboard::PANEL.y } else { H - 40 };
+            let floor = if s.has_keyboard() {
+                keyboard::PANEL.y
+            } else {
+                H - 40
+            };
             assert!(r.h > 0 && r.y + r.h <= floor, "{screen:?} row {k}: {r:?}");
         }
         // The D-pad walks from Start to every row or key and back.
@@ -1174,7 +1181,10 @@ fn the_dock_flow_loads_fetches_searches_adds_and_refreshes() {
     assert!(texts(&drawn(&mut s)).contains(&b"Missouri, US".to_vec()));
     tap_item(&mut s, Item::Match(0));
     assert_eq!(s.screen(), Screen::WeatherSettings);
-    assert_eq!((s.wset.n_places, s.wset.place().name.as_str()), (2, "Perryville"));
+    assert_eq!(
+        (s.wset.n_places, s.wset.place().name.as_str()),
+        (2, "Perryville")
+    );
     assert_eq!(s.wx.place.as_str(), "Perryville");
     let mut fetched = false;
     while let Some(q) = s.next_ask() {
@@ -1191,7 +1201,14 @@ fn the_dock_flow_loads_fetches_searches_adds_and_refreshes() {
     s.tick(s.now + 1000);
     while let Some(q) = s.next_ask() {
         let a = q.ask;
-        s.net_answer(true, if a == Ask::Find { b"\xff{\"results\":[{" } else { b"" });
+        s.net_answer(
+            true,
+            if a == Ask::Find {
+                b"\xff{\"results\":[{"
+            } else {
+                b""
+            },
+        );
     }
     assert_eq!((s.n_found, s.find_status), (0, "Nothing found"));
 }

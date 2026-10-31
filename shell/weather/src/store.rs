@@ -13,9 +13,7 @@
 //! dock today, a card file later) keeps as plain bytes.
 
 use crate::Name;
-use crate::settings::{
-    Appearance, PLACES_MAX, Place, Provider, RadarMap, Settings, Station,
-};
+use crate::settings::{Appearance, PLACES_MAX, Place, Provider, RadarMap, Settings, Station};
 
 /// The record's length.
 pub const LEN: usize = HEAD + PLACES_MAX * PLACE + 4;
@@ -139,7 +137,11 @@ pub fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         c ^= u32::from(b);
         for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
         }
     }
     !c
@@ -175,8 +177,14 @@ mod tests {
             (a.region, a.metric, a.n_places, a.current, a.home),
             (b.region, b.metric, b.n_places, b.current, b.home)
         );
-        assert_eq!((a.provider, a.station, a.refresh, a.pack), (b.provider, b.station, b.refresh, b.pack));
-        assert_eq!((a.radar, a.appearance, a.places), (b.radar, b.appearance, b.places));
+        assert_eq!(
+            (a.provider, a.station, a.refresh, a.pack),
+            (b.provider, b.station, b.refresh, b.pack)
+        );
+        assert_eq!(
+            (a.radar, a.appearance, a.places),
+            (b.radar, b.appearance, b.places)
+        );
     }
 
     #[test]
@@ -251,7 +259,10 @@ mod tests {
         assert_eq!(s.places()[1].name.as_str(), "B");
         assert_eq!((s.n_places, s.current, s.home), (2, 0, 1));
         for k in 0..20 {
-            let _ = s.add_place(Place { name: Name::from_text(&[b'C', b'a' + k as u8]), ..p("C", k) });
+            let _ = s.add_place(Place {
+                name: Name::from_text(&[b'C', b'a' + k as u8]),
+                ..p("C", k)
+            });
         }
         assert_eq!(s.n_places as usize, PLACES_MAX);
         assert!(!s.add_place(p("full", 99)));

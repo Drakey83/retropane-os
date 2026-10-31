@@ -219,8 +219,12 @@ mod tests {
     #[test]
     fn tempest_fills_the_forecast_it_carries() {
         let base = crate::sample();
-        let f = from_tempest(JSON, &base, Name::new("Perryville Loop Station")).expect("a forecast");
-        assert_eq!((f.place.as_str(), f.source), ("Perryville Loop Station", "Tempest"));
+        let f =
+            from_tempest(JSON, &base, Name::new("Perryville Loop Station")).expect("a forecast");
+        assert_eq!(
+            (f.place.as_str(), f.source),
+            ("Perryville Loop Station", "Tempest")
+        );
         assert_eq!(
             (f.now.temp, f.now.feels, f.now.humidity, f.now.uv),
             (174, 171, 93, 0)
