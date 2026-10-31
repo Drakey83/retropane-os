@@ -2,7 +2,7 @@
 //! and supplies:
 //!
 //! - the wallpaper: `local/wallpapers/<name>/<name>.yuv`, `<name>` from
-//!   `RP_TODAY_WALLPAPER` (default `pier`; made by
+//!   `RP_TODAY_WALLPAPER` (default `sunset`; made by
 //!   `tools/shell-assets/wallpaper.py` from the photo; `local/` is never
 //!   committed) or, when that's absent, a generated dusk sky, so the image
 //!   always builds. A test image holds one (950 KiB image area), so the
@@ -28,7 +28,9 @@ fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
     let out = std::env::var("OUT_DIR").expect("set by cargo");
     println!("cargo:rerun-if-env-changed=RP_TODAY_WALLPAPER");
-    let name = std::env::var("RP_TODAY_WALLPAPER").unwrap_or_else(|_| "pier".into());
+    // Sunset by default: the owner wants colour in every build he tests
+    // (2026-10-31; the pier photo is black and white).
+    let name = std::env::var("RP_TODAY_WALLPAPER").unwrap_or_else(|_| "sunset".into());
     assert!(
         !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
         "RP_TODAY_WALLPAPER: a folder name under local/wallpapers"
