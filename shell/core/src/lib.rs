@@ -749,7 +749,7 @@ impl Shell {
         let (ui, label) = (self.fonts.ui, self.fonts.label);
         let r = Rect::new(12, 46, 456, H - 40 - 56);
         Self::glass(f, r, MENU_LEFT, MENU_RIGHT);
-        let Some(a) = self.alerts.get(0).filter(|_| self.n_alerts > 0) else {
+        let Some(a) = self.alerts.first().filter(|_| self.n_alerts > 0) else {
             f.text(r.x + 16, r.y + 34, ui, TEXT, b"No alerts in force");
             return;
         };

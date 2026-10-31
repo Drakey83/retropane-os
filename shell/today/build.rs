@@ -345,8 +345,11 @@ fn pack_file(text: &str) -> Vec<u8> {
     f
 }
 
+/// A picture in a pack's list: its id, size, width and height.
+type Entry = (u8, u8, u16, u16);
+
 /// The pictures' list, their words and the zlib stream.
-fn pack_set(text: &str) -> (Vec<(u8, u8, u16, u16)>, usize, Vec<u8>) {
+fn pack_set(text: &str) -> (Vec<Entry>, usize, Vec<u8>) {
     let ints = |s: &str| -> Vec<u32> {
         s.split(',')
             .filter_map(|v| {

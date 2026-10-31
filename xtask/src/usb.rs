@@ -1151,7 +1151,7 @@ fn icon_packs(root: &Path) -> Result<(), String> {
                 }
                 r => r?,
             }
-            std::fs::write(&stamp, &digest).map_err(|e| format!("{}: {e}", stamp.display()))?;
+            std::fs::write(&stamp, digest).map_err(|e| format!("{}: {e}", stamp.display()))?;
         }
     }
     Ok(())

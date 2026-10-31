@@ -203,12 +203,9 @@ impl Shell {
                 while self.tile_k < total && v.tile(usize::from(self.tile_k % 9)).is_none() {
                     self.tile_k += 1;
                 }
-                let Some((tx, ty)) = v
+                let (tx, ty) = v
                     .tile(usize::from(self.tile_k % 9))
-                    .filter(|_| self.tile_k < total)
-                else {
-                    return None;
-                };
+                    .filter(|_| self.tile_k < total)?;
                 let kind = (self.tile_k / 9) as u8;
                 let rain = kind.checked_sub(1);
                 q.push(b"TILE ");

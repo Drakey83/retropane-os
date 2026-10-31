@@ -83,7 +83,7 @@ pub fn decode(
         let body = png.get(at + 8..at + 8 + len).ok_or(PngError::Damaged)?;
         match kind {
             b"PLTE" => {
-                for (k, c) in body.chunks_exact(3).take(256).enumerate() {
+                for (k, c) in body.as_chunks::<3>().0.iter().take(256).enumerate() {
                     palette[k] = 0xFF00_0000
                         | u32::from(c[0]) << 16
                         | u32::from(c[1]) << 8
