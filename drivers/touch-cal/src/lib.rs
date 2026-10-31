@@ -334,6 +334,12 @@ pub const Z_BACK_DRAG: u32 = 205;
 /// collapses to under [`Z_MIN`] at once, and a drag is reported only after
 /// two samples agree, so a lift's last jump never reads as one.
 pub const Z_HELD_SLIDE: u32 = 128;
+/// A reported touch ends only after this many samples in a row with no
+/// contact: the TSC2046 reads one empty sample now and then mid-stroke
+/// (the owner's swipe, 2026-10-31: pressure 1,363-1,515 either side of a
+/// single empty sample at 23,905 ms and a z = 5 one at 24,055 ms), and
+/// ending there split one swipe into three page turns.
+pub const LIFT_SAMPLES: u8 = 2;
 /// ... pressed at least this hard (raw Z1): a brush is lighter.
 pub const Z_LAND_MOVING: u16 = 900;
 /// Pressure back at this many 1/256ths of the peak: the stylus pressed
@@ -386,6 +392,8 @@ pub struct Filter {
     moving_run: u8,
     /// Where the pen first touched.
     first_at: (u16, u16),
+    /// Samples in a row with no contact since the touch was reported.
+    gap: u8,
     /// While dragging, the recent peak pressure ([`DRAG_PEAK_FADE`]).
     drag_peak: u16,
 }
@@ -406,6 +414,7 @@ impl Filter {
             down_at: (0, 0),
             moving_run: 0,
             first_at: (0, 0),
+            gap: 0,
             drag_peak: 0,
         }
     }
@@ -426,10 +435,18 @@ impl Filter {
     /// One sample (`None`: no pressure, or no pen) at `now_ms`.
     pub fn sample(&mut self, raw: Option<Sample>, now_ms: u32) -> Pen {
         let Some(s) = raw.filter(|s| s.z1 >= Z_MIN) else {
+            // A reported touch outlasts a single empty sample (a dropout
+            // mid-stroke); positions agree afresh after it.
+            if self.at.is_some() && self.gap + 1 < LIFT_SAMPLES {
+                self.gap += 1;
+                self.prev = None;
+                return Pen::Nothing;
+            }
             let up = self.at.map_or(Pen::Nothing, |(x, y)| Pen::Up(x, y));
             *self = Self::new();
             return up;
         };
+        self.gap = 0;
         if self.landed.is_none() {
             self.landed = Some(now_ms);
             self.first_at = (s.x, s.y);

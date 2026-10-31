@@ -14,6 +14,18 @@ type Touch = Vec<(u32, Option<Sample>)>;
 /// A screen rectangle: x, y, width, height.
 type Area = (u16, u16, u16, u16);
 
+/// One recorded sample through the filter as the device feeds it: after an
+/// empty one, while the touch is still down, the loop samples again on its
+/// next pass (~7 ms later), which is what lifts it (`LIFT_SAMPLES`).
+fn feed(f: &mut Filter, s: Option<Sample>, ms: u32) -> Pen {
+    let v = f.sample(s, ms);
+    let empty = s.is_none_or(|s| s.z1 < rp_touch_cal::Z_MIN);
+    if empty && v == Pen::Nothing && f.down() {
+        return f.sample(None, ms + 7);
+    }
+    v
+}
+
 fn touches() -> Vec<Touch> {
     let text = include_str!("data/owner-2026-10-13.txt");
     let mut out: Vec<Touch> = Vec::new();
@@ -71,7 +83,7 @@ fn every_recorded_touch_lands_where_it_was_meant_and_soon() {
         let start = touch[0].0;
         let (mut down, mut up) = (None, None);
         for &(ms, s) in touch {
-            match f.sample(s, ms) {
+            match feed(&mut f, s, ms) {
                 Pen::Down(x, y) => down = Some((ms - start, map(x, y))),
                 Pen::Up(x, y) => up = Some(map(x, y)),
                 _ => {}
@@ -131,7 +143,7 @@ fn free_tapping_is_recognised_promptly() {
         if s.is_some_and(|s| s.z1 >= rp_touch_cal::Z_MIN) && landed.is_none() {
             landed = Some(ms);
         }
-        match f.sample(s, ms) {
+        match feed(&mut f, s, ms) {
             Pen::Down(x, y) => down = Some((ms, map(x, y))),
             Pen::Up(x, y) => {
                 touches += 1;
@@ -247,7 +259,7 @@ fn replay_all() -> Vec<Replayed> {
                 up: None,
             });
         }
-        let ev = f.sample(s, ms);
+        let ev = feed(&mut f, s, ms);
         if let (Pen::Down(x, y), Some(t)) = (ev, cur.as_mut()) {
             t.down = Some((ms - t.landed, map(x, y)));
         }
@@ -385,7 +397,7 @@ fn the_owners_drags_follow_the_pen() {
         let (mut moves, mut at) = (0, None);
         let mut trace = String::new();
         for &(ms, p) in s {
-            let v = f.sample(p, ms);
+            let v = feed(&mut f, p, ms);
             if let Some(p) = p {
                 trace += &format!(" {},{},{}:{v:?}", p.x, p.y, p.z1);
             }

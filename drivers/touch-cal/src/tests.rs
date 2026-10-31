@@ -162,7 +162,11 @@ fn pressure_decides_when_a_position_counts() {
     // count, and the lift sample with almost no pressure ends nothing early.
     assert_eq!(f.sample(at(2283, 3277, 1546), 55), Pen::Nothing);
     assert_eq!(f.sample(at(2252, 3269, 1424), 66), Pen::Nothing);
-    assert_eq!(f.sample(at(0, 3512, 5), 77), Pen::Up(2327, 3290));
+    // One empty sample is bridged (a dropout mid-stroke); the second ends
+    // the touch where it was.
+    assert_eq!(f.sample(at(0, 3512, 5), 77), Pen::Nothing);
+    assert!(f.down());
+    assert_eq!(f.sample(None, 84), Pen::Up(2327, 3290));
     assert!(!f.down());
     // A touch that never steadied: no tap anywhere.
     let mut f = Filter::new();
@@ -203,4 +207,22 @@ fn a_landing_in_place_is_pressed_on_its_second_sample() {
     f.sample(at(2274, 739, 1254), 0);
     assert_eq!(f.sample(at(2300, 742, 1259), 11), Pen::Nothing);
     assert_eq!(f.sample(at(2309, 745, 1273), 22), Pen::Down(2309, 745));
+}
+
+#[test]
+fn one_empty_sample_mid_stroke_does_not_end_the_touch() {
+    // The owner's swipe (2026-10-31): firm pressure either side of a single
+    // empty sample; one touch, not two.
+    // As recorded (rp-today's log, 23,772-23,808 ms): lands on its third.
+    let mut f = Filter::new();
+    f.sample(at(2236, 3306, 1561), 0);
+    f.sample(at(2206, 3287, 1489), 8);
+    assert!(matches!(f.sample(at(2198, 3261, 1498), 15), Pen::Down(..)));
+    assert!(matches!(f.sample(at(2216, 3232, 1549), 22), Pen::Move(..)));
+    assert!(matches!(f.sample(at(2209, 3195, 1537), 29), Pen::Move(..)));
+    assert_eq!(f.sample(None, 36), Pen::Nothing);
+    assert!(f.down());
+    // Contact again: positions agree afresh, then it moves on.
+    assert_eq!(f.sample(at(2194, 3147, 1505), 43), Pen::Nothing);
+    assert!(matches!(f.sample(at(2171, 3109, 1486), 50), Pen::Move(..)));
 }
