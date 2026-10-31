@@ -721,6 +721,9 @@ mod image {
 
     fn main() -> ! {
         rt::init_mmu();
+        // The image's start, for the start-to-screen time (the sheet's
+        // target: under 0.5 s; P4's baseline).
+        let t_image = rt::ticks();
         let Some((regs, vram)) = rp_image::take_mbx() else {
             crash(format_args!("no display"))
         };
@@ -776,6 +779,7 @@ mod image {
         let Some(pool) = rp_hal_x51v::devices::take_ram_pool() else {
             crash(format_args!("no RAM pool"))
         };
+        let pool_words = pool.len();
         let (pics_px, rest) = pool.split_at_mut(rp_draw::pics::Pics::words(&PIC_CLASSES));
         let (wall_words, rest) = rest.split_at_mut(rp_today::WALLPAPER_BYTES.div_ceil(4));
         let (radar_px, rest) = rest.split_at_mut(rp_today::RADAR_WORDS);
@@ -810,7 +814,21 @@ mod image {
         let (png_raw_w, rest) = rest.split_at_mut((256usize * (1 + 256 * 4)).div_ceil(4));
         let png_data = rp_hal_mem::words_as_bytes_mut(png_data_w);
         let png_raw = rp_hal_mem::words_as_bytes_mut(png_raw_w);
-        let _ = rest;
+        // Weather's RAM (the sheet's target: under 8 MB): every part of the
+        // pool this image takes, and the pictures' share (option C).
+        let pictures = rp_draw::pics::Pics::words(&PIC_CLASSES) * 4
+            + DEF_FILE
+            + STREAM_BUF
+            + rp_today::BIG_WORDS * 4
+            + rp_today::Maker::shrink_words() * 4;
+        let _ = writeln!(
+            RunLog,
+            "ram: the image's parts of the RAM pool {} bytes of {} (the pictures {pictures}: store {}, default pack {DEF_FILE}, card stream {STREAM_BUF}, decode scratch {})",
+            (pool_words - rest.len()) * 4,
+            pool_words * 4,
+            rp_draw::pics::Pics::words(&PIC_CLASSES) * 4,
+            (rp_today::BIG_WORDS + rp_today::Maker::shrink_words()) * 4,
+        );
         let net_buf = rp_hal_mem::words_as_bytes_mut(net_words);
         let plane_bytes = rp_hal_mem::words_as_bytes_mut(plane_words);
         let wall_bytes =
@@ -2537,6 +2555,11 @@ mod image {
                 frames += 1;
                 if frames == 1 {
                     let _ = writeln!(RunLog, "{} first frame {us} us", rp_today::MARKER);
+                    let _ = writeln!(
+                        RunLog,
+                        "start: the Today screen shown at {} ms after the image began",
+                        rt::ticks().wrapping_sub(t_image) / TICKS_MS
+                    );
                     // The emulator check waits for this on the serial port.
                     let (stalls, fifo_full) = (gfx.two_d().stalls, gfx.two_d().fifo_full);
                     let _ = writeln!(

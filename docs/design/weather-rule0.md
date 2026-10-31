@@ -147,6 +147,17 @@ soft you lose all of the detail". He chose C, without a loader change:
   clamp. The Rust test holds the device's integer arithmetic to the
   fit's RMS on two VClouds conditions. VClouds' pack: 1,932,247 -> 1,408,989
   bytes; the image 701,828 -> 584,672 bytes loaded.
+- **Built in full (2026-10-31):** steps 1-6 (1282027a, 7044287b,
+  b9b8a6c6, c1a6ef36): handles and the wanted list; decode at size with
+  the fitted filter; packs at 250 px only (VClouds 1.41 MB); the default
+  pack from the SD card, else the CF card the loader attached, else the PC
+  through the dock relay, kept packed in RAM; other packs a picture at a
+  time by offset; no pictures in the image (701,828 -> 589,492 bytes
+  loaded); Hourly's graph one store picture on both paths (MAX_CMDS 256 ->
+  208). P7's radar half (b23caa98): a refresh keeps frames by their time,
+  9 tiles asked, not 81. The X51v run: docs/design/option-c-device-run.md.
+  Open: P4 (R153, after the run's start measurement), P5 (R154, the
+  owner's eye), P7's forecast half (R155).
 - **Hourly's card picture at 160 px** (the owner's pick of three drawn
   sizes, docs/design/mockups/hourly-card-picture-sizes.png), the text
   moved right; built 2026-10-31, the picture shown at 160 once the store
