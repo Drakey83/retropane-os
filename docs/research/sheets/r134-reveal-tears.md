@@ -75,3 +75,14 @@ step, the one before, the registers and the line of the write). One
 more run of WG names the step if it tears again; if it doesn't, R134
 closes as not reproduced, and the plane path's own Reveal is watched by
 the owner when built. Details in `docs/hw/2700g.md` "Run WG-R".
+
+## Run WG again (2026-10-30, gpubench-0251): closed, not reproduced
+
+Reveal 304 of 304 refreshes whole, with every other test as runs 1 and 2
+(the fling 600/600, Cascade 304/304, the turn 241/241 and 256/256, the
+hand-offs 100/100, M7's three holds 300/300). Since the 25 torn
+refreshes of runs 1-2, Reveal has run 1,216 refreshes through the same
+write without one tear. By the stop rule, R134 closes as not
+reproduced. No write rule changes: the plain write in the blanking
+stays. What reopens it: a tear seen in the plane path's own Reveal once
+it is built, which the owner watches.
