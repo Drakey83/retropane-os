@@ -139,6 +139,13 @@ watching.
   `VideoFormat::Rgb565` (2026-10-27), a 16-bit 3D target shown through
   the scaler while the core draws the other of a pair (`rp-gpubench`
   GC2BE measures it at divide 1).
+- The video plane in ARGB8888 (code 8) and ARGB4444 (code 4) with
+  per-pixel alpha (mode 3) over an RGB565 graphics plane: exact, no
+  underrun (`rp-gpubench` run WG, gpubench-0248/-0249). Mode 3 ignores
+  `VBBASE`'s global alpha. Window repoints written in lines 643-2 are
+  whole (`VSCADR`, `VSCTRL`, `SSSIZE`, `VSADR` x); moving `VSADR` y tore
+  10-15 of 304 refreshes. `MBXCLK` 0 leaves the display scanning
+  (300 of 300 refreshes); the 2D clock back in ~90 us.
 - `DMCTRL` (`0x2188`), the display's memory control (mbxfb's name):
   Windows Mobile leaves `0x10303010`, Linux mbxfb writes `0xD0303010`;
   its two high bits change nothing for the divide-1 corruption

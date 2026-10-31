@@ -486,6 +486,31 @@ about 5 minutes, the loader's Windows Mobile clock (no clock change).
    checks the layouts on the host and in the image (`model` hashes), and
    the emulator run checks the wiring and the 2D pictures.
 
+## Run on the X51v (2026-10-30, gpubench-0248 and -0249, twice)
+
+Full numbers in `docs/hw/2700g.md` "Run WG on the X51v". In plain words:
+
+- **M1 holds L2:** per-pixel alpha on the video plane works at both
+  depths, no underrun. The fallback (B, C4 as first voted) isn't needed.
+- **M2 and M3 hold:** the fling and rebound, Cascade and the turn (4- and
+  1-pixel steps) were whole every refresh in both runs, with the CPU
+  under 4 us a frame (37-40 ms today). **Reveal tore 15 and 10 of 304
+  refreshes**: the only test that moves the window's top edge. Not yet a
+  reason to fall back to Expand: the cause comes first (which steps, the
+  write order).
+- **Fade is not free:** mode 3 ignores the global alpha.
+- **M4:** every hand-off landed in its refresh, none torn, but the
+  composed screen and the layer are not the same picture; whether the
+  difference shows is the owner's eye.
+- **M5:** the 2D pieces of a turn and a hand-back: the neighbour page
+  7.3 ms, a hand-back 24.6 ms; the 2D blend differs from our model in 19%
+  of words (to find).
+- **M7:** the screen held with the 2D clock off and with `MBXCLK` 0, and
+  with the on-die buffer told to go low power; the 2D engine back in
+  ~90 us. R133 can gate the 2D clock while a page is still.
+- **The owner's eye (the watched block):** waiting for his answers (V3:
+  8888 or 4444; the turn's steps; the hand-off; the entrances).
+
 ## Votes needed (results are not decisions)
 
 - **V1: the page layer.** L2 (ours: the glass over a still wallpaper on
