@@ -337,6 +337,16 @@ pub enum Motion {
 
 /// The Now page's big panel's top (the hero card becomes it).
 const PANEL_Y: u16 = 80;
+/// The Now page's four cards: the first row's top, the step to the next.
+const CARD_Y: u16 = 342;
+const CARD_STEP: u16 = 92;
+/// A card's bar, from the card's corner.
+const BAR_DX: u16 = 14;
+const BAR_DY: u16 = 66;
+/// The Now page's sunset bar, unscrolled: its length follows the clock, so
+/// a picture check masks it (emu-today; a mask of its own went stale when
+/// the header shrank to 34 px and the cards moved up, 216 pixels "far").
+pub const SUNSET_BAR: Rect = Rect::new(16 + 232 + BAR_DX, CARD_Y + CARD_STEP + BAR_DY, 188, 6);
 
 /// How far a rising page starts below its place.
 const RISE: u32 = 40;
@@ -988,14 +998,15 @@ impl Shell {
         for (i, (name, value, amount, scale)) in cards.iter().enumerate() {
             let e = self.ease(2 + i as u32);
             let cx = 16 + (i as u16 % 2) * 232 + self.slide(2 + i as u32);
-            let cy = self.sy(342 + (i as u16 / 2) * 92);
+            let cy = self.sy(CARD_Y + (i as u16 / 2) * CARD_STEP);
             Self::glass_at(f, cx, cy, 216, 84);
             Self::text_at(f, cx + 14, cy + 26, label, DIM, name);
             Self::text_at(f, cx + 14, cy + 54, ui, TEXT, value.as_bytes());
-            if cy + 66 < 0 {
+            let bar_y = cy + i32::from(BAR_DY);
+            if bar_y < 0 {
                 continue;
             }
-            let track = Rect::new(cx + 14, (cy + 66) as u16, 188, 6);
+            let track = Rect::new(cx + BAR_DX, bar_y as u16, SUNSET_BAR.w, SUNSET_BAR.h);
             f.push(Cmd::Fill {
                 r: track,
                 color: TRACK,

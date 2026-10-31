@@ -650,8 +650,9 @@ mod image {
         }
 
         // ADR-0023: the 2D engine draws; no CPU layer in SDRAM.
-        let Some(two_d) = TWO_D.put_with(|| {
-            Mbx2dRenderer::new(
+        let Some(two_d) = TWO_D.put_in(|m| {
+            Mbx2dRenderer::new_in(
+                m,
                 d.into_inner(),
                 Vram(vram),
                 Layout::X51V,

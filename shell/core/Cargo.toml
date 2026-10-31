@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+rp-hal-mem = { path = "../../hal/mem" }
 rp-draw = { path = "../../drivers/draw" }
 rp-touch-cal = { path = "../../drivers/touch-cal" }
 rp-weather = { path = "../weather" }

@@ -386,6 +386,16 @@ impl ThreeD {
             blocks: [NO_BLOCK; BLOCKS],
         }
     }
+
+    /// [`Self::new`] made straight into `slot`: made on the stack and
+    /// moved, the 7.5 KB of blocks took a 7.6 KB frame at the image's start
+    /// (`cargo xtask stacks`, P6).
+    pub fn new_in(slot: &mut core::mem::MaybeUninit<Self>) -> &mut Self {
+        rp_hal_mem::in_place!(slot, ThreeD {
+            scene: None,
+            blocks: @each NO_BLOCK,
+        })
+    }
 }
 
 impl Default for ThreeD {

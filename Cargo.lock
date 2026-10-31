@@ -487,6 +487,7 @@ dependencies = [
  "rp-drv-blit2d",
  "rp-drv-mbx-display",
  "rp-hal-api",
+ "rp-hal-mem",
  "rp-mbx-render",
  "rp-mbx3d-render",
  "rp-vram-map",
@@ -751,6 +752,7 @@ dependencies = [
  "rp-drv-mbx-display",
  "rp-gfx",
  "rp-hal-api",
+ "rp-hal-mem",
  "rp-vram-map",
 ]
 
@@ -972,6 +974,7 @@ version = "0.0.0"
 dependencies = [
  "rp-draw",
  "rp-gfx",
+ "rp-hal-mem",
  "rp-touch-cal",
  "rp-weather",
 ]

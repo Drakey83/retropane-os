@@ -12,7 +12,7 @@
 //! (quality audit C95); only the transport changes, every reader stays.
 
 use rp_weather::Line;
-use rp_weather::open_meteo::{FOUND_MAX, Found};
+
 use rp_weather::settings::{Provider, Station};
 use rp_weather::store;
 
@@ -293,14 +293,9 @@ impl Shell {
             }
             Ask::Save => {}
             Ask::Find | Ask::Here => {
-                let mut out = [Found {
-                    name: rp_weather::Name::EMPTY,
-                    area: rp_weather::Name::EMPTY,
-                    lat: 0,
-                    lon: 0,
-                }; FOUND_MAX];
-                let n = rp_weather::open_meteo::found(body, &mut out);
-                self.found = out;
+                // Straight into the list kept (a copy on the stack was most
+                // of a 4.5 KB frame, the P6 stack rule).
+                let n = rp_weather::open_meteo::found(body, &mut self.found);
                 self.n_found = n as u8;
                 if a == Ask::Here && n > 0 && self.screen == Screen::AddPlace {
                     // The PC's place: kept at once (what the tap asked for).
@@ -333,31 +328,7 @@ impl Shell {
                     self.field_changed();
                 }
             }
-            Ask::Forecast => {
-                let place = self.wset.place().name;
-                let provider = self.provider_here();
-                let f = match provider {
-                    Provider::OpenMeteo => rp_weather::open_meteo::forecast(body, &self.wx, place),
-                    Provider::Tempest => {
-                        self.adopt_station(body);
-                        rp_weather::tempest::from_tempest(body, &self.wx, self.wset.place().name)
-                    }
-                    Provider::Nws | Provider::MetNo => None,
-                };
-                if let Some(f) = f {
-                    self.set_forecast(f);
-                    self.fetched_at = Some(self.now);
-                    // The alerts for the place, with each forecast.
-                    self.want(Ask::Alerts);
-                }
-                // The station's reading over the forecast, at its own place.
-                if self.wset.station == Station::Tempest
-                    && provider != Provider::Tempest
-                    && (self.at_station() || !self.station_known())
-                {
-                    self.want(Ask::Tempest);
-                }
-            }
+            Ask::Forecast => self.forecast_answer(body),
             Ask::Alerts => {
                 self.n_alerts = rp_weather::alerts::from_nws(body, &mut self.alerts) as u8;
                 self.dirty(super::weather_app::HEAD);
@@ -387,20 +358,55 @@ impl Shell {
             }
             // The device placed the tile; the next one.
             Ask::Tile => self.tile_done(),
-            Ask::Tempest => {
+            Ask::Tempest => self.tempest_answer(body),
+        }
+    }
+
+    /// A forecast's answer. Each answer that builds a forecast is a
+    /// function of its own (`inline(never)`): inlined, their forecasts on
+    /// the stack were added up in `net_answer`'s frame (4.5 KB, over the P6
+    /// rule's 4 KB).
+    #[inline(never)]
+    fn forecast_answer(&mut self, body: &[u8]) {
+        let place = self.wset.place().name;
+        let provider = self.provider_here();
+        let f = match provider {
+            Provider::OpenMeteo => rp_weather::open_meteo::forecast(body, &self.wx, place),
+            Provider::Tempest => {
                 self.adopt_station(body);
-                // The station's reading is "now" at its place (another
-                // place may have been picked meanwhile); the forecast stays.
-                if self.station_known() && !self.at_station() {
-                    return;
-                }
-                if let Some(t) = rp_weather::tempest::from_tempest(body, &self.wx, self.wx.place) {
-                    let mut f = self.wx;
-                    f.now = t.now;
-                    self.set_forecast(f);
-                    self.station_live = true;
-                }
+                rp_weather::tempest::from_tempest(body, &self.wx, self.wset.place().name)
             }
+            Provider::Nws | Provider::MetNo => None,
+        };
+        if let Some(f) = f {
+            self.set_forecast(f);
+            self.fetched_at = Some(self.now);
+            // The alerts for the place, with each forecast.
+            self.want(Ask::Alerts);
+        }
+        // The station's reading over the forecast, at its own place.
+        if self.wset.station == Station::Tempest
+            && provider != Provider::Tempest
+            && (self.at_station() || !self.station_known())
+        {
+            self.want(Ask::Tempest);
+        }
+    }
+
+    /// The station's answer (as [`Self::forecast_answer`]).
+    #[inline(never)]
+    fn tempest_answer(&mut self, body: &[u8]) {
+        self.adopt_station(body);
+        // The station's reading is "now" at its place (another place may
+        // have been picked meanwhile); the forecast stays.
+        if self.station_known() && !self.at_station() {
+            return;
+        }
+        if let Some(t) = rp_weather::tempest::from_tempest(body, &self.wx, self.wx.place) {
+            let mut f = self.wx;
+            f.now = t.now;
+            self.set_forecast(f);
+            self.station_live = true;
         }
     }
 

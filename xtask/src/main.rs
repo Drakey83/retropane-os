@@ -22,6 +22,7 @@ mod sdkit;
 mod serve;
 mod size;
 mod spot;
+mod stacks;
 mod symbols;
 mod trace;
 mod ui_preview;
@@ -102,6 +103,9 @@ commands:
   lint      architecture policy: layering and unsafe rules (DESIGN.md §3.1)
   test      host unit tests
   cross     build every OS crate for the X51v (ARMv5TE)
+  stacks    every image again with the compiler's frame sizes (target-stack):
+            no frame of 4 KB or more but main's, the deepest call path
+            under 75% of the image's stack (docs/design/weather-rule0.md P6)
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
   gate      count the performance gate's checklist lines (docs/ROADMAP.md)
   adrs      the ADR index (docs/adr/README.md) must match the records
@@ -364,12 +368,13 @@ fn main() -> ExitCode {
             "adrs",
             "test",
             "cross",
+            "stacks",
         ]
         .iter()
         .try_for_each(|c| run_step(c))
         .and_then(|()| ci_stamp(&workspace_root())),
         "eol" | "reminders" | "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross"
-        | "coverage" | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale"
+        | "stacks" | "coverage" | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale"
         | "emu-blend-filter" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat"
         | "emu-mbx3d-api" | "emu-tabench" | "emu-gpubench" | "emu-cs3bus" | "emu-cpldbus"
         | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "ui-preview" | "emu-crash"
@@ -787,6 +792,7 @@ fn run_step(step: &str) -> Result {
         "adrs" => adrs::check(&workspace_root()),
         "test" => cargo(&["test", "--workspace"]),
         "cross" => cross(),
+        "stacks" => stack_check(),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
         "emu-blend-scale" => cross().and_then(|()| emu::boot_loader_blend_scale(&workspace_root())),
@@ -1342,6 +1348,67 @@ fn measure_options() -> Result<profile::Options> {
 
 fn cross() -> Result {
     let crates = workspace_crates()?;
+    build_images(&crates, None)?;
+    // Bare-metal images: OS crates that are binaries only.
+    let images: Vec<&str> = crates
+        .iter()
+        .filter(|c| matches!(c.place, Placement::Os(_)) && c.lib_root.is_none())
+        .map(|c| c.name.as_str())
+        .collect();
+    let release = crate::arm_release(&workspace_root());
+    size::check(&release, &images)?;
+    frames::check(&release, &images)
+}
+
+/// P6 (docs/design/weather-rule0.md): every image built again with the
+/// compiler's own frame sizes, in a folder of its own (the flag in `target`
+/// would rebuild it for every other build), checked frame by frame and
+/// path by path. A CI step of its own, so the emulator's commands don't pay
+/// for a second build.
+fn stack_check() -> Result {
+    let crates = workspace_crates()?;
+    build_images(&crates, Some(stacks::DIR))?;
+    stacks::check(&crates_built(&crates, stacks::DIR))
+}
+
+/// The OS crates whose image was built into `dir`'s ARM and Thumb release
+/// folders (a crate with a library and a binary too, as `rp-today`).
+fn crates_built(crates: &[Crate], dir: &str) -> Vec<PathBuf> {
+    let root = workspace_root().join(dir);
+    let release = root.join("armv5te-x51v-none-eabi/release");
+    crates
+        .iter()
+        .filter(|c| matches!(c.place, Placement::Os(_)))
+        .map(|c| release.join(&c.name))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
+/// Builds every image into `target` (`stack_dir` `None`), or into the
+/// folder `stack_dir` with `-Zemit-stack-sizes` ([`stacks`]), the same
+/// way: user images, the OS crates, the Thumb and frame-pointer ones.
+fn build_images(crates: &[Crate], stack_dir: Option<&str>) -> Result {
+    let flags = |more: Option<&str>| {
+        let all: Vec<&str> = more
+            .into_iter()
+            .chain(stack_dir.map(|_| stacks::FLAG))
+            .collect();
+        all.join(" ")
+    };
+    let env = |more: Option<&str>| {
+        let mut cmd = Command::new("");
+        let f = flags(more);
+        if !f.is_empty() {
+            cmd.env("RUSTFLAGS", f);
+        }
+        cmd
+    };
+    let dir_args: Vec<&str> = stack_dir.map_or(vec![], |d| vec!["--target-dir", d]);
+    let base = stack_dir.map_or_else(
+        || target_dir(&workspace_root()),
+        |d| workspace_root().join(d),
+    );
+    let release = base.join("armv5te-x51v-none-eabi/release");
     // User process images first: the kernel image embeds them (its build
     // script reads `<name>.pe` next to them).
     let mut user = vec![
@@ -1352,11 +1419,12 @@ fn cross() -> Result {
         "-Zbuild-std=core,compiler_builtins",
         "-Zjson-target-spec",
     ];
+    user.extend(&dir_args);
     for name in userimg::IMAGES {
         user.extend(["-p", name]);
     }
-    cargo(&user)?;
-    userimg::package_all(&crate::arm_release(&workspace_root()))?;
+    cargo_with(&mut env(None), &user)?;
+    userimg::package_all(&release)?;
     let mut args = vec![
         "build".to_string(),
         "--release".into(),
@@ -1365,6 +1433,7 @@ fn cross() -> Result {
         "-Zbuild-std=core,compiler_builtins".into(),
         "-Zjson-target-spec".into(),
     ];
+    args.extend(dir_args.iter().map(|a| (*a).to_string()));
     for c in crates
         .iter()
         .filter(|c| matches!(c.place, Placement::Os(_)) && c.name != policy::MOCK_CRATE)
@@ -1376,13 +1445,13 @@ fn cross() -> Result {
         args.push(c.name.clone());
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    cargo(&refs)?;
+    cargo_with(&mut env(None), &refs)?;
     // ADR-0015: these images are built as Thumb code (the HAL's assembly
     // stays ARM, marked per function), then put where the ARM build put
     // them, so everything downstream (sizes, the emulator, the SD kit) uses
     // them unchanged. Reverting to all-ARM is emptying this list.
     for image in THUMB_IMAGES {
-        cargo(&[
+        let mut thumb = vec![
             "build",
             "--release",
             "--target",
@@ -1391,11 +1460,11 @@ fn cross() -> Result {
             "-Zjson-target-spec",
             "-p",
             image,
-        ])?;
-        let from = target_dir(&workspace_root())
-            .join("thumbv5te-x51v-none-eabi/release")
-            .join(image);
-        let to = crate::arm_release(&workspace_root()).join(image);
+        ];
+        thumb.extend(&dir_args);
+        cargo_with(&mut env(None), &thumb)?;
+        let from = base.join("thumbv5te-x51v-none-eabi/release").join(image);
+        let to = release.join(image);
         std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
     }
     // ADR-0001: these images are built with frame pointers (their crash
@@ -1404,19 +1473,23 @@ fn cross() -> Result {
     for image in FRAME_POINTER_IMAGES {
         if THUMB_IMAGES.contains(image) {
             return Err(format!(
-                "{image}: in both the Thumb and the frame-pointer lists (the walker follows ARM \
-                 code's chain only)"
+                "{image}: in both the Thumb and the frame-pointer lists (the walker follows ARM                  code's chain only)"
             ));
         }
-        let mut env = Command::new("");
-        let dir = frame_pointer_build(&mut env, image, "target");
-        if dir == "target" {
+        let mut fp = Command::new("");
+        let dir = frame_pointer_build(&mut fp, image, stack_dir.unwrap_or("target"));
+        if dir == stack_dir.unwrap_or("target") {
             // `RP_MAY_OMIT=1`: built may-omit above, where it stays (a copy
             // onto itself could empty it).
             continue;
         }
+        let fp_flags = fp
+            .get_envs()
+            .find(|(k, _)| *k == "RUSTFLAGS")
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned());
         cargo_with(
-            &mut env,
+            &mut env(fp_flags.as_deref()),
             &[
                 "build",
                 "--release",
@@ -1434,18 +1507,10 @@ fn cross() -> Result {
             .join(&dir)
             .join("armv5te-x51v-none-eabi/release")
             .join(image);
-        let to = crate::arm_release(&workspace_root()).join(image);
+        let to = release.join(image);
         std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
     }
-    // Bare-metal images: OS crates that are binaries only.
-    let images: Vec<&str> = crates
-        .iter()
-        .filter(|c| matches!(c.place, Placement::Os(_)) && c.lib_root.is_none())
-        .map(|c| c.name.as_str())
-        .collect();
-    let release = crate::arm_release(&workspace_root());
-    size::check(&release, &images)?;
-    frames::check(&release, &images)
+    Ok(())
 }
 
 #[cfg(test)]

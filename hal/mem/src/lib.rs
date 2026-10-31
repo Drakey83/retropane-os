@@ -13,6 +13,83 @@
 #![cfg_attr(not(test), no_std)]
 #![no_builtins]
 
+/// Makes a struct straight into its slot, a field at a time, so no whole
+/// struct is made on the stack and copied (the shell, 8.5 KB: made whole in
+/// `Slot::put_with` it took a 15.8 KB frame and overflowed the X51v's
+/// stack, today-0037). Rust-for-Linux's `init!` is the same idea; this is
+/// its smallest form, for crates that forbid `unsafe` (ADR-0004: the
+/// `unsafe` lives here, in the HAL).
+///
+/// `in_place!(slot, Type { field: value, ... })` with `slot` a
+/// `&mut MaybeUninit<Type>` gives `&mut Type`; `in_place!(value Type {
+/// ... })` is the plain struct literal (for a `new` that returns the
+/// value, so one field list serves both). `field: @each value` fills an
+/// array field with `value` an element at a time. Every field is named, as in a
+/// struct literal: a closure that is never called holds the same literal,
+/// so leaving a field out fails to compile.
+#[macro_export]
+macro_rules! in_place {
+    (value $ty:ident { $($f:ident : $(@$each:ident)? $v:expr),* $(,)? }) => {
+        $ty { $($f: $crate::in_place!(@value $v $(, $each)?)),* }
+    };
+    ($slot:expr, $ty:ident { $($f:ident : $(@$each:ident)? $v:expr),* $(,)? }) => {{
+        let slot: &mut core::mem::MaybeUninit<_> = $slot;
+        let p = slot.as_mut_ptr();
+        #[allow(unreachable_code, clippy::diverging_sub_expression)]
+        $crate::every_field(p, || $ty { $($f: unreachable!()),* });
+        $(
+            // SAFETY: `p` points at the slot, writable and aligned for
+            // `$ty`; the field is reached by a raw pointer (no reference to
+            // the uninitialised struct is made) and seen as uninitialised.
+            // The value is made outside the `unsafe`, straight into it.
+            let field = unsafe { $crate::uninit_field(core::ptr::addr_of_mut!((*p).$f)) };
+            $crate::in_place!(@write field, $v $(, $each)?);
+        )*
+        // SAFETY: every field was written above (the closure's literal
+        // names them all, or this fails to compile).
+        unsafe { slot.assume_init_mut() }
+    }};
+    (@value $v:expr) => { $v };
+    (@value $v:expr, each) => { [$v; _] };
+    (@write $field:ident, $v:expr) => {
+        $field.write($v);
+    };
+    // `field: @each value`: an array, an element at a time (a repeat
+    // expression is made whole on the stack first: the shell's 3.8 KB
+    // alerts list was).
+    (@write $field:ident, $v:expr, each) => {
+        for e in $crate::uninit_elems($field) {
+            e.write($v);
+        }
+    };
+}
+
+/// [`in_place!`]'s check: `literal` (never called) builds the same type
+/// as `p` points at, so it names every field.
+#[doc(hidden)]
+pub fn every_field<T>(_p: *mut T, _literal: impl FnOnce() -> T) {}
+
+/// A field of a struct being made by [`in_place!`], as uninitialised.
+///
+/// # Safety
+/// `p` points at a field of a live slot, valid and unaliased for `'a`.
+#[doc(hidden)]
+pub unsafe fn uninit_field<'a, F>(p: *mut F) -> &'a mut core::mem::MaybeUninit<F> {
+    // SAFETY: the caller's; `MaybeUninit<F>` has `F`'s layout.
+    unsafe { &mut *p.cast::<core::mem::MaybeUninit<F>>() }
+}
+
+/// An uninitialised array as its uninitialised elements, for
+/// [`in_place!`]'s `@each`.
+#[doc(hidden)]
+pub fn uninit_elems<T, const N: usize>(
+    a: &mut core::mem::MaybeUninit<[T; N]>,
+) -> &mut [core::mem::MaybeUninit<T>; N] {
+    // SAFETY: `[MaybeUninit<T>; N]` has the layout of `[T; N]`, and every
+    // bit pattern is a valid `MaybeUninit`; the borrow is `a`'s.
+    unsafe { &mut *a.as_mut_ptr().cast::<[core::mem::MaybeUninit<T>; N]>() }
+}
+
 /// Views words as bytes (little-endian order on the X51v). Always sound:
 /// `u8` has no alignment requirement and every bit pattern is a valid `u8`,
 /// and the borrow keeps the words untouchable while the bytes are in use.

@@ -13,6 +13,7 @@ publish.workspace = true
 model = []
 
 [dependencies]
+rp-hal-mem = { path = "../../hal/mem" }
 rp-hal-api = { path = "../../hal/api" }
 rp-draw = { path = "../draw" }
 rp-gfx = { path = "../gfx" }

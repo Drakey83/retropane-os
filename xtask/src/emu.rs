@@ -11834,7 +11834,7 @@ fn today_drag(
 fn page_differ(got: &[u8], want: &[u8]) -> (usize, usize) {
     let w = rp_today::W * 3;
     let (a, b) = (&got[94 * w..556 * w], &want[94 * w..556 * w]);
-    let sunset = rp_draw::Rect::new(248, 520, 216, 14);
+    let sunset = rp_shell::weather_app::SUNSET_BAR;
     a.chunks(3)
         .zip(b.chunks(3))
         .enumerate()

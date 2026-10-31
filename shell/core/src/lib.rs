@@ -515,33 +515,38 @@ impl Shell {
     /// The Today screen, all of it to be drawn.
     #[must_use]
     pub fn new(fonts: Fonts, icons: Icons, dev_exit: bool) -> Self {
-        let mut s = Self::make(fonts, icons, dev_exit);
+        let mut s = shell_start!(fonts, icons, dev_exit; value);
         s.dirty(Rect::new(0, 0, W, H));
         s
     }
 
-    /// [`Shell::new`] made straight into `slot` (the device's, in `.bss`):
-    /// the Shell is 7.6 KB, and made on the stack and moved it took a
-    /// 15.8 KB frame at start, which with `main`'s 8.7 KB overflowed the
-    /// image's stack (today-0036, -0037 on the X51v).
+    /// [`Shell::new`] made straight into `slot` (the device's, in `.bss`), a
+    /// field at a time: the Shell is 8.5 KB, and made on the stack and
+    /// moved it took a 15.8 KB frame at start (then 8.9 KB through
+    /// `slot.write`), which with `main`'s 8.7 KB overflowed the image's
+    /// stack (today-0036, -0037 on the X51v). `cargo xtask stacks` (P6)
+    /// keeps every such frame under 4 KB.
     pub fn new_in(
         slot: &mut core::mem::MaybeUninit<Self>,
         fonts: Fonts,
         icons: Icons,
         dev_exit: bool,
     ) -> &mut Self {
-        let s = slot.write(Self::make(fonts, icons, dev_exit));
+        let s = shell_start!(fonts, icons, dev_exit; slot,);
         s.dirty(Rect::new(0, 0, W, H));
         s
     }
+}
 
-    /// Every field's start.
-    #[inline(always)]
-    fn make(fonts: Fonts, icons: Icons, dev_exit: bool) -> Self {
-        Self {
-            fonts,
-            icons,
-            dev_exit,
+/// Every field's start, made as a value or straight into a slot
+/// (`rp_hal_mem::in_place!`): one list for [`Shell::new`] and
+/// [`Shell::new_in`].
+macro_rules! shell_start {
+    ($fonts:expr, $icons:expr, $dev_exit:expr; $($how:tt)*) => {
+        rp_hal_mem::in_place!($($how)* Shell {
+            fonts: $fonts,
+            icons: $icons,
+            dev_exit: $dev_exit,
             menu_open: false,
             focus: None,
             pressed: None,
@@ -567,12 +572,12 @@ impl Shell {
             typed_n: 0,
             kb: keyboard::Keyboard::default(),
             removing: false,
-            found: [rp_weather::open_meteo::Found {
+            found: @each rp_weather::open_meteo::Found {
                 name: rp_weather::Name::EMPTY,
                 area: rp_weather::Name::EMPTY,
                 lat: 0,
                 lon: 0,
-            }; rp_weather::open_meteo::FOUND_MAX],
+            },
             n_found: 0,
             search_at: None,
             find_status: "",
@@ -581,7 +586,7 @@ impl Shell {
             asking: None,
             hour_pick: 0,
             place_menu: false,
-            alerts: [rp_weather::alerts::Alert::NONE; rp_weather::alerts::ALERTS_MAX],
+            alerts: @each rp_weather::alerts::Alert::NONE,
             n_alerts: 0,
             curve: [None; weather_app::CURVE_SPRITES],
             dials: station::Dials::NONE,
@@ -604,9 +609,12 @@ impl Shell {
             layer_was: false,
             band: None,
             reveal_glide: true,
-        }
-    }
+        })
+    };
+}
+use shell_start;
 
+impl Shell {
     /// The focused target, if the D-pad has been used.
     #[must_use]
     pub fn focus(&self) -> Option<Target> {

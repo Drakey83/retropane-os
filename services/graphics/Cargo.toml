@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+rp-hal-mem = { path = "../../hal/mem" }
 rp-hal-api = { path = "../../hal/api" }
 rp-draw = { path = "../../drivers/draw" }
 rp-mbx-render = { path = "../../drivers/mbx-render" }

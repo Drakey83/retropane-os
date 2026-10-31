@@ -1149,8 +1149,9 @@ mod image {
             if under { "set" } else { "clear" }
         );
 
-        let Some(two_d) = TWO_D.put_with(|| {
-            Mbx2dRenderer::new(
+        let Some(two_d) = TWO_D.put_in(|m| {
+            Mbx2dRenderer::new_in(
+                m,
                 d.into_inner(),
                 Vram(vram),
                 Layout::X51V,
@@ -1163,7 +1164,7 @@ mod image {
         label(two_d, ["RP-SCENE SETTING UP", ""]);
         two_d.show(rt::delay_us);
         let (Some(three_d), Some(frame)) =
-            (THREE_D.put_with(ThreeD::new), FRAME.put_with(Frame::new))
+            (THREE_D.put_in(ThreeD::new_in), FRAME.put_with(Frame::new))
         else {
             crash(format_args!("started twice"))
         };

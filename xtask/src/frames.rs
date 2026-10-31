@@ -43,6 +43,16 @@ pub const REVIEWED: &[&str] = &[
     "rp-noise: rp_noise::image::main",
     "rp-looks: rp_looks::image::read_photo",
     "rp-looks: rp_looks::image::main",
+    // The loader's guard, rebuilt at a card change or after a write the
+    // loader made, and the format: set-up, not a loop; the Guard and the
+    // volume are made on the stack and moved. Found by `cargo xtask stacks`
+    // (2026-10-31: the Thumb image's frames were invisible to the check
+    // below); to be made in place on the loader's next device run (R149).
+    "rp-loader: <rp_loader::image::CfLun>::refresh_guard",
+    "rp-loader: <rp_loader::image::Lun>::refresh_guard",
+    "rp-loader: <rp_fat::exfat::ExVolume<rp_loader::image::Fed>>::guard",
+    "rp-loader: rp_fat::mkfs::write::<rp_loader::image::Fed>",
+    "rp-loader: <core::option::Option<&mut [u32]>>::and_then::<&mut rp_loader::image::mtp::Tables, <rp_loader::image::mtp::Tables>::new>",
 ];
 
 /// Hot loops kept out of their callers' big frames by `#[inline(never)]`:

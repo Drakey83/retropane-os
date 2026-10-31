@@ -425,10 +425,32 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// `ticks_per_ms`. Call [`Self::wallpaper_row`] for every line, then
     /// [`Self::show`].
     pub fn new(regs: R, mem: M, l: Layout, now: fn() -> u32, ticks_per_ms: u32) -> Self {
-        Self {
-            e: Engine::new(regs, l.fence, now, ticks_per_ms),
-            mem,
-            l,
+        renderer_start!(regs, mem, l, now, ticks_per_ms; value)
+    }
+
+    /// [`Self::new`] made straight into `slot`, a field at a time: made on
+    /// the stack and moved, the renderer took a 4.7 KB frame at the
+    /// image's start (`cargo xtask stacks`, P6).
+    pub fn new_in(
+        slot: &mut core::mem::MaybeUninit<Self>,
+        regs: R,
+        mem: M,
+        l: Layout,
+        now: fn() -> u32,
+        ticks_per_ms: u32,
+    ) -> &mut Self {
+        renderer_start!(regs, mem, l, now, ticks_per_ms; slot,)
+    }
+}
+
+/// Every field's start, made as a value or straight into a slot
+/// (`rp_hal_mem::in_place!`): one list for `new` and `new_in`.
+macro_rules! renderer_start {
+    ($regs:expr, $mem:expr, $l:expr, $now:expr, $tpm:expr; $($how:tt)*) => {
+        rp_hal_mem::in_place!($($how)* Mbx2dRenderer {
+            e: Engine::new($regs, $l.fence, $now, $tpm),
+            mem: $mem,
+            l: $l,
             front: 0,
             prev: [Rect::default(); MAX_DIRTY],
             prev_n: 0,
@@ -452,8 +474,8 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             dither: true,
             last: FrameStats::default(),
             delay_us: |_| {},
-            now,
-            ticks_per_ms,
+            now: $now,
+            ticks_per_ms: $tpm,
             pending: None,
             vsync_due: false,
             bg_hash: None,
@@ -473,9 +495,12 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             seen_at: 0,
             hoist: [false; MAX_CMDS],
             bounds: [Rect::new(0, 0, 0, 0); MAX_CMDS],
-        }
-    }
+        })
+    };
+}
+use renderer_start;
 
+impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// Stores line `y` of the wallpaper (`W` XRGB8888 pixels) as RGB565,
     /// each channel's top bits: pass a row already quantised to 16 bits
     /// (`rp-today`'s Floyd-Steinberg, the look the owner approved on
