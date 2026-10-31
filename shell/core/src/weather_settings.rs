@@ -485,7 +485,9 @@ impl Shell {
     /// The header of the screens below the app: the back control and the
     /// screen's name.
     pub(crate) fn sub_header(&self, f: &mut Frame, title: &[u8]) {
-        let r = super::weather_app::HEAD;
+        // Its own band, the back control's height (the Weather app's
+        // header is thinner since the mix mock-up, 2026-10-31).
+        let r = Rect::new(0, BACK.y, W, BACK.h);
         f.push(Cmd::HGradient {
             r,
             left: GLASS_LEFT,

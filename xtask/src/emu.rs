@@ -11350,6 +11350,7 @@ pub(crate) fn today_screens(
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     shell.set_curve(today_curve());
+    shell.set_dials(today_dials());
     shell.set_time(rp_shell::Time {
         hour: 12,
         minute: 0,
@@ -11359,6 +11360,8 @@ pub(crate) fn today_screens(
     });
     if let Some(a) = alerts {
         shell.set_alerts_from_nws(a);
+        // The previews' station too (the relay's canned Tempest shape).
+        shell.set_station_from_tempest(PREVIEW_STATION);
     }
     let mut frame = Frame::new();
     let mut screens = Vec::new();
@@ -11411,6 +11414,7 @@ pub(crate) fn today_hourly_on_planes(wall: &[u8], icons: Option<rp_shell::Icons>
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     shell.set_curve(today_curve());
+    shell.set_dials(today_dials());
     shell.set_time(rp_shell::Time {
         hour: 12,
         minute: 0,
@@ -11564,6 +11568,7 @@ pub(crate) fn today_live(
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     shell.set_curve(today_curve());
+    shell.set_dials(today_dials());
     shell.set_time(rp_shell::Time {
         hour: 12,
         minute: 0,
@@ -11654,6 +11659,26 @@ pub(crate) fn today_pack(release: &Path, n: usize) -> Option<rp_shell::Icons> {
         &pack,
         Box::leak(vec![0; words].into_boxed_slice()),
         Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::PACK_MAX])),
+    )
+}
+
+/// A station's reading for the previews (Tempest's shape).
+const PREVIEW_STATION: &[u8] = br#"{"latitude": 37.7, "longitude": -89.86,
+  "location_name": "Perryville Loop Station",
+  "current_conditions": {"time": 1761900000, "conditions": "Clear", "icon": "clear-day",
+    "air_temperature": 19.9, "feels_like": 19.6, "relative_humidity": 61, "dew_point": 12.2,
+    "wind_avg": 12.9, "wind_gust": 33.8, "wind_direction": 315, "uv": 3,
+    "sea_level_pressure": 1016.4, "pressure_trend": "rising", "precip_accum_local_day": 1.0,
+    "solar_radiation": 420, "lightning_strike_count_last_3hr": 4,
+    "lightning_strike_last_distance": 10}}"#;
+
+/// The Station screen's dials as the image paints them.
+fn today_dials() -> rp_shell::station::Dials {
+    rp_today::dials_into(
+        Box::leak(vec![0; rp_shell::station::DIAL_WORDS].into_boxed_slice()),
+        Box::leak(Box::new(
+            [rp_today::NO_IMAGE; rp_shell::station::DIALS.len()],
+        )),
     )
 }
 

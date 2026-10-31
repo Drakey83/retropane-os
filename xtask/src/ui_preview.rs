@@ -159,6 +159,11 @@ fn shots() -> Vec<Shot> {
             what: "The header's alert tapped: the alert in full (the relay's canned NWS answer)",
             steps: tap(220, 53),
         },
+        Shot {
+            name: "23-weather-station",
+            what: "Back, then the header's STATION: your station's screen (a canned Tempest reading)",
+            steps: [tap(80, 620), tap(326, 53)].concat(),
+        },
     ]
 }
 

@@ -27,7 +27,7 @@
 pub mod align;
 mod keyboard;
 pub mod motion;
-mod station;
+pub mod station;
 pub mod weather_app;
 mod weather_net;
 mod weather_settings;
@@ -472,6 +472,8 @@ pub struct Shell {
     /// Hourly's line pieces for the 2D path ([`weather_app::curve_sprite`]),
     /// made at start; kept once here, not in every icon pack's set.
     curve: [Option<&'static Image>; weather_app::CURVE_SPRITES],
+    /// The Station screen's dials (painted at start by the device).
+    dials: station::Dials,
     /// The real radar: its frames' times (Unix), how many, the place it
     /// was asked for, the next tile to ask, whether the map is in and how
     /// many rain frames are complete.
@@ -559,6 +561,7 @@ impl Shell {
             alerts: [rp_weather::alerts::Alert::NONE; rp_weather::alerts::ALERTS_MAX],
             n_alerts: 0,
             curve: [None; weather_app::CURVE_SPRITES],
+            dials: station::Dials::NONE,
             radar_times: [0; 8],
             radar_n: 0,
             radar_for: None,
@@ -692,11 +695,48 @@ impl Shell {
 
     /// Where the header's alert chip is (after the place and its dots).
     pub(crate) fn alert_rect(&self) -> Rect {
+        self.alert_chip().map_or(Rect::new(0, 0, 0, 0), |(r, _)| r)
+    }
+
+    /// The header's alert chip and the part of the alert's name that fits
+    /// it: it ends before the STATION chip (or the reading's time), a long
+    /// name cut with ".." (the owner's run, 2026-10-31: both chips shown).
+    pub(crate) fn alert_chip(&self) -> Option<(Rect, Line)> {
         let (ui, label) = (self.fonts.ui, self.fonts.label);
+        let name = self.alert_name()?;
         let mx = weather_app::PLACE_BTN.x + 14 + ui.width(self.wx.place.as_bytes());
-        let x = mx + 22 + 14 * u16::from(self.wset.n_places.min(10));
-        let w = self.alert_name().map_or(0, |a| label.width(a) + 34);
-        Rect::new(x + 8, weather_app::HEAD.y + 5, w, 24)
+        let x = mx + 22 + 14 * u16::from(self.wset.n_places.min(10)) + 8;
+        let end = if self.station.is_some() {
+            weather_app::STATION_BTN.x
+        } else {
+            W - 12 - label.width(self.read_at().as_bytes())
+        }
+        .saturating_sub(8);
+        let room = end.saturating_sub(x + 34);
+        let mut n = name.len();
+        while n > 0 && label.width(&name[..n]) > room {
+            n -= 1;
+        }
+        let text = if n < name.len() {
+            let mut k = n;
+            while k > 0 && label.width(&name[..k]) + label.width(b"..") > room {
+                k -= 1;
+            }
+            Line::new().push(&name[..k]).push(b"..")
+        } else {
+            Line::new().push(name)
+        };
+        (room > 0).then(|| {
+            (
+                Rect::new(
+                    x,
+                    weather_app::HEAD.y + 5,
+                    label.width(text.as_bytes()) + 34,
+                    24,
+                ),
+                text,
+            )
+        })
     }
 
     /// When the forecast was read, as a clock time ("sample" before any).
@@ -841,6 +881,14 @@ impl Shell {
     pub fn set_alerts_from_nws(&mut self, json: &[u8]) {
         self.n_alerts = rp_weather::alerts::from_nws(json, &mut self.alerts) as u8;
         self.dirty(weather_app::HEAD);
+    }
+
+    /// A station's reading as Tempest answers it: for the PC's previews,
+    /// which have no relay.
+    pub fn set_station_from_tempest(&mut self, json: &[u8]) {
+        self.station = rp_weather::tempest::station_now(json);
+        self.station_at = self.now;
+        self.dirty(Rect::new(0, 0, W, H));
     }
 
     /// Hourly's line pieces (made at start by the device).

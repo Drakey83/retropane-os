@@ -107,6 +107,7 @@ mod image {
     static ICON_IMGS: rt::Slot<[rp_draw::Image; rp_today::ICON_COUNT]> = rt::Slot::new();
     static CURVE_IMGS: rt::Slot<[rp_draw::Image; rp_shell::weather_app::CURVE_SPRITES]> =
         rt::Slot::new();
+    static DIAL_IMGS: rt::Slot<[rp_draw::Image; rp_shell::station::DIALS.len()]> = rt::Slot::new();
     /// The card's picture packs' descriptions, one set per pack (each read
     /// once, then kept: switching back is instant).
     static PACK_IMGS: [rt::Slot<[rp_draw::Image; rp_today::PACK_MAX]>; PACKS] =
@@ -672,6 +673,7 @@ mod image {
         let (wall_words, rest) = rest.split_at_mut(rp_today::WALLPAPER_BYTES.div_ceil(4));
         let (radar_px, rest) = rest.split_at_mut(rp_today::RADAR_WORDS);
         let (curve_px, rest) = rest.split_at_mut(rp_shell::weather_app::CURVE_WORDS);
+        let (dial_px, rest) = rest.split_at_mut(rp_shell::station::DIAL_WORDS);
         let (map_words, rest) = rest.split_at_mut(rp_today::MAP_BYTES.div_ceil(4));
         // The plane path's page drawing: the CPU's layer (ARGB8888) and the
         // picture it is flushed into (ARGB4444), the tallest page's size.
@@ -777,6 +779,17 @@ mod image {
             "radar cells drawn in {} us",
             rt::ticks().wrapping_sub(t0) / 13 * 4
         );
+        let t0 = rt::ticks();
+        let dials =
+            match DIAL_IMGS.put_with(|| [rp_today::NO_IMAGE; rp_shell::station::DIALS.len()]) {
+                Some(imgs) => rp_today::dials_into(dial_px, imgs),
+                None => rp_shell::station::Dials::NONE,
+            };
+        let _ = writeln!(
+            RunLog,
+            "station dials painted in {} us",
+            rt::ticks().wrapping_sub(t0) / 13 * 4
+        );
         let baked = icons;
         let Some(packs) = PACK_SETS.put_with(|| [None; PACKS]) else {
             crash(format_args!("started twice"))
@@ -799,6 +812,7 @@ mod image {
             crash(format_args!("started twice"))
         };
         shell.set_curve(curve);
+        shell.set_dials(dials);
 
         // The plane path: the pages' client and their pictures, drawn once
         // now (rebuilt only when a page's draw list changes).

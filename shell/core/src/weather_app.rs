@@ -805,16 +805,14 @@ impl Shell {
             x += 14;
         }
         // The alert in force, if any.
-        if let Some(a) = self.alert_name() {
-            let w = label.width(a) + 34;
-            let r = Rect::new(x + 8, HEAD.y + 5, w, 24);
+        if let Some((r, a)) = self.alert_chip() {
             f.push(Cmd::Fill {
                 r,
                 color: ALERT_BACK,
             });
             f.push(Cmd::Outline { r, color: ALERT });
             f.text(r.x + 9, r.y + 18, ui, ALERT, b"!");
-            f.text(r.x + 24, r.y + 17, label, ALERT, a);
+            f.text(r.x + 24, r.y + 17, label, ALERT, a.as_bytes());
             self.decorate(f, Target::Alert);
         }
         // Your station, once it answers: its instruments a tap away.

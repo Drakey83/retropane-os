@@ -169,7 +169,9 @@ impl PackLoad {
         }
         let table = file.get(PACK_HEAD..PACK_HEAD + count * PACK_ENTRY)?;
         let sum: usize = table
-            .chunks_exact(PACK_ENTRY)
+            .as_chunks::<PACK_ENTRY>()
+            .0
+            .iter()
             .map(|e| {
                 usize::from(u16::from_le_bytes([e[2], e[3]]))
                     * usize::from(u16::from_le_bytes([e[4], e[5]]))
@@ -238,7 +240,7 @@ impl PackLoad {
     pub fn icons(file: &[u8], imgs: &'static [Image; PACK_MAX]) -> Option<rp_shell::Icons> {
         let (_, table) = Self::table(file)?;
         let mut set = rp_shell::Icons::NONE;
-        for (img, e) in imgs.iter().zip(table.chunks_exact(PACK_ENTRY)) {
+        for (img, e) in imgs.iter().zip(table.as_chunks::<PACK_ENTRY>().0) {
             let i = usize::from(e[1].clamp(1, 22) - 1);
             match e[0] {
                 0 => set.hero[i] = Some(img),
@@ -442,6 +444,34 @@ pub fn curve_into(
     }
     let imgs: &'static [Image; CURVE_SPRITES] = imgs;
     for (s, img) in set.iter_mut().zip(imgs.iter()) {
+        *s = Some(img);
+    }
+    set
+}
+
+/// The Station screen's dials painted into `px` (at least
+/// [`rp_shell::station::DIAL_WORDS`]), described in `imgs`: the shell's set;
+/// too little room gives none (the screen without its dials).
+pub fn dials_into(
+    px: &'static mut [u32],
+    imgs: &'static mut [Image; rp_shell::station::DIALS.len()],
+) -> rp_shell::station::Dials {
+    use rp_shell::station::{DIAL_WORDS, DIALS, Dials, dial_pixel};
+    let mut set = Dials::NONE;
+    if px.len() < DIAL_WORDS {
+        return set;
+    }
+    let mut rest = px;
+    for (slot, &(d, w, h)) in imgs.iter_mut().zip(DIALS.iter()) {
+        let (mine, more) = rest.split_at_mut(usize::from(w) * usize::from(h));
+        rest = more;
+        for (i, p) in mine.iter_mut().enumerate() {
+            *p = dial_pixel(d, (i % usize::from(w)) as u16, (i / usize::from(w)) as u16);
+        }
+        *slot = Image { w, h, px: mine };
+    }
+    let imgs: &'static [Image; DIALS.len()] = imgs;
+    for (s, img) in set.imgs.iter_mut().zip(imgs.iter()) {
         *s = Some(img);
     }
     set
@@ -909,8 +939,10 @@ mod tests {
 
     #[test]
     fn a_pack_unpacks_a_picture_at_a_time_as_its_bytes_arrive() {
-        let a: Vec<u32> = (0..12 * 8).map(|i| 0xFF00_0000 | i * 0x0103_07).collect();
-        let b: Vec<u32> = (0..5 * 3).map(|i| 0x8000_0000 | i * 0x0010_2030).collect();
+        let a: Vec<u32> = (0..12 * 8).map(|i| 0xFF00_0000 | (i * 0x01_0307)).collect();
+        let b: Vec<u32> = (0..5 * 3)
+            .map(|i| 0x8000_0000 | (i * 0x0010_2030))
+            .collect();
         let pack = v2_pack(&[(0, 4, 12, 8, a.clone()), (3, 9, 5, 3, b.clone())]);
         let px: &'static mut [u32] = Box::leak(vec![0; 12 * 8 + 15].into_boxed_slice());
         let imgs: &'static mut [Image; PACK_MAX] = Box::leak(Box::new([NO_IMAGE; PACK_MAX]));
