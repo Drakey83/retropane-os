@@ -205,9 +205,14 @@ pub const STATION_KINDS: [(&str, &str); 5] = [
     ("Weather Underground", "station ID"),
 ];
 
+/// The bytes of the default icon pack's file one dock-relay answer
+/// carries (`RPNET PACK <offset>`: the image with no card fills its copy
+/// a piece at a time; its answer buffer is 256 KiB).
+pub const PACK_CHUNK: usize = 192 * 1024;
+
 /// The weather icon packs (the setting's index): VClouds, the default
-/// (built in, and every size on the card), then the owner's own packs, on
-/// the SD card (`RPICONS<n>.PAK`).
+/// (from the SD card, else the CF card, else the PC through the dock, and
+/// kept in RAM), then the owner's own packs, on the SD card (`RPIC<n>`).
 pub const PACKS: [&str; 7] = [
     "VClouds",
     "Sunburst",

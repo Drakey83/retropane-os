@@ -106,7 +106,8 @@ mod image {
     static CURVE_IMGS: rt::Slot<[rp_draw::Image; rp_shell::weather_app::CURVE_SPRITES]> =
         rt::Slot::new();
     static DIAL_IMGS: rt::Slot<[rp_draw::Image; rp_shell::station::DIALS.len()]> = rt::Slot::new();
-    /// The SD card: in `.bss`, not `main`'s frame.
+    /// The SD card and the CF card: in `.bss`, not `main`'s frame.
+    static CF: rt::Slot<Option<(CfDisk, u32)>> = rt::Slot::new();
     /// The picture store (option C, docs/design/weather-rule0.md): the
     /// pictures the screens show, at their sizes; the shell holds handles
     /// to them (ADR-0021 rule 1), both renderers read them by handle
@@ -520,8 +521,29 @@ mod image {
         off: u64,
         /// The time its reads took (us).
         read_us: u32,
+        /// From the CF card (else the SD card).
+        from_cf: bool,
     }
     type Card = SdCard<PxaMmc<Mmio>>;
+    type CfDisk = rp_drv_cf::CfCard<Mmio, Mmio>;
+
+    /// The CF card, adopted as the loader left it when its card log is on
+    /// (the loader attached it; no power or reset line is touched here:
+    /// a card the loader didn't attach is left alone), and its first
+    /// partition's start.
+    fn take_cf_card() -> Option<(CfDisk, u32)> {
+        let sectors = rp_hal_x51v::cardsink::current()
+            .map(|s| s.cf_sectors)
+            .filter(|&n| n > 0)?;
+        let (attr, common) = rp_hal_x51v::devices::take_cf()?;
+        let mut cf = rp_drv_cf::CfCard::adopt(attr, common, sectors);
+        let mut block = [0u8; BLOCK];
+        rp_hal_api::BlockDevice::read_blocks(&mut cf, 0, &mut block).ok()?;
+        let start = mbr_partitions(&block)
+            .and_then(|p| p[0])
+            .map_or(0, |p| p.start);
+        Some((cf, start))
+    }
 
     /// The SD card, taken over as the loader left it when its card log is
     /// on (no command sent: the log keeps writing through the same
@@ -592,8 +614,8 @@ mod image {
     /// at `part`/`off` into `out`: the bytes read (0 when that part is
     /// done: the next part from 0), or `None` once there is no next part
     /// (or no card). Nothing is logged while it reads.
-    fn read_chunk(
-        card: &mut Card,
+    fn read_chunk<D: rp_hal_api::BlockDevice>(
+        card: &mut D,
         start: u32,
         stem: [u8; 5],
         part: u8,
@@ -659,6 +681,8 @@ mod image {
         got: usize,
         /// The tile being fetched: where it goes.
         tile: Option<(Option<u8>, u8, rp_weather::tiles::View)>,
+        /// The default icon pack's piece being fetched (option C).
+        pack: bool,
     }
 
     impl Net {
@@ -671,6 +695,7 @@ mod image {
             self.len = None;
             self.got = 0;
             self.tile = None;
+            self.pack = false;
         }
     }
 
@@ -859,6 +884,10 @@ mod image {
         let mut def_load: Option<FileLoad> = None;
         let mut def_index: Option<rp_today::PackIndex> = None;
         let mut def_failed = false;
+        // The same file from the PC through the dock's relay when no card
+        // has it: the bytes in so far, and whether the relay can't give it.
+        let mut relay_got: Option<usize> = None;
+        let mut relay_failed = false;
         // The pack chosen other than the default, and its table.
         let mut chosen: Option<(u8, rp_today::PackIndex)> = None;
         let mut icons = rp_shell::Icons::NONE;
@@ -894,6 +923,9 @@ mod image {
             crash(format_args!("started twice"))
         };
         let mut card_tried = false;
+        let Some(cf) = CF.put_with(|| None) else {
+            crash(format_args!("started twice"))
+        };
         let (Some(shell), Some(frame)) = (
             SHELL.put_in(|m| Shell::new_in(m, rp_today::shell_fonts(), icons, true)),
             FRAME.put_in(Frame::new_in),
@@ -1041,6 +1073,7 @@ mod image {
                             len: None,
                             got: 0,
                             tile: None,
+                            pack: false,
                         });
                     }
                     Err(e) => {
@@ -1554,11 +1587,17 @@ mod image {
                     part: 0,
                     off: 0,
                     read_us: 0,
+                    from_cf: false,
                 });
                 let t0 = rt::ticks();
-                let got = card.as_mut().and_then(|(c, start)| {
-                    read_chunk(c, *start, *b"RPIC0", l.part, l.off, &mut def_file[l.got..])
-                });
+                let out = &mut def_file[l.got..];
+                let got = if l.from_cf {
+                    cf.as_mut()
+                        .and_then(|(c, start)| read_chunk(c, *start, *b"RPIC0", l.part, l.off, out))
+                } else {
+                    card.as_mut()
+                        .and_then(|(c, start)| read_chunk(c, *start, *b"RPIC0", l.part, l.off, out))
+                };
                 l.read_us += rt::ticks().wrapping_sub(t0) / 13 * 4;
                 let done = match got {
                     Some(0) => {
@@ -1574,19 +1613,45 @@ mod image {
                     None => true,
                 };
                 if done {
-                    let got = l.got;
+                    let (got, from_cf) = (l.got, l.from_cf);
                     def_index = rp_today::PackIndex::read(&def_file[..got])
                         .filter(|i| i.file_len() as usize <= got);
                     def_failed = def_index.is_none();
                     maker.forget();
                     let _ = writeln!(
                         RunLog,
-                        "icons: the default pack {} ({got} bytes from the SD card in {} us, kept in RAM)",
+                        "icons: the default pack {} ({got} bytes from the {} card in {} us, kept in RAM)",
                         if def_failed { "not usable" } else { "read" },
+                        if from_cf { "CF" } else { "SD" },
                         l.read_us,
                     );
                     def_load = None;
+                    if def_failed && !from_cf {
+                        // Not on the SD card: the CF card, if the loader
+                        // left one attached.
+                        *cf = take_cf_card();
+                        if cf.is_some() {
+                            def_failed = false;
+                            def_load = Some(FileLoad {
+                                got: 0,
+                                part: 0,
+                                off: 0,
+                                read_us: 0,
+                                from_cf: true,
+                            });
+                        }
+                    }
+                    if def_failed && NET {
+                        // On neither card: the PC through the dock.
+                        relay_got = Some(0);
+                    }
                 }
+            }
+            if let Some(at) = relay_got
+                && !relay_failed
+                && !shell.wants(rp_shell::Ask::Pack)
+            {
+                shell.want_pack(at as u32);
             }
             let want = shell.icon_pack();
             if want != pack_shown {
@@ -1714,6 +1779,7 @@ mod image {
                     }
                     n.out_at = 0;
                     n.tile = q.tile;
+                    n.pack = q.ask == rp_shell::Ask::Pack;
                     n.waiting = true;
                     n.asked_ms = now_ms;
                     let _ = writeln!(
@@ -1749,6 +1815,7 @@ mod image {
                                     match (ok, len) {
                                         (true, Some(l)) if l <= net_buf.len() => n.len = Some(l),
                                         _ => {
+                                            relay_failed |= n.pack;
                                             let _ =
                                                 writeln!(RunLog, "net: the relay answered {h:?}");
                                             shell.net_answer(false, &[]);
@@ -1799,6 +1866,30 @@ mod image {
                         shell.net_answer(ok, &[]);
                         if k == 8 {
                             radar_shown = None;
+                        }
+                    } else if n.pack {
+                        // The default pack's next piece, kept where the
+                        // card's copy would be; a short piece is its end.
+                        let at = relay_got.unwrap_or(0);
+                        let fits = def_file.get_mut(at..at + l);
+                        let ok = fits.is_some();
+                        if let Some(d) = fits {
+                            d.copy_from_slice(&net_buf[..l]);
+                            relay_got = Some(at + l);
+                        }
+                        shell.net_answer(ok, &[]);
+                        if !ok || l < rp_weather::settings::PACK_CHUNK {
+                            let got = relay_got.unwrap_or(0);
+                            def_index = rp_today::PackIndex::read(&def_file[..got])
+                                .filter(|i| ok && i.file_len() as usize <= got);
+                            relay_failed = def_index.is_none();
+                            relay_got = None;
+                            maker.forget();
+                            let _ = writeln!(
+                                RunLog,
+                                "icons: the default pack {} ({got} bytes from the PC through the dock, kept in RAM)",
+                                if relay_failed { "not usable" } else { "read" },
+                            );
                         }
                     } else {
                         shell.net_answer(true, &net_buf[..l]);

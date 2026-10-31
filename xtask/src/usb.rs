@@ -1831,7 +1831,9 @@ mod format_tests {
 /// `LOAD` / `SAVE` the Weather settings (`local/weather-settings.bin`, never
 /// the key), `FIND` a place (Open-Meteo's geocoder), `HERE` (Windows'
 /// location, named by Nominatim), `CLIP` (the clipboard's first line),
-/// `OPENMETEO` / `METNO` forecasts for a position, `TEMPEST` (the key in
+/// `OPENMETEO` / `METNO` forecasts for a position, `PACK <offset>` (the
+/// default icon pack's file the build made, 192 KiB a question, for an
+/// image with no card: option C), `TEMPEST` (the key in
 /// `local/tempest-key.txt`, never committed, never over USB). Each is a
 /// fixed URL; the device's arguments are checked (a place name's
 /// characters, positions in range). Answers are `RPNET <status> <length>`
@@ -1843,6 +1845,15 @@ pub fn net(root: &std::path::Path, canned: bool) -> Result<(), String> {
     // `--canned` gives.
     let key = root.join("local").join("tempest-key.txt");
     let store = root.join("local").join("weather-settings.bin");
+    // The default icon pack (option C): copied where the script reads it,
+    // none if the build didn't make it (no art in local/).
+    let pack = root.join("target").join("load").join("relay-rp-icons0.pak");
+    if let Ok(b) = crate::emu::today_output(&crate::arm_release(root), "rp-icons0.pak") {
+        std::fs::create_dir_all(root.join("target").join("load")).map_err(|e| e.to_string())?;
+        std::fs::write(&pack, b).map_err(|e| format!("{}: {e}", pack.display()))?;
+    } else {
+        let _ = std::fs::remove_file(&pack);
+    }
     let data = root
         .join("shell")
         .join("weather")
@@ -1863,6 +1874,7 @@ Open-Port
 $canned = {canned}
 $keyFile = '{key}'
 $store = '{store}'
+$pack = '{pack}'
 $data = '{data}'
 $ua = 'RetroPaneOS-dev/0.1 (github.com/Drakey83/retropane-os)'
 "RELAY on $port"
@@ -2012,6 +2024,20 @@ while ($true) {{
                 }}
                 Answer (FetchRaw $url)
             }}
+            'PACK' {{
+                # The default icon pack's file from an offset, 192 KiB at
+                # most a question (the image's answer buffer is 256 KiB);
+                # an empty answer at its end. Only that file, only digits.
+                if ($w.Length -ne 3 -or $w[2] -notmatch '^\d{{1,8}}$') {{ Refuse 400 'not an offset'; continue }}
+                if (-not (Test-Path $pack)) {{ Refuse 404 'no icon pack built'; continue }}
+                $all = [IO.File]::ReadAllBytes($pack)
+                $off = [int]$w[2]
+                $n = [math]::Max(0, [math]::Min({pack_chunk}, $all.Length - $off))
+                $b = New-Object byte[] $n
+                if ($n -gt 0) {{ [Array]::Copy($all, $off, $b, 0, $n) }}
+                "PACK from $off`: $n of $($all.Length) bytes"
+                Answer $b
+            }}
             'TEMPEST' {{
                 if ($canned) {{
                     # A fixed forecast in Tempest's shape: the link checked without a key.
@@ -2044,6 +2070,8 @@ $sp.Close()
 "#,
         key = key.display(),
         store = store.display(),
+        pack = pack.display(),
+        pack_chunk = rp_weather::settings::PACK_CHUNK,
         data = data.display(),
         store_len = rp_weather::store::LEN,
         canned = if canned { "$true" } else { "$false" },

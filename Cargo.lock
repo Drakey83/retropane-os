@@ -1035,6 +1035,7 @@ version = "0.0.0"
 dependencies = [
  "rp-draw",
  "rp-drv-blit2d",
+ "rp-drv-cf",
  "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
  "rp-drv-pxa-keypad",

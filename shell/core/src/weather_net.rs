@@ -41,15 +41,20 @@ pub enum Ask {
     Frames,
     /// A radar tile: the map's or a rain frame's ([`Question::tile`]).
     Tile,
+    /// A piece of the default icon pack's file from an offset (an image
+    /// with no card: option C, docs/design/weather-rule0.md); the device
+    /// keeps the answer, the shell only asks.
+    Pack,
 }
 
-const ORDER: [Ask; 10] = [
+const ORDER: [Ask; 11] = [
     Ask::Load,
     Ask::Save,
     Ask::Find,
     Ask::Here,
     Ask::Clip,
     Ask::Forecast,
+    Ask::Pack,
     Ask::Tempest,
     Ask::Alerts,
     Ask::Frames,
@@ -167,6 +172,10 @@ impl Shell {
             }
             Ask::Here => q.push(b"HERE"),
             Ask::Clip => q.push(b"CLIP"),
+            Ask::Pack => {
+                q.push(b"PACK ");
+                q.push(Line::new().num(self.pack_at as i32).as_bytes());
+            }
             Ask::Forecast => {
                 let p = self.wset.place();
                 let provider = self.provider_here();
@@ -230,6 +239,13 @@ impl Shell {
         Some(q)
     }
 
+    /// Wants the default icon pack's file from byte `off` (the device
+    /// keeps the answer).
+    pub fn want_pack(&mut self, off: u32) {
+        self.pack_at = off.min(i32::MAX as u32);
+        self.want(Ask::Pack);
+    }
+
     /// The question in flight wasn't heard (the port closed under it):
     /// wanted again, nothing else changes.
     pub fn net_retry(&mut self) {
@@ -280,6 +296,7 @@ impl Shell {
                     self.dirty(super::weather_app::HEAD);
                 }
                 Ask::Tile => self.tile_done(),
+                Ask::Pack => {}
             }
             return;
         }
@@ -291,7 +308,7 @@ impl Shell {
                 self.want(Ask::Forecast);
                 self.dirty(Rect::new(0, 0, W, super::H));
             }
-            Ask::Save => {}
+            Ask::Save | Ask::Pack => {}
             Ask::Find | Ask::Here => {
                 // Straight into the list kept (a copy on the stack was most
                 // of a 4.5 KB frame, the P6 stack rule).

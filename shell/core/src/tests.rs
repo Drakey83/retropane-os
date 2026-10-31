@@ -1986,3 +1986,29 @@ fn the_screens_draw_only_wanted_pictures_and_every_hour_s_card_is_wanted() {
     assert!(pics_drawn(&s, &f).iter().all(|&(z, _)| z == Size::Card));
     assert!(want.count() <= 2 + 4 + 8 + 16, "{want:?}");
 }
+
+#[test]
+fn the_default_pack_is_asked_by_offset_after_the_forecast_and_kept_by_the_device() {
+    // Option C: an image with no card fills its copy of the default icon
+    // pack from the PC a piece at a time; the shell only asks.
+    let mut s = shell(true);
+    while let Some(q) = s.next_ask() {
+        s.net_answer(false, &[]);
+        assert_ne!(q.ask, Ask::Pack);
+    }
+    s.want(Ask::Forecast);
+    s.want_pack(196_608);
+    assert!(s.wants(Ask::Pack));
+    let q = s.next_ask().expect("a question");
+    assert_eq!(q.ask, Ask::Forecast, "the forecast first");
+    s.net_answer(false, &[]);
+    let q = s.next_ask().expect("the pack's piece");
+    assert_eq!(q.line(), b"RPNET PACK 196608\n");
+    let before = *s.forecast();
+    s.net_answer(true, &[1, 2, 3]);
+    assert!(!s.wants(Ask::Pack));
+    assert!(
+        *s.forecast() == before,
+        "the answer is the device's, not the shell's"
+    );
+}

@@ -573,6 +573,8 @@ pub struct Shell {
     radar_map: bool,
     radar_done: u8,
     radar_asked: u32,
+    /// The default icon pack's offset asked next ([`Ask::Pack`]).
+    pack_at: u32,
     /// The station's instruments and when they came (ms).
     station: Option<rp_weather::tempest::StationNow>,
     station_at: u32,
@@ -686,6 +688,7 @@ macro_rules! shell_start {
             radar_map: false,
             radar_done: 0,
             radar_asked: 0,
+            pack_at: 0,
             station: None,
             station_at: 0,
             fetched_at: None,
