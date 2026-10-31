@@ -1,7 +1,7 @@
 # ADR-0034: The compositor: layers, frame modes and the frame budget
 
-- **Status:** **C4 changed for glass-over-wallpaper pages: L2 (owner, 2026-10-30, below C5).** **Accepted (owner, 2026-10-19): C1 A, C2 A (with draw-time
-  dithering), C3 A, C4 A, C5 A**, with the owner's review fixes (Gap 1,
+- **Status:** **Accepted (owner, 2026-10-19): C1 A, C2 A (with draw-time
+  dithering), C3 A, C4 A, C5 A**; **C4 changed for glass-over-wallpaper pages: L2 (owner, 2026-10-30, below C5)**; with the owner's review fixes (Gap 1,
   the pan-to-partial seam; Gap 2, the price table bounded) written in
   below and in [docs/design/compositor.md](../design/compositor.md).
   **Amends ADR-0023** (C2: 16-bit opaque pictures) **and ADR-0030 G1**
