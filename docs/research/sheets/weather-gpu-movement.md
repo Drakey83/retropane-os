@@ -508,8 +508,15 @@ Full numbers in `docs/hw/2700g.md` "Run WG on the X51v". In plain words:
 - **M7:** the screen held with the 2D clock off and with `MBXCLK` 0, and
   with the on-die buffer told to go low power; the 2D engine back in
   ~90 us. R133 can gate the 2D clock while a page is still.
-- **The owner's eye (the watched block):** waiting for his answers (V3:
-  8888 or 4444; the turn's steps; the hand-off; the entrances).
+- **The owner's eye (the watched block, run 2), his words:**
+  - The depths: "8888 basically looks the same, just a little darker"
+    (V3 not yet ruled: the look is nearly a tie, and 4444 is half the
+    memory).
+  - The turn in 4-pixel steps: "the white lettering flashes a little bit";
+    in 1-pixel steps (the start plus the window's place): "VERY smooth".
+    So a turn follows the pen to the pixel, never in 4-pixel steps.
+  - The hand-off, the entrances and M7's three holds: asked again by step
+    number (his answers 10-13 didn't map one to one onto the steps).
 
 ## Votes needed (results are not decisions)
 
