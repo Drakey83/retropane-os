@@ -47,6 +47,21 @@ nothing on these screens needs the CPU except moving pictures already made.
   cache (16 pictures, about 1 MB). A pack pick re-reads those few: tens of
   ms instead of 3 s, and ~1 MB instead of 37 MB. WM's folder of files plus
   the modern decode-at-size cache.
+- **P2a. The default icons without a card** (the owner, 2026-10-31: "a
+  default fall back ... if there is no sd card or cf card, but those
+  versions won't have icon packs available to switch to"). The default set
+  (VClouds) is also kept in the OS's own storage, in the same v2 format and
+  read through the same on-screen-only path, so a card-less device costs
+  the same small cache, not a second way of drawing. Its home: the flash
+  file system once RetroPane is installed (bare metal first); the image
+  itself at the SD stage. To fit the image area it stores two sizes (250
+  and 100 px) and makes the 66 and 40 px ones while decoding, with a
+  downscale filter fitted offline to these pictures (measured on the panel
+  against the stored sizes before adopting). Packs are looked for on the
+  SD card, then the CF card. With neither, Settings > Icons shows only the
+  default and says "More icon packs need an SD or CF card"; a card pulled
+  mid-run keeps the pictures already decoded and falls back to the default
+  for the rest, with no error box.
 - **P3. Compose once, then drop the parts.** Each page picture is composed
   at refresh; its icons, curve pieces and text are then given back until
   the next refresh. Only the page pictures stay.
