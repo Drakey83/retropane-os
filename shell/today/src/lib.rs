@@ -32,6 +32,8 @@ pub mod fonts;
 pub mod replay;
 
 use rp_draw::Image;
+use rp_draw::pics::{Pic, Pics};
+pub use rp_shell::{Size, Wanted};
 
 /// Printed in the run log once the Today screen is up.
 pub const MARKER: &str = "RETROPANE-TODAY-UP";
@@ -80,15 +82,178 @@ fn unpaeth4(px: &mut [u8], w: usize, h: usize) {
 
 /// Unpacks the baked pictures into `px` (at least [`ICON_WORDS`] words; the
 /// image's comes from SDRAM outside the image area) with their
-/// descriptions in `imgs`, and returns the shell's set. Too little room or
-/// a damaged stream gives no pictures, never a fault.
+/// descriptions in `imgs`, and returns them by size. Too little room or a
+/// damaged stream gives no pictures, never a fault.
 #[must_use]
-pub fn icons_into(
-    px: &'static mut [u32],
-    imgs: &'static mut [Image; ICON_COUNT],
-) -> rp_shell::Icons {
+pub fn icons_into(px: &'static mut [u32], imgs: &'static mut [Image; ICON_COUNT]) -> Unpacked {
     let desc = icon_data::DESC.iter().copied();
-    fill(desc, icon_data::PACKED, ICON_WORDS, px, imgs).unwrap_or(rp_shell::Icons::NONE)
+    fill(desc, icon_data::PACKED, ICON_WORDS, px, imgs).unwrap_or(Unpacked::NONE)
+}
+
+/// A pack's pictures unpacked whole, by size and pack id less one: where
+/// the store's pictures are made from ([`Keeper`]).
+#[derive(Clone, Copy)]
+pub struct Unpacked {
+    /// The big ones (250 px).
+    pub hero: [Option<&'static Image>; 22],
+    /// Hourly's card's (the card packs' 100 px).
+    pub mid: [Option<&'static Image>; 22],
+    /// The forecast cards' (66 px).
+    pub card: [Option<&'static Image>; 22],
+    /// The rows' (40 px).
+    pub row: [Option<&'static Image>; 22],
+}
+
+impl Unpacked {
+    /// None.
+    pub const NONE: Self = Self {
+        hero: [None; 22],
+        mid: [None; 22],
+        card: [None; 22],
+        row: [None; 22],
+    };
+
+    /// The pictures of `size`.
+    #[must_use]
+    pub const fn of(&self, size: Size) -> &[Option<&'static Image>; 22] {
+        match size {
+            Size::Hero => &self.hero,
+            Size::Mid => &self.mid,
+            Size::Card => &self.card,
+            Size::Row => &self.row,
+        }
+    }
+
+    /// The set by the pack table's kind (0 big, 1 card, 2 row, 3 mid).
+    fn put(&mut self, kind: u8, id: u8, img: &'static Image) {
+        let i = usize::from(id.clamp(1, 22) - 1);
+        match kind {
+            0 => self.hero[i] = Some(img),
+            1 => self.card[i] = Some(img),
+            2 => self.row[i] = Some(img),
+            _ => self.mid[i] = Some(img),
+        }
+    }
+}
+
+/// `img` copied into a new picture in `pics` (`None` when no slot takes it).
+pub fn store_copy(img: &Image, pics: &Pics) -> Option<Pic> {
+    let pic = pics.alloc(img.w, img.h)?;
+    if pics.write(pic, |px| px.copy_from_slice(img.px)) {
+        Some(pic)
+    } else {
+        pics.free(pic);
+        None
+    }
+}
+
+/// Every picture of `set` put in `pics` (the previews' whole set; the
+/// image keeps only what the screens show, [`Keeper`]): the shell's set.
+pub fn store_all(set: &Unpacked, pics: &Pics) -> rp_shell::Icons {
+    let mut icons = rp_shell::Icons::NONE;
+    for size in Size::ALL {
+        for (dst, src) in icons.of_mut(size).iter_mut().zip(set.of(size)) {
+            *dst = src.and_then(|img| store_copy(img, pics));
+        }
+    }
+    icons
+}
+
+/// What a [`Keeper::step`] did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kept {
+    /// Every wanted picture is in, from the pack shown.
+    Idle,
+    /// A picture no screen shows was given back.
+    Freed(Size, usize),
+    /// A wanted picture was made (pack id less one).
+    Made(Size, usize),
+    /// A wanted picture couldn't be made (the pack lacks it, or no slot):
+    /// not tried again until the pack changes.
+    Missing(Size, usize),
+}
+
+/// Keeps the store holding exactly the pictures the shell's screens show
+/// (`Shell::wanted`), from the pack chosen: one picture a step, so the
+/// image works it in idle moments (P1, P2: docs/design/principles.md). A
+/// picture from the pack shown before stays until its replacement is in
+/// (a pick never leaves a gap while a slot is spare).
+pub struct Keeper {
+    /// Per size and condition: the pack its picture was made from (or
+    /// tried, and missing), plus one; 0 nothing.
+    from: [[u8; 22]; 4],
+}
+
+impl Default for Keeper {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Keeper {
+    /// Nothing kept yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { from: [[0; 22]; 4] }
+    }
+
+    /// One step: gives back a picture no screen shows, else makes one
+    /// that is wanted from `pack` with `make` (which puts it in `pics`).
+    pub fn step(
+        &mut self,
+        shell: &mut rp_shell::Shell,
+        pics: &Pics,
+        pack: u8,
+        mut make: impl FnMut(Size, usize, &Pics) -> Option<Pic>,
+    ) -> Kept {
+        let want = shell.wanted();
+        let tag = pack.saturating_add(1);
+        for (z, size) in Size::ALL.into_iter().enumerate() {
+            for (i, from) in self.from[z].iter_mut().enumerate() {
+                if !want.has(size, i) && *from != 0 {
+                    if let Some(p) = shell.pic(size, i) {
+                        pics.free(p);
+                        shell.set_pic(size, i, None);
+                    }
+                    *from = 0;
+                    return Kept::Freed(size, i);
+                }
+            }
+        }
+        // The screen first shown first: the hero, the cards, then the
+        // Weather app's.
+        for size in [Size::Hero, Size::Card, Size::Mid, Size::Row] {
+            let z = Size::ALL.iter().position(|&s| s == size).unwrap_or(0);
+            for (i, from) in self.from[z].iter_mut().enumerate() {
+                if !want.has(size, i) || *from == tag {
+                    continue;
+                }
+                let old = shell.pic(size, i);
+                let mut new = make(size, i, pics);
+                if new.is_none()
+                    && let Some(o) = old
+                {
+                    // No spare slot: the old one goes first.
+                    pics.free(o);
+                    shell.set_pic(size, i, None);
+                    new = make(size, i, pics);
+                }
+                if let Some(o) = old
+                    && Some(o) != new
+                {
+                    pics.free(o);
+                }
+                shell.set_pic(size, i, new);
+                *from = tag;
+                return if new.is_some() {
+                    Kept::Made(size, i)
+                } else {
+                    Kept::Missing(size, i)
+                };
+            }
+        }
+        Kept::Idle
+    }
 }
 
 /// A card's icon pack (one of the seven, each a picture set: every
@@ -234,20 +399,14 @@ impl PackLoad {
         }
     }
 
-    /// The shell's set from a finished pack's pictures (`imgs`, as the
-    /// steps filled them) and its table.
+    /// A finished pack's pictures (`imgs`, as the steps filled them) by
+    /// size, from its table.
     #[must_use]
-    pub fn icons(file: &[u8], imgs: &'static [Image; PACK_MAX]) -> Option<rp_shell::Icons> {
+    pub fn icons(file: &[u8], imgs: &'static [Image; PACK_MAX]) -> Option<Unpacked> {
         let (_, table) = Self::table(file)?;
-        let mut set = rp_shell::Icons::NONE;
+        let mut set = Unpacked::NONE;
         for (img, e) in imgs.iter().zip(table.as_chunks::<PACK_ENTRY>().0) {
-            let i = usize::from(e[1].clamp(1, 22) - 1);
-            match e[0] {
-                0 => set.hero[i] = Some(img),
-                1 => set.card[i] = Some(img),
-                2 => set.row[i] = Some(img),
-                _ => set.mid[i] = Some(img),
-            }
+            set.put(e[0], e[1], img);
         }
         Some(set)
     }
@@ -260,7 +419,7 @@ pub fn pack_into(
     file: &[u8],
     px: &'static mut [u32],
     imgs: &'static mut [Image; PACK_MAX],
-) -> Option<rp_shell::Icons> {
+) -> Option<Unpacked> {
     let mut load = PackLoad::new(px);
     loop {
         match load.step(file, imgs) {
@@ -273,15 +432,15 @@ pub fn pack_into(
 
 /// The stream inflated into `px` (its bytes are the pictures' bytes: B, G,
 /// R, A, the ARGB word in memory on the X51v), each picture's filter
-/// undone in place, and the shell's set made from `desc`.
+/// undone in place, and the set made from `desc`.
 fn fill(
     desc: impl Iterator<Item = (u8, u8, u16, u16)> + Clone,
     stream: &[u8],
     words: usize,
     px: &'static mut [u32],
     imgs: &'static mut [Image],
-) -> Option<rp_shell::Icons> {
-    let mut set = rp_shell::Icons::NONE;
+) -> Option<Unpacked> {
+    let mut set = Unpacked::NONE;
     if px.len() < words || desc.clone().count() > imgs.len() {
         return None;
     }
@@ -302,13 +461,7 @@ fn fill(
     }
     let imgs: &'static [Image] = imgs;
     for (img, (kind, id, ..)) in imgs.iter().zip(desc) {
-        let i = usize::from(id.clamp(1, 22) - 1);
-        match kind {
-            0 => set.hero[i] = Some(img),
-            1 => set.card[i] = Some(img),
-            2 => set.row[i] = Some(img),
-            _ => set.mid[i] = Some(img),
-        }
+        set.put(kind, id, img);
     }
     Some(set)
 }
@@ -1002,12 +1155,112 @@ mod tests {
         assert!(pack_into(&pack, room(), imgs()).is_some());
     }
 
-    /// The pictures unpacked into memory that lives for the test.
-    fn host_icons() -> rp_shell::Icons {
-        icons_into(
+    /// A store with a slot for every condition at every size (leaked: it
+    /// lives for the test, as the image's lives for the run).
+    fn host_store() -> &'static Pics<'static> {
+        let classes: Vec<(u16, u8)> = Size::ALL.iter().map(|z| (z.side(), 22)).collect();
+        Box::leak(Box::new(Pics::new(
+            Box::leak(vec![0; Pics::words(&classes)].into_boxed_slice()),
+            &classes,
+        )))
+    }
+
+    /// The pictures unpacked into memory that lives for the test, in a
+    /// store of their own (handed to the renderers that draw them).
+    fn host_icons_in() -> (rp_shell::Icons, &'static Pics<'static>) {
+        let set = icons_into(
             Box::leak(vec![0; ICON_WORDS].into_boxed_slice()),
             Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
-        )
+        );
+        let pics = host_store();
+        (store_all(&set, pics), pics)
+    }
+
+    fn host_icons() -> rp_shell::Icons {
+        host_icons_in().0
+    }
+
+    /// The Keeper makes what the screens show and nothing else, a picture
+    /// a step; a new pack replaces each in turn, the old one shown until
+    /// then; what no screen shows any more is given back; a picture the
+    /// pack lacks is tried once.
+    #[test]
+    fn the_keeper_keeps_exactly_what_the_screens_show() {
+        let pics = host_store();
+        let mut shell = rp_shell::Shell::new(shell_fonts(), rp_shell::Icons::NONE, true);
+        let want = shell.wanted();
+        let img: &'static Image = Box::leak(Box::new(Image {
+            w: 2,
+            h: 2,
+            px: Box::leak(vec![0xFF00_0000; 4].into_boxed_slice()),
+        }));
+        let mut k = Keeper::new();
+        let mut made = 0;
+        let pack_of = |pack: u32| {
+            move |_: Size, _: usize, p: &Pics| {
+                let pic = store_copy(img, p)?;
+                p.write(pic, |px| px[0] = pack);
+                Some(pic)
+            }
+        };
+        loop {
+            match k.step(&mut shell, pics, 0, pack_of(0)) {
+                Kept::Made(..) => made += 1,
+                Kept::Idle => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(made, want.count());
+        assert_eq!(pics.used() as u32, want.count());
+        for size in Size::ALL {
+            for i in 0..22 {
+                assert_eq!(shell.pic(size, i).is_some(), want.has(size, i));
+            }
+        }
+        // Pack 1: each replaced in turn, the rest still pack 0's.
+        let hero = (0..22).find(|&i| want.has(Size::Hero, i)).unwrap();
+        let old = shell.pic(Size::Hero, hero).unwrap();
+        assert_eq!(
+            k.step(&mut shell, pics, 1, pack_of(1)),
+            Kept::Made(Size::Hero, hero)
+        );
+        let new = shell.pic(Size::Hero, hero).unwrap();
+        assert!(!pics.is_live(old) && pics.is_live(new));
+        assert_eq!(pics.read(new, |px| px[0]), Some(1));
+        let mut n = 1;
+        while k.step(&mut shell, pics, 1, pack_of(1)) != Kept::Idle {
+            n += 1;
+        }
+        assert_eq!(n, want.count());
+        assert_eq!(pics.used() as u32, want.count(), "every old one given back");
+        // A forecast with other skies: what no screen shows goes.
+        let mut wx = rp_weather::sample();
+        wx.now.sky = wx.days[3].sky;
+        for h in &mut wx.hours {
+            h.sky = wx.now.sky;
+        }
+        shell.set_forecast(wx);
+        let mut freed = 0;
+        loop {
+            match k.step(&mut shell, pics, 1, pack_of(1)) {
+                Kept::Freed(..) => freed += 1,
+                Kept::Idle => break,
+                _ => {}
+            }
+        }
+        assert!(freed > 0);
+        assert_eq!(pics.used() as u32, shell.wanted().count());
+        // A pack without pictures: tried once each, none, never a loop.
+        let mut misses = 0;
+        loop {
+            match k.step(&mut shell, pics, 2, |_, _, _| None) {
+                Kept::Missing(..) => misses += 1,
+                Kept::Idle => break,
+                _ => {}
+            }
+        }
+        assert_eq!(misses, shell.wanted().count());
+        assert_eq!(pics.used(), 0);
     }
 
     /// The image's radar map unpacks; Night shows it as built, Ink turns
@@ -1258,7 +1511,9 @@ mod tests {
         gpu.dither = false;
         let mut work = vec![0u8; PICTURE_BYTES];
         let mut plane = vec![0u8; PICTURE_BYTES];
-        let mut shell = Shell::new(shell_fonts(), host_icons(), true);
+        let (icons, pics) = host_icons_in();
+        gpu.set_pics(pics);
+        let mut shell = Shell::new(shell_fonts(), icons, true);
         // The emulator's run showed this; frames differ by their text.
         shell.set_time(rp_shell::Time {
             hour: 12,
@@ -1295,7 +1550,9 @@ mod tests {
             assert!(gpu.poll());
             hits += gpu.last.cache_hits;
             let layer = Layer::in_bytes(&mut work, W as u32, H as u32).unwrap();
-            CpuRenderer::new(layer, &mut plane, STRIDE, PlaneFormat::Argb8888).draw(&f);
+            let mut cpu = CpuRenderer::new(layer, &mut plane, STRIDE, PlaneFormat::Argb8888);
+            cpu.set_pics(pics);
+            cpu.draw(&f);
             let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
             let base = ((scadr & 0x7F_FFFF) * 16) as usize;
             let m = mem.borrow();
@@ -1361,7 +1618,9 @@ mod tests {
             1,
         );
         show_gpu(&mut gpu, &wall, |_| {}, &mut WallScratch::new());
-        let mut shell = Shell::new(shell_fonts(), host_icons(), true);
+        let (icons, pics) = host_icons_in();
+        gpu.set_pics(pics);
+        let mut shell = Shell::new(shell_fonts(), icons, true);
         let mut f = Frame::new();
         let s = rp_shell::START;
         let (sx, sy) = (s.x + s.w / 2, s.y + s.h / 2);

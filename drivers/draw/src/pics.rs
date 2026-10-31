@@ -20,8 +20,10 @@ use core::cell::{Cell, RefCell};
 
 use crate::Argb;
 
-/// Slots a store holds at most.
-pub const SLOTS: usize = 48;
+/// Slots a store holds at most: every condition at every size the shell
+/// shows (22 x 4, the previews' whole set) and room over (the device's
+/// store has 28; each slot costs 20 bytes here).
+pub const SLOTS: usize = 96;
 
 /// A picture in a [`Pics`] store: its slot, the slot's generation when it
 /// was made, and its size. Plain data: copied freely, checked on use.
@@ -68,7 +70,27 @@ impl<'a> Pics<'a> {
     /// says how many were made).
     #[must_use]
     pub fn new(block: &'a mut [Argb], classes: &[(u16, u8)]) -> Self {
-        let mut slots = [const { None }; SLOTS];
+        let mut p = Self {
+            slots: [const { None }; SLOTS],
+        };
+        p.carve(block, classes);
+        p
+    }
+
+    /// [`Pics::new`] made straight into `slot` (the image's, in `.bss`): at
+    /// [`SLOTS`] slots the store is 1.9 KB, and made on the stack and moved
+    /// it took a 4,640-byte frame (`cargo xtask stacks`, P6).
+    pub fn new_in<'s>(
+        slot: &'s mut core::mem::MaybeUninit<Self>,
+        block: &'a mut [Argb],
+        classes: &[(u16, u8)],
+    ) -> &'s mut Self {
+        let p = rp_hal_mem::in_place!(slot, Pics { slots: @each None });
+        p.carve(block, classes);
+        p
+    }
+
+    fn carve(&mut self, block: &'a mut [Argb], classes: &[(u16, u8)]) {
         let mut rest = block;
         let mut n = 0;
         for &(side, count) in classes {
@@ -79,7 +101,7 @@ impl<'a> Pics<'a> {
                 }
                 let (mine, more) = core::mem::take(&mut rest).split_at_mut(words);
                 rest = more;
-                slots[n] = Some(Slot {
+                self.slots[n] = Some(Slot {
                     px: RefCell::new(mine),
                     side,
                     era: Cell::new(0),
@@ -89,7 +111,6 @@ impl<'a> Pics<'a> {
                 n += 1;
             }
         }
-        Self { slots }
     }
 
     /// Words a store of `classes` needs.
@@ -188,6 +209,16 @@ impl<'a> Pics<'a> {
         if let Some(s) = self.live(pic) {
             s.used.set(false);
             s.era.set(s.era.get().wrapping_add(1));
+        }
+    }
+
+    /// Gives every slot back: every handle so far is stale.
+    pub fn clear(&self) {
+        for s in self.slots.iter().flatten() {
+            if s.used.get() {
+                s.used.set(false);
+                s.era.set(s.era.get().wrapping_add(1));
+            }
         }
     }
 

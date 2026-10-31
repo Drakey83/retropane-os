@@ -114,7 +114,13 @@ mod image {
         [const { rt::Slot::new() }; PACKS];
     /// The packs' picture sets once read, and the SD card: in `.bss`, not
     /// `main`'s frame (they overflowed its 12 KiB stack, 2026-10-31).
-    static PACK_SETS: rt::Slot<[Option<rp_shell::Icons>; PACKS]> = rt::Slot::new();
+    static PACK_SETS: rt::Slot<[Option<rp_today::Unpacked>; PACKS]> = rt::Slot::new();
+    /// The picture store (option C, docs/design/weather-rule0.md): the
+    /// pictures the screens show, at their sizes; the shell holds handles
+    /// to them (ADR-0021 rule 1), both renderers read them by handle
+    /// (ADR-0030 G3), the pixels in SDRAM where the CPU composes (ADR-0022
+    /// rule 2).
+    static PICS: rt::Slot<rp_draw::pics::Pics<'static>> = rt::Slot::new();
     static CARD: rt::Slot<Option<(Card, u32)>> = rt::Slot::new();
     // The radar's rain cells' descriptions (their pixels are in the RAM pool).
     static RADAR_IMGS: rt::Slot<[rp_draw::Image; 3]> = rt::Slot::new();
@@ -418,6 +424,42 @@ mod image {
     /// xtask load`): how many, the largest file, the largest unpacked.
     const PACKS: usize = rp_weather::settings::PACKS.len();
     const PACK_FILE: usize = 3 * 1024 * 1024;
+    /// The picture store's slots (side, count): the shell's sizes
+    /// (`rp_shell::Size`), as many of each as the screens show at once
+    /// plus a spare, so a pick replaces a picture with no gap (the sheet's
+    /// 250 x2, 66 x8, 40 x16; Hourly's 160 x6, not x2: every hour's card
+    /// picture is kept, so a pick never waits on a decode, P1).
+    const PIC_CLASSES: [(u16, u8); 4] = [
+        (rp_shell::Size::Hero.side(), 2),
+        (rp_shell::Size::Mid.side(), 6),
+        (rp_shell::Size::Card.side(), 8),
+        (rp_shell::Size::Row.side(), 16),
+    ];
+    /// The keeper's tag for the built-in pictures (apart from every pack).
+    const BUILT_IN: u8 = 0xFE;
+
+    /// Up to `most` steps of the keeper (the store made to hold what the
+    /// screens show, from `set`, tagged `tag`): how many pictures changed.
+    fn keep_pictures(
+        keeper: &mut rp_today::Keeper,
+        shell: &mut Shell,
+        pics: &rp_draw::pics::Pics<'static>,
+        tag: u8,
+        set: &rp_today::Unpacked,
+        most: u32,
+    ) -> u32 {
+        let mut n = 0;
+        while n < most {
+            let k = keeper.step(shell, pics, tag, |size, i, p| {
+                set.of(size)[i].and_then(|img| rp_today::store_copy(img, p))
+            });
+            if k == rp_today::Kept::Idle {
+                break;
+            }
+            n += 1;
+        }
+        n
+    }
     /// The pack buffer's last 512 KiB hold the radar map's file (214 KB),
     /// so the radar opened mid-preload never writes over a pack's bytes.
     const MAP_FILE_AT: usize = PACK_FILE - 512 * 1024;
@@ -671,6 +713,7 @@ mod image {
             crash(format_args!("no RAM pool"))
         };
         let (icon_px, rest) = pool.split_at_mut(rp_today::ICON_WORDS);
+        let (pics_px, rest) = rest.split_at_mut(rp_draw::pics::Pics::words(&PIC_CLASSES));
         let (wall_words, rest) = rest.split_at_mut(rp_today::WALLPAPER_BYTES.div_ceil(4));
         let (radar_px, rest) = rest.split_at_mut(rp_today::RADAR_WORDS);
         let (curve_px, rest) = rest.split_at_mut(rp_shell::weather_app::CURVE_WORDS);
@@ -761,10 +804,21 @@ mod image {
         let mut compare_frame = false;
         // The pictures unpacked once into the RAM pool (SDRAM outside the
         // image area, unused by this image): R129, the lean rule.
-        let mut icons = match ICON_IMGS.put_with(|| [rp_today::NO_IMAGE; rp_today::ICON_COUNT]) {
+        let baked = match ICON_IMGS.put_with(|| [rp_today::NO_IMAGE; rp_today::ICON_COUNT]) {
             Some(imgs) => rp_today::icons_into(icon_px, imgs),
-            None => rp_shell::Icons::NONE,
+            None => rp_today::Unpacked::NONE,
         };
+        let Some(pics) = PICS.put_in(|m| rp_draw::pics::Pics::new_in(m, pics_px, &PIC_CLASSES))
+        else {
+            crash(format_args!("started twice"))
+        };
+        let pics: &'static rp_draw::pics::Pics<'static> = pics;
+        gfx.two_d().set_pics(pics);
+        let mut keeper = rp_today::Keeper::new();
+        // The pictures' source: the pack shown (none yet: the built-in set).
+        let mut source = baked;
+        let mut source_tag = BUILT_IN;
+        let mut icons = rp_shell::Icons::NONE;
         let t0 = rt::ticks();
         if let Some(imgs) = RADAR_IMGS.put_with(|| [rp_today::NO_IMAGE; 3]) {
             icons.radar = rp_today::radar_into(radar_px, imgs);
@@ -791,7 +845,6 @@ mod image {
             "station dials painted in {} us",
             rt::ticks().wrapping_sub(t0) / 13 * 4
         );
-        let baked = icons;
         let Some(packs) = PACK_SETS.put_with(|| [None; PACKS]) else {
             crash(format_args!("started twice"))
         };
@@ -826,6 +879,19 @@ mod image {
             crash(format_args!("page layer"))
         };
         let mut cpu = CpuRenderer::new(cpu_layer, plane_bytes, W * 4, PlaneFormat::Argb8888);
+        cpu.set_pics(pics);
+        // The pictures the first screens show, in the store before they
+        // are drawn.
+        let t0 = rt::ticks();
+        let made = keep_pictures(&mut keeper, shell, pics, source_tag, &source, u32::MAX);
+        let _ = writeln!(
+            RunLog,
+            "icons: {made} pictures put in the store in {} us ({} of {} slots, {} wanted)",
+            rt::ticks().wrapping_sub(t0) / 13 * 4,
+            pics.used(),
+            pics.slots(),
+            shell.wanted().count(),
+        );
         let mut pages: [Page; 3] = [None; 3];
         if let Some(pc) = pc {
             shell.use_planes(true);
@@ -1451,14 +1517,14 @@ mod image {
                     || pack_failed[n_want]
                     || n_want == 0 && card_tried && card.is_none();
                 if ready {
-                    match packs[n_want] {
-                        Some(mut ic) => {
-                            ic.radar = baked.radar;
-                            shell.set_icons(ic);
+                    (source, source_tag) = match packs[n_want] {
+                        Some(set) => (set, n_want as u8),
+                        None if n_want == 0 => (baked, BUILT_IN),
+                        None => {
+                            shell.icon_pack_failed();
+                            (baked, BUILT_IN)
                         }
-                        None if n_want == 0 => shell.set_icons(baked),
-                        None => shell.icon_pack_failed(),
-                    }
+                    };
                     pack_shown = want;
                     pack_announced = None;
                     pages_check = true;
@@ -1474,6 +1540,23 @@ mod image {
             // one piece a pass (~30 ms at most) while nothing moves.
             let urgent = want != pack_shown;
             let still = !filter.down() && !shell.animating() && !shell.needs_frame() && !gfx.busy();
+            // The store keeps what the screens show, from the pack shown
+            // (option C): a few pictures a pass while nothing moves.
+            if still {
+                let t0 = rt::ticks();
+                let made = keep_pictures(&mut keeper, shell, pics, source_tag, &source, 4);
+                if made > 0 {
+                    pages_check = true;
+                    app_check = true;
+                    let _ = writeln!(
+                        RunLog,
+                        "icons: {made} pictures kept in {} us ({} of {} slots)",
+                        rt::ticks().wrapping_sub(t0) / 13 * 4,
+                        pics.used(),
+                        pics.slots(),
+                    );
+                }
+            }
             if preload.is_none() && (urgent || still) {
                 let next = if urgent && packs[n_want].is_none() && !pack_failed[n_want] {
                     Some(n_want)

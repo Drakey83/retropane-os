@@ -29,6 +29,25 @@ static PIC: Image = Image {
     px: &[0; 16],
 };
 
+/// A store with a 4 px picture for every condition at every size (leaked:
+/// the shell's handles are checked against a live store, as on the X51v).
+fn every_pic() -> Icons {
+    const CLASSES: [(u16, u8); 1] = [(4, 88)];
+    let store: &'static rp_draw::pics::Pics<'static> =
+        Box::leak(Box::new(rp_draw::pics::Pics::new(
+            Box::leak(vec![0; rp_draw::pics::Pics::words(&CLASSES)].into_boxed_slice()),
+            &CLASSES,
+        )));
+    let mut icons = Icons::NONE;
+    for size in Size::ALL {
+        for p in icons.of_mut(size) {
+            *p = store.alloc(4, 4);
+        }
+    }
+    icons.radar = [Some(&PIC); 3];
+    icons
+}
+
 fn shell(dev: bool) -> Shell {
     let mut s = Shell::new(
         Fonts {
@@ -36,13 +55,7 @@ fn shell(dev: bool) -> Shell {
             label: &FONT,
             big: &FONT,
         },
-        Icons {
-            hero: [Some(&PIC); 22],
-            card: [Some(&PIC); 22],
-            row: [Some(&PIC); 22],
-            mid: [Some(&PIC); 22],
-            radar: [Some(&PIC); 3],
-        },
+        every_pic(),
         dev,
     );
     s.set_curve([Some(&PIC); weather_app::CURVE_SPRITES]);
@@ -1213,17 +1226,14 @@ fn a_pull_past_the_top_refreshes_and_a_scroll_does_not() {
 fn pictures_replace_the_outlines_and_still_fit_a_frame() {
     let mut s = shell(true);
     let f = drawn(&mut s);
-    let images = f.cmds().filter(|c| matches!(c, Cmd::Image { .. })).count();
+    let images = f.cmds().filter(|c| matches!(c, Cmd::Pic { .. })).count();
     assert_eq!(images, 6);
     assert!(!f.overflowed());
     // Without pictures the same places draw outlines and no images.
     let mut none = shell(true);
     none.set_icons(Icons::NONE);
     let f = drawn(&mut none);
-    assert_eq!(
-        f.cmds().filter(|c| matches!(c, Cmd::Image { .. })).count(),
-        0
-    );
+    assert_eq!(f.cmds().filter(|c| matches!(c, Cmd::Pic { .. })).count(), 0);
 }
 
 #[test]
@@ -1913,4 +1923,66 @@ fn a_tap_off_the_page_is_never_a_tap_on_it() {
             assert_eq!(s.hour_pick, pick, "page {page}, dragged {drag}");
         }
     }
+}
+
+/// Each picture a frame draws, as (size, pack id less one).
+fn pics_drawn(s: &Shell, f: &Frame) -> Vec<(Size, usize)> {
+    f.cmds()
+        .filter_map(|c| match c {
+            Cmd::Pic { pic, .. } => Some(*pic),
+            _ => None,
+        })
+        .map(|pic| {
+            Size::ALL
+                .iter()
+                .flat_map(|&z| (0..22).map(move |i| (z, i)))
+                .find(|&(z, i)| s.pic(z, i) == Some(pic))
+                .expect("a drawn picture is one the shell holds")
+        })
+        .collect()
+}
+
+#[test]
+fn the_screens_draw_only_wanted_pictures_and_every_hour_s_card_is_wanted() {
+    // Option C (docs/design/weather-rule0.md): the device decodes what
+    // `wanted` lists and nothing else, so a picture drawn but not listed
+    // would be missing on the X51v.
+    let mut s = shell(true);
+    let want = s.wanted();
+    let f = drawn(&mut s);
+    let today = pics_drawn(&s, &f);
+    assert!(!today.is_empty());
+    for (z, i) in today {
+        assert!(want.has(z, i), "Today draws {z:?} {i} unlisted");
+    }
+    for page in 0..3 {
+        let mut s = weather(page);
+        let picks: Vec<u8> = if page == 1 {
+            (0..24).collect()
+        } else {
+            vec![0]
+        };
+        for h in picks {
+            s.hour_pick = h;
+            s.dirty(Rect::new(0, 0, W, H));
+            let f = drawn(&mut s);
+            let shown = pics_drawn(&s, &f);
+            for &(z, i) in &shown {
+                assert!(want.has(z, i), "page {page} draws {z:?} {i} unlisted");
+            }
+            if page == 1 {
+                let k = usize::from(Icon::of(s.wx.hours[usize::from(h)].sky).id() - 1);
+                assert!(shown.contains(&(Size::Mid, k)), "hour {h}'s card picture");
+            }
+        }
+    }
+    // Given back, a picture is simply not drawn; the count is what the
+    // device's store must hold (its classes: docs/design/weather-rule0.md).
+    let mut s = shell(true);
+    let k = usize::from(Icon::of(s.wx.now.sky).id() - 1);
+    s.set_pic(Size::Hero, k, None);
+    s.set_pic(Size::Card, k, None);
+    let f = drawn(&mut s);
+    assert!(pics_drawn(&s, &f).iter().all(|&(z, _)| z == Size::Card));
+    assert!(want.count() <= 2 + 4 + 8 + 16, "{want:?}");
 }

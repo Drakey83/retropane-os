@@ -124,6 +124,15 @@ soft you lose all of the detail". He chose C, without a loader change:
   nothing of pixels); the 2D renderer keys its copies in 2700G memory by
   slot and generation, so a reused slot is uploaded again, never shown
   stale (it keys by address today).
+- **Built so far (2026-10-31):** the shell holds `Option<Pic>` handles per
+  size and lists what its screens show (`Shell::wanted`: the hero's, the
+  five cards', every hour's card and row picture, 10 Day's rows);
+  `rp_today::Keeper` makes the store hold exactly that, a picture a step,
+  a pick replacing each in turn (old shown until its new one is in). The
+  store's classes are 250 x2, 160 x6, 66 x8, 40 x16 (~1.15 MB): 160 x6,
+  not the x2 first planned, because every hour's card picture is listed so
+  a pick never waits on a decode (P1); a day of mixed skies shows up to
+  about six.
 - **Hourly's card picture at 160 px** (the owner's pick of three drawn
   sizes, docs/design/mockups/hourly-card-picture-sizes.png), the text
   moved right; built 2026-10-31, the picture shown at 160 once the store

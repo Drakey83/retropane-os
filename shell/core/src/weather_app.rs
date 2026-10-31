@@ -936,15 +936,14 @@ impl Shell {
         let shown = rg.degrees(wx.now.temp) * self.ease(0) as i32 / 1024;
         let t = Line::new().num(shown).push(&[DEG_BIG]);
         Self::text_at(f, px + 20, py + 104, big, TEXT, t.as_bytes());
-        let pic = self.icons.big(icon);
-        if let Some(img) = pic {
+        if let Some(pic) = self.icons.big(icon) {
             let drop = ((1024 - self.ease(1)) * 24 / 1024) as i32;
-            let y = py + i32::from(206u16.saturating_sub(img.h) / 2) - 18 - drop;
+            let y = py + i32::from(206u16.saturating_sub(pic.h) / 2) - 18 - drop;
             if y >= 0 {
-                f.push(Cmd::Image {
-                    x: px + 448 - img.w - 6,
+                f.push(Cmd::Pic {
+                    x: px + 448 - pic.w - 6,
                     y: y as u16,
-                    img,
+                    pic,
                 });
             }
         }
@@ -1347,14 +1346,14 @@ impl Shell {
         // The hour's picture, up to 160 px wide (the owner's pick of three
         // drawn sizes, 2026-10-31: docs/design/mockups/hourly-card-picture-
         // sizes.png), centred in the column left of the lines and below the
-        // time: the card packs' mid size, else the card's.
+        // time: its own size, else the card's until that is decoded.
         let icon = Icon::of(h.sky);
         let k = usize::from(icon.id() - 1);
-        if let Some(img) = self.icons.mid[k].or(self.icons.card[k]) {
-            f.push(Cmd::Image {
-                x: c.x + (HOUR_TEXT_X / 2).saturating_sub(img.w / 2),
-                y: cy0(110 - i32::from(img.h / 2)),
-                img,
+        if let Some(pic) = self.icons.mid[k].or(self.icons.card[k]) {
+            f.push(Cmd::Pic {
+                x: c.x + (HOUR_TEXT_X / 2).saturating_sub(pic.w / 2),
+                y: cy0(110 - i32::from(pic.h / 2)),
+                pic,
             });
         }
         let us = rg.temp == rp_weather::Temp::F;
@@ -1480,11 +1479,11 @@ impl Shell {
                     DIM,
                     when.as_bytes(),
                 );
-                if let Some(img) = self.icons.row[usize::from(Icon::of(h.sky).id() - 1)] {
-                    f.push(Cmd::Image {
-                        x: cx.saturating_sub(img.w / 2),
-                        y: cy(24 + i32::from(40u16.saturating_sub(img.h) / 2)),
-                        img,
+                if let Some(pic) = self.icons.row[usize::from(Icon::of(h.sky).id() - 1)] {
+                    f.push(Cmd::Pic {
+                        x: cx.saturating_sub(pic.w / 2),
+                        y: cy(24 + i32::from(40u16.saturating_sub(pic.h) / 2)),
+                        pic,
                     });
                 }
                 let t = rg.temp(h.temp);
@@ -1772,11 +1771,11 @@ impl Shell {
             };
             f.text(r.x + 14, r.y + 28, label, TEXT, name);
             let icon = Icon::of(d.sky);
-            if let Some(img) = self.icons.row[usize::from(icon.id() - 1)] {
-                f.push(Cmd::Image {
-                    x: r.x + 90 + (40 - img.w.min(40)) / 2,
-                    y: r.y + (r.h.saturating_sub(img.h)) / 2,
-                    img,
+            if let Some(pic) = self.icons.row[usize::from(icon.id() - 1)] {
+                f.push(Cmd::Pic {
+                    x: r.x + 90 + (40 - pic.w.min(40)) / 2,
+                    y: r.y + (r.h.saturating_sub(pic.h)) / 2,
+                    pic,
                 });
             }
             if d.precip >= 20 {

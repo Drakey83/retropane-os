@@ -11347,6 +11347,7 @@ pub(crate) fn today_screens(
         || 0,
         1,
     );
+    gpu.set_pics(preview_pics());
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     shell.set_curve(today_curve());
@@ -11426,8 +11427,12 @@ pub(crate) fn today_page_on_planes(
         || 0,
         1,
     );
+    gpu.set_pics(preview_pics());
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
-    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
+    // The caller's set, else the image's (the previews' store holds one
+    // set at a time: making the image's would give the caller's back).
+    let icons = icons.unwrap_or_else(today_icons);
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), icons, true);
     shell.set_curve(today_curve());
     shell.set_dials(today_dials());
     shell.set_time(rp_shell::Time {
@@ -11438,9 +11443,6 @@ pub(crate) fn today_page_on_planes(
         month: 1,
     });
     shell.use_planes(true);
-    if let Some(icons) = icons {
-        shell.set_icons(icons);
-    }
     if let Some(a) = alerts {
         shell.set_alerts_from_nws(a);
     }
@@ -11482,6 +11484,7 @@ pub(crate) fn today_page_on_planes(
             480 * 4,
             PlaneFormat::Argb8888,
         );
+        cpu.set_pics(preview_pics());
         let mut f = Frame::new();
         let mut top = 0u16;
         while u32::from(top) < rows {
@@ -11615,6 +11618,7 @@ pub(crate) fn today_live(
         || 0,
         1,
     );
+    gpu.set_pics(preview_pics());
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     shell.set_curve(today_curve());
@@ -11683,18 +11687,46 @@ pub(crate) fn today_live(
     frames
 }
 
-/// The Today image's pictures, unpacked on the PC as the image unpacks them,
-/// and the radar's rain cells drawn as it draws them.
-fn today_icons() -> rp_shell::Icons {
-    let mut icons = rp_today::icons_into(
-        Box::leak(vec![0; rp_today::ICON_WORDS].into_boxed_slice()),
-        Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::ICON_COUNT])),
-    );
+thread_local! {
+    /// The previews' picture store (`rp_draw::pics`): a slot for every
+    /// condition at every size, made once a thread and kept (the renderers
+    /// hold it for good, as the image's do). It holds one set at a time:
+    /// [`preview_set`] gives the last one back.
+    static PREVIEW_PICS: &'static rp_draw::pics::Pics<'static> = {
+        let classes: Vec<(u16, u8)> =
+            rp_shell::Size::ALL.iter().map(|z| (z.side(), 22)).collect();
+        Box::leak(Box::new(rp_draw::pics::Pics::new(
+            Box::leak(vec![0; rp_draw::pics::Pics::words(&classes)].into_boxed_slice()),
+            &classes,
+        )))
+    };
+}
+
+/// The previews' picture store (every renderer here draws from it).
+pub(crate) fn preview_pics() -> &'static rp_draw::pics::Pics<'static> {
+    PREVIEW_PICS.with(|p| *p)
+}
+
+/// `set` put in the previews' store, the set before given back, with the
+/// radar's rain cells drawn as the image draws them.
+fn preview_set(set: &rp_today::Unpacked) -> rp_shell::Icons {
+    let pics = preview_pics();
+    pics.clear();
+    let mut icons = rp_today::store_all(set, pics);
     icons.radar = rp_today::radar_into(
         Box::leak(vec![0; rp_today::RADAR_WORDS].into_boxed_slice()),
         Box::leak(Box::new([rp_today::NO_IMAGE; 3])),
     );
     icons
+}
+
+/// The Today image's pictures, unpacked on the PC as the image unpacks them,
+/// and the radar's rain cells drawn as it draws them.
+fn today_icons() -> rp_shell::Icons {
+    preview_set(&rp_today::icons_into(
+        Box::leak(vec![0; rp_today::ICON_WORDS].into_boxed_slice()),
+        Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::ICON_COUNT])),
+    ))
 }
 
 /// The relay's canned alerts answer (`ALERTS`), for the previews.
@@ -11710,11 +11742,12 @@ pub(crate) fn today_pack(release: &Path, n: usize) -> Option<rp_shell::Icons> {
 /// A pack file's set, unpacked as the image unpacks it.
 pub(crate) fn pack_icons(pack: &[u8]) -> Option<rp_shell::Icons> {
     let words = rp_today::pack_words(pack)?;
-    rp_today::pack_into(
+    let set = rp_today::pack_into(
         pack,
         Box::leak(vec![0; words].into_boxed_slice()),
         Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::PACK_MAX])),
-    )
+    )?;
+    Some(preview_set(&set))
 }
 
 /// A station's reading for the previews (Tempest's shape).
@@ -11799,6 +11832,7 @@ fn compare_screens(wall: &[u8]) -> [Vec<u8>; 2] {
         || 0,
         1,
     );
+    gpu.set_pics(preview_pics());
     let mut scratch = rp_today::WallScratch::new();
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut scratch);
     let mut shell = Shell::new(rp_today::shell_fonts(), today_icons(), true);

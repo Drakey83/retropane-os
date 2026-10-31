@@ -35,6 +35,7 @@ pub use weather_net::{Ask, Question};
 
 pub use weather_app::{LAYER_MARGIN, Motion, PageView, picture_rows};
 
+use rp_draw::pics::Pic;
 use rp_draw::{Argb, Cmd, Font, Frame, Image, Rect};
 pub use rp_touch_cal::Calibration;
 use rp_weather::{Forecast, Icon, Line, Region};
@@ -54,40 +55,128 @@ pub struct Fonts {
     pub big: &'static Font,
 }
 
-/// The weather pictures (made from the icon pack on the PC; a missing one
-/// is an outline where it goes). Indexed by pack id less one
+/// A size the shell shows a weather picture at: a class of slots in the
+/// device's picture store (option C, docs/design/weather-rule0.md).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Size {
+    /// The hero panel's and the Now page's (250 px).
+    Hero,
+    /// Hourly's card ([`weather_app::HOUR_PIC_W`]).
+    Mid,
+    /// The forecast cards' (66 px).
+    Card,
+    /// The Weather app's rows (40 px).
+    Row,
+}
+
+impl Size {
+    /// Every size, in [`Wanted`]'s order.
+    pub const ALL: [Self; 4] = [Self::Hero, Self::Mid, Self::Card, Self::Row];
+
+    /// Its side in px: the largest picture of the size (its store slots').
+    #[must_use]
+    pub const fn side(self) -> u16 {
+        match self {
+            Self::Hero => 250,
+            Self::Mid => weather_app::HOUR_PIC_W,
+            Self::Card => 66,
+            Self::Row => 40,
+        }
+    }
+
+    const fn at(self) -> usize {
+        self as usize
+    }
+}
+
+/// The weather pictures: handles to the device's picture store
+/// (`rp_draw::pics`), decoded at run time at each size from the pack's big
+/// pictures. The shell holds handles only, never pixels (ADR-0021 rule 1);
+/// a missing one is drawn as nothing. Indexed by pack id less one
 /// ([`rp_weather::Icon::id`]).
 #[derive(Clone, Copy)]
 pub struct Icons {
     /// The big ones (250 px) in the hero panel and the app's Now page.
-    pub hero: [Option<&'static Image>; 22],
+    pub hero: [Option<Pic>; 22],
+    /// Hourly's card ([`weather_app::HOUR_PIC_W`]).
+    pub mid: [Option<Pic>; 22],
     /// The forecast cards' size (66 px).
-    pub card: [Option<&'static Image>; 22],
+    pub card: [Option<Pic>; 22],
     /// The Weather app's rows (40 px).
-    pub row: [Option<&'static Image>; 22],
-    /// Hourly's card (100 px; the card packs only).
-    pub mid: [Option<&'static Image>; 22],
+    pub row: [Option<Pic>; 22],
     /// The radar's rain cells ([`rp_weather::radar::CELLS`]), made at start.
     pub radar: [Option<&'static Image>; 3],
 }
 
 impl Icons {
-    /// The big picture for `icon`: its own, else its card size (a pack
-    /// without big ones), else none.
+    /// The big picture for `icon`: its own, else its card size (until the
+    /// big one is decoded), else none.
     #[must_use]
-    pub fn big(&self, icon: Icon) -> Option<&'static Image> {
+    pub fn big(&self, icon: Icon) -> Option<Pic> {
         let i = usize::from(icon.id() - 1);
         self.hero[i].or(self.card[i])
+    }
+
+    /// The pictures of `size`.
+    #[must_use]
+    pub const fn of(&self, size: Size) -> &[Option<Pic>; 22] {
+        match size {
+            Size::Hero => &self.hero,
+            Size::Mid => &self.mid,
+            Size::Card => &self.card,
+            Size::Row => &self.row,
+        }
+    }
+
+    /// The pictures of `size`, to change.
+    pub const fn of_mut(&mut self, size: Size) -> &mut [Option<Pic>; 22] {
+        match size {
+            Size::Hero => &mut self.hero,
+            Size::Mid => &mut self.mid,
+            Size::Card => &mut self.card,
+            Size::Row => &mut self.row,
+        }
     }
 
     /// No pictures.
     pub const NONE: Self = Self {
         hero: [None; 22],
+        mid: [None; 22],
         card: [None; 22],
         row: [None; 22],
-        mid: [None; 22],
         radar: [None; 3],
     };
+}
+
+/// The pictures the screens show with the forecast in hand: a bit per
+/// condition (pack id less one) per [`Size`]. The device decodes these
+/// (and gives the rest back) when the forecast, the pack or the place
+/// changes, never during touch (P1, P2: docs/design/principles.md).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Wanted(pub [u32; 4]);
+
+impl Wanted {
+    /// Whether `icon` (pack id less one) at `size` is wanted.
+    #[must_use]
+    pub const fn has(&self, size: Size, icon: usize) -> bool {
+        icon < 22 && self.0[size.at()] >> icon & 1 != 0
+    }
+
+    /// `icon` (pack id less one) at `size` wanted.
+    pub const fn add(&mut self, size: Size, icon: usize) {
+        if icon < 22 {
+            self.0[size.at()] |= 1 << icon;
+        }
+    }
+
+    /// How many pictures are wanted.
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        self.0[0].count_ones()
+            + self.0[1].count_ones()
+            + self.0[2].count_ones()
+            + self.0[3].count_ones()
+    }
 }
 
 /// Which screen is up.
@@ -717,11 +806,51 @@ impl Shell {
         self.wset.pack
     }
 
-    /// New pictures (an icon pack read from the card): every screen
-    /// redrawn with them.
+    /// New pictures (a whole set at once: the previews' and the tests'):
+    /// every screen redrawn with them.
     pub fn set_icons(&mut self, icons: Icons) {
         self.icons = icons;
         self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// One picture decoded (or given back, `None`): `icon` is the pack id
+    /// less one. Every screen is redrawn: the pages' draw lists key the
+    /// handle, so only a page that shows it is composed again.
+    pub fn set_pic(&mut self, size: Size, icon: usize, pic: Option<Pic>) {
+        if let Some(p) = self.icons.of_mut(size).get_mut(icon)
+            && *p != pic
+        {
+            *p = pic;
+            self.dirty(Rect::new(0, 0, W, H));
+        }
+    }
+
+    /// The picture held for `icon` (pack id less one) at `size`.
+    #[must_use]
+    pub fn pic(&self, size: Size, icon: usize) -> Option<Pic> {
+        self.icons.of(size).get(icon).copied().flatten()
+    }
+
+    /// The pictures the screens show with this forecast: the hero's and
+    /// the Now page's big one, the five forecast cards, Hourly's card for
+    /// any hour picked and the rows of its 24 hours and of 10 Day. Every
+    /// hour's card picture is listed (a pick never waits on a decode, P1).
+    #[must_use]
+    pub fn wanted(&self) -> Wanted {
+        let mut w = Wanted::default();
+        let id = |sky| usize::from(Icon::of(sky).id() - 1);
+        w.add(Size::Hero, id(self.wx.now.sky));
+        for d in &self.wx.days[1..6] {
+            w.add(Size::Card, id(d.sky));
+        }
+        for h in &self.wx.hours {
+            w.add(Size::Mid, id(h.sky));
+            w.add(Size::Row, id(h.sky));
+        }
+        for d in &self.wx.days {
+            w.add(Size::Row, id(d.sky));
+        }
+        w
     }
 
     /// The first alert in force's name (the header's chip).
@@ -1975,11 +2104,11 @@ impl Shell {
         f.text(HERO.x + 20, HERO.y + 174, ui, DIM, hl.as_bytes());
         // The icon; none drawn when the pack lacks it (an empty outline
         // read as a stray box: the owner's photo, 2026-10-31).
-        if let Some(img) = self.icons.big(icon) {
-            f.push(Cmd::Image {
-                x: HERO_ICON.x + HERO_ICON.w.saturating_sub(img.w),
-                y: HERO_ICON.y + HERO_ICON.h.saturating_sub(img.h) / 2,
-                img,
+        if let Some(pic) = self.icons.big(icon) {
+            f.push(Cmd::Pic {
+                x: HERO_ICON.x + HERO_ICON.w.saturating_sub(pic.w),
+                y: HERO_ICON.y + HERO_ICON.h.saturating_sub(pic.h) / 2,
+                pic,
             });
         }
         let date = date_line(&mut buf, self.time);
@@ -2005,11 +2134,11 @@ impl Shell {
             );
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             // The icon's 66 px box reaches 30 px above the card (as in the mock-ups).
-            if let Some(img) = self.icons.card[usize::from(Icon::of(d.sky).id() - 1)] {
-                f.push(Cmd::Image {
-                    x: r.x + r.w.saturating_sub(img.w) / 2,
-                    y: (r.y + 36).saturating_sub(66) + 66u16.saturating_sub(img.h) / 2,
-                    img,
+            if let Some(pic) = self.icons.card[usize::from(Icon::of(d.sky).id() - 1)] {
+                f.push(Cmd::Pic {
+                    x: r.x + r.w.saturating_sub(pic.w) / 2,
+                    y: (r.y + 36).saturating_sub(66) + 66u16.saturating_sub(pic.h) / 2,
+                    pic,
                 });
             }
             self.centred(
