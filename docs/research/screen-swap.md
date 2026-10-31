@@ -24,6 +24,7 @@ Sources, cited by letter in the tables:
 | Letter | Source |
 |---|---|
 | (S) | Sharp, *LS037V7DW01 LCD Module, Product Specifications*, LCP-06008A, 17 May 2006 (mirror: <https://www.beyondinfinite.com/lcd/Library/Sharp/LS037V7DW01.pdf>). The sibling of the Axim's LS037V7DD05; no DD05 datasheet was found. Facts only are used here; the document itself is copyrighted and is not copied into the repository |
+| (D) | Sharp, *LS037V7DD05 technical literature*, LCP-04006A, 3 March 2004, marked **tentative** (found by the owner, 2026-10-30; a local copy in `local/datasheets/`, not in the repository: the document is copyrighted and forbids copying, so only facts are used here). The Axim's own panel: section 1a |
 | (L) | Linux `drivers/gpu/drm/panel/panel-sharp-ls037v7dw01.c` (<https://raw.githubusercontent.com/torvalds/linux/master/drivers/gpu/drm/panel/panel-sharp-ls037v7dw01.c>) |
 | (F) | Focus LCDs, *E35GG-I-CW350-N* spec, rev 1.0, 2022-06-15 (<https://focuslcds.com/wp-content/uploads/Specs/E35GG-I-CW350-N_Spec.pdf>) |
 | (K) | Kingtech, *PV03502LZR40D* specification, V0, 2019-02-18 (<https://www.kingtechdisplay.com/uploads/file/20241217/ips-3.5-inch-480-640-transflective-tft-lcd-module.pdf>; product page <https://www.kingtechdisplay.com/products/ips-3-5-inch-480-640-transflective-tft-lcd-module.html>) |
@@ -129,6 +130,60 @@ need any spare line at all, only INI and RESB as its "go" signals.
 6. The Samsung variant's connector and pinout, if a Samsung-panel Axim
    turns up.
 7. The bezel opening's size and the depth behind the panel.
+
+## 1a. The DD05's own datasheet (found by the owner, 2026-10-30)
+
+The owner found the DD05's datasheet (D). **It is a different kind of
+module from the DW01**, so the DW01 rows above are wrong for the Axim
+wherever they differ:
+
+| Item | DD05 | Confidence | Source |
+|---|---|---|---|
+| What the module is | the glass with its source driver on the glass (COG), the gate driver in the glass, the LED backlight, the touch layer: **no timing controller and no power converter** ("it isn't composed control circuit") | confirmed | D |
+| Connector | **61 pins** (rev A: pin 60, ID2, changed from ground to not connected), plus the touch flex (T1-T4) | confirmed | D |
+| What the host must drive | the gate driver's clock and start pulse (CLS, SPS), the source driver's start pulses, latch and clock (SPL/SPR, LP, DCLK), 18 data lines, the polarity inversion (REV), VCOM (±2.5 V swing on +0.1..+2.1 V) and CsCOM, analog-switch and source controls (ASC, SSC), MOD | confirmed | D |
+| Supplies the host makes | **five rails**: +3.3 V (logic), +5 V (analog), +8 V and −4 V (the gate driver), −8 V (VEE), in a set order: 3.3 V, then the signals with a white picture, then +5/+8/−4, then MOD and −8 V; off in reverse, the white picture shown 2+ refreshes before | confirmed | D |
+| Modes on pins | **CO**: 262,144 colours (18-bit) or **8 colours**; **MO**: VGA or **QVGA (240 x 320)**; **U/L**, **LBR**: scan direction | confirmed | D |
+| Line and pixel rate | VGA: line 35.5-39.5 kHz, pixel clock 19.4-28 MHz; QVGA: 17.9-19.9 kHz, 5.0-6.8 MHz. The datasheet's own measuring set-up is **60 Hz with a 25.175 MHz clock**, which is our 60 Hz timing (`DISPPLL` `0xFC5`, 25.19 MHz); Windows Mobile's ~55 Hz is inside the range too | confirmed | D; R (2700g.md) |
+| Panel's own draw | about 5.5 mA at 5 V, 2.3 mA at 3.3 V and ~1.4 mA from the ±8/−4 V rails typ.: **about 45 mW** | confirmed (tentative values) | D |
+| Backlight | LEDs **32.4 V typ. at 15 mA** (37.8 V max at 20 mA), **486 mW**: about ten LEDs in series, so **the backlight draws ~10x what the panel does** | confirmed (values); likely (count) | D |
+| Response | rise 30 ms typ. (60 max), fall 50 ms typ. (100 max): **slow**; a full black-to-white change spans several 60 Hz refreshes | confirmed (tentative) | D |
+| Brightness, contrast | 85 cd/m² typ. at 15 mA (tentative), contrast 65:1 lit, 2.5:1 by reflection, 6% reflectance | confirmed (tentative) | D |
+| Temperature | operating −10 to 60 °C at the panel's surface, storage −20 to 70 °C | confirmed | D |
+
+**What it changes for a swap:**
+
+- **The Axim's board must hold a timing controller and the panel's power
+  supplies** between the 2700G (which sends ordinary RGB with syncs and a
+  data enable) and this connector. So the 61-pin connector carries
+  driver-level signals, not a plain RGB interface. An adapter there would
+  have to turn the gate and source pulses back into RGB: hard. The easier
+  tap is upstream, the 2700G's RGB output before that controller, or
+  replacing the controller's output stage. Where the controller sits and
+  what it is: **measure** (board photos; never opening the owner's unit,
+  "Any Axim").
+- **The DW01 rows on INI, RESB, the single 3.3 V supply, the DC-DC on the
+  flex, the 51-pin Hirose connector and the pins borrowable for SPI don't
+  apply to the Axim.** The borrowable-pin candidates on the DD05 are CO,
+  MO, U/L, LBR and the NC pins (2, 19, 60), and they are most likely
+  straps on the board as well.
+- The backlight voltage is higher than the DW01's (32 V against 28 V), so
+  a replacement's LEDs must match about ten in series, or a new driver.
+
+**What it says about the X51v as it is (not only a swap):**
+
+- **The backlight is the screen's power, by about ten to one.** For R133
+  (the GPU only while the screen moves), the backlight's level and
+  time-out matter more to the battery than the panel's refresh.
+- **The panel's response is slow** (30 ms + 50 ms typical). Fast flings
+  and short fades smear on this glass whatever the frame rate. That is a
+  physical limit of the glass, so motion design should lean on eased,
+  not-too-fast movement. Measurable with the owner's camera if needed.
+- **An 8-colour and a QVGA mode exist on the glass.** If the board
+  drives CO or MO (from a CPLD bit or a GPIO) rather than strapping them,
+  an 8-colour, lower-power standby picture (a clock face) would be
+  possible. **Measure**, only with the CPLD bits' owners known and the
+  owner watching (the no-blind-board-bits rule).
 
 ## 2. What the X51v side gives us
 
