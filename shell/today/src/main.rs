@@ -417,6 +417,9 @@ mod image {
     /// xtask load`): how many, the largest file, the largest unpacked.
     const PACKS: usize = rp_weather::settings::PACKS.len();
     const PACK_FILE: usize = 3 * 1024 * 1024;
+    /// The pack buffer's last 512 KiB hold the radar map's file (214 KB),
+    /// so the radar opened mid-preload never writes over a pack's bytes.
+    const MAP_FILE_AT: usize = PACK_FILE - 512 * 1024;
     type Card = SdCard<PxaMmc<Mmio>>;
 
     /// The SD card, taken over as the loader left it when its card log is
@@ -478,6 +481,74 @@ mod image {
             }
         }
         (!over && at > 0).then_some(at)
+    }
+
+    /// The bytes one background read takes from the card (~30 ms on the
+    /// X51v: a pack's 1.9 MB read in 1.4-2.2 s, today-0035/36).
+    const PACK_CHUNK: u64 = 32 * 1024;
+
+    /// The next piece of card file `stem` (parts `<stem>A.PAK`, `B`, ...)
+    /// at `part`/`off` into `out`: the bytes read (0 when that part is
+    /// done: the next part from 0), or `None` once there is no next part
+    /// (or no card). Nothing is logged while it reads.
+    fn read_chunk(
+        card: &mut Card,
+        start: u32,
+        stem: [u8; 5],
+        part: u8,
+        off: u64,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        rp_hal_x51v::cardsink::settle();
+        let mut vol = Volume::mount(&mut *card, start).ok()?;
+        let name = [
+            stem[0],
+            stem[1],
+            stem[2],
+            stem[3],
+            stem[4],
+            b'A' + part,
+            b'.',
+            b'P',
+            b'A',
+            b'K',
+        ];
+        let file = vol.find(core::str::from_utf8(&name).ok()?).ok()?;
+        if part > 0 && off == 0 && file.size() == 0 {
+            return None;
+        }
+        let mut scratch = [0u8; 2 * BLOCK];
+        let mut at = 0usize;
+        let mut over = false;
+        let len = PACK_CHUNK.min(out.len() as u64);
+        vol.read_range(&file, off, len, &mut scratch, |c| {
+            match out.get_mut(at..at + c.len()) {
+                Some(o) => o.copy_from_slice(c),
+                None => over = true,
+            }
+            at += c.len();
+        })
+        .ok()?;
+        (!over).then_some(at)
+    }
+
+    /// A pack being read and unpacked in the background, a piece a pass.
+    struct Preload {
+        /// Which pack.
+        n: usize,
+        /// Its bytes read so far (into the pack buffer, from its start).
+        got: usize,
+        /// The part being read and where in it.
+        part: u8,
+        off: u64,
+        /// No more parts.
+        eof: bool,
+        /// Its pictures' unpacking, once the header is in.
+        load: Option<rp_today::PackLoad>,
+        /// Its pictures' descriptions.
+        imgs: &'static mut [rp_draw::Image; rp_today::PACK_MAX],
+        /// The time spent reading it from the card (us).
+        read_us: u32,
     }
 
     /// The USB D+ pull-up's GPIO (docs/hw/udc.md).
@@ -710,7 +781,10 @@ mod image {
         let Some(packs) = PACK_SETS.put_with(|| [None; PACKS]) else {
             crash(format_args!("started twice"))
         };
-        let mut pack_tried = [false; PACKS];
+        // Packs read and unpacked in the background (R146): the chosen one
+        // first, then the others while nothing moves, so a pick is instant.
+        let mut pack_failed = [false; PACKS];
+        let mut preload: Option<Preload> = None;
         let mut pack_shown = u8::MAX;
         let mut radar_shown: Option<Option<u8>> = None;
         let mut pack_announced: Option<usize> = None;
@@ -1351,73 +1425,152 @@ mod image {
                 rp_image::finish()
             }
 
-            // The icon pack the settings name: read from the card the
-            // first time (about a second), kept after; pack 0 falls back
-            // to the pictures built in.
+            // The icon pack the settings name: shown at once when it is in;
+            // else "Loading icons" and its preload put first, worked at full
+            // speed until it is in.
             let want = shell.icon_pack();
+            let n_want = usize::from(want).min(PACKS - 1);
             if want != pack_shown {
-                let n = usize::from(want).min(PACKS - 1);
-                // A pack not read yet: first a frame saying so (the setting's
-                // new name and "Loading icons"), the read on the next pass
-                // (the owner, 2026-10-31: the button seemed not to respond).
-                let announce = !pack_tried[n] && pack_announced != Some(n);
-                if announce {
-                    pack_announced = Some(n);
-                    if pack_shown != u8::MAX {
-                        shell.icons_loading();
-                    }
-                } else if !pack_tried[n] {
-                    pack_tried[n] = true;
-                    if !card_tried {
-                        card_tried = true;
-                        *card = take_card();
-                    }
-                    let t0 = rt::ticks();
-                    let got = card.as_mut().and_then(|(c, start)| {
-                        read_pack(
-                            c,
-                            *start,
-                            [b'R', b'P', b'I', b'C', b'0' + n as u8],
-                            pack_file,
-                        )
-                    });
-                    let read_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
-                    let t1 = rt::ticks();
-                    packs[n] = got.and_then(|len| {
-                        let words = rp_today::pack_words(&pack_file[..len])?;
-                        if words > pack_room.len() {
-                            return None;
-                        }
-                        let (px, more) = core::mem::take(&mut pack_room).split_at_mut(words);
-                        pack_room = more;
-                        let imgs =
-                            PACK_IMGS[n].put_with(|| [rp_today::NO_IMAGE; rp_today::PACK_MAX])?;
-                        rp_today::pack_into(&pack_file[..len], px, imgs)
-                    });
-                    let _ = writeln!(
-                        RunLog,
-                        "icons: pack {n} {} (read {} bytes in {read_us} us, unpacked in {} us)",
-                        if packs[n].is_some() {
-                            "in use"
-                        } else {
-                            "not usable"
-                        },
-                        got.unwrap_or(0),
-                        rt::ticks().wrapping_sub(t1) / 13 * 4
-                    );
-                }
-                if !announce {
-                    match packs[n] {
+                let ready = packs[n_want].is_some()
+                    || pack_failed[n_want]
+                    || n_want == 0 && card_tried && card.is_none();
+                if ready {
+                    match packs[n_want] {
                         Some(mut ic) => {
                             ic.radar = baked.radar;
                             shell.set_icons(ic);
                         }
-                        None if n == 0 => shell.set_icons(baked),
+                        None if n_want == 0 => shell.set_icons(baked),
                         None => shell.icon_pack_failed(),
                     }
-                    pack_shown = shell.icon_pack();
+                    pack_shown = want;
+                    pack_announced = None;
                     pages_check = true;
                     app_check = true;
+                } else if pack_announced != Some(n_want) {
+                    pack_announced = Some(n_want);
+                    if pack_shown != u8::MAX {
+                        shell.icons_loading();
+                    }
+                }
+            }
+            // The preload: the pack waited for gets ~40 ms a pass; the others
+            // one piece a pass (~30 ms at most) while nothing moves.
+            let urgent = want != pack_shown;
+            let still = !filter.down() && !shell.animating() && !shell.needs_frame() && !gfx.busy();
+            if preload.is_none() && (urgent || still) {
+                let next = if urgent && packs[n_want].is_none() && !pack_failed[n_want] {
+                    Some(n_want)
+                } else {
+                    (0..PACKS).find(|&k| packs[k].is_none() && !pack_failed[k])
+                };
+                if let Some(k) = next {
+                    if !card_tried {
+                        card_tried = true;
+                        *card = take_card();
+                    }
+                    match PACK_IMGS[k].put_with(|| [rp_today::NO_IMAGE; rp_today::PACK_MAX]) {
+                        Some(imgs) if card.is_some() => {
+                            preload = Some(Preload {
+                                n: k,
+                                got: 0,
+                                part: 0,
+                                off: 0,
+                                eof: false,
+                                load: None,
+                                imgs,
+                                read_us: 0,
+                            });
+                        }
+                        _ => pack_failed[k] = true,
+                    }
+                }
+            }
+            if let Some(pl) = preload.as_mut()
+                && (urgent || still)
+            {
+                let t_pass = rt::ticks();
+                let budget_us = if urgent && pl.n == n_want { 40_000 } else { 1 };
+                let mut finished: Option<bool> = None;
+                loop {
+                    let step = match pl.load.as_mut() {
+                        Some(l) => l.step(&pack_file[..pl.got], pl.imgs),
+                        None => rp_today::PackStep::Waiting,
+                    };
+                    match step {
+                        rp_today::PackStep::Done => finished = Some(true),
+                        rp_today::PackStep::Broken => finished = Some(false),
+                        rp_today::PackStep::Unpacked => {}
+                        rp_today::PackStep::Waiting if pl.eof => finished = Some(false),
+                        rp_today::PackStep::Waiting => {
+                            let t0 = rt::ticks();
+                            let stem = [b'R', b'P', b'I', b'C', b'0' + pl.n as u8];
+                            let got = card.as_mut().and_then(|(c, start)| {
+                                read_chunk(
+                                    c,
+                                    *start,
+                                    stem,
+                                    pl.part,
+                                    pl.off,
+                                    &mut pack_file[pl.got.min(MAP_FILE_AT)..MAP_FILE_AT],
+                                )
+                            });
+                            pl.read_us += rt::ticks().wrapping_sub(t0) / 13 * 4;
+                            match got {
+                                Some(0) => {
+                                    pl.part += 1;
+                                    pl.off = 0;
+                                    pl.eof = pl.part > 25;
+                                }
+                                Some(k) => {
+                                    pl.got += k;
+                                    pl.off += k as u64;
+                                }
+                                None => pl.eof = true,
+                            }
+                            // The header in: the pictures' room taken.
+                            if pl.load.is_none()
+                                && let Some(words) = rp_today::pack_words(&pack_file[..pl.got])
+                            {
+                                if words > pack_room.len() {
+                                    finished = Some(false);
+                                } else {
+                                    let (px, more) =
+                                        core::mem::take(&mut pack_room).split_at_mut(words);
+                                    pack_room = more;
+                                    pl.load = Some(rp_today::PackLoad::new(px));
+                                }
+                            } else if pl.load.is_none() && pl.got >= 12 {
+                                finished = Some(false);
+                            }
+                        }
+                    }
+                    if finished.is_some() || rt::ticks().wrapping_sub(t_pass) / 13 * 4 >= budget_us
+                    {
+                        break;
+                    }
+                }
+                let spent = rt::ticks().wrapping_sub(t_pass) / 13 * 4;
+                if let Some(ok) = finished
+                    && let Some(pl) = preload.take()
+                {
+                    let k = pl.n;
+                    let imgs: &'static [rp_draw::Image; rp_today::PACK_MAX] = pl.imgs;
+                    packs[k] = ok
+                        .then(|| rp_today::PackLoad::icons(&pack_file[..pl.got], imgs))
+                        .flatten();
+                    pack_failed[k] = packs[k].is_none();
+                    let _ = writeln!(
+                        RunLog,
+                        "icons: pack {k} {} in the background ({} bytes, card reads {} us; last pass {spent} us)",
+                        if packs[k].is_some() {
+                            "ready"
+                        } else {
+                            "not usable"
+                        },
+                        pl.got,
+                        pl.read_us,
+                    );
                 }
             }
 
@@ -1595,12 +1748,14 @@ mod image {
                     *card = take_card();
                 }
                 let t0 = rt::ticks();
-                let got = card
-                    .as_mut()
-                    .and_then(|(c, start)| read_pack(c, *start, *b"RPMAP", pack_file));
+                let got = card.as_mut().and_then(|(c, start)| {
+                    read_pack(c, *start, *b"RPMAP", &mut pack_file[MAP_FILE_AT..])
+                });
                 let read_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
                 let t1 = rt::ticks();
-                let unpacked = got.map(|len| rp_today::unpack_map(&pack_file[..len], out));
+                let unpacked = got.map(|len| {
+                    rp_today::unpack_map(&pack_file[MAP_FILE_AT..MAP_FILE_AT + len], out)
+                });
                 let _ = writeln!(
                     RunLog,
                     "radar map: read {} bytes in {read_us} us, unpacked {unpacked:?} in {} us",

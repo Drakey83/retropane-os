@@ -333,20 +333,32 @@ pub static PACKED: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/icons.zz
     (rs, packed)
 }
 
-/// The SD card's pack (`rp_today::pack_into`'s format): `RPIK`, version
-/// 1, the count, two zero bytes, the words, the table, the stream.
+/// The SD card's pack (`rp_today::PackLoad`'s format): `RPIK`, version
+/// 2, the count, two zero bytes, the words, the table (kind, id, width,
+/// height, stream length), then each picture's own stream.
 fn pack_file(text: &str) -> Vec<u8> {
-    let (desc, words, packed) = pack_set(text);
+    let (desc, words, streams) = pack_pictures(text);
     let mut f = b"RPIK".to_vec();
-    f.extend([1, desc.len() as u8, 0, 0]);
+    f.extend([2, desc.len() as u8, 0, 0]);
     f.extend((words as u32).to_le_bytes());
-    for (k, i, w, h) in desc {
-        f.extend([k, i]);
+    for ((k, i, w, h), s) in desc.iter().zip(&streams) {
+        f.extend([*k, *i]);
         f.extend(w.to_le_bytes());
         f.extend(h.to_le_bytes());
+        f.extend((s.len() as u32).to_le_bytes());
     }
-    f.extend(packed);
+    for s in streams {
+        f.extend(s);
+    }
     f
+}
+
+/// The pictures' list, their words and each one's zlib stream.
+fn pack_pictures(text: &str) -> (Vec<Entry>, usize, Vec<Vec<u8>>) {
+    let (desc, filtered) = filtered_set(text);
+    let words = filtered.iter().map(Vec::len).sum::<usize>() / 4;
+    let streams = filtered.iter().map(|b| rp_inflate::pack::zlib(b)).collect();
+    (desc, words, streams)
 }
 
 /// A picture in a pack's list: its id, size, width and height.
@@ -354,6 +366,18 @@ type Entry = (u8, u8, u16, u16);
 
 /// The pictures' list, their words and the zlib stream.
 fn pack_set(text: &str) -> (Vec<Entry>, usize, Vec<u8>) {
+    let (desc, filtered) = filtered_set(text);
+    let stream: Vec<u8> = filtered.concat();
+    let packed = if stream.is_empty() {
+        Vec::new()
+    } else {
+        rp_inflate::pack::zlib(&stream)
+    };
+    (desc, stream.len() / 4, packed)
+}
+
+/// The pictures' list and each one's Paeth-filtered bytes.
+fn filtered_set(text: &str) -> (Vec<Entry>, Vec<Vec<u8>>) {
     let ints = |s: &str| -> Vec<u32> {
         s.split(',')
             .filter_map(|v| {
@@ -380,7 +404,7 @@ fn pack_set(text: &str) -> (Vec<Entry>, usize, Vec<u8>) {
         .find_map(|l| l.strip_prefix("pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = ["))
         .unwrap_or("];");
     let mut desc = Vec::new();
-    let mut stream = Vec::new();
+    let mut filtered = Vec::new();
     for t in list
         .trim_end_matches("];")
         .split("),")
@@ -410,7 +434,7 @@ fn pack_set(text: &str) -> (Vec<Entry>, usize, Vec<u8>) {
             }
         }
         let bytes: Vec<u8> = px.iter().flat_map(|p| p.to_le_bytes()).collect();
-        stream.extend(paeth4(&bytes, w, h));
+        filtered.push(paeth4(&bytes, w, h));
         desc.push((
             kind.parse().unwrap(),
             id.parse().unwrap(),
@@ -418,12 +442,7 @@ fn pack_set(text: &str) -> (Vec<Entry>, usize, Vec<u8>) {
             h as u16,
         ));
     }
-    let packed = if stream.is_empty() {
-        Vec::new()
-    } else {
-        rp_inflate::pack::zlib(&stream)
-    };
-    (desc, stream.len() / 4, packed)
+    (desc, filtered)
 }
 
 /// PNG's Paeth filter at 4 bytes a pixel (each channel against the same
