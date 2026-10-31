@@ -203,7 +203,11 @@ pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = [];
         // overflowed at start.
         // 16 KiB since the same day: the X51v's deepest use with the card
         // read was 12,744 bytes (78%), and the image area needed the room.
-        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=16384");
+        // 24 KiB since the same evening: the first run with the real radar
+        // (today-0036) used all 16 KiB (the PNG reader's palette and the
+        // inflater's tables, ~3.5 KiB, on top of the main loop's depth);
+        // the radar's base map moved to the card, so the area has the room.
+        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=24576");
     }
 }
 

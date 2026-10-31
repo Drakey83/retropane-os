@@ -513,11 +513,13 @@ pub const BUDGETS: &[Budget] = &[
     // 52.2 KiB measured, + ~7%. Then 56 -> 64 KiB: the stack 12 -> 20
     // KiB (the card read; 54.3 KiB with the pack tables in `.bss` + 8).
     // Then 64 -> 72 KiB: Hourly's 49 curve pieces' table, the station's and
-    // the real radar's state (64.5 KiB measured, + ~11%).
+    // the real radar's state (64.5 KiB measured, + ~11%). Then 72 -> 80
+    // KiB: the stack 16 -> 24 KiB (today-0036 on the X51v overflowed 16
+    // KiB decoding the real radar's PNG tiles; 74.9 KiB with it).
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 72 * 1024,
+        max_zero: 80 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D
