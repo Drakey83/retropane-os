@@ -11647,6 +11647,26 @@ fn today_differ(got: &[u8], want: &[u8]) -> usize {
         .count()
 }
 
+/// A drag at `x` through `ys`, each sample held 60 ms of the image's own
+/// time (`hold`: never the wall clock, so a starved guest still sees every
+/// sample), then the lift: emu-today's one stroke that isn't a press
+/// waiting on the screen (the page moves after it, checked by the caller).
+fn today_drag(
+    qmp: &mut crate::screen::Qmp,
+    x: u16,
+    ys: &[u16],
+    hold: &dyn Fn(u32) -> Result<(), String>,
+) -> Result<(), String> {
+    for (k, &y) in ys.iter().enumerate() {
+        if k > 0 {
+            hold(60)?;
+        }
+        touch(qmp, &Action::TouchDown(x, y))?;
+    }
+    hold(60)?;
+    touch(qmp, &Action::TouchUp).map(drop)
+}
+
 /// The Weather page's area (rows 94-555): pixels further than an ARGB4444
 /// step plus its dither from `want` in any channel (48 of 255), and pixels
 /// that differ at all.
@@ -11935,13 +11955,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         page_near("weather-now", &weather[2])?;
         press(&mut qmp, "hourly", 180, 578, Some(TAP_GUEST_MS))?;
         let still = page_near("weather-hourly", &weather[4])?;
-        touch(&mut qmp, &Action::TouchDown(240, 500))?;
-        for y in [470, 430, 390, 350, 310] {
-            guest_hold(60)?;
-            touch(&mut qmp, &Action::TouchDown(240, y))?;
-        }
-        guest_hold(60)?;
-        touch(&mut qmp, &Action::TouchUp)?;
+        today_drag(&mut qmp, 240, &[500, 470, 430, 390, 350, 310], &guest_hold)?;
         guest_hold(2000)?;
         let moved = dump("weather-dragged")?;
         let (_, changed) = page_differ(&moved, &still);
