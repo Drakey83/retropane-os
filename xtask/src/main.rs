@@ -1135,7 +1135,7 @@ fn build_id() -> String {
     if dirty { format!("{hash}+") } else { hash }
 }
 
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask lives one level below the workspace root")

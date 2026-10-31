@@ -7,7 +7,7 @@
 //!   committed) or, when that's absent, a generated dusk sky, so the image
 //!   always builds. A test image holds one (950 KiB image area), so the
 //!   16-bit comparison is one build per wallpaper;
-//! - the weather pictures (`local/icons/icons.rs`, else empty);
+//! - no weather pictures (option C: the packs are card files, `pack_file`);
 //! - the clock's start: the build machine's local time (there is no RTC
 //!   driver yet), as minutes since 1970 plus the UTC offset. The clock is
 //!   right to within the time between building and running.
@@ -84,43 +84,14 @@ fn main() {
     );
     std::fs::write(Path::new(&out).join("radar.zz"), packed).expect("OUT_DIR writable");
 
-    // The weather pictures: `local/icons/icons.rs` (made by
-    // `tools/shell-assets/icons.py` from assets/weather/vclouds; `local/` is
-    // never committed) or, when absent, empty pictures: the screen then
-    // draws outlines where they go.
-    let icons = Path::new(&dir).join("../../local/icons/icons.rs");
-    watch_local(&icons);
-    let data = std::fs::read_to_string(&icons).unwrap_or_else(|_| {
-        "pub const COUNT: usize = 0;
-pub const WORDS: usize = 0;
-pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = [];
-"
-        .to_string()
-    });
-    // The owner's default picture (`rp_draw::look`, 2026-10-22) on every
-    // icon pixel (non-premultiplied ARGB: the colour changes, alpha not),
-    // the same function the wallpaper goes through as it loads;
-    // `RP_PICTURE_ORIGINAL` leaves them as made.
+    // The weather pictures: none in the image (option C, docs/design/
+    // weather-rule0.md: its 122 KB of samples went). The default pack
+    // comes from the card or the PC and stays packed in RAM.
     println!("cargo:rerun-if-env-changed=RP_PICTURE_ORIGINAL");
-    let data = if std::env::var("RP_PICTURE_ORIGINAL").is_ok() {
-        data
-    } else {
-        looked(&data)
-    };
-    // Packed as the wallpaper is (Paeth, then zlib), not as runs: a 3D
-    // picture has few runs (the hero's was 140 KB as runs, 2026-10-31).
-    let (rs, packed) = pack_icons(&data);
-    println!(
-        "cargo:warning=pictures packed {} -> {} bytes",
-        icon_words(&data) * 4,
-        packed.len()
-    );
-    std::fs::write(Path::new(&out).join("icons.zz"), packed).expect("OUT_DIR writable");
-    std::fs::write(Path::new(&out).join("icons.rs"), rs).expect("OUT_DIR writable");
-    // The card's picture packs, every condition at every size (made by
-    // `icons.py --all`): too big for the image area (1.6 MB packed each),
-    // so `cargo xtask load` puts them on the SD card (`RPICONS<n>.PAK`) and
-    // the image reads the one the settings name. Pack 0 is VClouds
+    // The card's picture packs (made by `icons.py --all`; only their big
+    // pictures kept, `pack_file`): too big for the image area (~1.4 MB
+    // each), so `cargo xtask load` puts them on the SD card (`RPIC<n>`)
+    // and the image reads pack 0 whole and the others a picture at a time. Pack 0 is VClouds
     // (`local/icons/icons-all.rs`), packs 1-6 the owner's own, in
     // `rp_weather::settings::PACKS`' order (`icons-<name>.rs`, from his art
     // in local/, never committed).
@@ -301,43 +272,23 @@ fn sky() -> Vec<u8> {
     [y, u, v].concat()
 }
 
-/// The pictures' words unpacked (the generator's `WORDS`).
-fn icon_words(text: &str) -> usize {
-    text.lines()
-        .find_map(|l| l.strip_prefix("pub const WORDS: usize = "))
-        .and_then(|v| v.trim_end_matches(';').trim().parse().ok())
-        .unwrap_or(0)
-}
-
-/// The generator's run-length pictures (`P<n>` arrays of words: a head
-/// `skip << 16 | count`, then `count` ARGB pixels) and their list, as one
-/// zlib stream of every picture in order, each pixel's bytes B, G, R, A
-/// (the ARGB word in memory on the X51v) Paeth-filtered per channel
-/// against its neighbours (PNG's filter at 4 bytes a pixel); and the
-/// module `rp_today::icon_data` includes (the list, `WORDS`, the stream).
-fn pack_icons(text: &str) -> (String, Vec<u8>) {
-    let (desc, words, packed) = pack_set(text);
-    let d: Vec<String> = desc
-        .iter()
-        .map(|(k, i, w, h)| format!("({k}, {i}, {w}, {h})"))
-        .collect();
-    let rs = format!(
-        "pub const COUNT: usize = {n};
-pub const WORDS: usize = {words};
-pub static DESC: [(u8, u8, u16, u16); COUNT] = [{d}];
-pub static PACKED: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/icons.zz\"));
-",
-        n = desc.len(),
-        d = d.join(", ")
-    );
-    (rs, packed)
-}
-
-/// The SD card's pack (`rp_today::PackLoad`'s format): `RPIK`, version
+/// The SD card's pack (`rp_today::PackIndex`'s format): `RPIK`, version
 /// 2, the count, two zero bytes, the words, the table (kind, id, width,
-/// height, stream length), then each picture's own stream.
+/// height, stream length), then each picture's own stream. Only the big
+/// (250 px) pictures (kind 0): the image makes every smaller size from
+/// them as it decodes (option C, docs/design/weather-rule0.md), so a pack
+/// is ~27% smaller and never holds a picture enlarged or made twice.
 fn pack_file(text: &str) -> Vec<u8> {
-    let (desc, words, streams) = pack_pictures(text);
+    let (desc, _, streams) = pack_pictures(text);
+    let (desc, streams): (Vec<Entry>, Vec<Vec<u8>>) = desc
+        .into_iter()
+        .zip(streams)
+        .filter(|((k, ..), _)| *k == 0)
+        .unzip();
+    let words: usize = desc
+        .iter()
+        .map(|(_, _, w, h)| usize::from(*w) * usize::from(*h))
+        .sum();
     let mut f = b"RPIK".to_vec();
     f.extend([2, desc.len() as u8, 0, 0]);
     f.extend((words as u32).to_le_bytes());
@@ -363,18 +314,6 @@ fn pack_pictures(text: &str) -> (Vec<Entry>, usize, Vec<Vec<u8>>) {
 
 /// A picture in a pack's list: its id, size, width and height.
 type Entry = (u8, u8, u16, u16);
-
-/// The pictures' list, their words and the zlib stream.
-fn pack_set(text: &str) -> (Vec<Entry>, usize, Vec<u8>) {
-    let (desc, filtered) = filtered_set(text);
-    let stream: Vec<u8> = filtered.concat();
-    let packed = if stream.is_empty() {
-        Vec::new()
-    } else {
-        rp_inflate::pack::zlib(&stream)
-    };
-    (desc, stream.len() / 4, packed)
-}
 
 /// The pictures' list and each one's Paeth-filtered bytes.
 fn filtered_set(text: &str) -> (Vec<Entry>, Vec<Vec<u8>>) {

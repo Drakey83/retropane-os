@@ -103,24 +103,17 @@ mod image {
     static BURST: rt::Slot<[Latency; 3]> = rt::Slot::new();
     /// The wallpaper's conversion rows (the 16-bit comparison's dither).
     static WALL: rt::Slot<WallScratch> = rt::Slot::new();
-    // The weather pictures' descriptions (their pixels are in the RAM pool).
-    static ICON_IMGS: rt::Slot<[rp_draw::Image; rp_today::ICON_COUNT]> = rt::Slot::new();
     static CURVE_IMGS: rt::Slot<[rp_draw::Image; rp_shell::weather_app::CURVE_SPRITES]> =
         rt::Slot::new();
     static DIAL_IMGS: rt::Slot<[rp_draw::Image; rp_shell::station::DIALS.len()]> = rt::Slot::new();
-    /// The card's picture packs' descriptions, one set per pack (each read
-    /// once, then kept: switching back is instant).
-    static PACK_IMGS: [rt::Slot<[rp_draw::Image; rp_today::PACK_MAX]>; PACKS] =
-        [const { rt::Slot::new() }; PACKS];
-    /// The packs' picture sets once read, and the SD card: in `.bss`, not
-    /// `main`'s frame (they overflowed its 12 KiB stack, 2026-10-31).
-    static PACK_SETS: rt::Slot<[Option<rp_today::Unpacked>; PACKS]> = rt::Slot::new();
+    /// The SD card: in `.bss`, not `main`'s frame.
     /// The picture store (option C, docs/design/weather-rule0.md): the
     /// pictures the screens show, at their sizes; the shell holds handles
     /// to them (ADR-0021 rule 1), both renderers read them by handle
     /// (ADR-0030 G3), the pixels in SDRAM where the CPU composes (ADR-0022
     /// rule 2).
     static PICS: rt::Slot<rp_draw::pics::Pics<'static>> = rt::Slot::new();
+
     static CARD: rt::Slot<Option<(Card, u32)>> = rt::Slot::new();
     // The radar's rain cells' descriptions (their pixels are in the RAM pool).
     static RADAR_IMGS: rt::Slot<[rp_draw::Image; 3]> = rt::Slot::new();
@@ -420,10 +413,15 @@ mod image {
     /// `RP_TODAY_NO_NET`.
     const NET: bool = option_env!("RP_TODAY_NO_NET").is_none()
         && (!REPLAY || option_env!("RP_TODAY_REPLAY_NET").is_some());
-    /// The SD card's picture packs (`RPICONS<n>.PAK`, put there by `cargo
-    /// xtask load`): how many, the largest file, the largest unpacked.
-    const PACKS: usize = rp_weather::settings::PACKS.len();
-    const PACK_FILE: usize = 3 * 1024 * 1024;
+    /// The default pack's file (pack 0, VClouds: its 250 px pictures only,
+    /// ~1.41 MB), kept packed in RAM even with a card in (the owner's
+    /// choice, 2026-10-31): a card pulled mid-run never leaves a gap.
+    const DEF_FILE: usize = 1536 * 1024;
+    /// A big picture's stream read from a card pack (the largest ~170 KB),
+    /// and a pack's table.
+    const STREAM_BUF: usize = 256 * 1024;
+    /// The radar map's file (`RPMAP`, 214 KB).
+    const MAP_FILE: usize = 512 * 1024;
     /// The picture store's slots (side, count): the shell's sizes
     /// (`rp_shell::Size`), as many of each as the screens show at once
     /// plus a spare, so a pick replaces a picture with no gap (the sheet's
@@ -435,34 +433,94 @@ mod image {
         (rp_shell::Size::Card.side(), 8),
         (rp_shell::Size::Row.side(), 16),
     ];
-    /// The keeper's tag for the built-in pictures (apart from every pack).
-    const BUILT_IN: u8 = 0xFE;
+    /// The keeper's tag while no pack is in yet (apart from every pack).
+    const NOT_YET: u8 = 0xFE;
 
-    /// Up to `most` steps of the keeper (the store made to hold what the
-    /// screens show, from `set`, tagged `tag`): how many pictures changed.
-    fn keep_pictures(
-        keeper: &mut rp_today::Keeper,
-        shell: &mut Shell,
-        pics: &rp_draw::pics::Pics<'static>,
-        tag: u8,
-        set: &rp_today::Unpacked,
-        most: u32,
-    ) -> u32 {
-        let mut n = 0;
-        while n < most {
-            let k = keeper.step(shell, pics, tag, |size, i, p| {
-                set.of(size)[i].and_then(|img| rp_today::store_copy(img, p))
-            });
-            if k == rp_today::Kept::Idle {
-                break;
+    /// Card file `stem`'s bytes from `off` into `out` (all of it), across
+    /// its parts (`<stem>A.PAK`, `B`, ..., each [`rp_today::PACK_PART`]
+    /// bytes but the last): one ranged read a part, the volume mounted
+    /// once. False if the card, a part or a byte is missing. Nothing is
+    /// logged while it reads.
+    fn read_span(card: &mut Card, start: u32, stem: [u8; 5], off: u64, out: &mut [u8]) -> bool {
+        rp_hal_x51v::cardsink::settle();
+        let Ok(mut vol) = Volume::mount(&mut *card, start) else {
+            return false;
+        };
+        let mut scratch = [0u8; 2 * BLOCK];
+        let part_len = rp_today::PACK_PART as u64;
+        let mut done = 0usize;
+        while done < out.len() {
+            let at = off + done as u64;
+            let part = at / part_len;
+            if part >= 26 {
+                return false;
             }
-            n += 1;
+            let name = [
+                stem[0],
+                stem[1],
+                stem[2],
+                stem[3],
+                stem[4],
+                b'A' + part as u8,
+                b'.',
+                b'P',
+                b'A',
+                b'K',
+            ];
+            let Some(file) = core::str::from_utf8(&name)
+                .ok()
+                .and_then(|n| vol.find(n).ok())
+            else {
+                return false;
+            };
+            let in_part = at % part_len;
+            let n = (out.len() - done).min((part_len - in_part) as usize);
+            let mut got = 0usize;
+            let dst = &mut out[done..done + n];
+            let ok = vol.read_range(&file, in_part, n as u64, &mut scratch, |c| {
+                if let Some(o) = dst.get_mut(got..got + c.len()) {
+                    o.copy_from_slice(c);
+                }
+                got += c.len();
+            });
+            if ok.is_err() || got != n {
+                return false;
+            }
+            done += n;
         }
-        n
+        true
     }
-    /// The pack buffer's last 512 KiB hold the radar map's file (214 KB),
-    /// so the radar opened mid-preload never writes over a pack's bytes.
-    const MAP_FILE_AT: usize = PACK_FILE - 512 * 1024;
+
+    /// Pack `n`'s table from the card (two reads: the header, then the
+    /// table its count names), into `buf`.
+    fn read_index(
+        card: &mut Card,
+        start: u32,
+        n: u8,
+        buf: &mut [u8],
+    ) -> Option<rp_today::PackIndex> {
+        let stem = [b'R', b'P', b'I', b'C', b'0' + n];
+        let head = buf.get_mut(..12)?;
+        if !read_span(card, start, stem, 0, head) {
+            return None;
+        }
+        let len = rp_today::PackIndex::head_len(head)?;
+        let all = buf.get_mut(..len)?;
+        if !read_span(card, start, stem, 0, all) {
+            return None;
+        }
+        rp_today::PackIndex::read(all)
+    }
+
+    /// The default pack's file being read from the card a piece a pass.
+    struct FileLoad {
+        /// Bytes in so far, the part being read and where in it.
+        got: usize,
+        part: u8,
+        off: u64,
+        /// The time its reads took (us).
+        read_us: u32,
+    }
     type Card = SdCard<PxaMmc<Mmio>>;
 
     /// The SD card, taken over as the loader left it when its card log is
@@ -573,25 +631,6 @@ mod image {
         })
         .ok()?;
         (!over).then_some(at)
-    }
-
-    /// A pack being read and unpacked in the background, a piece a pass.
-    struct Preload {
-        /// Which pack.
-        n: usize,
-        /// Its bytes read so far (into the pack buffer, from its start).
-        got: usize,
-        /// The part being read and where in it.
-        part: u8,
-        off: u64,
-        /// No more parts.
-        eof: bool,
-        /// Its pictures' unpacking, once the header is in.
-        load: Option<rp_today::PackLoad>,
-        /// Its pictures' descriptions.
-        imgs: &'static mut [rp_draw::Image; rp_today::PACK_MAX],
-        /// The time spent reading it from the card (us).
-        read_us: u32,
     }
 
     /// The USB D+ pull-up's GPIO (docs/hw/udc.md).
@@ -712,8 +751,7 @@ mod image {
         let Some(pool) = rp_hal_x51v::devices::take_ram_pool() else {
             crash(format_args!("no RAM pool"))
         };
-        let (icon_px, rest) = pool.split_at_mut(rp_today::ICON_WORDS);
-        let (pics_px, rest) = rest.split_at_mut(rp_draw::pics::Pics::words(&PIC_CLASSES));
+        let (pics_px, rest) = pool.split_at_mut(rp_draw::pics::Pics::words(&PIC_CLASSES));
         let (wall_words, rest) = rest.split_at_mut(rp_today::WALLPAPER_BYTES.div_ceil(4));
         let (radar_px, rest) = rest.split_at_mut(rp_today::RADAR_WORDS);
         let (curve_px, rest) = rest.split_at_mut(rp_shell::weather_app::CURVE_WORDS);
@@ -727,10 +765,17 @@ mod image {
         let (trace_words, rest) = rest.split_at_mut(TRACE * 10);
         // The relay's answer (the dock's dev relay).
         let (net_words, rest) = rest.split_at_mut(NET_BUF / 4);
-        // The card's picture packs: the file read in, and each pack's
-        // pictures unpacked (22 conditions at three sizes, ~3.9 MB).
-        let (pack_file_words, rest) = rest.split_at_mut(PACK_FILE / 4);
-        let pack_file = rp_hal_mem::words_as_bytes_mut(pack_file_words);
+        // The pictures (option C): the default pack's file, a card pack's
+        // picture stream read in, the radar map's file, the filter's rows.
+        let (def_words, rest) = rest.split_at_mut(DEF_FILE / 4);
+        let def_file: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(def_words);
+        let (stream_words, rest) = rest.split_at_mut(STREAM_BUF / 4);
+        let stream_buf: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(stream_words);
+        let (map_file_words, rest) = rest.split_at_mut(MAP_FILE / 4);
+        let map_file = rp_hal_mem::words_as_bytes_mut(map_file_words);
+        let (big_px, rest) = rest.split_at_mut(rp_today::BIG_WORDS);
+        let (shrink_words, rest) = rest.split_at_mut(rp_today::Maker::shrink_words());
+        let shrink_px: &'static mut [i32] = rp_hal_mem::words_as_i32_mut(shrink_words);
         // The real radar: the map's view, eight rain frames, a tile, and
         // the PNG reader's scratch.
         let view_px = rp_weather::tiles::VIEW_W * rp_weather::tiles::VIEW_H;
@@ -741,9 +786,7 @@ mod image {
         let (png_raw_w, rest) = rest.split_at_mut((256usize * (1 + 256 * 4)).div_ceil(4));
         let png_data = rp_hal_mem::words_as_bytes_mut(png_data_w);
         let png_raw = rp_hal_mem::words_as_bytes_mut(png_raw_w);
-        // What is left of the pool, taken pack by pack as each is first
-        // chosen (each unpacks to its own size, about 4 MB; all seven fit).
-        let mut pack_room: &'static mut [u32] = rest;
+        let _ = rest;
         let net_buf = rp_hal_mem::words_as_bytes_mut(net_words);
         let plane_bytes = rp_hal_mem::words_as_bytes_mut(plane_words);
         let wall_bytes =
@@ -804,10 +847,6 @@ mod image {
         let mut compare_frame = false;
         // The pictures unpacked once into the RAM pool (SDRAM outside the
         // image area, unused by this image): R129, the lean rule.
-        let baked = match ICON_IMGS.put_with(|| [rp_today::NO_IMAGE; rp_today::ICON_COUNT]) {
-            Some(imgs) => rp_today::icons_into(icon_px, imgs),
-            None => rp_today::Unpacked::NONE,
-        };
         let Some(pics) = PICS.put_in(|m| rp_draw::pics::Pics::new_in(m, pics_px, &PIC_CLASSES))
         else {
             crash(format_args!("started twice"))
@@ -815,9 +854,13 @@ mod image {
         let pics: &'static rp_draw::pics::Pics<'static> = pics;
         gfx.two_d().set_pics(pics);
         let mut keeper = rp_today::Keeper::new();
-        // The pictures' source: the pack shown (none yet: the built-in set).
-        let mut source = baked;
-        let mut source_tag = BUILT_IN;
+        let mut maker = rp_today::Maker::new(big_px, shrink_px).timed(|| rt::ticks() / 13 * 4);
+        // The default pack's file: being read, read (its table), or none.
+        let mut def_load: Option<FileLoad> = None;
+        let mut def_index: Option<rp_today::PackIndex> = None;
+        let mut def_failed = false;
+        // The pack chosen other than the default, and its table.
+        let mut chosen: Option<(u8, rp_today::PackIndex)> = None;
         let mut icons = rp_shell::Icons::NONE;
         let t0 = rt::ticks();
         if let Some(imgs) = RADAR_IMGS.put_with(|| [rp_today::NO_IMAGE; 3]) {
@@ -845,16 +888,8 @@ mod image {
             "station dials painted in {} us",
             rt::ticks().wrapping_sub(t0) / 13 * 4
         );
-        let Some(packs) = PACK_SETS.put_with(|| [None; PACKS]) else {
-            crash(format_args!("started twice"))
-        };
-        // Packs read and unpacked in the background (R146): the chosen one
-        // first, then the others while nothing moves, so a pick is instant.
-        let mut pack_failed = [false; PACKS];
-        let mut preload: Option<Preload> = None;
-        let mut pack_shown = u8::MAX;
+        let mut pack_shown = 0u8;
         let mut radar_shown: Option<Option<u8>> = None;
-        let mut pack_announced: Option<usize> = None;
         let Some(card) = CARD.put_with(|| None) else {
             crash(format_args!("started twice"))
         };
@@ -880,16 +915,11 @@ mod image {
         };
         let mut cpu = CpuRenderer::new(cpu_layer, plane_bytes, W * 4, PlaneFormat::Argb8888);
         cpu.set_pics(pics);
-        // The pictures the first screens show, in the store before they
-        // are drawn.
-        let t0 = rt::ticks();
-        let made = keep_pictures(&mut keeper, shell, pics, source_tag, &source, u32::MAX);
         let _ = writeln!(
             RunLog,
-            "icons: {made} pictures put in the store in {} us ({} of {} slots, {} wanted)",
-            rt::ticks().wrapping_sub(t0) / 13 * 4,
-            pics.used(),
+            "icons: the picture store {} slots, {} bytes; the default pack's file {DEF_FILE} bytes; {} pictures wanted",
             pics.slots(),
+            rp_draw::pics::Pics::words(&PIC_CLASSES) * 4,
             shell.wanted().count(),
         );
         let mut pages: [Page; 3] = [None; 3];
@@ -1507,168 +1537,153 @@ mod image {
                 rp_image::finish()
             }
 
-            // The icon pack the settings name: shown at once when it is in;
-            // else "Loading icons" and its preload put first, worked at full
-            // speed until it is in.
-            let want = shell.icon_pack();
-            let n_want = usize::from(want).min(PACKS - 1);
-            if want != pack_shown {
-                let ready = packs[n_want].is_some()
-                    || pack_failed[n_want]
-                    || n_want == 0 && card_tried && card.is_none();
-                if ready {
-                    (source, source_tag) = match packs[n_want] {
-                        Some(set) => (set, n_want as u8),
-                        None if n_want == 0 => (baked, BUILT_IN),
-                        None => {
-                            shell.icon_pack_failed();
-                            (baked, BUILT_IN)
-                        }
-                    };
-                    pack_shown = want;
-                    pack_announced = None;
-                    pages_check = true;
-                    app_check = true;
-                } else if pack_announced != Some(n_want) {
-                    pack_announced = Some(n_want);
-                    if pack_shown != u8::MAX {
-                        shell.icons_loading();
+            // The pictures (option C, docs/design/weather-rule0.md): the
+            // default pack's file read from the card a piece a pass while
+            // nothing moves and kept packed in RAM; a pick of another pack
+            // reads its table from the card; the store keeps what the
+            // screens show, each picture decoded at its size from the pack
+            // shown, else from the default (a pulled card: no gap, no box).
+            let still = !filter.down() && !shell.animating() && !shell.needs_frame() && !gfx.busy();
+            if still && def_index.is_none() && !def_failed {
+                if !card_tried {
+                    card_tried = true;
+                    *card = take_card();
+                }
+                let l = def_load.get_or_insert(FileLoad {
+                    got: 0,
+                    part: 0,
+                    off: 0,
+                    read_us: 0,
+                });
+                let t0 = rt::ticks();
+                let got = card.as_mut().and_then(|(c, start)| {
+                    read_chunk(c, *start, *b"RPIC0", l.part, l.off, &mut def_file[l.got..])
+                });
+                l.read_us += rt::ticks().wrapping_sub(t0) / 13 * 4;
+                let done = match got {
+                    Some(0) => {
+                        l.part += 1;
+                        l.off = 0;
+                        l.part > 25 || l.got == def_file.len()
                     }
+                    Some(k) => {
+                        l.got += k;
+                        l.off += k as u64;
+                        false
+                    }
+                    None => true,
+                };
+                if done {
+                    let got = l.got;
+                    def_index = rp_today::PackIndex::read(&def_file[..got])
+                        .filter(|i| i.file_len() as usize <= got);
+                    def_failed = def_index.is_none();
+                    maker.forget();
+                    let _ = writeln!(
+                        RunLog,
+                        "icons: the default pack {} ({got} bytes from the SD card in {} us, kept in RAM)",
+                        if def_failed { "not usable" } else { "read" },
+                        l.read_us,
+                    );
+                    def_load = None;
                 }
             }
-            // The preload: the pack waited for gets ~40 ms a pass; the others
-            // one piece a pass (~30 ms at most) while nothing moves.
-            let urgent = want != pack_shown;
-            let still = !filter.down() && !shell.animating() && !shell.needs_frame() && !gfx.busy();
-            // The store keeps what the screens show, from the pack shown
-            // (option C): a few pictures a pass while nothing moves.
+            let want = shell.icon_pack();
+            if want != pack_shown {
+                chosen = None;
+                if want != 0 {
+                    if !card_tried {
+                        card_tried = true;
+                        *card = take_card();
+                    }
+                    let t0 = rt::ticks();
+                    match card
+                        .as_mut()
+                        .and_then(|(c, start)| read_index(c, *start, want, stream_buf))
+                    {
+                        Some(i) => chosen = Some((want, i)),
+                        None => shell.icon_pack_failed(),
+                    }
+                    let _ = writeln!(
+                        RunLog,
+                        "icons: pack {want} {} in {} us",
+                        if chosen.is_some() {
+                            "chosen: its table read"
+                        } else {
+                            "not on the card"
+                        },
+                        rt::ticks().wrapping_sub(t0) / 13 * 4
+                    );
+                }
+                pack_shown = chosen.map_or(0, |(n, _)| n);
+                pages_check = true;
+                app_check = true;
+            }
             if still {
-                let t0 = rt::ticks();
-                let made = keep_pictures(&mut keeper, shell, pics, source_tag, &source, 4);
+                let tag = match chosen {
+                    Some((n, _)) => n,
+                    None if def_index.is_some() => 0,
+                    None => NOT_YET,
+                };
+                let t_pass = rt::ticks();
+                let (mut made, mut worst, mut card_failed) = (0u32, (0u32, 0u32), false);
+                while made < 4 {
+                    let def_file: &[u8] = def_file;
+                    let k = keeper.step(shell, pics, tag, |size, i, p| {
+                        let mut pic = None;
+                        if let Some((n, idx)) = chosen
+                            && !card_failed
+                        {
+                            let buf = &mut *stream_buf;
+                            let card = &mut *card;
+                            pic = maker.make(n, &idx, size, i, p, move |b| {
+                                let (c, start) = card.as_mut()?;
+                                let out = buf.get_mut(..b.len as usize)?;
+                                let stem = [b'R', b'P', b'I', b'C', b'0' + n];
+                                read_span(c, *start, stem, u64::from(b.off), out).then_some(&*out)
+                            });
+                            // The card gone mid-run: the rest from the
+                            // default file, quietly.
+                            card_failed = pic.is_none() && idx.big(i).is_some();
+                        }
+                        if pic.is_none()
+                            && let Some(idx) = def_index
+                        {
+                            pic = maker.make(0, &idx, size, i, p, |b| {
+                                def_file.get(
+                                    b.off as usize..(b.off as usize).checked_add(b.len as usize)?,
+                                )
+                            });
+                        }
+                        let (a, b) = maker.last;
+                        if a + b > worst.0 + worst.1 {
+                            worst = (a, b);
+                        }
+                        pic
+                    });
+                    if k == rp_today::Kept::Idle {
+                        break;
+                    }
+                    made += 1;
+                }
                 if made > 0 {
                     pages_check = true;
                     app_check = true;
                     let _ = writeln!(
                         RunLog,
-                        "icons: {made} pictures kept in {} us ({} of {} slots)",
-                        rt::ticks().wrapping_sub(t0) / 13 * 4,
+                        "icons: {made} pictures kept in {} us (slowest {} us: inflate {} us, shrink {} us; {} inflates so far; {} of {} slots){}",
+                        rt::ticks().wrapping_sub(t_pass) / 13 * 4,
+                        worst.0 + worst.1,
+                        worst.0,
+                        worst.1,
+                        maker.inflates,
                         pics.used(),
                         pics.slots(),
-                    );
-                }
-            }
-            if preload.is_none() && (urgent || still) {
-                let next = if urgent && packs[n_want].is_none() && !pack_failed[n_want] {
-                    Some(n_want)
-                } else {
-                    (0..PACKS).find(|&k| packs[k].is_none() && !pack_failed[k])
-                };
-                if let Some(k) = next {
-                    if !card_tried {
-                        card_tried = true;
-                        *card = take_card();
-                    }
-                    match PACK_IMGS[k].put_with(|| [rp_today::NO_IMAGE; rp_today::PACK_MAX]) {
-                        Some(imgs) if card.is_some() => {
-                            preload = Some(Preload {
-                                n: k,
-                                got: 0,
-                                part: 0,
-                                off: 0,
-                                eof: false,
-                                load: None,
-                                imgs,
-                                read_us: 0,
-                            });
-                        }
-                        _ => pack_failed[k] = true,
-                    }
-                }
-            }
-            if let Some(pl) = preload.as_mut()
-                && (urgent || still)
-            {
-                let t_pass = rt::ticks();
-                let budget_us = if urgent && pl.n == n_want { 40_000 } else { 1 };
-                let mut finished: Option<bool> = None;
-                loop {
-                    let step = match pl.load.as_mut() {
-                        Some(l) => l.step(&pack_file[..pl.got], pl.imgs),
-                        None => rp_today::PackStep::Waiting,
-                    };
-                    match step {
-                        rp_today::PackStep::Done => finished = Some(true),
-                        rp_today::PackStep::Broken => finished = Some(false),
-                        rp_today::PackStep::Unpacked => {}
-                        rp_today::PackStep::Waiting if pl.eof => finished = Some(false),
-                        rp_today::PackStep::Waiting => {
-                            let t0 = rt::ticks();
-                            let stem = [b'R', b'P', b'I', b'C', b'0' + pl.n as u8];
-                            let got = card.as_mut().and_then(|(c, start)| {
-                                read_chunk(
-                                    c,
-                                    *start,
-                                    stem,
-                                    pl.part,
-                                    pl.off,
-                                    &mut pack_file[pl.got.min(MAP_FILE_AT)..MAP_FILE_AT],
-                                )
-                            });
-                            pl.read_us += rt::ticks().wrapping_sub(t0) / 13 * 4;
-                            match got {
-                                Some(0) => {
-                                    pl.part += 1;
-                                    pl.off = 0;
-                                    pl.eof = pl.part > 25;
-                                }
-                                Some(k) => {
-                                    pl.got += k;
-                                    pl.off += k as u64;
-                                }
-                                None => pl.eof = true,
-                            }
-                            // The header in: the pictures' room taken.
-                            if pl.load.is_none()
-                                && let Some(words) = rp_today::pack_words(&pack_file[..pl.got])
-                            {
-                                if words > pack_room.len() {
-                                    finished = Some(false);
-                                } else {
-                                    let (px, more) =
-                                        core::mem::take(&mut pack_room).split_at_mut(words);
-                                    pack_room = more;
-                                    pl.load = Some(rp_today::PackLoad::new(px));
-                                }
-                            } else if pl.load.is_none() && pl.got >= 12 {
-                                finished = Some(false);
-                            }
-                        }
-                    }
-                    if finished.is_some() || rt::ticks().wrapping_sub(t_pass) / 13 * 4 >= budget_us
-                    {
-                        break;
-                    }
-                }
-                let spent = rt::ticks().wrapping_sub(t_pass) / 13 * 4;
-                if let Some(ok) = finished
-                    && let Some(pl) = preload.take()
-                {
-                    let k = pl.n;
-                    let imgs: &'static [rp_draw::Image; rp_today::PACK_MAX] = pl.imgs;
-                    packs[k] = ok
-                        .then(|| rp_today::PackLoad::icons(&pack_file[..pl.got], imgs))
-                        .flatten();
-                    pack_failed[k] = packs[k].is_none();
-                    let _ = writeln!(
-                        RunLog,
-                        "icons: pack {k} {} in the background ({} bytes, card reads {} us; last pass {spent} us)",
-                        if packs[k].is_some() {
-                            "ready"
+                        if card_failed {
+                            "; the card failed, the rest from the default"
                         } else {
-                            "not usable"
+                            ""
                         },
-                        pl.got,
-                        pl.read_us,
                     );
                 }
             }
@@ -1847,14 +1862,12 @@ mod image {
                     *card = take_card();
                 }
                 let t0 = rt::ticks();
-                let got = card.as_mut().and_then(|(c, start)| {
-                    read_pack(c, *start, *b"RPMAP", &mut pack_file[MAP_FILE_AT..])
-                });
+                let got = card
+                    .as_mut()
+                    .and_then(|(c, start)| read_pack(c, *start, *b"RPMAP", map_file));
                 let read_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
                 let t1 = rt::ticks();
-                let unpacked = got.map(|len| {
-                    rp_today::unpack_map(&pack_file[MAP_FILE_AT..MAP_FILE_AT + len], out)
-                });
+                let unpacked = got.map(|len| rp_today::unpack_map(&map_file[..len], out));
                 let _ = writeln!(
                     RunLog,
                     "radar map: read {} bytes in {read_us} us, unpacked {unpacked:?} in {} us",

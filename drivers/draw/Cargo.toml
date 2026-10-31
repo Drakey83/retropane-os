@@ -12,3 +12,7 @@ workspace = true
 
 [dependencies]
 rp-hal-mem = { path = "../../hal/mem" }
+
+[dev-dependencies]
+# The shrink test's pictures are PNGs (drivers/draw/tests/data).
+rp-weather = { path = "../../shell/weather" }

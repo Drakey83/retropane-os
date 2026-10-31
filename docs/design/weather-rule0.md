@@ -133,6 +133,20 @@ soft you lose all of the detail". He chose C, without a loader change:
   not the x2 first planned, because every hour's card picture is listed so
   a pick never waits on a decode (P1); a day of mixed skies shows up to
   about six.
+- **The filter, fitted (2026-10-31):** `tools/shell-assets/shrink_fit.py`
+  fits a kernel per size by least squares to every pack's masters (the
+  device's own arithmetic: premultiplied, separable, clamped as it
+  clamps). RMS over all seven packs (premultiplied 8-bit): 160 px fitted
+  1.17 (Lanczos-3 0.74-1.70 a pack, bilinear 2.5-5.0, box 2.6-8.8); 66 px
+  fitted 0.63 (Lanczos-3 0.40-0.85, slightly worse in every pack); 40 px
+  fitted 0.80, a tie with Lanczos-3. Finding: the packs' small pictures
+  were themselves made by Lanczos-3 from the masters, so Lanczos-3 is
+  nearly the optimum here and the fit's gain is small; box and bilinear
+  are 4-8x worse. The fit's first run fitted the unclamped output (its
+  ringing) and came out worse than its start: fixed by modelling the
+  clamp. The Rust test holds the device's integer arithmetic to the
+  fit's RMS on two VClouds conditions. VClouds' pack: 1,932,247 -> 1,408,989
+  bytes; the image 701,828 -> 584,672 bytes loaded.
 - **Hourly's card picture at 160 px** (the owner's pick of three drawn
   sizes, docs/design/mockups/hourly-card-picture-sizes.png), the text
   moved right; built 2026-10-31, the picture shown at 160 once the store

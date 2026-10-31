@@ -11707,12 +11707,17 @@ pub(crate) fn preview_pics() -> &'static rp_draw::pics::Pics<'static> {
     PREVIEW_PICS.with(|p| *p)
 }
 
-/// `set` put in the previews' store, the set before given back, with the
-/// radar's rain cells drawn as the image draws them.
-fn preview_set(set: &rp_today::Unpacked) -> rp_shell::Icons {
+/// Pack `file`'s pictures made at every size as the image makes them
+/// (its big pictures decoded and shrunk by `rp_today::Maker`) into the
+/// previews' store, the set before given back, with the radar's rain cells
+/// drawn as the image draws them. No pictures if it isn't a pack.
+fn preview_set(file: &[u8]) -> rp_shell::Icons {
     let pics = preview_pics();
     pics.clear();
-    let mut icons = rp_today::store_all(set, pics);
+    let mut big = vec![0; rp_today::BIG_WORDS];
+    let mut shrink = vec![0; rp_today::Maker::shrink_words()];
+    let mut icons =
+        rp_today::make_all(file, pics, &mut rp_today::Maker::new(&mut big, &mut shrink));
     icons.radar = rp_today::radar_into(
         Box::leak(vec![0; rp_today::RADAR_WORDS].into_boxed_slice()),
         Box::leak(Box::new([rp_today::NO_IMAGE; 3])),
@@ -11720,13 +11725,44 @@ fn preview_set(set: &rp_today::Unpacked) -> rp_shell::Icons {
     icons
 }
 
-/// The Today image's pictures, unpacked on the PC as the image unpacks them,
-/// and the radar's rain cells drawn as it draws them.
+/// The pictures the Today image shows with no other pack chosen: the
+/// default pack (pack 0, VClouds) as it makes them, if the build made it
+/// (the image carries none of its own: option C).
 fn today_icons() -> rp_shell::Icons {
-    preview_set(&rp_today::icons_into(
-        Box::leak(vec![0; rp_today::ICON_WORDS].into_boxed_slice()),
-        Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::ICON_COUNT])),
-    ))
+    let release = crate::arm_release(&crate::workspace_root());
+    preview_set(&today_output(&release, "rp-icons0.pak").unwrap_or_default())
+}
+
+/// An SD card image holding the default icon pack in its parts
+/// (`RPIC0A.PAK`, ...) as `cargo xtask load` puts it there, if the build
+/// made the pack (none without the art in local/: no card, no pictures).
+fn today_card(root: &Path, release: &Path) -> Result<Option<PathBuf>, String> {
+    let Ok(pack) = today_output(release, "rp-icons0.pak") else {
+        return Ok(None);
+    };
+    let mut parts: Vec<(String, &[u8])> = pack
+        .chunks(rp_today::PACK_PART)
+        .enumerate()
+        .map(|(p, c)| (format!("RPIC0{}.PAK", (b'A' + p as u8) as char), c))
+        .collect();
+    parts.push((
+        format!("RPIC0{}.PAK", (b'A' + parts.len() as u8) as char),
+        &[],
+    ));
+    let files: Vec<rp_fat::format::Entry> = parts
+        .iter()
+        .map(|(name, data)| rp_fat::format::Entry { name, data })
+        .collect();
+    let img = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: (SD_IMAGE_BYTES / 512) as u32,
+        sectors_per_cluster: 8,
+        files: &files,
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let path = scratch(root, "today-card.img")?;
+    std::fs::write(&path, img).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(Some(path))
 }
 
 /// The relay's canned alerts answer (`ALERTS`), for the previews.
@@ -11739,15 +11775,10 @@ pub(crate) fn today_pack(release: &Path, n: usize) -> Option<rp_shell::Icons> {
     pack_icons(&pack)
 }
 
-/// A pack file's set, unpacked as the image unpacks it.
+/// A pack file's set, made as the image makes it.
 pub(crate) fn pack_icons(pack: &[u8]) -> Option<rp_shell::Icons> {
-    let words = rp_today::pack_words(pack)?;
-    let set = rp_today::pack_into(
-        pack,
-        Box::leak(vec![0; words].into_boxed_slice()),
-        Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::PACK_MAX])),
-    )?;
-    Some(preview_set(&set))
+    rp_today::PackIndex::read(pack)?;
+    Some(preview_set(pack))
 }
 
 /// A station's reading for the previews (Tempest's shape).
@@ -11980,6 +12011,10 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let wall = today_wallpaper(&release)?;
     let map = today_map(&release);
+    // The card the X51v's has: the default icon pack (option C: the image
+    // carries no pictures), read and decoded as on the device; the
+    // references draw it as the image makes it (`today_icons`).
+    let sd = today_card(root, &release)?;
     let start = rp_shell::START;
     let (sx, sy) = (start.x + start.w / 2, start.y + start.h / 2);
     let want = today_screens(
@@ -12270,7 +12305,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
             image: &loader,
             marker: LOADER_MARKER,
             screenshot: None,
-            sd_image: None,
+            sd_image: sd.as_deref(),
             steps: &[],
             // Guest time from instructions, not the host clock: with every
             // core busy the starved guest saw its time jump past the

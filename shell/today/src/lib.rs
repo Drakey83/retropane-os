@@ -48,19 +48,6 @@ pub fn shell_fonts() -> rp_shell::Fonts {
     }
 }
 
-/// The weather pictures, from `local/icons/icons.rs` (made by
-/// `tools/shell-assets/icons.py` from the default pack; packed by the
-/// build as one Paeth-filtered zlib stream; without it there are none and
-/// the screens draw outlines).
-mod icon_data {
-    include!(concat!(env!("OUT_DIR"), "/icons.rs"));
-}
-
-/// How many pictures are baked in.
-pub const ICON_COUNT: usize = icon_data::COUNT;
-/// Words the unpacked pictures need.
-pub const ICON_WORDS: usize = icon_data::WORDS;
-
 /// Undoes the build's 4-byte Paeth filter (each channel against its own
 /// left, up and up-left) in place: `px` is `w` x `h` pixels of 4 bytes.
 fn unpaeth4(px: &mut [u8], w: usize, h: usize) {
@@ -80,62 +67,6 @@ fn unpaeth4(px: &mut [u8], w: usize, h: usize) {
     }
 }
 
-/// Unpacks the baked pictures into `px` (at least [`ICON_WORDS`] words; the
-/// image's comes from SDRAM outside the image area) with their
-/// descriptions in `imgs`, and returns them by size. Too little room or a
-/// damaged stream gives no pictures, never a fault.
-#[must_use]
-pub fn icons_into(px: &'static mut [u32], imgs: &'static mut [Image; ICON_COUNT]) -> Unpacked {
-    let desc = icon_data::DESC.iter().copied();
-    fill(desc, icon_data::PACKED, ICON_WORDS, px, imgs).unwrap_or(Unpacked::NONE)
-}
-
-/// A pack's pictures unpacked whole, by size and pack id less one: where
-/// the store's pictures are made from ([`Keeper`]).
-#[derive(Clone, Copy)]
-pub struct Unpacked {
-    /// The big ones (250 px).
-    pub hero: [Option<&'static Image>; 22],
-    /// Hourly's card's (the card packs' 100 px).
-    pub mid: [Option<&'static Image>; 22],
-    /// The forecast cards' (66 px).
-    pub card: [Option<&'static Image>; 22],
-    /// The rows' (40 px).
-    pub row: [Option<&'static Image>; 22],
-}
-
-impl Unpacked {
-    /// None.
-    pub const NONE: Self = Self {
-        hero: [None; 22],
-        mid: [None; 22],
-        card: [None; 22],
-        row: [None; 22],
-    };
-
-    /// The pictures of `size`.
-    #[must_use]
-    pub const fn of(&self, size: Size) -> &[Option<&'static Image>; 22] {
-        match size {
-            Size::Hero => &self.hero,
-            Size::Mid => &self.mid,
-            Size::Card => &self.card,
-            Size::Row => &self.row,
-        }
-    }
-
-    /// The set by the pack table's kind (0 big, 1 card, 2 row, 3 mid).
-    fn put(&mut self, kind: u8, id: u8, img: &'static Image) {
-        let i = usize::from(id.clamp(1, 22) - 1);
-        match kind {
-            0 => self.hero[i] = Some(img),
-            1 => self.card[i] = Some(img),
-            2 => self.row[i] = Some(img),
-            _ => self.mid[i] = Some(img),
-        }
-    }
-}
-
 /// `img` copied into a new picture in `pics` (`None` when no slot takes it).
 pub fn store_copy(img: &Image, pics: &Pics) -> Option<Pic> {
     let pic = pics.alloc(img.w, img.h)?;
@@ -145,18 +76,6 @@ pub fn store_copy(img: &Image, pics: &Pics) -> Option<Pic> {
         pics.free(pic);
         None
     }
-}
-
-/// Every picture of `set` put in `pics` (the previews' whole set; the
-/// image keeps only what the screens show, [`Keeper`]): the shell's set.
-pub fn store_all(set: &Unpacked, pics: &Pics) -> rp_shell::Icons {
-    let mut icons = rp_shell::Icons::NONE;
-    for size in Size::ALL {
-        for (dst, src) in icons.of_mut(size).iter_mut().zip(set.of(size)) {
-            *dst = src.and_then(|img| store_copy(img, pics));
-        }
-    }
-    icons
 }
 
 /// What a [`Keeper::step`] did.
@@ -220,12 +139,14 @@ impl Keeper {
                 }
             }
         }
-        // The screen first shown first: the hero, the cards, then the
-        // Weather app's.
-        for size in [Size::Hero, Size::Card, Size::Mid, Size::Row] {
-            let z = Size::ALL.iter().position(|&s| s == size).unwrap_or(0);
-            for (i, from) in self.from[z].iter_mut().enumerate() {
-                if !want.has(size, i) || *from == tag {
+        // A condition at a time, every size it is wanted at (the maker
+        // decodes its big picture once for all of them), the hero's first
+        // (the screen first shown).
+        let first = (0..22).find(|&i| want.has(Size::Hero, i)).unwrap_or(0);
+        for i in core::iter::once(first).chain((0..22).filter(|&i| i != first)) {
+            for size in [Size::Hero, Size::Card, Size::Mid, Size::Row] {
+                let z = Size::ALL.iter().position(|&s| s == size).unwrap_or(0);
+                if !want.has(size, i) || self.from[z][i] == tag {
                     continue;
                 }
                 let old = shell.pic(size, i);
@@ -244,7 +165,7 @@ impl Keeper {
                     pics.free(o);
                 }
                 shell.set_pic(size, i, new);
-                *from = tag;
+                self.from[z][i] = tag;
                 return if new.is_some() {
                     Kept::Made(size, i)
                 } else {
@@ -256,214 +177,274 @@ impl Keeper {
     }
 }
 
-/// A card's icon pack (one of the seven, each a picture set: every
-/// condition at every size, put on the card by `cargo xtask load`):
-/// `RPIK`, version 2, the count, two bytes 0, the words unpacked
-/// (little-endian), then per picture its kind (0 big, 1 card, 2 row, 3
-/// mid), pack id, width and height, and its stream's length (all
-/// little-endian), then each picture's own zlib stream (its Paeth-filtered
-/// bytes). Version 1 was one stream for the whole pack: 1.3 s to unpack in
-/// one go on the X51v, so a pick waited (the owner, 2026-10-31); a stream a
-/// picture lets the image unpack a pack a picture at a time in idle moments
-/// as its bytes arrive from the card ([`PackLoad`]).
+/// An icon pack (put on the card by `cargo xtask load`, `RPIC<n>`):
+/// `RPIK`, version 2, the count, two bytes 0, the words its pictures take
+/// (little-endian), then per picture its kind (0 big; the earlier packs'
+/// 1 card, 2 row, 3 mid are skipped), pack id, width and height, and its
+/// stream's length (all little-endian), then each picture's own zlib
+/// stream (its Paeth-filtered bytes). Option C (docs/design/weather-
+/// rule0.md): a pack holds only its big (250 px) pictures and the image
+/// reads one picture's stream by its offset ([`PackIndex`]) and makes the
+/// sizes the screens show from it ([`Maker`]). Version 1 was one stream
+/// for the whole pack (1.3 s to unpack on the X51v).
 pub const PACK_MAGIC: &[u8; 4] = b"RPIK";
+/// A card file's part (`<stem>A.PAK`, `B`, ...: the files are put on the
+/// card in parts of this size, the last shorter; the image finds a byte's
+/// part by its offset). The loader receives a file into its image area
+/// less 64 KiB it keeps as scratch (886,784 bytes for the payload, name
+/// included; a 900,000-byte part was refused "too big", 2026-10-31).
+pub const PACK_PART: usize = 800_000;
 /// The pack format's version.
 pub const PACK_VERSION: u8 = 2;
-/// The most pictures a pack holds (22 conditions at four sizes).
+/// The most pictures a pack's table holds (22 conditions at four sizes).
 pub const PACK_MAX: usize = 88;
 /// The header's bytes, and each picture's in the table.
 const PACK_HEAD: usize = 12;
 const PACK_ENTRY: usize = 10;
 
-/// The words a pack's pictures unpack to, from its header (`None` if it
-/// isn't a pack of this version).
-#[must_use]
-pub fn pack_words(file: &[u8]) -> Option<usize> {
-    let h = file.get(..PACK_HEAD)?;
-    (&h[..4] == PACK_MAGIC && h[4] == PACK_VERSION)
-        .then(|| u32::from_le_bytes([h[8], h[9], h[10], h[11]]) as usize)
-}
-
-/// A pack being unpacked a picture at a time, as its bytes arrive. Nothing
-/// in it is trusted: the table is checked against the room and its own
-/// words before anything is written, every stream must inflate to its
-/// picture's exact size, ids are clamped.
-pub struct PackLoad {
-    /// Pictures unpacked so far.
-    done: usize,
-    /// Where the next picture's stream starts in the file.
-    at: usize,
-    /// The room left for pictures.
-    rest: &'static mut [u32],
-    /// The table checked (count, words) once its bytes are in.
-    checked: Option<usize>,
-}
-
-/// What a [`PackLoad::step`] did.
+/// A pack's big pictures, from its table (option C: a pack keeps only
+/// its 250 px pictures; a pack with every size still reads, its other
+/// pictures skipped): each condition's size and where its stream is.
+/// Nothing in the table is trusted: sizes over the big class, streams
+/// past the file's end or overlapping are refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PackStep {
-    /// A picture unpacked; more to come.
-    Unpacked,
-    /// The next picture's bytes haven't arrived yet.
-    Waiting,
-    /// Every picture unpacked: [`PackLoad::icons`] makes the set.
-    Done,
-    /// Not a sound pack, or it doesn't fit: the built-in set stays.
-    Broken,
+pub struct PackIndex {
+    /// Per condition (pack id less one): width, height, the stream's
+    /// offset in the file and its length (0: none).
+    big: [Big; 22],
+    /// The file's length the table names.
+    len: u32,
 }
 
-impl PackLoad {
-    /// A pack to unpack into `px` (the RAM pool's room, at least
-    /// [`pack_words`] words).
+/// A big picture in a pack: its size and its stream's place.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Big {
+    /// Width.
+    pub w: u16,
+    /// Height.
+    pub h: u16,
+    /// The stream's offset in the file.
+    pub off: u32,
+    /// The stream's length (0: the pack lacks it).
+    pub len: u32,
+}
+
+impl PackIndex {
+    /// Bytes from the file's start the table needs: the header's 12, then
+    /// what its count says (`None` if `head` isn't a pack's header).
     #[must_use]
-    pub const fn new(px: &'static mut [u32]) -> Self {
-        Self {
-            done: 0,
-            at: 0,
-            rest: px,
-            checked: None,
-        }
+    pub fn head_len(head: &[u8]) -> Option<usize> {
+        let h = head.get(..PACK_HEAD)?;
+        let count = usize::from(h[5]);
+        (&h[..4] == PACK_MAGIC && h[4] == PACK_VERSION && (1..=PACK_MAX).contains(&count))
+            .then_some(PACK_HEAD + count * PACK_ENTRY)
     }
 
-    /// The pack's table: count, and where the streams start.
-    fn table(file: &[u8]) -> Option<(usize, &[u8])> {
-        let words = pack_words(file)?;
-        let count = usize::from(file[5]);
-        if count == 0 || count > PACK_MAX {
-            return None;
-        }
-        let table = file.get(PACK_HEAD..PACK_HEAD + count * PACK_ENTRY)?;
-        let sum: usize = table
-            .as_chunks::<PACK_ENTRY>()
-            .0
-            .iter()
-            .map(|e| {
-                usize::from(u16::from_le_bytes([e[2], e[3]]))
-                    * usize::from(u16::from_le_bytes([e[4], e[5]]))
-            })
-            .sum();
-        (sum == words).then_some((count, table))
-    }
-
-    /// One more picture from `file` (the pack's bytes read so far, from
-    /// its start) into the room, described in `imgs[i]`.
-    pub fn step(&mut self, file: &[u8], imgs: &mut [Image; PACK_MAX]) -> PackStep {
-        let Some((count, table)) = Self::table(file) else {
-            // The header and table not all in yet, or not a sound pack.
-            let head_ok = file
-                .get(..5)
-                .is_none_or(|h| &h[..4] == PACK_MAGIC && h[4] == PACK_VERSION);
-            let count = file.get(5).map_or(1, |&c| usize::from(c));
-            let in_yet = file.len() >= PACK_HEAD + count * PACK_ENTRY;
-            return if head_ok && (1..=PACK_MAX).contains(&count) && !in_yet {
-                PackStep::Waiting
-            } else {
-                PackStep::Broken
-            };
-        };
-        if self.checked.is_none() {
-            let words = pack_words(file).unwrap_or(usize::MAX);
-            if words > self.rest.len() {
-                return PackStep::Broken;
+    /// The index from the file's first [`Self::head_len`] bytes.
+    #[must_use]
+    pub fn read(head: &[u8]) -> Option<Self> {
+        let n = Self::head_len(head)?;
+        let table = head.get(PACK_HEAD..n)?;
+        let mut big = [Big::default(); 22];
+        let mut at = n as u64;
+        let side = Size::Hero.side();
+        for e in table.as_chunks::<PACK_ENTRY>().0 {
+            let (w, h) = (
+                u16::from_le_bytes([e[2], e[3]]),
+                u16::from_le_bytes([e[4], e[5]]),
+            );
+            let len = u32::from_le_bytes([e[6], e[7], e[8], e[9]]);
+            if e[0] == 0 {
+                let i = usize::from(e[1].checked_sub(1)?);
+                if i >= 22 || w == 0 || h == 0 || w > side || h > side || len == 0 {
+                    return None;
+                }
+                big[i] = Big {
+                    w,
+                    h,
+                    off: u32::try_from(at).ok()?,
+                    len,
+                };
             }
-            self.checked = Some(count);
-            self.at = PACK_HEAD + count * PACK_ENTRY;
+            at += u64::from(len);
         }
-        if self.done >= count {
-            return PackStep::Done;
-        }
-        let e = &table[self.done * PACK_ENTRY..(self.done + 1) * PACK_ENTRY];
-        let (w, h) = (
-            u16::from_le_bytes([e[2], e[3]]),
-            u16::from_le_bytes([e[4], e[5]]),
-        );
-        let len = u32::from_le_bytes([e[6], e[7], e[8], e[9]]) as usize;
-        let Some(stream) = file.get(self.at..self.at + len) else {
-            return PackStep::Waiting;
-        };
-        let n = usize::from(w) * usize::from(h);
-        let (mine, more) = core::mem::take(&mut self.rest).split_at_mut(n);
-        self.rest = more;
-        let bytes = rp_hal_mem::words_as_bytes_mut(mine);
-        if rp_inflate::zlib(stream, bytes) != Ok(n * 4) {
-            return PackStep::Broken;
-        }
-        unpaeth4(bytes, usize::from(w), usize::from(h));
-        imgs[self.done] = Image { w, h, px: mine };
-        self.at += len;
-        self.done += 1;
-        if self.done == count {
-            PackStep::Done
-        } else {
-            PackStep::Unpacked
-        }
+        Some(Self {
+            big,
+            len: u32::try_from(at).ok()?,
+        })
     }
 
-    /// A finished pack's pictures (`imgs`, as the steps filled them) by
-    /// size, from its table.
+    /// The big picture for `icon` (pack id less one), if the pack has it.
     #[must_use]
-    pub fn icons(file: &[u8], imgs: &'static [Image; PACK_MAX]) -> Option<Unpacked> {
-        let (_, table) = Self::table(file)?;
-        let mut set = Unpacked::NONE;
-        for (img, e) in imgs.iter().zip(table.as_chunks::<PACK_ENTRY>().0) {
-            set.put(e[0], e[1], img);
-        }
-        Some(set)
+    pub fn big(&self, icon: usize) -> Option<Big> {
+        self.big.get(icon).copied().filter(|b| b.len > 0)
+    }
+
+    /// The file's length its table names.
+    #[must_use]
+    pub const fn file_len(&self) -> u32 {
+        self.len
     }
 }
 
-/// A whole pack at once (the PC's previews; the image goes a picture at a
-/// time through [`PackLoad`]).
+/// Words a big picture takes at most (the maker's scratch).
+pub const BIG_WORDS: usize = 250 * 250;
+
+/// Makes a pack's pictures at the sizes the shell shows: a condition's big
+/// picture inflated once into the scratch (held for its other sizes), then
+/// copied (the big size) or made smaller with the fitted filter
+/// (`rp_draw::shrink`) into a store picture.
+pub struct Maker<'s> {
+    big: &'s mut [u32],
+    shrink: &'s mut [i32],
+    /// The big picture in `big`: the pack's tag, the condition, its size.
+    held: Option<(u8, usize, u16, u16)>,
+    /// The last make's time in its parts (inflating, shrinking), in the
+    /// clock's units.
+    pub last: (u32, u32),
+    /// Big pictures inflated so far.
+    pub inflates: u32,
+    /// What times the parts (microseconds on the device; none on the PC).
+    clock: fn() -> u32,
+}
+
+impl<'s> Maker<'s> {
+    /// The scratch words `shrink` needs at most (from 250 px to the
+    /// widest size the shell shows).
+    #[must_use]
+    pub fn shrink_words() -> usize {
+        rp_draw::shrink::ALL
+            .iter()
+            .map(|k| rp_draw::shrink::scratch_words(250, usize::from(k.side), k))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// A maker with `big` ([`BIG_WORDS`]) and `shrink`
+    /// ([`Self::shrink_words`]) as scratch.
+    #[must_use]
+    pub const fn new(big: &'s mut [u32], shrink: &'s mut [i32]) -> Self {
+        Self {
+            big,
+            shrink,
+            held: None,
+            last: (0, 0),
+            inflates: 0,
+            clock: || 0,
+        }
+    }
+
+    /// Times its parts ([`Self::last`]) with `clock`.
+    #[must_use]
+    pub const fn timed(mut self, clock: fn() -> u32) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Forgets the big picture held (its pack's file changed).
+    pub fn forget(&mut self) {
+        self.held = None;
+    }
+
+    /// `icon` (pack id less one) at `size` from the pack tagged `tag`,
+    /// whose table is `index`, into `pics`; `stream` gives a big
+    /// picture's stream bytes (the file in RAM, or a read from the card).
+    /// `None`: the pack lacks it,
+    /// its stream is damaged, or no slot takes it.
+    pub fn make<'b>(
+        &mut self,
+        tag: u8,
+        index: &PackIndex,
+        size: Size,
+        icon: usize,
+        pics: &Pics,
+        stream: impl FnOnce(Big) -> Option<&'b [u8]>,
+    ) -> Option<Pic> {
+        let clock = self.clock;
+        let b = index.big(icon)?;
+        let n = usize::from(b.w) * usize::from(b.h);
+        let t0 = clock();
+        if self.held != Some((tag, icon, b.w, b.h)) {
+            self.held = None;
+            let s = stream(b)?;
+            let out = self.big.get_mut(..n)?;
+            if !decode_big(s, b.w, b.h, out) {
+                return None;
+            }
+            self.inflates += 1;
+            self.held = Some((tag, icon, b.w, b.h));
+        }
+        let t1 = clock();
+        let src = self.big.get(..n)?;
+        let (dw, dh) = if size == Size::Hero {
+            (b.w, b.h)
+        } else {
+            rp_draw::shrink::size(b.w, b.h, size.side())
+        };
+        let pic = pics.alloc(dw, dh)?;
+        let k = rp_draw::shrink::Kernel::for_side(size.side());
+        let shrink = &mut *self.shrink;
+        let mut ok = false;
+        pics.write(pic, |px| {
+            ok = if size == Size::Hero {
+                px.copy_from_slice(src);
+                true
+            } else {
+                rp_draw::shrink::shrink(
+                    src,
+                    (usize::from(b.w), usize::from(b.h)),
+                    px,
+                    (usize::from(dw), usize::from(dh)),
+                    k,
+                    shrink,
+                )
+            };
+        });
+        self.last = (t1.wrapping_sub(t0), clock().wrapping_sub(t1));
+        if ok {
+            Some(pic)
+        } else {
+            pics.free(pic);
+            None
+        }
+    }
+}
+
+/// A big picture's stream (zlib of its Paeth-filtered bytes) into `out`
+/// (`w` x `h` words): false, never a fault, if it doesn't inflate to
+/// exactly that.
 #[must_use]
-pub fn pack_into(
-    file: &[u8],
-    px: &'static mut [u32],
-    imgs: &'static mut [Image; PACK_MAX],
-) -> Option<Unpacked> {
-    let mut load = PackLoad::new(px);
-    loop {
-        match load.step(file, imgs) {
-            PackStep::Unpacked => {}
-            PackStep::Done => return PackLoad::icons(file, imgs),
-            PackStep::Waiting | PackStep::Broken => return None,
-        }
+pub fn decode_big(stream: &[u8], w: u16, h: u16, out: &mut [u32]) -> bool {
+    let n = usize::from(w) * usize::from(h);
+    let Some(out) = out.get_mut(..n) else {
+        return false;
+    };
+    let bytes = rp_hal_mem::words_as_bytes_mut(out);
+    if rp_inflate::zlib(stream, bytes) != Ok(n * 4) {
+        return false;
     }
+    unpaeth4(bytes, usize::from(w), usize::from(h));
+    true
 }
 
-/// The stream inflated into `px` (its bytes are the pictures' bytes: B, G,
-/// R, A, the ARGB word in memory on the X51v), each picture's filter
-/// undone in place, and the set made from `desc`.
-fn fill(
-    desc: impl Iterator<Item = (u8, u8, u16, u16)> + Clone,
-    stream: &[u8],
-    words: usize,
-    px: &'static mut [u32],
-    imgs: &'static mut [Image],
-) -> Option<Unpacked> {
-    let mut set = Unpacked::NONE;
-    if px.len() < words || desc.clone().count() > imgs.len() {
-        return None;
+/// Every condition of a pack `file` at every size the shell shows, made
+/// into `pics` (the previews' and the tests' whole set; the image keeps
+/// only what the screens show, [`Keeper`]): the shell's set. None if the
+/// file isn't a pack.
+pub fn make_all(file: &[u8], pics: &Pics, maker: &mut Maker) -> rp_shell::Icons {
+    let mut icons = rp_shell::Icons::NONE;
+    let Some(index) = PackIndex::read(file) else {
+        return icons;
+    };
+    maker.forget();
+    for i in 0..22 {
+        for size in Size::ALL {
+            icons.of_mut(size)[i] = maker.make(0, &index, size, i, pics, |b| {
+                file.get(b.off as usize..(b.off as usize).checked_add(b.len as usize)?)
+            });
+        }
     }
-    let bytes = rp_hal_mem::words_as_bytes_mut(&mut px[..words]);
-    if words > 0 && rp_inflate::zlib(stream, bytes) != Ok(words * 4) {
-        return None;
-    }
-    let mut rest = px;
-    for (slot, (_, _, w, h)) in imgs.iter_mut().zip(desc.clone()) {
-        let (mine, more) = rest.split_at_mut(usize::from(w) * usize::from(h));
-        rest = more;
-        unpaeth4(
-            rp_hal_mem::words_as_bytes_mut(mine),
-            usize::from(w),
-            usize::from(h),
-        );
-        *slot = Image { w, h, px: mine };
-    }
-    let imgs: &'static [Image] = imgs;
-    for (img, (kind, id, ..)) in imgs.iter().zip(desc) {
-        set.put(kind, id, img);
-    }
-    Some(set)
+    icons
 }
 
 /// The radar map's place on the screen (the Weather app's page) and its
@@ -677,7 +658,7 @@ pub fn unpack_wallpaper(packed: &[u8], dst: &mut [u8]) -> Result<(), rp_inflate:
     Ok(())
 }
 
-/// Room for [`icons_into`]'s descriptions.
+/// An empty picture description (room for one made at start).
 pub const NO_IMAGE: Image = Image {
     w: 0,
     h: 0,
@@ -1057,6 +1038,67 @@ pub fn reveal_window(r: rp_draw::Rect, shift: u16) -> (u16, u16, u16, u16, u16, 
 mod tests {
     use super::*;
 
+    /// A pack of big pictures only (option C) reads into an index; the
+    /// maker inflates a condition once for all its sizes, copies the big
+    /// one exactly and makes the others at the shell's sizes; a damaged
+    /// stream, a missing condition or a table that lies is refused.
+    #[test]
+    fn the_maker_decodes_a_big_picture_once_for_every_size() {
+        let (w, h) = (200u16, 140u16);
+        let a: Vec<u32> = (0..u32::from(w) * u32::from(h))
+            .map(|i| 0xFF00_0000 | (i % 200) << 16 | (i / 200) << 8 | 0x40)
+            .collect();
+        let pack = v2_pack(&[(0, 5, w, h, a.clone()), (1, 5, 2, 2, vec![0; 4])]);
+        let index = PackIndex::read(&pack).expect("an index");
+        assert_eq!(index.file_len() as usize, pack.len());
+        assert!(
+            index.big(5).is_none() && index.big(4).is_some(),
+            "only the big one"
+        );
+        let pics = host_store();
+        let mut big = vec![0; BIG_WORDS];
+        let mut sh = vec![0; Maker::shrink_words()];
+        let mut m = Maker::new(&mut big, &mut sh);
+        let stream = |b: Big| pack.get(b.off as usize..(b.off + b.len) as usize);
+        for size in Size::ALL {
+            let pic = m.make(1, &index, size, 4, pics, stream).expect("made");
+            let want = if size == Size::Hero {
+                (w, h)
+            } else {
+                rp_draw::shrink::size(w, h, size.side())
+            };
+            assert_eq!((pic.w, pic.h), want, "{size:?}");
+            if size == Size::Hero {
+                assert_eq!(pics.read(pic, <[u32]>::to_vec), Some(a.clone()));
+            } else {
+                // Opaque in, opaque out; the gradient kept in order.
+                let px = pics.read(pic, <[u32]>::to_vec).unwrap();
+                assert!(px.iter().all(|p| p >> 24 == 0xFF));
+                assert!(px[0] >> 16 & 0xFF < px[usize::from(pic.w) - 1] >> 16 & 0xFF);
+            }
+        }
+        assert_eq!(m.inflates, 1, "one inflate for four sizes");
+        // Another pack's tag inflates again; a condition it lacks is none.
+        assert!(m.make(2, &index, Size::Row, 4, pics, stream).is_some());
+        assert_eq!(m.inflates, 2);
+        assert!(m.make(2, &index, Size::Row, 6, pics, stream).is_none());
+        // A damaged stream: none, never a fault, and nothing held.
+        let mut bad = pack.clone();
+        let b4 = index.big(4).unwrap();
+        bad[(b4.off + b4.len / 2) as usize] ^= 0x5A;
+        m.forget();
+        let s2 = |b: Big| bad.get(b.off as usize..(b.off + b.len) as usize);
+        assert!(m.make(3, &index, Size::Card, 4, pics, s2).is_none());
+        // Tables that lie: a picture over the big size, an id past 22.
+        let mut over = pack.clone();
+        over[PACK_HEAD + 2..PACK_HEAD + 4].copy_from_slice(&251u16.to_le_bytes());
+        assert!(PackIndex::read(&over).is_none());
+        let mut id = pack.clone();
+        id[PACK_HEAD + 1] = 23;
+        assert!(PackIndex::read(&id).is_none());
+        assert!(PackIndex::read(&pack[..PACK_HEAD + 5]).is_none());
+    }
+
     /// A pack of these pictures, `(kind, id, w, h, pixels)`, as the build
     /// makes it (each picture Paeth-filtered and its own stream).
     fn v2_pack(pics: &[(u8, u8, u16, u16, Vec<u32>)]) -> Vec<u8> {
@@ -1098,63 +1140,6 @@ mod tests {
         f
     }
 
-    #[test]
-    fn a_pack_unpacks_a_picture_at_a_time_as_its_bytes_arrive() {
-        let a: Vec<u32> = (0..12 * 8).map(|i| 0xFF00_0000 | (i * 0x01_0307)).collect();
-        let b: Vec<u32> = (0..5 * 3)
-            .map(|i| 0x8000_0000 | (i * 0x0010_2030))
-            .collect();
-        let pack = v2_pack(&[(0, 4, 12, 8, a.clone()), (3, 9, 5, 3, b.clone())]);
-        let px: &'static mut [u32] = Box::leak(vec![0; 12 * 8 + 15].into_boxed_slice());
-        let imgs: &'static mut [Image; PACK_MAX] = Box::leak(Box::new([NO_IMAGE; PACK_MAX]));
-        let mut load = PackLoad::new(px);
-        // The bytes arrive a few at a time, as the card's reads give them.
-        let mut got = 0;
-        let mut steps = Vec::new();
-        loop {
-            match load.step(&pack[..got], imgs) {
-                PackStep::Waiting => got = (got + 7).min(pack.len()),
-                PackStep::Done => break,
-                s => steps.push(s),
-            }
-            assert!(steps.len() < 4, "{steps:?}");
-        }
-        assert_eq!(steps, [PackStep::Unpacked]);
-        assert_eq!(imgs[0].px, &a[..]);
-        assert_eq!(imgs[1].px, &b[..]);
-        let set = PackLoad::icons(&pack, imgs).expect("a set");
-        assert_eq!(set.hero[3].map(|i| i.w), Some(12));
-        assert_eq!(set.mid[8].map(|i| i.h), Some(3));
-    }
-
-    #[test]
-    fn a_damaged_or_oversized_pack_is_refused_never_trusted() {
-        let a: Vec<u32> = (0..6 * 6).map(|i| 0xFF00_0000 | i).collect();
-        let pack = v2_pack(&[(1, 2, 6, 6, a)]);
-        let room = || -> &'static mut [u32] { Box::leak(vec![0; 36].into_boxed_slice()) };
-        let imgs =
-            || -> &'static mut [Image; PACK_MAX] { Box::leak(Box::new([NO_IMAGE; PACK_MAX])) };
-        // Too little room.
-        let small: &'static mut [u32] = Box::leak(vec![0; 35].into_boxed_slice());
-        assert_eq!(PackLoad::new(small).step(&pack, imgs()), PackStep::Broken);
-        // Version 1, a wrong magic, a table whose sizes don't add up.
-        for (at, v) in [(4, 1u8), (0, b'X'), (14, 7)] {
-            let mut bad = pack.clone();
-            bad[at] = v;
-            assert_eq!(
-                PackLoad::new(room()).step(&bad, imgs()),
-                PackStep::Broken,
-                "byte {at}"
-            );
-        }
-        // A stream that inflates to the wrong size.
-        let mut bad = pack.clone();
-        let n = bad.len();
-        bad[n - 6] ^= 0x55;
-        assert_ne!(PackLoad::new(room()).step(&bad, imgs()), PackStep::Done);
-        assert!(pack_into(&pack, room(), imgs()).is_some());
-    }
-
     /// A store with a slot for every condition at every size (leaked: it
     /// lives for the test, as the image's lives for the run).
     fn host_store() -> &'static Pics<'static> {
@@ -1165,15 +1150,27 @@ mod tests {
         )))
     }
 
-    /// The pictures unpacked into memory that lives for the test, in a
-    /// store of their own (handed to the renderers that draw them).
+    /// A pack of three conditions' big pictures (gradients of their own),
+    /// every size made by the maker into a store of its own (handed to the
+    /// renderers that draw them), as the image makes them.
     fn host_icons_in() -> (rp_shell::Icons, &'static Pics<'static>) {
-        let set = icons_into(
-            Box::leak(vec![0; ICON_WORDS].into_boxed_slice()),
-            Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
-        );
+        let big = |id: u32, w: u16, h: u16| -> Vec<u32> {
+            (0..u32::from(w) * u32::from(h))
+                .map(|i| {
+                    0xFF00_0000 | (i % u32::from(w)) << 16 | (i / u32::from(w)) << 8 | (id * 40)
+                })
+                .collect()
+        };
+        let pack = v2_pack(&[
+            (0, 3, 250, 174, big(3, 250, 174)),
+            (0, 4, 200, 176, big(4, 200, 176)),
+            (0, 17, 176, 176, big(17, 176, 176)),
+        ]);
         let pics = host_store();
-        (store_all(&set, pics), pics)
+        let mut b = vec![0; BIG_WORDS];
+        let mut sh = vec![0; Maker::shrink_words()];
+        let icons = make_all(&pack, pics, &mut Maker::new(&mut b, &mut sh));
+        (icons, pics)
     }
 
     fn host_icons() -> rp_shell::Icons {
@@ -1320,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pictures_filter_undoes_exactly_and_short_room_gives_outlines() {
+    fn the_pictures_filter_undoes_exactly() {
         // A 5 x 3 picture of 4-byte pixels, filtered as the build does.
         let (w, h) = (5, 3);
         let px: Vec<u8> = (0..w * h * 4).map(|i| (i * 37 % 251) as u8).collect();
@@ -1339,21 +1336,6 @@ mod tests {
         }
         unpaeth4(&mut f, w, h);
         assert_eq!(f, px);
-        // Too little room: outlines, not a fault.
-        let small = icons_into(
-            Box::leak(vec![0; ICON_WORDS.saturating_sub(1)].into_boxed_slice()),
-            Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
-        );
-        assert!(ICON_WORDS == 0 || small.hero.iter().all(Option::is_none));
-        // Room: every picture, the hero opaque somewhere.
-        let full = icons_into(
-            Box::leak(vec![0; ICON_WORDS].into_boxed_slice()),
-            Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
-        );
-        if ICON_WORDS > 0 {
-            let hero = full.hero.iter().flatten().next().expect("a big picture");
-            assert!(hero.px.iter().any(|p| p >> 24 == 0xFF));
-        }
     }
 
     #[test]

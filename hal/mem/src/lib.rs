@@ -165,6 +165,16 @@ pub fn words_as_samples_mut(words: &mut [u32]) -> &mut [i16] {
     unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<i16>(), len) }
 }
 
+/// Views words as signed words (a filter's sums over word-typed RAM, the
+/// picture store's shrinking). Always sound, as [`words_as_bytes_mut`]:
+/// i32 has u32's size and alignment and every bit pattern is valid.
+pub fn words_as_i32_mut(words: &mut [u32]) -> &mut [i32] {
+    let len = words.len();
+    // SAFETY: a valid `&mut [u32]` of `len` words viewed as `len` i32s,
+    // borrowed mutably for the result's whole lifetime.
+    unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<i32>(), len) }
+}
+
 /// Views bytes as words, if they start 4-byte aligned (`None` otherwise);
 /// up to 3 trailing bytes are left out. For using a byte region (scratch
 /// RAM) as a 32-bit drawing layer.

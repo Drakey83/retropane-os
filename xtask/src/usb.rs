@@ -1104,11 +1104,7 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// The largest part of an icon pack put on the card: the loader receives a
-/// file into its image area less 64 KiB it keeps as scratch (886,784 bytes
-/// for the payload, name included; a 900,000-byte part was refused "too
-/// big", 2026-10-31).
-const PACK_PART: usize = 800_000;
+use rp_today::PACK_PART;
 
 /// rp-today's card files onto the SD card: its icon packs (`RPIC<n>`) and
 /// the radar's built-in base map (`RPMAP`, 214 KB that no longer fit the

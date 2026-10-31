@@ -476,6 +476,7 @@ pub trait Renderer {
 }
 
 pub mod pics;
+pub mod shrink;
 
 #[cfg(test)]
 mod tests;
