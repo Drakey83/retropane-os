@@ -1252,8 +1252,11 @@ mod image {
                             // now, so it grows from the card rather than
                             // jumping in partway (the composing took ~100 ms
                             // of its 540 on the first device run).
+                            // Up at the next refresh (the app composed ahead),
+                            // so Reveal's clock runs on from the tap: a
+                            // restart here stepped the window back 8 px (the
+                            // trace, 2026-10-31).
                             reveal_shown = true;
-                            shell.restart_entrance(now_ms as u32);
                             let _ = writeln!(
                                 RunLog,
                                 "open: {now_ms} ms, the app composed aside and its window up ({} commits so far)",
