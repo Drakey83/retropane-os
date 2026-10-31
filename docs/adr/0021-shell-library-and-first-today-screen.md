@@ -60,6 +60,15 @@ measures it yet.
 > The calendar line reads "No appointments today"; the battery is drawn
 > as an outline, not read.
 
+> **Correction (note added 2026-10-31):** a frame holds 256 commands. At
+> 160, Hourly drawn on screen 0 with its line pieces (185 commands) lost
+> its scroll bar, tabs and softkeys without a word: the shell's tests drew
+> with no pictures and no line pieces, so they counted fewer commands than
+> the X51v draws (emu-today found it). The tests now draw with a picture in
+> every slot (busiest frame 209), and rp-today logs a frame that is still
+> full. Option C (docs/design/weather-rule0.md) makes Hourly's graph one
+> picture, after which the room is measured again.
+
 1. **`rp-shell` (in `shell/`), `no_std`, no `unsafe`, host-tested:** owns
    the Today screen, title bar (Start at top left, clock, battery), Start
    menu and the two softkeys (docs/design/ui.md), the widget model,

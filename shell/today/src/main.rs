@@ -808,7 +808,7 @@ mod image {
         let mut card_tried = false;
         let (Some(shell), Some(frame)) = (
             SHELL.put_in(|m| Shell::new_in(m, rp_today::shell_fonts(), icons, true)),
-            FRAME.put_with(Frame::new),
+            FRAME.put_in(Frame::new_in),
         ) else {
             crash(format_args!("started twice"))
         };
@@ -998,6 +998,7 @@ mod image {
         let mut backdrop_shown: Option<bool> = None;
         let (mut burst_bg_px, mut burst_rows, mut burst_reused) = (0u64, 0u32, 0u32);
         let mut frames = 0u32;
+        let mut overflow_logged = false;
         let mut draw_us_worst = 0u32;
         // The CPU time of the frame last queued (for the slow-answer line).
         let mut last_frame_us = 0u32;
@@ -2213,6 +2214,19 @@ mod image {
                 let draw = commit.is_none_or(|(_, _, d)| d);
                 if draw {
                     z_shell.run(|| shell.frame(frame));
+                    // Commands past the frame's room are dropped: never
+                    // quietly (the tests walk every screen with the device's
+                    // pictures; this names one they missed).
+                    if frame.overflowed() && !overflow_logged {
+                        overflow_logged = true;
+                        let _ = writeln!(
+                            RunLog,
+                            "frame {}: full ({} commands), the rest dropped on {:?}",
+                            frames + 1,
+                            rp_draw::MAX_CMDS,
+                            shell.screen()
+                        );
+                    }
                 } else {
                     frame.clear();
                 }

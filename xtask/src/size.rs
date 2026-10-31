@@ -534,11 +534,15 @@ pub const BUDGETS: &[Budget] = &[
     // measured, + ~10%. Zeroed RAM 38 -> 44 KiB on 2026-10-30 (test
     // image): the 2D renderer's per-command background keys and its kept
     // row ring (the Weather app's speed sheet), ~4.2 KiB in `.bss`; 40.9
-    // KiB measured, + ~8%.
+    // KiB measured, + ~8%. Zeroed RAM 44 -> 48 KiB on 2026-10-31 (test
+    // image): a frame holds 256 commands, not 160 (Hourly drawn on screen 0
+    // needs 185 with its line pieces; 160 dropped its tabs without a word),
+    // the 2D renderer's per-command arrays with it; 45.4 KiB measured. Comes
+    // down when Hourly's graph is one picture (option C, step 2).
     Budget {
         image: "rp-scene",
         max_load: 165 * 1024,
-        max_zero: 44 * 1024,
+        max_zero: 48 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),

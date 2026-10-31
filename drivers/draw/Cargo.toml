@@ -9,3 +9,6 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+rp-hal-mem = { path = "../../hal/mem" }

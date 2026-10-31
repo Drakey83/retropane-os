@@ -1164,7 +1164,7 @@ mod image {
         label(two_d, ["RP-SCENE SETTING UP", ""]);
         two_d.show(rt::delay_us);
         let (Some(three_d), Some(frame)) =
-            (THREE_D.put_in(ThreeD::new_in), FRAME.put_with(Frame::new))
+            (THREE_D.put_in(ThreeD::new_in), FRAME.put_in(Frame::new_in))
         else {
             crash(format_args!("started twice"))
         };

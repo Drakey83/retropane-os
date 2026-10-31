@@ -263,8 +263,11 @@ impl Cmd {
 /// How far a text run's bounds reach past its line box.
 const TEXT_MARGIN: u16 = 4;
 
-/// Commands a frame holds.
-pub const MAX_CMDS: usize = 160;
+/// Commands a frame holds: the busiest frame the shell's tests draw (with a
+/// picture in every slot and Hourly's line pieces, as on the X51v) is 209
+/// commands; at 160, Hourly drawn on screen 0 (185) lost its scroll bar,
+/// tabs and softkeys without a word (emu-today, 2026-10-31).
+pub const MAX_CMDS: usize = 256;
 /// Bytes of text a frame holds.
 pub const MAX_TEXT: usize = 1024;
 /// Dirty rectangles a frame keeps apart; more merge into their union.
@@ -300,6 +303,22 @@ impl Frame {
             dn: 0,
             overflowed: false,
         }
+    }
+
+    /// [`Frame::new`] made straight into `slot` (the image's, in `.bss`),
+    /// a field at a time: at 256 commands a frame is 5 KB, and made on the
+    /// stack and moved it took a 5,136-byte frame (`cargo xtask stacks`,
+    /// P6).
+    pub fn new_in(slot: &mut core::mem::MaybeUninit<Self>) -> &mut Self {
+        rp_hal_mem::in_place!(slot, Frame {
+            cmds: @each None,
+            n: 0,
+            text: @each 0,
+            tn: 0,
+            dirty: @each Rect::new(0, 0, 0, 0),
+            dn: 0,
+            overflowed: false,
+        })
     }
 
     /// Empties it for the next frame.

@@ -1266,31 +1266,38 @@ impl Shell {
         let (curve_top, span) = (58i64, 84i64);
         let base = curve_top + span + 18;
         let t = |i: i64| i64::from(shown[i.clamp(0, GRAPH_HOURS as i64 - 1) as usize].temp);
-        // The temperature at hour position `u` (x 1024), on the curve.
+        // The temperature at hour position `u` (x 1024), on the curve, in
+        // sixteenths of a tenth: whole tenths flattened the line's ends (a
+        // slope taken over 1/16 hour rounded to nothing, emu-today
+        // 2026-10-31) and stepped its thickness.
+        let last = (GRAPH_HOURS as i64 - 1) * 1024;
+        let curve = |u: i64| {
+            let i = (u / 1024).min(GRAPH_HOURS as i64 - 2);
+            let s = u - i * 1024;
+            let (p0, p1, p2, p3) = (t(i - 1), t(i), t(i + 1), t(i + 2));
+            let (s2, s3) = (s * s / 1024, s * s / 1024 * s / 1024);
+            (2048 * p1
+                + (p2 - p0) * s
+                + (2 * p0 - 5 * p1 + 4 * p2 - p3) * s2
+                + (3 * p1 - p0 - 3 * p2 + p3) * s3)
+                / 128
+        };
         let temp_at = |u: i64| -> i64 {
-            let last = (GRAPH_HOURS as i64 - 1) * 1024;
-            let curve = |u: i64| {
-                let i = (u / 1024).min(GRAPH_HOURS as i64 - 2);
-                let s = u - i * 1024;
-                let (p0, p1, p2, p3) = (t(i - 1), t(i), t(i + 1), t(i + 2));
-                let (s2, s3) = (s * s / 1024, s * s / 1024 * s / 1024);
-                (2048 * p1
-                    + (p2 - p0) * s
-                    + (2 * p0 - 5 * p1 + 4 * p2 - p3) * s2
-                    + (3 * p1 - p0 - 3 * p2 + p3) * s3)
-                    / 2048
-            };
+            // Past the ends, on the curve's own tangent there: the end
+            // hours repeat, so it is half the step to the next hour.
             if u < 0 {
-                curve(0) + (curve(0) - curve(64)) * -u / 64
+                curve(0) + (t(1) - t(0)) * u / 128
             } else if u > last {
-                curve(last) + (curve(last) - curve(last - 64)) * (u - last) / 64
+                curve(last) + (t(last / 1024) - t(last / 1024 - 1)) * (u - last) / 128
             } else {
                 curve(u)
             }
         };
-        // The line's centre at temperature `v` (tenths), local rows x 256.
-        let range = (i64::from(hi) - i64::from(lo)).max(1);
-        let y_of = |v: i64| (curve_top + span) * 256 - span * 256 * (v - i64::from(lo)) / range;
+        // The line's centre at temperature `v` (tenths x 16), local rows
+        // x 256.
+        let range = (i64::from(hi) - i64::from(lo)).max(1) * 16;
+        let y_of =
+            |v: i64| (curve_top + span) * 256 - span * 256 * (v - 16 * i64::from(lo)) / range;
         let x_mid = i64::from(hour_x(0) + HOUR_W / 2);
         for x in i64::from(g.x) + 1..i64::from(g.x + g.w) - 1 {
             let u = (x - x_mid) * 1024 / i64::from(HOUR_W);

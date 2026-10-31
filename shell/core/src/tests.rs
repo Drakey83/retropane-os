@@ -19,16 +19,34 @@ static FONT: Font = Font {
     glyphs: &GLYPHS,
 };
 
+/// A picture for every slot: the frame holds as many commands as the
+/// device's, whose packs and line pieces are all there (with none, a test
+/// counted fewer commands than the X51v draws and missed Hourly's 2D frame
+/// overflowing: 185 commands against 160).
+static PIC: Image = Image {
+    w: 4,
+    h: 4,
+    px: &[0; 16],
+};
+
 fn shell(dev: bool) -> Shell {
-    Shell::new(
+    let mut s = Shell::new(
         Fonts {
             ui: &FONT,
             label: &FONT,
             big: &FONT,
         },
-        Icons::NONE,
+        Icons {
+            hero: [Some(&PIC); 22],
+            card: [Some(&PIC); 22],
+            row: [Some(&PIC); 22],
+            mid: [Some(&PIC); 22],
+            radar: [Some(&PIC); 3],
+        },
         dev,
-    )
+    );
+    s.set_curve([Some(&PIC); weather_app::CURVE_SPRITES]);
+    s
 }
 
 fn tap(s: &mut Shell, r: Rect) -> Action {
@@ -1191,36 +1209,16 @@ fn a_pull_past_the_top_refreshes_and_a_scroll_does_not() {
     assert!(s.wants(Ask::Forecast));
 }
 
-static PX: [u32; 4] = [0xFFFF_FFFF; 4];
-static PIC: Image = Image {
-    w: 2,
-    h: 2,
-    px: &PX,
-};
-
 #[test]
 fn pictures_replace_the_outlines_and_still_fit_a_frame() {
-    let mut s = Shell::new(
-        Fonts {
-            ui: &FONT,
-            label: &FONT,
-            big: &FONT,
-        },
-        Icons {
-            hero: [Some(&PIC); 22],
-            card: [Some(&PIC); 22],
-            row: [Some(&PIC); 22],
-            mid: [Some(&PIC); 22],
-            radar: [Some(&PIC); 3],
-        },
-        true,
-    );
+    let mut s = shell(true);
     let f = drawn(&mut s);
     let images = f.cmds().filter(|c| matches!(c, Cmd::Image { .. })).count();
     assert_eq!(images, 6);
     assert!(!f.overflowed());
     // Without pictures the same places draw outlines and no images.
     let mut none = shell(true);
+    none.set_icons(Icons::NONE);
     let f = drawn(&mut none);
     assert_eq!(
         f.cmds().filter(|c| matches!(c, Cmd::Image { .. })).count(),
@@ -1852,4 +1850,34 @@ fn a_place_picked_keeps_its_own_forecast_once_a_station_is_home() {
         "Seattle",
         "a station answer doesn't take it back"
     );
+}
+
+#[test]
+fn hourlys_line_runs_on_past_its_ends_on_the_curves_slope() {
+    // Past the first and last hours the painted line keeps the curve's
+    // slope there: in whole tenths a slope over 1/16 hour rounded to
+    // nothing and the ends lay flat (emu-today, 2026-10-31).
+    let g = weather_app::HOURLY_GRAPH;
+    for (first, second) in [(220i16, 237i16), (237, 220), (220, 226)] {
+        let mut s = weather(1);
+        s.wx.hours[0].temp = first;
+        s.wx.hours[1].temp = second;
+        let stride = usize::from(W);
+        let rows = 600usize;
+        let mut px = vec![0u32; stride * rows];
+        s.paint_hourly(&mut px, stride, (0, rows as i32));
+        // The line's top edge in a column (the first row painted).
+        let top = |x: u16| {
+            (0..rows)
+                .find(|&y| px[y * stride + usize::from(x)] != 0)
+                .expect("the line in every column")
+        };
+        let (edge, inner) = (top(g.x + 1), top(g.x + 20));
+        // Rising, the end is lower (a later row); falling, higher.
+        assert_eq!(
+            edge.cmp(&inner),
+            second.cmp(&first),
+            "{first} then {second}: the left end at row {edge}, inside at {inner}"
+        );
+    }
 }

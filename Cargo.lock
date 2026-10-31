@@ -281,6 +281,9 @@ dependencies = [
 [[package]]
 name = "rp-draw"
 version = "0.0.0"
+dependencies = [
+ "rp-hal-mem",
+]
 
 [[package]]
 name = "rp-drv-blit2d"

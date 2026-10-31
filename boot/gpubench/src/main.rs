@@ -5274,7 +5274,7 @@ mod image {
             0xFF20_2040,
             2,
         );
-        let Some(f) = FF_FRAME.put_with(Frame::new) else {
+        let Some(f) = FF_FRAME.put_in(Frame::new_in) else {
             log!("  FF2: started twice");
             return;
         };
@@ -5512,7 +5512,7 @@ mod image {
             0xFF20_2040,
             3,
         );
-        let Some(f) = FF_FRAME.put_with(Frame::new) else {
+        let Some(f) = FF_FRAME.put_in(Frame::new_in) else {
             log!("  FS3: started twice");
             return;
         };
