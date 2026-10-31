@@ -1618,11 +1618,15 @@ mod image {
                     };
                     trace[trace_n * 10..trace_n * 10 + 10].copy_from_slice(&t.words());
                     trace_n += 1;
+                    // After the opening, its tail counts refreshes sampled
+                    // (it counted loop passes, ~1 a ms, so every trace
+                    // ended at "Reveal done" and the hand-off was never
+                    // seen: the run of 2026-10-31).
+                    if !revealing && !gfx.aside_held() {
+                        trace_tail = trace_tail.saturating_sub(1);
+                    }
                 }
                 last_line = line;
-                if !revealing && !gfx.aside_held() {
-                    trace_tail = trace_tail.saturating_sub(u32::from(published && trace_n > 0));
-                }
                 if trace_tail == 0 || trace_n == TRACE {
                     trace_on = false;
                     let _ = writeln!(
