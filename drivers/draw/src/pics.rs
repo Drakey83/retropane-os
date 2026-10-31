@@ -51,6 +51,9 @@ struct Slot<'a> {
     side: u16,
     era: Cell<u16>,
     used: Cell<bool>,
+    /// Read since it was made: its pixels are final (a renderer may hold a
+    /// copy keyed by its handle).
+    sealed: Cell<bool>,
 }
 
 /// The store: slots of the sizes asked for, from one block.
@@ -81,6 +84,7 @@ impl<'a> Pics<'a> {
                     side,
                     era: Cell::new(0),
                     used: Cell::new(false),
+                    sealed: Cell::new(false),
                 });
                 n += 1;
             }
@@ -126,6 +130,7 @@ impl<'a> Pics<'a> {
             .filter(|(_, s)| !s.used.get() && s.side >= need)
             .min_by_key(|(_, s)| s.side)?;
         s.used.set(true);
+        s.sealed.set(false);
         let era = s.era.get().wrapping_add(1);
         s.era.set(era);
         s.px.try_borrow_mut().ok()?.fill(0);
@@ -144,11 +149,16 @@ impl<'a> Pics<'a> {
     }
 
     /// Writes `pic`'s pixels (`w * h`, rows `w` apart) with `f`; false for
-    /// a stale handle or while the pixels are being read.
+    /// a stale handle, while the pixels are being read, or once they have
+    /// been read (a renderer may keep a copy by the handle: a changed
+    /// picture is a new one, `free` then `alloc`).
     pub fn write(&self, pic: Pic, f: impl FnOnce(&mut [Argb])) -> bool {
         let Some(s) = self.live(pic) else {
             return false;
         };
+        if s.sealed.get() {
+            return false;
+        }
         let Ok(mut px) = s.px.try_borrow_mut() else {
             return false;
         };
@@ -167,6 +177,7 @@ impl<'a> Pics<'a> {
     pub fn read<R>(&self, pic: Pic, f: impl FnOnce(&[Argb]) -> R) -> Option<R> {
         let s = self.live(pic)?;
         let px = s.px.try_borrow().ok()?;
+        s.sealed.set(true);
         let n = usize::from(pic.w) * usize::from(pic.h);
         px.get(..n).map(f)
     }
@@ -218,8 +229,12 @@ mod tests {
     fn written_pixels_read_back_and_a_freed_handle_is_dead() {
         let s = store();
         let p = s.alloc(3, 2).unwrap();
-        assert_eq!(s.read(p, |px| px.to_vec()), Some(vec![0; 6]), "cleared");
         assert!(s.write(p, |px| px.copy_from_slice(&[1, 2, 3, 4, 5, 6])));
+        assert_eq!(s.read(p, |px| px[4]), Some(5));
+        assert!(
+            !s.write(p, |px| px[4] = 9),
+            "read once, its pixels are final"
+        );
         assert_eq!(s.read(p, |px| px[4]), Some(5));
         s.free(p);
         assert!(!s.is_live(p));
@@ -232,6 +247,8 @@ mod tests {
         assert_eq!(q.key() >> 16, p.key() >> 16, "the same slot");
         assert!(!s.is_live(p));
         assert_eq!(s.read(q, |px| px[4]), Some(0), "cleared for the new one");
+        let r = s.alloc(1, 1).unwrap();
+        assert!(s.write(r, |px| px[0] = 3), "a new picture is open again");
         s.free(p);
         assert!(s.is_live(q), "freeing a stale handle leaves the new one");
     }

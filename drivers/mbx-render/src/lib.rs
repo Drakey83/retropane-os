@@ -327,6 +327,9 @@ pub struct Mbx2dRenderer<R, M> {
     images: [(usize, usize); IMAGES],
     images_n: usize,
     images_top: usize,
+    /// The RAM store `Cmd::Pic` names pictures in (none: they draw
+    /// nothing).
+    pics: Option<&'static rp_draw::pics::Pics<'static>>,
     atlases: [Option<Atlas>; ATLASES],
     glyphs_top: usize,
     /// Flips written after waiting [`FLIP_WAIT_US`] for the blanking
@@ -459,6 +462,7 @@ macro_rules! renderer_start {
             images: [(0, 0); IMAGES],
             images_n: 0,
             images_top: 0,
+            pics: None,
             atlases: [None; ATLASES],
             glyphs_top: 0,
             late_flips: 0,
@@ -673,6 +677,11 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         // From now the old picture scans out until the frame's end.
         rp_drv_mbx_display::ack_events(&mut self.e.regs, rp_drv_mbx_display::event::VEVENT0);
         self.vsync_due = true;
+    }
+
+    /// The picture store `Cmd::Pic` reads from.
+    pub fn set_pics(&mut self, pics: &'static rp_draw::pics::Pics<'static>) {
+        self.pics = Some(pics);
     }
 
     /// The register window and memory (the image's own use).
@@ -1003,12 +1012,37 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// Where `img` is uploaded (uploading it now if it isn't).
     fn image(&mut self, img: &'static rp_draw::Image) -> Option<usize> {
         let key = img.px.as_ptr() as usize;
-        if let Some(&(_, at)) = self.images[..self.images_n].iter().find(|(k, _)| *k == key) {
+        if let Some(at) = self.cached(key) {
             return Some(at);
         }
         let n = usize::from(img.w) * usize::from(img.h);
-        let px = img.px.get(..n)?;
-        let bytes = n * 4;
+        self.upload(key, img.px.get(..n)?)
+    }
+
+    /// Where the store's `pic` is uploaded (uploading it now if it isn't):
+    /// kept by its handle's key (slot and era, ADR-0030 G3), so a slot
+    /// reused for another picture is uploaded again, never shown stale.
+    /// Odd keys: a static picture's key is its 4-aligned address.
+    fn pic(&mut self, pic: rp_draw::pics::Pic) -> Option<usize> {
+        let key = (pic.key() as usize) << 2 | 1;
+        if let Some(at) = self.cached(key) {
+            return Some(at);
+        }
+        let pics = self.pics?;
+        pics.read(pic, |px| self.upload(key, px)).flatten()
+    }
+
+    /// An uploaded picture's place, by key.
+    fn cached(&self, key: usize) -> Option<usize> {
+        self.images[..self.images_n]
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|&(_, at)| at)
+    }
+
+    /// Puts `px` in the image cache under `key`.
+    fn upload(&mut self, key: usize, px: &[Argb]) -> Option<usize> {
+        let bytes = px.len() * 4;
         if bytes > self.l.images.1 {
             return None;
         }
@@ -1124,6 +1158,13 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                     u32::from(x) << 16 | u32::from(y),
                     core::ptr::from_ref(img) as usize as u32,
                     0,
+                    0,
+                ],
+                Cmd::Pic { x, y, pic } => [
+                    7,
+                    u32::from(x) << 16 | u32::from(y),
+                    pic.key(),
+                    u32::from(pic.w) << 16 | u32::from(pic.h),
                     0,
                 ],
                 Cmd::Text {
@@ -1283,6 +1324,15 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 };
                 if let Some(at) = self.image(img) {
                     self.blend_from(dst, to, (at, usize::from(img.w) * 4), sx, sy);
+                }
+            }
+            Cmd::Pic { x, y, pic } => {
+                let Some((to, sx, sy)) = place(pic.w, pic.h, i32::from(x), i32::from(y), clip)
+                else {
+                    return;
+                };
+                if let Some(at) = self.pic(pic) {
+                    self.blend_from(dst, to, (at, usize::from(pic.w) * 4), sx, sy);
                 }
             }
             Cmd::Text {

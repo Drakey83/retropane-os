@@ -193,3 +193,48 @@ fn hostile_frames_draw_nothing_wrong() {
     // The single-pixel outline is one pixel.
     assert_eq!(r.layer().get(40, 30), Some(0xFFFF_FFFF));
 }
+
+#[test]
+fn a_store_picture_draws_as_the_same_image_and_a_stale_one_draws_nothing() {
+    use rp_draw::pics::Pics;
+    let pics = Pics::new(Box::leak(vec![0; 4].into_boxed_slice()), &[(2, 1)]);
+    let pic = pics.alloc(ICON.w, ICON.h).unwrap();
+    assert!(pics.write(pic, |px| px.copy_from_slice(ICON.px)));
+    let draw = |c: Cmd, store: Option<&Pics<'static>>| {
+        let (mut px, mut plane) = (vec![0; (W * H) as usize], vec![0; (W * H * 4) as usize]);
+        {
+            let mut r = renderer(&mut px, &mut plane);
+            if let Some(s) = store {
+                r.set_pics(s);
+            }
+            let mut f = Frame::new();
+            f.push(c);
+            f.damage(rp_draw::Rect::new(0, 0, W as u16, H as u16));
+            r.draw(&f);
+        }
+        plane
+    };
+    let want = draw(
+        Cmd::Image {
+            x: 5,
+            y: 3,
+            img: &ICON,
+        },
+        None,
+    );
+    assert_eq!(draw(Cmd::Pic { x: 5, y: 3, pic }, Some(&pics)), want);
+    let blank = draw(
+        Cmd::Fill {
+            r: rp_draw::Rect::new(0, 0, 0, 0),
+            color: 0,
+        },
+        None,
+    );
+    assert_eq!(draw(Cmd::Pic { x: 5, y: 3, pic }, None), blank, "no store");
+    pics.free(pic);
+    assert_eq!(
+        draw(Cmd::Pic { x: 5, y: 3, pic }, Some(&pics)),
+        blank,
+        "stale"
+    );
+}

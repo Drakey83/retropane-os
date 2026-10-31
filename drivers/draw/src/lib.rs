@@ -206,6 +206,18 @@ pub enum Cmd {
         /// The image.
         img: &'static Image,
     },
+    /// A picture from the RAM store ([`pics::Pics`]) drawn over what's
+    /// there: one decoded at run time (an icon at its size), named by its
+    /// handle. A renderer without the store, or a stale handle, draws
+    /// nothing.
+    Pic {
+        /// Left edge.
+        x: u16,
+        /// Top edge.
+        y: u16,
+        /// The picture.
+        pic: pics::Pic,
+    },
     /// A run of text.
     Text {
         /// The pen's starting position.
@@ -241,6 +253,7 @@ impl Cmd {
             Cmd::Fill { r, .. } | Cmd::HGradient { r, .. } | Cmd::Outline { r, .. } => r,
             Cmd::Clip { .. } => Rect::new(0, 0, 0, 0),
             Cmd::Image { x, y, img } => Rect::new(x, y, img.w, img.h),
+            Cmd::Pic { x, y, pic } => Rect::new(x, y, pic.w, pic.h),
             // The line box with a margin: glyphs may overhang their advance
             // (italics, `left` < 0) by a few pixels.
             Cmd::Text {

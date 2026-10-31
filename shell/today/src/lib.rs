@@ -848,6 +848,14 @@ pub fn frame_key(f: &rp_draw::Frame, mut h: u32) -> u32 {
                 // Pictures are placed once: the same place, the same pixels.
                 mix(core::ptr::from_ref(img) as usize as u32);
             }
+            Cmd::Pic { x, y, pic } => {
+                mix(7);
+                mix(u32::from(x) | u32::from(y) << 16);
+                // A store picture's pixels are final once drawn: its handle
+                // (slot and era) names them.
+                mix(pic.key());
+                mix(u32::from(pic.w) | u32::from(pic.h) << 16);
+            }
             Cmd::Text {
                 x,
                 baseline,

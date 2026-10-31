@@ -694,3 +694,73 @@ fn a_clip_limits_the_commands_after_it() {
         }
     }
 }
+
+/// A store picture draws exactly as the same pixels as a static picture,
+/// and a slot freed and reused for another picture is uploaded again (its
+/// copy is kept by slot and era), never shown stale.
+#[test]
+fn a_store_picture_draws_as_an_image_and_a_reused_slot_is_uploaded_again() {
+    use rp_draw::pics::Pics;
+    let pics: &'static Pics<'static> = std::boxed::Box::leak(std::boxed::Box::new(Pics::new(
+        std::boxed::Box::leak(std::vec![0; 16].into_boxed_slice()),
+        &[(4, 1)],
+    )));
+    let pic = pics.alloc(ICON.w, ICON.h).unwrap();
+    assert!(pics.write(pic, |px| px.copy_from_slice(&ICON_PX)));
+    let draw = |r: &mut Mbx2dRenderer<Bus, Mem>, mem: &model::Shared, c: Cmd| {
+        let mut f = Frame::new();
+        f.push(c);
+        f.damage(Rect::new(0, 0, W, H));
+        r.draw(&f);
+        assert!(r.poll());
+        shown(r, mem)
+    };
+    let (mut a, mem_a) = gpu();
+    let want = draw(
+        &mut a,
+        &mem_a,
+        Cmd::Image {
+            x: 30,
+            y: 80,
+            img: &ICON,
+        },
+    );
+    let (mut b, mem_b) = gpu();
+    b.set_pics(pics);
+    let got = draw(&mut b, &mem_b, Cmd::Pic { x: 30, y: 80, pic });
+    assert_eq!(got, want);
+    assert_eq!(b.last.images, 1);
+    // The same handle again: no upload.
+    draw(&mut b, &mem_b, Cmd::Pic { x: 30, y: 80, pic });
+    assert_eq!(b.last.images, 0);
+    // Freed, the slot reused for other pixels: uploaded again and shown.
+    pics.free(pic);
+    let other = pics.alloc(ICON.w, ICON.h).unwrap();
+    assert!(pics.write(other, |px| px.fill(0xFF00_00FF)));
+    let again = draw(
+        &mut b,
+        &mem_b,
+        Cmd::Pic {
+            x: 30,
+            y: 80,
+            pic: other,
+        },
+    );
+    assert_eq!(b.last.images, 1);
+    let blue = again[80 * usize::from(W) + 30];
+    assert_eq!(blue & 0x00FF_FFFF, 0x0000_00FF, "{blue:08X}");
+    // The old handle draws nothing at all.
+    let (mut c, mem_c) = gpu();
+    c.set_pics(pics);
+    let none = draw(&mut c, &mem_c, Cmd::Pic { x: 30, y: 80, pic });
+    let (mut d, mem_d) = gpu();
+    let bare = draw(
+        &mut d,
+        &mem_d,
+        Cmd::Fill {
+            r: Rect::new(0, 0, 0, 0),
+            color: 0,
+        },
+    );
+    assert_eq!(none, bare);
+}

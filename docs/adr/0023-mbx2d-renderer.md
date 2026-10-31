@@ -90,6 +90,14 @@ on the engine, not the CPU, and only where something changed.
 
 ## Decision
 
+> **Note (added 2026-10-31, option C of docs/design/weather-rule0.md):**
+> rule 3's image cache also takes pictures made at run time: `Cmd::Pic`
+> names a picture in the RAM store (`rp_draw::pics`) by handle, and its
+> copy in 2700G memory is kept by the handle's slot and era, not by an
+> address. A slot reused for another picture has a new era, so it is
+> uploaded again and never shown stale; a picture's pixels are final once
+> read. The CPU never reads 2700G memory for it (ADR-0022 rule 2).
+
 1. **Composition: B** (the owner's choice, 2026-10-14; A is described
    above and rejected: banding without dithering, inexact edges). The
    graphics plane is XRGB8888, opaque, double-buffered in 2700G memory;

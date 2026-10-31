@@ -48,6 +48,7 @@ pub struct CpuRenderer<'a> {
     plane: &'a mut [u8],
     stride: usize,
     fmt: PlaneFormat,
+    pics: Option<&'a rp_draw::pics::Pics<'static>>,
 }
 
 impl<'a> CpuRenderer<'a> {
@@ -59,7 +60,13 @@ impl<'a> CpuRenderer<'a> {
             plane,
             stride,
             fmt,
+            pics: None,
         }
+    }
+
+    /// The picture store `Cmd::Pic` reads from (none: they draw nothing).
+    pub fn set_pics(&mut self, pics: &'a rp_draw::pics::Pics<'static>) {
+        self.pics = Some(pics);
     }
 
     /// The layer as drawn (tests, screenshots).
@@ -129,6 +136,19 @@ impl<'a> CpuRenderer<'a> {
                 };
                 self.layer
                     .draw_over_in(&src, i32::from(x), i32::from(y), clip);
+            }
+            Cmd::Pic { x, y, pic } => {
+                if let Some(pics) = self.pics {
+                    let layer = &mut self.layer;
+                    pics.read(pic, |px| {
+                        let src = ArgbImage {
+                            px,
+                            w: u32::from(pic.w),
+                            h: u32::from(pic.h),
+                        };
+                        layer.draw_over_in(&src, i32::from(x), i32::from(y), clip);
+                    });
+                }
             }
             Cmd::Text {
                 x,
