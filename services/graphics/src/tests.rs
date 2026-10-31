@@ -1674,3 +1674,407 @@ fn a_scene_keeps_its_lists_on_die_unless_told_not_to() {
     r.g.open_scene(c, x, y, w, h).unwrap();
     assert_eq!(scene_r(&mut r).params(), rp_vram_map::PARAMS);
 }
+
+// ---- the page layer (ADR-0034 C4 as changed, L2) ----------------------------
+
+use rp_drv_mbx_display::layers::reg as lreg;
+
+/// `VSCADR`'s stream bit: the video plane on.
+const STREAM: u32 = 1 << 31;
+
+/// A register of the display as last written.
+fn dreg_of(r: &mut Rig, off: usize) -> u32 {
+    r.g.two_d().parts().0.regs.two.reg(off)
+}
+
+/// The clock at `line` of the next refresh.
+fn to_line(r: &mut Rig, line: u64) {
+    let t = at_line(r, line);
+    r.clock.set(t);
+}
+
+/// Polls until the commit is written (the clock moved to each wait).
+fn settle_commit(r: &mut Rig) {
+    for _ in 0..100 {
+        match r.g.poll(&mut r.clock) {
+            Step::Wait(t) => r.clock.set(t),
+            _ if !r.g.commit_pending() => return,
+            _ => {}
+        }
+    }
+    panic!("the commit never landed");
+}
+
+/// The Weather page's window over a 480 x 1,332 picture, scrolled.
+const fn page_win(scroll: u16) -> Window {
+    Window {
+        x: 0,
+        y: 94,
+        w: 480,
+        h: 462,
+        row: 120 + scroll,
+        col: 0,
+    }
+}
+
+/// A client with a 480 x 1,332 page picture, its first word `first`.
+fn page_rig(first: u32) -> (Rig, ClientId, Handle) {
+    let mut r = rig();
+    let c = r.g.client(4 << 20).unwrap();
+    let h = r.g.picture(c, 480, 1332).unwrap();
+    r.g.write_picture(c, h, 0, &[first]).unwrap();
+    (r, c, h)
+}
+
+#[test]
+fn page_pictures_are_the_clients_own_within_its_quota() {
+    let mut r = rig();
+    let a = r.g.client(1 << 20).unwrap();
+    let b = r.g.client(4 << 20).unwrap();
+    assert_eq!(
+        r.g.picture(a, 480, 1332),
+        Err(Error::Quota),
+        "1.2 MiB over 1 MiB"
+    );
+    let h = r.g.picture(b, 480, 1332).unwrap();
+    assert_eq!(r.g.used(b), 960 * 1332);
+    assert_eq!(r.g.picture_size(b, h), Ok((480, 1332, 960)));
+    // Another client's handle names nothing of its own.
+    assert_eq!(r.g.write_picture(a, h, 0, &[0]), Err(Error::BadHandle));
+    // Past its end, or off a word.
+    assert_eq!(
+        r.g.write_picture(b, h, 960 * 1332, &[0]),
+        Err(Error::BadWindow)
+    );
+    assert_eq!(r.g.write_picture(b, h, 2, &[0]), Err(Error::BadWindow));
+    r.g.free_picture(b, h).unwrap();
+    assert_eq!(r.g.used(b), 0);
+    assert_eq!(
+        r.g.write_picture(b, h, 0, &[0]),
+        Err(Error::BadHandle),
+        "a stale handle"
+    );
+}
+
+#[test]
+fn a_commit_is_written_only_in_the_plane_window_and_whole() {
+    use rp_drv_mbx_display::layers::{Blend, Layer, Scale, Slot, VideoFormat, VideoPlane};
+    let (mut r, c, h) = page_rig(0xF00F_F00F);
+    to_line(&mut r, 100);
+    let st = LayerState {
+        src: Source::Picture(h),
+        win: page_win(0),
+    };
+    let step =
+        r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock)
+            .unwrap();
+    assert!(
+        matches!(step, Step::Wait(_)),
+        "{step:?}: written mid-refresh"
+    );
+    assert_eq!(dreg_of(&mut r, lreg::VSCADR) & STREAM, 0, "not yet on");
+    assert!(r.g.commit_pending());
+    settle_commit(&mut r);
+    let cm = r.g.commits();
+    assert_eq!((cm.done, cm.late), (1, 0));
+    assert!(super::layer::window_line(cm.last_line.unwrap()), "{cm:?}");
+    assert_eq!(r.g.layer(), Some(st));
+    // The plane: the picture's row 120 at screen line 94, per-pixel alpha.
+    let at = r.g.picture_at(c, h).unwrap();
+    let mut v = VideoPlane::new(VideoFormat::Argb4444, 480, 462, (at + 120 * 960) as usize);
+    v.stride = 960;
+    let want = v.registers_scaled(
+        Layer {
+            slot: Slot::Middle,
+            blend: Blend::PixelAlpha,
+        },
+        false,
+        Scale {
+            x: 0,
+            y: 94,
+            ..Scale::NONE
+        },
+    );
+    for (off, val) in want {
+        assert_eq!(dreg_of(&mut r, off), val, "register {off:#x}");
+    }
+    assert_ne!(dreg_of(&mut r, lreg::VSCADR) & STREAM, 0, "on");
+}
+
+#[test]
+fn a_moved_window_writes_only_what_changed_and_the_latest_wins() {
+    let (mut r, c, h) = page_rig(0);
+    let st = LayerState {
+        src: Source::Picture(h),
+        win: page_win(0),
+    };
+    r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock)
+        .unwrap();
+    settle_commit(&mut r);
+    let start = dreg_of(&mut r, lreg::VSCADR);
+    // A drag: two windows staged before the blanking; only the second shows.
+    to_line(&mut r, 200);
+    r.g.move_layer(c, page_win(10)).unwrap();
+    r.g.move_layer(c, page_win(30)).unwrap();
+    settle_commit(&mut r);
+    let cm = r.g.commits();
+    assert_eq!((cm.done, cm.late, cm.last_regs), (2, 0, 1), "VSCADR alone");
+    assert_eq!(dreg_of(&mut r, lreg::VSCADR), start + 30 * 960 / 16);
+    assert_eq!(r.g.layer().unwrap().win, page_win(30));
+    // Nothing staged: nothing written.
+    let _ = r.g.poll(&mut r.clock);
+    assert_eq!(r.g.commits().done, 2);
+}
+
+#[test]
+fn windows_that_cant_be_shown_are_refused() {
+    let (mut r, c, h) = page_rig(0);
+    let bad = [
+        // Odd, empty, past its picture, off the screen, off the 16-byte grid.
+        Window {
+            w: 478,
+            x: 1,
+            ..page_win(0)
+        },
+        Window {
+            h: 0,
+            ..page_win(0)
+        },
+        Window {
+            row: 1332 - 461,
+            ..page_win(0)
+        },
+        Window {
+            x: 8,
+            ..page_win(0)
+        },
+        Window {
+            col: 4,
+            w: 400,
+            ..page_win(0)
+        },
+        Window {
+            w: 479,
+            ..page_win(0)
+        },
+    ];
+    for w in bad {
+        let st = LayerState {
+            src: Source::Picture(h),
+            win: w,
+        };
+        let res =
+            r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock);
+        // An odd-placed but even-sized window inside everything shows.
+        if w.x == 1 {
+            assert!(res.is_ok(), "{w:?}");
+            settle_commit(&mut r);
+            continue;
+        }
+        assert_eq!(res, Err(Error::BadWindow), "{w:?}");
+    }
+    // On the grid (8 pixels at 2 bytes) it shows.
+    let st = LayerState {
+        src: Source::Picture(h),
+        win: Window {
+            col: 8,
+            w: 400,
+            ..page_win(0)
+        },
+    };
+    r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock)
+        .unwrap();
+    settle_commit(&mut r);
+    // Nor moved anywhere wrong, nor its picture freed while shown.
+    assert_eq!(
+        r.g.move_layer(
+            c,
+            Window {
+                w: 3,
+                ..page_win(0)
+            }
+        ),
+        Err(Error::BadWindow)
+    );
+    assert_eq!(r.g.free_picture(c, h), Err(Error::Busy));
+    let other = r.g.client(1 << 20).unwrap();
+    assert_eq!(r.g.move_layer(other, page_win(0)), Err(Error::BadHandle));
+}
+
+#[test]
+fn the_layer_and_a_3d_scene_never_show_together() {
+    // ADR-0034 amendment P rules 2 and 4: the layer's pictures lie outside
+    // the safe region.
+    let (mut r, c, h) = page_rig(0);
+    let st = LayerState {
+        src: Source::Picture(h),
+        win: page_win(0),
+    };
+    r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock)
+        .unwrap();
+    assert_eq!(
+        r.g.open_scene(c, 0, 0, 64, 64),
+        Err(Error::LayerAnd3d),
+        "staged"
+    );
+    settle_commit(&mut r);
+    assert_eq!(
+        r.g.open_scene(c, 0, 0, 64, 64),
+        Err(Error::LayerAnd3d),
+        "shown"
+    );
+    r.g.frame_commit(c, &Frame::new(), None, false, &mut r.clock)
+        .unwrap();
+    settle_commit(&mut r);
+    assert_eq!(r.g.layer(), None);
+    assert_eq!(dreg_of(&mut r, lreg::VSCADR) & STREAM, 0, "off");
+    r.g.open_scene(c, 0, 0, 64, 64).unwrap();
+    assert_eq!(
+        r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock),
+        Err(Error::LayerAnd3d)
+    );
+}
+
+#[test]
+fn a_hand_off_flips_the_screen_and_sets_the_layer_in_one_commit() {
+    let (mut r, c, h) = page_rig(0);
+    to_line(&mut r, 100);
+    let before = r.shown().at;
+    let st = LayerState {
+        src: Source::Picture(h),
+        win: page_win(0),
+    };
+    let _ =
+        r.g.frame_commit(
+            c,
+            &fill(Rect::new(0, 0, 480, 94), WHITE),
+            Some(st),
+            false,
+            &mut r.clock,
+        )
+        .unwrap();
+    // Drawn, but neither shown before the window.
+    assert_eq!(r.shown().at, before);
+    assert_eq!(r.g.layer(), None);
+    settle_commit(&mut r);
+    assert_ne!(r.shown().at, before, "flipped");
+    assert_eq!(r.g.layer(), Some(st), "with the layer");
+    assert_eq!(r.g.commits().done, 1, "one commit");
+    assert_eq!(r.on_screen(5, 5), WHITE & 0xFF_FFFF);
+}
+
+#[test]
+fn an_app_composed_aside_shows_through_the_window_then_takes_the_screen() {
+    // Reveal: the app drawn into the picture not on screen, shown only
+    // through the growing window; then one commit shows the same picture
+    // on the graphics plane and the layer goes off.
+    let (mut r, c, _) = page_rig(0);
+    let before = r.shown().at;
+    let card = Window {
+        x: 16,
+        y: 210,
+        w: 448,
+        h: 140,
+        row: 210,
+        col: 16,
+    };
+    let st = LayerState {
+        src: Source::Aside,
+        win: card,
+    };
+    let _ =
+        r.g.frame_commit(
+            c,
+            &fill(Rect::new(0, 0, 480, 640), BLUE),
+            Some(st),
+            true,
+            &mut r.clock,
+        )
+        .unwrap();
+    settle_commit(&mut r);
+    assert!(r.g.aside_held());
+    assert_eq!(
+        r.shown().at,
+        before,
+        "the graphics plane keeps the Today screen"
+    );
+    let aside = r.g.two_d().landed().unwrap() as u32;
+    assert_ne!(aside, before);
+    assert_eq!(
+        dreg_of(&mut r, lreg::VSCADR) & 0x7F_FFFF,
+        (aside + 210 * 960 + 32) / 16,
+        "the window reads the aside picture"
+    );
+    // Off the 16-byte grid at RGB565: refused.
+    assert_eq!(
+        r.g.move_layer(
+            c,
+            Window {
+                col: 4,
+                x: 4,
+                ..card
+            }
+        ),
+        Err(Error::BadWindow)
+    );
+    // Grown to the screen under the title bar.
+    r.g.move_layer(
+        c,
+        Window {
+            x: 0,
+            y: 36,
+            w: 480,
+            h: 604,
+            row: 36,
+            col: 0,
+        },
+    )
+    .unwrap();
+    settle_commit(&mut r);
+    // No other 2D frame while it is held.
+    assert_eq!(r.g.frame(&still(GREY), &mut r.clock), Err(Error::Busy));
+    r.g.show_aside(c, None).unwrap();
+    settle_commit(&mut r);
+    assert!(!r.g.aside_held());
+    assert_eq!(r.shown().at, aside, "the same picture, now the screen");
+    assert_eq!(r.g.layer(), None);
+    assert_eq!(r.on_screen(5, 300), BLUE & 0xFF_FFFF);
+    assert_eq!(r.g.commits().late, 0);
+}
+
+#[test]
+fn the_screen_and_its_layer_compose_as_the_display_mixes_them() {
+    // The scan-out model (as run WG checked on the X51v, M1): an opaque
+    // pixel shows the picture, a clear one the screen, at the window's
+    // place.
+    let (mut r, c, h) = page_rig(0);
+    // Row 120 (the window's top at scroll 0): an opaque white pixel, then a
+    // clear one.
+    r.g.write_picture(c, h, 120 * 960, &[0x0000_FFFF]).unwrap();
+    let st = LayerState {
+        src: Source::Picture(h),
+        win: page_win(0),
+    };
+    r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock)
+        .unwrap();
+    settle_commit(&mut r);
+    let regs: std::collections::HashMap<usize, u32> = {
+        let bus = &mut r.g.two_d().parts().0.regs.two;
+        (0..0x2400).step_by(4).map(|o| (o, bus.reg(o))).collect()
+    };
+    // The display enabled (the rig never switches its sync on).
+    let mut regs = regs;
+    regs.insert(rp_drv_mbx_display::reg::DSCTRL, 1 << 31);
+    let mut out = std::vec![0u8; 480 * 640 * 3];
+    let mem = r.mem.borrow();
+    rp_drv_mbx_display::scanout::compose(|o| regs.get(&o).copied().unwrap_or(0), &mem, &mut out);
+    let px = |x: usize, y: usize| {
+        let k = 3 * (y * 480 + x);
+        u32::from(out[k]) << 16 | u32::from(out[k + 1]) << 8 | u32::from(out[k + 2])
+    };
+    assert_eq!(px(0, 94), 0xFF_FFFF, "opaque white over the screen");
+    // The screen as the display widens RGB565, above the window and
+    // through a clear pixel alike.
+    assert_ne!(px(0, 93), 0xFF_FFFF, "above the window: the screen");
+    assert_eq!(px(1, 94), px(1, 93), "clear: the screen");
+}

@@ -535,6 +535,21 @@ Full numbers in `docs/hw/2700g.md` "Run WG on the X51v". In plain words:
     showed. A real hand-off happens once a movement. The cure is the 2D
     hand-back made to match the display's mix (R135).
 
+## The plane path build, as built (the owner, 2026-10-30 late: "I just want to be able to play around with the weather app that is properly ran by the gpu")
+
+His go for the build steps above (the votes V1-V3 and the entrances were his). How each piece is made, rule 0 first:
+
+- **Dell and Windows Mobile (a finding):** no plane changes per frame at all (REA #37-#40); a flip is `GSCADR` alone at line 643, and the video plane is switched only around clock changes.
+- **The modern way:** Linux's atomic mode setting (one commit per refresh carrying every plane's address, window and format, applied together in the blanking or not at all) and Android's layers drawn once and moved by the display.
+- **Ours, and why it wins:**
+  1. **One atomic commit a refresh in `rp-graphics`.** The page layer's window, picture and on/off, and the 2D renderer's held flip, staged by the app and written together in lines 643-2 (run WG's proven window, the changed registers only, ~4 us). A newer window replaces a staged one (latest wins, never a queue of stale frames). A hand-off (the composed screen ↔ screen + layer) is then one commit, so it lands in one refresh, as M4 measured.
+  2. **Pictures by handle** (ADR-0030 G3, ADR-0027): the page pictures are pool blocks under the app's quota, named by handle; a window that would read outside its picture, or start off the 16-byte grid, is refused.
+  3. **Amendment P enforced by construction:** the layer can't be shown while a 3D scene is open, nor a scene opened while it shows (its pictures sit outside the safe region).
+  4. **Each page drawn once by the CPU** into an ARGB8888 band in SDRAM with `rp-gfx`'s straight-alpha "over" (the same draw list the 2D renderer takes), dithered to ARGB4444 (V3, the shipped 4x4 dither) and written in; **built ahead while the Today screen is still** (a band a pass, never a stall of a moving frame), so opening and turning wait for nothing. A page is rebuilt only when its draw list's hash changes (anything drawn, nothing missed), checked when a movement ends.
+  5. **Reveal on the planes:** the app composed once by the 2D renderer into the picture not on screen, shown through the video window growing from the Today card (RGB565, 8-pixel left steps), then handed over by one commit (the same pixels both sides, so exact).
+  6. **What stays 2D:** the radar page (its two pictures are step 4), menus, settings and the keyboard (they sit over the page: the layer is handed back first), and screen 0's own small changes (the thumb, the underline) copied in behind the scan (R115).
+- **What overturns it:** a commit that tears on the X51v (each refresh's `DSIG` in the device run), or a page build that shows as a pause (its time logged).
+
 ## Votes needed (results are not decisions)
 
 - **V1: the page layer.** L2 (ours: the glass over a still wallpaper on

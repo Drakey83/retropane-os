@@ -59,6 +59,9 @@ use rp_mbx3d_render::{
 };
 use rp_vram_map::Pool;
 
+mod layer;
+pub use layer::{Commits, LayerState, PICTURES, Source, Window};
+
 /// Clients at once.
 pub const CLIENTS: usize = 8;
 /// Blocks (textures) at once, all clients together.
@@ -95,6 +98,12 @@ pub enum Error {
     No3d,
     /// Refused by the 3D renderer.
     Scene(r3d::Error),
+    /// A page layer window that can't be shown: odd or empty, off the
+    /// screen, outside its picture, or a start off the plane's 16-byte grid.
+    BadWindow,
+    /// The page layer and a 3D scene at once (ADR-0034 amendment P rules 2
+    /// and 4: the layer's pictures lie outside the safe region).
+    LayerAnd3d,
 }
 
 /// How a quad is filled, its texture by handle.
@@ -252,6 +261,11 @@ enum Job {
         from: u32,
         to: u32,
     },
+    /// A commit's 2D frame drawing ([`Graphics::frame_commit`]): once it
+    /// lands it is kept aside (`aside`) or flipped with the layer.
+    Commit {
+        aside: bool,
+    },
 }
 
 /// How the 3D frames started (R20), for the logs.
@@ -398,6 +412,9 @@ pub struct Graphics<'a, R, M> {
     /// R119/R121: the divide-1 cures on renders into screen 1 (SDRAM).
     sdram_cures: bool,
     starts: Starts,
+    /// The page layer (ADR-0034 C4 as changed, L2).
+    layer: layer::LayerRec,
+    commits: Commits,
     /// Tests: the copy (1 = the next) before which the hook runs (it makes
     /// the model engine stall).
     #[cfg(test)]
@@ -445,6 +462,8 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 flips_no_window: 0,
                 last_no_window_line: None,
             },
+            layer: layer::LayerRec::default(),
+            commits: Commits::default(),
             #[cfg(test)]
             before_copy: None,
         }
@@ -605,12 +624,12 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         };
         if let Some((from, to)) = window {
             self.job = Job::Copy2d { from, to };
-            return self.poll(clock);
+            return self.poll_job(clock);
         }
         self.job = Job::Flip {
             since: clock.now_us(),
         };
-        self.poll(clock)
+        self.poll_job(clock)
     }
 
     /// `None` once the scan is in `from..=to`; if it gets there within
@@ -816,6 +835,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         if self.job != Job::None {
             return Err(Error::Busy);
         }
+        self.free_pictures(c)?;
         for k in 0..BLOCKS {
             if self
                 .three_d
@@ -982,6 +1002,9 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         if self.open().is_some() || self.job != Job::None {
             return Err(Error::Busy);
         }
+        if self.layer().is_some() || self.commit_pending() {
+            return Err(Error::LayerAnd3d);
+        }
         let pic = Picture::screen(0);
         if u32::from(x) + u32::from(w) > u32::from(pic.w)
             || u32::from(y) + u32::from(h) > u32::from(pic.h)
@@ -1109,7 +1132,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// same picture, then the flip ([`Self::poll`] drives it). A frame with
     /// no 2D change still shows the scene's changes.
     pub fn frame<C: Clock>(&mut self, frame: &Frame, clock: &mut C) -> Result<Step, Error> {
-        if self.job != Job::None {
+        if self.job != Job::None || self.aside_held() {
             return Err(Error::Busy);
         }
         // No copy's time known (the service just started, or the clock
@@ -1121,7 +1144,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         self.two_d.draw(frame);
         if self.two_d.landed().is_some() || !self.two_d.poll() {
             self.job = Job::TwoD;
-            return Ok(self.poll(clock));
+            return Ok(self.poll_job(clock));
         }
         // No 2D change. Nothing changed in the scene either: nothing to do.
         if self.open().is_none_or(|s| s.r.dirty() == 0) {
@@ -1180,7 +1203,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             Err(_) => return Step::Idle,
         };
         self.job = Job::Armed { from, to, prepared };
-        self.poll(clock)
+        self.poll_job(clock)
     }
 
     /// Starts the scene's frame into screen 1 at `other` while screen 0 is
@@ -1298,16 +1321,23 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         }
     }
 
-    /// Drives the frame in flight.
-    pub fn poll<C: Clock>(&mut self, clock: &mut C) -> Step {
+    /// Drives the frame in flight (the staged commit: [`Self::poll`]).
+    fn poll_job<C: Clock>(&mut self, clock: &mut C) -> Step {
         match self.job {
             Job::None => Step::Idle,
+            Job::Commit { aside } => {
+                if self.commit_landed(aside) {
+                    Step::Idle
+                } else {
+                    Step::Wait(clock.now_us().wrapping_add(TWO_D_POLL_US))
+                }
+            }
             Job::Flip { since } => self.flip_2d(since, clock),
             Job::TwoD => {
                 let Some(at) = self.two_d.landed() else {
                     let _ = self.two_d.poll();
                     return if self.two_d.landed().is_some() {
-                        self.poll(clock)
+                        self.poll_job(clock)
                     } else {
                         Step::Wait(clock.now_us().wrapping_add(TWO_D_POLL_US))
                     };
@@ -1424,7 +1454,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 match self.copy_window(&rects[..k]) {
                     Some((from, to)) => {
                         self.job = Job::Copy2d { from, to };
-                        self.poll(clock)
+                        self.poll_job(clock)
                     }
                     None => {
                         // No copy timed yet (or no window): at once, as
@@ -1526,7 +1556,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 }
                 // Rendered: the copy into screen 0 waits for its window.
                 self.job = Job::Copy { held, from, to };
-                self.poll(clock)
+                self.poll_job(clock)
             }
             Job::Copy { held, from, to } => {
                 let line = self.scan_line();
