@@ -73,6 +73,24 @@ the trust and the switch in LegacySync.
    key store, never the repo) and Open-Meteo, replacing the sample.
 5. Device run: the owner's real forecast on the X51v.
 
+## The TLS choice (step 1's second half, 2026-10-30)
+
+- **`embedded-tls`** (embassy-rs; TLS 1.3 client, no allocator): its `webpki`
+  verifier checks the server's own certificate against one trust anchor;
+  intermediate certificates are a TODO in its source and hostname checking
+  is optional. Real servers send intermediates, so it would refuse them or
+  need pinned certificates in the image: **not sound enough** for a key
+  sent over it (`docs/security.md`).
+- **`rustls` + `rustls-webpki`**: full chain and hostname checking, TLS 1.2
+  and 1.3; without std it needs an allocator, a crypto provider
+  (`rustls-rustcrypto`, pure Rust) and a time source (`TimeProvider`: our
+  clock, set from the PC on connect, ADR-0028 L4). **Chosen**, with the
+  network service's own fixed arena as its heap (bounded, measured, never
+  the system's), the roots a Mozilla bundle built into the service.
+- **Owed before it ships:** its code size against the service's budget
+  (likely a few hundred KiB: the budget rule asks the owner), the
+  handshake's time and stack on the PXA270, and the arena's peak.
+
 ## What overturns D
 
 - The certificate check can't be made sound on the device in a reasonable
