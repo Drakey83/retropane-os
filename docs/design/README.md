@@ -10,8 +10,9 @@ Engineering decisions (kernel, drivers, memory) live in the ADRs and
 before code (ROADMAP Phase 5), and "imitation is the last resort": Windows
 Mobile's feature list is kept on purpose, but its look and behaviour are
 only kept where they measurably win. Own artwork only (`CLEANROOM.md`).
-**Borrow the best, then beat it (owner, 2026-10-31: "our design philosophy
-for the entire UI/UX"):** every design surveys how Windows, Android, Apple
+**Rule 0, then borrow the best and beat it (owner, 2026-10-31: "our design
+philosophy for the entire UI/UX"; "rule 0 should also be a part of that
+design philosophy"):** iterate, don't imitate; every design surveys how Windows, Android, Apple
 and lean Linux solve its problem, borrows the idea that wins and says how
 ours goes further on the X51v, then measures both; the practices P1-P7
 (work at refresh, read only what is on screen, compose once, start from a
@@ -31,7 +32,7 @@ continent (owner, 2026-10-30).
 
 | Page | What's in it |
 |---|---|
-| [principles.md](principles.md) | **The design philosophy for the whole UI/UX (owner, 2026-10-31):** borrow the best from Windows, Android, Apple and lean Linux, then beat it on the X51v; the survey table; the practices P1-P7 every screen meets, with targets the image logs |
+| [principles.md](principles.md) | **The design philosophy for the whole UI/UX (owner, 2026-10-31):** rule 0 as its foundation; borrow the best from Windows, Android, Apple and lean Linux, then beat it on the X51v; the survey table; the practices P1-P7 every screen meets, with targets the image logs |
 | [ui.md](ui.md) | The look: the owner's decisions, **SPB Mobile Shell's whole experience as the reference with our own take (2026-10-19): two looks, Modern and Classic; the weather screen the default home; everything customisable, themes included; the carousel and a part-by-part survey of SPB's demo video**; **3D acceleration for the whole UI (a proposal, options A/B/C) and ideas for modern 3D effects (a 3D flip clock, a living weather sky, glass that catches the light, a card-stack task switcher...), not voted yet**; the smoked-glass design language (**boards N-R: the chosen design**), the Today screen, the Start menu, wallpapers and their licences, type, how the glass renders on the 624 MHz XScale |
 | [interaction.md](interaction.md) | **Draft for a vote (2026-10-30): the interaction foundations every app follows** in both looks: the screen's physical facts, a 12-column grid and 8 px rhythm, touch targets for stylus and finger (measured on the X51v, R124), softkey and button rules, navigation and Back, D-pad focus, states, type roles; votes I1-I12 |
 | [weather-flows.md](weather-flows.md) | **Draft for a vote (2026-10-30): Weather's screens and flows** in Classic and Modern, built on interaction.md: where the weather appears, the screens, first start, places, refresh, stale and offline, the D-pad per screen, our improvements (now from the held forecast, sun and moon on the device); votes WF1-WF10 |

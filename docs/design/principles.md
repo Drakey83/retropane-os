@@ -8,12 +8,33 @@ ideas and make them even better?" and "This shouldn't be just something we
 do for the Weather app design, it should be our design philosophy for the
 entire UI/UX."
 
-This page is that philosophy. It holds for every screen, app, widget and
-effect in the shell, both looks (Modern and Classic). It is CLAUDE.md's
-rule 0 ("iterate, don't imitate") turned into a method for UI/UX work.
-Weather is the first app built this way ([weather-rule0.md](weather-rule0.md)).
+And: "rule 0 should also be a part of that design philosophy."
 
-## The method, for every design
+This page is that philosophy. It holds for every screen, app, widget and
+effect in the shell, both looks (Modern and Classic). Weather is the first
+app built this way ([weather-rule0.md](weather-rule0.md)).
+
+## Rule 0, the foundation
+
+The owner's number one rule (CLAUDE.md rule 0) is the base of everything
+below: **iterate, don't imitate; be clever, modern and efficient.**
+
+- What Windows Mobile, Dell, Android, Apple, Linux or a textbook does is a
+  finding, never the answer and never a ceiling. A textbook default or a
+  copied value is a first draft to beat, not a design.
+- For every design, three things are written down before building: the
+  vendor or textbook way; the best way today's tools allow (computed
+  offline, measured, fitted to this exact hardware); and why ours wins.
+- Modernize everything that can be, while keeping the neo-retro look.
+- Nothing is impossible or a hardware limit without proof: every idea and
+  every "did we do it wrong?" check is ruled out by a measurement first.
+- Small gains count: every percent adds up on this hardware.
+
+Borrowing (below) is how rule 0 starts, not an exception to it: we take
+the best idea the world already proved, then iterate past it. Copying it
+as it is would be imitation.
+
+## The method, for every design (rule 0 applied)
 
 1. **Survey before drawing.** For the problem at hand (not the feature
    list), write down how Windows (Mobile and desktop), Android, Apple and
@@ -34,7 +55,8 @@ Weather is the first app built this way ([weather-rule0.md](weather-rule0.md)).
 
 Every design sheet for a screen or app carries a "borrow and beat" table
 (problem; what each system does; what we take; how ours beats it) next to
-its mock-ups, before the owner's vote.
+its mock-ups, before the owner's vote: rule 0's three lines (their way,
+the best way today, why ours wins) for each problem on the screen.
 
 ## What the big systems do, and what we take (first survey, 2026-10-31)
 
