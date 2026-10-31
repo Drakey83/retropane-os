@@ -5382,6 +5382,15 @@ fn variant_images_gpubench(
     let run_ch = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_HARNESS", "1"))?;
     // Run WG (the Weather movement on the planes): the watched block's
     // wait 1 s and its repeats cut; the device runs every repeat.
+    let run_wgr = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_WEATHER", "1"),
+            ("RP_GPUBENCH_WG_R", "1"),
+            ("RP_GPUBENCH_WG_QUICK", "1"),
+        ],
+    )?;
     let run_wg = variant_image_envs(
         root,
         "rp-gpubench",
@@ -6611,7 +6620,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 176] = [
+    let runs: [GpubenchRun; 177] = [
         (
             "run A",
             &run_a,
@@ -9896,6 +9905,31 @@ fn variant_images_gpubench(
         // runs, the L2 layouts through the scan-out model (a clear window is
         // screen 0 alone), the 2D engine's ARGB pictures word for word, M7's
         // settings written and put back, everything given back.
+        // Run WG-R (R134): Reveal written ways A-G and H at ARGB4444; the
+        // emulator checks each way runs and DSCTRL comes back as found.
+        (
+            "run WG-R",
+            &run_wgr,
+            &[
+                "  WG-R (R134, sheet r134-reveal-tears.md)",
+                "  WG A REVEAL AS RUN WG: 19 states",
+                "  WG B REVEAL, VSADR LAST: 19 states",
+                "  WG C REVEAL, VSADR FIRST: 19 states",
+                "  WG D REVEAL, LINES 640-642: 19 states",
+                "  WG E THE TOP ALONE MOVING: 19 states",
+                "  WG F THE HEIGHT ALONE MOVING: 19 states",
+                "  WG G1 HELD, BIT 24 CLEARED: 19 states",
+                "  WG G2 HELD, DUCTRL 1 TWICE: 19 states",
+                "  WG G3 HELD, DUCTRL 0 THEN 1: 19 states",
+                "  WG H REVEAL AT ARGB4444: 19 states",
+                "  WG H TURN AT ARGB4444, 1-PIXEL STEPS (8-PIXEL STARTS, THE WINDOW 0-7): 64 states",
+                "WG: done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
         (
             "run WG",
             &run_wg,

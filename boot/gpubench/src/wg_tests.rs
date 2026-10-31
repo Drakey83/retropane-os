@@ -55,6 +55,20 @@ fn every_state_reads_inside_its_picture_on_a_16_byte_start() {
     for f in 0..FLING_FRAMES {
         assert_eq!(page_win(fling(f)).start(0x7A_0000, W * 2, 2) % 16, 0);
     }
+    // V3 is ARGB4444: Reveal on 8-pixel steps and the turn to the pixel on
+    // 8-pixel starts, 16-byte aligned at 2 bytes a pixel.
+    for k in 0..=ENTRANCE_FRAMES {
+        let r = reveal_on(k, 8);
+        assert_eq!(r.start(0x7A_0000, W * 2, 2) % 16, 0, "{r:?}");
+        assert!(r.x + r.w <= W && r.row + r.h <= PIC_H);
+    }
+    assert_eq!(reveal_on(ENTRANCE_FRAMES, 8), page_win(0));
+    for p in 0..=W {
+        let s = strip1_on(p, 8);
+        assert_eq!(s.start(0, STRIP_W * 2, 2) % 16, 0);
+        assert_eq!(s.col, s.x + p);
+        assert!(s.x <= 7 && s.w >= W - 8 && s.w % 2 == 0 && s.col + s.w <= STRIP_W);
+    }
 }
 
 #[test]

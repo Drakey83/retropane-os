@@ -64,6 +64,10 @@ const WAIT_SECS: u32 = match option_env!("RP_GPUBENCH_WG_WAIT_SECS") {
 
 /// Labelled steps (the label rule).
 const STEPS: u32 = 13;
+/// Run WG-R (`RP_GPUBENCH_WG_R`, with `RP_GPUBENCH_WEATHER`): R134's ways
+/// for Reveal's tears alone (sheet `docs/research/sheets/r134-reveal-tears.md`).
+const R134: bool = option_env!("RP_GPUBENCH_WG_R").is_some();
+const R134_STEPS: u32 = 11;
 /// Screen 0: local memory 0 (Windows Mobile's place).
 const S0: u32 = 0;
 const S0_STRIDE: u32 = W * 2;
@@ -152,8 +156,13 @@ fn draw_screen(g: &mut Rig, at: u32, (y0, y1): (u32, u32), l1: &str, l2: &str) {
 /// The label (the step and what it is) in screen 0's header, and in the
 /// composed screen's when there is one, so the two stay the same picture.
 fn label(g: &mut Rig, p: &Pics, step: u32, what: &str, l2: &str) {
+    label_of(g, p, (step, STEPS), what, l2);
+}
+
+/// [`label`] with its step count given.
+fn label_of(g: &mut Rig, p: &Pics, (step, of): (u32, u32), what: &str, l2: &str) {
     let mut l1 = heapless_name();
-    let _ = write!(l1, "STEP {step} OF {STEPS}: {what}");
+    let _ = write!(l1, "STEP {step} OF {of}: {what}");
     draw_screen(g, S0, (0, WIN_Y), l1.as_str(), l2);
     if p.s0c != 0 {
         draw_screen(g, p.s0c, (0, WIN_Y), l1.as_str(), l2);
@@ -429,6 +438,11 @@ pub(super) fn run(g: &mut Rig) {
         "WG: the Weather movement on the planes (docs/research/sheets/weather-gpu-movement.md; ADR-0034 C4 as changed, L2): M1 per-pixel alpha on the video plane, M2 the window panned and its entrances, M3 the turn's strip, M5 the 2D engine's ARGB pictures, M4 the hand-offs, judged by DSIG every refresh; then a watched block; M7 (R133) last. No 3D, no clock change"
     );
     wm_clock_first(g);
+    if R134 {
+        r134(g);
+        log!("WG: done");
+        return;
+    }
     let Some(scratch) = rp_hal_x51v::devices::take_scratch() else {
         log!("  WG: no scratch SDRAM: nothing run");
         return;
@@ -629,7 +643,6 @@ fn m1(g: &mut Rig, p: &Pics, out: &mut [u8]) {
 /// reference first (`key` names the state of frame `f`, below 1024), then
 /// `passes` runs through the sequence, each refresh's `DSIG` judged
 /// against its due state's reference.
-#[inline(never)]
 fn pan(
     g: &mut Rig,
     name: &str,
@@ -637,6 +650,131 @@ fn pan(
     passes: u32,
     key: &dyn Fn(usize) -> usize,
     state: &dyn Fn(usize) -> [(usize, u32); 9],
+) {
+    pan_with(g, name, (n, passes), key, state, Way::Blank);
+}
+
+/// How a run writes each frame's window (R134's ways).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Way {
+    /// The changed registers in the driver's order, in lines 643-2 (A).
+    Blank,
+    /// `VSADR` after `VSCADR` (B).
+    VsadrLast,
+    /// `VSADR` before the others (C).
+    VsadrFirst,
+    /// In lines 640-642, the blanking's start (D).
+    Early,
+    /// `DSCTRL` bit 24 set and the registers written mid-refresh (line
+    /// 300), then released in the blanking (G): 0 bit 24 cleared,
+    /// 1 `DUCTRL` = 1 twice, 2 `DUCTRL` = 0 then 1.
+    Hold(u8),
+}
+
+/// The display's update control (R113: Dell writes 1 after a flip).
+const DUCTRL: usize = 0x230C;
+/// `DSCTRL` bit 24 (`UPDCNT`): holds plane writes (R113).
+const UPDCNT: u32 = 1 << 24;
+
+/// `r`'s changed registers written in `order` (1 `VSADR` last, 2 `VSADR`
+/// first, the others in the driver's order). Registers written.
+fn layer_write(g: &mut Rig, r: &[(usize, u32); 9], last: &mut [(usize, u32); 9], order: u8) -> u32 {
+    let vsadr = r.iter().position(|e| e.0 == lreg::VSADR).unwrap_or(3);
+    let mut idx = [0usize; 9];
+    let mut n = 0;
+    if order == 2 {
+        idx[0] = vsadr;
+        n = 1;
+    }
+    for k in (0..9).filter(|&k| k != vsadr) {
+        idx[n] = k;
+        n += 1;
+    }
+    if order != 2 {
+        idx[8] = vsadr;
+    }
+    let mut w = 0;
+    for &k in &idx {
+        if last[k] != r[k] {
+            g.e.regs.write32(r[k].0, r[k].1);
+            last[k] = r[k];
+            w += 1;
+        }
+    }
+    w
+}
+
+/// One frame's write in `way` (see [`Way`]): (registers written, the line
+/// the write ended on, whether it ended inside the way's lines).
+fn way_write(
+    g: &mut Rig,
+    way: Way,
+    r: Option<&[(usize, u32); 9]>,
+    last: &mut [(usize, u32); 9],
+) -> (u32, u32, bool) {
+    let mut n = 0;
+    match way {
+        Way::Blank | Way::VsadrLast | Way::VsadrFirst => {
+            let _ = at_blank(g);
+            let order = match way {
+                Way::VsadrLast => 1,
+                Way::VsadrFirst => 2,
+                _ => 0,
+            };
+            if let Some(r) = r {
+                n = if order == 0 {
+                    layer_move(g, r, last)
+                } else {
+                    layer_write(g, r, last, order)
+                };
+            }
+            let l = g.line();
+            (n, l, in_blank(g))
+        }
+        Way::Early => {
+            let _ = g.wait_line(640, 3);
+            if let Some(r) = r {
+                n = layer_move(g, r, last);
+            }
+            let l = g.line();
+            (n, l, (640..643).contains(&l))
+        }
+        Way::Hold(release) => {
+            let _ = g.wait_line(300, 200);
+            let d = g.e.regs.read32(dreg::DSCTRL);
+            g.e.regs.write32(dreg::DSCTRL, d | UPDCNT);
+            if let Some(r) = r {
+                n = layer_move(g, r, last);
+            }
+            let _ = at_blank(g);
+            match release {
+                0 => g.e.regs.write32(dreg::DSCTRL, d & !UPDCNT),
+                1 => {
+                    g.e.regs.write32(DUCTRL, 1);
+                    g.e.regs.write32(DUCTRL, 1);
+                }
+                _ => {
+                    g.e.regs.write32(DUCTRL, 0);
+                    g.e.regs.write32(DUCTRL, 1);
+                }
+            }
+            let l = g.line();
+            (n, l, in_blank(g))
+        }
+    }
+}
+
+/// [`pan`] with each frame written `way`, the first torn refreshes logged
+/// (the frame, its state and the one before, the registers and line of
+/// its write).
+#[inline(never)]
+fn pan_with(
+    g: &mut Rig,
+    name: &str,
+    (n, passes): (usize, u32),
+    key: &dyn Fn(usize) -> usize,
+    state: &dyn Fn(usize) -> [(usize, u32); 9],
+    way: Way,
 ) {
     let mut refs = [0u32; 1024];
     let mut have = [false; 1024];
@@ -673,19 +811,20 @@ fn pan(
     let live = refs[key(0)] != 0 && again == refs[key(0)] && distinct > 1;
     let ref_ms = us_since(t0) / 1000;
     let _ = underrun_take(&mut g.e.regs);
+    let d0 = g.e.regs.read32(dreg::DSCTRL);
     let (mut due, mut late, mut other, mut torn, mut slow) = (0u32, 0u32, 0u32, 0u32, 0u32);
     let mut cpu = Samples::new();
+    let mut shown = 0u32;
     for _ in 0..passes {
         let mut prev = (key(0), key(0));
+        // The write that put the due state up: its registers and line.
+        let mut wrote = (0u32, 0u32);
         for f in 0..=n {
-            let _ = at_blank(g);
             let t = rt::ticks();
-            if f < n {
-                let r = state(f);
-                let _ = layer_move(g, &r, &mut last);
-            }
+            let r = (f < n).then(|| state(f));
+            let (w, line, ok) = way_write(g, way, r.as_ref(), &mut last);
             cpu.add(us_since(t));
-            slow += u32::from(!in_blank(g));
+            slow += u32::from(!ok);
             // The refresh just ended showed the state written a blanking
             // before this one.
             let s = sig_prev(g);
@@ -699,8 +838,18 @@ fn pan(
                     other += 1;
                 } else {
                     torn += 1;
+                    if shown < 16 {
+                        shown += 1;
+                        log!(
+                            "    WG {name}: torn at frame {}: state {want} after {before}, {} registers written, the write ended on line {}",
+                            f - 1,
+                            wrote.0,
+                            wrote.1
+                        );
+                    }
                 }
             }
+            wrote = (w, line);
             if f < n {
                 prev = (key(f), prev.0);
             }
@@ -709,10 +858,13 @@ fn pan(
             }
         }
     }
+    if g.e.regs.read32(dreg::DSCTRL) != d0 {
+        g.e.regs.write32(dreg::DSCTRL, d0);
+    }
     let under = underrun_take(&mut g.e.regs);
     let (med, worst) = cpu.median_max();
     log!(
-        "  WG {name}: {} states, {distinct} distinct signatures, references {ref_ms} ms; {passes} x {n} refreshes: {due} whole as due, {late} the state before (late), {other} another state, {torn} TORN{}; writes outside the blanking {slow}; the CPU a frame median {med} us worst {worst} us; the underrun flag {}",
+        "  WG {name}: {} states, {distinct} distinct signatures, references {ref_ms} ms; {passes} x {n} refreshes: {due} whole as due, {late} the state before (late), {other} another state, {torn} TORN{}; writes outside the way's lines {slow}; the CPU a frame median {med} us worst {worst} us; the underrun flag {}",
         taken,
         if live {
             ""
@@ -1398,4 +1550,140 @@ fn m7(g: &mut Rig, p: &Pics) {
         rt::check_in();
     }
     layer_off(g);
+}
+
+/// Run WG-R (R134): Reveal's 8 grow-and-shrink cycles written ways A-G,
+/// then way H (V3's ARGB4444: Reveal and the 1-pixel turn), each refresh
+/// judged and the first torn ones placed.
+#[inline(never)]
+fn r134(g: &mut Rig) {
+    log!(
+        "  WG-R (R134, sheet r134-reveal-tears.md): Reveal written ways A-G (the order, the line, y alone, the height alone, DSCTRL bit 24 with three releases), then H at ARGB4444; DSCTRL 0x{:x} as found",
+        g.e.regs.read32(dreg::DSCTRL)
+    );
+    let strip16 = P4_STRIDE * 2 * WIN_H;
+    let sizes = [P8_STRIDE * PIC_H, P4_STRIDE * PIC_H, strip16];
+    let mut at = [0u32; 3];
+    for k in 0..3 {
+        match g.pool.alloc(sizes[k], 0x1000) {
+            Some(a) => at[k] = a,
+            None => {
+                log!("  WG-R: no pool block of {} bytes: nothing run", sizes[k]);
+                for j in 0..k {
+                    let _ = g.pool.free(at[j], sizes[j]);
+                }
+                return;
+            }
+        }
+    }
+    let p = Pics {
+        p8: at[0],
+        p4: at[1],
+        strip: at[2],
+        back: BACK,
+        wall: WALL,
+        s0c: 0,
+    };
+    draw_screen(
+        g,
+        S0,
+        (0, H),
+        "STEP 1 OF 11: DRAWING",
+        "UNATTENDED: NOTHING TO DO",
+    );
+    graphics_screen(g, S0);
+    layer_off(g);
+    draw_pic(g, p.p8, (W, PIC_H), false, &|x, y| wg::page(x, y, false));
+    draw_pic(g, p.p4, (W, PIC_H), true, &|x, y| wg::page(x, y, false));
+    draw_pic(g, p.strip, (STRIP_W, WIN_H), true, &wg::strip);
+    let s8 = Src {
+        base: p.p8,
+        stride: P8_STRIDE,
+        fmt: VideoFormat::Argb8888,
+        blend: Blend::PixelAlpha,
+    };
+    let s4 = Src {
+        base: p.p4,
+        stride: P4_STRIDE,
+        fmt: VideoFormat::Argb4444,
+        blend: Blend::PixelAlpha,
+    };
+    let span = 2 * (wg::ENTRANCE_FRAMES as usize + 1);
+    let k_of = move |f: usize| {
+        let c = f % span;
+        if c <= wg::ENTRANCE_FRAMES as usize {
+            c
+        } else {
+            span - 1 - c
+        }
+    };
+    let n = if QUICK { 2 } else { 8 } * span;
+    let reveal = move |f: usize| wg::reveal(k_of(f) as u32);
+    // E: the top alone moves (the size and the start fixed).
+    let y_alone = move |f: usize| Win {
+        x: 0,
+        y: reveal(f).y,
+        w: W,
+        h: wg::SOFTKEYS_Y - 210,
+        row: MARGIN,
+        col: 0,
+    };
+    // F: the height alone, at Reveal's steps (the top fixed).
+    let h_alone = move |f: usize| Win {
+        h: reveal(f).h,
+        ..wg::page_win(0)
+    };
+    let ways: [(&str, Way, &dyn Fn(usize) -> Win); 9] = [
+        ("A REVEAL AS RUN WG", Way::Blank, &reveal),
+        ("B REVEAL, VSADR LAST", Way::VsadrLast, &reveal),
+        ("C REVEAL, VSADR FIRST", Way::VsadrFirst, &reveal),
+        ("D REVEAL, LINES 640-642", Way::Early, &reveal),
+        ("E THE TOP ALONE MOVING", Way::Blank, &y_alone),
+        ("F THE HEIGHT ALONE MOVING", Way::Blank, &h_alone),
+        ("G1 HELD, BIT 24 CLEARED", Way::Hold(0), &reveal),
+        ("G2 HELD, DUCTRL 1 TWICE", Way::Hold(1), &reveal),
+        ("G3 HELD, DUCTRL 0 THEN 1", Way::Hold(2), &reveal),
+    ];
+    for (k, &(name, way, win)) in ways.iter().enumerate() {
+        label_of(g, &p, (k as u32 + 2, R134_STEPS), &name[..2], name);
+        pan_with(g, name, (n, 1), &k_of, &|f| layer_regs(win(f), s8), way);
+        layer_off(g);
+        rt::check_in();
+    }
+    // H: V3's ARGB4444: Reveal on 8-pixel steps, the turn to the pixel.
+    label_of(
+        g,
+        &p,
+        (11, R134_STEPS),
+        "H 4444",
+        "REVEAL AND THE TURN AT ARGB4444",
+    );
+    pan_with(
+        g,
+        "H REVEAL AT ARGB4444",
+        (n, 1),
+        &k_of,
+        &|f| layer_regs(wg::reveal_on(k_of(f) as u32, 8), s4),
+        Way::Blank,
+    );
+    let st = Src {
+        base: p.strip,
+        stride: P4_STRIDE * 2,
+        fmt: VideoFormat::Argb4444,
+        blend: Blend::PixelAlpha,
+    };
+    let one = |f: usize| if f < 64 { f } else { 127 - f };
+    pan_with(
+        g,
+        "H TURN AT ARGB4444, 1-PIXEL STEPS (8-PIXEL STARTS, THE WINDOW 0-7)",
+        (128, 2),
+        &one,
+        &|f| layer_regs(wg::strip1_on(one(f) as u32, 8), st),
+        Way::Blank,
+    );
+    layer_off(g);
+    graphics_screen(g, S0);
+    for k in 0..3 {
+        let _ = g.pool.free(at[k], sizes[k]);
+    }
 }

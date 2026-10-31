@@ -278,9 +278,16 @@ pub const fn page_win(scroll: i32) -> Win {
 /// on 4-pixel steps (16-byte starts at ARGB8888).
 #[must_use]
 pub const fn reveal(k: u32) -> Win {
+    reveal_on(k, 4)
+}
+
+/// [`reveal`] with the window's left edge on `step`-pixel steps (a power
+/// of two: 4 for 16-byte starts at ARGB8888, 8 at ARGB4444).
+#[must_use]
+pub const fn reveal_on(k: u32, step: u32) -> Win {
     let n = ENTRANCE_FRAMES as i32;
     let e = ease_out(0, 1024, k as i32, n) as u32;
-    let x = (16 * (1024 - e) / 1024) & !3;
+    let x = (16 * (1024 - e) / 1024) & !(step - 1);
     let y = 210 - 116 * e / 1024;
     let bottom = 350 + (SOFTKEYS_Y - 350) * e / 1024;
     let low = 52 * (1024 - e) / 1024;
@@ -331,7 +338,14 @@ pub const fn strip4(p: u32) -> Win {
 /// so the cut never shows). Screen column `X` shows strip column `X + p`.
 #[must_use]
 pub const fn strip1(p: u32) -> Win {
-    let c = (p + 3) & !3;
+    strip1_on(p, 4)
+}
+
+/// [`strip1`] with the start on `step`-pixel steps (8 at ARGB4444: the
+/// window moved 0-7 pixels, still inside the cards' clear 8-pixel edge).
+#[must_use]
+pub const fn strip1_on(p: u32, step: u32) -> Win {
+    let c = (p + step - 1) & !(step - 1);
     let s = c - p;
     Win {
         x: s,
