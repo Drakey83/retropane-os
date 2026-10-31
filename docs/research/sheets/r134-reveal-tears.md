@@ -44,6 +44,11 @@ and which registers changed.
 | F | the height alone moving at Reveal's y steps (y fixed) | that it's y and not the size |
 | G | `DSCTRL` bit 24 set, the four written, then each release R113 didn't try: bit 24 cleared in the blanking; `DUCTRL` = 1 twice; `DUCTRL` = 0 then 1 | a shadow latch for every plane move |
 
+Also in the same image (V3 ruled ARGB4444 + dither, the owner,
+2026-10-30): **way H**, the turn to the pixel and Reveal at ARGB4444,
+where the start moves in 8-pixel steps and the window by 0-7 pixels, both
+judged as above.
+
 **Stop rule (written first):** one run. If any way of A-F is clean in all
 304 refreshes and A tears, that way ships in the page layer. If only G is
 clean, its release becomes the driver's plane write. If none is clean,

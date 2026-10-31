@@ -429,7 +429,13 @@ do 5 if its just as good, 4 i like cascade":
 - **V1: L2** (the owner, the same evening: "Yes, L2"). Written into
   ADR-0034 as a change to C4, with C4 as first voted the fallback if M1
   fails.
-- **V3 (depth):** open, waiting for M1's side-by-side look.
+- **V3 (depth): ARGB4444 + dither** (the owner, 2026-10-30, after run
+  WG's look, "8888 basically looks the same, just a little darker": "if
+  4444 is cheaper just use that"). Half the memory (1.2 MiB for Hourly),
+  half the display's reads and the 2D engine's bytes. At 2 bytes a pixel
+  the start moves in 8-pixel steps, so the 1-pixel turn moves the window
+  by 0-7 pixels inside the cards' clear 8-pixel edge: not yet run on the
+  X51v (run WG turned at 8888), so it goes in R134's run as way H.
 
 ## The device image, built (2026-10-30, the owner's "Yes, build the test")
 
