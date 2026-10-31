@@ -306,6 +306,17 @@ impl Shell {
     /// composes it ahead while the Today screen is still, so a tap shows
     /// Reveal's window at the next refresh. Nothing on screen changes.
     pub fn weather_preview(&mut self, f: &mut Frame) {
+        self.weather_preview_as(f, false);
+    }
+
+    /// [`Self::weather_preview`] on the plane path: the app's screen as
+    /// Reveal leaves it, its chrome only (the page on the layer), composed
+    /// ahead so Reveal ends with the screen plane pointed at it.
+    pub fn weather_chrome_preview(&mut self, f: &mut Frame) {
+        self.weather_preview_as(f, self.planes);
+    }
+
+    fn weather_preview_as(&mut self, f: &mut Frame, planes: bool) {
         let saved = (
             self.screen,
             self.tab,
@@ -322,7 +333,7 @@ impl Shell {
         self.scroll = super::motion::Scroll::new(max_scroll(0));
         self.anim = None;
         self.expanding = false;
-        self.planes = false;
+        self.planes = planes;
         self.menu_open = false;
         self.pressed = None;
         self.focus = None;

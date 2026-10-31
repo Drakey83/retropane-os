@@ -563,8 +563,11 @@ mod image {
         let mut revealing = false;
         // Reveal's window has shown (its clock restarted then).
         let mut reveal_shown = false;
-        // The app's screen drawn and held during Reveal (for one switch).
-        let mut chrome_held = false;
+        // The app's screen as Reveal leaves it, composed ahead (its picture
+        // and key), and whether the screen plane shows it now (handed back
+        // to the renderer by the next frame).
+        let mut chrome_pic: Option<(Handle, u32)> = None;
+        let mut screen_on_pic = false;
         // The app composed ahead (its picture and key), whether to check it,
         // and the open under way's start (ms, commits).
         let mut app_pic: Option<(Handle, u32)> = None;
@@ -1168,22 +1171,26 @@ mod image {
                             trace_on = true;
                             trace_tail = 30;
                         }
-                    } else if gfx.aside_held() && chrome_held {
-                        // Reveal done over the picture composed ahead: the
-                        // app's screen, drawn and held while Reveal ran, and
-                        // its page on the layer, in one commit at the next
-                        // refresh (nothing left to draw).
-                        chrome_held = false;
-                        let v = shell.page_layer();
-                        let st = v
-                            .and_then(|v| pages[usize::from(v.tab)].map(|(h, _)| page_state(h, v)));
-                        let _ = gfx.show_aside(pc, st);
-                        shown_tab = v.map(|v| v.tab);
+                    } else if revealing
+                        && let Some((ch, _)) = chrome_pic
+                        && let Some(v) = shell.page_layer()
+                        && let Some((h, _)) = pages[usize::from(v.tab)]
+                    {
+                        // Reveal done: the screen plane on the app's screen
+                        // composed ahead and its page on the layer, in one
+                        // commit at the next refresh, nothing drawn (the
+                        // trace, 2026-10-31: drawing that screen during
+                        // Reveal froze it two refreshes). The renderer's own
+                        // screens come back with the next frame.
+                        let _ = gfx.commit_screen(pc, ch, Some(page_state(h, v)));
+                        shown_tab = Some(v.tab);
+                        screen_on_pic = true;
+                        shell.redraw_all();
                         let n = gfx.commits().done - reveal_c0;
                         let ms = (now_ms - reveal_t0).max(1);
                         let _ = writeln!(
                             RunLog,
-                            "open: {now_ms} ms, Reveal done: {n} window moves in {ms} ms (~{} fps); its screen held, switched with the page next refresh",
+                            "open: {now_ms} ms, Reveal done: {n} window moves in {ms} ms (~{} fps); the screen on its picture composed ahead, the page on the layer, one commit",
                             u64::from(n) * 1000 / ms
                         );
                         revealing = false;
@@ -1240,24 +1247,6 @@ mod image {
                 // Moves: the window follows (staged; the latest wins).
                 if commit.is_none() {
                     if shell.reveal_plane().is_some() {
-                        if revealing
-                            && reveal_shown
-                            && !chrome_held
-                            && app_pic.is_some()
-                            && !gfx.busy()
-                            && !gfx.aside_held()
-                            && let Some(cur) = gfx.layer()
-                        {
-                            // The 2D engine idles while Reveal runs: the app's
-                            // screen drawn now and held, for the end's switch.
-                            shell.weather_after_entrance(frame);
-                            if gfx
-                                .frame_commit(pc, frame, Some(cur), true, &mut gclock)
-                                .is_ok()
-                            {
-                                chrome_held = true;
-                            }
-                        }
                         if revealing && gfx.layer().is_some() && !reveal_shown {
                             // The app's window is up: Reveal's clock starts
                             // now, so it grows from the card rather than
@@ -1356,6 +1345,29 @@ mod image {
                                 let _ = writeln!(RunLog, "app picture: not composed ({e:?})");
                             }
                         }
+                        // The app's screen (its chrome) on a later pass.
+                        app_check = true;
+                    } else {
+                        // Then the app's screen as Reveal leaves it (the
+                        // same frame reused: one more would cost the image
+                        // its RAM budget).
+                        shell.weather_chrome_preview(frame);
+                        let key = rp_today::frame_key(frame, rp_today::KEY_START);
+                        if chrome_pic.is_none_or(|(_, k)| k != key) {
+                            let h = match chrome_pic {
+                                Some((h, _)) => Ok(h),
+                                None => gfx.picture_rgb565(pc),
+                            };
+                            match h.and_then(|h| {
+                                gfx.compose_into(pc, frame, h, &mut gclock).map(|_| h)
+                            }) {
+                                Ok(h) => chrome_pic = Some((h, key)),
+                                Err(e) => {
+                                    let _ =
+                                        writeln!(RunLog, "chrome picture: not composed ({e:?})");
+                                }
+                            }
+                        }
                     }
                 }
                 // A replaced picture goes back once nothing shows it.
@@ -1365,6 +1377,14 @@ mod image {
                 {
                     retire = None;
                 }
+            }
+
+            // The screen on a picture composed ahead: the next frame hands it
+            // back to the renderer's own screen (drawn whole, flipped, the
+            // layer kept), the same pixels.
+            if screen_on_pic && commit.is_none() && !gfx.busy() && !gfx.commit_pending() {
+                screen_on_pic = false;
+                commit = Some((gfx.layer(), false, true));
             }
 
             // The opening's trace: once a refresh, after its signature is

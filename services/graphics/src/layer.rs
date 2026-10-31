@@ -118,6 +118,9 @@ pub(crate) struct Staged {
     /// The layer's registers, worked out when staged (the blanking then
     /// only writes them); `None` until an aside source has landed.
     regs: Option<[(usize, u32); 9]>,
+    /// The screen plane pointed at this RGB565 picture (an app's screen
+    /// composed ahead), with the commit.
+    screen_at: Option<u32>,
 }
 
 /// The layer's own state in the service.
@@ -233,9 +236,17 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             return Step::Wait(clock.now_us().wrapping_add(super::TWO_D_POLL_US));
         };
         let all = [rp_draw::Rect::new(0, 0, 480, 640)];
-        let ok = self.copy_screens(at as usize, src, &all, clock);
+        // Out to its picture, then the screen on show copied back over the
+        // renderer's back picture: both hold the shown frame again, so no
+        // frame after is redrawn whole (the owner's run, 2026-10-31: two
+        // whole redraws, 758,785 px, hitched a swipe).
+        let front = self.two_d.front();
+        let ok = self.copy_screens(at as usize, src, &all, clock)
+            && self.copy_screens(src, front, &all, clock);
         self.two_d.keep_front();
-        self.two_d.invalidate_all();
+        if !ok {
+            self.two_d.invalidate_all();
+        }
         self.job = Job::None;
         if ok { Step::Shown } else { Step::Recovered }
     }
@@ -440,6 +451,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             layer: layer.map(|st| (st, c.0)),
             flip: false,
             regs,
+            screen_at: None,
         });
         // Nothing to draw: the layer alone (Reveal's start), no 2D work (a
         // renderer told to redraw whole would redraw and flip the screen).
@@ -497,6 +509,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             layer: layer.map(|st| (st, c.0)),
             flip: true,
             regs,
+            screen_at: None,
         });
         Ok(())
     }
@@ -524,6 +537,36 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             layer: Some((st, owner)),
             flip: staged.is_some_and(|s| s.flip),
             regs,
+            screen_at: staged.and_then(|s| s.screen_at),
+        });
+        Ok(())
+    }
+
+    /// At the next blanking, the screen plane shows client `c`'s RGB565
+    /// picture `h` (an app's screen composed ahead) and the layer is set to
+    /// `layer`, in one commit: Reveal's end with nothing drawn. The 2D
+    /// renderer's own screens come back with the next [`Self::frame_commit`]
+    /// (its flip), which the caller makes next.
+    pub fn commit_screen(
+        &mut self,
+        c: ClientId,
+        h: Handle,
+        layer: Option<LayerState>,
+    ) -> Result<(), Error> {
+        self.rec(c)?;
+        let p = self.pic(c.0, h)?;
+        if !p.rgb565 || self.job != Job::None || self.layer.aside {
+            return Err(Error::Busy);
+        }
+        let regs = match layer {
+            Some(st) => Some(self.registers(c.0, st)?),
+            None => None,
+        };
+        self.layer.staged = Some(Staged {
+            layer: layer.map(|st| (st, c.0)),
+            flip: false,
+            regs,
+            screen_at: Some(p.at),
         });
         Ok(())
     }
@@ -618,6 +661,14 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         if s.flip {
             self.two_d.flip();
             self.layer.aside = false;
+        }
+        if let Some(at) = s.screen_at {
+            let regs = &mut self.two_d.parts().0.regs;
+            let g = regs.read32(rp_drv_mbx_display::reg::GSCADR);
+            regs.write32(
+                rp_drv_mbx_display::reg::GSCADR,
+                (g & !0x007F_FFFF) | (at / 16),
+            );
         }
         let mut n = u32::from(s.flip);
         let was_on = self.layer.shown.is_some();

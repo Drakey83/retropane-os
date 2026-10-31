@@ -538,6 +538,12 @@ impl Shell {
         }
     }
 
+    /// Marks the whole screen to be drawn (the device's hand-back from a
+    /// picture composed ahead to the renderer's own screens).
+    pub fn redraw_all(&mut self) {
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
     /// Whether anything waits to be drawn.
     #[must_use]
     pub fn needs_frame(&self) -> bool {

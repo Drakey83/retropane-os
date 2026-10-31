@@ -2165,3 +2165,49 @@ fn an_app_composed_ahead_lands_in_its_picture_and_shows_opaque() {
     assert_eq!(dreg_of(&mut r, lreg::VSCADR) >> 29 & 3, 0, "opaque");
     assert_eq!(r.shown().at, before, "the screen still the Today screen");
 }
+
+#[test]
+fn reveal_ends_with_the_screen_on_a_picture_composed_ahead_then_hands_back() {
+    let (mut r, c, page) = page_rig(0);
+    let chrome = r.g.picture_rgb565(c).unwrap();
+    let mut step =
+        r.g.compose_into(
+            c,
+            &fill(Rect::new(0, 0, 480, 640), BLUE),
+            chrome,
+            &mut r.clock,
+        )
+        .unwrap();
+    while let Step::Wait(t) = step {
+        r.clock.set(t);
+        step = r.g.poll(&mut r.clock);
+    }
+    let renderer_screen = r.shown().at;
+    // One commit: the screen plane on the picture, the page on the layer.
+    let st = LayerState {
+        src: Source::Picture(page),
+        win: page_win(0),
+    };
+    r.g.commit_screen(c, chrome, Some(st)).unwrap();
+    settle_commit(&mut r);
+    assert_eq!(r.g.commits().done, 1, "one commit");
+    assert_eq!(r.shown().at, r.g.picture_at(c, chrome).unwrap());
+    assert_eq!(r.g.layer(), Some(st));
+    assert_eq!(r.on_screen(5, 300), BLUE & 0xFF_FFFF);
+    // The next frame, drawn whole by the renderer and flipped with the
+    // layer kept: the renderer's own screen on show again.
+    r.g.frame_commit(
+        c,
+        &fill(Rect::new(0, 0, 480, 640), BLUE),
+        Some(st),
+        false,
+        &mut r.clock,
+    )
+    .unwrap();
+    settle_commit(&mut r);
+    assert_ne!(r.shown().at, r.g.picture_at(c, chrome).unwrap());
+    assert!(
+        r.shown().at == renderer_screen || r.g.two_d().screens().contains(&(r.shown().at as usize))
+    );
+    assert_eq!(r.on_screen(5, 300), BLUE & 0xFF_FFFF);
+}
