@@ -507,6 +507,94 @@ impl Latency {
     }
 }
 
+/// The plane path's page pictures (sheet weather-gpu-movement.md, "The plane
+/// path build, as built"): rows drawn into the CPU's layer at a time (a
+/// band's draw list stays well inside a frame's 160 commands).
+pub const PAGE_BAND: u16 = 96;
+
+/// A draw list's key, folded into `h` (FNV-1a over every command and its
+/// text): a page's picture is current while its draw list's key is the
+/// one it was drawn from, whatever changed it (data, units, theme, time).
+#[must_use]
+pub fn frame_key(f: &rp_draw::Frame, mut h: u32) -> u32 {
+    use rp_draw::Cmd;
+    let mut mix = |v: u32| {
+        for b in v.to_le_bytes() {
+            h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+        }
+    };
+    let rect = |r: rp_draw::Rect| u32::from(r.x) | u32::from(r.y) << 16;
+    let size = |r: rp_draw::Rect| u32::from(r.w) | u32::from(r.h) << 16;
+    // Where it is drawn (a band's rows), then what.
+    for d in f.dirty() {
+        mix(rect(*d));
+        mix(size(*d));
+    }
+    for c in f.cmds() {
+        match *c {
+            Cmd::Fill { r, color } | Cmd::Outline { r, color } => {
+                mix(if matches!(c, Cmd::Fill { .. }) { 1 } else { 2 });
+                mix(rect(r));
+                mix(size(r));
+                mix(color);
+            }
+            Cmd::HGradient { r, left, right } => {
+                mix(3);
+                mix(rect(r));
+                mix(size(r));
+                mix(left);
+                mix(right);
+            }
+            Cmd::Image { x, y, img } => {
+                mix(4);
+                mix(u32::from(x) | u32::from(y) << 16);
+                // Pictures are placed once: the same place, the same pixels.
+                mix(core::ptr::from_ref(img) as usize as u32);
+            }
+            Cmd::Text {
+                x,
+                baseline,
+                font,
+                color,
+                text,
+            } => {
+                mix(5);
+                mix(u32::from(x) | u32::from(baseline) << 16);
+                mix(core::ptr::from_ref(font) as usize as u32);
+                mix(color);
+                for &b in f.text_of(text) {
+                    mix(u32::from(b));
+                }
+            }
+            Cmd::Clip { r } => {
+                mix(6);
+                mix(rect(r));
+                mix(size(r));
+            }
+        }
+    }
+    h
+}
+
+/// The FNV-1a start for [`frame_key`].
+pub const KEY_START: u32 = 0x811C_9DC5;
+
+/// Reveal's window on the video plane (place x, y, size w, h, the app's row
+/// and column at its top left) from the shell's window `r` and how many
+/// rows lower the app is read in it (screen row y shows the app's row
+/// y + `shift`, as the preview composes it: the big panel starts where the
+/// card was): the left edge down to the 8-pixel grid the plane's start
+/// needs at 2 bytes a pixel (the width grown to keep the right edge),
+/// sizes even, never reading past the app's last row.
+#[must_use]
+pub fn reveal_window(r: rp_draw::Rect, shift: u16) -> (u16, u16, u16, u16, u16, u16) {
+    let x = r.x & !7;
+    let w = ((r.w + (r.x - x)).min(W as u16 - x)) & !1;
+    let row = (r.y + shift).min(H as u16 - 2);
+    let h = (r.h.min(H as u16 - r.y).min(H as u16 - row)) & !1;
+    (x, r.y, w.max(2), h.max(2), row, x)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -902,6 +990,37 @@ mod tests {
                 t.px_text,
                 t.px_dither
             );
+        }
+    }
+
+    #[test]
+    fn a_page_key_changes_with_anything_drawn() {
+        let mut s = rp_shell::Shell::new(shell_fonts(), host_icons(), true);
+        let mut f = rp_draw::Frame::new();
+        s.page_band(1, &mut f, 0, PAGE_BAND);
+        let a = frame_key(&f, KEY_START);
+        s.page_band(1, &mut f, 0, PAGE_BAND);
+        assert_eq!(frame_key(&f, KEY_START), a, "the same list, the same key");
+        s.page_band(1, &mut f, PAGE_BAND, PAGE_BAND);
+        assert_ne!(frame_key(&f, KEY_START), a, "another band");
+        let b = frame_key(&f, KEY_START);
+        s.page_band(2, &mut f, PAGE_BAND, PAGE_BAND);
+        assert_ne!(frame_key(&f, KEY_START), b, "another page");
+    }
+
+    #[test]
+    fn reveals_window_sits_on_the_planes_grid_and_keeps_its_edges() {
+        for (x, w) in [(16u16, 448u16), (13, 454), (0, 480), (7, 466)] {
+            let r = rp_draw::Rect::new(x, 60, w, 301);
+            let (wx, wy, ww, wh, row, col) = reveal_window(r, 20);
+            assert_eq!(wx % 8, 0);
+            assert_eq!(col, wx);
+            assert!(wx <= x && wx + ww >= x + w - 1 && wx + ww <= 480, "{x} {w}");
+            assert_eq!((ww % 2, wh % 2), (0, 0));
+            assert_eq!((wy, wh, row), (60, 300, 80));
+            // Read lower, never past the app's last row.
+            let (_, _, _, wh, row, _) = reveal_window(rp_draw::Rect::new(x, 300, w, 340), 52);
+            assert!(row + wh <= 640, "{row} + {wh}");
         }
     }
 

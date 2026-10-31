@@ -1324,3 +1324,202 @@ fn reveal_opens_from_the_card_and_cascade_grows_down_with_nothing_inside_moving(
     assert_eq!(s.page_area(), PAGE);
     assert_eq!(s.reveal(), None, "a page turn never reveals");
 }
+
+// ---- the plane path (sheet weather-gpu-movement.md; ADR-0034 C4 as changed, L2)
+
+/// A layer of `w` x `h` drawn by the CPU renderer (ARGB8888, straight
+/// alpha), cleared.
+fn cpu_layer(w: u32, h: u32) -> (Vec<u32>, Vec<u8>) {
+    (vec![0; (w * h) as usize], vec![0u8; (w * h * 4) as usize])
+}
+
+/// Page `tab`'s whole picture as the device draws it: band by band.
+fn picture_of(s: &mut Shell, tab: u8) -> Vec<u32> {
+    use rp_draw::Renderer;
+    use rp_gfx::layer::{Layer, PlaneFormat};
+    use rp_gfx::render::CpuRenderer;
+    let rows = u32::from(picture_rows(tab));
+    let (mut px, mut plane) = cpu_layer(480, rows);
+    {
+        let mut r = CpuRenderer::new(
+            Layer::new(&mut px, 480, rows, 480).unwrap(),
+            &mut plane,
+            480 * 4,
+            PlaneFormat::Argb8888,
+        );
+        let mut f = Frame::new();
+        let mut top = 0;
+        while top < rows as u16 {
+            let n = 100.min(rows as u16 - top);
+            s.page_band(tab, &mut f, top, n);
+            assert!(!f.overflowed(), "band {top}: {} commands", f.cmds().count());
+            r.draw(&f);
+            top += n;
+        }
+    }
+    px
+}
+
+/// The page area of the screen as the 2D path draws it (the page's own
+/// commands only: everything else drawn transparent is left out by
+/// clearing the rest of the frame's commands' reach to the page).
+fn page_2d(s: &mut Shell) -> Vec<u32> {
+    use rp_draw::Renderer;
+    use rp_gfx::layer::{Layer, PlaneFormat};
+    use rp_gfx::render::CpuRenderer;
+    let (w, h) = (u32::from(W), u32::from(H));
+    let (mut px, mut plane) = cpu_layer(w, h);
+    {
+        let mut r = CpuRenderer::new(
+            Layer::new(&mut px, w, h, w as usize).unwrap(),
+            &mut plane,
+            w as usize * 4,
+            PlaneFormat::Argb8888,
+        );
+        let mut f = Frame::new();
+        f.damage(weather_app::PAGE);
+        f.clip(Some(weather_app::PAGE));
+        match s.weather_page().0 {
+            0 => s.now_page(&mut f),
+            1 => s.hourly_page(&mut f),
+            _ => s.days_page(&mut f),
+        }
+        r.draw(&f);
+    }
+    px
+}
+
+#[test]
+fn each_pages_picture_is_the_page_the_2d_path_draws() {
+    // The page layer shows a picture drawn once in bands; at every scroll
+    // its window must show exactly what the 2D path draws there (the
+    // scroll bar aside: screen 0's on the planes).
+    for tab in 0..3u8 {
+        let mut s = weather(tab);
+        let pic = picture_of(&mut s, tab);
+        let max = i32::from(weather_app::max_scroll(tab));
+        for scroll in [0, max / 3, max] {
+            s.scroll.set(scroll);
+            let flat = page_2d(&mut s);
+            let p = weather_app::PAGE;
+            for y in p.y..p.y + p.h {
+                let row = u32::from(LAYER_MARGIN) + u32::from(y - p.y) + scroll as u32;
+                for x in 0..W - 10 {
+                    let a = flat[usize::from(y) * 480 + usize::from(x)];
+                    let b = pic[row as usize * 480 + usize::from(x)];
+                    assert_eq!(a, b, "page {tab} scroll {scroll} at ({x}, {y})");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn on_the_planes_screen_0_carries_only_the_chrome_and_a_drag_only_the_bar() {
+    let mut s = weather(1);
+    s.use_planes(true);
+    let f = drawn(&mut s);
+    // The page's area is the wallpaper's on screen 0: nothing of the page
+    // but the scroll bar is drawn there.
+    let page = weather_app::PAGE;
+    let inside = f
+        .cmds_clipped()
+        .filter(|(c, clip)| !c.bounds(&f).intersect(clip).intersect(&page).is_empty())
+        .count();
+    assert_eq!(inside, 2, "the bar's track and thumb only");
+    let v = s.page_layer().expect("the layer shows Hourly");
+    assert_eq!((v.tab, v.win, v.row), (1, page, LAYER_MARGIN));
+    // A drag moves the layer's row; screen 0 redraws only the bar.
+    let (x, y) = (240, 400);
+    s.input(Input::PenDown { x, y });
+    s.input(Input::PenMove { x, y: y - 20 });
+    s.input(Input::PenMove { x, y: y - 60 });
+    let f = drawn(&mut s);
+    assert!(
+        f.dirty().iter().all(|d| d.x >= W - 9 && d.w <= 3),
+        "{:?}",
+        f.dirty()
+    );
+    let v = s.page_layer().unwrap();
+    assert!(v.row > LAYER_MARGIN, "scrolled down: {}", v.row);
+    s.input(Input::PenUp { x, y: y - 60 });
+}
+
+#[test]
+fn on_the_planes_the_layer_hands_back_for_menus_the_radar_and_settings() {
+    let mut s = weather(0);
+    s.use_planes(true);
+    drawn(&mut s);
+    assert!(s.page_layer().is_some());
+    // The menu over the page: the page comes back to screen 0, whole.
+    tap(&mut s, START);
+    assert!(s.page_layer().is_none());
+    let f = drawn(&mut s);
+    assert!(
+        f.dirty().iter().any(|d| d.union(&weather_app::PAGE) == *d),
+        "{:?}",
+        f.dirty()
+    );
+    tap(&mut s, START);
+    assert!(s.page_layer().is_some());
+    // The radar stays 2D.
+    tap(&mut s, weather_app::tab_rect(weather_app::RADAR));
+    assert!(s.page_layer().is_none());
+}
+
+#[test]
+fn on_the_planes_entrances_move_the_window_and_draw_nothing() {
+    let mut s = shell(true);
+    s.use_planes(true);
+    drawn(&mut s);
+    // Reveal from the Today card: the app drawn whole once (aside), then
+    // only the window grows.
+    tap(&mut s, HERO);
+    let (r0, _) = s.reveal_plane().expect("revealing");
+    let f = drawn(&mut s);
+    assert!(
+        f.dirty().contains(&Rect::new(0, 0, W, H)),
+        "the app, whole: {:?}",
+        f.dirty()
+    );
+    assert!(s.page_layer().is_none(), "the page waits for the reveal");
+    s.tick(100);
+    assert!(!s.needs_frame(), "no redraw while it opens");
+    let (r1, _) = s.reveal_plane().unwrap();
+    assert!(r1.w > r0.w && r1.y < r0.y, "{r0:?} to {r1:?}");
+    s.tick(10_000);
+    assert!(s.reveal_plane().is_none());
+    assert!(s.page_layer().is_some());
+    // Cascade between pages: the window grows down from the tabs' foot.
+    drawn(&mut s);
+    tap(&mut s, weather_app::tab_rect(2));
+    let v0 = s.page_layer().unwrap();
+    assert!(v0.win.h < weather_app::PAGE.h && v0.win.h.is_multiple_of(2));
+    drawn(&mut s);
+    // Into Hourly: its scroll bar on screen 0 is drawn whole at once, not
+    // clipped to Cascade's window (the emulator found it missing).
+    tap(&mut s, weather_app::tab_rect(1));
+    let f = drawn(&mut s);
+    let bar = f
+        .cmds_clipped()
+        .filter(|(c, clip)| {
+            let b = c.bounds(&f).intersect(clip);
+            b.x >= W - 9 && b.h > 100
+        })
+        .count();
+    assert_eq!(bar, 2, "the bar's track and thumb, whole");
+    tap(&mut s, weather_app::tab_rect(2));
+    let v0 = s.page_layer().unwrap();
+    let now = s.now;
+    s.tick(now + 100);
+    let v1 = s.page_layer().unwrap();
+    assert!(v1.win.h > v0.win.h, "{v0:?} to {v1:?}");
+    let f = drawn(&mut s);
+    assert!(
+        f.dirty()
+            .iter()
+            .all(|d| d.intersect(&weather_app::PAGE).is_empty()),
+        "{:?}",
+        f.dirty()
+    );
+}

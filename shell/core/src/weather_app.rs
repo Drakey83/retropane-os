@@ -80,6 +80,35 @@ const SELECTED_RIGHT: Argb = rp_draw::look::theme(0xDC4A_5460);
 const COLD: Argb = 0xFF4F_A8FF;
 const WARM: Argb = 0xFFFF_A040;
 
+/// The page layer's clear rows above and below a page's picture: the
+/// rebound shows the still wallpaper through them (`motion.rs`'s
+/// `BAND_MAX_PX`).
+pub const LAYER_MARGIN: u16 = 120;
+
+/// Rows in page `tab`'s picture on the page layer (480 wide): the margins,
+/// the page, and how far it scrolls (Hourly: 1,332).
+#[must_use]
+pub const fn picture_rows(tab: u8) -> u16 {
+    2 * LAYER_MARGIN + PAGE.h + max_scroll(tab)
+}
+
+/// A page as the plane path shows it (sheet weather-gpu-movement.md, ADR-0034
+/// C4 as changed, L2): its picture, the video window on screen, and the
+/// picture's row at the window's top.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PageView {
+    /// The page (0 Now, 1 Hourly, 2 10 Day).
+    pub tab: u8,
+    /// The window (even sizes).
+    pub win: Rect,
+    /// The picture's row at its top.
+    pub row: u16,
+}
+
+/// The Hourly list's scroll bar: on screen 0, through the layer's clear
+/// right edge.
+const THUMB_TRACK: Rect = Rect::new(W - 9, ROW_Y, 3, ROW_STEP * ROWS as u16 - 3);
+
 /// Where tab `i` is.
 pub(crate) const fn tab_rect(i: u8) -> Rect {
     let w = W / TAB_NAMES.len() as u16;
@@ -154,6 +183,10 @@ fn frac(v: i16, lo: i16, hi: i16) -> u32 {
 impl Shell {
     /// Item `i`'s entrance, eased out: 0 just started, 1024 in place.
     pub(crate) fn ease(&self, i: u32) -> u32 {
+        // A page drawn into its picture is drawn in place.
+        if self.band.is_some() {
+            return 1024;
+        }
         // Cascade and Reveal move the page's window and place only: its
         // content is drawn once, final (the plane path draws nothing a
         // frame), so nothing inside it counts up or slides.
@@ -171,7 +204,7 @@ impl Shell {
 
     /// How far right item `i` still is.
     fn slide(&self, i: u32) -> u16 {
-        if self.motion != Motion::Stagger {
+        if self.motion != Motion::Stagger || self.band.is_some() {
             return 0;
         }
         ((1024 - self.ease(i)) * SLIDE / 1024) as u16
@@ -231,7 +264,7 @@ impl Shell {
     /// Expand's share of the way from the hero card to the page, 0-1024
     /// (1024 when not expanding).
     fn grow(&self) -> u32 {
-        if self.motion != Motion::Expand || !self.expanding {
+        if self.motion != Motion::Expand || !self.expanding || self.band.is_some() {
             return 1024;
         }
         self.ease(0)
@@ -261,6 +294,96 @@ impl Shell {
         self.motion = m;
     }
 
+    /// The plane path on (the device): the Weather pages on the page layer,
+    /// arriving by Reveal from the Today card and Cascade between pages
+    /// (the owner's picks, 2026-10-30).
+    pub fn use_planes(&mut self, on: bool) {
+        self.planes = on;
+        if on {
+            self.motion = Motion::Reveal;
+        }
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// The page the layer shows now, if any: on the plane path, the Weather
+    /// app's Now, Hourly or 10 Day page with nothing over it and not
+    /// opening by Reveal (the radar, menus and settings stay 2D).
+    pub(crate) fn layer_tab(&self) -> Option<u8> {
+        (self.planes
+            && self.screen == super::Screen::Weather
+            && self.tab < RADAR
+            && !self.menu_open
+            && self.align.is_none()
+            && !self.bare
+            && self.reveal().is_none())
+        .then_some(self.tab)
+    }
+
+    /// The page layer's view now (`None`: the page is drawn on screen 0).
+    #[must_use]
+    pub fn page_layer(&self) -> Option<PageView> {
+        let tab = self.layer_tab()?;
+        let a = self.page_area();
+        let win = Rect::new(a.x, a.y, a.w & !1, (a.h & !1).max(2));
+        let row = i32::from(LAYER_MARGIN) + self.scroll.offset() - self.rise();
+        let last = i32::from(picture_rows(tab)) - i32::from(win.h);
+        Some(PageView {
+            tab,
+            win,
+            row: row.clamp(0, last) as u16,
+        })
+    }
+
+    /// While the app opens by Reveal on the plane path: the window and how
+    /// many rows lower the app is read inside it.
+    #[must_use]
+    pub fn reveal_plane(&self) -> Option<(Rect, u16)> {
+        self.reveal_window().filter(|_| self.planes)
+    }
+
+    /// Page `tab`'s picture rows `top..top + rows` into `f` (its damage
+    /// those rows), in picture coordinates: the page in place, scrolled to
+    /// its top, below [`LAYER_MARGIN`] clear rows. The CPU draws it once
+    /// into the page layer's picture.
+    pub fn page_band(&mut self, tab: u8, f: &mut Frame, top: u16, rows: u16) {
+        f.clear();
+        f.damage(Rect::new(0, top, W, rows));
+        let saved = (self.tab, self.band);
+        self.tab = tab;
+        self.band = Some((i32::from(top), i32::from(top) + i32::from(rows)));
+        match tab {
+            0 => self.now_page(f),
+            1 => self.hourly_page(f),
+            _ => self.days_page(f),
+        }
+        (self.tab, self.band) = saved;
+    }
+
+    /// The page moved (a drag, a fling, the D-pad): redrawn on screen 0, or
+    /// on the planes only the scroll bar there (the layer moves).
+    pub(crate) fn page_moved(&mut self) {
+        match self.layer_tab() {
+            Some(1) => self.dirty(THUMB_TRACK),
+            Some(_) => {}
+            None => self.dirty(PAGE),
+        }
+    }
+
+    /// How far content laid out at `y` is drawn above it: the scroll less
+    /// the rise, or in a picture the page's place below its margin.
+    fn view_off(&self) -> i32 {
+        if self.band.is_some() {
+            i32::from(PAGE.y) - i32::from(LAYER_MARGIN)
+        } else {
+            self.scroll.offset() - self.rise()
+        }
+    }
+
+    /// The rows drawn: the picture's band, or the page down to its bottom.
+    fn view_rows(&self) -> (i32, i32) {
+        self.band.unwrap_or((0, i32::from(PAGE.y + PAGE.h)))
+    }
+
     /// Opens the Weather app on its Now page.
     pub(crate) fn open_weather(&mut self) {
         self.screen = super::Screen::Weather;
@@ -282,11 +405,20 @@ impl Shell {
         if t == self.tab {
             return;
         }
+        let was = self.tab;
         self.tab = t;
         self.scroll = super::motion::Scroll::new(max_scroll(t));
         self.anim = (self.motion != Motion::None).then_some(self.now);
         self.expanding = false;
-        self.dirty(PAGE);
+        // On the planes the page's picture changes, not screen 0 (only the
+        // scroll bar, Hourly's alone).
+        if self.layer_tab().is_some() {
+            if was == 1 || t == 1 {
+                self.dirty(THUMB_TRACK);
+            }
+        } else {
+            self.dirty(PAGE);
+        }
         self.dirty(TABS);
     }
 
@@ -296,14 +428,14 @@ impl Shell {
         self.scroll
             .set(before + i32::from(rows) * i32::from(ROW_STEP));
         if self.scroll.offset() != before {
-            self.dirty(PAGE);
+            self.page_moved();
         }
     }
 
     /// Where content laid out at `y` is drawn, scrolled (may be negative
     /// or past the page: the clip keeps it in).
     fn sy(&self, y: u16) -> i32 {
-        i32::from(y) - self.scroll.offset() + self.rise()
+        i32::from(y) - self.view_off()
     }
 
     /// A glass panel at a scrolled `y`, cut at the screen's top (the clip
@@ -368,17 +500,22 @@ impl Shell {
 
         // The page scrolls inside its own rectangle (an expanding hero card
         // may still reach above it).
-        let page = if self.reveal().is_some() {
+        // On the planes Cascade is the video window's: screen 0's part of
+        // the page (the scroll bar) is drawn whole from the first frame.
+        let page = if self.reveal().is_some() || self.layer_tab().is_some() {
             PAGE
         } else {
             self.page_area()
         };
         f.clip(Some(outer.map_or(page, |o| page.intersect(&o))));
-        match self.tab {
-            0 => self.now_page(f),
-            1 => self.hourly_page(f),
-            2 => self.days_page(f),
-            _ => self.radar_page(f),
+        match (self.layer_tab(), self.tab) {
+            // On the layer: only the scroll bar is screen 0's.
+            (Some(1), _) => self.hourly_thumb(f),
+            (Some(_), _) => {}
+            (None, 0) => self.now_page(f),
+            (None, 1) => self.hourly_page(f),
+            (None, 2) => self.days_page(f),
+            (None, _) => self.radar_page(f),
         }
         f.clip(outer);
 
@@ -412,7 +549,7 @@ impl Shell {
         }
     }
 
-    fn now_page(&self, f: &mut Frame) {
+    pub(crate) fn now_page(&self, f: &mut Frame) {
         let (ui, label, big) = (self.fonts.ui, self.fonts.label, self.fonts.big);
         let (wx, rg) = (&self.wx, &self.region);
         let icon = Icon::of(wx.now.sky);
@@ -537,20 +674,29 @@ impl Shell {
         }
     }
 
-    fn hourly_page(&self, f: &mut Frame) {
+    pub(crate) fn hourly_page(&self, f: &mut Frame) {
         let (ui, label) = (self.fonts.ui, self.fonts.label);
         let (wx, rg) = (&self.wx, &self.region);
         let (lo, hi) = wx.hours.iter().fold((i16::MAX, i16::MIN), |(a, b), h| {
             (a.min(h.temp), b.max(h.temp))
         });
-        // Only the rows on the page (and the one or two cut at its edges).
+        // Only the rows on the page (and the one or two cut at its edges),
+        // or in the picture's band.
         let off = self.scroll.offset();
-        let first = ((off - i32::from(ROW_H)).max(0) / i32::from(ROW_STEP)) as usize;
+        let first = if self.band.is_some() {
+            0
+        } else {
+            ((off - i32::from(ROW_H)).max(0) / i32::from(ROW_STEP)) as usize
+        };
+        let (top, bottom) = self.view_rows();
         for i in first..HOURS {
             let Some(h) = wx.hours.get(i) else { break };
-            let y = i32::from(ROW_Y) + i as i32 * i32::from(ROW_STEP) - off + self.rise();
-            if y >= i32::from(PAGE.y + PAGE.h) {
+            let y = i32::from(ROW_Y) + i as i32 * i32::from(ROW_STEP) - self.view_off();
+            if y >= bottom {
                 break;
+            }
+            if y + i32::from(ROW_H) <= top {
+                continue;
             }
             // The entrance staggers the rows on screen, not the list's.
             let k = (i - first) as u32;
@@ -598,15 +744,21 @@ impl Shell {
             let tw = ui.width(t.as_bytes());
             f.text(r.x + r.w - 14 - tw, r.y + 28, ui, TEXT, t.as_bytes());
         }
-        // Where the list is: a thin bar at the right edge.
-        let track = Rect::new(W - 9, ROW_Y, 3, ROW_STEP * ROWS as u16 - 3);
+        if self.band.is_none() {
+            self.hourly_thumb(f);
+        }
+    }
+
+    /// Where the Hourly list is: a thin bar at the right edge.
+    fn hourly_thumb(&self, f: &mut Frame) {
+        let track = THUMB_TRACK;
         f.push(Cmd::Fill {
             r: track,
             color: TRACK,
         });
         let max = i32::from(max_scroll(1)).max(1);
         let thumb_h = track.h * ROWS as u16 / HOURS as u16;
-        let at = off.clamp(0, max);
+        let at = self.scroll.offset().clamp(0, max);
         let y = track.y + ((i32::from(track.h - thumb_h) * at) / max) as u16;
         f.push(Cmd::Fill {
             r: Rect::new(track.x, y, 3, thumb_h),
@@ -756,7 +908,7 @@ impl Shell {
         }
     }
 
-    fn days_page(&self, f: &mut Frame) {
+    pub(crate) fn days_page(&self, f: &mut Frame) {
         const NAMES: [&[u8]; 7] = [b"MON", b"TUE", b"WED", b"THU", b"FRI", b"SAT", b"SUN"];
         let (ui, label) = (self.fonts.ui, self.fonts.label);
         let (wx, rg) = (&self.wx, &self.region);
@@ -764,7 +916,8 @@ impl Shell {
         for (k, d) in wx.days.iter().enumerate().take(DAYS.min(ROWS)) {
             let e = self.ease(k as u32);
             let y = self.sy(row(k).y);
-            if y + i32::from(ROW_H) <= 0 || y >= i32::from(PAGE.y + PAGE.h) {
+            let (top, bottom) = self.view_rows();
+            if y + i32::from(ROW_H) <= top || y >= bottom {
                 continue;
             }
             let r = Rect::new(16 + self.slide(k as u32), y.max(0) as u16, 448, ROW_H);

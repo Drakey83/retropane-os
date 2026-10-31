@@ -11647,6 +11647,33 @@ fn today_differ(got: &[u8], want: &[u8]) -> usize {
         .count()
 }
 
+/// The Weather page's area (rows 94-555): pixels further than an ARGB4444
+/// step plus its dither from `want` in any channel (48 of 255), and pixels
+/// that differ at all.
+/// The Now page's Sunset bar (how much of the day has gone: the clock's,
+/// like the masked clocks) is left out.
+fn page_differ(got: &[u8], want: &[u8]) -> (usize, usize) {
+    let w = rp_today::W * 3;
+    let (a, b) = (&got[94 * w..556 * w], &want[94 * w..556 * w]);
+    let sunset = rp_draw::Rect::new(248, 520, 216, 14);
+    a.chunks(3)
+        .zip(b.chunks(3))
+        .enumerate()
+        .filter(|(i, _)| {
+            let (x, y) = ((i % rp_today::W) as u16, (94 + i / rp_today::W) as u16);
+            !sunset.contains_point(x, y)
+        })
+        .fold((0, 0), |(far, any), (_, (p, q))| {
+            let d = p
+                .iter()
+                .zip(q)
+                .map(|(x, y)| x.abs_diff(*y))
+                .max()
+                .unwrap_or(0);
+            (far + usize::from(d > 48), any + usize::from(d > 0))
+        })
+}
+
 /// Pixels that differ within 32 px of a press at (`x`, `y`), unmasked.
 fn press_answer(got: &[u8], want: &[u8], x: u16, y: u16) -> usize {
     let near = rp_draw::Rect::new(x.saturating_sub(32), y.saturating_sub(32), 64, 64);
@@ -11695,6 +11722,15 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         false,
     );
     let bare = compare_screens(&wall);
+    // The Weather app as the 2D path draws it, for the plane path's check
+    // below: a screen a pen event, so Now is [2] and Hourly [4].
+    let tap_at = |x, y| [Input::PenDown { x, y }, Input::PenUp { x, y }];
+    let weather = today_screens(
+        &wall,
+        map.as_deref(),
+        &[tap_at(240, 150), tap_at(180, 578)].concat(),
+        true,
+    );
     let wsl = matches!(emulator(root)?, Emulator::Wsl);
     let dump = |name: &str| -> Result<Vec<u8>, String> {
         let shot = scratch(root, &format!("today-{name}.ppm"))?;
@@ -11862,6 +11898,69 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         // depth notice gone), not for a time (under load 500 ms wasn't
         // enough and Start was pressed on the bare wallpaper).
         until("today-after-compare", &want[0])?;
+        // The plane path (sheet weather-gpu-movement.md; ADR-0034 C4 as
+        // changed, L2): the hero card opens Weather by Reveal; each page
+        // shows on the video plane over screen 0 as the 2D path draws it
+        // (ARGB4444 + dither against 8 bits: near, not exact); a drag moves
+        // the page and leaves the header and tabs byte for byte; Home hands
+        // the screen back pixel-exact.
+        let page_near = |name: &str, want: &[u8]| -> Result<Vec<u8>, String> {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                poll_pause(Duration::from_millis(500));
+                let got = dump(name)?;
+                let (far, _) = page_differ(&got, want);
+                if far == 0 {
+                    return Ok(got);
+                }
+                if Instant::now() > deadline {
+                    let mut ppm = format!(
+                        "P6
+{} {}
+255
+",
+                        rp_today::W,
+                        rp_today::H
+                    )
+                    .into_bytes();
+                    ppm.extend_from_slice(want);
+                    let _ = std::fs::write(scratch(root, &format!("today-{name}-want.ppm"))?, ppm);
+                    return Err(format!(
+                        "today: the {name} page is far from the 2D path's in {far} pixels (target/emulator/today-{name}.ppm, expected today-{name}-want.ppm)"
+                    ));
+                }
+            }
+        };
+        press(&mut qmp, "hero", 240, 150, Some(TAP_GUEST_MS))?;
+        page_near("weather-now", &weather[2])?;
+        press(&mut qmp, "hourly", 180, 578, Some(TAP_GUEST_MS))?;
+        let still = page_near("weather-hourly", &weather[4])?;
+        touch(&mut qmp, &Action::TouchDown(240, 500))?;
+        for y in [470, 430, 390, 350, 310] {
+            guest_hold(60)?;
+            touch(&mut qmp, &Action::TouchDown(240, y))?;
+        }
+        guest_hold(60)?;
+        touch(&mut qmp, &Action::TouchUp)?;
+        guest_hold(2000)?;
+        let moved = dump("weather-dragged")?;
+        let (_, changed) = page_differ(&moved, &still);
+        if changed == 0 {
+            return Err("today: the Hourly page didn't move under a drag".into());
+        }
+        let chrome = |s: &[u8]| {
+            let w = rp_today::W * 3;
+            (s[36 * w..94 * w].to_vec(), s[556 * w..600 * w].to_vec())
+        };
+        if chrome(&moved) != chrome(&still) {
+            return Err(
+                "today: a drag changed the header or tabs (screen 0 must stay still)".into(),
+            );
+        }
+        qmp.key("f4", true)?;
+        guest_hold(TAP_GUEST_MS)?;
+        qmp.key("f4", false)?;
+        until("today-after-weather", &want[0])?;
         press(&mut qmp, "start-after-compare", sx, sy, None)?;
         until("menu-after-compare", &want[2])?;
         // The last menu entry is "Back to loader" (test images only).
@@ -11939,8 +12038,11 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     let stack =
         check_stack(log)?.ok_or_else(|| format!("today: no stack line in the run log:{log}"))?;
     eprintln!(
-        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, the wallpaper alone pixel-exact dithered and plain (16 bits), Back to loader returned; {}; stack {} of {} bytes",
+        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, the wallpaper alone pixel-exact dithered and plain (16 bits), Weather on the plane path (Now and Hourly near the 2D path's, a drag moved the page and not the header or tabs, Home pixel-exact; {}), Back to loader returned; {}; stack {} of {} bytes",
         calibrated.trim(),
+        log.lines()
+            .find(|l| l.contains("plane path:") && l.contains("commits"))
+            .map_or("no commit line", str::trim),
         line.trim(),
         stack.0,
         stack.1

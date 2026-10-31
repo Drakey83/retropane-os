@@ -10,6 +10,7 @@ mod image {
     use core::fmt::Write;
 
     use rp_draw::Frame;
+    use rp_draw::Renderer as _;
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::layers::Snapshot;
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
@@ -18,7 +19,9 @@ mod image {
     use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_tsc2046::Tsc2046;
-    use rp_graphics::{Graphics, Step};
+    use rp_gfx::layer::{Layer, PlaneFormat};
+    use rp_gfx::render::CpuRenderer;
+    use rp_graphics::{ClientId, Graphics, Handle, LayerState, Source, Step, Window};
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::soc::irq;
     use rp_hal_pxa27x::{Mmio, cpu, pmu, rt};
@@ -185,6 +188,121 @@ mod image {
     /// KB of planes in ~140 KB); unpacked at start into the RAM pool.
     static WALLPAPER_PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.zz"));
 
+    /// The plane path (sheet weather-gpu-movement.md, "The plane path
+    /// build, as built"; ADR-0034 C4 as changed, L2): the Weather pages on
+    /// the page layer, moved by repointing the video plane in the blanking.
+    /// `RP_TODAY_2D` builds the 2D renderer's way instead, to compare.
+    const PLANES: bool = option_env!("RP_TODAY_2D").is_none();
+    /// The tallest page picture's rows (Hourly's, 1,332).
+    const PIC_ROWS: usize = rp_shell::picture_rows(1) as usize;
+    /// The pages' 2700G memory: three pictures and one being rebuilt (~3.9
+    /// MiB of the pool's ~8.4).
+    const PAGES_QUOTA: u32 = 6 << 20;
+
+    /// A page's picture and the key of the draw list it was drawn from.
+    type Page = Option<(Handle, u32)>;
+
+    /// Page `tab`'s draw list's key, band by band (nothing drawn).
+    fn page_key(shell: &mut Shell, f: &mut Frame, tab: u8) -> u32 {
+        let rows = rp_shell::picture_rows(tab);
+        let mut key = rp_today::KEY_START;
+        let mut top = 0;
+        while top < rows {
+            let n = rp_today::PAGE_BAND.min(rows - top);
+            shell.page_band(tab, f, top, n);
+            key = rp_today::frame_key(f, key);
+            top += n;
+        }
+        key
+    }
+
+    /// Page `tab` drawn once by the CPU, band by band, into its layer in
+    /// SDRAM (straight alpha) and out as ARGB4444 with the shipped dither
+    /// (V3), then written into a new picture of the pages' client: the
+    /// picture and its draw list's key; the times logged.
+    fn build_page(
+        gfx: &mut Graphics<'static, Mmio, Vram>,
+        pc: ClientId,
+        shell: &mut Shell,
+        cpu: &mut CpuRenderer<'_>,
+        f: &mut Frame,
+        tab: u8,
+    ) -> Page {
+        let t0 = rt::ticks();
+        let rows = rp_shell::picture_rows(tab);
+        let mut key = rp_today::KEY_START;
+        let mut top = 0;
+        while top < rows {
+            let n = rp_today::PAGE_BAND.min(rows - top);
+            shell.page_band(tab, f, top, n);
+            key = rp_today::frame_key(f, key);
+            let _ = cpu.draw(f);
+            top += n;
+            rt::check_in();
+        }
+        let drawn_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
+        let t1 = rt::ticks();
+        let h = match gfx.picture(pc, W as u16, rows) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = writeln!(RunLog, "page {tab}: no picture ({e:?})");
+                return None;
+            }
+        };
+        let bytes = cpu.plane();
+        let mut row = [0u32; W / 2];
+        for y in 0..usize::from(rows) {
+            for (k, w) in row.iter_mut().enumerate() {
+                let a = y * W * 2 + 4 * k;
+                *w = u32::from_le_bytes([bytes[a], bytes[a + 1], bytes[a + 2], bytes[a + 3]]);
+            }
+            if gfx.write_picture(pc, h, (y * W * 2) as u32, &row).is_err() {
+                let _ = gfx.free_picture(pc, h);
+                return None;
+            }
+            if y % 64 == 0 {
+                rt::check_in();
+            }
+        }
+        let _ = writeln!(
+            RunLog,
+            "page {tab}: its picture (480 x {rows}, ARGB4444) drawn by the CPU in {drawn_us} us, written in {} us",
+            rt::ticks().wrapping_sub(t1) / 13 * 4
+        );
+        Some((h, key))
+    }
+
+    /// The layer showing page picture `h` as the shell's view `v` has it.
+    fn page_state(h: Handle, v: rp_shell::PageView) -> LayerState {
+        LayerState {
+            src: Source::Picture(h),
+            win: Window {
+                x: v.win.x,
+                y: v.win.y,
+                w: v.win.w,
+                h: v.win.h,
+                row: v.row,
+                col: 0,
+            },
+        }
+    }
+
+    /// Reveal's window over the app composed aside.
+    fn reveal_state(r: rp_draw::Rect, shift: u16) -> LayerState {
+        let (x, y, w, h, row, col) = rp_today::reveal_window(r, shift);
+        LayerState {
+            src: Source::Aside,
+            win: Window {
+                x,
+                y,
+                w,
+                h,
+                row,
+                col,
+            },
+        }
+    }
+
     /// Start of the clock, in local minutes since 1970 (from the build).
     fn start_minutes() -> i64 {
         let utc: i64 = env!("RP_TODAY_UTC_MIN").parse().unwrap_or(0);
@@ -264,7 +382,12 @@ mod image {
         let (icon_px, rest) = pool.split_at_mut(rp_today::ICON_WORDS);
         let (wall_words, rest) = rest.split_at_mut(rp_today::WALLPAPER_BYTES.div_ceil(4));
         let (radar_px, rest) = rest.split_at_mut(rp_today::RADAR_WORDS);
-        let (map_words, _) = rest.split_at_mut(rp_today::MAP_BYTES.div_ceil(4));
+        let (map_words, rest) = rest.split_at_mut(rp_today::MAP_BYTES.div_ceil(4));
+        // The plane path's page drawing: the CPU's layer (ARGB8888) and the
+        // picture it is flushed into (ARGB4444), the tallest page's size.
+        let (layer_px, rest) = rest.split_at_mut(W * PIC_ROWS);
+        let (plane_words, _) = rest.split_at_mut(W * PIC_ROWS / 2);
+        let plane_bytes = rp_hal_mem::words_as_bytes_mut(plane_words);
         let wall_bytes =
             &mut rp_hal_mem::words_as_bytes_mut(wall_words)[..rp_today::WALLPAPER_BYTES];
         let map_bytes = &mut rp_hal_mem::words_as_bytes_mut(map_words)[..rp_today::MAP_BYTES];
@@ -351,6 +474,50 @@ mod image {
         ) else {
             crash(format_args!("started twice"))
         };
+
+        // The plane path: the pages' client and their pictures, drawn once
+        // now (rebuilt only when a page's draw list changes).
+        let pc = if PLANES {
+            gfx.client(PAGES_QUOTA)
+        } else {
+            None
+        };
+        let Some(cpu_layer) = Layer::new(layer_px, W as u32, PIC_ROWS as u32, W) else {
+            crash(format_args!("page layer"))
+        };
+        let mut cpu =
+            CpuRenderer::new(cpu_layer, plane_bytes, W * 2, PlaneFormat::Argb4444Dithered);
+        let mut pages: [Page; 3] = [None; 3];
+        if let Some(pc) = pc {
+            shell.use_planes(true);
+            // The clock first: the Now page's Sunset bar follows it.
+            shell.set_time(clock::time_at(start_minutes()));
+            for (tab, p) in pages.iter_mut().enumerate() {
+                *p = build_page(gfx, pc, shell, &mut cpu, frame, tab as u8);
+            }
+            if pages.iter().any(Option::is_none) {
+                // Without every picture, the 2D way throughout.
+                shell.use_planes(false);
+                let _ = writeln!(RunLog, "plane path: off (a page picture failed)");
+            }
+        }
+        let _ = writeln!(
+            RunLog,
+            "plane path: {}",
+            if PLANES && pages.iter().all(Option::is_some) {
+                "on (the Weather pages on the page layer)"
+            } else {
+                "off (the 2D renderer draws every frame)"
+            }
+        );
+        // The page the layer shows, a Reveal under way, a picture replaced
+        // and given back once nothing shows it.
+        let mut shown_tab: Option<u8> = None;
+        let mut revealing = false;
+        let mut retire: Option<Handle> = None;
+        // The pages' draw lists to check against their pictures (a new
+        // minute), rebuilt ahead while the screen is still.
+        let mut pages_check = false;
 
         // Input: the keypad and the touch screen, interrupt-driven.
         let (Some(kp), Some(gpio), Some(ssp)) =
@@ -529,6 +696,7 @@ mod image {
                 minute_shown = minute;
                 let time: Time = clock::time_at(minute);
                 shell.set_time(time);
+                pages_check = true;
             }
             // Movement by itself (an entrance, a fling, a rebound) marks
             // what changed; it is drawn below, not counted as an answer.
@@ -814,6 +982,12 @@ mod image {
                     fifo_full,
                     key_events.missed()
                 );
+                let cm = gfx.commits();
+                let _ = writeln!(
+                    RunLog,
+                    "plane path: {} commits (window moves and hand-offs), {} ending outside the plane window (lines 643-2), the last on line {:?}",
+                    cm.done, cm.late, cm.last_line
+                );
                 let _ = writeln!(
                     RunLog,
                     "gpu frames: worst CPU queueing {queue_worst} us, worst wait for the previous frame and scan-out {wait_worst} us, worst queue-to-flip {engine_worst} us, background rebuilt {rebuilds} times; flips waited for the blanking {}, slipped a refresh {}; copied behind the scan {}, flipped as large {}, flipped with no copy window {}; copy times {:?} us",
@@ -882,14 +1056,142 @@ mod image {
                 backdrop_shown = want;
             }
 
+            // The plane path: what the page layer shows. A hand-off (the
+            // layer on, off, another page, a page redrawn) is a commit with
+            // this pass's frame; a move only repoints it, no engine.
+            let mut commit: Option<(Option<LayerState>, bool)> = None;
+            if let Some(pc) = pc.filter(|_| pages.iter().all(Option::is_some)) {
+                if !gfx.busy() && !gfx.commit_pending() {
+                    if let Some((r, shift)) = shell.reveal_plane() {
+                        if !gfx.aside_held() && !revealing {
+                            // The app drawn whole aside, shown through the
+                            // card's window.
+                            commit = Some((Some(reveal_state(r, shift)), true));
+                        }
+                    } else if gfx.aside_held() {
+                        // Reveal done: the app takes the screen (the same
+                        // pixels), then its page goes onto the layer.
+                        let _ = gfx.show_aside(pc, None);
+                        revealing = false;
+                        shown_tab = None;
+                    } else {
+                        let want = shell.page_layer();
+                        let still = !(shell.animating() || filter.down());
+                        if want.map(|v| v.tab) != shown_tab {
+                            if let Some(v) = want {
+                                let i = usize::from(v.tab);
+                                let key = page_key(shell, frame, v.tab);
+                                if pages[i].is_some_and(|(_, k)| k != key) {
+                                    // Not shown (another page is): replaced now.
+                                    if let Some((h, _)) = pages[i].take() {
+                                        let _ = gfx.free_picture(pc, h);
+                                    }
+                                    pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, v.tab);
+                                }
+                                if let Some((h, _)) = pages[i] {
+                                    commit = Some((Some(page_state(h, v)), false));
+                                    shown_tab = Some(v.tab);
+                                }
+                            } else {
+                                commit = Some((None, false));
+                                shown_tab = None;
+                            }
+                        } else if let Some(v) = want
+                            && shell.needs_frame()
+                            && still
+                        {
+                            // Something changed: the shown page's draw list
+                            // checked against its picture's.
+                            let i = usize::from(v.tab);
+                            let key = page_key(shell, frame, v.tab);
+                            if pages[i].is_some_and(|(_, k)| k != key) {
+                                let old = pages[i].take();
+                                pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, v.tab);
+                                match pages[i] {
+                                    Some((h, _)) => {
+                                        commit = Some((Some(page_state(h, v)), false));
+                                        retire = old.map(|(h, _)| h);
+                                    }
+                                    None => pages[i] = old,
+                                }
+                            }
+                        }
+                    }
+                }
+                // Moves: the window follows (staged; the latest wins).
+                if commit.is_none() {
+                    if let Some((r, shift)) = shell.reveal_plane() {
+                        if revealing {
+                            let _ = gfx.move_layer(pc, reveal_state(r, shift).win);
+                        }
+                    } else if let Some(v) = shell.page_layer()
+                        && shown_tab == Some(v.tab)
+                        && let Some((h, _)) = pages[usize::from(v.tab)]
+                    {
+                        let st = page_state(h, v);
+                        if gfx.layer().map(|l| l.win) != Some(st.win) {
+                            let _ = gfx.move_layer(pc, st.win);
+                        }
+                    }
+                }
+                // Ahead of need, while still: a page not shown whose draw
+                // list changed (the clock's minute) is rebuilt, one a pass,
+                // so opening or turning to it never waits for a build.
+                if pages_check
+                    && commit.is_none()
+                    && !shell.animating()
+                    && !filter.down()
+                    && !shell.needs_frame()
+                    && !gfx.busy()
+                    && !gfx.commit_pending()
+                    && !gfx.aside_held()
+                {
+                    let stale = (0..3u8).find(|&t| {
+                        Some(t) != shown_tab
+                            && pages[usize::from(t)]
+                                .is_some_and(|(_, k)| k != page_key(shell, frame, t))
+                    });
+                    match stale {
+                        Some(t) => {
+                            let i = usize::from(t);
+                            if let Some((h, _)) = pages[i].take() {
+                                let _ = gfx.free_picture(pc, h);
+                            }
+                            pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, t);
+                        }
+                        None => pages_check = false,
+                    }
+                }
+                // A replaced picture goes back once nothing shows it.
+                if let Some(h) = retire
+                    && !gfx.commit_pending()
+                    && gfx.free_picture(pc, h).is_ok()
+                {
+                    retire = None;
+                }
+            }
+
             // Draw what changed, timing it. One job at a time: with a frame
             // still in flight (its flip waiting for the blanking, R115) the
             // new one waits a pass, the pen sampled meanwhile, rather than
-            // the CPU spinning until the flip.
-            if shell.needs_frame() && !gfx.busy() {
+            // the CPU spinning until the flip. Nothing while a frame is held
+            // aside (Reveal): it waits for the hand-over.
+            if (commit.is_some() || shell.needs_frame()) && !gfx.busy() && !gfx.aside_held() {
                 let t0 = rt::ticks();
                 z_shell.run(|| shell.frame(frame));
-                let _ = z_compositor.run(|| gfx.frame(frame, &mut gclock));
+                let _ = z_compositor.run(|| match (commit, pc) {
+                    (Some((layer, aside)), Some(pc)) => {
+                        let r = gfx.frame_commit(pc, frame, layer, aside, &mut gclock);
+                        if r.is_ok() && aside {
+                            revealing = true;
+                        }
+                        if let Err(e) = r {
+                            let _ = writeln!(RunLog, "plane path: a commit refused ({e:?})");
+                        }
+                        r
+                    }
+                    _ => gfx.frame(frame, &mut gclock),
+                });
                 let t1 = rt::ticks();
                 let us = t1.wrapping_sub(t0) / 13 * 4;
                 if core::mem::take(&mut compare_frame) {
@@ -985,7 +1287,7 @@ mod image {
             if !filter.down() && raw.is_none() && touch.pen_down() {
                 phantom = phantom.saturating_add(1);
             }
-            let wait_ms: u32 = if showing.is_some() || gfx.busy() {
+            let wait_ms: u32 = if showing.is_some() || gfx.busy() || gfx.commit_pending() {
                 // A frame is with the engine or waiting for the blanking:
                 // flip it as soon as it's due.
                 1
@@ -1020,7 +1322,7 @@ mod image {
             let mut wait_ticks = wait_ms * TICKS_MS;
             // The frame in flight's own time, if sooner (R115: woken at its
             // flip's deadline, not up to a millisecond after).
-            if let Some(due) = flip_due.filter(|_| gfx.busy()) {
+            if let Some(due) = flip_due.filter(|_| gfx.busy() || gfx.commit_pending()) {
                 let until = due.wrapping_sub(gclock.now_us()) as i32;
                 wait_ticks = wait_ticks
                     .min((until.max(1) as u32).saturating_mul(13) / 4)

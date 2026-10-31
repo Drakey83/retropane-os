@@ -29,7 +29,7 @@ pub mod motion;
 mod weather_app;
 mod weather_settings;
 
-pub use weather_app::Motion;
+pub use weather_app::{LAYER_MARGIN, Motion, PageView, picture_rows};
 
 use rp_draw::{Argb, Cmd, Font, Frame, Image, Rect};
 pub use rp_touch_cal::Calibration;
@@ -403,6 +403,16 @@ pub struct Shell {
     radar_frame: u8,
     radar_play: bool,
     radar_at: u32,
+    /// The plane path (sheet weather-gpu-movement.md, ADR-0034 C4 as
+    /// changed, L2): the Weather pages on the page layer, screen 0 their
+    /// chrome. Set by the device; the preview draws everything in 2D.
+    planes: bool,
+    /// Whether the last frame left the page to the layer (a change redraws
+    /// the page's area on screen 0).
+    layer_was: bool,
+    /// While a page is drawn into its picture: the picture's rows drawn
+    /// (top, bottom), in picture rows.
+    band: Option<(i32, i32)>,
 }
 
 impl Shell {
@@ -441,6 +451,9 @@ impl Shell {
             radar_frame: 0,
             radar_play: true,
             radar_at: 0,
+            planes: false,
+            layer_was: false,
+            band: None,
         };
         s.dirty(Rect::new(0, 0, W, H));
         s
@@ -652,7 +665,7 @@ impl Shell {
             return Action::Redraw;
         }
         if self.screen == Screen::Weather && self.scroll.step(now_ms) {
-            self.dirty(weather_app::PAGE);
+            self.page_moved();
             if self.anim.is_none() && self.notice.is_none() {
                 return Action::Redraw;
             }
@@ -660,11 +673,15 @@ impl Shell {
         if let Some(start) = self.anim {
             // A page arriving: redraw it every pass until it's in place.
             let area = self.page_area();
+            // On the planes an entrance moves the layer's window only.
+            let planes = self.layer_tab().is_some() || self.reveal_plane().is_some();
             if now_ms.wrapping_sub(start) >= weather_app::ANIM_MS {
                 self.anim = None;
                 self.expanding = false;
             }
-            self.dirty(area);
+            if !planes {
+                self.dirty(area);
+            }
             if self.notice.is_none() {
                 return Action::Redraw;
             }
@@ -691,7 +708,9 @@ impl Shell {
         if self.screen == Screen::Weather {
             // The header's "read at" time; the Now page's sunset bar.
             self.dirty(weather_app::HEAD);
-            if self.tab == 0 {
+            // On the planes the Now page's picture is checked against its
+            // draw list when this frame is drawn (the device's).
+            if self.tab == 0 && self.layer_tab().is_none() {
                 self.dirty(weather_app::PAGE);
             }
         }
@@ -904,7 +923,7 @@ impl Shell {
         let before = self.scroll.offset();
         self.scroll.drag(y, self.now);
         if self.scroll.offset() != before {
-            self.dirty(weather_app::PAGE);
+            self.page_moved();
         }
     }
 
@@ -1172,6 +1191,13 @@ impl Shell {
     /// Fills `f` with the changed rectangles and the whole scene, and
     /// forgets the changes.
     pub fn frame(&mut self, f: &mut Frame) {
+        // The page handed to the layer or back: its area on screen 0 is
+        // the wallpaper or the page.
+        let layer = self.layer_tab().is_some();
+        if layer != self.layer_was {
+            self.layer_was = layer;
+            self.dirty(weather_app::PAGE);
+        }
         f.clear();
         for d in &self.damage[..self.damaged] {
             f.damage(*d);
@@ -1317,7 +1343,12 @@ impl Shell {
             color: DIM,
         });
 
-        let reveal = self.reveal_window().map(|(r, _)| r);
+        // On the plane path the app is drawn whole (aside) and the window
+        // is the video plane's.
+        let reveal = self
+            .reveal_window()
+            .map(|(r, _)| r)
+            .filter(|_| !self.planes);
         match self.screen {
             Screen::Today => self.today_scene(f),
             Screen::Weather => {
