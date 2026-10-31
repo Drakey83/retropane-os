@@ -91,6 +91,27 @@ the trust and the switch in LegacySync.
   (likely a few hundred KiB: the budget rule asks the owner), the
   handshake's time and stack on the PXA270, and the arena's peak.
 
+## The build plan (2026-10-31, from the code)
+
+- **The link while an image runs:** the loader switches USB off before it
+  starts an image (`boot/loader` ~line 3,985: pull-up off, the controller
+  disabled), so the running program brings up its own USB device: the
+  same `pxa-udc` driver, a CDC serial function Windows binds with no driver
+  (as the loader's), its own product id so `cargo xtask load` doesn't take
+  it for the loader. (D's WinUSB vendor interface stays the target for
+  LegacySync; CDC first because Windows 11 already binds it.)
+- **The relay on the PC:** `cargo xtask net` (dev) opens that port and
+  serves framed requests (open host:port, data, close, errors) with real
+  TCP; later inside LegacySync with its switch and partnership (ADR-0028).
+- **TLS: owner's call.** On the device (rustls, the plan above) is the
+  secure end state and the larger part of the work. A dev-only first step
+  could let the PC relay make the HTTPS request (the key passes his own PC
+  over USB in clear): faster to his first live forecast, never shipped,
+  logged in `docs/quality-audit.md` until replaced.
+- **Then:** Tempest's REST (`/swd/rest/stations` to find his station,
+  `better_forecast` for it) parsed on the device into the shell's
+  `Forecast`, replacing the sample; the key from the key-entry screen.
+
 ## What overturns D
 
 - The certificate check can't be made sound on the device in a reasonable
