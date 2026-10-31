@@ -1528,3 +1528,25 @@ fn on_the_planes_entrances_move_the_window_and_draw_nothing() {
         f.dirty()
     );
 }
+
+#[test]
+fn a_long_swipe_moves_the_tab_line_one_tab_at_most() {
+    // A swipe turns one page; its line over the tabs follows the pen no
+    // further (the owner, 2026-10-30: a long swipe slid it two or three).
+    let mut s = weather(1);
+    drawn(&mut s);
+    s.input(Input::PenDown { x: 440, y: 300 });
+    for x in [420, 300, 150, 40] {
+        s.input(Input::PenMove { x, y: 300 });
+    }
+    let f = drawn(&mut s);
+    let line = f
+        .cmds()
+        .find_map(|c| match *c {
+            Cmd::Fill { r, color } if color == FOCUS && r.h == 3 => Some(r),
+            _ => None,
+        })
+        .expect("the tab line");
+    let next = weather_app::tab_rect(2);
+    assert_eq!(line.x, next.x + 40, "{line:?}: on 10 Day, not past it");
+}

@@ -547,7 +547,15 @@ impl Shell {
                 // The underline follows a swipe live: a full tab's width
                 // for a swipe of the turning distance and more, the way the
                 // page will go (a swipe left moves on).
-                let lead = -i32::from(self.swipe_dx()) * i32::from(r.w) / 180;
+                // At most one tab either way, and never past the first or
+                // last: a swipe turns one page (the owner, 2026-10-30: a
+                // long swipe slid the line two or three tabs).
+                let last = TAB_NAMES.len() as i32 - 1;
+                let (lo, hi) = (
+                    if i == 0 { 0 } else { -i32::from(r.w) },
+                    if i as i32 == last { 0 } else { i32::from(r.w) },
+                );
+                let lead = (-i32::from(self.swipe_dx()) * i32::from(r.w) / 180).clamp(lo, hi);
                 let x = (i32::from(r.x) + 40 + lead).clamp(0, i32::from(W) - i32::from(r.w - 80));
                 f.push(Cmd::Fill {
                     r: Rect::new(x as u16, r.y + r.h - 4, r.w - 80, 3),
