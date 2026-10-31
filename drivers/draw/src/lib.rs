@@ -462,5 +462,7 @@ pub trait Renderer {
     }
 }
 
+pub mod pics;
+
 #[cfg(test)]
 mod tests;
