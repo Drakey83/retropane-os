@@ -200,6 +200,19 @@ pub const STATION_KINDS: [(&str, &str); 5] = [
     ("Weather Underground", "station ID"),
 ];
 
+/// The weather icon packs (the setting's index): VClouds, the default
+/// (built in, and every size on the card), then the owner's own packs, on
+/// the SD card (`RPICONS<n>.PAK`).
+pub const PACKS: [&str; 7] = [
+    "VClouds",
+    "Sunburst",
+    "Golden Hour",
+    "Frosted",
+    "Noir",
+    "Aurora",
+    "Chrome",
+];
+
 /// Light or dark (ui.md "Light and dark": a core decision).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Appearance {
@@ -365,8 +378,7 @@ pub struct Settings {
     pub station: Station,
     /// Index into [`REFRESH`].
     pub refresh: u8,
-    /// The icon pack's index (0: VClouds, the base set; packs on the card
-    /// later).
+    /// The icon pack: an index into [`PACKS`].
     pub pack: u8,
     /// The radar's map.
     pub radar: RadarMap,
@@ -530,7 +542,8 @@ impl Settings {
         self.home = self.home.min(n as u8 - 1);
         self.region %= REGIONS.len() as u8;
         self.refresh %= REFRESH.len() as u8;
-        // Only the base pack exists yet.
-        self.pack = 0;
+        if usize::from(self.pack) >= PACKS.len() {
+            self.pack = 0;
+        }
     }
 }

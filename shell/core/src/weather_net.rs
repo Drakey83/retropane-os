@@ -56,7 +56,7 @@ const fn bit(a: Ask) -> u8 {
 pub struct Question {
     /// What it is.
     pub ask: Ask,
-    line: [u8; 72],
+    line: [u8; 96],
     n: usize,
     /// Save's record.
     pub body: Option<[u8; store::LEN]>,
@@ -67,6 +67,23 @@ impl Question {
     #[must_use]
     pub fn line(&self) -> &[u8] {
         &self.line[..self.n]
+    }
+
+    /// The line as a log may show it: the first two words (a key after
+    /// them is never logged).
+    #[must_use]
+    pub fn logged(&self) -> &[u8] {
+        let l = self.line();
+        let mut spaces = 0;
+        let end = l
+            .iter()
+            .position(|&c| {
+                spaces += usize::from(c == b' ');
+                spaces == 2 && self.ask == Ask::Tempest
+                    || spaces == 2 && l.starts_with(b"RPNET TEMPEST")
+            })
+            .unwrap_or(l.len());
+        &l[..end]
     }
 
     fn push(&mut self, b: &[u8]) {
@@ -113,7 +130,7 @@ impl Shell {
         self.wants &= !bit(a);
         let mut q = Question {
             ask: a,
-            line: [0; 72],
+            line: [0; 96],
             n: 0,
             body: None,
         };
@@ -145,13 +162,19 @@ impl Shell {
                     Provider::MetNo => b"METNO ",
                     Provider::Tempest => b"TEMPEST",
                 });
+                if self.wset.provider == Provider::Tempest {
+                    self.push_key(&mut q);
+                }
                 if self.wset.provider != Provider::Tempest {
                     q.push(degrees(p.lat).as_bytes());
                     q.push(b" ");
                     q.push(degrees(p.lon).as_bytes());
                 }
             }
-            Ask::Tempest => q.push(b"TEMPEST"),
+            Ask::Tempest => {
+                q.push(b"TEMPEST");
+                self.push_key(&mut q);
+            }
         }
         q.push(b"\n");
         q.line[q.n] = 0;
@@ -164,6 +187,18 @@ impl Shell {
     pub fn net_retry(&mut self) {
         if let Some(a) = self.asking.take() {
             self.want(a);
+        }
+    }
+
+    /// The station key typed on the device, after a space (the owner,
+    /// 2026-10-31: "i should just be able to put the key in and it be
+    /// accepted"): the dev relay makes the one call with it and keeps
+    /// nothing (quality audit C95); the device's log never prints it
+    /// ([`Question::logged`]).
+    fn push_key(&self, q: &mut Question) {
+        if self.wset.tempest_key.is_set() {
+            q.push(b" ");
+            q.push(self.wset.tempest_key.expose());
         }
     }
 
@@ -234,7 +269,10 @@ impl Shell {
                 let place = self.wset.place().name;
                 let f = match self.wset.provider {
                     Provider::OpenMeteo => rp_weather::open_meteo::forecast(body, &self.wx, place),
-                    Provider::Tempest => rp_weather::tempest::from_tempest(body, &self.wx, place),
+                    Provider::Tempest => {
+                        self.adopt_station(body);
+                        rp_weather::tempest::from_tempest(body, &self.wx, self.wset.place().name)
+                    }
                     Provider::Nws | Provider::MetNo => None,
                 };
                 if let Some(f) = f {
@@ -247,6 +285,7 @@ impl Shell {
                 }
             }
             Ask::Tempest => {
+                self.adopt_station(body);
                 // The station's reading is "now"; the forecast stays.
                 if let Some(t) = rp_weather::tempest::from_tempest(body, &self.wx, self.wx.place) {
                     let mut f = self.wx;
@@ -255,6 +294,32 @@ impl Shell {
                     self.station_live = true;
                 }
             }
+        }
+    }
+
+    /// The station's place, the first time it answers: kept, shown and
+    /// made home, and its forecast asked for (the owner, 2026-10-31: "that
+    /// should automatically switch to your location once you connect it").
+    fn adopt_station(&mut self, body: &[u8]) {
+        if self.station_live {
+            return;
+        }
+        let Some((name, lat, lon)) = rp_weather::tempest::station_place(body) else {
+            return;
+        };
+        let p = rp_weather::settings::Place {
+            name,
+            area: rp_weather::Name::new("Your station"),
+            lat,
+            lon,
+        };
+        let was = self.wset.current;
+        if self.wset.add_place(p) && (self.wset.current != was || self.wset.home != self.wset.current) {
+            self.wset.home = self.wset.current;
+            self.station_live = true;
+            self.apply_settings();
+            self.want(Ask::Save);
+            self.want(Ask::Forecast);
         }
     }
 
@@ -287,8 +352,10 @@ impl Shell {
     /// The header's line about the data: where from and how old.
     pub(crate) fn data_age(&self) -> Line {
         let src = Line::new().push(self.wx.source.as_bytes());
+        if self.wants(Ask::Forecast) {
+            return src.push(b", updating");
+        }
         match self.fetched_at {
-            None if self.wants(Ask::Forecast) => src.push(b", updating"),
             None => src.push(b", sample"),
             Some(at) => {
                 let min = self.now.wrapping_sub(at) / 60_000;
@@ -312,5 +379,28 @@ mod tests {
         assert_eq!(degrees(-89_061).as_bytes(), b"-89.061");
         assert_eq!(degrees(-5).as_bytes(), b"-0.005");
         assert_eq!(degrees(180_000).as_bytes(), b"180.000");
+    }
+
+    #[test]
+    fn a_tempest_question_carries_the_key_and_its_log_never_does() {
+        let mut q = Question {
+            ask: Ask::Tempest,
+            line: [0; 96],
+            n: 0,
+            body: None,
+        };
+        q.push(b"RPNET TEMPEST abcd-1234
+");
+        assert_eq!(q.logged(), b"RPNET TEMPEST");
+        let mut f = Question {
+            ask: Ask::Forecast,
+            line: [0; 96],
+            n: 0,
+            body: None,
+        };
+        f.push(b"RPNET OPENMETEO 1.000 2.000
+");
+        assert_eq!(f.logged(), b"RPNET OPENMETEO 1.000 2.000
+");
     }
 }

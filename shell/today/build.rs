@@ -117,6 +117,36 @@ pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = [];
     );
     std::fs::write(Path::new(&out).join("icons.zz"), packed).expect("OUT_DIR writable");
     std::fs::write(Path::new(&out).join("icons.rs"), rs).expect("OUT_DIR writable");
+    // The card's picture packs, every condition at every size (made by
+    // `icons.py --all`): too big for the image area (1.6 MB packed each),
+    // so `cargo xtask load` puts them on the SD card (`RPICONS<n>.PAK`) and
+    // the image reads the one the settings name. Pack 0 is VClouds
+    // (`local/icons/icons-all.rs`), packs 1-6 the owner's own, in
+    // `rp_weather::settings::PACKS`' order (`icons-<name>.rs`, from his art
+    // in local/, never committed).
+    for (n, file) in [
+        (0, "icons-all.rs"),
+        (1, "icons-sunburst.rs"),
+        (2, "icons-golden-hour.rs"),
+        (3, "icons-frosted.rs"),
+        (4, "icons-noir.rs"),
+        (5, "icons-aurora.rs"),
+        (6, "icons-chrome.rs"),
+    ] {
+        let src = Path::new(&dir).join("../../local/icons").join(file);
+        watch_local(&src);
+        if let Ok(t) = std::fs::read_to_string(&src) {
+            let t = if std::env::var("RP_PICTURE_ORIGINAL").is_ok() {
+                t
+            } else {
+                looked(&t)
+            };
+            let pak = pack_file(&t);
+            println!("cargo:warning=picture pack {n} ({file}): {} bytes", pak.len());
+            std::fs::write(Path::new(&out).join(format!("rp-icons{n}.pak")), pak)
+                .expect("OUT_DIR writable");
+        }
+    }
 
     // Rebuilt each time, so the clock starts near the real time.
     println!("cargo:rerun-if-changed=build.rs");
@@ -273,6 +303,41 @@ fn icon_words(text: &str) -> usize {
 /// against its neighbours (PNG's filter at 4 bytes a pixel); and the
 /// module `rp_today::icon_data` includes (the list, `WORDS`, the stream).
 fn pack_icons(text: &str) -> (String, Vec<u8>) {
+    let (desc, words, packed) = pack_set(text);
+    let d: Vec<String> = desc
+        .iter()
+        .map(|(k, i, w, h)| format!("({k}, {i}, {w}, {h})"))
+        .collect();
+    let rs = format!(
+        "pub const COUNT: usize = {n};
+pub const WORDS: usize = {words};
+pub static DESC: [(u8, u8, u16, u16); COUNT] = [{d}];
+pub static PACKED: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/icons.zz\"));
+",
+        n = desc.len(),
+        d = d.join(", ")
+    );
+    (rs, packed)
+}
+
+/// The SD card's pack (`rp_today::pack_into`'s format): `RPIK`, version
+/// 1, the count, two zero bytes, the words, the table, the stream.
+fn pack_file(text: &str) -> Vec<u8> {
+    let (desc, words, packed) = pack_set(text);
+    let mut f = b"RPIK".to_vec();
+    f.extend([1, desc.len() as u8, 0, 0]);
+    f.extend((words as u32).to_le_bytes());
+    for (k, i, w, h) in desc {
+        f.extend([k, i]);
+        f.extend(w.to_le_bytes());
+        f.extend(h.to_le_bytes());
+    }
+    f.extend(packed);
+    f
+}
+
+/// The pictures' list, their words and the zlib stream.
+fn pack_set(text: &str) -> (Vec<(u8, u8, u16, u16)>, usize, Vec<u8>) {
     let ints = |s: &str| -> Vec<u32> {
         s.split(',')
             .filter_map(|v| {
@@ -330,24 +395,19 @@ fn pack_icons(text: &str) -> (String, Vec<u8>) {
         }
         let bytes: Vec<u8> = px.iter().flat_map(|p| p.to_le_bytes()).collect();
         stream.extend(paeth4(&bytes, w, h));
-        desc.push(format!("({kind}, {id}, {w}, {h})"));
+        desc.push((
+            kind.parse().unwrap(),
+            id.parse().unwrap(),
+            w as u16,
+            h as u16,
+        ));
     }
-    let rs = format!(
-        "pub const COUNT: usize = {n};
-pub const WORDS: usize = {words};
-pub static DESC: [(u8, u8, u16, u16); COUNT] = [{d}];
-pub static PACKED: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/icons.zz\"));
-",
-        n = desc.len(),
-        words = stream.len() / 4,
-        d = desc.join(", ")
-    );
     let packed = if stream.is_empty() {
         Vec::new()
     } else {
         rp_inflate::pack::zlib(&stream)
     };
-    (rs, packed)
+    (desc, stream.len() / 4, packed)
 }
 
 /// PNG's Paeth filter at 4 bytes a pixel (each channel against the same

@@ -90,19 +90,18 @@ impl Shell {
         let n = self.wset.n_places;
         match self.screen {
             Screen::WeatherSettings => {
-                // Up to three places, else two and "all of them".
-                if n <= 3 {
+                // Up to two places, then Add (while there's room) and
+                // Manage (remove one, choose home): reachable whatever the
+                // count (the owner, 2026-10-31: no way to remove Seattle).
+                if n <= 2 {
                     (0..n).for_each(|i| add(Item::Place(i)));
+                    add(Item::AddPlace);
                 } else {
                     add(Item::Place(self.wset.current));
-                    // And home, or the first other one.
                     let (c, h) = (self.wset.current, self.wset.home);
                     add(Item::Place(if h != c { h } else { u8::from(c == 0) }));
-                    add(Item::AllPlaces);
                 }
-                if n < 4 {
-                    add(Item::AddPlace);
-                }
+                add(Item::AllPlaces);
                 for i in [
                     Item::Forecast,
                     Item::Station,
@@ -227,7 +226,7 @@ impl Shell {
     /// app to the Today screen.
     pub(crate) fn go_back(&mut self) {
         match self.screen {
-            Screen::AddPlace if self.wset.n_places > 3 => self.open(Screen::WeatherPlaces),
+            Screen::AddPlace if self.wset.n_places > 2 => self.open(Screen::WeatherPlaces),
             Screen::WeatherPlaces | Screen::AddPlace | Screen::WeatherFrom => {
                 self.open(Screen::WeatherSettings);
             }
@@ -260,8 +259,14 @@ impl Shell {
                     self.dirty(Rect::new(0, TOP, W, H - 40 - TOP));
                 }
             }
+            // On the places list a tap shows it and makes it home; on T1 it
+            // shows it.
             (_, Item::Place(i)) => {
-                if i != self.wset.current {
+                let home = self.screen == Screen::WeatherPlaces && self.wset.home != i;
+                if home {
+                    self.wset.home = i;
+                }
+                if i != self.wset.current || home {
                     self.wset.current = i;
                     self.settings_changed(true);
                 }
@@ -293,7 +298,11 @@ impl Shell {
                 self.wset.next_region();
                 self.settings_changed(false);
             }
-            (_, Item::Icons) => self.show_notice("Base pack only"),
+            (_, Item::Icons) => {
+                let n = rp_weather::settings::PACKS.len() as u8;
+                self.wset.pack = (self.wset.pack + 1) % n;
+                self.settings_changed(false);
+            }
             (_, Item::Provider(i)) => {
                 let p = Provider::ALL[usize::from(i) % Provider::ALL.len()];
                 if p != self.wset.provider {
@@ -340,7 +349,6 @@ impl Shell {
         self.want(super::weather_net::Ask::Save);
         if refetch {
             self.wx.place = self.wset.place().name;
-            self.fetched_at = None;
             self.want(super::weather_net::Ask::Forecast);
         }
         self.dirty(Rect::new(0, TOP, W, H - 40 - TOP));
@@ -558,6 +566,8 @@ impl Shell {
                 f.text(r.x + 36, base, ui, TEXT, p.name.as_bytes());
                 let note: &[u8] = if self.removing {
                     b"tap to remove"
+                } else if i == s.home && on {
+                    b"home, showing now"
                 } else if on {
                     b"showing now"
                 } else if i == s.home {
@@ -648,7 +658,8 @@ impl Shell {
             }
             Item::Icons => {
                 f.text(r.x + 12, base, ui, TEXT, b"Icons");
-                right(f, b"VClouds", DIM);
+                let p = rp_weather::settings::PACKS[usize::from(s.pack) % rp_weather::settings::PACKS.len()];
+                right(f, p.as_bytes(), DIM);
             }
             Item::Provider(i) => {
                 let p = Provider::ALL[usize::from(i) % Provider::ALL.len()];
@@ -717,12 +728,17 @@ impl Shell {
     pub(crate) fn settings_scene(&self, f: &mut Frame) {
         let title: &[u8] = match self.screen {
             Screen::WeatherPlaces if self.removing => b"REMOVE A PLACE",
-            Screen::WeatherPlaces => b"PLACES",
+            Screen::WeatherPlaces => b"PLACES: TAP FOR HOME",
             Screen::WeatherFrom => b"WEATHER FROM",
             _ => b"WEATHER SETTINGS",
         };
         self.sub_header(f, title);
         self.rows_scene(f);
+        if self.screen == Screen::WeatherPlaces && !self.removing {
+            let r = Rect::new(16, H - 40 - 34, 448, 28);
+            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            centre_in(f, r, self.fonts.label, TEXT, b"Remove (right softkey) takes one out");
+        }
         if self.screen == Screen::WeatherFrom {
             let r = Rect::new(16, H - 40 - 34, 448, 28);
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);

@@ -1253,7 +1253,7 @@ fn pictures_replace_the_outlines_and_still_fit_a_frame() {
             big: &FONT,
         },
         Icons {
-            hero: Some(&PIC),
+            hero: [Some(&PIC); 22],
             card: [Some(&PIC); 22],
             row: [Some(&PIC); 22],
             radar: [Some(&PIC); 3],
@@ -1725,4 +1725,34 @@ fn the_weather_preview_is_the_app_as_reveal_leaves_it_and_changes_nothing() {
     let mut w = weather(0);
     w.dirty(Rect::new(0, 0, W, H));
     assert_eq!(preview, texts(&drawn(&mut w)), "the app's own frame");
+}
+
+#[test]
+fn a_connected_station_becomes_the_place_shown_and_home() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    s.wset.station = rp_weather::settings::Station::Tempest;
+    s.want(Ask::Tempest);
+    let q = s.next_ask().expect("the station");
+    assert_eq!(q.ask, Ask::Tempest);
+    s.net_answer(
+        true,
+        br#"{"location_name":"Liberty Hill Station","latitude":30.664,"longitude":-97.922,"timezone_offset_minutes":-300,"current_conditions":{"air_temperature":18.0}}"#,
+    );
+    let p = s.wset.place();
+    assert_eq!((p.name.as_str(), p.lat, p.lon), ("Liberty Hill Station", 30_664, -97_922));
+    assert_eq!(s.wset.home, s.wset.current);
+    assert_eq!(s.wx.place.as_str(), "Liberty Hill Station");
+    assert!(s.wants(Ask::Forecast) && s.wants(Ask::Save));
+    // Seattle can go: Manage places, Remove, tap it.
+    tap(&mut s, SOFT_RIGHT);
+    s.open(Screen::WeatherSettings);
+    tap_item(&mut s, Item::AllPlaces);
+    assert_eq!(s.screen(), Screen::WeatherPlaces);
+    tap(&mut s, SOFT_RIGHT);
+    tap_item(&mut s, Item::Place(0));
+    assert_eq!(s.wset.n_places, 1);
+    assert_eq!(s.wset.place().name.as_str(), "Liberty Hill Station");
 }

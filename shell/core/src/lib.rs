@@ -58,9 +58,8 @@ pub struct Fonts {
 /// ([`rp_weather::Icon::id`]).
 #[derive(Clone, Copy)]
 pub struct Icons {
-    /// The big one in the hero panel and the app's Now page: the reading
-    /// now's (partly cloudy, day, in the sample).
-    pub hero: Option<&'static Image>,
+    /// The big ones (250 px) in the hero panel and the app's Now page.
+    pub hero: [Option<&'static Image>; 22],
     /// The forecast cards' size (66 px).
     pub card: [Option<&'static Image>; 22],
     /// The Weather app's rows (40 px).
@@ -70,9 +69,17 @@ pub struct Icons {
 }
 
 impl Icons {
+    /// The big picture for `icon`: its own, else its card size (a pack
+    /// without big ones), else none.
+    #[must_use]
+    pub fn big(&self, icon: Icon) -> Option<&'static Image> {
+        let i = usize::from(icon.id() - 1);
+        self.hero[i].or(self.card[i])
+    }
+
     /// No pictures.
     pub const NONE: Self = Self {
-        hero: None,
+        hero: [None; 22],
         card: [None; 22],
         row: [None; 22],
         radar: [None; 3],
@@ -590,6 +597,28 @@ impl Shell {
     /// checked against their draw lists and rebuilt.
     pub fn set_forecast(&mut self, f: rp_weather::Forecast) {
         self.wx = f;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// The icon pack the settings name (the device loads it from the card
+    /// and hands it over with [`Shell::set_icons`]).
+    #[must_use]
+    pub fn icon_pack(&self) -> u8 {
+        self.wset.pack
+    }
+
+    /// New pictures (an icon pack read from the card): every screen
+    /// redrawn with them.
+    pub fn set_icons(&mut self, icons: Icons) {
+        self.icons = icons;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// The pack the settings name couldn't be read: back to the default.
+    pub fn icon_pack_failed(&mut self) {
+        self.wset.pack = 0;
+        self.show_notice("Pack not on the card");
+        self.want(Ask::Save);
         self.dirty(Rect::new(0, 0, W, H));
     }
 
@@ -1508,22 +1537,14 @@ impl Shell {
             .push(b"   Low ")
             .push(rg.temp(d.low).as_bytes());
         f.text(HERO.x + 20, HERO.y + 174, ui, DIM, hl.as_bytes());
-        // The icon, or its outline until the pictures exist
-        // (docs/design/today-screen-plan.md).
-        let pic = match (icon, self.icons.hero) {
-            (Icon::PartlyDay, Some(h)) => Some(h),
-            _ => self.icons.card[usize::from(icon.id() - 1)],
-        };
-        match pic {
-            Some(img) => f.push(Cmd::Image {
+        // The icon; none drawn when the pack lacks it (an empty outline
+        // read as a stray box: the owner's photo, 2026-10-31).
+        if let Some(img) = self.icons.big(icon) {
+            f.push(Cmd::Image {
                 x: HERO_ICON.x + HERO_ICON.w.saturating_sub(img.w),
                 y: HERO_ICON.y + HERO_ICON.h.saturating_sub(img.h) / 2,
                 img,
-            }),
-            None => f.push(Cmd::Outline {
-                r: HERO_ICON,
-                color: 0x30FF_FFFF,
-            }),
+            });
         }
         let date = date_line(&mut buf, self.time);
         let w = label.width(date);
@@ -1548,16 +1569,12 @@ impl Shell {
             );
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             // The icon's 66 px box reaches 30 px above the card (as in the mock-ups).
-            match self.icons.card[usize::from(Icon::of(d.sky).id() - 1)] {
-                Some(img) => f.push(Cmd::Image {
+            if let Some(img) = self.icons.card[usize::from(Icon::of(d.sky).id() - 1)] {
+                f.push(Cmd::Image {
                     x: r.x + r.w.saturating_sub(img.w) / 2,
                     y: (r.y + 36).saturating_sub(66) + 66u16.saturating_sub(img.h) / 2,
                     img,
-                }),
-                None => f.push(Cmd::Outline {
-                    r: Rect::new(r.x + r.w / 2 - 22, r.y + 6, 44, 24),
-                    color: 0x30FF_FFFF,
-                }),
+                });
             }
             self.centred(
                 f,
@@ -1624,7 +1641,6 @@ pub const NOTICES: [&str; 29] = [
     "40 at most",
     "64 at most",
     "Asking your PC",
-    "Base pack only",
     "Clipboard empty",
     "Keeps one place",
     "Key forgotten",
@@ -1648,6 +1664,7 @@ pub const NOTICES: [&str; 29] = [
     "Not yet: Settings",
     "Not yet: Tasks",
     "Nothing to paste",
+    "Pack not on the card",
     "Refreshing",
     "Ten places at most",
 ];

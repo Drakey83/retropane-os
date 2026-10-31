@@ -188,6 +188,21 @@ pub fn place_name(json: &[u8]) -> Name {
     n
 }
 
+/// The station as a place: its name and position (`latitude`,
+/// `longitude` in `better_forecast`), thousandths of a degree. `None` if
+/// either is missing or out of range.
+#[must_use]
+pub fn station_place(json: &[u8]) -> Option<(Name, i32, i32)> {
+    let (mut lat, mut lon) = (None, None);
+    let _ = Json::new(json).object(|k, v| match k {
+        b"latitude" => lat = v.number().filter(|l| (-90_000..=90_000).contains(l)),
+        b"longitude" => lon = v.number().filter(|l| (-180_000..=180_000).contains(l)),
+        _ => {}
+    });
+    let name = place_name(json);
+    (!name.is_empty()).then_some((name, lat? as i32, lon? as i32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +270,8 @@ mod tests {
         assert_eq!(f.days[2], base.days[2]);
         assert_eq!(f.hours[2], base.hours[2]);
         assert_eq!(place_name(JSON).as_str(), "Perryville Loop Station");
+        assert_eq!(station_place(b"{\"location_name\":\"X\",\"latitude\":37.7,\"longitude\":-89.86}"), Some((Name::new("X"), 37_700, -89_860)));
+        assert_eq!(station_place(b"{\"location_name\":\"X\",\"latitude\":97.7,\"longitude\":1}"), None);
     }
 
     #[test]

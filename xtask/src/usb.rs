@@ -874,6 +874,9 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
              benchmarks on the device. Add --force to send it anyway."
         ));
     }
+    if what == "rp-today" {
+        icon_packs(root)?;
+    }
     let (payload, frame, frames) = image_frame(root, what)?;
     let mut out = powershell(&load_script_opts(&frame, true, frames))?;
     if String::from_utf8_lossy(&out.stdout).contains("NOPORT") {
@@ -1099,6 +1102,51 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
     } else {
         Err(format!("the loader refused {name}: {reply}"))
     }
+}
+
+/// The largest part of an icon pack put on the card (the loader receives a
+/// file into its image area, 950,272 bytes).
+const PACK_PART: usize = 900_000;
+
+/// rp-today's icon packs onto the SD card, each in parts (`RPIC<n>A.PAK`,
+/// `B`, ...) and an empty part after the last (the image joins parts up to
+/// the first missing or empty one); a part already sent with the same
+/// contents (its SHA-256 kept in `target/load/sent-<name>.txt`) isn't sent
+/// again. Packs the build didn't make (no art in local/) are skipped.
+fn icon_packs(root: &Path) -> Result<(), String> {
+    let release = crate::arm_release(root);
+    let dir = root.join("target/load");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for n in 0..rp_weather::settings::PACKS.len() {
+        let Ok(pack) = crate::emu::today_output(&release, &format!("rp-icons{n}.pak")) else {
+            continue;
+        };
+        let mut parts: Vec<&[u8]> = pack.chunks(PACK_PART).collect();
+        parts.push(&[]);
+        for (p, part) in parts.iter().enumerate() {
+            let name = format!("RPIC{n}{}.PAK", (b'A' + p as u8) as char);
+            let digest = rp_crypto::hex(&rp_crypto::Sha256::digest(part));
+            let stamp = dir.join(format!("sent-{name}.txt"));
+            if std::fs::read(&stamp).is_ok_and(|s| s == digest) {
+                continue;
+            }
+            let file = dir.join(&name);
+            std::fs::write(&file, part).map_err(|e| format!("{}: {e}", file.display()))?;
+            eprintln!("    icon pack {n} ({}): {name}, {} bytes", rp_weather::settings::PACKS[n], part.len());
+            let sent = put(root, &file.to_string_lossy(), Some(&name));
+            // The empty end marker matters only after a pack shrank: a
+            // loader that refuses an empty file is told, not fatal.
+            match sent {
+                Err(e) if part.is_empty() => {
+                    eprintln!("    {name} (the end marker) not written: {e}");
+                    continue;
+                }
+                r => r?,
+            }
+            std::fs::write(&stamp, &digest).map_err(|e| format!("{}: {e}", stamp.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Compares the loader's SHA-256 (hex) of what it holds with ours of what
@@ -1916,8 +1964,12 @@ while ($true) {{
                     Answer $b
                     continue
                 }}
-                if (-not (Test-Path $keyFile)) {{ Refuse 404 'no Tempest key on the PC'; continue }}
-                $key = (Get-Content -Raw $keyFile).Trim()
+                # The key the device sends (typed or pasted on it), else
+                # the PC's file. Used for this call only, never printed.
+                $key = $null
+                if ($w.Length -ge 3 -and $w[2] -match '^[A-Za-z0-9-]{{8,64}}$') {{ $key = $w[2] }}
+                elseif (Test-Path $keyFile) {{ $key = (Get-Content -Raw $keyFile).Trim() }}
+                if (-not $key) {{ Refuse 404 'no Tempest key: enter it on the device'; continue }}
                 $st = Invoke-RestMethod "https://swd.weatherflow.com/swd/rest/stations?token=$key"
                 $sid = $st.stations[0].station_id
                 $b = Fetch "https://swd.weatherflow.com/swd/rest/better_forecast?station_id=$sid&token=$key&units_temp=c&units_wind=kph&units_pressure=mb&units_precip=mm&units_distance=km"

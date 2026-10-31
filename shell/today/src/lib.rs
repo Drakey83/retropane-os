@@ -80,45 +80,105 @@ fn unpaeth4(px: &mut [u8], w: usize, h: usize) {
 
 /// Unpacks the baked pictures into `px` (at least [`ICON_WORDS`] words; the
 /// image's comes from SDRAM outside the image area) with their
-/// descriptions in `imgs`, and returns the shell's set. Too little room
-/// gives no pictures (outlines), never a fault.
+/// descriptions in `imgs`, and returns the shell's set. Too little room or
+/// a damaged stream gives no pictures, never a fault.
 #[must_use]
 pub fn icons_into(
     px: &'static mut [u32],
     imgs: &'static mut [Image; ICON_COUNT],
 ) -> rp_shell::Icons {
-    let mut set = rp_shell::Icons::NONE;
-    if px.len() < ICON_WORDS {
-        return set;
+    let desc = icon_data::DESC.iter().copied();
+    fill(desc, icon_data::PACKED, ICON_WORDS, px, imgs).unwrap_or(rp_shell::Icons::NONE)
+}
+
+/// The SD card's picture pack (`RPICONS.PAK`, made by the build from every
+/// condition at every size, put on the card by `cargo xtask load`):
+/// `RPIK`, version 1, the count, two bytes 0, the words unpacked
+/// (little-endian), then per picture its kind (0 big, 1 card, 2 row), pack
+/// id and width and height (little-endian), then the zlib stream as the
+/// built-in set's.
+pub const PACK_MAGIC: &[u8; 4] = b"RPIK";
+/// The most pictures a pack holds (22 conditions at three sizes).
+pub const PACK_MAX: usize = 66;
+
+/// The words a pack's pictures unpack to, from its header (`None` if it
+/// isn't a pack).
+#[must_use]
+pub fn pack_words(file: &[u8]) -> Option<usize> {
+    let h = file.get(..12)?;
+    (&h[..4] == PACK_MAGIC && h[4] == 1).then(|| u32::from_le_bytes([h[8], h[9], h[10], h[11]]) as usize)
+}
+
+/// The card's pack unpacked into `px` (its pictures described in `imgs`),
+/// or `None` if it isn't a sound pack or doesn't fit: the built-in set is
+/// then used. Nothing in it is trusted: sizes are checked against the
+/// room before anything is written, ids clamped.
+pub fn pack_into(
+    file: &[u8],
+    px: &'static mut [u32],
+    imgs: &'static mut [Image; PACK_MAX],
+) -> Option<rp_shell::Icons> {
+    let head = file.get(..12)?;
+    if &head[..4] != PACK_MAGIC || head[4] != 1 {
+        return None;
     }
-    // The whole stream at once into the pictures' words (its bytes are
-    // their bytes: B, G, R, A, the ARGB word in memory on the X51v), then
-    // each picture's filter undone in place. A damaged stream: none.
-    let bytes = rp_hal_mem::words_as_bytes_mut(&mut px[..ICON_WORDS]);
-    if ICON_WORDS > 0 && rp_inflate::zlib(icon_data::PACKED, bytes) != Ok(ICON_WORDS * 4) {
-        return set;
+    let count = usize::from(head[5]);
+    let words = u32::from_le_bytes([head[8], head[9], head[10], head[11]]) as usize;
+    if count == 0 || count > PACK_MAX || words > px.len() {
+        return None;
+    }
+    let table = file.get(12..12 + count * 6)?;
+    let desc = table.chunks(6).map(|d| {
+        (
+            d[0],
+            d[1],
+            u16::from_le_bytes([d[2], d[3]]),
+            u16::from_le_bytes([d[4], d[5]]),
+        )
+    });
+    // The pictures' sizes must add up to the words it says.
+    let sum: usize = desc.clone().map(|(_, _, w, h)| usize::from(w) * usize::from(h)).sum();
+    if sum != words {
+        return None;
+    }
+    fill(desc, &file[12 + count * 6..], words, px, imgs)
+}
+
+/// The stream inflated into `px` (its bytes are the pictures' bytes: B, G,
+/// R, A, the ARGB word in memory on the X51v), each picture's filter
+/// undone in place, and the shell's set made from `desc`.
+fn fill(
+    desc: impl Iterator<Item = (u8, u8, u16, u16)> + Clone,
+    stream: &[u8],
+    words: usize,
+    px: &'static mut [u32],
+    imgs: &'static mut [Image],
+) -> Option<rp_shell::Icons> {
+    let mut set = rp_shell::Icons::NONE;
+    if px.len() < words || desc.clone().count() > imgs.len() {
+        return None;
+    }
+    let bytes = rp_hal_mem::words_as_bytes_mut(&mut px[..words]);
+    if words > 0 && rp_inflate::zlib(stream, bytes) != Ok(words * 4) {
+        return None;
     }
     let mut rest = px;
-    for (slot, &(_, _, w, h)) in imgs.iter_mut().zip(&icon_data::DESC) {
+    for (slot, (_, _, w, h)) in imgs.iter_mut().zip(desc.clone()) {
         let (mine, more) = rest.split_at_mut(usize::from(w) * usize::from(h));
         rest = more;
-        unpaeth4(
-            rp_hal_mem::words_as_bytes_mut(mine),
-            usize::from(w),
-            usize::from(h),
-        );
+        unpaeth4(rp_hal_mem::words_as_bytes_mut(mine), usize::from(w), usize::from(h));
         *slot = Image { w, h, px: mine };
     }
-    let imgs: &'static [Image; ICON_COUNT] = imgs;
-    for (img, &(kind, id, ..)) in imgs.iter().zip(&icon_data::DESC) {
+    let imgs: &'static [Image] = imgs;
+    for (img, (kind, id, ..)) in imgs.iter().zip(desc) {
         let i = usize::from(id.clamp(1, 22) - 1);
         match kind {
-            0 => set.hero = Some(img),
+            0 => set.hero[i] = Some(img),
             1 => set.card[i] = Some(img),
             _ => set.row[i] = Some(img),
         }
     }
-    set
+    Some(set)
 }
 
 /// The radar map's place on the screen (the Weather app's page) and its
@@ -699,14 +759,14 @@ mod tests {
             Box::leak(vec![0; ICON_WORDS.saturating_sub(1)].into_boxed_slice()),
             Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
         );
-        assert!(ICON_WORDS == 0 || small.hero.is_none());
+        assert!(ICON_WORDS == 0 || small.hero.iter().all(Option::is_none));
         // Room: every picture, the hero opaque somewhere.
         let full = icons_into(
             Box::leak(vec![0; ICON_WORDS].into_boxed_slice()),
             Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
         );
         if ICON_WORDS > 0 {
-            let hero = full.hero.expect("the hero picture");
+            let hero = full.hero.iter().flatten().next().expect("a big picture");
             assert!(hero.px.iter().any(|p| p >> 24 == 0xFF));
         }
     }

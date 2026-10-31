@@ -11295,7 +11295,7 @@ pub(crate) fn today_map(release: &Path) -> Option<Vec<u8>> {
 }
 
 /// The newest `name` among rp-today's build outputs.
-fn today_output(release: &Path, name: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn today_output(release: &Path, name: &str) -> Result<Vec<u8>, String> {
     fn find(dir: &Path, depth: u32, in_today: bool, name: &str, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;

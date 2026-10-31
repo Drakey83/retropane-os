@@ -668,10 +668,7 @@ impl Shell {
         let shown = rg.degrees(wx.now.temp) * self.ease(0) as i32 / 1024;
         let t = Line::new().num(shown).push(&[DEG_BIG]);
         Self::text_at(f, px + 20, py + 104, big, TEXT, t.as_bytes());
-        let pic = match (icon, self.icons.hero) {
-            (Icon::PartlyDay, Some(h)) => Some(h),
-            _ => self.icons.card[usize::from(icon.id() - 1)],
-        };
+        let pic = self.icons.big(icon);
         if let Some(img) = pic {
             let drop = ((1024 - self.ease(1)) * 24 / 1024) as i32;
             let y = py + i32::from(206u16.saturating_sub(img.h) / 2) - 18 - drop;

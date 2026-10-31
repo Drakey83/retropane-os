@@ -507,11 +507,14 @@ pub const BUDGETS: &[Budget] = &[
     // start), 586 KB loaded; zeroed RAM 40 -> 48 KiB for the 2D renderer's
     // per-command background keys and clips (~5.6 KiB in `.bss`): 42.9
     // KiB measured, + ~12%. The load budget stays 900 KiB: the room is for
-    // settings, the keyboard and the radar.
+    // settings, the keyboard and the radar. 2026-10-31: zeroed RAM 48 ->
+    // 56 KiB for the seven icon packs read from the SD card (their picture
+    // tables, 66 a pack, ~5.5 KiB) and the dock link's question buffer:
+    // 52.2 KiB measured, + ~7%.
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 48 * 1024,
+        max_zero: 56 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D

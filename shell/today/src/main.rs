@@ -18,7 +18,10 @@ mod image {
     use rp_drv_pxa_keypad::keys::{Keys, Kind, Timing};
     use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
+    use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_udc::{Layout as UsbLayout, Udc};
+    use rp_drv_sdcard::{BLOCK, Identity, SdCard, mbr_partitions};
+    use rp_fat::Volume;
     use rp_drv_tsc2046::Tsc2046;
     use rp_gfx::layer::{Layer, PlaneFormat};
     use rp_gfx::render::CpuRenderer;
@@ -102,6 +105,10 @@ mod image {
     static WALL: rt::Slot<WallScratch> = rt::Slot::new();
     // The weather pictures' descriptions (their pixels are in the RAM pool).
     static ICON_IMGS: rt::Slot<[rp_draw::Image; rp_today::ICON_COUNT]> = rt::Slot::new();
+    /// The card's picture packs' descriptions, one set per pack (each read
+    /// once, then kept: switching back is instant).
+    static PACK_IMGS: [rt::Slot<[rp_draw::Image; rp_today::PACK_MAX]>; PACKS] =
+        [const { rt::Slot::new() }; PACKS];
     // The radar's rain cells' descriptions (their pixels are in the RAM pool).
     static RADAR_IMGS: rt::Slot<[rp_draw::Image; 3]> = rt::Slot::new();
     /// The radar's base map, packed by the build (the Night look; Ink is
@@ -358,6 +365,68 @@ mod image {
     /// `RP_TODAY_NO_NET`.
     const NET: bool = option_env!("RP_TODAY_NO_NET").is_none()
         && (!REPLAY || option_env!("RP_TODAY_REPLAY_NET").is_some());
+    /// The SD card's picture packs (`RPICONS<n>.PAK`, put there by `cargo
+    /// xtask load`): how many, the largest file, the largest unpacked.
+    const PACKS: usize = rp_weather::settings::PACKS.len();
+    const PACK_FILE: usize = 3 * 1024 * 1024;
+    type Card = SdCard<PxaMmc<Mmio>>;
+
+    /// The SD card, taken over as the loader left it when its card log is
+    /// on (no command sent: the log keeps writing through the same
+    /// controller between the image's reads, `cardsink::settle` first),
+    /// else started fresh; and its first partition's start.
+    fn take_card() -> Option<(Card, u32)> {
+        let id = rp_hal_x51v::cardsink::current().map(|s| Identity {
+            rca: s.sd.rca as u16,
+            high_capacity: s.sd.flags & 1 != 0,
+            wide: s.sd.flags & 2 != 0,
+            blocks: s.sd.blocks,
+        });
+        // Taking the controller settles the card log and marks the card
+        // taken (the PC re-reads it after the run).
+        let mmc = rt::take_mmc()?;
+        let mut card = match id {
+            Some(id) if id.rca != 0 => SdCard::adopt(PxaMmc::new(mmc), id),
+            _ => SdCard::try_init(PxaMmc::new(mmc)).ok()?,
+        };
+        let mut block = [0u8; BLOCK];
+        card.read(0, &mut block).ok()?;
+        let start = mbr_partitions(&block)
+            .and_then(|p| p[0])
+            .map_or(0, |p| p.start);
+        Some((card, start))
+    }
+
+    /// Pack `n` from the card's root into `out`: its parts
+    /// (`RPIC<n>A.PAK`, `B`, ...: the loader takes files up to its image
+    /// area's size, a pack is 1.2-1.6 MB) joined, up to the first missing
+    /// or empty one; the length, or `None` (no card, no part, too big).
+    /// Nothing is logged while it reads (a log line would send the card
+    /// log's sector mid-read).
+    fn read_pack(card: &mut Card, start: u32, n: usize, out: &mut [u8]) -> Option<usize> {
+        rp_hal_x51v::cardsink::settle();
+        let mut vol = Volume::mount(&mut *card, start).ok()?;
+        let mut scratch = [0u8; 2 * BLOCK];
+        let (mut at, mut over) = (0usize, false);
+        for part in b'A'..=b'Z' {
+            let name = [b'R', b'P', b'I', b'C', b'0' + n as u8, part, b'.', b'P', b'A', b'K'];
+            let Ok(file) = vol.find(core::str::from_utf8(&name).ok()?) else { break };
+            let before = at;
+            vol.read_file(&file, &mut scratch, |chunk| {
+                match out.get_mut(at..at + chunk.len()) {
+                    Some(o) => o.copy_from_slice(chunk),
+                    None => over = true,
+                }
+                at += chunk.len();
+            })
+            .ok()?;
+            if at == before {
+                break;
+            }
+        }
+        (!over && at > 0).then_some(at)
+    }
+
     /// The USB D+ pull-up's GPIO (docs/hw/udc.md).
     const USB_PULLUP: u8 = 2;
     /// The largest answer kept (a `better_forecast` is ~30-60 KB).
@@ -373,7 +442,7 @@ mod image {
     /// since when, the answer's header so far, its length and bytes in.
     struct Net {
         udc: Udc<Mmio>,
-        out: [u8; 72 + rp_weather::store::LEN],
+        out: [u8; 96 + rp_weather::store::LEN],
         out_n: usize,
         out_at: usize,
         waiting: bool,
@@ -483,7 +552,14 @@ mod image {
         // The openings' trace, in the RAM pool (not the image's RAM budget).
         let (trace_words, rest) = rest.split_at_mut(TRACE * 10);
         // The relay's answer (the dock's dev relay).
-        let (net_words, _) = rest.split_at_mut(NET_BUF / 4);
+        let (net_words, rest) = rest.split_at_mut(NET_BUF / 4);
+        // The card's picture packs: the file read in, and each pack's
+        // pictures unpacked (22 conditions at three sizes, ~3.9 MB).
+        let (pack_file_words, rest) = rest.split_at_mut(PACK_FILE / 4);
+        let pack_file = rp_hal_mem::words_as_bytes_mut(pack_file_words);
+        // What is left of the pool, taken pack by pack as each is first
+        // chosen (each unpacks to its own size, about 4 MB; all seven fit).
+        let mut pack_room: &'static mut [u32] = rest;
         let net_buf = rp_hal_mem::words_as_bytes_mut(net_words);
         let plane_bytes = rp_hal_mem::words_as_bytes_mut(plane_words);
         let wall_bytes =
@@ -566,6 +642,12 @@ mod image {
             "radar cells drawn in {} us",
             rt::ticks().wrapping_sub(t0) / 13 * 4
         );
+        let baked = icons;
+        let mut packs: [Option<rp_shell::Icons>; PACKS] = [None; PACKS];
+        let mut pack_tried = [false; PACKS];
+        let mut pack_shown = u8::MAX;
+        let mut card: Option<(Card, u32)> = None;
+        let mut card_tried = false;
         let (Some(shell), Some(frame)) = (
             SHELL.put_with(|| Shell::new(rp_today::shell_fonts(), icons, true)),
             FRAME.put_with(Frame::new),
@@ -688,7 +770,7 @@ mod image {
                         );
                         net = Some(Net {
                             udc,
-                            out: [0; 72 + rp_weather::store::LEN],
+                            out: [0; 96 + rp_weather::store::LEN],
                             out_n: 0,
                             out_at: 0,
                             waiting: false,
@@ -1192,6 +1274,55 @@ mod image {
                 rp_image::finish()
             }
 
+            // The icon pack the settings name: read from the card the
+            // first time (about a second), kept after; pack 0 falls back
+            // to the pictures built in.
+            let want = shell.icon_pack();
+            if want != pack_shown {
+                let n = usize::from(want).min(PACKS - 1);
+                if !pack_tried[n] {
+                    pack_tried[n] = true;
+                    if !card_tried {
+                        card_tried = true;
+                        card = take_card();
+                    }
+                    let t0 = rt::ticks();
+                    let got = card
+                        .as_mut()
+                        .and_then(|(c, start)| read_pack(c, *start, n, pack_file));
+                    let read_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
+                    let t1 = rt::ticks();
+                    packs[n] = got.and_then(|len| {
+                        let words = rp_today::pack_words(&pack_file[..len])?;
+                        if words > pack_room.len() {
+                            return None;
+                        }
+                        let (px, more) = core::mem::take(&mut pack_room).split_at_mut(words);
+                        pack_room = more;
+                        let imgs = PACK_IMGS[n].put_with(|| [rp_today::NO_IMAGE; rp_today::PACK_MAX])?;
+                        rp_today::pack_into(&pack_file[..len], px, imgs)
+                    });
+                    let _ = writeln!(
+                        RunLog,
+                        "icons: pack {n} {} (read {} bytes in {read_us} us, unpacked in {} us)",
+                        if packs[n].is_some() { "in use" } else { "not usable" },
+                        got.unwrap_or(0),
+                        rt::ticks().wrapping_sub(t1) / 13 * 4
+                    );
+                }
+                match packs[n] {
+                    Some(mut ic) => {
+                        ic.radar = baked.radar;
+                        shell.set_icons(ic);
+                    }
+                    None if n == 0 => shell.set_icons(baked),
+                    None => shell.icon_pack_failed(),
+                }
+                pack_shown = shell.icon_pack();
+                pages_check = true;
+                app_check = true;
+            }
+
             // The dock's dev relay: the port polled each pass; the shell's
             // next question sent when none is waiting, its answer read into
             // the RAM pool and handed back whole (weather-settings-build.md
@@ -1222,7 +1353,7 @@ mod image {
                     let _ = writeln!(
                         RunLog,
                         "net: asked {:?} at {now_ms} ms",
-                        core::str::from_utf8(line).unwrap_or("?").trim_end()
+                        core::str::from_utf8(q.logged()).unwrap_or("?").trim_end()
                     );
                 }
                 // What is left of the question, as the port takes it.
