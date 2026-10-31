@@ -3,7 +3,10 @@
 Written 2026-10-30 (overnight) for the owner's UI/UX work starting that
 day. It decides nothing: it says what is ready, the loop to iterate in,
 and what waits on a vote. The look itself is [ui.md](ui.md); the
-compositor is [compositor.md](compositor.md) and ADR-0034.
+compositor is [compositor.md](compositor.md) and ADR-0034. Before any
+step below, every design starts from [principles.md](principles.md):
+survey how Windows, Android, Apple and lean Linux solve it, borrow the
+idea that wins, say how ours beats it, and meet the practices P1-P7.
 
 ## The loop, fastest first
 

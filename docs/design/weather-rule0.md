@@ -35,6 +35,14 @@ nothing on these screens needs the CPU except moving pictures already made.
   moves rectangles and pictures well, an SD card at about 1 MB/s with fast
   seeks.
 
+## What the big systems do, and what we take
+
+Moved to [principles.md](principles.md) (the owner, 2026-10-31: "it
+should be our design philosophy for the entire UI/UX"): the method, the
+table of what Windows, Android, Apple and lean Linux do and how ours goes
+further, and the practices below as rules for every screen. Weather is
+their first app.
+
 ## The practices (the two combined, fitted to the X51v)
 
 - **P1. Work at refresh, never during touch.** Fetch, parse, pick pictures,
