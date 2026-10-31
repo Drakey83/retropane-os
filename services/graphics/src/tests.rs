@@ -2113,3 +2113,55 @@ fn the_layer_takes_the_screens_gamma_and_never_starts_on_the_windows_last_line()
     let cm = r.g.commits();
     assert_eq!((cm.done, cm.late), (before + 1, 0));
 }
+
+#[test]
+fn an_app_composed_ahead_lands_in_its_picture_and_shows_opaque() {
+    let mut r = rig();
+    let c = r.g.client(4 << 20).unwrap();
+    let h = r.g.picture_rgb565(c).unwrap();
+    let before = r.shown().at;
+    let screen = r.on_screen(5, 300);
+    let step =
+        r.g.compose_into(c, &fill(Rect::new(0, 0, 480, 640), BLUE), h, &mut r.clock)
+            .unwrap();
+    let mut step = step;
+    for _ in 0..100 {
+        match step {
+            Step::Wait(t) => {
+                r.clock.set(t);
+                step = r.g.poll(&mut r.clock);
+            }
+            _ => break,
+        }
+    }
+    assert_eq!(step, Step::Shown);
+    assert!(!r.g.busy());
+    // In its picture, the screen untouched.
+    let at = r.g.picture_at(c, h).unwrap();
+    let pic = Picture {
+        at,
+        ..Picture::screen(0)
+    };
+    assert_eq!(r.px(pic, 5, 300) & 0xFF_FFFF, BLUE & 0xFF_FFFF);
+    assert_eq!(r.shown().at, before);
+    assert_eq!(r.on_screen(5, 300), screen);
+    // Shown through the layer: RGB565, opaque.
+    let st = LayerState {
+        src: Source::Picture(h),
+        win: Window {
+            x: 16,
+            y: 52,
+            w: 448,
+            h: 196,
+            row: 104,
+            col: 16,
+        },
+    };
+    r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock)
+        .unwrap();
+    settle_commit(&mut r);
+    let vsctrl = dreg_of(&mut r, lreg::VSCTRL);
+    assert_eq!(vsctrl >> 27 & 0xF, 0x7, "RGB565");
+    assert_eq!(dreg_of(&mut r, lreg::VSCADR) >> 29 & 3, 0, "opaque");
+    assert_eq!(r.shown().at, before, "the screen still the Today screen");
+}

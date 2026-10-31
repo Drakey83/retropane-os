@@ -105,6 +105,8 @@ pub(crate) struct Pic {
     at: u32,
     w: u16,
     h: u16,
+    /// RGB565 and opaque (an app composed ahead), else ARGB4444 glass.
+    rgb565: bool,
 }
 
 /// The next commit: the layer as it should be from the next blanking (its
@@ -178,12 +180,64 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             at,
             w,
             h,
+            rgb565: false,
         };
         self.clients[usize::from(c.0)].used += bytes;
         Ok(Handle {
             slot: k as u16,
             generation: p.generation,
         })
+    }
+
+    /// A 480 x 640 RGB565 picture for client `c` (an app composed ahead by
+    /// [`Self::compose_into`], shown opaque through the layer: Reveal's
+    /// window from the first refresh after the tap).
+    pub fn picture_rgb565(&mut self, c: ClientId) -> Result<Handle, Error> {
+        let h = self.picture(c, 480, 640)?;
+        self.layer.pics[usize::from(h.slot)].rgb565 = true;
+        Ok(h)
+    }
+
+    /// Composes the 2D `frame` (drawn whole: its damage the screen) into
+    /// client `c`'s RGB565 picture `h`, not shown: the 2D renderer draws it
+    /// into the picture not on screen, the 2D engine copies it out, and the
+    /// renderer redraws its next two frames whole (its back picture held
+    /// something else). [`Self::poll`] drives it.
+    pub fn compose_into<C: Clock>(
+        &mut self,
+        c: ClientId,
+        frame: &Frame,
+        h: Handle,
+        clock: &mut C,
+    ) -> Result<Step, Error> {
+        self.rec(c)?;
+        let p = self.pic(c.0, h)?;
+        if !p.rgb565 {
+            return Err(Error::BadHandle);
+        }
+        if self.job != Job::None || self.layer.aside || self.commit_pending() {
+            return Err(Error::Busy);
+        }
+        self.two_d.draw(frame);
+        self.job = Job::Compose { at: p.at };
+        Ok(self.poll(clock))
+    }
+
+    /// The composed frame landed: copied into its picture, the renderer
+    /// told its back picture is stale.
+    pub(crate) fn compose_landed<C: Clock>(&mut self, at: u32, clock: &mut C) -> Step {
+        if self.two_d.landed().is_none() {
+            let _ = self.two_d.poll();
+        }
+        let Some(src) = self.two_d.landed() else {
+            return Step::Wait(clock.now_us().wrapping_add(super::TWO_D_POLL_US));
+        };
+        let all = [rp_draw::Rect::new(0, 0, 480, 640)];
+        let ok = self.copy_screens(at as usize, src, &all, clock);
+        self.two_d.keep_front();
+        self.two_d.invalidate_all();
+        self.job = Job::None;
+        if ok { Step::Shown } else { Step::Recovered }
     }
 
     /// Client `c`'s picture behind `h`.
@@ -270,14 +324,12 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         match src {
             Source::Picture(h) => {
                 let p = self.pic(owner, h)?;
-                Ok((
-                    p.at,
-                    stride(p.w),
-                    p.w,
-                    p.h,
-                    VideoFormat::Argb4444,
-                    Blend::PixelAlpha,
-                ))
+                let (fmt, blend) = if p.rgb565 {
+                    (VideoFormat::Rgb565, Blend::Opaque)
+                } else {
+                    (VideoFormat::Argb4444, Blend::PixelAlpha)
+                };
+                Ok((p.at, stride(p.w), p.w, p.h, fmt, blend))
             }
             Source::Aside => {
                 let at = match self.two_d.landed() {
@@ -389,6 +441,11 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             flip: false,
             regs,
         });
+        // Nothing to draw: the layer alone (Reveal's start), no 2D work (a
+        // renderer told to redraw whole would redraw and flip the screen).
+        if frame.dirty().is_empty() && !aside {
+            return Ok(self.poll(clock));
+        }
         self.two_d.draw(frame);
         if self.two_d.landed().is_some() || !self.two_d.poll() {
             self.job = Job::Commit { aside };

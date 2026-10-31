@@ -266,6 +266,11 @@ enum Job {
     Commit {
         aside: bool,
     },
+    /// A 2D frame being composed into a picture at `at`
+    /// ([`Graphics::compose_into`]).
+    Compose {
+        at: u32,
+    },
 }
 
 /// How the 3D frames started (R20), for the logs.
@@ -1325,6 +1330,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     fn poll_job<C: Clock>(&mut self, clock: &mut C) -> Step {
         match self.job {
             Job::None => Step::Idle,
+            Job::Compose { at } => self.compose_landed(at, clock),
             Job::Commit { aside } => {
                 if self.commit_landed(aside) {
                     Step::Idle

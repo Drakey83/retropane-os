@@ -1550,3 +1550,20 @@ fn a_long_swipe_moves_the_tab_line_one_tab_at_most() {
     let next = weather_app::tab_rect(2);
     assert_eq!(line.x, next.x + 40, "{line:?}: on 10 Day, not past it");
 }
+
+#[test]
+fn the_weather_preview_is_the_app_as_reveal_leaves_it_and_changes_nothing() {
+    // Composed ahead on the device: it must be exactly the app's frame at
+    // rest on Now (as the 2D path draws it), from the Today screen, and
+    // leave the Today screen as it was.
+    let mut s = shell(true);
+    drawn(&mut s);
+    let mut f = Frame::new();
+    s.weather_preview(&mut f);
+    assert_eq!(s.screen(), Screen::Today);
+    assert!(!s.needs_frame(), "nothing marked to draw");
+    let preview = texts(&f);
+    let mut w = weather(0);
+    w.dirty(Rect::new(0, 0, W, H));
+    assert_eq!(preview, texts(&drawn(&mut w)), "the app's own frame");
+}

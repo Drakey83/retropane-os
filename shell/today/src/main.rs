@@ -516,6 +516,11 @@ mod image {
         let mut revealing = false;
         // Reveal's window has shown (its clock restarted then).
         let mut reveal_shown = false;
+        // The app composed ahead (its picture and key), whether to check it,
+        // and the open under way's start (ms, commits).
+        let mut app_pic: Option<(Handle, u32)> = None;
+        let mut app_check = true;
+        let (mut reveal_t0, mut reveal_c0) = (0u64, 0u32);
         // Openings so far (the glide's alternation).
         let mut opens = 0u32;
         let mut retire: Option<Handle> = None;
@@ -701,6 +706,7 @@ mod image {
                 let time: Time = clock::time_at(minute);
                 shell.set_time(time);
                 pages_check = true;
+                app_check = true;
             }
             // Movement by itself (an entrance, a fling, a rebound) marks
             // what changed; it is drawn below, not counted as an answer.
@@ -1064,7 +1070,9 @@ mod image {
             // The plane path: what the page layer shows. A hand-off (the
             // layer on, off, another page, a page redrawn) is a commit with
             // this pass's frame; a move only repoints it, no engine.
-            let mut commit: Option<(Option<LayerState>, bool)> = None;
+            // (the layer, the frame kept aside, this pass's 2D frame drawn
+            // with it)
+            let mut commit: Option<(Option<LayerState>, bool, bool)> = None;
             if let Some(pc) = pc.filter(|_| pages.iter().all(Option::is_some)) {
                 if !gfx.busy() && !gfx.commit_pending() {
                     if let Some((r, shift)) = shell.reveal_plane() {
@@ -1086,7 +1094,19 @@ mod image {
                                     "held still (the window grows, the app in place)"
                                 }
                             );
-                            commit = Some((Some(reveal_state(r, shift)), true));
+                            commit = Some(match app_pic {
+                                // Composed ahead: the window at the next
+                                // refresh, no 2D work on the tap.
+                                Some((h, _)) => {
+                                    let mut st = reveal_state(r, shift);
+                                    st.src = Source::Picture(h);
+                                    (Some(st), false, false)
+                                }
+                                // Not ready: composed now, aside.
+                                None => (Some(reveal_state(r, shift)), true, true),
+                            });
+                            reveal_t0 = now_ms;
+                            reveal_c0 = gfx.commits().done;
                         }
                     } else if gfx.aside_held() {
                         // Reveal done: the app takes the screen (the same
@@ -1100,6 +1120,20 @@ mod image {
                         reveal_shown = false;
                         shown_tab = None;
                     } else {
+                        if revealing {
+                            // Reveal done over the picture composed ahead: the
+                            // screen's chrome and the page layer in one commit
+                            // (below), its frames counted.
+                            let n = gfx.commits().done - reveal_c0;
+                            let ms = (now_ms - reveal_t0).max(1);
+                            let _ = writeln!(
+                                RunLog,
+                                "open: {now_ms} ms, Reveal done: {n} window moves in {ms} ms (~{} fps); the screen and the page in one commit next",
+                                u64::from(n) * 1000 / ms
+                            );
+                            revealing = false;
+                            reveal_shown = false;
+                        }
                         let want = shell.page_layer();
                         let still = !(shell.animating() || filter.down());
                         if want.map(|v| v.tab) != shown_tab {
@@ -1108,11 +1142,11 @@ mod image {
                             // ms of CPU here); checks run while still.
                             if let Some(v) = want {
                                 if let Some((h, _)) = pages[usize::from(v.tab)] {
-                                    commit = Some((Some(page_state(h, v)), false));
+                                    commit = Some((Some(page_state(h, v)), false, true));
                                     shown_tab = Some(v.tab);
                                 }
                             } else {
-                                commit = Some((None, false));
+                                commit = Some((None, false, true));
                                 shown_tab = None;
                             }
                             pages_check = true;
@@ -1125,8 +1159,8 @@ mod image {
                 }
                 // Moves: the window follows (staged; the latest wins).
                 if commit.is_none() {
-                    if let Some((r, shift)) = shell.reveal_plane() {
-                        if revealing && gfx.aside_held() && !reveal_shown {
+                    if shell.reveal_plane().is_some() {
+                        if revealing && gfx.layer().is_some() && !reveal_shown {
                             // The app's window is up: Reveal's clock starts
                             // now, so it grows from the card rather than
                             // jumping in partway (the composing took ~100 ms
@@ -1180,7 +1214,7 @@ mod image {
                             pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, t);
                             match (pages[i], shell.page_layer()) {
                                 (Some((h, _)), Some(v)) => {
-                                    commit = Some((Some(page_state(h, v)), false));
+                                    commit = Some((Some(page_state(h, v)), false, true));
                                     retire = old.map(|(h, _)| h);
                                 }
                                 _ => pages[i] = old,
@@ -1194,6 +1228,36 @@ mod image {
                             pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, t);
                         }
                         None => pages_check = false,
+                    }
+                }
+                // The app composed ahead while the Today screen is still (its
+                // key the draw list's: the header's clock makes it stale),
+                // so a tap opens Reveal's window at the next refresh.
+                if app_check
+                    && commit.is_none()
+                    && shell.screen() == rp_shell::Screen::Today
+                    && !shell.animating()
+                    && !filter.down()
+                    && !shell.needs_frame()
+                    && !gfx.busy()
+                    && !gfx.commit_pending()
+                    && !gfx.aside_held()
+                {
+                    app_check = false;
+                    shell.weather_preview(frame);
+                    let key = rp_today::frame_key(frame, rp_today::KEY_START);
+                    if app_pic.is_none_or(|(_, k)| k != key) {
+                        let h = match app_pic {
+                            Some((h, _)) => Ok(h),
+                            None => gfx.picture_rgb565(pc),
+                        };
+                        match h.and_then(|h| gfx.compose_into(pc, frame, h, &mut gclock).map(|_| h))
+                        {
+                            Ok(h) => app_pic = Some((h, key)),
+                            Err(e) => {
+                                let _ = writeln!(RunLog, "app picture: not composed ({e:?})");
+                            }
+                        }
                     }
                 }
                 // A replaced picture goes back once nothing shows it.
@@ -1210,12 +1274,26 @@ mod image {
             // new one waits a pass, the pen sampled meanwhile, rather than
             // the CPU spinning until the flip. Nothing while a frame is held
             // aside (Reveal): it waits for the hand-over.
-            if (commit.is_some() || shell.needs_frame()) && !gfx.busy() && !gfx.aside_held() {
+            if (commit.is_some() || shell.needs_frame() && !revealing)
+                && !gfx.busy()
+                && !gfx.aside_held()
+            {
                 let t0 = rt::ticks();
-                z_shell.run(|| shell.frame(frame));
+                let draw = commit.is_none_or(|(_, _, d)| d);
+                if draw {
+                    z_shell.run(|| shell.frame(frame));
+                } else {
+                    frame.clear();
+                }
+                if shell.screen() == rp_shell::Screen::Today {
+                    app_check = true;
+                }
                 let _ = z_compositor.run(|| match (commit, pc) {
-                    (Some((layer, aside)), Some(pc)) => {
+                    (Some((layer, aside, _)), Some(pc)) => {
                         let r = gfx.frame_commit(pc, frame, layer, aside, &mut gclock);
+                        if r.is_ok() && layer.is_some_and(|l| matches!(l.src, Source::Picture(_))) && shell.reveal_plane().is_some() {
+                            revealing = true;
+                        }
                         if r.is_ok() && aside {
                             revealing = true;
                         }

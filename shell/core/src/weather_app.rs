@@ -301,6 +301,47 @@ impl Shell {
         self.motion = m;
     }
 
+    /// The Weather app as Reveal opens it (its Now page at rest, drawn
+    /// whole in 2D) into `f`, whatever is on screen now: the device
+    /// composes it ahead while the Today screen is still, so a tap shows
+    /// Reveal's window at the next refresh. Nothing on screen changes.
+    pub fn weather_preview(&mut self, f: &mut Frame) {
+        let saved = (
+            self.screen,
+            self.tab,
+            self.scroll,
+            self.anim,
+            self.expanding,
+            self.planes,
+            self.menu_open,
+            self.pressed,
+            self.focus,
+        );
+        self.screen = super::Screen::Weather;
+        self.tab = 0;
+        self.scroll = super::motion::Scroll::new(max_scroll(0));
+        self.anim = None;
+        self.expanding = false;
+        self.planes = false;
+        self.menu_open = false;
+        self.pressed = None;
+        self.focus = None;
+        f.clear();
+        f.damage(Rect::new(0, 0, W, H));
+        self.scene(f);
+        (
+            self.screen,
+            self.tab,
+            self.scroll,
+            self.anim,
+            self.expanding,
+            self.planes,
+            self.menu_open,
+            self.pressed,
+            self.focus,
+        ) = saved;
+    }
+
     /// Whether Reveal's content glides up into place (the mock-up's) or is
     /// held still while the window grows.
     pub fn set_reveal_glide(&mut self, on: bool) {
