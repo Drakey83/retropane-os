@@ -1,6 +1,7 @@
 //! The Weather settings as a small stored record (docs/design/weather-settings-build.md
-//! "The settings store"): what survives a reset. The station's key is never
-//! in it (R130: the protected key store).
+//! "The settings store"): what survives a reset, the station's key
+//! included since version 2 (the owner, 2026-10-31: a key entered once
+//! must keep working; R130's protected key store replaces this).
 //!
 //! The record: `RPWS`, a version byte, the fields at fixed places, then a
 //! CRC-32 of everything before it. A record that is short, damaged, of
@@ -16,9 +17,13 @@ use crate::Name;
 use crate::settings::{Appearance, PLACES_MAX, Place, Provider, RadarMap, Settings, Station};
 
 /// The record's length.
-pub const LEN: usize = HEAD + PLACES_MAX * PLACE + 4;
+pub const LEN: usize = HEAD + PLACES_MAX * PLACE + KEY + 4;
+/// Version 1's length (no key): still read.
+const LEN_V1: usize = HEAD + PLACES_MAX * PLACE + 4;
+/// The key: its length, then up to [`KEY_MAX`] bytes.
+const KEY: usize = 1 + crate::settings::KEY_MAX;
 const MAGIC: &[u8; 4] = b"RPWS";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 /// The magic, version and the single-byte fields.
 const HEAD: usize = 16;
 /// A place: name and area (a length byte and 32 bytes each), latitude and
@@ -52,6 +57,10 @@ pub fn encode(s: &Settings) -> [u8; LEN] {
         r[at + 66..at + 70].copy_from_slice(&p.lat.to_le_bytes());
         r[at + 70..at + 74].copy_from_slice(&p.lon.to_le_bytes());
     }
+    let at = HEAD + PLACES_MAX * PLACE;
+    let k = s.tempest_key.expose();
+    r[at] = k.len() as u8;
+    r[at + 1..at + 1 + k.len()].copy_from_slice(k);
     let crc = crc32(&r[..LEN - 4]);
     r[LEN - 4..].copy_from_slice(&crc.to_le_bytes());
     r
@@ -65,13 +74,23 @@ pub fn decode(r: &[u8], key: crate::settings::Secret) -> Settings {
         tempest_key: key,
         ..Settings::DEFAULT
     };
-    if r.len() != LEN || &r[..4] != MAGIC || r[4] != VERSION {
+    let n = r.len();
+    let sound = (n == LEN && r.get(4) == Some(&VERSION)) || (n == LEN_V1 && r.get(4) == Some(&1));
+    if !sound || &r[..4] != MAGIC {
         return fallback;
     }
-    let crc = u32::from_le_bytes([r[LEN - 4], r[LEN - 3], r[LEN - 2], r[LEN - 1]]);
-    if crc != crc32(&r[..LEN - 4]) {
+    let crc = u32::from_le_bytes([r[n - 4], r[n - 3], r[n - 2], r[n - 1]]);
+    if crc != crc32(&r[..n - 4]) {
         return fallback;
     }
+    // Version 2's key, if it holds one (a bad one: the caller's kept).
+    let at = HEAD + PLACES_MAX * PLACE;
+    let key = if n == LEN {
+        let k = usize::from(r[at]).min(crate::settings::KEY_MAX);
+        crate::settings::Secret::new(&r[at + 1..at + 1 + k]).unwrap_or(key)
+    } else {
+        key
+    };
     let mut s = Settings {
         region: r[5],
         metric: r[6] != 0,
@@ -188,14 +207,22 @@ mod tests {
     }
 
     #[test]
-    fn a_record_round_trips_and_never_holds_the_key() {
+    fn a_record_round_trips_with_its_key_and_reads_version_1() {
         let s = sample();
         let r = encode(&s);
-        assert_eq!(LEN, 760);
-        assert!(!r.windows(5).any(|w| w == b"token"), "the key never stored");
+        assert_eq!(LEN, 825);
         let back = decode(&r, Secret::NONE);
         same(&back, &s);
-        assert!(!back.tempest_key.is_set());
+        assert_eq!(back.tempest_key.expose(), b"secret-token-1234");
+        // A version 1 record (no key): read, the caller's key kept.
+        let mut v1 = [0u8; LEN_V1];
+        v1[..LEN_V1 - 4].copy_from_slice(&r[..LEN_V1 - 4]);
+        v1[4] = 1;
+        let crc = crc32(&v1[..LEN_V1 - 4]);
+        v1[LEN_V1 - 4..].copy_from_slice(&crc.to_le_bytes());
+        let old = decode(&v1, Secret::new(b"kept").unwrap());
+        same(&old, &s);
+        assert_eq!(old.tempest_key.expose(), b"kept");
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
     }
 

@@ -16,13 +16,13 @@ mod image {
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
     use rp_drv_pxa_keypad::Keypad;
     use rp_drv_pxa_keypad::keys::{Keys, Kind, Timing};
+    use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
-    use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_udc::{Layout as UsbLayout, Udc};
     use rp_drv_sdcard::{BLOCK, Identity, SdCard, mbr_partitions};
-    use rp_fat::Volume;
     use rp_drv_tsc2046::Tsc2046;
+    use rp_fat::Volume;
     use rp_gfx::layer::{Layer, PlaneFormat};
     use rp_gfx::render::CpuRenderer;
     use rp_graphics::{ClientId, Graphics, Handle, LayerState, Source, Step, Window};
@@ -109,6 +109,10 @@ mod image {
     /// once, then kept: switching back is instant).
     static PACK_IMGS: [rt::Slot<[rp_draw::Image; rp_today::PACK_MAX]>; PACKS] =
         [const { rt::Slot::new() }; PACKS];
+    /// The packs' picture sets once read, and the SD card: in `.bss`, not
+    /// `main`'s frame (they overflowed its 12 KiB stack, 2026-10-31).
+    static PACK_SETS: rt::Slot<[Option<rp_shell::Icons>; PACKS]> = rt::Slot::new();
+    static CARD: rt::Slot<Option<(Card, u32)>> = rt::Slot::new();
     // The radar's rain cells' descriptions (their pixels are in the RAM pool).
     static RADAR_IMGS: rt::Slot<[rp_draw::Image; 3]> = rt::Slot::new();
     /// The radar's base map, packed by the build (the Night look; Ink is
@@ -409,8 +413,21 @@ mod image {
         let mut scratch = [0u8; 2 * BLOCK];
         let (mut at, mut over) = (0usize, false);
         for part in b'A'..=b'Z' {
-            let name = [b'R', b'P', b'I', b'C', b'0' + n as u8, part, b'.', b'P', b'A', b'K'];
-            let Ok(file) = vol.find(core::str::from_utf8(&name).ok()?) else { break };
+            let name = [
+                b'R',
+                b'P',
+                b'I',
+                b'C',
+                b'0' + n as u8,
+                part,
+                b'.',
+                b'P',
+                b'A',
+                b'K',
+            ];
+            let Ok(file) = vol.find(core::str::from_utf8(&name).ok()?) else {
+                break;
+            };
             let before = at;
             vol.read_file(&file, &mut scratch, |chunk| {
                 match out.get_mut(at..at + chunk.len()) {
@@ -643,10 +660,14 @@ mod image {
             rt::ticks().wrapping_sub(t0) / 13 * 4
         );
         let baked = icons;
-        let mut packs: [Option<rp_shell::Icons>; PACKS] = [None; PACKS];
+        let Some(packs) = PACK_SETS.put_with(|| [None; PACKS]) else {
+            crash(format_args!("started twice"))
+        };
         let mut pack_tried = [false; PACKS];
         let mut pack_shown = u8::MAX;
-        let mut card: Option<(Card, u32)> = None;
+        let Some(card) = CARD.put_with(|| None) else {
+            crash(format_args!("started twice"))
+        };
         let mut card_tried = false;
         let (Some(shell), Some(frame)) = (
             SHELL.put_with(|| Shell::new(rp_today::shell_fonts(), icons, true)),
@@ -1284,7 +1305,7 @@ mod image {
                     pack_tried[n] = true;
                     if !card_tried {
                         card_tried = true;
-                        card = take_card();
+                        *card = take_card();
                     }
                     let t0 = rt::ticks();
                     let got = card
@@ -1299,13 +1320,18 @@ mod image {
                         }
                         let (px, more) = core::mem::take(&mut pack_room).split_at_mut(words);
                         pack_room = more;
-                        let imgs = PACK_IMGS[n].put_with(|| [rp_today::NO_IMAGE; rp_today::PACK_MAX])?;
+                        let imgs =
+                            PACK_IMGS[n].put_with(|| [rp_today::NO_IMAGE; rp_today::PACK_MAX])?;
                         rp_today::pack_into(&pack_file[..len], px, imgs)
                     });
                     let _ = writeln!(
                         RunLog,
                         "icons: pack {n} {} (read {} bytes in {read_us} us, unpacked in {} us)",
-                        if packs[n].is_some() { "in use" } else { "not usable" },
+                        if packs[n].is_some() {
+                            "in use"
+                        } else {
+                            "not usable"
+                        },
                         got.unwrap_or(0),
                         rt::ticks().wrapping_sub(t1) / 13 * 4
                     );

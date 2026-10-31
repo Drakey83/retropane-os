@@ -44,7 +44,7 @@ device can never make the PC fetch an address of its choosing.
 |---|---|
 | `RPNET FIND <text>` | Open-Meteo geocoding `search?name=<text>&count=8` (text: letters, digits, space, `-`, `'`, `,`, `.`, at most 40) |
 | `RPNET HERE` | the PC's Windows location, named by Nominatim, as a place-search answer |
-| `RPNET LOAD` / `RPNET SAVE <760>` | `local/weather-settings.bin` (the record, never the key) |
+| `RPNET LOAD` / `RPNET SAVE <825>` | `local/weather-settings.bin` (the record; since version 2 the station key too, the owner 2026-10-31: a key entered once keeps working, until R130's key store) |
 | `RPNET CLIP` | the PC clipboard's first line (printable, 128 at most) |
 | `RPNET OPENMETEO <lat> <lon>` | Open-Meteo `forecast` (current, 24 hours, 10 days, unixtime, the place's time zone) |
 | `RPNET METNO <lat> <lon>` / `RPNET NWS <lat> <lon>` | MET Norway compact / NWS points then hourly and daily (User-Agent as their terms ask) |

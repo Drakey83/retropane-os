@@ -658,7 +658,8 @@ impl Shell {
             }
             Item::Icons => {
                 f.text(r.x + 12, base, ui, TEXT, b"Icons");
-                let p = rp_weather::settings::PACKS[usize::from(s.pack) % rp_weather::settings::PACKS.len()];
+                let p = rp_weather::settings::PACKS
+                    [usize::from(s.pack) % rp_weather::settings::PACKS.len()];
                 right(f, p.as_bytes(), DIM);
             }
             Item::Provider(i) => {
@@ -737,7 +738,13 @@ impl Shell {
         if self.screen == Screen::WeatherPlaces && !self.removing {
             let r = Rect::new(16, H - 40 - 34, 448, 28);
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
-            centre_in(f, r, self.fonts.label, TEXT, b"Remove (right softkey) takes one out");
+            centre_in(
+                f,
+                r,
+                self.fonts.label,
+                TEXT,
+                b"Remove (right softkey) takes one out",
+            );
         }
         if self.screen == Screen::WeatherFrom {
             let r = Rect::new(16, H - 40 - 34, 448, 28);

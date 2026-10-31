@@ -1027,7 +1027,7 @@ fn settings_rows_change_what_every_screen_shows_and_are_kept() {
         s.net_answer(false, b"");
     }
     let q = q.expect("a save");
-    assert_eq!(q.line(), b"RPNET SAVE 760\n");
+    assert_eq!(q.line(), b"RPNET SAVE 825\n");
     let back = rp_weather::store::decode(
         &q.body.expect("the record"),
         rp_weather::settings::Secret::NONE,
@@ -1742,7 +1742,10 @@ fn a_connected_station_becomes_the_place_shown_and_home() {
         br#"{"location_name":"Liberty Hill Station","latitude":30.664,"longitude":-97.922,"timezone_offset_minutes":-300,"current_conditions":{"air_temperature":18.0}}"#,
     );
     let p = s.wset.place();
-    assert_eq!((p.name.as_str(), p.lat, p.lon), ("Liberty Hill Station", 30_664, -97_922));
+    assert_eq!(
+        (p.name.as_str(), p.lat, p.lon),
+        ("Liberty Hill Station", 30_664, -97_922)
+    );
     assert_eq!(s.wset.home, s.wset.current);
     assert_eq!(s.wx.place.as_str(), "Liberty Hill Station");
     assert!(s.wants(Ask::Forecast) && s.wants(Ask::Save));

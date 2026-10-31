@@ -1637,7 +1637,7 @@ pub(crate) fn upper(s: &str) -> Line {
 /// Every notice the shell shows: each must fit the notice's area between
 /// the softkeys in the real font (rp-today's test; 2026-10-30: two
 /// settings notices ran past it and were left on screen).
-pub const NOTICES: [&str; 29] = [
+pub const NOTICES: [&str; 30] = [
     "40 at most",
     "64 at most",
     "Asking your PC",
@@ -1645,6 +1645,7 @@ pub const NOTICES: [&str; 29] = [
     "Keeps one place",
     "Key forgotten",
     "Key kept",
+    "No key copied",
     "No spaces",
     "Not connected yet",
     "Not yet: Browser",

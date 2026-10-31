@@ -255,11 +255,24 @@ impl Shell {
                 self.dirty_matches();
             }
             Ask::Clip => {
-                if self.has_keyboard() {
-                    // One line, printable ASCII only.
+                if self.screen == Screen::KeyEntry {
+                    // The key out of whatever was copied (the owner's
+                    // clipboard held 96 characters around a 36-character
+                    // token, 2026-10-31): the longest run of letters,
+                    // digits and dashes, 8 to 64 long.
+                    match key_in(body) {
+                        Some(k) => {
+                            self.forget_typed();
+                            self.type_bytes(k);
+                            self.field_changed();
+                        }
+                        None => self.show_notice("No key copied"),
+                    }
+                } else if self.has_keyboard() {
+                    // A place: the first line.
                     let line = body
                         .split(|b| *b == b'\n' || *b == b'\r')
-                        .next()
+                        .find(|l| !l.is_empty())
                         .unwrap_or(b"");
                     self.type_bytes(line);
                     self.field_changed();
@@ -314,7 +327,9 @@ impl Shell {
             lon,
         };
         let was = self.wset.current;
-        if self.wset.add_place(p) && (self.wset.current != was || self.wset.home != self.wset.current) {
+        if self.wset.add_place(p)
+            && (self.wset.current != was || self.wset.home != self.wset.current)
+        {
             self.wset.home = self.wset.current;
             self.station_live = true;
             self.apply_settings();
@@ -369,9 +384,31 @@ impl Shell {
     }
 }
 
+/// The longest run of letters, digits and dashes in `text`, 8 to 64 long:
+/// a key as services print it, out of whatever surrounds it.
+fn key_in(text: &[u8]) -> Option<&[u8]> {
+    text.split(|c| !(c.is_ascii_alphanumeric() || *c == b'-'))
+        .filter(|t| (8..=64).contains(&t.len()))
+        .max_by_key(|t| t.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_is_found_in_whatever_was_copied() {
+        let k = b"0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+        let text = [
+            &b"Personal access token: "[..],
+            k,
+            b"\r\nCreated 10/31/2026, Liberty Hill",
+        ]
+        .concat();
+        assert_eq!(key_in(&text), Some(&k[..]));
+        assert_eq!(key_in(k), Some(&k[..]));
+        assert_eq!(key_in(b"no key here"), None);
+    }
 
     #[test]
     fn degrees_keep_their_three_places_and_sign() {
@@ -389,8 +426,10 @@ mod tests {
             n: 0,
             body: None,
         };
-        q.push(b"RPNET TEMPEST abcd-1234
-");
+        q.push(
+            b"RPNET TEMPEST abcd-1234
+",
+        );
         assert_eq!(q.logged(), b"RPNET TEMPEST");
         let mut f = Question {
             ask: Ask::Forecast,
@@ -398,9 +437,14 @@ mod tests {
             n: 0,
             body: None,
         };
-        f.push(b"RPNET OPENMETEO 1.000 2.000
-");
-        assert_eq!(f.logged(), b"RPNET OPENMETEO 1.000 2.000
-");
+        f.push(
+            b"RPNET OPENMETEO 1.000 2.000
+",
+        );
+        assert_eq!(
+            f.logged(),
+            b"RPNET OPENMETEO 1.000 2.000
+"
+        );
     }
 }

@@ -142,7 +142,10 @@ pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = [];
                 looked(&t)
             };
             let pak = pack_file(&t);
-            println!("cargo:warning=picture pack {n} ({file}): {} bytes", pak.len());
+            println!(
+                "cargo:warning=picture pack {n} ({file}): {} bytes",
+                pak.len()
+            );
             std::fs::write(Path::new(&out).join(format!("rp-icons{n}.pak")), pak)
                 .expect("OUT_DIR writable");
         }
@@ -188,13 +191,17 @@ pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = [];
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
         println!("cargo:rustc-link-arg-bins=-T{dir}/../../boot/link.x");
-        // 12 KiB of stack. It was 24, then 40: the image used 23.5 KiB (96% of
+        // The stack. It was 24, then 40, then 12: the image used 23.5 KiB (96% of
         // 24) and an older build froze the Axim (the watchdog error screen,
         // 2026-10-17). Of that, 22 KiB was `main`'s frame holding the
         // long-lived objects; they are in `rt::Slot`s in `.bss` now, where
         // the zeroed-RAM budget counts them. Every emulator image fails above
         // 80% stack use.
-        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=12288");
+        // 20 KiB since 2026-10-31: the last run used 11,840 of 12,288 bytes
+        // and reading an icon pack from the SD card (the FAT volume's two
+        // sectors, a read buffer) adds ~3 KiB; the first build with it
+        // overflowed at start.
+        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=20480");
     }
 }
 

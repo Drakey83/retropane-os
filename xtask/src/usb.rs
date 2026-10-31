@@ -1104,9 +1104,11 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// The largest part of an icon pack put on the card (the loader receives a
-/// file into its image area, 950,272 bytes).
-const PACK_PART: usize = 900_000;
+/// The largest part of an icon pack put on the card: the loader receives a
+/// file into its image area less 64 KiB it keeps as scratch (886,784 bytes
+/// for the payload, name included; a 900,000-byte part was refused "too
+/// big", 2026-10-31).
+const PACK_PART: usize = 800_000;
 
 /// rp-today's icon packs onto the SD card, each in parts (`RPIC<n>A.PAK`,
 /// `B`, ...) and an empty part after the last (the image joins parts up to
@@ -1132,7 +1134,11 @@ fn icon_packs(root: &Path) -> Result<(), String> {
             }
             let file = dir.join(&name);
             std::fs::write(&file, part).map_err(|e| format!("{}: {e}", file.display()))?;
-            eprintln!("    icon pack {n} ({}): {name}, {} bytes", rp_weather::settings::PACKS[n], part.len());
+            eprintln!(
+                "    icon pack {n} ({}): {name}, {} bytes",
+                rp_weather::settings::PACKS[n],
+                part.len()
+            );
             let sent = put(root, &file.to_string_lossy(), Some(&name));
             // The empty end marker matters only after a pack shrank: a
             // loader that refuses an empty file is told, not fatal.
@@ -1935,9 +1941,12 @@ while ($true) {{
                 Answer $b
             }}
             'CLIP' {{
-                $t = (Get-Clipboard -Raw) -replace '[^\x20-\x7E\n]', ''
-                $t = ($t -split "`n")[0].Trim()
-                if ($t.Length -eq 0 -or $t.Length -gt 128) {{ Refuse 404 'nothing usable on the clipboard'; continue }}
+                # The whole clipboard (printable, lines kept, 1024 at most):
+                # the device picks what its field takes (a key out of a
+                # longer text, a place's first line).
+                $t = ((Get-Clipboard -Raw) -replace '[^\x20-\x7E\n]', '').Trim()
+                if ($t.Length -gt 1024) {{ $t = $t.Substring(0, 1024) }}
+                if ($t.Length -eq 0) {{ Refuse 404 'nothing usable on the clipboard'; continue }}
                 "CLIPBOARD $($t.Length) characters"
                 Answer ([Text.Encoding]::ASCII.GetBytes($t))
             }}

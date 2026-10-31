@@ -510,11 +510,12 @@ pub const BUDGETS: &[Budget] = &[
     // settings, the keyboard and the radar. 2026-10-31: zeroed RAM 48 ->
     // 56 KiB for the seven icon packs read from the SD card (their picture
     // tables, 66 a pack, ~5.5 KiB) and the dock link's question buffer:
-    // 52.2 KiB measured, + ~7%.
+    // 52.2 KiB measured, + ~7%. Then 56 -> 64 KiB: the stack 12 -> 20
+    // KiB (the card read; 54.3 KiB with the pack tables in `.bss` + 8).
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 56 * 1024,
+        max_zero: 64 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D
