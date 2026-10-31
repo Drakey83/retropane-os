@@ -87,6 +87,54 @@ their first app.
   the card by zoom/x/y/time; a forecast with its time; a refresh fetches
   only what changed.
 
+## Option C, as decided (the owner, 2026-10-31)
+
+P2a as first written (the default set inside the image) doesn't fit: VClouds'
+250 px pictures pack to 1.41 MB and its 100 px ones to 312 KB, against about
+240 KB free in the 928 KiB image area (pack 0's table, measured). Four
+options were put to the owner; A (only the 66 px set in the image, the big
+pictures enlarged from it) was drawn on the device's own path
+(docs/design/mockups/default-icons-a-compare.png: Lanczos the closest of
+three filters, RMS 8.7 against the stored pictures) and turned down: "too
+soft you lose all of the detail". He chose C, without a loader change:
+
+- **Stored once, made smaller, never enlarged.** Each pack keeps only its
+  250 px pictures (VClouds 1.93 -> ~1.41 MB on the card); every other size
+  (Hourly's 160 px, the cards' 66, the rows' 40) is made smaller from it
+  while decoding, with a downscale filter fitted offline to these pictures
+  (the packs' own 100/66/40 versions, made from the masters, are the fit's
+  targets). The image carries no icons (its 122 KB of samples go).
+- **The default set, with or without a card.** VClouds' file comes from
+  the SD card, else the CF card, else the PC through the dock relay (the
+  link the forecasts use; at the SD stage "no card" means a test image
+  loaded over USB, so the PC is there), and stays packed in RAM (~1.4 MB):
+  a card pulled mid-run never leaves a gap, no error box. Installed on
+  flash, the same file is read from the flash file system.
+- **Read only what is on screen.** The shell lists the pictures it shows
+  (a bit per condition per size: the Now and Today big pictures, the
+  forecast cards, Hourly's rows and card, 10 Day's rows); at a refresh,
+  a pack pick or a place change the image decodes just those, from the
+  default file in RAM or the chosen pack on the card by offset (one read
+  per picture, `rp_fat::Volume::read_range`).
+- **A store of pictures, handles to the shell.** Decoded pictures live in
+  a fixed RAM store (about 1 MB of slots; ADR-0022 rule 2: the CPU, which
+  composes the pages, never reads 2700G memory). The shell holds small
+  handles (slot, generation, size), never pointers, so a slot can be
+  reused safely without `unsafe` (ADR-0021 rule 1: the shell knows
+  nothing of pixels); the 2D renderer keys its copies in 2700G memory by
+  slot and generation, so a reused slot is uploaded again, never shown
+  stale (it keys by address today).
+- **Hourly's card picture at 160 px** (the owner's pick of three drawn
+  sizes, docs/design/mockups/hourly-card-picture-sizes.png), the text
+  moved right; built 2026-10-31, the picture shown at 160 once the store
+  decodes it at that size.
+- **What it costs, against R146:** the image -122 KB; RAM ~37 MB -> ~2.4
+  MB (the default file and the store); each pack on the card ~27% smaller;
+  graphics memory a fixed ~1 MB of copies.
+- **Measured before it is called done:** a decode at size under 10 ms a
+  picture on the X51v (else the decoded pictures are kept on the card,
+  P4's file), a pack pick under 0.1 s, the log's RAM and timing lines.
+
 ## Targets (measured on the X51v; the owner proves)
 
 | | Now | Target |

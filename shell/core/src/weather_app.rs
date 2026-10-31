@@ -85,6 +85,12 @@ const RAIN: Argb = rp_draw::look::theme(0xFF7F_C8FF);
 /// Hourly's graph and the picked hour's card (R140, the mix mock-up X2).
 pub(crate) const HOURLY_GRAPH: Rect = Rect::new(16, 78, 448, 240);
 const HOURLY_CARD: Rect = Rect::new(16, 326, 448, 196);
+/// The hour card's lines, from its left: the picture's column (up to
+/// [`HOUR_PIC_W`] wide) is left of them.
+const HOUR_TEXT_X: u16 = 176;
+/// The widest picture the hour card shows (the size the icon cache decodes
+/// it at).
+pub const HOUR_PIC_W: u16 = 160;
 /// The 24-hour grid under the card: four rows of six cells.
 const GRID_Y: u16 = 550;
 const GRID_ROWS: usize = 4;
@@ -1330,13 +1336,15 @@ impl Shell {
         };
         let cy0 = |v: i32| (v + cy).max(0) as u16;
         f.text(c.x + 16, cy0(30), label, TEXT, when.as_bytes());
-        // The mock-up's 100 px picture (the card packs'), else the card's,
-        // centred left of the lines and below the time.
+        // The hour's picture, up to 160 px wide (the owner's pick of three
+        // drawn sizes, 2026-10-31: docs/design/mockups/hourly-card-picture-
+        // sizes.png), centred in the column left of the lines and below the
+        // time: the card packs' mid size, else the card's.
         let icon = Icon::of(h.sky);
         let k = usize::from(icon.id() - 1);
         if let Some(img) = self.icons.mid[k].or(self.icons.card[k]) {
             f.push(Cmd::Image {
-                x: c.x + 72u16.saturating_sub(img.w / 2),
+                x: c.x + (HOUR_TEXT_X / 2).saturating_sub(img.w / 2),
                 y: cy0(110 - i32::from(img.h / 2)),
                 img,
             });
@@ -1414,7 +1422,13 @@ impl Shell {
             if !b.as_bytes().is_empty() {
                 l = l.push(SEP).push(b.as_bytes());
             }
-            f.text(c.x + 136, cy0(58 + 29 * k as i32), ui, color, l.as_bytes());
+            f.text(
+                c.x + HOUR_TEXT_X,
+                cy0(58 + 29 * k as i32),
+                ui,
+                color,
+                l.as_bytes(),
+            );
         }
     }
 

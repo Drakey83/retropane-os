@@ -1448,4 +1448,67 @@ mod tests {
             );
         }
     }
+
+    /// Hourly's card with the real fonts: every line ends inside the card
+    /// for every sky and the widest readings (three-digit temperatures,
+    /// gusts, km/h), the text moved right for the 160 px picture (the
+    /// owner's pick, 2026-10-31).
+    #[test]
+    fn every_hour_card_line_fits_with_the_wide_picture() {
+        use rp_draw::{Cmd, Frame};
+        use rp_shell::{Input, Key, Shell};
+        for metric in [false, true] {
+            for wmo in [0u8, 2, 3, 45, 51, 61, 65, 66, 71, 75, 77, 80, 85, 95, 99] {
+                let mut wx = rp_weather::sample();
+                let h = &mut wx.hours[0];
+                h.sky.wmo = wmo;
+                h.sky.wind = 1_999;
+                (h.temp, h.feels, h.dew) = (-499, -499, -499);
+                (h.humidity, h.precip, h.uv) = (100, 100, 11);
+                (h.gust, h.rain, h.vis) = (1_999, 9_999, 65_000);
+                h.wind_from = 337;
+                let mut s = Shell::new(shell_fonts(), rp_shell::Icons::NONE, true);
+                s.set_forecast(wx);
+                if metric {
+                    s.set_region(rp_weather::Region::METRIC);
+                }
+                for e in [
+                    Input::PenDown { x: 240, y: 150 },
+                    Input::PenUp { x: 240, y: 150 },
+                    Input::Key(Key::Right),
+                ] {
+                    s.input(e);
+                    s.settle();
+                }
+                let mut f = Frame::new();
+                s.frame(&mut f);
+                let mut lines = 0;
+                for c in f.cmds() {
+                    // The card's lines (326 to 522 on the page, which
+                    // starts at the screen's row 0 at rest), not the chrome.
+                    if let Cmd::Text {
+                        x,
+                        baseline,
+                        font,
+                        text,
+                        ..
+                    } = *c
+                        && (326..522).contains(&baseline)
+                    {
+                        lines += 1;
+                        let end = x + font.width(f.text_of(text));
+                        assert!(
+                            end <= 464 - 8,
+                            "wmo {wmo}, metric {metric}: {:?} ends at {end}",
+                            core::str::from_utf8(f.text_of(text))
+                        );
+                    }
+                }
+                assert!(
+                    lines >= 6,
+                    "wmo {wmo}: the card's time and five lines seen ({lines})"
+                );
+            }
+        }
+    }
 }

@@ -219,6 +219,25 @@ pub fn run(root: &Path) -> Result<(), String> {
     .map_err(|e| format!("07b: {e}"))?;
     page.push_str("<figure><img src=\"07b-weather-hourly-device.png\" alt=\"Hourly on the device\"><figcaption>Hourly as the X51v shows it: the page's picture on the layer over the chrome</figcaption></figure>
 ");
+    // `RP_PREVIEW_PACKS=a.pak,b.pak`: a Weather page (`RP_PREVIEW_TAB`, 0
+    // Now, 1 Hourly, 2 10 Day; Now by default) as the X51v shows it with
+    // each pack (page-<tab>-pack-N.png): pictures compared on the device's
+    // own path (the page's picture over the chrome, at its own depth).
+    if let Ok(list) = std::env::var("RP_PREVIEW_PACKS") {
+        let tab: u8 = std::env::var("RP_PREVIEW_TAB")
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .filter(|t| *t <= 2)
+            .unwrap_or(0);
+        for (k, file) in list.split(',').filter(|f| !f.is_empty()).enumerate() {
+            let pack = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+            let icons = crate::emu::pack_icons(&pack).ok_or(format!("{file}: not a pack"))?;
+            let rgb = crate::emu::today_page_on_planes(&wall, Some(icons), tab);
+            let name = format!("page-{tab}-pack-{k}.png");
+            std::fs::write(out.join(&name), png_rgb(480, 640, &rgb))
+                .map_err(|e| format!("{name}: {e}"))?;
+        }
+    }
     // The movement: each entrance as frames every 30 ms (motion-<name>-NN.png),
     // which a GIF tool can join; the device draws the same frames.
     let hero = vec![

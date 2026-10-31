@@ -703,6 +703,13 @@ impl Shell {
         self.dirty(Rect::new(0, 0, W, H));
     }
 
+    /// The units and formats shown (the settings set them; tests and
+    /// previews show a country's at once).
+    pub fn set_region(&mut self, r: Region) {
+        self.region = r;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
     /// The icon pack the settings name (the device loads it from the card
     /// and hands it over with [`Shell::set_icons`]).
     #[must_use]

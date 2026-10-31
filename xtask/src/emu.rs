@@ -11397,6 +11397,18 @@ pub(crate) fn today_screens(
 /// out to ARGB4444 dithered as the image writes it) blended over it in the
 /// page's window, at rest (ARGB8888, as the image writes its pages).
 pub(crate) fn today_hourly_on_planes(wall: &[u8], icons: Option<rp_shell::Icons>) -> Vec<u8> {
+    today_page_on_planes(wall, icons, 1)
+}
+
+/// Weather's page `tab` as the X51v shows it on the plane path: the app's
+/// chrome on screen 0 and the page's picture blended over it, Hourly's at
+/// ARGB8888 with its line painted per pixel, the others at ARGB4444
+/// dithered (the image's `build_page`).
+pub(crate) fn today_page_on_planes(
+    wall: &[u8],
+    icons: Option<rp_shell::Icons>,
+    tab: u8,
+) -> Vec<u8> {
     use rp_draw::{Frame, Renderer};
     use rp_gfx::layer::{Layer, PlaneFormat};
     use rp_gfx::render::CpuRenderer;
@@ -11427,11 +11439,14 @@ pub(crate) fn today_hourly_on_planes(wall: &[u8], icons: Option<rp_shell::Icons>
         shell.set_icons(icons);
     }
     shell.set_alerts_from_nws(NWS_ALERTS);
+    let right = core::iter::repeat_n(rp_shell::Input::Key(rp_shell::Key::Right), usize::from(tab));
     for e in [
         rp_shell::Input::PenDown { x: 240, y: 150 },
         rp_shell::Input::PenUp { x: 240, y: 150 },
-        rp_shell::Input::Key(rp_shell::Key::Right),
-    ] {
+    ]
+    .into_iter()
+    .chain(right)
+    {
         shell.input(e);
         shell.settle();
     }
@@ -11451,9 +11466,10 @@ pub(crate) fn today_hourly_on_planes(wall: &[u8], icons: Option<rp_shell::Icons>
             .collect()
     };
     // The page's picture, as the image builds it.
-    let rows = u32::from(rp_shell::picture_rows(1));
+    let rows = u32::from(rp_shell::picture_rows(tab));
     let mut px = vec![0u32; 480 * rows as usize];
     let mut plane = vec![0u8; 480 * 4 * rows as usize];
+    let mut converted = None;
     {
         let mut cpu = CpuRenderer::new(
             Layer::new(&mut px, 480, rows, 480).expect("the layer"),
@@ -11465,19 +11481,48 @@ pub(crate) fn today_hourly_on_planes(wall: &[u8], icons: Option<rp_shell::Icons>
         let mut top = 0u16;
         while u32::from(top) < rows {
             let n = rp_today::PAGE_BAND.min(rows as u16 - top);
-            shell.page_band(1, &mut f, top, n);
+            shell.page_band(tab, &mut f, top, n);
             let _ = cpu.draw(&f);
-            let band = (i32::from(top), i32::from(top + n));
-            cpu.paint(
-                rp_gfx::Rect::new(0, u32::from(top), 480, u32::from(n)),
-                |p, stride| shell.paint_hourly(p, stride, band),
-            );
+            if tab == 1 {
+                let band = (i32::from(top), i32::from(top + n));
+                cpu.paint(
+                    rp_gfx::Rect::new(0, u32::from(top), 480, u32::from(n)),
+                    |p, stride| shell.paint_hourly(p, stride, band),
+                );
+            }
             top += n;
         }
+        if tab != 1 {
+            // To the panel's ARGB4444, dithered, as the image sends it;
+            // back to 8888 (each nibble repeated) for the blend below.
+            let mut wide = vec![0u8; 480 * 4 * rows as usize];
+            let mut half = [0u8; 480 * 2];
+            for y in 0..rows {
+                let r = rp_gfx::Rect::new(0, y, 480, 1);
+                let _ = rp_gfx::layer::flush(
+                    &cpu.layer().view(),
+                    PlaneFormat::Argb4444Dithered,
+                    &mut half,
+                    0,
+                    &[r],
+                );
+                for (x, q) in half.as_chunks::<2>().0.iter().enumerate() {
+                    let v = u16::from_le_bytes(*q);
+                    let n4 = |s: u16| u32::from((v >> s) & 15) * 17;
+                    let w = n4(12) << 24 | n4(8) << 16 | n4(4) << 8 | n4(0);
+                    let at = (y as usize * 480 + x) * 4;
+                    wide[at..at + 4].copy_from_slice(&w.to_le_bytes());
+                }
+            }
+            converted = Some(wide);
+        }
+    }
+    if let Some(wide) = converted {
+        plane = wide;
     }
     // Over screen 0 in the page's window (at rest: row LAYER_MARGIN at its
     // top), each 4444 pixel by its alpha.
-    let v = shell.page_layer().expect("Hourly on the layer");
+    let v = shell.page_layer().expect("the page on the layer");
     for y in 0..usize::from(v.win.h) {
         for x in 0..usize::from(v.win.w) {
             let at = (usize::from(v.row) + y) * 480 * 4 + (usize::from(v.win.x) + x) * 4;
@@ -11654,9 +11699,14 @@ pub(crate) const NWS_ALERTS: &[u8] =
 /// Icon pack `n` as the image unpacks it from the card, if the build made it.
 pub(crate) fn today_pack(release: &Path, n: usize) -> Option<rp_shell::Icons> {
     let pack = today_output(release, &format!("rp-icons{n}.pak")).ok()?;
-    let words = rp_today::pack_words(&pack)?;
+    pack_icons(&pack)
+}
+
+/// A pack file's set, unpacked as the image unpacks it.
+pub(crate) fn pack_icons(pack: &[u8]) -> Option<rp_shell::Icons> {
+    let words = rp_today::pack_words(pack)?;
     rp_today::pack_into(
-        &pack,
+        pack,
         Box::leak(vec![0; words].into_boxed_slice()),
         Box::leak(Box::new([rp_today::NO_IMAGE; rp_today::PACK_MAX])),
     )
