@@ -299,9 +299,38 @@ mod image {
         meant: (u16, u16, u16, u16, u16),
     }
 
+    impl Refresh {
+        /// As ten words (kept in the RAM pool).
+        fn words(&self) -> [u32; 10] {
+            let m = self.meant;
+            [
+                self.ms,
+                self.sig,
+                self.regs[0],
+                self.regs[1],
+                self.regs[2],
+                self.regs[3],
+                self.regs[4],
+                u32::from(m.0) | u32::from(m.1) << 16,
+                u32::from(m.2) | u32::from(m.3) << 16,
+                u32::from(m.4),
+            ]
+        }
+
+        /// Back from [`Self::words`].
+        fn from_words(w: &[u32]) -> Self {
+            let lo = |v: u32| (v & 0xFFFF) as u16;
+            Self {
+                ms: w[0],
+                sig: w[1],
+                regs: [w[2], w[3], w[4], w[5], w[6]],
+                meant: (lo(w[7]), lo(w[7] >> 16), lo(w[8]), lo(w[8] >> 16), lo(w[9])),
+            }
+        }
+    }
+
     /// Refreshes kept per opening (~1.6 s at 60 Hz).
     const TRACE: usize = 96;
-    static TRACE_BUF: rt::Slot<[Refresh; TRACE]> = rt::Slot::new();
 
     /// Reveal's window over the app composed aside.
     fn reveal_state(r: rp_draw::Rect, shift: u16) -> LayerState {
@@ -402,7 +431,9 @@ mod image {
         // The plane path's page drawing: the CPU's layer (ARGB8888) and the
         // picture it is flushed into (ARGB4444), the tallest page's size.
         let (layer_px, rest) = rest.split_at_mut(W * PIC_ROWS);
-        let (plane_words, _) = rest.split_at_mut(W * PIC_ROWS / 2);
+        let (plane_words, rest) = rest.split_at_mut(W * PIC_ROWS / 2);
+        // The openings' trace, in the RAM pool (not the image's RAM budget).
+        let (trace_words, _) = rest.split_at_mut(TRACE * 10);
         let plane_bytes = rp_hal_mem::words_as_bytes_mut(plane_words);
         let wall_bytes =
             &mut rp_hal_mem::words_as_bytes_mut(wall_words)[..rp_today::WALLPAPER_BYTES];
@@ -542,9 +573,7 @@ mod image {
         // The opening's trace: refreshes recorded, the last refresh's
         // count (`DSIG` is published at line 3 of the next), and how many
         // refreshes to keep recording after the opening ends.
-        let Some(trace) = TRACE_BUF.put_with(|| [Refresh::default(); TRACE]) else {
-            crash(format_args!("started twice"))
-        };
+        let trace = trace_words;
         let (mut trace_n, mut trace_on, mut trace_tail) = (0usize, false, 0u32);
         let mut last_line = 0u32;
         let mut meant = (0u16, 0u16, 0u16, 0u16, 0u16);
@@ -1310,7 +1339,7 @@ mod image {
                     && trace_n < TRACE
                 {
                     let rd = |r: &mut Mmio, o: usize| r.read32(o);
-                    trace[trace_n] = Refresh {
+                    let t = Refresh {
                         ms: now_ms as u32,
                         sig: rd(regs, rp_drv_mbx_display::sig::DSIG),
                         regs: [
@@ -1322,6 +1351,7 @@ mod image {
                         ],
                         meant,
                     };
+                    trace[trace_n * 10..trace_n * 10 + 10].copy_from_slice(&t.words());
                     trace_n += 1;
                 }
                 last_line = line;
@@ -1334,7 +1364,8 @@ mod image {
                         RunLog,
                         "trace of open {opens}: {trace_n} refreshes (ms, DSIG, GSCADR, VSCADR, VSADR, VSCTRL, SSSIZE; the window meant x,y,w,h,row)"
                     );
-                    for t in &trace[..trace_n] {
+                    for w in trace[..trace_n * 10].chunks(10) {
+                        let t = Refresh::from_words(w);
                         let _ = writeln!(
                             RunLog,
                             "T {} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} | {},{},{},{},{}",
