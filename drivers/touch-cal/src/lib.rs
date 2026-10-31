@@ -297,6 +297,45 @@ pub const STABLE_WITHIN: u16 = 20;
 /// [`Pen::Move`]; closer is a [`Pen::Hold`] (the owner's taps reported a
 /// Move almost every sample for 1-unit jitter).
 pub const MOVE_BEYOND: u16 = 4;
+/// Once a touch is down, two consecutive counted samples this close (raw,
+/// either channel) are a stylus moving, not noise: ~55 px a sample, ~8 px
+/// a ms at the 7 ms sample. [`STABLE_WITHIN`] (the taps' rule) reported
+/// nothing for a drag: the owner's strokes on the X51v (2026-10-30, two
+/// runs, `tests/data/owner-2026-10-30-drags.txt`) moved 50-150 raw a
+/// sample and long ones got 0-3 moves.
+pub const MOVE_STEP: u16 = 400;
+/// While dragging, a sample counts while Z1 is at least this many
+/// 1/256ths of the touch's peak (65%): a moving stylus's pressure wanders
+/// more than a held one's, and [`Z_HELD`]'s 95% read it as lifting.
+pub const Z_HELD_DRAG: u32 = 166;
+/// While dragging, pressure counts as steady within this many 1/256ths
+/// of the previous sample's (30%).
+pub const Z_STEADY_DRAG: u32 = 77;
+/// A touch is a drag once a position this far (raw, either channel) from
+/// where it went down is reported (~8 px, the shell's tap slop): taps,
+/// creeping a few units, keep the taps' rules.
+pub const DRAG_FROM: u16 = 40;
+/// A stroke that moves from its landing (a flick: pressure swinging
+/// 25-50% a sample, so never steady twice) is down after this many
+/// pressed samples in a row, each within [`MOVE_STEP`] of the last
+/// (the owner's flicks, 2026-10-30, were otherwise lost whole).
+pub const LAND_MOVING: u8 = 3;
+/// While dragging, pressure is judged against a recent peak that fades by
+/// 1/this a sample (~6%: halves in ~80 ms), not the landing's: a stroke
+/// pressed hard to land then slides lighter (the owner's, 2026-10-30: a
+/// 1,887 landing, the slide at 1,000-1,500, read as a lift at 1,061).
+pub const DRAG_PEAK_FADE: u16 = 16;
+/// While dragging, a lift undone at this many 1/256ths of the recent peak
+/// (80%).
+pub const Z_BACK_DRAG: u32 = 205;
+/// A tap's "lift" that slides on beyond 3 x [`DRAG_FROM`] is a drag while
+/// still pressed at this many 1/256ths of the landing's peak (50%): the
+/// owner's press-hold-swipe eased to 51-64% (2026-10-30). A real lift
+/// collapses to under [`Z_MIN`] at once, and a drag is reported only after
+/// two samples agree, so a lift's last jump never reads as one.
+pub const Z_HELD_SLIDE: u32 = 128;
+/// ... pressed at least this hard (raw Z1): a brush is lighter.
+pub const Z_LAND_MOVING: u16 = 900;
 /// Pressure back at this many 1/256ths of the peak: the stylus pressed
 /// again, not lifting after all.
 pub const Z_BACK: u32 = 250;
@@ -338,6 +377,17 @@ pub struct Filter {
     at: Option<(u16, u16)>,
     /// Pressure has fallen from its peak: the stylus is leaving.
     lifting: bool,
+    /// A position [`DRAG_FROM`] from the touch's first was reported.
+    dragging: bool,
+    /// Where it went down.
+    down_at: (u16, u16),
+    /// Pressed samples in a row each within a step of the last, before
+    /// the touch is down.
+    moving_run: u8,
+    /// Where the pen first touched.
+    first_at: (u16, u16),
+    /// While dragging, the recent peak pressure ([`DRAG_PEAK_FADE`]).
+    drag_peak: u16,
 }
 
 impl Filter {
@@ -352,6 +402,11 @@ impl Filter {
             last_at: (0, 0),
             at: None,
             lifting: false,
+            dragging: false,
+            down_at: (0, 0),
+            moving_run: 0,
+            first_at: (0, 0),
+            drag_peak: 0,
         }
     }
 
@@ -375,9 +430,17 @@ impl Filter {
             *self = Self::new();
             return up;
         };
-        self.landed.get_or_insert(now_ms);
+        if self.landed.is_none() {
+            self.landed = Some(now_ms);
+            self.first_at = (s.x, s.y);
+        }
+        let (z_steady, z_held) = if self.dragging {
+            (Z_STEADY_DRAG, Z_HELD_DRAG)
+        } else {
+            (Z_STEADY, Z_HELD)
+        };
         let steady =
-            u32::from(s.z1.abs_diff(self.last_z)) * 256 <= Z_STEADY * u32::from(self.last_z.max(1));
+            u32::from(s.z1.abs_diff(self.last_z)) * 256 <= z_steady * u32::from(self.last_z.max(1));
         self.last_z = s.z1;
         self.peak_z = self.peak_z.max(s.z1);
         let last_at = core::mem::replace(&mut self.last_at, (s.x, s.y));
@@ -386,10 +449,58 @@ impl Filter {
         // its second sample, and treating it as a lift threw away 60 ms of
         // steady samples). Pressing firmly again undoes it.
         let z = u32::from(s.z1) * 256;
-        if self.at.is_some() && z < Z_HELD * u32::from(self.peak_z) {
+        if self.dragging {
+            self.drag_peak = s.z1.max(self.drag_peak - self.drag_peak / DRAG_PEAK_FADE);
+            let peak = u32::from(self.drag_peak);
+            if z < z_held * peak {
+                self.lifting = true;
+            } else if z >= Z_BACK_DRAG * peak {
+                self.lifting = false;
+            }
+        } else if self.at.is_some() && z < z_held * u32::from(self.peak_z) {
             self.lifting = true;
         } else if z >= Z_BACK * u32::from(self.peak_z) {
             self.lifting = false;
+        }
+        // A stroke moving from its landing: down once it has pressed and
+        // kept within a step for a few samples, steady or not.
+        if self.at.is_none() {
+            let step = last_at.0.abs_diff(s.x) <= MOVE_STEP && last_at.1.abs_diff(s.y) <= MOVE_STEP;
+            self.moving_run = if s.z1 >= Z_LAND_MOVING && step {
+                self.moving_run.saturating_add(1)
+            } else {
+                0
+            };
+            // Carried away from where the pen first touched (a landing's
+            // bounce slides back and forth in place: the owner's slowest
+            // tap ends 69 from its first contact).
+            let away = self
+                .first_at
+                .0
+                .abs_diff(s.x)
+                .max(self.first_at.1.abs_diff(s.y));
+            if self.moving_run >= LAND_MOVING && away > 2 * DRAG_FROM {
+                self.at = Some((s.x, s.y));
+                self.down_at = (s.x, s.y);
+                self.prev = Some((s.x, s.y));
+                return Pen::Down(s.x, s.y);
+            }
+        }
+        // A "lift" that slides on, still pressed, is a drag that eased off
+        // (the owner's press-then-slide strokes, 2026-10-30: pressure 1,887
+        // at the landing, 1,773 as the slide began, 94% of the peak, and
+        // the tap rule dropped the whole 2,808-raw stroke). A real lift
+        // slides at most ~75 raw (the recorded taps), well inside this.
+        if self.lifting
+            && !self.dragging
+            && self.at.is_some()
+            && (self.down_at.0.abs_diff(s.x) > 3 * DRAG_FROM
+                || self.down_at.1.abs_diff(s.y) > 3 * DRAG_FROM)
+            && z >= Z_HELD_SLIDE * u32::from(self.peak_z)
+        {
+            self.dragging = true;
+            self.lifting = false;
+            self.drag_peak = s.z1;
         }
         if !steady || self.lifting {
             self.prev = None;
@@ -414,12 +525,15 @@ impl Filter {
                 return Pen::Nothing;
             }
             self.at = Some((s.x, s.y));
+            self.down_at = (s.x, s.y);
             return Pen::Down(s.x, s.y);
         }
         let Some((px, py)) = prev else {
             return Pen::Nothing;
         };
-        if !near((px, py), (s.x, s.y)) {
+        // Down: a stylus moving agrees sample to sample within a step, not
+        // within the taps' few units.
+        if px.abs_diff(s.x) > MOVE_STEP || py.abs_diff(s.y) > MOVE_STEP {
             return Pen::Nothing;
         }
         let avg = |a: u16, b: u16| (u32::from(a) + u32::from(b)).div_ceil(2) as u16;
@@ -430,6 +544,13 @@ impl Filter {
                 if old.0.abs_diff(pos.0) > MOVE_BEYOND || old.1.abs_diff(pos.1) > MOVE_BEYOND =>
             {
                 self.at = Some(pos);
+                let (dx, dy) = self.down_at;
+                if !self.dragging
+                    && (dx.abs_diff(pos.0) > DRAG_FROM || dy.abs_diff(pos.1) > DRAG_FROM)
+                {
+                    self.dragging = true;
+                    self.drag_peak = s.z1;
+                }
                 Pen::Move(pos.0, pos.1)
             }
             Some(old) => Pen::Hold(old.0, old.1),

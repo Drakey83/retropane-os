@@ -310,6 +310,8 @@ const TEXT: Argb = rp_draw::look::theme(0xFFF0_F2F4);
 const DIM: Argb = rp_draw::look::theme(0xFFA8_B0B8);
 const FOCUS: Argb = rp_draw::look::theme(0xFF7F_D0FF);
 const PRESSED: Argb = rp_draw::look::theme(0x40FF_FFFF);
+/// A pressed card that opens an app: darkened, not lit.
+const PRESSED_DARK: Argb = rp_draw::look::theme(0x40000000);
 /// The align screen's background (opaque: the wallpaper would distract).
 const ALIGN_BACK: Argb = rp_draw::look::theme(0xFF0C_1014);
 /// A target held long enough.
@@ -1231,7 +1233,15 @@ impl Shell {
     fn decorate(&self, f: &mut Frame, t: Target) {
         let r = self.rect_of(t);
         if self.pressed == Some(t) {
-            f.push(Cmd::Fill { r, color: PRESSED });
+            // The weather card opens the app: pressed, it darkens (a pale
+            // fill over its glass read as the screen flashing white while
+            // the app composed, the owner's photo 2026-10-30).
+            let color = if t == Target::Hero {
+                PRESSED_DARK
+            } else {
+                PRESSED
+            };
+            f.push(Cmd::Fill { r, color });
         }
         if self.focus == Some(t) {
             f.push(Cmd::Outline { r, color: FOCUS });

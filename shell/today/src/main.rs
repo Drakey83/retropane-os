@@ -1122,7 +1122,11 @@ mod image {
                                 gfx.commits().done
                             );
                         }
-                        if revealing && let Some((r, shift)) = shell.reveal_plane() {
+                        // Only once its window is up: moves staged while the
+                        // app was still composing showed it part-open, then
+                        // the restart snapped it back to the card (the
+                        // owner's second run, today-0022, his photos).
+                        if reveal_shown && let Some((r, shift)) = shell.reveal_plane() {
                             let _ = gfx.move_layer(pc, reveal_state(r, shift).win);
                         }
                     } else if let Some(v) = shell.page_layer()

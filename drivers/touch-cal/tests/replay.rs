@@ -306,3 +306,108 @@ fn every_recorded_touch_is_pressed_promptly_and_in_place() {
         "pressed more than 20 px from release: {jumps:?}"
     );
 }
+
+/// The owner's drags and swipes on the X51v (2026-10-30, two runs of the
+/// plane path's Weather app, `data/owner-2026-10-30-drags.txt`): every
+/// long stroke follows the pen. The taps' rule alone (two samples within
+/// `STABLE_WITHIN`, 95% of peak pressure) gave them 0-3 moves.
+#[test]
+fn the_owners_drags_follow_the_pen() {
+    let text = include_str!("data/owner-2026-10-30-drags.txt");
+    let mut strokes: Vec<Touch> = Vec::new();
+    let mut cur: Touch = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let ms: u32 = f[1].parse().unwrap();
+        // A stroke ends where the pen leaves (no pressure, or under the
+        // filter's contact floor: the log runs touches together).
+        let p = (f[2] != "-").then(|| {
+            let n = |i: usize| f[i].parse::<u16>().unwrap();
+            Sample {
+                x: n(2),
+                y: n(3),
+                z1: n(4),
+            }
+        });
+        match p.filter(|p| p.z1 >= rp_touch_cal::Z_MIN) {
+            Some(p) => cur.push((ms, Some(p))),
+            None if !cur.is_empty() => {
+                cur.push((ms, None));
+                strokes.push(std::mem::take(&mut cur));
+            }
+            None => {}
+        }
+    }
+    let mut long = 0;
+    for (k, s) in strokes.iter().enumerate() {
+        // Where the pen was pressing, first to last: samples at the drag
+        // rule's pressure (the landing's and the lift's light ones out).
+        let peak = s
+            .iter()
+            .filter_map(|&(_, p)| p)
+            .map(|p| u32::from(p.z1))
+            .max()
+            .unwrap_or(0);
+        let pressed: Vec<Sample> = s
+            .iter()
+            .filter_map(|&(_, p)| p)
+            .filter(|p| u32::from(p.z1) * 256 >= rp_touch_cal::Z_HELD_DRAG * peak)
+            .collect();
+        if pressed.len() < 3 {
+            continue;
+        }
+        // Where it started: the middle of the first three pressed samples
+        // (a landing can read one wild position first: x 1,541 then 2,865).
+        let mid = |a: u16, b: u16, c: u16| a.max(b).min(a.min(b).max(c));
+        let (p0, p1, p2) = (pressed[0], pressed[1], pressed[2]);
+        let first = &Sample {
+            x: mid(p0.x, p1.x, p2.x),
+            y: mid(p0.y, p1.y, p2.y),
+            z1: p2.z1,
+        };
+        // Where it stopped: the last sample before the pressure collapses
+        // into the lift (above a third of the peak: a slide eases off long
+        // before it lifts, the owner's down to a third).
+        let Some(last) = s
+            .iter()
+            .rev()
+            .filter_map(|&(_, p)| p)
+            .find(|p| u32::from(p.z1) * 3 > peak)
+        else {
+            continue;
+        };
+        let travel = first.x.abs_diff(last.x).max(first.y.abs_diff(last.y));
+        if travel < 800 || pressed.len() < 10 {
+            continue;
+        }
+        long += 1;
+        let mut f = Filter::new();
+        let (mut moves, mut at) = (0, None);
+        let mut trace = String::new();
+        for &(ms, p) in s {
+            let v = f.sample(p, ms);
+            if let Some(p) = p {
+                trace += &format!(" {},{},{}:{v:?}", p.x, p.y, p.z1);
+            }
+            match v {
+                Pen::Move(x, y) => {
+                    moves += 1;
+                    at = Some((x, y));
+                }
+                Pen::Down(x, y) => at = Some((x, y)),
+                _ => {}
+            }
+        }
+        let (x, y) = at.unwrap_or_else(|| panic!("stroke {k}: never down"));
+        assert!(
+            moves >= 4,
+            "stroke {k} (travel {travel}): only {moves} moves:{trace}"
+        );
+        let off = x.abs_diff(last.x).max(y.abs_diff(last.y));
+        assert!(
+            off <= 200,
+            "stroke {k}: ended {off} raw from where the pen stopped:{trace}"
+        );
+    }
+    assert!(long >= 20, "{long} long strokes recorded");
+}
