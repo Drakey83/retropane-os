@@ -415,6 +415,25 @@ listing is inconsistent (its headline says 320x480 "SPI RGB"; its table
   and bottom than the Sharp's: a thin black mask or frame; depth fits (2.5-2.6
   mm plus a touch layer, under the Sharp's 4.4); where the adapter sits:
   measure on the spare X50v.
+- **What the DD05's own datasheet changes (2026-10-30, section 1a; the
+  owner asked again about E the same day):** the Axim's connector does
+  not carry plain RGB with HSYNC, VSYNC and DE. It carries the Sharp
+  glass's driver timing, but its **data is still 18-bit RGB clocked by
+  DCLK** (R5-R0, G5-G0, B5-B0), and its timing pulses map onto what E
+  wants: **SPS** (the gate start, once a frame) acts as VSYNC, **LP**
+  (the source latch, once a line) as HSYNC, and **SPL/SPR** (the
+  sampling start) marks where a line's pixels begin, from which a DE can
+  be made. So E still takes the Axim's own pixels, unrotated and unchanged
+  for Windows Mobile, but the adapter gains a small timing job: turning
+  SPS/LP/SPL into VSYNC/HSYNC/DE (a few gates or a small CPLD; the
+  ILI9806E's porch limits must fit Dell's timing). The rest of the Sharp's
+  signals (CLS, REV, VCOM, CsCOM, ASC, SSC, MOD) and its +5, +8, −4 and −8 V
+  rails go unused; E runs from the 3.3 V rail (VSHD) and the LED pins
+  (VL1/VL2, constant current). Whether these pulses come from the 2700G
+  itself (a panel mode of its display controller, then a register setting
+  might give plain HSYNC/VSYNC/DE on the same pins) or from a timing chip
+  on the board: **measure** (a logic analyser on the spare X50v's flex,
+  never the owner's X51v).
 - **First steps** when the swap comes off the parking list: ask the
   supplier (E) for the datasheet and RGB start-up code; measure the
   Axim's backlight current and bezel depth on the spare X50v; order E's
