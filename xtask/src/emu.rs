@@ -11952,6 +11952,16 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
             }
         };
         press(&mut qmp, "hero", 240, 150, Some(TAP_GUEST_MS))?;
+        // Diagnostics on request (`RETROPANE_TODAY_OPEN_FRAMES=n`): the
+        // opening's screens, as fast as the monitor dumps them
+        // (target/emulator/today-open-NN.ppm), to see each step.
+        let frames: u32 = std::env::var("RETROPANE_TODAY_OPEN_FRAMES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        for k in 0..frames {
+            dump(&format!("open-{k:02}"))?;
+        }
         page_near("weather-now", &weather[2])?;
         press(&mut qmp, "hourly", 180, 578, Some(TAP_GUEST_MS))?;
         let still = page_near("weather-hourly", &weather[4])?;

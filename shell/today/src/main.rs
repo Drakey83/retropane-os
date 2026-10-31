@@ -514,6 +514,8 @@ mod image {
         // and given back once nothing shows it.
         let mut shown_tab: Option<u8> = None;
         let mut revealing = false;
+        // Reveal's window has shown (its clock restarted then).
+        let mut reveal_shown = false;
         let mut retire: Option<Handle> = None;
         // The pages' draw lists to check against their pictures (a new
         // minute), rebuilt ahead while the screen is still.
@@ -768,6 +770,7 @@ mod image {
                 };
                 (traced, traced.map(|(s, _)| s))
             };
+            let sampled_at = rt::ticks();
             if raw.is_some() && !filter.down() {
                 landed_ticks = Some(read_at);
             }
@@ -1073,22 +1076,17 @@ mod image {
                         // pixels), then its page goes onto the layer.
                         let _ = gfx.show_aside(pc, None);
                         revealing = false;
+                        reveal_shown = false;
                         shown_tab = None;
                     } else {
                         let want = shell.page_layer();
                         let still = !(shell.animating() || filter.down());
                         if want.map(|v| v.tab) != shown_tab {
+                            // The picture as built: nothing is checked or
+                            // drawn on the tap (the first device run: 40-70
+                            // ms of CPU here); checks run while still.
                             if let Some(v) = want {
-                                let i = usize::from(v.tab);
-                                let key = page_key(shell, frame, v.tab);
-                                if pages[i].is_some_and(|(_, k)| k != key) {
-                                    // Not shown (another page is): replaced now.
-                                    if let Some((h, _)) = pages[i].take() {
-                                        let _ = gfx.free_picture(pc, h);
-                                    }
-                                    pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, v.tab);
-                                }
-                                if let Some((h, _)) = pages[i] {
+                                if let Some((h, _)) = pages[usize::from(v.tab)] {
                                     commit = Some((Some(page_state(h, v)), false));
                                     shown_tab = Some(v.tab);
                                 }
@@ -1096,32 +1094,26 @@ mod image {
                                 commit = Some((None, false));
                                 shown_tab = None;
                             }
-                        } else if let Some(v) = want
-                            && shell.needs_frame()
-                            && still
-                        {
-                            // Something changed: the shown page's draw list
-                            // checked against its picture's.
-                            let i = usize::from(v.tab);
-                            let key = page_key(shell, frame, v.tab);
-                            if pages[i].is_some_and(|(_, k)| k != key) {
-                                let old = pages[i].take();
-                                pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, v.tab);
-                                match pages[i] {
-                                    Some((h, _)) => {
-                                        commit = Some((Some(page_state(h, v)), false));
-                                        retire = old.map(|(h, _)| h);
-                                    }
-                                    None => pages[i] = old,
-                                }
-                            }
+                            pages_check = true;
+                        } else if want.is_some() && shell.needs_frame() && still {
+                            // Something changed on screen: the pictures are
+                            // checked once it is still.
+                            pages_check = true;
                         }
                     }
                 }
                 // Moves: the window follows (staged; the latest wins).
                 if commit.is_none() {
                     if let Some((r, shift)) = shell.reveal_plane() {
-                        if revealing {
+                        if revealing && gfx.aside_held() && !reveal_shown {
+                            // The app's window is up: Reveal's clock starts
+                            // now, so it grows from the card rather than
+                            // jumping in partway (the composing took ~100 ms
+                            // of its 540 on the first device run).
+                            reveal_shown = true;
+                            shell.restart_entrance(now_ms as u32);
+                        }
+                        if revealing && let Some((r, shift)) = shell.reveal_plane() {
                             let _ = gfx.move_layer(pc, reveal_state(r, shift).win);
                         }
                     } else if let Some(v) = shell.page_layer()
@@ -1147,11 +1139,23 @@ mod image {
                     && !gfx.aside_held()
                 {
                     let stale = (0..3u8).find(|&t| {
-                        Some(t) != shown_tab
-                            && pages[usize::from(t)]
-                                .is_some_and(|(_, k)| k != page_key(shell, frame, t))
+                        pages[usize::from(t)].is_some_and(|(_, k)| k != page_key(shell, frame, t))
                     });
                     match stale {
+                        // The page shown: a new picture, swapped in by a
+                        // commit, the old one given back after it.
+                        Some(t) if Some(t) == shown_tab => {
+                            let i = usize::from(t);
+                            let old = pages[i].take();
+                            pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, t);
+                            match (pages[i], shell.page_layer()) {
+                                (Some((h, _)), Some(v)) => {
+                                    commit = Some((Some(page_state(h, v)), false));
+                                    retire = old.map(|(h, _)| h);
+                                }
+                                _ => pages[i] = old,
+                            }
+                        }
                         Some(t) => {
                             let i = usize::from(t);
                             if let Some((h, _)) = pages[i].take() {
@@ -1327,6 +1331,34 @@ mod image {
                 wait_ticks = wait_ticks
                     .min((until.max(1) as u32).saturating_mul(13) / 4)
                     .max(1);
+            }
+            // While a touch is in progress the pen is sampled at its proven
+            // rate (PEN_DOWN_SLEEP_MS after the last sample: the filter's
+            // thresholds were proven at it, docs/hw/touch.md), however often
+            // the display wakes the loop. Commits due sooner are written
+            // here without a sample (the first device run of the plane
+            // path: samples 2-4 ms apart, strokes broken into short
+            // touches, drags up and swipes lost).
+            if !REPLAY && (filter.down() || touch.pen_down()) {
+                let pen_at = sampled_at.wrapping_add(PEN_DOWN_SLEEP_MS * TICKS_MS);
+                loop {
+                    let left = pen_at.wrapping_sub(rt::ticks()) as i32;
+                    if left <= 0 {
+                        break;
+                    }
+                    let mut ticks = left as u32;
+                    if gfx.busy() || gfx.commit_pending() {
+                        if let Step::Wait(t) = gfx.poll(&mut gclock) {
+                            let until = t.wrapping_sub(gclock.now_us()) as i32;
+                            ticks = ticks.min((until.max(1) as u32).saturating_mul(13) / 4);
+                        }
+                    }
+                    if rt::set_alarm(rt::ticks().wrapping_add(ticks.max(1))) {
+                        rt::wait_any_signal();
+                    }
+                    rt::check_in();
+                }
+                continue;
             }
             if rt::set_alarm(rt::ticks().wrapping_add(wait_ticks)) {
                 rt::wait_any_signal();

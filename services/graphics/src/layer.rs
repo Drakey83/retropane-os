@@ -52,6 +52,13 @@ const fn in_window(line: u32) -> bool {
     line >= PLANE_FROM || line <= PLANE_TO
 }
 
+/// Whether a commit may start on `line`: in the window but not its last
+/// line, so its few writes end inside it (the X51v's first run of the app:
+/// 17 of 1,309 commits ended outside).
+const fn may_start(line: u32) -> bool {
+    line >= PLANE_FROM || line < PLANE_TO
+}
+
 /// Where the layer shows on screen and what of its picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Window {
@@ -106,6 +113,9 @@ pub(crate) struct Pic {
 pub(crate) struct Staged {
     layer: Option<(LayerState, u8)>,
     flip: bool,
+    /// The layer's registers, worked out when staged (the blanking then
+    /// only writes them); `None` until an aside source has landed.
+    regs: Option<[(usize, u32); 9]>,
 }
 
 /// The layer's own state in the service.
@@ -304,6 +314,19 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         if !fits {
             return Err(Error::BadWindow);
         }
+        // The look's gamma as the screen has it (the owner's picture,
+        // display-calibration.md): the video plane's own bit follows the
+        // graphics plane's, so a page on the layer and the screen under it
+        // go through the same curve.
+        let gamma = self
+            .two_d
+            .parts()
+            .0
+            .regs
+            .read32(rp_drv_mbx_display::reg::GSCTRL)
+            >> 26
+            & 1
+            != 0;
         let mut v = VideoPlane::new(fmt, w.w, w.h, 0);
         v.offset = (base + u32::from(w.row) * stride + 2 * u32::from(w.col)) as usize;
         v.stride = stride as usize;
@@ -317,7 +340,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
                 slot: Slot::Middle,
                 blend,
             },
-            false,
+            gamma,
             scale,
         ))
     }
@@ -350,10 +373,11 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         }
         // An aside source shows the frame this commit draws: checked once
         // it has landed. Any other is checked now.
+        let mut regs = None;
         if let Some(st) = layer
             && !(aside && st.src == Source::Aside)
         {
-            self.registers(c.0, st)?;
+            regs = Some(self.registers(c.0, st)?);
         }
         if aside && self.copies.band().is_none() {
             // As `frame`: a copy's time known first (it copies between the
@@ -363,6 +387,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         self.layer.staged = Some(Staged {
             layer: layer.map(|st| (st, c.0)),
             flip: false,
+            regs,
         });
         self.two_d.draw(frame);
         if self.two_d.landed().is_some() || !self.two_d.poll() {
@@ -383,6 +408,13 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         self.job = Job::None;
         if aside {
             self.layer.aside = true;
+            // The aside source now exists: its registers worked out.
+            if let Some(mut s) = self.layer.staged
+                && let Some((st, owner)) = s.layer
+            {
+                s.regs = self.registers(owner, st).ok();
+                self.layer.staged = Some(s);
+            }
         } else if let Some(s) = self.layer.staged.as_mut() {
             s.flip = true;
         }
@@ -397,15 +429,17 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         if !self.layer.aside || self.job != Job::None {
             return Err(Error::Busy);
         }
+        let mut regs = None;
         if let Some(st) = layer {
             if st.src == Source::Aside {
                 return Err(Error::BadWindow);
             }
-            self.registers(c.0, st)?;
+            regs = Some(self.registers(c.0, st)?);
         }
         self.layer.staged = Some(Staged {
             layer: layer.map(|st| (st, c.0)),
             flip: true,
+            regs,
         });
         Ok(())
     }
@@ -425,12 +459,14 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         }
         let st = LayerState { src: cur.src, win };
         // An aside source waiting for its frame to land is checked then.
+        let mut regs = None;
         if !(st.src == Source::Aside && !self.layer.aside) {
-            self.registers(owner, st)?;
+            regs = Some(self.registers(owner, st)?);
         }
         self.layer.staged = Some(Staged {
             layer: Some((st, owner)),
             flip: staged.is_some_and(|s| s.flip),
+            regs,
         });
         Ok(())
     }
@@ -492,7 +528,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
             let t0 = clock.now_us();
             loop {
                 let line = self.scan_line();
-                if in_window(line) {
+                if may_start(line) {
                     break;
                 }
                 let until = (PLANE_FROM + sc.total - line % sc.total) % sc.total;
@@ -513,11 +549,12 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         let Some(s) = self.layer.staged.take() else {
             return;
         };
+        // Worked out when staged; only an aside source not yet landed then
+        // is worked out here (never shown half-checked: off if it can't be).
         let want = match s.layer {
-            Some((st, owner)) => match self.registers(owner, st) {
-                Ok(r) => Some((r, st, owner)),
-                // Its picture went (never shown half-checked): off.
-                Err(_) => None,
+            Some((st, owner)) => match s.regs {
+                Some(r) => Some((r, st, owner)),
+                None => self.registers(owner, st).ok().map(|r| (r, st, owner)),
             },
             None => None,
         };

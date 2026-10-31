@@ -2078,3 +2078,38 @@ fn the_screen_and_its_layer_compose_as_the_display_mixes_them() {
     assert_ne!(px(0, 93), 0xFF_FFFF, "above the window: the screen");
     assert_eq!(px(1, 94), px(1, 93), "clear: the screen");
 }
+
+#[test]
+fn the_layer_takes_the_screens_gamma_and_never_starts_on_the_windows_last_line() {
+    let (mut r, c, h) = page_rig(0);
+    // The screen's gamma on (the owner's look): the layer's too.
+    let gsctrl = dreg_of(&mut r, rp_drv_mbx_display::reg::GSCTRL);
+    r.g.two_d()
+        .parts()
+        .0
+        .regs
+        .write32(rp_drv_mbx_display::reg::GSCTRL, gsctrl | 1 << 26);
+    let st = LayerState {
+        src: Source::Picture(h),
+        win: page_win(0),
+    };
+    r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock)
+        .unwrap();
+    settle_commit(&mut r);
+    assert_ne!(
+        dreg_of(&mut r, lreg::VSCTRL) & 1 << 26,
+        0,
+        "gamma as the screen's"
+    );
+    // Staged with the scan on line 2 (the window's last): written in the
+    // next window, not now.
+    to_line(&mut r, 2);
+    let before = r.g.commits().done;
+    r.g.move_layer(c, page_win(8)).unwrap();
+    let step = r.g.poll(&mut r.clock);
+    assert!(matches!(step, Step::Wait(_)), "{step:?}");
+    assert_eq!(r.g.commits().done, before, "not on the last line");
+    settle_commit(&mut r);
+    let cm = r.g.commits();
+    assert_eq!((cm.done, cm.late), (before + 1, 0));
+}

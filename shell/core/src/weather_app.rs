@@ -305,6 +305,16 @@ impl Shell {
         self.dirty(Rect::new(0, 0, W, H));
     }
 
+    /// Restarts the entrance under way from `now` (ms): the plane path's
+    /// Reveal starts when its window first shows, not at the tap, so it
+    /// grows from the card whatever composing the app took.
+    pub fn restart_entrance(&mut self, now: u32) {
+        self.now = now;
+        if self.anim.is_some() {
+            self.anim = Some(now);
+        }
+    }
+
     /// The page the layer shows now, if any: on the plane path, the Weather
     /// app's Now, Hourly or 10 Day page with nothing over it and not
     /// opening by Reveal (the radar, menus and settings stay 2D).

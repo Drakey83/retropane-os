@@ -77,6 +77,6 @@ the trust and the switch in LegacySync.
 - Something needs UDP or inbound first (a LAN station): the relay grows a
   UDP channel, or C is reopened.
 
-## Vote needed
+## The owner's ruling
 
-- **R132's way: D** (recommended), A, B or C.
+- **R132's way: D** (the owner, 2026-10-30 late: "D"). Next: Dell's REA search (the sheet's step 1, its result written here), then the TLS choice, then the build.

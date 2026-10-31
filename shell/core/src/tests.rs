@@ -1483,7 +1483,11 @@ fn on_the_planes_entrances_move_the_window_and_draw_nothing() {
         f.dirty()
     );
     assert!(s.page_layer().is_none(), "the page waits for the reveal");
-    s.tick(100);
+    // Restarted when the window first shows: from the card again.
+    s.tick(300);
+    s.restart_entrance(300);
+    assert_eq!(s.reveal_plane().unwrap().0, r0, "from the card");
+    s.tick(400);
     assert!(!s.needs_frame(), "no redraw while it opens");
     let (r1, _) = s.reveal_plane().unwrap();
     assert!(r1.w > r0.w && r1.y < r0.y, "{r0:?} to {r1:?}");
