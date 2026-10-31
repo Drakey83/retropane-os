@@ -1994,8 +1994,10 @@ while ($true) {{
                 Answer ([Text.Encoding]::ASCII.GetBytes($t))
             }}
             'TILE' {{
-                # A map tile (CARTO's dark base map) or a rain frame's
-                # (RainViewer's): every number checked, the URL fixed.
+                # A map tile (OpenStreetMap's standard one, darkened on the
+                # device; CARTO's dark tiles went behind a key, 2026-10-31)
+                # or a rain frame's (RainViewer's): every number checked,
+                # the URL fixed.
                 $isRain = $w[2] -eq 'RAIN'
                 $o = if ($isRain) {{ 4 }} else {{ 3 }}
                 $nums = $w[$o..($o + 2)]
@@ -2003,14 +2005,14 @@ while ($true) {{
                 $z = [int]$nums[0]; $x = [int]$nums[1]; $y = [int]$nums[2]
                 if ($z -gt 10 -or $x -ge (1 -shl $z) -or $y -ge (1 -shl $z)) {{ Refuse 400 'not a tile'; continue }}
                 if ($canned) {{
-                    $f = if ($isRain) {{ 'rainviewer-7-29-52.png' }} else {{ 'carto-dark-7-29-52.png' }}
+                    $f = if ($isRain) {{ 'rainviewer-7-29-52.png' }} else {{ 'osm-7-29-52.png' }}
                     Answer ([IO.File]::ReadAllBytes("$data\$f")); continue
                 }}
                 if ($isRain) {{
                     if ($w[3] -notmatch '^\d$' -or [int]$w[3] -ge $script:rv.Count) {{ Refuse 404 'no such frame'; continue }}
                     $url = "$($script:rvHost)$($script:rv[[int]$w[3]].path)/256/$z/$x/$y/2/1_1.png"
                 }} else {{
-                    $url = "https://a.basemaps.cartocdn.com/dark_all/$z/$x/$y.png"
+                    $url = "https://tile.openstreetmap.org/$z/$x/$y.png"
                 }}
                 Answer (FetchRaw $url)
             }}

@@ -1765,7 +1765,7 @@ fn the_radar_asks_its_frames_then_the_map_then_each_rain_frame_tile_by_tile() {
     assert_eq!(s.radar_real(), Some(Some(0)));
     let f = drawn(&mut s);
     assert!(!f.overflowed());
-    assert!(texts(&f).contains(&b"RAINVIEWER  CARTO  OSM".to_vec()));
+    assert!(texts(&f).contains(&b"(c) OpenStreetMap contributors, RainViewer".to_vec()));
 }
 
 #[test]
@@ -1797,4 +1797,59 @@ fn an_alert_in_force_shows_in_the_header_and_opens_in_full() {
     assert!(texts(&f).contains(&meta.as_bytes().to_vec()));
     tap(&mut s, SOFT_LEFT);
     assert_eq!(s.screen(), Screen::Weather);
+}
+
+/// A Tempest answer: the station's place and its reading now.
+const STATION_JSON: &[u8] = br#"{"latitude": 37.7, "longitude": -89.86,
+  "location_name": "Perryville Loop Station",
+  "current_conditions": {"time": 1761900000, "conditions": "Clear", "icon": "clear-night",
+    "air_temperature": 17.4, "feels_like": 17.1, "relative_humidity": 93,
+    "wind_avg": 5.0, "wind_direction": 360, "uv": 0, "station_pressure": 813.2}}"#;
+
+#[test]
+fn a_place_picked_keeps_its_own_forecast_once_a_station_is_home() {
+    // The owner, 2026-10-31 (today-0036): with the station connected,
+    // Seattle picked from the header's menu still showed the station.
+    let mut s = weather(0);
+    s.wset.provider = rp_weather::settings::Provider::Tempest;
+    s.wset.station = rp_weather::settings::Station::Tempest;
+    // No station place yet: the first question is the station's.
+    let mut asked = Vec::new();
+    for _ in 0..8 {
+        let Some(q) = s.next_ask() else { break };
+        asked.push(q.line().to_vec());
+        let tempest = q.line().starts_with(b"RPNET TEMPEST");
+        s.net_answer(tempest, if tempest { STATION_JSON } else { b"" });
+    }
+    assert!(
+        asked.iter().any(|l| l.starts_with(b"RPNET TEMPEST")),
+        "{asked:?}"
+    );
+    assert!(s.at_station(), "the station's place is home and shown");
+    assert_eq!(s.wset.place().name.as_str(), "Perryville Loop Station");
+    // Seattle picked: its forecast from the internet, and it stays.
+    tap(&mut s, weather_app::PLACE_BTN);
+    let seattle = (0..s.wset.n_places)
+        .find(|&i| s.wset.places()[usize::from(i)].name.as_str() == "Seattle")
+        .expect("Seattle");
+    tap(&mut s, Shell::place_item(seattle));
+    assert_eq!(s.wset.place().name.as_str(), "Seattle");
+    let mut forecast = None;
+    for _ in 0..8 {
+        let Some(q) = s.next_ask() else { break };
+        if q.ask == Ask::Forecast {
+            forecast = Some(q.line().to_vec());
+        }
+        let tempest = q.line().starts_with(b"RPNET TEMPEST");
+        s.net_answer(tempest, if tempest { STATION_JSON } else { b"" });
+    }
+    assert_eq!(
+        forecast.as_deref(),
+        Some(&b"RPNET OPENMETEO 47.606 -122.332\n"[..])
+    );
+    assert_eq!(
+        s.wset.place().name.as_str(),
+        "Seattle",
+        "a station answer doesn't take it back"
+    );
 }

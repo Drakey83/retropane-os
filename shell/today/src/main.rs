@@ -789,6 +789,10 @@ mod image {
         let mut trace_due = false;
         let mut meant = (0u16, 0u16, 0u16, 0u16, 0u16);
         let mut retire: Option<Handle> = None;
+        // A page whose build found no room, by its draw list's key: not
+        // tried again until that changes (today-0036 retried every pass,
+        // 487 times).
+        let mut no_room: [Option<u32>; 3] = [None; 3];
         // The pages' draw lists to check against their pictures (a new
         // minute), rebuilt ahead while the screen is still.
         let mut pages_check = false;
@@ -1507,6 +1511,13 @@ mod image {
                         let ok = rp_weather::png::decode(&net_buf[..l], tile_px, png_data, png_raw)
                             == Ok((256, 256));
                         if ok {
+                            // The map's tiles are OpenStreetMap's light
+                            // ones, made dark here.
+                            if rain.is_none() {
+                                for p in tile_px.iter_mut() {
+                                    *p = rp_weather::tiles::dark(*p);
+                                }
+                            }
                             let dst: &mut [u32] = match rain {
                                 None => radar_view_map,
                                 Some(f) => {
@@ -1827,8 +1838,20 @@ mod image {
                     && !gfx.commit_pending()
                     && !gfx.aside_held()
                 {
+                    // The page shown is replaced only while it is on the
+                    // layer and no replaced picture still waits to go back:
+                    // otherwise its new picture had nowhere to go and was
+                    // lost (today-0036: with the place menu open, each pass
+                    // built one and kept none, until the pool ran out).
+                    let layer_on = shell.page_layer().is_some();
                     let stale = (0..3u8).find(|&t| {
-                        pages[usize::from(t)].is_some_and(|(_, k)| k != page_key(shell, frame, t))
+                        let i = usize::from(t);
+                        let shown_now = Some(t) == shown_tab;
+                        (!shown_now || (layer_on && retire.is_none()))
+                            && pages[i].is_some_and(|(_, k)| {
+                                let key = page_key(shell, frame, t);
+                                k != key && no_room[i] != Some(key)
+                            })
                     });
                     match stale {
                         // The page shown: a new picture, swapped in by a
@@ -1842,7 +1865,15 @@ mod image {
                                     commit = Some((Some(page_state(h, v)), false, true));
                                     retire = old.map(|(h, _)| h);
                                 }
-                                _ => pages[i] = old,
+                                // Not shown after all: the new one goes back.
+                                (Some((h, _)), None) => {
+                                    let _ = gfx.free_picture(pc, h);
+                                    pages[i] = old;
+                                }
+                                (None, _) => {
+                                    no_room[i] = Some(page_key(shell, frame, t));
+                                    pages[i] = old;
+                                }
                             }
                         }
                         Some(t) => {
@@ -1851,6 +1882,9 @@ mod image {
                                 let _ = gfx.free_picture(pc, h);
                             }
                             pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, t);
+                            if pages[i].is_none() {
+                                no_room[i] = Some(page_key(shell, frame, t));
+                            }
                         }
                         None => pages_check = false,
                     }

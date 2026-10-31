@@ -109,9 +109,53 @@ impl View {
     }
 }
 
+/// A light map's pixel made dark, hue kept: lightness turned over
+/// (`c + 255 - max - min` on each channel is an inversion followed by a
+/// half turn of hue, in one add), lifted 14 so land is not black. CARTO's
+/// dark tiles went behind a key (2026-10-31, every tile its "API key
+/// required" picture); OpenStreetMap's standard tiles, free and kept up
+/// everywhere, become a dark map this way on the device: white land to
+/// near-black, blue water to dark teal, red roads stay red.
+#[must_use]
+pub fn dark(p: u32) -> u32 {
+    let (r, g, b) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
+    let max = if r > g {
+        if r > b { r } else { b }
+    } else if g > b {
+        g
+    } else {
+        b
+    };
+    let min = if r < g {
+        if r < b { r } else { b }
+    } else if g < b {
+        g
+    } else {
+        b
+    };
+    // c >= min and 269 > max: never below zero, in this order.
+    let lift = |c: u32| (c + 255 + 14 - max - min).min(255);
+    (p & 0xFF00_0000) | lift(r) << 16 | lift(g) << 8 | lift(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_light_map_turns_dark_with_its_hues_kept() {
+        // OpenStreetMap's land, water and a main road.
+        assert_eq!(dark(0xFFF2_EFE9), 0xFF24_211B);
+        assert_eq!(dark(0xFFAA_D3DF), 0xFF2E_5763);
+        let road = dark(0xFFE8_92A2);
+        assert!(
+            (road >> 16) & 0xFF > (road >> 8) & 0xFF,
+            "red stays red: {road:08x}"
+        );
+        // Black and white trade places; alpha is kept; nothing overflows.
+        assert_eq!(dark(0xFF00_0000), 0xFFFF_FFFF);
+        assert_eq!(dark(0x80FF_FFFF), 0x800E_0E0E);
+    }
 
     #[test]
     fn the_table_is_within_a_pixel_of_mercator() {

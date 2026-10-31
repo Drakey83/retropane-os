@@ -169,16 +169,16 @@ impl Shell {
             Ask::Clip => q.push(b"CLIP"),
             Ask::Forecast => {
                 let p = self.wset.place();
-                q.push(match self.wset.provider {
+                let provider = self.provider_here();
+                q.push(match provider {
                     Provider::OpenMeteo => b"OPENMETEO ",
                     Provider::Nws => b"NWS ",
                     Provider::MetNo => b"METNO ",
                     Provider::Tempest => b"TEMPEST",
                 });
-                if self.wset.provider == Provider::Tempest {
+                if provider == Provider::Tempest {
                     self.push_key(&mut q);
-                }
-                if self.wset.provider != Provider::Tempest {
+                } else {
                     q.push(degrees(p.lat).as_bytes());
                     q.push(b" ");
                     q.push(degrees(p.lon).as_bytes());
@@ -335,7 +335,8 @@ impl Shell {
             }
             Ask::Forecast => {
                 let place = self.wset.place().name;
-                let f = match self.wset.provider {
+                let provider = self.provider_here();
+                let f = match provider {
                     Provider::OpenMeteo => rp_weather::open_meteo::forecast(body, &self.wx, place),
                     Provider::Tempest => {
                         self.adopt_station(body);
@@ -349,7 +350,10 @@ impl Shell {
                     // The alerts for the place, with each forecast.
                     self.want(Ask::Alerts);
                 }
-                if self.wset.station == Station::Tempest && self.wset.provider != Provider::Tempest
+                // The station's reading over the forecast, at its own place.
+                if self.wset.station == Station::Tempest
+                    && provider != Provider::Tempest
+                    && (self.at_station() || !self.station_known())
                 {
                     self.want(Ask::Tempest);
                 }
@@ -385,7 +389,11 @@ impl Shell {
             Ask::Tile => self.tile_done(),
             Ask::Tempest => {
                 self.adopt_station(body);
-                // The station's reading is "now"; the forecast stays.
+                // The station's reading is "now" at its place (another
+                // place may have been picked meanwhile); the forecast stays.
+                if self.station_known() && !self.at_station() {
+                    return;
+                }
                 if let Some(t) = rp_weather::tempest::from_tempest(body, &self.wx, self.wx.place) {
                     let mut f = self.wx;
                     f.now = t.now;
@@ -411,7 +419,11 @@ impl Shell {
                 super::weather_app::HEAD
             });
         }
-        if self.station_live {
+        // Its place is added and made home once, when it first connects:
+        // after that, picking another place keeps it (today-0036: every
+        // answer made the station current again, so Seattle never stayed).
+        let station_area = rp_weather::Name::new(rp_weather::settings::STATION_AREA);
+        if self.station_live || self.station_known() {
             return;
         }
         let Some((name, lat, lon)) = rp_weather::tempest::station_place(body) else {
@@ -419,7 +431,7 @@ impl Shell {
         };
         let p = rp_weather::settings::Place {
             name,
-            area: rp_weather::Name::new("Your station"),
+            area: station_area,
             lat,
             lon,
         };
@@ -432,6 +444,30 @@ impl Shell {
             self.apply_settings();
             self.want(Ask::Save);
             self.want(Ask::Forecast);
+        }
+    }
+
+    /// Whether the place shown is the connected station's.
+    pub(crate) fn at_station(&self) -> bool {
+        self.wset.place().area.as_bytes() == rp_weather::settings::STATION_AREA.as_bytes()
+    }
+
+    /// Whether the station's place is among the places (it is added when
+    /// the station first answers; until then its answers are asked for
+    /// wherever the place shown is, to learn where it is).
+    fn station_known(&self) -> bool {
+        let area = rp_weather::settings::STATION_AREA.as_bytes();
+        self.wset.places().iter().any(|q| q.area.as_bytes() == area)
+    }
+
+    /// Where the place shown's forecast comes from: the station's own
+    /// forecast only at the station's place, the internet provider (Open-
+    /// Meteo) for every other (the owner, 2026-10-31: Seattle picked from
+    /// the menu still showed the station's weather).
+    pub(crate) fn provider_here(&self) -> Provider {
+        match self.wset.provider {
+            Provider::Tempest if self.station_known() && !self.at_station() => Provider::OpenMeteo,
+            p => p,
         }
     }
 

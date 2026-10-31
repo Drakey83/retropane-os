@@ -108,6 +108,11 @@ impl Place {
 }
 
 /// The most places kept (WF8: up to 10, one home).
+/// The area a connected station's place carries: the place whose forecast
+/// and readings are the station's own (every other place's come from the
+/// internet provider).
+pub const STATION_AREA: &str = "Your station";
+
 pub const PLACES_MAX: usize = 10;
 
 /// The place a fresh install starts with (the sample forecast's).
@@ -487,6 +492,7 @@ impl Settings {
     /// and area). `false` when all [`PLACES_MAX`] are taken or `p` isn't a
     /// real place.
     pub fn add_place(&mut self, p: Place) -> bool {
+        // (A place is the same place by its name and area.)
         if let Some(i) = self
             .places()
             .iter()

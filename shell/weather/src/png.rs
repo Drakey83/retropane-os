@@ -190,6 +190,19 @@ mod tests {
     }
 
     #[test]
+    fn an_openstreetmap_tile_decodes_to_what_a_reference_decoder_gives() {
+        // OpenStreetMap's standard tile 7/29/52 (8-bit palette), the map
+        // the relay now fetches: Pillow's pixels, as ARGB words, CRC'd.
+        let osm = include_bytes!("../tests/data/osm-7-29-52.png");
+        let mut out = vec![0u32; 256 * 256];
+        let mut data = vec![0u8; 64 * 1024];
+        let mut raw = vec![0u8; 256 * (1 + 256 * 4)];
+        assert_eq!(decode(osm, &mut out, &mut data, &mut raw), Ok((256, 256)));
+        assert_eq!(out[57 * 256 + 100], 0xFFF2_EFE9);
+        assert_eq!(crc(&out), 0xd4f3_d2dd);
+    }
+
+    #[test]
     fn damaged_or_unsupported_tiles_are_refused_never_trusted() {
         let mut out = vec![0u32; 256 * 256];
         let mut data = vec![0u8; 64 * 1024];

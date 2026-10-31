@@ -1585,26 +1585,36 @@ impl Shell {
                 });
             }
         }
-        let chip = Rect::new(16, 80, 300, 40);
-        // The menus' denser glass: readable over the light Ink map too.
-        Self::glass(f, chip, super::MENU_LEFT, super::MENU_RIGHT);
-        let what: &[u8] = match (real, self.radar_loading()) {
-            (true, false) => b"RAINVIEWER  CARTO  OSM",
-            (_, true) => b"RADAR LOADING",
-            _ => b"RAIN  SAMPLE",
-        };
-        f.text(chip.x + 14, chip.y + 27, label, TEXT, what);
-        // You are here: the view is centred on the place shown.
+        // The real radar's sources, small over the map's corner (the
+        // licences ask for them: OpenStreetMap's "(c) OpenStreetMap
+        // contributors"); while loading or on the sample, a note says so.
+        if real && !self.radar_loading() {
+            let credit = b"(c) OpenStreetMap contributors, RainViewer";
+            let w = label.width(credit);
+            f.text(W - 12 - w, TIME_PANEL.y - 8, label, DIM, credit);
+        } else {
+            let chip = Rect::new(16, 80, 300, 40);
+            // The menus' denser glass: readable over the map.
+            Self::glass(f, chip, super::MENU_LEFT, super::MENU_RIGHT);
+            let what: &[u8] = if self.radar_loading() {
+                b"RADAR LOADING"
+            } else {
+                b"RAIN  SAMPLE"
+            };
+            f.text(chip.x + 14, chip.y + 27, label, TEXT, what);
+        }
+        // You are here: a round dot, white-edged, at the view's centre
+        // (the view is centred on the place shown).
         if real {
             let (cx, cy) = (W / 2, PAGE.y + rp_weather::tiles::VIEW_H as u16 / 2);
-            f.push(Cmd::Fill {
-                r: Rect::new(cx - 6, cy - 6, 12, 12),
-                color: TEXT,
-            });
-            f.push(Cmd::Fill {
-                r: Rect::new(cx - 4, cy - 4, 8, 8),
-                color: FOCUS,
-            });
+            for (r, color) in [
+                (Rect::new(cx - 4, cy - 7, 8, 14), TEXT),
+                (Rect::new(cx - 7, cy - 4, 14, 8), TEXT),
+                (Rect::new(cx - 2, cy - 5, 4, 10), FOCUS),
+                (Rect::new(cx - 5, cy - 2, 10, 4), FOCUS),
+            ] {
+                f.push(Cmd::Fill { r, color });
+            }
         }
         Self::glass(f, TIME_PANEL, super::MENU_LEFT, super::MENU_RIGHT);
         // Play or pause: a triangle of steps, or two bars.
