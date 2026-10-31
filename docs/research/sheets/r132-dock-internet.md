@@ -21,10 +21,13 @@ per PC in LegacySync; this sheet decides **how**.
   5721), which opens the real connection and relays the bytes. Only
   outbound IPv4 TCP; one device at a time. Needs ActiveSync or WMDC on the
   PC, which Windows 11 no longer runs.
-- **Dell's way: REA search owed** before the go (the sheet rule: an address
-  or a logged no-result search in `local/re/rea-search-log.md`). Expected
-  from the ROM's layout: Dell ships Microsoft's ActiveSync stack and no
-  networking of its own over USB; to be confirmed, not assumed.
+- **Dell's way (REA search #41, `local/re/rea-search-log.md`): no networking
+  of its own.** Its USB drivers (`usbfndrv`, `SerialUSBFn`) carry none; the
+  ROM ships Microsoft's stack: the RNDIS function (`rndisfn.dll`), the DTPT
+  client (`dtpt_lsp.dll`, a layered provider; `dtpt_nsp.dll`, "Windows CE
+  ASDTPT Resolver"; `dtpt_srv.dll`, settings under `Comm\DTPT`), and
+  `udp2tcp.exe` ("UDP to TCP proxy": DTPT carries TCP only, so UDP was
+  tunnelled over it).
 - **The modern way:**
   - **USB NCM + the PC's connection sharing.** Windows 10 1903+ and Windows
     11 bind a CDC-NCM device to their inbox `UsbNcm.sys` with no driver
