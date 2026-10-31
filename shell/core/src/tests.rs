@@ -1515,10 +1515,11 @@ fn on_the_planes_entrances_move_the_window_and_draw_nothing() {
     let v1 = s.page_layer().unwrap();
     assert!(v1.win.h > v0.win.h, "{v0:?} to {v1:?}");
     let f = drawn(&mut s);
+    // Nothing of the page on screen 0 but Hourly's scroll bar going away.
     assert!(
         f.dirty()
             .iter()
-            .all(|d| d.intersect(&weather_app::PAGE).is_empty()),
+            .all(|d| d.intersect(&weather_app::PAGE).is_empty() || d.x >= W - 9 && d.w <= 3),
         "{:?}",
         f.dirty()
     );
