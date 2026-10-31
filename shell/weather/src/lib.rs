@@ -24,6 +24,7 @@
 pub mod radar;
 mod sample;
 pub mod settings;
+pub mod tempest;
 pub use sample::sample;
 
 /// The pack icons the sample forecast uses, sorted: the test image bakes

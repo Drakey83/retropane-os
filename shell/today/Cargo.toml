@@ -42,6 +42,7 @@ rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
 rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
+rp-drv-pxa-udc = { path = "../../drivers/pxa-udc" }
 
 [lints]
 workspace = true

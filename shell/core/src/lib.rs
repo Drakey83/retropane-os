@@ -538,6 +538,20 @@ impl Shell {
         }
     }
 
+    /// The forecast every screen reads.
+    #[must_use]
+    pub fn forecast(&self) -> &rp_weather::Forecast {
+        &self.wx
+    }
+
+    /// A new forecast (a fetch through the dock's relay, R132): every
+    /// screen that shows it is redrawn; the Weather pages' pictures are
+    /// checked against their draw lists and rebuilt.
+    pub fn set_forecast(&mut self, f: rp_weather::Forecast) {
+        self.wx = f;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
     /// Marks the whole screen to be drawn (the device's hand-back from a
     /// picture composed ahead to the renderer's own screens).
     pub fn redraw_all(&mut self) {

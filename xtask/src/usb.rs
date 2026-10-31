@@ -1770,3 +1770,85 @@ mod format_tests {
         assert_eq!(autorun_icon(b"label=X51V"), None);
     }
 }
+
+/// `cargo xtask net`: the dock's **dev-only** relay (R132, quality audit C95;
+/// the owner's ruling 2026-10-31: TLS at the PC while developing, on the
+/// device before anything is live). While a RetroPane image runs with its
+/// USB serial port up, it answers the image's `RPNET TEMPEST` line with
+/// Tempest's `better_forecast` (metric) for the first station of the key in
+/// `local/tempest-key.txt` (never committed; the key never crosses USB), as
+/// `RPNET <status> <length>` then the JSON. It ends when the port goes (the
+/// image back at the loader). Prints what it fetched, never the key.
+pub fn net(root: &std::path::Path, canned: bool) -> Result<(), String> {
+    let key = root.join("local").join("tempest-key.txt");
+    if !canned && !key.exists() {
+        return Err(format!(
+            "net: put the Tempest key in {} (one line; local/ is never committed)",
+            key.display()
+        ));
+    }
+    // The image's own port: its serial-only entry (no `MI_` interface in
+    // the device id, unlike the loader's composite one), present now. The
+    // first entry with the id was the loader's stale COM4 once (2026-10-31).
+    let script = open_port().replace(
+        "$_.PNPDeviceID -like",
+        "$_.Status -eq 'OK' -and $_.PNPDeviceID -notlike '*MI_*' -and $_.PNPDeviceID -like",
+    ) + &format!(
+        r#"$sp.DtrEnable = $true
+$sp.RtsEnable = $true
+$sp.ReadTimeout = 500
+$sp.NewLine = "`n"
+Open-Port
+$canned = {canned}
+$key = if ($canned) {{ '' }} else {{ (Get-Content -Raw '{key}').Trim() }}
+"RELAY on $port"
+function Send-Bytes($b) {{ $sp.Write($b, 0, $b.Length) }}
+while ($true) {{
+    try {{ $line = $sp.ReadLine().Trim() }}
+    catch [System.TimeoutException] {{ continue }}
+    catch {{ 'PORT GONE'; break }}
+    if ($line -ne 'RPNET TEMPEST') {{ continue }}
+    if ($canned) {{
+        # A fixed forecast in Tempest's shape: the link checked without a key.
+        $b = [Text.Encoding]::UTF8.GetBytes('{CANNED}')
+        "CANNED $($b.Length) bytes"
+        Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 200 $($b.Length)`n"))
+        Send-Bytes $b
+        continue
+    }}
+    try {{
+        $st = Invoke-RestMethod "https://swd.weatherflow.com/swd/rest/stations?token=$key"
+        $sid = $st.stations[0].station_id
+        $r = Invoke-WebRequest -UseBasicParsing "https://swd.weatherflow.com/swd/rest/better_forecast?station_id=$sid&token=$key&units_temp=c&units_wind=kph&units_pressure=mb&units_precip=mm&units_distance=km"
+        $b = [Text.Encoding]::UTF8.GetBytes($r.Content)
+        "FORECAST station $sid ($($st.stations[0].name)): $($b.Length) bytes"
+        Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 200 $($b.Length)`n"))
+        Send-Bytes $b
+    }} catch {{
+        "ERROR $($_.Exception.Message)"
+        Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 502 0`n"))
+    }}
+}}
+$sp.Close()
+"#,
+        key = key.display(),
+        canned = if canned { "$true" } else { "$false" },
+        CANNED = CANNED_FORECAST,
+    );
+    // The image's port comes up a moment after the loader's goes: waited
+    // for, a minute at most.
+    for _ in 0..60 {
+        let out = powershell(&script)?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        if !text.contains("NOPORT") {
+            eprintln!("{text}{}", String::from_utf8_lossy(&out.stderr));
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Err("net: no RetroPane port in a minute (is the image running with its USB up?)".into())
+}
+
+/// `cargo xtask net --canned`'s answer: a forecast in Tempest's shape
+/// (metric), so the dock link is checked end to end without a key.
+const CANNED_FORECAST: &str = r#"{"timezone_offset_minutes":-300,"location_name":"Canned Test Station","current_conditions":{"icon":"partly-cloudy-day","air_temperature":11.5,"feels_like":9.8,"relative_humidity":61,"wind_avg":12.0,"wind_direction":270,"uv":3},"forecast":{"daily":[{"day_start_local":1761886800,"icon":"rainy","sunrise":1761911400,"sunset":1761950400,"air_temp_high":14.0,"air_temp_low":4.5,"precip_probability":70}],"hourly":[{"icon":"cloudy","air_temperature":11.0,"precip_probability":20,"local_hour":9,"wind_avg":10.0}]}}"#;

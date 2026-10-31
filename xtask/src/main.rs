@@ -122,6 +122,8 @@ commands:
             talks to it holds a machine-wide lock for its whole run, and
             waits while another holds it (--no-wait, or RP_AXIM_NO_WAIT=1:
             fail at once instead; RP_AXIM_WHO=<label> names the holder)
+  net       the dock's dev-only relay (R132, audit C95): answers a running
+            image's Tempest request with the forecast for local/tempest-key.txt
   usb       talk to an X51v running the USB link test (target/sdkit/usb) over
             its sync cable: find the COM port, check the banner and echo
   codegen-variant <image> <label> <--config ...>...
@@ -394,6 +396,10 @@ fn main() -> ExitCode {
         "usb" => {
             eprintln!("==> usb");
             usb::run()
+        }
+        "net" => {
+            eprintln!("==> net (the dock's dev relay: Tempest through the PC)");
+            usb::net(&workspace_root(), flag == "--canned")
         }
         "adr-index" => adrs::write(&workspace_root()),
         "perf" => {

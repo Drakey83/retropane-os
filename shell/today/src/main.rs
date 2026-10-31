@@ -18,6 +18,7 @@ mod image {
     use rp_drv_pxa_keypad::keys::{Keys, Kind, Timing};
     use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
+    use rp_drv_pxa_udc::{Layout as UsbLayout, Udc};
     use rp_drv_tsc2046::Tsc2046;
     use rp_gfx::layer::{Layer, PlaneFormat};
     use rp_gfx::render::CpuRenderer;
@@ -348,6 +349,33 @@ mod image {
         }
     }
 
+    /// The dock's dev relay (R132, quality audit C95: dev-only, TLS at the
+    /// PC while developing): the image brings up its own USB serial port
+    /// (the loader switched USB off before starting it) and asks the PC's
+    /// `cargo xtask net` for the Tempest forecast. Off in the replay (on
+    /// with `RP_TODAY_REPLAY_NET`: the link checked unattended), or with
+    /// `RP_TODAY_NO_NET`.
+    const NET: bool = option_env!("RP_TODAY_NO_NET").is_none()
+        && (!REPLAY || option_env!("RP_TODAY_REPLAY_NET").is_some());
+    /// The USB D+ pull-up's GPIO (docs/hw/udc.md).
+    const USB_PULLUP: u8 = 2;
+    /// The largest answer kept (a `better_forecast` is ~30-60 KB).
+    const NET_BUF: usize = 256 * 1024;
+    /// The station's name (the shell holds `&'static str`).
+    static PLACE: rt::Slot<[u8; 40]> = rt::Slot::new();
+
+    /// The relay's request in flight: the port, whether it was asked, the
+    /// answer's header so far and its body's length and bytes received.
+    struct Net {
+        udc: Udc<Mmio>,
+        asked: bool,
+        header: [u8; 32],
+        hn: usize,
+        len: Option<usize>,
+        got: usize,
+        done: bool,
+    }
+
     /// Start of the clock, in local minutes since 1970 (from the build).
     fn start_minutes() -> i64 {
         let utc: i64 = env!("RP_TODAY_UTC_MIN").parse().unwrap_or(0);
@@ -433,7 +461,10 @@ mod image {
         let (layer_px, rest) = rest.split_at_mut(W * PIC_ROWS);
         let (plane_words, rest) = rest.split_at_mut(W * PIC_ROWS / 2);
         // The openings' trace, in the RAM pool (not the image's RAM budget).
-        let (trace_words, _) = rest.split_at_mut(TRACE * 10);
+        let (trace_words, rest) = rest.split_at_mut(TRACE * 10);
+        // The relay's answer (the dock's dev relay).
+        let (net_words, _) = rest.split_at_mut(NET_BUF / 4);
+        let net_buf = rp_hal_mem::words_as_bytes_mut(net_words);
         let plane_bytes = rp_hal_mem::words_as_bytes_mut(plane_words);
         let wall_bytes =
             &mut rp_hal_mem::words_as_bytes_mut(wall_words)[..rp_today::WALLPAPER_BYTES];
@@ -619,6 +650,38 @@ mod image {
             crash(format_args!("no IRQs"))
         };
         let mut key_events = Keys::new(Timing::DEFAULT);
+        let mut net: Option<Net> = None;
+        // The dock's dev relay: USB up as a serial port (unplugged first,
+        // so the PC sees a fresh device), asked once the PC opens it.
+        if NET {
+            gpio.borrow_mut().make_output(USB_PULLUP, false);
+            rt::delay_us(200_000);
+            if let Some(bus) = rt::take_udc() {
+                let mut udc = Udc::new(bus);
+                udc.set_layout(UsbLayout::Serial);
+                match udc.enable() {
+                    Ok(()) => {
+                        gpio.borrow_mut().write(USB_PULLUP, true);
+                        let _ = writeln!(
+                            RunLog,
+                            "net: USB serial up, waiting for the PC's relay (cargo xtask net)"
+                        );
+                        net = Some(Net {
+                            udc,
+                            asked: false,
+                            header: [0; 32],
+                            hn: 0,
+                            len: None,
+                            got: 0,
+                            done: false,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = writeln!(RunLog, "net: USB not enabled ({e:?})");
+                    }
+                }
+            }
+        }
         let _ = writeln!(
             RunLog,
             "touch: GPIO24 function {cs_found} as found, now a plain GPIO (chip select)"
@@ -1098,8 +1161,103 @@ mod image {
                         let _ = writeln!(RunLog, "PROFILE {name}: {}", z.tally.split());
                     }
                 }
+                if let Some(n) = net.as_mut() {
+                    n.udc.disable();
+                    gpio.borrow_mut().write(USB_PULLUP, false);
+                }
                 before.restore(&mut gfx.two_d().parts().0.regs);
                 rp_image::finish()
+            }
+
+            // The dock's dev relay: the port polled each pass; the answer
+            // read into the RAM pool and given to the shell when whole.
+            if let Some(n) = net.as_mut().filter(|n| !n.done) {
+                n.udc.poll();
+                // Closed before an answer (another program had opened the
+                // port, `load` asking for the log say): asked again on the
+                // next open.
+                if n.asked && n.len.is_none() && n.hn == 0 && !n.udc.host_open() {
+                    n.asked = false;
+                }
+                if !n.asked && n.udc.configured() && n.udc.host_open() {
+                    n.udc.write(b"RPNET TEMPEST\n");
+                    n.asked = true;
+                    let _ = writeln!(
+                        RunLog,
+                        "net: asked the relay for the Tempest forecast at {now_ms} ms"
+                    );
+                }
+                let mut chunk = [0u8; 64];
+                loop {
+                    let k = n.udc.read(&mut chunk);
+                    if k == 0 {
+                        break;
+                    }
+                    // Nothing counts before the request (a loader command
+                    // from the PC on the same port, say).
+                    if !n.asked {
+                        continue;
+                    }
+                    for &b in &chunk[..k] {
+                        match n.len {
+                            None => {
+                                if b == b'\n' {
+                                    // "RPNET <status> <length>"
+                                    let h = core::str::from_utf8(&n.header[..n.hn]).unwrap_or("");
+                                    let mut f = h.split(' ');
+                                    let ok = f.next() == Some("RPNET") && f.next() == Some("200");
+                                    let len = f.next().and_then(|l| l.parse::<usize>().ok());
+                                    match (ok, len) {
+                                        (true, Some(l)) if l <= net_buf.len() => n.len = Some(l),
+                                        _ => {
+                                            let _ =
+                                                writeln!(RunLog, "net: the relay answered {h:?}");
+                                            n.done = true;
+                                        }
+                                    }
+                                } else if n.hn < n.header.len() {
+                                    n.header[n.hn] = b;
+                                    n.hn += 1;
+                                }
+                            }
+                            Some(l) if n.got < l => {
+                                net_buf[n.got] = b;
+                                n.got += 1;
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                }
+                if let Some(l) = n.len
+                    && n.got == l
+                    && !n.done
+                {
+                    n.done = true;
+                    let json = &net_buf[..l];
+                    let mut name = [0u8; 40];
+                    let k = rp_weather::tempest::place_name(json, &mut name);
+                    let place: &'static str = PLACE.put_with(|| name).map_or("Tempest", |p| {
+                        core::str::from_utf8(&p[..k]).unwrap_or("Tempest")
+                    });
+                    match rp_weather::tempest::from_tempest(json, shell.forecast(), place) {
+                        Some(f) => {
+                            shell.set_forecast(f);
+                            pages_check = true;
+                            app_check = true;
+                            let _ = writeln!(
+                                RunLog,
+                                "net: Tempest forecast for {place} ({l} bytes) applied at {now_ms} ms: now {} tenths C",
+                                f.now.temp
+                            );
+                        }
+                        None => {
+                            let _ = writeln!(
+                                RunLog,
+                                "net: {l} bytes from the relay weren't a forecast"
+                            );
+                        }
+                    }
+                }
             }
 
             // The radar's map under the page while Radar is open, the
@@ -1599,30 +1757,32 @@ mod image {
             if !filter.down() && raw.is_none() && touch.pen_down() {
                 phantom = phantom.saturating_add(1);
             }
-            let wait_ms: u32 = if showing.is_some() || gfx.busy() || gfx.commit_pending() {
-                // A frame is with the engine or waiting for the blanking:
-                // flip it as soon as it's due.
-                1
-            } else if shell.animating() {
-                // A fling, a rebound or an entrance: the next frame as soon
-                // as the last is on the screen.
-                1
-            } else if REPLAY && !replay_touching {
-                // The pause before the next touch.
-                replay_until.map_or(1, |u| u.saturating_sub(now_ms).clamp(1, 50) as u32)
-            } else if filter.down() || touch.pen_down() || replay_touching {
-                PEN_DOWN_SLEEP_MS
-            } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
-                20
-            } else if shell.notice().is_some() {
-                100
-            } else {
-                // The next minute, but look at the pen line every 50 ms
-                // too: a touch must never depend on one interrupt alone
-                // (on the device touch went dead after a hold, as if one
-                // were missed; the counts in the run log will say).
-                (60_000 - (now_ms % 60_000) as u32).clamp(1, 50)
-            };
+            let net_busy = net.as_ref().is_some_and(|n| !n.done);
+            let wait_ms: u32 =
+                if showing.is_some() || gfx.busy() || gfx.commit_pending() || net_busy {
+                    // A frame is with the engine or waiting for the blanking:
+                    // flip it as soon as it's due.
+                    1
+                } else if shell.animating() {
+                    // A fling, a rebound or an entrance: the next frame as soon
+                    // as the last is on the screen.
+                    1
+                } else if REPLAY && !replay_touching {
+                    // The pause before the next touch.
+                    replay_until.map_or(1, |u| u.saturating_sub(now_ms).clamp(1, 50) as u32)
+                } else if filter.down() || touch.pen_down() || replay_touching {
+                    PEN_DOWN_SLEEP_MS
+                } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
+                    20
+                } else if shell.notice().is_some() {
+                    100
+                } else {
+                    // The next minute, but look at the pen line every 50 ms
+                    // too: a touch must never depend on one interrupt alone
+                    // (on the device touch went dead after a hold, as if one
+                    // were missed; the counts in the run log will say).
+                    (60_000 - (now_ms % 60_000) as u32).clamp(1, 50)
+                };
             if !filter.down() {
                 // Re-arm pen-down, then re-check the level: an edge while it
                 // was disarmed isn't remembered.
