@@ -665,6 +665,7 @@ mod image {
         };
         let mut pack_tried = [false; PACKS];
         let mut pack_shown = u8::MAX;
+        let mut pack_announced: Option<usize> = None;
         let Some(card) = CARD.put_with(|| None) else {
             crash(format_args!("started twice"))
         };
@@ -1301,7 +1302,16 @@ mod image {
             let want = shell.icon_pack();
             if want != pack_shown {
                 let n = usize::from(want).min(PACKS - 1);
-                if !pack_tried[n] {
+                // A pack not read yet: first a frame saying so (the setting's
+                // new name and "Loading icons"), the read on the next pass
+                // (the owner, 2026-10-31: the button seemed not to respond).
+                let announce = !pack_tried[n] && pack_announced != Some(n);
+                if announce {
+                    pack_announced = Some(n);
+                    if pack_shown != u8::MAX {
+                        shell.icons_loading();
+                    }
+                } else if !pack_tried[n] {
                     pack_tried[n] = true;
                     if !card_tried {
                         card_tried = true;
@@ -1336,17 +1346,19 @@ mod image {
                         rt::ticks().wrapping_sub(t1) / 13 * 4
                     );
                 }
-                match packs[n] {
-                    Some(mut ic) => {
-                        ic.radar = baked.radar;
-                        shell.set_icons(ic);
+                if !announce {
+                    match packs[n] {
+                        Some(mut ic) => {
+                            ic.radar = baked.radar;
+                            shell.set_icons(ic);
+                        }
+                        None if n == 0 => shell.set_icons(baked),
+                        None => shell.icon_pack_failed(),
                     }
-                    None if n == 0 => shell.set_icons(baked),
-                    None => shell.icon_pack_failed(),
+                    pack_shown = shell.icon_pack();
+                    pages_check = true;
+                    app_check = true;
                 }
-                pack_shown = shell.icon_pack();
-                pages_check = true;
-                app_check = true;
             }
 
             // The dock's dev relay: the port polled each pass; the shell's

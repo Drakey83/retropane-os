@@ -234,10 +234,14 @@ pub const START: Rect = Rect::new(0, 0, 96, 36);
 /// The weather hero panel: the place, the temperature, the condition, today's
 /// high and low, and the date (docs/design/ui.md "Weather and icons").
 const HERO: Rect = Rect::new(16, 52, 448, 196);
-/// The box of the weather icon, as in the mock-ups: 8 px past the panel's right
-/// edge and 48 px above its top, over the title bar; the picture is centred
-/// vertically in it and sits against its right side.
-const HERO_ICON: Rect = Rect::new(16 + 448 + 8 - 250, 52 - 48, 250, 176);
+/// The box of the weather icon: 8 px past the panel's right edge, its top
+/// 2 px under the title bar (the mock-ups' 48 px above the panel put tall
+/// pictures over the clock: the owner's photo, 2026-10-31; the picture
+/// keeps its size, the box moved down); the picture is centred vertically
+/// in it and sits against its right side.
+const HERO_ICON: Rect = Rect::new(16 + 448 + 8 - 250, 38, 250, 176);
+/// The hero's place line stops short of the icon.
+const HERO_LABEL_W: u16 = HERO_ICON.x - HERO.x - 28;
 /// The date at the hero's bottom right (its text depends on the day).
 pub const DATE_BOX: Rect = Rect::new(280, 52 + 196 - 50, 168, 40);
 /// The five-day forecast row with the room above it for the icons that
@@ -313,8 +317,8 @@ const MENU_ROW: u16 = 40;
 // letters, do it for all of the glass"): panels 72-55% to 85-74%, bars
 // 85-69% to 91-82%, menus 88-82% to 93-88%.
 
-const GLASS_LEFT: Argb = rp_draw::look::theme(0xD810_1418);
-const GLASS_RIGHT: Argb = rp_draw::look::theme(0xBC4C_545C);
+const GLASS_LEFT: Argb = rp_draw::look::theme(0xEC10_1418);
+const GLASS_RIGHT: Argb = rp_draw::look::theme(0xE238_3E46);
 const GLASS_EDGE: Argb = rp_draw::look::theme(0x50FF_FFFF);
 const BAR_LEFT: Argb = rp_draw::look::theme(0xE800_0000);
 const BAR_RIGHT: Argb = rp_draw::look::theme(0xD020_2428);
@@ -612,6 +616,12 @@ impl Shell {
     pub fn set_icons(&mut self, icons: Icons) {
         self.icons = icons;
         self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// An icon pack is being read from the card (about two seconds the
+    /// first time): said at once, so the tap is seen to have worked.
+    pub fn icons_loading(&mut self) {
+        self.show_notice("Loading icons");
     }
 
     /// The pack the settings name couldn't be read: back to the default.
@@ -1522,10 +1532,14 @@ impl Shell {
 
         // The weather hero (a tap opens the Weather app).
         Self::glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
-        let head = upper(wx.place.as_str())
-            .push(b" - ")
-            .push(upper(wx.source).as_bytes());
-        f.text(HERO.x + 20, HERO.y + 34, label, DIM, head.as_bytes());
+        // The place only (the app's header says the source), cut before
+        // the icon.
+        let head = upper(wx.place.as_str());
+        let mut b = head.as_bytes();
+        while label.width(b) > HERO_LABEL_W {
+            b = &b[..b.len() - 1];
+        }
+        f.text(HERO.x + 20, HERO.y + 34, label, DIM, b);
         let temp = Line::new().num(rg.degrees(wx.now.temp)).push(&[DEG_BIG]);
         f.text(HERO.x + 20, HERO.y + 116, big, TEXT, temp.as_bytes());
         let icon = Icon::of(wx.now.sky);
@@ -1637,7 +1651,7 @@ pub(crate) fn upper(s: &str) -> Line {
 /// Every notice the shell shows: each must fit the notice's area between
 /// the softkeys in the real font (rp-today's test; 2026-10-30: two
 /// settings notices ran past it and were left on screen).
-pub const NOTICES: [&str; 30] = [
+pub const NOTICES: [&str; 31] = [
     "40 at most",
     "64 at most",
     "Asking your PC",
@@ -1645,6 +1659,7 @@ pub const NOTICES: [&str; 30] = [
     "Keeps one place",
     "Key forgotten",
     "Key kept",
+    "Loading icons",
     "No key copied",
     "No spaces",
     "Not connected yet",
