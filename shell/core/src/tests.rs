@@ -1749,6 +1749,18 @@ fn a_connected_station_becomes_the_place_shown_and_home() {
     assert_eq!(s.wset.home, s.wset.current);
     assert_eq!(s.wx.place.as_str(), "Liberty Hill Station");
     assert!(s.wants(Ask::Forecast) && s.wants(Ask::Save));
+    // The Station button, then its screen: every instrument card drawn,
+    // within one frame.
+    assert!(s.station.is_some());
+    s.open_weather();
+    s.settle();
+    tap(&mut s, weather_app::STATION_BTN);
+    assert_eq!(s.screen(), Screen::Station);
+    let f = drawn(&mut s);
+    assert!(!f.overflowed());
+    assert!(texts(&f).contains(&b"LIGHTNING".to_vec()));
+    tap(&mut s, SOFT_LEFT);
+    assert_eq!(s.screen(), Screen::Weather);
     // Seattle can go: Manage places, Remove, tap it.
     tap(&mut s, SOFT_RIGHT);
     s.open(Screen::WeatherSettings);

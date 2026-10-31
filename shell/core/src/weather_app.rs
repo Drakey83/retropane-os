@@ -25,6 +25,9 @@ use super::{
 
 /// The header strip: the place and the source.
 pub(crate) const HEAD: Rect = Rect::new(0, 36, W, 58);
+/// The header's Station button, left of today's temperature (shown once a
+/// station answers).
+pub(crate) const STATION_BTN: Rect = Rect::new(W - 196, 36 + 13, 112, 32);
 /// The page between the header and the tabs.
 pub(crate) const PAGE: Rect = Rect::new(0, 94, W, 462);
 /// The tab strip above the softkeys.
@@ -583,6 +586,30 @@ impl Shell {
         let now = self.region.temp(wx.now.temp);
         let w = ui.width(now.as_bytes());
         f.text(W - 16 - w, HEAD.y + 37, ui, TEXT, now.as_bytes());
+        // Your station, once it answers: its instruments a tap away.
+        if self.station.is_some() {
+            let r = STATION_BTN;
+            f.push(Cmd::Fill {
+                r,
+                color: super::keyboard::KEY_FILL,
+            });
+            f.push(Cmd::Outline {
+                r,
+                color: super::FOCUS,
+            });
+            f.push(Cmd::Fill {
+                r: Rect::new(r.x + 10, r.y + r.h / 2 - 3, 6, 6),
+                color: super::station::LIVE,
+            });
+            super::keyboard::centre_in(
+                f,
+                Rect::new(r.x + 14, r.y, r.w - 14, r.h),
+                label,
+                TEXT,
+                b"STATION",
+            );
+            self.decorate(f, Target::Station);
+        }
 
         // The page scrolls inside its own rectangle (an expanding hero card
         // may still reach above it).

@@ -188,6 +188,86 @@ pub fn place_name(json: &[u8]) -> Name {
     n
 }
 
+/// A personal station's instruments now (Tempest's `current_conditions`),
+/// in the model's units: tenths of a degree C, tenths of km/h, tenths of a
+/// millibar, tenths of a mm. A field the answer lacks is `None`.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct StationNow {
+    /// Air temperature.
+    pub temp: Option<i16>,
+    /// Feels like.
+    pub feels: Option<i16>,
+    /// Dew point.
+    pub dew: Option<i16>,
+    /// Relative humidity, %.
+    pub humidity: Option<u8>,
+    /// Wind average and gust.
+    pub wind: Option<u16>,
+    /// Wind gust.
+    pub gust: Option<u16>,
+    /// Wind from, degrees.
+    pub wind_from: Option<u16>,
+    /// Sea-level pressure.
+    pub pressure: Option<u16>,
+    /// The pressure's trend: -1 falling, 0 steady, 1 rising.
+    pub trend: Option<i8>,
+    /// Rain since local midnight.
+    pub rain_today: Option<u16>,
+    /// UV index.
+    pub uv: Option<u8>,
+    /// Solar radiation, W/m2.
+    pub solar: Option<u16>,
+    /// Lightning strikes in the last 3 hours.
+    pub strikes_3h: Option<u16>,
+    /// The last strike's distance, km.
+    pub strike_km: Option<u16>,
+}
+
+/// The station's instruments from `better_forecast`; `None` if the answer
+/// has no current conditions.
+#[must_use]
+pub fn station_now(json: &[u8]) -> Option<StationNow> {
+    let mut n = StationNow::default();
+    let mut seen = false;
+    let _ = Json::new(json).object(|k, v| {
+        if k != b"current_conditions" {
+            return;
+        }
+        seen = true;
+        let _ = v.object(|k, v| match k {
+            b"air_temperature" => n.temp = tenths(v.number(), -900, 700),
+            b"feels_like" => n.feels = tenths(v.number(), -900, 700),
+            b"dew_point" => n.dew = tenths(v.number(), -900, 700),
+            b"relative_humidity" => n.humidity = whole(v.number(), 0, 100).map(|h| h as u8),
+            b"wind_avg" => n.wind = tenths(v.number(), 0, 5000).map(|w| w as u16),
+            b"wind_gust" => n.gust = tenths(v.number(), 0, 5000).map(|w| w as u16),
+            b"wind_direction" => n.wind_from = whole(v.number(), 0, 360).map(|d| d as u16),
+            b"sea_level_pressure" => n.pressure = tenths(v.number(), 8000, 11000).map(|p| p as u16),
+            b"pressure_trend" => {
+                n.trend = v.string().and_then(|t| match t {
+                    b"falling" => Some(-1),
+                    b"steady" => Some(0),
+                    b"rising" => Some(1),
+                    _ => None,
+                });
+            }
+            b"precip_accum_local_day" => {
+                n.rain_today = tenths(v.number(), 0, 30000).map(|r| r as u16)
+            }
+            b"uv" => n.uv = whole(v.number(), 0, 20).map(|u| u as u8),
+            b"solar_radiation" => n.solar = whole(v.number(), 0, 2000).map(|w| w as u16),
+            b"lightning_strike_count_last_3hr" => {
+                n.strikes_3h = whole(v.number(), 0, 60000).map(|c| c as u16);
+            }
+            b"lightning_strike_last_distance" => {
+                n.strike_km = whole(v.number(), 0, 100).map(|d| d as u16)
+            }
+            _ => {}
+        });
+    });
+    seen.then_some(n)
+}
+
 /// The station as a place: its name and position (`latitude`,
 /// `longitude` in `better_forecast`), thousandths of a degree. `None` if
 /// either is missing or out of range.
@@ -270,8 +350,30 @@ mod tests {
         assert_eq!(f.days[2], base.days[2]);
         assert_eq!(f.hours[2], base.hours[2]);
         assert_eq!(place_name(JSON).as_str(), "Perryville Loop Station");
-        assert_eq!(station_place(b"{\"location_name\":\"X\",\"latitude\":37.7,\"longitude\":-89.86}"), Some((Name::new("X"), 37_700, -89_860)));
-        assert_eq!(station_place(b"{\"location_name\":\"X\",\"latitude\":97.7,\"longitude\":1}"), None);
+        let n = station_now(JSON).expect("instruments");
+        assert_eq!(
+            (n.temp, n.humidity, n.wind, n.wind_from),
+            (Some(174), Some(93), Some(50), Some(360))
+        );
+        assert_eq!((n.gust, n.trend), (None, None));
+        let n = station_now(br#"{"current_conditions":{"sea_level_pressure":1016.4,"pressure_trend":"falling","wind_gust":21.6,"precip_accum_local_day":3.2,"lightning_strike_count_last_3hr":4,"lightning_strike_last_distance":12,"solar_radiation":512}}"#).unwrap();
+        assert_eq!(
+            (n.pressure, n.trend, n.gust, n.rain_today),
+            (Some(10164), Some(-1), Some(216), Some(32))
+        );
+        assert_eq!(
+            (n.strikes_3h, n.strike_km, n.solar),
+            (Some(4), Some(12), Some(512))
+        );
+        assert_eq!(station_now(b"{}"), None);
+        assert_eq!(
+            station_place(b"{\"location_name\":\"X\",\"latitude\":37.7,\"longitude\":-89.86}"),
+            Some((Name::new("X"), 37_700, -89_860))
+        );
+        assert_eq!(
+            station_place(b"{\"location_name\":\"X\",\"latitude\":97.7,\"longitude\":1}"),
+            None
+        );
     }
 
     #[test]

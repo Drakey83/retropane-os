@@ -258,6 +258,8 @@ pub(crate) fn centre_in(f: &mut Frame, r: Rect, font: &'static Font, color: Argb
 const PANEL_LEFT: Argb = rp_draw::look::theme(0xF40C_1014);
 const PANEL_RIGHT: Argb = rp_draw::look::theme(0xF020_262C);
 const KEY: Argb = rp_draw::look::theme(0xFF3A_424C);
+/// A key's fill, for buttons that look like keys.
+pub(crate) const KEY_FILL: Argb = KEY;
 const KEY_DOWN: Argb = rp_draw::look::theme(0xFF6A_7480);
 const POP: Argb = rp_draw::look::theme(0xF040_4850);
 pub(crate) const DONE_TEXT: Argb = rp_draw::look::theme(0xFF06_121C);

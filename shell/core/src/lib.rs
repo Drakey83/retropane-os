@@ -27,6 +27,7 @@
 pub mod align;
 mod keyboard;
 pub mod motion;
+mod station;
 mod weather_app;
 mod weather_net;
 mod weather_settings;
@@ -103,6 +104,8 @@ pub enum Screen {
     WeatherFrom,
     /// The station key, typed on the on-screen keyboard.
     KeyEntry,
+    /// Your weather station's instruments now.
+    Station,
 }
 
 /// The keys the shell reacts to.
@@ -224,6 +227,8 @@ pub enum Target {
     Play,
     /// The radar's timeline (a tap picks the frame).
     Timeline,
+    /// The Weather header's Station button (a station connected).
+    Station,
 }
 
 // ---- Layout (480 x 640, portrait) --------------------------------------
@@ -432,6 +437,9 @@ pub struct Shell {
     /// The dock's questions wanted (bits of [`Ask`]) and the one in flight.
     wants: u8,
     asking: Option<Ask>,
+    /// The station's instruments and when they came (ms).
+    station: Option<rp_weather::tempest::StationNow>,
+    station_at: u32,
     /// When the forecast last came (ms), whether the dock ever answered,
     /// and whether the station's readings are in.
     fetched_at: Option<u32>,
@@ -501,6 +509,8 @@ impl Shell {
             // The stored settings first, then the forecast they name.
             wants: 1 << Ask::Load as u8,
             asking: None,
+            station: None,
+            station_at: 0,
             fetched_at: None,
             dock: false,
             station_live: false,
@@ -721,6 +731,7 @@ impl Shell {
             Target::Tab(i) => weather_app::tab_rect(i),
             Target::Back | Target::Row(_) | Target::Cap(_) => self.settings_rect(t),
             Target::Play => weather_app::PLAY,
+            Target::Station => weather_app::STATION_BTN,
             Target::Timeline => weather_app::TIMELINE,
         }
     }
@@ -748,6 +759,10 @@ impl Shell {
             .chain((0..hero).map(|_| Target::Hero))
             .chain((0..quick).map(Target::Quick))
             .chain((0..tabs).map(Target::Tab))
+            .chain(
+                (self.screen == Screen::Weather && self.station.is_some())
+                    .then_some(Target::Station),
+            )
             .chain((0..self.rows()).map(Target::Row))
             .chain((0..caps).map(Target::Cap))
             .chain((0..radar).flat_map(|_| [Target::Play, Target::Timeline]))
@@ -904,8 +919,10 @@ impl Shell {
                     self.dirty(Rect::new(0, 0, W, H));
                 }
                 Screen::WeatherSettings | Screen::WeatherFrom => {}
+                Screen::Station => self.refresh(),
             },
             Target::Hero => self.open_weather(),
+            Target::Station => self.open(Screen::Station),
             Target::Tab(i) => self.set_tab(i),
             Target::Back => self.go_back(),
             Target::Row(i) => self.row_tapped(i),
@@ -992,6 +1009,7 @@ impl Shell {
             Screen::WeatherPlaces => ("Back", "Remove"),
             Screen::AddPlace => ("Cancel", "Add"),
             Screen::KeyEntry => ("Cancel", "Done"),
+            Screen::Station => ("Back", "Refresh"),
         }
     }
 
@@ -1499,6 +1517,7 @@ impl Shell {
             }
             Screen::AddPlace => self.add_place_scene(f),
             Screen::KeyEntry => self.key_scene(f),
+            Screen::Station => self.station_scene(f),
         }
 
         // Softkeys and the notice between them.

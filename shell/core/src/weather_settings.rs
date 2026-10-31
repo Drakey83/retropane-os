@@ -231,7 +231,7 @@ impl Shell {
                 self.open(Screen::WeatherSettings);
             }
             Screen::KeyEntry => self.open(Screen::WeatherFrom),
-            Screen::WeatherSettings => {
+            Screen::WeatherSettings | Screen::Station => {
                 self.open_weather();
                 self.settle();
             }

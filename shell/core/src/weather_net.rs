@@ -314,6 +314,17 @@ impl Shell {
     /// made home, and its forecast asked for (the owner, 2026-10-31: "that
     /// should automatically switch to your location once you connect it").
     fn adopt_station(&mut self, body: &[u8]) {
+        // The instruments, every answer: the Station button and screen.
+        if let Some(n) = rp_weather::tempest::station_now(body) {
+            let first = self.station.is_none();
+            self.station = Some(n);
+            self.station_at = self.now;
+            self.dirty(if first || self.screen == Screen::Station {
+                Rect::new(0, 0, W, super::H)
+            } else {
+                super::weather_app::HEAD
+            });
+        }
         if self.station_live {
             return;
         }
