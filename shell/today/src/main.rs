@@ -563,6 +563,8 @@ mod image {
         let mut revealing = false;
         // Reveal's window has shown (its clock restarted then).
         let mut reveal_shown = false;
+        // The app's screen drawn and held during Reveal (for one switch).
+        let mut chrome_held = false;
         // The app composed ahead (its picture and key), whether to check it,
         // and the open under way's start (ms, commits).
         let mut app_pic: Option<(Handle, u32)> = None;
@@ -576,6 +578,7 @@ mod image {
         let trace = trace_words;
         let (mut trace_n, mut trace_on, mut trace_tail) = (0usize, false, 0u32);
         let mut last_line = 0u32;
+        let mut trace_due = false;
         let mut meant = (0u16, 0u16, 0u16, 0u16, 0u16);
         let mut retire: Option<Handle> = None;
         // The pages' draw lists to check against their pictures (a new
@@ -1165,6 +1168,26 @@ mod image {
                             trace_on = true;
                             trace_tail = 30;
                         }
+                    } else if gfx.aside_held() && chrome_held {
+                        // Reveal done over the picture composed ahead: the
+                        // app's screen, drawn and held while Reveal ran, and
+                        // its page on the layer, in one commit at the next
+                        // refresh (nothing left to draw).
+                        chrome_held = false;
+                        let v = shell.page_layer();
+                        let st = v
+                            .and_then(|v| pages[usize::from(v.tab)].map(|(h, _)| page_state(h, v)));
+                        let _ = gfx.show_aside(pc, st);
+                        shown_tab = v.map(|v| v.tab);
+                        let n = gfx.commits().done - reveal_c0;
+                        let ms = (now_ms - reveal_t0).max(1);
+                        let _ = writeln!(
+                            RunLog,
+                            "open: {now_ms} ms, Reveal done: {n} window moves in {ms} ms (~{} fps); its screen held, switched with the page next refresh",
+                            u64::from(n) * 1000 / ms
+                        );
+                        revealing = false;
+                        reveal_shown = false;
                     } else if gfx.aside_held() {
                         // Reveal done: the app takes the screen (the same
                         // pixels), then its page goes onto the layer.
@@ -1217,6 +1240,24 @@ mod image {
                 // Moves: the window follows (staged; the latest wins).
                 if commit.is_none() {
                     if shell.reveal_plane().is_some() {
+                        if revealing
+                            && reveal_shown
+                            && !chrome_held
+                            && app_pic.is_some()
+                            && !gfx.busy()
+                            && !gfx.aside_held()
+                            && let Some(cur) = gfx.layer()
+                        {
+                            // The 2D engine idles while Reveal runs: the app's
+                            // screen drawn now and held, for the end's switch.
+                            shell.weather_after_entrance(frame);
+                            if gfx
+                                .frame_commit(pc, frame, Some(cur), true, &mut gclock)
+                                .is_ok()
+                            {
+                                chrome_held = true;
+                            }
+                        }
                         if revealing && gfx.layer().is_some() && !reveal_shown {
                             // The app's window is up: Reveal's clock starts
                             // now, so it grows from the card rather than
@@ -1332,12 +1373,14 @@ mod image {
                 use rp_hal_api::RegisterBus as _;
                 let regs = &mut gfx.two_d().parts().0.regs;
                 let line = regs.read32(rp_drv_mbx_display::reg::DVLNUM) & 0xFFF;
+                // A new refresh began since the last look (the line went
+                // back): sampled once its signature is published (line 3).
+                if line < last_line {
+                    trace_due = true;
+                }
                 let published = line >= rp_drv_mbx_display::sig::PUBLISHED_LINE;
-                if published
-                    && last_line < rp_drv_mbx_display::sig::PUBLISHED_LINE + 1
-                    && line < 600
-                    && trace_n < TRACE
-                {
+                if trace_due && published && trace_n < TRACE {
+                    trace_due = false;
                     let rd = |r: &mut Mmio, o: usize| r.read32(o);
                     let t = Refresh {
                         ms: now_ms as u32,

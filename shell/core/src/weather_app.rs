@@ -342,6 +342,20 @@ impl Shell {
         ) = saved;
     }
 
+    /// The Weather app's screen as it will be once the entrance under way
+    /// ends, into `f` (drawn whole): on the plane path its chrome, the page
+    /// left to the layer. Drawn and held while Reveal runs, so Reveal ends
+    /// in one switch with nothing left to draw. Nothing on screen changes.
+    pub fn weather_after_entrance(&mut self, f: &mut Frame) {
+        let saved = (self.anim, self.expanding);
+        self.anim = None;
+        self.expanding = false;
+        f.clear();
+        f.damage(Rect::new(0, 0, W, H));
+        self.scene(f);
+        (self.anim, self.expanding) = saved;
+    }
+
     /// Whether Reveal's content glides up into place (the mock-up's) or is
     /// held still while the window grows.
     pub fn set_reveal_glide(&mut self, on: bool) {
