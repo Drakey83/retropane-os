@@ -443,6 +443,32 @@ impl<B: RegisterBus> Stopped<'_, B> {
     pub fn resume_as(mut self, mbxclk: u32) {
         self.was = never_off(mbxclk);
     }
+
+    /// A display register read while the clocks are off: only the display
+    /// block (`0x2000`-`0x23FF`: the planes, the scan line, `DSIG`, the
+    /// event and underrun flags); `None` for any other offset. The display
+    /// has its own clock: `rp-gpubench` run WG on the X51v (M7, 2026-10-30,
+    /// gpubench-0248/-0249/-0251) read `DVLNUM`, `DSIG` and `DINTRS` 2,700
+    /// times with `MBXCLK` enable 0 and with `MBXCLK` 0, and the display
+    /// held every refresh; an MBX core register read is what hung (run FS).
+    pub fn display_read32(&mut self, offset: usize) -> Option<u32> {
+        DISPLAY_BLOCK
+            .contains(&offset)
+            .then(|| self.bus.read32(offset))
+    }
+}
+
+/// The display block's registers, readable while the MBX clocks are off
+/// ([`Stopped::display_read32`]).
+pub const DISPLAY_BLOCK: core::ops::Range<usize> = 0x2000..0x2400;
+
+/// [`stop`] as Dell's off path writes it: the whole register 0, the
+/// divider too (`ddi_2700g`, REA #39), until the returned [`Stopped`] is
+/// dropped or resumed (the value found put back).
+pub fn stop_whole<B: RegisterBus>(bus: &mut B) -> Stopped<'_, B> {
+    let was = bus.read32(MBXCLK);
+    bus.write32(MBXCLK, 0);
+    Stopped { bus, was }
 }
 
 impl<B: RegisterBus> Drop for Stopped<'_, B> {
@@ -594,6 +620,24 @@ mod tests {
         bus.preset(MBXCLK, 0xA);
         stop(&mut bus).resume();
         assert_eq!(&bus.writes()[2..], [(MBXCLK, 0x8), (MBXCLK, 0xA)]);
+    }
+
+    #[test]
+    fn stopped_reads_the_display_block_only() {
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(MBXCLK, 0x5);
+        bus.preset(0x2184, 0xABCD);
+        {
+            let mut s = stop_whole(&mut bus);
+            assert_eq!(s.display_read32(0x2184), Some(0xABCD));
+            assert_eq!(s.display_read32(0x2308), Some(0));
+            // The MBX core (status at 0x412c), the system block (ODFBSTAT
+            // 0x068), MBXCLK itself and the block's edges: refused.
+            for off in [0x412C, 0x068, MBXCLK, 0x1FFC, 0x2400] {
+                assert_eq!(s.display_read32(off), None, "0x{off:x}");
+            }
+        }
+        assert_eq!(bus.writes(), [(MBXCLK, 0), (MBXCLK, 0x5)]);
     }
 
     #[test]

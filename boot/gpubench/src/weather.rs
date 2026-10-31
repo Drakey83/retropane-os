@@ -1506,15 +1506,8 @@ fn m7(g: &mut Rig, p: &Pics) {
             k + 1
         );
         let t0 = rt::ticks();
-        match k {
-            0 => g.e.regs.write32(MBXCLK, clk0 & !3),
-            1 => g.e.regs.write32(MBXCLK, 0),
-            _ => g.e.regs.write32(ODFBPWR, (odfb0 & !3) | 1),
-        }
-        let stat = g.e.regs.read32(ODFBSTAT);
         let (mut same, mut zero, mut other) = (0u32, 0u32, 0u32);
-        for _ in 0..hold_frames {
-            let s = sig_prev(g);
+        let mut tally = |s: u32| {
             if s == want {
                 same += 1;
             } else if s == 0 {
@@ -1522,14 +1515,34 @@ fn m7(g: &mut Rig, p: &Pics) {
             } else {
                 other += 1;
             }
-            let _ = at_blank(g);
-        }
-        let under = underrun_take(&mut g.e.regs);
+        };
+        let (stat, under) = if k < 2 {
+            // The clocks off through the guard (C43): only the display
+            // block is read meanwhile; ODFBSTAT is read after.
+            let mut s = if k == 0 {
+                clock::stop(&mut g.e.regs)
+            } else {
+                clock::stop_whole(&mut g.e.regs)
+            };
+            for _ in 0..hold_frames {
+                tally(stopped_sig_next(&mut s));
+            }
+            let under = s
+                .display_read32(DINTRS)
+                .is_some_and(|v| v & GFX_UNDERRUN != 0);
+            s.resume();
+            (g.e.regs.read32(ODFBSTAT), under)
+        } else {
+            g.e.regs.write32(ODFBPWR, (odfb0 & !3) | 1);
+            let stat = g.e.regs.read32(ODFBSTAT);
+            for _ in 0..hold_frames {
+                tally(sig_next(g));
+            }
+            g.e.regs.write32(ODFBPWR, odfb0);
+            (stat, false)
+        };
+        let under = under | underrun_take(&mut g.e.regs);
         let held = us_since(t0) / 1000;
-        match k {
-            0 | 1 => g.e.regs.write32(MBXCLK, clk0),
-            _ => g.e.regs.write32(ODFBPWR, odfb0),
-        }
         // The 2D clock's wake: a 64 x 64 fill submitted and finished.
         let w = rp_image::need(
             cmd::fill(
@@ -1543,7 +1556,7 @@ fn m7(g: &mut Rig, p: &Pics) {
         );
         let (ok, _, wake) = run2d(g, &w);
         log!(
-            "  WG M7 step {} of 3, {name}: held {held} ms, ODFBSTAT 0x{stat:x} meanwhile; {hold_frames} refreshes: {same} the page as before, {zero} DSIG 0, {other} other{}; the underrun flag {}; put back, the first 2D fill after it {wake} us (done {ok}); MBXCLK 0x{:x} ODFBPWR 0x{:x} ODFBSTAT 0x{:x}",
+            "  WG M7 step {} of 3, {name}: held {held} ms, ODFBSTAT 0x{stat:x} (meanwhile for ODFBPWR, after for the clocks); {hold_frames} refreshes: {same} the page as before, {zero} DSIG 0, {other} other{}; the underrun flag {}; put back, the first 2D fill after it {wake} us (done {ok}); MBXCLK 0x{:x} ODFBPWR 0x{:x} ODFBSTAT 0x{:x}",
             k + 1,
             if want == 0 {
                 " (not judged: DSIG 0)"
@@ -1694,4 +1707,29 @@ fn r134(g: &mut Rig) {
     for k in 0..3 {
         let _ = g.pool.free(at[k], sizes[k]);
     }
+}
+
+/// The next refresh's `DSIG` with the MBX clocks stopped: the scan line
+/// and the signature read through the guard's display-block reads alone
+/// (as [`sig_next`]: the blanking, then line 3 of the next refresh), 0 if
+/// the line never came (40 ms each).
+fn stopped_sig_next<B: RegisterBus>(s: &mut clock::Stopped<'_, B>) -> u32 {
+    let mut line =
+        |s: &mut clock::Stopped<'_, B>| s.display_read32(dreg::DVLNUM).unwrap_or(0) & 0xFFF;
+    let mut until = |s: &mut clock::Stopped<'_, B>, ok: &dyn Fn(u32) -> bool| {
+        let t0 = rt::ticks();
+        while us_since(t0) < 40_000 {
+            if ok(line(s)) {
+                return true;
+            }
+        }
+        false
+    };
+    if !until(s, &|l| l >= 643 || l < sig::PUBLISHED_LINE) {
+        return 0;
+    }
+    if !until(s, &|l| (sig::PUBLISHED_LINE..603).contains(&l)) {
+        return 0;
+    }
+    s.display_read32(DSIG).unwrap_or(0)
 }
