@@ -1,121 +1,217 @@
-//! The Weather app's screens below its main one (build-ui-foundation.md
-//! steps 3-5): Settings, Places, and the station key typed on an on-screen
-//! keyboard (the owner, 2026-10-30: "for now I will need to do it manually
-//! with a keyboard"). Each has the header's back control and Back on the
-//! left softkey; Home goes home from anywhere.
+//! The Weather app's screens below its main one (docs/design/weather-settings-build.md,
+//! the owner's go 2026-10-31 on `mockups/settings-sheet.jpg`):
+//!
+//! - **T1 Settings:** one grouped list (Places, Weather from, Look); a tap
+//!   changes or opens; changes apply at once (no Save), Back and ok return.
+//! - **Places:** every place kept; a tap shows it; Remove mode takes one out.
+//! - **T2 Add a place:** a field on K1 compact; the search runs as typing
+//!   pauses (Open-Meteo's geocoder through the dock), up to four matches,
+//!   and Near your dock PC.
+//! - **T3 Weather from:** the forecast provider, and the weather stations.
+//! - **The station key** on K1 compact (kept in RAM, R130).
 //!
 //! Iterate, don't imitate (rule 0): WM5's settings were dialogs of
-//! drop-down lists and an OK box, and its soft keyboard (SIP) a small
-//! panel of 15 px keys meant for a stylus. Ours: one row per setting, a tap
-//! moves to the next choice or opens its list (no dialog, nothing to
-//! confirm), and a key-entry screen whose keys are 46 x 50 px (fingertip
-//! size, I3's provisional 64 px goal for the main targets) with the key
-//! masked as it is typed, its last four characters shown so the owner can
-//! check it.
+//! drop-downs behind OK, and its weather programs a fixed city list; ours
+//! is the modern grouped list with live changes and a worldwide search by
+//! name or postal code, inside WM's frame (title bar, Back, softkeys).
 
-use rp_draw::{Argb, Cmd, Frame, Rect};
+use rp_draw::{Cmd, Frame, Rect};
 use rp_weather::Line;
-use rp_weather::settings::{KEY_MAX, PLACES, Secret};
+use rp_weather::settings::{Appearance, KEY_MAX, PLACES_MAX, Provider, STATION_KINDS, Secret, Station};
 
-use super::{DIM, FOCUS, GLASS_LEFT, GLASS_RIGHT, H, Screen, Shell, TEXT, Target, W};
+use super::keyboard::{self, Cap, centre_in};
+use super::{DIM, FOCUS, GLASS_EDGE, GLASS_LEFT, GLASS_RIGHT, H, Screen, Shell, TEXT, Target, W};
 
 /// The header's back control (every Weather screen).
 pub(crate) const BACK: Rect = Rect::new(0, 36, 64, 58);
-/// The settings' and places' rows.
-const ROW_Y: u16 = 104;
-const ROW_STEP: u16 = 58;
-const ROW_H: u16 = 52;
-/// The settings, in order.
-pub(crate) const SETTINGS: usize = 8;
+/// The content's top (under the header).
+const TOP: u16 = 98;
+const ROW_H: u16 = 38;
+const LABEL_H: u16 = 18;
+/// A provider's card on T3.
+const CARD_H: u16 = 52;
+/// The text field (T2 and the key).
+const FIELD: Rect = Rect::new(16, 100, 448, 40);
+/// T2's Near your dock PC card.
+const HERE: Rect = Rect::new(16, 146, 448, 48);
+/// The key screen's help panel (its count changes as a key is typed).
+const KEY_HELP_Y: u16 = FIELD.y + FIELD.h + 8;
+/// The most matches shown above the keyboard.
+pub(crate) const MATCHES_SHOWN: u8 = 4;
+/// How long typing must pause before the search goes (ms).
+pub(crate) const SEARCH_PAUSE_MS: u32 = 600;
 
-/// The key-entry screen: the field, and the keyboard's rows.
-const FIELD: Rect = Rect::new(28, 144, 424, 60);
-/// The panel around the field: what the key is for, the field, its count
-/// and where it is kept (all of it redrawn as a key is typed).
-const KEY_PANEL: Rect = Rect::new(16, 102, 448, 214);
-const KEYS_Y: u16 = 330;
-const KEY_W: u16 = 48;
-const KEY_H: u16 = 52;
-const KEY_STEP_Y: u16 = 54;
-/// The keys, row by row; `\x08` backspace, `\x0E` shift, `\x0F` show or
-/// hide.
-const KEYROWS: [&[u8]; 4] = [
-    b"1234567890",
-    b"qwertyuiop",
-    b"asdfghjkl-",
-    b"\x0Ezxcvbnm_\x08",
-];
-/// The fifth row: show or hide, then the space between Cancel and Done is
-/// the softkeys'.
-const SHOW: u8 = 0x0F;
-const SHIFT: u8 = 0x0E;
-const BKSP: u8 = 0x08;
-/// Keys in all.
-pub(crate) const CAPS: u8 = 41;
-
-const PRESSED_KEY: Argb = rp_draw::look::theme(0xE04A_5460);
-
-/// A settings or places row.
-const fn row(i: u8) -> Rect {
-    Rect::new(16, ROW_Y + i as u16 * ROW_STEP, 448, ROW_H)
+/// What a row of the screen up is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Item {
+    /// T1: a place (shown now: ticked).
+    Place(u8),
+    /// T1: all the places (more than T1 shows).
+    AllPlaces,
+    /// T1 and the places list: add one.
+    AddPlace,
+    /// T1: the forecast's provider.
+    Forecast,
+    /// T1: the station.
+    Station,
+    /// T1: the radar's map.
+    Radar,
+    /// T1: how often it refreshes.
+    Updates,
+    /// T1: light or dark.
+    Appearance,
+    /// T1: the region and its units.
+    Units,
+    /// T1: the icon pack.
+    Icons,
+    /// T3: a provider.
+    Provider(u8),
+    /// T3: a station kind.
+    StationKind(u8),
+    /// T2: Near your dock PC.
+    Here,
+    /// T2: a match.
+    Match(u8),
 }
 
-/// Which key cap `i` is: its byte and rectangle.
-fn cap(i: u8) -> Option<(u8, Rect)> {
-    let mut k = i;
-    for (r, keys) in KEYROWS.iter().enumerate() {
-        if usize::from(k) < keys.len() {
-            let x = u16::from(k) * KEY_W;
-            let y = KEYS_Y + r as u16 * KEY_STEP_Y;
-            return Some((keys[usize::from(k)], Rect::new(x, y, KEY_W - 2, KEY_H)));
-        }
-        k -= keys.len() as u8;
-    }
-    (k == 0).then(|| {
-        (
-            SHOW,
-            Rect::new(W / 2 - 80, KEYS_Y + 4 * KEY_STEP_Y, 160, KEY_H - 6),
-        )
-    })
-}
-
-/// The key cap that types `c` (lower case; upper case is shift then it):
-/// the tests type through it.
-#[cfg(test)]
-pub(crate) fn cap_of(c: u8) -> Option<u8> {
-    (0..CAPS).find(|&i| cap(i).is_some_and(|(b, _)| b == c.to_ascii_lowercase()))
-}
+/// Up to 16 rows.
+pub(crate) type Items = ([Item; 16], u8);
 
 impl Shell {
+    /// The rows of the screen up, in order.
+    pub(crate) fn items(&self) -> Items {
+        let mut out = ([Item::Icons; 16], 0u8);
+        let mut add = |i: Item| {
+            out.0[usize::from(out.1)] = i;
+            out.1 += 1;
+        };
+        let n = self.wset.n_places;
+        match self.screen {
+            Screen::WeatherSettings => {
+                // Up to three places, else two and "all of them".
+                if n <= 3 {
+                    (0..n).for_each(|i| add(Item::Place(i)));
+                } else {
+                    add(Item::Place(self.wset.current));
+                    // And home, or the first other one.
+                    let (c, h) = (self.wset.current, self.wset.home);
+                    add(Item::Place(if h != c {
+                        h
+                    } else {
+                        u8::from(c == 0)
+                    }));
+                    add(Item::AllPlaces);
+                }
+                if n < 4 {
+                    add(Item::AddPlace);
+                }
+                for i in [
+                    Item::Forecast,
+                    Item::Station,
+                    Item::Radar,
+                    Item::Updates,
+                    Item::Appearance,
+                    Item::Units,
+                    Item::Icons,
+                ] {
+                    add(i);
+                }
+            }
+            Screen::WeatherPlaces => {
+                (0..n).for_each(|i| add(Item::Place(i)));
+                if usize::from(n) < PLACES_MAX && !self.removing {
+                    add(Item::AddPlace);
+                }
+            }
+            Screen::AddPlace => {
+                add(Item::Here);
+                (0..self.n_found.min(MATCHES_SHOWN)).for_each(|i| add(Item::Match(i)));
+            }
+            Screen::WeatherFrom => {
+                (0..Provider::ALL.len() as u8).for_each(|i| add(Item::Provider(i)));
+                (0..STATION_KINDS.len() as u8).for_each(|i| add(Item::StationKind(i)));
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// Row `k` of the screen up: what it is and where.
+    pub(crate) fn item(&self, k: u8) -> Option<(Item, Rect)> {
+        let (items, n) = self.items();
+        if k >= n {
+            return None;
+        }
+        let mut y = TOP;
+        let mut prev = None;
+        for (j, it) in items[..usize::from(n)].iter().enumerate() {
+            let sec = self.section(*it);
+            if sec.is_some() && sec != prev {
+                y += LABEL_H + 5;
+            }
+            prev = sec;
+            let (r, gap) = match it {
+                Item::Here => (HERE, 4),
+                Item::Provider(_) => (Rect::new(16, y, 448, CARD_H), 4),
+                _ => (Rect::new(16, y, 448, ROW_H), 0),
+            };
+            if j == usize::from(k) {
+                return Some((*it, r));
+            }
+            y = r.y + r.h + gap;
+        }
+        None
+    }
+
+    /// The section label a row sits under (drawn above its first row).
+    fn section(&self, it: Item) -> Option<&'static [u8]> {
+        Some(match (self.screen, it) {
+            (Screen::WeatherSettings, Item::Place(_) | Item::AllPlaces | Item::AddPlace) => b"PLACES",
+            (Screen::WeatherSettings, Item::Forecast | Item::Station | Item::Radar | Item::Updates) => {
+                b"WEATHER FROM"
+            }
+            (Screen::WeatherSettings, Item::Appearance | Item::Units | Item::Icons) => b"LOOK",
+            (Screen::WeatherFrom, Item::Provider(_)) => b"FORECAST",
+            (Screen::WeatherFrom, Item::StationKind(_)) => b"YOUR WEATHER STATION",
+            (Screen::AddPlace, Item::Match(_)) => b"MATCHES",
+            _ => return None,
+        })
+    }
+
     /// Where a target of these screens is.
     pub(crate) fn settings_rect(&self, t: Target) -> Rect {
         match t {
-            Target::Row(i) => row(i),
-            Target::Cap(i) => cap(i).map_or(Rect::new(0, 0, 0, 0), |(_, r)| r),
+            Target::Row(i) => self.item(i).map_or(Rect::new(0, 0, 0, 0), |(_, r)| r),
+            Target::Cap(i) => self.kb.cap(i).map_or(Rect::new(0, 0, 0, 0), |(_, r)| r),
             _ => BACK,
         }
     }
 
     /// The rows the screen up has.
     pub(crate) fn rows(&self) -> u8 {
-        match self.screen {
-            Screen::WeatherSettings => SETTINGS as u8,
-            Screen::WeatherPlaces => PLACES.len() as u8,
-            _ => 0,
-        }
+        self.items().1
+    }
+
+    /// Whether the screen up has the keyboard.
+    pub(crate) fn has_keyboard(&self) -> bool {
+        matches!(self.screen, Screen::AddPlace | Screen::KeyEntry)
     }
 
     /// Opens a screen below the Weather app.
     pub(crate) fn open(&mut self, s: Screen) {
+        if self.screen == Screen::KeyEntry && s != Screen::KeyEntry {
+            self.forget_typed();
+        }
         self.screen = s;
         self.pressed = None;
         self.anim = None;
+        self.removing = false;
         self.gesture = super::Gesture::None;
-        if s == Screen::KeyEntry {
-            self.typed = [0; KEY_MAX];
-            self.typed_n = 0;
-            self.shift = false;
-            self.show_key = false;
+        if self.has_keyboard() {
+            self.forget_typed();
+            self.kb = keyboard::Keyboard::default();
+            self.n_found = 0;
+            self.search_at = None;
         }
         if self.focus.is_some() {
             self.focus = Some(match s {
@@ -129,11 +225,12 @@ impl Shell {
     /// One screen back: a screen below the app to the one above it, the
     /// app to the Today screen.
     pub(crate) fn go_back(&mut self) {
-        if self.screen == Screen::KeyEntry {
-            self.forget_typed();
-        }
         match self.screen {
-            Screen::WeatherPlaces | Screen::KeyEntry => self.open(Screen::WeatherSettings),
+            Screen::AddPlace if self.wset.n_places > 3 => self.open(Screen::WeatherPlaces),
+            Screen::WeatherPlaces | Screen::AddPlace | Screen::WeatherFrom => {
+                self.open(Screen::WeatherSettings);
+            }
+            Screen::KeyEntry => self.open(Screen::WeatherFrom),
             Screen::WeatherSettings => {
                 self.open_weather();
                 self.settle();
@@ -143,38 +240,103 @@ impl Shell {
         }
     }
 
-    /// The typed key zeroed.
-    fn forget_typed(&mut self) {
+    /// The typed text zeroed (a key is never left in RAM after its screen).
+    pub(crate) fn forget_typed(&mut self) {
         self.typed = [0; KEY_MAX];
         self.typed_n = 0;
     }
 
-    /// A settings or places row tapped.
-    pub(crate) fn row_tapped(&mut self, i: u8) {
-        if self.screen == Screen::WeatherPlaces {
-            self.wset.place = i % PLACES.len() as u8;
-            self.apply_settings();
+    /// A row tapped.
+    pub(crate) fn row_tapped(&mut self, k: u8) {
+        let Some((it, r)) = self.item(k) else { return };
+        match (self.screen, it) {
+            (Screen::WeatherPlaces, Item::Place(i)) if self.removing => {
+                if self.wset.n_places <= 1 {
+                    self.show_notice("Keeps one place");
+                } else {
+                    self.wset.remove_place(i);
+                    self.settings_changed(true);
+                    self.dirty(Rect::new(0, TOP, W, H - 40 - TOP));
+                }
+            }
+            (_, Item::Place(i)) => {
+                if i != self.wset.current {
+                    self.wset.current = i;
+                    self.settings_changed(true);
+                }
+                self.dirty(Rect::new(0, TOP, W, H - 40 - TOP));
+            }
+            (_, Item::AllPlaces) => self.open(Screen::WeatherPlaces),
+            (_, Item::AddPlace) => self.open(Screen::AddPlace),
+            (_, Item::Forecast | Item::Station) => self.open(Screen::WeatherFrom),
+            (_, Item::Radar) => {
+                self.wset.radar = self.wset.radar.next();
+                self.settings_changed(false);
+            }
+            (_, Item::Updates) => {
+                self.wset.refresh = (self.wset.refresh + 1) % rp_weather::settings::REFRESH.len() as u8;
+                self.settings_changed(false);
+            }
+            (_, Item::Appearance) => {
+                let a = Appearance::ALL;
+                let i = a.iter().position(|x| *x == self.wset.appearance).unwrap_or(0);
+                self.wset.appearance = a[(i + 1) % a.len()];
+                self.settings_changed(false);
+                self.dirty(Rect::new(0, 0, W, H));
+            }
+            (_, Item::Units) => {
+                self.wset.next_region();
+                self.settings_changed(false);
+            }
+            (_, Item::Icons) => self.show_notice("Base pack only"),
+            (_, Item::Provider(i)) => {
+                let p = Provider::ALL[usize::from(i) % Provider::ALL.len()];
+                if p != self.wset.provider {
+                    self.wset.provider = p;
+                    self.settings_changed(true);
+                }
+                self.dirty(Rect::new(0, TOP, W, H - 40 - TOP));
+            }
+            (_, Item::StationKind(0)) => self.open(Screen::KeyEntry),
+            (_, Item::StationKind(_)) => self.show_notice("Not connected yet"),
+            (_, Item::Here) => {
+                self.want(super::weather_net::Ask::Here);
+                self.find_status = "Asking your dock PC";
+                self.dirty(Rect::new(0, HERE.y, W, keyboard::PANEL.y - HERE.y));
+            }
+            (_, Item::Match(i)) => self.add_found(i),
+        }
+        self.dirty(r);
+    }
+
+    /// Match `i` kept as a place, and shown.
+    pub(crate) fn add_found(&mut self, i: u8) {
+        let Some(m) = self.found.get(usize::from(i)).copied() else { return };
+        let p = rp_weather::settings::Place {
+            name: m.name,
+            area: m.area,
+            lat: m.lat,
+            lon: m.lon,
+        };
+        if self.wset.add_place(p) {
+            self.settings_changed(true);
             self.open(Screen::WeatherSettings);
-            return;
+        } else {
+            self.show_notice("Ten places at most");
         }
-        match i {
-            0 => self.wset.next_region(),
-            1 => self.wset.metric = !self.wset.metric,
-            2 => return self.open(Screen::WeatherPlaces),
-            3 => self.wset.source = self.wset.source.next(),
-            4 => return self.open(Screen::KeyEntry),
-            5 => {
-                self.wset.refresh =
-                    (self.wset.refresh + 1) % rp_weather::settings::REFRESH.len() as u8;
-            }
-            6 => {
-                // The base set only, until packs come from the card.
-                self.show_notice("Base pack only");
-            }
-            _ => self.wset.radar = self.wset.radar.next(),
-        }
+    }
+
+    /// The settings changed: the screens follow, the store keeps them, and
+    /// (`refetch`) the forecast is asked for again.
+    pub(crate) fn settings_changed(&mut self, refetch: bool) {
         self.apply_settings();
-        self.dirty(row(i));
+        self.want(super::weather_net::Ask::Save);
+        if refetch {
+            self.wx.place = self.wset.place().name;
+            self.fetched_at = None;
+            self.want(super::weather_net::Ask::Forecast);
+        }
+        self.dirty(Rect::new(0, TOP, W, H - 40 - TOP));
     }
 
     /// The settings into what every screen reads.
@@ -185,62 +347,103 @@ impl Shell {
             // Every number and the clock change.
             self.dirty(Rect::new(0, 0, W, H));
         }
-        self.wx.place = self.wset.place_name();
-        self.wx.source = if self.wset.source == rp_weather::settings::Source::Sample {
-            "Sample data"
-        } else {
-            // No network yet: the choice is kept, the sample shown.
-            "Sample (no network yet)"
-        };
+        self.wx.place = self.wset.place().name;
     }
 
     /// A key on the keyboard.
     pub(crate) fn cap_tapped(&mut self, i: u8) {
-        let Some((b, r)) = cap(i) else { return };
-        match b {
-            BKSP => self.typed_n = self.typed_n.saturating_sub(1),
-            SHIFT => {
-                self.shift = !self.shift;
-                self.dirty(Rect::new(0, KEYS_Y, W, 4 * KEY_STEP_Y));
+        let Some((cap, r)) = self.kb.cap(i) else { return };
+        let before = self.kb;
+        match self.kb.press(cap) {
+            Cap::Char(c) => self.type_bytes(&[c]),
+            Cap::Delete => self.typed_n = self.typed_n.saturating_sub(1),
+            Cap::Done => return self.field_done(),
+            Cap::Paste => self.show_notice("Clipboard empty"),
+            Cap::FromPc => {
+                self.want(super::weather_net::Ask::Clip);
+                self.show_notice("Asking your PC");
             }
-            SHOW => self.show_key = !self.show_key,
-            _ if self.typed_n < KEY_MAX => {
-                let c = if self.shift {
-                    b.to_ascii_uppercase()
-                } else {
-                    b
-                };
-                self.typed[self.typed_n] = c;
-                self.typed_n += 1;
-                if self.shift {
-                    self.shift = false;
-                    self.dirty(Rect::new(0, KEYS_Y, W, 4 * KEY_STEP_Y));
-                }
-            }
-            _ => self.show_notice("64 at most"),
+            Cap::Shift | Cap::Symbols => {}
         }
         self.typed[self.typed_n..].fill(0);
-        self.dirty(KEY_PANEL);
+        if before.shift != self.kb.shift || before.symbols != self.kb.symbols {
+            self.dirty(keyboard::PANEL);
+        }
+        self.field_changed();
         self.dirty(r);
     }
 
-    /// Done on the key-entry screen: the key kept (in RAM until the key
-    /// store exists, R125), the typed copy zeroed.
-    pub(crate) fn key_done(&mut self) {
+    /// Bytes into the field (printable ASCII, as many as fit).
+    pub(crate) fn type_bytes(&mut self, b: &[u8]) {
+        let max = if self.screen == Screen::KeyEntry { KEY_MAX } else { 40 };
+        for &c in b.iter().filter(|c| (0x20..0x7F).contains(*c)) {
+            if self.typed_n >= max {
+                self.show_notice(if max == KEY_MAX { "64 at most" } else { "40 at most" });
+                break;
+            }
+            self.typed[self.typed_n] = c;
+            self.typed_n += 1;
+        }
+    }
+
+    /// The field changed: redrawn, and on T2 the search waits for a pause.
+    pub(crate) fn field_changed(&mut self) {
+        self.dirty(FIELD);
+        if self.screen == Screen::KeyEntry {
+            self.dirty(Rect::new(0, KEY_HELP_Y, W, 76));
+        }
+        if self.screen == Screen::AddPlace {
+            self.search_at = (self.typed_n >= 2).then_some(self.now.wrapping_add(SEARCH_PAUSE_MS));
+            if self.typed_n < 2 {
+                self.n_found = 0;
+                self.find_status = "";
+                self.dirty(Rect::new(0, HERE.y + HERE.h, W, keyboard::PANEL.y - HERE.y - HERE.h));
+            }
+        }
+    }
+
+    /// Done (the keyboard's or the right softkey): T2 adds the first match
+    /// (or searches now), the key screen keeps the key.
+    pub(crate) fn field_done(&mut self) {
+        if self.screen == Screen::AddPlace {
+            if self.n_found > 0 {
+                return self.add_found(0);
+            }
+            if self.typed_n >= 2 {
+                self.search_at = Some(self.now);
+            }
+            return;
+        }
         match Secret::new(&self.typed[..self.typed_n]) {
             Some(k) => {
                 self.wset.tempest_key.clear();
                 self.wset.tempest_key = k;
+                self.wset.station = Station::Tempest;
                 self.forget_typed();
-                self.open(Screen::WeatherSettings);
+                self.settings_changed(true);
+                self.open(Screen::WeatherFrom);
                 self.show_notice("Key kept");
             }
             None if self.typed_n == 0 => {
                 self.wset.tempest_key.clear();
-                self.open(Screen::WeatherSettings);
+                self.wset.station = Station::None;
+                self.settings_changed(true);
+                self.open(Screen::WeatherFrom);
                 self.show_notice("Key forgotten");
             }
             None => self.show_notice("No spaces"),
+        }
+    }
+
+    /// The search, when typing has paused (called each frame).
+    pub(crate) fn search_due(&mut self) {
+        if let Some(at) = self.search_at
+            && self.now.wrapping_sub(at) < 1 << 31
+        {
+            self.search_at = None;
+            self.want(super::weather_net::Ask::Find);
+            self.find_status = "Searching";
+            self.dirty(Rect::new(0, HERE.y + HERE.h, W, keyboard::PANEL.y - HERE.y - HERE.h));
         }
     }
 
@@ -255,7 +458,7 @@ impl Shell {
         });
         f.push(Cmd::Fill {
             r: Rect::new(0, r.y + r.h - 1, W, 1),
-            color: super::GLASS_EDGE,
+            color: GLASS_EDGE,
         });
         self.back_arrow(f);
         f.text(72, r.y + 37, self.fonts.label, TEXT, title);
@@ -277,138 +480,263 @@ impl Shell {
         self.decorate(f, Target::Back);
     }
 
-    /// The settings screen.
-    pub(crate) fn settings_scene(&self, f: &mut Frame) {
-        self.sub_header(f, b"WEATHER SETTINGS");
-        let s = &self.wset;
-        let refresh = s.refresh_name();
-        let source = s.source.name();
-        let key = s.tempest_key.masked();
-        let units: &str = if s.metric { "Metric" } else { "US customary" };
-        let rows: [(&[u8], &[u8]); SETTINGS] = [
-            (b"REGION", s.region_info().name.as_bytes()),
-            (b"UNITS", units.as_bytes()),
-            (b"PLACE", s.place_name().as_bytes()),
-            (b"DATA SOURCE", source.as_bytes()),
-            (b"TEMPEST KEY", key.as_bytes()),
-            (b"REFRESH", refresh.as_bytes()),
-            (b"ICON PACK", b"VClouds"),
-            (b"RADAR MAP", s.radar.name().as_bytes()),
-        ];
-        for (i, (name, value)) in rows.iter().enumerate() {
-            self.setting_row(f, i as u8, name, value, true);
-        }
-    }
-
-    fn setting_row(&self, f: &mut Frame, i: u8, name: &[u8], value: &[u8], chevron: bool) {
+    /// The rows and their section labels.
+    fn rows_scene(&self, f: &mut Frame) {
         let (ui, label) = (self.fonts.ui, self.fonts.label);
-        let r = row(i);
-        Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
-        f.text(r.x + 14, r.y + 33, label, DIM, name);
-        let w = ui.width(value);
-        let right = r.x + r.w - if chevron { 34 } else { 14 };
-        f.text(right.saturating_sub(w), r.y + 34, ui, TEXT, value);
-        if chevron {
-            f.text(r.x + r.w - 24, r.y + 34, ui, DIM, b">");
-        }
-        self.decorate(f, Target::Row(i));
-    }
-
-    /// The places screen: the current one ticked.
-    pub(crate) fn places_scene(&self, f: &mut Frame) {
-        self.sub_header(f, b"PLACES");
-        for (i, p) in PLACES.iter().enumerate() {
-            let on = usize::from(self.wset.place) == i;
-            let r = row(i as u8);
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
-            f.text(r.x + 14, r.y + 34, self.fonts.ui, TEXT, p.as_bytes());
-            if on {
-                f.text(r.x + r.w - 110, r.y + 34, self.fonts.ui, FOCUS, b"Selected");
+        let (items, n) = self.items();
+        let mut last = None;
+        for k in 0..n {
+            let Some((it, r)) = self.item(k) else { continue };
+            let sec = self.section(it);
+            if sec.is_some() && sec != last {
+                let s = sec.unwrap_or(b"");
+                let w = label.width(s) + 12;
+                let lr = Rect::new(r.x - 2, r.y - LABEL_H - 2, w, LABEL_H);
+                Self::glass(f, lr, GLASS_LEFT, GLASS_RIGHT);
+                centre_in(f, lr, label, TEXT, s);
             }
-            self.decorate(f, Target::Row(i as u8));
+            last = sec;
+            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.row_body(f, items[usize::from(k)], r, (ui, label));
+            self.decorate(f, Target::Row(k));
         }
     }
 
-    /// The key-entry screen: what it's for, the field (masked unless
-    /// shown), the keyboard.
-    pub(crate) fn key_scene(&self, f: &mut Frame) {
-        let (ui, label) = (self.fonts.ui, self.fonts.label);
-        self.sub_header(f, b"TEMPEST KEY");
-        Self::glass(f, KEY_PANEL, GLASS_LEFT, GLASS_RIGHT);
-        f.text(28, 130, ui, TEXT, b"Your token from the Tempest web app");
-        f.push(Cmd::Fill {
-            r: FIELD,
-            color: rp_draw::look::theme(0xC000_0000),
-        });
+    /// One row's text.
+    fn row_body(&self, f: &mut Frame, it: Item, r: Rect, (ui, label): (&'static rp_draw::Font, &'static rp_draw::Font)) {
+        let s = &self.wset;
+        let base = r.y + (r.h + u16::from(ui.ascent) * 7 / 10) / 2;
+        let right = |f: &mut Frame, text: &[u8], color| {
+            let w = ui.width(text);
+            f.text((r.x + r.w - 30).saturating_sub(w), base, ui, color, text);
+        };
+        let chevron = |f: &mut Frame| f.text(r.x + r.w - 20, base, ui, DIM, b">");
+        match it {
+            Item::Place(i) => {
+                let p = s.places()[usize::from(i).min(s.places().len() - 1)];
+                let on = i == s.current;
+                if self.removing {
+                    f.text(r.x + 12, base, ui, FOCUS, b"x");
+                } else if on {
+                    f.text(r.x + 12, base, ui, FOCUS, b"*");
+                }
+                f.text(r.x + 36, base, ui, TEXT, p.name.as_bytes());
+                let note: &[u8] = if self.removing {
+                    b"tap to remove"
+                } else if on {
+                    b"showing now"
+                } else if i == s.home {
+                    b"home"
+                } else {
+                    p.area.as_bytes()
+                };
+                right(f, note, DIM);
+            }
+            Item::AllPlaces => {
+                f.text(r.x + 36, base, ui, TEXT, Line::new().push(b"All ").num(i32::from(s.n_places)).push(b" places").as_bytes());
+                chevron(f);
+            }
+            Item::AddPlace => {
+                f.text(r.x + 12, base, ui, FOCUS, b"+");
+                f.text(r.x + 36, base, ui, FOCUS, b"Add a place");
+                chevron(f);
+            }
+            Item::Forecast => {
+                f.text(r.x + 12, base, ui, TEXT, b"Forecast");
+                right(f, s.provider.short().as_bytes(), DIM);
+                chevron(f);
+            }
+            Item::Station => {
+                f.text(r.x + 12, base, ui, TEXT, b"Your station");
+                let v: &[u8] = match s.station {
+                    Station::Tempest if self.station_live => b"Tempest, live",
+                    Station::Tempest => b"Tempest",
+                    Station::None => b"None",
+                };
+                right(f, v, DIM);
+                chevron(f);
+            }
+            Item::Radar => {
+                f.text(r.x + 12, base, ui, TEXT, b"Radar map");
+                right(f, s.radar.name().as_bytes(), DIM);
+            }
+            Item::Updates => {
+                f.text(r.x + 12, base, ui, TEXT, b"Updates");
+                right(f, s.refresh_name().as_bytes(), DIM);
+            }
+            Item::Appearance => {
+                f.text(r.x + 12, base, ui, TEXT, b"Appearance");
+                // A three-way switch, the setting lit.
+                let mut x = r.x + r.w - 12 - 3 * 58;
+                for a in Appearance::ALL {
+                    let seg = Rect::new(x, r.y + 7, 58, r.h - 14);
+                    if a == s.appearance {
+                        f.push(Cmd::Fill { r: seg, color: FOCUS });
+                    }
+                    f.push(Cmd::Outline {
+                        r: seg,
+                        color: GLASS_EDGE,
+                    });
+                    let c = if a == s.appearance { keyboard::DONE_TEXT } else { DIM };
+                    centre_in(f, seg, label, c, a.name().as_bytes());
+                    x += 58;
+                }
+            }
+            Item::Units => {
+                f.text(r.x + 12, base, ui, TEXT, b"Units");
+                let u = s.units();
+                let t = Line::new()
+                    .push(s.region_info().name.as_bytes())
+                    .push(if u.temp == rp_weather::Temp::F { b": F, mph" } else { b": C" });
+                right(f, t.as_bytes(), DIM);
+            }
+            Item::Icons => {
+                f.text(r.x + 12, base, ui, TEXT, b"Icons");
+                right(f, b"VClouds", DIM);
+            }
+            Item::Provider(i) => {
+                let p = Provider::ALL[usize::from(i) % Provider::ALL.len()];
+                let on = p == s.provider;
+                if on {
+                    f.push(Cmd::Outline {
+                        r: Rect::new(r.x + 1, r.y + 1, r.w - 2, r.h - 2),
+                        color: FOCUS,
+                    });
+                }
+                f.text(r.x + 12, r.y + 22, ui, if on { FOCUS } else { DIM }, if on { b"(*)" } else { b"( )" });
+                f.text(r.x + 50, r.y + 22, ui, TEXT, p.name().as_bytes());
+                f.text(r.x + 50, r.y + 44, label, DIM, p.note().as_bytes());
+            }
+            Item::StationKind(i) => {
+                let (name, needs) = STATION_KINDS[usize::from(i) % STATION_KINDS.len()];
+                let tempest = i == 0;
+                let on = tempest && s.station == Station::Tempest;
+                f.text(r.x + 12, base, ui, FOCUS, if on { b"*" } else { b"+" });
+                f.text(r.x + 36, base, ui, if on { TEXT } else { FOCUS }, name.as_bytes());
+                let v: &[u8] = if on && self.station_live {
+                    b"live"
+                } else if on {
+                    b"connected"
+                } else {
+                    needs.as_bytes()
+                };
+                right(f, v, DIM);
+                if tempest {
+                    chevron(f);
+                }
+            }
+            Item::Here => {
+                f.text(r.x + 12, r.y + 21, ui, FOCUS, b"o");
+                f.text(r.x + 34, r.y + 21, ui, TEXT, b"Near your dock PC");
+                f.text(r.x + 34, r.y + 41, label, DIM, b"From the PC's own location service");
+            }
+            Item::Match(i) => {
+                if let Some(m) = self.found.get(usize::from(i)) {
+                    f.text(r.x + 12, base, ui, TEXT, m.name.as_bytes());
+                    right(f, m.area.as_bytes(), DIM);
+                }
+            }
+        }
+    }
+
+    /// T1, the places list, T3.
+    pub(crate) fn settings_scene(&self, f: &mut Frame) {
+        let title: &[u8] = match self.screen {
+            Screen::WeatherPlaces if self.removing => b"REMOVE A PLACE",
+            Screen::WeatherPlaces => b"PLACES",
+            Screen::WeatherFrom => b"WEATHER FROM",
+            _ => b"WEATHER SETTINGS",
+        };
+        self.sub_header(f, title);
+        self.rows_scene(f);
+        if self.screen == Screen::WeatherFrom {
+            let r = Rect::new(16, H - 40 - 34, 448, 28);
+            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            centre_in(f, r, self.fonts.label, TEXT, b"A station's readings replace the forecast's now");
+        }
+    }
+
+    /// The field: its text (masked on the key screen) and the caret.
+    fn field(&self, f: &mut Frame, masked: bool) {
+        let ui = self.fonts.ui;
+        Self::glass(f, FIELD, GLASS_LEFT, GLASS_RIGHT);
         f.push(Cmd::Outline {
             r: FIELD,
             color: FOCUS,
         });
         let typed = &self.typed[..self.typed_n];
-        let shown = if self.show_key {
-            Line::new().push(typed)
-        } else {
-            // Dots, then the last four as typed.
+        let shown = if masked {
+            // Dots, then the last four as typed (to check it).
             let n = typed.len();
             let mut l = Line::new();
-            for _ in 0..n.saturating_sub(4).min(24) {
+            for _ in 0..n.saturating_sub(4).min(30) {
                 l = l.push(b"*");
             }
             l.push(&typed[n.saturating_sub(4)..])
+        } else {
+            Line::new().push(typed)
         };
-        // The end of a long key stays in view.
         let text = shown.as_bytes();
         let mut start = 0;
-        while ui.width(&text[start..]) > FIELD.w - 40 {
+        while ui.width(&text[start..]) > FIELD.w - 30 {
             start += 1;
         }
-        f.text(FIELD.x + 14, FIELD.y + 40, ui, TEXT, &text[start..]);
-        let caret = FIELD.x + 16 + ui.width(&text[start..]);
+        let base = FIELD.y + (FIELD.h + u16::from(ui.ascent) * 7 / 10) / 2;
+        f.text(FIELD.x + 12, base, ui, TEXT, &text[start..]);
+        let caret = FIELD.x + 13 + ui.width(&text[start..]);
         f.push(Cmd::Fill {
-            r: Rect::new(caret, FIELD.y + 16, 2, 32),
+            r: Rect::new(caret, FIELD.y + 8, 2, FIELD.h - 16),
             color: FOCUS,
         });
-        let count = Line::new().num(self.typed_n as i32).push(b" characters");
-        f.text(28, FIELD.y + FIELD.h + 30, ui, DIM, count.as_bytes());
-        f.text(
-            28,
-            FIELD.y + FIELD.h + 58,
-            ui,
-            DIM,
-            b"Kept on this device only (in memory for now)",
+    }
+
+    /// The keyboard, its pressed key and focus.
+    fn keyboard_scene(&self, f: &mut Frame) {
+        let cap = |t: Option<Target>| match t {
+            Some(Target::Cap(i)) => Some(i),
+            _ => None,
+        };
+        self.kb.draw(
+            f,
+            (self.fonts.ui, self.fonts.label),
+            cap(self.pressed),
+            cap(self.focus),
+            FOCUS,
         );
-        for i in 0..CAPS {
-            let Some((b, r)) = cap(i) else { continue };
-            let t = Target::Cap(i);
-            let lit = (b == SHIFT && self.shift) || (b == SHOW && self.show_key);
-            f.push(Cmd::Fill {
-                r,
-                color: if self.pressed == Some(t) || lit {
-                    PRESSED_KEY
-                } else {
-                    super::BAR_RIGHT
-                },
-            });
-            let name: Option<&[u8]> = match b {
-                BKSP => Some(b"DEL"),
-                SHIFT => Some(b"ABC"),
-                SHOW if self.show_key => Some(b"HIDE KEY"),
-                SHOW => Some(b"SHOW KEY"),
-                _ => None,
-            };
-            let face = [if self.shift {
-                b.to_ascii_uppercase()
+    }
+
+    /// T2: the field, Near your dock PC, the matches, the keyboard.
+    pub(crate) fn add_place_scene(&self, f: &mut Frame) {
+        self.sub_header(f, b"ADD A PLACE");
+        self.field(f, false);
+        self.rows_scene(f);
+        if self.n_found == 0 {
+            let say: &[u8] = if self.find_status.is_empty() {
+                b"Cities and ZIP or postal codes, worldwide"
             } else {
-                b
-            }];
-            let (font, text) = match name {
-                Some(n) => (label, n),
-                None => (ui, &face[..]),
+                self.find_status.as_bytes()
             };
-            self.centred(f, r, r.y + 33, font, TEXT, text);
-            if self.focus == Some(t) {
-                f.push(Cmd::Outline { r, color: FOCUS });
-            }
+            let r = Rect::new(16, HERE.y + HERE.h + 8, 448, 30);
+            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            centre_in(f, r, self.fonts.label, TEXT, say);
         }
+        self.keyboard_scene(f);
+    }
+
+    /// The station key: what it is for, the field (masked), the keyboard.
+    pub(crate) fn key_scene(&self, f: &mut Frame) {
+        let label = self.fonts.label;
+        self.sub_header(f, b"TEMPEST KEY");
+        self.field(f, true);
+        let help = Rect::new(16, KEY_HELP_Y, 448, 76);
+        Self::glass(f, help, GLASS_LEFT, GLASS_RIGHT);
+        let count = Line::new().num(self.typed_n as i32).push(b" characters");
+        f.text(28, help.y + 22, label, TEXT, count.as_bytes());
+        f.text(28, help.y + 44, label, DIM, b"tempestwx.com, Settings, Data Authorizations");
+        f.text(28, help.y + 66, label, DIM, b"Kept on this device (in memory for now)");
+        self.keyboard_scene(f);
     }
 }
+
+/// The settings' keyboard key count (the targets list's).
+pub(crate) const CAPS: u8 = keyboard::CAPS;

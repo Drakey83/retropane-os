@@ -352,7 +352,8 @@ mod image {
     /// The dock's dev relay (R132, quality audit C95: dev-only, TLS at the
     /// PC while developing): the image brings up its own USB serial port
     /// (the loader switched USB off before starting it) and asks the PC's
-    /// `cargo xtask net` for the Tempest forecast. Off in the replay (on
+    /// `cargo xtask net` for the Weather app's questions (settings, place
+    /// search, forecasts, the station). Off in the replay (on
     /// with `RP_TODAY_REPLAY_NET`: the link checked unattended), or with
     /// `RP_TODAY_NO_NET`.
     const NET: bool = option_env!("RP_TODAY_NO_NET").is_none()
@@ -361,19 +362,38 @@ mod image {
     const USB_PULLUP: u8 = 2;
     /// The largest answer kept (a `better_forecast` is ~30-60 KB).
     const NET_BUF: usize = 256 * 1024;
-    /// The station's name (the shell holds `&'static str`).
-    static PLACE: rt::Slot<[u8; 40]> = rt::Slot::new();
 
-    /// The relay's request in flight: the port, whether it was asked, the
-    /// answer's header so far and its body's length and bytes received.
+    /// The longest a question waits for the relay's answer (a search or
+    /// a forecast through the PC is well under a second; a slow network
+    /// several).
+    const NET_TIMEOUT_MS: u64 = 20_000;
+
+    /// The relay link: the port, the question being sent (line and Save's
+    /// record) and how much of it went, whether an answer is awaited and
+    /// since when, the answer's header so far, its length and bytes in.
     struct Net {
         udc: Udc<Mmio>,
-        asked: bool,
+        out: [u8; 72 + rp_weather::store::LEN],
+        out_n: usize,
+        out_at: usize,
+        waiting: bool,
+        asked_ms: u64,
         header: [u8; 32],
         hn: usize,
         len: Option<usize>,
         got: usize,
-        done: bool,
+    }
+
+    impl Net {
+        /// Ready for the next question.
+        fn reset(&mut self) {
+            self.out_n = 0;
+            self.out_at = 0;
+            self.waiting = false;
+            self.hn = 0;
+            self.len = None;
+            self.got = 0;
+        }
     }
 
     /// Start of the clock, in local minutes since 1970 (from the build).
@@ -668,12 +688,15 @@ mod image {
                         );
                         net = Some(Net {
                             udc,
-                            asked: false,
+                            out: [0; 72 + rp_weather::store::LEN],
+                            out_n: 0,
+                            out_at: 0,
+                            waiting: false,
+                            asked_ms: 0,
                             header: [0; 32],
                             hn: 0,
                             len: None,
                             got: 0,
-                            done: false,
                         });
                     }
                     Err(e) => {
@@ -1169,23 +1192,42 @@ mod image {
                 rp_image::finish()
             }
 
-            // The dock's dev relay: the port polled each pass; the answer
-            // read into the RAM pool and given to the shell when whole.
-            if let Some(n) = net.as_mut().filter(|n| !n.done) {
+            // The dock's dev relay: the port polled each pass; the shell's
+            // next question sent when none is waiting, its answer read into
+            // the RAM pool and handed back whole (weather-settings-build.md
+            // "The dock link, version 2").
+            if let Some(n) = net.as_mut() {
                 n.udc.poll();
-                // Closed before an answer (another program had opened the
-                // port, `load` asking for the log say): asked again on the
-                // next open.
-                if n.asked && n.len.is_none() && n.hn == 0 && !n.udc.host_open() {
-                    n.asked = false;
+                // Closed before an answer (another program had the port,
+                // `load` reading the log say): asked again on the next open.
+                if n.waiting && !n.udc.host_open() {
+                    shell.net_retry();
+                    n.reset();
                 }
-                if !n.asked && n.udc.configured() && n.udc.host_open() {
-                    n.udc.write(b"RPNET TEMPEST\n");
-                    n.asked = true;
+                if !n.waiting
+                    && n.udc.configured()
+                    && n.udc.host_open()
+                    && let Some(q) = shell.next_ask()
+                {
+                    let line = q.line();
+                    n.out[..line.len()].copy_from_slice(line);
+                    n.out_n = line.len();
+                    if let Some(b) = q.body {
+                        n.out[n.out_n..n.out_n + b.len()].copy_from_slice(&b);
+                        n.out_n += b.len();
+                    }
+                    n.out_at = 0;
+                    n.waiting = true;
+                    n.asked_ms = now_ms;
                     let _ = writeln!(
                         RunLog,
-                        "net: asked the relay for the Tempest forecast at {now_ms} ms"
+                        "net: asked {:?} at {now_ms} ms",
+                        core::str::from_utf8(line).unwrap_or("?").trim_end()
                     );
+                }
+                // What is left of the question, as the port takes it.
+                if n.out_at < n.out_n {
+                    n.out_at += n.udc.write(&n.out[n.out_at..n.out_n]);
                 }
                 let mut chunk = [0u8; 64];
                 loop {
@@ -1193,9 +1235,9 @@ mod image {
                     if k == 0 {
                         break;
                     }
-                    // Nothing counts before the request (a loader command
+                    // Nothing counts before a question (a loader command
                     // from the PC on the same port, say).
-                    if !n.asked {
+                    if !n.waiting {
                         continue;
                     }
                     for &b in &chunk[..k] {
@@ -1212,7 +1254,8 @@ mod image {
                                         _ => {
                                             let _ =
                                                 writeln!(RunLog, "net: the relay answered {h:?}");
-                                            n.done = true;
+                                            shell.net_answer(false, &[]);
+                                            n.reset();
                                         }
                                     }
                                 } else if n.hn < n.header.len() {
@@ -1230,33 +1273,31 @@ mod image {
                 }
                 if let Some(l) = n.len
                     && n.got == l
-                    && !n.done
                 {
-                    n.done = true;
-                    let json = &net_buf[..l];
-                    let mut name = [0u8; 40];
-                    let k = rp_weather::tempest::place_name(json, &mut name);
-                    let place: &'static str = PLACE.put_with(|| name).map_or("Tempest", |p| {
-                        core::str::from_utf8(&p[..k]).unwrap_or("Tempest")
-                    });
-                    match rp_weather::tempest::from_tempest(json, shell.forecast(), place) {
-                        Some(f) => {
-                            shell.set_forecast(f);
-                            pages_check = true;
-                            app_check = true;
-                            let _ = writeln!(
-                                RunLog,
-                                "net: Tempest forecast for {place} ({l} bytes) applied at {now_ms} ms: now {} tenths C",
-                                f.now.temp
-                            );
-                        }
-                        None => {
-                            let _ = writeln!(
-                                RunLog,
-                                "net: {l} bytes from the relay weren't a forecast"
-                            );
-                        }
+                    let before = *shell.forecast();
+                    shell.net_answer(true, &net_buf[..l]);
+                    let after = shell.forecast();
+                    if *after != before {
+                        pages_check = true;
+                        app_check = true;
                     }
+                    let _ = writeln!(
+                        RunLog,
+                        "net: {l} bytes answered at {now_ms} ms ({} ms after asking){}",
+                        now_ms.wrapping_sub(n.asked_ms),
+                        if *after != before {
+                            ", the forecast changed"
+                        } else {
+                            ""
+                        }
+                    );
+                    n.reset();
+                }
+                // No answer in time: the shell decides what still matters.
+                if n.waiting && now_ms.wrapping_sub(n.asked_ms) > NET_TIMEOUT_MS {
+                    let _ = writeln!(RunLog, "net: no answer in {NET_TIMEOUT_MS} ms");
+                    shell.net_answer(false, &[]);
+                    n.reset();
                 }
             }
 
@@ -1757,7 +1798,7 @@ mod image {
             if !filter.down() && raw.is_none() && touch.pen_down() {
                 phantom = phantom.saturating_add(1);
             }
-            let net_busy = net.as_ref().is_some_and(|n| !n.done);
+            let net_busy = net.as_ref().is_some_and(|n| n.waiting);
             let wait_ms: u32 =
                 if showing.is_some() || gfx.busy() || gfx.commit_pending() || net_busy {
                     // A frame is with the engine or waiting for the blanking:

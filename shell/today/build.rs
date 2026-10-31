@@ -107,7 +107,16 @@ pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = [];
     } else {
         looked(&data)
     };
-    std::fs::write(Path::new(&out).join("icons.rs"), data).expect("OUT_DIR writable");
+    // Packed as the wallpaper is (Paeth, then zlib), not as runs: a 3D
+    // picture has few runs (the hero's was 140 KB as runs, 2026-10-31).
+    let (rs, packed) = pack_icons(&data);
+    println!(
+        "cargo:warning=pictures packed {} -> {} bytes",
+        icon_words(&data) * 4,
+        packed.len()
+    );
+    std::fs::write(Path::new(&out).join("icons.zz"), packed).expect("OUT_DIR writable");
+    std::fs::write(Path::new(&out).join("icons.rs"), rs).expect("OUT_DIR writable");
 
     // Rebuilt each time, so the clock starts near the real time.
     println!("cargo:rerun-if-changed=build.rs");
@@ -247,6 +256,103 @@ fn sky() -> Vec<u8> {
         v.extend(std::iter::repeat_n((118 + t * 30 / 255) as u8, W / 2));
     }
     [y, u, v].concat()
+}
+
+/// The pictures' words unpacked (the generator's `WORDS`).
+fn icon_words(text: &str) -> usize {
+    text.lines()
+        .find_map(|l| l.strip_prefix("pub const WORDS: usize = "))
+        .and_then(|v| v.trim_end_matches(';').trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// The generator's run-length pictures (`P<n>` arrays of words: a head
+/// `skip << 16 | count`, then `count` ARGB pixels) and their list, as one
+/// zlib stream of every picture in order, each pixel's bytes B, G, R, A
+/// (the ARGB word in memory on the X51v) Paeth-filtered per channel
+/// against its neighbours (PNG's filter at 4 bytes a pixel); and the
+/// module `rp_today::icon_data` includes (the list, `WORDS`, the stream).
+fn pack_icons(text: &str) -> (String, Vec<u8>) {
+    let ints = |s: &str| -> Vec<u32> {
+        s.split(',')
+            .filter_map(|v| {
+                let v = v.trim();
+                if let Some(h) = v.strip_prefix("0x") {
+                    u32::from_str_radix(h, 16).ok()
+                } else {
+                    v.parse().ok()
+                }
+            })
+            .collect()
+    };
+    let arrays: std::collections::HashMap<String, Vec<u32>> = text
+        .lines()
+        .filter_map(|l| {
+            let l = l.strip_prefix("static P")?;
+            let (name, rest) = l.split_once(':')?;
+            let body = rest.split_once('[')?.1.split_once('[')?.1;
+            Some((format!("P{name}"), ints(body.trim_end_matches("];"))))
+        })
+        .collect();
+    let list = text
+        .lines()
+        .find_map(|l| l.strip_prefix("pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = ["))
+        .unwrap_or("];");
+    let mut desc = Vec::new();
+    let mut stream = Vec::new();
+    for t in list.trim_end_matches("];").split("),").filter(|t| t.contains('&')) {
+        let f: Vec<&str> = t.trim_start_matches([' ', '(']).split(',').map(str::trim).collect();
+        let (kind, id, w, h) = (f[0], f[1], f[2].parse::<usize>().unwrap(), f[3].parse::<usize>().unwrap());
+        let runs = &arrays[f[4].trim_start_matches('&').trim_end_matches(')')];
+        let mut px = vec![0u32; w * h];
+        let (mut at, mut i) = (0usize, 0usize);
+        while let Some(&head) = runs.get(i) {
+            i += 1;
+            at += (head >> 16) as usize;
+            for _ in 0..(head & 0xFFFF) {
+                px[at] = runs[i];
+                i += 1;
+                at += 1;
+            }
+        }
+        let bytes: Vec<u8> = px.iter().flat_map(|p| p.to_le_bytes()).collect();
+        stream.extend(paeth4(&bytes, w, h));
+        desc.push(format!("({kind}, {id}, {w}, {h})"));
+    }
+    let rs = format!(
+        "pub const COUNT: usize = {n};
+pub const WORDS: usize = {words};
+pub static DESC: [(u8, u8, u16, u16); COUNT] = [{d}];
+pub static PACKED: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/icons.zz\"));
+",
+        n = desc.len(),
+        words = stream.len() / 4,
+        d = desc.join(", ")
+    );
+    let packed = if stream.is_empty() {
+        Vec::new()
+    } else {
+        rp_inflate::pack::zlib(&stream)
+    };
+    (rs, packed)
+}
+
+/// PNG's Paeth filter at 4 bytes a pixel (each channel against the same
+/// channel left, up and up-left): what `rp_today::unpaeth4` undoes.
+fn paeth4(px: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let stride = w * 4;
+    let at = |i: isize| if i < 0 { 0 } else { px[i as usize] };
+    let mut f = vec![0u8; px.len()];
+    for y in 0..h {
+        for x in 0..stride {
+            let i = (y * stride + x) as isize;
+            let a = if x >= 4 { at(i - 4) } else { 0 };
+            let b = if y > 0 { at(i - stride as isize) } else { 0 };
+            let c = if x >= 4 && y > 0 { at(i - stride as isize - 4) } else { 0 };
+            f[i as usize] = px[i as usize].wrapping_sub(rp_inflate::paeth(a, b, c));
+        }
+    }
+    f
 }
 
 /// `text` with every `0xAARRGGBB` pixel (the generator's only hex: ten

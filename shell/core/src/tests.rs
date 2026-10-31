@@ -1,6 +1,7 @@
 use rp_draw::{Glyph, MAX_CMDS};
 
 use super::*;
+use super::weather_settings::Item;
 
 static G: Glyph = Glyph {
     w: 1,
@@ -944,21 +945,27 @@ fn a_swipe_moves_the_underline_as_it_goes_and_turns_the_page_on_lift() {
 }
 
 #[test]
-fn back_goes_up_a_screen_by_softkey_header_or_home() {
-    let mut s = weather(1);
-    // The left softkey and the header's control both go back.
-    tap(&mut s, SOFT_LEFT);
-    assert_eq!(s.screen(), Screen::Today);
+fn back_goes_up_a_screen_by_header_softkey_or_home() {
+    // The Weather app: the header's control goes back; the left softkey
+    // refreshes (T4).
     let mut s = weather(1);
     tap(&mut s, weather_settings::BACK);
     assert_eq!(s.screen(), Screen::Today);
-    // Settings, then a place, then back up one at a time.
+    let mut s = weather(1);
+    tap(&mut s, SOFT_LEFT);
+    assert_eq!(s.screen(), Screen::Weather);
+    assert!(s.wants(Ask::Forecast));
+    // Menu, then Add a place, then back up one at a time.
     let mut s = weather(0);
     tap(&mut s, SOFT_RIGHT);
     assert_eq!(s.screen(), Screen::WeatherSettings);
-    tap_t(&mut s, Target::Row(2));
-    assert_eq!(s.screen(), Screen::WeatherPlaces);
+    tap_item(&mut s, Item::AddPlace);
+    assert_eq!(s.screen(), Screen::AddPlace);
     tap(&mut s, weather_settings::BACK);
+    assert_eq!(s.screen(), Screen::WeatherSettings);
+    tap_item(&mut s, Item::Forecast);
+    assert_eq!(s.screen(), Screen::WeatherFrom);
+    tap(&mut s, SOFT_LEFT);
     assert_eq!(s.screen(), Screen::WeatherSettings);
     tap(&mut s, SOFT_LEFT);
     assert_eq!(s.screen(), Screen::Weather);
@@ -968,46 +975,88 @@ fn back_goes_up_a_screen_by_softkey_header_or_home() {
     assert_eq!(s.screen(), Screen::Today);
 }
 
-#[test]
-fn settings_rows_change_what_every_screen_shows() {
-    let mut s = weather(0);
-    tap(&mut s, SOFT_RIGHT);
-    // Units: US customary to Metric, every number redrawn.
-    drawn(&mut s);
-    tap_t(&mut s, Target::Row(1));
-    assert_eq!(s.region.temp, rp_weather::Temp::C);
-    assert!(drawn(&mut s).dirty().contains(&Rect::new(0, 0, W, H)));
-    // A place: picked from the list, named in the app's header.
-    tap_t(&mut s, Target::Row(2));
-    tap_t(&mut s, Target::Row(6));
-    assert_eq!(s.wx.place, "Oslo");
-    assert_eq!(s.screen(), Screen::WeatherSettings);
-    // The source: kept, the sample still shown and saying so.
-    tap_t(&mut s, Target::Row(3));
-    assert_eq!(s.wset.source, rp_weather::settings::Source::OpenMeteo);
-    assert_eq!(s.wx.source, "Sample (no network yet)");
-    // Region: the next one brings its own units.
-    tap_t(&mut s, Target::Row(0));
-    assert_eq!(s.wset.region_info().name, "Canada");
-    assert!(s.wset.metric);
-    tap(&mut s, SOFT_LEFT);
-    assert!(texts(&drawn(&mut s)).contains(&b"OSLO".to_vec()));
-}
-
 /// Taps target `t`.
 fn tap_t(s: &mut Shell, t: Target) -> Action {
     let r = s.rect_of(t);
     tap(s, r)
 }
 
-/// Taps the keys for `text` on the key-entry screen (shift before a
-/// capital).
-fn type_keys(s: &mut Shell, text: &[u8]) {
-    for &c in text {
-        let i = weather_settings::cap_of(c).expect("a key for every character");
-        if c.is_ascii_uppercase() {
-            tap_t(s, Target::Cap(weather_settings::cap_of(0x0E).unwrap_or(0)));
+/// Taps the first row that is `it`.
+fn tap_item(s: &mut Shell, it: Item) -> Action {
+    let t = row_of(s, it);
+    tap_t(s, t)
+}
+
+/// The target of the first row that is `it` on the screen up.
+fn row_of(s: &Shell, it: Item) -> Target {
+    let (items, n) = s.items();
+    let k = items[..usize::from(n)]
+        .iter()
+        .position(|i| *i == it)
+        .unwrap_or_else(|| panic!("{it:?} not on {:?}", s.screen()));
+    Target::Row(k as u8)
+}
+
+#[test]
+fn settings_rows_change_what_every_screen_shows_and_are_kept() {
+    let mut s = weather(0);
+    tap(&mut s, SOFT_RIGHT);
+    drawn(&mut s);
+    // Units: the next region and its units, every number redrawn, kept.
+    tap_item(&mut s, Item::Units);
+    assert_eq!(s.wset.region_info().name, "Canada");
+    assert_eq!(s.region.temp, rp_weather::Temp::C);
+    assert!(drawn(&mut s).dirty().contains(&Rect::new(0, 0, W, H)));
+    assert!(s.wants(Ask::Save));
+    // Appearance: Auto, Light, Dark.
+    tap_item(&mut s, Item::Appearance);
+    assert_eq!(s.wset.appearance, rp_weather::settings::Appearance::Light);
+    // The provider: picked on T3, the forecast asked for again.
+    tap_item(&mut s, Item::Forecast);
+    tap_item(&mut s, Item::Provider(2));
+    assert_eq!(s.wset.provider, rp_weather::settings::Provider::MetNo);
+    assert!(s.wants(Ask::Forecast));
+    // The save carries all of it, never the key.
+    let mut q = None;
+    while let Some(next) = s.next_ask() {
+        let a = next.ask;
+        if a == Ask::Save {
+            q = Some(next);
+            break;
         }
+        s.net_answer(false, b"");
+    }
+    let q = q.expect("a save");
+    assert_eq!(q.line(), b"RPNET SAVE 760\n");
+    let back = rp_weather::store::decode(&q.body.expect("the record"), rp_weather::settings::Secret::NONE);
+    assert_eq!(back.provider, rp_weather::settings::Provider::MetNo);
+    assert_eq!(back.region, 1);
+}
+
+/// Taps the keys for `text` (Shift before a capital; the symbols layer
+/// for what only it has).
+fn type_keys(s: &mut Shell, text: &[u8]) {
+    let find = |s: &Shell, cap: keyboard::Cap| {
+        (0..keyboard::CAPS)
+            .find(|&i| s.kb.cap(i).is_some_and(|(c, _)| c == cap))
+            .expect("the key")
+    };
+    for &c in text {
+        let low = c.to_ascii_lowercase();
+        if s.kb.cap_of(low).is_none() && s.kb.cap_of(c).is_none() {
+            let sym = find(s, keyboard::Cap::Symbols);
+            tap_t(s, Target::Cap(sym));
+            let i = s.kb.cap_of(c).expect("a key for every character");
+            tap_t(s, Target::Cap(i));
+            let sym = find(s, keyboard::Cap::Symbols);
+            tap_t(s, Target::Cap(sym));
+            continue;
+        }
+        if c.is_ascii_uppercase() {
+            let shift = find(s, keyboard::Cap::Shift);
+            tap_t(s, Target::Cap(shift));
+        }
+        let i = s.kb.cap_of(c).expect("a key for every character");
         tap_t(s, Target::Cap(i));
     }
 }
@@ -1017,7 +1066,8 @@ fn the_tempest_key_is_typed_masked_kept_and_never_drawn_in_full() {
     let key = b"0a1B2c3d-4e5f-6789-abcd-ef0123456789";
     let mut s = weather(0);
     tap(&mut s, SOFT_RIGHT);
-    tap_t(&mut s, Target::Row(4));
+    tap_item(&mut s, Item::Station);
+    tap_item(&mut s, Item::StationKind(0));
     assert_eq!(s.screen(), Screen::KeyEntry);
     type_keys(&mut s, key);
     assert_eq!(&s.typed[..s.typed_n], key);
@@ -1029,20 +1079,20 @@ fn the_tempest_key_is_typed_masked_kept_and_never_drawn_in_full() {
             .all(|t| !t.windows(8).any(|w| key.windows(8).any(|k| k == w)))
     );
     assert!(shown.iter().any(|t| t.ends_with(b"6789")));
-    // Done keeps it and zeroes the typed copy.
+    // Done keeps it, connects the station and zeroes the typed copy.
     tap(&mut s, SOFT_RIGHT);
-    assert_eq!(s.screen(), Screen::WeatherSettings);
+    assert_eq!(s.screen(), Screen::WeatherFrom);
     assert_eq!(s.wset.tempest_key.expose(), key);
+    assert_eq!(s.wset.station, rp_weather::settings::Station::Tempest);
     assert!(s.typed.iter().all(|&b| b == 0) && s.typed_n == 0);
-    assert!(texts(&drawn(&mut s)).contains(&b"**** 6789".to_vec()));
     // Typed again and cancelled: the kept key stays, the typed one goes.
-    tap_t(&mut s, Target::Row(4));
+    tap_item(&mut s, Item::StationKind(0));
     type_keys(&mut s, b"abc");
     tap(&mut s, SOFT_LEFT);
     assert_eq!(s.wset.tempest_key.expose(), key);
     assert!(s.typed.iter().all(|&b| b == 0));
     // Home half way through forgets it too.
-    tap_t(&mut s, Target::Row(4));
+    tap_item(&mut s, Item::StationKind(0));
     type_keys(&mut s, b"xyz");
     s.input(Input::Key(Key::Home));
     assert!(s.typed.iter().all(|&b| b == 0) && s.typed_n == 0);
@@ -1050,19 +1100,25 @@ fn the_tempest_key_is_typed_masked_kept_and_never_drawn_in_full() {
 
 #[test]
 fn every_new_screen_fits_a_frame_and_the_d_pad_reaches_its_targets() {
-    for (row, screen) in [
-        (None, Screen::WeatherSettings),
-        (Some(2), Screen::WeatherPlaces),
-        (Some(4), Screen::KeyEntry),
+    for screen in [
+        Screen::WeatherSettings,
+        Screen::WeatherPlaces,
+        Screen::AddPlace,
+        Screen::WeatherFrom,
+        Screen::KeyEntry,
     ] {
         let mut s = weather(0);
         tap(&mut s, SOFT_RIGHT);
-        if let Some(r) = row {
-            tap_t(&mut s, Target::Row(r));
-        }
+        s.open(screen);
         assert_eq!(s.screen(), screen);
         let f = drawn(&mut s);
         assert!(!f.overflowed(), "{screen:?}: {}", f.cmds().count());
+        // Every row on the screen, above the keyboard and the softkeys.
+        for k in 0..s.rows() {
+            let r = s.rect_of(Target::Row(k));
+            let floor = if s.has_keyboard() { keyboard::PANEL.y } else { H - 40 };
+            assert!(r.h > 0 && r.y + r.h <= floor, "{screen:?} row {k}: {r:?}");
+        }
         // The D-pad walks from Start to every row or key and back.
         s.input(Input::Key(Key::Enter));
         let mut seen = std::vec::Vec::new();
@@ -1076,6 +1132,92 @@ fn every_new_screen_fits_a_frame_and_the_d_pad_reaches_its_targets() {
             "{screen:?}: {seen:?}"
         );
     }
+}
+
+/// The recorded answers (shell/weather/tests/data).
+const SEATTLE_JSON: &[u8] = include_bytes!("../../weather/tests/data/open-meteo-seattle.json");
+const PERRYVILLE_JSON: &[u8] =
+    include_bytes!("../../weather/tests/data/open-meteo-find-perryville.json");
+
+#[test]
+fn the_dock_flow_loads_fetches_searches_adds_and_refreshes() {
+    let mut s = weather(0);
+    // At start: the stored settings; none (no dock answer) gives the
+    // default place's forecast, from Open-Meteo, by position only.
+    let q = s.next_ask().expect("load");
+    assert_eq!(q.line(), b"RPNET LOAD\n");
+    assert!(s.next_ask().is_none(), "one question at a time");
+    s.net_answer(false, b"");
+    let q = s.next_ask().expect("the forecast");
+    assert_eq!(q.line(), b"RPNET OPENMETEO 47.606 -122.332\n");
+    s.net_answer(true, SEATTLE_JSON);
+    assert_eq!((s.wx.now.temp, s.wx.source), (32, "Open-Meteo"));
+    assert_eq!(s.data_age().as_bytes(), b"Open-Meteo, just now");
+    s.tick(s.now + 5 * 60_000);
+    assert_eq!(s.data_age().as_bytes(), b"Open-Meteo, 5 min ago");
+    // Add a place: typed, searched once typing pauses, a match tapped.
+    tap(&mut s, SOFT_RIGHT);
+    tap_item(&mut s, Item::AddPlace);
+    type_keys(&mut s, b"Perryv");
+    assert!(!s.wants(Ask::Find), "not while typing");
+    let now = s.now;
+    s.tick(now + weather_settings::SEARCH_PAUSE_MS + 1);
+    while let Some(q) = s.next_ask() {
+        if q.ask == Ask::Find {
+            assert_eq!(q.line(), b"RPNET FIND Perryv\n");
+            s.net_answer(true, PERRYVILLE_JSON);
+            break;
+        }
+        s.net_answer(true, b"");
+    }
+    assert!(s.n_found >= 3);
+    assert!(texts(&drawn(&mut s)).contains(&b"Missouri, US".to_vec()));
+    tap_item(&mut s, Item::Match(0));
+    assert_eq!(s.screen(), Screen::WeatherSettings);
+    assert_eq!((s.wset.n_places, s.wset.place().name.as_str()), (2, "Perryville"));
+    assert_eq!(s.wx.place.as_str(), "Perryville");
+    let mut fetched = false;
+    while let Some(q) = s.next_ask() {
+        if q.ask == Ask::Forecast {
+            assert_eq!(q.line(), b"RPNET OPENMETEO 37.724 -89.861\n");
+            fetched = true;
+        }
+        s.net_answer(false, b"");
+    }
+    assert!(fetched);
+    // A hostile search answer finds nothing and says so.
+    s.open(Screen::AddPlace);
+    type_keys(&mut s, b"zz");
+    s.tick(s.now + 1000);
+    while let Some(q) = s.next_ask() {
+        let a = q.ask;
+        s.net_answer(true, if a == Ask::Find { b"\xff{\"results\":[{" } else { b"" });
+    }
+    assert_eq!((s.n_found, s.find_status), (0, "Nothing found"));
+}
+
+#[test]
+fn a_pull_past_the_top_refreshes_and_a_scroll_does_not() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    // A scroll up the page: no refresh.
+    s.input(Input::PenDown { x: 240, y: 500 });
+    for y in (300..500).rev().step_by(20) {
+        s.input(Input::PenMove { x: 240, y });
+    }
+    s.input(Input::PenUp { x: 240, y: 300 });
+    assert!(!s.wants(Ask::Forecast));
+    s.settle();
+    s.scroll.set(0);
+    // Pulled down from the top well past the rebound: refresh.
+    s.input(Input::PenDown { x: 240, y: 200 });
+    for y in (200..440).step_by(20) {
+        s.input(Input::PenMove { x: 240, y });
+    }
+    s.input(Input::PenUp { x: 240, y: 440 });
+    assert!(s.wants(Ask::Forecast));
 }
 
 static PX: [u32; 4] = [0xFFFF_FFFF; 4];

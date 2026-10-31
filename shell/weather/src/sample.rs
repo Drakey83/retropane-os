@@ -47,7 +47,7 @@ const fn day(weekday: u8, high: i32, low: i32, wmo: u8, cover: u8, precip: u8) -
 #[must_use]
 pub const fn sample() -> Forecast {
     Forecast {
-        place: "Seattle",
+        place: crate::Name::new("Seattle"),
         source: "Sample data",
         sun: (7 * 60 + 52, 18 * 60 + 2),
         now: Now {

@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+rp-hal-mem = { path = "../../hal/mem" }
 rp-draw = { path = "../../drivers/draw" }
 rp-shell = { path = "../core" }
 rp-weather = { path = "../weather" }
@@ -37,7 +38,6 @@ rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }
-rp-hal-mem = { path = "../../hal/mem" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }

@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+rp-weather = { path = "../shell/weather" }
 serde_json = "1"
 rp-drv-mbx-display = { path = "../drivers/mbx-display" }
 rp-drv-mbx3d = { path = "../drivers/mbx3d" }

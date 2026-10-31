@@ -575,13 +575,10 @@ impl Shell {
             color: super::GLASS_EDGE,
         });
         self.back_arrow(f);
-        let place = super::upper(wx.place);
+        let place = super::upper(wx.place.as_str());
         f.text(72, HEAD.y + 25, label, TEXT, place.as_bytes());
-        let read = Line::new().push(wx.source.as_bytes()).push(b", ").push(
-            self.region
-                .time(self.time.hour, self.time.minute, true)
-                .as_bytes(),
-        );
+        // Where from and how old (T4's "updated 12 min ago").
+        let read = self.data_age();
         f.text(72, HEAD.y + 49, ui, DIM, read.as_bytes());
         let now = self.region.temp(wx.now.temp);
         let w = ui.width(now.as_bytes());

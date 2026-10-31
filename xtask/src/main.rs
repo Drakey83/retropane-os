@@ -398,7 +398,7 @@ fn main() -> ExitCode {
             usb::run()
         }
         "net" => {
-            eprintln!("==> net (the dock's dev relay: Tempest through the PC)");
+            eprintln!("==> net (the dock's dev relay: settings, place search, forecasts, Tempest)");
             usb::net(&workspace_root(), flag == "--canned")
         }
         "adr-index" => adrs::write(&workspace_root()),

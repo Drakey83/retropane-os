@@ -1203,6 +1203,7 @@ dependencies = [
  "rp-shell",
  "rp-today",
  "rp-usb-mtp",
+ "rp-weather",
  "serde_json",
 ]
 

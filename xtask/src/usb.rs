@@ -1774,19 +1774,24 @@ mod format_tests {
 /// `cargo xtask net`: the dock's **dev-only** relay (R132, quality audit C95;
 /// the owner's ruling 2026-10-31: TLS at the PC while developing, on the
 /// device before anything is live). While a RetroPane image runs with its
-/// USB serial port up, it answers the image's `RPNET TEMPEST` line with
-/// Tempest's `better_forecast` (metric) for the first station of the key in
-/// `local/tempest-key.txt` (never committed; the key never crosses USB), as
-/// `RPNET <status> <length>` then the JSON. It ends when the port goes (the
-/// image back at the loader). Prints what it fetched, never the key.
+/// USB serial port up, it answers the image's questions
+/// (docs/design/weather-settings-build.md "The dock link, version 2"):
+/// `LOAD` / `SAVE` the Weather settings (`local/weather-settings.bin`, never
+/// the key), `FIND` a place (Open-Meteo's geocoder), `HERE` (Windows'
+/// location, named by Nominatim), `CLIP` (the clipboard's first line),
+/// `OPENMETEO` / `METNO` forecasts for a position, `TEMPEST` (the key in
+/// `local/tempest-key.txt`, never committed, never over USB). Each is a
+/// fixed URL; the device's arguments are checked (a place name's
+/// characters, positions in range). Answers are `RPNET <status> <length>`
+/// then the body. `--canned` answers from the recorded samples. It ends
+/// when the port goes. Prints what it did, never the key.
 pub fn net(root: &std::path::Path, canned: bool) -> Result<(), String> {
+    // The Tempest key (optional: without it Tempest questions are
+    // refused), the settings kept between runs, the recorded answers
+    // `--canned` gives.
     let key = root.join("local").join("tempest-key.txt");
-    if !canned && !key.exists() {
-        return Err(format!(
-            "net: put the Tempest key in {} (one line; local/ is never committed)",
-            key.display()
-        ));
-    }
+    let store = root.join("local").join("weather-settings.bin");
+    let data = root.join("shell").join("weather").join("tests").join("data");
     // The image's own port: its serial-only entry (no `MI_` interface in
     // the device id, unlike the loader's composite one), present now. The
     // first entry with the id was the loader's stale COM4 once (2026-10-31).
@@ -1800,38 +1805,135 @@ $sp.ReadTimeout = 500
 $sp.NewLine = "`n"
 Open-Port
 $canned = {canned}
-$key = if ($canned) {{ '' }} else {{ (Get-Content -Raw '{key}').Trim() }}
+$keyFile = '{key}'
+$store = '{store}'
+$data = '{data}'
+$ua = 'RetroPaneOS-dev/0.1 (github.com/Drakey83/retropane-os)'
 "RELAY on $port"
 function Send-Bytes($b) {{ $sp.Write($b, 0, $b.Length) }}
+function Answer($b) {{
+    Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 200 $($b.Length)`n"))
+    if ($b.Length -gt 0) {{ Send-Bytes $b }}
+}}
+function Refuse($code, $why) {{
+    "REFUSED $code $why"
+    Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET $code 0`n"))
+}}
+function Fetch($url) {{
+    $r = Invoke-WebRequest -UseBasicParsing -UserAgent $ua $url
+    [Text.Encoding]::UTF8.GetBytes($r.Content)
+}}
+# A position the device sent: a number in range, three decimals at most.
+function Degrees($v, $max) {{
+    if ($v -notmatch '^-?\d{{1,3}}(\.\d{{1,3}})?$') {{ return $null }}
+    $d = [double]::Parse($v, [Globalization.CultureInfo]::InvariantCulture)
+    if ([math]::Abs($d) -gt $max) {{ return $null }}
+    $v
+}}
 while ($true) {{
     try {{ $line = $sp.ReadLine().Trim() }}
     catch [System.TimeoutException] {{ continue }}
     catch {{ 'PORT GONE'; break }}
-    if ($line -ne 'RPNET TEMPEST') {{ continue }}
-    if ($canned) {{
-        # A fixed forecast in Tempest's shape: the link checked without a key.
-        $b = [Text.Encoding]::UTF8.GetBytes('{CANNED}')
-        "CANNED $($b.Length) bytes"
-        Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 200 $($b.Length)`n"))
-        Send-Bytes $b
-        continue
-    }}
+    $w = $line.Split(' ')
+    if ($w[0] -ne 'RPNET') {{ continue }}
+    "ASKED $($w[1])"
     try {{
-        $st = Invoke-RestMethod "https://swd.weatherflow.com/swd/rest/stations?token=$key"
-        $sid = $st.stations[0].station_id
-        $r = Invoke-WebRequest -UseBasicParsing "https://swd.weatherflow.com/swd/rest/better_forecast?station_id=$sid&token=$key&units_temp=c&units_wind=kph&units_pressure=mb&units_precip=mm&units_distance=km"
-        $b = [Text.Encoding]::UTF8.GetBytes($r.Content)
-        "FORECAST station $sid ($($st.stations[0].name)): $($b.Length) bytes"
-        Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 200 $($b.Length)`n"))
-        Send-Bytes $b
+        switch ($w[1]) {{
+            'LOAD' {{
+                if (Test-Path $store) {{ $b = [IO.File]::ReadAllBytes($store); "SETTINGS $($b.Length) bytes"; Answer $b }}
+                else {{ Refuse 404 'no settings kept yet' }}
+            }}
+            'SAVE' {{
+                $n = [int]$w[2]
+                if ($n -ne {store_len}) {{ Refuse 400 "a record of $n bytes"; continue }}
+                $b = New-Object byte[] $n
+                $got = 0
+                $sp.ReadTimeout = 3000
+                while ($got -lt $n) {{ $got += $sp.Read($b, $got, $n - $got) }}
+                $sp.ReadTimeout = 500
+                [IO.File]::WriteAllBytes($store, $b)
+                "SAVED $n bytes"
+                Answer @()
+            }}
+            'FIND' {{
+                $q = $line.Substring(11)
+                if ($q -notmatch "^[A-Za-z0-9 ,.'-]{{2,40}}$") {{ Refuse 400 'not a place name'; continue }}
+                if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\open-meteo-find-perryville.json")); continue }}
+                $b = Fetch "https://geocoding-api.open-meteo.com/v1/search?name=$([uri]::EscapeDataString($q))&count=8&language=en&format=json"
+                "FOUND for '$q': $($b.Length) bytes"
+                Answer $b
+            }}
+            'HERE' {{
+                # The PC's own location service (Windows), named by
+                # OpenStreetMap's Nominatim: no IP-location company.
+                Add-Type -AssemblyName System.Device
+                $gw = New-Object System.Device.Location.GeoCoordinateWatcher
+                $null = $gw.TryStart($false, [TimeSpan]::FromSeconds(10))
+                $c = $gw.Position.Location
+                $gw.Stop()
+                if ($c.IsUnknown) {{ Refuse 503 'Windows location is off or unknown'; continue }}
+                $lat = [math]::Round($c.Latitude, 3); $lon = [math]::Round($c.Longitude, 3)
+                $inv = [Globalization.CultureInfo]::InvariantCulture
+                $r = Invoke-RestMethod -UserAgent $ua ("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&lat=" + $lat.ToString($inv) + "&lon=" + $lon.ToString($inv))
+                $a = $r.address
+                $name = @($a.city, $a.town, $a.village, $a.county) | Where-Object {{ $_ }} | Select-Object -First 1
+                $o = @{{ results = @(@{{ name = $name; admin1 = $a.state; country_code = $a.country_code.ToUpper(); latitude = $lat; longitude = $lon }}) }}
+                $b = [Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Depth 4 -Compress))
+                "HERE $name (to the nearest km)"
+                Answer $b
+            }}
+            'CLIP' {{
+                $t = (Get-Clipboard -Raw) -replace '[^\x20-\x7E\n]', ''
+                $t = ($t -split "`n")[0].Trim()
+                if ($t.Length -eq 0 -or $t.Length -gt 128) {{ Refuse 404 'nothing usable on the clipboard'; continue }}
+                "CLIPBOARD $($t.Length) characters"
+                Answer ([Text.Encoding]::ASCII.GetBytes($t))
+            }}
+            'OPENMETEO' {{
+                $lat = Degrees $w[2] 90; $lon = Degrees $w[3] 180
+                if (-not $lat -or -not $lon) {{ Refuse 400 'not a position'; continue }}
+                if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\open-meteo-seattle.json")); continue }}
+                $b = Fetch "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,is_day,cloud_cover,wind_speed_10m,wind_direction_10m,uv_index&hourly=temperature_2m,weather_code,precipitation_probability,is_day,cloud_cover,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset&forecast_days=10&forecast_hours=24&timezone=auto&timeformat=unixtime"
+                "FORECAST Open-Meteo: $($b.Length) bytes"
+                Answer $b
+            }}
+            'METNO' {{
+                $lat = Degrees $w[2] 90; $lon = Degrees $w[3] 180
+                if (-not $lat -or -not $lon) {{ Refuse 400 'not a position'; continue }}
+                $b = Fetch "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=$lat&lon=$lon"
+                "FORECAST MET Norway: $($b.Length) bytes"
+                Answer $b
+            }}
+            'TEMPEST' {{
+                if ($canned) {{
+                    # A fixed forecast in Tempest's shape: the link checked without a key.
+                    $b = [Text.Encoding]::UTF8.GetBytes('{CANNED}')
+                    "CANNED $($b.Length) bytes"
+                    Answer $b
+                    continue
+                }}
+                if (-not (Test-Path $keyFile)) {{ Refuse 404 'no Tempest key on the PC'; continue }}
+                $key = (Get-Content -Raw $keyFile).Trim()
+                $st = Invoke-RestMethod "https://swd.weatherflow.com/swd/rest/stations?token=$key"
+                $sid = $st.stations[0].station_id
+                $b = Fetch "https://swd.weatherflow.com/swd/rest/better_forecast?station_id=$sid&token=$key&units_temp=c&units_wind=kph&units_pressure=mb&units_precip=mm&units_distance=km"
+                "FORECAST Tempest station $sid ($($st.stations[0].name)): $($b.Length) bytes"
+                Answer $b
+            }}
+            default {{ Refuse 501 "unknown question $($w[1])" }}
+        }}
     }} catch {{
-        "ERROR $($_.Exception.Message)"
+        # The message only: a URL with the key in it is never printed.
+        "ERROR $($_.Exception.GetType().Name)"
         Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 502 0`n"))
     }}
 }}
 $sp.Close()
 "#,
         key = key.display(),
+        store = store.display(),
+        data = data.display(),
+        store_len = rp_weather::store::LEN,
         canned = if canned { "$true" } else { "$false" },
         CANNED = CANNED_FORECAST,
     );

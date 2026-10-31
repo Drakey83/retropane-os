@@ -47,8 +47,9 @@ pub fn shell_fonts() -> rp_shell::Fonts {
 }
 
 /// The weather pictures, from `local/icons/icons.rs` (made by
-/// `tools/shell-assets/icons.py` from the default pack, run-length packed;
-/// without it there are none and the screens draw outlines).
+/// `tools/shell-assets/icons.py` from the default pack; packed by the
+/// build as one Paeth-filtered zlib stream; without it there are none and
+/// the screens draw outlines).
 mod icon_data {
     include!(concat!(env!("OUT_DIR"), "/icons.rs"));
 }
@@ -58,22 +59,17 @@ pub const ICON_COUNT: usize = icon_data::COUNT;
 /// Words the unpacked pictures need.
 pub const ICON_WORDS: usize = icon_data::WORDS;
 
-/// Unpacks one picture's runs into `out` (R129: kept packed in the image so
-/// it fits the loader's image area). Nothing is trusted: a run past the
-/// picture's end stops there, and what the runs don't reach stays clear.
-fn unpack(packed: &[u32], out: &mut [u32]) {
-    out.fill(0);
-    let (mut at, mut i) = (0usize, 0usize);
-    while let Some(&head) = packed.get(i) {
-        i += 1;
-        at = at.saturating_add((head >> 16) as usize);
-        for _ in 0..(head & 0xFFFF) {
-            let (Some(&p), Some(slot)) = (packed.get(i), out.get_mut(at)) else {
-                return;
-            };
-            *slot = p;
-            i += 1;
-            at += 1;
+/// Undoes the build's 4-byte Paeth filter (each channel against its own
+/// left, up and up-left) in place: `px` is `w` x `h` pixels of 4 bytes.
+fn unpaeth4(px: &mut [u8], w: usize, h: usize) {
+    let stride = w * 4;
+    for y in 0..h {
+        for x in 0..stride {
+            let i = y * stride + x;
+            let a = if x >= 4 { px[i - 4] } else { 0 };
+            let b = if y > 0 { px[i - stride] } else { 0 };
+            let c = if x >= 4 && y > 0 { px[i - stride - 4] } else { 0 };
+            px[i] = px[i].wrapping_add(rp_inflate::paeth(a, b, c));
         }
     }
 }
@@ -91,15 +87,22 @@ pub fn icons_into(
     if px.len() < ICON_WORDS {
         return set;
     }
+    // The whole stream at once into the pictures' words (its bytes are
+    // their bytes: B, G, R, A, the ARGB word in memory on the X51v), then
+    // each picture's filter undone in place. A damaged stream: none.
+    let bytes = rp_hal_mem::words_as_bytes_mut(&mut px[..ICON_WORDS]);
+    if ICON_WORDS > 0 && rp_inflate::zlib(icon_data::PACKED, bytes) != Ok(ICON_WORDS * 4) {
+        return set;
+    }
     let mut rest = px;
-    for (slot, &(_, _, w, h, packed)) in imgs.iter_mut().zip(&icon_data::PACKED) {
+    for (slot, &(_, _, w, h)) in imgs.iter_mut().zip(&icon_data::DESC) {
         let (mine, more) = rest.split_at_mut(usize::from(w) * usize::from(h));
         rest = more;
-        unpack(packed, mine);
+        unpaeth4(rp_hal_mem::words_as_bytes_mut(mine), usize::from(w), usize::from(h));
         *slot = Image { w, h, px: mine };
     }
     let imgs: &'static [Image; ICON_COUNT] = imgs;
-    for (img, &(kind, id, ..)) in imgs.iter().zip(&icon_data::PACKED) {
+    for (img, &(kind, id, ..)) in imgs.iter().zip(&icon_data::DESC) {
         let i = usize::from(id.clamp(1, 22) - 1);
         match kind {
             0 => set.hero = Some(img),
@@ -664,32 +667,36 @@ mod tests {
     }
 
     #[test]
-    fn packed_pictures_unpack_and_damaged_ones_stay_inside() {
-        let mut out = [7u32; 6];
-        unpack(
-            &[
-                (2 << 16) | 2,
-                0xFF00_0001,
-                0xFF00_0002,
-                1 << 16 | 1,
-                0xFF00_0003,
-            ],
-            &mut out,
-        );
-        assert_eq!(out, [0, 0, 0xFF00_0001, 0xFF00_0002, 0, 0xFF00_0003]);
-        // Runs past the end, a header promising more than there is, nothing.
-        let mut out = [7u32; 3];
-        unpack(&[(1 << 16) | 9, 1, 2, 3, 4], &mut out);
-        assert_eq!(out, [0, 1, 2]);
-        unpack(&[0xFFFF_0005, 1], &mut out);
-        assert_eq!(out, [0, 0, 0]);
-        unpack(&[], &mut out);
+    fn the_pictures_filter_undoes_exactly_and_short_room_gives_outlines() {
+        // A 5 x 3 picture of 4-byte pixels, filtered as the build does.
+        let (w, h) = (5, 3);
+        let px: Vec<u8> = (0..w * h * 4).map(|i| (i * 37 % 251) as u8).collect();
+        let stride = w * 4;
+        let mut f = px.clone();
+        for i in 0..px.len() {
+            let (x, y) = (i % stride, i / stride);
+            let a = if x >= 4 { px[i - 4] } else { 0 };
+            let b = if y > 0 { px[i - stride] } else { 0 };
+            let c = if x >= 4 && y > 0 { px[i - stride - 4] } else { 0 };
+            f[i] = px[i].wrapping_sub(rp_inflate::paeth(a, b, c));
+        }
+        unpaeth4(&mut f, w, h);
+        assert_eq!(f, px);
         // Too little room: outlines, not a fault.
         let small = icons_into(
             Box::leak(vec![0; ICON_WORDS.saturating_sub(1)].into_boxed_slice()),
             Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
         );
         assert!(ICON_WORDS == 0 || small.hero.is_none());
+        // Room: every picture, the hero opaque somewhere.
+        let full = icons_into(
+            Box::leak(vec![0; ICON_WORDS].into_boxed_slice()),
+            Box::leak(Box::new([NO_IMAGE; ICON_COUNT])),
+        );
+        if ICON_WORDS > 0 {
+            let hero = full.hero.expect("the hero picture");
+            assert!(hero.px.iter().any(|p| p >> 24 == 0xFF));
+        }
     }
 
     #[test]

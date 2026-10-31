@@ -25,9 +25,12 @@
 #![forbid(unsafe_code)]
 
 pub mod align;
+mod keyboard;
 pub mod motion;
 mod weather_app;
+mod weather_net;
 mod weather_settings;
+pub use weather_net::{Ask, Question};
 
 pub use weather_app::{LAYER_MARGIN, Motion, PageView, picture_rows};
 
@@ -85,8 +88,12 @@ pub enum Screen {
     Weather,
     /// The Weather app's settings.
     WeatherSettings,
-    /// The Weather app's places.
+    /// The Weather app's places (and removing one).
     WeatherPlaces,
+    /// Adding a place: a search by name or postal code.
+    AddPlace,
+    /// Where the weather comes from: providers and stations.
+    WeatherFrom,
     /// The station key, typed on the on-screen keyboard.
     KeyEntry,
 }
@@ -353,6 +360,9 @@ enum Gesture {
 const SLOP: i32 = 8;
 /// A swipe this far across turns the page.
 const SWIPE_TURN: i32 = 60;
+/// How far past the top a pull must go to refresh (px; T4's 70 px drawn,
+/// the band halves the pen's travel past an end).
+const PULL_REFRESH: i32 = 56;
 
 /// The shell's state.
 pub struct Shell {
@@ -392,14 +402,30 @@ pub struct Shell {
     /// How pages arrive, and whether this entrance came from the hero.
     motion: weather_app::Motion,
     expanding: bool,
-    /// The Weather app's settings (RAM until the settings store exists).
+    /// The Weather app's settings (kept through the dock: `Ask::Save`).
     wset: rp_weather::settings::Settings,
-    /// The key being typed (zeroed when done or left).
+    /// The field being typed (a place's name, or the key: zeroed when done
+    /// or left).
     typed: [u8; rp_weather::settings::KEY_MAX],
     typed_n: usize,
-    /// The keyboard's shift, and whether the key is shown as typed.
-    shift: bool,
-    show_key: bool,
+    /// The keyboard (K1 compact): shift and the symbols layer.
+    kb: keyboard::Keyboard,
+    /// The places list in Remove mode.
+    removing: bool,
+    /// The place search's matches, how many, when it is due, and what it
+    /// says while there are none.
+    found: [rp_weather::open_meteo::Found; rp_weather::open_meteo::FOUND_MAX],
+    n_found: u8,
+    search_at: Option<u32>,
+    find_status: &'static str,
+    /// The dock's questions wanted (bits of [`Ask`]) and the one in flight.
+    wants: u8,
+    asking: Option<Ask>,
+    /// When the forecast last came (ms), whether the dock ever answered,
+    /// and whether the station's readings are in.
+    fetched_at: Option<u32>,
+    dock: bool,
+    station_live: bool,
     /// The radar loop: the frame shown, whether it plays, when it last
     /// moved on (ms).
     radar_frame: u8,
@@ -450,8 +476,23 @@ impl Shell {
             wset: rp_weather::settings::Settings::DEFAULT,
             typed: [0; rp_weather::settings::KEY_MAX],
             typed_n: 0,
-            shift: false,
-            show_key: false,
+            kb: keyboard::Keyboard::default(),
+            removing: false,
+            found: [rp_weather::open_meteo::Found {
+                name: rp_weather::Name::EMPTY,
+                area: rp_weather::Name::EMPTY,
+                lat: 0,
+                lon: 0,
+            }; rp_weather::open_meteo::FOUND_MAX],
+            n_found: 0,
+            search_at: None,
+            find_status: "",
+            // The stored settings first, then the forecast they name.
+            wants: 1 << Ask::Load as u8,
+            asking: None,
+            fetched_at: None,
+            dock: false,
+            station_live: false,
             radar_frame: 0,
             radar_play: true,
             radar_at: 0,
@@ -657,7 +698,7 @@ impl Shell {
         };
         let back = u8::from(self.screen != Screen::Today);
         let radar = u8::from(self.screen == Screen::Weather && self.tab == weather_app::RADAR);
-        let caps = if self.screen == Screen::KeyEntry {
+        let caps = if self.has_keyboard() {
             weather_settings::CAPS
         } else {
             0
@@ -686,6 +727,7 @@ impl Shell {
     /// notice past its time goes.
     pub fn tick(&mut self, now_ms: u32) -> Action {
         self.now = now_ms;
+        self.net_tick();
         if self.radar_step(now_ms) && self.anim.is_none() && self.notice.is_none() {
             return Action::Redraw;
         }
@@ -763,11 +805,14 @@ impl Shell {
         if p == self.pressed {
             return;
         }
-        if let Some(old) = self.pressed {
-            self.dirty(self.rect_of(old));
-        }
-        if let Some(new) = p {
-            self.dirty(self.rect_of(new));
+        for t in [self.pressed, p].into_iter().flatten() {
+            self.dirty(self.rect_of(t));
+            // A key's enlargement above it, and what it covered.
+            if let Target::Cap(i) = t
+                && let Some(r) = self.kb.pop_rect(i)
+            {
+                self.dirty(r);
+            }
         }
         self.pressed = p;
     }
@@ -805,6 +850,8 @@ impl Shell {
             }
             Target::SoftLeft => match self.screen {
                 Screen::Today => self.show_notice(not_yet(self.softkeys().0)),
+                // Refresh (T4); the header's control goes back.
+                Screen::Weather => self.refresh(),
                 // Back (Cancel on the keyboard), I7: the left softkey and
                 // the header's control do the same.
                 _ => self.go_back(),
@@ -812,8 +859,12 @@ impl Shell {
             Target::SoftRight => match self.screen {
                 Screen::Today => self.show_notice(not_yet(self.softkeys().1)),
                 Screen::Weather => self.open(Screen::WeatherSettings),
-                Screen::KeyEntry => self.key_done(),
-                Screen::WeatherSettings | Screen::WeatherPlaces => {}
+                Screen::KeyEntry | Screen::AddPlace => self.field_done(),
+                Screen::WeatherPlaces => {
+                    self.removing = !self.removing;
+                    self.dirty(Rect::new(0, 0, W, H));
+                }
+                Screen::WeatherSettings | Screen::WeatherFrom => {}
             },
             Target::Hero => self.open_weather(),
             Target::Tab(i) => self.set_tab(i),
@@ -894,8 +945,13 @@ impl Shell {
     fn softkeys(&self) -> (&'static str, &'static str) {
         match self.screen {
             Screen::Today => ("Calendar", "Edit"),
-            Screen::Weather => ("Back", "Settings"),
-            Screen::WeatherSettings | Screen::WeatherPlaces => ("Back", ""),
+            // T4: Refresh, and Menu (the settings list); the header's
+            // control goes back.
+            Screen::Weather => ("Refresh", "Menu"),
+            Screen::WeatherSettings | Screen::WeatherFrom => ("Back", ""),
+            Screen::WeatherPlaces if self.removing => ("Back", "Done"),
+            Screen::WeatherPlaces => ("Back", "Remove"),
+            Screen::AddPlace => ("Cancel", "Add"),
             Screen::KeyEntry => ("Cancel", "Done"),
         }
     }
@@ -963,6 +1019,10 @@ impl Shell {
         let g = core::mem::replace(&mut self.gesture, Gesture::None);
         match g {
             Gesture::Scroll => {
+                // T4: let go pulled past the top's rebound: refresh.
+                if self.scroll.offset() <= -PULL_REFRESH {
+                    self.refresh();
+                }
                 self.scroll.release(self.now);
                 Some(Action::Redraw)
             }
@@ -1395,8 +1455,10 @@ impl Shell {
                 }
                 self.weather_scene(f, reveal);
             }
-            Screen::WeatherSettings => self.settings_scene(f),
-            Screen::WeatherPlaces => self.places_scene(f),
+            Screen::WeatherSettings | Screen::WeatherPlaces | Screen::WeatherFrom => {
+                self.settings_scene(f);
+            }
+            Screen::AddPlace => self.add_place_scene(f),
             Screen::KeyEntry => self.key_scene(f),
         }
 
@@ -1431,7 +1493,7 @@ impl Shell {
 
         // The weather hero (a tap opens the Weather app).
         Self::glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
-        let head = upper(wx.place)
+        let head = upper(wx.place.as_str())
             .push(b" - ")
             .push(upper(wx.source).as_bytes());
         f.text(HERO.x + 20, HERO.y + 34, label, DIM, head.as_bytes());
@@ -1558,12 +1620,17 @@ pub(crate) fn upper(s: &str) -> Line {
 /// Every notice the shell shows: each must fit the notice's area between
 /// the softkeys in the real font (rp-today's test; 2026-10-30: two
 /// settings notices ran past it and were left on screen).
-pub const NOTICES: [&str; 21] = [
+pub const NOTICES: [&str; 29] = [
+    "40 at most",
     "64 at most",
+    "Asking your PC",
     "Base pack only",
+    "Clipboard empty",
+    "Keeps one place",
     "Key forgotten",
     "Key kept",
     "No spaces",
+    "Not connected yet",
     "Not yet: Browser",
     "Not yet: Calendar",
     "Not yet: Documents",
@@ -1580,6 +1647,9 @@ pub const NOTICES: [&str; 21] = [
     "Not yet: Record",
     "Not yet: Settings",
     "Not yet: Tasks",
+    "Nothing to paste",
+    "Refreshing",
+    "Ten places at most",
 ];
 
 /// The notice's area's width.
