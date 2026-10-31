@@ -1436,7 +1436,13 @@ impl Shell {
                 }
                 Some(Action::Redraw)
             }
-            Gesture::None | Gesture::Pending { .. } => {
+            // A press that didn't start on the page (another screen, the
+            // menu over it) is never a tap on the page: Hourly scrolled, then
+            // Home, the Start menu's last entry fell on a grid cell and
+            // picked an hour instead of going back to the loader
+            // (emu-today, 2026-10-31).
+            Gesture::None => None,
+            Gesture::Pending { .. } => {
                 // Still a tap: the scroll lets go where it is.
                 self.scroll.release(self.now);
                 // On Hourly's graph: that hour into the card.

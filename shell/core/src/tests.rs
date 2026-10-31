@@ -1881,3 +1881,36 @@ fn hourlys_line_runs_on_past_its_ends_on_the_curves_slope() {
         );
     }
 }
+
+#[test]
+fn a_tap_off_the_page_is_never_a_tap_on_it() {
+    // Hourly scrolled, then Home: the Start menu's last entry lies where a
+    // grid cell would be, and picked an hour instead of going back to the
+    // loader (emu-today, 2026-10-31). Every page, dragged or not.
+    for page in 0..3 {
+        for drag in [false, true] {
+            let mut s = weather(page);
+            drawn(&mut s);
+            if drag {
+                s.input(Input::PenDown { x: 240, y: 500 });
+                for y in [470, 430, 390, 350, 310] {
+                    s.input(Input::PenMove { x: 240, y });
+                }
+                s.input(Input::PenUp { x: 240, y: 310 });
+                s.settle();
+            }
+            s.input(Input::Key(Key::Home));
+            s.settle();
+            drawn(&mut s);
+            let pick = s.hour_pick;
+            tap(&mut s, START);
+            let last = s.menu_len() - 1;
+            assert_eq!(
+                tap(&mut s, Shell::menu_entry(last)),
+                Action::BackToLoader,
+                "page {page}, dragged {drag}"
+            );
+            assert_eq!(s.hour_pick, pick, "page {page}, dragged {drag}");
+        }
+    }
+}

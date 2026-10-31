@@ -11397,17 +11397,20 @@ pub(crate) fn today_screens(
 /// out to ARGB4444 dithered as the image writes it) blended over it in the
 /// page's window, at rest (ARGB8888, as the image writes its pages).
 pub(crate) fn today_hourly_on_planes(wall: &[u8], icons: Option<rp_shell::Icons>) -> Vec<u8> {
-    today_page_on_planes(wall, icons, 1)
+    today_page_on_planes(wall, icons, 1, Some(NWS_ALERTS))
 }
 
 /// Weather's page `tab` as the X51v shows it on the plane path: the app's
 /// chrome on screen 0 and the page's picture blended over it, Hourly's at
 /// ARGB8888 with its line painted per pixel, the others at ARGB4444
-/// dithered (the image's `build_page`).
+/// dithered (the image's `build_page`). `alerts`: the NWS answer the
+/// header shows (the previews' canned one), or none (the image with no
+/// link, as emu-today runs it).
 pub(crate) fn today_page_on_planes(
     wall: &[u8],
     icons: Option<rp_shell::Icons>,
     tab: u8,
+    alerts: Option<&[u8]>,
 ) -> Vec<u8> {
     use rp_draw::{Frame, Renderer};
     use rp_gfx::layer::{Layer, PlaneFormat};
@@ -11438,7 +11441,9 @@ pub(crate) fn today_page_on_planes(
     if let Some(icons) = icons {
         shell.set_icons(icons);
     }
-    shell.set_alerts_from_nws(NWS_ALERTS);
+    if let Some(a) = alerts {
+        shell.set_alerts_from_nws(a);
+    }
     let right = core::iter::repeat_n(rp_shell::Input::Key(rp_shell::Key::Right), usize::from(tab));
     for e in [
         rp_shell::Input::PenDown { x: 240, y: 150 },
@@ -11876,20 +11881,22 @@ fn today_drag(
     touch(qmp, &Action::TouchUp).map(drop)
 }
 
-/// The Weather page's area (rows 94-555): pixels further than an ARGB4444
+/// The Weather page's area (`weather_app::PAGE`'s rows): pixels further than an ARGB4444
 /// step plus its dither from `want` in any channel (48 of 255), and pixels
 /// that differ at all.
 /// The Now page's Sunset bar (how much of the day has gone: the clock's,
 /// like the masked clocks) is left out.
 fn page_differ(got: &[u8], want: &[u8]) -> (usize, usize) {
     let w = rp_today::W * 3;
-    let (a, b) = (&got[94 * w..556 * w], &want[94 * w..556 * w]);
+    let page = rp_shell::weather_app::PAGE;
+    let rows = usize::from(page.y) * w..usize::from(page.bottom()) * w;
+    let (a, b) = (&got[rows.clone()], &want[rows]);
     let sunset = rp_shell::weather_app::SUNSET_BAR;
     a.chunks(3)
         .zip(b.chunks(3))
         .enumerate()
         .filter(|(i, _)| {
-            let (x, y) = ((i % rp_today::W) as u16, (94 + i / rp_today::W) as u16);
+            let (x, y) = ((i % rp_today::W) as u16, page.y + (i / rp_today::W) as u16);
             !sunset.contains_point(x, y)
         })
         .fold((0, 0), |(far, any), (_, (p, q))| {
@@ -11952,16 +11959,13 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         None,
     );
     let bare = compare_screens(&wall);
-    // The Weather app as the 2D path draws it, for the plane path's check
-    // below: a screen a pen event, so Now is [2] and Hourly [4].
-    let tap_at = |x, y| [Input::PenDown { x, y }, Input::PenUp { x, y }];
-    let weather = today_screens(
-        &wall,
-        map.as_deref(),
-        &[tap_at(240, 150), tap_at(180, 578)].concat(),
-        true,
-        None,
-    );
+    // The Weather app's pages as the plane path shows them (screen 0's
+    // chrome through the 2D engine model, the page's picture over it), the
+    // model the image's own path is held to: the 2D path's drawing differs
+    // where the two paths draw differently by design (Hourly's line: pieces
+    // on screen 0, painted per pixel in the picture), so it was the wrong
+    // reference (919 pixels "far" on the line alone, 2026-10-31).
+    let weather = [0u8, 1].map(|tab| today_page_on_planes(&wall, None, tab, None));
     let wsl = matches!(emulator(root)?, Emulator::Wsl);
     let dump = |name: &str| -> Result<Vec<u8>, String> {
         let shot = scratch(root, &format!("today-{name}.ppm"))?;
@@ -12173,9 +12177,9 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         for k in 0..frames {
             dump(&format!("open-{k:02}"))?;
         }
-        page_near("weather-now", &weather[2])?;
+        page_near("weather-now", &weather[0])?;
         press(&mut qmp, "hourly", 180, 578, Some(TAP_GUEST_MS))?;
-        let still = page_near("weather-hourly", &weather[4])?;
+        let still = page_near("weather-hourly", &weather[1])?;
         today_drag(&mut qmp, 240, &[500, 470, 430, 390, 350, 310], &guest_hold)?;
         guest_hold(2000)?;
         let moved = dump("weather-dragged")?;
@@ -12185,7 +12189,11 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         }
         let chrome = |s: &[u8]| {
             let w = rp_today::W * 3;
-            (s[36 * w..94 * w].to_vec(), s[556 * w..600 * w].to_vec())
+            let (head, tabs) = (rp_shell::weather_app::HEAD, rp_shell::weather_app::TABS);
+            (
+                s[usize::from(head.y) * w..usize::from(head.bottom()) * w].to_vec(),
+                s[usize::from(tabs.y) * w..rp_today::H * w].to_vec(),
+            )
         };
         if chrome(&moved) != chrome(&still) {
             return Err(
@@ -12273,7 +12281,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     let stack =
         check_stack(log)?.ok_or_else(|| format!("today: no stack line in the run log:{log}"))?;
     eprintln!(
-        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, the wallpaper alone pixel-exact dithered and plain (16 bits), Weather on the plane path (Now and Hourly near the 2D path's, a drag moved the page and not the header or tabs, Home pixel-exact; {}), Back to loader returned; {}; stack {} of {} bytes",
+        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, the wallpaper alone pixel-exact dithered and plain (16 bits), Weather on the plane path (Now and Hourly near the plane path model's, a drag moved the page and not the header or tabs, Home pixel-exact; {}), Back to loader returned; {}; stack {} of {} bytes",
         calibrated.trim(),
         log.lines()
             .find(|l| l.contains("plane path:") && l.contains("commits"))

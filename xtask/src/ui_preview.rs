@@ -232,7 +232,12 @@ pub fn run(root: &Path) -> Result<(), String> {
         for (k, file) in list.split(',').filter(|f| !f.is_empty()).enumerate() {
             let pack = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
             let icons = crate::emu::pack_icons(&pack).ok_or(format!("{file}: not a pack"))?;
-            let rgb = crate::emu::today_page_on_planes(&wall, Some(icons), tab);
+            let rgb = crate::emu::today_page_on_planes(
+                &wall,
+                Some(icons),
+                tab,
+                Some(crate::emu::NWS_ALERTS),
+            );
             let name = format!("page-{tab}-pack-{k}.png");
             std::fs::write(out.join(&name), png_rgb(480, 640, &rgb))
                 .map_err(|e| format!("{name}: {e}"))?;

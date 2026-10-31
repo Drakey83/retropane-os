@@ -21,10 +21,11 @@ use rp_weather::{DAYS, HOURS, Icon, Line};
 
 use super::{DEG_BIG, DIM, FOCUS, GLASS_LEFT, GLASS_RIGHT, H, Shell, TEXT, Target, W};
 
-/// The header strip: the place and the source.
 /// The header: one thin row (the mix mock-up's): the place and its menu,
-/// the places' dots, an alert, the reading's time.
-pub(crate) const HEAD: Rect = Rect::new(0, 36, W, 34);
+/// the places' dots, an alert, the reading's time. Public with [`PAGE`] and
+/// [`TABS`] for the picture checks (emu-today), which read the layout from
+/// here, never as numbers of their own (theirs went stale twice).
+pub const HEAD: Rect = Rect::new(0, 36, W, 34);
 /// The header's Station button, left of the reading's time (shown once a
 /// station answers).
 pub(crate) const STATION_BTN: Rect = Rect::new(W - 196, 36 + 5, 84, 24);
@@ -36,9 +37,9 @@ const ALERT: Argb = rp_draw::look::theme(0xFFF2_B45A);
 pub(crate) const ALERT_TEXT: Argb = ALERT;
 const ALERT_BACK: Argb = rp_draw::look::theme(0xFF4A_3A24);
 /// The page between the header and the tabs.
-pub(crate) const PAGE: Rect = Rect::new(0, 70, W, 486);
+pub const PAGE: Rect = Rect::new(0, 70, W, 486);
 /// The tab strip above the softkeys.
-pub(crate) const TABS: Rect = Rect::new(0, H - 84, W, 44);
+pub const TABS: Rect = Rect::new(0, H - 84, W, 44);
 /// The pages.
 pub(crate) const TAB_NAMES: [&[u8]; 4] = [b"Now", b"Hourly", b"10 Day", b"Radar"];
 /// The radar's page.
@@ -1510,7 +1511,7 @@ impl Shell {
 
     /// The hour at screen (`x`, `y`) on Hourly's graph or grid, if any.
     pub(crate) fn hour_at(&self, x: u16, y: u16) -> Option<u8> {
-        if self.tab != 1 || !PAGE.contains_point(x, y) {
+        if self.tab != 1 || !self.on_page(x, y) {
             return None;
         }
         // In the page's own rows (it scrolls).
