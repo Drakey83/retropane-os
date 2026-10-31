@@ -1075,6 +1075,10 @@ mod image {
                         // Reveal done: the app takes the screen (the same
                         // pixels), then its page goes onto the layer.
                         let _ = gfx.show_aside(pc, None);
+                        let _ = writeln!(
+                            RunLog,
+                            "open: {now_ms} ms, Reveal done: the app handed to the screen"
+                        );
                         revealing = false;
                         reveal_shown = false;
                         shown_tab = None;
@@ -1112,6 +1116,11 @@ mod image {
                             // of its 540 on the first device run).
                             reveal_shown = true;
                             shell.restart_entrance(now_ms as u32);
+                            let _ = writeln!(
+                                RunLog,
+                                "open: {now_ms} ms, the app composed aside and its window up ({} commits so far)",
+                                gfx.commits().done
+                            );
                         }
                         if revealing && let Some((r, shift)) = shell.reveal_plane() {
                             let _ = gfx.move_layer(pc, reveal_state(r, shift).win);
@@ -1189,6 +1198,18 @@ mod image {
                         if r.is_ok() && aside {
                             revealing = true;
                         }
+                        let cm = gfx.commits();
+                        let _ = writeln!(
+                            RunLog,
+                            "hand-off: {now_ms} ms, {} (the last commit on line {:?}, {} late so far)",
+                            match (layer.map(|l| l.src), aside) {
+                                (_, true) => "the app being composed aside for Reveal",
+                                (Some(Source::Picture(_)), _) => "screen 0's chrome + a page on the layer",
+                                _ => "the layer off, the page drawn on screen 0",
+                            },
+                            cm.last_line,
+                            cm.late
+                        );
                         if let Err(e) = r {
                             let _ = writeln!(RunLog, "plane path: a commit refused ({e:?})");
                         }
