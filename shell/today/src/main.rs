@@ -287,6 +287,22 @@ mod image {
         }
     }
 
+    /// One refresh of an opening, as the display had it: the time, the
+    /// display's signature of the picture it scanned out (`DSIG`), the plane
+    /// registers read back (`GSCADR`, `VSCADR`, `VSADR`, `VSCTRL`,
+    /// `SSSIZE`), and the window the code meant for it (x, y, w, h, row).
+    #[derive(Clone, Copy, Default)]
+    struct Refresh {
+        ms: u32,
+        sig: u32,
+        regs: [u32; 5],
+        meant: (u16, u16, u16, u16, u16),
+    }
+
+    /// Refreshes kept per opening (~1.6 s at 60 Hz).
+    const TRACE: usize = 96;
+    static TRACE_BUF: rt::Slot<[Refresh; TRACE]> = rt::Slot::new();
+
     /// Reveal's window over the app composed aside.
     fn reveal_state(r: rp_draw::Rect, shift: u16) -> LayerState {
         let (x, y, w, h, row, col) = rp_today::reveal_window(r, shift);
@@ -523,6 +539,15 @@ mod image {
         let (mut reveal_t0, mut reveal_c0) = (0u64, 0u32);
         // Openings so far (the glide's alternation).
         let mut opens = 0u32;
+        // The opening's trace: refreshes recorded, the last refresh's
+        // count (`DSIG` is published at line 3 of the next), and how many
+        // refreshes to keep recording after the opening ends.
+        let Some(trace) = TRACE_BUF.put_with(|| [Refresh::default(); TRACE]) else {
+            crash(format_args!("started twice"))
+        };
+        let (mut trace_n, mut trace_on, mut trace_tail) = (0usize, false, 0u32);
+        let mut last_line = 0u32;
+        let mut meant = (0u16, 0u16, 0u16, 0u16, 0u16);
         let mut retire: Option<Handle> = None;
         // The pages' draw lists to check against their pictures (a new
         // minute), rebuilt ahead while the screen is still.
@@ -1107,6 +1132,9 @@ mod image {
                             });
                             reveal_t0 = now_ms;
                             reveal_c0 = gfx.commits().done;
+                            trace_n = 0;
+                            trace_on = true;
+                            trace_tail = 30;
                         }
                     } else if gfx.aside_held() {
                         // Reveal done: the app takes the screen (the same
@@ -1267,6 +1295,69 @@ mod image {
                 {
                     retire = None;
                 }
+            }
+
+            // The opening's trace: once a refresh, after its signature is
+            // published (line 3 of the next), what the display showed.
+            if trace_on {
+                use rp_hal_api::RegisterBus as _;
+                let regs = &mut gfx.two_d().parts().0.regs;
+                let line = regs.read32(rp_drv_mbx_display::reg::DVLNUM) & 0xFFF;
+                let published = line >= rp_drv_mbx_display::sig::PUBLISHED_LINE;
+                if published
+                    && last_line < rp_drv_mbx_display::sig::PUBLISHED_LINE + 1
+                    && line < 600
+                    && trace_n < TRACE
+                {
+                    let rd = |r: &mut Mmio, o: usize| r.read32(o);
+                    trace[trace_n] = Refresh {
+                        ms: now_ms as u32,
+                        sig: rd(regs, rp_drv_mbx_display::sig::DSIG),
+                        regs: [
+                            rd(regs, rp_drv_mbx_display::reg::GSCADR),
+                            rd(regs, rp_drv_mbx_display::layers::reg::VSCADR),
+                            rd(regs, rp_drv_mbx_display::layers::reg::VSADR),
+                            rd(regs, rp_drv_mbx_display::layers::reg::VSCTRL),
+                            rd(regs, rp_drv_mbx_display::layers::reg::SSSIZE),
+                        ],
+                        meant,
+                    };
+                    trace_n += 1;
+                }
+                last_line = line;
+                if !revealing && !gfx.aside_held() {
+                    trace_tail = trace_tail.saturating_sub(u32::from(published && trace_n > 0));
+                }
+                if trace_tail == 0 || trace_n == TRACE {
+                    trace_on = false;
+                    let _ = writeln!(
+                        RunLog,
+                        "trace of open {opens}: {trace_n} refreshes (ms, DSIG, GSCADR, VSCADR, VSADR, VSCTRL, SSSIZE; the window meant x,y,w,h,row)"
+                    );
+                    for t in &trace[..trace_n] {
+                        let _ = writeln!(
+                            RunLog,
+                            "T {} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} | {},{},{},{},{}",
+                            t.ms,
+                            t.sig,
+                            t.regs[0],
+                            t.regs[1],
+                            t.regs[2],
+                            t.regs[3],
+                            t.regs[4],
+                            t.meant.0,
+                            t.meant.1,
+                            t.meant.2,
+                            t.meant.3,
+                            t.meant.4
+                        );
+                    }
+                }
+            }
+            if let Some(l) = gfx.layer() {
+                meant = (l.win.x, l.win.y, l.win.w, l.win.h, l.win.row);
+            } else {
+                meant = (0, 0, 0, 0, 0);
             }
 
             // Draw what changed, timing it. One job at a time: with a frame
