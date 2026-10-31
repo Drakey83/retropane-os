@@ -515,8 +515,11 @@ Full numbers in `docs/hw/2700g.md` "Run WG on the X51v". In plain words:
   - The turn in 4-pixel steps: "the white lettering flashes a little bit";
     in 1-pixel steps (the start plus the window's place): "VERY smooth".
     So a turn follows the pen to the pixel, never in 4-pixel steps.
-  - The hand-off, the entrances and M7's three holds: asked again by step
-    number (his answers 10-13 didn't map one to one onto the steps).
+  - Asked again by step number: the hand-off, no flash or colour jump
+    (so the display's mix differing from the 2D engine's doesn't show);
+    Reveal looks good but he saw its tears ("can we chase down the tears
+    though?": R134, sheet `r134-reveal-tears.md`); Cascade and the fling
+    look good; M7: the page held still and right in all three steps.
 
 ## Votes needed (results are not decisions)
 
