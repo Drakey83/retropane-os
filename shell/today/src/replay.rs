@@ -152,10 +152,18 @@ mod tests {
         let mut frame = rp_draw::Frame::new();
         let mut now = 0u32;
         shell.frame(&mut frame);
-        for st in steps(DATA) {
-            now += u32::from(st.wait_ms).max(7);
+        // During a pause between touches the image's loop keeps sampling
+        // the pen (no pressure), which lifts the last touch (the filter ends
+        // one after two empty samples: a single dropout mid-stroke is
+        // bridged).
+        let samples = steps(DATA).flat_map(|st| {
+            let pause = (st.wait_ms > 0).then_some((0u16, None));
+            pause.into_iter().chain([(st.wait_ms, st.sample)])
+        });
+        for (wait, sample) in samples {
+            now += u32::from(wait).max(7);
             shell.tick(now);
-            let ev = filter.sample(st.sample, now);
+            let ev = filter.sample(sample, now);
             let map = |x, y| cal.to_screen(x, y, (crate::W as u16, crate::H as u16));
             let what = match ev {
                 Pen::Down(x, y) => {
@@ -198,10 +206,18 @@ mod tests {
         let mut shell = Shell::new(crate::shell_fonts(), rp_shell::Icons::NONE, true);
         let mut filter = Filter::new();
         let (mut now, mut downs, mut redraws) = (0u32, 0, 0);
-        for st in steps(DATA) {
-            now += u32::from(st.wait_ms).max(7);
+        // During a pause between touches the image's loop keeps sampling
+        // the pen (no pressure), which lifts the last touch (the filter ends
+        // one after two empty samples: a single dropout mid-stroke is
+        // bridged).
+        let samples = steps(DATA).flat_map(|st| {
+            let pause = (st.wait_ms > 0).then_some((0u16, None));
+            pause.into_iter().chain([(st.wait_ms, st.sample)])
+        });
+        for (wait, sample) in samples {
+            now += u32::from(wait).max(7);
             shell.tick(now);
-            let ev = filter.sample(st.sample, now);
+            let ev = filter.sample(sample, now);
             assert!(
                 !shell.wants_raw(),
                 "the replay opened the align screen at {now} ms"

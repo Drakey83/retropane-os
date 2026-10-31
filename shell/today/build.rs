@@ -119,11 +119,31 @@ pub static PACKED: [(u8, u8, u16, u16, &[u32]); COUNT] = [];
         utc_offset_minutes()
     );
 
-    let rec = Path::new(&dir).join("../../drivers/touch-cal/tests/data/owner-2026-10-17-12k.txt");
+    // The replay's recording: the ratchet's (default), or another
+    // (`RP_TODAY_REPLAY_FILE`, under the repo, replayed whole, with pauses up
+    // to `RP_TODAY_REPLAY_GAP_MS`: the plane path's unattended device runs
+    // replay the owner's Weather session, its openings finishing between
+    // taps).
+    println!("cargo:rerun-if-env-changed=RP_TODAY_REPLAY_FILE");
+    println!("cargo:rerun-if-env-changed=RP_TODAY_REPLAY_GAP_MS");
+    let (rec, end) = match std::env::var("RP_TODAY_REPLAY_FILE") {
+        Ok(f) => (Path::new(&dir).join("../..").join(f), u32::MAX),
+        Err(_) => (
+            Path::new(&dir).join("../../drivers/touch-cal/tests/data/owner-2026-10-17-12k.txt"),
+            REPLAY_END_MS,
+        ),
+    };
+    let gap = std::env::var("RP_TODAY_REPLAY_GAP_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(REPLAY_GAP_MAX_MS);
     println!("cargo:rerun-if-changed={}", rec.display());
     let text = std::fs::read_to_string(&rec).expect("the touch replay's recording");
-    std::fs::write(Path::new(&out).join("replay.bin"), pack_replay(&text))
-        .expect("OUT_DIR writable");
+    std::fs::write(
+        Path::new(&out).join("replay.bin"),
+        pack_replay(&text, end, gap),
+    )
+    .expect("OUT_DIR writable");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
         println!("cargo:rustc-link-arg-bins=-T{dir}/../../boot/link.x");
@@ -280,7 +300,7 @@ const REPLAY_END_MS: u32 = 73_534;
 /// pace), then x, y and z1 (z1 0: no pressure). Where the pen lifted with
 /// no line saying so, a no-pressure sample is added, as the image's loop
 /// would have read one; and at the end.
-fn pack_replay(text: &str) -> Vec<u8> {
+fn pack_replay(text: &str, end_ms: u32, gap_max_ms: u32) -> Vec<u8> {
     let mut out = Vec::new();
     let mut push = |wait: u32, x: u16, y: u16, z1: u16| {
         for v in [wait as u16, x, y, z1] {
@@ -291,7 +311,7 @@ fn pack_replay(text: &str) -> Vec<u8> {
     for line in text.lines().filter(|l| l.starts_with("R ")) {
         let f: Vec<&str> = line.split_whitespace().collect();
         let ms: u32 = f[1].parse().expect("a recorder line's time");
-        if ms >= REPLAY_END_MS {
+        if ms >= end_ms {
             break;
         }
         let (x, y, z1) = if f[2] == "-" {
@@ -302,12 +322,12 @@ fn pack_replay(text: &str) -> Vec<u8> {
             (n(2), n(3), n(4))
         };
         let wait = match prev {
-            None => REPLAY_GAP_MAX_MS,
+            None => gap_max_ms,
             Some((at, pressed)) if ms - at > REPLAY_LIFT_MS => {
                 if pressed {
                     push(0, 0, 0, 0);
                 }
-                (ms - at).min(REPLAY_GAP_MAX_MS)
+                (ms - at).min(gap_max_ms)
             }
             Some(_) => 0,
         };
