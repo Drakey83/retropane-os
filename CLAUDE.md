@@ -16,7 +16,8 @@
    naming a co-author or generator; a commit touching an ADR-decided area
    (`docs/adr-areas.md`) without naming one of its ADRs; a `git push` unless
    `cargo xtask ci` passed on exactly that commit (`target/ci-pass.txt`);
-   another session or agent unless the owner's latest message asks for one.
+   another session or agent unless the owner's latest message asks for one
+   (a message he sends mid-task counts; at most 5 per go, then a fresh yes).
    Git's own hooks (`tools/githooks`, `core.hooksPath`) run the commit and
    push checks again as git acts, on Claude's commands only (`CLAUDECODE`
    set), so a file changed in the same command can't slip past. The printed

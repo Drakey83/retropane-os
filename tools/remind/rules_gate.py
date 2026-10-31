@@ -252,36 +252,80 @@ def read_stamp():
         return None
 
 
-def last_owner_message(transcript):
-    """The owner's latest typed message in the session's transcript."""
+# Sessions or agents one "yes" of the owner's allows (2026-10-31: "for up to
+# 5 sessions, then I have to say 'yes' again").
+SPAWN_MAX = 5
+SPAWN_TOOLS = (
+    "Agent",
+    "Workflow",
+    "mcp__ccd_session__start_session",
+    "mcp__ccd_session__hand_off_to_session",
+)
+
+
+def owner_and_spawns(transcript):
+    """The owner's latest message in the session's transcript, and how many
+    sessions or agents were started since. His message is one typed between
+    turns, or one he sent while Claude was working: the app records that as
+    a `queued_command` attachment from a human, which tool output can't
+    make (the owner, 2026-10-31: "you can start a new session and break the
+    gate if I tell you to"; his mid-task "make a new session" had been
+    refused, the gate reading only between-turn messages). A start refused
+    (its result an error) doesn't count."""
     last = None
+    started = {}
     with open(transcript, encoding="utf-8") as fh:
         for line in fh:
             try:
                 o = json.loads(line)
             except ValueError:
                 continue
-            if o.get("type") != "user" or o.get("isMeta"):
+            a = o.get("attachment") if o.get("type") == "attachment" else None
+            if isinstance(a, dict) and a.get("type") == "queued_command":
+                prompt = a.get("prompt")
+                if (a.get("origin") or {}).get("kind") == "human" and isinstance(prompt, str) and prompt.strip():
+                    last, started = prompt, {}
                 continue
             c = (o.get("message") or {}).get("content")
+            if o.get("type") == "assistant" and isinstance(c, list):
+                for x in c:
+                    if isinstance(x, dict) and x.get("type") == "tool_use" and x.get("name") in SPAWN_TOOLS:
+                        started[x.get("id")] = True
+                continue
+            if o.get("type") != "user" or o.get("isMeta"):
+                continue
+            if isinstance(c, list):
+                for x in c:
+                    if isinstance(x, dict) and x.get("type") == "tool_result" and x.get("is_error"):
+                        started.pop(x.get("tool_use_id"), None)
             texts = [c] if isinstance(c, str) else [
                 x.get("text", "") for x in (c or []) if isinstance(x, dict) and x.get("type") == "text"
             ]
             texts = [t for t in texts if t.strip() and not t.lstrip().startswith("<")]
             if texts:
-                last = "\n".join(texts)
-    return last
+                last, started = "\n".join(texts), {}
+    return last, len(started)
 
 
-def spawn_verdict(message):
+def last_owner_message(transcript):
+    """The owner's latest message in the session's transcript."""
+    return owner_and_spawns(transcript)[0]
+
+
+def spawn_verdict(message, started=0):
     if message is None:
         return "one session: the owner's latest message couldn't be read"
-    if ASKS_FOR_SPAWN.search(message):
-        return None
-    return (
-        "one session (the owner's hard rule, credits): another session or agent only when his "
-        "latest message asks for one; do the work here"
-    )
+    if not ASKS_FOR_SPAWN.search(message):
+        return (
+            "one session (the owner's hard rule, credits): another session or agent only when his "
+            "latest message asks for one; do the work here"
+        )
+    if started >= SPAWN_MAX:
+        return (
+            f"one session: {started} sessions or agents started since the owner's last go "
+            f"(at most {SPAWN_MAX}); ask him for a fresh yes"
+        )
+    return None
 
 
 def deny(reason):
@@ -316,10 +360,10 @@ def hook(mode):
     data = json.load(sys.stdin)
     if mode == "spawn":
         try:
-            msg = last_owner_message(data.get("transcript_path") or "")
+            msg, started = owner_and_spawns(data.get("transcript_path") or "")
         except OSError:
-            msg = None
-        reason = spawn_verdict(msg)
+            msg, started = None, 0
+        reason = spawn_verdict(msg, started)
         if reason:
             deny(reason)
         return
@@ -478,6 +522,37 @@ def self_test():
         if (spawn_verdict(msg) is None) != allow:
             bad += 1
             print("WRONG spawn:", msg)
+    if spawn_verdict("start a new session", SPAWN_MAX - 1) is not None:
+        bad += 1
+        print("WRONG spawn: the fifth start refused")
+    if spawn_verdict("start a new session", SPAWN_MAX) is None:
+        bad += 1
+        print("WRONG spawn: a sixth start allowed without a fresh yes")
+    # A transcript: a typed ask, two starts (one refused), then a mid-task
+    # message from the owner and one more start.
+    import tempfile
+    rows = [
+        {"type": "user", "message": {"content": "Start a new session"}},
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "a", "name": "Agent"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "b", "name": "Agent"}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "b", "is_error": True}]}},
+    ]
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as fh:
+        fh.write("\n".join(json.dumps(r) for r in rows))
+        path = fh.name
+    if owner_and_spawns(path) != ("Start a new session", 1):
+        bad += 1
+        print("WRONG spawn count:", owner_and_spawns(path))
+    rows.append({"type": "attachment", "attachment": {
+        "type": "queued_command", "prompt": "then make a new session", "origin": {"kind": "human"}}})
+    rows.append({"type": "attachment", "attachment": {
+        "type": "queued_command", "prompt": "fork it", "origin": {"kind": "task-notification"}}})
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(json.dumps(r) for r in rows))
+    if owner_and_spawns(path) != ("then make a new session", 0):
+        bad += 1
+        print("WRONG mid-task message:", owner_and_spawns(path))
+    os.remove(path)
     # The real table: every ADR it names exists, every prefix is a path.
     adr_dir = os.path.join(ROOT, "docs", "adr")
     have = {int(f[:4]) for f in os.listdir(adr_dir) if f[:4].isdigit()}
