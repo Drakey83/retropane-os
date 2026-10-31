@@ -806,7 +806,7 @@ mod image {
         };
         let mut card_tried = false;
         let (Some(shell), Some(frame)) = (
-            SHELL.put_with(|| Shell::new(rp_today::shell_fonts(), icons, true)),
+            SHELL.put_in(|m| Shell::new_in(m, rp_today::shell_fonts(), icons, true)),
             FRAME.put_with(Frame::new),
         ) else {
             crash(format_args!("started twice"))

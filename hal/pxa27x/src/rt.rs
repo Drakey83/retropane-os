@@ -1327,6 +1327,27 @@ impl<T> Slot<T> {
     }
 }
 
+impl<T> Slot<T> {
+    /// Makes the object with `init` in the slot itself (`init` writes it
+    /// through the `MaybeUninit` and returns it), for objects too big to
+    /// be made on the stack and moved (the shell, 7.6 KB: `put_with` took
+    /// a 15.8 KB frame for it); `None` if the slot was filled already.
+    #[inline(never)]
+    pub fn put_in(
+        &'static self,
+        init: impl FnOnce(&'static mut core::mem::MaybeUninit<T>) -> &'static mut T,
+    ) -> Option<&'static mut T> {
+        let was = irq_save();
+        let filled = self.filled.replace(true);
+        irq_restore(was);
+        if filled {
+            return None;
+        }
+        // SAFETY: as `put_with`: the only reference ever made.
+        Some(init(unsafe { &mut *self.value.get() }))
+    }
+}
+
 /// The SPSR at the last fault, kept by its exception entry.
 #[unsafe(export_name = "rp_fault_spsr")]
 static mut FAULT_SPSR: u32 = 0;

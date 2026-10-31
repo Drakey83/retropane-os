@@ -515,7 +515,30 @@ impl Shell {
     /// The Today screen, all of it to be drawn.
     #[must_use]
     pub fn new(fonts: Fonts, icons: Icons, dev_exit: bool) -> Self {
-        let mut s = Self {
+        let mut s = Self::make(fonts, icons, dev_exit);
+        s.dirty(Rect::new(0, 0, W, H));
+        s
+    }
+
+    /// [`Shell::new`] made straight into `slot` (the device's, in `.bss`):
+    /// the Shell is 7.6 KB, and made on the stack and moved it took a
+    /// 15.8 KB frame at start, which with `main`'s 8.7 KB overflowed the
+    /// image's stack (today-0036, -0037 on the X51v).
+    pub fn new_in(
+        slot: &mut core::mem::MaybeUninit<Self>,
+        fonts: Fonts,
+        icons: Icons,
+        dev_exit: bool,
+    ) -> &mut Self {
+        let s = slot.write(Self::make(fonts, icons, dev_exit));
+        s.dirty(Rect::new(0, 0, W, H));
+        s
+    }
+
+    /// Every field's start.
+    #[inline(always)]
+    fn make(fonts: Fonts, icons: Icons, dev_exit: bool) -> Self {
+        Self {
             fonts,
             icons,
             dev_exit,
@@ -581,9 +604,7 @@ impl Shell {
             layer_was: false,
             band: None,
             reveal_glide: true,
-        };
-        s.dirty(Rect::new(0, 0, W, H));
-        s
+        }
     }
 
     /// The focused target, if the D-pad has been used.
