@@ -1911,6 +1911,29 @@ mod image {
                         }
                     } else {
                         shell.net_answer(true, &net_buf[..l]);
+                        // A radar refresh kept frames by their time (P7):
+                        // each moved forward to its new place, in order
+                        // (every source at or after its frame).
+                        if let Some(m) = shell.take_radar_moves() {
+                            let mut kept = 0;
+                            for (i, &j) in m.iter().enumerate() {
+                                let j = usize::from(j);
+                                if j < 8 && j >= i {
+                                    if j != i {
+                                        rain_all.copy_within(
+                                            j * view_px..(j + 1) * view_px,
+                                            i * view_px,
+                                        );
+                                    }
+                                    kept += 1;
+                                }
+                            }
+                            radar_shown = None;
+                            let _ = writeln!(
+                                RunLog,
+                                "radar: {kept} frames kept by their time, the rest asked"
+                            );
+                        }
                     }
                     let after = shell.forecast();
                     if *after != before {

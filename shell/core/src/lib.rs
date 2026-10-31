@@ -574,6 +574,11 @@ pub struct Shell {
     tile_k: u16,
     radar_map: bool,
     radar_done: u8,
+    /// A refresh of the radar for the same place (its map and frames kept
+    /// until the new list says which still hold), and the frames moved by
+    /// their time for the device to apply (P7: [`Shell::take_radar_moves`]).
+    radar_refresh: bool,
+    radar_moves: Option<[u8; 8]>,
     radar_asked: u32,
     /// The default icon pack's offset asked next ([`Ask::Pack`]).
     pack_at: u32,
@@ -689,6 +694,8 @@ macro_rules! shell_start {
             tile_k: 0,
             radar_map: false,
             radar_done: 0,
+            radar_refresh: false,
+            radar_moves: None,
             radar_asked: 0,
             pack_at: 0,
             station: None,

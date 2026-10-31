@@ -2091,3 +2091,63 @@ fn the_busiest_frame_leaves_a_quarter_of_the_frame_spare() {
         most.1
     );
 }
+
+#[test]
+fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
+    // P7, by key: ten minutes on, RainViewer's list has moved on by one
+    // frame; the map and the frames still listed are kept (moved forward
+    // by the device), so 9 tiles are asked, not 81.
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    s.wset.places[0].lat = 30_664;
+    s.wset.places[0].lon = -97_922;
+    s.set_tab(weather_app::RADAR);
+    s.tick(s.now + 10);
+    let all = |s: &mut Shell| {
+        let mut n = 0;
+        while let Some(q) = s.next_ask() {
+            assert_eq!(q.ask, Ask::Tile);
+            n += 1;
+            s.net_answer(true, b"");
+        }
+        n
+    };
+    let q = s.next_ask().expect("the frames");
+    assert_eq!(q.ask, Ask::Frames);
+    s.net_answer(true, b"100 200 300 400");
+    assert_eq!(all(&mut s), 9 * 5);
+    assert_eq!(s.take_radar_moves(), None, "nothing kept the first time");
+    // Ten minutes on: the same place.
+    s.tick(s.now + 600_001);
+    let q = s.next_ask().expect("the frames again");
+    assert_eq!(q.ask, Ask::Frames);
+    assert!(s.radar_real().is_some(), "still shown while it asks");
+    s.net_answer(true, b"200 300 400 500");
+    let m = s.take_radar_moves().expect("frames kept");
+    assert_eq!(&m[..4], &[1, 2, 3, u8::MAX]);
+    assert!(
+        matches!(s.radar_real(), Some(Some(f)) if f < 3),
+        "the frame shown is a kept one: {:?}",
+        s.radar_real()
+    );
+    let tiles: Vec<Vec<u8>> = core::iter::from_fn(|| {
+        let q = s.next_ask()?;
+        let l = q.line().to_vec();
+        s.net_answer(true, b"");
+        Some(l)
+    })
+    .collect();
+    assert_eq!(tiles.len(), 9, "only the new frame's tiles");
+    assert!(tiles[0].starts_with(b"RPNET TILE RAIN 3 "));
+    assert_eq!(s.radar_frames(), 4);
+    // Another place: nothing kept.
+    s.wset.places[0].lat = 47_606;
+    s.tick(s.now + 10);
+    let q = s.next_ask().expect("the frames for the new place");
+    assert_eq!(q.ask, Ask::Frames);
+    s.net_answer(true, b"200 300 400 500");
+    assert_eq!(s.take_radar_moves(), None);
+    assert_eq!(all(&mut s), 9 * 5);
+}
