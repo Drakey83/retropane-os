@@ -526,6 +526,14 @@ Full numbers in `docs/hw/2700g.md` "Run WG on the X51v". In plain words:
     Reveal looks good but he saw its tears ("can we chase down the tears
     though?": R134, sheet `r134-reveal-tears.md`); Cascade and the fling
     look good; M7: the page held still and right in all three steps.
+  - Run 3 (gpubench-0251), his eye: step 8 again, 4-pixel steps
+    jittery and 1-pixel steps smooth; **step 6's top line flashing**: the
+    unattended hand-offs swap the composed screen and the layer every few
+    refreshes (~10 a second), and their pictures differ (the display's mix
+    against the 2D engine's "over", at most 10 of 255 a channel), which
+    shows at that rate; at one swap every half second (step 9) nothing
+    showed. A real hand-off happens once a movement. The cure is the 2D
+    hand-back made to match the display's mix (R135).
 
 ## Votes needed (results are not decisions)
 

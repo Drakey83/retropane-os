@@ -36,7 +36,7 @@ fn states() -> Vec<(&'static str, Win, (u32, u32))> {
 fn every_state_reads_inside_its_picture_on_a_16_byte_start() {
     for (name, s, (pw, ph)) in states() {
         assert!(
-            s.w >= 2 && s.h >= 2 && s.w % 2 == 0 && s.h % 2 == 0,
+            s.w >= 2 && s.h >= 2 && s.w.is_multiple_of(2) && s.h.is_multiple_of(2),
             "{name} {s:?}"
         );
         assert!(s.x + s.w <= W && s.y + s.h <= H, "{name} on screen {s:?}");
@@ -67,7 +67,7 @@ fn every_state_reads_inside_its_picture_on_a_16_byte_start() {
         let s = strip1_on(p, 8);
         assert_eq!(s.start(0, STRIP_W * 2, 2) % 16, 0);
         assert_eq!(s.col, s.x + p);
-        assert!(s.x <= 7 && s.w >= W - 8 && s.w % 2 == 0 && s.col + s.w <= STRIP_W);
+        assert!(s.x <= 7 && s.w >= W - 8 && s.w.is_multiple_of(2) && s.col + s.w <= STRIP_W);
     }
 }
 
