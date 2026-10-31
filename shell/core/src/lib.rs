@@ -352,6 +352,9 @@ const HERO: Rect = Rect::new(16, 52, 448, 196);
 /// keeps its size, the box moved down); the picture is centred vertically
 /// in it and sits against its right side.
 const HERO_ICON: Rect = Rect::new(16 + 448 + 8 - 250, 38, 250, 176);
+/// The big pictures' height at most (they fit the hero's 250 x 176 box):
+/// the picture store's slots for them are that, not square.
+pub const HERO_PIC_H: u16 = HERO_ICON.h;
 /// The hero's place line stops short of the icon.
 const HERO_LABEL_W: u16 = HERO_ICON.x - HERO.x - 28;
 /// The date at the hero's bottom right (its text depends on the day).
@@ -558,9 +561,8 @@ pub struct Shell {
     /// The weather alerts in force for the place shown.
     alerts: [rp_weather::alerts::Alert; rp_weather::alerts::ALERTS_MAX],
     n_alerts: u8,
-    /// Hourly's line pieces for the 2D path ([`weather_app::curve_sprite`]),
-    /// made at start; kept once here, not in every icon pack's set.
-    curve: [Option<&'static Image>; weather_app::CURVE_SPRITES],
+    /// Hourly's graph, one store picture ([`Shell::paint_graph`]).
+    graph: Option<Pic>,
     /// The Station screen's dials (painted at start by the device).
     dials: station::Dials,
     /// The real radar: its frames' times (Unix), how many, the place it
@@ -679,7 +681,7 @@ macro_rules! shell_start {
             place_menu: false,
             alerts: @each rp_weather::alerts::Alert::NONE,
             n_alerts: 0,
-            curve: [None; weather_app::CURVE_SPRITES],
+            graph: None,
             dials: station::Dials::NONE,
             radar_times: [0; 8],
             radar_n: 0,
@@ -1059,9 +1061,28 @@ impl Shell {
         self.dirty(Rect::new(0, 0, W, H));
     }
 
-    /// Hourly's line pieces (made at start by the device).
-    pub fn set_curve(&mut self, c: [Option<&'static Image>; weather_app::CURVE_SPRITES]) {
-        self.curve = c;
+    /// Hourly's graph picture, painted by the device with
+    /// [`Shell::paint_graph`] for the forecast [`Shell::graph_key`] names.
+    pub fn set_graph(&mut self, pic: Option<Pic>) {
+        if self.graph != pic {
+            self.graph = pic;
+            self.dirty(Rect::new(0, 0, W, H));
+        }
+    }
+
+    /// Hourly's graph picture held.
+    #[must_use]
+    pub fn graph(&self) -> Option<Pic> {
+        self.graph
+    }
+
+    /// What Hourly's graph picture shows (its hours' temperatures): a new
+    /// key is a new picture to paint.
+    #[must_use]
+    pub fn graph_key(&self) -> u32 {
+        self.wx.hours[..12].iter().fold(0x811C_9DC5u32, |h, x| {
+            (h ^ u32::from(x.temp.cast_unsigned())).wrapping_mul(0x0100_0193)
+        })
     }
 
     /// An icon pack is being read from the card (about two seconds the
@@ -2110,7 +2131,7 @@ impl Shell {
         if let Some(pic) = self.icons.big(icon) {
             f.push(Cmd::Pic {
                 x: HERO_ICON.x + HERO_ICON.w.saturating_sub(pic.w),
-                y: HERO_ICON.y + HERO_ICON.h.saturating_sub(pic.h) / 2,
+                y: (HERO_ICON.y + HERO_ICON.h.saturating_sub(pic.h) / 2).cast_signed(),
                 pic,
             });
         }
@@ -2140,7 +2161,8 @@ impl Shell {
             if let Some(pic) = self.icons.card[usize::from(Icon::of(d.sky).id() - 1)] {
                 f.push(Cmd::Pic {
                     x: r.x + r.w.saturating_sub(pic.w) / 2,
-                    y: (r.y + 36).saturating_sub(66) + 66u16.saturating_sub(pic.h) / 2,
+                    y: ((r.y + 36).saturating_sub(66) + 66u16.saturating_sub(pic.h) / 2)
+                        .cast_signed(),
                     pic,
                 });
             }

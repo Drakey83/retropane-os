@@ -103,8 +103,6 @@ mod image {
     static BURST: rt::Slot<[Latency; 3]> = rt::Slot::new();
     /// The wallpaper's conversion rows (the 16-bit comparison's dither).
     static WALL: rt::Slot<WallScratch> = rt::Slot::new();
-    static CURVE_IMGS: rt::Slot<[rp_draw::Image; rp_shell::weather_app::CURVE_SPRITES]> =
-        rt::Slot::new();
     static DIAL_IMGS: rt::Slot<[rp_draw::Image; rp_shell::station::DIALS.len()]> = rt::Slot::new();
     /// The SD card and the CF card: in `.bss`, not `main`'s frame.
     static CF: rt::Slot<Option<(CfDisk, u32)>> = rt::Slot::new();
@@ -251,12 +249,6 @@ mod image {
             shell.page_band(tab, f, top, n);
             key = rp_today::frame_key(f, key);
             let _ = cpu.draw(f);
-            // Hourly's line and band, painted per pixel into these rows.
-            if tab == 1 {
-                let r = rp_gfx::Rect::new(0, u32::from(top), W as u32, u32::from(n));
-                let rows = (i32::from(top), i32::from(top + n));
-                cpu.paint(r, |px, stride| shell.paint_hourly(px, stride, rows));
-            }
             top += n;
             rt::check_in();
         }
@@ -428,11 +420,19 @@ mod image {
     /// plus a spare, so a pick replaces a picture with no gap (the sheet's
     /// 250 x2, 66 x8, 40 x16; Hourly's 160 x6, not x2: every hour's card
     /// picture is kept, so a pick never waits on a decode, P1).
-    const PIC_CLASSES: [(u16, u8); 4] = [
-        (rp_shell::Size::Hero.side(), 2),
-        (rp_shell::Size::Mid.side(), 6),
-        (rp_shell::Size::Card.side(), 8),
-        (rp_shell::Size::Row.side(), 16),
+    /// The big pictures are fitted inside 250 x 176 (the hero's box), so
+    /// their slots are that, not square (-148 KB). Hourly's graph is one
+    /// picture of its own (its line and band, painted once a forecast).
+    const PIC_CLASSES: [(u16, u16, u8); 5] = [
+        (rp_shell::Size::Hero.side(), rp_shell::HERO_PIC_H, 2),
+        (rp_shell::Size::Mid.side(), rp_shell::Size::Mid.side(), 6),
+        (rp_shell::Size::Card.side(), rp_shell::Size::Card.side(), 8),
+        (rp_shell::Size::Row.side(), rp_shell::Size::Row.side(), 16),
+        (
+            rp_shell::weather_app::GRAPH_PIC.0,
+            rp_shell::weather_app::GRAPH_PIC.1,
+            1,
+        ),
     ];
     /// The keeper's tag while no pack is in yet (apart from every pack).
     const NOT_YET: u8 = 0xFE;
@@ -779,7 +779,6 @@ mod image {
         let (pics_px, rest) = pool.split_at_mut(rp_draw::pics::Pics::words(&PIC_CLASSES));
         let (wall_words, rest) = rest.split_at_mut(rp_today::WALLPAPER_BYTES.div_ceil(4));
         let (radar_px, rest) = rest.split_at_mut(rp_today::RADAR_WORDS);
-        let (curve_px, rest) = rest.split_at_mut(rp_shell::weather_app::CURVE_WORDS);
         let (dial_px, rest) = rest.split_at_mut(rp_shell::station::DIAL_WORDS);
         let (map_words, rest) = rest.split_at_mut(rp_today::MAP_BYTES.div_ceil(4));
         // The plane path's page drawing: the CPU's layer (ARGB8888) and the
@@ -895,12 +894,6 @@ mod image {
         if let Some(imgs) = RADAR_IMGS.put_with(|| [rp_today::NO_IMAGE; 3]) {
             icons.radar = rp_today::radar_into(radar_px, imgs);
         }
-        let curve = match CURVE_IMGS
-            .put_with(|| [rp_today::NO_IMAGE; rp_shell::weather_app::CURVE_SPRITES])
-        {
-            Some(imgs) => rp_today::curve_into(curve_px, imgs),
-            None => [None; rp_shell::weather_app::CURVE_SPRITES],
-        };
         let _ = writeln!(
             RunLog,
             "radar cells drawn in {} us",
@@ -932,7 +925,6 @@ mod image {
         ) else {
             crash(format_args!("started twice"))
         };
-        shell.set_curve(curve);
         shell.set_dials(dials);
 
         // The plane path: the pages' client and their pictures, drawn once
@@ -953,6 +945,21 @@ mod image {
             pics.slots(),
             rp_draw::pics::Pics::words(&PIC_CLASSES) * 4,
             shell.wanted().count(),
+        );
+        // Hourly's graph: one store picture painted once a forecast, drawn
+        // the same on the planes and the 2D path.
+        let mut graph_key: Option<u32> = None;
+        let t0 = rt::ticks();
+        rp_today::keep_graph(shell, pics, &mut graph_key);
+        let _ = writeln!(
+            RunLog,
+            "graph: Hourly's line painted in {} us ({})",
+            rt::ticks().wrapping_sub(t0) / 13 * 4,
+            if shell.graph().is_some() {
+                "in the store"
+            } else {
+                "no slot"
+            },
         );
         let mut pages: [Page; 3] = [None; 3];
         if let Some(pc) = pc {
@@ -1685,6 +1692,17 @@ mod image {
                 app_check = true;
             }
             if still {
+                // A new forecast's hours: Hourly's graph painted again.
+                let t0 = rt::ticks();
+                if rp_today::keep_graph(shell, pics, &mut graph_key) {
+                    pages_check = true;
+                    app_check = true;
+                    let _ = writeln!(
+                        RunLog,
+                        "graph: Hourly's line painted again in {} us",
+                        rt::ticks().wrapping_sub(t0) / 13 * 4
+                    );
+                }
                 let tag = match chosen {
                     Some((n, _)) => n,
                     None if def_index.is_some() => 0,

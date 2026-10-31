@@ -518,11 +518,14 @@ pub const BUDGETS: &[Budget] = &[
     // KiB decoding the real radar's PNG tiles; 74.9 KiB with it). Then 80
     // -> 84 KiB (option C, 2026-10-31): the picture store's table (96
     // slots, 1.9 KiB) beside R146's pack tables until they go (82.0 KiB
-    // measured); back down when they do.
+    // measured); back down when they do. Then 84 -> 76 KiB (option C's
+    // step 6): the pack tables, the built-in pictures' and the 49 line
+    // pieces' descriptions gone, a frame 208 commands not 256 (68.1 KiB
+    // measured, + ~11%).
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 84 * 1024,
+        max_zero: 76 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D
@@ -540,12 +543,13 @@ pub const BUDGETS: &[Budget] = &[
     // KiB measured, + ~8%. Zeroed RAM 44 -> 48 KiB on 2026-10-31 (test
     // image): a frame holds 256 commands, not 160 (Hourly drawn on screen 0
     // needs 185 with its line pieces; 160 dropped its tabs without a word),
-    // the 2D renderer's per-command arrays with it; 45.4 KiB measured. Comes
-    // down when Hourly's graph is one picture (option C, step 2).
+    // the 2D renderer's per-command arrays with it; 45.4 KiB measured.
+    // Then 48 -> 46 KiB (option C's step 6: Hourly's graph one picture, a
+    // frame 208 commands): 43.3 KiB measured, + ~6%.
     Budget {
         image: "rp-scene",
         max_load: 165 * 1024,
-        max_zero: 48 * 1024,
+        max_zero: 46 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),

@@ -213,8 +213,9 @@ pub enum Cmd {
     Pic {
         /// Left edge.
         x: u16,
-        /// Top edge.
-        y: u16,
+        /// Top edge: above the top (negative), the picture's rows there
+        /// are cut (a picture scrolled partly off).
+        y: i16,
         /// The picture.
         pic: pics::Pic,
     },
@@ -253,7 +254,15 @@ impl Cmd {
             Cmd::Fill { r, .. } | Cmd::HGradient { r, .. } | Cmd::Outline { r, .. } => r,
             Cmd::Clip { .. } => Rect::new(0, 0, 0, 0),
             Cmd::Image { x, y, img } => Rect::new(x, y, img.w, img.h),
-            Cmd::Pic { x, y, pic } => Rect::new(x, y, pic.w, pic.h),
+            Cmd::Pic { x, y, pic } => {
+                let cut = y.min(0).unsigned_abs();
+                Rect::new(
+                    x,
+                    y.max(0).cast_unsigned(),
+                    pic.w,
+                    pic.h.saturating_sub(cut),
+                )
+            }
             // The line box with a margin: glyphs may overhang their advance
             // (italics, `left` < 0) by a few pixels.
             Cmd::Text {
@@ -277,10 +286,13 @@ impl Cmd {
 const TEXT_MARGIN: u16 = 4;
 
 /// Commands a frame holds: the busiest frame the shell's tests draw (with a
-/// picture in every slot and Hourly's line pieces, as on the X51v) is 209
-/// commands; at 160, Hourly drawn on screen 0 (185) lost its scroll bar,
-/// tabs and softkeys without a word (emu-today, 2026-10-31).
-pub const MAX_CMDS: usize = 256;
+/// picture in every slot, as on the X51v) is 155 commands (Hourly scrolled
+/// with the menu open), a quarter spare (rp-shell's test holds it). It was
+/// 256 while Hourly's line was 49 pieces on the 2D path (209 commands); at
+/// 160, Hourly drawn on screen 0 (185) lost its scroll bar, tabs and
+/// softkeys without a word (emu-today, 2026-10-31). The line is one
+/// picture since option C's step 6.
+pub const MAX_CMDS: usize = 208;
 /// Bytes of text a frame holds.
 pub const MAX_TEXT: usize = 1024;
 /// Dirty rectangles a frame keeps apart; more merge into their union.

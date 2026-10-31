@@ -197,7 +197,7 @@ fn hostile_frames_draw_nothing_wrong() {
 #[test]
 fn a_store_picture_draws_as_the_same_image_and_a_stale_one_draws_nothing() {
     use rp_draw::pics::Pics;
-    let pics = Pics::new(Box::leak(vec![0; 4].into_boxed_slice()), &[(2, 1)]);
+    let pics = Pics::new(Box::leak(vec![0; 4].into_boxed_slice()), &[(2, 2, 1)]);
     let pic = pics.alloc(ICON.w, ICON.h).unwrap();
     assert!(pics.write(pic, |px| px.copy_from_slice(ICON.px)));
     let draw = |c: Cmd, store: Option<&Pics<'static>>| {

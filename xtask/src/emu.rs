@@ -11350,7 +11350,7 @@ pub(crate) fn today_screens(
     gpu.set_pics(preview_pics());
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
-    shell.set_curve(today_curve());
+    rp_today::keep_graph(&mut shell, preview_pics(), &mut None);
     shell.set_dials(today_dials());
     shell.set_time(rp_shell::Time {
         hour: 12,
@@ -11394,7 +11394,7 @@ pub(crate) fn today_screens(
 
 /// Hourly as the X51v shows it on the plane path (the preview's device
 /// shot): screen 0 the app's chrome through the 2D engine model, the page
-/// the CPU's picture (bands of the page, Hourly's line painted per pixel,
+/// the CPU's picture (bands of the page, Hourly's graph its one picture,
 /// out to ARGB4444 dithered as the image writes it) blended over it in the
 /// page's window, at rest (ARGB8888, as the image writes its pages).
 pub(crate) fn today_hourly_on_planes(wall: &[u8], icons: Option<rp_shell::Icons>) -> Vec<u8> {
@@ -11403,7 +11403,7 @@ pub(crate) fn today_hourly_on_planes(wall: &[u8], icons: Option<rp_shell::Icons>
 
 /// Weather's page `tab` as the X51v shows it on the plane path: the app's
 /// chrome on screen 0 and the page's picture blended over it, Hourly's at
-/// ARGB8888 with its line painted per pixel, the others at ARGB4444
+/// ARGB8888 with its graph picture, the others at ARGB4444
 /// dithered (the image's `build_page`). `alerts`: the NWS answer the
 /// header shows (the previews' canned one), or none (the image with no
 /// link, as emu-today runs it).
@@ -11433,7 +11433,7 @@ pub(crate) fn today_page_on_planes(
     // set at a time: making the image's would give the caller's back).
     let icons = icons.unwrap_or_else(today_icons);
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), icons, true);
-    shell.set_curve(today_curve());
+    rp_today::keep_graph(&mut shell, preview_pics(), &mut None);
     shell.set_dials(today_dials());
     shell.set_time(rp_shell::Time {
         hour: 12,
@@ -11491,13 +11491,6 @@ pub(crate) fn today_page_on_planes(
             let n = rp_today::PAGE_BAND.min(rows as u16 - top);
             shell.page_band(tab, &mut f, top, n);
             let _ = cpu.draw(&f);
-            if tab == 1 {
-                let band = (i32::from(top), i32::from(top + n));
-                cpu.paint(
-                    rp_gfx::Rect::new(0, u32::from(top), 480, u32::from(n)),
-                    |p, stride| shell.paint_hourly(p, stride, band),
-                );
-            }
             top += n;
         }
         if tab != 1 {
@@ -11621,7 +11614,7 @@ pub(crate) fn today_live(
     gpu.set_pics(preview_pics());
     rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
-    shell.set_curve(today_curve());
+    rp_today::keep_graph(&mut shell, preview_pics(), &mut None);
     shell.set_dials(today_dials());
     shell.set_time(rp_shell::Time {
         hour: 12,
@@ -11689,12 +11682,14 @@ pub(crate) fn today_live(
 
 thread_local! {
     /// The previews' picture store (`rp_draw::pics`): a slot for every
-    /// condition at every size, made once a thread and kept (the renderers
+    /// condition at every size and Hourly's graph, made once a thread and kept (the renderers
     /// hold it for good, as the image's do). It holds one set at a time:
     /// [`preview_set`] gives the last one back.
     static PREVIEW_PICS: &'static rp_draw::pics::Pics<'static> = {
-        let classes: Vec<(u16, u8)> =
-            rp_shell::Size::ALL.iter().map(|z| (z.side(), 22)).collect();
+        let mut classes: Vec<(u16, u16, u8)> =
+            rp_shell::Size::ALL.iter().map(|z| (z.side(), z.side(), 22)).collect();
+        let (gw, gh) = rp_shell::weather_app::GRAPH_PIC;
+        classes.push((gw, gh, 1));
         Box::leak(Box::new(rp_draw::pics::Pics::new(
             Box::leak(vec![0; rp_draw::pics::Pics::words(&classes)].into_boxed_slice()),
             &classes,
@@ -11797,16 +11792,6 @@ fn today_dials() -> rp_shell::station::Dials {
         Box::leak(vec![0; rp_shell::station::DIAL_WORDS].into_boxed_slice()),
         Box::leak(Box::new(
             [rp_today::NO_IMAGE; rp_shell::station::DIALS.len()],
-        )),
-    )
-}
-
-/// Hourly's line pieces as the image makes them.
-fn today_curve() -> [Option<&'static rp_draw::Image>; rp_shell::weather_app::CURVE_SPRITES] {
-    rp_today::curve_into(
-        Box::leak(vec![0; rp_shell::weather_app::CURVE_WORDS].into_boxed_slice()),
-        Box::leak(Box::new(
-            [rp_today::NO_IMAGE; rp_shell::weather_app::CURVE_SPRITES],
         )),
     )
 }

@@ -50,7 +50,8 @@ impl Pic {
 /// whether a picture is in it.
 struct Slot<'a> {
     px: RefCell<&'a mut [Argb]>,
-    side: u16,
+    w: u16,
+    h: u16,
     era: Cell<u16>,
     used: Cell<bool>,
     /// Read since it was made: its pixels are final (a renderer may hold a
@@ -64,12 +65,12 @@ pub struct Pics<'a> {
 }
 
 impl<'a> Pics<'a> {
-    /// Carves `block` into `classes` (a side, the largest square picture a
-    /// slot of the class takes, and how many such slots); slots that don't
+    /// Carves `block` into `classes` (the largest picture a slot of the
+    /// class takes, width and height, and how many such slots); slots that don't
     /// fit in `block`, or past [`SLOTS`], are left out ([`Self::slots`]
     /// says how many were made).
     #[must_use]
-    pub fn new(block: &'a mut [Argb], classes: &[(u16, u8)]) -> Self {
+    pub fn new(block: &'a mut [Argb], classes: &[(u16, u16, u8)]) -> Self {
         let mut p = Self {
             slots: [const { None }; SLOTS],
         };
@@ -83,18 +84,18 @@ impl<'a> Pics<'a> {
     pub fn new_in<'s>(
         slot: &'s mut core::mem::MaybeUninit<Self>,
         block: &'a mut [Argb],
-        classes: &[(u16, u8)],
+        classes: &[(u16, u16, u8)],
     ) -> &'s mut Self {
         let p = rp_hal_mem::in_place!(slot, Pics { slots: @each None });
         p.carve(block, classes);
         p
     }
 
-    fn carve(&mut self, block: &'a mut [Argb], classes: &[(u16, u8)]) {
+    fn carve(&mut self, block: &'a mut [Argb], classes: &[(u16, u16, u8)]) {
         let mut rest = block;
         let mut n = 0;
-        for &(side, count) in classes {
-            let words = usize::from(side) * usize::from(side);
+        for &(w, h, count) in classes {
+            let words = usize::from(w) * usize::from(h);
             for _ in 0..count {
                 if n == SLOTS || rest.len() < words {
                     break;
@@ -103,7 +104,8 @@ impl<'a> Pics<'a> {
                 rest = more;
                 self.slots[n] = Some(Slot {
                     px: RefCell::new(mine),
-                    side,
+                    w,
+                    h,
                     era: Cell::new(0),
                     used: Cell::new(false),
                     sealed: Cell::new(false),
@@ -115,12 +117,12 @@ impl<'a> Pics<'a> {
 
     /// Words a store of `classes` needs.
     #[must_use]
-    pub const fn words(classes: &[(u16, u8)]) -> usize {
+    pub const fn words(classes: &[(u16, u16, u8)]) -> usize {
         let mut i = 0;
         let mut n = 0;
         while i < classes.len() {
-            let (side, count) = classes[i];
-            n += side as usize * side as usize * count as usize;
+            let (w, h, count) = classes[i];
+            n += w as usize * h as usize * count as usize;
             i += 1;
         }
         n
@@ -138,18 +140,17 @@ impl<'a> Pics<'a> {
         self.slots.iter().flatten().filter(|s| s.used.get()).count()
     }
 
-    /// Room for a `w` x `h` picture: the free slot with the smallest side
+    /// Room for a `w` x `h` picture: the free slot with the least room
     /// that takes it; `None` when every such slot is in use. Its pixels are
     /// cleared (see-through) until written.
     pub fn alloc(&self, w: u16, h: u16) -> Option<Pic> {
-        let need = w.max(h);
         let (k, s) = self
             .slots
             .iter()
             .enumerate()
             .filter_map(|(k, s)| Some((k, s.as_ref()?)))
-            .filter(|(_, s)| !s.used.get() && s.side >= need)
-            .min_by_key(|(_, s)| s.side)?;
+            .filter(|(_, s)| !s.used.get() && s.w >= w && s.h >= h)
+            .min_by_key(|(_, s)| u32::from(s.w) * u32::from(s.h))?;
         s.used.set(true);
         s.sealed.set(false);
         let era = s.era.get().wrapping_add(1);
@@ -233,7 +234,7 @@ impl<'a> Pics<'a> {
 mod tests {
     use super::*;
 
-    const CLASSES: [(u16, u8); 2] = [(4, 2), (8, 1)];
+    const CLASSES: [(u16, u16, u8); 2] = [(4, 4, 2), (8, 8, 1)];
 
     fn store() -> Pics<'static> {
         Pics::new(

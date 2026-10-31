@@ -205,7 +205,7 @@ const PACK_ENTRY: usize = 10;
 /// A pack's big pictures, from its table (option C: a pack keeps only
 /// its 250 px pictures; a pack with every size still reads, its other
 /// pictures skipped): each condition's size and where its stream is.
-/// Nothing in the table is trusted: sizes over the big class, streams
+/// Nothing in the table is trusted: sizes over the hero's 250 x 176, streams
 /// past the file's end or overlapping are refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PackIndex {
@@ -256,7 +256,7 @@ impl PackIndex {
             let len = u32::from_le_bytes([e[6], e[7], e[8], e[9]]);
             if e[0] == 0 {
                 let i = usize::from(e[1].checked_sub(1)?);
-                if i >= 22 || w == 0 || h == 0 || w > side || h > side || len == 0 {
+                if i >= 22 || w == 0 || h == 0 || w > side || h > rp_shell::HERO_PIC_H || len == 0 {
                     return None;
                 }
                 big[i] = Big {
@@ -287,8 +287,9 @@ impl PackIndex {
     }
 }
 
-/// Words a big picture takes at most (the maker's scratch).
-pub const BIG_WORDS: usize = 250 * 250;
+/// Words a big picture takes at most (the maker's scratch): 250 x 176,
+/// the hero's box.
+pub const BIG_WORDS: usize = 250 * rp_shell::HERO_PIC_H as usize;
 
 /// Makes a pack's pictures at the sizes the shell shows: a condition's big
 /// picture inflated once into the scratch (held for its other sizes), then
@@ -551,36 +552,28 @@ fn blend(m: u32, c: u32) -> u32 {
     ch(16) | ch(8) | ch(0)
 }
 
-/// Hourly's line pieces drawn into `px` (at least
-/// [`rp_shell::weather_app::CURVE_WORDS`]), described in `imgs`: the
-/// shell's set; too little room gives none (a stepped line).
-#[must_use]
-pub fn curve_into(
-    px: &'static mut [u32],
-    imgs: &'static mut [Image; rp_shell::weather_app::CURVE_SPRITES],
-) -> [Option<&'static Image>; rp_shell::weather_app::CURVE_SPRITES] {
-    use rp_shell::weather_app::{CURVE_SPRITES, CURVE_W, CURVE_WORDS, curve_h, curve_sprite};
-    let mut set = [None; CURVE_SPRITES];
-    if px.len() < CURVE_WORDS {
-        return set;
+/// Hourly's graph picture kept for the forecast shown (`painted`: the
+/// key it was painted for): when the forecast's hours change, the old
+/// picture is given back and a new one painted into the store
+/// (`Shell::paint_graph`, one slot of `GRAPH_PIC`). True if it changed.
+pub fn keep_graph(shell: &mut rp_shell::Shell, pics: &Pics, painted: &mut Option<u32>) -> bool {
+    let key = shell.graph_key();
+    if *painted == Some(key) && shell.graph().is_some_and(|p| pics.is_live(p)) {
+        return false;
     }
-    let mut rest = px;
-    for (k, slot) in imgs.iter_mut().enumerate() {
-        let h = curve_h(k);
-        let (mine, more) = rest.split_at_mut(usize::from(CURVE_W) * usize::from(h));
-        rest = more;
-        curve_sprite(mine, k);
-        *slot = Image {
-            w: CURVE_W,
-            h,
-            px: mine,
-        };
+    if let Some(old) = shell.graph() {
+        pics.free(old);
+        shell.set_graph(None);
     }
-    let imgs: &'static [Image; CURVE_SPRITES] = imgs;
-    for (s, img) in set.iter_mut().zip(imgs.iter()) {
-        *s = Some(img);
+    let (w, h) = rp_shell::weather_app::GRAPH_PIC;
+    let pic = pics.alloc(w, h);
+    if let Some(p) = pic {
+        let s: &rp_shell::Shell = shell;
+        pics.write(p, |px| s.paint_graph(px));
     }
-    set
+    shell.set_graph(pic);
+    *painted = Some(key);
+    true
 }
 
 /// The Station screen's dials painted into `px` (at least
@@ -984,7 +977,7 @@ pub fn frame_key(f: &rp_draw::Frame, mut h: u32) -> u32 {
             }
             Cmd::Pic { x, y, pic } => {
                 mix(7);
-                mix(u32::from(x) | u32::from(y) << 16);
+                mix(u32::from(x) | u32::from(y.cast_unsigned()) << 16);
                 // A store picture's pixels are final once drawn: its handle
                 // (slot and era) names them.
                 mix(pic.key());
@@ -1089,10 +1082,16 @@ mod tests {
         m.forget();
         let s2 = |b: Big| bad.get(b.off as usize..(b.off + b.len) as usize);
         assert!(m.make(3, &index, Size::Card, 4, pics, s2).is_none());
-        // Tables that lie: a picture over the big size, an id past 22.
+        // Tables that lie: a picture over the hero's box, an id past 22.
         let mut over = pack.clone();
         over[PACK_HEAD + 2..PACK_HEAD + 4].copy_from_slice(&251u16.to_le_bytes());
         assert!(PackIndex::read(&over).is_none());
+        let mut tall = pack.clone();
+        tall[PACK_HEAD + 4..PACK_HEAD + 6].copy_from_slice(&177u16.to_le_bytes());
+        assert!(
+            PackIndex::read(&tall).is_none(),
+            "taller than the hero's box"
+        );
         let mut id = pack.clone();
         id[PACK_HEAD + 1] = 23;
         assert!(PackIndex::read(&id).is_none());
@@ -1143,7 +1142,8 @@ mod tests {
     /// A store with a slot for every condition at every size (leaked: it
     /// lives for the test, as the image's lives for the run).
     fn host_store() -> &'static Pics<'static> {
-        let classes: Vec<(u16, u8)> = Size::ALL.iter().map(|z| (z.side(), 22)).collect();
+        let classes: Vec<(u16, u16, u8)> =
+            Size::ALL.iter().map(|z| (z.side(), z.side(), 22)).collect();
         Box::leak(Box::new(Pics::new(
             Box::leak(vec![0; Pics::words(&classes)].into_boxed_slice()),
             &classes,

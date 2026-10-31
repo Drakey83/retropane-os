@@ -20,24 +20,41 @@ static FONT: Font = Font {
 };
 
 /// A picture for every slot: the frame holds as many commands as the
-/// device's, whose packs and line pieces are all there (with none, a test
-/// counted fewer commands than the X51v draws and missed Hourly's 2D frame
-/// overflowing: 185 commands against 160).
+/// device's, whose pictures are all there (with none, a test counted fewer
+/// commands than the X51v draws and missed Hourly's 2D frame overflowing:
+/// 185 commands against 160).
 static PIC: Image = Image {
     w: 4,
     h: 4,
     px: &[0; 16],
 };
 
-/// A store with a 4 px picture for every condition at every size (leaked:
-/// the shell's handles are checked against a live store, as on the X51v).
+thread_local! {
+    /// The store of the shell made last on this thread (the tests'
+    /// renderers draw its pictures).
+    static STORE: core::cell::Cell<Option<&'static rp_draw::pics::Pics<'static>>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// The store of the shell made last.
+fn store() -> &'static rp_draw::pics::Pics<'static> {
+    STORE.with(core::cell::Cell::get).expect("a shell made")
+}
+
+/// A store with a 4 px picture for every condition at every size and room
+/// for Hourly's graph (leaked: the shell's handles are checked against a
+/// live store, as on the X51v).
 fn every_pic() -> Icons {
-    const CLASSES: [(u16, u8); 1] = [(4, 88)];
+    const CLASSES: [(u16, u16, u8); 2] = [
+        (4, 4, 88),
+        (weather_app::GRAPH_PIC.0, weather_app::GRAPH_PIC.1, 1),
+    ];
     let store: &'static rp_draw::pics::Pics<'static> =
         Box::leak(Box::new(rp_draw::pics::Pics::new(
             Box::leak(vec![0; rp_draw::pics::Pics::words(&CLASSES)].into_boxed_slice()),
             &CLASSES,
         )));
+    STORE.with(|s| s.set(Some(store)));
     let mut icons = Icons::NONE;
     for size in Size::ALL {
         for p in icons.of_mut(size) {
@@ -58,7 +75,14 @@ fn shell(dev: bool) -> Shell {
         every_pic(),
         dev,
     );
-    s.set_curve([Some(&PIC); weather_app::CURVE_SPRITES]);
+    // Hourly's graph, painted as the device paints it.
+    let pics = store();
+    let (gw, gh) = weather_app::GRAPH_PIC;
+    let graph = pics.alloc(gw, gh);
+    if let Some(g) = graph {
+        pics.write(g, |px| s.paint_graph(px));
+    }
+    s.set_graph(graph);
     s
 }
 
@@ -306,6 +330,7 @@ fn incremental_frames_match_full_redraws() {
         PlaneFormat::Argb8888,
     );
     let mut s = shell(true);
+    inc.set_pics(store());
     let mut f = Frame::new();
     let mut seed = 0x1234_5678u32;
     let mut next = move || {
@@ -431,6 +456,7 @@ fn incremental_frames_match_full_redraws() {
             w as usize * 4,
             PlaneFormat::Argb8888,
         );
+        full.set_pics(store());
         let mut g = Frame::new();
         s.scene(&mut g);
         g.damage(Rect::new(0, 0, W, H));
@@ -1469,6 +1495,7 @@ fn picture_of(s: &mut Shell, tab: u8) -> Vec<u32> {
             480 * 4,
             PlaneFormat::Argb8888,
         );
+        r.set_pics(store());
         let mut f = Frame::new();
         let mut top = 0;
         while top < rows as u16 {
@@ -1476,13 +1503,6 @@ fn picture_of(s: &mut Shell, tab: u8) -> Vec<u32> {
             s.page_band(tab, &mut f, top, n);
             assert!(!f.overflowed(), "band {top}: {} commands", f.cmds().count());
             r.draw(&f);
-            if tab == 1 {
-                let rows = (i32::from(top), i32::from(top + n));
-                r.paint(
-                    rp_gfx::Rect::new(0, u32::from(top), 480, u32::from(n)),
-                    |px, stride| s.paint_hourly(px, stride, rows),
-                );
-            }
             top += n;
         }
     }
@@ -1505,6 +1525,7 @@ fn page_2d(s: &mut Shell) -> Vec<u32> {
             w as usize * 4,
             PlaneFormat::Argb8888,
         );
+        r.set_pics(store());
         let mut f = Frame::new();
         f.damage(weather_app::PAGE);
         f.clip(Some(weather_app::PAGE));
@@ -1872,14 +1893,17 @@ fn hourlys_line_runs_on_past_its_ends_on_the_curves_slope() {
         let mut s = weather(1);
         s.wx.hours[0].temp = first;
         s.wx.hours[1].temp = second;
-        let stride = usize::from(W);
-        let rows = 600usize;
+        let (stride, rows) = (
+            usize::from(weather_app::GRAPH_PIC.0),
+            usize::from(weather_app::GRAPH_PIC.1),
+        );
         let mut px = vec![0u32; stride * rows];
-        s.paint_hourly(&mut px, stride, (0, rows as i32));
-        // The line's top edge in a column (the first row painted).
+        s.paint_graph(&mut px);
+        // The line's top edge in a column (the first row painted; the
+        // picture starts at the panel's first inner column).
         let top = |x: u16| {
             (0..rows)
-                .find(|&y| px[y * stride + usize::from(x)] != 0)
+                .find(|&y| px[y * stride + usize::from(x - g.x - 1)] != 0)
                 .expect("the line in every column")
         };
         let (edge, inner) = (top(g.x + 1), top(g.x + 20));
@@ -1929,7 +1953,7 @@ fn a_tap_off_the_page_is_never_a_tap_on_it() {
 fn pics_drawn(s: &Shell, f: &Frame) -> Vec<(Size, usize)> {
     f.cmds()
         .filter_map(|c| match c {
-            Cmd::Pic { pic, .. } => Some(*pic),
+            Cmd::Pic { pic, .. } if Some(*pic) != s.graph() => Some(*pic),
             _ => None,
         })
         .map(|pic| {
@@ -2010,5 +2034,60 @@ fn the_default_pack_is_asked_by_offset_after_the_forecast_and_kept_by_the_device
     assert!(
         *s.forecast() == before,
         "the answer is the device's, not the shell's"
+    );
+}
+
+#[test]
+fn the_busiest_frame_leaves_a_quarter_of_the_frame_spare() {
+    // MAX_CMDS is sized from this (P6: budgets the build enforces): every
+    // screen, every page scrolled to its top, middle and end, with the
+    // menu open and not, at most three quarters of a frame.
+    let mut most = (0usize, String::new());
+    let mut note = |f: &Frame, what: String| {
+        assert!(!f.overflowed(), "{what}");
+        let n = f.cmds().count();
+        if n > most.0 {
+            most = (n, what);
+        }
+    };
+    let mut s = shell(true);
+    note(&drawn(&mut s), "Today".into());
+    tap(&mut s, START);
+    note(&drawn(&mut s), "Today, menu".into());
+    for page in 0..3u8 {
+        let max = i32::from(weather_app::max_scroll(page));
+        for scroll in [0, max / 2, max] {
+            for menu in [false, true] {
+                let mut s = weather(page);
+                s.scroll.set(scroll);
+                s.dirty(Rect::new(0, 0, W, H));
+                if menu {
+                    tap(&mut s, START);
+                }
+                note(
+                    &drawn(&mut s),
+                    format!("page {page} at {scroll}, menu {menu}"),
+                );
+            }
+        }
+    }
+    for screen in [
+        Screen::WeatherSettings,
+        Screen::WeatherPlaces,
+        Screen::AddPlace,
+        Screen::WeatherFrom,
+        Screen::KeyEntry,
+    ] {
+        let mut s = weather(0);
+        tap(&mut s, SOFT_RIGHT);
+        s.open(screen);
+        note(&drawn(&mut s), format!("{screen:?}"));
+    }
+    println!("busiest frame: {} commands ({})", most.0, most.1);
+    assert!(
+        most.0 * 4 <= MAX_CMDS * 3,
+        "{} commands ({})",
+        most.0,
+        most.1
     );
 }

@@ -103,99 +103,11 @@ const GRAPH_X0: u16 = 24;
 const HOUR_W: u16 = 36;
 /// Hours on the graph (the mock-up's: now and the next 11).
 const GRAPH_HOURS: usize = 12;
-/// The curve's pieces: rises and falls of up to this many half pixels a
-/// piece (the line is placed to half a pixel: whole pixels kinked its
-/// joins, the owner's marks 2026-10-31).
-pub const CURVE_DY: i32 = 32;
-/// How many pieces: every rise from -[`CURVE_DY`] to +[`CURVE_DY`] half
-/// pixels, each starting on a whole or a half pixel.
-pub const CURVE_SPRITES: usize = (2 * CURVE_DY as usize + 1) * 2;
-/// A piece's width: a quarter hour (the curve has a point every quarter
-/// hour: the owner, 2026-10-31, "why cant that yellow line be smoother").
-pub const CURVE_W: u16 = HOUR_W / 4;
-/// Points an hour.
-const STEPS: usize = 4;
-
-/// Piece `k`'s rise (half pixels) and its start's half pixel (0 or 1).
-const fn curve_piece(k: usize) -> (i32, i32) {
-    ((k / 2) as i32 - CURVE_DY, (k % 2) as i32)
-}
-
-/// A piece's top (pixels, relative to its start's whole pixel) and height.
-const fn curve_box(dyh: i32, f: i32) -> (i32, u16) {
-    let (a, b) = (f, f + dyh);
-    let lo = if a < b { a } else { b };
-    let hi = if a < b { b } else { a };
-    let top = lo.div_euclid(2) - 2;
-    (top, (hi.div_euclid(2) + 4 - top) as u16)
-}
-
-/// Piece `k`'s height.
-#[must_use]
-pub const fn curve_h(k: usize) -> u16 {
-    let (dyh, f) = curve_piece(k);
-    curve_box(dyh, f).1
-}
-
-/// Pixels all the pieces need.
-pub const CURVE_WORDS: usize = {
-    let mut n = 0;
-    let mut k = 0;
-    while k < CURVE_SPRITES {
-        n += CURVE_W as usize * curve_h(k) as usize;
-        k += 1;
-    }
-    n
-};
-
-/// The piece from `a2` to `b2` (screen rows in half pixels): its index,
-/// its top row on screen and its height.
-fn curve_pick(a2: i32, b2: i32) -> (usize, i32, u16) {
-    let dyh = (b2 - a2).clamp(-CURVE_DY, CURVE_DY);
-    let f = a2.rem_euclid(2);
-    let (top, h) = curve_box(dyh, f);
-    (
-        ((dyh + CURVE_DY) * 2 + f) as usize,
-        a2.div_euclid(2) + top,
-        h,
-    )
-}
-
-/// Piece `k` of Hourly's line: an anti-aliased 3 px amber line across a
-/// quarter hour, from half pixel `f` down `dyh` half pixels; below it the
-/// band's frost, above it clear. Drawn over the panel's glass the frost
-/// is exactly the band ([`over`]), so piece and band meet with no edge.
-/// Made once at start; the 2D engine has rectangles, not lines.
-pub fn curve_sprite(px: &mut [u32], k: usize) {
-    let (dyh, f) = curve_piece(k);
-    let (top, h) = curve_box(dyh, f);
-    let (w, h) = (i32::from(CURVE_W), i32::from(h));
-    // Half-thickness measured vertically, x 256: 1.5 px across the line,
-    // longer down a steep one (1.5 * sqrt(1 + slope^2)).
-    let s2 = (dyh * dyh * 65_536) / (4 * w * w);
-    let half = 384 * isqrt(65_536 + s2) / 256;
-    for y in 0..h {
-        for x in 0..w {
-            // The line's centre at this column's middle, x 256, in rows
-            // from the piece's top.
-            let c = (f * 128 + dyh * 128 * (2 * x + 1) / (2 * w)) - top * 256;
-            let d = (y * 256 + 128) - c;
-            let cover = (half + 128 - d.abs()).clamp(0, 256) as u32;
-            let a = cover * 255 / 256;
-            let line = (a << 24) | (CURVE & 0x00FF_FFFF);
-            let p = match (a, d > 0) {
-                (0, false) => 0,
-                (0, true) => FROST,
-                (_, false) => line,
-                (_, true) => over(FROST, line),
-            };
-            if let Some(o) = px.get_mut((y * w + x) as usize) {
-                *o = p;
-            }
-        }
-    }
-}
-
+/// Hourly's graph's picture (its line and the band under it), from the
+/// panel's first inner column and its top row: width, height (the band's
+/// foot). Painted once a forecast by [`Shell::paint_graph`] into a store
+/// picture and drawn as one, on the planes and the 2D path alike.
+pub const GRAPH_PIC: (u16, u16) = (HOURLY_GRAPH.w - 2, 160);
 /// Integer square root.
 const fn isqrt(v: i32) -> i32 {
     let mut r = 0;
@@ -232,17 +144,6 @@ const fn over(under: Argb, top: Argb) -> Argb {
     out
 }
 
-/// `a` to `b` at `t` (1024ths), every channel, alpha included.
-const fn lerp(a: Argb, b: Argb, t: u32) -> Argb {
-    let mut out = 0;
-    let mut s = 0;
-    while s < 32 {
-        let (x, y) = ((a >> s) & 0xFF, (b >> s) & 0xFF);
-        out |= ((x * (1024 - t) + y * t) / 1024) << s;
-        s += 8;
-    }
-    out
-}
 /// The rain bars: the mock-up's softer blue.
 const RAIN_BAR: Argb = rp_draw::look::theme(0xFF5C_94DC);
 /// The gauges' and timelines' track: solid (the owner, 2026-10-31: no
@@ -942,7 +843,7 @@ impl Shell {
             if y >= 0 {
                 f.push(Cmd::Pic {
                     x: px + 448 - pic.w - 6,
-                    y: y as u16,
+                    y: (y as u16).cast_signed(),
                     pic,
                 });
             }
@@ -1084,100 +985,16 @@ impl Shell {
             let top = curve_top + span - span * at / 1024;
             base - (base - top) * grow as i32 / 1024
         };
-        // The same in half pixels (the line's pieces are placed to half a
-        // pixel).
-        let level2 = |t: i16| {
-            let at = frac(t, lo, hi) as i32;
-            let top = 2 * (curve_top + span) - 2 * span * at / 1024;
-            2 * base - (2 * base - top) * grow as i32 / 1024
-        };
-        // The temperature every quarter hour: a Catmull-Rom curve through
-        // the hours, so the line rounds its turns as the mock-up's does.
-        let t = |i: isize| i32::from(shown[i.clamp(0, GRAPH_HOURS as isize - 1) as usize].temp);
-        let at = |k: usize| -> i16 {
-            let (i, q) = ((k / STEPS) as isize, (k % STEPS) as i32);
-            let (p0, p1, p2, p3) = (t(i - 1), t(i), t(i + 1), t(i + 2));
-            // p(u) with u = q / 4, all x 128.
-            let (u, u2, u3) = (q * 32, q * q * 8, q * q * q * 2);
-            let v = 128 * 2 * p1
-                + (p2 - p0) * u
-                + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2
-                + (3 * p1 - p0 - 3 * p2 + p3) * u3;
-            (v / 256) as i16
-        };
-        let band = |px: u16| {
-            let t = u32::from(px.saturating_sub(g.x)) * 1024 / u32::from(g.w - 1);
-            over(lerp(GLASS_LEFT, GLASS_RIGHT, t.min(1024)), FROST)
-        };
-        // Every piece from the panel's left side to its right: the curve
-        // between the first and last hours, and beyond them on its own
-        // slope (as the mock-up's line runs on to the sides).
-        let n = STEPS * (GRAPH_HOURS - 1);
-        let x_at = |k: i32| i32::from(hour_x(0) + HOUR_W / 2) + k * i32::from(CURVE_W);
-        let lead = (x_at(0) - i32::from(g.x) - 1) / i32::from(CURVE_W);
-        let tail = (i32::from(g.x + g.w) - 1 - x_at(n as i32)) / i32::from(CURVE_W);
-        let at2 = |k: i32| -> i32 {
-            let lv = |k: usize| level2(at(k));
-            if k < 0 {
-                lv(0) + (lv(0) - lv(1)) * -k
-            } else if k > n as i32 {
-                lv(n) + (lv(n) - lv(n - 1)) * (k - n as i32)
-            } else {
-                lv(k as usize)
-            }
-        };
-        // Drawn into the page's picture (the plane path), the line and its
-        // band are painted per pixel instead ([`Shell::paint_hourly`]).
-        let pieces = if self.band.is_some() {
-            0
-        } else {
-            n as i32 + tail
-        };
-        let lead = if self.band.is_some() { 0 } else { lead };
-        for k in -lead..pieces {
-            let x = x_at(k) as u16;
-            let (a2, b2) = (at2(k), at2(k + 1));
-            let (pk, top, h) = curve_pick(a2, b2);
-            let bottom = top + i32::from(h);
-            match self.curve[pk] {
-                Some(img) => {
-                    // The band from the piece's foot to the base: the frost
-                    // over the panel's glass there, as one layer.
-                    f.push(Cmd::HGradient {
-                        r: clip(x, bottom, CURVE_W, base - bottom),
-                        left: band(x),
-                        right: band(x + CURVE_W - 1),
-                    });
-                    if top + gy >= 0 {
-                        f.push(Cmd::Image { x, y: y0(top), img });
-                    }
-                }
-                None => f.push(Cmd::Fill {
-                    r: clip(x, a2 / 2, CURVE_W, 3),
-                    color: CURVE,
-                }),
-            }
-        }
-        // What the pieces leave at the sides: the band, level with the
-        // line's ends.
-        let lx = x_at(-lead) as u16;
-        let rx = x_at(n as i32 + tail) as u16;
-        for (x0, x1, y2) in [
-            (g.x + 1, lx, at2(-lead)),
-            (rx, g.x + g.w - 1, at2(n as i32 + tail)),
-        ] {
-            if x1 > x0 && self.band.is_none() {
-                let y = y2 / 2;
-                f.push(Cmd::HGradient {
-                    r: clip(x0, y + 2, x1 - x0, base - y - 2),
-                    left: band(x0),
-                    right: band(x1 - 1),
-                });
-                f.push(Cmd::Fill {
-                    r: clip(x0, y - 1, x1 - x0, 3),
-                    color: CURVE,
-                });
-            }
+        // The line and the band under it: one picture painted once a
+        // forecast ([`Shell::paint_graph`]), drawn the same way on the
+        // planes and the 2D path (the 2D path's 49 line pieces, ~95
+        // commands a frame, are gone).
+        if let Some(pic) = self.graph {
+            f.push(Cmd::Pic {
+                x: g.x + 1,
+                y: i16::try_from(gy).unwrap_or(i16::MIN),
+                pic,
+            });
         }
         for (i, h) in shown.iter().enumerate() {
             let x = hour_x(i as u8) + HOUR_W / 2;
@@ -1248,21 +1065,25 @@ impl Shell {
         }
     }
 
-    /// Hourly's line and band painted per pixel into page rows `rows`
-    /// (picture rows) of an ARGB layer (`stride` pixels a row): for every
-    /// column the smooth curve through the hours (Catmull-Rom, continued on
-    /// its own slope to the panel's sides), the band's frost from it down,
-    /// and over it a 3 px line anti-aliased by its distance from the curve
-    /// (the owner, 2026-10-31: "give me a smooth line"). The CPU draws the
-    /// page's picture once per forecast, so this costs nothing a frame.
-    pub fn paint_hourly(&self, px: &mut [u32], stride: usize, rows: (i32, i32)) {
+    /// Hourly's line and band painted per pixel into `px`, a see-through
+    /// picture of [`GRAPH_PIC`]: for every column the smooth curve through
+    /// the hours (Catmull-Rom, continued on its own slope to the panel's
+    /// sides), the band's frost from it down, and over it a 3 px line
+    /// anti-aliased by its distance from the curve (the owner, 2026-10-31:
+    /// "give me a smooth line"). Painted once a forecast (the key:
+    /// [`Shell::graph_key`]); drawn over the panel's glass it is exactly
+    /// what painting over the glass gives ([`over`] composes).
+    pub fn paint_graph(&self, px: &mut [u32]) {
+        let stride = usize::from(GRAPH_PIC.0);
+        let rows = (0, i32::from(GRAPH_PIC.1));
         let shown = &self.wx.hours[..GRAPH_HOURS];
         let (lo, hi) = shown.iter().fold((i32::MAX, i32::MIN), |(a, b), h| {
             (a.min(i32::from(h.temp)), b.max(i32::from(h.temp)))
         });
         let g = HOURLY_GRAPH;
-        // Picture row of the graph's local row 0.
-        let row0 = i32::from(g.y) - i32::from(PAGE.y) + i32::from(LAYER_MARGIN);
+        // The picture's first column is the panel's first inner one.
+        let col0 = i64::from(g.x) + 1;
+        let row0 = 0i64;
         let (curve_top, span) = (58i64, 84i64);
         let base = curve_top + span + 18;
         let t = |i: i64| i64::from(shown[i.clamp(0, GRAPH_HOURS as i64 - 1) as usize].temp);
@@ -1307,11 +1128,11 @@ impl Shell {
             let half = 384 * i64::from(isqrt(65_536 + (dc * dc / 256) as i32)) / 256;
             let top = (c - half - 256) / 256;
             for ly in top.max(0)..base {
-                let r = row0 as i64 + ly;
+                let r = row0 + ly;
                 if r < i64::from(rows.0) || r >= i64::from(rows.1) {
                     continue;
                 }
-                let at = r as usize * stride + x as usize;
+                let at = r as usize * stride + (x - col0) as usize;
                 let Some(p) = px.get_mut(at) else { continue };
                 let d = ly * 256 + 128 - c;
                 if d > 0 {
@@ -1352,7 +1173,7 @@ impl Shell {
         if let Some(pic) = self.icons.mid[k].or(self.icons.card[k]) {
             f.push(Cmd::Pic {
                 x: c.x + (HOUR_TEXT_X / 2).saturating_sub(pic.w / 2),
-                y: cy0(110 - i32::from(pic.h / 2)),
+                y: (cy0(110 - i32::from(pic.h / 2))).cast_signed(),
                 pic,
             });
         }
@@ -1482,7 +1303,7 @@ impl Shell {
                 if let Some(pic) = self.icons.row[usize::from(Icon::of(h.sky).id() - 1)] {
                     f.push(Cmd::Pic {
                         x: cx.saturating_sub(pic.w / 2),
-                        y: cy(24 + i32::from(40u16.saturating_sub(pic.h) / 2)),
+                        y: (cy(24 + i32::from(40u16.saturating_sub(pic.h) / 2))).cast_signed(),
                         pic,
                     });
                 }
@@ -1774,7 +1595,7 @@ impl Shell {
             if let Some(pic) = self.icons.row[usize::from(icon.id() - 1)] {
                 f.push(Cmd::Pic {
                     x: r.x + 90 + (40 - pic.w.min(40)) / 2,
-                    y: r.y + (r.h.saturating_sub(pic.h)) / 2,
+                    y: (r.y + (r.h.saturating_sub(pic.h)) / 2).cast_signed(),
                     pic,
                 });
             }

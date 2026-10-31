@@ -1162,7 +1162,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 ],
                 Cmd::Pic { x, y, pic } => [
                     7,
-                    u32::from(x) << 16 | u32::from(y),
+                    u32::from(x) << 16 | u32::from(y.cast_unsigned()),
                     pic.key(),
                     u32::from(pic.w) << 16 | u32::from(pic.h),
                     0,

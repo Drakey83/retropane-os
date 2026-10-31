@@ -703,7 +703,7 @@ fn a_store_picture_draws_as_an_image_and_a_reused_slot_is_uploaded_again() {
     use rp_draw::pics::Pics;
     let pics: &'static Pics<'static> = std::boxed::Box::leak(std::boxed::Box::new(Pics::new(
         std::boxed::Box::leak(std::vec![0; 16].into_boxed_slice()),
-        &[(4, 1)],
+        &[(4, 4, 1)],
     )));
     let pic = pics.alloc(ICON.w, ICON.h).unwrap();
     assert!(pics.write(pic, |px| px.copy_from_slice(&ICON_PX)));
