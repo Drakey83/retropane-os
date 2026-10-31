@@ -1033,6 +1033,7 @@ dependencies = [
  "rp-drv-pxa-keypad",
  "rp-drv-pxa-ssp",
  "rp-drv-pxa-uart",
+ "rp-drv-pxa-udc",
  "rp-drv-tsc2046",
  "rp-gfx",
  "rp-graphics",
