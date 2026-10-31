@@ -1772,11 +1772,21 @@ fn the_radar_asks_its_frames_then_the_map_then_each_rain_frame_tile_by_tile() {
 fn an_alert_in_force_shows_in_the_header_and_opens_in_full() {
     let mut s = weather(1);
     let f = drawn(&mut s);
-    assert!(!texts(&f).iter().any(|t| t.as_slice() == b"Winter Weather Advisory"));
-    s.set_alerts_from_nws(include_bytes!("../../weather/tests/data/nws-alerts-two.json"));
+    assert!(
+        !texts(&f)
+            .iter()
+            .any(|t| t.as_slice() == b"Winter Weather Advisory")
+    );
+    s.set_alerts_from_nws(include_bytes!(
+        "../../weather/tests/data/nws-alerts-two.json"
+    ));
     let f = drawn(&mut s);
     assert!(!f.overflowed(), "{}", f.cmds().count());
-    assert!(texts(&f).iter().any(|t| t.as_slice() == b"Winter Weather Advisory"));
+    assert!(
+        texts(&f)
+            .iter()
+            .any(|t| t.as_slice() == b"Winter Weather Advisory")
+    );
     let chip = s.alert_rect();
     tap(&mut s, chip);
     assert_eq!(s.screen(), Screen::Alert);
