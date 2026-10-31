@@ -5380,6 +5380,17 @@ fn variant_images_gpubench(
     let run_fi = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_IRQ_BITS", "1"))?;
     let run_fd = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_DMA_FEED", "1"))?;
     let run_ch = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_HARNESS", "1"))?;
+    // Run WG (the Weather movement on the planes): the watched block's
+    // wait 1 s and its repeats cut; the device runs every repeat.
+    let run_wg = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_WEATHER", "1"),
+            ("RP_GPUBENCH_WG_QUICK", "1"),
+            ("RP_GPUBENCH_WG_WAIT_SECS", "1"),
+        ],
+    )?;
     let run_c71 = variant_image_with(
         root,
         "rp-gpubench",
@@ -6600,7 +6611,7 @@ fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 175] = [
+    let runs: [GpubenchRun; 176] = [
         (
             "run A",
             &run_a,
@@ -9874,6 +9885,51 @@ fn variant_images_gpubench(
                 "  CH 3D steps done: 18 of 18",
                 "  CH W5 turns, every tile every frame: the last picture against a fresh full render",
                 "CH: done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        // Run WG: the emulator doesn't model DSIG (reads 0), so every
+        // refresh is "not judged"; what it checks is the wiring: every step
+        // runs, the L2 layouts through the scan-out model (a clear window is
+        // screen 0 alone), the 2D engine's ARGB pictures word for word, M7's
+        // settings written and put back, everything given back.
+        (
+            "run WG",
+            &run_wg,
+            &[
+                "WG: the Weather movement on the planes",
+                "  WG M1 ARGB8888 per-pixel alpha on the video plane: the clear lines read as screen 0 alone not judged, the page differs from screen 0 not judged, the page differs from its alpha ignored not judged; the model: true true true",
+                "  WG M1 ARGB4444 per-pixel alpha on the video plane: the clear lines read as screen 0 alone not judged, the page differs from screen 0 not judged, the page differs from its alpha ignored not judged; the model: true true true",
+                "  WG M2 fling and rebound (VSCADR, ARGB8888): ",
+                "  WG M2 Reveal (VSADR, VSCTRL, SSSIZE and VSCADR a frame): 19 states",
+                "  WG M2 Cascade (VSCTRL, SSSIZE and VSCADR a frame): 19 states",
+                "  WG M3 turn, 4-pixel steps (VSCADR, stride 3840): 121 states",
+                "  WG M3 turn, 1-pixel steps (VSCADR, VSADR x and VSCTRL width): 64 states",
+                "  WG M5 an alpha-0 fill 480 x 462 (32 bits): ",
+                "done true; 0 of 221760 words wrong",
+                "  WG M5 ten rows' cards 464 x 41 copied (32 bits): ",
+                "done true; 0 of 216000 words wrong",
+                "  WG M5 24 radar cells 30 x 32 copied (32 bits): ",
+                "done true; 0 of 23040 words wrong",
+                "  WG M5 the neighbour page 480 x 462 into the strip (32 bits): ",
+                "  WG M5 screen 0 copied 480 x 640 (16 bits): ",
+                "done true; 0 of 153600 words wrong",
+                "  WG M5 the hand-back (the page over the wallpaper, 32 bits, converted into the screen): ",
+                "done true; 0 of 110880 words differ from the CPU's \"over\"",
+                "  WG M5 an ARGB4444 row card 480 x 41 copied (16 bits): ",
+                "done true; 0 of 9840 words wrong",
+                "  WG M4 the scan-out model's mix against the 2D engine's compose: ",
+                "  WG M4 composed -> layer: 50 hand-offs: 0 in the refresh due, 0 a refresh late, 0 not in three, 0 with a refresh of NEITHER (not judged)",
+                "  WG M4 layer -> composed: 50 hand-offs: 0 in the refresh due, 0 a refresh late, 0 not in three, 0 with a refresh of NEITHER (not judged)",
+                "  WG M2 fling and rebound (VSCADR, ARGB8888): 256 states",
+                "  WG watched block: ",
+                "  WG M7 step 1 of 3, MBXCLK clocks off (bits 1-0 = 0, the divider kept): about to write",
+                "  WG M7 step 2 of 3, MBXCLK 0 (Dell's off path): about to write",
+                "  WG M7 step 3 of 3, ODFBPWR 1 (the on-die buffer active low power): about to write",
+                "WG: done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
             ],

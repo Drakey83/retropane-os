@@ -257,6 +257,15 @@ pub enum VideoFormat {
     /// exactly on the X51v (`rp-gpubench` run D, 2026-10-19). A 3D target
     /// shown through the scaler without the graphics plane's reads.
     Rgb565,
+    /// ARGB8888, 4 bytes a pixel (`VSCTRL` code 8, conversion off): read
+    /// as ARGB8888 on the X51v (run D, 2026-10-19). With
+    /// [`Blend::PixelAlpha`] the Weather page layer of ADR-0034 C4 as
+    /// changed (L2); its per-pixel alpha on this plane is the sheet's M1
+    /// (`docs/research/sheets/weather-gpu-movement.md`), unproven until it.
+    Argb8888,
+    /// ARGB4444, 2 bytes a pixel (`VSCTRL` code 4, conversion off): read as
+    /// ARGB4444 by run D; the page layer's half-memory depth (V3, open).
+    Argb4444,
 }
 
 /// The video plane: shown under (or over) the graphics plane, in YUV.
@@ -285,9 +294,10 @@ impl VideoPlane {
     #[must_use]
     pub const fn new(format: VideoFormat, width: u16, height: u16, offset: usize) -> Self {
         let (stride, u_offset, v_offset) = match format {
-            VideoFormat::Uyvy | VideoFormat::Rgb565 => {
+            VideoFormat::Uyvy | VideoFormat::Rgb565 | VideoFormat::Argb4444 => {
                 ((width as usize * 2).div_ceil(16) * 16, 0, 0)
             }
+            VideoFormat::Argb8888 => ((width as usize * 4).div_ceil(16) * 16, 0, 0),
             VideoFormat::Yuv420 => {
                 let stride = (width as usize).div_ceil(32) * 32;
                 let u = offset + stride * height as usize;
@@ -309,7 +319,10 @@ impl VideoPlane {
     #[must_use]
     pub const fn bytes(&self) -> usize {
         match self.format {
-            VideoFormat::Uyvy | VideoFormat::Rgb565 => self.stride * self.height as usize,
+            VideoFormat::Uyvy
+            | VideoFormat::Rgb565
+            | VideoFormat::Argb8888
+            | VideoFormat::Argb4444 => self.stride * self.height as usize,
             VideoFormat::Yuv420 => {
                 self.v_offset + self.stride / 2 * (self.height as usize / 2) - self.offset
             }
@@ -415,6 +428,8 @@ impl VideoPlane {
         let (fmt, ubase, vbase) = match self.format {
             VideoFormat::Uyvy => (0xC, 0, 0),
             VideoFormat::Rgb565 => (0x7, 0, 0),
+            VideoFormat::Argb8888 => (0x8, 0, 0),
+            VideoFormat::Argb4444 => (0x4, 0, 0),
             VideoFormat::Yuv420 => {
                 assert!(self.stride.is_multiple_of(32), "chroma stride unaligned");
                 assert!(
@@ -474,7 +489,8 @@ impl VideoPlane {
         };
         let vsctrl = VSCTRL_FMT.insert(0, fmt);
         // The colour-space conversion is for YUV; RGB is shown as it is.
-        let vsctrl = VSCTRL_CSC_EN.insert(vsctrl, u32::from(self.format != VideoFormat::Rgb565));
+        let yuv = matches!(self.format, VideoFormat::Uyvy | VideoFormat::Yuv420);
+        let vsctrl = VSCTRL_CSC_EN.insert(vsctrl, u32::from(yuv));
         let vsctrl = VSCTRL_GAMMA_EN.insert(vsctrl, u32::from(gamma));
         let vsctrl = VSCTRL_WIDTH.insert(vsctrl, w - 1);
         let vsctrl = VSCTRL_HEIGHT.insert(vsctrl, h - 1);
@@ -684,6 +700,29 @@ mod tests {
         let s = v.registers_scaled(Layer::SOLO, false, v.scale_to(480, 640, 0, 0));
         assert_eq!(SPOCTRL_VPITCH.extract(s[5].1), 0x400);
         assert_ne!(s[5].1 & SPOCTRL_VS_UR_C, 0);
+    }
+
+    #[test]
+    fn argb_layouts_are_the_graphics_codes_with_conversion_off() {
+        // The Weather page layer (L2): 480 x 462 of a 480-wide ARGB picture.
+        for (f, code, bytes) in [(VideoFormat::Argb8888, 8, 4), (VideoFormat::Argb4444, 4, 2)] {
+            let v = VideoPlane::new(f, 480, 462, 0x7A_0000);
+            assert_eq!(v.stride, 480 * bytes);
+            assert_eq!(v.bytes(), 480 * 462 * bytes);
+            let r = v.registers(
+                Layer {
+                    slot: Slot::Middle,
+                    blend: Blend::PixelAlpha,
+                },
+                false,
+            );
+            assert_eq!(VSCTRL_FMT.extract(r[2].1), code);
+            assert_eq!(VSCTRL_CSC_EN.extract(r[2].1), 0);
+            assert_eq!(VSCTRL_HEIGHT.extract(r[2].1), 461);
+            assert_eq!(VSADR_STRIDE.extract(r[3].1), (480 * bytes / 16 - 1) as u32);
+            assert_eq!(SCADR_BLEND_M.extract(r[8].1), 3);
+            assert_eq!(SCADR_BLEND_POS.extract(r[8].1), 1);
+        }
     }
 
     #[test]

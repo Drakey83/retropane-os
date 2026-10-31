@@ -102,6 +102,9 @@ mod gc2;
 #[cfg(any(target_os = "none", test))]
 mod g21;
 
+#[cfg(any(target_os = "none", test))]
+mod wg;
+
 #[cfg(target_os = "none")]
 mod image {
     use core::cell::{Cell, RefCell};
@@ -157,6 +160,10 @@ mod image {
     /// Run FI2, the status bits run FI left (the gate's P18).
     #[path = "../statusbits.rs"]
     mod statusbits;
+    /// Run WG, the Weather movement on the planes
+    /// (docs/research/sheets/weather-gpu-movement.md).
+    #[path = "../weather.rs"]
+    mod weather;
 
     /// Run B: the texture-word probes instead of run A.
     const PROBES: bool = option_env!("RP_GPUBENCH_PROBES").is_some();
@@ -164,6 +171,9 @@ mod image {
     const PLANES: bool = option_env!("RP_GPUBENCH_PLANES").is_some();
     /// Run CH: the compositor harness (the gate's T1, T3, T4; unattended).
     const HARNESS: bool = option_env!("RP_GPUBENCH_HARNESS").is_some();
+    /// Run WG (`RP_GPUBENCH_WEATHER`): the Weather app's movement on the
+    /// planes, the sheet's device tests M1-M5 and M7 (see [`weather`]).
+    const WEATHER: bool = option_env!("RP_GPUBENCH_WEATHER").is_some();
     /// Run LIM: the 3D core's limits (the gate's P14; unattended).
     const LIMITS: bool = option_env!("RP_GPUBENCH_LIMITS").is_some();
     /// Run FI2: the status bits run FI left (the gate's P18; reads only).
@@ -333,6 +343,7 @@ mod image {
         || FINGERPRINT
         || UNDERRUN
         || HARNESS
+        || WEATHER
         || LIMITS
         || STATUS2
         || BX
@@ -34939,6 +34950,8 @@ mod image {
             "{MARKER}: run {}, MBXCLK 0x{clk0:x}",
             if PROBES {
                 "B (texture-word probes)"
+            } else if WEATHER {
+                "WG (the Weather movement on the planes: M1-M5 judged by DSIG, a watched block, M7 last)"
             } else if TARGETS2 {
                 "P2 (the target formats' follow-up: two more shapes, the dither matrix per layout, what each layout stores for alpha)"
             } else if TARGETS_WATCH {
@@ -35076,6 +35089,8 @@ mod image {
             probes(&mut g);
         } else if HARNESS {
             harness::run(&mut g);
+        } else if WEATHER {
+            weather::run(&mut g);
         } else if LIMITS {
             limits::run(&mut g);
         } else if STATUS2 {

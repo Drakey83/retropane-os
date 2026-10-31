@@ -145,7 +145,13 @@ X51v.
   `research/sheets/weather-gpu-movement.md`: each movement mapped to
   ADR-0034's modes (the page's glass on the video plane over a still
   screen 0, repointed; 2D only for Stagger and the radar's cells; 3D only
-  for Expand), device tests M1-M7, votes V1-V3. Awaits the owner's go.
+  for Expand), device tests M1-M7, votes V1-V3. The owner's rulings the
+  same evening: V1 = L2 (ADR-0034 C4 changed), V2 = the guard in the
+  clock's tail (ADR-0035 rule 6), the ~5 minute run, the entrances Reveal
+  and Cascade. **The device image built** (`rp-gpubench` run WG, the
+  sheet's "The device image, built"); its run on the X51v waits for the
+  owner's "run it". Next after it: the plane path build (the sheet's
+  build steps 1-5), V3 from M1's look.
 - **Open:** the owner's pick of the movement, I6 (the right softkey opens
   Settings, not a Menu: a vote).
 

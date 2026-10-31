@@ -431,6 +431,61 @@ do 5 if its just as good, 4 i like cascade":
   fails.
 - **V3 (depth):** open, waiting for M1's side-by-side look.
 
+## The device image, built (2026-10-30, the owner's "Yes, build the test")
+
+`rp-gpubench` run WG (`RP_GPUBENCH_WEATHER=1 cargo xtask codegen-variant
+rp-gpubench wg`; code `boot/gpubench/src/weather.rs`, the pictures and
+window states shared with the host test in `wg.rs`; emulator check
+`RETROPANE_GPUBENCH_RUNS="run WG" cargo xtask emu-gpubench`). One load,
+about 5 minutes, the loader's Windows Mobile clock (no clock change).
+
+- **Unattended (~2 minutes), every refresh's `DSIG` judged:** every state
+  a test shows gets its reference first (written in the blanking, a whole
+  refresh with nothing written, its signature), and the first is taken
+  again at the end (repeatable or the test reports "not judged"). Each
+  refresh is then whole as due, the state before (late), another state,
+  or torn. M1 (9 layouts: screen 0 alone, the page, a clear window over
+  the margin that must read as screen 0 alone, the alpha ignored, at
+  ARGB8888 and ARGB4444 + the shipped dither, Fade's probe, mode 2;
+  the underrun flag over 1 s each; each also composed by the scan-out
+  model), M2 (the fling and rebound twice, then Reveal and Cascade 8
+  grow-and-shrink cycles each), M3 (4-pixel steps across, then 1-pixel
+  steps over 64 pixels), M5 (an alpha-0 fill, ten rows' cards, 24 radar
+  cells, the neighbour page, the hand-back composed into a second screen,
+  an ARGB4444 row: each timed and checked word for word), M4 (the
+  composed screen alone against screen 0 + the page layer, 50 hand-offs
+  each way, and the model's mix against the 2D engine's compose).
+- **Watched (~2 minutes, started by a button, or after 2 minutes):**
+  the two depths, the turn dragged slowly in 4- and 1-pixel steps, the
+  hand-off every half second, Reveal, Cascade and the fling at speed.
+- **M7 last (~20 s):** with the page showing, the 2D clock off, `MBXCLK`
+  0, then `ODFBPWR` 1, each 5 s with every refresh's `DSIG` read, its
+  marker in the kept log first, put back, the first 2D fill after it
+  timed.
+
+**Where the build differs from the sheet's words, and why:**
+
+1. **The depths in turn on one place, not side by side.** A plane takes
+   one format, and screen 0 must stay the wallpaper, so the only
+   side-by-side would be a picture composed by the CPU, which isn't the
+   display's mix being judged. 8888 and 4444 swap every 2 seconds on the
+   same rows (a blink comparison), the header naming the one showing.
+2. **M7 times the 2D clock's wake only.** At Windows Mobile's `MBXCLK`
+   `0x5` the 3D clock is already off (bits 1-0: 1 = 2D only), so there is
+   no "3D off" step separate from "both off"; the 3D wake stays T9's
+   ~1.0 ms (ADR-0026). "2D off" is bits 1-0 = 0 with the divider kept;
+   "both off" is Dell's whole-register 0 (#39).
+3. **The 1-pixel steps are made, not shown failing.** `VSCADR` holds the
+   start in 16-byte units, so a start between them can't be written. The
+   build takes the sheet's own fallback at once: the start on the next
+   4-pixel step and the window moved right by the 0-3 pixels left (its
+   width cut to stay even, inside the cards' clear 8-pixel edge).
+4. **M2 at ARGB8888 only,** the heavier depth (V3 open; M1 holds both).
+5. **The references are the device's own** (the emulator doesn't model
+   `DSIG`), as the sheet's "what overturns it" foresaw. The scan-out model
+   checks the layouts on the host and in the image (`model` hashes), and
+   the emulator run checks the wiring and the 2D pictures.
+
 ## Votes needed (results are not decisions)
 
 - **V1: the page layer.** L2 (ours: the glass over a still wallpaper on

@@ -19,6 +19,8 @@ rp-drv-blit2d = { path = "../../drivers/blit2d" }
 rp-draw = { path = "../../drivers/draw" }
 rp-mbx-render = { path = "../../drivers/mbx-render" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+# Run WG's ARGB4444 page: the shipped 4x4 ordered dither.
+rp-gfx = { path = "../../drivers/gfx" }
 rp-drv-mbx3d = { path = "../../drivers/mbx3d" }
 rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
 rp-vram-map = { path = "../../drivers/vram-map" }
@@ -33,6 +35,9 @@ rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 rp-mbx3d-render = { path = "../../drivers/mbx3d-render", features = ["model"] }
 rp-vram-map = { path = "../../drivers/vram-map" }
+# Run WG's layouts through the scan-out model (src/wg_tests.rs).
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-gfx = { path = "../../drivers/gfx" }
 
 [lints]
 workspace = true
