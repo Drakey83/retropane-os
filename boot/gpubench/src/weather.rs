@@ -705,17 +705,19 @@ fn layer_write(g: &mut Rig, r: &[(usize, u32); 9], last: &mut [(usize, u32); 9],
 }
 
 /// One frame's write in `way` (see [`Way`]): (registers written, the line
-/// the write ended on, whether it ended inside the way's lines).
+/// the write ended on, whether it ended inside the way's lines, the CPU's
+/// time writing, waits left out).
 fn way_write(
     g: &mut Rig,
     way: Way,
     r: Option<&[(usize, u32); 9]>,
     last: &mut [(usize, u32); 9],
-) -> (u32, u32, bool) {
+) -> (u32, u32, bool, u32) {
     let mut n = 0;
     match way {
         Way::Blank | Way::VsadrLast | Way::VsadrFirst => {
             let _ = at_blank(g);
+            let t = rt::ticks();
             let order = match way {
                 Way::VsadrLast => 1,
                 Way::VsadrFirst => 2,
@@ -728,25 +730,31 @@ fn way_write(
                     layer_write(g, r, last, order)
                 };
             }
+            let us = us_since(t);
             let l = g.line();
-            (n, l, in_blank(g))
+            (n, l, in_blank(g), us)
         }
         Way::Early => {
             let _ = g.wait_line(640, 3);
+            let t = rt::ticks();
             if let Some(r) = r {
                 n = layer_move(g, r, last);
             }
+            let us = us_since(t);
             let l = g.line();
-            (n, l, (640..643).contains(&l))
+            (n, l, (640..643).contains(&l), us)
         }
         Way::Hold(release) => {
             let _ = g.wait_line(300, 200);
+            let t = rt::ticks();
             let d = g.e.regs.read32(dreg::DSCTRL);
             g.e.regs.write32(dreg::DSCTRL, d | UPDCNT);
             if let Some(r) = r {
                 n = layer_move(g, r, last);
             }
+            let mut us = us_since(t);
             let _ = at_blank(g);
+            let t = rt::ticks();
             match release {
                 0 => g.e.regs.write32(dreg::DSCTRL, d & !UPDCNT),
                 1 => {
@@ -758,8 +766,9 @@ fn way_write(
                     g.e.regs.write32(DUCTRL, 1);
                 }
             }
+            us += us_since(t);
             let l = g.line();
-            (n, l, in_blank(g))
+            (n, l, in_blank(g), us)
         }
     }
 }
@@ -820,10 +829,9 @@ fn pan_with(
         // The write that put the due state up: its registers and line.
         let mut wrote = (0u32, 0u32);
         for f in 0..=n {
-            let t = rt::ticks();
             let r = (f < n).then(|| state(f));
-            let (w, line, ok) = way_write(g, way, r.as_ref(), &mut last);
-            cpu.add(us_since(t));
+            let (w, line, ok, us) = way_write(g, way, r.as_ref(), &mut last);
+            cpu.add(us);
             slow += u32::from(!ok);
             // The refresh just ended showed the state written a blanking
             // before this one.

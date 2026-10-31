@@ -62,3 +62,16 @@ mock-up frames for the owner before any device run.
 (the same k in every way). Then it's the picture, not the timing: the
 torn refreshes are photographed (the owner) and compared with each
 state's reference.
+
+## Run on the X51v (2026-10-30, gpubench-0250)
+
+Ways A-F and H: 0 torn of 304 each (H's turn 0 of 256); G1-G3: 288 of
+304 each (bit 24 changes the picture and no release shows the held
+state; the owner saw the tearing at steps 9 and 10). By the stop rule's
+own terms the control didn't tear, so no way "wins": the tear isn't the
+write order, the line, or the top edge alone. What run WG had that this
+run lacks is the lead. Run WG's Reveal now logs each torn refresh (its
+step, the one before, the registers and the line of the write). One
+more run of WG names the step if it tears again; if it doesn't, R134
+closes as not reproduced, and the plane path's own Reveal is watched by
+the owner when built. Details in `docs/hw/2700g.md` "Run WG-R".
