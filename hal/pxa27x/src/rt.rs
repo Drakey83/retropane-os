@@ -1993,6 +1993,39 @@ pub fn idle_until_interrupt(ready: impl FnOnce() -> bool) {
     irq_enable();
 }
 
+/// Sleeps until OS-timer value `at`, any signal, or `ready()` (checked with
+/// IRQs masked). The alarm is armed and the tick count taken with IRQs
+/// masked, before the sleep: arming the alarm, then calling
+/// [`wait_any_signal`] (or [`idle_until_interrupt`]) let an alarm due at
+/// once fire in between, unseen, and the sleep lasted until the next
+/// interrupt (the owner's run, 2026-10-31: the Today image froze 24 s
+/// until a key press; the kernel's idle threads had the same gap). Returns
+/// at once if `at` has passed. IRQs are enabled on return.
+pub fn sleep_until(at: u32, ready: impl Fn() -> bool) {
+    ensure_intc();
+    let was = irq_save();
+    let start = tick_count();
+    // SAFETY: written with IRQs masked; read only by the IRQ handler.
+    unsafe { core::ptr::addr_of_mut!(ALARM_MODE).write(true) };
+    let armed = ostimer().alarm(at);
+    intc().enable(crate::soc::irq::OST1);
+    if armed {
+        loop {
+            // SAFETY: IRQs are masked (exclusive access to DISPATCH).
+            let signalled = unsafe { (*core::ptr::addr_of!(DISPATCH)).any_signalled() };
+            if signalled || ready() || tick_count() != start {
+                break;
+            }
+            // Idle with IRQs masked: a pending one ends it; then it is taken.
+            idle();
+            irq_enable();
+            irq_disable();
+        }
+    }
+    irq_restore(was);
+    irq_enable();
+}
+
 /// Starts a periodic tick at `hz` on OS timer match 1 and enables IRQs.
 /// Requires [`init_mmu`] (for the vectors) first.
 pub fn start_tick(hz: u32) {

@@ -2747,16 +2747,15 @@ mod image {
                             ticks = ticks.min((until.max(1) as u32).saturating_mul(13) / 4);
                         }
                     }
-                    if rt::set_alarm(rt::ticks().wrapping_add(ticks.max(1))) {
-                        rt::wait_any_signal();
-                    }
+                    rt::sleep_until(rt::ticks().wrapping_add(ticks.max(1)), || false);
                     rt::check_in();
                 }
                 continue;
             }
-            if rt::set_alarm(rt::ticks().wrapping_add(wait_ticks)) {
-                rt::wait_any_signal();
-            }
+            // Armed and slept on as one step (an alarm due at once fired
+            // between the two and the loop slept until a key press: the
+            // owner's run, 2026-10-31, 24 s frozen).
+            rt::sleep_until(rt::ticks().wrapping_add(wait_ticks), || false);
         }
     }
 }

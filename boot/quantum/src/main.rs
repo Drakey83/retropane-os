@@ -609,12 +609,13 @@ mod image {
 
     extern "C" fn idle_thread(_: usize) -> ! {
         loop {
-            let due = match SCHED.with(|s| s.next_deadline()) {
-                Some(at) => !rt::set_alarm(at),
-                None => false,
-            };
-            if !due {
-                rt::idle_until_interrupt(|| SCHED.with(|s| s.has_ready()));
+            // The deadline's alarm armed and slept on as one step: armed
+            // first, an alarm due at once fired before the sleep and the
+            // idle thread slept until some other interrupt (found in the
+            // Today image, 2026-10-31).
+            match SCHED.with(|s| s.next_deadline()) {
+                Some(at) => rt::sleep_until(at, || SCHED.with(|s| s.has_ready())),
+                None => rt::idle_until_interrupt(|| SCHED.with(|s| s.has_ready())),
             }
             reschedule();
         }
