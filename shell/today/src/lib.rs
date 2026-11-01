@@ -139,38 +139,42 @@ impl Keeper {
                 }
             }
         }
-        // A condition at a time, every size it is wanted at (the maker
-        // decodes its big picture once for all of them), the hero's first
-        // (the screen first shown).
+        // The Today screen's pictures first (its big one and the forecast
+        // cards: the owner, 2026-10-31, a decode at size is ~70 ms on the
+        // X51v), then the Weather app's; within each, a condition at a time
+        // (the maker decodes its big picture once for all its sizes), the
+        // hero's first.
         let first = (0..22).find(|&i| want.has(Size::Hero, i)).unwrap_or(0);
-        for i in core::iter::once(first).chain((0..22).filter(|&i| i != first)) {
-            for size in [Size::Hero, Size::Card, Size::Mid, Size::Row] {
-                let z = Size::ALL.iter().position(|&s| s == size).unwrap_or(0);
-                if !want.has(size, i) || self.from[z][i] == tag {
-                    continue;
+        for sizes in [[Size::Hero, Size::Card], [Size::Mid, Size::Row]] {
+            for i in core::iter::once(first).chain((0..22).filter(|&i| i != first)) {
+                for size in sizes {
+                    let z = Size::ALL.iter().position(|&s| s == size).unwrap_or(0);
+                    if !want.has(size, i) || self.from[z][i] == tag {
+                        continue;
+                    }
+                    let old = shell.pic(size, i);
+                    let mut new = make(size, i, pics);
+                    if new.is_none()
+                        && let Some(o) = old
+                    {
+                        // No spare slot: the old one goes first.
+                        pics.free(o);
+                        shell.set_pic(size, i, None);
+                        new = make(size, i, pics);
+                    }
+                    if let Some(o) = old
+                        && Some(o) != new
+                    {
+                        pics.free(o);
+                    }
+                    shell.set_pic(size, i, new);
+                    self.from[z][i] = tag;
+                    return if new.is_some() {
+                        Kept::Made(size, i)
+                    } else {
+                        Kept::Missing(size, i)
+                    };
                 }
-                let old = shell.pic(size, i);
-                let mut new = make(size, i, pics);
-                if new.is_none()
-                    && let Some(o) = old
-                {
-                    // No spare slot: the old one goes first.
-                    pics.free(o);
-                    shell.set_pic(size, i, None);
-                    new = make(size, i, pics);
-                }
-                if let Some(o) = old
-                    && Some(o) != new
-                {
-                    pics.free(o);
-                }
-                shell.set_pic(size, i, new);
-                self.from[z][i] = tag;
-                return if new.is_some() {
-                    Kept::Made(size, i)
-                } else {
-                    Kept::Missing(size, i)
-                };
             }
         }
         Kept::Idle
@@ -1193,6 +1197,7 @@ mod tests {
         }));
         let mut k = Keeper::new();
         let mut made = 0;
+        let mut order = Vec::new();
         let pack_of = |pack: u32| {
             move |_: Size, _: usize, p: &Pics| {
                 let pic = store_copy(img, p)?;
@@ -1202,13 +1207,25 @@ mod tests {
         };
         loop {
             match k.step(&mut shell, pics, 0, pack_of(0)) {
-                Kept::Made(..) => made += 1,
+                Kept::Made(z, _) => {
+                    made += 1;
+                    order.push(z);
+                }
                 Kept::Idle => break,
                 other => panic!("{other:?}"),
             }
         }
         assert_eq!(made, want.count());
         assert_eq!(pics.used() as u32, want.count());
+        // The Today screen's pictures (big, cards) before the app's.
+        let today = order
+            .iter()
+            .take_while(|z| matches!(z, Size::Hero | Size::Card))
+            .count();
+        assert_eq!(
+            today as u32,
+            want.0[0].count_ones() + want.0[2].count_ones()
+        );
         for size in Size::ALL {
             for i in 0..22 {
                 assert_eq!(shell.pic(size, i).is_some(), want.has(size, i));

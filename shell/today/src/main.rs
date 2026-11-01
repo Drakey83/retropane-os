@@ -1763,17 +1763,28 @@ mod image {
                         {
                             let buf = &mut *stream_buf;
                             let card = &mut *card;
-                            pic = maker.make(n, &idx, size, i, p, move |b| {
-                                let (c, start) = card.as_mut()?;
-                                let out = buf.get_mut(..b.len as usize)?;
-                                let stem = [b'R', b'P', b'I', b'C', b'0' + n];
-                                read_span(c, *start, stem, u64::from(b.off), out).then_some(&*out)
+                            let read_failed = core::cell::Cell::new(false);
+                            pic = maker.make(n, &idx, size, i, p, |b| {
+                                let got = card.as_mut().and_then(|(c, start)| {
+                                    let out = buf.get_mut(..b.len as usize)?;
+                                    let stem = [b'R', b'P', b'I', b'C', b'0' + n];
+                                    read_span(c, *start, stem, u64::from(b.off), out)
+                                        .then_some(&*out)
+                                });
+                                read_failed.set(got.is_none());
+                                got
                             });
                             // The card gone mid-run: the rest from the
-                            // default file, quietly.
-                            *card_failed |= pic.is_none() && idx.big(i).is_some();
+                            // default file, quietly. Only a read that
+                            // failed says so: a full store (the old picture
+                            // still in its slot until the keeper frees it)
+                            // was taken for a gone card, and every pick
+                            // showed the default pack's pictures (the
+                            // owner's run, 2026-10-31).
+                            *card_failed |= read_failed.get();
                         }
                         if pic.is_none()
+                            && (chosen.is_none() || *card_failed)
                             && let Some(idx) = def_index
                         {
                             pic = maker.make(0, &idx, size, i, p, |b| {
