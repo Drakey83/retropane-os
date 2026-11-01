@@ -2874,7 +2874,9 @@ fn the_light_look_reads_on_any_wallpaper() {
     let glass = [
         light_glass(GLASS_LEFT, LightStyle::Frosted),
         light_glass(GLASS_RIGHT, LightStyle::Frosted),
-        soft::PANEL,
+        // The glass panel's body, its top (the sheen) to its bottom.
+        panel::art(true).rows[0],
+        panel::art(true).rows[63],
     ];
     let behind: Vec<Argb> = glass
         .iter()
@@ -2896,7 +2898,6 @@ fn the_light_look_reads_on_any_wallpaper() {
                 // The sky's glyphs and the words' shadows aren't words.
                 if core::ptr::eq(font, &sky::SKY)
                     || core::ptr::eq(font, &sky::CLOUDS)
-                    || core::ptr::eq(font, &soft::RIMS)
                     || color >> 24 < 0x80
                     || color == weather_app::SHADOW_LIGHT
                 {

@@ -10,7 +10,7 @@ extern crate std;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::vec::Vec;
 
-use rp_draw::{Cmd, Font, Frame, Glyph, Image, Rect, Renderer};
+use rp_draw::{Cmd, Font, Frame, Glyph, Image, PanelArt, Rect, Renderer};
 use rp_drv_mbx_display::scanout::mix;
 use rp_gfx::layer::{Layer, PlaneFormat};
 use rp_gfx::render::CpuRenderer;
@@ -189,6 +189,121 @@ static FONT: Font = Font {
     glyphs: &GLYPHS,
 };
 
+/// A glass panel: rows darkening down, a lit rim, corners of their own.
+static PANEL_ROWS: [u32; 64] = {
+    let mut r = [0u32; 64];
+    let mut i = 0;
+    while i < 64 {
+        r[i] = 0xF0B0_B2B8 - (i as u32) * 0x0001_0101;
+        i += 1;
+    }
+    r
+};
+static CORNER_PX: [[u32; 16]; 4] = [
+    [
+        0,
+        0x40FF_FFFF,
+        0xC0E0_E0E0,
+        0xF0D0_D0D0,
+        0x40FF_FFFF,
+        0xF0F0_F0F0,
+        0xF0C0_C0C0,
+        0xF0B0_B2B8,
+        0xC0E0_E0E0,
+        0xF0C0_C0C0,
+        0xF0B0_B2B8,
+        0xF0B0_B2B8,
+        0xF0D0_D0D0,
+        0xF0B0_B2B8,
+        0xF0B0_B2B8,
+        0xF0B0_B2B8,
+    ],
+    [
+        0xF0D0_D0D0,
+        0xC0E0_E0E0,
+        0x40FF_FFFF,
+        0,
+        0xF0B0_B2B8,
+        0xF0C0_C0C0,
+        0xF0F0_F0F0,
+        0x40FF_FFFF,
+        0xF0B0_B2B8,
+        0xF0B0_B2B8,
+        0xF0C0_C0C0,
+        0xC0E0_E0E0,
+        0xF0B0_B2B8,
+        0xF0B0_B2B8,
+        0xF0B0_B2B8,
+        0xF0D0_D0D0,
+    ],
+    [
+        0xF080_8288,
+        0xF070_7278,
+        0xF070_7278,
+        0xF070_7278,
+        0xC0A0_A0A0,
+        0xF080_8288,
+        0xF070_7278,
+        0xF070_7278,
+        0x40C0_C0C0,
+        0xF0A0_A0A0,
+        0xF080_8288,
+        0xF070_7278,
+        0,
+        0x40C0_C0C0,
+        0xC0A0_A0A0,
+        0xF080_8288,
+    ],
+    [
+        0xF070_7278,
+        0xF070_7278,
+        0xF070_7278,
+        0xF080_8288,
+        0xF070_7278,
+        0xF070_7278,
+        0xF080_8288,
+        0xC0A0_A0A0,
+        0xF070_7278,
+        0xF080_8288,
+        0xF0A0_A0A0,
+        0x40C0_C0C0,
+        0xF080_8288,
+        0xC0A0_A0A0,
+        0x40C0_C0C0,
+        0,
+    ],
+];
+static CORNERS: [Image; 4] = [
+    Image {
+        w: 4,
+        h: 4,
+        px: &CORNER_PX[0],
+    },
+    Image {
+        w: 4,
+        h: 4,
+        px: &CORNER_PX[1],
+    },
+    Image {
+        w: 4,
+        h: 4,
+        px: &CORNER_PX[2],
+    },
+    Image {
+        w: 4,
+        h: 4,
+        px: &CORNER_PX[3],
+    },
+];
+static PANEL: PanelArt = PanelArt {
+    radius: 4,
+    rows: &PANEL_ROWS,
+    top: [0xF0F8_F8F8, 0xF0D8_D8DC],
+    bottom: [0xF090_9298, 0xF0A0_A2A8],
+    side: 0xF0C8_C8CC,
+    corners: [&CORNERS[0], &CORNERS[1], &CORNERS[2], &CORNERS[3]],
+};
+
 /// A scene with every command, glass under text and icons.
 fn scene(f: &mut Frame, shift: u16) {
     f.clear();
@@ -221,6 +336,21 @@ fn scene(f: &mut Frame, shift: u16) {
     });
     f.text(12 + shift, 100, &FONT, 0xFFFF_FFFF, b"ABAA");
     f.text(40, 230, &FONT, 0x80FF_FF00, b"AAB A");
+    // Glass panels: one tall (every row its own), one short (rows
+    // joined), one too small for its corners (left out).
+    f.push(Cmd::Panel {
+        r: Rect::new(330, 60 + shift, 140, 200),
+        art: &PANEL,
+    });
+    f.push(Cmd::Panel {
+        r: Rect::new(330, 300, 90, 30),
+        art: &PANEL,
+    });
+    f.push(Cmd::Panel {
+        r: Rect::new(430, 300, 8, 8),
+        art: &PANEL,
+    });
+    f.text(340, 100 + shift, &FONT, 0xFF10_1010, b"AB");
 }
 
 #[test]

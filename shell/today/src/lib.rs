@@ -1025,6 +1025,13 @@ pub fn frame_key(f: &rp_draw::Frame, mut h: u32) -> u32 {
                     mix(u32::from(b));
                 }
             }
+            Cmd::Panel { r, art } => {
+                mix(8);
+                mix(rect(r));
+                mix(size(r));
+                // Its art is fixed: the same art, the same pixels.
+                mix(core::ptr::from_ref(art) as usize as u32);
+            }
             Cmd::Clip { r } => {
                 mix(6);
                 mix(rect(r));

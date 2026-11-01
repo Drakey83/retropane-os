@@ -11594,10 +11594,11 @@ fn reveal_over(
     out
 }
 
-/// The light look in `style` at noon (the owner's pick, 2026-11-01): the
+/// The light look in `style` at `hour` (noon the light look, night the
+/// dark; the owner's pick, 2026-11-01): the
 /// Today screen with a rainy living sky, the Weather app's Now page with a
 /// station live, and its settings, as the image draws them.
-pub(crate) fn today_light(wall: &[u8], style: rp_shell::LightStyle) -> [Vec<u8>; 3] {
+pub(crate) fn today_light(wall: &[u8], style: rp_shell::LightStyle, hour: u8) -> [Vec<u8>; 3] {
     use rp_draw::{Frame, Renderer};
     use rp_mbx_render::model::{self, Bus, Mem};
     use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
@@ -11615,7 +11616,7 @@ pub(crate) fn today_light(wall: &[u8], style: rp_shell::LightStyle) -> [Vec<u8>;
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     shell.set_dials(today_dials());
     shell.set_time(rp_shell::Time {
-        hour: 12,
+        hour,
         minute: 0,
         weekday: 6,
         day: 1,
@@ -11656,6 +11657,79 @@ pub(crate) fn today_light(wall: &[u8], style: rp_shell::LightStyle) -> [Vec<u8>;
     shell.settle();
     let settings = shot(&mut shell, &mut gpu);
     [today, now, settings]
+}
+
+/// For panel mock-ups: the Today screen's and the Now page's words and
+/// pictures alone (no panels, no wallpaper) as an RGBA layer, by the CPU
+/// renderer the device's 2D path is held to, in the light look or the dark;
+/// and the wallpaper alone. Each [480 x 640 x 4] (RGBA), the wallpaper RGB.
+pub(crate) fn panel_mock_layers(wall: &[u8], light: bool) -> (Vec<u8>, [Vec<u8>; 2]) {
+    use rp_draw::{Frame, Renderer};
+    use rp_gfx::layer::{Layer, PlaneFormat};
+    use rp_mbx_render::model::{self, Bus, Mem};
+    use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
+
+    // The wallpaper alone, through the 2D model.
+    let mem = model::memory();
+    let mut gpu = Mbx2dRenderer::new(
+        Bus::new(mem.clone()),
+        Mem(mem.clone()),
+        Layout::X51V,
+        || 0,
+        1,
+    );
+    gpu.set_pics(preview_pics());
+    rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
+    let mut frame = Frame::new();
+    frame.damage(rp_draw::Rect::new(0, 0, 480, 640));
+    gpu.draw(&frame);
+    while !gpu.poll() {}
+    let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
+    let base = ((scadr & 0x7F_FFFF) * 16) as usize;
+    let wall_rgb: Vec<u8> = mem.borrow()[base..base + SCREEN_BYTES]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .flat_map(|p| shown_565(u16::from_le_bytes(*p)))
+        .collect();
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
+    shell.set_time(rp_shell::Time {
+        hour: if light { 12 } else { 22 },
+        minute: 0,
+        weekday: 6,
+        day: 1,
+        month: 11,
+    });
+    shell.set_station_from_tempest(PREVIEW_STATION);
+    shell.preview_panels_off(true);
+    let layer = |shell: &mut rp_shell::Shell| -> Vec<u8> {
+        let mut px = vec![0u32; 480 * 640];
+        let mut plane = vec![0u8; 480 * 4 * 640];
+        {
+            let mut cpu = rp_gfx::render::CpuRenderer::new(
+                Layer::new(&mut px, 480, 640, 480).expect("the layer"),
+                &mut plane,
+                480 * 4,
+                PlaneFormat::Argb8888,
+            );
+            cpu.set_pics(preview_pics());
+            let mut f = Frame::new();
+            shell.redraw_all();
+            shell.frame(&mut f);
+            let _ = cpu.draw(&f);
+        }
+        // BGRA to RGBA.
+        plane
+            .chunks(4)
+            .flat_map(|c| [c[2], c[1], c[0], c[3]])
+            .collect()
+    };
+    let today = layer(&mut shell);
+    shell.input(rp_shell::Input::PenDown { x: 240, y: 150 });
+    shell.input(rp_shell::Input::PenUp { x: 240, y: 150 });
+    shell.settle();
+    let now = layer(&mut shell);
+    (wall_rgb, [today, now])
 }
 
 /// The living sky on the Today screen (W6, `rp_shell::sky`): `n` frames

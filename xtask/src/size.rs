@@ -552,9 +552,11 @@ pub const BUDGETS: &[Budget] = &[
     // measured. Then 48 -> 50 KiB the same day: a frame 256 commands again,
     // not 224 (the light look's glass fades at its edges, five pieces a
     // panel), the renderer's per-command arrays with it; 48.0 KiB measured.
+    // Then load 165 -> 168 KiB (2026-11-01): the glass panel command
+    // (drawn from pre-rendered art: rows, rim, corners), 165.0 KiB measured.
     Budget {
         image: "rp-scene",
-        max_load: 165 * 1024,
+        max_load: 168 * 1024,
         max_zero: 50 * 1024,
         device: OnDevice::Returns,
     },

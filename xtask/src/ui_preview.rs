@@ -390,12 +390,35 @@ pub fn run(root: &Path) -> Result<(), String> {
     ] {
         for (part, rgb) in ["today", "now", "settings"]
             .iter()
-            .zip(crate::emu::today_light(&wall, style))
+            .zip(crate::emu::today_light(&wall, style, 12))
         {
             let file = format!("light-{name}-{part}.png");
             std::fs::write(out.join(&file), png_rgb(480, 640, &rgb))
                 .map_err(|e| format!("{file}: {e}"))?;
         }
+    }
+    // The dark look's glass the same (the owner, 2026-11-01: "make the dark
+    // mode boxes match"): dark-<today|now|settings>.png, at 10 PM.
+    for (part, rgb) in ["today", "now", "settings"]
+        .iter()
+        .zip(crate::emu::today_light(
+            &wall,
+            rp_shell::LightStyle::Frosted,
+            22,
+        ))
+    {
+        let file = format!("dark-{part}.png");
+        std::fs::write(out.join(&file), png_rgb(480, 640, &rgb))
+            .map_err(|e| format!("{file}: {e}"))?;
+    }
+    // For panel mock-ups (tools/shell-assets/panel_mock.py): the wallpaper
+    // alone and the words and pictures alone, light and dark.
+    for (name, light) in [("light", true), ("dark", false)] {
+        let (wall_rgb, [today, now]) = crate::emu::panel_mock_layers(&wall, light);
+        let w = |f: &str, b: &[u8]| std::fs::write(out.join(f), b).map_err(|e| format!("{f}: {e}"));
+        w("mock-wall.rgb", &wall_rgb)?;
+        w(&format!("mock-{name}-today.rgba"), &today)?;
+        w(&format!("mock-{name}-now.rgba"), &now)?;
     }
     std::fs::write(out.join("index.html"), page).map_err(|e| format!("index.html: {e}"))?;
     eprintln!(

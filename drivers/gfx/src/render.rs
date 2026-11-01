@@ -97,6 +97,10 @@ impl<'a> CpuRenderer<'a> {
 
     fn command(&mut self, frame: &Frame, cmd: &Cmd, clip: Rect) {
         match *cmd {
+            // Its fills and images, each drawn as such.
+            Cmd::Panel { r, art } => {
+                rp_draw::panel_cmds(r, art, |p| self.command(frame, &p, clip));
+            }
             Cmd::Fill { r, color } => self.layer.fill(rect(r).intersect(&clip), color),
             Cmd::Clip { .. } => {}
             Cmd::HGradient { r, left, right } => {

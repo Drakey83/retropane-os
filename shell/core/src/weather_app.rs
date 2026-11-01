@@ -19,7 +19,7 @@
 use rp_draw::{Argb, Cmd, Frame, Rect};
 use rp_weather::{DAYS, HOURS, Icon, Line};
 
-use super::{DEG_BIG, DIM, FOCUS, GLASS_LEFT, GLASS_RIGHT, H, Shell, TEXT, Target, W};
+use super::{DEG_BIG, DIM, FOCUS, H, Shell, TEXT, Target, W};
 
 /// The header: one thin row (the mix mock-up's): the place and its menu,
 /// the places' dots, an alert, the reading's time. Public with [`PAGE`] and
@@ -736,28 +736,18 @@ impl Shell {
     }
 
     /// A glass panel at a scrolled `y`, cut at the screen's top (the clip
-    /// does the rest; the tint runs across, so a cut keeps it).
+    /// does the rest; a cut panel loses its top corners, as it should).
     fn glass_at(&self, f: &mut Frame, x: u16, y: i32, w: u16, h: u16) {
+        if self.panels_off {
+            return;
+        }
         let top = y.max(0);
         let bottom = y + i32::from(h);
         if bottom <= top {
             return;
         }
         let r = Rect::new(x, top as u16, w, (bottom - top) as u16);
-        if self.light() {
-            return super::glass_light(f, r, GLASS_LEFT, GLASS_RIGHT);
-        }
-        f.push(Cmd::HGradient {
-            r,
-            left: GLASS_LEFT,
-            right: GLASS_RIGHT,
-        });
-        // Cut too: its top edge then sits at the screen's top, outside
-        // every page's clip.
-        f.push(Cmd::Outline {
-            r,
-            color: super::GLASS_EDGE,
-        });
+        super::panel::draw(f, r, self.light());
     }
 
     /// Text whose baseline is at a scrolled `y` (left out when its line is

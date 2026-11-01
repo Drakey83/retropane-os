@@ -240,6 +240,105 @@ pub enum Cmd {
         /// Where later commands may draw.
         r: Rect,
     },
+    /// A panel drawn from pre-rendered art ([`PanelArt`]): one command, the
+    /// renderer draws it as the fills and images [`panel_cmds`] gives (a
+    /// glass box of any size with rounded corners and a shaded body, no
+    /// pixel computed per frame).
+    Panel {
+        /// Where.
+        r: Rect,
+        /// Its art.
+        art: &'static PanelArt,
+    },
+}
+
+/// A panel's pre-rendered art (made offline, e.g.
+/// `tools/shell-assets/panel_art.py`): the body's colour from its top row
+/// to its bottom, the straight rim's rows and columns, the four corners as
+/// images (the rim and the body's rounded ends in them).
+#[derive(Debug)]
+pub struct PanelArt {
+    /// The corners' size (px), each `radius` square.
+    pub radius: u16,
+    /// The body's colour from top to bottom (stretched to the panel's
+    /// height, a row each).
+    pub rows: &'static [Argb; 64],
+    /// The top and bottom rim rows (over the body, between the corners).
+    pub top: [Argb; 2],
+    /// See [`Self::top`].
+    pub bottom: [Argb; 2],
+    /// The side rim's colour (one column each side, between the corners).
+    pub side: Argb,
+    /// The corners: top left, top right, bottom left, bottom right.
+    pub corners: [&'static Image; 4],
+}
+
+/// Panel `r` in `art` as fills and images, each passed to `emit`: the body
+/// row by row (rows of one colour joined), the rim's rows and columns, the
+/// corners. Nothing for a panel smaller than its corners.
+pub fn panel_cmds(r: Rect, art: &PanelArt, mut emit: impl FnMut(Cmd)) {
+    let k = art.radius;
+    if r.w < 2 * k + 2 || r.h < 2 * k + 2 {
+        return;
+    }
+    let row = |y: u16| {
+        let i = u32::from(y) * 63 * 2 / u32::from(r.h - 1);
+        art.rows[(i.div_ceil(2) as usize).min(63)]
+    };
+    // The body: between the corners across the top and bottom bands, the
+    // whole width (less the side rims) between them; a fill for each run
+    // of rows of one colour.
+    let mut y = 0;
+    while y < r.h {
+        let band = y < k || y >= r.h - k;
+        let rim = match y {
+            0 | 1 => Some(art.top[usize::from(y)]),
+            _ if y >= r.h - 2 => Some(art.bottom[usize::from(y - (r.h - 2))]),
+            _ => None,
+        };
+        let color = rim.unwrap_or_else(|| row(y));
+        let mut n = 1;
+        while rim.is_none()
+            && y + n < r.h
+            && (y + n < k || y + n >= r.h - k) == band
+            && y + n < r.h - 2
+            && row(y + n) == color
+        {
+            n += 1;
+        }
+        let (x, w) = if band {
+            (r.x + k, r.w - 2 * k)
+        } else {
+            (r.x + 1, r.w - 2)
+        };
+        emit(Cmd::Fill {
+            r: Rect::new(x, r.y + y, w, n),
+            color,
+        });
+        y += n;
+    }
+    // The side rims, between the corners.
+    for x in [r.x, r.x + r.w - 1] {
+        emit(Cmd::Fill {
+            r: Rect::new(x, r.y + k, 1, r.h - 2 * k),
+            color: art.side,
+        });
+    }
+    for (i, &(x, y)) in [
+        (r.x, r.y),
+        (r.x + r.w - k, r.y),
+        (r.x, r.y + r.h - k),
+        (r.x + r.w - k, r.y + r.h - k),
+    ]
+    .iter()
+    .enumerate()
+    {
+        emit(Cmd::Image {
+            x,
+            y,
+            img: art.corners[i],
+        });
+    }
 }
 
 /// A clip that clips nothing (`Cmd::Clip`'s end).
@@ -251,7 +350,10 @@ impl Cmd {
     #[must_use]
     pub fn bounds(&self, frame: &Frame) -> Rect {
         match *self {
-            Cmd::Fill { r, .. } | Cmd::HGradient { r, .. } | Cmd::Outline { r, .. } => r,
+            Cmd::Fill { r, .. }
+            | Cmd::HGradient { r, .. }
+            | Cmd::Outline { r, .. }
+            | Cmd::Panel { r, .. } => r,
             Cmd::Clip { .. } => Rect::new(0, 0, 0, 0),
             Cmd::Image { x, y, img } => Rect::new(x, y, img.w, img.h),
             Cmd::Pic { x, y, pic } => {
@@ -365,7 +467,7 @@ impl Frame {
                     *left = f(*left, false);
                     *right = f(*right, false);
                 }
-                Cmd::Image { .. } | Cmd::Pic { .. } | Cmd::Clip { .. } => {}
+                Cmd::Image { .. } | Cmd::Pic { .. } | Cmd::Clip { .. } | Cmd::Panel { .. } => {}
             }
         }
     }

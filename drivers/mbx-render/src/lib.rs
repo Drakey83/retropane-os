@@ -1172,6 +1172,10 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                     u32::from(pic.w) << 16 | u32::from(pic.h),
                     0,
                 ],
+                Cmd::Panel { r, art } => {
+                    let [a, b] = rect(r);
+                    [8, a, b, core::ptr::from_ref(art) as usize as u32, 0]
+                }
                 Cmd::Text {
                     x,
                     baseline,
@@ -1268,6 +1272,10 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     fn command(&mut self, frame: &Frame, c: &Cmd, clip: Rect, dst: usize) {
         match *c {
             Cmd::Clip { .. } => {}
+            // Its fills and images, each drawn as such (ADR-0023 rule 3).
+            Cmd::Panel { r, art } => {
+                rp_draw::panel_cmds(r, art, |p| self.command(frame, &p, clip, dst));
+            }
             Cmd::Fill { r, color } => {
                 let t = r.intersect(&clip);
                 if t.is_empty() {

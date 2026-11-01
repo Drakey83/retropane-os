@@ -28,8 +28,9 @@ pub mod align;
 pub mod chart;
 mod keyboard;
 pub mod motion;
+pub mod panel;
+mod panel_art;
 pub mod sky;
-pub mod soft;
 pub mod station;
 pub mod weather_app;
 mod weather_net;
@@ -236,17 +237,6 @@ pub enum LightStyle {
 /// The washed wallpaper's veil (C), drawn first, kept by the look.
 pub(crate) const WASH: Argb = 0x9CF4_F2F6;
 
-/// The light look's glass: a big panel soft-edged ([`soft::panel`]: opaque
-/// in the middle, its rim fading to clear, the owner's mock-up), a small
-/// cell (Hourly's grid rows, a chip) one plain piece of frosted glass.
-fn glass_light(f: &mut Frame, r: Rect, left: Argb, right: Argb) {
-    if r.h >= 60 && r.w >= 200 {
-        soft::panel(f, r);
-    } else {
-        f.push(Cmd::HGradient { r, left, right });
-    }
-}
-
 /// The frosted glass's opacity in the light look.
 pub(crate) const LIGHT_GLASS_ALPHA: u32 = 0xB8;
 
@@ -301,9 +291,11 @@ pub const fn light_text(c: Argb) -> Argb {
     // An accent kept in its hue, darkened until it reads at 4.5:1 on the
     // frosted glass (a fixed 55% left the live green at 3.46:1: the light
     // look's contrast test, 2026-11-01): its luminance, gamma taken as 2,
-    // under 0.05 (the 72% glass over a black wallpaper pixel is ~0.36).
+    // under 0.015: the grey glass's darkest, its bottom over a black
+    // wallpaper pixel, is ~0.28 (0.05 held on the white glass before it,
+    // 2026-11-01; at 0.05 the live green read 3.55:1 on the grey).
     let (mut r, mut g, mut b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
-    while (2126 * r * r + 7152 * g * g + 722 * b * b) / (255 * 255) > 500 {
+    while (2126 * r * r + 7152 * g * g + 722 * b * b) / (255 * 255) > 150 {
         r = r * 9 / 10;
         g = g * 9 / 10;
         b = b * 9 / 10;
@@ -750,8 +742,10 @@ pub struct Shell {
     /// The sky's steps so far (its clouds move a whole pixel a step).
     sky_n: u32,
     sky_forced: bool,
-    /// The light look's style.
+    /// The light look's style, and its panels' ([`soft`]).
     light_style: LightStyle,
+    /// The previews' panels left out (mock-ups composite their own).
+    panels_off: bool,
     /// The test image's sky test: 0 the forecast's sky, else the weather
     /// it shows ([`sky`]).
     sky_test: u8,
@@ -877,6 +871,7 @@ macro_rules! shell_start {
             sky_n: 0,
             sky_forced: false,
             light_style: LightStyle::Frosted,
+            panels_off: false,
             sky_test: 0,
             fetched_at: None,
             dock: false,
@@ -2165,7 +2160,7 @@ impl Shell {
             let style = self.light_style;
             f.map_colors(|c, text| {
                 if sky::is_ink(c)
-                    || soft::is_soft(c)
+                    || panel::is_panel(c)
                     || c == WASH
                     || c == keyboard::DONE_TEXT
                     || c == weather_app::SHADOW_LIGHT
@@ -2185,6 +2180,13 @@ impl Shell {
         }
     }
 
+    /// The previews' screens without their panels (the mock-ups of panel
+    /// designs composite theirs under the words).
+    pub fn preview_panels_off(&mut self, off: bool) {
+        self.panels_off = off;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
     /// The light look's style (the owner's pick of the three drawn,
     /// 2026-11-01; the previews draw each).
     pub fn set_light_style(&mut self, style: LightStyle) {
@@ -2193,14 +2195,13 @@ impl Shell {
     }
 
     fn glass(&self, f: &mut Frame, r: Rect, left: Argb, right: Argb) {
-        if self.light() {
-            return glass_light(f, r, left, right);
+        if self.panels_off {
+            return;
         }
-        f.push(Cmd::HGradient { r, left, right });
-        f.push(Cmd::Outline {
-            r,
-            color: GLASS_EDGE,
-        });
+        // Every box the same glass (the owner, 2026-11-01): the tints
+        // once passed here belonged to the flat look before it.
+        let _ = (left, right);
+        panel::draw(f, r, self.light());
     }
 
     fn centred(
