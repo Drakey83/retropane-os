@@ -194,6 +194,15 @@ with the time of day. **Proposed, for his vote (L1-L5):**
   The faint icons (fog, clear night: weather.md) get a look on the light
   glass.
 
+**Built, a first version (2026-11-01, ef6b35d1):** Light, Dark and Auto
+(light between sunrise and sunset at the place shown) through one switch on
+every frame: neutral colours mirrored in lightness (frosted white glass,
+dark text), accents and pictures kept, light accent text darkened to read;
+the radar map's Night and Ink applied to the real tiles. Renders:
+`mockups/light-mode-first.png`. Not yet: the role table and its build
+check (L1), the cross-fade, the veil over the wallpaper, the toggle in a
+shade.
+
 Votes: **L1** the role table plus the build check (recommended yes);
 **L2** Auto by sunrise and sunset at the home place as the default
 (recommended) or a fixed schedule; **L3** one day/night clock for mode,
