@@ -2220,3 +2220,37 @@ fn a_pressed_button_is_solid_under_its_label() {
         "nothing see-through over it"
     );
 }
+
+#[test]
+fn every_day_and_every_hour_shows_its_chance_of_rain() {
+    // The owner, 2026-10-31 (the third time): rows without a percentage
+    // look broken. Every 10 Day row and every Hourly cell shows one, 0%
+    // too.
+    let mut s = weather(2);
+    for d in &mut s.wx.days {
+        d.precip = 0;
+    }
+    s.dirty(Rect::new(0, 0, W, H));
+    let f = drawn(&mut s);
+    let zeros = texts(&f).iter().filter(|t| t.as_slice() == b"0%").count();
+    assert_eq!(zeros, rp_weather::DAYS, "a 0% on each 10 Day row");
+    let mut s = weather(1);
+    for h in &mut s.wx.hours {
+        h.precip = 0;
+    }
+    s.use_planes(true);
+    let mut seen = 0;
+    let rows = picture_rows(1);
+    let mut top = 0;
+    while top < rows {
+        let n = 100.min(rows - top);
+        let mut f = Frame::new();
+        s.page_band(1, &mut f, top, n);
+        seen += texts(&f).iter().filter(|t| t.as_slice() == b"0%").count();
+        top += n;
+    }
+    assert!(
+        seen >= rp_weather::HOURS,
+        "a 0% in each hour's cell: {seen}"
+    );
+}

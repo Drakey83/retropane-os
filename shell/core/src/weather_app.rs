@@ -1321,7 +1321,9 @@ impl Shell {
                     TEXT,
                     t.as_bytes(),
                 );
-                if h.precip >= 10 {
+                // Every hour's chance, 0% too: a gap read as broken (the
+                // owner, 2026-10-31, said three times).
+                {
                     let p = Line::new().num(i32::from(h.precip)).push(b"%");
                     f.text(
                         cx.saturating_sub(label.width(p.as_bytes()) / 2),
@@ -1606,10 +1608,10 @@ impl Shell {
                     pic,
                 });
             }
-            if d.precip >= 20 {
-                let p = Line::new().num(i32::from(d.precip)).push(b"%");
-                f.text(r.x + 138, r.y + 28, ui, RAIN, p.as_bytes());
-            }
+            // Every day's chance of rain, 0% too: rows without one looked
+            // broken (the owner, 2026-10-31, said three times).
+            let p = Line::new().num(i32::from(d.precip)).push(b"%");
+            f.text(r.x + 138, r.y + 28, ui, RAIN, p.as_bytes());
             let low = rg.temp(d.low);
             let lw = ui.width(low.as_bytes());
             f.text(r.x + 230 - lw, r.y + 28, ui, DIM, low.as_bytes());

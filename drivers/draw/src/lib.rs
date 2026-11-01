@@ -286,13 +286,14 @@ impl Cmd {
 const TEXT_MARGIN: u16 = 4;
 
 /// Commands a frame holds: the busiest frame the shell's tests draw (with a
-/// picture in every slot, as on the X51v) is 155 commands (Hourly scrolled
-/// with the menu open), a quarter spare (rp-shell's test holds it). It was
+/// picture in every slot, as on the X51v) is 168 commands (Hourly scrolled
+/// with the menu open, every hour's chance of rain shown), a quarter spare
+/// (rp-shell's test holds it). It was
 /// 256 while Hourly's line was 49 pieces on the 2D path (209 commands); at
 /// 160, Hourly drawn on screen 0 (185) lost its scroll bar, tabs and
 /// softkeys without a word (emu-today, 2026-10-31). The line is one
 /// picture since option C's step 6.
-pub const MAX_CMDS: usize = 208;
+pub const MAX_CMDS: usize = 224;
 /// Bytes of text a frame holds.
 pub const MAX_TEXT: usize = 1024;
 /// Dirty rectangles a frame keeps apart; more merge into their union.
