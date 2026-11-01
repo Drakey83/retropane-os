@@ -204,6 +204,7 @@ impl Shell {
         }
         self.screen = s;
         self.place_menu = false;
+        self.chart = None;
         self.pressed = None;
         self.anim = None;
         self.removing = false;

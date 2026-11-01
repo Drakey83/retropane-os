@@ -237,6 +237,16 @@ const RAIN: Rect = Rect::new(168, 368, 144, 120);
 const BOLTS: Rect = Rect::new(320, 368, 144, 120);
 const SUN: Rect = Rect::new(16, 496, 448, 96);
 
+/// The tile reading `i` ([`super::chart::Reading::ALL`]'s order) opens its
+/// chart from: the big temperature's (humidity too), wind's, pressure's.
+pub(crate) const fn reading_rect(i: u8) -> Rect {
+    match i {
+        1 => WIND,
+        3 => PRESSURE,
+        _ => HERO,
+    }
+}
+
 impl Shell {
     /// The dials painted at start by the device.
     pub fn set_dials(&mut self, d: Dials) {

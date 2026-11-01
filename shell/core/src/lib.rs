@@ -25,8 +25,10 @@
 #![forbid(unsafe_code)]
 
 pub mod align;
+pub mod chart;
 mod keyboard;
 pub mod motion;
+pub mod sky;
 pub mod station;
 pub mod weather_app;
 mod weather_net;
@@ -374,6 +376,10 @@ pub enum Target {
     PlaceItem(u8),
     /// The Weather header's alert: the alert in full.
     Alert,
+    /// A reading that opens its chart ([`chart::Reading::ALL`]'s order).
+    Reading(u8),
+    /// The chart's span chip (0: 12 hours, 1: 2 days).
+    Span(u8),
 }
 
 // ---- Layout (480 x 640, portrait) --------------------------------------
@@ -531,6 +537,13 @@ enum Gesture {
         /// How far it has gone (negative: left).
         dx: i16,
     },
+    /// Along the chart's line: the marker follows the pen.
+    Scrub,
+    /// Down from the chart sheet's top: far enough closes it.
+    Sheet {
+        /// Where it went down.
+        y0: u16,
+    },
 }
 
 /// How far the pen may move before a press stops being a tap (px): a
@@ -631,6 +644,15 @@ pub struct Shell {
     /// The station's instruments and when they came (ms).
     station: Option<rp_weather::tempest::StationNow>,
     station_at: u32,
+    /// The station's last day (for its charts) and when it came (ms).
+    history: Option<rp_weather::tempest::History>,
+    history_at: u32,
+    /// The chart sheet open, if any (N3, N4: [`chart`]).
+    chart: Option<chart::Chart>,
+    /// When the living sky last moved (ms), and the previews' word that it
+    /// moves with the sample forecast ([`sky`]).
+    sky_at: u32,
+    sky_forced: bool,
     /// When the forecast last came (ms), whether the dock ever answered,
     /// and whether the station's readings are in.
     fetched_at: Option<u32>,
@@ -746,6 +768,11 @@ macro_rules! shell_start {
             pack_at: 0,
             station: None,
             station_at: 0,
+            history: None,
+            history_at: 0,
+            chart: None,
+            sky_at: 0,
+            sky_forced: false,
             fetched_at: None,
             dock: false,
             station_live: false,
@@ -1140,10 +1167,24 @@ impl Shell {
         self.graph
     }
 
+    /// The size of the graph's picture to paint: Hourly's, or the open
+    /// chart's (painted into the same slot).
+    #[must_use]
+    pub fn graph_size(&self) -> (u16, u16) {
+        if self.chart.is_some() {
+            chart::CHART_PIC
+        } else {
+            weather_app::GRAPH_PIC
+        }
+    }
+
     /// What Hourly's graph picture shows (its hours' temperatures): a new
     /// key is a new picture to paint.
     #[must_use]
     pub fn graph_key(&self) -> u32 {
+        if let Some(c) = self.chart {
+            return self.chart_key(c);
+        }
         self.wx.hours[..12].iter().fold(0x811C_9DC5u32, |h, x| {
             (h ^ u32::from(x.temp.cast_unsigned())).wrapping_mul(0x0100_0193)
         })
@@ -1258,6 +1299,8 @@ impl Shell {
             Target::PlaceItem(i) => Self::place_item(i),
             Target::Alert => self.alert_rect(),
             Target::Timeline => weather_app::TIMELINE,
+            Target::Reading(i) => self.reading_rect(i),
+            Target::Span(i) => chart::span_chip(i),
         }
     }
 
@@ -1302,9 +1345,23 @@ impl Shell {
             .chain((0..self.rows()).map(Target::Row))
             .chain((0..caps).map(Target::Cap))
             .chain((0..radar).flat_map(|_| [Target::Play, Target::Timeline]))
+            .chain(
+                (0..4)
+                    .filter(|&i| self.reading_shown(i))
+                    .map(Target::Reading),
+            )
+            .chain((0..2).filter(|_| self.chart.is_some()).map(Target::Span))
             .chain([Target::SoftLeft, Target::SoftRight])
-            // With the menu open only Start (to close it) and the menu act.
-            .filter(|t| !self.menu_open || *t == Target::Start);
+            // With the menu open only Start (to close it) and the menu act;
+            // with a chart open, Start, its chips and the softkeys.
+            .filter(|t| !self.menu_open || *t == Target::Start)
+            .filter(|t| {
+                self.chart.is_none()
+                    || matches!(
+                        t,
+                        Target::Start | Target::Span(_) | Target::SoftLeft | Target::SoftRight
+                    )
+            });
         menu.chain(today)
     }
 
@@ -1319,6 +1376,9 @@ impl Shell {
         self.now = now_ms;
         self.net_tick();
         if self.radar_step(now_ms) && self.anim.is_none() && self.notice.is_none() {
+            return Action::Redraw;
+        }
+        if self.sky_step(now_ms) && self.notice.is_none() {
             return Action::Redraw;
         }
         if self.screen == Screen::Weather && self.scroll.step(now_ms) {
@@ -1438,6 +1498,20 @@ impl Shell {
     }
 
     fn activate(&mut self, t: Target) -> Action {
+        // The chart's softkeys: Close, and the other span.
+        if let Some(c) = self.chart {
+            match t {
+                Target::SoftLeft => {
+                    self.close_chart();
+                    return Action::Redraw;
+                }
+                Target::SoftRight => {
+                    self.set_chart_span(1 - c.span);
+                    return Action::Redraw;
+                }
+                _ => {}
+            }
+        }
         match t {
             Target::Start => self.set_menu(!self.menu_open),
             Target::Quick(i) => {
@@ -1478,6 +1552,8 @@ impl Shell {
                 self.dirty(Rect::new(0, 0, W, H));
             }
             Target::Alert => self.open(Screen::Alert),
+            Target::Reading(i) => self.open_chart(chart::Reading::ALL[usize::from(i).min(3)]),
+            Target::Span(i) => self.set_chart_span(i),
             Target::Tab(i) => self.set_tab(i),
             Target::Back => self.go_back(),
             Target::Row(i) => self.row_tapped(i),
@@ -1530,6 +1606,7 @@ impl Shell {
             self.typed_n = 0;
             self.screen = Screen::Today;
             self.place_menu = false;
+            self.chart = None;
             self.anim = None;
             self.pressed = None;
             if self.focus.is_some() {
@@ -1564,6 +1641,9 @@ impl Shell {
 
     /// The softkeys' names on the screen up.
     fn softkeys(&self) -> (&'static str, &'static str) {
+        if let Some(k) = self.chart_softkeys() {
+            return k;
+        }
         match self.screen {
             Screen::Today => ("Calendar", "Edit"),
             // T4: Refresh, and Menu (the settings list); the header's
@@ -1581,7 +1661,10 @@ impl Shell {
 
     /// Whether a stroke from `(x, y)` is the Weather page's.
     fn on_page(&self, x: u16, y: u16) -> bool {
-        self.screen == Screen::Weather && !self.menu_open && weather_app::PAGE.contains_point(x, y)
+        self.screen == Screen::Weather
+            && !self.menu_open
+            && self.chart.is_none()
+            && weather_app::PAGE.contains_point(x, y)
     }
 
     /// The pen moved: a press slid off its target loses its press state;
@@ -1612,6 +1695,8 @@ impl Shell {
                 }
             }
             Gesture::Scroll => self.scroll_to_pen(y),
+            // The chart's own ([`Shell::chart_input`]).
+            Gesture::Scrub | Gesture::Sheet { .. } => {}
             Gesture::Swipe { x0, dx } => {
                 let d = (i32::from(x) - i32::from(x0)).clamp(-i32::from(W), i32::from(W)) as i16;
                 if d != dx {
@@ -1666,7 +1751,7 @@ impl Shell {
             // Home, the Start menu's last entry fell on a grid cell and
             // picked an hour instead of going back to the loader
             // (emu-today, 2026-10-31).
-            Gesture::None => None,
+            Gesture::None | Gesture::Scrub | Gesture::Sheet { .. } => None,
             Gesture::Pending { .. } => {
                 // Still a tap: the scroll lets go where it is.
                 self.scroll.release(self.now);
@@ -1760,6 +1845,12 @@ impl Shell {
             };
         }
         let before = self.damaged;
+        if let Some(a) = self.chart_input(e) {
+            return match a {
+                Action::Nothing if self.damaged != before => Action::Redraw,
+                a => a,
+            };
+        }
         let act = match e {
             Input::PenDown { x, y } => {
                 self.gesture = Gesture::None;
@@ -1961,7 +2052,16 @@ impl Shell {
     /// R160).
     fn look(&self, f: &mut Frame) {
         if self.light() {
-            f.map_colors(|c, text| if text { light_text(c) } else { light_twin(c) });
+            f.map_colors(|c, text| {
+                if sky::is_ink(c) {
+                    // The living sky's own colours, chosen for each look.
+                    c
+                } else if text {
+                    light_text(c)
+                } else {
+                    light_twin(c)
+                }
+            });
         }
     }
 
@@ -2179,6 +2279,11 @@ impl Shell {
             .reveal_window()
             .map(|(r, _)| r)
             .filter(|_| !self.planes);
+        // A chart open: what is under its sheet isn't drawn (its pictures
+        // would take the 2D engine's cache from the chart's).
+        if self.chart.is_some() {
+            f.clip(Some(Rect::new(0, 36, W, chart::SHEET.y - 36)));
+        }
         match self.screen {
             Screen::Today => self.today_scene(f),
             Screen::Weather => {
@@ -2203,6 +2308,18 @@ impl Shell {
             Screen::KeyEntry => self.key_scene(f),
             Screen::Station => self.station_scene(f),
             Screen::Alert => self.alert_scene(f),
+        }
+        if self.chart.is_some() {
+            f.clip(None);
+        }
+        // A reading pressed or focused, then the chart's sheet over all.
+        for i in 0..4 {
+            if self.reading_shown(i) {
+                self.decorate(f, Target::Reading(i));
+            }
+        }
+        if let Some(c) = self.chart {
+            self.chart_scene(f, c);
         }
 
         // Softkeys and the notice between them.
@@ -2256,6 +2373,8 @@ impl Shell {
             .push(b"   Low ")
             .push(rg.temp(d.low).as_bytes());
         f.text(HERO.x + 20, HERO.y + 174, ui, DIM, hl.as_bytes());
+        // The living sky, behind the picture.
+        self.sky_scene(f);
         // The icon; none drawn when the pack lacks it (an empty outline
         // read as a stray box: the owner's photo, 2026-10-31).
         if let Some(pic) = self.icons.big(icon) {

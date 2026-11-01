@@ -343,8 +343,10 @@ pub fn history(json: &[u8]) -> Option<History> {
     if end == i64::MIN {
         return None;
     }
-    let mut sum = [[0i64; 4]; HIST];
-    let mut n = [[0i64; 4]; HIST];
+    // i32 sums and u16 counts (a minute's rows, 30 a half-hour): the
+    // parse stays well under the P6 stack rule's 4 KB with the answer.
+    let mut sum = [[0i32; 4]; HIST];
+    let mut n = [[0u16; 4]; HIST];
     let mut gust = [None::<u16>; HIST];
     let _ = Json::new(json).object(|k, v| {
         if k != b"obs" {
@@ -381,8 +383,8 @@ pub fn history(json: &[u8]) -> Option<History> {
             ];
             for (j, f) in fields.into_iter().enumerate() {
                 if let Some(f) = f {
-                    sum[b][j] += f;
-                    n[b][j] += 1;
+                    sum[b][j] = sum[b][j].saturating_add(f as i32);
+                    n[b][j] = n[b][j].saturating_add(1);
                 }
             }
             if let Some(g) = kmh(vals[3]) {
@@ -396,7 +398,7 @@ pub fn history(json: &[u8]) -> Option<History> {
         s: [Sample::default(); HIST],
     };
     for (b, s) in h.s.iter_mut().enumerate() {
-        let avg = |j: usize| (n[b][j] > 0).then(|| sum[b][j] / n[b][j]);
+        let avg = |j: usize| (n[b][j] > 0).then(|| sum[b][j] / i32::from(n[b][j]));
         *s = Sample {
             temp: avg(0).map(|v| v as i16),
             humidity: avg(1).map(|v| v as u8),

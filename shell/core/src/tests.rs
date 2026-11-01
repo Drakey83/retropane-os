@@ -2084,6 +2084,33 @@ fn the_busiest_frame_leaves_a_quarter_of_the_frame_spare() {
         s.open(screen);
         note(&drawn(&mut s), format!("{screen:?}"));
     }
+    // The living sky at its busiest (a storm: heavy rain, every cloud and
+    // the flash), the menu open over it.
+    let mut s = shell(true);
+    let mut wx = s.wx;
+    wx.now.sky.wmo = 95;
+    wx.now.sky.cover = 100;
+    s.set_forecast(wx);
+    s.preview_sky(true);
+    s.tick(5200 * 3 + 10);
+    note(&drawn(&mut s), "Today, storm sky".into());
+    tap(&mut s, START);
+    note(&drawn(&mut s), "Today, storm sky, menu".into());
+    // Your station on Now (N1, N2) with a chart's sheet open over it, and
+    // the Station screen with one.
+    let storm: &[u8] = br#"{"current_conditions": {"time": 1761900000,
+      "air_temperature": 20.0, "relative_humidity": 61, "wind_avg": 12.9, "wind_gust": 33.8,
+      "sea_level_pressure": 1016.4, "pressure_trend": "rising", "uv": 6,
+      "lightning_strike_count_last_3hr": 4, "lightning_strike_last_distance": 10}}"#;
+    let mut s = weather(0);
+    s.set_station_from_tempest(storm);
+    note(&drawn(&mut s), "Now, your station".into());
+    let r = s.now_reading_rect(0);
+    tap(&mut s, r);
+    note(&drawn(&mut s), "Now, a chart".into());
+    s.open(Screen::Station);
+    tap(&mut s, station::reading_rect(1));
+    note(&drawn(&mut s), "Station, a chart".into());
     println!("busiest frame: {} commands ({})", most.0, most.1);
     assert!(
         most.0 * 4 <= MAX_CMDS * 3,
@@ -2391,4 +2418,134 @@ fn with_a_station_now_shows_its_live_readings_and_what_matters_now() {
             .iter()
             .any(|x| x.as_slice() == b"YOUR STATION, LIVE")
     );
+}
+
+#[test]
+fn a_reading_opens_its_chart_the_marker_scrubs_and_the_sheet_closes() {
+    // N3, N4 (docs/design/station-everywhere.md): the wind card opens the
+    // wind's chart, the station's day joined to the forecast at now; the
+    // D-pad and a finger move the marker; up changes the reading; Close, a
+    // tap above and a pull down shut it.
+    let now: &[u8] = br#"{"current_conditions": {"time": 1761900000,
+      "air_temperature": 20.0, "relative_humidity": 61, "wind_avg": 12.9,
+      "sea_level_pressure": 1016.4, "pressure_trend": "rising"}}"#;
+    let mut s = weather(0);
+    s.set_station_from_tempest(now);
+    // A day of half-hour rows, as Tempest's observations answer.
+    let rows: Vec<String> = (0..48)
+        .map(|i| {
+            format!(
+                "[{},0.5,{}.0,6.0,315,3,{}.0,{}.0,60]",
+                1_761_900_000 - (47 - i) * 1800,
+                1 + i % 5,
+                990 + i / 8,
+                10 + i / 4
+            )
+        })
+        .collect();
+    let json = format!("{{\"obs\":[{}]}}", rows.join(","));
+    s.history = rp_weather::tempest::history(json.as_bytes());
+    assert!(s.history.is_some());
+    drawn(&mut s);
+    assert!(s.reading_shown(1));
+    let r = s.now_reading_rect(1);
+    tap(&mut s, r);
+    assert_eq!(s.chart.map(|c| c.reading), Some(chart::Reading::Wind));
+    assert_eq!(s.softkeys(), ("Close", "2 days"));
+    let f = drawn(&mut s);
+    assert!(!f.overflowed(), "{} commands", f.cmds().count());
+    let t = texts(&f);
+    let has = |t: &[Vec<u8>], b: &[u8]| t.iter().any(|x| x.as_slice() == b);
+    assert!(has(&t, b"WIND") && has(&t, b"NOW, YOUR STATION"), "{t:?}");
+    // The line is painted into the graph's picture.
+    let (gw, gh) = weather_app::GRAPH_PIC;
+    let mut px = vec![0u32; usize::from(gw) * usize::from(gh)];
+    s.paint_graph(&mut px);
+    assert!(px.iter().filter(|p| **p >> 24 > 0x80).count() > 400);
+    assert_ne!(s.graph_key(), {
+        let c = s.chart.take();
+        let k = s.graph_key();
+        s.chart = c;
+        k
+    });
+    // The D-pad: right into the forecast, left back into the station's.
+    s.input(Input::Key(Key::Right));
+    assert_eq!(s.chart.map(|c| c.at), Some(1));
+    assert!(has(&texts(&drawn(&mut s)), b"THE FORECAST"));
+    for _ in 0..3 {
+        s.input(Input::Key(Key::Left));
+    }
+    assert_eq!(s.chart.map(|c| c.at), Some(-2));
+    assert!(has(&texts(&drawn(&mut s)), b"YOUR STATION MEASURED"));
+    // A finger at the line's left end: twelve hours ago.
+    let (x, y) = (17 + 10, chart::SHEET.y + 156 + 80);
+    s.input(Input::PenDown { x, y });
+    s.input(Input::PenMove { x: x + 1, y });
+    s.input(Input::PenUp { x: x + 1, y });
+    assert_eq!(s.chart.map(|c| c.at), Some(-24));
+    // Up: the next reading round (temperature); the right softkey: 2 days.
+    s.input(Input::Key(Key::Up));
+    assert_eq!(s.chart.map(|c| c.reading), Some(chart::Reading::Temp));
+    tap(&mut s, SOFT_RIGHT);
+    assert_eq!(s.chart.map(|c| c.span), Some(1));
+    assert!(!drawn(&mut s).overflowed());
+    // Close; then a tap above the sheet; then a pull down from its top.
+    tap(&mut s, SOFT_LEFT);
+    assert!(s.chart.is_none());
+    assert_eq!(s.screen(), Screen::Weather);
+    let r = s.now_reading_rect(0);
+    tap(&mut s, r);
+    assert!(s.chart.is_some());
+    s.input(Input::PenDown { x: 240, y: 120 });
+    s.input(Input::PenUp { x: 240, y: 120 });
+    assert!(s.chart.is_none());
+    let r = s.now_reading_rect(3);
+    tap(&mut s, r);
+    assert_eq!(s.chart.map(|c| c.reading), Some(chart::Reading::Pressure));
+    let y0 = chart::SHEET.y + 20;
+    s.input(Input::PenDown { x: 100, y: y0 });
+    s.input(Input::PenMove { x: 100, y: y0 + 50 });
+    s.input(Input::PenUp { x: 100, y: y0 + 50 });
+    assert!(s.chart.is_none());
+    // The Station screen's tiles open it too.
+    s.open(Screen::Station);
+    drawn(&mut s);
+    tap(&mut s, station::reading_rect(1));
+    assert_eq!(s.chart.map(|c| c.reading), Some(chart::Reading::Wind));
+    assert!(!drawn(&mut s).overflowed());
+}
+
+#[test]
+fn the_sky_moves_only_with_a_real_forecast_at_its_own_pace() {
+    // W6: rain falls through drifting cloud behind Today's picture; the
+    // sample forecast keeps it still (nothing pretends).
+    let mut s = shell(false);
+    drawn(&mut s);
+    let mut wx = s.wx;
+    wx.now.sky.wmo = 63;
+    s.set_forecast(wx);
+    drawn(&mut s);
+    assert!(!s.sky_live(), "the sample forecast: still");
+    assert_eq!(s.tick(1000), Action::Nothing);
+    s.preview_sky(true);
+    assert!(s.sky_live());
+    drawn(&mut s);
+    assert_eq!(s.tick(2000), Action::Redraw);
+    let f = drawn(&mut s);
+    assert!(
+        f.dirty()
+            .iter()
+            .all(|d| sky::AREA.intersect(d) == *d || *d == sky::AREA)
+    );
+    let runs = f
+        .cmds()
+        .filter(|c| matches!(c, Cmd::Text { font, .. } if core::ptr::eq(*font, &sky::SKY)))
+        .count();
+    assert!(runs >= 10, "{runs} runs of the sky's glyphs");
+    // Not again before its step; then again.
+    assert_eq!(s.tick(2000 + sky::STEP_MS - 1), Action::Nothing);
+    assert_eq!(s.tick(2000 + sky::STEP_MS), Action::Redraw);
+    // Off the Today screen: still.
+    tap(&mut s, HERO);
+    assert!(!s.sky_live());
 }

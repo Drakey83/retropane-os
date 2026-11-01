@@ -75,6 +75,22 @@ beating anything). New options, drawn the same way:
   dragged along the line, or the D-pad, moves a marker and reads the time
   and value large. Drawn once; only the marker moves.
 
+## Built to try (2026-11-01)
+
+The owner asked to try N1-N4 on the X51v before voting, ready to revert
+(R163). Built: N1 and N2 on Now while the station's reading is under an
+hour old (`STATION_ON_NOW`); N3 and N4 as one sheet from the Now page's big
+temperature and wind, pressure and humidity cards and the Station screen's
+temperature, wind and pressure tiles (`chart::CHARTS`): 12 hours or 2 days
+each side of now, the station's day from Tempest's observations through
+the dock relay (`HISTORY`, its rows cut to the nine fields read), the
+forecast's hours dashed, the D-pad's left and right or a finger moving the
+marker, up and down changing the reading, Close, a tap above or a pull
+down closing it. The line is painted into Hourly's graph slot (446 x 112,
+under the 2D engine's 256 KiB picture cache). Pressure's day is lifted to
+sea level by the difference now (Tempest's history is at the station's
+height). Not built: "the forecast said" and a week (R164).
+
 ## Votes
 
 - **S1:** gauges on Now: A, B or C.

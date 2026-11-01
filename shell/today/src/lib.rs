@@ -592,7 +592,7 @@ pub fn keep_graph(shell: &mut rp_shell::Shell, pics: &Pics, painted: &mut Option
         pics.free(old);
         shell.set_graph(None);
     }
-    let (w, h) = rp_shell::weather_app::GRAPH_PIC;
+    let (w, h) = shell.graph_size();
     let pic = pics.alloc(w, h);
     if let Some(p) = pic {
         let s: &rp_shell::Shell = shell;
@@ -1057,6 +1057,31 @@ pub fn reveal_window(r: rp_draw::Rect, shift: u16) -> (u16, u16, u16, u16, u16, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every store picture the 2D engine draws fits its picture cache
+    /// whole (a bigger one draws nothing: Hourly's 446 x 160 graph, 285 KB,
+    /// was never drawn on the 2D path; ui-preview, 2026-11-01).
+    #[test]
+    fn every_picture_fits_the_2d_engines_cache() {
+        let cache = rp_mbx_render::Layout::X51V.images.1;
+        let sizes = [
+            (rp_shell::Size::Hero.side(), rp_shell::HERO_PIC_H),
+            (rp_shell::Size::Mid.side(), rp_shell::Size::Mid.side()),
+            (rp_shell::Size::Card.side(), rp_shell::Size::Card.side()),
+            (rp_shell::Size::Row.side(), rp_shell::Size::Row.side()),
+            rp_shell::weather_app::GRAPH_PIC,
+            rp_shell::chart::CHART_PIC,
+        ];
+        for (w, h) in sizes {
+            assert!(
+                usize::from(w) * usize::from(h) * 4 <= cache,
+                "{w} x {h} is over the cache's {cache} bytes"
+            );
+        }
+        // The chart is painted into the graph's slot.
+        let (g, c) = (rp_shell::weather_app::GRAPH_PIC, rp_shell::chart::CHART_PIC);
+        assert!(c.0 <= g.0 && c.1 <= g.1);
+    }
 
     /// A pack of big pictures only (option C) reads into an index; the
     /// maker inflates a condition once for all its sizes, copies the big

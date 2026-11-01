@@ -2728,6 +2728,9 @@ mod image {
                     PEN_DOWN_SLEEP_MS
                 } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
                     20
+                } else if shell.sky_live() {
+                    // The living sky's next step.
+                    rp_shell::sky::STEP_MS
                 } else if shell.notice().is_some() {
                     100
                 } else {

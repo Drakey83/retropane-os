@@ -164,6 +164,26 @@ fn shots() -> Vec<Shot> {
             what: "Back, then the header's STATION: your station's screen (a canned Tempest reading)",
             steps: [tap(80, 620), tap(326, 53)].concat(),
         },
+        Shot {
+            name: "24-station-chart-wind",
+            what: "The station's WIND tile tapped: its chart (N3, N4), the station's day solid, the forecast dashed",
+            steps: tap(126, 290),
+        },
+        Shot {
+            name: "25-chart-scrubbed",
+            what: "The D-pad's left six times: the marker three hours back, read large",
+            steps: vec![Input::Key(Key::Left); 6],
+        },
+        Shot {
+            name: "26-weather-now-station",
+            what: "Close, Back, Now: your station live on the Now page (N1, N2)",
+            steps: [tap(80, 620), tap(80, 620), tap(60, 578)].concat(),
+        },
+        Shot {
+            name: "27-now-chart-2-days",
+            what: "The big temperature tapped, then 2 days: the temperature's chart",
+            steps: [tap(240, 180), tap(400, 620)].concat(),
+        },
     ]
 }
 
@@ -326,6 +346,27 @@ pub fn run(root: &Path) -> Result<(), String> {
         let file = format!("drag-{:02}.png", k / 2);
         std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
             .map_err(|e| format!("{file}: {e}"))?;
+    }
+    // The living sky (W6): rain, snow, a storm and cloud, ten frames 80 ms
+    // apart each, by day (the light look) and night (the dark one)
+    // (sky-<what>-<day|night>-NN.png), the Today screen as the image draws
+    // it with a real forecast of that weather.
+    for (name, sky, hour) in [
+        ("rain-day", (63u8, 90u8, 240u16, 250u16), 12u8),
+        ("rain-night", (63, 90, 240, 250), 22),
+        ("snow-day", (73, 90, 120, 300), 12),
+        ("snow-night", (73, 90, 120, 300), 22),
+        ("storm-night", (95, 100, 380, 230), 22),
+        ("cloudy-night", (3, 80, 300, 270), 22),
+    ] {
+        for (k, rgb) in crate::emu::today_sky(&wall, sky, hour, rp_shell::sky::STEP_MS, 10)
+            .iter()
+            .enumerate()
+        {
+            let file = format!("sky-{name}-{k:02}.png");
+            std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
+                .map_err(|e| format!("{file}: {e}"))?;
+        }
     }
     std::fs::write(out.join("index.html"), page).map_err(|e| format!("index.html: {e}"))?;
     eprintln!(

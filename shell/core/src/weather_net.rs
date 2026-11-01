@@ -35,6 +35,8 @@ pub enum Ask {
     Forecast,
     /// The Tempest station's readings.
     Tempest,
+    /// The station's last day, for its charts (N3).
+    History,
     /// The weather alerts in force for the place shown.
     Alerts,
     /// The radar's frames (their times).
@@ -47,7 +49,7 @@ pub enum Ask {
     Pack,
 }
 
-const ORDER: [Ask; 11] = [
+const ORDER: [Ask; 12] = [
     Ask::Load,
     Ask::Save,
     Ask::Find,
@@ -56,6 +58,7 @@ const ORDER: [Ask; 11] = [
     Ask::Forecast,
     Ask::Pack,
     Ask::Tempest,
+    Ask::History,
     Ask::Alerts,
     Ask::Frames,
     Ask::Tile,
@@ -96,7 +99,7 @@ impl Question {
             .iter()
             .position(|&c| {
                 spaces += usize::from(c == b' ');
-                spaces == 2 && self.ask == Ask::Tempest
+                spaces == 2 && matches!(self.ask, Ask::Tempest | Ask::History)
                     || spaces == 2 && l.starts_with(b"RPNET TEMPEST")
             })
             .unwrap_or(l.len());
@@ -195,6 +198,10 @@ impl Shell {
             }
             Ask::Tempest => {
                 q.push(b"TEMPEST");
+                self.push_key(&mut q);
+            }
+            Ask::History => {
+                q.push(b"HISTORY");
                 self.push_key(&mut q);
             }
             Ask::Frames => q.push(b"FRAMES"),
@@ -309,7 +316,7 @@ impl Shell {
                     self.dirty(super::weather_app::HEAD);
                 }
                 Ask::Tile => self.tile_done(),
-                Ask::Pack => {}
+                Ask::Pack | Ask::History => {}
             }
             return;
         }
@@ -422,6 +429,20 @@ impl Shell {
             // The device placed the tile; the next one.
             Ask::Tile => self.tile_done(),
             Ask::Tempest => self.tempest_answer(body),
+            Ask::History => self.history_answer(body),
+        }
+    }
+
+    /// The station's last day (as [`Self::forecast_answer`]): the chart
+    /// open shows it.
+    #[inline(never)]
+    fn history_answer(&mut self, body: &[u8]) {
+        if let Some(h) = rp_weather::tempest::history(body) {
+            self.history = Some(h);
+            self.history_at = self.now;
+            if self.chart.is_some() {
+                self.dirty(Rect::new(0, 0, W, super::H));
+            }
         }
     }
 
@@ -480,6 +501,9 @@ impl Shell {
         // The instruments, every answer: the Station button and screen.
         if let Some(n) = rp_weather::tempest::station_now(body) {
             let first = self.station.is_none();
+            if first && super::chart::CHARTS {
+                self.want(Ask::History);
+            }
             self.station = Some(n);
             self.station_at = self.now;
             self.dirty(if first || self.screen == Screen::Station {

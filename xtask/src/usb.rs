@@ -1892,7 +1892,8 @@ mod format_tests {
 /// `OPENMETEO` / `METNO` forecasts for a position, `PACK <offset>` (the
 /// default icon pack's file the build made, 192 KiB a question, for an
 /// image with no card: option C), `TEMPEST` (the key in
-/// `local/tempest-key.txt`, never committed, never over USB). Each is a
+/// `local/tempest-key.txt`, never committed, never over USB), `HISTORY`
+/// (the station's last day, its rows cut to the fields the image reads). Each is a
 /// fixed URL; the device's arguments are checked (a place name's
 /// characters, positions in range). Answers are `RPNET <status> <length>`
 /// then the body. `--canned` answers from the recorded samples. It ends
@@ -2121,6 +2122,30 @@ while ($true) {{
                 $sid = $st.stations[0].station_id
                 $b = Fetch "https://swd.weatherflow.com/swd/rest/better_forecast?station_id=$sid&token=$key&units_temp=c&units_wind=kph&units_pressure=mb&units_precip=mm&units_distance=km"
                 "FORECAST Tempest station $sid ($($st.stations[0].name)): $($b.Length) bytes"
+                Answer $b
+            }}
+            'HISTORY' {{
+                # The station's last day for its charts (N3): its outdoor
+                # unit's (ST) one-minute rows, each cut to the nine fields
+                # the image reads (time, wind lull, average, gust,
+                # direction, interval, pressure, temperature, humidity):
+                # ~70 KB, not ~200 KB.
+                if ($canned) {{ Refuse 404 'no recorded history'; continue }}
+                $key = $null
+                if ($w.Length -ge 3 -and $w[2] -match '^[A-Za-z0-9-]{{8,64}}$') {{ $key = $w[2] }}
+                elseif (Test-Path $keyFile) {{ $key = (Get-Content -Raw $keyFile).Trim() }}
+                if (-not $key) {{ Refuse 404 'no Tempest key: enter it on the device'; continue }}
+                $st = Invoke-RestMethod "https://swd.weatherflow.com/swd/rest/stations?token=$key"
+                $dev = @($st.stations[0].devices | Where-Object {{ $_.device_type -eq 'ST' }})[0]
+                if (-not $dev) {{ Refuse 404 'no Tempest outdoor unit'; continue }}
+                $end = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                $obs = Invoke-RestMethod "https://swd.weatherflow.com/swd/rest/observations/device/$($dev.device_id)?time_start=$($end - 86400)&time_end=$end&token=$key"
+                $rows = foreach ($r in @($obs.obs)) {{
+                    $f = foreach ($v in @($r)[0..8]) {{ if ($null -eq $v) {{ 'null' }} else {{ [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{{0}}', $v) }} }}
+                    '[' + ($f -join ',') + ']'
+                }}
+                $b = [Text.Encoding]::UTF8.GetBytes('{{"obs":[' + (@($rows) -join ',') + ']}}')
+                "HISTORY Tempest unit $($dev.device_id): $(@($rows).Count) rows, $($b.Length) bytes"
                 Answer $b
             }}
             default {{ Refuse 501 "unknown question $($w[1])" }}

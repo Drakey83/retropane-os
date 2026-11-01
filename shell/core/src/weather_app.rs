@@ -104,10 +104,16 @@ const HOUR_W: u16 = 36;
 /// Hours on the graph (the mock-up's: now and the next 11).
 const GRAPH_HOURS: usize = 12;
 /// Hourly's graph's picture (its line and the band under it), from the
-/// panel's first inner column and its top row: width, height (the band's
-/// foot). Painted once a forecast by [`Shell::paint_graph`] into a store
-/// picture and drawn as one, on the planes and the 2D path alike.
-pub const GRAPH_PIC: (u16, u16) = (HOURLY_GRAPH.w - 2, 160);
+/// panel's first inner column and [`GRAPH_CUT`] rows below its top: width,
+/// height (to the band's foot). Painted once a forecast by
+/// [`Shell::paint_graph`] into a store picture and drawn as one, on the
+/// planes and the 2D path alike. It must fit the 2D engine's picture cache
+/// (256 KiB): at 446 x 160 (285 KB) the 2D path drew no line at all (seen
+/// in ui-preview 2026-11-01; on the X51v, Hourly with a menu over it).
+pub const GRAPH_PIC: (u16, u16) = (HOURLY_GRAPH.w - 2, 120);
+/// The graph's rows above its picture: the curve's top is row 58 and a
+/// Catmull-Rom overshoot with the line's width stays below row 44.
+const GRAPH_CUT: u16 = 40;
 /// The radar's play mark: a right-pointing triangle, anti-aliased by 4 x 4
 /// samples a pixel, made when the shell is built (the 2D engine has
 /// rectangles, not triangles; the stepped one of 2 px rectangles looked
@@ -161,7 +167,7 @@ pub(crate) fn play_icon() -> rp_draw::Image {
 }
 
 /// Integer square root.
-const fn isqrt(v: i32) -> i32 {
+pub(crate) const fn isqrt(v: i32) -> i32 {
     let mut r = 0;
     while (r + 1) * (r + 1) <= v {
         r += 1;
@@ -171,15 +177,15 @@ const fn isqrt(v: i32) -> i32 {
 const fn hour_x(i: u8) -> u16 {
     GRAPH_X0 + i as u16 * HOUR_W
 }
-const CURVE: Argb = rp_draw::look::theme(0xFFF2_B45A);
+pub(crate) const CURVE: Argb = rp_draw::look::theme(0xFFF2_B45A);
 /// Under the curve: the mock-up's band, a light frost over the panel's
 /// glass.
-const FROST: Argb = rp_draw::look::theme(0x50F4_F2EC);
+pub(crate) const FROST: Argb = rp_draw::look::theme(0x50F4_F2EC);
 
 /// `top` over `under` (straight alpha) as the one layer that looks the
 /// same: the renderer lays every see-through fill straight over the
 /// wallpaper, so the band (frost over the panel's glass) is drawn as this.
-const fn over(under: Argb, top: Argb) -> Argb {
+pub(crate) const fn over(under: Argb, top: Argb) -> Argb {
     let (ua, ta) = (under >> 24, top >> 24);
     let a = ta + ua * (255 - ta) / 255;
     if a == 0 {
@@ -561,6 +567,7 @@ impl Shell {
             && self.tab < RADAR
             && !self.menu_open
             && !self.place_menu
+            && self.chart.is_none()
             && self.align.is_none()
             && !self.bare
             && self.reveal().is_none())
@@ -1097,6 +1104,20 @@ impl Shell {
         out
     }
 
+    /// Where reading `i` ([`super::chart::Reading::ALL`]'s order) is on the
+    /// Now page with a station live: the big panel, the wind, pressure and
+    /// humidity cards.
+    pub(crate) fn now_reading_rect(&self, i: u8) -> Rect {
+        let (x, y, w, h) = match i {
+            0 => (16, PANEL_Y, 448, 206),
+            1 => (16, SMART_CARD_Y, 216, SMART_CARD_H),
+            3 => (248, SMART_CARD_Y, 216, SMART_CARD_H),
+            _ => (16, SMART_CARD_Y + SMART_CARD_STEP, 216, SMART_CARD_H),
+        };
+        let top = (i32::from(y) - self.view_off()).clamp(0, i32::from(H)) as u16;
+        Rect::new(x, top, w, h)
+    }
+
     /// N1 and N2 on the Now page: the strip, then four cards with your
     /// station's readings where it has them (a green dot) and the
     /// forecast's sunset.
@@ -1269,7 +1290,7 @@ impl Shell {
         if let Some(pic) = self.graph {
             f.push(Cmd::Pic {
                 x: g.x + 1,
-                y: i16::try_from(gy).unwrap_or(i16::MIN),
+                y: i16::try_from(gy + i32::from(GRAPH_CUT)).unwrap_or(i16::MIN),
                 pic,
             });
         }
@@ -1351,6 +1372,10 @@ impl Shell {
     /// [`Shell::graph_key`]); drawn over the panel's glass it is exactly
     /// what painting over the glass gives ([`over`] composes).
     pub fn paint_graph(&self, px: &mut [u32]) {
+        // The chart open paints its line into the same picture.
+        if let Some(c) = self.chart {
+            return self.paint_chart(px, c);
+        }
         let stride = usize::from(GRAPH_PIC.0);
         let rows = (0, i32::from(GRAPH_PIC.1));
         let shown = &self.wx.hours[..GRAPH_HOURS];
@@ -1360,7 +1385,7 @@ impl Shell {
         let g = HOURLY_GRAPH;
         // The picture's first column is the panel's first inner one.
         let col0 = i64::from(g.x) + 1;
-        let row0 = 0i64;
+        let row0 = -i64::from(GRAPH_CUT);
         let (curve_top, span) = (58i64, 84i64);
         let base = curve_top + span + 18;
         let t = |i: i64| i64::from(shown[i.clamp(0, GRAPH_HOURS as i64 - 1) as usize].temp);

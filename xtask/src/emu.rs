@@ -11363,10 +11363,12 @@ pub(crate) fn today_screens(
         shell.set_alerts_from_nws(a);
         // The previews' station too (the relay's canned Tempest shape).
         shell.set_station_from_tempest(PREVIEW_STATION);
+        shell.set_history_from_tempest(preview_history().as_bytes());
     }
     let mut frame = Frame::new();
     let mut screens = Vec::new();
     let mut shown = None;
+    let mut painted = None;
     for step in std::iter::once(None).chain(steps.iter().map(Some)) {
         if let Some(&e) = step {
             shell.input(e);
@@ -11374,6 +11376,9 @@ pub(crate) fn today_screens(
         if settle {
             shell.settle();
         }
+        // A chart opened or closed: the graph's picture painted again, as
+        // the image does.
+        rp_today::keep_graph(&mut shell, preview_pics(), &mut painted);
         backdrop(&mut gpu, &shell, wall, map, &mut shown);
         shell.frame(&mut frame);
         gpu.draw(&frame);
@@ -11589,6 +11594,68 @@ fn reveal_over(
     out
 }
 
+/// The living sky on the Today screen (W6, `rp_shell::sky`): `n` frames
+/// `every_ms` apart with the sample forecast's sky set to `wmo` (cloud
+/// cover `cover` %, wind `kmh10` from `from` degrees), as the image draws
+/// it with a real forecast.
+pub(crate) fn today_sky(
+    wall: &[u8],
+    (wmo, cover, kmh10, from): (u8, u8, u16, u16),
+    hour: u8,
+    every_ms: u32,
+    n: u32,
+) -> Vec<Vec<u8>> {
+    use rp_draw::{Frame, Renderer};
+    use rp_mbx_render::model::{self, Bus, Mem};
+    use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
+
+    let mem = model::memory();
+    let mut gpu = Mbx2dRenderer::new(
+        Bus::new(mem.clone()),
+        Mem(mem.clone()),
+        Layout::X51V,
+        || 0,
+        1,
+    );
+    gpu.set_pics(preview_pics());
+    rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
+    shell.set_time(rp_shell::Time {
+        hour,
+        minute: 0,
+        weekday: 3,
+        day: 30,
+        month: 10,
+    });
+    let mut wx = *shell.forecast();
+    wx.now.sky.wmo = wmo;
+    wx.now.sky.cover = cover;
+    wx.now.sky.wind = kmh10;
+    wx.now.wind_from = from;
+    shell.set_forecast(wx);
+    shell.preview_sky(true);
+    let mut frame = Frame::new();
+    let mut frames = Vec::new();
+    for k in 0..n {
+        shell.tick(10_000 + k * every_ms);
+        shell.frame(&mut frame);
+        gpu.draw(&frame);
+        while !gpu.poll() {}
+        let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
+        let base = ((scadr & 0x7F_FFFF) * 16) as usize;
+        let m = mem.borrow();
+        frames.push(
+            m[base..base + SCREEN_BYTES]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .flat_map(|p| shown_565(u16::from_le_bytes(*p)))
+                .collect::<Vec<u8>>(),
+        );
+    }
+    frames
+}
+
 pub(crate) fn today_live(
     wall: &[u8],
     map: Option<&[u8]>,
@@ -11686,8 +11753,17 @@ thread_local! {
     /// hold it for good, as the image's do). It holds one set at a time:
     /// [`preview_set`] gives the last one back.
     static PREVIEW_PICS: &'static rp_draw::pics::Pics<'static> = {
-        let mut classes: Vec<(u16, u16, u8)> =
-            rp_shell::Size::ALL.iter().map(|z| (z.side(), z.side(), 22)).collect();
+        // The big pictures' slots are the device's shape (250 x 176): square,
+        // they were roomier than the graph's, and a short big picture took
+        // the graph's slot (the store gives the least room that fits), so
+        // the previews drew Hourly and the charts without their line.
+        let mut classes: Vec<(u16, u16, u8)> = rp_shell::Size::ALL
+            .iter()
+            .map(|&z| {
+                let h = if z == rp_shell::Size::Hero { rp_shell::HERO_PIC_H } else { z.side() };
+                (z.side(), h, 22)
+            })
+            .collect();
         let (gw, gh) = rp_shell::weather_app::GRAPH_PIC;
         classes.push((gw, gh, 1));
         Box::leak(Box::new(rp_draw::pics::Pics::new(
@@ -11799,6 +11875,30 @@ const PREVIEW_STATION: &[u8] = br#"{"latitude": 37.7, "longitude": -89.86,
     "sea_level_pressure": 1016.4, "pressure_trend": "rising", "precip_accum_local_day": 1.0,
     "solar_radiation": 420, "lightning_strike_count_last_3hr": 4,
     "lightning_strike_last_distance": 10}}"#;
+
+/// The previews' station day: a day of Tempest's one-minute rows (every
+/// fifth), cool at dawn and warm mid-afternoon, a breeze building, ending
+/// at [`PREVIEW_STATION`]'s reading.
+fn preview_history() -> String {
+    let end = 1_761_900_000i64;
+    let rows: Vec<String> = (0..288)
+        .map(|k| {
+            let t = end - (287 - k) * 300;
+            // Hours before noon: the day's shape as a smooth wave.
+            let h = (k as f64 - 287.0) / 12.0;
+            let temp = 15.5 + 4.5 * ((h + 9.0) * std::f64::consts::PI / 12.0).sin();
+            let wind = 2.5 + 1.5 * ((h + 4.0) * std::f64::consts::PI / 10.0).sin().abs();
+            let rh = 72.0 - 12.0 * ((h + 9.0) * std::f64::consts::PI / 12.0).sin();
+            let p = 985.0 + 0.08 * (k as f64 / 12.0);
+            format!(
+                "[{t},{:.2},{wind:.2},{:.2},300,60,{p:.1},{temp:.1},{rh:.0}]",
+                wind * 0.6,
+                wind * 1.8
+            )
+        })
+        .collect();
+    format!("{{\"obs\":[{}]}}", rows.join(","))
+}
 
 /// The Station screen's dials as the image paints them.
 fn today_dials() -> rp_shell::station::Dials {
