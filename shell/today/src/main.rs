@@ -513,6 +513,17 @@ mod image {
         rp_today::PackIndex::read(all)
     }
 
+    /// The store's pictures made since it last held what the screens show:
+    /// logged as one line when it does again.
+    #[derive(Default)]
+    struct Batch {
+        made: u32,
+        passes: u32,
+        us: u32,
+        worst: (u32, u32),
+        card_failed: bool,
+    }
+
     /// The default pack's file being read from the card a piece a pass.
     struct FileLoad {
         /// Bytes in so far, the part being read and where in it.
@@ -1022,6 +1033,8 @@ mod image {
         let (mut reveal_t0, mut reveal_c0) = (0u64, 0u32);
         // Openings so far (the glide's alternation).
         let mut opens = 0u32;
+        let mut batch = Batch::default();
+        let mut screen_logged = (rp_shell::Screen::Today, u8::MAX, u8::MAX);
         // The opening's trace: refreshes recorded, the last refresh's
         // count (`DSIG` is published at line 3 of the next), and how many
         // refreshes to keep recording after the opening ends.
@@ -1727,13 +1740,17 @@ mod image {
                     None => NOT_YET,
                 };
                 let t_pass = rt::ticks();
-                let (mut made, mut worst, mut card_failed) = (0u32, (0u32, 0u32), false);
-                while made < 4 {
+                let mut made = 0u32;
+                let (worst, card_failed) = (&mut batch.worst, &mut batch.card_failed);
+                // One picture a pass: a decode at size is ~70 ms on the
+                // X51v (the option C run, 2026-10-31: four a pass held the
+                // screen ~0.17 s), so a touch waits at most one.
+                while made < 1 {
                     let def_file: &[u8] = def_file;
                     let k = keeper.step(shell, pics, tag, |size, i, p| {
                         let mut pic = None;
                         if let Some((n, idx)) = chosen
-                            && !card_failed
+                            && !*card_failed
                         {
                             let buf = &mut *stream_buf;
                             let card = &mut *card;
@@ -1745,7 +1762,7 @@ mod image {
                             });
                             // The card gone mid-run: the rest from the
                             // default file, quietly.
-                            card_failed = pic.is_none() && idx.big(i).is_some();
+                            *card_failed |= pic.is_none() && idx.big(i).is_some();
                         }
                         if pic.is_none()
                             && let Some(idx) = def_index
@@ -1757,8 +1774,8 @@ mod image {
                             });
                         }
                         let (a, b) = maker.last;
-                        if a + b > worst.0 + worst.1 {
-                            worst = (a, b);
+                        if pic.is_some() && a + b > worst.0 + worst.1 {
+                            *worst = (a, b);
                         }
                         pic
                     });
@@ -1766,27 +1783,54 @@ mod image {
                         break;
                     }
                     made += 1;
+                    if matches!(k, rp_today::Kept::Made(..)) {
+                        batch.made += 1;
+                    }
                 }
+                let spent = rt::ticks().wrapping_sub(t_pass) / 13 * 4;
                 if made > 0 {
                     pages_check = true;
                     app_check = true;
-                    let _ = writeln!(
-                        RunLog,
-                        "icons: {made} pictures kept in {} us (slowest {} us: inflate {} us, shrink {} us; {} inflates so far; {} of {} slots){}",
-                        rt::ticks().wrapping_sub(t_pass) / 13 * 4,
-                        worst.0 + worst.1,
-                        worst.0,
-                        worst.1,
-                        maker.inflates,
-                        pics.used(),
-                        pics.slots(),
-                        if card_failed {
-                            "; the card failed, the rest from the default"
-                        } else {
-                            ""
-                        },
-                    );
+                    batch.us += spent;
+                    batch.passes += 1;
+                } else if batch.passes > 0 {
+                    // The batch done (the store holds what the screens
+                    // show): one line for it, not one a pass (a line a
+                    // pass filled the 64 KiB log, emu-today 2026-10-31).
+                    if batch.made > 0 {
+                        let _ = writeln!(
+                            RunLog,
+                            "icons: {} pictures made in {} passes, {} us in all (slowest {} us: inflate {} us, shrink {} us; {} inflates so far; {} of {} slots){}",
+                            batch.made,
+                            batch.passes,
+                            batch.us,
+                            batch.worst.0 + batch.worst.1,
+                            batch.worst.0,
+                            batch.worst.1,
+                            maker.inflates,
+                            pics.used(),
+                            pics.slots(),
+                            if batch.card_failed {
+                                "; the card failed, the rest from the default"
+                            } else {
+                                ""
+                            },
+                        );
+                    }
+                    batch = Batch::default();
                 }
+            }
+
+            // What the owner sees, by time: each screen and Weather page
+            // (the run log read against the eye's answers).
+            let seen = (shell.screen(), shell.weather_page().0, shell.icon_pack());
+            if seen != screen_logged {
+                screen_logged = seen;
+                let _ = writeln!(
+                    RunLog,
+                    "screen: {:?}, page {}, icon pack {} at {now_ms} ms",
+                    seen.0, seen.1, seen.2
+                );
             }
 
             // The dock's dev relay: the port polled each pass; the shell's
@@ -2420,7 +2464,10 @@ mod image {
                         RunLog,
                         "trace of open {opens}: {trace_n} refreshes (ms, DSIG, GSCADR, VSCADR, VSADR, VSCTRL, SSSIZE; the window meant x,y,w,h,row)"
                     );
-                    for w in trace[..trace_n * 10].chunks(10) {
+                    // The first opening's refreshes only: every opening's
+                    // filled the 64 KiB log by the seventh (the option C
+                    // run, 2026-10-31, lost its end).
+                    for w in trace[..if opens <= 1 { trace_n * 10 } else { 0 }].chunks(10) {
                         let t = Refresh::from_words(w);
                         let _ = writeln!(
                             RunLog,

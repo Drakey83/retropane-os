@@ -10,8 +10,8 @@ each of the sheet's targets. Nothing starts until the owner says "Run it".
 
 | Target (the sheet) | The log line that answers it | Pass |
 |---|---|---|
-| A decode at size under 10 ms a picture | `icons: N pictures kept in X us (slowest Y us: inflate A us, shrink B us; ...)` | every pass's slowest Y < 10,000; else P2's fallback (decoded pictures kept on the card, with P4's file) is designed next |
-| A pack pick under 0.1 s | `icons: pack N chosen: its table read in X us`, then the `icons: ... kept` passes that follow it | X plus the passes until the pictures on screen are in < 100,000 us |
+| A decode at size under 10 ms a picture | `icons: N pictures made in P passes, X us in all (slowest Y us: inflate A us, shrink B us; ...)` | the slowest Y < 10,000 (the first run: 73 ms, inflate 34-49 ms); else P2's fallback (decoded pictures kept on the card, with P4's file) is designed next |
+| A pack pick under 0.1 s | `icons: pack N chosen: its table read in X us`, then the `icons: ... made` line that follows it | X plus the passes until the pictures on screen are in < 100,000 us |
 | Weather's RAM under 8 MB | `ram: the image's parts of the RAM pool ...` (start) | the pictures' parts about 3.5 MB (store 1.49 MB, default pack 1.5 MiB, card stream 256 KiB, decode scratch ~0.19 MB; above the sheet's 2.4 MB by Hourly's 160 px x6 not x2, the graph's picture and the card stream); the whole of the image's pool use < 8 MB is the radar's and the pages' question too |
 | Start to Weather shown under 0.5 s | `start: the Today screen shown at X ms after the image began` and `open: ... Reveal done` | measured, the baseline for P4 (snapshot start), whose design waits for this number |
 | Frames during touch 30+ fps | `movement at ...: N frames ... (~F fps)` | F >= 30 during drags on Hourly (the graph now one picture) |

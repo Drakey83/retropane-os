@@ -12360,6 +12360,66 @@ pub fn today_replay(root: &Path) -> Result<(), String> {
     today_replay_with(root, true)
 }
 
+/// `cargo xtask emu-today-watch <recording>`: the owner's taps from a
+/// device run (its run log's `R` lines, a file under the repo) replayed
+/// on the image in the emulator, with the SD card holding the default
+/// icon pack, the screen saved every second (`target/emulator/watch-NNN.ppm`)
+/// to see what the panel showed (the run log says only what the image
+/// believed it did).
+pub fn today_watch(root: &Path, recording: &str) -> Result<(), String> {
+    let release = crate::arm_release(root);
+    let envs = [
+        ("RP_TODAY_REPLAY", "1"),
+        ("RP_TODAY_REPLAY_FILE", recording),
+        ("RP_TODAY_REPLAY_GAP_MS", "3000"),
+    ];
+    let bin = variant_image_envs(root, "rp-today", &envs)?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let sd = today_card(root, &release)?;
+    let wsl = matches!(emulator(root)?, Emulator::Wsl);
+    let shots = || -> Result<(), String> {
+        for k in 0..240 {
+            poll_pause(Duration::from_millis(1000));
+            let shot = scratch(root, &format!("watch-{k:03}.ppm"))?;
+            let guest = if wsl {
+                to_wsl_path(&shot)
+            } else {
+                shot.display().to_string()
+            };
+            let Ok(mut mon) = crate::screen::Monitor::connect(monitor_port()) else {
+                return Ok(());
+            };
+            if mon.screendump(&guest, &shot).is_err() {
+                return Ok(());
+            }
+        }
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: sd.as_deref(),
+            steps: &[],
+            extra: &["-icount", "shift=0"],
+            input: Some((&rp_loadproto::frame(&payload), rp_today::MARKER)),
+            during: Some(&shots),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    if let Some((_, log)) = output.rsplit_once("RPL LOG") {
+        let path = scratch(root, "watch-log.txt")?;
+        std::fs::write(&path, log).map_err(|e| e.to_string())?;
+        eprintln!("    watch: run log in {}", path.display());
+    }
+    Ok(())
+}
+
 fn today_replay_with(root: &Path, profile: bool) -> Result<(), String> {
     let mut envs = vec![("RP_TODAY_REPLAY", "1")];
     if profile {
