@@ -603,6 +603,7 @@ impl Shell {
         self.tab = 0;
         self.scroll = super::motion::Scroll::new(max_scroll(0));
         self.menu_open = false;
+        self.place_menu = false;
         self.pressed = None;
         if self.focus.is_some() {
             self.focus = Some(Target::Tab(0));
@@ -620,6 +621,7 @@ impl Shell {
         }
         let was = self.tab;
         self.tab = t;
+        self.place_menu = false;
         self.scroll = super::motion::Scroll::new(max_scroll(t));
         self.anim = (self.motion != Motion::None).then_some(self.now);
         self.expanding = false;

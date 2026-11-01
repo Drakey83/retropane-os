@@ -1467,6 +1467,7 @@ impl Shell {
             self.typed = [0; rp_weather::settings::KEY_MAX];
             self.typed_n = 0;
             self.screen = Screen::Today;
+            self.place_menu = false;
             self.anim = None;
             self.pressed = None;
             if self.focus.is_some() {
@@ -1712,6 +1713,15 @@ impl Shell {
                 if t.is_none() && self.menu_open && !self.menu_rect().contains_point(x, y) {
                     // A tap outside the open menu closes it.
                     self.set_menu(false);
+                }
+                // The place menu the same way: left open, it kept the page
+                // off its layer and stayed drawn behind Today and the app
+                // (the owner's run, 2026-10-31). The press starts no page
+                // gesture: it only closes the menu.
+                if self.place_menu && !matches!(t, Some(Target::PlaceItem(_) | Target::PlaceMenu)) {
+                    self.place_menu = false;
+                    self.gesture = Gesture::None;
+                    self.dirty(Rect::new(0, 0, W, H));
                 }
                 self.set_pressed(t);
                 Action::Nothing

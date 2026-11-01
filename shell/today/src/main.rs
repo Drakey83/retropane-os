@@ -132,8 +132,10 @@ mod image {
     /// taking more CPU than this gets its own log line.
     const SLOW_FRAME_US: u32 = 10_000;
     /// Samples the recorder keeps (~47 bytes each with the early settling
-    /// values, in the 64 KiB run log: ~8 s of pen-down at ~7 ms a sample).
-    const RECORD: u32 = 1150;
+    /// values: ~2 s of pen-down at ~7 ms a sample, ~14 KB). It was 1150
+    /// (~54 KB): with a watched run's screen lines the 64 KiB run log
+    /// filled at 130 s and lost the run's end twice (2026-10-31).
+    const RECORD: u32 = 300;
     /// The sleep between samples while a touch is in progress: 5 ms, with
     /// ~2 ms samples (X settles 32 conversions, not 256) a sample every ~7
     /// ms, the rate the filter's per-sample thresholds were proven at on

@@ -378,14 +378,14 @@ fn main() -> ExitCode {
         | "emu-blend-filter" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat"
         | "emu-mbx3d-api" | "emu-tabench" | "emu-gpubench" | "emu-cs3bus" | "emu-cpldbus"
         | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-today-watch"
-        | "ui-preview" | "emu-crash" | "emu-probe" | "emu-cf" | "emu-kernel" | "emu-quantum"
-        | "emu-threads" | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-mtp" | "emu-stale"
-        | "emu-drive" | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover"
-        | "emu-nightlight" | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone"
-        | "emu-audio-s1" | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2"
-        | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh" | "emu-screen-measure" | "emu-scene"
-        | "emu-scene-d1" | "emu-unplug" | "emu-keepfed" | "emu-cardlog" | "emu-format"
-        | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-today-steps" | "ui-preview" | "emu-crash" | "emu-probe" | "emu-cf"
+        | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace" | "emu-fullsize"
+        | "emu-usb" | "emu-mtp" | "emu-stale" | "emu-drive" | "emu-usb-suite" | "emu-storfast"
+        | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect" | "emu-display-cal"
+        | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep" | "emu-dma-restart"
+        | "emu-audio-s2" | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh"
+        | "emu-screen-measure" | "emu-scene" | "emu-scene-d1" | "emu-unplug" | "emu-keepfed"
+        | "emu-cardlog" | "emu-format" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -814,6 +814,7 @@ fn run_step(step: &str) -> Result {
         "emu-clocks" => cross().and_then(|()| emu::boot_loader_clocks(&workspace_root())),
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
         "ui-preview" => cross().and_then(|()| ui_preview::run(&workspace_root())),
+        "emu-today-steps" => cross().and_then(|()| emu::today_steps(&workspace_root())),
         "emu-today-watch" => cross()
             .and_then(|()| emu::today_watch(&workspace_root(), &args().nth(2).unwrap_or_default())),
         "emu-today" => cross()

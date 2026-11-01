@@ -2151,3 +2151,43 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     assert_eq!(s.take_radar_moves(), None);
     assert_eq!(all(&mut s), 9 * 5);
 }
+
+#[test]
+fn the_place_menu_closes_on_a_tap_outside_home_and_any_screen_or_page_change() {
+    // Left open, the place menu kept the page off its layer and stayed
+    // drawn behind Today and the app (the owner's run, 2026-10-31;
+    // emu-today-steps shot 09). Every way out closes it, and the layer
+    // takes the page back.
+    let open = |s: &mut Shell| {
+        tap(s, weather_app::PLACE_BTN);
+        assert!(s.place_menu, "opened");
+    };
+    let mut s = weather(0);
+    s.use_planes(true);
+    open(&mut s);
+    assert_eq!(
+        s.layer_tab(),
+        None,
+        "the page off its layer while it is open"
+    );
+    tap(&mut s, Rect::new(380, 380, 40, 40));
+    assert!(!s.place_menu, "a tap outside closes it");
+    assert_eq!(s.layer_tab(), Some(0), "the page back on its layer");
+    assert_eq!(s.screen(), Screen::Weather);
+    open(&mut s);
+    s.input(Input::Key(Key::Home));
+    assert!(!s.place_menu, "Home closes it");
+    tap(&mut s, HERO);
+    assert!(!s.place_menu && s.screen() == Screen::Weather);
+    open(&mut s);
+    s.set_tab(1);
+    assert!(!s.place_menu, "a page turn closes it");
+    open(&mut s);
+    s.open(Screen::WeatherSettings);
+    assert!(!s.place_menu, "another screen closes it");
+    // Picking a place still works.
+    s.open_weather();
+    open(&mut s);
+    tap(&mut s, Shell::place_item(0));
+    assert!(!s.place_menu);
+}

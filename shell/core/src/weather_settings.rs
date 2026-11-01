@@ -203,6 +203,7 @@ impl Shell {
             self.forget_typed();
         }
         self.screen = s;
+        self.place_menu = false;
         self.pressed = None;
         self.anim = None;
         self.removing = false;

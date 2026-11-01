@@ -12360,6 +12360,92 @@ pub fn today_replay(root: &Path) -> Result<(), String> {
     today_replay_with(root, true)
 }
 
+/// `cargo xtask emu-today-steps`: the owner's report of the option C run
+/// (2026-10-31) as taps on the image in the emulator, the SD card holding
+/// the default pack, the screen saved after each (`target/emulator/
+/// steps-NN-<name>.ppm`): open Weather, the place menu, a place, Home,
+/// Weather again, Hourly, Now, Home.
+pub fn today_steps(root: &Path) -> Result<(), String> {
+    let release = crate::arm_release(root);
+    let dir = emu_dir(root)?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-today.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-today"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let sd = today_card(root, &release)?;
+    let wsl = matches!(emulator(root)?, Emulator::Wsl);
+    let steps = || -> Result<(), String> {
+        let hold = |ms: u32| {
+            guest_hold(
+                &mut crate::screen::Monitor::connect(monitor_port())?,
+                ms,
+                "steps",
+            )
+        };
+        let dump = |k: usize, name: &str| -> Result<(), String> {
+            let shot = scratch(root, &format!("steps-{k:02}-{name}.ppm"))?;
+            let guest = if wsl {
+                to_wsl_path(&shot)
+            } else {
+                shot.display().to_string()
+            };
+            crate::screen::Monitor::connect(monitor_port())?.screendump(&guest, &shot)
+        };
+        let mut qmp = crate::screen::Qmp::connect(monitor_port() + 1)?;
+        // The default pack read and its pictures made.
+        hold(8000)?;
+        dump(0, "today")?;
+        let list: [(&str, Option<(u16, u16)>); 10] = [
+            ("weather", Some((240, 150))),
+            ("place-menu", Some((100, 53))),
+            ("place-picked", Some((100, 91))),
+            ("home", None),
+            ("weather-again", Some((240, 150))),
+            ("hourly", Some((180, 580))),
+            ("now", Some((60, 580))),
+            ("place-menu-2", Some((100, 53))),
+            ("place-closed", Some((400, 400))),
+            ("home-2", None),
+        ];
+        for (k, (name, at)) in list.into_iter().enumerate() {
+            match at {
+                Some((x, y)) => {
+                    touch(&mut qmp, &Action::TouchDown(x, y))?;
+                    hold(150)?;
+                    touch(&mut qmp, &Action::TouchUp)?;
+                }
+                None => {
+                    qmp.key("f4", true)?;
+                    hold(150)?;
+                    qmp.key("f4", false)?;
+                }
+            }
+            hold(2500)?;
+            dump(k + 1, name)?;
+        }
+        // Back to the loader: Start, its last entry.
+        Ok(())
+    };
+    let _ = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: sd.as_deref(),
+            steps: &[],
+            extra: &["-icount", "shift=0"],
+            input: Some((&rp_loadproto::frame(&payload), rp_today::MARKER)),
+            during: Some(&steps),
+            then: None,
+            timeout: Duration::from_secs(600),
+        },
+    );
+    eprintln!("    steps: screens in target/emulator/steps-*.ppm");
+    Ok(())
+}
+
 /// `cargo xtask emu-today-watch <recording>`: the owner's taps from a
 /// device run (its run log's `R` lines, a file under the repo) replayed
 /// on the image in the emulator, with the SD card holding the default
