@@ -50,6 +50,31 @@ open; B: 400 x 170, ~270 KB), made when opened and given back when closed;
 the history comes through the dock relay from Tempest's observations (a
 day at a point every 5 minutes is ~300 readings, a few KB).
 
+## Rule 0 options, asked for after the first set (2026-11-01)
+
+The owner asked whether A/B/C and the two chart layouts used rule 0: only
+partly (they borrowed Tempest's and the Station screen's pieces without
+beating anything). New options, drawn the same way:
+
+- **N1, smart cards** (`mockups/station-n1-n2.png`): Now keeps its cards;
+  with a station connected each card and the big temperature show the
+  station's live reading (a green dot), the forecast's words, picture and
+  high/low beside them. Beats: phones show a model's grid square, Tempest
+  only the station; this shows the best number for each thing, nothing
+  twice, no more scrolling.
+- **N2, what matters now:** a strip of three readings the image picks by
+  what is happening (lightning when strikes in the last 3 h, rain rate
+  when raining, gusts over 20 mph; else pressure trend, UV, dew point).
+  Shown storming and raining.
+- **N3, past and future on one line** (`mockups/station-n3-n4.png`): a
+  tap on a reading opens one chart: the last day from the station
+  (solid), the next from the forecast (dashed), meeting at now, so it
+  shows whether the forecast was right today. Nobody joins them.
+- **N4, a sheet you scrub:** the chart slides up over the lower two
+  thirds (what was tapped stays in view, swipe down to close); a finger
+  dragged along the line, or the D-pad, moves a marker and reads the time
+  and value large. Drawn once; only the marker moves.
+
 ## Votes
 
 - **S1:** gauges on Now: A, B or C.
