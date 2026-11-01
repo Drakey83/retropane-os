@@ -38,6 +38,16 @@ pub use rp_shell::{Size, Wanted};
 /// Printed in the run log once the Today screen is up.
 pub const MARKER: &str = "RETROPANE-TODAY-UP";
 
+/// The local time the image starts its clock from: the build machine's
+/// (there is no RTC driver yet; the image and the PC's checks read the same
+/// build's).
+#[must_use]
+pub fn build_time() -> rp_shell::Time {
+    let utc: i64 = env!("RP_TODAY_UTC_MIN").parse().unwrap_or(0);
+    let off: i64 = env!("RP_TODAY_OFFSET_MIN").parse().unwrap_or(0);
+    clock::time_at(utc + off)
+}
+
 /// The shell's fonts, as generated.
 #[must_use]
 pub fn shell_fonts() -> rp_shell::Fonts {
@@ -523,19 +533,32 @@ pub fn show_backdrop<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
 }
 
 /// The real radar as the page's background (the radar built for real,
-/// 2026-10-31): the map's view (CARTO's tiles around the place, decoded on
-/// the device) with a rain frame (RainViewer's) blended over it by its
-/// alpha, row by row into the renderer's wallpaper under the page.
+/// 2026-10-31): the map's view (OpenStreetMap's tiles around the place,
+/// decoded on the device and kept as sent) in the look the settings name
+/// (`ink`: Ink, else Night) with a rain frame (RainViewer's) blended over it
+/// by its alpha, row by row into the renderer's wallpaper under the page.
 pub fn show_radar<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
     r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
     map: &[u32],
     rain: Option<&[u32]>,
+    ink: bool,
 ) {
     let mut row = [0u32; W];
     for y in 0..MAP_H {
         let at = y * W;
         for (x, p) in row.iter_mut().enumerate() {
-            let m = map.get(at + x).copied().unwrap_or(0);
+            // The map as OpenStreetMap sent it, in the look the settings
+            // name: Ink (black water, light land) or Night (dark land).
+            let raw = map.get(at + x).copied().unwrap_or(0);
+            // No tile there yet: black, as before (darkened, a zero is
+            // white).
+            let m = if raw == 0 {
+                0
+            } else if ink {
+                rp_weather::tiles::ink(raw)
+            } else {
+                rp_weather::tiles::dark(raw)
+            };
             *p = match rain.and_then(|f| f.get(at + x)) {
                 Some(&c) if c >> 24 != 0 => blend(m, c),
                 _ => m,

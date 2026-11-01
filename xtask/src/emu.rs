@@ -11352,13 +11352,13 @@ pub(crate) fn today_screens(
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     rp_today::keep_graph(&mut shell, preview_pics(), &mut None);
     shell.set_dials(today_dials());
-    shell.set_time(rp_shell::Time {
+    shell.set_time(preview_clock(rp_shell::Time {
         hour: 12,
         minute: 0,
         weekday: 0,
         day: 1,
         month: 1,
-    });
+    }));
     if let Some(a) = alerts {
         shell.set_alerts_from_nws(a);
         // The previews' station too (the relay's canned Tempest shape).
@@ -11435,13 +11435,13 @@ pub(crate) fn today_page_on_planes(
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), icons, true);
     rp_today::keep_graph(&mut shell, preview_pics(), &mut None);
     shell.set_dials(today_dials());
-    shell.set_time(rp_shell::Time {
+    shell.set_time(preview_clock(rp_shell::Time {
         hour: 12,
         minute: 0,
         weekday: 0,
         day: 1,
         month: 1,
-    });
+    }));
     shell.use_planes(true);
     if let Some(a) = alerts {
         shell.set_alerts_from_nws(a);
@@ -11616,13 +11616,13 @@ pub(crate) fn today_live(
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
     rp_today::keep_graph(&mut shell, preview_pics(), &mut None);
     shell.set_dials(today_dials());
-    shell.set_time(rp_shell::Time {
+    shell.set_time(preview_clock(rp_shell::Time {
         hour: 12,
         minute: 0,
         weekday: 3,
         day: 30,
         month: 10,
-    });
+    }));
     let mut frame = Frame::new();
     let mut shown = None;
     let mut show = |shell: &mut rp_shell::Shell| {
@@ -11758,6 +11758,20 @@ fn today_card(root: &Path, release: &Path) -> Result<Option<PathBuf>, String> {
     let path = scratch(root, "today-card.img")?;
     std::fs::write(&path, img).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(Some(path))
+}
+
+thread_local! {
+    /// The clock the references are drawn at instead of the previews'
+    /// noon: the image's own start (its build's local time) while a check
+    /// compares the image's screens, whose look (Auto: light by day, dark
+    /// by night) follows its clock.
+    static PREVIEW_CLOCK: std::cell::Cell<Option<rp_shell::Time>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// `noon`, or the image's clock while a check compares against it.
+fn preview_clock(noon: rp_shell::Time) -> rp_shell::Time {
+    PREVIEW_CLOCK.with(std::cell::Cell::get).unwrap_or(noon)
 }
 
 /// The relay's canned alerts answer (`ALERTS`), for the previews.
@@ -11996,6 +12010,8 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let wall = today_wallpaper(&release)?;
     let map = today_map(&release);
+    // The references at the image's own clock: its look (Auto) follows it.
+    PREVIEW_CLOCK.with(|c| c.set(Some(rp_today::build_time())));
     // The card the X51v's has: the default icon pack (option C: the image
     // carries no pictures), read and decoded as on the device; the
     // references draw it as the image makes it (`today_icons`).

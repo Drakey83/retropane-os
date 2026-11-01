@@ -1945,13 +1945,10 @@ mod image {
                         let ok = rp_weather::png::decode(&net_buf[..l], tile_px, png_data, png_raw)
                             == Ok((256, 256));
                         if ok {
-                            // The map's tiles are OpenStreetMap's light
-                            // ones, made dark here.
-                            if rain.is_none() {
-                                for p in tile_px.iter_mut() {
-                                    *p = rp_weather::tiles::dark(*p);
-                                }
-                            }
+                            // The map's tiles are kept as OpenStreetMap
+                            // sends them (light); the look the settings
+                            // name (Night or Ink) is applied as the radar
+                            // is shown, so a change of look shows at once.
                             let dst: &mut [u32] = match rain {
                                 None => radar_view_map,
                                 Some(f) => {
@@ -2047,14 +2044,19 @@ mod image {
             // The real radar once its map is in: the frame shown blended
             // over it.
             let real = shell.backdrop().and(shell.radar_real());
-            if real.is_some() && real != radar_shown {
+            if real.is_some() && (real != radar_shown || shell.backdrop() != backdrop_shown) {
                 while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
                 let t0 = rt::ticks();
                 let f = real.flatten().map(|f| {
                     let f = usize::from(f).min(7);
                     &rain_all[f * view_px..(f + 1) * view_px]
                 });
-                rp_today::show_radar(gfx.two_d(), radar_view_map, f);
+                rp_today::show_radar(
+                    gfx.two_d(),
+                    radar_view_map,
+                    f,
+                    shell.backdrop() == Some(true),
+                );
                 radar_shown = real;
                 backdrop_shown = shell.backdrop();
                 let _ = writeln!(

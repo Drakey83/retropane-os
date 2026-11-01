@@ -179,6 +179,49 @@ impl Wanted {
     }
 }
 
+/// A colour's light twin: a neutral one (its channels within 40 of each
+/// other: glass, bars, text, edges) mirrored in lightness, alpha kept; any
+/// other (an accent) as it is.
+#[must_use]
+pub const fn light_twin(c: Argb) -> Argb {
+    let (r, g, b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+    let max = if r > g {
+        if r > b { r } else { b }
+    } else if g > b {
+        g
+    } else {
+        b
+    };
+    let min = if r < g {
+        if r < b { r } else { b }
+    } else if g < b {
+        g
+    } else {
+        b
+    };
+    if max - min > 40 {
+        return c;
+    }
+    (c & 0xFF00_0000) | (255 - r) << 16 | (255 - g) << 8 | (255 - b)
+}
+
+/// Text's colour in the light look: a neutral one as [`light_twin`]; a
+/// light accent (the rain blue, the focus blue) darkened to 55% so it reads
+/// on the white glass (the first render: cyan "Add a place" and the rain
+/// percentages were faint).
+#[must_use]
+pub const fn light_text(c: Argb) -> Argb {
+    let t = light_twin(c);
+    if t != c {
+        return t;
+    }
+    let (r, g, b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+    if (r * 77 + g * 150 + b * 29) >> 8 < 140 {
+        return c;
+    }
+    (c & 0xFF00_0000) | (r * 55 / 100) << 16 | (g * 55 / 100) << 8 | (b * 55 / 100)
+}
+
 /// Which screen is up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Screen {
@@ -846,6 +889,16 @@ impl Shell {
         self.icons.of(size).get(icon).copied().flatten()
     }
 
+    /// Whether the title bar shows Windows Mobile's "ok" (closes the screen).
+    /// Not in the Weather app: back and Home do its job (the owner's ruling,
+    /// 2026-10-31, R162: "We dont need this ... atleast for the weather app,
+    /// it might make sense on a different app"). Every screen so far is the
+    /// Weather app's or Today, so none shows it; an app that wants it says
+    /// so here.
+    const fn shows_ok(&self) -> bool {
+        false
+    }
+
     /// The pictures the screens show with this forecast: the hero's and
     /// the Now page's big one, the five forecast cards, Hourly's card for
     /// any hour picked and the rows of its 24 hours and of 10 Day. Every
@@ -1227,7 +1280,7 @@ impl Shell {
         };
         let today = [Target::Start]
             .into_iter()
-            .chain((self.screen != Screen::Today).then_some(Target::Ok))
+            .chain(self.shows_ok().then_some(Target::Ok))
             .chain((0..back).map(|_| Target::Back))
             .chain((0..hero).map(|_| Target::Hero))
             .chain((0..quick).map(Target::Quick))
@@ -1307,8 +1360,13 @@ impl Shell {
         }
         let date_changed =
             (t.weekday, t.day, t.month) != (self.time.weekday, self.time.day, self.time.month);
+        let was_light = self.light();
         self.time = t;
         self.dirty(TITLE_CLOCK);
+        // Auto's change at sunrise or sunset: every screen in the other look.
+        if self.light() != was_light {
+            self.dirty(Rect::new(0, 0, W, H));
+        }
         if self.screen == Screen::Weather {
             // The header's "read at" time; the Now page's sunset bar.
             self.dirty(weather_app::HEAD);
@@ -1875,6 +1933,36 @@ impl Shell {
         }
         self.damaged = 0;
         self.scene(f);
+        self.look(f);
+    }
+
+    /// Whether the light look is on: the settings' Light, or Auto between
+    /// sunrise and sunset at the place shown (ui.md "Light and dark":
+    /// decided by the owner, both modes, a toggle and a change with the time
+    /// of day).
+    #[must_use]
+    pub fn light(&self) -> bool {
+        match self.wset.appearance {
+            rp_weather::settings::Appearance::Light => true,
+            rp_weather::settings::Appearance::Dark => false,
+            rp_weather::settings::Appearance::Auto => {
+                let m = u16::from(self.time.hour) * 60 + u16::from(self.time.minute);
+                m >= self.wx.sun.0 && m < self.wx.sun.1
+            }
+        }
+    }
+
+    /// The look on a frame just drawn: in the light look every neutral
+    /// colour (glass, bars, text, edges) turned to its light twin (ui.md:
+    /// frosted white glass and dark text over the same photo); accents
+    /// (the focus blue, rain, the temperature colours) and pictures keep
+    /// theirs. One switch for every screen, so none is forgotten in one
+    /// look (the owner's run, 2026-10-31: Light and Dark changed nothing,
+    /// R160).
+    fn look(&self, f: &mut Frame) {
+        if self.light() {
+            f.map_colors(|c, text| if text { light_text(c) } else { light_twin(c) });
+        }
     }
 
     fn glass(f: &mut Frame, r: Rect, left: Argb, right: Argb) {
@@ -2047,15 +2135,21 @@ impl Shell {
                 TEXT,
                 self.title().as_bytes(),
             );
-            self.press_under(f, Target::Ok);
-            f.push(Cmd::Outline {
-                r: OK_BOX,
-                color: EDGE_LIGHT,
-            });
-            keyboard::centre_in(f, OK_BOX, ui, TEXT, b"ok");
-            self.decorate(f, Target::Ok);
+            if self.shows_ok() {
+                self.press_under(f, Target::Ok);
+                f.push(Cmd::Outline {
+                    r: OK_BOX,
+                    color: EDGE_LIGHT,
+                });
+                keyboard::centre_in(f, OK_BOX, ui, TEXT, b"ok");
+                self.decorate(f, Target::Ok);
+            }
         }
-        let right = if app { OK_BOX.x - 10 } else { W - 10 };
+        let right = if self.shows_ok() {
+            OK_BOX.x - 10
+        } else {
+            W - 10
+        };
         let hm = self.region.time(self.time.hour, self.time.minute, true);
         let w = ui.width(hm.as_bytes());
         f.text(right - w, 25, ui, TEXT, hm.as_bytes());

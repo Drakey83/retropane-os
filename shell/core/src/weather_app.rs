@@ -108,6 +108,58 @@ const GRAPH_HOURS: usize = 12;
 /// foot). Painted once a forecast by [`Shell::paint_graph`] into a store
 /// picture and drawn as one, on the planes and the 2D path alike.
 pub const GRAPH_PIC: (u16, u16) = (HOURLY_GRAPH.w - 2, 160);
+/// The radar's play mark: a right-pointing triangle, anti-aliased by 4 x 4
+/// samples a pixel, made when the shell is built (the 2D engine has
+/// rectangles, not triangles; the stepped one of 2 px rectangles looked
+/// broken on the panel: the owner's run, 2026-10-31, R161).
+const PLAY_W: usize = 20;
+const PLAY_H: usize = 28;
+const PLAY_PX: [Argb; PLAY_W * PLAY_H] = {
+    let mut px = [0; PLAY_W * PLAY_H];
+    let (w, h) = (PLAY_W as i32, PLAY_H as i32);
+    let mut y = 0;
+    while y < h {
+        let mut x = 0;
+        while x < w {
+            // Inside: |y - h/2| <= h/2 (1 - x / w), in eighths of a pixel.
+            let mut hits = 0u32;
+            let mut j = 0;
+            while j < 4 {
+                let mut i = 0;
+                while i < 4 {
+                    let sx = 8 * x + 2 * i + 1;
+                    let sy = 8 * y + 2 * j + 1;
+                    let dy = sy - 4 * h;
+                    let dy = if dy < 0 { -dy } else { dy };
+                    if dy * w <= 4 * h * w - (h / 2) * sx {
+                        hits += 1;
+                    }
+                    i += 1;
+                }
+                j += 1;
+            }
+            px[(y * w + x) as usize] = (hits * 255 / 16) << 24 | (TEXT & 0x00FF_FFFF);
+            x += 1;
+        }
+        y += 1;
+    }
+    px
+};
+static PLAY_ICON: rp_draw::Image = rp_draw::Image {
+    w: PLAY_W as u16,
+    h: PLAY_H as u16,
+    px: &PLAY_PX,
+};
+
+#[cfg(test)]
+pub(crate) fn play_icon() -> rp_draw::Image {
+    rp_draw::Image {
+        w: PLAY_W as u16,
+        h: PLAY_H as u16,
+        px: &PLAY_PX,
+    }
+}
+
 /// Integer square root.
 const fn isqrt(v: i32) -> i32 {
     let mut r = 0;
@@ -435,6 +487,7 @@ impl Shell {
         f.clear();
         f.damage(Rect::new(0, 0, W, H));
         self.scene(f);
+        self.look(f);
         (
             self.screen,
             self.tab,
@@ -459,6 +512,7 @@ impl Shell {
         f.clear();
         f.damage(Rect::new(0, 0, W, H));
         self.scene(f);
+        self.look(f);
         (self.anim, self.expanding) = saved;
     }
 
@@ -569,6 +623,7 @@ impl Shell {
             1 => self.hourly_page(f),
             _ => self.days_page(f),
         }
+        self.look(f);
         (self.tab, self.band) = saved;
     }
 
@@ -1476,16 +1531,16 @@ impl Shell {
             }
         }
         Self::glass(f, TIME_PANEL, super::MENU_LEFT, super::MENU_RIGHT);
-        // Play or pause: a triangle of steps, or two bars.
+        // Play or pause: a smooth triangle (one picture made at build
+        // time), or two bars.
         self.press_under(f, Target::Play);
         let (px, py) = (PLAY.x + 20, PLAY.y + 20);
         if self.radar_play {
-            for k in 0..8u16 {
-                f.push(Cmd::Fill {
-                    r: Rect::new(px + 2 * k, py + k, 2, 28 - 2 * k),
-                    color: TEXT,
-                });
-            }
+            f.push(Cmd::Image {
+                x: px,
+                y: py,
+                img: &PLAY_ICON,
+            });
         } else {
             for dx in [0u16, 12] {
                 f.push(Cmd::Fill {

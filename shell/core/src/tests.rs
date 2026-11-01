@@ -459,6 +459,7 @@ fn incremental_frames_match_full_redraws() {
         full.set_pics(store());
         let mut g = Frame::new();
         s.scene(&mut g);
+        s.look(&mut g);
         g.damage(Rect::new(0, 0, W, H));
         full.draw(&g);
         let first = inc
@@ -2253,4 +2254,85 @@ fn every_day_and_every_hour_shows_its_chance_of_rain() {
         seen >= rp_weather::HOURS,
         "a 0% in each hour's cell: {seen}"
     );
+}
+
+#[test]
+fn the_weather_app_has_no_ok_in_its_title_bar() {
+    // The owner's ruling, 2026-10-31 (R162): back and Home do its job.
+    for screen in [
+        Screen::Weather,
+        Screen::WeatherSettings,
+        Screen::WeatherPlaces,
+        Screen::WeatherFrom,
+    ] {
+        let mut s = weather(0);
+        if screen != Screen::Weather {
+            s.open(screen);
+        }
+        let f = drawn(&mut s);
+        assert!(
+            !texts(&f).iter().any(|t| t.as_slice() == b"ok"),
+            "{screen:?}"
+        );
+        assert_eq!(s.hit(OK_BOX.x + 20, OK_BOX.y + 14), None, "{screen:?}");
+    }
+}
+
+#[test]
+fn the_play_mark_is_a_smooth_triangle() {
+    // R161: the stepped one looked broken. Solid at its left middle, see-
+    // through at its right corners, and its edge shades between.
+    let img = &weather_app::play_icon();
+    let a = |x: usize, y: usize| img.px[y * usize::from(img.w) + x] >> 24;
+    let (w, h) = (usize::from(img.w), usize::from(img.h));
+    assert_eq!(a(1, h / 2), 255);
+    assert_eq!(a(w - 1, 0), 0);
+    assert_eq!(a(w - 1, h - 1), 0);
+    assert!(
+        img.px.iter().any(|p| (1..255).contains(&(p >> 24))),
+        "anti-aliased"
+    );
+}
+
+#[test]
+fn light_and_dark_change_every_screen_and_auto_follows_the_sun() {
+    // R160: the settings' Light and Dark changed nothing. Light turns the
+    // neutral colours (glass, text) to their light twins and keeps accents;
+    // Auto is light between sunrise and sunset.
+    use rp_weather::settings::Appearance;
+    let text_colors = |s: &mut Shell| -> Vec<Argb> {
+        drawn(s)
+            .cmds()
+            .filter_map(|c| match c {
+                Cmd::Text { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut s = weather(0);
+    s.wset.appearance = Appearance::Dark;
+    s.dirty(Rect::new(0, 0, W, H));
+    let dark = text_colors(&mut s);
+    s.wset.appearance = Appearance::Light;
+    s.dirty(Rect::new(0, 0, W, H));
+    let light = text_colors(&mut s);
+    assert!(dark.contains(&TEXT) && !light.contains(&TEXT));
+    assert!(light.contains(&light_twin(TEXT)));
+    assert_eq!(light_twin(FOCUS), FOCUS, "an accent keeps its colour");
+    assert_eq!(light_twin(light_twin(TEXT)), TEXT);
+    // Auto: by the sun at the place shown, and a change redraws it all.
+    s.wset.appearance = Appearance::Auto;
+    let (rise, set) = s.wx.sun;
+    let t = |m: u16| Time {
+        hour: (m / 60) as u8,
+        minute: (m % 60) as u8,
+        ..s.time
+    };
+    let (day, night) = (t(rise + 60), t(set + 60));
+    s.set_time(day);
+    assert!(s.light());
+    drawn(&mut s);
+    s.set_time(night);
+    assert!(!s.light());
+    assert!(drawn(&mut s).dirty().contains(&Rect::new(0, 0, W, H)));
 }

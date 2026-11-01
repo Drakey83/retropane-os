@@ -138,8 +138,39 @@ pub fn dark(p: u32) -> u32 {
     (p & 0xFF00_0000) | lift(r) << 16 | lift(g) << 8 | lift(b)
 }
 
+/// OpenStreetMap's standard tile pixel `p` in the Ink look (the built-in
+/// map's: black water, light land, roads and labels darker by their
+/// lightness), so the real map follows Settings > Radar map as the built-in
+/// one does (the owner's run, 2026-10-31: Ink changed nothing once the real
+/// tiles were in). Water is OSM's blue (#AAD3DF and its shades: blue well
+/// above red and at least green).
+#[must_use]
+pub fn ink(p: u32) -> u32 {
+    let (r, g, b) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
+    if b > r + 30 && b >= g {
+        return (p & 0xFF00_0000) | 0x18_1818;
+    }
+    let l = (r * 77 + g * 150 + b * 29) >> 8;
+    // Land (~240) near white, a label's dark text (~50) dark grey.
+    let v = 24 + l * 220 / 255;
+    (p & 0xFF00_0000) | v << 16 | v << 8 | v
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ink_makes_osm_water_black_and_land_light() {
+        let water = super::ink(0xFFAA_D3DF);
+        assert_eq!(water & 0xFF_FFFF, 0x18_1818, "OSM's water");
+        let land = super::ink(0xFFF2_EFE9) & 0xFF;
+        assert!(land > 200, "OSM's land light: {land}");
+        let label = super::ink(0xFF33_3333) & 0xFF;
+        assert!(label < 80, "a label dark: {label}");
+        let park = super::ink(0xFFC8_FACC);
+        assert_ne!(park & 0xFF_FFFF, 0x18_1818, "a park is land, not water");
+        assert_eq!(super::ink(0x80AA_D3DF) >> 24, 0x80, "alpha kept");
+    }
     use super::*;
 
     #[test]

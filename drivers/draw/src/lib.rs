@@ -347,6 +347,27 @@ impl Frame {
         })
     }
 
+    /// Every colour the frame's commands draw with passed through `f`
+    /// (pictures and the text they hold keep theirs): the look's switch
+    /// (light and dark) done once for every screen, after it is drawn.
+    /// `f` is told whether the colour is text's (text may need more
+    /// contrast than a fill).
+    pub fn map_colors(&mut self, f: impl Fn(Argb, bool) -> Argb) {
+        for c in self.cmds.iter_mut().take(self.n).flatten() {
+            match c {
+                Cmd::Fill { color, .. } | Cmd::Outline { color, .. } => {
+                    *color = f(*color, false);
+                }
+                Cmd::Text { color, .. } => *color = f(*color, true),
+                Cmd::HGradient { left, right, .. } => {
+                    *left = f(*left, false);
+                    *right = f(*right, false);
+                }
+                Cmd::Image { .. } | Cmd::Pic { .. } | Cmd::Clip { .. } => {}
+            }
+        }
+    }
+
     /// Empties it for the next frame.
     pub fn clear(&mut self) {
         self.n = 0;
