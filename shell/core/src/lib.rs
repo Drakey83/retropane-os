@@ -204,14 +204,15 @@ pub const fn light_twin(c: Argb) -> Argb {
     if max - min > 40 {
         return c;
     }
-    // Mirrored onto 0-224, not 0-255: the glass a soft light grey rather
+    // Mirrored onto 0-196, not 0-255: the glass a mid light grey rather
     // than near white, which washed out the lettering and the pictures
     // (the owner's run, 2026-11-01: "a little too bright ... make it a
-    // little darker"; his pick A of a greyer glass or a text shadow).
+    // little darker", his pick A; 0-224 was "a little better but ... still
+    // too bright").
     (c & 0xFF00_0000)
-        | ((255 - r) * 224 / 255) << 16
-        | ((255 - g) * 224 / 255) << 8
-        | ((255 - b) * 224 / 255)
+        | ((255 - r) * 196 / 255) << 16
+        | ((255 - g) * 196 / 255) << 8
+        | ((255 - b) * 196 / 255)
 }
 
 /// Text's colour in the light look: a neutral one as [`light_twin`]; a
@@ -412,7 +413,7 @@ const HERO_ICON: Rect = Rect::new(16 + 448 + 8 - 250, 38, 250, 176);
 /// the picture store's slots for them are that, not square.
 pub const HERO_PIC_H: u16 = HERO_ICON.h;
 /// The hero's place line stops short of the icon.
-const HERO_LABEL_W: u16 = HERO_ICON.x - HERO.x - 28;
+pub(crate) const HERO_LABEL_W: u16 = HERO_ICON.x - HERO.x - 28;
 /// The date at the hero's bottom right (its text depends on the day).
 pub const DATE_BOX: Rect = Rect::new(280, 52 + 196 - 50, 168, 40);
 /// The five-day forecast row with the room above it for the icons that
@@ -2367,51 +2368,16 @@ impl Shell {
     /// five days (from the shell's forecast), the calendar, the quick
     /// buttons.
     fn today_scene(&self, f: &mut Frame) {
-        let (ui, label, big) = (self.fonts.ui, self.fonts.label, self.fonts.big);
+        let (ui, label) = (self.fonts.ui, self.fonts.label);
         let (wx, rg) = (&self.wx, &self.region);
-        let mut buf = [0u8; 32];
 
         // The weather hero (a tap opens the Weather app), the living sky
         // behind its words and picture.
         Self::glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
         self.sky_scene(f);
-        // The place only (the app's header says the source), cut before
-        // the icon.
-        let head = upper(wx.place.as_str());
-        let mut b = head.as_bytes();
-        while label.width(b) > HERO_LABEL_W {
-            b = &b[..b.len() - 1];
-        }
-        f.text(HERO.x + 20, HERO.y + 34, label, DIM, b);
-        let temp = Line::new().num(rg.degrees(wx.now.temp)).push(&[DEG_BIG]);
-        f.text(HERO.x + 20, HERO.y + 116, big, TEXT, temp.as_bytes());
-        let icon = Icon::of(wx.now.sky);
-        f.text(HERO.x + 20, HERO.y + 146, ui, TEXT, icon.words().as_bytes());
-        let d = &wx.days[0];
-        let hl = Line::new()
-            .push(b"High ")
-            .push(rg.temp(d.high).as_bytes())
-            .push(b"   Low ")
-            .push(rg.temp(d.low).as_bytes());
-        f.text(HERO.x + 20, HERO.y + 174, ui, DIM, hl.as_bytes());
-        // The icon; none drawn when the pack lacks it (an empty outline
-        // read as a stray box: the owner's photo, 2026-10-31).
-        if let Some(pic) = self.icons.big(icon) {
-            f.push(Cmd::Pic {
-                x: HERO_ICON.x + HERO_ICON.w.saturating_sub(pic.w),
-                y: (HERO_ICON.y + HERO_ICON.h.saturating_sub(pic.h) / 2).cast_signed(),
-                pic,
-            });
-        }
-        let date = date_line(&mut buf, self.time);
-        let w = label.width(date);
-        f.text(
-            DATE_BOX.x + DATE_BOX.w - w,
-            HERO.y + HERO.h - 20,
-            label,
-            TEXT,
-            date,
-        );
+        // The card, as the Weather app's Now panel draws it (Reveal opens
+        // from one to the other with nothing changing).
+        self.weather_card(f, HERO.x, i32::from(HERO.y), 0);
         self.decorate(f, Target::Hero);
 
         // The next five days: the card, its icon over the card's top edge,
@@ -2573,7 +2539,7 @@ const MONTHS: [&[u8]; 12] = [
 ];
 
 /// `MON 13 OCTOBER` into `buf` (spaced capitals are the label font's job).
-fn date_line(buf: &mut [u8; 32], t: Time) -> &[u8] {
+pub(crate) fn date_line(buf: &mut [u8; 32], t: Time) -> &[u8] {
     const DAYS: [&[u8]; 7] = [b"MON", b"TUE", b"WED", b"THU", b"FRI", b"SAT", b"SUN"];
     let day = DAYS[usize::from(t.weekday.min(6))];
     let month = MONTHS[usize::from(t.month.clamp(1, 12) - 1)];

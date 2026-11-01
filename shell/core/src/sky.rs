@@ -22,8 +22,12 @@ use super::{Screen, Shell};
 /// Off: the Today picture stands still (the owner may revert, 2026-11-01).
 pub const LIVING_SKY: bool = true;
 
-/// How often the sky moves (ms): ~12 Hz, in ui.md's 10-15 Hz.
-pub const STEP_MS: u32 = 80;
+/// How often the sky moves (ms): 30 a second, the owner's floor for
+/// anything that moves (the first build's 80 ms, ui.md's 10-15 Hz, measured
+/// ~10 fps on the X51v and read as ~5: "i specifically said ... i didnt
+/// want anything under 30 fps"). A step cost ~4 ms of CPU on the X51v
+/// (the run of 2026-11-01): ~12% at 30 a second.
+pub const STEP_MS: u32 = 33;
 
 /// Where the sky moves: the whole weather panel, under its words and its
 /// picture (the first try kept to the picture's box, which the picture
@@ -35,16 +39,17 @@ const FALL: Rect = AREA;
 /// strength), chosen for each look and left alone by the light look's
 /// mapping ([`is_ink`]): mapped like text, rain and snow came out black on
 /// the white glass (the owner, 2026-11-01: "rain and snow arent black").
-/// Dark look: pale blue rain, white snow; light look: a mid blue rain, an
-/// icy blue snow (white would vanish on its white glass).
+/// Dark look: pale blue rain, white snow; light look: a deep blue rain,
+/// white snow and clouds on its grey glass (the owner's run, 2026-11-01:
+/// "i cant see anything at all hardly with the living sky" in light).
 const RAIN_DARK: Argb = 0xFFB4_D2F2;
 const SNOW_DARK: Argb = 0xFFF6_FAFF;
-const RAIN_LIGHT: Argb = 0xFF4E_8CD0;
-const SNOW_LIGHT: Argb = 0xFF9E_C2EA;
-/// Clouds with nothing falling: near white by night, a blue grey on the
-/// light glass.
+const RAIN_LIGHT: Argb = 0xFF24_5C9E;
+const SNOW_LIGHT: Argb = 0xFFFC_FDFF;
+/// Clouds with nothing falling: near white in both looks (the light
+/// look's glass is grey).
 const CLOUD_DARK: Argb = 0xFFE4_ECF6;
-const CLOUD_LIGHT: Argb = 0xFF7C_92AE;
+const CLOUD_LIGHT: Argb = 0xFFF2_F6FB;
 
 /// Whether `c` is one of the sky's colours (the light look keeps them).
 #[must_use]
@@ -342,6 +347,25 @@ impl Shell {
     pub fn preview_sky(&mut self, on: bool) {
         self.sky_forced = on;
         self.dirty(AREA);
+    }
+
+    /// How long until the sky's next step (ms) while it moves, for the
+    /// image's wait: woken when it is due, not a fixed sleep after it (a
+    /// fixed 80 ms sleep plus the frame gave ~99 ms steps).
+    #[must_use]
+    pub fn sky_due_in(&self, now: u32) -> Option<u32> {
+        self.sky_live()
+            .then(|| STEP_MS.saturating_sub(now.wrapping_sub(self.sky_at)).max(1))
+    }
+
+    /// Whether only the sky changed since the last frame (the image then
+    /// keeps the Weather app it composed ahead: nothing of it changed).
+    #[must_use]
+    pub fn only_sky_changed(&self) -> bool {
+        self.damaged > 0
+            && self.damage[..self.damaged]
+                .iter()
+                .all(|d| AREA.intersect(d) == *d)
     }
 
     /// The sky's next step if due at `now`: its area marked to draw.

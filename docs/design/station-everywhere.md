@@ -96,4 +96,4 @@ height). Not built: "the forecast said" and a week (R164).
 - **S1:** gauges on Now: A, B or C.
 - **S2:** a tile's chart: A or B.
 - **S3:** where else: Today's hero showing the station's temperature when
-  one is connected (yes or no).
+  one is connected (yes or no). **Voted yes (the owner, 2026-11-01)**: Today's card and the Now panel are one card (`Shell::weather_card`), the station's live temperature on both, so Reveal's first refresh changes nothing.

@@ -2154,21 +2154,17 @@ mod image {
                     if let Some((r, shift)) = shell.reveal_plane() {
                         if !gfx.aside_held() && !revealing {
                             // The app drawn whole aside, shown through the
-                            // card's window. Opens alternate the glide (odd)
-                            // and a still app (even), to tell apart the
-                            // glide on this panel and the hand-over (the
-                            // owner's run, 2026-10-30).
+                            // card's window, gliding from where the card is.
+                            // (The 2026-10-30 test held every second opening
+                            // still; left in, it jumped the app's lines 28 px
+                            // in their first refresh: the owner's video,
+                            // 2026-11-01, "just as jarring".)
                             opens += 1;
-                            shell.set_reveal_glide(opens % 2 == 1);
+                            shell.set_reveal_glide(true);
                             let (r, shift) = shell.reveal_plane().unwrap_or((r, shift));
                             let _ = writeln!(
                                 RunLog,
-                                "open {opens}: Reveal {}",
-                                if opens % 2 == 1 {
-                                    "with the glide (the app read 52 rows lower, easing up)"
-                                } else {
-                                    "held still (the window grows, the app in place)"
-                                }
+                                "open {opens}: Reveal with the glide (the app read 28 rows lower, easing up)"
                             );
                             // On the page layer when the app's screen and
                             // page are ready: the screen plane on the app's
@@ -2553,6 +2549,8 @@ mod image {
             {
                 let t0 = rt::ticks();
                 let draw = commit.is_none_or(|(_, _, d)| d);
+                // A sky step alone leaves the app composed ahead as it was.
+                let sky_only = shell.only_sky_changed();
                 if draw {
                     z_shell.run(|| shell.frame(frame));
                     // Commands past the frame's room are dropped: never
@@ -2571,7 +2569,7 @@ mod image {
                 } else {
                     frame.clear();
                 }
-                if shell.screen() == rp_shell::Screen::Today {
+                if shell.screen() == rp_shell::Screen::Today && !sky_only {
                     app_check = true;
                 }
                 let _ = z_compositor.run(|| match (commit, pc) {
@@ -2728,9 +2726,9 @@ mod image {
                     PEN_DOWN_SLEEP_MS
                 } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
                     20
-                } else if shell.sky_live() {
-                    // The living sky's next step.
-                    rp_shell::sky::STEP_MS
+                } else if let Some(due) = shell.sky_due_in(now_ms as u32) {
+                    // The living sky's next step, when it is due.
+                    due
                 } else if shell.notice().is_some() {
                     100
                 } else {

@@ -669,7 +669,11 @@ fn the_hero_and_days_read_the_forecast_including_frost_and_heat() {
     let f = drawn(&mut s);
     let t = texts(&f);
     assert!(t.contains(&b"72\xb0".to_vec()), "{t:?}");
-    assert!(t.contains(&b"High 75\x7f   Low 52\x7f".to_vec()));
+    assert!(
+        t.iter()
+            .any(|x| x.starts_with(b"High 75\x7f  Low 52\x7f  Feels ")),
+        "{t:?}"
+    );
     assert!(t.contains(&b"73\x7f 52\x7f".to_vec()));
     // A winter morning and a desert afternoon: no leading zeros, no caps.
     s.wx.now.temp = -70;
@@ -2350,7 +2354,7 @@ fn light_and_dark_change_every_screen_and_auto_follows_the_sun() {
     // the glass a light grey, the text near black.
     let glass = light_twin(GLASS_LEFT);
     assert!(
-        (glass & 0xFF) <= 224 && (glass & 0xFF) >= 200,
+        (glass & 0xFF) <= 196 && (glass & 0xFF) >= 176,
         "{glass:08X}"
     );
     assert!(light_twin(TEXT) & 0xFF <= 16);
@@ -2400,14 +2404,14 @@ fn with_a_station_now_shows_its_live_readings_and_what_matters_now() {
       "lightning_strike_count_last_3hr": 4, "lightning_strike_last_distance": 10}}"#;
     let mut s = weather(0);
     let before = texts(&drawn(&mut s));
-    assert!(!before.iter().any(|t| t.as_slice() == b"YOUR STATION, LIVE"));
+    assert!(!before.iter().any(|t| t.as_slice() == b" LIVE"));
     s.set_station_from_tempest(storm);
     s.dirty(Rect::new(0, 0, W, H));
     let f = drawn(&mut s);
     assert!(!f.overflowed(), "{} commands", f.cmds().count());
     let t = texts(&f);
     let has = |b: &[u8]| t.iter().any(|x| x.as_slice() == b);
-    assert!(has(b"YOUR STATION, LIVE"));
+    assert!(has(b" LIVE"));
     assert!(has(b"68\xB0"), "the station's 20.0 C as 68 F: {t:?}");
     assert!(has(b"LIGHTNING") && has(b"GUSTS") && has(b"PRESSURE"));
     let order: Vec<&[u8]> = s
@@ -2423,7 +2427,7 @@ fn with_a_station_now_shows_its_live_readings_and_what_matters_now() {
     assert!(
         !texts(&drawn(&mut s))
             .iter()
-            .any(|x| x.as_slice() == b"YOUR STATION, LIVE")
+            .any(|x| x.as_slice() == b" LIVE")
     );
 }
 
@@ -2712,4 +2716,47 @@ fn every_station_field_opens_its_own_chart() {
             R::Sun
         ]
     );
+}
+
+#[test]
+fn todays_card_and_the_now_panel_are_one_card() {
+    // The owner's 60 fps video (2026-11-01): Reveal's first refresh jumped
+    // from Today's lines to the app's. Every text the Today card draws, the
+    // Now panel draws at the same offset from its own top (Reveal reads the
+    // app 28 rows lower, so the first refresh is the same picture), with
+    // the station's temperature on both (S3).
+    let storm: &[u8] = br#"{"current_conditions": {"time": 1761900000,
+      "air_temperature": 25.6, "feels_like": 26.0, "relative_humidity": 61}}"#;
+    let card_texts = |f: &Frame, top: u16| -> Vec<(u16, i32, Vec<u8>)> {
+        f.cmds()
+            .filter_map(|c| match *c {
+                Cmd::Text {
+                    x, baseline, text, ..
+                } if (top..top + 196).contains(&baseline) && x < 470 => Some((
+                    x,
+                    i32::from(baseline) - i32::from(top),
+                    f.text_of(text).to_vec(),
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut s = shell(false);
+    s.set_station_from_tempest(storm);
+    s.dirty(Rect::new(0, 0, W, H));
+    let today = card_texts(&drawn(&mut s), 52);
+    assert!(
+        today.iter().any(|t| t.2 == b"78\xb0"),
+        "the station's 25.6 C: {today:?}"
+    );
+    let mut s2 = weather(0);
+    s2.set_station_from_tempest(storm);
+    s2.dirty(Rect::new(0, 0, W, H));
+    let panel = card_texts(&drawn(&mut s2), 80);
+    for t in &today {
+        assert!(
+            panel.contains(t),
+            "{t:?} not on the panel at the same place: {panel:?}"
+        );
+    }
 }

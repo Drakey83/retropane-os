@@ -896,10 +896,83 @@ impl Shell {
         }
     }
 
+    /// The weather card: Today's hero and the Now page's panel, the same
+    /// lines in the same places from the card's top `y` (so opening the app
+    /// by Reveal changes nothing in its first refresh): the place, marked
+    /// LIVE with a green dot when your station is connected; the
+    /// temperature, the station's then (S3, the owner's yes, 2026-11-01),
+    /// else the forecast's; the sky in words; the high, low and feel; the
+    /// date; the picture in its box (lowered `drop` px while arriving).
+    pub(crate) fn weather_card(&self, f: &mut Frame, x: u16, y: i32, drop: i32) {
+        let (ui, label, big) = (self.fonts.ui, self.fonts.label, self.fonts.big);
+        let (wx, rg) = (&self.wx, &self.region);
+        let live = self.smart_station();
+        let mut lx = x + 20;
+        if live.is_some() && y + 25 >= 0 {
+            f.push(Cmd::Fill {
+                r: Rect::new(x + 20, (y + 25) as u16, 7, 7),
+                color: super::station::LIVE,
+            });
+            lx += 16;
+        }
+        // The place, cut before the picture's box (and LIVE after it).
+        let live_w = if live.is_some() {
+            label.width(b" LIVE")
+        } else {
+            0
+        };
+        let head = super::upper(wx.place.as_str());
+        let mut b = head.as_bytes();
+        while label.width(b) + live_w > super::HERO_LABEL_W - (lx - x - 20) {
+            b = &b[..b.len() - 1];
+        }
+        Self::text_at(f, lx, y + 34, label, DIM, b);
+        if live.is_some() {
+            Self::text_at(
+                f,
+                lx + label.width(b),
+                y + 34,
+                label,
+                super::station::LIVE,
+                b" LIVE",
+            );
+        }
+        let temp = live.and_then(|n| n.temp).unwrap_or(wx.now.temp);
+        let feels = live.and_then(|n| n.feels).unwrap_or(wx.now.feels);
+        let t = Line::new().num(rg.degrees(temp)).push(&[DEG_BIG]);
+        Self::text_at(f, x + 20, y + 116, big, TEXT, t.as_bytes());
+        let icon = Icon::of(wx.now.sky);
+        Self::text_at(f, x + 20, y + 146, ui, TEXT, icon.words().as_bytes());
+        let d = &wx.days[0];
+        let hl = Line::new()
+            .push(b"High ")
+            .push(rg.temp(d.high).as_bytes())
+            .push(b"  Low ")
+            .push(rg.temp(d.low).as_bytes())
+            .push(b"  Feels ")
+            .push(rg.temp(feels).as_bytes());
+        Self::text_at(f, x + 20, y + 174, ui, DIM, hl.as_bytes());
+        // The picture in its box: 8 px past the card's right edge, from 14
+        // px above its top (Today's HERO_ICON, from the card).
+        if let Some(pic) = self.icons.big(icon) {
+            let bx = i32::from(x) + 448 + 8 - 250;
+            let by = y - 14 + i32::from(176u16.saturating_sub(pic.h) / 2) - drop;
+            if by >= 0 {
+                f.push(Cmd::Pic {
+                    x: (bx + 250 - i32::from(pic.w)) as u16,
+                    y: (by as u16).cast_signed(),
+                    pic,
+                });
+            }
+        }
+        let mut buf = [0u8; 32];
+        let date = super::date_line(&mut buf, self.time);
+        Self::text_at(f, x + 432 - label.width(date), y + 176, label, TEXT, date);
+    }
+
     pub(crate) fn now_page(&self, f: &mut Frame) {
         let (ui, label, big) = (self.fonts.ui, self.fonts.label, self.fonts.big);
         let (wx, rg) = (&self.wx, &self.region);
-        let icon = Icon::of(wx.now.sky);
 
         // The big panel: the temperature counting up, the sky, the day.
         let dx = self.slide(0);
@@ -918,52 +991,14 @@ impl Shell {
             }
         }
         Self::glass_at(f, px, py, 448, 206);
-        // N1: with your station connected, its live temperature and feel
-        // (the forecast's sky, words and high and low beside them).
+        // The same card as Today's, line for line and pixel for pixel, so
+        // Reveal's first refresh shows exactly what was tapped (the owner's
+        // 60 fps video, 2026-11-01: the app's lines sat 12-18 px from
+        // Today's and its number differed, "just as jarring"); the panel's
+        // last 10 rows come into view as the window grows.
+        let drop = ((1024 - self.ease(1)) * 24 / 1024) as i32;
+        self.weather_card(f, px, py, drop);
         let live = self.smart_station();
-        let temp_now = live.and_then(|n| n.temp).unwrap_or(wx.now.temp);
-        let feels_now = live.and_then(|n| n.feels).unwrap_or(wx.now.feels);
-        if live.is_some() && py + 18 >= 0 {
-            f.push(Cmd::Fill {
-                r: Rect::new(px + 22, (py + 18) as u16, 7, 7),
-                color: super::station::LIVE,
-            });
-            Self::text_at(
-                f,
-                px + 36,
-                py + 26,
-                label,
-                super::station::LIVE,
-                b"YOUR STATION, LIVE",
-            );
-        }
-        let shown = rg.degrees(temp_now) * self.ease(0) as i32 / 1024;
-        let t = Line::new().num(shown).push(&[DEG_BIG]);
-        Self::text_at(f, px + 20, py + 104, big, TEXT, t.as_bytes());
-        if let Some(pic) = self.icons.big(icon) {
-            let drop = ((1024 - self.ease(1)) * 24 / 1024) as i32;
-            let y = py + i32::from(206u16.saturating_sub(pic.h) / 2) - 18 - drop;
-            if y >= 0 {
-                f.push(Cmd::Pic {
-                    x: px + 448 - pic.w - 6,
-                    y: (y as u16).cast_signed(),
-                    pic,
-                });
-            }
-        }
-        Self::text_at(f, px + 20, py + 140, ui, TEXT, icon.words().as_bytes());
-        let feels = Line::new()
-            .push(b"Feels like ")
-            .push(rg.temp(feels_now).as_bytes());
-        Self::text_at(f, px + 20, py + 166, ui, DIM, feels.as_bytes());
-        let d = &wx.days[0];
-        let hl = Line::new()
-            .push(b"High ")
-            .push(rg.temp(d.high).as_bytes())
-            .push(b"   Low ")
-            .push(rg.temp(d.low).as_bytes())
-            .push(if live.is_some() { b"  (forecast)" } else { b"" });
-        Self::text_at(f, px + 20, py + 192, ui, DIM, hl.as_bytes());
 
         // The summary strip.
         let (sx, sy) = (16 + self.slide(1), self.sy(294));
