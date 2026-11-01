@@ -943,10 +943,7 @@ mod image {
         );
         let mut pack_shown = 0u8;
         let mut radar_shown: Option<Option<u8>> = None;
-        let Some(card) = CARD.put_with(|| None) else {
-            crash(format_args!("started twice"))
-        };
-        let mut card_tried = false;
+
         let Some(cf) = CF.put_with(|| None) else {
             crash(format_args!("started twice"))
         };
@@ -957,6 +954,35 @@ mod image {
             crash(format_args!("started twice"))
         };
         shell.set_dials(dials);
+        // The Weather settings `cargo xtask load` put on the card (the
+        // relay's record): the chosen icon pack and place known before the
+        // first picture is made (the relay answers ~15 s in).
+        let Some(card) = CARD.put_with(|| None) else {
+            crash(format_args!("started twice"))
+        };
+        let mut card_tried = true;
+        *card = take_card();
+        let t0 = rt::ticks();
+        match card
+            .as_mut()
+            .and_then(|(c, start)| read_pack(c, *start, *b"RPSET", stream_buf))
+        {
+            Some(n) => {
+                shell.settings_from_card(&stream_buf[..n]);
+                let _ = writeln!(
+                    RunLog,
+                    "settings: read from the card ({n} bytes) in {} us: icon pack {}",
+                    rt::ticks().wrapping_sub(t0) / 13 * 4,
+                    shell.icon_pack()
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    RunLog,
+                    "settings: none on the card (the relay's at its answer)"
+                );
+            }
+        }
 
         // The plane path: the pages' client and their pictures, drawn once
         // now (rebuilt only when a page's draw list changes).

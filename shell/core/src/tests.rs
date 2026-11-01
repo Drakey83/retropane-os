@@ -2336,3 +2336,20 @@ fn light_and_dark_change_every_screen_and_auto_follows_the_sun() {
     assert!(!s.light());
     assert!(drawn(&mut s).dirty().contains(&Rect::new(0, 0, W, H)));
 }
+
+#[test]
+fn the_cards_settings_name_the_pack_and_place_from_the_start() {
+    // R153's settings half: the record the relay keeps, read from the card
+    // at start, so the chosen pack is known before any picture is made; a
+    // damaged one gives the defaults.
+    let mut s = shell(true);
+    let mut set = s.wset;
+    set.pack = 2;
+    let rec = rp_weather::store::encode(&set);
+    s.settings_from_card(&rec);
+    assert_eq!(s.icon_pack(), 2);
+    let mut bad = rec;
+    bad[10] ^= 0xFF;
+    s.settings_from_card(&bad);
+    assert_eq!(s.icon_pack(), 0, "a damaged record: the defaults");
+}

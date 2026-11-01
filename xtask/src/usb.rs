@@ -1168,13 +1168,21 @@ fn icon_packs(root: &Path) -> Result<(), String> {
     let dir = root.join("target/load");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let packs = rp_weather::settings::PACKS.iter().enumerate();
-    let files = packs
+    let mut files: Vec<(Vec<u8>, String, &str)> = packs
         .map(|(n, what)| (format!("rp-icons{n}.pak"), format!("RPIC{n}"), *what))
-        .chain([("radar.zz".to_string(), "RPMAP".to_string(), "radar map")]);
-    for (out, stem, what) in files {
-        let Ok(pack) = crate::emu::today_output(&release, &out) else {
-            continue;
-        };
+        .chain([("radar.zz".to_string(), "RPMAP".to_string(), "radar map")])
+        .filter_map(|(out, stem, what)| {
+            Some((crate::emu::today_output(&release, &out).ok()?, stem, what))
+        })
+        .collect();
+    // The Weather settings the relay keeps (never the station key): on the
+    // card too, so the image knows the chosen icon pack and place from its
+    // first frame (the relay answers ~15 s in: the owner's run of
+    // 2026-10-31 made Today's pictures twice).
+    if let Ok(set) = std::fs::read(root.join("local").join("weather-settings.bin")) {
+        files.push((set, "RPSET".to_string(), "Weather settings"));
+    }
+    for (pack, stem, what) in files {
         let mut parts: Vec<&[u8]> = pack.chunks(PACK_PART).collect();
         parts.push(&[]);
         for (p, part) in parts.iter().enumerate() {

@@ -246,6 +246,19 @@ impl Shell {
         self.want(Ask::Pack);
     }
 
+    /// The settings the PC left on the card at the load (`RPSET`, the
+    /// relay's own record): applied at start, before any picture is made,
+    /// so the chosen icon pack and place show from the first frame (the
+    /// relay's answer comes ~15 s in, and Today's pictures were made twice:
+    /// the owner's run, 2026-10-31). A damaged record gives the defaults;
+    /// the relay's LOAD later says the same or newer.
+    pub fn settings_from_card(&mut self, body: &[u8]) {
+        let key = self.wset.tempest_key;
+        self.wset = store::decode(body, key);
+        self.apply_settings();
+        self.dirty(Rect::new(0, 0, W, super::H));
+    }
+
     /// The question in flight wasn't heard (the port closed under it):
     /// wanted again, nothing else changes.
     pub fn net_retry(&mut self) {
