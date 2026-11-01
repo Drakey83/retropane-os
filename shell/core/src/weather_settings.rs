@@ -508,6 +508,7 @@ impl Shell {
         // back, 3 px thick, in 2-row steps (6 commands a side, was 12:
         // Hourly's graph needed the frame's room, 2026-10-31).
         let (cx, cy) = (26u16, BACK.y + BACK.h / 2);
+        self.press_under(f, Target::Back);
         for k in (0..12u16).step_by(2) {
             for y in [cy - k - 1, cy + k] {
                 f.push(Cmd::Fill {
@@ -538,6 +539,7 @@ impl Shell {
             }
             last = sec;
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.press_under(f, Target::Row(k));
             self.row_body(f, items[usize::from(k)], r, (ui, label));
             self.decorate(f, Target::Row(k));
         }

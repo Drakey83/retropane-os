@@ -2191,3 +2191,32 @@ fn the_place_menu_closes_on_a_tap_outside_home_and_any_screen_or_page_change() {
     tap(&mut s, Shell::place_item(0));
     assert!(!s.place_menu);
 }
+
+#[test]
+fn a_pressed_button_is_solid_under_its_label() {
+    // The owner, 2026-10-31: a see-through press, "I do NOT like that";
+    // he picked solid slate (docs/design/mockups/pressed-look-choices.png).
+    // Held, a button draws an opaque fill before its label, and nothing
+    // see-through over it; the weather card still darkens.
+    let mut s = weather(0);
+    let r = weather_app::tab_rect(1);
+    let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+    s.input(Input::PenDown { x, y });
+    let f = drawn(&mut s);
+    let cmds: Vec<&Cmd> = f.cmds().collect();
+    let fill = cmds
+        .iter()
+        .position(|c| matches!(c, Cmd::Fill { r: fr, color } if *fr == r && color >> 24 == 0xFF))
+        .expect("a solid fill over the pressed tab");
+    let label = cmds
+        .iter()
+        .rposition(|c| matches!(c, Cmd::Text { x: tx, .. } if *tx >= r.x && *tx < r.x + r.w))
+        .expect("the tab's label");
+    assert!(fill < label, "the fill under the label");
+    assert!(
+        !cmds[fill + 1..]
+            .iter()
+            .any(|c| matches!(c, Cmd::Fill { r: fr, color } if *fr == r && color >> 24 != 0xFF)),
+        "nothing see-through over it"
+    );
+}

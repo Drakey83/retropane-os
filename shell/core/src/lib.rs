@@ -449,7 +449,10 @@ const MENU_RIGHT: Argb = rp_draw::look::theme(0xE02C_3238);
 const TEXT: Argb = rp_draw::look::theme(0xFFF0_F2F4);
 const DIM: Argb = rp_draw::look::theme(0xFFCC_D3DA);
 const FOCUS: Argb = rp_draw::look::theme(0xFF7F_D0FF);
-const PRESSED: Argb = rp_draw::look::theme(0x40FF_FFFF);
+/// A pressed button: solid slate under its label (the owner's pick of
+/// three drawn, 2026-10-31: a see-through press, "I do NOT like that";
+/// docs/design/mockups/pressed-look-choices.png).
+const PRESSED_UNDER: Argb = rp_draw::look::theme(0xFF3C_4656);
 /// A pressed card that opens an app: darkened, not lit.
 const PRESSED_DARK: Argb = rp_draw::look::theme(0x40000000);
 /// The align screen's background (opaque: the wallpaper would distract).
@@ -955,6 +958,7 @@ impl Shell {
             let e = Self::place_item(i);
             let p = self.wset.places()[usize::from(i)];
             let color = if i == self.wset.current { FOCUS } else { TEXT };
+            self.press_under(f, Target::PlaceItem(i));
             f.text(e.x + 16, e.y + 28, ui, color, p.name.as_bytes());
             self.decorate(f, Target::PlaceItem(i));
         }
@@ -1492,6 +1496,8 @@ impl Shell {
                 color: APP_SOFT_DIVIDER,
             });
         }
+        self.press_under(f, Target::SoftLeft);
+        self.press_under(f, Target::SoftRight);
         self.centred(f, SOFT_LEFT, H - 14, ui, TEXT, l.as_bytes());
         self.centred(f, SOFT_RIGHT, H - 14, ui, TEXT, r.as_bytes());
         self.decorate(f, Target::SoftLeft);
@@ -1893,18 +1899,28 @@ impl Shell {
         f.text(x, baseline, font, color, text);
     }
 
+    /// A pressed button's solid fill, drawn under its label (every button
+    /// but the weather card, which darkens).
+    fn press_under(&self, f: &mut Frame, t: Target) {
+        if self.pressed == Some(t) {
+            f.push(Cmd::Fill {
+                r: self.rect_of(t),
+                color: PRESSED_UNDER,
+            });
+        }
+    }
+
     fn decorate(&self, f: &mut Frame, t: Target) {
         let r = self.rect_of(t);
-        if self.pressed == Some(t) {
-            // The weather card opens the app: pressed, it darkens (a pale
-            // fill over its glass read as the screen flashing white while
-            // the app composed, the owner's photo 2026-10-30).
-            let color = if t == Target::Hero {
-                PRESSED_DARK
-            } else {
-                PRESSED
-            };
-            f.push(Cmd::Fill { r, color });
+        // The weather card opens the app: pressed, it darkens (a pale fill
+        // over its glass read as the screen flashing white while the app
+        // composed, the owner's photo 2026-10-30). Every other button's
+        // press is solid, under its label (`press_under`).
+        if self.pressed == Some(t) && t == Target::Hero {
+            f.push(Cmd::Fill {
+                r,
+                color: PRESSED_DARK,
+            });
         }
         if self.focus == Some(t) {
             f.push(Cmd::Outline { r, color: FOCUS });
@@ -2005,6 +2021,7 @@ impl Shell {
             right: if app { APP_TITLE_RIGHT } else { BAR_RIGHT },
         });
         let label = self.fonts.label;
+        self.press_under(f, Target::Start);
         f.push(Cmd::Outline {
             r: START_BOX,
             color: EDGE_LIGHT,
@@ -2030,6 +2047,7 @@ impl Shell {
                 TEXT,
                 self.title().as_bytes(),
             );
+            self.press_under(f, Target::Ok);
             f.push(Cmd::Outline {
                 r: OK_BOX,
                 color: EDGE_LIGHT,
@@ -2108,6 +2126,7 @@ impl Shell {
             Self::glass(f, r, MENU_LEFT, MENU_RIGHT);
             for i in 0..self.menu_len() {
                 let e = Self::menu_entry(i);
+                self.press_under(f, Target::Menu(i));
                 f.text(e.x + 16, e.y + 27, ui, TEXT, self.menu_label(i).as_bytes());
                 self.decorate(f, Target::Menu(i));
             }
@@ -2226,6 +2245,7 @@ impl Shell {
             let t = Target::Quick(i as u8);
             let r = self.rect_of(t);
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.press_under(f, t);
             self.centred(f, r, r.y + r.h - 14, ui, TEXT, name.as_bytes());
             self.decorate(f, t);
         }

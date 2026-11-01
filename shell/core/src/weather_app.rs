@@ -703,6 +703,7 @@ impl Shell {
         });
         let base = HEAD.y + 24;
         let place = wx.place.as_bytes();
+        self.press_under(f, Target::PlaceMenu);
         f.text(PLACE_BTN.x + 8, base, ui, TEXT, place);
         // The menu's mark: a small triangle pointing down.
         let mx = PLACE_BTN.x + 14 + ui.width(place);
@@ -730,6 +731,7 @@ impl Shell {
                 r,
                 color: ALERT_BACK,
             });
+            self.press_under(f, Target::Alert);
             f.push(Cmd::Outline { r, color: ALERT });
             f.text(r.x + 9, r.y + 18, ui, ALERT, b"!");
             f.text(r.x + 24, r.y + 17, label, ALERT, a.as_bytes());
@@ -742,6 +744,7 @@ impl Shell {
                 r,
                 color: super::keyboard::KEY_FILL,
             });
+            self.press_under(f, Target::Station);
             f.push(Cmd::Outline { r, color: FOCUS });
             super::keyboard::centre_in(f, r, label, TEXT, b"STATION");
             self.decorate(f, Target::Station);
@@ -809,6 +812,7 @@ impl Shell {
                     color: FOCUS,
                 });
             }
+            self.press_under(f, Target::Tab(i as u8));
             self.centred(f, r, r.y + 30, ui, if on { TEXT } else { DIM }, name);
             self.decorate(f, Target::Tab(i as u8));
         }
@@ -1471,6 +1475,7 @@ impl Shell {
         }
         Self::glass(f, TIME_PANEL, super::MENU_LEFT, super::MENU_RIGHT);
         // Play or pause: a triangle of steps, or two bars.
+        self.press_under(f, Target::Play);
         let (px, py) = (PLAY.x + 20, PLAY.y + 20);
         if self.radar_play {
             for k in 0..8u16 {
