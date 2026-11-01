@@ -14,7 +14,7 @@ each of the sheet's targets. Nothing starts until the owner says "Run it".
 | A pack pick under 0.1 s | `icons: pack N chosen: its table read in X us`, then the `icons: ... made` line that follows it | X plus the passes until the pictures on screen are in < 100,000 us |
 | Weather's RAM under 8 MB | `ram: the image's parts of the RAM pool ...` (start) | the pictures' parts about 3.5 MB (store 1.49 MB, default pack 1.5 MiB, card stream 256 KiB, decode scratch ~0.19 MB; above the sheet's 2.4 MB by Hourly's 160 px x6 not x2, the graph's picture and the card stream); the whole of the image's pool use < 8 MB is the radar's and the pages' question too |
 | Start to Weather shown under 0.5 s | `start: the Today screen shown at X ms after the image began` and `open: ... Reveal done` | measured, the baseline for P4 (snapshot start), whose design waits for this number |
-| Frames during touch 30+ fps | `movement at ...: N frames ... (~F fps)` | F >= 30 during drags on Hourly (the graph now one picture) |
+| Frames during touch 30+ fps | `movement at ...` lines (written only for a movement under 30 fps over five frames or more) and `movement: N more at 30 fps or better ...` at the end | no `movement at` line for a drag on Hourly (the graph now one picture) |
 | Stack: deepest under 75% | `stack: deepest X of 24576 bytes` | X < 18,432 |
 | The default pack read and kept | `icons: the default pack read (1408989 bytes from the SD card in X us, kept in RAM)` | read; X recorded (about 1.4 s at the card's ~1 MB/s) |
 | Hourly's graph one picture | `graph: Hourly's line painted in X us (in the store)` | in the store; X recorded |

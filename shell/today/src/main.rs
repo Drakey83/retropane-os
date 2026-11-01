@@ -1035,6 +1035,9 @@ mod image {
         let (mut reveal_t0, mut reveal_c0) = (0u64, 0u32);
         // Openings so far (the glide's alternation).
         let mut opens = 0u32;
+        // Movements not given a line of their own (smooth, or a tap's two
+        // frames).
+        let mut movements_quiet = 0u32;
         let mut batch = Batch::default();
         let mut screen_logged = (rp_shell::Screen::Today, u8::MAX, u8::MAX);
         // The opening's trace: refreshes recorded, the last refresh's
@@ -1592,6 +1595,10 @@ mod image {
                         "  {name}: {n} times, median {median} us, worst {worst} us"
                     );
                 }
+                let _ = writeln!(
+                    RunLog,
+                    "movement: {movements_quiet} more at 30 fps or better, or of a frame or two (not logged one by one)"
+                );
                 if PROFILE {
                     for (name, z) in [
                         ("touch sample (SPI)", &z_touch),
@@ -2631,7 +2638,16 @@ mod image {
             {
                 burst = None;
                 let (n, cpu_med, cpu_worst) = burst_cpu.summary();
-                if n > 1 {
+                let (_, per_med, _) = burst_period.summary();
+                // Only the movements worth reading: slower than 30 fps over
+                // five frames or more. A line each filled the 64 KiB run log
+                // (138 lines, 31 KB, the owner's run of 2026-10-31); the
+                // rest are counted, one line at the end.
+                let slow = n >= 5 && per_med > 33_333;
+                if n > 1 && !slow {
+                    movements_quiet += 1;
+                }
+                if n > 1 && slow {
                     let (_, eng_med, eng_worst) = burst_engine.summary();
                     let (_, per_med, per_worst) = burst_period.summary();
                     let fps10 = if per_med > 0 { 10_000_000 / per_med } else { 0 };

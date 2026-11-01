@@ -878,6 +878,16 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
         icon_packs(root)?;
     }
     let (payload, frame, frames) = image_frame(root, what)?;
+    // rp-today asks the dock's relay for its forecast, places, Tempest and
+    // the default icon pack: the relay runs alongside the load, in this
+    // process, which holds the Axim's lock (a separate `cargo xtask net`
+    // waited for that lock until the run was over, so no run had the
+    // internet: the owner, 2026-10-31). It ends when the image's port goes.
+    let relay = (what == "rp-today").then(|| {
+        let root = root.to_path_buf();
+        eprintln!("    the dock's relay runs alongside (cargo xtask net)");
+        std::thread::spawn(move || net(&root, false))
+    });
     let mut out = powershell(&load_script_opts(&frame, true, frames))?;
     if String::from_utf8_lossy(&out.stdout).contains("NOPORT") {
         // Windows still holds a stale entry for the port (Windows Mobile's
@@ -977,6 +987,13 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
                     println!("{l}");
                 }
                 return run_verdict(&lines);
+            }
+            if let Some(r) = relay {
+                match r.join() {
+                    Ok(Ok(())) => eprintln!("    the relay ended with the image"),
+                    Ok(Err(e)) => eprintln!("    the relay: {e}"),
+                    Err(_) => eprintln!("    the relay stopped unexpectedly"),
+                }
             }
             if returned {
                 eprintln!("    the image returned to the loader; its run log:");
