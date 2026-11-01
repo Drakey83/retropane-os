@@ -745,7 +745,7 @@ impl Shell {
         }
         let r = Rect::new(x, top as u16, w, (bottom - top) as u16);
         if self.light() {
-            return super::glass_faded(f, r, GLASS_LEFT, GLASS_RIGHT);
+            return super::glass_light(f, r, GLASS_LEFT, GLASS_RIGHT);
         }
         f.push(Cmd::HGradient {
             r,

@@ -29,6 +29,7 @@ pub mod chart;
 mod keyboard;
 pub mod motion;
 pub mod sky;
+pub mod soft;
 pub mod station;
 pub mod weather_app;
 mod weather_net;
@@ -235,61 +236,15 @@ pub enum LightStyle {
 /// The washed wallpaper's veil (C), drawn first, kept by the look.
 pub(crate) const WASH: Argb = 0x9CF4_F2F6;
 
-/// The light look's glass: opaque in the middle, fading to clear over its
-/// outer 12 px at the sides and a 6 px half-clear row at the top and
-/// bottom, no outline (the
-/// owner, 2026-11-01: "opaque in the middle and just transparent on the
-/// edges with a very gentle transition"). Every word sits inside the
-/// opaque part (cards' text starts 14 px in and ~6 px down), where the
-/// contrast test holds it. Drawn in the dark look's colours, mapped by the
-/// look ([`light_glass`] keeps each piece's opacity in proportion).
-fn glass_faded(f: &mut Frame, r: Rect, left: Argb, right: Argb) {
-    const SIDE: u16 = 12;
-    const ROW: u16 = 6;
-    let clear = |c: Argb, a: u32| (c & 0x00FF_FFFF) | (((c >> 24) * a / 255) << 24);
-    // A small cell (Hourly's grid rows, a chip): one plain piece, no
-    // outline (faded, Hourly's grid of them passed the frame's budget: 196
-    // commands of 224).
-    if r.h < 60 || r.w < 200 {
+/// The light look's glass: a big panel soft-edged ([`soft::panel`]: opaque
+/// in the middle, its rim fading to clear, the owner's mock-up), a small
+/// cell (Hourly's grid rows, a chip) one plain piece of frosted glass.
+fn glass_light(f: &mut Frame, r: Rect, left: Argb, right: Argb) {
+    if r.h >= 60 && r.w >= 200 {
+        soft::panel(f, r);
+    } else {
         f.push(Cmd::HGradient { r, left, right });
-        return;
     }
-    // The colour across at `x` (the tint runs left to right).
-    let at = |x: u16| {
-        let k = u32::from(x - r.x) * 255 / u32::from(r.w - 1);
-        let mix = |s: u32| {
-            let (a, b) = ((left >> s) & 0xFF, (right >> s) & 0xFF);
-            ((a * (255 - k) + b * k) / 255) << s
-        };
-        mix(24) | mix(16) | mix(8) | mix(0)
-    };
-    let (l, rr) = (at(r.x + SIDE), at(r.x + r.w - SIDE - 1));
-    // A row at each end, half opaque (two each passed the frame's budget,
-    // 194 commands, Hourly with the menu); the middle band with its sides
-    // fading out.
-    for y in [r.y, r.y + r.h - ROW] {
-        f.push(Cmd::HGradient {
-            r: Rect::new(r.x + SIDE, y, r.w - 2 * SIDE, ROW),
-            left: clear(l, 128),
-            right: clear(rr, 128),
-        });
-    }
-    let band = Rect::new(r.x, r.y + ROW, r.w, r.h - 2 * ROW);
-    f.push(Cmd::HGradient {
-        r: Rect::new(band.x, band.y, SIDE, band.h),
-        left: clear(left, 0),
-        right: l,
-    });
-    f.push(Cmd::HGradient {
-        r: Rect::new(band.x + SIDE, band.y, band.w - 2 * SIDE, band.h),
-        left: l,
-        right: rr,
-    });
-    f.push(Cmd::HGradient {
-        r: Rect::new(band.x + band.w - SIDE, band.y, SIDE, band.h),
-        left: rr,
-        right: clear(right, 0),
-    });
 }
 
 /// The frosted glass's opacity in the light look.
@@ -2210,6 +2165,7 @@ impl Shell {
             let style = self.light_style;
             f.map_colors(|c, text| {
                 if sky::is_ink(c)
+                    || soft::is_soft(c)
                     || c == WASH
                     || c == keyboard::DONE_TEXT
                     || c == weather_app::SHADOW_LIGHT
@@ -2238,7 +2194,7 @@ impl Shell {
 
     fn glass(&self, f: &mut Frame, r: Rect, left: Argb, right: Argb) {
         if self.light() {
-            return glass_faded(f, r, left, right);
+            return glass_light(f, r, left, right);
         }
         f.push(Cmd::HGradient { r, left, right });
         f.push(Cmd::Outline {

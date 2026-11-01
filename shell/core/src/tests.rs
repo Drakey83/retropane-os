@@ -350,16 +350,20 @@ fn incremental_frames_match_full_redraws() {
         g.cmds_clipped()
             .filter_map(|(c, clip)| match *c {
                 Cmd::Text {
-                    x, baseline, text, ..
+                    x,
+                    baseline,
+                    text,
+                    font,
+                    ..
                 } => {
-                    // The line box, without the bounds' 4 px overhang
-                    // margin, inside its clip (what can show).
-                    let b = c.bounds(&g);
+                    // The line box (the bounds less their overhang margin,
+                    // which a run at x 0 has no room for), inside its clip
+                    // (what can show).
                     let b = Rect::new(
-                        b.x + 4,
-                        b.y + 4,
-                        b.w.saturating_sub(8),
-                        b.h.saturating_sub(8),
+                        x,
+                        baseline.saturating_sub(u16::from(font.ascent)),
+                        font.width(g.text_of(text)),
+                        u16::from(font.line),
                     )
                     .intersect(&clip);
                     Some((x, baseline, g.text_of(text).to_vec(), b))
@@ -441,9 +445,10 @@ fn incremental_frames_match_full_redraws() {
             }
             assert!(
                 f.dirty().iter().any(|d| d.intersect(&b) == b),
-                "step {step} ({:?}): {:?} at ({x}, {y}) is new but not marked changed",
+                "step {step} ({:?}): {:?} at ({x}, {y}) is new but not marked changed (bounds {b:?}, dirty {:?})",
                 s.screen(),
-                std::string::String::from_utf8_lossy(&t)
+                std::string::String::from_utf8_lossy(&t),
+                f.dirty()
             );
         }
         inc.draw(&f);
@@ -2869,6 +2874,7 @@ fn the_light_look_reads_on_any_wallpaper() {
     let glass = [
         light_glass(GLASS_LEFT, LightStyle::Frosted),
         light_glass(GLASS_RIGHT, LightStyle::Frosted),
+        soft::PANEL,
     ];
     let behind: Vec<Argb> = glass
         .iter()
@@ -2890,6 +2896,7 @@ fn the_light_look_reads_on_any_wallpaper() {
                 // The sky's glyphs and the words' shadows aren't words.
                 if core::ptr::eq(font, &sky::SKY)
                     || core::ptr::eq(font, &sky::CLOUDS)
+                    || core::ptr::eq(font, &soft::RIMS)
                     || color >> 24 < 0x80
                     || color == weather_app::SHADOW_LIGHT
                 {
