@@ -380,6 +380,23 @@ pub fn run(root: &Path) -> Result<(), String> {
                 .map_err(|e| format!("{file}: {e}"))?;
         }
     }
+    // The light look's three approaches (the owner's pick, 2026-11-01), and
+    // the grey of the runs before: light-<style>-<today|now|settings>.png.
+    for (name, style) in [
+        ("grey", rp_shell::LightStyle::Grey),
+        ("a-frosted", rp_shell::LightStyle::Frosted),
+        ("b-tonal", rp_shell::LightStyle::Tonal),
+        ("c-washed", rp_shell::LightStyle::Washed),
+    ] {
+        for (part, rgb) in ["today", "now", "settings"]
+            .iter()
+            .zip(crate::emu::today_light(&wall, style))
+        {
+            let file = format!("light-{name}-{part}.png");
+            std::fs::write(out.join(&file), png_rgb(480, 640, &rgb))
+                .map_err(|e| format!("{file}: {e}"))?;
+        }
+    }
     std::fs::write(out.join("index.html"), page).map_err(|e| format!("index.html: {e}"))?;
     eprintln!(
         "    ui-preview: {} screens in {}",

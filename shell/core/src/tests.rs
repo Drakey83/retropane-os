@@ -2760,3 +2760,145 @@ fn todays_card_and_the_now_panel_are_one_card() {
         );
     }
 }
+
+#[test]
+fn clouds_move_a_whole_pixel_every_step() {
+    // The owner's run (2026-11-01): by the clock, under a pixel a step,
+    // the clouds stood still and hopped. Now each cloud moves 1 px a step
+    // (2 in a wind), every step.
+    let mut s = shell(false);
+    let mut wx = s.wx;
+    wx.now.sky.wmo = 3;
+    wx.now.sky.cover = 90;
+    s.set_forecast(wx);
+    s.preview_sky(true);
+    let clouds = |s: &mut Shell| -> Vec<(u16, u16, Vec<u8>)> {
+        let f = drawn(s);
+        f.cmds()
+            .filter_map(|c| match *c {
+                Cmd::Text {
+                    x,
+                    baseline,
+                    font,
+                    text,
+                    ..
+                } if core::ptr::eq(font, &sky::SKY) => {
+                    let t = f.text_of(text).to_vec();
+                    t.iter().all(|&b| b >= b' ' + 9).then_some((baseline, x, t))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let mut now = 1000;
+    s.tick(now);
+    let mut last = clouds(&mut s);
+    let mut moves = 0;
+    for _ in 0..120 {
+        now += sky::STEP_MS;
+        s.tick(now);
+        let next = clouds(&mut s);
+        for (y, x, _) in &next {
+            if let Some((_, x0, _)) = last.iter().find(|c| c.0 == *y) {
+                let d = (i32::from(*x) - i32::from(*x0)).abs();
+                assert!(
+                    (1..=2).contains(&d),
+                    "a cloud at y {y} moved {d} px in a step"
+                );
+                moves += 1;
+            }
+        }
+        last = next;
+    }
+    assert!(moves > 100, "{moves} cloud moves seen");
+}
+
+/// WCAG's relative luminance of an RGB colour.
+fn luminance(c: Argb) -> f64 {
+    let lin = |v: u32| {
+        let s = f64::from(v) / 255.0;
+        if s <= 0.039_28 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin((c >> 16) & 0xFF) + 0.7152 * lin((c >> 8) & 0xFF) + 0.0722 * lin(c & 0xFF)
+}
+
+/// `top` (its alpha) over the opaque `under`.
+fn over_rgb(top: Argb, under: Argb) -> Argb {
+    let a = top >> 24;
+    let ch = |s: u32| ((((top >> s) & 0xFF) * a + ((under >> s) & 0xFF) * (255 - a)) / 255) << s;
+    ch(16) | ch(8) | ch(0)
+}
+
+#[test]
+fn the_light_look_reads_on_any_wallpaper() {
+    // The owner's pick A (2026-11-01, "nothing is super easy to see in
+    // light mode"): every text colour every screen draws in the light look
+    // has at least 4.5:1 contrast (WCAG AA) against the frosted glass, over
+    // the worst wallpaper pixel (black or white) behind it.
+    let glass = [
+        light_glass(GLASS_LEFT, LightStyle::Frosted),
+        light_glass(GLASS_RIGHT, LightStyle::Frosted),
+    ];
+    let behind: Vec<Argb> = glass
+        .iter()
+        .flat_map(|g| [over_rgb(*g, 0xFF00_0000), over_rgb(*g, 0xFFFF_FFFF)])
+        .collect();
+    let contrast = |a: Argb, b: Argb| {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    };
+    let check = |s: &mut Shell, what: &str| {
+        s.wset.appearance = rp_weather::settings::Appearance::Light;
+        s.dirty(Rect::new(0, 0, W, H));
+        let f = drawn(s);
+        for c in f.cmds() {
+            if let Cmd::Text {
+                color, font, text, ..
+            } = *c
+            {
+                if core::ptr::eq(font, &sky::SKY) || color >> 24 < 0x80 {
+                    continue;
+                }
+                for b in &behind {
+                    let k = contrast(color, *b);
+                    assert!(
+                        k >= 4.5,
+                        "{what}: {:?} {color:08X} on {b:08X}: {k:.2}:1",
+                        String::from_utf8_lossy(f.text_of(text))
+                    );
+                }
+            }
+        }
+    };
+    let storm: &[u8] = br#"{"current_conditions": {"time": 1761900000,
+      "air_temperature": 20.0, "relative_humidity": 61, "wind_avg": 12.9, "wind_gust": 33.8,
+      "sea_level_pressure": 1016.4, "pressure_trend": "rising", "uv": 6,
+      "lightning_strike_count_last_3hr": 4, "lightning_strike_last_distance": 10}}"#;
+    let mut s = shell(true);
+    s.set_station_from_tempest(storm);
+    check(&mut s, "Today");
+    for page in 0..3 {
+        let mut s = weather(page);
+        s.set_station_from_tempest(storm);
+        check(&mut s, &format!("page {page}"));
+    }
+    let mut s = weather(0);
+    s.set_station_from_tempest(storm);
+    s.open(Screen::Station);
+    check(&mut s, "Station");
+    for screen in [
+        Screen::WeatherSettings,
+        Screen::WeatherPlaces,
+        Screen::AddPlace,
+        Screen::WeatherFrom,
+        Screen::KeyEntry,
+    ] {
+        let mut s = weather(0);
+        s.open(screen);
+        check(&mut s, &format!("{screen:?}"));
+    }
+}

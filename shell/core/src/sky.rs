@@ -39,17 +39,18 @@ const FALL: Rect = AREA;
 /// strength), chosen for each look and left alone by the light look's
 /// mapping ([`is_ink`]): mapped like text, rain and snow came out black on
 /// the white glass (the owner, 2026-11-01: "rain and snow arent black").
-/// Dark look: pale blue rain, white snow; light look: a deep blue rain,
-/// white snow and clouds on its grey glass (the owner's run, 2026-11-01:
-/// "i cant see anything at all hardly with the living sky" in light).
+/// Dark look: pale blue rain, white snow; light look: a deep blue rain, a
+/// steel blue snow, slate clouds, dark on its light glass (the owner's
+/// runs, 2026-11-01: "i cant see anything at all hardly with the living
+/// sky" in light, with white snow and clouds and with blue-grey ones).
 const RAIN_DARK: Argb = 0xFFB4_D2F2;
 const SNOW_DARK: Argb = 0xFFF6_FAFF;
 const RAIN_LIGHT: Argb = 0xFF24_5C9E;
-const SNOW_LIGHT: Argb = 0xFFFC_FDFF;
-/// Clouds with nothing falling: near white in both looks (the light
-/// look's glass is grey).
+const SNOW_LIGHT: Argb = 0xFF6E_90C0;
+/// Clouds with nothing falling: near white by night, slate on the light
+/// glass.
 const CLOUD_DARK: Argb = 0xFFE4_ECF6;
-const CLOUD_LIGHT: Argb = 0xFFF2_F6FB;
+const CLOUD_LIGHT: Argb = 0xFF74_7678;
 
 /// Whether `c` is one of the sky's colours (the light look keeps them).
 #[must_use]
@@ -107,8 +108,10 @@ const CLOUD_H: usize = 40;
 /// memory beside the screen's fonts (~200 KB).
 const SHAPES: usize = 4;
 const FADES: usize = 4;
-/// How long a cloud is seen (ms), its fades included.
-const CLOUD_LIFE: i64 = 12_000;
+/// How long a cloud is seen, in sky steps (12 s at 30 a second), its fades
+/// included; and its fade's length each way (1.5 s).
+const CLOUD_LIFE: i64 = 360;
+const CLOUD_FADE: i64 = 45;
 const CLOUD_ALL: &[u8; SHAPES * CLOUD_W * CLOUD_H] = include_bytes!("sky-cloud.alpha");
 
 /// Cloud `shape` at strength `level` of [`FADES`].
@@ -240,7 +243,7 @@ fn run(buf: &mut [u8; 48], xs: &[i32], what: u8) -> usize {
     n
 }
 
-/// Cloud `g` of `clouds` at `t` ms: its birth number (every cloud's
+/// Cloud `g` of `clouds` at sky step `t`: its birth number (every cloud's
 /// births counted in order: cloud g's are at (c x clouds - g) x life /
 /// clouds) and how long it has lived.
 const fn birth(t: i64, g: i64, clouds: i64) -> (i64, i64) {
@@ -374,6 +377,7 @@ impl Shell {
             return false;
         }
         self.sky_at = now;
+        self.sky_n = self.sky_n.wrapping_add(1);
         self.dirty(AREA);
         true
     }
@@ -420,25 +424,30 @@ impl Shell {
         // wrapped round and were cut off: "they just blink out of
         // existence").
         let cw = i64::from(AREA.w);
-        let drift = i64::from((kmh / 2 + 3).clamp(3, 18)) * if across < 0 { -1 } else { 1 };
+        // Whole pixels a step, never less than one: drifting by the clock,
+        // under a pixel a step, a cloud stood still two or three steps then
+        // hopped (the owner's run, 2026-11-01: "the clouds especially dont
+        // seem to be 30 fps"). One a step in a breeze, two in a wind.
+        let drift = (1 + i64::from(kmh >= 20)) * if across < 0 { -1 } else { 1 };
+        let steps = i64::from(self.sky_n);
         let flash = w.storm && t % 5200 < 140;
         let clouds = i64::from(w.clouds.max(1));
         for g in 0..clouds {
-            let (j, u) = birth(t, g, clouds);
+            let (j, u) = birth(steps, g, clouds);
             let s = scatter(j as u32);
-            let travel = drift * CLOUD_LIFE / 1000;
+            let travel = drift * CLOUD_LIFE;
             let room = (cw - CLOUD_W as i64 - travel.abs()).max(0);
             let start = (CLOUD_W as i64 / 2) + i64::from(s) % (room + 1);
             let x = if drift < 0 {
                 start + travel.abs()
             } else {
                 start
-            } + drift * u / 1000;
+            } + drift * u;
             let lane = 150 / clouds;
             let y = 30 + j.rem_euclid(clouds) * lane + i64::from(s >> 9) % (lane / 2 + 1);
             // Its strength: up over the first 1.5 s, down over the last.
             let near = u.min(CLOUD_LIFE - u);
-            let k = (near * FADES as i64 / 1500).min(FADES as i64);
+            let k = (near * FADES as i64 / CLOUD_FADE).min(FADES as i64);
             if k == 0 {
                 continue;
             }
@@ -555,7 +564,7 @@ mod twins {
                 let mut seen = [false; SHAPES];
                 for g in 0..clouds {
                     let (j, u) = birth(t, g, clouds);
-                    if u.min(CLOUD_LIFE - u) * FADES as i64 / 1500 == 0 {
+                    if u.min(CLOUD_LIFE - u) * FADES as i64 / CLOUD_FADE == 0 {
                         continue;
                     }
                     let shape = j.rem_euclid(SHAPES as i64) as usize;

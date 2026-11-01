@@ -11594,6 +11594,70 @@ fn reveal_over(
     out
 }
 
+/// The light look in `style` at noon (the owner's pick, 2026-11-01): the
+/// Today screen with a rainy living sky, the Weather app's Now page with a
+/// station live, and its settings, as the image draws them.
+pub(crate) fn today_light(wall: &[u8], style: rp_shell::LightStyle) -> [Vec<u8>; 3] {
+    use rp_draw::{Frame, Renderer};
+    use rp_mbx_render::model::{self, Bus, Mem};
+    use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
+
+    let mem = model::memory();
+    let mut gpu = Mbx2dRenderer::new(
+        Bus::new(mem.clone()),
+        Mem(mem.clone()),
+        Layout::X51V,
+        || 0,
+        1,
+    );
+    gpu.set_pics(preview_pics());
+    rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), today_icons(), true);
+    shell.set_dials(today_dials());
+    shell.set_time(rp_shell::Time {
+        hour: 12,
+        minute: 0,
+        weekday: 6,
+        day: 1,
+        month: 11,
+    });
+    shell.set_light_style(style);
+    shell.set_station_from_tempest(PREVIEW_STATION);
+    let mut wx = *shell.forecast();
+    wx.now.sky.wmo = 63;
+    wx.now.sky.cover = 90;
+    shell.set_forecast(wx);
+    shell.preview_sky(true);
+    let mut frame = Frame::new();
+    let mut shot = |shell: &mut rp_shell::Shell, gpu: &mut Mbx2dRenderer<Bus, Mem>| {
+        shell.frame(&mut frame);
+        gpu.draw(&frame);
+        while !gpu.poll() {}
+        let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
+        let base = ((scadr & 0x7F_FFFF) * 16) as usize;
+        let m = mem.borrow();
+        m[base..base + SCREEN_BYTES]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| shown_565(u16::from_le_bytes(*p)))
+            .collect::<Vec<u8>>()
+    };
+    for k in 0..90 {
+        shell.tick(10_000 + k * rp_shell::sky::STEP_MS);
+    }
+    let today = shot(&mut shell, &mut gpu);
+    shell.input(rp_shell::Input::PenDown { x: 240, y: 150 });
+    shell.input(rp_shell::Input::PenUp { x: 240, y: 150 });
+    shell.settle();
+    let now = shot(&mut shell, &mut gpu);
+    shell.input(rp_shell::Input::PenDown { x: 400, y: 620 });
+    shell.input(rp_shell::Input::PenUp { x: 400, y: 620 });
+    shell.settle();
+    let settings = shot(&mut shell, &mut gpu);
+    [today, now, settings]
+}
+
 /// The living sky on the Today screen (W6, `rp_shell::sky`): `n` frames
 /// `every_ms` apart with the sample forecast's sky set to `wmo` (cloud
 /// cover `cover` %, wind `kmh10` from `from` degrees), as the image draws

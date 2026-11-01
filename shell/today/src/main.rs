@@ -1281,8 +1281,8 @@ mod image {
                 if total > SLOW_ANSWER_US && !REPLAY {
                     let _ = writeln!(
                         RunLog,
-                        "slow answer at {} ms: {total} us; its frame's CPU {last_frame_us} us, wait {} us, engine {} us",
-                        now_ms, s.wait_us, s.engine_us
+                        "slow answer at {} ms: {total} us; its frame's CPU {last_frame_us} us, wait {} us, engine {} us; {} glyph atlases and {} pictures uploaded",
+                        now_ms, s.wait_us, s.engine_us, s.atlases, s.images
                     );
                 }
                 engine_worst = engine_worst.max(s.engine_us);
@@ -2173,12 +2173,21 @@ mod image {
                             // ends as the app rests, with no hand-off (the
                             // owner's run, 2026-10-31: the end's hand-off
                             // changed the picture twice in 80 ms).
-                            let on_page =
-                                chrome_pic
-                                    .zip(shell.reveal_page())
-                                    .and_then(|((ch, _), v)| {
-                                        pages[usize::from(v.tab)].map(|(h, _)| (ch, h, v))
-                                    });
+                            // The whole app composed ahead grows from the
+                            // card over Today when it is ready, Today kept
+                            // round it (the owner's run, 2026-11-01: on the
+                            // page layer the first refresh swapped the whole
+                            // screen to the app's frame, Today's rows gone
+                            // and the header in at once, "still looks
+                            // jarring"); the page layer only without it.
+                            let on_page = app_pic
+                                .is_none()
+                                .then_some(chrome_pic)
+                                .flatten()
+                                .zip(shell.reveal_page())
+                                .and_then(|((ch, _), v)| {
+                                    pages[usize::from(v.tab)].map(|(h, _)| (ch, h, v))
+                                });
                             if let Some((ch, h, v)) = on_page {
                                 if gfx.commit_screen(pc, ch, Some(page_state(h, v))).is_ok() {
                                     revealing = true;
@@ -2634,12 +2643,14 @@ mod image {
                 if us > SLOW_FRAME_US && frames > 0 && !REPLAY && !moving {
                     let _ = writeln!(
                         RunLog,
-                        "slow frame {} at {} ms: {us} us (queueing {} us, wait {} us, background {})",
+                        "slow frame {} at {} ms: {us} us (queueing {} us, wait {} us, background {}; {} glyph atlases and {} pictures uploaded)",
                         frames + 1,
                         now_ms,
                         s.queue_us,
                         s.wait_us,
-                        s.background
+                        s.background,
+                        s.atlases,
+                        s.images
                     );
                 }
                 queue_worst = queue_worst.max(s.queue_us);

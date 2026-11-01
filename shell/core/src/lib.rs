@@ -215,6 +215,57 @@ pub const fn light_twin(c: Argb) -> Argb {
         | ((255 - b) * 196 / 255)
 }
 
+/// How the light look keeps text readable over the photo (the owner's run,
+/// 2026-11-01: grey glass was "still too bright" and "nothing is super easy
+/// to see"): three approaches drawn for his pick.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LightStyle {
+    /// The grey glass of the first two runs (neutrals mirrored onto 0-196).
+    Grey,
+    /// A: iOS's way: near-opaque frosted white glass, near-black text.
+    Frosted,
+    /// B: Material You's way: near-opaque glass tinted from the wallpaper
+    /// (the sunset's rose).
+    Tonal,
+    /// C: frosted glass, and the wallpaper itself veiled light between the
+    /// panels.
+    Washed,
+}
+
+/// The washed wallpaper's veil (C), drawn first, kept by the look.
+pub(crate) const WASH: Argb = 0x9CF4_F2F6;
+
+/// A neutral fill's colour in the light look's `style`; accents kept.
+#[must_use]
+pub const fn light_glass(c: Argb, style: LightStyle) -> Argb {
+    // (Dark glass's channels are under 0x80: lifted to 0xE0-0xFF, tinted.)
+    let t = light_twin(c);
+    if t == c || matches!(style, LightStyle::Grey) {
+        return t;
+    }
+    let (r, g, b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+    let a = c >> 24;
+    // Dark glass (the panels) to near-opaque light glass; light lines
+    // (edges, dividers) to soft dark ones.
+    if (r + g + b) / 3 < 0x80 {
+        let (tr, tg, tb) = match style {
+            LightStyle::Tonal => (250, 236, 244),
+            _ => (244, 246, 250),
+        };
+        let a = if a >= 0x60 {
+            if a < 0xEC { 0xEC } else { a }
+        } else {
+            a
+        };
+        a << 24
+            | ((255 - r / 4) * tr / 255) << 16
+            | ((255 - g / 4) * tg / 255) << 8
+            | ((255 - b / 4) * tb / 255)
+    } else {
+        (a / 2) << 24 | 0x0030_3640
+    }
+}
+
 /// Text's colour in the light look: a neutral one as [`light_twin`]; a
 /// light accent (the rain blue, the focus blue) darkened to 55% so it reads
 /// on the white glass (the first render: cyan "Add a place" and the rain
@@ -225,11 +276,17 @@ pub const fn light_text(c: Argb) -> Argb {
     if t != c {
         return t;
     }
-    let (r, g, b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
-    if (r * 77 + g * 150 + b * 29) >> 8 < 140 {
-        return c;
+    // An accent kept in its hue, darkened until it reads at 4.5:1 on the
+    // frosted glass (a fixed 55% left the live green at 3.46:1: the light
+    // look's contrast test, 2026-11-01): its luminance, gamma taken as 2,
+    // under 0.11 (the glass is ~0.75).
+    let (mut r, mut g, mut b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+    while (2126 * r * r + 7152 * g * g + 722 * b * b) / (255 * 255) > 1100 {
+        r = r * 9 / 10;
+        g = g * 9 / 10;
+        b = b * 9 / 10;
     }
-    (c & 0xFF00_0000) | (r * 55 / 100) << 16 | (g * 55 / 100) << 8 | (b * 55 / 100)
+    (c & 0xFF00_0000) | r << 16 | g << 8 | b
 }
 
 /// Which screen is up.
@@ -663,7 +720,11 @@ pub struct Shell {
     /// When the living sky last moved (ms), and the previews' word that it
     /// moves with the sample forecast ([`sky`]).
     sky_at: u32,
+    /// The sky's steps so far (its clouds move a whole pixel a step).
+    sky_n: u32,
     sky_forced: bool,
+    /// The light look's style.
+    light_style: LightStyle,
     /// The test image's sky test: 0 the forecast's sky, else the weather
     /// it shows ([`sky`]).
     sky_test: u8,
@@ -786,7 +847,9 @@ macro_rules! shell_start {
             history_at: 0,
             chart: None,
             sky_at: 0,
+            sky_n: 0,
             sky_forced: false,
+            light_style: LightStyle::Frosted,
             sky_test: 0,
             fetched_at: None,
             dock: false,
@@ -2072,17 +2135,29 @@ impl Shell {
     /// R160).
     fn look(&self, f: &mut Frame) {
         if self.light() {
+            let style = self.light_style;
             f.map_colors(|c, text| {
-                if sky::is_ink(c) {
-                    // The living sky's own colours, chosen for each look.
+                if sky::is_ink(c) || c == WASH || c == keyboard::DONE_TEXT {
+                    // The living sky's own colours, chosen for each look,
+                    // the washed wallpaper's veil, and the dark text on an
+                    // accent fill (a lit switch, Done), which stays light
+                    // in both looks: mirrored it was light grey on light
+                    // blue (1.4:1, the light look's contrast test).
                     c
                 } else if text {
                     light_text(c)
                 } else {
-                    light_twin(c)
+                    light_glass(c, style)
                 }
             });
         }
+    }
+
+    /// The light look's style (the owner's pick of the three drawn,
+    /// 2026-11-01; the previews draw each).
+    pub fn set_light_style(&mut self, style: LightStyle) {
+        self.light_style = style;
+        self.dirty(Rect::new(0, 0, W, H));
     }
 
     fn glass(f: &mut Frame, r: Rect, left: Argb, right: Argb) {
@@ -2218,6 +2293,12 @@ impl Shell {
             return;
         }
         let ui = self.fonts.ui;
+        if self.light() && self.light_style == LightStyle::Washed {
+            f.push(Cmd::Fill {
+                r: Rect::new(0, 0, W, H),
+                color: WASH,
+            });
+        }
 
         // Title bar (the agreed mix mock-up's, Windows Mobile's layout): a
         // boxed Start, the app's name, the status and time, and ok (back)
