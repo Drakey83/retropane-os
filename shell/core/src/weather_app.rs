@@ -32,6 +32,10 @@ pub(crate) const STATION_BTN: Rect = Rect::new(W - 196, 36 + 5, 84, 24);
 /// The header's place and its menu.
 pub(crate) const PLACE_BTN: Rect = Rect::new(0, 36, 200, 34);
 /// The alert chip's colours (amber, the mock-up's).
+/// The card's word shadows: dark in the dark look, a light halo in the
+/// light look (kept by the light look's mapping).
+pub(crate) const SHADOW_DARK: Argb = 0x8C00_0000;
+pub(crate) const SHADOW_LIGHT: Argb = 0xB4FF_FFFF;
 const ALERT: Argb = rp_draw::look::theme(0xFFF2_B45A);
 /// The alert screen's name.
 pub(crate) const ALERT_TEXT: Argb = ALERT;
@@ -733,13 +737,16 @@ impl Shell {
 
     /// A glass panel at a scrolled `y`, cut at the screen's top (the clip
     /// does the rest; the tint runs across, so a cut keeps it).
-    fn glass_at(f: &mut Frame, x: u16, y: i32, w: u16, h: u16) {
+    fn glass_at(&self, f: &mut Frame, x: u16, y: i32, w: u16, h: u16) {
         let top = y.max(0);
         let bottom = y + i32::from(h);
         if bottom <= top {
             return;
         }
         let r = Rect::new(x, top as u16, w, (bottom - top) as u16);
+        if self.light() {
+            return super::glass_faded(f, r, GLASS_LEFT, GLASS_RIGHT);
+        }
         f.push(Cmd::HGradient {
             r,
             left: GLASS_LEFT,
@@ -896,6 +903,24 @@ impl Shell {
         }
     }
 
+    /// Text with a soft shadow under it (1 px down and right): the card's
+    /// words stay readable over the living sky's clouds (the owner, 2026-
+    /// 11-01: "the clouds should not appear behind lettering, it makes
+    /// words hard to read"; his pick of the shadow over keeping the clouds
+    /// away).
+    fn shadowed(
+        f: &mut Frame,
+        sh: Argb,
+        x: u16,
+        y: i32,
+        font: &'static rp_draw::Font,
+        c: Argb,
+        t: &[u8],
+    ) {
+        Self::text_at(f, x + 1, y + 1, font, sh, t);
+        Self::text_at(f, x, y, font, c, t);
+    }
+
     /// The weather card: Today's hero and the Now page's panel, the same
     /// lines in the same places from the card's top `y` (so opening the app
     /// by Reveal changes nothing in its first refresh): the place, marked
@@ -907,6 +932,11 @@ impl Shell {
         let (ui, label, big) = (self.fonts.ui, self.fonts.label, self.fonts.big);
         let (wx, rg) = (&self.wx, &self.region);
         let live = self.smart_station();
+        let sh = if self.light() {
+            SHADOW_LIGHT
+        } else {
+            SHADOW_DARK
+        };
         let mut lx = x + 20;
         if live.is_some() && y + 25 >= 0 {
             f.push(Cmd::Fill {
@@ -926,10 +956,11 @@ impl Shell {
         while label.width(b) + live_w > super::HERO_LABEL_W - (lx - x - 20) {
             b = &b[..b.len() - 1];
         }
-        Self::text_at(f, lx, y + 34, label, DIM, b);
+        Self::shadowed(f, sh, lx, y + 34, label, DIM, b);
         if live.is_some() {
-            Self::text_at(
+            Self::shadowed(
                 f,
+                sh,
                 lx + label.width(b),
                 y + 34,
                 label,
@@ -940,9 +971,9 @@ impl Shell {
         let temp = live.and_then(|n| n.temp).unwrap_or(wx.now.temp);
         let feels = live.and_then(|n| n.feels).unwrap_or(wx.now.feels);
         let t = Line::new().num(rg.degrees(temp)).push(&[DEG_BIG]);
-        Self::text_at(f, x + 20, y + 116, big, TEXT, t.as_bytes());
+        Self::shadowed(f, sh, x + 20, y + 116, big, TEXT, t.as_bytes());
         let icon = Icon::of(wx.now.sky);
-        Self::text_at(f, x + 20, y + 146, ui, TEXT, icon.words().as_bytes());
+        Self::shadowed(f, sh, x + 20, y + 146, ui, TEXT, icon.words().as_bytes());
         let d = &wx.days[0];
         let hl = Line::new()
             .push(b"High ")
@@ -951,7 +982,7 @@ impl Shell {
             .push(rg.temp(d.low).as_bytes())
             .push(b"  Feels ")
             .push(rg.temp(feels).as_bytes());
-        Self::text_at(f, x + 20, y + 174, ui, DIM, hl.as_bytes());
+        Self::shadowed(f, sh, x + 20, y + 174, ui, DIM, hl.as_bytes());
         // The picture in its box: 8 px past the card's right edge, from 14
         // px above its top (Today's HERO_ICON, from the card).
         if let Some(pic) = self.icons.big(icon) {
@@ -967,7 +998,15 @@ impl Shell {
         }
         let mut buf = [0u8; 32];
         let date = super::date_line(&mut buf, self.time);
-        Self::text_at(f, x + 432 - label.width(date), y + 176, label, TEXT, date);
+        Self::shadowed(
+            f,
+            sh,
+            x + 432 - label.width(date),
+            y + 176,
+            label,
+            TEXT,
+            date,
+        );
     }
 
     pub(crate) fn now_page(&self, f: &mut Frame) {
@@ -983,14 +1022,14 @@ impl Shell {
             // (16, 104, 448 x 206): the card alone until it is in place.
             let lerp = |a: i32, b: i32| a + (b - a) * g as i32 / 1024;
             let (y, h) = (lerp(52, i32::from(PANEL_Y)), lerp(196, 206));
-            Self::glass_at(f, 16, y, 448, h as u16);
+            self.glass_at(f, 16, y, 448, h as u16);
             let t = Line::new().num(rg.degrees(wx.now.temp)).push(&[DEG_BIG]);
             Self::text_at(f, 36, y + lerp(116, 104), big, TEXT, t.as_bytes());
             if g < 700 {
                 return;
             }
         }
-        Self::glass_at(f, px, py, 448, 206);
+        self.glass_at(f, px, py, 448, 206);
         // The same card as Today's, line for line and pixel for pixel, so
         // Reveal's first refresh shows exactly what was tapped (the owner's
         // 60 fps video, 2026-11-01: the app's lines sat 12-18 px from
@@ -1002,7 +1041,7 @@ impl Shell {
 
         // The summary strip.
         let (sx, sy) = (16 + self.slide(1), self.sy(294));
-        Self::glass_at(f, sx, sy, 448, 40);
+        self.glass_at(f, sx, sy, 448, 40);
         Self::text_at(f, sx + 16, sy + 27, ui, TEXT, wx.summary(rg).as_bytes());
 
         if let Some(n) = live {
@@ -1049,7 +1088,7 @@ impl Shell {
             let e = self.ease(2 + i as u32);
             let cx = 16 + (i as u16 % 2) * 232 + self.slide(2 + i as u32);
             let cy = self.sy(CARD_Y + (i as u16 / 2) * CARD_STEP);
-            Self::glass_at(f, cx, cy, 216, 84);
+            self.glass_at(f, cx, cy, 216, 84);
             Self::text_at(f, cx + 14, cy + 26, label, DIM, name);
             Self::text_at(f, cx + 14, cy + 54, ui, TEXT, value.as_bytes());
             let bar_y = cy + i32::from(BAR_DY);
@@ -1182,7 +1221,7 @@ impl Shell {
             };
             let x = 16 + i as u16 * 152 + self.slide(2);
             let y = self.sy(STRIP.y);
-            Self::glass_at(f, x, y, 144, STRIP.h);
+            self.glass_at(f, x, y, 144, STRIP.h);
             Self::text_at(f, x + 10, y + 20, label, *color, name);
             Self::text_at(f, x + 10, y + 44, ui, TEXT, value.as_bytes());
         }
@@ -1243,7 +1282,7 @@ impl Shell {
             let e = self.ease(2 + i as u32);
             let cx = 16 + (i as u16 % 2) * 232 + self.slide(2 + i as u32);
             let cy = self.sy(SMART_CARD_Y + (i as u16 / 2) * SMART_CARD_STEP);
-            Self::glass_at(f, cx, cy, 216, SMART_CARD_H);
+            self.glass_at(f, cx, cy, 216, SMART_CARD_H);
             Self::text_at(f, cx + 14, cy + 22, label, DIM, name);
             if *live && cy + 13 >= 0 {
                 f.push(Cmd::Fill {
@@ -1312,7 +1351,7 @@ impl Shell {
         // as bars under it.
         let g = HOURLY_GRAPH;
         let gy = i32::from(g.y) + dy;
-        Self::glass_at(f, g.x, gy, g.w, g.h);
+        self.glass_at(f, g.x, gy, g.w, g.h);
         let y0 = |v: i32| (v + gy).max(0) as u16;
         // A rectangle `h` tall from local row `y`, cut at the screen's top
         // (scrolled up, it must shrink, not slide down).
@@ -1502,7 +1541,7 @@ impl Shell {
         let pick = usize::from(self.hour_pick).min(HOURS - 1);
         let c = HOURLY_CARD;
         let cy = i32::from(c.y) + dy;
-        Self::glass_at(f, c.x, cy, c.w, c.h);
+        self.glass_at(f, c.x, cy, c.w, c.h);
         let h = wx.hours[pick];
         let when = if pick == 0 {
             Line::new().push(b"Now")
@@ -1622,7 +1661,7 @@ impl Shell {
             if y + i32::from(GRID_H) <= top || y >= bottom {
                 continue;
             }
-            Self::glass_at(f, 16, y, 448, GRID_H);
+            self.glass_at(f, 16, y, 448, GRID_H);
             for c in 0..6usize {
                 let i = r * 6 + c;
                 let Some(h) = wx.hours.get(i) else { continue };
@@ -1795,7 +1834,7 @@ impl Shell {
         } else {
             let chip = Rect::new(16, 80, 300, 40);
             // The menus' denser glass: readable over the map.
-            Self::glass(f, chip, super::MENU_LEFT, super::MENU_RIGHT);
+            self.glass(f, chip, super::MENU_LEFT, super::MENU_RIGHT);
             let what: &[u8] = if self.radar_loading() {
                 b"RADAR LOADING"
             } else {
@@ -1816,7 +1855,7 @@ impl Shell {
                 f.push(Cmd::Fill { r, color });
             }
         }
-        Self::glass(f, TIME_PANEL, super::MENU_LEFT, super::MENU_RIGHT);
+        self.glass(f, TIME_PANEL, super::MENU_LEFT, super::MENU_RIGHT);
         // Play or pause: a smooth triangle (one picture made at build
         // time), or two bars.
         self.press_under(f, Target::Play);
@@ -1931,7 +1970,7 @@ impl Shell {
                 continue;
             }
             let r = Rect::new(16 + self.slide(k as u32), y.max(0) as u16, 448, ROW_H);
-            Self::glass_at(f, r.x, y, r.w, r.h);
+            self.glass_at(f, r.x, y, r.w, r.h);
             if y < 0 {
                 continue;
             }

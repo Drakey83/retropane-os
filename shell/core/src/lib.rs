@@ -235,6 +235,66 @@ pub enum LightStyle {
 /// The washed wallpaper's veil (C), drawn first, kept by the look.
 pub(crate) const WASH: Argb = 0x9CF4_F2F6;
 
+/// The light look's glass: opaque in the middle, fading to clear over its
+/// outer 12 px at the sides and a 6 px half-clear row at the top and
+/// bottom, no outline (the
+/// owner, 2026-11-01: "opaque in the middle and just transparent on the
+/// edges with a very gentle transition"). Every word sits inside the
+/// opaque part (cards' text starts 14 px in and ~6 px down), where the
+/// contrast test holds it. Drawn in the dark look's colours, mapped by the
+/// look ([`light_glass`] keeps each piece's opacity in proportion).
+fn glass_faded(f: &mut Frame, r: Rect, left: Argb, right: Argb) {
+    const SIDE: u16 = 12;
+    const ROW: u16 = 6;
+    let clear = |c: Argb, a: u32| (c & 0x00FF_FFFF) | (((c >> 24) * a / 255) << 24);
+    // A small cell (Hourly's grid rows, a chip): one plain piece, no
+    // outline (faded, Hourly's grid of them passed the frame's budget: 196
+    // commands of 224).
+    if r.h < 60 || r.w < 200 {
+        f.push(Cmd::HGradient { r, left, right });
+        return;
+    }
+    // The colour across at `x` (the tint runs left to right).
+    let at = |x: u16| {
+        let k = u32::from(x - r.x) * 255 / u32::from(r.w - 1);
+        let mix = |s: u32| {
+            let (a, b) = ((left >> s) & 0xFF, (right >> s) & 0xFF);
+            ((a * (255 - k) + b * k) / 255) << s
+        };
+        mix(24) | mix(16) | mix(8) | mix(0)
+    };
+    let (l, rr) = (at(r.x + SIDE), at(r.x + r.w - SIDE - 1));
+    // A row at each end, half opaque (two each passed the frame's budget,
+    // 194 commands, Hourly with the menu); the middle band with its sides
+    // fading out.
+    for y in [r.y, r.y + r.h - ROW] {
+        f.push(Cmd::HGradient {
+            r: Rect::new(r.x + SIDE, y, r.w - 2 * SIDE, ROW),
+            left: clear(l, 128),
+            right: clear(rr, 128),
+        });
+    }
+    let band = Rect::new(r.x, r.y + ROW, r.w, r.h - 2 * ROW);
+    f.push(Cmd::HGradient {
+        r: Rect::new(band.x, band.y, SIDE, band.h),
+        left: clear(left, 0),
+        right: l,
+    });
+    f.push(Cmd::HGradient {
+        r: Rect::new(band.x + SIDE, band.y, band.w - 2 * SIDE, band.h),
+        left: l,
+        right: rr,
+    });
+    f.push(Cmd::HGradient {
+        r: Rect::new(band.x + band.w - SIDE, band.y, SIDE, band.h),
+        left: rr,
+        right: clear(right, 0),
+    });
+}
+
+/// The frosted glass's opacity in the light look.
+pub(crate) const LIGHT_GLASS_ALPHA: u32 = 0xB8;
+
 /// A neutral fill's colour in the light look's `style`; accents kept.
 #[must_use]
 pub const fn light_glass(c: Argb, style: LightStyle) -> Argb {
@@ -252,10 +312,17 @@ pub const fn light_glass(c: Argb, style: LightStyle) -> Argb {
             LightStyle::Tonal => (250, 236, 244),
             _ => (244, 246, 250),
         };
-        let a = if a >= 0x60 {
-            if a < 0xEC { 0xEC } else { a }
+        // As see-through as every word's 4.5:1 allows over the darkest
+        // wallpaper (the owner, 2026-11-01: readable, "but there is no
+        // transparence at all, is there a middle ground"): 72%, found by
+        // the light look's contrast test (66% left the live green at
+        // 4.43:1).
+        // In proportion: the dark glass's opacity (0xC8 and over) to the
+        // light's, a fading edge's lower ones scaled the same.
+        let a = if a >= 0xC8 {
+            LIGHT_GLASS_ALPHA
         } else {
-            a
+            a * LIGHT_GLASS_ALPHA / 0xC8
         };
         a << 24
             | ((255 - r / 4) * tr / 255) << 16
@@ -279,9 +346,9 @@ pub const fn light_text(c: Argb) -> Argb {
     // An accent kept in its hue, darkened until it reads at 4.5:1 on the
     // frosted glass (a fixed 55% left the live green at 3.46:1: the light
     // look's contrast test, 2026-11-01): its luminance, gamma taken as 2,
-    // under 0.11 (the glass is ~0.75).
+    // under 0.05 (the 72% glass over a black wallpaper pixel is ~0.36).
     let (mut r, mut g, mut b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
-    while (2126 * r * r + 7152 * g * g + 722 * b * b) / (255 * 255) > 1100 {
+    while (2126 * r * r + 7152 * g * g + 722 * b * b) / (255 * 255) > 500 {
         r = r * 9 / 10;
         g = g * 9 / 10;
         b = b * 9 / 10;
@@ -459,29 +526,34 @@ const OK_BOX: Rect = Rect::new(W - 46, 4, 40, 28);
 const EDGE_LIGHT: Argb = rp_draw::look::theme(0x70FF_FFFF);
 /// The weather hero panel: the place, the temperature, the condition, today's
 /// high and low, and the date (docs/design/ui.md "Weather and icons").
-const HERO: Rect = Rect::new(16, 52, 448, 196);
+/// Exactly the Weather app's Now panel (its place and size): the app opens
+/// from it by Reveal reading the app in place, so the window's wallpaper
+/// meets Today's and its first refresh is the card itself (the owner's run,
+/// 2026-11-01, the trace: read 28 rows lower to meet a card at y 52, the
+/// app's wallpaper moved inside the window, "the background box").
+const HERO: Rect = Rect::new(16, 80, 448, 206);
 /// The box of the weather icon: 8 px past the panel's right edge, its top
 /// 2 px under the title bar (the mock-ups' 48 px above the panel put tall
 /// pictures over the clock: the owner's photo, 2026-10-31; the picture
 /// keeps its size, the box moved down); the picture is centred vertically
 /// in it and sits against its right side.
-const HERO_ICON: Rect = Rect::new(16 + 448 + 8 - 250, 38, 250, 176);
+const HERO_ICON: Rect = Rect::new(16 + 448 + 8 - 250, 80 - 14, 250, 176);
 /// The big pictures' height at most (they fit the hero's 250 x 176 box):
 /// the picture store's slots for them are that, not square.
 pub const HERO_PIC_H: u16 = HERO_ICON.h;
 /// The hero's place line stops short of the icon.
 pub(crate) const HERO_LABEL_W: u16 = HERO_ICON.x - HERO.x - 28;
 /// The date at the hero's bottom right (its text depends on the day).
-pub const DATE_BOX: Rect = Rect::new(280, 52 + 196 - 50, 168, 40);
+pub const DATE_BOX: Rect = Rect::new(280, 80 + 176 - 24, 170, 40);
 /// The five-day forecast row with the room above it for the icons that
 /// reach over the cards' top edge (its day names depend on the day).
-pub const FORECAST_ROW: Rect = Rect::new(16, 252, 448, 88);
+pub const FORECAST_ROW: Rect = Rect::new(16, 292, 448, 88);
 /// The cards' top: the row's top plus the icons' headroom.
-const FORECAST_TOP: u16 = 266;
+const FORECAST_TOP: u16 = 306;
 const FORECAST_H: u16 = 74;
 const FORECAST_W: u16 = 83;
 const FORECAST_STEP: u16 = 91;
-const CALENDAR_PANEL: Rect = Rect::new(16, 352, 448, 104);
+const CALENDAR_PANEL: Rect = Rect::new(16, 392, 448, 104);
 const SOFTKEYS: Rect = Rect::new(0, H - 40, W, 40);
 const SOFT_LEFT: Rect = Rect::new(0, H - 40, 160, 40);
 const SOFT_RIGHT: Rect = Rect::new(W - 160, H - 40, 160, 40);
@@ -1111,7 +1183,7 @@ impl Shell {
             280,
             u16::from(n) * 42,
         );
-        Self::glass(f, r, MENU_LEFT, MENU_RIGHT);
+        self.glass(f, r, MENU_LEFT, MENU_RIGHT);
         for i in 0..n {
             let e = Self::place_item(i);
             let p = self.wset.places()[usize::from(i)];
@@ -1127,7 +1199,7 @@ impl Shell {
     pub(crate) fn alert_scene(&self, f: &mut Frame) {
         let (ui, label) = (self.fonts.ui, self.fonts.label);
         let r = Rect::new(12, 46, 456, H - 40 - 56);
-        Self::glass(f, r, MENU_LEFT, MENU_RIGHT);
+        self.glass(f, r, MENU_LEFT, MENU_RIGHT);
         let Some(a) = self.alerts.first().filter(|_| self.n_alerts > 0) else {
             f.text(r.x + 16, r.y + 34, ui, TEXT, b"No alerts in force");
             return;
@@ -2137,7 +2209,11 @@ impl Shell {
         if self.light() {
             let style = self.light_style;
             f.map_colors(|c, text| {
-                if sky::is_ink(c) || c == WASH || c == keyboard::DONE_TEXT {
+                if sky::is_ink(c)
+                    || c == WASH
+                    || c == keyboard::DONE_TEXT
+                    || c == weather_app::SHADOW_LIGHT
+                {
                     // The living sky's own colours, chosen for each look,
                     // the washed wallpaper's veil, and the dark text on an
                     // accent fill (a lit switch, Done), which stays light
@@ -2160,7 +2236,10 @@ impl Shell {
         self.dirty(Rect::new(0, 0, W, H));
     }
 
-    fn glass(f: &mut Frame, r: Rect, left: Argb, right: Argb) {
+    fn glass(&self, f: &mut Frame, r: Rect, left: Argb, right: Argb) {
+        if self.light() {
+            return glass_faded(f, r, left, right);
+        }
         f.push(Cmd::HGradient { r, left, right });
         f.push(Cmd::Outline {
             r,
@@ -2435,7 +2514,7 @@ impl Shell {
         // The Start menu over everything.
         if self.menu_open {
             let r = self.menu_rect();
-            Self::glass(f, r, MENU_LEFT, MENU_RIGHT);
+            self.glass(f, r, MENU_LEFT, MENU_RIGHT);
             for i in 0..self.menu_len() {
                 let e = Self::menu_entry(i);
                 self.press_under(f, Target::Menu(i));
@@ -2454,7 +2533,7 @@ impl Shell {
 
         // The weather hero (a tap opens the Weather app), the living sky
         // behind its words and picture.
-        Self::glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
+        self.glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
         self.sky_scene(f);
         // The card, as the Weather app's Now panel draws it (Reveal opens
         // from one to the other with nothing changing).
@@ -2471,7 +2550,7 @@ impl Shell {
                 FORECAST_W,
                 FORECAST_H,
             );
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             // The icon's 66 px box reaches 30 px above the card (as in the mock-ups).
             if let Some(pic) = self.icons.card[usize::from(Icon::of(d.sky).id() - 1)] {
                 f.push(Cmd::Pic {
@@ -2494,7 +2573,7 @@ impl Shell {
         }
 
         // The calendar: sample lines until there is a calendar.
-        Self::glass(f, CALENDAR_PANEL, GLASS_LEFT, GLASS_RIGHT);
+        self.glass(f, CALENDAR_PANEL, GLASS_LEFT, GLASS_RIGHT);
         f.text(
             CALENDAR_PANEL.x + 16,
             CALENDAR_PANEL.y + 28,
@@ -2523,7 +2602,7 @@ impl Shell {
         for (i, name) in QUICK.iter().enumerate() {
             let t = Target::Quick(i as u8);
             let r = self.rect_of(t);
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             self.press_under(f, t);
             self.centred(f, r, r.y + r.h - 14, ui, TEXT, name.as_bytes());
             self.decorate(f, t);

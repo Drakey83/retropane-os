@@ -2238,8 +2238,9 @@ mod image {
                         }
                         reveal_on_page = false;
                         shown_tab = Some(v.tab);
+                        // Kept on the picture until something on the
+                        // screen changes (below): nothing drawn now.
                         screen_on_pic = true;
-                        shell.redraw_all();
                         let n = gfx.commits().done - reveal_c0;
                         let ms = (now_ms - reveal_t0).max(1);
                         let _ = writeln!(
@@ -2465,11 +2466,23 @@ mod image {
                 }
             }
 
-            // The screen on a picture composed ahead: the next frame hands it
-            // back to the renderer's own screen (drawn whole, flipped, the
-            // layer kept), the same pixels.
-            if screen_on_pic && commit.is_none() && !gfx.busy() && !gfx.commit_pending() {
+            // The screen on a picture composed ahead stays on it until
+            // something on the screen changes; then the renderer's own
+            // screen, drawn whole, takes over with that change. Handed back
+            // at once after the opening (drawn whole, assumed the same
+            // pixels), the panel showed two other pictures in 80 ms: the
+            // owner's "flash at the end", DSIG 5435b376 -> 31a77120 ->
+            // 50804349 at the hand-back while the draw lists matched
+            // command for command (the 2D renderer's own drawing differs
+            // from the picture's, R135).
+            if screen_on_pic
+                && shell.needs_frame()
+                && commit.is_none()
+                && !gfx.busy()
+                && !gfx.commit_pending()
+            {
                 screen_on_pic = false;
+                shell.redraw_all();
                 commit = Some((gfx.layer(), false, true));
             }
 
@@ -2676,6 +2689,14 @@ mod image {
                     // Answered by this frame: counted when it shows.
                     showing = Some(showing.unwrap_or(at).min(at));
                 }
+            }
+
+            // An answer with nothing left to draw on screen 0 (the layer's
+            // alone, or nothing changed) isn't timed: kept, the next frame
+            // whenever it came was charged with the wait (the run of
+            // 2026-11-01: a "slow answer" of 9.9 s with no touch between).
+            if pending.is_some() && !shell.needs_frame() && !gfx.busy() && !gfx.commit_pending() {
+                pending = None;
             }
 
             // A movement over (no frame for a while): its one summary line.

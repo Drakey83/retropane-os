@@ -47,10 +47,10 @@ const RAIN_DARK: Argb = 0xFFB4_D2F2;
 const SNOW_DARK: Argb = 0xFFF6_FAFF;
 const RAIN_LIGHT: Argb = 0xFF24_5C9E;
 const SNOW_LIGHT: Argb = 0xFF6E_90C0;
-/// Clouds with nothing falling: near white by night, slate on the light
-/// glass.
+/// The clouds: near white by night, a dark grey on the light glass (a mid
+/// grey "arent showing up great on light mode", the owner, 2026-11-01).
 const CLOUD_DARK: Argb = 0xFFE4_ECF6;
-const CLOUD_LIGHT: Argb = 0xFF74_7678;
+const CLOUD_LIGHT: Argb = 0xFF56_5A60;
 
 /// Whether `c` is one of the sky's colours (the light look keeps them).
 #[must_use]
@@ -94,48 +94,51 @@ const fn flake_cover() -> [u8; FLAKE * FLAKE] {
     c
 }
 
-/// A cloud: a soft, uneven mass with wispy edges, lit from above, made
-/// offline by tools/shell-assets/sky_cloud.py (fractal noise bent by noise
-/// in a soft envelope) to sit with VClouds' realistic pictures; the first,
-/// lobed one looked "too cartoony" (the owner, 2026-11-01). Made at
-/// [`FADES`] strengths, so a cloud fades in and out by its glyph, all in
-/// the sky's one atlas.
-const CLOUD_W: usize = 112;
-const CLOUD_H: usize = 40;
-/// The clouds' shapes (a long low bank, a taller heap, two lumps, a thin
-/// wisp: the owner, "we need like 3 or 4 variations") and the strengths
-/// each fades through: 16 glyphs, ~290 KB of the 2D engine's 512 KB glyph
-/// memory beside the screen's fonts (~200 KB).
-const SHAPES: usize = 4;
-const FADES: usize = 4;
-/// How long a cloud is seen, in sky steps (12 s at 30 a second), its fades
-/// included; and its fade's length each way (1.5 s).
-const CLOUD_LIFE: i64 = 360;
-const CLOUD_FADE: i64 = 45;
-const CLOUD_ALL: &[u8; SHAPES * CLOUD_W * CLOUD_H] = include_bytes!("sky-cloud.alpha");
+/// The clouds: eight whole clouds, four long and four small or double (the
+/// owner, 2026-11-01: "make 3 of the clouds long as the 2 you have now, and
+/// 3 small or double ... or 4"; earlier: one whole cloud "looks much better", clouds built of puffs
+/// "look like cobbled together smaller clouds", "small ones can work along
+/// side bigger ones"), soft uneven masses with wispy edges lit from above,
+/// made offline by tools/shell-assets/sky_cloud.py (fractal noise bent by
+/// noise in soft envelopes) to sit with VClouds' realistic pictures. They
+/// never fade: each drifts in under one edge of the weather panel and out
+/// under the other, as clouds cross a window (fades by glyph strength
+/// stepped, the owner: "the fade animation is still jittery").
+const BIG: (usize, usize) = (128, 40);
+const SMALL: (usize, usize) = (80, 32);
+const SHAPES: usize = 8;
+const CLOUD_ALL: &[u8; 4 * BIG.0 * BIG.1 + 4 * SMALL.0 * SMALL.1] =
+    include_bytes!("sky-cloud.alpha");
 
-/// Cloud `shape` at strength `level` of [`FADES`].
-const fn cloud_cover(shape: usize, level: usize) -> [u8; CLOUD_W * CLOUD_H] {
-    let mut c = [0u8; CLOUD_W * CLOUD_H];
+/// Big cloud `k`'s coverage.
+const fn big(k: usize) -> [u8; BIG.0 * BIG.1] {
+    let mut c = [0u8; BIG.0 * BIG.1];
     let mut i = 0;
     while i < c.len() {
-        c[i] = (CLOUD_ALL[shape * CLOUD_W * CLOUD_H + i] as usize * (level + 1) / FADES) as u8;
+        c[i] = CLOUD_ALL[k * BIG.0 * BIG.1 + i];
         i += 1;
     }
     c
 }
 
+/// Small cloud `k`'s coverage.
+const fn small(k: usize) -> [u8; SMALL.0 * SMALL.1] {
+    let mut c = [0u8; SMALL.0 * SMALL.1];
+    let mut i = 0;
+    while i < c.len() {
+        c[i] = CLOUD_ALL[4 * BIG.0 * BIG.1 + k * SMALL.0 * SMALL.1 + i];
+        i += 1;
+    }
+    c
+}
+
+/// The order clouds come in: long and small by turns.
+const ORDER: [usize; SHAPES] = [0, 4, 1, 5, 2, 6, 3, 7];
+
 static DROP: [u8; DROP_W * DROP_H] = drop_cover();
 static FLAKE_PX: [u8; FLAKE * FLAKE] = flake_cover();
-static CLOUDS: [[u8; CLOUD_W * CLOUD_H]; SHAPES * FADES] = {
-    let mut all = [[0u8; CLOUD_W * CLOUD_H]; SHAPES * FADES];
-    let mut k = 0;
-    while k < SHAPES * FADES {
-        all[k] = cloud_cover(k / FADES, k % FADES);
-        k += 1;
-    }
-    all
-};
+static BIG_PX: [[u8; BIG.0 * BIG.1]; 4] = [big(0), big(1), big(2), big(3)];
+static SMALL_PX: [[u8; SMALL.0 * SMALL.1]; 4] = [small(0), small(1), small(2), small(3)];
 
 const fn space(advance: u8) -> Glyph {
     Glyph {
@@ -148,18 +151,24 @@ const fn space(advance: u8) -> Glyph {
     }
 }
 
-const fn cloud_glyph(k: usize) -> Glyph {
+const fn cloud_glyph(w: usize, h: usize, cover: &'static [u8]) -> Glyph {
     Glyph {
-        w: CLOUD_W as u8,
-        h: CLOUD_H as u8,
-        left: -((CLOUD_W / 2) as i8),
-        top: (CLOUD_H / 2) as i8,
+        w: w as u8,
+        h: h as u8,
+        // Its pen its right edge: entering from the left the pen is never
+        // off the screen (a centred pen went below 0 and was held there, the
+        // cloud standing still for its first ~50 px: the motion test).
+        left: -(w as i16) as i8,
+        top: (h / 2) as i8,
         advance: 0,
-        cover: &CLOUDS[k],
+        cover,
     }
 }
 
-static GLYPHS: [Glyph; 9 + SHAPES * FADES] = [
+/// The sky's glyphs: spaces of 1 to 64 px (any gap in a few bytes), then a
+/// drop and a flake, each centred on the pen and the baseline and moving it
+/// nowhere.
+static GLYPHS: [Glyph; 9] = [
     space(1),
     space(2),
     space(4),
@@ -183,25 +192,23 @@ static GLYPHS: [Glyph; 9 + SHAPES * FADES] = [
         advance: 0,
         cover: &FLAKE_PX,
     },
-    cloud_glyph(0),
-    cloud_glyph(1),
-    cloud_glyph(2),
-    cloud_glyph(3),
-    cloud_glyph(4),
-    cloud_glyph(5),
-    cloud_glyph(6),
-    cloud_glyph(7),
-    cloud_glyph(8),
-    cloud_glyph(9),
-    cloud_glyph(10),
-    cloud_glyph(11),
-    cloud_glyph(12),
-    cloud_glyph(13),
-    cloud_glyph(14),
-    cloud_glyph(15),
 ];
 
-/// The sky's font (its line spans every glyph, for the renderers' bounds).
+/// The clouds, a font of their own: its atlas only in the clouds' colour
+/// (in the sky's font, the rain's colour made a second copy).
+static CLOUD_GLYPHS: [Glyph; SHAPES] = [
+    cloud_glyph(BIG.0, BIG.1, &BIG_PX[0]),
+    cloud_glyph(BIG.0, BIG.1, &BIG_PX[1]),
+    cloud_glyph(BIG.0, BIG.1, &BIG_PX[2]),
+    cloud_glyph(BIG.0, BIG.1, &BIG_PX[3]),
+    cloud_glyph(SMALL.0, SMALL.1, &SMALL_PX[0]),
+    cloud_glyph(SMALL.0, SMALL.1, &SMALL_PX[1]),
+    cloud_glyph(SMALL.0, SMALL.1, &SMALL_PX[2]),
+    cloud_glyph(SMALL.0, SMALL.1, &SMALL_PX[3]),
+];
+
+/// The sky's font: rain and snow (its line spans every glyph, for the
+/// renderers' bounds).
 pub static SKY: Font = Font {
     line: 40,
     ascent: 20,
@@ -211,10 +218,14 @@ pub static SKY: Font = Font {
 
 const RAIN: u8 = b' ' + 7;
 const SNOW: u8 = b' ' + 8;
-/// Cloud `shape` at strength `k` (0 faintest).
-const fn cloud(shape: usize, k: usize) -> u8 {
-    b' ' + 9 + (shape * FADES + k) as u8
-}
+
+/// The clouds' font (its line spans a large cloud).
+pub static CLOUDS: Font = Font {
+    line: 60,
+    ascent: 30,
+    first: b'A',
+    glyphs: &CLOUD_GLYPHS,
+};
 
 /// A run of particles at x offsets `xs` (ascending, from the run's start):
 /// each gap in spaces, then the particle.
@@ -243,15 +254,12 @@ fn run(buf: &mut [u8; 48], xs: &[i32], what: u8) -> usize {
     n
 }
 
-/// Cloud `g` of `clouds` at sky step `t`: its birth number (every cloud's
-/// births counted in order: cloud g's are at (c x clouds - g) x life /
-/// clouds) and how long it has lived.
-const fn birth(t: i64, g: i64, clouds: i64) -> (i64, i64) {
-    let at = t + g * CLOUD_LIFE / clouds;
-    (
-        at.div_euclid(CLOUD_LIFE) * clouds - g,
-        at.rem_euclid(CLOUD_LIFE),
-    )
+/// Cloud `g` of `clouds` crossing in `life` steps, at sky step `t`: its
+/// birth number (every cloud's births counted in order: cloud g's are at
+/// (c x clouds - g) x life / clouds) and how far across it is.
+const fn birth(t: i64, g: i64, clouds: i64, life: i64) -> (i64, i64) {
+    let at = t + g * life / clouds;
+    (at.div_euclid(life) * clouds - g, at.rem_euclid(life))
 }
 
 /// A number from `i` that looks random (the same each frame).
@@ -297,11 +305,9 @@ fn weather_of(sky: rp_weather::Sky) -> Weather {
         71..=77 | 85 | 86 => (0, true),
         _ => (0, false),
     };
-    let clouds = match sky.cover {
-        0..=19 => 1,
-        20..=59 => 2,
-        _ => 3,
-    };
+    // Two or three at once (the owner, 2026-11-01: "two or 3, larger,
+    // clouds on the screen at once").
+    let clouds = if sky.cover < 50 { 2 } else { 3 };
     Weather {
         rain,
         snow,
@@ -394,13 +400,19 @@ impl Shell {
         let (aw, ah) = (i32::from(FALL.w), i32::from(FALL.h));
         f.clip(Some(AREA));
         let mut buf = [0u8; 48];
-        let ink = match (self.light(), w.rain > 0, w.snow) {
-            (false, true, _) => RAIN_DARK,
-            (false, _, true) => SNOW_DARK,
-            (false, ..) => CLOUD_DARK,
-            (true, true, _) => RAIN_LIGHT,
-            (true, _, true) => SNOW_LIGHT,
-            (true, ..) => CLOUD_LIGHT,
+        // The clouds' own grey and the rain's or snow's colour (two
+        // atlases: one colour for both made the light look's clouds blue
+        // in rain, the owner's run, 2026-11-01).
+        let cloud_ink = if self.light() {
+            CLOUD_LIGHT
+        } else {
+            CLOUD_DARK
+        };
+        let ink = match (self.light(), w.snow) {
+            (false, false) => RAIN_DARK,
+            (false, true) => SNOW_DARK,
+            (true, false) => RAIN_LIGHT,
+            (true, true) => SNOW_LIGHT,
         };
 
         // The wind: blowing toward from + 180; across the screen, its
@@ -412,61 +424,46 @@ impl Shell {
         let vx = speed * across / 1024;
         let vx = if vx == 0 { 4 } else { vx };
 
-        // Clouds: born one after another, evenly spaced, each living
-        // [`CLOUD_LIFE`], so those on screen are always the last few born;
-        // a cloud's shape is its birth number round the four, so no two
-        // seen together are ever the same shape (the owner, 2026-11-01:
-        // "guarantees 2 of the similar cloud shapes dont twin up"), and its
-        // height lane the same way, so they don't stack either. Each drifts
-        // with the wind (slower than the rain, as far clouds look), fades
-        // in and out over ~1.5 s through its strengths, and is placed so it
-        // never reaches the area's edge while seen (the first try's puffs
-        // wrapped round and were cut off: "they just blink out of
-        // existence").
-        let cw = i64::from(AREA.w);
-        // Whole pixels a step, never less than one: drifting by the clock,
-        // under a pixel a step, a cloud stood still two or three steps then
-        // hopped (the owner's run, 2026-11-01: "the clouds especially dont
-        // seem to be 30 fps"). One a step in a breeze, two in a wind.
-        let drift = (1 + i64::from(kmh >= 20)) * if across < 0 { -1 } else { 1 };
+        // Clouds: one after another across the panel, evenly spaced, each
+        // drifting in under one edge and out under the other (the clip is
+        // the panel's inside, its glass edge the window frame): those on
+        // screen are always the last two or three to come in. Each takes
+        // the next shape in turn of eight, large and small by turns, so
+        // none seen together are alike, and its own height lane. A whole
+        // pixel every few steps, evenly (by the clock, under a pixel a
+        // step, a cloud hopped; a pixel every step it was "racing across
+        // the screen"): one every 4 steps (7.5 px/s), every 2 in a wind of
+        // 20 km/h and over.
+        let pace = if kmh >= 20 { 2 } else { 4 };
+        let dir = if across < 0 { -1 } else { 1 };
         let steps = i64::from(self.sky_n);
         let flash = w.storm && t % 5200 < 140;
         let clouds = i64::from(w.clouds.max(1));
+        let path = i64::from(AREA.w) + BIG.0 as i64;
+        let life = path * pace;
         for g in 0..clouds {
-            let (j, u) = birth(steps, g, clouds);
+            let (j, u) = birth(steps, g, clouds, life);
             let s = scatter(j as u32);
-            let travel = drift * CLOUD_LIFE;
-            let room = (cw - CLOUD_W as i64 - travel.abs()).max(0);
-            let start = (CLOUD_W as i64 / 2) + i64::from(s) % (room + 1);
-            let x = if drift < 0 {
-                start + travel.abs()
+            let shape = ORDER[j.rem_euclid(SHAPES as i64) as usize];
+            // The cloud's right edge (its pen): from the panel's left edge
+            // (all of it hidden) to past its right edge by its width.
+            let along = u / pace;
+            let x = if dir > 0 {
+                along
             } else {
-                start
-            } + drift * u;
-            let lane = 150 / clouds;
-            let y = 30 + j.rem_euclid(clouds) * lane + i64::from(s >> 9) % (lane / 2 + 1);
-            // Its strength: up over the first 1.5 s, down over the last.
-            let near = u.min(CLOUD_LIFE - u);
-            let k = (near * FADES as i64 / CLOUD_FADE).min(FADES as i64);
-            if k == 0 {
-                continue;
-            }
-            let shape = j.rem_euclid(SHAPES as i64) as usize;
-            buf[0] = cloud(shape, k as usize - 1);
-            // The storm's flash: the first cloud lit up (its own shape
-            // twice over, in place).
-            let n = if flash && g == 0 {
-                buf[1] = cloud(shape, FADES - 1);
-                2
-            } else {
-                1
+                i64::from(AREA.w) + BIG.0 as i64 - along
             };
+            let lane = 120 / clouds;
+            let y = 44 + j.rem_euclid(clouds) * lane + i64::from(s >> 9) % (lane / 3 + 1);
+            let glyph = [b'A' + shape as u8; 2];
+            // The storm's flash: a cloud twice over, lit.
+            let n = if flash && g == 0 { 2 } else { 1 };
             f.text(
-                (i64::from(AREA.x) + x) as u16,
+                (i64::from(AREA.x) + x).max(0) as u16,
                 (i64::from(AREA.y) + y) as u16,
-                &SKY,
-                ink,
-                &buf[..n],
+                &CLOUDS,
+                cloud_ink,
+                &glyph[..n],
             );
         }
         f.clip(Some(FALL));
@@ -551,28 +548,26 @@ mod tests {
 }
 
 #[cfg(test)]
-mod twins {
+mod lanes {
     use super::*;
 
-    /// No two clouds seen together share a shape, at any moment, for any
-    /// number of clouds (the owner's photo, 2026-11-01: two alike side by
-    /// side): the shapes of the clouds alive at `t`, as the scene picks them.
+    /// Clouds seen together are in different lanes and of different
+    /// shapes, at any moment, for two or three clouds (shapes come in a
+    /// round of eight, so three in a row are never alike).
     #[test]
-    fn clouds_seen_together_never_share_a_shape() {
+    fn clouds_seen_together_never_share_a_lane_or_a_shape() {
+        let life = (i64::from(AREA.w) + BIG.0 as i64) * 4;
         for clouds in 1..=3i64 {
-            for t in (0..200_000i64).step_by(37) {
-                let mut seen = [false; SHAPES];
+            for t in (0..20_000i64).step_by(7) {
+                let mut lanes = [false; 3];
+                let mut shapes = [false; SHAPES];
                 for g in 0..clouds {
-                    let (j, u) = birth(t, g, clouds);
-                    if u.min(CLOUD_LIFE - u) * FADES as i64 / CLOUD_FADE == 0 {
-                        continue;
-                    }
-                    let shape = j.rem_euclid(SHAPES as i64) as usize;
-                    assert!(
-                        !seen[shape],
-                        "{clouds} clouds at {t} ms: shape {shape} twice"
-                    );
-                    seen[shape] = true;
+                    let (j, _) = birth(t, g, clouds, life);
+                    let lane = j.rem_euclid(clouds) as usize;
+                    let shape = ORDER[j.rem_euclid(SHAPES as i64) as usize];
+                    assert!(!lanes[lane] && !shapes[shape], "{clouds} clouds at {t}");
+                    lanes[lane] = true;
+                    shapes[shape] = true;
                 }
             }
         }

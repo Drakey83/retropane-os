@@ -535,11 +535,11 @@ impl Shell {
                 let s = sec.unwrap_or(b"");
                 let w = label.width(s) + 12;
                 let lr = Rect::new(r.x - 2, r.y - LABEL_H - 2, w, LABEL_H);
-                Self::glass(f, lr, GLASS_LEFT, GLASS_RIGHT);
+                self.glass(f, lr, GLASS_LEFT, GLASS_RIGHT);
                 centre_in(f, lr, label, TEXT, s);
             }
             last = sec;
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             self.press_under(f, Target::Row(k));
             self.row_body(f, items[usize::from(k)], r, (ui, label));
             self.decorate(f, Target::Row(k));
@@ -744,7 +744,7 @@ impl Shell {
         self.rows_scene(f);
         if self.screen == Screen::WeatherPlaces && !self.removing {
             let r = Rect::new(16, H - 40 - 34, 448, 28);
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             centre_in(
                 f,
                 r,
@@ -755,7 +755,7 @@ impl Shell {
         }
         if self.screen == Screen::WeatherFrom {
             let r = Rect::new(16, H - 40 - 34, 448, 28);
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             centre_in(
                 f,
                 r,
@@ -769,7 +769,7 @@ impl Shell {
     /// The field: its text (masked on the key screen) and the caret.
     fn field(&self, f: &mut Frame, masked: bool) {
         let ui = self.fonts.ui;
-        Self::glass(f, FIELD, GLASS_LEFT, GLASS_RIGHT);
+        self.glass(f, FIELD, GLASS_LEFT, GLASS_RIGHT);
         f.push(Cmd::Outline {
             r: FIELD,
             color: FOCUS,
@@ -827,7 +827,7 @@ impl Shell {
                 self.find_status.as_bytes()
             };
             let r = Rect::new(16, HERE.y + HERE.h + 8, 448, 30);
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             centre_in(f, r, self.fonts.label, TEXT, say);
         }
         self.keyboard_scene(f);
@@ -839,7 +839,7 @@ impl Shell {
         self.sub_header(f, b"TEMPEST KEY");
         self.field(f, true);
         let help = Rect::new(16, KEY_HELP_Y, 448, 76);
-        Self::glass(f, help, GLASS_LEFT, GLASS_RIGHT);
+        self.glass(f, help, GLASS_LEFT, GLASS_RIGHT);
         let count = Line::new().num(self.typed_n as i32).push(b" characters");
         f.text(28, help.y + 22, label, TEXT, count.as_bytes());
         f.text(

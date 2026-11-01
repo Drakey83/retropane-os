@@ -1,18 +1,19 @@
-"""Makes the living sky's cloud (shell/core/src/sky-cloud.alpha, ADR-0021).
+"""Makes the living sky's clouds (shell/core/src/sky-cloud.alpha, ADR-0021).
 
-A soft, uneven cloud mass to sit with VClouds' realistic pictures (the
-owner, 2026-11-01: the first, lobed one looked "too cartoony"): fractal
-value noise, its sampling bent by more noise (billows rather than blobs),
-inside a soft wide envelope with a flatter, fainter base; wispy edges where
-the density thins; lit from above (more coverage at the top, so brighter
-by night and denser by day). Four different clouds (the owner: "it cant
-just be one cloud over and over, we need like 3 or 4 variations"): a long
-low bank, a taller heap, two lumps, a thin wisp. One coverage byte a pixel,
-W x H, row by row, the four one after another; the image makes its fade
-strengths from them at build time. 112 x 40 each, so four clouds at four
-strengths fit the 2D engine's glyph memory with the screen's fonts (~290 of
-512 KB). Made once, offline (fixed seeds): the device stores 18 KB and
-computes nothing.
+Eight whole clouds, four long and four small or double, each a soft, uneven mass with wispy edges, lit from
+above, to sit with VClouds' realistic pictures (the owner, 2026-11-01: the
+lobed first try was "too cartoony"; one cloud of this kind "looks much
+better"; clouds built from puffs "look like cobbled together smaller
+clouds"): fractal value noise, its sampling bent by more noise (billows,
+not blobs), inside a soft envelope of one to three lumps with a flatter,
+fainter base, the domes inside brighter; nothing at the picture's border.
+Eight shapes (long: low banks, a two-part and a three-part bank; small:
+tufts, doubles, a little bank), so the clouds on screen together are never alike. They don't fade: they drift in and out under the weather
+panel's edges, as clouds cross a window.
+
+One coverage byte a pixel, w x h, row by row, the clouds one after another
+(the long first). Made once, offline (fixed seeds): the device stores 32
+KB and computes nothing.
 
 Run: python tools/shell-assets/sky_cloud.py
 """
@@ -20,20 +21,27 @@ Run: python tools/shell-assets/sky_cloud.py
 import math
 import os
 
-W, H = 112, 40
 SEED = 20261101
 
-# Each cloud: its noise seed, its envelope as lumps (centre x, centre y as
-# fractions, half-width, half-height above, half-height below), how dense.
+# Each cloud: its size (w, h), its noise salt, its envelope as lumps (centre
+# x, centre y as fractions; half-width; half-height above, below), how
+# dense. Four long, four small or double (the owner, 2026-11-01: "small
+# ones can work along side bigger ones"; "make 3 of the clouds long as the
+# 2 you have now, and 3 small or double ... or 4").
 CLOUDS = [
-    (11, [(0.5, 0.6, 0.52, 0.46, 0.30)], 1.05),
-    (23, [(0.5, 0.62, 0.38, 0.62, 0.32)], 1.1),
-    (37, [(0.31, 0.62, 0.32, 0.52, 0.28), (0.69, 0.56, 0.32, 0.56, 0.28)], 1.05),
-    (51, [(0.5, 0.56, 0.54, 0.32, 0.24)], 0.9),
+    ((128, 40), 11, [(0.5, 0.62, 0.46, 0.40, 0.24)], 1.0),
+    ((128, 40), 51, [(0.5, 0.60, 0.48, 0.30, 0.20)], 0.95),
+    ((128, 40), 67, [(0.3, 0.64, 0.26, 0.40, 0.22), (0.68, 0.6, 0.30, 0.44, 0.22)], 1.0),
+    ((128, 40), 37, [(0.22, 0.64, 0.2, 0.36, 0.22), (0.5, 0.58, 0.22, 0.46, 0.22), (0.78, 0.64, 0.2, 0.34, 0.22)], 1.0),
+    ((80, 32), 79, [(0.5, 0.6, 0.38, 0.44, 0.26)], 1.1),
+    ((80, 32), 97, [(0.33, 0.62, 0.26, 0.46, 0.24), (0.68, 0.58, 0.26, 0.48, 0.24)], 1.05),
+    ((80, 32), 101, [(0.5, 0.58, 0.40, 0.36, 0.24)], 1.05),
+    ((80, 32), 113, [(0.38, 0.6, 0.30, 0.50, 0.26), (0.7, 0.66, 0.22, 0.36, 0.22)], 1.1),
 ]
 
-
 SALT = [0]
+# The noise's feature size (px): smaller clouds, finer billows.
+SCALE = [22.0]
 
 
 def lattice(ix, iy, octave):
@@ -54,7 +62,7 @@ def value(x, y, octave):
 def fbm(x, y, base, octaves=5):
     total, amp, freq, norm = 0.0, 1.0, 1.0, 0.0
     for o in range(octaves):
-        total += amp * value(x * freq / 22.0, y * freq / 22.0, base + o)
+        total += amp * value(x * freq / SCALE[0], y * freq / SCALE[0], base + o)
         norm += amp
         amp *= 0.55
         freq *= 2.03
@@ -66,7 +74,7 @@ def smoothstep(a, b, v):
     return t * t * (3 - 2 * t)
 
 
-def cloud(lumps, density):
+def cloud(W, H, lumps, density):
     out = bytearray()
     for y in range(H):
         for x in range(W):
@@ -79,17 +87,16 @@ def cloud(lumps, density):
                 dx = (x - W * fx) / (W * hw)
                 dy = (y - H * fy) / (H * (up if y < H * fy else down))
                 env = max(env, math.exp(-2.2 * (dx * dx + dy * dy)))
-            # A lumpier top: the envelope lifted where the noise is high.
             d = env * 1.05 * density + (n - 0.5) * 1.1 - 0.2
             c = smoothstep(0.05, 0.75, d)
             # Inside, billows: brighter domes and softer hollows, lit from
-            # above (each dome's top catching more light).
+            # above.
             dome = fbm(wx * 1.6, wy * 1.6 - 3.0, 120, 4)
             shade = 0.55 + 0.6 * smoothstep(0.35, 0.75, dome)
             lit = 1.0 - 0.42 * (y / H)
             # To nothing at the picture's border: no wisp cut off.
-            ex = min(x + 1, W - x) / 10.0
-            ey = min(y + 1, H - y) / 7.0
+            ex = min(x + 1, W - x) / 12.0
+            ey = min(y + 1, H - y) / 8.0
             edge = min(1.0, ex) * min(1.0, ey)
             out.append(int(round(min(1.0, 235 / 255 * c * shade * lit * edge) * 255)))
     return out
@@ -97,13 +104,14 @@ def cloud(lumps, density):
 
 def main():
     out = bytearray()
-    for salt, lumps, density in CLOUDS:
+    for (w, h), salt, lumps, density in CLOUDS:
         SALT[0] = salt * 7919
-        out += cloud(lumps, density)
+        SCALE[0] = 22.0 * h / 44
+        out += cloud(w, h, lumps, density)
     path = os.path.join(os.path.dirname(__file__), "..", "..", "shell", "core", "src", "sky-cloud.alpha")
     with open(os.path.normpath(path), "wb") as f:
         f.write(out)
-    print(f"sky-cloud.alpha: {len(CLOUDS)} clouds of {W} x {H}, {len(out)} bytes")
+    print(f"sky-cloud.alpha: {len(CLOUDS)} clouds, {len(out)} bytes")
 
 
 if __name__ == "__main__":

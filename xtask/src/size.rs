@@ -545,11 +545,17 @@ pub const BUDGETS: &[Budget] = &[
     // needs 185 with its line pieces; 160 dropped its tabs without a word),
     // the 2D renderer's per-command arrays with it; 45.4 KiB measured.
     // Then 48 -> 46 KiB (option C's step 6: Hourly's graph one picture, a
-    // frame 208 commands): 43.3 KiB measured, + ~6%.
+    // frame 208 commands): 43.3 KiB measured, + ~6%. Then 46 -> 48 KiB
+    // on 2026-11-01 (test image): the 2D renderer's glyph atlas slots 8 ->
+    // 16 (Today's living sky and its card's shadows draw text in 10 font
+    // and colour pairs; 8 reset the cache every frame), ~2.6 KiB; 46.6 KiB
+    // measured. Then 48 -> 50 KiB the same day: a frame 256 commands again,
+    // not 224 (the light look's glass fades at its edges, five pieces a
+    // panel), the renderer's per-command arrays with it; 48.0 KiB measured.
     Budget {
         image: "rp-scene",
         max_load: 165 * 1024,
-        max_zero: 46 * 1024,
+        max_zero: 50 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),

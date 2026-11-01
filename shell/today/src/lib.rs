@@ -1099,7 +1099,9 @@ mod tests {
                     }
                 }
             }
-            assert!(seen.len() <= 8, "{} atlases", seen.len());
+            // The renderer's slots (ADR-0023): more, and every frame
+            // would reset the cache.
+            assert!(seen.len() <= 16, "{} atlases", seen.len());
             assert!(total <= room, "at {hour}:00 {total} of {room} bytes");
         }
     }

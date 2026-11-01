@@ -2173,8 +2173,17 @@ $sp.Close()
     for _ in 0..wait_secs {
         let out = powershell(&script)?;
         let text = String::from_utf8_lossy(&out.stdout);
-        if !text.contains("NOPORT") {
-            eprintln!("{text}{}", String::from_utf8_lossy(&out.stderr));
+        let err = String::from_utf8_lossy(&out.stderr);
+        // The port held past the script's own 5 s of retries (Windows
+        // settling a new USB serial port: the owner's run, 2026-11-01,
+        // "Access to the port 'COM3' is denied." and no relay all run, so
+        // no station and no Station button): tried again, as a port not
+        // there yet, until the wait ends.
+        let refused = err.contains("UnauthorizedAccess") || err.contains("is denied");
+        if refused {
+            eprintln!("    net: the image's port is held; trying again");
+        } else if !text.contains("NOPORT") {
+            eprintln!("{text}{err}");
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_secs(1));

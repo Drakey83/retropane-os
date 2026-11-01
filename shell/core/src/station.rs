@@ -279,7 +279,7 @@ impl Shell {
 
     /// A tile: glass and its name.
     fn tile(&self, f: &mut Frame, r: Rect, name: &[u8], color: Argb) {
-        Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+        self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
         f.text(r.x + 12, r.y + 24, self.fonts.label, color, name);
     }
 
@@ -289,7 +289,7 @@ impl Shell {
         self.sub_header(f, b"YOUR STATION");
         let Some(n) = self.station else {
             let r = Rect::new(16, HERO.y, 448, 40);
-            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
             centre_in(f, r, label, TEXT, b"Waiting for your station");
             return;
         };

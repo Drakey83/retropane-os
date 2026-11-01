@@ -89,7 +89,12 @@ const ROW_BYTES: usize = 640 * 4;
 /// Images kept uploaded.
 const IMAGES: usize = 32;
 /// (font, colour) atlases kept uploaded.
-const ATLASES: usize = 8;
+// 16: Today with the living sky and its card's soft shadows draws text in
+// 10 font-and-colour pairs (ADR-0023 rule 3); with 8 slots every frame
+// reset the cache and uploaded the fonts again, a stutter (the run of
+// 2026-11-01 logged 7 atlases uploaded in its slowest frames). The 512 KiB
+// they share (rule 4) is unchanged; a slot is ~330 bytes of RAM.
+const ATLASES: usize = 16;
 /// Glyphs a font may have.
 const GLYPHS: usize = 160;
 /// Areas kept in the cache at once.

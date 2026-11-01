@@ -2115,6 +2115,44 @@ fn the_busiest_frame_leaves_a_quarter_of_the_frame_spare() {
     s.open(Screen::Station);
     tap(&mut s, station::reading_rect(1));
     note(&drawn(&mut s), "Station, a chart".into());
+    // The light look's faded glass: five pieces a panel, every screen.
+    for page in 0..3u8 {
+        let max = i32::from(weather_app::max_scroll(page));
+        for scroll in [0, max] {
+            for menu in [false, true] {
+                let mut s = weather(page);
+                s.wset.appearance = rp_weather::settings::Appearance::Light;
+                s.set_station_from_tempest(storm);
+                s.scroll.set(scroll);
+                s.dirty(Rect::new(0, 0, W, H));
+                if menu {
+                    tap(&mut s, START);
+                }
+                note(
+                    &drawn(&mut s),
+                    format!("light page {page} at {scroll}, menu {menu}"),
+                );
+            }
+        }
+    }
+    let mut s = shell(true);
+    s.wset.appearance = rp_weather::settings::Appearance::Light;
+    s.set_station_from_tempest(storm);
+    s.preview_sky(true);
+    s.tick(5200 * 3 + 10);
+    tap(&mut s, START);
+    note(&drawn(&mut s), "light Today, sky, menu".into());
+    for screen in [
+        Screen::Station,
+        Screen::WeatherSettings,
+        Screen::WeatherPlaces,
+    ] {
+        let mut s = weather(0);
+        s.wset.appearance = rp_weather::settings::Appearance::Light;
+        s.set_station_from_tempest(storm);
+        s.open(screen);
+        note(&drawn(&mut s), format!("light {screen:?}"));
+    }
     println!("busiest frame: {} commands ({})", most.0, most.1);
     assert!(
         most.0 * 4 <= MAX_CMDS * 3,
@@ -2572,6 +2610,10 @@ fn reveal_starts_from_rest() {
     drawn(&mut s);
     tap(&mut s, HERO);
     let foot = |s: &Shell| s.reveal_window().map(|(r, _)| i32::from(r.y + r.h));
+    // It starts as Today's card, and reads the app in place throughout (a
+    // shift moved the app's wallpaper inside the window: the trace,
+    // 2026-11-01).
+    assert_eq!(s.reveal_window(), Some((HERO, 0)));
     let start = foot(&s).expect("revealing");
     s.tick(1017);
     let one = foot(&s).expect("revealing");
@@ -2583,6 +2625,7 @@ fn reveal_starts_from_rest() {
     for k in 1..32 {
         s.tick(1000 + k * 17);
         let Some(f) = foot(&s) else { break };
+        assert_eq!(s.reveal_window().map(|(_, shift)| shift), Some(0));
         assert!(
             f - last <= mean * 2,
             "refresh {k}: {last} to {f}, mean {mean}"
@@ -2744,7 +2787,10 @@ fn todays_card_and_the_now_panel_are_one_card() {
     let mut s = shell(false);
     s.set_station_from_tempest(storm);
     s.dirty(Rect::new(0, 0, W, H));
-    let today = card_texts(&drawn(&mut s), 52);
+    // The same place on the screen, not only the same offsets (the window
+    // reads the app in place: nothing may move in the first refresh).
+    assert_eq!(HERO, Rect::new(16, 80, 448, 206));
+    let today = card_texts(&drawn(&mut s), 80);
     assert!(
         today.iter().any(|t| t.2 == b"78\xb0"),
         "the station's 25.6 C: {today:?}"
@@ -2762,75 +2808,56 @@ fn todays_card_and_the_now_panel_are_one_card() {
 }
 
 #[test]
-fn clouds_move_a_whole_pixel_every_step() {
-    // The owner's run (2026-11-01): by the clock, under a pixel a step,
-    // the clouds stood still and hopped. Now each cloud moves 1 px a step
-    // (2 in a wind), every step.
+fn clouds_move_a_whole_pixel_at_an_even_pace() {
+    // The owner's runs (2026-11-01): by the clock, under a pixel a step,
+    // the clouds stood and hopped; a pixel every step, they raced. Now each
+    // cloud moves at most 1 px a step, one step in four in a breeze.
     let mut s = shell(false);
     let mut wx = s.wx;
     wx.now.sky.wmo = 3;
     wx.now.sky.cover = 90;
+    wx.now.sky.wind = 80;
     s.set_forecast(wx);
     s.preview_sky(true);
-    let clouds = |s: &mut Shell| -> Vec<(u16, u16, Vec<u8>)> {
+    let puffs = |s: &mut Shell| -> Vec<(u16, u16)> {
         let f = drawn(s);
         f.cmds()
             .filter_map(|c| match *c {
                 Cmd::Text {
-                    x,
-                    baseline,
-                    font,
-                    text,
-                    ..
-                } if core::ptr::eq(font, &sky::SKY) => {
-                    let t = f.text_of(text).to_vec();
-                    t.iter().all(|&b| b >= b' ' + 9).then_some((baseline, x, t))
-                }
+                    x, baseline, font, ..
+                } if core::ptr::eq(font, &sky::CLOUDS) => Some((baseline, x)),
                 _ => None,
             })
             .collect()
     };
     let mut now = 1000;
     s.tick(now);
-    let mut last = clouds(&mut s);
-    let mut moves = 0;
-    for _ in 0..120 {
+    let mut last = puffs(&mut s);
+    let (mut pairs, mut moves) = (0, 0);
+    for _ in 0..240 {
         now += sky::STEP_MS;
         s.tick(now);
-        let next = clouds(&mut s);
-        for (y, x, _) in &next {
-            if let Some((_, x0, _)) = last.iter().find(|c| c.0 == *y) {
-                let d = (i32::from(*x) - i32::from(*x0)).abs();
-                assert!(
-                    (1..=2).contains(&d),
-                    "a cloud at y {y} moved {d} px in a step"
-                );
-                moves += 1;
+        let next = puffs(&mut s);
+        assert!((2..=3).contains(&next.len()), "{} clouds", next.len());
+        for &(y, x) in &next {
+            let near = last
+                .iter()
+                .filter(|p| p.0 == y)
+                .map(|p| (i32::from(x) - i32::from(p.1)).abs())
+                .min();
+            if let Some(d) = near.filter(|&d| d <= 3) {
+                assert!(d <= 1, "a cloud at y {y} moved {d} px in a step");
+                pairs += 1;
+                moves += usize::from(d == 1);
             }
         }
         last = next;
     }
-    assert!(moves > 100, "{moves} cloud moves seen");
-}
-
-/// WCAG's relative luminance of an RGB colour.
-fn luminance(c: Argb) -> f64 {
-    let lin = |v: u32| {
-        let s = f64::from(v) / 255.0;
-        if s <= 0.039_28 {
-            s / 12.92
-        } else {
-            ((s + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * lin((c >> 16) & 0xFF) + 0.7152 * lin((c >> 8) & 0xFF) + 0.0722 * lin(c & 0xFF)
-}
-
-/// `top` (its alpha) over the opaque `under`.
-fn over_rgb(top: Argb, under: Argb) -> Argb {
-    let a = top >> 24;
-    let ch = |s: u32| ((((top >> s) & 0xFF) * a + ((under >> s) & 0xFF) * (255 - a)) / 255) << s;
-    ch(16) | ch(8) | ch(0)
+    let share = moves as f64 / pairs as f64;
+    assert!(
+        pairs > 400 && (0.2..0.3).contains(&share),
+        "{moves} of {pairs} moved"
+    );
 }
 
 #[test]
@@ -2860,7 +2887,12 @@ fn the_light_look_reads_on_any_wallpaper() {
                 color, font, text, ..
             } = *c
             {
-                if core::ptr::eq(font, &sky::SKY) || color >> 24 < 0x80 {
+                // The sky's glyphs and the words' shadows aren't words.
+                if core::ptr::eq(font, &sky::SKY)
+                    || core::ptr::eq(font, &sky::CLOUDS)
+                    || color >> 24 < 0x80
+                    || color == weather_app::SHADOW_LIGHT
+                {
                     continue;
                 }
                 for b in &behind {
@@ -2901,4 +2933,24 @@ fn the_light_look_reads_on_any_wallpaper() {
         s.open(screen);
         check(&mut s, &format!("{screen:?}"));
     }
+}
+
+/// WCAG's relative luminance of an RGB colour.
+fn luminance(c: Argb) -> f64 {
+    let lin = |v: u32| {
+        let s = f64::from(v) / 255.0;
+        if s <= 0.039_28 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin((c >> 16) & 0xFF) + 0.7152 * lin((c >> 8) & 0xFF) + 0.0722 * lin(c & 0xFF)
+}
+
+/// `top` (its alpha) over the opaque `under`.
+fn over_rgb(top: Argb, under: Argb) -> Argb {
+    let a = top >> 24;
+    let ch = |s: u32| ((((top >> s) & 0xFF) * a + ((under >> s) & 0xFF) * (255 - a)) / 255) << s;
+    ch(16) | ch(8) | ch(0)
 }

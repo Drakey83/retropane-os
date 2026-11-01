@@ -292,8 +292,10 @@ const TEXT_MARGIN: u16 = 4;
 /// 256 while Hourly's line was 49 pieces on the 2D path (209 commands); at
 /// 160, Hourly drawn on screen 0 (185) lost its scroll bar, tabs and
 /// softkeys without a word (emu-today, 2026-10-31). The line is one
-/// picture since option C's step 6.
-pub const MAX_CMDS: usize = 224;
+/// picture since option C's step 6. Back to 256 on 2026-11-01: the light
+/// look's glass fades at its edges (five pieces a panel, the owner's ask),
+/// its busiest frame ~181, a quarter spare.
+pub const MAX_CMDS: usize = 256;
 /// Bytes of text a frame holds.
 pub const MAX_TEXT: usize = 1024;
 /// Dirty rectangles a frame keeps apart; more merge into their union.
