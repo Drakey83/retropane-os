@@ -693,8 +693,36 @@ fn parse(output: &str) -> Outcome {
 pub(crate) fn powershell(script: &str) -> Result<std::process::Output, String> {
     crate::devlock::ensure_held()?;
     let mut cmd = Command::new("powershell");
-    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
-        .arg(encode_command(script));
+    let encoded = encode_command(script);
+    // Windows takes a command line of 32,767 characters at most; the dock
+    // relay's script, base64 of UTF-16, passed it once it answered the icon
+    // pack too ("The filename or extension is too long", os error 206: the
+    // relay never started, 2026-10-31). A long script runs from a file.
+    let file = (encoded.len() > 30_000).then(|| {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("rp-xtask-{}-{n}.ps1", std::process::id()))
+    });
+    match &file {
+        Some(f) => {
+            // UTF-8 with its mark, so Windows PowerShell 5 reads it as such.
+            let mut bytes = vec![0xEF, 0xBB, 0xBF];
+            bytes.extend_from_slice(script.as_bytes());
+            std::fs::write(f, bytes).map_err(|e| format!("{}: {e}", f.display()))?;
+            cmd.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(f);
+        }
+        None => {
+            cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+                .arg(encoded);
+        }
+    }
     // No console window: each device command used to flash a blue
     // PowerShell window over whatever the owner was typing in (the owner,
     // 2026-10-26). The script only talks to the serial port and its output
@@ -704,7 +732,11 @@ pub(crate) fn powershell(script: &str) -> Result<std::process::Output, String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    cmd.output().map_err(|e| format!("powershell: {e}"))
+    let out = cmd.output().map_err(|e| format!("powershell: {e}"));
+    if let Some(f) = file {
+        let _ = std::fs::remove_file(f);
+    }
+    out
 }
 
 /// Windows' `CREATE_NO_WINDOW` process creation flag: a console program
@@ -886,7 +918,8 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
     let relay = (what == "rp-today").then(|| {
         let root = root.to_path_buf();
         eprintln!("    the dock's relay runs alongside (cargo xtask net)");
-        std::thread::spawn(move || net(&root, false))
+        let wait = u64::from(log_wait_secs());
+        std::thread::spawn(move || net_for(&root, false, wait))
     });
     let mut out = powershell(&load_script_opts(&frame, true, frames))?;
     if String::from_utf8_lossy(&out.stdout).contains("NOPORT") {
@@ -1857,6 +1890,13 @@ mod format_tests {
 /// then the body. `--canned` answers from the recorded samples. It ends
 /// when the port goes. Prints what it did, never the key.
 pub fn net(root: &std::path::Path, canned: bool) -> Result<(), String> {
+    net_for(root, canned, 60)
+}
+
+/// [`net`], looking for the image's port for up to `wait_secs` (a load's
+/// relay looks as long as the load waits for the run: the image comes up
+/// after the image is sent and started, often past a minute).
+fn net_for(root: &std::path::Path, canned: bool, wait_secs: u64) -> Result<(), String> {
     // The Tempest key (optional: without it Tempest questions are
     // refused), the settings kept between runs, the recorded answers
     // `--canned` gives.
@@ -2095,8 +2135,8 @@ $sp.Close()
         CANNED = CANNED_FORECAST,
     );
     // The image's port comes up a moment after the loader's goes: waited
-    // for, a minute at most.
-    for _ in 0..60 {
+    // for, a second a try.
+    for _ in 0..wait_secs {
         let out = powershell(&script)?;
         let text = String::from_utf8_lossy(&out.stdout);
         if !text.contains("NOPORT") {
@@ -2105,7 +2145,9 @@ $sp.Close()
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    Err("net: no RetroPane port in a minute (is the image running with its USB up?)".into())
+    Err(format!(
+        "net: no RetroPane port in {wait_secs} s (is the image running with its USB up?)"
+    ))
 }
 
 /// `cargo xtask net --canned`'s answer: a forecast in Tempest's shape
