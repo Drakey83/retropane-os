@@ -175,6 +175,16 @@ fn shots() -> Vec<Shot> {
             steps: vec![Input::Key(Key::Left); 6],
         },
         Shot {
+            name: "25b-chart-rain",
+            what: "Close, then the RAIN tile: the half-hours' rain as bars",
+            steps: [tap(80, 620), tap(240, 428)].concat(),
+        },
+        Shot {
+            name: "25c-chart-sunlight",
+            what: "Down twice (lightning, sunlight): the day's sunlight",
+            steps: vec![Input::Key(Key::Down); 2],
+        },
+        Shot {
             name: "26-weather-now-station",
             what: "Close, Back, Now: your station live on the Now page (N1, N2)",
             steps: [tap(80, 620), tap(80, 620), tap(60, 578)].concat(),
@@ -358,8 +368,10 @@ pub fn run(root: &Path) -> Result<(), String> {
         ("snow-night", (73, 90, 120, 300), 22),
         ("storm-night", (95, 100, 380, 230), 22),
         ("cloudy-night", (3, 80, 300, 270), 22),
+        ("cloudy-day", (3, 80, 300, 270), 12),
     ] {
-        for (k, rgb) in crate::emu::today_sky(&wall, sky, hour, rp_shell::sky::STEP_MS, 10)
+        // 24 frames 160 ms apart: long enough to see a cloud fade.
+        for (k, rgb) in crate::emu::today_sky(&wall, sky, hour, 2 * rp_shell::sky::STEP_MS, 24)
             .iter()
             .enumerate()
         {

@@ -407,7 +407,14 @@ impl Shell {
         if self.motion != Motion::Reveal || !self.expanding || self.anim.is_none() {
             return None;
         }
-        let left = self.whole_left() as i32;
+        // Smoothstep, not the pages' ease-out: it starts from rest. The
+        // ease-out's start, three times its mean speed, dropped the window's
+        // foot ~38 px in the first refresh (the owner's 60 fps video,
+        // 2026-11-01: "jerk the screen violently down at the very
+        // beginning"); this one moves ~1 px then, fastest half-way.
+        let t = i64::from(self.now.wrapping_sub(self.anim.unwrap_or(0)).min(ANIM_MS)) * 1024
+            / i64::from(ANIM_MS);
+        let left = (1024 - t * t * (3 * 1024 - 2 * t) / (1024 * 1024)) as i32;
         let lerp =
             |a: u16, b: u16| (i32::from(b) + (i32::from(a) - i32::from(b)) * left / 1024) as u16;
         let (card, top) = (super::HERO, super::TITLE.h);
@@ -1104,15 +1111,18 @@ impl Shell {
         out
     }
 
-    /// Where reading `i` ([`super::chart::Reading::ALL`]'s order) is on the
-    /// Now page with a station live: the big panel, the wind, pressure and
-    /// humidity cards.
+    /// Where slot `i`'s field is on the Now page with a station live: the
+    /// big panel, the wind, pressure, humidity and sunset cards, the
+    /// strip's three.
     pub(crate) fn now_reading_rect(&self, i: u8) -> Rect {
         let (x, y, w, h) = match i {
             0 => (16, PANEL_Y, 448, 206),
             1 => (16, SMART_CARD_Y, 216, SMART_CARD_H),
-            3 => (248, SMART_CARD_Y, 216, SMART_CARD_H),
-            _ => (16, SMART_CARD_Y + SMART_CARD_STEP, 216, SMART_CARD_H),
+            2 => (248, SMART_CARD_Y, 216, SMART_CARD_H),
+            3 => (16, SMART_CARD_Y + SMART_CARD_STEP, 216, SMART_CARD_H),
+            4 => (248, SMART_CARD_Y + SMART_CARD_STEP, 216, SMART_CARD_H),
+            // The strip's items.
+            k => (16 + (k.min(7) - 5) as u16 * 152, STRIP.y, 144, STRIP.h),
         };
         let top = (i32::from(y) - self.view_off()).clamp(0, i32::from(H)) as u16;
         Rect::new(x, top, w, h)

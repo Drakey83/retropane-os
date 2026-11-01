@@ -1058,6 +1058,52 @@ pub fn reveal_window(r: rp_draw::Rect, shift: u16) -> (u16, u16, u16, u16, u16, 
 mod tests {
     use super::*;
 
+    /// The Today screen's text and the living sky fit the 2D engine's glyph
+    /// memory together (an atlas a font and colour, as the renderer builds
+    /// them): over it, every frame would reset the atlases and upload the
+    /// fonts again. Counted from the fonts and colours a storm's Today
+    /// frame draws, by day and by night.
+    #[test]
+    fn the_sky_and_the_screens_fonts_fit_the_glyph_memory() {
+        let atlas = |f: &rp_draw::Font| -> usize {
+            f.glyphs
+                .iter()
+                .map(|g| (usize::from(g.w) * usize::from(g.h) * 4).next_multiple_of(16))
+                .sum()
+        };
+        let room = rp_mbx_render::Layout::X51V.glyphs.1;
+        for hour in [12, 22] {
+            let mut shell = rp_shell::Shell::new(shell_fonts(), rp_shell::Icons::NONE, true);
+            shell.set_time(rp_shell::Time {
+                hour,
+                minute: 0,
+                weekday: 0,
+                day: 1,
+                month: 11,
+            });
+            let mut wx = *shell.forecast();
+            wx.now.sky.wmo = 95;
+            wx.now.sky.cover = 100;
+            shell.set_forecast(wx);
+            shell.preview_sky(true);
+            let mut f = rp_draw::Frame::new();
+            shell.frame(&mut f);
+            let mut seen: std::vec::Vec<(usize, u32)> = std::vec::Vec::new();
+            let mut total = 0;
+            for c in f.cmds() {
+                if let rp_draw::Cmd::Text { font, color, .. } = *c {
+                    let key = (core::ptr::from_ref(font) as usize, color);
+                    if !seen.contains(&key) {
+                        seen.push(key);
+                        total += atlas(font);
+                    }
+                }
+            }
+            assert!(seen.len() <= 8, "{} atlases", seen.len());
+            assert!(total <= room, "at {hour}:00 {total} of {room} bytes");
+        }
+    }
+
     /// Every store picture the 2D engine draws fits its picture cache
     /// whole (a bigger one draws nothing: Hourly's 446 x 160 graph, 285 KB,
     /// was never drawn on the 2D path; ui-preview, 2026-11-01).

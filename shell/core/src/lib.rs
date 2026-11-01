@@ -204,7 +204,14 @@ pub const fn light_twin(c: Argb) -> Argb {
     if max - min > 40 {
         return c;
     }
-    (c & 0xFF00_0000) | (255 - r) << 16 | (255 - g) << 8 | (255 - b)
+    // Mirrored onto 0-224, not 0-255: the glass a soft light grey rather
+    // than near white, which washed out the lettering and the pictures
+    // (the owner's run, 2026-11-01: "a little too bright ... make it a
+    // little darker"; his pick A of a greyer glass or a text shadow).
+    (c & 0xFF00_0000)
+        | ((255 - r) * 224 / 255) << 16
+        | ((255 - g) * 224 / 255) << 8
+        | ((255 - b) * 224 / 255)
 }
 
 /// Text's colour in the light look: a neutral one as [`light_twin`]; a
@@ -468,11 +475,14 @@ const SHOWING_PLAIN: &str = "16-bit plain";
 /// The notice's backing in the wallpaper-only view (readable on any picture).
 const NOTICE_BACK: Argb = rp_draw::look::theme(0xD000_0000);
 /// The test image's extra Start menu entries, after the OS's.
-const DEV_MENU: [&str; 3] = [WALLPAPER_COMPARE, ALIGN_SCREEN, BACK_TO_LOADER];
+/// The test image's sky test ([`sky`]): each tap the next weather.
+const SKY_TEST: &str = "Sky test";
+const DEV_MENU: [&str; 4] = [WALLPAPER_COMPARE, SKY_TEST, ALIGN_SCREEN, BACK_TO_LOADER];
 const MENU_X: u16 = 0;
 const MENU_Y: u16 = 36;
 const MENU_W: u16 = 280;
-const MENU_ROW: u16 = 40;
+/// 38 px: fourteen rows fit between the title bar and the softkeys.
+const MENU_ROW: u16 = 38;
 
 // ---- Colours (the smoked glass, docs/design/ui.md) -------------
 
@@ -653,6 +663,9 @@ pub struct Shell {
     /// moves with the sample forecast ([`sky`]).
     sky_at: u32,
     sky_forced: bool,
+    /// The test image's sky test: 0 the forecast's sky, else the weather
+    /// it shows ([`sky`]).
+    sky_test: u8,
     /// When the forecast last came (ms), whether the dock ever answered,
     /// and whether the station's readings are in.
     fetched_at: Option<u32>,
@@ -773,6 +786,7 @@ macro_rules! shell_start {
             chart: None,
             sky_at: 0,
             sky_forced: false,
+            sky_test: 0,
             fetched_at: None,
             dock: false,
             station_live: false,
@@ -1346,7 +1360,7 @@ impl Shell {
             .chain((0..caps).map(Target::Cap))
             .chain((0..radar).flat_map(|_| [Target::Play, Target::Timeline]))
             .chain(
-                (0..4)
+                (0..8)
                     .filter(|&i| self.reading_shown(i))
                     .map(Target::Reading),
             )
@@ -1552,7 +1566,7 @@ impl Shell {
                 self.dirty(Rect::new(0, 0, W, H));
             }
             Target::Alert => self.open(Screen::Alert),
-            Target::Reading(i) => self.open_chart(chart::Reading::ALL[usize::from(i).min(3)]),
+            Target::Reading(i) => self.open_chart(self.reading_of(i)),
             Target::Span(i) => self.set_chart_span(i),
             Target::Tab(i) => self.set_tab(i),
             Target::Back => self.go_back(),
@@ -1576,6 +1590,11 @@ impl Shell {
                 }
                 if label == ALIGN_SCREEN {
                     self.start_align();
+                    return Action::Redraw;
+                }
+                if label == SKY_TEST {
+                    self.set_menu(false);
+                    self.next_sky_test();
                     return Action::Redraw;
                 }
                 if label == WALLPAPER_COMPARE {
@@ -2313,7 +2332,7 @@ impl Shell {
             f.clip(None);
         }
         // A reading pressed or focused, then the chart's sheet over all.
-        for i in 0..4 {
+        for i in 0..8 {
             if self.reading_shown(i) {
                 self.decorate(f, Target::Reading(i));
             }
@@ -2352,8 +2371,10 @@ impl Shell {
         let (wx, rg) = (&self.wx, &self.region);
         let mut buf = [0u8; 32];
 
-        // The weather hero (a tap opens the Weather app).
+        // The weather hero (a tap opens the Weather app), the living sky
+        // behind its words and picture.
         Self::glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
+        self.sky_scene(f);
         // The place only (the app's header says the source), cut before
         // the icon.
         let head = upper(wx.place.as_str());
@@ -2373,8 +2394,6 @@ impl Shell {
             .push(b"   Low ")
             .push(rg.temp(d.low).as_bytes());
         f.text(HERO.x + 20, HERO.y + 174, ui, DIM, hl.as_bytes());
-        // The living sky, behind the picture.
-        self.sky_scene(f);
         // The icon; none drawn when the pack lacks it (an empty outline
         // read as a stray box: the owner's photo, 2026-10-31).
         if let Some(pic) = self.icons.big(icon) {

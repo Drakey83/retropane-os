@@ -2126,10 +2126,11 @@ while ($true) {{
             }}
             'HISTORY' {{
                 # The station's last day for its charts (N3): its outdoor
-                # unit's (ST) one-minute rows, each cut to the nine fields
-                # the image reads (time, wind lull, average, gust,
-                # direction, interval, pressure, temperature, humidity):
-                # ~70 KB, not ~200 KB.
+                # unit's (ST) one-minute rows, each cut to the sixteen
+                # fields the image reads (time, wind lull, average, gust,
+                # direction, interval, pressure, temperature, humidity,
+                # light, UV, sunlight, rain, its type, strike distance and
+                # count): ~110 KB, not ~200 KB.
                 if ($canned) {{ Refuse 404 'no recorded history'; continue }}
                 $key = $null
                 if ($w.Length -ge 3 -and $w[2] -match '^[A-Za-z0-9-]{{8,64}}$') {{ $key = $w[2] }}
@@ -2141,7 +2142,7 @@ while ($true) {{
                 $end = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
                 $obs = Invoke-RestMethod "https://swd.weatherflow.com/swd/rest/observations/device/$($dev.device_id)?time_start=$($end - 86400)&time_end=$end&token=$key"
                 $rows = foreach ($r in @($obs.obs)) {{
-                    $f = foreach ($v in @($r)[0..8]) {{ if ($null -eq $v) {{ 'null' }} else {{ [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{{0}}', $v) }} }}
+                    $f = foreach ($v in @($r)[0..15]) {{ if ($null -eq $v) {{ 'null' }} else {{ [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{{0}}', $v) }} }}
                     '[' + ($f -join ',') + ']'
                 }}
                 $b = [Text.Encoding]::UTF8.GetBytes('{{"obs":[' + (@($rows) -join ',') + ']}}')

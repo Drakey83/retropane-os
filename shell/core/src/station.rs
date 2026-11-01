@@ -237,12 +237,16 @@ const RAIN: Rect = Rect::new(168, 368, 144, 120);
 const BOLTS: Rect = Rect::new(320, 368, 144, 120);
 const SUN: Rect = Rect::new(16, 496, 448, 96);
 
-/// The tile reading `i` ([`super::chart::Reading::ALL`]'s order) opens its
-/// chart from: the big temperature's (humidity too), wind's, pressure's.
+/// Slot `i`'s tile (each opens its chart, `Shell::reading_of`): the big
+/// temperature's, wind's, pressure's, UV's, rain's, lightning's, the sun's.
 pub(crate) const fn reading_rect(i: u8) -> Rect {
     match i {
         1 => WIND,
-        3 => PRESSURE,
+        2 => PRESSURE,
+        3 => UV,
+        4 => RAIN,
+        5 => BOLTS,
+        6 => SUN,
         _ => HERO,
     }
 }

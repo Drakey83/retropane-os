@@ -2346,7 +2346,14 @@ fn light_and_dark_change_every_screen_and_auto_follows_the_sun() {
     assert!(dark.contains(&TEXT) && !light.contains(&TEXT));
     assert!(light.contains(&light_twin(TEXT)));
     assert_eq!(light_twin(FOCUS), FOCUS, "an accent keeps its colour");
-    assert_eq!(light_twin(light_twin(TEXT)), TEXT);
+    // Mirrored short of white (the owner's run, 2026-11-01: too bright):
+    // the glass a light grey, the text near black.
+    let glass = light_twin(GLASS_LEFT);
+    assert!(
+        (glass & 0xFF) <= 224 && (glass & 0xFF) >= 200,
+        "{glass:08X}"
+    );
+    assert!(light_twin(TEXT) & 0xFF <= 16);
     // Auto: by the sun at the place shown, and a change redraws it all.
     s.wset.appearance = Appearance::Auto;
     let (rise, set) = s.wx.sun;
@@ -2499,7 +2506,7 @@ fn a_reading_opens_its_chart_the_marker_scrubs_and_the_sheet_closes() {
     s.input(Input::PenDown { x: 240, y: 120 });
     s.input(Input::PenUp { x: 240, y: 120 });
     assert!(s.chart.is_none());
-    let r = s.now_reading_rect(3);
+    let r = s.now_reading_rect(2);
     tap(&mut s, r);
     assert_eq!(s.chart.map(|c| c.reading), Some(chart::Reading::Pressure));
     let y0 = chart::SHEET.y + 20;
@@ -2548,4 +2555,161 @@ fn the_sky_moves_only_with_a_real_forecast_at_its_own_pace() {
     // Off the Today screen: still.
     tap(&mut s, HERO);
     assert!(!s.sky_live());
+}
+
+#[test]
+fn reveal_starts_from_rest() {
+    // The owner's 60 fps video (2026-11-01): the window's foot dropped
+    // ~38 px in the first refresh. From rest now: a few px in the first
+    // two refreshes, every refresh's step no more than twice the mean.
+    let mut s = shell(false);
+    s.use_planes(true);
+    s.tick(1000);
+    drawn(&mut s);
+    tap(&mut s, HERO);
+    let foot = |s: &Shell| s.reveal_window().map(|(r, _)| i32::from(r.y + r.h));
+    let start = foot(&s).expect("revealing");
+    s.tick(1017);
+    let one = foot(&s).expect("revealing");
+    s.tick(1034);
+    let two = foot(&s).expect("revealing");
+    assert!(one - start <= 3 && two - start <= 8, "{start} {one} {two}");
+    let mean = (i32::from(H) - start) * 17 / weather_app::ANIM_MS as i32;
+    let mut last = start;
+    for k in 1..32 {
+        s.tick(1000 + k * 17);
+        let Some(f) = foot(&s) else { break };
+        assert!(
+            f - last <= mean * 2,
+            "refresh {k}: {last} to {f}, mean {mean}"
+        );
+        last = f;
+    }
+}
+
+#[test]
+fn the_sky_test_cycles_through_the_weathers_and_back() {
+    // The owner, 2026-11-01: a way to see rain, snow and a storm on demand.
+    let mut s = shell(true);
+    drawn(&mut s);
+    assert!(!s.sky_live(), "the sample forecast: still");
+    let entry = (0..s.menu_len())
+        .find(|&i| s.menu_label(i) == "Sky test")
+        .expect("the test image's menu has it");
+    let pick = |s: &mut Shell| {
+        tap(s, START);
+        tap(s, Shell::menu_entry(entry));
+        s.notice()
+    };
+    assert_eq!(pick(&mut s), Some("Sky test: rain"));
+    assert!(s.sky_live() && weather_of_test(&s) == 63);
+    for want in [
+        "Sky test: heavy rain",
+        "Sky test: snow",
+        "Sky test: storm",
+        "Sky test: cloudy",
+    ] {
+        assert_eq!(pick(&mut s), Some(want));
+        assert!(!drawn(&mut s).overflowed());
+    }
+    assert_eq!(pick(&mut s), Some("Sky: the forecast's"));
+    assert!(!s.sky_live());
+    // Every menu row fits above the softkeys.
+    let last = Shell::menu_entry(s.menu_len() - 1);
+    assert!(last.y + last.h <= H - 40);
+}
+
+fn weather_of_test(s: &Shell) -> u8 {
+    s.sky_now().wmo
+}
+
+#[test]
+fn every_station_field_opens_its_own_chart() {
+    // The owner, 2026-11-01: "what happened to everything you click on gets
+    // a new barograph or open to a new page rule?" Every tile on the Station
+    // screen, every card and strip item on Now, opens its reading's chart,
+    // each drawn within the frame.
+    use chart::Reading as R;
+    let storm: &[u8] = br#"{"current_conditions": {"time": 1761900000,
+      "air_temperature": 20.0, "relative_humidity": 61, "dew_point": 12.2, "wind_avg": 12.9,
+      "wind_gust": 33.8, "sea_level_pressure": 1016.4, "pressure_trend": "rising", "uv": 6,
+      "solar_radiation": 420, "precip_accum_local_day": 3.0,
+      "lightning_strike_count_last_3hr": 4, "lightning_strike_last_distance": 10}}"#;
+    let mut s = weather(0);
+    s.set_station_from_tempest(storm);
+    let rows: Vec<String> = (0..48)
+        .map(|i| {
+            format!(
+                "[{},0.5,2.0,6.0,315,60,990.0,18.0,70,9000,{}.5,{},{}.{},0,8,{}]",
+                1_761_900_000 - (47 - i) * 1800,
+                i % 7,
+                100 + i * 9,
+                i % 3,
+                i % 9,
+                i % 4
+            )
+        })
+        .collect();
+    s.history =
+        rp_weather::tempest::history(format!("{{\"obs\":[{}]}}", rows.join(",")).as_bytes());
+    let h = s.history.expect("a history");
+    assert_eq!(h.s[47].uv, Some(55), "UV 5.5 in tenths");
+    assert_eq!(h.s[47].strikes, Some(3));
+    assert_eq!(h.s[47].solar, Some(523));
+    assert_eq!(h.s[47].rain, Some(22), "2.2 mm in tenths");
+    drawn(&mut s);
+    let mut seen = Vec::new();
+    for i in 0..8u8 {
+        if !s.reading_shown(i) {
+            continue;
+        }
+        let r = s.now_reading_rect(i);
+        tap(&mut s, r);
+        let got = s
+            .chart
+            .map(|c| c.reading)
+            .unwrap_or_else(|| panic!("slot {i}: no chart"));
+        assert_eq!(got, s.reading_of(i));
+        assert!(!drawn(&mut s).overflowed());
+        seen.push(got);
+        s.close_chart();
+        drawn(&mut s);
+    }
+    assert_eq!(
+        seen.len(),
+        8,
+        "the panel, four cards, three strip items: {seen:?}"
+    );
+    assert!(seen.contains(&R::Sun) && seen.contains(&R::Lightning) && seen.contains(&R::Gust));
+    s.open(Screen::Station);
+    drawn(&mut s);
+    let mut seen = Vec::new();
+    for i in 0..7u8 {
+        assert!(s.reading_shown(i));
+        tap(&mut s, station::reading_rect(i));
+        let got = s.chart.map(|c| c.reading).expect("a chart");
+        // Every reading has a value somewhere on its chart.
+        assert!(
+            (-24..=24).any(|o| s.chart_value(got, o).is_some()),
+            "{got:?}"
+        );
+        let (gw, gh) = weather_app::GRAPH_PIC;
+        let mut px = vec![0u32; usize::from(gw) * usize::from(gh)];
+        s.paint_graph(&mut px);
+        assert!(px.iter().any(|p| p >> 24 > 0x80), "{got:?} painted");
+        seen.push(got);
+        s.close_chart();
+    }
+    assert_eq!(
+        seen,
+        [
+            R::Temp,
+            R::Wind,
+            R::Pressure,
+            R::Uv,
+            R::Rain,
+            R::Lightning,
+            R::Sun
+        ]
+    );
 }

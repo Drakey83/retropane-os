@@ -437,8 +437,10 @@ impl Shell {
     /// open shows it.
     #[inline(never)]
     fn history_answer(&mut self, body: &[u8]) {
-        if let Some(h) = rp_weather::tempest::history(body) {
-            self.history = Some(h);
+        let h = self
+            .history
+            .get_or_insert(rp_weather::tempest::History::EMPTY);
+        if rp_weather::tempest::history_into(body, h) {
             self.history_at = self.now;
             if self.chart.is_some() {
                 self.dirty(Rect::new(0, 0, W, super::H));

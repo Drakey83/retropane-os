@@ -41,11 +41,34 @@ pub enum Reading {
     Humidity,
     /// Pressure.
     Pressure,
+    /// The wind's gusts (each half-hour's strongest).
+    Gust,
+    /// Dew point.
+    Dew,
+    /// UV index.
+    Uv,
+    /// Rain (each half-hour's, as bars).
+    Rain,
+    /// Lightning strikes (each half-hour's, as bars).
+    Lightning,
+    /// Sunlight (solar radiation).
+    Sun,
 }
 
 impl Reading {
-    /// Every reading, in [`Target::Reading`]'s order.
-    pub const ALL: [Self; 4] = [Self::Temp, Self::Wind, Self::Humidity, Self::Pressure];
+    /// Every reading, in the D-pad's up and down order.
+    pub const ALL: [Self; 10] = [
+        Self::Temp,
+        Self::Wind,
+        Self::Humidity,
+        Self::Pressure,
+        Self::Gust,
+        Self::Dew,
+        Self::Uv,
+        Self::Rain,
+        Self::Lightning,
+        Self::Sun,
+    ];
 
     const fn name(self) -> &'static [u8] {
         match self {
@@ -53,7 +76,18 @@ impl Reading {
             Self::Wind => b"WIND",
             Self::Humidity => b"HUMIDITY",
             Self::Pressure => b"PRESSURE",
+            Self::Gust => b"WIND GUSTS",
+            Self::Dew => b"DEW POINT",
+            Self::Uv => b"UV INDEX",
+            Self::Rain => b"RAIN",
+            Self::Lightning => b"LIGHTNING",
+            Self::Sun => b"SUNLIGHT",
         }
+    }
+
+    /// Drawn as a bar a half-hour (amounts, not levels).
+    const fn bars(self) -> bool {
+        matches!(self, Self::Rain | Self::Lightning)
     }
 
     /// The least the chart's height spans, in the reading's unit (a calm
@@ -64,6 +98,12 @@ impl Reading {
             Self::Wind => 80,
             Self::Humidity => 10,
             Self::Pressure => 20,
+            Self::Gust => 80,
+            Self::Dew => 30,
+            Self::Uv => 30,
+            Self::Rain => 10,
+            Self::Lightning => 5,
+            Self::Sun => 200,
         }
     }
 }
@@ -130,10 +170,10 @@ fn col_of(c: Chart, o: i32) -> i64 {
 fn value_line(s: &Shell, r: Reading, v: i32) -> Line {
     let rg = &s.region;
     match r {
-        Reading::Temp => Line::new()
+        Reading::Temp | Reading::Dew => Line::new()
             .num(rg.degrees(v.clamp(-900, 700) as i16))
             .push(&[DEG_BIG]),
-        Reading::Wind => {
+        Reading::Wind | Reading::Gust => {
             let unit: &[u8] = match rg.wind {
                 rp_weather::Wind::Mph => b" mph",
                 rp_weather::Wind::Kmh => b" km/h",
@@ -148,6 +188,17 @@ fn value_line(s: &Shell, r: Reading, v: i32) -> Line {
             v.clamp(0, i32::from(u16::MAX)) as u16,
             rg.temp == rp_weather::Temp::F,
         ),
+        Reading::Uv => Line::new().num(v / 10).push(b".").num(v % 10),
+        Reading::Rain => super::station::rain_line(
+            v.clamp(0, i32::from(u16::MAX)) as u16,
+            rg.temp == rp_weather::Temp::F,
+        ),
+        Reading::Lightning => {
+            Line::new()
+                .num(v)
+                .push(if v == 1 { b" strike" } else { b" strikes" })
+        }
+        Reading::Sun => Line::new().num(v).push(b" W/m2"),
     }
 }
 
@@ -172,7 +223,12 @@ impl Shell {
                 Reading::Temp => Some(i32::from(h.temp)),
                 Reading::Wind => Some(i32::from(h.sky.wind)),
                 Reading::Humidity => Some(i32::from(h.humidity)),
-                Reading::Pressure => None,
+                Reading::Gust => Some(i32::from(h.gust)),
+                Reading::Dew => Some(i32::from(h.dew)),
+                Reading::Uv => Some(i32::from(h.uv) * 10),
+                // The hour's rain, half to each half-hour.
+                Reading::Rain => Some(i32::from(h.rain) / 2),
+                Reading::Pressure | Reading::Lightning | Reading::Sun => None,
             };
         }
         let live = self.smart_station();
@@ -183,9 +239,15 @@ impl Shell {
                 Reading::Temp => n.temp.map(i32::from),
                 Reading::Wind => n.wind.map(i32::from),
                 Reading::Humidity => n.humidity.map(i32::from),
+                Reading::Gust => n.gust.map(i32::from),
+                Reading::Dew => n.dew.map(i32::from),
+                Reading::Uv => n.uv.map(|u| i32::from(u) * 10),
+                Reading::Sun => n.solar.map(i32::from),
                 // The history's is the station's own pressure, the reading
-                // now the sea level's: the history's, lifted below.
-                Reading::Pressure => None,
+                // now the sea level's: the history's, lifted below. Rain
+                // and strikes now are the day's and 3 hours': the
+                // half-hour's from the history.
+                Reading::Pressure | Reading::Rain | Reading::Lightning => None,
             };
             if v.is_some() {
                 return v;
@@ -197,6 +259,17 @@ impl Shell {
             Reading::Temp => s.temp.map(i32::from),
             Reading::Wind => s.wind.map(i32::from),
             Reading::Humidity => s.humidity.map(i32::from),
+            Reading::Gust => s.gust.map(i32::from),
+            // From the half-hour's temperature and humidity (within ~1 °C
+            // above 50%: the forecasters' rule of thumb, T - (100 - RH) / 5).
+            Reading::Dew => s
+                .temp
+                .zip(s.humidity)
+                .map(|(t, h)| i32::from(t) - (100 - i32::from(h)) * 2),
+            Reading::Uv => s.uv.map(i32::from),
+            Reading::Rain => s.rain.map(i32::from),
+            Reading::Lightning => s.strikes.map(i32::from),
+            Reading::Sun => s.solar.map(i32::from),
             Reading::Pressure => {
                 // Tempest's history is at the station's height, its reading
                 // now at sea level: the day's line lifted by the difference
@@ -218,6 +291,10 @@ impl Shell {
             .fold((i32::MAX, i32::MIN), |(a, b), v| (a.min(v), b.max(v)));
         if lo > hi {
             return None;
+        }
+        // Bars stand on nothing.
+        if c.reading.bars() {
+            return Some((0, hi.max(c.reading.least()) + hi.max(c.reading.least()) / 8));
         }
         let pad = ((hi - lo).max(c.reading.least()) - (hi - lo)) / 2 + (hi - lo) / 10 + 1;
         Some((lo - pad, hi + pad))
@@ -279,6 +356,31 @@ impl Shell {
                 continue;
             }
             let o256 = (x - PAD) * i64::from(2 * reach) * 256 / w - i64::from(reach) * 256;
+            if c.reading.bars() {
+                // The half-hour under this column, its bar two thirds of
+                // the half-hour's width (a gap between bars).
+                let o = (o256 + 128).div_euclid(256) as i32;
+                let centre = col_of(c, o);
+                let half = (w / i64::from(2 * reach) / 3).max(1);
+                let Some(v) = self.chart_value(c.reading, o).filter(|&v| v > 0) else {
+                    continue;
+                };
+                if (x - centre).abs() > half {
+                    continue;
+                }
+                let top = (Self::chart_row(lo, hi, v) / 256).clamp(0, BOTTOM - 1);
+                let color = if o <= 0 {
+                    CURVE
+                } else {
+                    (FOCUS & 0x00FF_FFFF) | 0xA000_0000
+                };
+                for ly in top..BOTTOM {
+                    if let Some(p) = px.get_mut(ly as usize * stride + x as usize) {
+                        *p = over(*p, color);
+                    }
+                }
+                continue;
+            }
             let Some(cy) = row_at(o256) else { continue };
             let past = o256 <= 0;
             // The forecast's dashes: 8 px on, 6 off.
@@ -311,21 +413,69 @@ impl Shell {
         }
     }
 
-    /// Whether reading `i` can be tapped now (and where: [`Self::reading_rect`]).
+    /// Whether slot `i`'s field can be tapped now (and where:
+    /// [`Self::reading_rect`]; which reading: [`Self::reading_of`]). Every
+    /// field opens its chart (the owner, 2026-11-01: "what happened to
+    /// everything you click on gets a new barograph or open to a new
+    /// page"): on Now with a station live, the big panel, the four cards
+    /// and the strip's readings; on the Station screen, every tile.
     pub(crate) fn reading_shown(&self, i: u8) -> bool {
         if !CHARTS || self.chart.is_some() || self.menu_open || self.place_menu {
             return false;
         }
         match self.screen {
-            Screen::Weather => self.tab == 0 && self.smart_station().is_some(),
-            // The Station screen's tiles: the big temperature, wind and
-            // pressure (its humidity is in the temperature's tile).
-            Screen::Station => self.station.is_some() && i != 2,
+            Screen::Weather => {
+                self.tab == 0
+                    && self.smart_station().is_some()
+                    && (i < 5 || self.strip_reading(usize::from(i) - 5).is_some())
+            }
+            Screen::Station => self.station.is_some() && i < 7,
             _ => false,
         }
     }
 
-    /// Where reading `i`'s tile is.
+    /// The reading slot `i` charts.
+    pub(crate) fn reading_of(&self, i: u8) -> Reading {
+        let station = [
+            Reading::Temp,
+            Reading::Wind,
+            Reading::Pressure,
+            Reading::Uv,
+            Reading::Rain,
+            Reading::Lightning,
+            Reading::Sun,
+        ];
+        let now = [
+            Reading::Temp,
+            Reading::Wind,
+            Reading::Pressure,
+            Reading::Humidity,
+            Reading::Sun,
+        ];
+        match self.screen {
+            Screen::Station => station[usize::from(i).min(6)],
+            _ if i >= 5 => self
+                .strip_reading(usize::from(i) - 5)
+                .unwrap_or(Reading::Temp),
+            _ => now[usize::from(i).min(4)],
+        }
+    }
+
+    /// The reading the strip's `k`th item is.
+    fn strip_reading(&self, k: usize) -> Option<Reading> {
+        let n = self.smart_station()?;
+        let (name, ..) = self.strip_readings(&n).get(k).copied().flatten()?;
+        Some(match name {
+            b"LIGHTNING" => Reading::Lightning,
+            b"RAIN TODAY" => Reading::Rain,
+            b"GUSTS" => Reading::Gust,
+            b"PRESSURE" => Reading::Pressure,
+            b"UV" => Reading::Uv,
+            _ => Reading::Dew,
+        })
+    }
+
+    /// Where slot `i`'s field is.
     pub(crate) fn reading_rect(&self, i: u8) -> Rect {
         if self.screen == Screen::Station {
             super::station::reading_rect(i)

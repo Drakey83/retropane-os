@@ -11890,10 +11890,17 @@ fn preview_history() -> String {
             let wind = 2.5 + 1.5 * ((h + 4.0) * std::f64::consts::PI / 10.0).sin().abs();
             let rh = 72.0 - 12.0 * ((h + 9.0) * std::f64::consts::PI / 12.0).sin();
             let p = 985.0 + 0.08 * (k as f64 / 12.0);
+            // Daylight from 7 AM (hour -5) to 6 PM; a shower mid-morning
+            // with a few strikes.
+            let sun = (((h + 5.0) / 11.0 * std::f64::consts::PI).sin() * 780.0).max(0.0);
+            let uv = sun / 85.0;
+            let rain = if (-3.5..-2.0).contains(&h) { 0.06 } else { 0.0 };
+            let strikes = u32::from((-3.0..-2.5).contains(&h)) * (k as u32 % 3);
             format!(
-                "[{t},{:.2},{wind:.2},{:.2},300,60,{p:.1},{temp:.1},{rh:.0}]",
+                "[{t},{:.2},{wind:.2},{:.2},300,60,{p:.1},{temp:.1},{rh:.0},{:.0},{uv:.2},{sun:.0},{rain:.3},1,9,{strikes}]",
                 wind * 0.6,
-                wind * 1.8
+                wind * 1.8,
+                sun * 120.0
             )
         })
         .collect();
@@ -11989,10 +11996,10 @@ fn compare_screens(wall: &[u8]) -> [Vec<u8>; 2] {
     step(&mut shell, &mut gpu);
     tap(&mut shell, rp_shell::START);
     step(&mut shell, &mut gpu);
-    tap(&mut shell, Shell::menu_entry(Shell::menu_entries(true) - 3));
+    tap(&mut shell, Shell::menu_entry(Shell::menu_entries(true) - 4));
     assert!(
         shell.wallpaper_only(),
-        "the compare entry is third from the end"
+        "the compare entry is fourth from the end (then Sky test, Align, Back)"
     );
     step(&mut shell, &mut gpu);
     shell.tick(10_000);
@@ -12277,11 +12284,11 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         // taps land where they should through the new calibration).
         press(&mut qmp, "start-aligned", sx, sy, None)?;
         until("menu-aligned", &want[2])?;
-        // The wallpaper comparison (the owner's 16-bit check, the third
+        // The wallpaper comparison (the owner's 16-bit check, the fourth
         // entry from the end): the wallpaper alone, pixel-exact dithered
         // and plain once each notice has gone; a tap flips it, Home goes
         // back. Ends dithered, so the menu below matches as before.
-        let compare = rp_shell::Shell::menu_entry(entries - 3);
+        let compare = rp_shell::Shell::menu_entry(entries - 4);
         press(
             &mut qmp,
             "compare",

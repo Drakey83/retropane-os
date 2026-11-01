@@ -286,7 +286,8 @@ pub fn station_place(json: &[u8]) -> Option<(Name, i32, i32)> {
 /// Half-hours the station's history keeps: the last day.
 pub const HIST: usize = 48;
 
-/// A half-hour of the station's readings (each averaged over it).
+/// A half-hour of the station's readings: averaged over it, or summed
+/// (rain, strikes), or its strongest (the gust).
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Sample {
     /// Air temperature, tenths of °C.
@@ -299,6 +300,14 @@ pub struct Sample {
     pub wind: Option<u16>,
     /// The half-hour's strongest gust, tenths of km/h.
     pub gust: Option<u16>,
+    /// UV index, tenths.
+    pub uv: Option<u16>,
+    /// Sunlight (solar radiation), W/m².
+    pub solar: Option<u16>,
+    /// Rain over the half-hour, tenths of a mm.
+    pub rain: Option<u16>,
+    /// Lightning strikes over the half-hour.
+    pub strikes: Option<u16>,
 }
 
 /// The station's last day, oldest half-hour first; the last one ends at
@@ -311,17 +320,44 @@ pub struct History {
     pub s: [Sample; HIST],
 }
 
+impl History {
+    /// None yet.
+    pub const EMPTY: Self = Self {
+        end: 0,
+        s: [Sample {
+            temp: None,
+            humidity: None,
+            pressure: None,
+            wind: None,
+            gust: None,
+            uv: None,
+            solar: None,
+            rain: None,
+            strikes: None,
+        }; HIST],
+    };
+}
+
+/// [`history_into`] as a value (the PC's tests and previews).
+#[must_use]
+pub fn history(json: &[u8]) -> Option<History> {
+    let mut h = History::EMPTY;
+    history_into(json, &mut h).then_some(h)
+}
+
 /// The station's readings from Tempest's `observations/device` answer (an
 /// `obs` array of rows: time, wind lull, average and gust in m/s, wind
 /// direction, interval, station pressure in mb, air temperature in °C,
-/// humidity, ...), folded into [`HIST`] half-hours ending at the newest
-/// row. Rows out of range or older than a day are left out; `None` if
-/// there are none. For the station charts (the owner, 2026-10-31: each
-/// tile opens a chart, as Tempest's own app does).
-#[must_use]
-pub fn history(json: &[u8]) -> Option<History> {
-    // Sums and counts per half-hour: (temp, humidity, pressure, wind),
-    // and the gust's maximum. The rows' times first, to find the end.
+/// humidity, illuminance, UV, solar radiation in W/m², rain over the
+/// interval in mm, precipitation type, strike distance, strike count, ...),
+/// folded into [`HIST`] half-hours ending at the newest row, into `out`.
+/// Rows out of range or older than a day are left out; false (and `out` as
+/// it was) if there are none. Written in place: returned as a value with
+/// its sums, the parse's frame neared the P6 rule's 4 KB. For the station
+/// charts (the owner, 2026-10-31: each tile opens a chart, as Tempest's own
+/// app does).
+pub fn history_into(json: &[u8], out: &mut History) -> bool {
+    // The rows' times first, to find the end.
     let mut end = i64::MIN;
     let _ = Json::new(json).object(|k, v| {
         if k == b"obs" {
@@ -341,12 +377,16 @@ pub fn history(json: &[u8]) -> Option<History> {
         }
     });
     if end == i64::MIN {
-        return None;
+        return false;
     }
-    // i32 sums and u16 counts (a minute's rows, 30 a half-hour): the
-    // parse stays well under the P6 stack rule's 4 KB with the answer.
-    let mut sum = [[0i32; 4]; HIST];
-    let mut n = [[0u16; 4]; HIST];
+    // Per half-hour: sums and counts of the averaged readings (temp,
+    // humidity, pressure, wind, UV, sunlight), the summed ones (rain in
+    // thousandths of a mm, strikes), the gust's strongest. i32 sums and u8
+    // counts (a minute's rows, 30 a half-hour).
+    let mut sum = [[0i32; 6]; HIST];
+    let mut n = [[0u8; 6]; HIST];
+    let mut rain = [None::<i32>; HIST];
+    let mut strikes = [None::<u16>; HIST];
     let mut gust = [None::<u16>; HIST];
     let _ = Json::new(json).object(|k, v| {
         if k != b"obs" {
@@ -354,7 +394,7 @@ pub fn history(json: &[u8]) -> Option<History> {
             return;
         }
         let _ = v.array(|_, row| {
-            let mut vals = [None::<i64>; 9];
+            let mut vals = [None::<i64>; 16];
             let _ = row.array(|i, x| {
                 if i < vals.len() {
                     vals[i] = x.number();
@@ -380,6 +420,8 @@ pub fn history(json: &[u8]) -> Option<History> {
                 whole(vals[8], 0, 100),
                 tenths(vals[6], 5000, 11_000).map(i64::from),
                 kmh(vals[2]),
+                tenths(vals[10], 0, 250).map(i64::from),
+                whole(vals[11], 0, 2000),
             ];
             for (j, f) in fields.into_iter().enumerate() {
                 if let Some(f) = f {
@@ -391,13 +433,18 @@ pub fn history(json: &[u8]) -> Option<History> {
                 let g = g as u16;
                 gust[b] = Some(gust[b].map_or(g, |m| m.max(g)));
             }
+            // Rain over the row's interval: thousandths of a mm, at most
+            // 100 mm a row.
+            if let Some(r) = vals[12].filter(|r| (0..=100_000).contains(r)) {
+                rain[b] = Some(rain[b].unwrap_or(0).saturating_add(r as i32));
+            }
+            if let Some(c) = whole(vals[15], 0, 1000) {
+                strikes[b] = Some(strikes[b].unwrap_or(0).saturating_add(c as u16));
+            }
         });
     });
-    let mut h = History {
-        end,
-        s: [Sample::default(); HIST],
-    };
-    for (b, s) in h.s.iter_mut().enumerate() {
+    out.end = end;
+    for (b, s) in out.s.iter_mut().enumerate() {
         let avg = |j: usize| (n[b][j] > 0).then(|| sum[b][j] / i32::from(n[b][j]));
         *s = Sample {
             temp: avg(0).map(|v| v as i16),
@@ -405,9 +452,13 @@ pub fn history(json: &[u8]) -> Option<History> {
             pressure: avg(2).map(|v| v as u16),
             wind: avg(3).map(|v| v as u16),
             gust: gust[b],
+            uv: avg(4).map(|v| v as u16),
+            solar: avg(5).map(|v| v as u16),
+            rain: rain[b].map(|r| (r / 100).min(i32::from(u16::MAX)) as u16),
+            strikes: strikes[b],
         };
     }
-    Some(h)
+    true
 }
 
 #[cfg(test)]
