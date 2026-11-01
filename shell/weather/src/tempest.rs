@@ -283,8 +283,157 @@ pub fn station_place(json: &[u8]) -> Option<(Name, i32, i32)> {
     (!name.is_empty()).then_some((name, lat? as i32, lon? as i32))
 }
 
+/// Half-hours the station's history keeps: the last day.
+pub const HIST: usize = 48;
+
+/// A half-hour of the station's readings (each averaged over it).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Sample {
+    /// Air temperature, tenths of °C.
+    pub temp: Option<i16>,
+    /// Relative humidity, %.
+    pub humidity: Option<u8>,
+    /// Station pressure, tenths of a millibar.
+    pub pressure: Option<u16>,
+    /// Wind average, tenths of km/h.
+    pub wind: Option<u16>,
+    /// The half-hour's strongest gust, tenths of km/h.
+    pub gust: Option<u16>,
+}
+
+/// The station's last day, oldest half-hour first; the last one ends at
+/// the newest reading (`end`, Unix time).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct History {
+    /// The newest reading's time.
+    pub end: i64,
+    /// The half-hours.
+    pub s: [Sample; HIST],
+}
+
+/// The station's readings from Tempest's `observations/device` answer (an
+/// `obs` array of rows: time, wind lull, average and gust in m/s, wind
+/// direction, interval, station pressure in mb, air temperature in °C,
+/// humidity, ...), folded into [`HIST`] half-hours ending at the newest
+/// row. Rows out of range or older than a day are left out; `None` if
+/// there are none. For the station charts (the owner, 2026-10-31: each
+/// tile opens a chart, as Tempest's own app does).
+#[must_use]
+pub fn history(json: &[u8]) -> Option<History> {
+    // Sums and counts per half-hour: (temp, humidity, pressure, wind),
+    // and the gust's maximum. The rows' times first, to find the end.
+    let mut end = i64::MIN;
+    let _ = Json::new(json).object(|k, v| {
+        if k == b"obs" {
+            let _ = v.array(|_, row| {
+                let _ = row.array(|i, x| {
+                    if i == 0 {
+                        if let Some(t) = whole(x.number(), 0, i64::from(u32::MAX)) {
+                            end = end.max(t);
+                        }
+                    } else {
+                        let _ = x.skip();
+                    }
+                });
+            });
+        } else {
+            let _ = v.skip();
+        }
+    });
+    if end == i64::MIN {
+        return None;
+    }
+    let mut sum = [[0i64; 4]; HIST];
+    let mut n = [[0i64; 4]; HIST];
+    let mut gust = [None::<u16>; HIST];
+    let _ = Json::new(json).object(|k, v| {
+        if k != b"obs" {
+            let _ = v.skip();
+            return;
+        }
+        let _ = v.array(|_, row| {
+            let mut vals = [None::<i64>; 9];
+            let _ = row.array(|i, x| {
+                if i < vals.len() {
+                    vals[i] = x.number();
+                } else {
+                    let _ = x.skip();
+                }
+            });
+            let Some(t) = whole(vals[0], 0, i64::from(u32::MAX)) else {
+                return;
+            };
+            let age = end - t;
+            if !(0..HIST as i64 * 1800).contains(&age) {
+                return;
+            }
+            let b = HIST - 1 - (age / 1800) as usize;
+            // m/s in thousandths to tenths of km/h: x 36 / 1000.
+            let kmh = |v: Option<i64>| {
+                v.filter(|v| (0..=100_000).contains(v))
+                    .map(|v| v * 36 / 1000)
+            };
+            let fields = [
+                tenths(vals[7], -900, 700).map(i64::from),
+                whole(vals[8], 0, 100),
+                tenths(vals[6], 5000, 11_000).map(i64::from),
+                kmh(vals[2]),
+            ];
+            for (j, f) in fields.into_iter().enumerate() {
+                if let Some(f) = f {
+                    sum[b][j] += f;
+                    n[b][j] += 1;
+                }
+            }
+            if let Some(g) = kmh(vals[3]) {
+                let g = g as u16;
+                gust[b] = Some(gust[b].map_or(g, |m| m.max(g)));
+            }
+        });
+    });
+    let mut h = History {
+        end,
+        s: [Sample::default(); HIST],
+    };
+    for (b, s) in h.s.iter_mut().enumerate() {
+        let avg = |j: usize| (n[b][j] > 0).then(|| sum[b][j] / n[b][j]);
+        *s = Sample {
+            temp: avg(0).map(|v| v as i16),
+            humidity: avg(1).map(|v| v as u8),
+            pressure: avg(2).map(|v| v as u16),
+            wind: avg(3).map(|v| v as u16),
+            gust: gust[b],
+        };
+    }
+    Some(h)
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_days_readings_fold_into_half_hours_ending_at_the_newest() {
+        // Two rows in the newest half-hour, one an hour earlier, one too
+        // old, one with nonsense values: averaged, placed, left out.
+        let json = br#"{"status":{"status_code":0},"device_id":1,
+          "obs":[[1761900000,0.5,2.0,4.0,315,3,1000.0,20.0,60,0,1,0,0,0,0,0,2.5,1],
+                 [1761899900,0.5,4.0,6.0,315,3,1002.0,22.0,62,0,1,0,0,0,0,0,2.5,1],
+                 [1761896400,0.5,1.0,2.0,315,3,1001.0,18.0,70,0,1,0,0,0,0,0,2.5,1],
+                 [1761700000,0.5,1.0,2.0,315,3,1001.0,18.0,70,0,1,0,0,0,0,0,2.5,1],
+                 [1761899950,0.5,999.0,999.0,315,3,1.0,99.0,700,0,1,0,0,0,0,0,2.5,1]]}"#;
+        let h = super::history(json).expect("a history");
+        assert_eq!(h.end, 1_761_900_000);
+        let last = h.s[super::HIST - 1];
+        assert_eq!(last.temp, Some(210), "20.0 and 22.0 averaged; 99 left out");
+        assert_eq!(last.humidity, Some(61));
+        assert_eq!(last.pressure, Some(10_010));
+        assert_eq!(last.wind, Some(108), "2 and 4 m/s: 10.8 km/h");
+        assert_eq!(last.gust, Some(216), "the strongest gust, 6 m/s");
+        let hour_ago = h.s[super::HIST - 3];
+        assert_eq!(hour_ago.temp, Some(180));
+        assert_eq!(h.s[0], super::Sample::default(), "a day ago: nothing");
+        assert!(super::history(br#"{"obs":[]}"#).is_none());
+    }
     use super::*;
 
     /// A trimmed `better_forecast` in Tempest's shape (metric).

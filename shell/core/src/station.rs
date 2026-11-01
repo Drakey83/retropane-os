@@ -23,7 +23,7 @@ use super::{DIM, GLASS_LEFT, GLASS_RIGHT, Shell, TEXT};
 /// The live dot's green.
 pub(crate) const LIVE: Argb = rp_draw::look::theme(0xFF5E_E07A);
 /// Lightning's amber.
-const BOLT: Argb = rp_draw::look::theme(0xFFF2_B45A);
+pub(crate) const BOLT: Argb = rp_draw::look::theme(0xFFF2_B45A);
 
 /// The dials painted at start, in [`DIALS`]'s order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -587,6 +587,64 @@ impl Shell {
 }
 
 /// `v` (0-99) as two digits.
+/// A pressure (tenths of a millibar) in the region's unit.
+pub(crate) fn pressure_line(p: u16, us: bool) -> Line {
+    if us {
+        let h = (u32::from(p) * 2953 + 5000) / 10_000;
+        Line::new()
+            .num((h / 100) as i32)
+            .push(b".")
+            .push(&two(h % 100))
+            .push(b" in")
+    } else {
+        Line::new()
+            .num(i32::from(p / 10))
+            .push(b".")
+            .num(i32::from(p % 10))
+            .push(b" mb")
+    }
+}
+
+/// Rain (tenths of a mm) in the region's unit.
+pub(crate) fn rain_line(r: u16, us: bool) -> Line {
+    if us {
+        let h = (u32::from(r) * 100 + 127) / 254;
+        Line::new()
+            .num((h / 100) as i32)
+            .push(b".")
+            .push(&two(h % 100))
+            .push(b" in")
+    } else {
+        Line::new()
+            .num(i32::from(r / 10))
+            .push(b".")
+            .num(i32::from(r % 10))
+            .push(b" mm")
+    }
+}
+
+/// A distance (km) in the region's unit.
+pub(crate) fn km_line(km: u16, us: bool) -> Line {
+    let d = if us {
+        u32::from(km) * 6214 / 10_000
+    } else {
+        u32::from(km)
+    };
+    Line::new()
+        .num(d as i32)
+        .push(if us { b" mi" } else { b" km" })
+}
+
+/// The pressure's trend in a word.
+pub(crate) const fn trend_word(t: Option<i8>) -> &'static [u8] {
+    match t {
+        Some(1) => b"rising",
+        Some(-1) => b"falling",
+        Some(_) => b"steady",
+        None => b"",
+    }
+}
+
 fn two(v: u32) -> [u8; 2] {
     [b'0' + (v / 10) as u8, b'0' + (v % 10) as u8]
 }

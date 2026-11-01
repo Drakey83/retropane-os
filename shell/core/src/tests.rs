@@ -2353,3 +2353,42 @@ fn the_cards_settings_name_the_pack_and_place_from_the_start() {
     s.settings_from_card(&bad);
     assert_eq!(s.icon_pack(), 0, "a damaged record: the defaults");
 }
+
+#[test]
+fn with_a_station_now_shows_its_live_readings_and_what_matters_now() {
+    // N1 and N2 (docs/design/station-everywhere.md): the big temperature
+    // and the cards are the station's, marked live; the strip puts a
+    // storm's lightning first.
+    let storm: &[u8] = br#"{"current_conditions": {"time": 1761900000,
+      "air_temperature": 20.0, "feels_like": 19.5, "relative_humidity": 61, "dew_point": 12.2,
+      "wind_avg": 12.9, "wind_gust": 33.8, "wind_direction": 315, "uv": 3,
+      "sea_level_pressure": 1016.4, "pressure_trend": "rising",
+      "lightning_strike_count_last_3hr": 4, "lightning_strike_last_distance": 10}}"#;
+    let mut s = weather(0);
+    let before = texts(&drawn(&mut s));
+    assert!(!before.iter().any(|t| t.as_slice() == b"YOUR STATION, LIVE"));
+    s.set_station_from_tempest(storm);
+    s.dirty(Rect::new(0, 0, W, H));
+    let f = drawn(&mut s);
+    assert!(!f.overflowed(), "{} commands", f.cmds().count());
+    let t = texts(&f);
+    let has = |b: &[u8]| t.iter().any(|x| x.as_slice() == b);
+    assert!(has(b"YOUR STATION, LIVE"));
+    assert!(has(b"68\xB0"), "the station's 20.0 C as 68 F: {t:?}");
+    assert!(has(b"LIGHTNING") && has(b"GUSTS") && has(b"PRESSURE"));
+    let order: Vec<&[u8]> = s
+        .strip_readings(&s.station.unwrap())
+        .iter()
+        .flatten()
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(order, [&b"LIGHTNING"[..], b"GUSTS", b"PRESSURE"]);
+    // Stale (an hour old): the forecast's again.
+    s.now = s.station_at.wrapping_add(61 * 60_000);
+    s.dirty(Rect::new(0, 0, W, H));
+    assert!(
+        !texts(&drawn(&mut s))
+            .iter()
+            .any(|x| x.as_slice() == b"YOUR STATION, LIVE")
+    );
+}

@@ -302,6 +302,15 @@ const CARD_Y: u16 = 342;
 const CARD_STEP: u16 = 92;
 /// A card's bar, from the card's corner.
 const BAR_DX: u16 = 14;
+/// Your station on the Now page (N1, N2: docs/design/station-everywhere.md,
+/// the owner's choice to try, 2026-11-01): off reverts to the forecast's
+/// cards alone.
+pub(crate) const STATION_ON_NOW: bool = true;
+/// N2's strip, and N1's cards under it (shorter, to make its room).
+const STRIP: Rect = Rect::new(16, CARD_Y, 448, 52);
+const SMART_CARD_Y: u16 = CARD_Y + 60;
+const SMART_CARD_STEP: u16 = 76;
+const SMART_CARD_H: u16 = 70;
 const BAR_DY: u16 = 66;
 /// The Now page's sunset bar, unscrolled: its length follows the clock, so
 /// a picture check masks it (emu-today; a mask of its own went stale when
@@ -895,7 +904,26 @@ impl Shell {
             }
         }
         Self::glass_at(f, px, py, 448, 206);
-        let shown = rg.degrees(wx.now.temp) * self.ease(0) as i32 / 1024;
+        // N1: with your station connected, its live temperature and feel
+        // (the forecast's sky, words and high and low beside them).
+        let live = self.smart_station();
+        let temp_now = live.and_then(|n| n.temp).unwrap_or(wx.now.temp);
+        let feels_now = live.and_then(|n| n.feels).unwrap_or(wx.now.feels);
+        if live.is_some() && py + 18 >= 0 {
+            f.push(Cmd::Fill {
+                r: Rect::new(px + 22, (py + 18) as u16, 7, 7),
+                color: super::station::LIVE,
+            });
+            Self::text_at(
+                f,
+                px + 36,
+                py + 26,
+                label,
+                super::station::LIVE,
+                b"YOUR STATION, LIVE",
+            );
+        }
+        let shown = rg.degrees(temp_now) * self.ease(0) as i32 / 1024;
         let t = Line::new().num(shown).push(&[DEG_BIG]);
         Self::text_at(f, px + 20, py + 104, big, TEXT, t.as_bytes());
         if let Some(pic) = self.icons.big(icon) {
@@ -912,14 +940,15 @@ impl Shell {
         Self::text_at(f, px + 20, py + 140, ui, TEXT, icon.words().as_bytes());
         let feels = Line::new()
             .push(b"Feels like ")
-            .push(rg.temp(wx.now.feels).as_bytes());
+            .push(rg.temp(feels_now).as_bytes());
         Self::text_at(f, px + 20, py + 166, ui, DIM, feels.as_bytes());
         let d = &wx.days[0];
         let hl = Line::new()
             .push(b"High ")
             .push(rg.temp(d.high).as_bytes())
             .push(b"   Low ")
-            .push(rg.temp(d.low).as_bytes());
+            .push(rg.temp(d.low).as_bytes())
+            .push(if live.is_some() { b"  (forecast)" } else { b"" });
         Self::text_at(f, px + 20, py + 192, ui, DIM, hl.as_bytes());
 
         // The summary strip.
@@ -927,6 +956,10 @@ impl Shell {
         Self::glass_at(f, sx, sy, 448, 40);
         Self::text_at(f, sx + 16, sy + 27, ui, TEXT, wx.summary(rg).as_bytes());
 
+        if let Some(n) = live {
+            self.now_station_cards(f, &n);
+            return;
+        }
         // Four cards, each with a bar.
         let minutes = u32::from(self.time.hour) * 60 + u32::from(self.time.minute);
         let (rise, set) = (u32::from(wx.sun.0), u32::from(wx.sun.1));
@@ -975,6 +1008,189 @@ impl Shell {
                 continue;
             }
             let track = Rect::new(cx + BAR_DX, bar_y as u16, SUNSET_BAR.w, SUNSET_BAR.h);
+            f.push(Cmd::Fill {
+                r: track,
+                color: TRACK,
+            });
+            let w = (u32::from(track.w) * amount / 1024 * e / 1024) as u16;
+            if w > 0 {
+                let right = if *scale {
+                    mix(COLD, WARM, *amount)
+                } else {
+                    FOCUS
+                };
+                f.push(Cmd::HGradient {
+                    r: Rect::new(track.x, track.y, w, track.h),
+                    left: if *scale { mix(COLD, WARM, 0) } else { RAIN },
+                    right,
+                });
+            }
+        }
+    }
+
+    /// Your station's readings when it is connected and recent (N1, N2:
+    /// docs/design/station-everywhere.md), else `None` (the forecast's).
+    pub(crate) fn smart_station(&self) -> Option<rp_weather::tempest::StationNow> {
+        if !STATION_ON_NOW {
+            return None;
+        }
+        let n = self.station?;
+        // An hour old is not "live".
+        (self.now.wrapping_sub(self.station_at) < 60 * 60_000).then_some(n)
+    }
+
+    /// N2, "what matters now": up to three of the station's readings,
+    /// picked by what is happening (a storm's lightning, rain, strong
+    /// gusts), then the steady ones (the pressure's trend, UV, dew point).
+    pub(crate) fn strip_readings(
+        &self,
+        n: &rp_weather::tempest::StationNow,
+    ) -> [Option<(&'static [u8], Line, Argb)>; 3] {
+        let rg = &self.region;
+        let us = rg.temp == rp_weather::Temp::F;
+        let wet = matches!(self.wx.now.sky.wmo, 51..=67 | 80..=82 | 95..=99);
+        let unit: &[u8] = match rg.wind {
+            rp_weather::Wind::Mph => b" mph",
+            rp_weather::Wind::Kmh => b" km/h",
+            rp_weather::Wind::Ms => b" m/s",
+        };
+        let mut out = [None, None, None];
+        let mut k = 0;
+        let mut add = |r: (&'static [u8], Line, Argb)| {
+            if k < 3 {
+                out[k] = Some(r);
+                k += 1;
+            }
+        };
+        if let Some(c) = n.strikes_3h.filter(|&c| c > 0) {
+            let mut l = Line::new().num(i32::from(c)).push(b" strikes");
+            if let Some(km) = n.strike_km {
+                l = l
+                    .push(b", ")
+                    .push(super::station::km_line(km, us).as_bytes());
+            }
+            add((b"LIGHTNING", l, super::station::BOLT));
+        }
+        if wet && let Some(r) = n.rain_today {
+            add((b"RAIN TODAY", super::station::rain_line(r, us), RAIN));
+        }
+        // 20 mph and over.
+        if let Some(g) = n.gust.filter(|&g| g >= 322) {
+            add((b"GUSTS", Line::new().num(rg.wind_speed(g)).push(unit), TEXT));
+        }
+        if n.trend.is_some() {
+            add((
+                b"PRESSURE",
+                Line::new().push(super::station::trend_word(n.trend)),
+                DIM,
+            ));
+        }
+        if let Some(u) = n.uv.filter(|&u| u >= 3) {
+            add((b"UV", Line::new().num(i32::from(u)), DIM));
+        }
+        if let Some(d) = n.dew {
+            add((b"DEW POINT", rg.temp(d), DIM));
+        }
+        if !wet && let Some(r) = n.rain_today.filter(|&r| r > 0) {
+            add((b"RAIN TODAY", super::station::rain_line(r, us), RAIN));
+        }
+        out
+    }
+
+    /// N1 and N2 on the Now page: the strip, then four cards with your
+    /// station's readings where it has them (a green dot) and the
+    /// forecast's sunset.
+    fn now_station_cards(&self, f: &mut Frame, n: &rp_weather::tempest::StationNow) {
+        let (ui, label) = (self.fonts.ui, self.fonts.label);
+        let (wx, rg) = (&self.wx, &self.region);
+        let us = rg.temp == rp_weather::Temp::F;
+        let dash = Line::new().push(b"--");
+        let unit: &[u8] = match rg.wind {
+            rp_weather::Wind::Mph => b" mph",
+            rp_weather::Wind::Kmh => b" km/h",
+            rp_weather::Wind::Ms => b" m/s",
+        };
+        for (i, r) in self.strip_readings(n).iter().enumerate() {
+            let Some((name, value, color)) = r else {
+                continue;
+            };
+            let x = 16 + i as u16 * 152 + self.slide(2);
+            let y = self.sy(STRIP.y);
+            Self::glass_at(f, x, y, 144, STRIP.h);
+            Self::text_at(f, x + 10, y + 20, label, *color, name);
+            Self::text_at(f, x + 10, y + 44, ui, TEXT, value.as_bytes());
+        }
+        let minutes = u32::from(self.time.hour) * 60 + u32::from(self.time.minute);
+        let (rise, set) = (u32::from(wx.sun.0), u32::from(wx.sun.1));
+        let day_gone = (minutes.clamp(rise, set) - rise) * 1024 / (set - rise).max(1);
+        let wind = n.wind.map_or(dash, |w| {
+            let mut l = Line::new().num(rg.wind_speed(w)).push(unit);
+            if let Some(d) = n.wind_from {
+                l = l.push(b" from ").push(rp_weather::compass(d));
+            }
+            if let Some(g) = n.gust {
+                l = l.push(b", gusts ").num(rg.wind_speed(g));
+            }
+            l
+        });
+        let pressure = n.pressure.map_or(dash, |p| {
+            super::station::pressure_line(p, us)
+                .push(b", ")
+                .push(super::station::trend_word(n.trend))
+        });
+        let humidity = n
+            .humidity
+            .map_or(dash, |h| Line::new().num(i32::from(h)).push(b"%"));
+        let pressure_amount =
+            u32::from(n.pressure.unwrap_or(9800).clamp(9800, 10_400) - 9800) * 1024 / 600;
+        let cards: [(&[u8], Line, u32, bool, bool); 4] = [
+            (
+                b"WIND",
+                wind,
+                u32::from(n.wind.unwrap_or(0)).min(600) * 1024 / 600,
+                false,
+                n.wind.is_some(),
+            ),
+            (
+                b"PRESSURE",
+                pressure,
+                pressure_amount,
+                false,
+                n.pressure.is_some(),
+            ),
+            (
+                b"HUMIDITY",
+                humidity,
+                u32::from(n.humidity.unwrap_or(0)) * 1024 / 100,
+                false,
+                n.humidity.is_some(),
+            ),
+            (
+                b"SUNSET",
+                rg.time((set / 60) as u8, (set % 60) as u8, true),
+                day_gone,
+                true,
+                false,
+            ),
+        ];
+        for (i, (name, value, amount, scale, live)) in cards.iter().enumerate() {
+            let e = self.ease(2 + i as u32);
+            let cx = 16 + (i as u16 % 2) * 232 + self.slide(2 + i as u32);
+            let cy = self.sy(SMART_CARD_Y + (i as u16 / 2) * SMART_CARD_STEP);
+            Self::glass_at(f, cx, cy, 216, SMART_CARD_H);
+            Self::text_at(f, cx + 14, cy + 22, label, DIM, name);
+            if *live && cy + 13 >= 0 {
+                f.push(Cmd::Fill {
+                    r: Rect::new(cx + 20 + label.width(name), (cy + 13) as u16, 7, 7),
+                    color: super::station::LIVE,
+                });
+            }
+            Self::text_at(f, cx + 14, cy + 48, ui, TEXT, value.as_bytes());
+            let bar_y = cy + 58;
+            if bar_y < 0 {
+                continue;
+            }
+            let track = Rect::new(cx + BAR_DX, bar_y as u16, 188, 4);
             f.push(Cmd::Fill {
                 r: track,
                 color: TRACK,
