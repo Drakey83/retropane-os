@@ -1272,9 +1272,23 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     fn command(&mut self, frame: &Frame, c: &Cmd, clip: Rect, dst: usize) {
         match *c {
             Cmd::Clip { .. } => {}
-            // Its fills and images, each drawn as such (ADR-0023 rule 3).
+            // Its fills and images (ADR-0023 rule 3): the wallpaper copied
+            // once under its body (the clears), then its rows and rim only
+            // blended over it, not each a copy and a blend (R176); the
+            // corners as images.
             Cmd::Panel { r, art } => {
-                rp_draw::panel_cmds(r, art, |p| self.command(frame, &p, clip, dst));
+                rp_draw::panel_cmds(r, art, |p| match p {
+                    Cmd::Fill { r: f, color } => {
+                        let t = f.intersect(&clip);
+                        if t.is_empty() {
+                        } else if color == rp_draw::CLEAR {
+                            self.wallpaper(dst, t);
+                        } else {
+                            self.over(dst, t, color);
+                        }
+                    }
+                    p => self.command(frame, &p, clip, dst),
+                });
             }
             Cmd::Fill { r, color } => {
                 let t = r.intersect(&clip);

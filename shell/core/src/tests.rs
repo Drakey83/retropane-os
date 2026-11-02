@@ -3020,3 +3020,70 @@ fn the_pressed_weather_card_keeps_its_words_and_picture() {
     }
     assert_eq!(glass, 1);
 }
+
+/// The engine commands a screen's whole frame sends (R176: the glass
+/// panels expanded into their fills and corners), per screen and look.
+#[test]
+#[ignore = "exploration: prints each screen's commands"]
+fn engine_commands_per_screen() {
+    // Engine operations: a see-through fill is a wallpaper copy and a
+    // blend; in a panel, its clears are the copy and its rows the blend
+    // alone (R176). `old`: every panel fill a copy and a blend, as before.
+    let count = |f: &rp_draw::Frame| {
+        let (mut cmds, mut ops, mut old, mut panel) = (0, 0, 0, 0);
+        for c in f.cmds() {
+            cmds += 1;
+            match *c {
+                rp_draw::Cmd::Panel { r, art } => {
+                    panel += 1;
+                    rp_draw::panel_cmds(r, art, |p| {
+                        ops += 1;
+                        if let rp_draw::Cmd::Fill { color, .. } = p {
+                            old += if color == rp_draw::CLEAR { 0 } else { 2 };
+                        } else {
+                            old += 1;
+                        }
+                    });
+                }
+                rp_draw::Cmd::Fill { color, .. } if color >> 24 != 255 => {
+                    ops += 2;
+                    old += 2;
+                }
+                _ => {
+                    ops += 1;
+                    old += 1;
+                }
+            }
+        }
+        (cmds, ops, old, panel)
+    };
+    for hour in [12u8, 22] {
+        let mut shell = shell(true);
+        shell.set_time(Time {
+            hour,
+            minute: 0,
+            weekday: 0,
+            day: 1,
+            month: 11,
+        });
+        let mut f = rp_draw::Frame::new();
+        let mut shot = |shell: &mut Shell, what: &str| {
+            shell.redraw_all();
+            shell.frame(&mut f);
+            let (c, e, o, p) = count(&f);
+            std::println!(
+                "{hour:02}h {what:<12} frame {c:>3} cmds, {p:>2} panels -> engine operations {e:>4} (each row a copy and a blend: {o})"
+            );
+        };
+        shot(&mut shell, "Today");
+        shell.open(Screen::Weather);
+        shell.settle();
+        shot(&mut shell, "Weather");
+        shell.open(Screen::Station);
+        shell.settle();
+        shot(&mut shell, "Station");
+        shell.open(Screen::WeatherSettings);
+        shell.settle();
+        shot(&mut shell, "Settings");
+    }
+}

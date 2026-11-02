@@ -295,13 +295,30 @@ pub struct PanelArt {
     pub corners: [&'static Image; 4],
 }
 
-/// Panel `r` in `art` as fills and images, each passed to `emit`: the body
-/// row by row (rows of one colour joined), the rim's rows and columns, the
-/// corners. Nothing for a panel smaller than its corners.
+/// A panel's clear (fully see-through): see [`panel_cmds`].
+pub const CLEAR: Argb = 0;
+
+/// Panel `r` in `art` as fills and images, each passed to `emit`: first
+/// the body's area (all but the corners) cleared, as fills of
+/// [`CLEAR`]; then the body row by row (rows of one colour joined), the
+/// rim's rows and columns, the corners. Nothing for a panel smaller than
+/// its corners.
+///
+/// A renderer may take the clears as "the wallpaper here" and the fills
+/// after them as blends over it: the 2D engine copies the wallpaper once
+/// for the panel, not under every row (R176: a row's fill was a copy and a
+/// blend, ~120 engine operations a panel). The pixels are the same.
 pub fn panel_cmds(r: Rect, art: &PanelArt, mut emit: impl FnMut(Cmd)) {
     let k = art.radius;
     if r.w < 2 * k + 2 || r.h < 2 * k + 2 {
         return;
+    }
+    for c in [
+        Rect::new(r.x + k, r.y, r.w - 2 * k, k),
+        Rect::new(r.x, r.y + k, r.w, r.h - 2 * k),
+        Rect::new(r.x + k, r.y + r.h - k, r.w - 2 * k, k),
+    ] {
+        emit(Cmd::Fill { r: c, color: CLEAR });
     }
     let row = |y: u16| {
         let i = u32::from(y) * 63 * 2 / u32::from(r.h - 1);

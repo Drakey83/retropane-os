@@ -100,8 +100,17 @@ def corner(look, k):
     return px
 
 
+def shown(rgb):
+    """A body colour rounded to what the X51v's RGB565 screen shows (red
+    and blue in steps of 8, green of 4): rows a step apart look the same
+    there, and like rows join into one fill (R176: ~60 fills a panel to
+    ~10-15, the look unchanged)."""
+    step = (8, 4, 8)
+    return [min(255, round(v / step[i]) * step[i]) for i, v in enumerate(rgb)]
+
+
 def art(name, look):
-    rows = [argb(body(look, i / 63), look["alpha"]) for i in range(64)]
+    rows = [argb(shown(body(look, i / 63)), look["alpha"]) for i in range(64)]
     top_lit, bottom_lit, side_lit = 0.8, 0.57, 0.73
     top = [argb(mix(body(look, 0.0), rim_at(look, y + 0.5, top_lit)), look["alpha"]) for y in range(2)]
     bottom = [argb(mix(body(look, 1.0), rim_at(look, 1.5 - y, bottom_lit)), look["alpha"]) for y in range(2)]
