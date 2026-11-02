@@ -26,6 +26,11 @@ LOOKS = {
     "LIGHT": dict(top=(176, 178, 183), bottom=(140, 142, 148), alpha=0.93, rim=0.85, sheen=0.26),
     "DARK": dict(top=(64, 66, 74), bottom=(40, 42, 48), alpha=0.90, rim=0.65, sheen=0.18),
 }
+# A pressed panel (the weather card under the pen): the same glass a shade
+# darker, words and pictures kept (a dark fill over it replaced them all,
+# the card gone for the press, the owner's video of 2026-11-01).
+LOOKS["LIGHT_PRESSED"] = dict(LOOKS["LIGHT"], dim=0.80)
+LOOKS["DARK_PRESSED"] = dict(LOOKS["DARK"], dim=0.70)
 
 
 def smooth(e0, e1, v):
@@ -35,11 +40,12 @@ def smooth(e0, e1, v):
 
 def body(look, f):
     """The body's colour at fraction f down the panel (0 top, 1 bottom):
-    the frosted grey, a sheen near the top."""
+    the frosted grey, a sheen near the top; a pressed panel's darker
+    (`dim`)."""
     t, b = look["top"], look["bottom"]
     c = [t[i] + (b[i] - t[i]) * f for i in range(3)]
     g = look["sheen"] * math.exp(-(((f - 0.05) / 0.25) ** 2))
-    return [c[i] * (1 - g) + 255 * g for i in range(3)]
+    return [(c[i] * (1 - g) + 255 * g) * look.get("dim", 1.0) for i in range(3)]
 
 
 def rim_at(look, inward, lit):
@@ -112,7 +118,7 @@ def art(name, look):
     for i in range(0, 64, 6):
         out.append("    " + ", ".join(f"0x{v:08X}" for v in rows[i : i + 6]) + ",")
     out.append("];")
-    out.append(f"/// The {name.lower()} look's glass panel.")
+    out.append(f"/// The {name.lower().replace('_', ' ')} glass panel.")
     out.append(f"pub static {name}: PanelArt = PanelArt {{")
     out.append(f"    radius: {K},")
     out.append(f"    rows: &{name}_ROWS,")

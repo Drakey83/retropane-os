@@ -2986,3 +2986,37 @@ fn the_living_sky_moves_inside_the_weather_card() {
     }
     assert!(seen > 0, "no sky drawn");
 }
+
+#[test]
+fn the_pressed_weather_card_keeps_its_words_and_picture() {
+    // The owner's video, 2026-11-01: a dark fill over the pressed card set
+    // its pixels, the glass, words and picture gone for the press. Pressed,
+    // the card's glass is drawn darker, and nothing is filled over it.
+    let mut s = shell(true);
+    drawn(&mut s);
+    let (x, y) = (HERO.x + HERO.w / 2, HERO.y + HERO.h / 2);
+    s.input(Input::PenDown { x, y });
+    let f = drawn(&mut s);
+    let mut glass = 0;
+    let mut after = false;
+    for c in f.cmds() {
+        match *c {
+            Cmd::Panel { r, art } if r == HERO => {
+                assert!(
+                    core::ptr::eq(art, panel::pressed(s.light())),
+                    "pressed glass"
+                );
+                glass += 1;
+                after = true;
+            }
+            Cmd::Fill { r, .. } | Cmd::HGradient { r, .. } if after => {
+                assert!(
+                    r.intersect(&HERO).is_empty(),
+                    "{r:?} filled over the pressed card"
+                );
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(glass, 1);
+}

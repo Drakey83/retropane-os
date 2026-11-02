@@ -39,18 +39,37 @@ pub fn body(light: bool) -> Argb {
 /// Whether `c` is the panels' own (the light look keeps it).
 #[must_use]
 pub fn is_panel(c: Argb) -> bool {
-    c == body(true)
+    c == body(true) || c == pressed(true).rows[32]
 }
 
 /// Draws box `r` as glass in the look.
 pub fn draw(f: &mut Frame, r: Rect, light: bool) {
-    let art = art(light);
+    draw_art(f, r, art(light), body(light));
+}
+
+/// The pressed glass for the look: the same panel a shade darker (the
+/// weather card under the pen).
+#[must_use]
+pub fn pressed(light: bool) -> &'static PanelArt {
+    if light {
+        &panel_art::LIGHT_PRESSED
+    } else {
+        &panel_art::DARK_PRESSED
+    }
+}
+
+/// Draws box `r` as pressed glass in the look: a dark fill over the card
+/// replaced its glass, words and picture (a fill sets its pixels), the
+/// card gone for the press (the owner's video, 2026-11-01).
+pub fn draw_pressed(f: &mut Frame, r: Rect, light: bool) {
+    let art = pressed(light);
+    draw_art(f, r, art, art.rows[32]);
+}
+
+fn draw_art(f: &mut Frame, r: Rect, art: &'static PanelArt, flat: Argb) {
     let k = 2 * art.radius + 2;
     if r.w < k || r.h < k {
-        f.push(Cmd::Fill {
-            r,
-            color: body(light),
-        });
+        f.push(Cmd::Fill { r, color: flat });
         return;
     }
     f.push(Cmd::Panel { r, art });

@@ -590,8 +590,6 @@ const FOCUS: Argb = rp_draw::look::theme(0xFF7F_D0FF);
 /// three drawn, 2026-10-31: a see-through press, "I do NOT like that";
 /// docs/design/mockups/pressed-look-choices.png).
 const PRESSED_UNDER: Argb = rp_draw::look::theme(0xFF3C_4656);
-/// A pressed card that opens an app: darkened, not lit.
-const PRESSED_DARK: Argb = rp_draw::look::theme(0x40000000);
 /// The align screen's background (opaque: the wallpaper would distract).
 const ALIGN_BACK: Argb = rp_draw::look::theme(0xFF0C_1014);
 /// A target held long enough.
@@ -2232,16 +2230,12 @@ impl Shell {
 
     fn decorate(&self, f: &mut Frame, t: Target) {
         let r = self.rect_of(t);
-        // The weather card opens the app: pressed, it darkens (a pale fill
-        // over its glass read as the screen flashing white while the app
-        // composed, the owner's photo 2026-10-30). Every other button's
-        // press is solid, under its label (`press_under`).
-        if self.pressed == Some(t) && t == Target::Hero {
-            f.push(Cmd::Fill {
-                r,
-                color: PRESSED_DARK,
-            });
-        }
+        // The weather card opens the app: pressed, its glass darkens
+        // (`today_scene`; a pale fill over its glass read as the screen
+        // flashing white, the owner's photo 2026-10-30, and a dark one
+        // replaced the card, words and picture, with the wallpaper, his
+        // video 2026-11-01). Every other button's press is solid, under its
+        // label (`press_under`).
         if self.focus == Some(t) {
             f.push(Cmd::Outline { r, color: FOCUS });
             f.push(Cmd::Outline {
@@ -2491,7 +2485,11 @@ impl Shell {
 
         // The weather hero (a tap opens the Weather app), the living sky
         // behind its words and picture.
-        self.glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
+        if self.pressed == Some(Target::Hero) && !self.panels_off {
+            panel::draw_pressed(f, HERO, self.light());
+        } else {
+            self.glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
+        }
         self.sky_scene(f);
         // The card, as the Weather app's Now panel draws it (Reveal opens
         // from one to the other with nothing changing).

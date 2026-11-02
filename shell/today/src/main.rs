@@ -2742,6 +2742,14 @@ mod image {
                 // A sky step alone leaves the app composed ahead as it was.
                 let sky_only = shell.only_sky_changed();
                 if draw {
+                    // The chart's line painted before the frame that shows
+                    // it (painted only when still, a chart opened over the
+                    // last one's line, then swapped: the owner's video,
+                    // 2026-11-01, "a fully different line graph").
+                    if rp_today::keep_graph(shell, pics, &mut graph_key) {
+                        pages_check = true;
+                        app_check = true;
+                    }
                     z_shell.run(|| shell.frame(frame));
                     // Commands past the frame's room are dropped: never
                     // quietly (the tests walk every screen with the device's
