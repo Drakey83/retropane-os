@@ -96,3 +96,33 @@ fn dirty_rectangles_merge_when_full() {
     let all = f.dirty().iter().fold(Rect::default(), |a, r| a.union(r));
     assert_eq!(all, Rect::new(0, 0, 362, 10));
 }
+
+/// A glyph lying wholly left of its pen (the living sky's clouds) is
+/// within its text's bounds: bounded by the line box alone, a cloud whose
+/// pen passed the sky's right edge was skipped while still on screen (the
+/// owner's run, 2026-11-01).
+#[test]
+fn text_bounds_hold_a_glyph_left_of_its_pen() {
+    static COVER: [u8; 40 * 10] = [255; 40 * 10];
+    static GLYPHS: [Glyph; 1] = [Glyph {
+        w: 40,
+        h: 10,
+        left: -40,
+        top: 0,
+        advance: 0,
+        cover: &COVER,
+    }];
+    static CLOUD: Font = Font {
+        line: 10,
+        ascent: 0,
+        first: b'A',
+        glyphs: &GLYPHS,
+    };
+    let mut f = Frame::new();
+    f.text(300, 100, &CLOUD, 0xFFFF_FFFF, b"A");
+    let b = f.cmds().next().unwrap().bounds(&f);
+    assert!(b.x <= 260 && b.x + b.w >= 300, "{b:?}");
+    assert!(b.y <= 100 && b.y + b.h >= 110, "{b:?}");
+    // A dirty area left of the pen still meets it.
+    assert!(!Rect::new(250, 90, 30, 30).intersect(&b).is_empty());
+}

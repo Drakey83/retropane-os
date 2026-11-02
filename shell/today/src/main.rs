@@ -348,6 +348,9 @@ mod image {
         sig: u32,
         regs: [u32; 5],
         meant: (u16, u16, u16, u16, u16),
+        /// The scan line the last commit ended on (where its writes
+        /// landed).
+        line: u32,
     }
 
     impl Refresh {
@@ -364,7 +367,7 @@ mod image {
                 self.regs[4],
                 u32::from(m.0) | u32::from(m.1) << 16,
                 u32::from(m.2) | u32::from(m.3) << 16,
-                u32::from(m.4),
+                u32::from(m.4) | self.line << 16,
             ]
         }
 
@@ -376,12 +379,23 @@ mod image {
                 sig: w[1],
                 regs: [w[2], w[3], w[4], w[5], w[6]],
                 meant: (lo(w[7]), lo(w[7] >> 16), lo(w[8]), lo(w[8] >> 16), lo(w[9])),
+                line: w[9] >> 16,
             }
         }
     }
 
     /// Refreshes kept per opening (~1.6 s at 60 Hz).
     const TRACE: usize = 96;
+
+    /// The layer's window over the whole of a screen-sized picture.
+    const WHOLE: Window = Window {
+        x: 0,
+        y: 0,
+        w: W as u16,
+        h: H as u16,
+        row: 0,
+        col: 0,
+    };
 
     /// Reveal's window over the app composed aside.
     fn reveal_state(r: rp_draw::Rect, shift: u16) -> LayerState {
@@ -1600,7 +1614,7 @@ mod image {
                 let cm = gfx.commits();
                 let _ = writeln!(
                     RunLog,
-                    "plane path: {} commits (window moves and hand-offs), {} ending outside the plane window (lines 643-2), the last on line {:?}",
+                    "plane path: {} commits (window moves and hand-offs), {} ending outside the plane window (lines 640-642), the last on line {:?}",
                     cm.done, cm.late, cm.last_line
                 );
                 let _ = writeln!(
@@ -2166,13 +2180,39 @@ mod image {
                     // own planes (its chrome drawn, its page on the layer)
                     // once anything on it changes or the pen comes down,
                     // so the change shows with the swap, never on its own.
-                    if rest_on_app
-                        && (shell.needs_frame()
-                            || filter.down()
-                            || shell.animating()
-                            || shell.page_layer().is_none())
-                    {
+                    let wake = if !rest_on_app {
+                        None
+                    } else if filter.down() {
+                        Some("the pen down")
+                    } else if shell.animating() {
+                        Some("the app moving")
+                    } else if shell.page_layer().is_none() {
+                        Some("no page on the layer")
+                    } else if shell.needs_frame() {
+                        Some(if shell.only_sky_changed() {
+                            "the sky's area changed"
+                        } else {
+                            "the app changed"
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(why) = wake {
                         rest_on_app = false;
+                        // The page the app hands over to, built now if it
+                        // is out of date (the screen shows the opening's
+                        // picture meanwhile, as right as ever): never an
+                        // old page swapped in, then rebuilt.
+                        if let Some(v) = shell.page_layer() {
+                            let i = usize::from(v.tab);
+                            let key = page_key(shell, frame, v.tab);
+                            if pages[i].is_none_or(|(_, k)| k != key) {
+                                if let Some((h, _)) = pages[i].take() {
+                                    let _ = gfx.free_picture(pc, h);
+                                }
+                                pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, v.tab);
+                            }
+                        }
                         shell.redraw_all();
                         let want = shell.page_layer().and_then(|v| {
                             pages[usize::from(v.tab)].map(|(h, _)| (v.tab, page_state(h, v)))
@@ -2182,7 +2222,7 @@ mod image {
                         pages_check = true;
                         let _ = writeln!(
                             RunLog,
-                            "rest: {now_ms} ms, the opening's picture handed to the app's planes"
+                            "rest: {now_ms} ms, the opening's picture handed to the app's planes ({why})"
                         );
                     }
                     if commit.is_some() {
@@ -2295,13 +2335,14 @@ mod image {
                             let _ = gfx.move_layer(pc, page_state(h, v).win);
                             shown_tab = Some(v.tab);
                             screen_on_pic = true;
-                        } else if let Some(app) = reveal_pic.take()
-                            && gfx.commit_screen(pc, app, None).is_ok()
-                        {
-                            // The screen plane on the opening's own picture,
-                            // the layer off: the same pixels, its title bar
-                            // in (below the bar, nothing changes). Rests
-                            // there until the app changes or is touched.
+                        } else if reveal_pic.take().is_some() && gfx.move_layer(pc, WHOLE).is_ok() {
+                            // The layer's window over the whole of the
+                            // opening's own picture: the same pixels, its
+                            // title bar in (below the bar, nothing changes).
+                            // The layer stays on (switched off here and on
+                            // again at the hand-over, the run of 2026-11-01
+                            // showed one wrong refresh). Rests there until
+                            // the app changes or is touched.
                             rest_on_app = true;
                             shown_tab = None;
                         } else {
@@ -2343,9 +2384,7 @@ mod image {
                             // the screen plane rests on it (as above), or
                             // the screen's chrome and the page layer in one
                             // commit (below), its frames counted.
-                            if let Some(app) = reveal_pic.take()
-                                && gfx.commit_screen(pc, app, None).is_ok()
-                            {
+                            if reveal_pic.take().is_some() && gfx.move_layer(pc, WHOLE).is_ok() {
                                 rest_on_app = true;
                                 shown_tab = None;
                             }
@@ -2434,16 +2473,16 @@ mod image {
                 // Ahead of need, while still: a page not shown whose draw
                 // list changed (the clock's minute) is rebuilt, one a pass,
                 // so opening or turning to it never waits for a build.
-                // (Only the living sky moving counts as still: it moves on
-                // Today all the time, and these waited for a stillness that
-                // never came, two minutes in the owner's run of 2026-11-01,
-                // so the opening grew old pictures.)
+                // (Not while the living sky moves: a page's build holds the
+                // CPU ~110 ms, the sky stopping 3-4 steps, the owner's run
+                // of 2026-11-01, today-0048. A page out of date is built
+                // when the app first hands over to it, above.)
                 if pages_check
                     && commit.is_none()
                     && !rest_on_app
                     && !shell.animating()
                     && !filter.down()
-                    && (!shell.needs_frame() || shell.only_sky_changed())
+                    && !shell.needs_frame()
                     && !gfx.busy()
                     && !gfx.commit_pending()
                     && !gfx.aside_held()
@@ -2607,6 +2646,7 @@ mod image {
                             rd(regs, rp_drv_mbx_display::layers::reg::SSSIZE),
                         ],
                         meant,
+                        line: gfx.commits().last_line.unwrap_or(0xFFF),
                     };
                     trace[trace_n * 10..trace_n * 10 + 10].copy_from_slice(&t.words());
                     trace_n += 1;
@@ -2626,7 +2666,7 @@ mod image {
                     trace_on = false;
                     let _ = writeln!(
                         RunLog,
-                        "trace of open {opens}: {trace_n} refreshes (ms, DSIG, GSCADR, VSCADR, VSADR, VSCTRL, SSSIZE; the window meant x,y,w,h,row)"
+                        "trace of open {opens}: {trace_n} refreshes (ms, DSIG, GSCADR, VSCADR, VSADR, VSCTRL, SSSIZE; the window meant x,y,w,h,row; @ the last commit's line)"
                     );
                     // Every opening's end in one line: from the opening's
                     // last refresh, how many times the picture changed
@@ -2664,7 +2704,7 @@ mod image {
                         let t = Refresh::from_words(w);
                         let _ = writeln!(
                             RunLog,
-                            "T {} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} | {},{},{},{},{}",
+                            "T {} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} | {},{},{},{},{} @{}",
                             t.ms,
                             t.sig,
                             t.regs[0],
@@ -2676,7 +2716,8 @@ mod image {
                             t.meant.1,
                             t.meant.2,
                             t.meant.3,
-                            t.meant.4
+                            t.meant.4,
+                            t.line
                         );
                     }
                 }

@@ -7,8 +7,9 @@
 //! - **One atomic commit a refresh** (the modern way: Linux's atomic mode
 //!   setting). The layer's picture, window and on/off, and the 2D
 //!   renderer's held flip, are staged and written together in scan lines
-//!   643-2 (run WG on the X51v: window repoints there whole every refresh,
-//!   gpubench-0248/-0249/-0251), the changed registers only. A newer window
+//!   640-642 (run WG-R way D on the X51v; 643-2 at first, where the
+//!   owner's run of 2026-11-01 saw a write split across two refreshes),
+//!   the changed registers only. A newer window
 //!   replaces a staged one: the latest wins, never a queue of stale frames.
 //!   A hand-off between the composed screen and the screen with its layer
 //!   is one commit, so it lands in one refresh (M4).
@@ -36,27 +37,33 @@ use super::{ClientId, Error, FLIP_LEAD_US, Graphics, Handle, Job, Step};
 /// turn's strip, the radar's two).
 pub const PICTURES: usize = 6;
 
-/// The first scan line of the plane window: lines 643-644 and 0-2 of the
-/// 645-line refresh (GC2DC run 2: plane writes clean there; run WG wrote
-/// every window there, whole).
-const PLANE_FROM: u32 = 643;
-/// Its last line, after the wrap.
-const PLANE_TO: u32 = 2;
+/// The first scan line of the plane window: lines 640-642 of the 645-line
+/// refresh, the blanking's start (run WG-R way D: every Reveal refresh
+/// whole there). Not 643-2 as first built: the owner's run of 2026-11-01
+/// (today-0048, his video) had every hand-off written ending on line 643,
+/// and the refresh after one showed the window at its new place reading
+/// its old picture start (34 rows off, `DSIG` c2da691a for one refresh,
+/// the registers already read back final), as if the picture start is
+/// taken early in line 643 and the place later: a write there splits
+/// across two refreshes.
+const PLANE_FROM: u32 = 640;
+/// Its last line.
+const PLANE_TO: u32 = 642;
 /// The plane window's lines.
-const PLANE_LINES: u32 = 5;
+const PLANE_LINES: u32 = 3;
 /// The screens' stride (RGB565, 480 wide): an app composed aside.
 const SCREEN_STRIDE: u32 = 960;
 
 /// Whether `line` is in the plane window.
 const fn in_window(line: u32) -> bool {
-    line >= PLANE_FROM || line <= PLANE_TO
+    line >= PLANE_FROM && line <= PLANE_TO
 }
 
 /// Whether a commit may start on `line`: in the window but not its last
 /// line, so its few writes end inside it (the X51v's first run of the app:
 /// 17 of 1,309 commits ended outside).
 const fn may_start(line: u32) -> bool {
-    line >= PLANE_FROM || line < PLANE_TO
+    line >= PLANE_FROM && line < PLANE_TO
 }
 
 /// Where the layer shows on screen and what of its picture.
@@ -738,8 +745,9 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
     }
 }
 
-/// The plane window is five lines long (the scan model's check).
-const _: () = assert!((scan::X51V_60HZ.total - PLANE_FROM) + PLANE_TO + 1 == PLANE_LINES);
+/// The plane window is three lines long, in the blanking (the scan
+/// model's check).
+const _: () = assert!(PLANE_TO - PLANE_FROM + 1 == PLANE_LINES && PLANE_TO < scan::X51V_60HZ.total);
 
 #[cfg(test)]
 pub(crate) const fn window_line(line: u32) -> bool {

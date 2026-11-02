@@ -159,6 +159,28 @@ impl Font {
             .filter_map(|&c| self.glyph(c))
             .fold(0u16, |w, g| w.saturating_add(u16::from(g.advance)))
     }
+
+    /// Where `text`'s glyphs' masks fall, from the pen and the baseline:
+    /// (left, right, top, bottom), x right and y down, `None` with no
+    /// mask. A glyph may lie wholly left of its pen (the living sky's
+    /// clouds: `left` = -their width).
+    #[must_use]
+    pub fn ink(&self, text: &[u8]) -> Option<(i32, i32, i32, i32)> {
+        let mut pen = 0i32;
+        let mut ink: Option<(i32, i32, i32, i32)> = None;
+        for g in text.iter().filter_map(|&c| self.glyph(c)) {
+            if g.w > 0 && g.h > 0 {
+                let x0 = pen + i32::from(g.left);
+                let y0 = -i32::from(g.top);
+                let b = (x0, x0 + i32::from(g.w), y0, y0 + i32::from(g.h));
+                ink = Some(ink.map_or(b, |a| {
+                    (a.0.min(b.0), a.1.max(b.1), a.2.min(b.2), a.3.max(b.3))
+                }));
+            }
+            pen += i32::from(g.advance);
+        }
+        ink
+    }
 }
 
 /// Where a text run's bytes are in its frame's text store.
@@ -365,21 +387,34 @@ impl Cmd {
                     pic.h.saturating_sub(cut),
                 )
             }
-            // The line box with a margin: glyphs may overhang their advance
-            // (italics, `left` < 0) by a few pixels.
+            // The line box and where the glyphs' masks fall (a cloud of the
+            // living sky lies wholly left of its pen: bounded by its line
+            // box alone, it was skipped once its pen passed the sky's right
+            // edge and vanished there, the owner's run of 2026-11-01), with
+            // a margin.
             Cmd::Text {
                 x,
                 baseline,
                 font,
                 text,
                 ..
-            } => Rect::new(
-                x.saturating_sub(TEXT_MARGIN),
-                baseline.saturating_sub(u16::from(font.ascent) + TEXT_MARGIN),
-                font.width(frame.text_of(text))
-                    .saturating_add(2 * TEXT_MARGIN),
-                u16::from(font.line) + 2 * TEXT_MARGIN,
-            ),
+            } => {
+                let t = frame.text_of(text);
+                let (x, b) = (i32::from(x), i32::from(baseline));
+                let (mut x0, mut x1) = (x, x + i32::from(font.width(t)));
+                let (mut y0, mut y1) = (
+                    b - i32::from(font.ascent),
+                    b - i32::from(font.ascent) + i32::from(font.line),
+                );
+                if let Some((l, r, top, bottom)) = font.ink(t) {
+                    (x0, x1) = (x0.min(x + l), x1.max(x + r));
+                    (y0, y1) = (y0.min(b + top), y1.max(b + bottom));
+                }
+                let m = i32::from(TEXT_MARGIN);
+                let (x0, y0) = ((x0 - m).max(0), (y0 - m).max(0));
+                let (x1, y1) = ((x1 + m).clamp(x0, 0xFFFF), (y1 + m).clamp(y0, 0xFFFF));
+                Rect::new(x0 as u16, y0 as u16, (x1 - x0) as u16, (y1 - y0) as u16)
+            }
         }
     }
 }

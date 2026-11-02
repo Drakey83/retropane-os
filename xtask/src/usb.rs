@@ -72,15 +72,28 @@ $sp.Close()
 
 #[cfg(test)]
 fn load_script(frame: &Path) -> String {
-    load_script_opts(frame, true, 1)
+    load_script_opts(frame, true, 1, None)
 }
 
 /// [`load_script`], or with `wait_log` false only the send and the
 /// loader's reply (for [`start`]). `frames`: control frames before the
 /// image in the same send (the card log's `name`) each get their own
-/// reply first (`EARLY`); the image's is the last.
-fn load_script_opts(frame: &Path, wait_log: bool, frames: usize) -> String {
+/// reply first (`EARLY`); the image's is the last. `relay`: a file that
+/// exists while the dock's relay runs; the wait for the log leaves the
+/// port alone then (the image's port has the loader's USB ID: opened and
+/// held by this wait, the relay was refused all run, no station, the
+/// owner's run of 2026-11-01).
+fn load_script_opts(frame: &Path, wait_log: bool, frames: usize, relay: Option<&Path>) -> String {
     let log_wait = log_wait_secs();
+    let relay_up = relay.map_or_else(
+        || "$false".to_string(),
+        |f| {
+            format!(
+                "(Test-Path -LiteralPath '{}')",
+                f.display().to_string().replace('\'', "''")
+            )
+        },
+    );
     let path = frame.display().to_string().replace('\'', "''");
     let stop = if wait_log { "" } else { "exit 0\n" };
     let early = frames.saturating_sub(1);
@@ -121,6 +134,8 @@ $done = $false
 $lastKick = Get-Date
 while (-not $done -and (Get-Date) -lt $deadline) {{
     Start-Sleep -Milliseconds 500
+    # The relay has the image's port: not opened, not restarted.
+    if ({relay_up}) {{ $lastKick = Get-Date; continue }}
     if (((Get-Date) - $lastKick).TotalSeconds -ge 8) {{
         {kick}
         $lastKick = Get-Date
@@ -875,7 +890,7 @@ fn image_frame(root: &Path, what: &str) -> Result<(Vec<u8>, std::path::PathBuf, 
 /// from the image's start. The run log is left for `cargo xtask log`.
 pub fn start(root: &Path, what: &str) -> Result<std::time::Instant, String> {
     let (payload, frame, frames) = image_frame(root, what)?;
-    let out = powershell(&load_script_opts(&frame, false, frames))?;
+    let out = powershell(&load_script_opts(&frame, false, frames, None))?;
     let at = std::time::Instant::now();
     let text = String::from_utf8_lossy(&out.stdout);
     if text.contains("NOPORT") || !text.contains("PORT ") {
@@ -915,19 +930,31 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
     // process, which holds the Axim's lock (a separate `cargo xtask net`
     // waited for that lock until the run was over, so no run had the
     // internet: the owner, 2026-10-31). It ends when the image's port goes.
+    // While it runs, a file says so, and the wait for the run's log
+    // leaves the port to it (`load_script_opts`).
+    let relay_flag = root.join("target").join("load").join("relay-up");
+    let _ = std::fs::remove_file(&relay_flag);
     let relay = (what == "rp-today").then(|| {
         let root = root.to_path_buf();
+        let flag = relay_flag.clone();
         eprintln!("    the dock's relay runs alongside (cargo xtask net)");
         let wait = u64::from(log_wait_secs());
-        std::thread::spawn(move || net_for(&root, false, wait))
+        let _ = std::fs::create_dir_all(root.join("target").join("load"));
+        let _ = std::fs::write(&flag, b"the dock's relay has the image's port\n");
+        std::thread::spawn(move || {
+            let r = net_for(&root, false, wait);
+            let _ = std::fs::remove_file(&flag);
+            r
+        })
     });
-    let mut out = powershell(&load_script_opts(&frame, true, frames))?;
+    let hold = relay.is_some().then_some(relay_flag.as_path());
+    let mut out = powershell(&load_script_opts(&frame, true, frames, hold))?;
     if String::from_utf8_lossy(&out.stdout).contains("NOPORT") {
         // Windows still holds a stale entry for the port (Windows Mobile's
         // device after a fresh start, or ours): restart it and look again.
         eprintln!("    no port yet: asking Windows to re-find the Axim");
         let _ = powershell(&format!("{}; Start-Sleep 6", kick_task()));
-        out = powershell(&load_script_opts(&frame, true, frames))?;
+        out = powershell(&load_script_opts(&frame, true, frames, hold))?;
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut port = None;
@@ -1589,7 +1616,7 @@ mod tests {
     /// comes first and is set apart, the image's is the one acted on.
     #[test]
     fn a_name_sent_with_the_image_has_its_reply_set_apart() {
-        let s = load_script_opts(Path::new("x.frame"), true, 2);
+        let s = load_script_opts(Path::new("x.frame"), true, 2, None);
         assert!(s.contains("$early = 1"));
         assert!(s.contains("\"EARLY \" + $l"));
         assert!(load_script(Path::new("x.frame")).contains("$early = 0"));
