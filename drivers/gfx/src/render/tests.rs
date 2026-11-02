@@ -200,6 +200,7 @@ fn a_store_picture_draws_as_the_same_image_and_a_stale_one_draws_nothing() {
     let pics = Pics::new(Box::leak(vec![0; 4].into_boxed_slice()), &[(2, 2, 1)]);
     let pic = pics.alloc(ICON.w, ICON.h).unwrap();
     assert!(pics.write(pic, |px| px.copy_from_slice(ICON.px)));
+    let missed = core::cell::Cell::new(rp_draw::pics::Misses::default());
     let draw = |c: Cmd, store: Option<&Pics<'static>>| {
         let (mut px, mut plane) = (vec![0; (W * H) as usize], vec![0; (W * H * 4) as usize]);
         {
@@ -211,6 +212,7 @@ fn a_store_picture_draws_as_the_same_image_and_a_stale_one_draws_nothing() {
             f.push(c);
             f.damage(rp_draw::Rect::new(0, 0, W as u16, H as u16));
             r.draw(&f);
+            missed.set(r.missed);
         }
         plane
     };
@@ -230,11 +232,18 @@ fn a_store_picture_draws_as_the_same_image_and_a_stale_one_draws_nothing() {
         },
         None,
     );
+    assert_eq!(missed.get().n, 0, "a picture drawn isn't missed");
     assert_eq!(draw(Cmd::Pic { x: 5, y: 3, pic }, None), blank, "no store");
+    assert_eq!(
+        missed.get().last,
+        Some((pic, rp_draw::pics::Miss::NoStore)),
+        "and says so (R181)"
+    );
     pics.free(pic);
     assert_eq!(
         draw(Cmd::Pic { x: 5, y: 3, pic }, Some(&pics)),
         blank,
         "stale"
     );
+    assert_eq!(missed.get().last, Some((pic, rp_draw::pics::Miss::Stale)));
 }

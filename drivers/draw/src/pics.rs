@@ -228,6 +228,52 @@ impl<'a> Pics<'a> {
     pub fn is_live(&self, pic: Pic) -> bool {
         self.live(pic).is_some()
     }
+
+    /// Why `pic` can't be read now: its slot freed or reused, or being
+    /// written.
+    #[must_use]
+    pub fn why_not(&self, pic: Pic) -> Miss {
+        match self.live(pic) {
+            None => Miss::Stale,
+            Some(s) if s.px.try_borrow().is_err() => Miss::Busy,
+            Some(_) => Miss::Other,
+        }
+    }
+}
+
+/// Why a renderer drew nothing for a `Cmd::Pic` (the owner's run of
+/// 2026-11-02, R181: a forecast card without its icon, and nothing in the
+/// log; no silent errors).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Miss {
+    /// The handle's slot was freed or reused (an old handle).
+    Stale,
+    /// The slot was being written.
+    Busy,
+    /// No store given to the renderer.
+    NoStore,
+    /// Larger than the renderer's cache for pictures.
+    TooBig,
+    /// Read, but not placed (the renderer's own reason).
+    Other,
+}
+
+/// A renderer's pictures not drawn: how many, and the last (which and
+/// why), for the run log.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Misses {
+    /// Pictures not drawn.
+    pub n: u32,
+    /// The last one and why.
+    pub last: Option<(Pic, Miss)>,
+}
+
+impl Misses {
+    /// Counts `pic` not drawn for `why`.
+    pub fn note(&mut self, pic: Pic, why: Miss) {
+        self.n = self.n.saturating_add(1);
+        self.last = Some((pic, why));
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +329,26 @@ mod tests {
         assert!(s.write(r, |px| px[0] = 3), "a new picture is open again");
         s.free(p);
         assert!(s.is_live(q), "freeing a stale handle leaves the new one");
+    }
+
+    /// Why a picture can't be had is told, never left silent (R181): an
+    /// old handle is stale, one being written busy; the tally keeps the
+    /// count and the last.
+    #[test]
+    fn a_picture_not_had_says_why() {
+        let s = store();
+        let p = s.alloc(2, 2).unwrap();
+        assert_eq!(s.why_not(p), Miss::Other, "live and free to read");
+        let mut seen = None;
+        assert!(s.write(p, |_| seen = Some(s.why_not(p))));
+        assert_eq!(seen, Some(Miss::Busy), "while it's written");
+        s.free(p);
+        assert_eq!(s.why_not(p), Miss::Stale);
+        let mut m = Misses::default();
+        m.note(p, Miss::Stale);
+        m.note(p, Miss::TooBig);
+        assert_eq!(m.n, 2);
+        assert_eq!(m.last, Some((p, Miss::TooBig)));
     }
 
     #[test]

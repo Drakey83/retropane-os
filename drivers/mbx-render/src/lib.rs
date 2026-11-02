@@ -265,6 +265,9 @@ pub struct FrameStats {
     /// Commands the 2D FIFO wouldn't take (full for 100 ms): the rest of
     /// the frame was dropped and it isn't shown ([`Mbx2dRenderer::fifo_full`]).
     pub fifo_full: u32,
+    /// Pictures not drawn (`Cmd::Pic` whose pixels couldn't be had or
+    /// placed), and the last of them (R181: never silent).
+    pub pics_missed: rp_draw::pics::Misses,
 }
 
 /// The 3D core's dither matrix (`0x650` bit 3, `rp-gpubench` run P2 on
@@ -1028,13 +1031,18 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// kept by its handle's key (slot and era, ADR-0030 G3), so a slot
     /// reused for another picture is uploaded again, never shown stale.
     /// Odd keys: a static picture's key is its 4-aligned address.
-    fn pic(&mut self, pic: rp_draw::pics::Pic) -> Option<usize> {
+    fn pic(&mut self, pic: rp_draw::pics::Pic) -> Result<usize, rp_draw::pics::Miss> {
+        use rp_draw::pics::Miss;
         let key = (pic.key() as usize) << 2 | 1;
         if let Some(at) = self.cached(key) {
-            return Some(at);
+            return Ok(at);
         }
-        let pics = self.pics?;
-        pics.read(pic, |px| self.upload(key, px)).flatten()
+        let pics = self.pics.ok_or(Miss::NoStore)?;
+        match pics.read(pic, |px| self.upload(key, px)) {
+            Some(Some(at)) => Ok(at),
+            Some(None) => Err(Miss::TooBig),
+            None => Err(pics.why_not(pic)),
+        }
     }
 
     /// An uploaded picture's place, by key.
@@ -1358,8 +1366,9 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 else {
                     return;
                 };
-                if let Some(at) = self.pic(pic) {
-                    self.blend_from(dst, to, (at, usize::from(pic.w) * 4), sx, sy);
+                match self.pic(pic) {
+                    Ok(at) => self.blend_from(dst, to, (at, usize::from(pic.w) * 4), sx, sy),
+                    Err(why) => self.last.pics_missed.note(pic, why),
                 }
             }
             Cmd::Text {

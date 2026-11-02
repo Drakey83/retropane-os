@@ -1053,6 +1053,20 @@ impl Shell {
         w
     }
 
+    /// The Today screen's five forecast cards: each day's condition (pack
+    /// id less one) and the picture its card shows (`None`: the card is
+    /// drawn without one). For the run log (R181: a card shown without its
+    /// icon said nothing).
+    #[must_use]
+    pub fn today_cards(&self) -> [(u8, Option<Pic>); 5] {
+        let mut out = [(0, None); 5];
+        for (o, d) in out.iter_mut().zip(&self.wx.days[1..6]) {
+            let id = Icon::of(d.sky).id() - 1;
+            *o = (id, self.icons.card[usize::from(id)]);
+        }
+        out
+    }
+
     /// The first alert in force's name (the header's chip).
     pub(crate) fn alert_name(&self) -> Option<&[u8]> {
         (self.n_alerts > 0).then(|| self.alerts[0].event.as_bytes())

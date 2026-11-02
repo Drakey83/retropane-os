@@ -459,6 +459,26 @@ mod image {
     /// The keeper's tag while no pack is in yet (apart from every pack).
     const NOT_YET: u8 = 0xFE;
 
+    /// The Today screen's forecast cards in the run log: each day's
+    /// condition and its picture (its key, and whether the store still
+    /// holds it), or "none" (R181: a card drawn without its icon said
+    /// nothing).
+    fn cards_line(shell: &rp_shell::Shell, pics: &rp_draw::pics::Pics<'_>) {
+        let _ = write!(RunLog, "today cards:");
+        for (id, pic) in shell.today_cards() {
+            let _ = match pic {
+                Some(p) => write!(
+                    RunLog,
+                    " {id}:{:#x}{}",
+                    p.key(),
+                    if pics.is_live(p) { "" } else { " stale" }
+                ),
+                None => write!(RunLog, " {id}:none"),
+            };
+        }
+        let _ = writeln!(RunLog);
+    }
+
     /// Card file `stem`'s bytes from `off` into `out` (all of it), across
     /// its parts (`<stem>A.PAK`, `B`, ..., each [`rp_today::PACK_PART`]
     /// bytes but the last): one ranged read a part, the volume mounted
@@ -1228,6 +1248,13 @@ mod image {
         let mut backdrop_shown: Option<bool> = None;
         let (mut burst_bg_px, mut burst_rows, mut burst_reused) = (0u64, 0u32, 0u32);
         let mut frames = 0u32;
+        // Pictures the renderers drew nothing for (R181): all so far, the
+        // CPU renderer's count when last read, the last one said and how
+        // many lines (a picture missed every frame says so once).
+        let mut pics_missed = 0u32;
+        let mut cpu_missed_seen = 0u32;
+        let mut missed_said: Option<(rp_draw::pics::Pic, rp_draw::pics::Miss)> = None;
+        let mut missed_lines = 0u32;
         let mut overflow_logged = false;
         let mut draw_us_worst = 0u32;
         // The CPU time of the frame last queued (for the slow-answer line).
@@ -1626,7 +1653,7 @@ mod image {
                 );
                 let _ = writeln!(
                     RunLog,
-                    "gpu frames: worst CPU queueing {queue_worst} us, worst wait for the previous frame and scan-out {wait_worst} us, worst queue-to-flip {engine_worst} us, background rebuilt {rebuilds} times; flips waited for the blanking {}, slipped a refresh {}; copied behind the scan {}, flipped as large {}, flipped with no copy window {}; copy times {:?} us",
+                    "gpu frames: worst CPU queueing {queue_worst} us, worst wait for the previous frame and scan-out {wait_worst} us, worst queue-to-flip {engine_worst} us, background rebuilt {rebuilds} times, pictures not drawn {pics_missed}; flips waited for the blanking {}, slipped a refresh {}; copied behind the scan {}, flipped as large {}, flipped with no copy window {}; copy times {:?} us",
                     gfx.starts().flips_waited,
                     gfx.starts().flips_slipped,
                     gfx.starts().two_d_behind,
@@ -1894,6 +1921,7 @@ mod image {
                                 ""
                             },
                         );
+                        cards_line(shell, pics);
                     }
                     batch = Batch::default();
                 }
@@ -1909,6 +1937,9 @@ mod image {
                     "screen: {:?}, page {}, icon pack {} at {now_ms} ms",
                     seen.0, seen.1, seen.2
                 );
+                if seen.0 == rp_shell::Screen::Today {
+                    cards_line(shell, pics);
+                }
             }
 
             // The dock's dev relay: the port polled each pass; the shell's
@@ -2849,6 +2880,29 @@ mod image {
                         s.atlases,
                         s.images
                     );
+                }
+                // Pictures drawn as nothing, by either renderer (R181).
+                let cpu_new = cpu.missed.n.wrapping_sub(cpu_missed_seen);
+                cpu_missed_seen = cpu.missed.n;
+                for (n, last, by) in [
+                    (s.pics_missed.n, s.pics_missed.last, "the 2D engine"),
+                    (cpu_new, cpu.missed.last, "the CPU"),
+                ] {
+                    pics_missed = pics_missed.saturating_add(n);
+                    if n > 0 && last != missed_said && missed_lines < 24 {
+                        missed_said = last;
+                        missed_lines += 1;
+                        if let Some((pic, why)) = last {
+                            let _ = writeln!(
+                                RunLog,
+                                "pictures not drawn by {by}: {n} in frame {} at {now_ms} ms, the last picture {:#x} ({} x {}): {why:?}; {pics_missed} so far",
+                                frames + 1,
+                                pic.key(),
+                                pic.w,
+                                pic.h
+                            );
+                        }
+                    }
                 }
                 queue_worst = queue_worst.max(s.queue_us);
                 wait_worst = wait_worst.max(s.wait_us);

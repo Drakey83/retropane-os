@@ -49,6 +49,8 @@ pub struct CpuRenderer<'a> {
     stride: usize,
     fmt: PlaneFormat,
     pics: Option<&'a rp_draw::pics::Pics<'static>>,
+    /// Pictures not drawn so far, and the last (R181: never silent).
+    pub missed: rp_draw::pics::Misses,
 }
 
 impl<'a> CpuRenderer<'a> {
@@ -61,6 +63,7 @@ impl<'a> CpuRenderer<'a> {
             stride,
             fmt,
             pics: None,
+            missed: rp_draw::pics::Misses::default(),
         }
     }
 
@@ -142,16 +145,21 @@ impl<'a> CpuRenderer<'a> {
                     .draw_over_in(&src, i32::from(x), i32::from(y), clip);
             }
             Cmd::Pic { x, y, pic } => {
-                if let Some(pics) = self.pics {
-                    let layer = &mut self.layer;
-                    pics.read(pic, |px| {
-                        let src = ArgbImage {
-                            px,
-                            w: u32::from(pic.w),
-                            h: u32::from(pic.h),
-                        };
-                        layer.draw_over_in(&src, i32::from(x), i32::from(y), clip);
-                    });
+                let Some(pics) = self.pics else {
+                    self.missed.note(pic, rp_draw::pics::Miss::NoStore);
+                    return;
+                };
+                let layer = &mut self.layer;
+                let drawn = pics.read(pic, |px| {
+                    let src = ArgbImage {
+                        px,
+                        w: u32::from(pic.w),
+                        h: u32::from(pic.h),
+                    };
+                    layer.draw_over_in(&src, i32::from(x), i32::from(y), clip);
+                });
+                if drawn.is_none() {
+                    self.missed.note(pic, pics.why_not(pic));
                 }
             }
             Cmd::Text {

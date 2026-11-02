@@ -883,6 +883,13 @@ fn a_store_picture_draws_as_an_image_and_a_reused_slot_is_uploaded_again() {
     let (mut c, mem_c) = gpu();
     c.set_pics(pics);
     let none = draw(&mut c, &mem_c, Cmd::Pic { x: 30, y: 80, pic });
+    // ... and says so (R181).
+    assert_eq!(c.last.pics_missed.n, 1);
+    assert_eq!(
+        c.last.pics_missed.last,
+        Some((pic, rp_draw::pics::Miss::Stale))
+    );
+    assert_eq!(b.last.pics_missed.n, 0, "a picture drawn isn't missed");
     let (mut d, mem_d) = gpu();
     let bare = draw(
         &mut d,
