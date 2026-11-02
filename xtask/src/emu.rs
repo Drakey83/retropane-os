@@ -11369,6 +11369,7 @@ pub(crate) fn today_screens(
     let mut screens = Vec::new();
     let mut shown = None;
     let mut painted = None;
+    let mut chart_painted = None;
     for step in std::iter::once(None).chain(steps.iter().map(Some)) {
         if let Some(&e) = step {
             shell.input(e);
@@ -11376,9 +11377,10 @@ pub(crate) fn today_screens(
         if settle {
             shell.settle();
         }
-        // A chart opened or closed: the graph's picture painted again, as
-        // the image does.
+        // A chart opened: its line painted into its own picture, as the
+        // image does.
         rp_today::keep_graph(&mut shell, preview_pics(), &mut painted);
+        rp_today::keep_chart(&mut shell, preview_pics(), &mut chart_painted);
         backdrop(&mut gpu, &shell, wall, map, &mut shown);
         shell.frame(&mut frame);
         gpu.draw(&frame);
@@ -11904,6 +11906,8 @@ thread_local! {
             .collect();
         let (gw, gh) = rp_shell::weather_app::GRAPH_PIC;
         classes.push((gw, gh, 1));
+        let (cw, ch) = rp_shell::chart::CHART_PIC;
+        classes.push((cw, ch, 1));
         Box::leak(Box::new(rp_draw::pics::Pics::new(
             Box::leak(vec![0; rp_draw::pics::Pics::words(&classes)].into_boxed_slice()),
             &classes,
@@ -12588,6 +12592,23 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         .ok_or_else(|| format!("today: unreadable latency line {line:?}"))?;
     if answered < 2 {
         return Err(format!("today: the taps weren't answered: {line:?}"));
+    }
+    // The frame budget (R171, the owner, 2026-11-01: "I also want the
+    // entirety of the OS to run smoothly"): no frame of the replay may take
+    // longer to prepare than a refresh at 30 fps, in the emulator's own
+    // time (instructions, `-icount`): a change that makes a screen's frame
+    // heavier fails here before it reaches the X51v.
+    const FRAME_BUDGET_US: u32 = 33_000;
+    let worst: u32 = line
+        .split("worst draw ")
+        .nth(1)
+        .and_then(|t| t.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .ok_or_else(|| format!("today: no worst draw in {line:?}"))?;
+    if worst > FRAME_BUDGET_US {
+        return Err(format!(
+            "today: a frame took {worst} us to prepare, over the {FRAME_BUDGET_US} us budget (30 fps, R171): {line:?}"
+        ));
     }
     let calibrated = log
         .lines()

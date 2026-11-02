@@ -5,8 +5,15 @@
 use super::*;
 
 /// (name, packed, original): made by `zlib.compress` at the level named
-/// (0: stored blocks; `fixed`: the fixed code, `Z_FIXED`; the rest dynamic).
-const CASES: [(&str, &[u8], &[u8]); 6] = [
+/// (0: stored blocks; `fixed`: the fixed code, `Z_FIXED`; the rest dynamic;
+/// `mixed`: dynamic blocks with flushes' empty stored blocks between, so a
+/// stored block starts after bits the decoder read ahead).
+const CASES: [(&str, &[u8], &[u8]); 7] = [
+    (
+        "mixed",
+        include_bytes!("data/mixed.zz"),
+        include_bytes!("data/mixed.raw"),
+    ),
     (
         "text9",
         include_bytes!("data/text9.zz"),

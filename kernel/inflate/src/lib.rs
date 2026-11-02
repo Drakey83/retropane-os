@@ -57,29 +57,80 @@ impl Bits<'_> {
         Ok(v)
     }
 
-    /// Drops the bits left in the current byte (a stored block's start).
+    /// The next `FAST` bits without taking them (zeros past the input's
+    /// end) and how many of them are real.
+    fn peek(&mut self) -> (u32, u32) {
+        while self.n < FAST {
+            let Some(&b) = self.src.get(self.at) else {
+                break;
+            };
+            self.at += 1;
+            self.buf |= u32::from(b) << self.n;
+            self.n += 8;
+        }
+        (self.buf & ((1 << FAST) - 1), self.n)
+    }
+
+    /// Takes `k` bits already in the buffer.
+    fn skip(&mut self, k: u32) {
+        self.buf >>= k;
+        self.n -= k;
+    }
+
+    /// Drops the bits left in the current byte (a stored block's start),
+    /// and gives back the whole bytes [`Self::peek`] read ahead.
     fn align(&mut self) {
+        self.at -= (self.n / 8) as usize;
         self.buf = 0;
         self.n = 0;
     }
 }
 
+/// Bits a code's first look takes at most: every code this long or
+/// shorter is found in one table read ([`Huffman::fast`]), the rest bit by
+/// bit.
+const FAST: u32 = 9;
+
+/// The literal and length code: 288 symbols, a 9-bit first look.
+type Lit = Huffman<288, 512>;
+/// The distance code: 30 symbols (32 by the fixed code), an 8-bit look.
+type Dist = Huffman<32, 256>;
+/// The code-length code: 19 symbols, an 8-bit look. Each sized to what it
+/// holds, the decoder's frame stays under the stack rule's 4 KB (one size
+/// for all, 7.2 KB).
+type Lens = Huffman<19, 256>;
+
 /// A canonical Huffman code: how many codes of each length (1-15) and the
-/// symbols in code order.
-struct Huffman {
+/// symbols in code order, and a table of the short codes by their first
+/// [`FAST`] bits (as deflate stores them, least significant first): the
+/// symbol and its length, 0 for a longer code. Bit by bit, a symbol took
+/// up to 15 loop turns (R178: inflating was ~3/4 of an icon's making on
+/// the X51v, ~70-100 ms each at start).
+struct Huffman<const S: usize, const T: usize> {
     count: [u16; 16],
-    symbol: [u16; 320],
+    symbol: [u16; S],
+    fast: [u16; T],
 }
 
-impl Huffman {
+impl<const S: usize, const T: usize> Huffman<S, T> {
+    /// The first look's bits.
+    const BITS: u32 = T.trailing_zeros();
+
     /// The code for `lengths` (one per symbol, 0: unused). An
     /// over-subscribed set is refused; an incomplete one decodes until a
     /// missing code is met, which fails.
-    fn new(lengths: &[u8]) -> Result<Self, Error> {
-        let mut h = Self {
-            count: [0; 16],
-            symbol: [0; 320],
-        };
+    const EMPTY: Self = Self {
+        count: [0; 16],
+        symbol: [0; S],
+        fast: [0; T],
+    };
+
+    /// Made again in place for `lengths` (one table a code for the whole
+    /// stream: built anew in each block's branch, the decoder's frame held
+    /// a set a branch, 5.2 KB).
+    fn set(&mut self, lengths: &[u8]) -> Result<(), Error> {
+        *self = Self::EMPTY;
+        let h = self;
         if lengths.len() > h.symbol.len() {
             return Err(Error::Bad);
         }
@@ -105,10 +156,44 @@ impl Huffman {
                 *o += 1;
             }
         }
-        Ok(h)
+        // The short codes' table: canonical codes in order of length, then
+        // symbol (RFC 1951 3.2.2), each written reversed (deflate sends a
+        // code's top bit first) at every index its first bits fill.
+        let mut next = [0u32; 16];
+        let mut code = 0u32;
+        for len in 1..16usize {
+            next[len] = code;
+            code = (code + u32::from(h.count[len])) << 1;
+        }
+        for (sym, &l) in lengths.iter().enumerate() {
+            let l = u32::from(l & 15);
+            if l == 0 || l > Self::BITS {
+                if l != 0 {
+                    next[l as usize] += 1;
+                }
+                continue;
+            }
+            let c = next[l as usize];
+            next[l as usize] += 1;
+            let rev = c.reverse_bits() >> (32 - l);
+            let entry = (l as u16) << 10 | sym as u16;
+            let mut i = rev;
+            while i < T as u32 {
+                h.fast[i as usize] = entry;
+                i += 1 << l;
+            }
+        }
+        Ok(())
     }
 
     fn decode(&self, b: &mut Bits<'_>) -> Result<u16, Error> {
+        let (bits, have) = b.peek();
+        let e = self.fast[(bits & (T as u32 - 1)) as usize];
+        let len = u32::from(e >> 10);
+        if e != 0 && len <= have {
+            b.skip(len);
+            return Ok(e & 0x3FF);
+        }
         let (mut code, mut first, mut index) = (0i32, 0i32, 0i32);
         for &count in &self.count[1..] {
             code |= b.need(1)? as i32;
@@ -154,8 +239,8 @@ fn codes(
     b: &mut Bits<'_>,
     dst: &mut [u8],
     out: &mut usize,
-    lit: &Huffman,
-    dist: &Huffman,
+    lit: &Lit,
+    dist: &Dist,
 ) -> Result<(), Error> {
     loop {
         let sym = lit.decode(b)?;
@@ -217,6 +302,7 @@ pub fn inflate(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         n: 0,
     };
     let mut out = 0;
+    let (mut lit, mut dist, mut lens) = (Lit::EMPTY, Dist::EMPTY, Lens::EMPTY);
     loop {
         let last = b.need(1)? == 1;
         match b.need(2)? {
@@ -237,8 +323,8 @@ pub fn inflate(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
                 b.at = at + 4 + len;
             }
             1 => {
-                let lit = Huffman::new(&fixed_lengths())?;
-                let dist = Huffman::new(&[5u8; 30])?;
+                lit.set(&fixed_lengths())?;
+                dist.set(&[5u8; 30])?;
                 codes(&mut b, dst, &mut out, &lit, &dist)?;
             }
             2 => {
@@ -252,7 +338,8 @@ pub fn inflate(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
                 for &k in &ORDER[..ncode] {
                     cl[k] = b.need(3)? as u8;
                 }
-                let lencode = Huffman::new(&cl)?;
+                lens.set(&cl)?;
+                let lencode = &lens;
                 let mut l = [0u8; 316];
                 let mut i = 0;
                 while i < nlen + ndist {
@@ -275,8 +362,8 @@ pub fn inflate(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
                 if l[256] == 0 {
                     return Err(Error::Bad);
                 }
-                let lit = Huffman::new(&l[..nlen])?;
-                let dist = Huffman::new(&l[nlen..nlen + ndist])?;
+                lit.set(&l[..nlen])?;
+                dist.set(&l[nlen..nlen + ndist])?;
                 codes(&mut b, dst, &mut out, &lit, &dist)?;
             }
             _ => return Err(Error::Bad),

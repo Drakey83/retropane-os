@@ -23,6 +23,8 @@ const LEN_V1: usize = HEAD + PLACES_MAX * PLACE + 4;
 /// The key: its length, then up to [`KEY_MAX`] bytes.
 const KEY: usize = 1 + crate::settings::KEY_MAX;
 const MAGIC: &[u8; 4] = b"RPWS";
+/// The appearance byte's top bit: the living sky off.
+const SKY_OFF: u8 = 0x80;
 const VERSION: u8 = 2;
 /// The magic, version and the single-byte fields.
 const HEAD: usize = 16;
@@ -49,7 +51,9 @@ pub fn encode(s: &Settings) -> [u8; LEN] {
     r[12] = s.refresh;
     r[13] = s.pack;
     r[14] = s.radar as u8;
-    r[15] = s.appearance as u8;
+    // The living sky's off in the appearance byte's top bit (a record
+    // from before it reads as on, no new version or length).
+    r[15] = s.appearance as u8 | if s.living_sky { 0 } else { SKY_OFF };
     for (k, p) in s.places.iter().enumerate() {
         let at = HEAD + k * PLACE;
         put_name(&mut r[at..at + 33], &p.name);
@@ -110,11 +114,12 @@ pub fn decode(r: &[u8], key: crate::settings::Secret) -> Settings {
             2 => RadarMap::Ink,
             _ => RadarMap::Night,
         },
-        appearance: match r[15] {
+        appearance: match r[15] & !SKY_OFF {
             1 => Appearance::Light,
             2 => Appearance::Dark,
             _ => Appearance::Auto,
         },
+        living_sky: r[15] & SKY_OFF == 0,
         tempest_key: key,
         ..Settings::DEFAULT
     };
@@ -187,6 +192,7 @@ mod tests {
         s.refresh = 1;
         s.radar = RadarMap::Auto;
         s.appearance = Appearance::Light;
+        s.living_sky = false;
         s.tempest_key = Secret::new(b"secret-token-1234").unwrap();
         s
     }
@@ -201,8 +207,8 @@ mod tests {
             (b.provider, b.station, b.refresh, b.pack)
         );
         assert_eq!(
-            (a.radar, a.appearance, a.places),
-            (b.radar, b.appearance, b.places)
+            (a.radar, a.appearance, a.living_sky, a.places),
+            (b.radar, b.appearance, b.living_sky, b.places)
         );
     }
 

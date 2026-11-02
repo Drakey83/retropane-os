@@ -265,8 +265,8 @@ fn run(buf: &mut [u8; 48], xs: &[i32], what: u8) -> usize {
 /// Cloud `g` of `clouds` crossing in `life` steps, at sky step `t`: its
 /// birth number (every cloud's births counted in order: cloud g's are at
 /// (c x clouds - g) x life / clouds) and how far across it is.
-const fn birth(t: i64, g: i64, clouds: i64, life: i64) -> (i64, i64) {
-    let at = t + g * life / clouds;
+const fn birth(t: i64, g: i64, clouds: i64, life: i64, pace: i64) -> (i64, i64) {
+    let at = t + g * life / clouds / pace * pace;
     (at.div_euclid(life) * clouds - g, at.rem_euclid(life))
 }
 
@@ -297,6 +297,32 @@ const SKY_TESTS: [(&str, u8, u8); 6] = [
 
 /// What the sky shows: rain (its strength 1-3), snow, a storm's flashes,
 /// how cloudy (0-3 groups of puffs).
+/// A cloud as drawn: its pen, its baseline, its glyph.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Cloud {
+    x: u16,
+    y: u16,
+    glyph: u8,
+}
+
+impl Cloud {
+    const NONE: Self = Self {
+        x: 0,
+        y: 0,
+        glyph: b'A',
+    };
+
+    /// Where its mask falls (wholly left of its pen).
+    fn rect(&self) -> Rect {
+        let (l, r, t, b) = CLOUDS.ink(&[self.glyph]).unwrap_or((0, 0, 0, 0));
+        let x0 = (i32::from(self.x) + l).max(0);
+        let y0 = (i32::from(self.y) + t).max(0);
+        let x1 = (i32::from(self.x) + r).max(x0);
+        let y1 = (i32::from(self.y) + b).max(y0);
+        Rect::new(x0 as u16, y0 as u16, (x1 - x0) as u16, (y1 - y0) as u16)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Weather {
     rain: u8,
@@ -330,6 +356,7 @@ impl Shell {
     #[must_use]
     pub fn sky_live(&self) -> bool {
         LIVING_SKY
+            && self.wset.living_sky
             && self.screen == Screen::Today
             && !self.bare
             && self.align.is_none()
@@ -385,15 +412,82 @@ impl Shell {
                 .all(|d| AREA.intersect(d) == *d)
     }
 
-    /// The sky's next step if due at `now`: its area marked to draw.
+    /// The sky's next step if due at `now`: what it changes marked to
+    /// draw. Rain or snow move every step: the whole area. Clouds alone
+    /// move a whole pixel every few steps: only where a cloud was and is
+    /// now, and nothing at all on a step where none moved (the same
+    /// pixels; the owner, 2026-11-01: "Can we fix this and keep the
+    /// living sky?", ~14 ms of CPU a step, every step, the whole card).
     pub(crate) fn sky_step(&mut self, now: u32) -> bool {
         if !self.sky_live() || now.wrapping_sub(self.sky_at) < STEP_MS {
             return false;
         }
         self.sky_at = now;
+        let w = weather_of(self.sky_now());
+        let before = self.cloud_places(w, i64::from(self.sky_n));
         self.sky_n = self.sky_n.wrapping_add(1);
-        self.dirty(AREA);
-        true
+        if w.rain > 0 || w.snow || w.storm {
+            self.dirty(AREA);
+            return true;
+        }
+        let after = self.cloud_places(w, i64::from(self.sky_n));
+        let mut moved = false;
+        for (a, b) in before.0[..before.1].iter().zip(&after.0[..after.1]) {
+            if a != b {
+                let r = a.rect().union(&b.rect()).intersect(&AREA);
+                self.dirty(r);
+                moved = true;
+            }
+        }
+        if before.1 != after.1 {
+            self.dirty(AREA);
+            moved = true;
+        }
+        moved
+    }
+
+    /// The clouds at step `steps`: one after another across the panel,
+    /// evenly spaced, each drifting in under one edge and out under the
+    /// other (the clip is the panel's inside, its glass edge the window
+    /// frame): those on screen are always the last two or three to come
+    /// in. Each takes the next shape in turn of eight, large and small by
+    /// turns, so none seen together are alike, and its own height lane. A
+    /// whole pixel every few steps, evenly (by the clock, under a pixel a
+    /// step, a cloud hopped; a pixel every step it was "racing across the
+    /// screen"): one every 4 steps (7.5 px/s), every 2 in a wind of 20
+    /// km/h and over.
+    fn cloud_places(&self, w: Weather, steps: i64) -> ([Cloud; 3], usize) {
+        let kmh = i32::from(self.wx.now.sky.wind) / 10;
+        let across = sin1024(i32::from(self.wx.now.wind_from) + 180);
+        let pace = if kmh >= 20 { 2 } else { 4 };
+        let dir = if across < 0 { -1 } else { 1 };
+        let clouds = i64::from(w.clouds.clamp(1, 3));
+        let path = i64::from(AREA.w) + BIG.0 as i64;
+        let life = path * pace;
+        let mut out = [Cloud::NONE; 3];
+        for (g, c) in out.iter_mut().enumerate().take(clouds as usize) {
+            // Spaced in whole paces, so every cloud moves on the same step
+            // and the steps between draw nothing.
+            let (j, u) = birth(steps, g as i64, clouds, life, pace);
+            let s = scatter(j as u32);
+            let shape = ORDER[j.rem_euclid(SHAPES as i64) as usize];
+            // The cloud's right edge (its pen): from the panel's left edge
+            // (all of it hidden) to past its right edge by its width.
+            let along = u / pace;
+            let x = if dir > 0 {
+                along
+            } else {
+                i64::from(AREA.w) + BIG.0 as i64 - along
+            };
+            let lane = 120 / clouds;
+            let y = 44 + j.rem_euclid(clouds) * lane + i64::from(s >> 9) % (lane / 3 + 1);
+            *c = Cloud {
+                x: (i64::from(AREA.x) + x).max(0) as u16,
+                y: (i64::from(AREA.y) + y) as u16,
+                glyph: b'A' + shape as u8,
+            };
+        }
+        (out, clouds as usize)
     }
 
     /// The sky at `self.now`, behind the weather picture: cloud puffs
@@ -423,56 +517,19 @@ impl Shell {
             (true, true) => SNOW_LIGHT,
         };
 
-        // The wind: blowing toward from + 180; across the screen, its
-        // east-west part (px a second from km/h, at least a slow drift).
         let kmh = i32::from(self.wx.now.sky.wind) / 10;
         let toward = i32::from(self.wx.now.wind_from) + 180;
         let across = sin1024(toward);
         let speed = (kmh * 2).clamp(6, 70);
         let vx = speed * across / 1024;
         let vx = if vx == 0 { 4 } else { vx };
-
-        // Clouds: one after another across the panel, evenly spaced, each
-        // drifting in under one edge and out under the other (the clip is
-        // the panel's inside, its glass edge the window frame): those on
-        // screen are always the last two or three to come in. Each takes
-        // the next shape in turn of eight, large and small by turns, so
-        // none seen together are alike, and its own height lane. A whole
-        // pixel every few steps, evenly (by the clock, under a pixel a
-        // step, a cloud hopped; a pixel every step it was "racing across
-        // the screen"): one every 4 steps (7.5 px/s), every 2 in a wind of
-        // 20 km/h and over.
-        let pace = if kmh >= 20 { 2 } else { 4 };
-        let dir = if across < 0 { -1 } else { 1 };
-        let steps = i64::from(self.sky_n);
         let flash = w.storm && t % 5200 < 140;
-        let clouds = i64::from(w.clouds.max(1));
-        let path = i64::from(AREA.w) + BIG.0 as i64;
-        let life = path * pace;
-        for g in 0..clouds {
-            let (j, u) = birth(steps, g, clouds, life);
-            let s = scatter(j as u32);
-            let shape = ORDER[j.rem_euclid(SHAPES as i64) as usize];
-            // The cloud's right edge (its pen): from the panel's left edge
-            // (all of it hidden) to past its right edge by its width.
-            let along = u / pace;
-            let x = if dir > 0 {
-                along
-            } else {
-                i64::from(AREA.w) + BIG.0 as i64 - along
-            };
-            let lane = 120 / clouds;
-            let y = 44 + j.rem_euclid(clouds) * lane + i64::from(s >> 9) % (lane / 3 + 1);
-            let glyph = [b'A' + shape as u8; 2];
+        let (places, n) = self.cloud_places(w, i64::from(self.sky_n));
+        for (g, c) in places[..n].iter().enumerate() {
+            let glyph = [c.glyph; 2];
             // The storm's flash: a cloud twice over, lit.
-            let n = if flash && g == 0 { 2 } else { 1 };
-            f.text(
-                (i64::from(AREA.x) + x).max(0) as u16,
-                (i64::from(AREA.y) + y) as u16,
-                &CLOUDS,
-                cloud_ink,
-                &glyph[..n],
-            );
+            let k = if flash && g == 0 { 2 } else { 1 };
+            f.text(c.x, c.y, &CLOUDS, cloud_ink, &glyph[..k]);
         }
         f.clip(Some(FALL));
 
@@ -570,7 +627,7 @@ mod lanes {
                 let mut lanes = [false; 3];
                 let mut shapes = [false; SHAPES];
                 for g in 0..clouds {
-                    let (j, _) = birth(t, g, clouds, life);
+                    let (j, _) = birth(t, g, clouds, life, 4);
                     let lane = j.rem_euclid(clouds) as usize;
                     let shape = ORDER[j.rem_euclid(SHAPES as i64) as usize];
                     assert!(!lanes[lane] && !shapes[shape], "{clouds} clouds at {t}");

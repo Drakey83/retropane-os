@@ -439,7 +439,7 @@ mod image {
     /// The big pictures are fitted inside 250 x 176 (the hero's box), so
     /// their slots are that, not square (-148 KB). Hourly's graph is one
     /// picture of its own (its line and band, painted once a forecast).
-    const PIC_CLASSES: [(u16, u16, u8); 5] = [
+    const PIC_CLASSES: [(u16, u16, u8); 6] = [
         (rp_shell::Size::Hero.side(), rp_shell::HERO_PIC_H, 2),
         (rp_shell::Size::Mid.side(), rp_shell::Size::Mid.side(), 6),
         (rp_shell::Size::Card.side(), rp_shell::Size::Card.side(), 8),
@@ -447,6 +447,12 @@ mod image {
         (
             rp_shell::weather_app::GRAPH_PIC.0,
             rp_shell::weather_app::GRAPH_PIC.1,
+            1,
+        ),
+        // The open chart's line, its own picture (Hourly's left be).
+        (
+            rp_shell::chart::CHART_PIC.0,
+            rp_shell::chart::CHART_PIC.1,
             1,
         ),
     ];
@@ -1020,6 +1026,7 @@ mod image {
         // Hourly's graph: one store picture painted once a forecast, drawn
         // the same on the planes and the 2D path.
         let mut graph_key: Option<u32> = None;
+        let mut chart_key: Option<u32> = None;
         let t0 = rt::ticks();
         rp_today::keep_graph(shell, pics, &mut graph_key);
         let _ = writeln!(
@@ -2750,6 +2757,7 @@ mod image {
                         pages_check = true;
                         app_check = true;
                     }
+                    rp_today::keep_chart(shell, pics, &mut chart_key);
                     z_shell.run(|| shell.frame(frame));
                     // Commands past the frame's room are dropped: never
                     // quietly (the tests walk every screen with the device's

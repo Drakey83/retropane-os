@@ -1437,6 +1437,14 @@ impl Shell {
         }
     }
 
+    /// The open chart's line painted into `px`, a picture of
+    /// [`super::chart::CHART_PIC`] (nothing with no chart open).
+    pub fn paint_chart_pic(&self, px: &mut [u32]) {
+        if let Some(c) = self.chart {
+            self.paint_chart(px, c);
+        }
+    }
+
     /// Hourly's line and band painted per pixel into `px`, a see-through
     /// picture of [`GRAPH_PIC`]: for every column the smooth curve through
     /// the hours (Catmull-Rom, continued on its own slope to the panel's
@@ -1446,10 +1454,6 @@ impl Shell {
     /// [`Shell::graph_key`]); drawn over the panel's glass it is exactly
     /// what painting over the glass gives ([`over`] composes).
     pub fn paint_graph(&self, px: &mut [u32]) {
-        // The chart open paints its line into the same picture.
-        if let Some(c) = self.chart {
-            return self.paint_chart(px, c);
-        }
         let stride = usize::from(GRAPH_PIC.0);
         let rows = (0, i32::from(GRAPH_PIC.1));
         let shown = &self.wx.hours[..GRAPH_HOURS];

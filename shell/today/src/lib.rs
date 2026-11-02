@@ -61,18 +61,25 @@ pub fn shell_fonts() -> rp_shell::Fonts {
 /// Undoes the build's 4-byte Paeth filter (each channel against its own
 /// left, up and up-left) in place: `px` is `w` x `h` pixels of 4 bytes.
 fn unpaeth4(px: &mut [u8], w: usize, h: usize) {
+    // The first row and each row's first pixel have no up-left: Paeth is
+    // plainly the left, or the up (so the loop over the rest has no edge
+    // tests: R178, the Paeth undo was ~1/4 of an icon's making).
     let stride = w * 4;
-    for y in 0..h {
-        for x in 0..stride {
-            let i = y * stride + x;
-            let a = if x >= 4 { px[i - 4] } else { 0 };
-            let b = if y > 0 { px[i - stride] } else { 0 };
-            let c = if x >= 4 && y > 0 {
-                px[i - stride - 4]
-            } else {
-                0
-            };
-            px[i] = px[i].wrapping_add(rp_inflate::paeth(a, b, c));
+    if w == 0 || px.len() < stride * h {
+        return;
+    }
+    for x in 4..stride {
+        px[x] = px[x].wrapping_add(px[x - 4]);
+    }
+    for y in 1..h {
+        let (done, rest) = px.split_at_mut(y * stride);
+        let up = &done[(y - 1) * stride..];
+        let row = &mut rest[..stride];
+        for x in 0..4 {
+            row[x] = row[x].wrapping_add(up[x]);
+        }
+        for x in 4..stride {
+            row[x] = row[x].wrapping_add(rp_inflate::paeth(row[x - 4], up[x], up[x - 4]));
         }
     }
 }
@@ -599,6 +606,31 @@ pub fn keep_graph(shell: &mut rp_shell::Shell, pics: &Pics, painted: &mut Option
         pics.write(p, |px| s.paint_graph(px));
     }
     shell.set_graph(pic);
+    *painted = Some(key);
+    true
+}
+
+/// The open chart's line kept for the chart shown (`painted`: the key it
+/// was painted for), in a picture of its own (`Shell::paint_chart_pic`,
+/// `CHART_PIC`): Hourly's left as it is. True if it changed.
+pub fn keep_chart(shell: &mut rp_shell::Shell, pics: &Pics, painted: &mut Option<u32>) -> bool {
+    let Some(key) = shell.chart_pic_key() else {
+        return false;
+    };
+    if *painted == Some(key) && shell.chart_pic().is_some_and(|p| pics.is_live(p)) {
+        return false;
+    }
+    if let Some(old) = shell.chart_pic() {
+        pics.free(old);
+        shell.set_chart_pic(None);
+    }
+    let (w, h) = rp_shell::chart::CHART_PIC;
+    let pic = pics.alloc(w, h);
+    if let Some(p) = pic {
+        let s: &rp_shell::Shell = shell;
+        pics.write(p, |px| s.paint_chart_pic(px));
+    }
+    shell.set_chart_pic(pic);
     *painted = Some(key);
     true
 }
@@ -1164,6 +1196,88 @@ mod tests {
             }
         }
         (ahead, rest)
+    }
+
+    /// The Weather pages' pictures stay put while nothing on them changes:
+    /// on the Station screen, Hourly's picture was built again every ~1.5 s
+    /// (the owner's run of 2026-11-01, 11 times in 22 s, ~190 ms of CPU
+    /// each): its key must not move with the clock alone.
+    #[test]
+    fn a_page_s_key_holds_while_nothing_on_it_changes() {
+        let key = |shell: &mut rp_shell::Shell, tab: u8| {
+            let mut f = rp_draw::Frame::new();
+            let rows = rp_shell::picture_rows(tab);
+            let (mut k, mut top) = (KEY_START, 0);
+            while top < rows {
+                let n = PAGE_BAND.min(rows - top);
+                shell.page_band(tab, &mut f, top, n);
+                k = frame_key(&f, k);
+                top += n;
+            }
+            k
+        };
+        let storm: &[u8] = br#"{"current_conditions": {"time": 1761900000,
+          "air_temperature": 20.0, "relative_humidity": 61, "wind_avg": 12.9, "wind_gust": 33.8,
+          "sea_level_pressure": 1016.4, "pressure_trend": "rising", "uv": 6}}"#;
+        let mut shell = rp_shell::Shell::new(shell_fonts(), rp_shell::Icons::NONE, true);
+        shell.use_planes(true);
+        shell.set_station_from_tempest(storm);
+        let mut f = rp_draw::Frame::new();
+        shell.frame(&mut f);
+        shell.input(rp_shell::Input::PenDown { x: 240, y: 150 });
+        shell.input(rp_shell::Input::PenUp { x: 240, y: 150 });
+        shell.settle();
+        shell.input(rp_shell::Input::PenDown { x: 325, y: 53 });
+        shell.input(rp_shell::Input::PenUp { x: 325, y: 53 });
+        shell.settle();
+        std::println!("screen {:?}", shell.screen());
+        let mut now = 10_000u32;
+        let first: std::vec::Vec<u32> = (0..3).map(|t| key(&mut shell, t)).collect();
+        for _ in 0..20 {
+            now += 1_500;
+            shell.tick(now);
+            shell.frame(&mut f);
+            let k: std::vec::Vec<u32> = (0..3).map(|t| key(&mut shell, t)).collect();
+            assert_eq!(k, first, "at {now} ms on {:?}", shell.screen());
+        }
+    }
+
+    /// Where a big picture's making goes, on the PC (R178): the inflate
+    /// and the Paeth undo apart, over a real pack (`target/load/
+    /// relay-rp-icons0.pak`, the default, made by a load).
+    #[test]
+    #[ignore = "exploration: times a pack's pictures on the PC"]
+    fn where_a_big_picture_s_time_goes() {
+        let Ok(file) = std::fs::read("../../target/load/relay-rp-icons0.pak") else {
+            std::println!("no pack: run a load first");
+            return;
+        };
+        let idx = PackIndex::read(&file).expect("a pack");
+        let (mut tz, mut tp, mut n) = (0u128, 0u128, 0);
+        let mut out = std::vec![0u32; 250 * 250];
+        for i in 0..22 {
+            let Some(b) = idx.big(i).filter(|b| b.len > 0) else {
+                continue;
+            };
+            let stream = &file[b.off as usize..(b.off + b.len) as usize];
+            let px = usize::from(b.w) * usize::from(b.h);
+            for _ in 0..20 {
+                let bytes = rp_hal_mem::words_as_bytes_mut(&mut out[..px]);
+                let t0 = std::time::Instant::now();
+                let _ = rp_inflate::zlib(stream, bytes);
+                let t1 = std::time::Instant::now();
+                unpaeth4(bytes, usize::from(b.w), usize::from(b.h));
+                let t2 = std::time::Instant::now();
+                tz += (t1 - t0).as_nanos();
+                tp += (t2 - t1).as_nanos();
+                n += 1;
+            }
+        }
+        std::println!(
+            "per picture on the PC: inflate {} us, unpaeth {} us",
+            tz / n / 1000,
+            tp / n / 1000
+        );
     }
 
     #[test]

@@ -712,7 +712,7 @@ impl Shell {
         f.text(tx, KIND_Y, label, kind_color, kind);
 
         // The line, then the marker over it: a thin rule and a dot.
-        if let Some(pic) = self.graph {
+        if let Some(pic) = self.chart_pic {
             f.push(Cmd::Pic {
                 x: CHART_X,
                 y: CHART_Y as i16,

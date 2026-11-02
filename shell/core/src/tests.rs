@@ -45,9 +45,10 @@ fn store() -> &'static rp_draw::pics::Pics<'static> {
 /// for Hourly's graph (leaked: the shell's handles are checked against a
 /// live store, as on the X51v).
 fn every_pic() -> Icons {
-    const CLASSES: [(u16, u16, u8); 2] = [
+    const CLASSES: [(u16, u16, u8); 3] = [
         (4, 4, 88),
         (weather_app::GRAPH_PIC.0, weather_app::GRAPH_PIC.1, 1),
+        (chart::CHART_PIC.0, chart::CHART_PIC.1, 1),
     ];
     let store: &'static rp_draw::pics::Pics<'static> =
         Box::leak(Box::new(rp_draw::pics::Pics::new(
@@ -2511,17 +2512,17 @@ fn a_reading_opens_its_chart_the_marker_scrubs_and_the_sheet_closes() {
     let t = texts(&f);
     let has = |t: &[Vec<u8>], b: &[u8]| t.iter().any(|x| x.as_slice() == b);
     assert!(has(&t, b"WIND") && has(&t, b"NOW, YOUR STATION"), "{t:?}");
-    // The line is painted into the graph's picture.
-    let (gw, gh) = weather_app::GRAPH_PIC;
+    // The line is painted into the chart's own picture, Hourly's left be.
+    let (gw, gh) = chart::CHART_PIC;
     let mut px = vec![0u32; usize::from(gw) * usize::from(gh)];
-    s.paint_graph(&mut px);
+    s.paint_chart_pic(&mut px);
     assert!(px.iter().filter(|p| **p >> 24 > 0x80).count() > 400);
-    assert_ne!(s.graph_key(), {
-        let c = s.chart.take();
-        let k = s.graph_key();
-        s.chart = c;
-        k
-    });
+    let hourly = s.graph_key();
+    assert!(s.chart_pic_key().is_some());
+    let c = s.chart.take();
+    assert_eq!(s.graph_key(), hourly, "Hourly's key apart from the chart");
+    assert!(s.chart_pic_key().is_none());
+    s.chart = c;
     // The D-pad: right into the forecast, left back into the station's.
     s.input(Input::Key(Key::Right));
     assert_eq!(s.chart.map(|c| c.at), Some(1));
@@ -2745,9 +2746,9 @@ fn every_station_field_opens_its_own_chart() {
             (-24..=24).any(|o| s.chart_value(got, o).is_some()),
             "{got:?}"
         );
-        let (gw, gh) = weather_app::GRAPH_PIC;
+        let (gw, gh) = chart::CHART_PIC;
         let mut px = vec![0u32; usize::from(gw) * usize::from(gh)];
-        s.paint_graph(&mut px);
+        s.paint_chart_pic(&mut px);
         assert!(px.iter().any(|p| p >> 24 > 0x80), "{got:?} painted");
         seen.push(got);
         s.close_chart();
@@ -3086,4 +3087,97 @@ fn engine_commands_per_screen() {
         shell.settle();
         shot(&mut shell, "Settings");
     }
+}
+
+#[test]
+fn the_living_sky_can_be_turned_off_and_stays_off() {
+    // The owner, 2026-11-01: "a way to turn it off if you dont like it or
+    // want to save power". Off, nothing of the sky is drawn or woken for.
+    let mut s = shell(true);
+    s.preview_sky(true);
+    assert!(s.sky_due_in(0).is_some());
+    s.wset.living_sky = false;
+    s.dirty(Rect::new(0, 0, W, H));
+    let f = drawn(&mut s);
+    assert!(s.sky_due_in(0).is_none(), "no wake for the sky");
+    for c in f.cmds() {
+        if let Cmd::Text { font, .. } = *c {
+            assert!(
+                !core::ptr::eq(font, &sky::SKY) && !core::ptr::eq(font, &sky::CLOUDS),
+                "sky drawn while off"
+            );
+        }
+    }
+    // Kept with the other settings.
+    let r = rp_weather::store::encode(&s.wset);
+    let back = rp_weather::store::decode(&r, rp_weather::settings::Secret::NONE);
+    assert!(!back.living_sky);
+}
+
+/// The living sky's steps drawn only where they change (a dry sky: only
+/// where a cloud was and is; a step with none moved: nothing) give the same
+/// pixels as the whole card drawn each step.
+#[test]
+fn the_sky_drawn_where_it_changes_matches_it_drawn_whole() {
+    use rp_draw::Renderer;
+    use rp_gfx::layer::{Layer, PlaneFormat};
+    use rp_gfx::render::CpuRenderer;
+
+    let (w, h) = (u32::from(W), u32::from(H));
+    let mut px = vec![0; (w * h) as usize];
+    let mut plane = vec![0u8; (w * h * 4) as usize];
+    let mut inc = CpuRenderer::new(
+        Layer::new(&mut px, w, h, w as usize).unwrap(),
+        &mut plane,
+        w as usize * 4,
+        PlaneFormat::Argb8888,
+    );
+    let mut s = shell(true);
+    inc.set_pics(store());
+    let mut wx = *s.forecast();
+    wx.now.sky.wmo = 2;
+    wx.now.sky.cover = 60;
+    s.set_forecast(wx);
+    s.preview_sky(true);
+    let mut f = Frame::new();
+    s.frame(&mut f);
+    inc.draw(&f);
+    let (mut now, mut drawn_steps, mut whole) = (0u32, 0, 0);
+    for step in 0..1200 {
+        now += sky::STEP_MS;
+        s.tick(now);
+        if !s.needs_frame() {
+            continue;
+        }
+        s.frame(&mut f);
+        drawn_steps += 1;
+        if f.dirty().contains(&sky::AREA) {
+            whole += 1;
+        }
+        inc.draw(&f);
+        if step % 40 != 0 {
+            continue;
+        }
+        let mut px2 = vec![0; (w * h) as usize];
+        let mut plane2 = vec![0u8; (w * h * 4) as usize];
+        let mut full = CpuRenderer::new(
+            Layer::new(&mut px2, w, h, w as usize).unwrap(),
+            &mut plane2,
+            w as usize * 4,
+            PlaneFormat::Argb8888,
+        );
+        full.set_pics(store());
+        let mut g = Frame::new();
+        s.scene(&mut g);
+        s.look(&mut g);
+        g.damage(Rect::new(0, 0, W, H));
+        full.draw(&g);
+        assert!(
+            inc.plane() == full.plane(),
+            "step {step}: the sky drawn in parts differs"
+        );
+    }
+    // A dry sky's clouds move a pixel every 4 steps: most steps draw nothing.
+    assert!(drawn_steps < 1200 / 2, "{drawn_steps} of 1200 steps drawn");
+    assert_eq!(whole, 0, "a dry sky never redraws the whole card");
 }

@@ -394,6 +394,9 @@ pub struct Settings {
     pub radar: RadarMap,
     /// Light or dark.
     pub appearance: Appearance,
+    /// The living sky behind the weather card (the owner, 2026-11-01: "a
+    /// way to turn it off if you dont like it or want to save power").
+    pub living_sky: bool,
     /// The Tempest station's key (never stored: R130).
     pub tempest_key: Secret,
 }
@@ -426,6 +429,7 @@ impl Settings {
         // way better then the ink map".
         radar: RadarMap::Night,
         appearance: Appearance::Auto,
+        living_sky: true,
         tempest_key: Secret::NONE,
     };
 

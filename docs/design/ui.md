@@ -86,6 +86,12 @@ XP/Vista." Mock-up: `mockups/classic-desktop-sheet.jpg`.
 
 <img src="mockups/classic-desktop-sheet.jpg" width="900" alt="The Classic desktop: the weather widget above free desktop icons; an icon's menu; an icon being moved with the grid shown; the desktop's own menu with Arrange icons by">
 
+**The owner's ruling (2026-11-01): Classic has no living sky.** "classic
+should not have living sky, it would go against the spirit of retro
+esthetic": the moving sky is Modern's alone; Classic's weather widget is
+still. Still to design (R180): the Classic desktop whole and the framework
+that switches the OS between Modern and Classic.
+
 Proposed, for his vote (D1-D5):
 - **Desktop icons, not tiles:** full-colour, glossy icons straight on
   the wallpaper, labels in white with a soft shadow, as on an XP or Vista

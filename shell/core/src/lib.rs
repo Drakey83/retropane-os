@@ -708,6 +708,11 @@ pub struct Shell {
     n_alerts: u8,
     /// Hourly's graph, one store picture ([`Shell::paint_graph`]).
     graph: Option<Pic>,
+    /// The open chart's line, a picture of its own ([`Shell::paint_chart_pic`]):
+    /// in Hourly's slot, opening a chart repainted Hourly's line away and
+    /// rebuilt Hourly's page around the chart's (~190 ms each, the owner's
+    /// run of 2026-11-01).
+    chart_pic: Option<Pic>,
     /// The Station screen's dials (painted at start by the device).
     dials: station::Dials,
     /// The real radar: its frames' times (Unix), how many, the place it
@@ -850,6 +855,7 @@ macro_rules! shell_start {
             alerts: @each rp_weather::alerts::Alert::NONE,
             n_alerts: 0,
             graph: None,
+            chart_pic: None,
             dials: station::Dials::NONE,
             radar_times: [0; 8],
             radar_n: 0,
@@ -1266,24 +1272,41 @@ impl Shell {
         self.graph
     }
 
-    /// The size of the graph's picture to paint: Hourly's, or the open
-    /// chart's (painted into the same slot).
+    /// The size of Hourly's graph picture.
     #[must_use]
     pub fn graph_size(&self) -> (u16, u16) {
-        if self.chart.is_some() {
-            chart::CHART_PIC
-        } else {
-            weather_app::GRAPH_PIC
+        weather_app::GRAPH_PIC
+    }
+
+    /// The open chart's line picture held.
+    #[must_use]
+    pub fn chart_pic(&self) -> Option<Pic> {
+        self.chart_pic
+    }
+
+    /// The open chart's line picture, painted by the device with
+    /// [`Shell::paint_chart_pic`] for the chart [`Shell::chart_pic_key`]
+    /// names.
+    pub fn set_chart_pic(&mut self, pic: Option<Pic>) {
+        if self.chart_pic != pic {
+            self.chart_pic = pic;
+            if self.chart.is_some() {
+                self.dirty(Rect::new(0, 0, W, H));
+            }
         }
+    }
+
+    /// What the open chart's line shows (`None`: no chart open): a new key
+    /// is a new picture to paint.
+    #[must_use]
+    pub fn chart_pic_key(&self) -> Option<u32> {
+        self.chart.map(|c| self.chart_key(c))
     }
 
     /// What Hourly's graph picture shows (its hours' temperatures): a new
     /// key is a new picture to paint.
     #[must_use]
     pub fn graph_key(&self) -> u32 {
-        if let Some(c) = self.chart {
-            return self.chart_key(c);
-        }
         self.wx.hours[..12].iter().fold(0x811C_9DC5u32, |h, x| {
             (h ^ u32::from(x.temp.cast_unsigned())).wrapping_mul(0x0100_0193)
         })

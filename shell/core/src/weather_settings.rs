@@ -28,7 +28,9 @@ use super::{DIM, FOCUS, GLASS_EDGE, GLASS_LEFT, GLASS_RIGHT, H, Screen, Shell, T
 pub(crate) const BACK: Rect = Rect::new(0, 36, 64, 58);
 /// The content's top (under the header).
 const TOP: u16 = 98;
-const ROW_H: u16 = 38;
+/// A row: 36 px, so twelve rows and three section labels fit above the
+/// bar (38 until the living sky's row, 2026-11-01).
+const ROW_H: u16 = 36;
 const LABEL_H: u16 = 18;
 /// A provider's card on T3.
 const CARD_H: u16 = 52;
@@ -62,6 +64,8 @@ pub(crate) enum Item {
     Updates,
     /// T1: light or dark.
     Appearance,
+    /// T1: the living sky on or off.
+    LivingSky,
     /// T1: the region and its units.
     Units,
     /// T1: the icon pack.
@@ -108,6 +112,7 @@ impl Shell {
                     Item::Radar,
                     Item::Updates,
                     Item::Appearance,
+                    Item::LivingSky,
                     Item::Units,
                     Item::Icons,
                 ] {
@@ -170,7 +175,10 @@ impl Shell {
                 Screen::WeatherSettings,
                 Item::Forecast | Item::Station | Item::Radar | Item::Updates,
             ) => b"WEATHER FROM",
-            (Screen::WeatherSettings, Item::Appearance | Item::Units | Item::Icons) => b"LOOK",
+            (
+                Screen::WeatherSettings,
+                Item::Appearance | Item::LivingSky | Item::Units | Item::Icons,
+            ) => b"LOOK",
             (Screen::WeatherFrom, Item::Provider(_)) => b"FORECAST",
             (Screen::WeatherFrom, Item::StationKind(_)) => b"YOUR WEATHER STATION",
             (Screen::AddPlace, Item::Match(_)) => b"MATCHES",
@@ -295,6 +303,10 @@ impl Shell {
                 self.wset.appearance = a[(i + 1) % a.len()];
                 self.settings_changed(false);
                 self.dirty(Rect::new(0, 0, W, H));
+            }
+            (_, Item::LivingSky) => {
+                self.wset.living_sky = !self.wset.living_sky;
+                self.settings_changed(false);
             }
             (_, Item::Units) => {
                 self.wset.next_region();
@@ -648,6 +660,28 @@ impl Shell {
                         DIM
                     };
                     centre_in(f, seg, label, c, a.name().as_bytes());
+                    x += 58;
+                }
+            }
+            Item::LivingSky => {
+                f.text(r.x + 12, base, ui, TEXT, b"Living sky");
+                // A two-way switch, the setting lit, as Appearance's.
+                let mut x = r.x + r.w - 12 - 2 * 58;
+                for (on, name) in [(true, b"On" as &[u8]), (false, b"Off")] {
+                    let seg = Rect::new(x, r.y + 7, 58, r.h - 14);
+                    let lit = on == s.living_sky;
+                    if lit {
+                        f.push(Cmd::Fill {
+                            r: seg,
+                            color: FOCUS,
+                        });
+                    }
+                    f.push(Cmd::Outline {
+                        r: seg,
+                        color: GLASS_EDGE,
+                    });
+                    let c = if lit { keyboard::DONE_TEXT } else { DIM };
+                    centre_in(f, seg, label, c, name);
                     x += 58;
                 }
             }
