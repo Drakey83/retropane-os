@@ -2962,3 +2962,27 @@ fn over_rgb(top: Argb, under: Argb) -> Argb {
     let ch = |s: u32| ((((top >> s) & 0xFF) * a + ((under >> s) & 0xFF) * (255 - a)) / 255) << s;
     ch(16) | ch(8) | ch(0)
 }
+
+#[test]
+fn the_living_sky_moves_inside_the_weather_card() {
+    // The owner's run, 2026-11-01: the sky drew 27 px above the card.
+    let mut s = shell(true);
+    s.preview_sky(true);
+    let f = drawn(&mut s);
+    let mut seen = 0;
+    let mut clip = None;
+    for c in f.cmds() {
+        match *c {
+            Cmd::Clip { r } => clip = Some(r),
+            Cmd::Text { font, .. }
+                if core::ptr::eq(font, &sky::SKY) || core::ptr::eq(font, &sky::CLOUDS) =>
+            {
+                let r = clip.expect("the sky is clipped");
+                assert_eq!(r.intersect(&HERO), r, "{r:?} outside the card {HERO:?}");
+                seen += 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(seen > 0, "no sky drawn");
+}

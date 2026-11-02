@@ -1065,6 +1065,137 @@ pub fn reveal_window(r: rp_draw::Rect, shift: u16) -> (u16, u16, u16, u16, u16, 
 mod tests {
     use super::*;
 
+    /// The Weather app as Reveal shows it (composed ahead, whole, in 2D)
+    /// and as it rests (its chrome on the screen, its Now page's picture on
+    /// the layer at its window), each drawn by the CPU renderer at 32 bits
+    /// over nothing: they must be the same pixels, or the opening's end
+    /// changes the picture (the owner's "glitch at the end", 2026-11-01).
+    fn reveal_and_rest(light: bool) -> (std::vec::Vec<u32>, std::vec::Vec<u32>) {
+        use rp_draw::Renderer as _;
+        use rp_gfx::layer::{Layer, PlaneFormat};
+        use rp_gfx::render::CpuRenderer;
+        let draw =
+            |w: usize,
+             h: usize,
+             fill: &mut dyn FnMut(&mut rp_draw::Frame, &mut CpuRenderer<'_>)| {
+                let mut px = std::vec![0u32; w * h];
+                let mut plane = std::vec![0u8; w * 4 * h];
+                {
+                    let mut cpu = CpuRenderer::new(
+                        Layer::new(&mut px, w as u32, h as u32, w).expect("the layer"),
+                        &mut plane,
+                        w * 4,
+                        PlaneFormat::Argb8888,
+                    );
+                    let mut f = rp_draw::Frame::new();
+                    fill(&mut f, &mut cpu);
+                }
+                plane
+                    .chunks(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect::<std::vec::Vec<u32>>()
+            };
+        let mut shell = rp_shell::Shell::new(shell_fonts(), rp_shell::Icons::NONE, true);
+        shell.set_time(rp_shell::Time {
+            hour: if light { 12 } else { 22 },
+            minute: 0,
+            weekday: 0,
+            day: 1,
+            month: 11,
+        });
+        shell.use_planes(true);
+        let mut f = rp_draw::Frame::new();
+        shell.frame(&mut f);
+        shell.input(rp_shell::Input::PenDown { x: 240, y: 150 });
+        shell.input(rp_shell::Input::PenUp { x: 240, y: 150 });
+        shell.settle();
+        assert_eq!(shell.screen(), rp_shell::Screen::Weather);
+        let ahead = draw(W, H, &mut |f, cpu| {
+            shell.weather_preview(f);
+            let _ = cpu.draw(f);
+        });
+        let chrome = draw(W, H, &mut |f, cpu| {
+            shell.weather_chrome_preview(f);
+            let _ = cpu.draw(f);
+        });
+        let rows = usize::from(rp_shell::picture_rows(0));
+        let page = draw(W, rows, &mut |f, cpu| {
+            let mut top = 0;
+            while top < rows {
+                let n = usize::from(PAGE_BAND).min(rows - top);
+                shell.page_band(0, f, top as u16, n as u16);
+                let _ = cpu.draw(f);
+                top += n;
+            }
+        });
+        let v = shell.page_layer().expect("the Now page on the layer");
+        // Over a wallpaper (a grey ramp) as the display mixes planes
+        // (straight alpha): the screen's pixels, then the layer's over them.
+        let over = |p: u32, d: u32| {
+            let a = (p >> 24) as u8;
+            let ch = |s: u32| {
+                u32::from(rp_drv_mbx_display::scanout::mix(
+                    (p >> s) as u8,
+                    (d >> s) as u8,
+                    a,
+                )) << s
+            };
+            0xFF00_0000 | ch(16) | ch(8) | ch(0)
+        };
+        let wall = |i: usize| {
+            let g = (i % W * 255 / W) as u32;
+            0xFF00_0000 | g << 16 | (255 - g) << 8 | (i / W * 255 / H) as u32
+        };
+        let ahead: std::vec::Vec<u32> = ahead
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| over(p, wall(i)))
+            .collect();
+        let mut rest: std::vec::Vec<u32> = chrome
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| over(p, wall(i)))
+            .collect();
+        for y in 0..usize::from(v.win.h) {
+            for x in 0..usize::from(v.win.w) {
+                let (sx, sy) = (usize::from(v.win.x) + x, usize::from(v.win.y) + y);
+                let p = page[(usize::from(v.row) + y) * W + usize::from(v.win.x) + x];
+                rest[sy * W + sx] = over(p, rest[sy * W + sx]);
+            }
+        }
+        (ahead, rest)
+    }
+
+    #[test]
+    fn reveal_ends_on_the_same_picture_the_app_rests_on() {
+        for light in [false, true] {
+            let (ahead, rest) = reveal_and_rest(light);
+            if let Some(dir) = option_env!("RP_REVEAL_DUMP") {
+                let raw = |v: &[u32]| {
+                    v.iter()
+                        .flat_map(|p| p.to_le_bytes())
+                        .collect::<std::vec::Vec<u8>>()
+                };
+                std::fs::write(std::format!("{dir}/ahead-{light}.raw"), raw(&ahead)).unwrap();
+                std::fs::write(std::format!("{dir}/rest-{light}.raw"), raw(&rest)).unwrap();
+            }
+            let mut n = 0;
+            let mut b = (W, H, 0, 0);
+            for y in 0..H {
+                for x in 0..W {
+                    let (p, q) = (ahead[y * W + x], rest[y * W + x]);
+                    let off =
+                        (0..4).any(|k| ((p >> (8 * k)) & 0xFF).abs_diff((q >> (8 * k)) & 0xFF) > 3);
+                    if off {
+                        n += 1;
+                        b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+                    }
+                }
+            }
+            assert_eq!(n, 0, "light {light}: {n} pixels differ, within {b:?}");
+        }
+    }
+
     /// The Today screen's text and the living sky fit the 2D engine's glyph
     /// memory together (an atlas a font and colour, as the renderer builds
     /// them): over it, every frame would reset the atlases and upload the

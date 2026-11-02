@@ -291,11 +291,12 @@ pub const fn light_text(c: Argb) -> Argb {
     // An accent kept in its hue, darkened until it reads at 4.5:1 on the
     // frosted glass (a fixed 55% left the live green at 3.46:1: the light
     // look's contrast test, 2026-11-01): its luminance, gamma taken as 2,
-    // under 0.015: the grey glass's darkest, its bottom over a black
-    // wallpaper pixel, is ~0.28 (0.05 held on the white glass before it,
-    // 2026-11-01; at 0.05 the live green read 3.55:1 on the grey).
+    // under 0.012: the grey glass's darkest, its bottom at 93% over a
+    // black wallpaper pixel, is ~0.27 (the owner, 2026-11-01: "a little
+    // more transparent"; 0.05 held on the white glass before it, and at
+    // 0.05 the live green read 3.55:1 on the grey).
     let (mut r, mut g, mut b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
-    while (2126 * r * r + 7152 * g * g + 722 * b * b) / (255 * 255) > 150 {
+    while (2126 * r * r + 7152 * g * g + 722 * b * b) / (255 * 255) > 120 {
         r = r * 9 / 10;
         g = g * 9 / 10;
         b = b * 9 / 10;

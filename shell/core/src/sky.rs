@@ -31,8 +31,16 @@ pub const STEP_MS: u32 = 33;
 
 /// Where the sky moves: the whole weather panel, under its words and its
 /// picture (the first try kept to the picture's box, which the picture
-/// all but covers: the owner saw only a smudge or two).
-pub(crate) const AREA: Rect = Rect::new(17, 53, 446, 194);
+/// all but covers: the owner saw only a smudge or two). Inside the card's
+/// rim, taken from the card itself (a fixed copy stayed where the card was
+/// before it moved down 27 px: the owner's run, 2026-11-01, "off set of
+/// the box ... like a quarter inch above").
+pub(crate) const AREA: Rect = Rect::new(
+    crate::HERO.x + 1,
+    crate::HERO.y + 1,
+    crate::HERO.w - 2,
+    crate::HERO.h - 2,
+);
 const FALL: Rect = AREA;
 
 /// The sky's colours, one a frame (its glyphs' coverage gives each its

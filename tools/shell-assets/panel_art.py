@@ -23,7 +23,7 @@ K = 12  # the corners' radius (px)
 RIM = 2.2  # the rim's width (px)
 
 LOOKS = {
-    "LIGHT": dict(top=(176, 178, 183), bottom=(140, 142, 148), alpha=0.96, rim=0.85, sheen=0.26),
+    "LIGHT": dict(top=(176, 178, 183), bottom=(140, 142, 148), alpha=0.93, rim=0.85, sheen=0.26),
     "DARK": dict(top=(64, 66, 74), bottom=(40, 42, 48), alpha=0.90, rim=0.65, sheen=0.18),
 }
 
