@@ -715,20 +715,21 @@ pub struct Shell {
     chart_pic: Option<Pic>,
     /// The Station screen's dials (painted at start by the device).
     dials: station::Dials,
-    /// The real radar: its frames' times (Unix), how many, the place it
-    /// was asked for, the next tile to ask, whether the map is in and how
-    /// many rain frames are complete.
-    radar_times: [u32; 8],
+    /// The real radar (R184 step 2): its frames' times (Unix, oldest
+    /// first), how many, the place it was asked for, whether the map is in,
+    /// which rain frames are complete (a bit each), and the frame being
+    /// fetched with its next tile (the newest missing first).
+    radar_times: [u32; rp_weather::radar::PAST],
     radar_n: u8,
     radar_for: Option<(i32, i32)>,
-    tile_k: u16,
     radar_map: bool,
-    radar_done: u8,
+    radar_have: u16,
+    radar_tile: Option<(u8, u8)>,
     /// A refresh of the radar for the same place (its map and frames kept
     /// until the new list says which still hold), and the frames moved by
     /// their time for the device to apply (P7: [`Shell::take_radar_moves`]).
     radar_refresh: bool,
-    radar_moves: Option<[u8; 8]>,
+    radar_moves: Option<[u8; rp_weather::radar::PAST]>,
     radar_asked: u32,
     /// The default icon pack's offset asked next ([`Ask::Pack`]).
     pack_at: u32,
@@ -857,12 +858,12 @@ macro_rules! shell_start {
             graph: None,
             chart_pic: None,
             dials: station::Dials::NONE,
-            radar_times: [0; 8],
+            radar_times: [0; rp_weather::radar::PAST],
             radar_n: 0,
             radar_for: None,
-            tile_k: 0,
             radar_map: false,
-            radar_done: 0,
+            radar_have: 0,
+            radar_tile: None,
             radar_refresh: false,
             radar_moves: None,
             radar_asked: 0,
@@ -1344,6 +1345,12 @@ impl Shell {
     /// picture composed ahead to the renderer's own screens).
     pub fn redraw_all(&mut self) {
         self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// Marks `r` to be drawn: the device changed what lies under it (the
+    /// radar's wallpaper bands switched to another frame, R184 step 2).
+    pub fn redraw(&mut self, r: Rect) {
+        self.dirty(r);
     }
 
     /// Whether anything waits to be drawn.

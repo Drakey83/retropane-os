@@ -1805,10 +1805,11 @@ fn the_radar_asks_its_frames_then_the_map_then_each_rain_frame_tile_by_tile() {
         "the map's layers (one answer, R184), then three frames, nine tiles each"
     );
     assert_eq!(lines[0], b"RPNET LAYERS 30.664 -97.922 7\n");
-    assert_eq!(lines[1], b"RPNET TILE RAIN 0 7 28 51\n");
-    assert_eq!(lines[27], b"RPNET TILE RAIN 2 7 30 53\n");
+    // The newest frame first (R184 step 2), the oldest last.
+    assert_eq!(lines[1], b"RPNET TILE RAIN 2 7 28 51\n");
+    assert_eq!(lines[27], b"RPNET TILE RAIN 0 7 30 53\n");
     assert_eq!(s.radar_frames(), 3);
-    assert_eq!(s.radar_real(), Some(Some(0)));
+    assert_eq!(s.radar_real(), Some(Some(2)), "the newest shown");
     let f = drawn(&mut s);
     assert!(!f.overflowed());
     assert!(texts(&f).contains(&b"Natural Earth, Mapzen, RainViewer".to_vec()));
@@ -2177,8 +2178,8 @@ fn the_busiest_frame_leaves_a_quarter_of_the_frame_spare() {
 #[test]
 fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     // P7, by key: ten minutes on, RainViewer's list has moved on by one
-    // frame; the map and the frames still listed are kept (moved forward
-    // by the device), so 9 tiles are asked, not 37.
+    // frame; the map and the frames still listed are kept (moved by the
+    // device), so 9 tiles are asked, not 37.
     let mut s = weather(0);
     while s.next_ask().is_some() {
         s.net_answer(false, b"");
@@ -2201,6 +2202,7 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     s.net_answer(true, b"100 200 300 400");
     assert_eq!(all(&mut s), 1 + 9 * 4, "the map's layers, then four frames");
     assert_eq!(s.take_radar_moves(), None, "nothing kept the first time");
+    assert!(s.radar_complete());
     // Ten minutes on: the same place.
     s.tick(s.now + 600_001);
     let q = s.next_ask().expect("the frames again");
@@ -2209,11 +2211,13 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     s.net_answer(true, b"200 300 400 500");
     let m = s.take_radar_moves().expect("frames kept");
     assert_eq!(&m[..4], &[1, 2, 3, u8::MAX]);
+    assert_eq!(s.radar_have(), 0b0111);
     assert!(
         matches!(s.radar_real(), Some(Some(f)) if f < 3),
         "the frame shown is a kept one: {:?}",
         s.radar_real()
     );
+    assert!(!s.radar_complete(), "the newest not in yet");
     let tiles: Vec<Vec<u8>> = core::iter::from_fn(|| {
         let q = s.next_ask()?;
         let l = q.line().to_vec();
@@ -2224,6 +2228,20 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     assert_eq!(tiles.len(), 9, "only the new frame's tiles");
     assert!(tiles[0].starts_with(b"RPNET TILE RAIN 3 "));
     assert_eq!(s.radar_frames(), 4);
+    assert!(s.radar_complete());
+    // A frame the device couldn't keep is asked again, alone.
+    s.radar_forget(1);
+    assert!(!s.radar_complete());
+    let again: Vec<Vec<u8>> = core::iter::from_fn(|| {
+        let q = s.next_ask()?;
+        let l = q.line().to_vec();
+        s.net_answer(true, b"");
+        Some(l)
+    })
+    .collect();
+    assert_eq!(again.len(), 9);
+    assert!(again.iter().all(|l| l.starts_with(b"RPNET TILE RAIN 1 ")));
+    assert!(s.radar_complete());
     // Another place: nothing kept.
     s.wset.places[0].lat = 47_606;
     s.tick(s.now + 10);
@@ -2232,6 +2250,74 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     s.net_answer(true, b"200 300 400 500");
     assert_eq!(s.take_radar_moves(), None);
     assert_eq!(all(&mut s), 1 + 9 * 4, "the map's layers, then four frames");
+}
+
+/// R184 step 2 (R177): two hours of frames (13, RainViewer's whole past
+/// list, the newest kept if it lists more); the newest is shown still
+/// while the rest come; the loop starts only once all are in; the
+/// timeline counts them in, then names the span.
+#[test]
+fn the_real_radar_holds_its_newest_frame_until_all_thirteen_are_in() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    s.wset.places[0].lat = 30_664;
+    s.wset.places[0].lon = -97_922;
+    s.set_tab(weather_app::RADAR);
+    s.tick(s.now + 10);
+    assert_eq!(s.next_ask().map(|q| q.ask), Some(Ask::Frames));
+    // Fourteen listed: the oldest dropped.
+    let list: Vec<u8> = (0..14u32)
+        .map(|k| (1_793_450_000 + 600 * k).to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .into_bytes();
+    s.net_answer(true, &list);
+    assert_eq!(s.radar_frames(), 13);
+    let layers = s.next_ask().expect("the map");
+    assert!(layers.line().starts_with(b"RPNET LAYERS "));
+    s.net_answer(true, b"");
+    // The newest frame's nine tiles: then it shows, still.
+    for _ in 0..9 {
+        let q = s.next_ask().expect("a tile");
+        assert!(q.line().starts_with(b"RPNET TILE RAIN 12 "));
+        s.net_answer(true, b"");
+    }
+    assert_eq!(s.radar_real(), Some(Some(12)));
+    let f = drawn(&mut s);
+    assert!(
+        texts(&f).contains(&b"1 of 13 in".to_vec()),
+        "{:?}",
+        texts(&f)
+    );
+    let t = s.now;
+    for k in 1..20 {
+        assert!(!s.radar_step(t + k * 2000), "held while frames come");
+    }
+    assert_eq!(s.radar_real(), Some(Some(12)));
+    // The rest, newest to oldest.
+    let mut order = Vec::new();
+    while let Some(q) = s.next_ask() {
+        let l = q.line().to_vec();
+        if order.last() != Some(&l[16..18].to_vec()) {
+            order.push(l[16..18].to_vec());
+        }
+        s.net_answer(true, b"");
+    }
+    let want: Vec<Vec<u8>> = (0..12)
+        .rev()
+        .map(|f: u8| format!("{f} ").into_bytes()[..2].to_vec())
+        .collect();
+    assert_eq!(order, want);
+    assert!(s.radar_complete());
+    let f = drawn(&mut s);
+    assert!(
+        texts(&f).contains(&b"past 2 hours".to_vec()),
+        "{:?}",
+        texts(&f)
+    );
+    assert!(s.radar_step(t + 60_000), "the loop plays once all are in");
 }
 
 #[test]

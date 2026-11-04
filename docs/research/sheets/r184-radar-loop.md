@@ -123,3 +123,36 @@ half a megabyte, and the 32-bit frame buffers go.
   copied by the DMA engine (the CPU free while it copies).
 - The box-limited rebuild measured no faster than the whole one: then B.
 - Decoding 13 frames' PNGs again on a look change over ~1.5 s: then 2.
+
+## As built (2026-11-04, the owner's "Go, way C")
+
+- **Way C**, with one change found while building: 13 pictures (one per
+  frame) would have taken 13 of the graphics service's picture slots and
+  grown it past its size bound, and allocating and freeing a picture per
+  frame fragments the pool. Instead the radar takes up to three large
+  RGB565 pictures when Radar opens (48 bands of 42 rows each, halved if the
+  pool can't give that) and hands out **band slots** inside them; a frame
+  takes a slot only for each band where it rains. With fewer slots than
+  bands, frames not on screen give theirs way and are composed again when
+  the loop reaches them (slower, never wrong; logged). The pictures go back
+  to the pool when Radar closes.
+- The renderer (`Mbx2dRenderer::wallpaper_bands`) reads each band of the
+  wallpaper from its slot and makes the background and the screen again
+  only in the box where the rain changed (tests: the screen equals a
+  rewritten wallpaper's, the box only). The graphics service checks every
+  slot is the radar's own RGB565 picture (`Graphics::wallpaper_bands`), and
+  a picture a band reads can't be given back.
+- **The shell** asks the newest frame first, shows it still, holds the loop
+  until all 13 are in (the timeline's ticks fill in, "5 of 13 in", then
+  "past 2 hours"); a loop step dirties only the timeline, the rain's box is
+  the device's.
+- **The rain's PNGs** kept in a 2 MB store (compacted when full), moved by
+  record on a refresh; the 7.1 MB of 32-bit frames gone.
+- **Opacity, as fitted** (`tools/maps/rain_opacity.py`, held by
+  `the_rain_factors_are_fitted`): equal DeltaE to Night is out of reach on
+  the light maps (RainViewer's light greens and yellows: even opaque rain
+  on Paper reaches 26.7 against Night's 26.3 of 42.1), so the fit matches
+  the **share** of what each map allows instead (0.625): Paper x1.35
+  (345/256), Ink x1.44 (369/256), Night unchanged.
+- Shortcut on the audit: C97 (a tile not kept or not readable shows as no
+  rain, logged).

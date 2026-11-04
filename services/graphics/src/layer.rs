@@ -34,8 +34,10 @@ use rp_mbx3d_render::scan;
 use super::{ClientId, Error, FLIP_LEAD_US, Graphics, Handle, Job, Step};
 
 /// Page pictures at once, all clients together (a page, the next page, a
-/// turn's strip, the radar's two).
-pub const PICTURES: usize = 6;
+/// turn's strip, the app composed ahead and its chrome), and the radar's
+/// band pictures (R184 step 2: three at most, its frames' rainy bands
+/// handed out inside them by the radar itself).
+pub const PICTURES: usize = 9;
 
 /// The first scan line of the plane window: lines 640-642 of the 645-line
 /// refresh, the blanking's start (run WG-R way D: every Reveal refresh
@@ -152,6 +154,9 @@ pub(crate) struct LayerRec {
     regs: [u32; 9],
     /// The commit waiting for the blanking.
     staged: Option<Staged>,
+    /// The pictures the 2D renderer's wallpaper bands read (by slot):
+    /// never given back while it does.
+    bands: u32,
     /// A 2D frame held aside (shown only through the layer).
     aside: bool,
 }
@@ -232,6 +237,57 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         let h = self.picture(c, 480, 640)?;
         self.layer.pics[usize::from(h.slot)].rgb565 = true;
         Ok(h)
+    }
+
+    /// A 480 x `h` RGB565 picture for client `c` (R184 step 2: a radar
+    /// frame's bands, composed once over the map), within its quota.
+    pub fn picture_rgb565_rows(&mut self, c: ClientId, h: u16) -> Result<Handle, Error> {
+        let p = self.picture(c, 480, h)?;
+        self.layer.pics[usize::from(p.slot)].rgb565 = true;
+        Ok(p)
+    }
+
+    /// The 2D renderer's wallpaper read band by band (R184 step 2): rows
+    /// from `top` on, `h` at a time, band `k` from `bands[k]` (client
+    /// `c`'s RGB565 picture, 480 wide, from its row: checked here, so the
+    /// renderer is only ever given the allocator's addresses, ADR-0023
+    /// rule 7) or the wallpaper where `None`; `changed` is the screen
+    /// this changes, drawn again there only
+    /// (`Mbx2dRenderer::wallpaper_bands`). The pictures named can't be
+    /// given back until another call stops naming them; `&[]` reads the
+    /// wallpaper alone again.
+    pub fn wallpaper_bands(
+        &mut self,
+        c: ClientId,
+        top: u16,
+        h: u16,
+        bands: &[Option<(Handle, u16)>],
+        changed: rp_draw::Rect,
+    ) -> Result<(), Error> {
+        self.rec(c)?;
+        if bands.len() > rp_mbx_render::BANDS
+            || h == 0
+            || u32::from(top) + u32::from(h) * bands.len() as u32 > 640
+        {
+            return Err(Error::BadWindow);
+        }
+        let mut at = [None; rp_mbx_render::BANDS];
+        let mut used = 0u32;
+        for (out, b) in at.iter_mut().zip(bands) {
+            let Some((ph, row)) = *b else {
+                continue;
+            };
+            let p = self.pic(c.0, ph)?;
+            if !p.rgb565 || p.w != 480 || u32::from(row) + u32::from(h) > u32::from(p.h) {
+                return Err(Error::BadWindow);
+            }
+            *out = Some((p.at + u32::from(row) * p.stride()) as usize);
+            used |= 1 << ph.slot;
+        }
+        self.layer.bands = used;
+        self.two_d
+            .wallpaper_bands(top, h, &at[..bands.len()], changed);
+        Ok(())
     }
 
     /// Composes the 2D `frame` (drawn whole: its damage the screen) into
@@ -327,7 +383,10 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         let uses = |s: Option<(LayerState, u8)>| {
             s.is_some_and(|(st, o)| o == c.0 && st.src == Source::Picture(h))
         };
-        if uses(self.layer.shown) || self.layer.staged.is_some_and(|s| uses(s.layer)) {
+        if uses(self.layer.shown)
+            || self.layer.staged.is_some_and(|s| uses(s.layer))
+            || self.layer.bands & 1 << h.slot != 0
+        {
             return Err(Error::Busy);
         }
         let bytes = p.stride() * u32::from(p.h);

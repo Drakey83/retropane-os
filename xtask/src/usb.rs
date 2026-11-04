@@ -2085,12 +2085,13 @@ while ($true) {{
                 Answer $b
             }}
             'FRAMES' {{
-                # RainViewer's radar frames: the last eight, kept for the
-                # tiles that follow; their times (Unix) to the device.
+                # RainViewer's radar frames: its whole past list (two hours,
+                # every ten minutes: 13; R184 step 2), kept for the tiles
+                # that follow; their times (Unix) to the device.
                 if ($canned) {{ $script:rv = @(); Answer ([Text.Encoding]::ASCII.GetBytes('1793457000 1793457600')); continue }}
                 $m = Invoke-RestMethod -UserAgent $ua 'https://api.rainviewer.com/public/weather-maps.json'
                 $script:rvHost = $m.host
-                $script:rv = @($m.radar.past | Select-Object -Last 8)
+                $script:rv = @($m.radar.past | Select-Object -Last 13)
                 $t = ($script:rv | ForEach-Object {{ $_.time }}) -join ' '
                 "RADAR $($script:rv.Count) frames"
                 Answer ([Text.Encoding]::ASCII.GetBytes($t))

@@ -202,6 +202,16 @@ each through ui-preview first.
 2. **The timeline and the rain** (M6, R177): past 2 hours only, ending at
    now; the loop's newest-first fetch, kept frames, each frame composed
    once over the map; opacity per look.
+   **Built 2026-11-04 by way C** (sheet
+   [r184-radar-loop.md](../research/sheets/r184-radar-loop.md)): today-0053
+   measured a loop step at ~70 ms (the blend ~8, the whole map written into
+   2700G memory ~27, the renderer's whole-screen rebuild ~36), so each
+   frame is composed once into band slots in 2700G memory (only where it
+   rains) and a step switches the wallpaper's bands and redraws the box
+   where the rain changed; 13 frames, the newest first and shown still, the
+   loop held until all are in; the rain kept as its PNGs (2 MB store, not
+   7.1 MB of frames); rain x1.35 on Paper, x1.44 on Ink (fitted). Device
+   run owed.
 3. **Any place, drawn on the PC** (M3's first half): the dock's relay draws
    the map for the place shown (the same drawer as step 1, Natural Earth
    and open elevation tiles) at each zoom, instead of OpenStreetMap's

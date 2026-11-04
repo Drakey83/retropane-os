@@ -214,9 +214,8 @@ impl Shell {
             }
             // The map first: one layered map of the whole view, drawn by
             // the relay for the place (R184; it took nine OpenStreetMap
-            // tiles, recoloured on the device), counted as the first nine
-            // steps so the rain's tiles keep their numbers.
-            Ask::Tile if self.tile_k < 9 => {
+            // tiles, recoloured on the device).
+            Ask::Tile if !self.radar_map => {
                 let v = self.radar_view();
                 let p = self.wset.place();
                 q.push(b"LAYERS ");
@@ -231,23 +230,13 @@ impl Shell {
                 );
                 q.tile = Some((None, 0, v));
             }
+            // Then the rain, the newest frame missing first, tile by tile
+            // (R184 step 2: the newest shows at once, the rest come behind).
             Ask::Tile => {
                 let v = self.radar_view();
-                let total = 9 * (1 + u16::from(self.radar_n));
-                // The next tile on the map (past the poles: none).
-                while self.tile_k < total && v.tile(usize::from(self.tile_k % 9)).is_none() {
-                    self.tile_k += 1;
-                }
-                let (tx, ty) = v
-                    .tile(usize::from(self.tile_k % 9))
-                    .filter(|_| self.tile_k < total)?;
-                let kind = (self.tile_k / 9) as u8;
-                let rain = kind.checked_sub(1);
-                q.push(b"TILE ");
-                match rain {
-                    None => q.push(b"MAP"),
-                    Some(f) => q.push(Line::new().push(b"RAIN ").num(i32::from(f)).as_bytes()),
-                }
+                let (f, k) = self.radar_tile?;
+                let (tx, ty) = v.tile(usize::from(k))?;
+                q.push(Line::new().push(b"TILE RAIN ").num(i32::from(f)).as_bytes());
                 let z = Line::new()
                     .push(b" ")
                     .num(i32::from(rp_weather::tiles::ZOOM))
@@ -256,7 +245,7 @@ impl Shell {
                     .push(b" ")
                     .num(ty as i32);
                 q.push(z.as_bytes());
-                q.tile = Some((rain, (self.tile_k % 9) as u8, v));
+                q.tile = Some((Some(f), k, v));
             }
         }
         q.push(b"\n");
@@ -389,62 +378,7 @@ impl Shell {
                 self.n_alerts = rp_weather::alerts::from_nws(body, &mut self.alerts) as u8;
                 self.dirty(super::weather_app::HEAD);
             }
-            Ask::Frames => {
-                // "t1 t2 ... tn", oldest first, up to eight.
-                let (old, old_n) = (self.radar_times, usize::from(self.radar_n));
-                let mut n = 0;
-                for t in body.split(|c| *c == b' ').filter(|t| !t.is_empty()) {
-                    let Some(v) = core::str::from_utf8(t)
-                        .ok()
-                        .and_then(|t| t.trim().parse::<u32>().ok())
-                    else {
-                        continue;
-                    };
-                    if n < 8 {
-                        self.radar_times[n] = v;
-                        n += 1;
-                    }
-                }
-                self.radar_n = n as u8;
-                // P7, by key: a refresh for the same place keeps the map
-                // and every frame whose time it still lists (RainViewer adds
-                // one every ten minutes: 9 tiles asked, not 81). Only a run
-                // of the new list's oldest frames, each found further on in
-                // the old list, is kept (the device moves them forward).
-                let mut moves = [u8::MAX; 8];
-                let mut kept = 0;
-                if core::mem::take(&mut self.radar_refresh) && self.radar_map {
-                    let mut from = 0;
-                    while kept < n {
-                        let Some(j) = (from..old_n).find(|&j| old[j] == self.radar_times[kept])
-                        else {
-                            break;
-                        };
-                        if j < kept {
-                            break;
-                        }
-                        moves[kept] = j as u8;
-                        from = j + 1;
-                        kept += 1;
-                    }
-                }
-                if kept > 0 {
-                    self.radar_moves = Some(moves);
-                    self.tile_k = 9 * (1 + kept as u16);
-                    self.radar_done = kept as u8;
-                    self.radar_frame = self.radar_frame.min(kept as u8 - 1);
-                } else {
-                    self.radar_moves = None;
-                    self.tile_k = 0;
-                    self.radar_map = false;
-                    self.radar_done = 0;
-                    self.radar_frame = 0;
-                }
-                if self.tile_k < 9 * (1 + u16::from(self.radar_n)) {
-                    self.want(Ask::Tile);
-                }
-                self.dirty(super::weather_app::PAGE);
-            }
+            Ask::Frames => self.frames_answer(body),
             // The device placed the tile; the next one.
             Ask::Tile => self.tile_done(),
             Ask::Tempest => self.tempest_answer(body),
@@ -585,31 +519,137 @@ impl Shell {
         }
     }
 
-    /// A tile answered (or not): on to the next; the map or a rain frame
-    /// complete at each ninth.
-    fn tile_done(&mut self) {
-        // The map is one answer for the first nine steps.
-        self.tile_k = if self.tile_k < 9 { 9 } else { self.tile_k + 1 };
-        if self.tile_k.is_multiple_of(9) {
-            let kind = self.tile_k / 9;
-            if kind == 1 {
-                self.radar_map = true;
-            } else {
-                self.radar_done = (kind - 1) as u8;
+    /// RainViewer's frame list ("t1 t2 ... tn", oldest first; the last
+    /// [`rp_weather::radar::PAST`] kept). P7, by key: a refresh for the same
+    /// place keeps the map and every frame whose time it still lists
+    /// (RainViewer adds one every ten minutes: 9 tiles asked, not 117); the
+    /// device moves its kept frames to their new places
+    /// ([`Self::take_radar_moves`]).
+    #[inline(never)]
+    fn frames_answer(&mut self, body: &[u8]) {
+        use rp_weather::radar::PAST;
+        let (old, old_n) = (self.radar_times, usize::from(self.radar_n));
+        let mut times = [0u32; PAST];
+        let mut n = 0;
+        for t in body.split(|c| *c == b' ').filter(|t| !t.is_empty()) {
+            let Some(v) = core::str::from_utf8(t)
+                .ok()
+                .and_then(|t| t.trim().parse::<u32>().ok())
+            else {
+                continue;
+            };
+            // The newest kept when the list runs long.
+            if n == PAST {
+                times.copy_within(1.., 0);
+                n -= 1;
             }
-            self.dirty(Rect::new(0, 0, W, super::H));
+            times[n] = v;
+            n += 1;
         }
-        if self.tile_k < 9 * (1 + u16::from(self.radar_n)) {
+        let shown =
+            (usize::from(self.radar_frame) < old_n).then(|| old[usize::from(self.radar_frame)]);
+        self.radar_times = times;
+        self.radar_n = n as u8;
+        let mut moves = [u8::MAX; PAST];
+        let mut have = 0u16;
+        if core::mem::take(&mut self.radar_refresh) && self.radar_map {
+            for (i, m) in moves.iter_mut().enumerate().take(n) {
+                if let Some(j) = (0..old_n).find(|&j| old[j] == times[i])
+                    && self.radar_have & 1 << j != 0
+                {
+                    *m = j as u8;
+                    have |= 1 << i;
+                }
+            }
+        }
+        self.radar_moves = (have != 0).then_some(moves);
+        self.radar_have = have;
+        // The frame shown stays the same picture if it was kept, else the
+        // newest kept (the newest, when none is).
+        self.radar_frame = shown
+            .and_then(|t| times[..n].iter().position(|&x| x == t))
+            .filter(|&i| have & 1 << i != 0)
+            .or_else(|| (0..n).rev().find(|&i| have & 1 << i != 0))
+            .unwrap_or(n.saturating_sub(1)) as u8;
+        self.radar_tile = None;
+        self.next_radar_frame();
+        self.dirty(super::weather_app::PAGE);
+    }
+
+    /// Asks for the next frame's tiles, the newest missing first; the
+    /// loop starts once none is.
+    fn next_radar_frame(&mut self) {
+        let missing = (0..self.radar_n)
+            .rev()
+            .find(|&f| self.radar_have & 1 << f == 0);
+        self.radar_tile = missing.map(|f| (f, self.first_tile(0)));
+        if !self.radar_map || self.radar_tile.is_some() {
             self.want(Ask::Tile);
         }
     }
 
+    /// The view's first tile from `k` on (past the poles: none; 9 when
+    /// there is none left).
+    fn first_tile(&self, k: u8) -> u8 {
+        let v = self.radar_view();
+        (k..9)
+            .find(|&k| v.tile(usize::from(k)).is_some())
+            .unwrap_or(9)
+    }
+
+    /// A tile answered (or not): on to the next; a rain frame complete at
+    /// its last tile.
+    fn tile_done(&mut self) {
+        if !self.radar_map {
+            self.radar_map = true;
+            self.dirty(Rect::new(0, 0, W, super::H));
+        } else if let Some((f, k)) = self.radar_tile {
+            let next = self.first_tile(k + 1);
+            if next < 9 {
+                self.radar_tile = Some((f, next));
+                self.want(Ask::Tile);
+                return;
+            }
+            self.radar_have |= 1 << f;
+            self.dirty(Rect::new(0, 0, W, super::H));
+        }
+        self.next_radar_frame();
+    }
+
+    /// The device couldn't keep frame `f` (its tiles' room was full, or a
+    /// tile wasn't readable): asked again, after the frames still missing
+    /// newer than it.
+    pub fn radar_forget(&mut self, f: u8) {
+        if self.radar_have & 1 << f == 0 {
+            return;
+        }
+        self.radar_have &= !(1 << f);
+        if self.radar_tile.is_none() && self.radar_map {
+            self.next_radar_frame();
+        }
+        self.dirty(super::weather_app::PAGE);
+    }
+
     /// The rain frames a refresh kept, by their time (P7): for each new
     /// frame, the old frame whose pixels it is (`u8::MAX`: fetched anew).
-    /// Each source is at or after its frame, so moving them in order is
-    /// safe. Taken once; the device moves its frame buffers.
-    pub fn take_radar_moves(&mut self) -> Option<[u8; 8]> {
+    /// Taken once; the device moves its frames (in any order: it moves
+    /// their records, not pixels).
+    pub fn take_radar_moves(&mut self) -> Option<[u8; rp_weather::radar::PAST]> {
         self.radar_moves.take()
+    }
+
+    /// Whether every listed rain frame is in (the loop plays only then).
+    #[must_use]
+    pub fn radar_complete(&self) -> bool {
+        self.radar_map
+            && self.radar_n > 0
+            && self.radar_have.count_ones() == u32::from(self.radar_n)
+    }
+
+    /// Which rain frames are in (a bit each, oldest first).
+    #[must_use]
+    pub fn radar_have(&self) -> u16 {
+        self.radar_have
     }
 
     /// The radar's view: centred on the place shown.
@@ -624,7 +664,7 @@ impl Shell {
     #[must_use]
     pub fn radar_real(&self) -> Option<Option<u8>> {
         self.radar_map
-            .then(|| Some(self.radar_frame).filter(|f| *f < self.radar_done))
+            .then(|| Some(self.radar_frame).filter(|f| self.radar_have & 1 << f != 0))
     }
 
     /// Frames on the timeline: the real ones once the map is in, else the
@@ -639,7 +679,7 @@ impl Shell {
 
     /// Whether radar tiles are still coming.
     pub(crate) fn radar_loading(&self) -> bool {
-        self.radar_for.is_some() && self.tile_k < 9 * (1 + u16::from(self.radar_n))
+        self.radar_for.is_some() && (!self.radar_map || self.wants(Ask::Frames))
     }
 
     /// The match list's area on T2.
@@ -667,7 +707,8 @@ impl Shell {
             self.radar_refresh = self.radar_for == Some((p.lat, p.lon)) && self.radar_map;
             if !self.radar_refresh {
                 self.radar_map = false;
-                self.radar_done = 0;
+                self.radar_have = 0;
+                self.radar_tile = None;
             }
             self.radar_for = Some((p.lat, p.lon));
             self.radar_asked = self.now;

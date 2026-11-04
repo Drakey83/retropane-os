@@ -2211,3 +2211,49 @@ fn reveal_ends_with_the_screen_on_a_picture_composed_ahead_then_hands_back() {
     );
     assert_eq!(r.on_screen(5, 300), BLUE & 0xFF_FFFF);
 }
+
+/// R184 step 2: the radar's frames as wallpaper bands. Only a client's
+/// own RGB565 pictures, 480 wide, with the band's rows inside them, are
+/// taken; a picture a band reads is never given back until the bands stop
+/// naming it; the other client's picture is refused.
+#[test]
+fn wallpaper_bands_take_only_the_clients_own_pictures_and_hold_them() {
+    let mut r = rig();
+    let c = r.g.client(4 << 20).unwrap();
+    let other = r.g.client(1 << 20).unwrap();
+    let a = r.g.picture_rgb565_rows(c, 80).unwrap();
+    let glass = r.g.picture(c, 480, 80).unwrap();
+    let narrow = r.g.picture(c, 240, 80).unwrap();
+    let theirs = r.g.picture_rgb565_rows(other, 40).unwrap();
+    assert_eq!(r.g.used(c), 3 * 960 * 80 - 480 * 80);
+    let all = Rect::new(0, 70, 480, 80);
+    for (bands, why) in [
+        (&[Some((glass, 0))][..], "ARGB4444 glass"),
+        (&[Some((narrow, 0))][..], "not 480 wide"),
+        (&[Some((a, 50))][..], "the band's rows past its end"),
+        (&[None; 17][..], "more bands than the renderer has"),
+    ] {
+        assert_eq!(
+            r.g.wallpaper_bands(c, 70, 40, bands, all),
+            Err(Error::BadWindow),
+            "{why}"
+        );
+    }
+    assert_eq!(
+        r.g.wallpaper_bands(c, 70, 40, &[Some((theirs, 0))], all),
+        Err(Error::BadHandle),
+        "another client's picture"
+    );
+    assert_eq!(
+        r.g.wallpaper_bands(c, 70, 40, &[None, Some((a, 40))], all),
+        Ok(())
+    );
+    assert_eq!(r.g.free_picture(c, a), Err(Error::Busy), "a band reads it");
+    assert_eq!(r.g.wallpaper_bands(c, 70, 40, &[], all), Ok(()));
+    assert_eq!(r.g.free_picture(c, a), Ok(()));
+    assert_eq!(
+        r.g.wallpaper_bands(c, 70, 40, &[Some((a, 0))], all),
+        Err(Error::BadHandle),
+        "a picture given back"
+    );
+}

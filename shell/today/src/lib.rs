@@ -29,6 +29,7 @@
 
 pub mod clock;
 pub mod fonts;
+pub mod rain;
 pub mod replay;
 
 use rp_draw::Image;

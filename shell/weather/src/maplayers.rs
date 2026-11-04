@@ -221,6 +221,29 @@ const LINES: [Layer; 6] = [
     Layer::Text,
 ];
 
+/// The rain's opacity per look (R184 step 2, M6: "a little stronger on
+/// the light map"): a factor on RainViewer's own alpha, in 256ths. Night
+/// keeps today's rain (256); Paper's and Ink's are fitted by
+/// `tools/maps/rain_opacity.py` so the rain's mean colour difference from
+/// the land (CIE DeltaE 2000) reaches the same share of what the map allows
+/// as Night's (0.625); the test below fits them again.
+#[must_use]
+pub const fn rain_k(look: Look) -> u32 {
+    match look {
+        Look::Night => 256,
+        Look::Paper => 345,
+        Look::Ink => 369,
+    }
+}
+
+/// A rain pixel `c` (ARGB, straight alpha: RainViewer's) over the map's
+/// pixel `m` in `look`, opaque.
+#[must_use]
+pub fn rain_over(m: u32, c: u32, look: Look) -> u32 {
+    let a = (((c >> 24) * rain_k(look) + 128) >> 8).min(255);
+    0xFF00_0000 | if a == 0 { m } else { mix(m, c, a) }
+}
+
 /// The whole view in `look` into `out` ([`W`] x [`H`]).
 pub fn colour(layers: &[u8], look: Look, out: &mut [u32]) {
     for (y, row) in out.as_chunks_mut::<W>().0.iter_mut().enumerate().take(H) {
@@ -295,6 +318,129 @@ mod tests {
         assert_eq!(unpack(&good[..HEAD - 1], &mut out), Err(Error::Header));
         assert_eq!(unpack(&good[..HEAD + 20], &mut out), Err(Error::Stream));
         assert_eq!(unpack(&good, &mut out[1..]), Err(Error::Room));
+    }
+
+    /// CIE DeltaE 2000 between two sRGB colours (the fit's measure, as
+    /// `tools/maps/rain_opacity.py` computes it).
+    fn de2000(p: [u32; 3], q: [u32; 3]) -> f64 {
+        fn lab(c: [u32; 3]) -> [f64; 3] {
+            let lin = |v: u32| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let (r, g, b) = (lin(c[0]), lin(c[1]), lin(c[2]));
+            let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+            let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+            let f = |t: f64| {
+                if t > 216.0 / 24389.0 {
+                    t.cbrt()
+                } else {
+                    (24389.0 / 27.0 * t + 16.0) / 116.0
+                }
+            };
+            let (fx, fy, fz) = (f(x), f(y), f(z));
+            [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+        }
+        let ([l1, a1, b1], [l2, a2, b2]) = (lab(p), lab(q));
+        let cm = (a1.hypot(b1) + a2.hypot(b2)) / 2.0;
+        let g = 0.5 * (1.0 - (cm.powi(7) / (cm.powi(7) + 25f64.powi(7))).sqrt());
+        let (a1, a2) = (a1 * (1.0 + g), a2 * (1.0 + g));
+        let (c1, c2) = (a1.hypot(b1), a2.hypot(b2));
+        let h1 = b1.atan2(a1).to_degrees().rem_euclid(360.0);
+        let h2 = b2.atan2(a2).to_degrees().rem_euclid(360.0);
+        let (dl, dc) = (l2 - l1, c2 - c1);
+        let mut dh = 0.0;
+        if c1 * c2 != 0.0 {
+            dh = h2 - h1;
+            if dh > 180.0 {
+                dh -= 360.0;
+            } else if dh < -180.0 {
+                dh += 360.0;
+            }
+        }
+        let dhh = 2.0 * (c1 * c2).sqrt() * (dh / 2.0).to_radians().sin();
+        let (lm, cm) = ((l1 + l2) / 2.0, (c1 + c2) / 2.0);
+        let mut hm = h1 + h2;
+        if c1 * c2 != 0.0 {
+            if (h1 - h2).abs() > 180.0 {
+                hm += if h1 + h2 < 360.0 { 360.0 } else { -360.0 };
+            }
+            hm /= 2.0;
+        }
+        let cos = |d: f64| d.to_radians().cos();
+        let t = 1.0 - 0.17 * cos(hm - 30.0) + 0.24 * cos(2.0 * hm) + 0.32 * cos(3.0 * hm + 6.0)
+            - 0.20 * cos(4.0 * hm - 63.0);
+        let sl = 1.0 + 0.015 * (lm - 50.0).powi(2) / (20.0 + (lm - 50.0).powi(2)).sqrt();
+        let sc = 1.0 + 0.045 * cm;
+        let sh = 1.0 + 0.015 * cm * t;
+        let rt = -2.0
+            * (cm.powi(7) / (cm.powi(7) + 25f64.powi(7))).sqrt()
+            * (60.0 * (-((hm - 275.0) / 25.0).powi(2)).exp())
+                .to_radians()
+                .sin();
+        ((dl / sl).powi(2) + (dc / sc).powi(2) + (dhh / sh).powi(2) + rt * (dc / sc) * (dhh / sh))
+            .sqrt()
+    }
+
+    /// The rain's factors are the fit's (R184 step 2): each light look's
+    /// share of its most contrast (every colour opaque) matches Night's at
+    /// 256 to within a step of the factor, over every colour of the test
+    /// tile (RainViewer's scheme 2).
+    #[test]
+    fn the_rain_factors_are_fitted() {
+        let png = include_bytes!("../tests/data/rainviewer-7-29-52.png");
+        let mut tile = vec![0u32; 256 * 256];
+        let mut data = vec![0u8; 256 * 1024];
+        let mut raw = vec![0u8; 256 * (1 + 256 * 4)];
+        assert_eq!(
+            crate::png::decode(png, &mut tile, &mut data, &mut raw),
+            Ok((256, 256))
+        );
+        let mut colours: Vec<u32> = tile.iter().copied().filter(|c| c >> 24 != 0).collect();
+        colours.sort_unstable();
+        colours.dedup();
+        assert!(colours.len() > 30, "the tile's colours");
+        let rgb = |c: u32| [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF];
+        let land = |look: Look| {
+            let p = palette(look);
+            let lit = p.lo + p.span * 128 / 255;
+            let ch = |s: u32| (((p.land >> s) & 0xFF) * lit / 256).min(255);
+            [ch(16), ch(8), ch(0)]
+        };
+        let contrast = |look: Look, k: u32| {
+            let m = land(look);
+            let mm = m[0] << 16 | m[1] << 8 | m[2];
+            colours
+                .iter()
+                .map(|&c| {
+                    let a = (((c >> 24) * k + 128) >> 8).min(255);
+                    de2000(m, rgb(mix(mm, c, a)))
+                })
+                .sum::<f64>()
+                / colours.len() as f64
+        };
+        let share = |look: Look, k: u32| contrast(look, k) / contrast(look, 1 << 16);
+        let target = share(Look::Night, rain_k(Look::Night));
+        for look in [Look::Paper, Look::Ink] {
+            let k = rain_k(look);
+            assert!(
+                share(look, k - 1) < target && target <= share(look, k + 1),
+                "{look:?}"
+            );
+            assert!(k > rain_k(Look::Night), "{look:?}: stronger than on Night");
+        }
+        // Night's rain is today's: RainViewer's alpha as it came.
+        let c = 0x8C3C_BE50;
+        assert_eq!(
+            rain_over(0x22_282E, c, Look::Night),
+            0xFF00_0000 | mix(0x22_282E, c, 0x8C)
+        );
+        assert_eq!(rain_over(0x22_282E, 0, Look::Paper), 0xFF22_282E);
     }
 
     /// Every look from the same layers, each keeping what the others do:

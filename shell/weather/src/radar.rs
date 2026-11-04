@@ -16,6 +16,10 @@ pub const FRAMES: u8 = 13;
 pub const NOW_FRAME: u8 = 6;
 /// Minutes between frames.
 pub const STEP_MIN: i16 = 10;
+/// Real frames at most: RainViewer's past two hours, every 10 minutes
+/// (R184 step 2, M6: the timeline ends at now; RainViewer has no
+/// forecast frames).
+pub const PAST: usize = 13;
 
 /// The rain steps, light to heavy: colour and the threshold (of 256) at
 /// which each starts (the mock-ups' scale).

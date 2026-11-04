@@ -421,7 +421,18 @@ pub struct Mbx2dRenderer<R, M> {
     /// Keys of areas drawn lately (a ring).
     seen: [u32; SEEN],
     seen_at: usize,
+    /// The wallpaper's rows read band by band ([`Self::wallpaper_bands`]):
+    /// the first band's row, the bands' height, and per band the base its
+    /// rows are read from (laid out as the screen; `None`: the wallpaper).
+    bands: (u16, u16, [Option<usize>; BANDS]),
+    /// Where the wallpaper changed since the last frame (a band switch):
+    /// its background made again and its screen area drawn there only.
+    wall_box: Option<Rect>,
 }
+
+/// Bands of the wallpaper that can be read from elsewhere
+/// ([`Mbx2dRenderer::wallpaper_bands`]).
+pub const BANDS: usize = 16;
 
 /// The longest wait for the blanking before a flip, us: a refresh (16.6 ms
 /// at 60 Hz, 17.7 at Windows Mobile's 56 Hz) and a little.
@@ -507,6 +518,8 @@ macro_rules! renderer_start {
             seen_at: 0,
             hoist: [false; MAX_CMDS],
             bounds: [Rect::new(0, 0, 0, 0); MAX_CMDS],
+            bands: (0, 1, [None; BANDS]),
+            wall_box: None,
         })
     };
 }
@@ -547,6 +560,42 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         self.bg_hash = None;
         self.row_keys = [None; ROWS];
         self.fresh = 2;
+    }
+
+    /// Reads the wallpaper's rows from `top` on, `h` at a time, band `k`'s
+    /// from `bands[k]` (an RGB565 picture `W` pixels wide, its rows
+    /// `STRIDE16` apart, from the allocator: the graphics service checks
+    /// it) or, where `None` or past the list, from the wallpaper itself;
+    /// `changed` is all the screen this changes (R184 step 2: a radar
+    /// frame composed once into its bands, a loop step switching them). The
+    /// background and the screen are made again there only, not whole, and
+    /// cached areas over it are dropped. No bands (`&[]`) reads the
+    /// wallpaper alone again.
+    pub fn wallpaper_bands(&mut self, top: u16, h: u16, bands: &[Option<usize>], changed: Rect) {
+        let mut b = [None; BANDS];
+        for (k, (out, at)) in b.iter_mut().zip(bands).enumerate() {
+            let row = usize::from(top) + k * usize::from(h);
+            *out = at.map(|a| a.wrapping_sub(row * STRIDE16));
+        }
+        self.bands = (top, h.max(1), b);
+        let changed = changed.intersect(&SCREEN);
+        if changed.is_empty() {
+            return;
+        }
+        self.wall_box = Some(match self.wall_box {
+            Some(w) => w.union(&changed),
+            None => changed,
+        });
+        // A cached area over the change holds the old wallpaper.
+        let mut k = 0;
+        while k < self.cached_n {
+            if self.cached[k].1.intersect(&changed).is_empty() {
+                k += 1;
+            } else {
+                self.cached_n -= 1;
+                self.cached[k] = self.cached[self.cached_n];
+            }
+        }
     }
 
     /// Draws the whole screen afresh on the next two frames (an area that
@@ -796,8 +845,42 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// Copies the wallpaper (RGB565) under `r` into the 32 bpp picture
     /// `dst` (the engine widens it).
     fn wallpaper(&mut self, dst: usize, r: Rect) {
-        let src = self.l.wallpaper;
-        self.copy_as(wide(dst), narrow(src), r);
+        let end = r.y + r.h;
+        let mut y = r.y;
+        while y < end {
+            // The longest run of rows read from one place (bands from the
+            // wallpaper itself merge with it: one copy, as before bands).
+            let (src, mut next) = self.wallpaper_src(y);
+            while next < end {
+                let (s2, n2) = self.wallpaper_src(next);
+                if s2 != src {
+                    break;
+                }
+                next = n2;
+            }
+            let next = next.min(end);
+            self.copy_as(wide(dst), narrow(src), Rect::new(r.x, y, r.w, next - y));
+            y = next;
+        }
+    }
+
+    /// Where wallpaper row `y` is read from (laid out as the screen), and
+    /// the first row after `y` that may be read from elsewhere.
+    fn wallpaper_src(&self, y: u16) -> (usize, u16) {
+        let (top, h, bands) = self.bands;
+        let last = top.saturating_add(h.saturating_mul(BANDS as u16));
+        match y.checked_sub(top) {
+            _ if bands.iter().all(Option::is_none) => (self.l.wallpaper, H),
+            None => (self.l.wallpaper, top),
+            Some(_) if y >= last => (self.l.wallpaper, H),
+            Some(d) => {
+                let k = usize::from(d / h);
+                (
+                    bands[k].unwrap_or(self.l.wallpaper),
+                    top + (k as u16 + 1) * h,
+                )
+            }
+        }
     }
 
     /// Copies `r` of the 32 bpp picture at `src` into the one at `dst`.
@@ -1492,6 +1575,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let mut redo = [Rect::default(); MAX_DIRTY];
         let mut nr = 0;
         let whole = self.bg_hash.is_none();
+        // A band switch: the background and the screen there (all of it
+        // anyway when whole).
+        let wall_box = self.wall_box.take().filter(|_| !whole);
         if whole {
             redo[0] = SCREEN;
             nr = 1;
@@ -1522,6 +1608,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                     redo[best] = redo[best].union(&r);
                 }
             };
+            if let Some(b) = wall_box {
+                add(b);
+            }
             for &(k, r) in &self.bg_keys[..self.bg_n] {
                 if !(0..cmds).any(|i| self.hoist[i] && self.keys[i] == k) {
                     add(r);
@@ -1589,11 +1678,16 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                 forward[0] = SCREEN;
                 nf = 1;
             }
-            for r in frame.dirty() {
+            for r in frame.dirty().iter().chain(wall_box.iter()) {
                 let r = r.intersect(&SCREEN);
-                if !r.is_empty() && !rects[..n].iter().any(|d| d.intersect(&r) == r) {
+                if r.is_empty() || rects[..n].iter().any(|d| d.intersect(&r) == r) {
+                    continue;
+                }
+                if n < MAX_DIRTY {
                     rects[n] = r;
                     n += 1;
+                } else {
+                    rects[n - 1] = rects[n - 1].union(&r);
                 }
             }
             // (Nothing more to bring forward when it's all coming.)
@@ -1608,6 +1702,16 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         }
         self.prev_n = frame.dirty().len().min(MAX_DIRTY);
         self.prev[..self.prev_n].copy_from_slice(&frame.dirty()[..self.prev_n]);
+        // The band switch's area, brought forward into the other picture
+        // next frame as the frame's own changes are.
+        if let Some(b) = wall_box {
+            if self.prev_n < MAX_DIRTY {
+                self.prev[self.prev_n] = b;
+                self.prev_n += 1;
+            } else {
+                self.prev[MAX_DIRTY - 1] = self.prev[MAX_DIRTY - 1].union(&b);
+            }
+        }
         self.drawn_n = n;
         self.drawn[..n].copy_from_slice(&rects[..n]);
         if n == 0 && nf == 0 {

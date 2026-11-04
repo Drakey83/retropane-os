@@ -11378,6 +11378,7 @@ pub(crate) fn today_screens(
         if settle {
             shell.settle();
         }
+        preview_net(&mut shell);
         // A chart opened: its line painted into its own picture, as the
         // image does.
         rp_today::keep_graph(&mut shell, preview_pics(), &mut painted);
@@ -12077,6 +12078,94 @@ pub(crate) fn set_preview_look(l: Option<rp_weather::maplayers::Look>) {
     PREVIEW_LOOK.with(|c| c.set(l));
 }
 
+thread_local! {
+    /// A RainViewer tile (PNG) the previews' real radar shows in every
+    /// tile of its view, every frame (R184 step 2: the rain over each
+    /// look), with the relay's answers given to the shell.
+    static PREVIEW_RAIN: std::cell::RefCell<Option<Vec<u8>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The previews' real rain from now on (`None`: the sample's again).
+pub(crate) fn set_preview_rain(png: Option<Vec<u8>>) {
+    PREVIEW_RAIN.with(|c| *c.borrow_mut() = png);
+}
+
+/// With the previews' rain set, the shell's radar asks answered as the
+/// relay would: 13 frames ten minutes apart, the map (the build's own,
+/// already shown), every tile (kept by the preview, not the shell).
+fn preview_net(shell: &mut rp_shell::Shell) {
+    if PREVIEW_RAIN.with(|c| c.borrow().is_none()) {
+        return;
+    }
+    // The shell's network turn: the radar's asks once it is open.
+    shell.tick(1);
+    let times: Vec<String> = (0..13u32)
+        .map(|k| (1_793_450_000 + 600 * k).to_string())
+        .collect();
+    while let Some(q) = shell.next_ask() {
+        match q.ask {
+            rp_shell::Ask::Frames => shell.net_answer(true, times.join(" ").as_bytes()),
+            rp_shell::Ask::Tile => shell.net_answer(true, b""),
+            _ => shell.net_answer(false, b""),
+        }
+    }
+}
+
+/// The previews' rain composed over the coloured map as the image does
+/// (`rp_today::rain`: the rainy bands into a 16-bit picture in 2700G
+/// memory, the wallpaper's bands pointed at it).
+fn preview_bands(
+    gpu: &mut rp_mbx_render::Mbx2dRenderer<rp_mbx_render::model::Bus, rp_mbx_render::model::Mem>,
+    shell: &rp_shell::Shell,
+    map: &[u32],
+    look: rp_weather::maplayers::Look,
+) {
+    use rp_mbx_render::LocalMem;
+    use rp_today::rain::{BAND_H, BANDS};
+    use rp_weather::tiles::{VIEW_H, VIEW_W};
+    let Some(png) = PREVIEW_RAIN.with(|c| c.borrow().clone()) else {
+        return;
+    };
+    if !matches!(shell.radar_real(), Some(Some(_))) {
+        return;
+    }
+    let mut tile = vec![0u32; 256 * 256];
+    let mut data = vec![0u8; 256 * 1024];
+    let mut raw = vec![0u8; 256 * (1 + 256 * 4)];
+    if rp_weather::png::decode(&png, &mut tile, &mut data, &mut raw) != Ok((256, 256)) {
+        return;
+    }
+    let v = shell.radar_view();
+    let mut rain = vec![0u32; VIEW_W * VIEW_H];
+    for k in 0..9 {
+        v.place(k, &tile, &mut rain);
+    }
+    let spans = rp_today::rain::bands_of(&rain);
+    let at = rp_vram_map::POOL.at as usize;
+    let mut bands = [None; BANDS];
+    let mut row = 0usize;
+    let mut words = [0u32; VIEW_W / 2];
+    for b in 0..BANDS {
+        if spans[b].is_none() {
+            continue;
+        }
+        bands[b] = Some(at + row * VIEW_W * 2);
+        for y in 0..usize::from(BAND_H) {
+            let i = (b * usize::from(BAND_H) + y) * VIEW_W;
+            rp_today::rain::row565(&map[i..i + VIEW_W], &rain[i..i + VIEW_W], look, &mut words);
+            gpu.parts().1.store(at + (row + y) * VIEW_W * 2, &words);
+        }
+        row += usize::from(BAND_H);
+    }
+    gpu.wallpaper_bands(
+        rp_today::MAP_TOP,
+        BAND_H,
+        &bands,
+        rp_draw::Rect::new(0, 0, 480, 640),
+    );
+}
+
 /// The radar's map under the Weather page while Radar is open, its layers
 /// coloured in the look the settings name, the wallpaper after, as the
 /// image does (`rp_today::show_backdrop`).
@@ -12097,12 +12186,16 @@ fn backdrop(
             rp_weather::maplayers::colour(layers, look, &mut view);
             view
         });
+        gpu.wallpaper_bands(0, 1, &[], rp_draw::Rect::new(0, 0, 0, 0));
         rp_today::show_backdrop(
             gpu,
             wall,
             coloured.as_deref(),
             &mut rp_today::WallScratch::new(),
         );
+        if let (Some(look), Some(view)) = (want, coloured.as_deref()) {
+            preview_bands(gpu, shell, view, look);
+        }
         *shown = want;
     }
 }

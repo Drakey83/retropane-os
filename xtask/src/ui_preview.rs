@@ -305,6 +305,13 @@ pub fn run(root: &Path) -> Result<(), String> {
             maps.push((stem, layers));
         }
         use rp_weather::maplayers::Look;
+        // `RP_PREVIEW_RAIN=tile.png`: the real radar's rain (that
+        // RainViewer tile in every tile of the view) over each look, through
+        // the image's own composing (R184 step 2).
+        let rain = std::env::var("RP_PREVIEW_RAIN").ok();
+        if let Some(f) = rain.as_deref() {
+            crate::emu::set_preview_rain(Some(std::fs::read(f).map_err(|e| format!("{f}: {e}"))?));
+        }
         for (when, hour) in [("day", 12), ("night", 22)] {
             crate::emu::set_preview_clock(Some(rp_shell::Time {
                 hour,
@@ -335,6 +342,7 @@ pub fn run(root: &Path) -> Result<(), String> {
         }
         crate::emu::set_preview_look(None);
         crate::emu::set_preview_clock(None);
+        crate::emu::set_preview_rain(None);
     }
     // The movement: each entrance as frames every 30 ms (motion-<name>-NN.png),
     // which a GIF tool can join; the device draws the same frames.

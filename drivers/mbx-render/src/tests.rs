@@ -901,3 +901,124 @@ fn a_store_picture_draws_as_an_image_and_a_reused_slot_is_uploaded_again() {
     );
     assert_eq!(none, bare);
 }
+
+/// Band `k`'s pixel at (x, y) in a test's band pictures: unlike the
+/// wallpaper anywhere, already RGB565.
+fn band_px(k: usize, x: usize, y: usize) -> u32 {
+    let raw =
+        0xFF00_0000 | (((k * 70 + x) & 0xFF) << 16) as u32 | (((y * 5) & 0xFF) << 8) as u32 | 0x40;
+    model::widen(to565(raw))
+}
+
+/// Writes band pictures (480 x `h`, RGB565) at `at[k]`.
+fn write_bands(r: &mut Mbx2dRenderer<Bus, Mem>, at: &[usize], h: usize) {
+    for (k, &a) in at.iter().enumerate() {
+        for y in 0..h {
+            let words: Vec<u32> = (0..240)
+                .map(|i| {
+                    u32::from(to565(band_px(k, 2 * i, y)))
+                        | u32::from(to565(band_px(k, 2 * i + 1, y))) << 16
+                })
+                .collect();
+            r.parts().1.store(a + y * STRIDE16, &words);
+        }
+    }
+}
+
+/// R184 step 2: a radar frame's bands switched in draws exactly the
+/// screen a rewritten wallpaper would, but makes the background and the
+/// screen again only in the changed box (not whole, not two whole frames);
+/// switching back shows the wallpaper again; a cached area over the box is
+/// never shown stale.
+#[test]
+fn a_band_switch_redraws_only_its_box_and_matches_a_rewritten_wallpaper() {
+    let (top, h) = (100u16, 40u16);
+    let pool = rp_vram_map::POOL.at as usize;
+    let at = [pool, pool + usize::from(h) * STRIDE16];
+    let mut f = Frame::new();
+    let (mut r, mem) = gpu();
+    // The reference: the same bands written into its wallpaper, changed
+    // whole.
+    let (mut want, wmem) = gpu();
+    for y in top + h..top + 3 * h {
+        let k = usize::from((y - top) / h) - 1;
+        let row: Vec<u32> = (0..480)
+            .map(|x| band_px(k, x, usize::from((y - top) % h)))
+            .collect();
+        want.wallpaper_row(y, &row);
+    }
+    want.wallpaper_changed();
+    for _ in 0..4 {
+        scene(&mut f, 0);
+        f.damage(Rect::new(0, 0, W, H));
+        r.draw(&f);
+        assert!(r.poll());
+    }
+    let before = shown(&mut r, &mem);
+    write_bands(&mut r, &at, usize::from(h));
+    let changed = Rect::new(0, top + h, W, 2 * h);
+    r.wallpaper_bands(top, h, &[None, Some(at[0]), Some(at[1])], changed);
+    for k in 0..3 {
+        scene(&mut f, 0);
+        if k == 0 {
+            f.damage(Rect::new(0, 0, W, H));
+        }
+        want.draw(&f);
+        assert!(want.poll());
+        scene(&mut f, 0);
+        r.draw(&f);
+        assert!(r.poll());
+        if k == 0 {
+            assert!(r.last.background, "the box's background made again");
+            assert_eq!(r.last.background_px, u32::from(W) * u32::from(2 * h));
+            assert!(r.last.rects <= 1, "the box only, not the screen");
+        }
+        assert_eq!(
+            shown(&mut r, &mem),
+            shown(&mut want, &wmem),
+            "frame {k} after the switch"
+        );
+    }
+    // Back to the wallpaper alone.
+    r.wallpaper_bands(0, 1, &[], changed);
+    for k in 0..2 {
+        scene(&mut f, 0);
+        r.draw(&f);
+        assert!(r.poll());
+        assert_eq!(
+            shown(&mut r, &mem),
+            before,
+            "frame {k} after switching back"
+        );
+    }
+}
+
+/// The bands' rows are read from their pictures and every other row from
+/// the wallpaper, in as few copies as the sources allow.
+#[test]
+fn bands_read_their_rows_and_the_wallpaper_the_rest() {
+    let (top, h) = (70u16, 33u16);
+    let pool = rp_vram_map::POOL.at as usize;
+    let (mut r, mem) = gpu();
+    write_bands(&mut r, &[pool], usize::from(h));
+    let mut f = Frame::new();
+    r.wallpaper_bands(top, h, &[None, None, Some(pool)], Rect::new(0, 0, W, H));
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    let got = shown(&mut r, &mem);
+    for y in [0u16, 69, 70, 135, 136, 168, 169, 639] {
+        for x in [0usize, 239, 479] {
+            let want = if (136..169).contains(&y) {
+                band_px(0, x, usize::from(y - 136))
+            } else {
+                wall(x as u16, y)
+            };
+            assert_eq!(
+                got[usize::from(y) * 480 + x],
+                want & 0xFF_FFFF,
+                "({x}, {y})"
+            );
+        }
+    }
+}
