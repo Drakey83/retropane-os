@@ -273,6 +273,82 @@ pub fn run(root: &Path) -> Result<(), String> {
                 .map_err(|e| format!("{name}: {e}"))?;
         }
     }
+    // `RP_PREVIEW_MAPS=a.rgb,b.rgb`: the Radar page (shot 20's steps) with
+    // each candidate base map (480 x 462, RGB, as
+    // tools/mockups/radar_basemaps.py writes them), by day (the light look)
+    // and by night (the dark one): radar-map-<stem>-<day|night>.png. The map
+    // reaches the screen as the X51v's does (its 5-6-5 planes, the 2D
+    // engine model); `ink-now` is the built-in map through today's Ink
+    // conversion, for comparison (R179, the radar maps session).
+    if let Ok(list) = std::env::var("RP_PREVIEW_MAPS") {
+        let upto = shots
+            .iter()
+            .position(|s| s.name == "20-weather-radar")
+            .ok_or("ui-preview: no radar shot")?;
+        let steps: Vec<Input> = shots[..=upto]
+            .iter()
+            .flat_map(|s| s.steps.iter().copied())
+            .collect();
+        let n = 480 * rp_today::MAP_H;
+        let planes = |rgb: &[u8]| {
+            let mut m = vec![0u8; 3 * n];
+            for (i, p) in rgb.as_chunks::<3>().0.iter().enumerate().take(n) {
+                m[i] = p[0] >> 3;
+                m[n + i] = p[1] >> 2;
+                m[2 * n + i] = p[2] >> 3;
+            }
+            m
+        };
+        let mut maps: Vec<(String, Vec<u8>)> = Vec::new();
+        if let Some(m) = map.as_deref() {
+            let mut rgb = Vec::with_capacity(3 * n);
+            let mut row = [0u32; 480];
+            for y in 0..rp_today::MAP_H {
+                rp_today::map_row(m, y, true, &mut row);
+                for p in row {
+                    rgb.extend([(p >> 16) as u8, (p >> 8) as u8, p as u8]);
+                }
+            }
+            maps.push(("ink-now".into(), planes(&rgb)));
+        }
+        for file in list.split(',').filter(|f| !f.is_empty()) {
+            let rgb = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+            if rgb.len() != 3 * n {
+                return Err(format!("{file}: not 480 x {} RGB", rp_today::MAP_H));
+            }
+            let stem = Path::new(file)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("map")
+                .trim_start_matches("radar-")
+                .trim_end_matches("-480x462")
+                .to_string();
+            maps.push((stem, planes(&rgb)));
+        }
+        for (when, hour) in [("day", 12), ("night", 22)] {
+            crate::emu::set_preview_clock(Some(rp_shell::Time {
+                hour,
+                minute: 0,
+                weekday: 0,
+                day: 1,
+                month: 1,
+            }));
+            for (stem, m) in &maps {
+                let all = crate::emu::today_screens(
+                    &wall,
+                    Some(m),
+                    &steps,
+                    true,
+                    Some(crate::emu::NWS_ALERTS),
+                );
+                let rgb = all.last().ok_or("ui-preview: no radar screen")?;
+                let name = format!("radar-map-{stem}-{when}.png");
+                std::fs::write(out.join(&name), png_rgb(480, 640, rgb))
+                    .map_err(|e| format!("{name}: {e}"))?;
+            }
+        }
+        crate::emu::set_preview_clock(None);
+    }
     // The movement: each entrance as frames every 30 ms (motion-<name>-NN.png),
     // which a GIF tool can join; the device draws the same frames.
     let hero = vec![

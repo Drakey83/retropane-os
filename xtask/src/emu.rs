@@ -11988,6 +11988,11 @@ thread_local! {
 }
 
 /// `noon`, or the image's clock while a check compares against it.
+/// The previews' clock from now on (`None`: noon again).
+pub(crate) fn set_preview_clock(t: Option<rp_shell::Time>) {
+    PREVIEW_CLOCK.with(|c| c.set(t));
+}
+
 fn preview_clock(noon: rp_shell::Time) -> rp_shell::Time {
     PREVIEW_CLOCK.with(std::cell::Cell::get).unwrap_or(noon)
 }

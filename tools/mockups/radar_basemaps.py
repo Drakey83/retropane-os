@@ -165,4 +165,35 @@ tint = np.where(elev[..., None] > 1900, rgb((235, 238, 240)), tint)
 img = np.where(landm[..., None], tint * (0.25 + 1.0 * shade[..., None]), rgb((22, 50, 78)))
 finish(Image.fromarray(img.clip(0, 255).astype(np.uint8)).convert('RGBA'),
        (200, 225, 240, 140), (255, 255, 255, 70), (60, 110, 150, 255), (255, 255, 255, 90), (255, 255, 255, 255), (0, 0, 0, 190), 'relief')
+# The light maps of the radar maps session (R179, 2026-11-04): each drawn as
+# its own map from the same data, never made from Night on the device (Ink
+# made that way lost the terrain, swelled every inlet into black and washed
+# out light rain: the owner, "do you see how much detail the ink map
+# loses?"). Each keeps the hillshade, gives water a mid-tone and leaves land
+# light but not white, so the lightest rain still reads.
+lit = 0.78 + 0.34 * shade[..., None]          # hillshade, gentle, around 1
+
+# 4: paper, warm light land, steel-blue water
+img = np.where(landm[..., None], rgb((226, 221, 210)) * lit, rgb((150, 176, 196)))
+finish(Image.fromarray(img.clip(0, 255).astype(np.uint8)).convert('RGBA'),
+       (92, 120, 142, 255), (120, 104, 92, 200), (118, 150, 176, 255), (110, 96, 86, 150), (34, 34, 38, 255), (255, 255, 255, 220), 'paper')
+
+# 5: slate, cool neutral greys, the water a shade darker than the land
+img = np.where(landm[..., None], rgb((214, 218, 222)) * lit, rgb((132, 146, 160)))
+finish(Image.fromarray(img.clip(0, 255).astype(np.uint8)).convert('RGBA'),
+       (84, 96, 108, 255), (88, 94, 102, 190), (110, 124, 140, 255), (80, 88, 98, 140), (30, 32, 36, 255), (255, 255, 255, 220), 'slate')
+
+# 6: ink, redone: the newspaper look kept (off-white land, dark water, black
+# lines) with the terrain and charcoal water instead of black
+img = np.where(landm[..., None], rgb((236, 234, 228)) * (0.84 + 0.22 * shade[..., None]), rgb((58, 62, 68)))
+finish(Image.fromarray(img.clip(0, 255).astype(np.uint8)).convert('RGBA'),
+       (20, 20, 22, 255), (30, 30, 32, 170), (58, 62, 68, 255), (30, 30, 32, 120), (14, 14, 16, 255), (255, 255, 255, 230), 'ink2')
+
+# 7: relief by day, soft colours by height under the same shade
+e = np.clip(elev / 2200, 0, 1)[..., None]
+tint = (1 - e) * rgb((206, 216, 196)) + e * rgb((228, 222, 208))
+tint = np.where(elev[..., None] > 1900, rgb((244, 246, 248)), tint)
+img = np.where(landm[..., None], tint * lit, rgb((152, 184, 208)))
+finish(Image.fromarray(img.clip(0, 255).astype(np.uint8)).convert('RGBA'),
+       (90, 124, 150, 255), (110, 100, 88, 190), (120, 156, 186, 255), (100, 92, 84, 140), (34, 36, 34, 255), (255, 255, 255, 220), 'dayrelief')
 print('places', [p[1] for p in places], 'land', len(land), 'roads', len(roads))
