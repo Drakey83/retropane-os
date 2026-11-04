@@ -126,6 +126,43 @@ extracts, ODbL, attribution required) only if a closer zoom is wanted.
   visits, only the newest fetched again; each frame composed over the map
   once into a picture.
 
+## Weight, and every country (the owner, 2026-11-04: "will this be too heavy and will it work for every body even people in different countries?")
+
+Measured from the Natural Earth files (2026-11-04) where it says
+measured; the rest are estimates to measure on the X51v.
+
+| | What | How much |
+|---|---|---|
+| The world's map data | land, islands, lakes, rivers, roads, state and province lines | 2.03 million points (measured): ~8 MB at 4 bytes a point, less packed; the place names, 7,342 places, well under 1 MB |
+| The terrain shading | elevation for the whole world's land at ~2 km | ~10-20 MB packed (estimate); optional: without it the land is flat, every other detail stays |
+| Drawing a view | the map for one screen, once, then kept | well under a second (estimate: a few thousand points in view and one pass over the screen's 222,000 pixels) |
+| Memory | one drawn view; the loop's 12 frames composed | 444 KB; 5.3 MB (2.7 MB at R154's 8-bit palette) of the 64 MB |
+| Network | the rain only, never the map | a frame ~10-30 KB (the run of 2026-11-02: tiles 300-8,000 bytes, 9 a frame); a full loop ~100-300 KB |
+
+Lighter than today: the map is never fetched or decoded (today's path
+fetches nine map pictures and decodes them every time Radar opens).
+
+**Every country:**
+
+- **The map** works everywhere: Natural Earth covers the whole world at
+  the same detail, and it draws its borders by a chosen country's view
+  where borders are disputed (its "point of view" files): the region
+  setting picks it.
+- **Place names** in the person's language: Natural Earth's full places
+  file carries names in many languages; scripts beyond Latin, Greek and
+  Cyrillic need fonts the OS doesn't have yet (the international rule's
+  scripts item, not the radar's alone).
+- **Units**: the scale bar in miles or km by the region setting.
+- **The rain** is where the honest limit is: RainViewer gathers ground
+  radar from many countries (North America, most of Europe, Japan,
+  Korea, Australia and others), but large parts of Africa, Asia, South
+  America and the oceans have no weather radar at all. There the radar
+  says "No radar coverage here" (RainViewer's coverage map tells us
+  where), never an empty map that looks like a dry day. A worldwide
+  fallback to weigh later: satellite rain estimates (NASA's IMERG, public
+  domain, global, ~10 km, every 30 minutes), coarse but everywhere.
+- NOAA's sharper radar (M4) is a US extra on top; nothing depends on it.
+
 ## Votes wanted
 
 M1 (light map), M2 (dark map), M3 (where the map comes from), M4 (zoom),
