@@ -67,7 +67,7 @@ impl<'a> Store<'a> {
     pub fn new(bytes: &'a mut [u8]) -> Self {
         let n = bytes.len().min(DATA);
         bytes[..n].fill(0);
-        let mut s = Self { bytes, top: DATA };
+        let s = Self { bytes, top: DATA };
         if s.bytes.len() > DATA {
             for f in 0..PAST {
                 s.bytes[ORDER + f] = f as u8;
@@ -476,8 +476,8 @@ mod tests {
             "every row but the two kept"
         );
         let went: Vec<_> = (0..PAST)
-            .filter_map(|r| (gone & 1 << r != 0).then(|| s.take_row(r)))
-            .flatten()
+            .filter(|&r| gone & 1 << r != 0)
+            .filter_map(|r| s.take_row(r))
             .collect();
         assert_eq!(went, vec![c(5)], "frame 0's bands to give back");
         assert_eq!(s.composed(0), Some(c(7)));
