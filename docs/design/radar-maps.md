@@ -3,8 +3,17 @@
 The owner, 2026-11-01: "I want to make sure that we have a design session
 over just the maps for the radar". This page is that session's material:
 what the radar's maps are now, what is wrong with them, and the choices,
-each with its pros and cons, for the owner's votes (M1-M6). Nothing here is
-decided until he votes.
+each with its pros and cons, for the owner's votes (M1-M6).
+
+**Decided 2026-11-04: the owner adopted every proposal ("Adopt
+proposals"):** M1 Paper as the light map, Ink redone kept as a choice;
+M2 Night with its roads dimmed; M3 the X51v draws its own map from map
+data on the card, reached through maps drawn on the PC; M4 zooms 6-9,
+opening at 8, the rain enlarged past 7, NOAA's radar for the US once its
+terms are checked; M5 cities by size per zoom, the place's pin, faint
+interstates and borders, attribution; M6 the past 2 hours only, rain a
+little stronger on the light map, R177's loop; our own nowcast designed
+later. Build order at the end of this page.
 
 Every mock-up below is drawn by `cargo xtask ui-preview` through the
 X51v's own shell and 2D-engine code (`RP_PREVIEW_MAPS`, the map at the
@@ -163,7 +172,31 @@ fetches nine map pictures and decodes them every time Radar opens).
   domain, global, ~10 km, every 30 minutes), coarse but everywhere.
 - NOAA's sharper radar (M4) is a US extra on top; nothing depends on it.
 
-## Votes wanted
+## Build order (decided 2026-11-04)
 
-M1 (light map), M2 (dark map), M3 (where the map comes from), M4 (zoom),
-M5 (labels), M6 (rain and the "+1 h").
+Each step proven on the X51v before the next (proven-on-hardware rule);
+each through ui-preview first.
+
+1. **The looks as maps of their own** (M1, M2): the PC draws Paper, Ink
+   (redone) and Night (roads dimmed) for the built-in place; the maps go
+   on the card as files (the image has no room for three: rp-today loads
+   ~686 KB of its ~886 KB), read like the icon packs; the device's Ink
+   conversion (`map_row`'s ink branch) removed. The setting's looks:
+   Paper, Ink, Night, and Auto (Paper by day, Night by night, the
+   default).
+2. **The timeline and the rain** (M6, R177): past 2 hours only, ending at
+   now; the loop's newest-first fetch, kept frames, each frame composed
+   once over the map; opacity per look.
+3. **Any place, drawn on the PC** (M3's first half): the dock's relay draws
+   the map for the place shown (the same drawer as step 1, Natural Earth
+   and open elevation tiles) at each zoom, instead of OpenStreetMap's
+   tiles; the device keeps them on the card.
+4. **Zoom** (M4): + and &minus; for zooms 6-9, opening at 8, the rain past
+   zoom 7 through the fitted 2x upscaler; the place's pin; "No radar
+   coverage here" from RainViewer's coverage map.
+5. **The map drawn by the X51v** (M3's target): a sheet first (the compact
+   map format, its parser as hostile input, drawing time measured),
+   tested pixel for pixel against the PC drawer; then labels by zoom
+   (M5) in the shell's font.
+6. **NOAA's US radar** (M4): its terms (R159), then sharper rain at 8-9 in
+   the US.
