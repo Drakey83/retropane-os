@@ -182,8 +182,15 @@ each through ui-preview first.
    on the card as files (the image has no room for three: rp-today loads
    ~686 KB of its ~886 KB), read like the icon packs; the device's Ink
    conversion (`map_row`'s ink branch) removed. The setting's looks:
-   Paper, Ink, Night, and Auto (Paper by day, Night by night, the
-   default).
+   Paper, Ink, Night, and Auto (Paper by day, Night by night); the default
+   stays Night, the owner's own pick (2026-10-30: "the dark map looks way
+   better then the ink map"), until he says otherwise.
+   **Built 2026-11-04 by way C** (sheet
+   [r184-radar-map-looks.md](../research/sheets/r184-radar-map-looks.md)):
+   one layered map (`RPML`, `rp_weather::maplayers`) for every look,
+   coloured on the device; the owner's own place drawn by the dock's relay
+   (`RPNET LAYERS`, `tools/maps/radar_layers.py`) instead of nine
+   OpenStreetMap tiles; previews `mockups/radar-layers-seattle.jpg`.
 2. **The timeline and the rain** (M6, R177): past 2 hours only, ending at
    now; the loop's newest-first fetch, kept frames, each frame composed
    once over the map; opacity per look.

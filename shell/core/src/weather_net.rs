@@ -212,6 +212,25 @@ impl Shell {
                 q.push(b" ");
                 q.push(degrees(p.lon).as_bytes());
             }
+            // The map first: one layered map of the whole view, drawn by
+            // the relay for the place (R184; it took nine OpenStreetMap
+            // tiles, recoloured on the device), counted as the first nine
+            // steps so the rain's tiles keep their numbers.
+            Ask::Tile if self.tile_k < 9 => {
+                let v = self.radar_view();
+                let p = self.wset.place();
+                q.push(b"LAYERS ");
+                q.push(degrees(p.lat).as_bytes());
+                q.push(b" ");
+                q.push(degrees(p.lon).as_bytes());
+                q.push(
+                    Line::new()
+                        .push(b" ")
+                        .num(i32::from(rp_weather::tiles::ZOOM))
+                        .as_bytes(),
+                );
+                q.tile = Some((None, 0, v));
+            }
             Ask::Tile => {
                 let v = self.radar_view();
                 let total = 9 * (1 + u16::from(self.radar_n));
@@ -569,7 +588,8 @@ impl Shell {
     /// A tile answered (or not): on to the next; the map or a rain frame
     /// complete at each ninth.
     fn tile_done(&mut self) {
-        self.tile_k += 1;
+        // The map is one answer for the first nine steps.
+        self.tile_k = if self.tile_k < 9 { 9 } else { self.tile_k + 1 };
         if self.tile_k.is_multiple_of(9) {
             let kind = self.tile_k / 9;
             if kind == 1 {

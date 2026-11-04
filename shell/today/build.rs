@@ -65,23 +65,19 @@ fn main() {
     std::fs::write(Path::new(&out).join("wallpaper.zz"), packed).expect("OUT_DIR writable");
     std::fs::write(Path::new(&out).join("wallpaper.yuv"), wall).expect("OUT_DIR writable");
 
-    // The radar's base map (the Night look; Ink is made from it on the
-    // device): `local/maps/radar-night-480x462.rgb`, made by
-    // `RADAR_DEVICE=1 tools/mockups/radar_basemaps.py` from Natural Earth
-    // (`local/` is never committed), else a plain stand-in. Packed at the
-    // screen's depth (5, 6, 5 bits a plane), Paeth, zlib.
-    let map_src = Path::new(&dir).join("../../local/maps/radar-night-480x462.rgb");
+    // The radar's built-in base map, as layers every look is coloured from
+    // on the device (`RPML`, rp_weather::maplayers; R184): made by
+    // `tools/maps/radar_layers.py local/maps <font> local/maps/radar-builtin.rpml
+    // 47.55 -122.40 9` from Natural Earth and open elevation data
+    // (`local/` is never committed), else a plain stand-in. Goes on the
+    // card as `RPMAP` (`cargo xtask load`).
+    let map_src = Path::new(&dir).join("../../local/maps/radar-builtin.rpml");
     watch_local(&map_src);
-    let map = match std::fs::read(&map_src) {
-        Ok(m) if m.len() == W * MAP_H * 3 => m,
+    let packed = match std::fs::read(&map_src) {
+        Ok(m) if m.starts_with(b"RPML") => m,
         _ => stand_in_map(),
     };
-    let packed = pack_map(&map);
-    println!(
-        "cargo:warning=radar map packed {} -> {} bytes",
-        map.len(),
-        packed.len()
-    );
+    println!("cargo:warning=radar map (layers) {} bytes", packed.len());
     std::fs::write(Path::new(&out).join("radar.zz"), packed).expect("OUT_DIR writable");
 
     // The weather pictures: none in the image (option C, docs/design/
@@ -230,29 +226,37 @@ fn pack_wallpaper(wall: &[u8]) -> Vec<u8> {
 /// The radar map's rows (the Weather app's page).
 const MAP_H: usize = 462;
 
-/// The map's R, G and B planes at 5, 6 and 5 bits, each Paeth-filtered,
-/// then zlib: what `rp_today::unpack_map` undoes.
-fn pack_map(rgb: &[u8]) -> Vec<u8> {
-    let mut f = Vec::new();
-    for (c, shift) in [(0, 3), (1, 2), (2, 3)] {
-        let plane: Vec<u8> = rgb.chunks(3).map(|p| p[c] >> shift).collect();
-        f.extend(rp_inflate::pack::paeth_filter(&plane, W, MAP_H));
-    }
-    rp_inflate::pack::zlib(&f)
-}
-
-/// A plain map when the real one isn't built: water with a coast running
-/// down the middle (CI, and anyone without the map data).
+/// A plain layered map when the real one isn't drawn: water with a coast
+/// running down the middle, flat land (CI, and anyone without the map data),
+/// as `RPML` (rp_weather::maplayers: each row as differences from its left,
+/// then zlib).
 fn stand_in_map() -> Vec<u8> {
-    let mut m = Vec::with_capacity(W * MAP_H * 3);
+    let mut layers = vec![0u8; W * MAP_H * 8];
     for y in 0..MAP_H {
+        let coast = 200 + (y * 7 % 60);
         for x in 0..W {
-            let coast = 200 + (y * 7 % 60);
-            let p = if x > coast { [34, 40, 46] } else { [6, 14, 24] };
-            m.extend(p);
+            if x > coast {
+                layers[y * W + x] = 255;
+                layers[W * MAP_H + y * W + x] = 128;
+            }
         }
     }
-    m
+    let mut diff = Vec::with_capacity(layers.len());
+    for row in layers.chunks(W) {
+        let mut left = 0u8;
+        for &b in row {
+            diff.push(b.wrapping_sub(left));
+            left = b;
+        }
+    }
+    let mut f = b"RPML".to_vec();
+    f.push(1);
+    f.extend((W as u16).to_le_bytes());
+    f.extend((MAP_H as u16).to_le_bytes());
+    f.push(8);
+    f.extend(0..8u8);
+    f.extend(rp_inflate::pack::zlib(&diff));
+    f
 }
 
 /// A dusk sky as planar 4:2:0: deep blue at the top to warm low light.

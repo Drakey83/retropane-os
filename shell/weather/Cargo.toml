@@ -10,5 +10,8 @@ publish.workspace = true
 [dependencies]
 rp-inflate = { path = "../../kernel/inflate" }
 
+[dev-dependencies]
+rp-inflate = { path = "../../kernel/inflate", features = ["pack"] }
+
 [lints]
 workspace = true

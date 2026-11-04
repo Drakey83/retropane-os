@@ -470,68 +470,25 @@ pub fn make_all(file: &[u8], pics: &Pics, maker: &mut Maker) -> rp_shell::Icons 
 }
 
 /// The radar map's place on the screen (the Weather app's page) and its
-/// bytes unpacked (three planes of 5, 6 and 5 bits).
+/// height (the view's, [`rp_weather::maplayers::H`]).
 pub const MAP_TOP: u16 = 70;
 /// See [`MAP_TOP`].
-pub const MAP_H: usize = 462;
-/// See [`MAP_TOP`].
-pub const MAP_BYTES: usize = W * MAP_H * 3;
+pub const MAP_H: usize = rp_weather::maplayers::H;
 
-/// Unpacks the image's radar map into `dst` ([`MAP_BYTES`]).
-///
-/// # Errors
-/// `packed` damaged, or `dst` the wrong size.
-pub fn unpack_map(packed: &[u8], dst: &mut [u8]) -> Result<(), rp_inflate::Error> {
-    if rp_inflate::zlib(packed, dst)? != MAP_BYTES || dst.len() != MAP_BYTES {
-        return Err(rp_inflate::Error::Bad);
-    }
-    for plane in dst.chunks_mut(W * MAP_H) {
-        rp_inflate::unpaeth(plane, W, MAP_H);
-    }
-    Ok(())
-}
-
-/// Row `y` of the map as XRGB8888: the Night look, or Ink made from it
-/// (black water, light land shaded by the Night's relief, its light roads
-/// and labels turned dark: no second map in the image).
-pub fn map_row(map: &[u8], y: usize, ink: bool, row: &mut [u32; W]) {
-    let n = W * MAP_H;
-    for (x, p) in row.iter_mut().enumerate() {
-        let i = y * W + x;
-        let (r5, g6, b5) = (
-            u32::from(*map.get(i).unwrap_or(&0)),
-            u32::from(*map.get(n + i).unwrap_or(&0)),
-            u32::from(*map.get(2 * n + i).unwrap_or(&0)),
-        );
-        let (r, g, b) = (r5 << 3 | r5 >> 2, g6 << 2 | g6 >> 4, b5 << 3 | b5 >> 2);
-        *p = if !ink {
-            r << 16 | g << 8 | b
-        } else if 4 * b > 7 * r.max(1) {
-            // Water (and the coast's line): black.
-            0x18_1818
-        } else {
-            let l = (r * 77 + g * 150 + b * 29) >> 8;
-            let v = (250 - 2 * l.saturating_sub(30) as i32).clamp(16, 250) as u32;
-            v << 16 | v << 8 | v
-        };
-    }
-}
-
-/// The wallpaper under the Weather app's page: the radar map (`Some(ink)`)
-/// or the wallpaper itself again (`None`, the whole of it converted
-/// afresh); then the renderer makes its background again.
+/// The wallpaper under the Weather app's page: the radar's map, already
+/// coloured in its look (`Some`, [`rp_weather::maplayers::colour`]), or
+/// the wallpaper itself again (`None`, the whole of it converted afresh);
+/// then the renderer makes its background again.
 pub fn show_backdrop<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
     r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
     wallpaper: &[u8],
-    map: Option<(&[u8], bool)>,
+    map: Option<&[u32]>,
     s: &mut WallScratch,
 ) {
     match map {
-        Some((m, ink)) => {
-            let mut row = [0u32; W];
-            for y in 0..MAP_H {
-                map_row(m, y, ink, &mut row);
-                r.wallpaper_row(MAP_TOP + y as u16, &row);
+        Some(m) => {
+            for (y, row) in m.as_chunks::<W>().0.iter().enumerate().take(MAP_H) {
+                r.wallpaper_row(MAP_TOP + y as u16, row);
             }
         }
         None => load_wallpaper(r, wallpaper, Depth::Rgb565, s),
@@ -540,32 +497,20 @@ pub fn show_backdrop<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
 }
 
 /// The real radar as the page's background (the radar built for real,
-/// 2026-10-31): the map's view (OpenStreetMap's tiles around the place,
-/// decoded on the device and kept as sent) in the look the settings name
-/// (`ink`: Ink, else Night) with a rain frame (RainViewer's) blended over it
-/// by its alpha, row by row into the renderer's wallpaper under the page.
+/// 2026-10-31): the map's view, coloured in its look
+/// ([`rp_weather::maplayers::colour`]), with a rain frame (RainViewer's)
+/// blended over it by its alpha, row by row into the renderer's wallpaper
+/// under the page.
 pub fn show_radar<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
     r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
     map: &[u32],
     rain: Option<&[u32]>,
-    ink: bool,
 ) {
     let mut row = [0u32; W];
     for y in 0..MAP_H {
         let at = y * W;
         for (x, p) in row.iter_mut().enumerate() {
-            // The map as OpenStreetMap sent it, in the look the settings
-            // name: Ink (black water, light land) or Night (dark land).
-            let raw = map.get(at + x).copied().unwrap_or(0);
-            // No tile there yet: black, as before (darkened, a zero is
-            // white).
-            let m = if raw == 0 {
-                0
-            } else if ink {
-                rp_weather::tiles::ink(raw)
-            } else {
-                rp_weather::tiles::dark(raw)
-            };
+            let m = map.get(at + x).copied().unwrap_or(0);
             *p = match rain.and_then(|f| f.get(at + x)) {
                 Some(&c) if c >> 24 != 0 => blend(m, c),
                 _ => m,
@@ -1625,33 +1570,30 @@ mod tests {
         assert_eq!(pics.used(), 0);
     }
 
-    /// The image's radar map unpacks; Night shows it as built, Ink turns
-    /// its water black and its land light; damage is refused.
+    /// The build's radar map (the card's `RPMAP`) is a layered map that
+    /// unpacks, has both water and land, and colours in every look; damage
+    /// is refused.
     #[test]
-    fn the_radar_map_unpacks_and_ink_is_made_from_night() {
+    fn the_radar_map_unpacks_and_colours_in_every_look() {
+        use rp_weather::maplayers::{self, Look};
         let packed = include_bytes!(concat!(env!("OUT_DIR"), "/radar.zz"));
-        let mut map = vec![0u8; MAP_BYTES];
-        assert_eq!(unpack_map(packed, &mut map), Ok(()));
-        let (mut night, mut ink) = ([0u32; W], [0u32; W]);
-        let (mut water, mut land) = (0, 0);
-        for y in (0..MAP_H).step_by(7) {
-            map_row(&map, y, false, &mut night);
-            map_row(&map, y, true, &mut ink);
-            for (n, i) in night.iter().zip(&ink) {
-                let (r, b) = ((n >> 16) & 0xFF, n & 0xFF);
-                if 4 * b > 7 * r.max(1) {
-                    assert_eq!(*i, 0x18_1818);
-                    water += 1;
-                } else {
-                    land += 1;
-                }
-            }
+        let mut layers = vec![0u8; maplayers::BYTES];
+        assert_eq!(maplayers::unpack(packed, &mut layers), Ok(()));
+        let land = &layers[..W * MAP_H];
+        let (water, ground) = (
+            land.iter().filter(|&&l| l == 0).count(),
+            land.iter().filter(|&&l| l == 255).count(),
+        );
+        assert!(water > 1000 && ground > 1000, "both: {water} {ground}");
+        let mut map = vec![0u32; W * MAP_H];
+        for look in [Look::Night, Look::Paper, Look::Ink] {
+            maplayers::colour(&layers, look, &mut map);
+            assert!(map.iter().all(|c| c >> 24 == 0xFF), "{look:?} opaque");
         }
-        assert!(water > 1000 && land > 1000, "both: {water} {land}");
         let mut bad = packed.to_vec();
         let mid = bad.len() / 3;
         bad[mid] ^= 0x40;
-        assert!(unpack_map(&bad, &mut map).is_err());
+        assert!(maplayers::unpack(&bad, &mut layers).is_err());
     }
 
     /// Every notice fits its area in the real font (a wider one is drawn

@@ -112,6 +112,7 @@ pub fn decode(r: &[u8], key: crate::settings::Secret) -> Settings {
         radar: match r[14] {
             0 => RadarMap::Auto,
             2 => RadarMap::Ink,
+            3 => RadarMap::Paper,
             _ => RadarMap::Night,
         },
         appearance: match r[15] & !SKY_OFF {

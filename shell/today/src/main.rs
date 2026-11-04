@@ -459,6 +459,42 @@ mod image {
     /// The keeper's tag while no pack is in yet (apart from every pack).
     const NOT_YET: u8 = 0xFE;
 
+    /// Whose map the radar's layers are (R184).
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum MapOf {
+        /// The built-in place's, from the card.
+        BuiltIn,
+        /// The place shown's, drawn by the dock's relay.
+        Place,
+    }
+    /// The layers coloured into `view` in `look` when they are `of`'s and
+    /// what is there is another look or another map's (R184, way C); true
+    /// if it coloured.
+    fn recolour(
+        of: MapOf,
+        look: Option<rp_weather::maplayers::Look>,
+        layers_of: Option<MapOf>,
+        coloured: &mut Option<(MapOf, rp_weather::maplayers::Look)>,
+        layers: &[u8],
+        view: &mut [u32],
+    ) -> bool {
+        let Some(l) = look.filter(|_| layers_of == Some(of)) else {
+            return false;
+        };
+        if *coloured == Some((of, l)) {
+            return false;
+        }
+        let t0 = rt::ticks();
+        rp_weather::maplayers::colour(layers, l, view);
+        *coloured = Some((of, l));
+        let _ = writeln!(
+            RunLog,
+            "radar map: {of:?}'s layers coloured {l:?} in {} us",
+            rt::ticks().wrapping_sub(t0) / 13 * 4
+        );
+        true
+    }
+
     /// The Today screen's forecast cards in the run log: each day's
     /// condition and its picture (its key, and whether the store still
     /// holds it), or "none" (R181: a card drawn without its icon said
@@ -837,7 +873,7 @@ mod image {
         let (wall_words, rest) = rest.split_at_mut(rp_today::WALLPAPER_BYTES.div_ceil(4));
         let (radar_px, rest) = rest.split_at_mut(rp_today::RADAR_WORDS);
         let (dial_px, rest) = rest.split_at_mut(rp_shell::station::DIAL_WORDS);
-        let (map_words, rest) = rest.split_at_mut(rp_today::MAP_BYTES.div_ceil(4));
+        let (map_words, rest) = rest.split_at_mut(rp_weather::maplayers::BYTES.div_ceil(4));
         // The plane path's page drawing: the CPU's layer (ARGB8888) and the
         // picture it is flushed into (ARGB4444), the tallest page's size.
         let (layer_px, rest) = rest.split_at_mut(W * PIC_ROWS);
@@ -886,20 +922,25 @@ mod image {
         let plane_bytes = rp_hal_mem::words_as_bytes_mut(plane_words);
         let wall_bytes =
             &mut rp_hal_mem::words_as_bytes_mut(wall_words)[..rp_today::WALLPAPER_BYTES];
-        let map_bytes: &'static mut [u8] =
-            &mut rp_hal_mem::words_as_bytes_mut(map_words)[..rp_today::MAP_BYTES];
+        let map_layers: &'static mut [u8] =
+            &mut rp_hal_mem::words_as_bytes_mut(map_words)[..rp_weather::maplayers::BYTES];
         let t0 = rt::ticks();
         if let Err(e) = rp_today::unpack_wallpaper(WALLPAPER_PACKED, wall_bytes) {
             crash(format_args!("wallpaper unpacking: {e:?}"))
         }
         let unpacked_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
         let wallpaper: &'static [u8] = wall_bytes;
-        // The radar's built-in base map (the Night look; Ink is made from
-        // it) is on the card (`RPMAPA.PAK`, put there by `cargo xtask
-        // load`), read the first time the radar shows without the real
-        // tiles: none, or a damaged one, leaves the radar on the wallpaper.
-        let mut map_bytes = Some(map_bytes);
-        let mut radar_map: Option<&'static [u8]> = None;
+        // The radar's base map as layers (R184, rp_weather::maplayers), one
+        // set in RAM: the built-in place's (the card's `RPMAP`, put there by
+        // `cargo xtask load`, read the first time the radar shows without a
+        // place's map, kept packed in `map_file`) or the place's (drawn by
+        // the dock's relay); coloured into the view in the look the settings
+        // name, again only when the look or the layers change. None, or a
+        // damaged file, leaves the radar on the wallpaper.
+        let mut layers_of: Option<MapOf> = None;
+        let mut builtin_len: Option<usize> = None;
+        let mut builtin_tried = false;
+        let mut coloured: Option<(MapOf, rp_weather::maplayers::Look)> = None;
         let _ = writeln!(
             RunLog,
             "wallpaper unpacked: {} -> {} bytes in {unpacked_us} us",
@@ -1245,7 +1286,7 @@ mod image {
         let mut burst: Option<(u64, u64)> = None;
         // What is under the Weather app's page: the wallpaper (None) or the
         // radar map (Some(ink)).
-        let mut backdrop_shown: Option<bool> = None;
+        let mut backdrop_shown: Option<rp_weather::maplayers::Look> = None;
         let (mut burst_bg_px, mut burst_rows, mut burst_reused) = (0u64, 0u32, 0u32);
         let mut frames = 0u32;
         // Pictures the renderers drew nothing for (R181): all so far, the
@@ -2030,22 +2071,29 @@ mod image {
                     let before = *shell.forecast();
                     // A tile: decoded here into the map or its rain frame
                     // (the shell only moves on to the next).
-                    if let Some((rain, k, v)) = n.tile {
+                    if let Some((None, _, _)) = n.tile {
+                        // The place's map: its layers in one answer (R184).
+                        let t0 = rt::ticks();
+                        let got = rp_weather::maplayers::unpack(&net_buf[..l], map_layers);
+                        let _ = writeln!(
+                            RunLog,
+                            "radar map: the place's layers, {l} bytes, unpacked {got:?} in {} us",
+                            rt::ticks().wrapping_sub(t0) / 13 * 4
+                        );
+                        layers_of = got.is_ok().then_some(MapOf::Place);
+                        coloured = None;
+                        radar_shown = None;
+                        shell.net_answer(got.is_ok(), &[]);
+                    } else if let Some((Some(f), k, v)) = n.tile {
                         let ok = rp_weather::png::decode(&net_buf[..l], tile_px, png_data, png_raw)
                             == Ok((256, 256));
                         if ok {
-                            // The map's tiles are kept as OpenStreetMap
-                            // sends them (light); the look the settings
-                            // name (Night or Ink) is applied as the radar
-                            // is shown, so a change of look shows at once.
-                            let dst: &mut [u32] = match rain {
-                                None => radar_view_map,
-                                Some(f) => {
-                                    let f = usize::from(f).min(7);
-                                    &mut rain_all[f * view_px..(f + 1) * view_px]
-                                }
-                            };
-                            v.place(usize::from(k), tile_px, dst);
+                            let f = usize::from(f).min(7);
+                            v.place(
+                                usize::from(k),
+                                tile_px,
+                                &mut rain_all[f * view_px..(f + 1) * view_px],
+                            );
                         } else {
                             let _ = writeln!(RunLog, "net: a radar tile ({l} bytes) wasn't read");
                         }
@@ -2133,77 +2181,112 @@ mod image {
             // The real radar once its map is in: the frame shown blended
             // over it.
             let real = shell.backdrop().and(shell.radar_real());
-            if real.is_some() && (real != radar_shown || shell.backdrop() != backdrop_shown) {
-                while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
-                let t0 = rt::ticks();
-                let f = real.flatten().map(|f| {
-                    let f = usize::from(f).min(7);
-                    &rain_all[f * view_px..(f + 1) * view_px]
-                });
-                rp_today::show_radar(
-                    gfx.two_d(),
+            let look = shell.backdrop();
+            if real.is_some() {
+                // The place's map: its layers coloured in the look shown
+                // when either changed (Paper, Ink or Night from the same
+                // layers: R184, way C), the rain frame over it.
+                let changed = recolour(
+                    MapOf::Place,
+                    look,
+                    layers_of,
+                    &mut coloured,
+                    map_layers,
                     radar_view_map,
-                    f,
-                    shell.backdrop() == Some(true),
                 );
-                radar_shown = real;
-                backdrop_shown = shell.backdrop();
-                let _ = writeln!(
-                    RunLog,
-                    "radar: frame {:?} over the map in {} us",
-                    real.flatten(),
-                    rt::ticks().wrapping_sub(t0) / 13 * 4
-                );
-            } else if real.is_none() {
+                if changed || real != radar_shown || look != backdrop_shown {
+                    while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
+                    let t0 = rt::ticks();
+                    if layers_of != Some(MapOf::Place) {
+                        // The place's map failed: dark water, never another
+                        // place's map.
+                        radar_view_map.fill(0xFF06_0E18);
+                        coloured = None;
+                    }
+                    let f = real.flatten().map(|f| {
+                        let f = usize::from(f).min(7);
+                        &rain_all[f * view_px..(f + 1) * view_px]
+                    });
+                    rp_today::show_radar(gfx.two_d(), radar_view_map, f);
+                    radar_shown = real;
+                    backdrop_shown = look;
+                    let _ = writeln!(
+                        RunLog,
+                        "radar: frame {:?} over the map in {} us",
+                        real.flatten(),
+                        rt::ticks().wrapping_sub(t0) / 13 * 4
+                    );
+                }
+            } else {
                 radar_shown = None;
-            }
-            // The map, from the card, the first time the radar wants it.
-            if shell.backdrop().is_some()
-                && real.is_none()
-                && let Some(out) = map_bytes.take()
-            {
-                if !card_tried {
-                    card_tried = true;
-                    *card = take_card();
+                // The built-in map, from the card the first time the radar
+                // wants it; its layers again from the packed copy after a
+                // place's map was in them.
+                if look.is_some() && !builtin_tried {
+                    builtin_tried = true;
+                    if !card_tried {
+                        card_tried = true;
+                        *card = take_card();
+                    }
+                    let t0 = rt::ticks();
+                    builtin_len = card
+                        .as_mut()
+                        .and_then(|(c, start)| read_pack(c, *start, *b"RPMAP", map_file));
+                    let _ = writeln!(
+                        RunLog,
+                        "radar map: the built-in's {} bytes read in {} us",
+                        builtin_len.unwrap_or(0),
+                        rt::ticks().wrapping_sub(t0) / 13 * 4
+                    );
                 }
-                let t0 = rt::ticks();
-                let got = card
-                    .as_mut()
-                    .and_then(|(c, start)| read_pack(c, *start, *b"RPMAP", map_file));
-                let read_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
-                let t1 = rt::ticks();
-                let unpacked = got.map(|len| rp_today::unpack_map(&map_file[..len], out));
-                let _ = writeln!(
-                    RunLog,
-                    "radar map: read {} bytes in {read_us} us, unpacked {unpacked:?} in {} us",
-                    got.unwrap_or(0),
-                    rt::ticks().wrapping_sub(t1) / 13 * 4
-                );
-                if unpacked == Some(Ok(())) {
-                    radar_map = Some(out);
+                if look.is_some()
+                    && layers_of != Some(MapOf::BuiltIn)
+                    && let Some(len) = builtin_len
+                {
+                    let t0 = rt::ticks();
+                    let got = rp_weather::maplayers::unpack(&map_file[..len], map_layers);
+                    let _ = writeln!(
+                        RunLog,
+                        "radar map: the built-in's layers unpacked {got:?} in {} us",
+                        rt::ticks().wrapping_sub(t0) / 13 * 4
+                    );
+                    if got.is_ok() {
+                        layers_of = Some(MapOf::BuiltIn);
+                        coloured = None;
+                    } else {
+                        builtin_len = None;
+                    }
                 }
-            }
-            let want = shell.backdrop().filter(|_| radar_map.is_some());
-            if want != backdrop_shown && real.is_none() {
-                while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
-                let t0 = rt::ticks();
-                rp_today::show_backdrop(
-                    gfx.two_d(),
-                    wallpaper,
-                    want.zip(radar_map).map(|(ink, m)| (m, ink)),
-                    wall,
+                let changed = recolour(
+                    MapOf::BuiltIn,
+                    look,
+                    layers_of,
+                    &mut coloured,
+                    map_layers,
+                    radar_view_map,
                 );
-                let _ = writeln!(
-                    RunLog,
-                    "backdrop: {} in {} us",
-                    match want {
-                        Some(true) => "radar map, Ink",
-                        Some(false) => "radar map, Night",
-                        None => "wallpaper",
-                    },
-                    rt::ticks().wrapping_sub(t0) / 13 * 4
-                );
-                backdrop_shown = want;
+                let want = look.filter(|_| layers_of == Some(MapOf::BuiltIn));
+                if changed || want != backdrop_shown {
+                    while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
+                    let t0 = rt::ticks();
+                    rp_today::show_backdrop(
+                        gfx.two_d(),
+                        wallpaper,
+                        want.map(|_| &*radar_view_map),
+                        wall,
+                    );
+                    let _ = writeln!(
+                        RunLog,
+                        "backdrop: {} in {} us",
+                        if want.is_some() {
+                            "radar map"
+                        } else {
+                            "wallpaper"
+                        },
+                        rt::ticks().wrapping_sub(t0) / 13 * 4
+                    );
+                    backdrop_shown = want;
+                }
             }
 
             // The plane path: what the page layer shows. A hand-off (the

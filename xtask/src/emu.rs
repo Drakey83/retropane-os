@@ -11285,12 +11285,13 @@ pub(crate) fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
     today_output(release, "wallpaper.yuv")
 }
 
-/// The radar map rp-today was built with, unpacked as the image unpacks
-/// it (`radar.zz` beside the wallpaper), or `None` if it isn't there.
+/// The radar map's layers rp-today was built with (`radar.zz`, the card's
+/// `RPMAP`), unpacked as the image unpacks them, or `None` if it isn't
+/// there.
 pub(crate) fn today_map(release: &Path) -> Option<Vec<u8>> {
     let packed = today_output(release, "radar.zz").ok()?;
-    let mut map = vec![0u8; rp_today::MAP_BYTES];
-    rp_today::unpack_map(&packed, &mut map).ok()?;
+    let mut map = vec![0u8; rp_weather::maplayers::BYTES];
+    rp_weather::maplayers::unpack(&packed, &mut map).ok()?;
     Some(map)
 }
 
@@ -12064,21 +12065,42 @@ fn today_dials() -> rp_shell::station::Dials {
     )
 }
 
-/// The radar's map under the Weather page while Radar is open, the
-/// wallpaper after, as the image does (`rp_today::show_backdrop`).
+thread_local! {
+    /// The look the previews colour the radar's map in instead of the
+    /// shell's (`RP_PREVIEW_MAPS` draws each look).
+    static PREVIEW_LOOK: std::cell::Cell<Option<rp_weather::maplayers::Look>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The previews' radar look from now on (`None`: the settings' again).
+pub(crate) fn set_preview_look(l: Option<rp_weather::maplayers::Look>) {
+    PREVIEW_LOOK.with(|c| c.set(l));
+}
+
+/// The radar's map under the Weather page while Radar is open, its layers
+/// coloured in the look the settings name, the wallpaper after, as the
+/// image does (`rp_today::show_backdrop`).
 fn backdrop(
     gpu: &mut rp_mbx_render::Mbx2dRenderer<rp_mbx_render::model::Bus, rp_mbx_render::model::Mem>,
     shell: &rp_shell::Shell,
     wall: &[u8],
     map: Option<&[u8]>,
-    shown: &mut Option<bool>,
+    shown: &mut Option<rp_weather::maplayers::Look>,
 ) {
-    let want = shell.backdrop().filter(|_| map.is_some());
+    let want = shell
+        .backdrop()
+        .map(|l| PREVIEW_LOOK.with(std::cell::Cell::get).unwrap_or(l))
+        .filter(|_| map.is_some());
     if want != *shown {
+        let coloured = want.zip(map).map(|(look, layers)| {
+            let mut view = vec![0u32; rp_weather::maplayers::W * rp_weather::maplayers::H];
+            rp_weather::maplayers::colour(layers, look, &mut view);
+            view
+        });
         rp_today::show_backdrop(
             gpu,
             wall,
-            want.zip(map).map(|(ink, m)| (m, ink)),
+            coloured.as_deref(),
             &mut rp_today::WallScratch::new(),
         );
         *shown = want;

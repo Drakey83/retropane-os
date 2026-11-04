@@ -256,12 +256,15 @@ pub const REFRESH: [u16; 5] = [15, 30, 60, 180, 0];
 /// The radar's base map.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RadarMap {
-    /// Ink by day, Night by night (ui.md "Light and dark").
+    /// Paper by day, Night by night (ui.md "Light and dark"; the owner's
+    /// M1, 2026-11-04: Paper the light map).
     Auto,
     /// Dark land and water, under the smoked glass.
     Night,
-    /// Black water, white land.
+    /// The newspaper look: off-white land with its terrain, charcoal water.
     Ink,
+    /// Warm light land, steel-blue water.
+    Paper,
 }
 
 impl RadarMap {
@@ -272,6 +275,7 @@ impl RadarMap {
             Self::Auto => "Auto",
             Self::Night => "Night",
             Self::Ink => "Ink",
+            Self::Paper => "Paper",
         }
     }
 
@@ -279,9 +283,22 @@ impl RadarMap {
     #[must_use]
     pub const fn next(self) -> Self {
         match self {
-            Self::Auto => Self::Night,
-            Self::Night => Self::Ink,
-            Self::Ink => Self::Auto,
+            Self::Auto => Self::Paper,
+            Self::Paper => Self::Ink,
+            Self::Ink => Self::Night,
+            Self::Night => Self::Auto,
+        }
+    }
+
+    /// The map's look, by day or by night.
+    #[must_use]
+    pub const fn look(self, day: bool) -> crate::maplayers::Look {
+        use crate::maplayers::Look;
+        match self {
+            Self::Auto if day => Look::Paper,
+            Self::Auto | Self::Night => Look::Night,
+            Self::Ink => Look::Ink,
+            Self::Paper => Look::Paper,
         }
     }
 }

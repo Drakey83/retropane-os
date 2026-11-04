@@ -1969,6 +1969,7 @@ $keyFile = '{key}'
 $store = '{store}'
 $pack = '{pack}'
 $data = '{data}'
+$maps = '{maps}'
 $ua = 'RetroPaneOS-dev/0.1 (github.com/Drakey83/retropane-os)'
 "RELAY on $port"
 function Send-Bytes($b) {{ $sp.Write($b, 0, $b.Length) }}
@@ -2094,6 +2095,25 @@ while ($true) {{
                 "RADAR $($script:rv.Count) frames"
                 Answer ([Text.Encoding]::ASCII.GetBytes($t))
             }}
+            'LAYERS' {{
+                # The radar's base map for a place as layers (R184): drawn
+                # here once by tools/maps/radar_layers.py from Natural Earth
+                # and the open elevation tiles, kept in local/maps/cache.
+                # Every number checked; nothing else reaches the drawer.
+                if ($w.Length -ne 5 -or $w[2] -notmatch '^-?\d{{1,2}}\.\d{{3}}$' -or $w[3] -notmatch '^-?\d{{1,3}}\.\d{{3}}$' -or $w[4] -notmatch '^\d{{1,2}}$') {{ Refuse 400 'not a place'; continue }}
+                $lat = [double]$w[2]; $lon = [double]$w[3]; $z = [int]$w[4]
+                if ([math]::Abs($lat) -gt 85 -or [math]::Abs($lon) -gt 180 -or $z -lt 3 -or $z -gt 10) {{ Refuse 400 'not a place'; continue }}
+                if ($canned) {{ $f = "$maps\radar-builtin.rpml" }} else {{
+                    $f = "$maps\cache\$($w[2])_$($w[3])_$z.rpml"
+                    if (-not (Test-Path $f)) {{
+                        New-Item -ItemType Directory -Force "$maps\cache" | Out-Null
+                        & python -I '{drawer}' $maps '{font}' $f $w[2] $w[3] $z | Out-Null
+                    }}
+                }}
+                if (-not (Test-Path $f)) {{ Refuse 404 'no map drawn'; continue }}
+                "LAYERS $($w[2]) $($w[3]) $z"
+                Answer ([IO.File]::ReadAllBytes($f))
+            }}
             'TILE' {{
                 # A map tile (OpenStreetMap's standard one, darkened on the
                 # device; CARTO's dark tiles went behind a key, 2026-10-31)
@@ -2191,6 +2211,18 @@ $sp.Close()
         pack = pack.display(),
         pack_chunk = rp_weather::settings::PACK_CHUNK,
         data = data.display(),
+        maps = root.join("local").join("maps").display(),
+        drawer = root
+            .join("tools")
+            .join("maps")
+            .join("radar_layers.py")
+            .display(),
+        font = root
+            .join("local")
+            .join("fonts")
+            .join("didactgothic")
+            .join("DidactGothic-Regular.ttf")
+            .display(),
         store_len = rp_weather::store::LEN,
         canned = if canned { "$true" } else { "$false" },
         CANNED = CANNED_FORECAST,

@@ -1342,9 +1342,10 @@ fn every_notice_shown_is_listed() {
 fn the_radar_loops_its_frames_and_holds_on_the_last() {
     use rp_weather::radar::FRAMES;
     let mut s = weather(weather_app::RADAR);
+    use rp_weather::maplayers::Look;
     assert_eq!(
         s.backdrop(),
-        Some(false),
+        Some(Look::Night),
         "Night by default (the owner's pick)"
     );
     s.wset.radar = rp_weather::settings::RadarMap::Auto;
@@ -1352,12 +1353,18 @@ fn the_radar_loops_its_frames_and_holds_on_the_last() {
         hour: 12,
         ..Time::default()
     });
-    assert_eq!(s.backdrop(), Some(true), "noon: Ink under the page");
+    assert_eq!(
+        s.backdrop(),
+        Some(Look::Paper),
+        "noon: Paper under the page"
+    );
     s.set_time(Time {
         hour: 22,
         ..Time::default()
     });
-    assert_eq!(s.backdrop(), Some(false), "night: Night");
+    assert_eq!(s.backdrop(), Some(Look::Night), "night: Night");
+    s.wset.radar = rp_weather::settings::RadarMap::Ink;
+    assert_eq!(s.backdrop(), Some(Look::Ink), "Ink at any hour");
     s.radar_frame = 0;
     s.radar_at = 10_000;
     s.tick(10_000);
@@ -1377,7 +1384,7 @@ fn the_radar_loops_its_frames_and_holds_on_the_last() {
     assert_eq!(s.radar_frame, 0);
     // Night by the setting; nothing under any other page.
     s.wset.radar = rp_weather::settings::RadarMap::Night;
-    assert_eq!(s.backdrop(), Some(false));
+    assert_eq!(s.backdrop(), Some(Look::Night));
     s.set_tab(0);
     assert_eq!(s.backdrop(), None);
 }
@@ -1794,18 +1801,17 @@ fn the_radar_asks_its_frames_then_the_map_then_each_rain_frame_tile_by_tile() {
     }
     assert_eq!(
         lines.len(),
-        9 * 4,
-        "the map and three frames, nine tiles each"
+        1 + 9 * 3,
+        "the map's layers (one answer, R184), then three frames, nine tiles each"
     );
-    assert_eq!(lines[0], b"RPNET TILE MAP 7 28 51\n");
-    assert_eq!(lines[4], b"RPNET TILE MAP 7 29 52\n");
-    assert_eq!(lines[9], b"RPNET TILE RAIN 0 7 28 51\n");
-    assert_eq!(lines[35], b"RPNET TILE RAIN 2 7 30 53\n");
+    assert_eq!(lines[0], b"RPNET LAYERS 30.664 -97.922 7\n");
+    assert_eq!(lines[1], b"RPNET TILE RAIN 0 7 28 51\n");
+    assert_eq!(lines[27], b"RPNET TILE RAIN 2 7 30 53\n");
     assert_eq!(s.radar_frames(), 3);
     assert_eq!(s.radar_real(), Some(Some(0)));
     let f = drawn(&mut s);
     assert!(!f.overflowed());
-    assert!(texts(&f).contains(&b"(c) OpenStreetMap contributors, RainViewer".to_vec()));
+    assert!(texts(&f).contains(&b"Natural Earth, Mapzen, RainViewer".to_vec()));
 }
 
 #[test]
@@ -2172,7 +2178,7 @@ fn the_busiest_frame_leaves_a_quarter_of_the_frame_spare() {
 fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     // P7, by key: ten minutes on, RainViewer's list has moved on by one
     // frame; the map and the frames still listed are kept (moved forward
-    // by the device), so 9 tiles are asked, not 81.
+    // by the device), so 9 tiles are asked, not 37.
     let mut s = weather(0);
     while s.next_ask().is_some() {
         s.net_answer(false, b"");
@@ -2193,7 +2199,7 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     let q = s.next_ask().expect("the frames");
     assert_eq!(q.ask, Ask::Frames);
     s.net_answer(true, b"100 200 300 400");
-    assert_eq!(all(&mut s), 9 * 5);
+    assert_eq!(all(&mut s), 1 + 9 * 4, "the map's layers, then four frames");
     assert_eq!(s.take_radar_moves(), None, "nothing kept the first time");
     // Ten minutes on: the same place.
     s.tick(s.now + 600_001);
@@ -2225,7 +2231,7 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     assert_eq!(q.ask, Ask::Frames);
     s.net_answer(true, b"200 300 400 500");
     assert_eq!(s.take_radar_moves(), None);
-    assert_eq!(all(&mut s), 9 * 5);
+    assert_eq!(all(&mut s), 1 + 9 * 4, "the map's layers, then four frames");
 }
 
 #[test]

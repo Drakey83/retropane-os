@@ -1780,20 +1780,21 @@ impl Shell {
         true
     }
 
-    /// Whether the radar's map is under the page, and which look: `Some(true)`
-    /// Ink, `Some(false)` Night (Auto: Ink between sunrise and sunset). The
-    /// caller puts the map into the wallpaper under the page while it is.
+    /// Whether the radar's map is under the page, and in which look (Auto:
+    /// Paper between sunrise and sunset, Night after). The caller puts the
+    /// map, coloured in that look, into the wallpaper under the page while
+    /// it is.
     #[must_use]
-    pub fn backdrop(&self) -> Option<bool> {
+    pub fn backdrop(&self) -> Option<rp_weather::maplayers::Look> {
         if self.screen != super::Screen::Weather || self.tab != RADAR {
             return None;
         }
         let m = u16::from(self.time.hour) * 60 + u16::from(self.time.minute);
-        Some(match self.wset.radar {
-            rp_weather::settings::RadarMap::Ink => true,
-            rp_weather::settings::RadarMap::Night => false,
-            rp_weather::settings::RadarMap::Auto => m >= self.wx.sun.0 && m < self.wx.sun.1,
-        })
+        Some(
+            self.wset
+                .radar
+                .look(m >= self.wx.sun.0 && m < self.wx.sun.1),
+        )
     }
 
     /// The radar: the rain cells over the map (the backdrop), a chip naming
@@ -1818,11 +1819,12 @@ impl Shell {
                 });
             }
         }
-        // The real radar's sources, small over the map's corner (the
-        // licences ask for them: OpenStreetMap's "(c) OpenStreetMap
-        // contributors"); while loading or on the sample, a note says so.
+        // The real radar's sources, small over the map's corner: the rain's
+        // (RainViewer) and the map's (ours from Natural Earth, public
+        // domain, and the open elevation tiles, whose terms ask for
+        // "Mapzen"); while loading or on the sample, a note says so.
         if real && !self.radar_loading() {
-            let credit = b"(c) OpenStreetMap contributors, RainViewer";
+            let credit = b"Natural Earth, Mapzen, RainViewer";
             let w = label.width(credit);
             f.text(W - 12 - w, TIME_PANEL.y - 8, label, DIM, credit);
         } else {
