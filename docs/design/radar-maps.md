@@ -191,6 +191,14 @@ each through ui-preview first.
    coloured on the device; the owner's own place drawn by the dock's relay
    (`RPNET LAYERS`, `tools/maps/radar_layers.py`) instead of nine
    OpenStreetMap tiles; previews `mockups/radar-layers-seattle.jpg`.
+   **First X51v run (today-0053, 2026-11-04):** a look coloured in 63 ms
+   (Night, Paper and Ink alike: under the sheet's 100 ms, way C holds);
+   layers unpacked in 166-168 ms; the place's map drawn by the PC in
+   3.46 s the first time (181 KB over the dock); the built-in's card read
+   361 ms. Found: the first Radar opening waited 0.76 s for the built-in
+   (Seattle) map that the place's own replaced 5 s later; for step 3, keep
+   each place's map on the card (instant after the first time) and skip
+   the built-in when the place shown isn't its own.
 2. **The timeline and the rain** (M6, R177): past 2 hours only, ending at
    now; the loop's newest-first fetch, kept frames, each frame composed
    once over the map; opacity per look.
