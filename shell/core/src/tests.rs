@@ -3297,7 +3297,10 @@ fn a_refused_rain_frame_is_asked_again_once_then_skipped_never_shown_dry() {
     s.tick(s.now + 10);
     assert_eq!(s.next_ask().map(|q| q.ask), Some(Ask::Frames));
     s.net_answer(true, b"100 200 300");
-    assert!(s.next_ask().is_some_and(|q| q.line().starts_with(b"RPNET LAYERS")));
+    assert!(
+        s.next_ask()
+            .is_some_and(|q| q.line().starts_with(b"RPNET LAYERS"))
+    );
     s.net_answer(true, b"");
     // Frame 2's first tile refused: asked again from its first tile.
     let mut lines = Vec::new();
@@ -3310,7 +3313,11 @@ fn a_refused_rain_frame_is_asked_again_once_then_skipped_never_shown_dry() {
     assert_eq!(lines[0], lines[1], "asked again once");
     // Refused again: lost, and frame 1 asked next.
     let q = s.next_ask().expect("the next frame");
-    assert!(q.line().starts_with(b"RPNET TILE RAIN 1 "), "{:?}", q.line());
+    assert!(
+        q.line().starts_with(b"RPNET TILE RAIN 1 "),
+        "{:?}",
+        q.line()
+    );
     assert_ne!(s.radar_real(), Some(Some(2)), "never shown as a dry frame");
     s.net_answer(true, b"");
     while s.next_ask().is_some() {

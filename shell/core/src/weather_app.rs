@@ -1889,8 +1889,8 @@ impl Shell {
         self.decorate(f, Target::Play);
         // Play waits for the frames: dimmed by the panel's own glass until
         // they are all in.
-        let waiting = real
-            && (!self.radar_complete() || self.radar_shown_ready() != self.radar_have());
+        let waiting =
+            real && (!self.radar_complete() || self.radar_shown_ready() != self.radar_have());
         if waiting {
             f.push(Cmd::Fill {
                 r: Rect::new(px - 4, py - 4, 34, 36),
