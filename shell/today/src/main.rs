@@ -1141,6 +1141,9 @@ mod image {
         // The frame being composed, a step a pass; whether the background
         // composing waits for room; the pages whose pictures Radar holds.
         let mut radar_job: Option<Job> = None;
+        // The living sky's last logged state, when, and its counts then.
+        #[allow(clippy::type_complexity)]
+        let mut sky_logged: Option<((bool, &'static str, u8, bool), u64, u32, u32)> = None;
         let mut no_band_room = false;
         let mut pages_lent = 0u8;
         let mut spans_shown = [None; rp_today::rain::BANDS];
@@ -2397,6 +2400,38 @@ mod image {
             // wallpaper again after (the frame in flight may read it).
             // The real radar once its map is in: the frame shown blended
             // over it.
+            // The living sky in the log (the owner, 2026-11-06: "it doesnt
+            // do the animation at all"): when it starts or stops and why,
+            // and while it runs its steps and moves every 5 s.
+            let sky = shell.sky_report();
+            let key = (sky.live, sky.why, sky.test, sky.moving);
+            if sky_logged.map(|(k, _, _, _)| k) != Some(key) {
+                let _ = writeln!(
+                    RunLog,
+                    "sky: {} (test {} {}; the weather shown {}) at {now_ms} ms",
+                    if sky.live { "running" } else { sky.why },
+                    sky.test,
+                    sky.test_name,
+                    if sky.moving {
+                        "moves"
+                    } else {
+                        "has nothing that moves"
+                    }
+                );
+                sky_logged = Some((key, now_ms, sky.steps, sky.moved));
+            } else if let Some((k, at, steps, moved)) = sky_logged
+                && sky.live
+                && now_ms.wrapping_sub(at) >= 5000
+            {
+                let _ = writeln!(
+                    RunLog,
+                    "sky: {} steps, {} of them moved something, in {} ms",
+                    sky.steps.wrapping_sub(steps),
+                    sky.moved.wrapping_sub(moved),
+                    now_ms.wrapping_sub(at)
+                );
+                sky_logged = Some((k, now_ms, sky.steps, sky.moved));
+            }
             let real = shell.backdrop().and(shell.radar_real());
             let look = shell.backdrop();
             if real.is_some() {

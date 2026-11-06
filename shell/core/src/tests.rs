@@ -3349,3 +3349,32 @@ fn the_radar_asks_first_while_open_and_says_when_there_is_no_dock() {
     assert!(t.contains(&b"RADAR NEEDS THE DOCK".to_vec()), "{t:?}");
     assert!(t.contains(&b"No radar".to_vec()));
 }
+
+/// The living sky's report for the device's log (the owner, 2026-11-06:
+/// "it doesnt do the animation at all"): why it isn't running, and once it
+/// runs, its steps and those that moved something.
+#[test]
+fn the_sky_report_says_why_it_waits_and_counts_its_moves() {
+    let mut s = shell(true);
+    let mut wx = rp_weather::sample();
+    wx.now.sky.wmo = 95;
+    wx.now.sky.cover = 100;
+    s.set_forecast(wx);
+    let r = s.sky_report();
+    assert!(!r.live);
+    assert_eq!(r.why, "no forecast yet");
+    assert!(r.moving, "a storm moves");
+    s.preview_sky(true);
+    assert!(s.sky_report().live);
+    for t in 1..=10 {
+        s.tick(t * 40);
+    }
+    let r = s.sky_report();
+    assert_eq!(r.steps, 10);
+    assert_eq!(r.moved, 10, "rain moves every step");
+    s.wset.living_sky = false;
+    assert_eq!(s.sky_report().why, "off in Settings");
+    s.wset.living_sky = true;
+    tap(&mut s, HERO);
+    assert_eq!(s.sky_report().why, "not on Today");
+}

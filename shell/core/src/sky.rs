@@ -285,6 +285,25 @@ const fn sin1024(deg: i32) -> i32 {
     sign * 4096 * x * (180 - x) / (40_500 - x * (180 - x))
 }
 
+/// What [`Shell::sky_report`] says about the living sky.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SkyReport {
+    /// Whether it runs.
+    pub live: bool,
+    /// If not, the first reason.
+    pub why: &'static str,
+    /// The sky test's weather (0: the forecast's), and its name.
+    pub test: u8,
+    /// See [`SkyReport::test`].
+    pub test_name: &'static str,
+    /// Its steps so far, and how many changed the screen.
+    pub steps: u32,
+    /// See [`SkyReport::steps`].
+    pub moved: u32,
+    /// Whether the weather shown has anything that moves.
+    pub moving: bool,
+}
+
 /// The sky test's weathers: its notice, the weather code, the cloud cover.
 const SKY_TESTS: [(&str, u8, u8); 6] = [
     ("Sky: the forecast's", 0, 0),
@@ -428,6 +447,7 @@ impl Shell {
         self.sky_n = self.sky_n.wrapping_add(1);
         if w.rain > 0 || w.snow || w.storm {
             self.dirty(AREA);
+            self.sky_moved += 1;
             return true;
         }
         let after = self.cloud_places(w, i64::from(self.sky_n));
@@ -443,7 +463,41 @@ impl Shell {
             self.dirty(AREA);
             moved = true;
         }
+        self.sky_moved += u32::from(moved);
         moved
+    }
+
+    /// The living sky for the device's log: whether it runs, and if not the
+    /// first reason; the sky test's weather (0: the forecast's) and its
+    /// name; its steps so far and how many moved anything; and whether the
+    /// weather shown has anything that moves (clouds, rain, snow, storm).
+    #[must_use]
+    pub fn sky_report(&self) -> SkyReport {
+        let why = if !LIVING_SKY {
+            "off in this build"
+        } else if !self.wset.living_sky {
+            "off in Settings"
+        } else if self.screen != Screen::Today {
+            "not on Today"
+        } else if self.bare {
+            "the bare screen"
+        } else if self.align.is_some() {
+            "aligning the screen"
+        } else if !(self.fetched_at.is_some() || self.sky_forced || self.sky_test > 0) {
+            "no forecast yet"
+        } else {
+            ""
+        };
+        let w = weather_of(self.sky_now());
+        SkyReport {
+            live: why.is_empty(),
+            why,
+            test: self.sky_test,
+            test_name: SKY_TESTS[usize::from(self.sky_test)].0,
+            steps: self.sky_n,
+            moved: self.sky_moved,
+            moving: w.clouds > 0 || w.rain > 0 || w.snow || w.storm,
+        }
     }
 
     /// The clouds at step `steps`: one after another across the panel,

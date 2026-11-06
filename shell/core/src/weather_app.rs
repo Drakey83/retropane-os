@@ -1879,16 +1879,11 @@ impl Shell {
             }
         }
         self.decorate(f, Target::Play);
-        // Play waits for the frames: dimmed by the panel's own glass until
-        // they are all in.
+        // While the frames come the loop waits; the control stays as it is
+        // (a box over it read as a square: the owner, 2026-11-06) and the
+        // timeline's ticks show the progress.
         let waiting =
             real && (!self.radar_complete() || self.radar_shown_ready() != self.radar_have());
-        if waiting {
-            f.push(Cmd::Fill {
-                r: Rect::new(px - 4, py - 4, 34, 36),
-                color: 0xB000_0000 | (super::MENU_LEFT & 0xFF_FFFF),
-            });
-        }
         // Real frames: how long ago each was taken; before they are in, a
         // word (no sample's times: the sample is gone).
         let when = if real {

@@ -1991,7 +1991,7 @@ $data = '{data}'
 $maps = '{maps}'
 # The rain's frames stitched and encoded for the X51v (R184 step 2):
 # compiled once here.
-Add-Type -Path '{rain_cs}' -ReferencedAssemblies System.Drawing
+Add-Type -Path '{rain_cs}' -ReferencedAssemblies System.Drawing, System.Net.Http
 $ua = 'RetroPaneOS-dev/0.1 (github.com/Drakey83/retropane-os)'
 "RELAY on $port"
 function Send-Bytes($b) {{ $sp.Write($b, 0, $b.Length) }}
@@ -2114,6 +2114,7 @@ while ($true) {{
                 $m = Invoke-RestMethod -UserAgent $ua 'https://api.rainviewer.com/public/weather-maps.json'
                 $script:rvHost = $m.host
                 $script:rv = @($m.radar.past | Select-Object -Last 13)
+                [RpRain]::Keep([string[]]@($script:rv | ForEach-Object {{ $_.path }}))
                 $t = ($script:rv | ForEach-Object {{ $_.time }}) -join ' '
                 "RADAR $($script:rv.Count) frames"
                 Answer ([Text.Encoding]::ASCII.GetBytes($t))
@@ -2130,15 +2131,27 @@ while ($true) {{
                 $f = [int]$w[2]; $z = [int]$w[3]; $tx = [int]$w[4]; $ty = [int]$w[5]; $ox = [int]$w[6]; $oy = [int]$w[7]
                 if ($z -lt 1 -or $z -gt 7 -or $ox -lt 0 -or $ox -gt 255 -or $oy -lt 0 -or $oy -gt 255) {{ Refuse 400 'not a frame'; continue }}
                 if (-not $canned -and $f -ge $script:rv.Count) {{ Refuse 404 'no such frame'; continue }}
-                $n = 1 -shl $z
-                $tiles = New-Object 'byte[][]' 9
-                for ($k = 0; $k -lt 9; $k++) {{
-                    $x = (($tx + $k % 3) % $n + $n) % $n; $y = $ty + [math]::Floor($k / 3)
-                    if ($y -lt 0 -or $y -ge $n) {{ continue }}
-                    if ($canned) {{ $tiles[$k] = [IO.File]::ReadAllBytes("$data\rainviewer-7-29-52.png"); continue }}
-                    $tiles[$k] = FetchRaw "$($script:rvHost)$($script:rv[$f].path)/256/$z/$x/$y/2/1_1.png"
+                if ($canned) {{
+                    $n = 1 -shl $z
+                    $tiles = New-Object 'byte[][]' 9
+                    for ($k = 0; $k -lt 9; $k++) {{
+                        $y = $ty + [math]::Floor($k / 3)
+                        if ($y -ge 0 -and $y -lt $n) {{ $tiles[$k] = [IO.File]::ReadAllBytes("$data\rainviewer-7-29-52.png") }}
+                    }}
+                    $b = [RpRain]::Encode($tiles, $ox, $oy)
+                }} else {{
+                    # Every frame of the list fetched for this view at once
+                    # (nine tiles each, together): this one's ready when its
+                    # own tiles are, the rest while the device takes them.
+                    $paths = [string[]]@($script:rv | ForEach-Object {{ $_.path }})
+                    [RpRain]::Prefetch($script:rvHost, $paths, $z, $tx, $ty, $ox, $oy, $ua)
+                    try {{
+                        $b = [RpRain]::Frame($script:rvHost, $paths[$f], $z, $tx, $ty, $ox, $oy, $ua).Result
+                    }} catch {{
+                        [RpRain]::Drop($paths[$f])
+                        Refuse 502 "a tile not fetched: $($_.Exception.InnerException.Message)"; continue
+                    }}
                 }}
-                $b = [RpRain]::Encode($tiles, $ox, $oy)
                 if ($null -eq $b -or $b.Length -gt 240000) {{ Refuse 422 'too many colours or too big'; continue }}
                 "RAIN $f $($b.Length) bytes"
                 Answer $b

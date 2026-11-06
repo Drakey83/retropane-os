@@ -753,8 +753,11 @@ pub struct Shell {
     /// When the living sky last moved (ms), and the previews' word that it
     /// moves with the sample forecast ([`sky`]).
     sky_at: u32,
-    /// The sky's steps so far (its clouds move a whole pixel a step).
+    /// The sky's steps so far (its clouds move a whole pixel a step), and
+    /// how many of them changed what is on screen (the device's log: the
+    /// owner, 2026-11-06, "it doesnt do the animation at all").
     sky_n: u32,
+    sky_moved: u32,
     sky_forced: bool,
     /// The light look's style, and its panels' ([`soft`]).
     light_style: LightStyle,
@@ -888,6 +891,7 @@ macro_rules! shell_start {
             chart: None,
             sky_at: 0,
             sky_n: 0,
+            sky_moved: 0,
             sky_forced: false,
             light_style: LightStyle::Frosted,
             panels_off: false,
