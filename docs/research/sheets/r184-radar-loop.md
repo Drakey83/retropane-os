@@ -193,3 +193,37 @@ gave 3.4 MB beside the pages' pictures):
 | C | Fewer frames in heavy rain (the newest that fit) | nothing else changes | the loop shorter than 2 hours exactly when rain is widespread |
 
 Proposed: **A**.
+
+### Rule 0 on the room choice (the owner, 2026-11-06: "is this using rule 0?")
+
+The A/B/C table above was three workarounds weighed against each other,
+not rule 0. The check:
+
+- **What others do (findings):** phones and browsers keep radar frames
+  as GPU textures and, when memory runs short, drop what isn't on screen
+  (iOS discards off-screen layer contents, Android's trim-memory calls,
+  browsers' off-screen tiles) and redraw it on return. Windows Mobile:
+  no radar.
+- **Can we need less, instead of finding more?** Two ways checked against
+  the 2D engine's measured facts (docs/hw/2700g.md):
+  - **D. Rain alone at 8 bits a pixel with its own palette** (RainViewer's
+    colours with their alpha: 38 in the test tile, under 256), blended by
+    the engine over the map already in the wallpaper: half the memory of
+    16-bit, the map never copied per frame, colours exact. But the engine
+    reads 8-bit sources at a twelfth of 16-bit's speed (a full screen
+    63.3 ms against 5.0 ms, B9): a heavy-rain step would cost ~40-50 ms
+    of engine against the ~28 ms measured now.
+  - **Smaller cells than bands** (only where it rains): no help when rain
+    covers the view, which is when room runs out.
+- **Measured this run:** a loop step's frame in heavy rain 28.3 ms median
+  (61 steps; 90.6 ms worst), against ~70 ms before step 2; the step's CPU
+  24-32 us. Above the 15 ms target in rain this widespread.
+
+**Proposed: A, done the modern OS way**: the pages' pictures not on
+screen are given back while Radar needs the room (Hourly's first, the
+largest) and made again when their page comes back, by their own client
+(no service eviction of another client's pictures: ADR-0027's watch
+item). It beats D on step speed (measured engine rates), B on CPU and
+copies, C on data. D stays the fallback if a page can't give room.
+Owed with it: the 28 ms heavy-rain step (redraw only the bands whose
+pixels differ, not the box of both frames' rain).
