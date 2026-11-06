@@ -156,3 +156,40 @@ half a megabyte, and the 32-bit frame buffers go.
   (345/256), Ink x1.44 (369/256), Night unchanged.
 - Shortcut on the audit: C97 (a tile not kept or not readable shows as no
   rain, logged).
+
+## First X51v run (today-0054, 2026-11-06): froze; what the log shows
+
+`local/cardlog/today-0054.txt` (the serial log was lost to the watchdog
+reset; the card log has the run):
+
+1. **The relay refused frames 10-12** ("RPNET 404 0"): its TILE check took
+   a one-digit frame number (`'^\d$'`), fine for 8 frames, not 13. The
+   device took each refusal as a dry tile, so the three newest frames were
+   composed empty (0 bands of rain) and the newest frame showed no rain.
+2. **Composing a frame took 0.56 s** (9-10 of 11 bands raining), every
+   frame alike, in one pass of the main loop (the empty frames 18 ms). The
+   sheet estimated ~50-100 ms; decoding the nine PNGs again is most of it
+   (the step-1 run decoded a tile in ~10-60 ms on arrival). Split to be
+   logged.
+3. **The pool gave 84 band slots of 143** (3.4 MB); today's rain covered
+   10 of 11 bands in every frame, so the loop needed 130. The background
+   composer then made frame 1 by evicting frame 2 and frame 2 by evicting
+   frame 1, 83 times, 1.1 s each (the "1.1 s" lines are two attempts in
+   one), starving the loop until the watchdog reset the X51v.
+
+Fixes that need no choice: the relay takes two-digit frames; a refused
+tile marks its frame missing (never shown dry) and asks it again once;
+composing spread over passes (a tile decoded or a band written per pass,
+no pass over ~60 ms); the background composer never evicts; the log splits
+decode and compose time.
+
+The choice (room for widespread rain: 13 x 10 bands = 5.4 MB, the pool
+gave 3.4 MB beside the pages' pictures):
+
+| | Way | For | Against |
+|---|---|---|---|
+| A | **Give Hourly's picture (2.3 MB) back while Radar is open**, made again on the way back (measured 96 + 110 ms; the swipe through 10 Day hides most of it) | all 13 frames fit in any rain; a step stays a pointer switch | Hourly redrawn after Radar (~0.2 s of CPU) |
+| B | Composed frames kept in RAM (30 MB free), the shown one copied into the chip by DMA each step | no page touched; any number of frames | a ~15 ms DMA copy a step in heavy rain (CPU free meanwhile), new DMA code |
+| C | Fewer frames in heavy rain (the newest that fit) | nothing else changes | the loop shorter than 2 hours exactly when rain is widespread |
+
+Proposed: **A**.
