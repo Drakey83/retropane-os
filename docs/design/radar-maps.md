@@ -214,8 +214,12 @@ each through ui-preview first.
    rains) and a step switches the wallpaper's bands and redraws the box
    where the rain changed; 13 frames, the newest first and shown still, the
    loop held until all are in; the rain kept as its PNGs (2 MB store, not
-   7.1 MB of frames); rain x1.35 on Paper, x1.44 on Ink (fitted). Device
-   run owed.
+   7.1 MB of frames); rain x1.35 on Paper, x1.44 on Ink (fitted).
+   **Proven on the X51v 2026-11-06 after four runs** (the owner: "looks
+   good"; sheet's run sections): the relay stitches each frame on the PC
+   (RPRN, ~21 KB, 3.3 ms to expand), pages lend their pictures while Radar
+   needs room, the map follows Appearance; newest frame 3.3 s after
+   opening, the loop at 8.0 s, a step 30.3 ms median in widespread rain.
 3. **Any place, drawn on the PC** (M3's first half): the dock's relay draws
    the map for the place shown (the same drawer as step 1, Natural Earth
    and open elevation tiles) at each zoom, instead of OpenStreetMap's

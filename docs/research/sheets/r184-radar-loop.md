@@ -334,3 +334,30 @@ once and all 13 frames as soon as the list comes, so each RAIN answer is
 only the dock's transfer (~0.2 s: newest frame ~2.5 s after opening, all
 13 in ~5 s, estimate); the living sky logged (each step and the sky
 test's pick) so its cause is proven in the next run.
+
+## Fourth X51v run (2026-11-06, `local/rp-today-run-2026-11-06-r184s2d.txt`): proven
+
+The owner: "looks good". The log:
+
+- **Opening to the newest frame: 3.3 s** (Radar at 38.5 s; the frame list
+  0.5 s, the place's map 1.3 s over the dock, the newest frame 1.1 s, the
+  relay's first fetch included); every later frame 0.2-0.3 s (the dock's
+  transfer: the relay had them ready); all 13 in at 6.8 s; the loop
+  playing at 8.0 s (run 3: 5.0 s to the newest, ~20 s for all 13; run 2:
+  37 s to the loop).
+- **A frame:** RPRN decoded in 3.3-3.5 ms, composed in 31-38 ms (9-11 of
+  11 bands raining).
+- **A loop step:** 32-40 us of CPU; its frame 30.3 ms median (37 steps,
+  44.7 ms worst), widespread rain, 175,000-222,000 px redrawn a step.
+  Above the 15 ms target in rain this widespread (the redraw is the
+  engine's whole-area composition); against ~70 ms before step 2.
+- **The living sky** ran: the forecast's sky 113-151 steps in 5 s (22-30 a
+  second), 28-38 of them moving a cloud (whole pixels, a few a second: the
+  design); the sky test's rain moved every step (145 of 145). Run 3's "no
+  animation" had no log to prove a cause; this run's logs show it running.
+- Room: 143 band slots with Hourly's picture lent; the second opening lent
+  all three pages (made again in 0.21-0.42 s on leaving).
+
+Left for later steps: the place's map sent every opening (1.3 s; step 3
+keeps it on the card); the step's 30 ms in widespread rain (a sheet if the
+owner wants it lower).
