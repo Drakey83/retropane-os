@@ -309,3 +309,28 @@ otherwise (it costs a few bytes; removing it is one line).
 - The radar's questions go first while Radar is open.
 - The map follows Appearance (Paper light, Night dark); the radar's own map
   setting, its settings row and its store byte (now written 0) are gone.
+
+## Third X51v run (2026-11-06, `local/rp-today-run-2026-11-06-r184s2c.txt`)
+
+- **The rain's decoding:** 3.3 ms a frame (RPRN) against 549 ms (nine
+  PNGs); composing 35 ms; frames 20-26 KB each in today's widespread rain.
+- **Opening to the newest frame:** 5.0 s (Radar at 15.3 s, frame 12 on
+  screen at 20.3 s): the frame list 0.6 s, the place's map 1.5 s (181 KB
+  over the dock, every opening: step 3 keeps it on the card), the first
+  frame 1.8 s, of which ~1.5 s is the relay fetching RainViewer's nine
+  tiles one after another. The rest came 1.5 s apart (~20 s for 13).
+- **A loop step:** 32-40 us of CPU, its frame 31.0 ms median (36 steps).
+- No Seattle map, no sample rain, no page over the radar; the second
+  opening lent all three pages (0b111), made again in 0.42 s on leaving.
+- **The owner:** the play control "looks like a square" while frames
+  load (the dimming box drawn over it); the living sky "doesn't do the
+  animation at all" (sky.rs unchanged since 2026-11-01; the log has no
+  sky lines, and 180 frames in 178 s say it never stepped; cause not yet
+  proven).
+
+Next, for the owner's go: the play control with no box while loading
+(the ticks show the progress); the relay fetching a frame's nine tiles at
+once and all 13 frames as soon as the list comes, so each RAIN answer is
+only the dock's transfer (~0.2 s: newest frame ~2.5 s after opening, all
+13 in ~5 s, estimate); the living sky logged (each step and the sky
+test's pick) so its cause is proven in the next run.
