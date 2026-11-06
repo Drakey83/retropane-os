@@ -27,6 +27,7 @@ pub mod maplayers;
 pub mod open_meteo;
 pub mod png;
 pub mod radar;
+pub mod rprn;
 mod sample;
 pub mod settings;
 pub mod store;

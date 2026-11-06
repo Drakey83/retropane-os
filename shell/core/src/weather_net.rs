@@ -146,7 +146,15 @@ impl Shell {
         if self.asking.is_some() {
             return None;
         }
-        let a = ORDER.into_iter().find(|a| self.wants & bit(*a) != 0)?;
+        // The radar's questions first while it is open (run today-0055:
+        // its frames waited 4.4 s behind the station's history, which
+        // nothing on screen waits for).
+        let radar = self.screen == Screen::Weather && self.tab == super::weather_app::RADAR;
+        let a = [Ask::Frames, Ask::Tile]
+            .into_iter()
+            .filter(|_| radar)
+            .chain(ORDER)
+            .find(|a| self.wants & bit(*a) != 0)?;
         self.wants &= !bit(a);
         let mut q = Question {
             ask: a,
@@ -230,22 +238,28 @@ impl Shell {
                 );
                 q.tile = Some((None, 0, v));
             }
-            // Then the rain, the newest frame missing first, tile by tile
-            // (R184 step 2: the newest shows at once, the rest come behind).
+            // Then the rain, the newest frame missing first, a frame an
+            // answer: the relay stitches its nine tiles to the view and
+            // sends it as RPRN (R184 step 2, rp_weather::rprn; nine tile
+            // asks a frame took ~2.3 s in run today-0055).
             Ask::Tile => {
                 let v = self.radar_view();
-                let (f, k) = self.radar_tile?;
-                let (tx, ty) = v.tile(usize::from(k))?;
-                q.push(Line::new().push(b"TILE RAIN ").num(i32::from(f)).as_bytes());
+                let (f, _) = self.radar_tile?;
+                q.push(Line::new().push(b"RAIN ").num(i32::from(f)).as_bytes());
+                let (tx, ty) = (v.tx, v.ty);
                 let z = Line::new()
                     .push(b" ")
                     .num(i32::from(rp_weather::tiles::ZOOM))
                     .push(b" ")
                     .num(tx as i32)
                     .push(b" ")
-                    .num(ty as i32);
+                    .num(ty as i32)
+                    .push(b" ")
+                    .num(v.ox as i32)
+                    .push(b" ")
+                    .num(v.oy as i32);
                 q.push(z.as_bytes());
-                q.tile = Some((Some(f), k, v));
+                q.tile = Some((Some(f), 0, v));
             }
         }
         q.push(b"\n");
@@ -317,7 +331,13 @@ impl Shell {
                 // No stored settings: the defaults' forecast.
                 Ask::Load => self.want(Ask::Forecast),
                 Ask::Save => {}
-                Ask::Frames => self.radar_for = None,
+                Ask::Frames => {
+                    self.radar_for = None;
+                    if !self.radar_offline {
+                        self.radar_offline = true;
+                        self.dirty(super::weather_app::PAGE);
+                    }
+                }
                 // None (outside the US, or no answer): none shown.
                 Ask::Alerts => {
                     self.n_alerts = 0;
@@ -528,6 +548,7 @@ impl Shell {
     #[inline(never)]
     fn frames_answer(&mut self, body: &[u8]) {
         use rp_weather::radar::PAST;
+        self.radar_offline = false;
         let (old, old_n) = (self.radar_times, usize::from(self.radar_n));
         let mut times = [0u32; PAST];
         let mut n = 0;
@@ -583,42 +604,25 @@ impl Shell {
     fn next_radar_frame(&mut self) {
         let done = self.radar_have | self.radar_lost;
         let missing = (0..self.radar_n).rev().find(|&f| done & 1 << f == 0);
-        self.radar_tile = missing.map(|f| (f, self.first_tile(0)));
+        self.radar_tile = missing.map(|f| (f, 0));
         if !self.radar_map || self.radar_tile.is_some() {
             self.want(Ask::Tile);
         }
     }
 
-    /// The view's first tile from `k` on (past the poles: none; 9 when
-    /// there is none left).
-    fn first_tile(&self, k: u8) -> u8 {
-        let v = self.radar_view();
-        (k..9)
-            .find(|&k| v.tile(usize::from(k)).is_some())
-            .unwrap_or(9)
-    }
-
-    /// A tile answered (or not): on to the next; a rain frame complete at
-    /// its last tile.
+    /// The map or a rain frame answered (or the map not): on to the next.
     fn tile_done(&mut self) {
         if !self.radar_map {
             self.radar_map = true;
             self.dirty(Rect::new(0, 0, W, super::H));
-        } else if let Some((f, k)) = self.radar_tile {
-            let next = self.first_tile(k + 1);
-            if next < 9 {
-                self.radar_tile = Some((f, next));
-                self.want(Ask::Tile);
-                return;
-            }
+        } else if let Some((f, _)) = self.radar_tile {
             self.radar_have |= 1 << f;
             self.dirty(Rect::new(0, 0, W, super::H));
         }
         self.next_radar_frame();
     }
 
-    /// A tile refused or unanswered: its frame asked again from its first
-    /// tile, once; refused again, the frame is lost (a stub on the
+    /// A frame refused or unanswered: asked again, once; refused again, the frame is lost (a stub on the
     /// timeline, skipped by the loop), never shown as dry (run today-0054:
     /// the relay refused frames 10-12 and the newest showed no rain).
     fn tile_failed(&mut self) {
@@ -628,7 +632,6 @@ impl Shell {
         };
         if self.radar_retried & 1 << f == 0 {
             self.radar_retried |= 1 << f;
-            self.radar_tile = Some((f, self.first_tile(0)));
             self.want(Ask::Tile);
             return;
         }

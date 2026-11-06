@@ -14,7 +14,7 @@
 //! dock today, a card file later) keeps as plain bytes.
 
 use crate::Name;
-use crate::settings::{Appearance, PLACES_MAX, Place, Provider, RadarMap, Settings, Station};
+use crate::settings::{Appearance, PLACES_MAX, Place, Provider, Settings, Station};
 
 /// The record's length.
 pub const LEN: usize = HEAD + PLACES_MAX * PLACE + KEY + 4;
@@ -50,7 +50,9 @@ pub fn encode(s: &Settings) -> [u8; LEN] {
     };
     r[12] = s.refresh;
     r[13] = s.pack;
-    r[14] = s.radar as u8;
+    // Byte 14 held the radar's own map choice until 2026-11-06 (the owner:
+    // the map follows the appearance); written 0, read as nothing.
+    r[14] = 0;
     // The living sky's off in the appearance byte's top bit (a record
     // from before it reads as on, no new version or length).
     r[15] = s.appearance as u8 | if s.living_sky { 0 } else { SKY_OFF };
@@ -109,12 +111,6 @@ pub fn decode(r: &[u8], key: crate::settings::Secret) -> Settings {
         },
         refresh: r[12],
         pack: r[13],
-        radar: match r[14] {
-            0 => RadarMap::Auto,
-            2 => RadarMap::Ink,
-            3 => RadarMap::Paper,
-            _ => RadarMap::Night,
-        },
         appearance: match r[15] & !SKY_OFF {
             1 => Appearance::Light,
             2 => Appearance::Dark,
@@ -191,7 +187,6 @@ mod tests {
         s.provider = Provider::MetNo;
         s.station = Station::Tempest;
         s.refresh = 1;
-        s.radar = RadarMap::Auto;
         s.appearance = Appearance::Light;
         s.living_sky = false;
         s.tempest_key = Secret::new(b"secret-token-1234").unwrap();
@@ -208,8 +203,8 @@ mod tests {
             (b.provider, b.station, b.refresh, b.pack)
         );
         assert_eq!(
-            (a.radar, a.appearance, a.living_sky, a.places),
-            (b.radar, b.appearance, b.living_sky, b.places)
+            (a.appearance, a.living_sky, a.places),
+            (b.appearance, b.living_sky, b.places)
         );
     }
 

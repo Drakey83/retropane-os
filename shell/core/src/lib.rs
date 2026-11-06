@@ -731,6 +731,9 @@ pub struct Shell {
     radar_lost: u16,
     radar_retried: u16,
     radar_ready: u16,
+    /// The relay didn't answer the radar's frame list (no dock): said so
+    /// on the radar, never a sample's rain instead.
+    radar_offline: bool,
     /// A refresh of the radar for the same place (its map and frames kept
     /// until the new list says which still hold), and the frames moved by
     /// their time for the device to apply (P7: [`Shell::take_radar_moves`]).
@@ -873,6 +876,7 @@ macro_rules! shell_start {
             radar_lost: 0,
             radar_retried: 0,
             radar_ready: 0,
+            radar_offline: false,
             radar_refresh: false,
             radar_moves: None,
             radar_asked: 0,

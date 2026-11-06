@@ -1759,8 +1759,11 @@ impl Shell {
     pub(crate) fn radar_step(&mut self, now: u32) -> bool {
         // The real radar holds its newest frame until every frame is in
         // (R177: the loop played what had come, the bare map between).
-        let held = self.radar_real().is_some()
-            && (!self.radar_complete() || self.radar_shown_ready() != self.radar_have());
+        // No real radar yet: nothing loops (the sample's rain is gone: the
+        // owner, run today-0055).
+        let held = self.radar_real().is_none()
+            || !self.radar_complete()
+            || self.radar_shown_ready() != self.radar_have();
         if self.screen != super::Screen::Weather || self.tab != RADAR || !self.radar_play || held {
             self.radar_at = now;
             return false;
@@ -1796,45 +1799,32 @@ impl Shell {
         true
     }
 
-    /// Whether the radar's map is under the page, and in which look (Auto:
-    /// Paper between sunrise and sunset, Night after). The caller puts the
-    /// map, coloured in that look, into the wallpaper under the page while
-    /// it is.
+    /// Whether the radar's map is under the page, and in which look: the
+    /// app's appearance's (the owner, 2026-11-06: "one dark mode one and
+    /// one light mode one ... set with the mode/theme in settings"): Paper
+    /// in the light look, Night in the dark. The caller puts the map,
+    /// coloured in that look, into the wallpaper under the page while it
+    /// is.
     #[must_use]
     pub fn backdrop(&self) -> Option<rp_weather::maplayers::Look> {
-        if self.screen != super::Screen::Weather || self.tab != RADAR {
-            return None;
-        }
-        let m = u16::from(self.time.hour) * 60 + u16::from(self.time.minute);
-        Some(
-            self.wset
-                .radar
-                .look(m >= self.wx.sun.0 && m < self.wx.sun.1),
-        )
+        use rp_weather::maplayers::Look;
+        (self.screen == super::Screen::Weather && self.tab == RADAR).then(|| {
+            if self.light() {
+                Look::Paper
+            } else {
+                Look::Night
+            }
+        })
     }
 
     /// The radar: the rain cells over the map (the backdrop), a chip naming
     /// the layer, and the timeline with play and pause.
     fn radar_page(&self, f: &mut Frame) {
-        use rp_weather::radar::{NOW_FRAME, STEP_MIN, STEPS, TRACKS};
+        use rp_weather::radar::{NOW_FRAME, STEPS};
         let (ui, label) = (self.fonts.ui, self.fonts.label);
         let real = self.radar_real().is_some();
         let n = self.radar_frames();
         let now_frame = if real { n - 1 } else { NOW_FRAME };
-        // The sample's cells only while there is no real radar.
-        for t in TRACKS.iter().filter(|_| !real) {
-            let Some(img) = self.icons.radar[usize::from(t.cell)] else {
-                continue;
-            };
-            let (x, y) = t.at(self.radar_frame);
-            if x >= 0 && y >= 0 && x as u16 + img.w <= W {
-                f.push(Cmd::Image {
-                    x: x as u16,
-                    y: y as u16,
-                    img,
-                });
-            }
-        }
         // The real radar's sources, small over the map's corner: the rain's
         // (RainViewer) and the map's (ours from Natural Earth, public
         // domain, and the open elevation tiles, whose terms ask for
@@ -1847,10 +1837,12 @@ impl Shell {
             let chip = Rect::new(16, 80, 300, 40);
             // The menus' denser glass: readable over the map.
             self.glass(f, chip, super::MENU_LEFT, super::MENU_RIGHT);
-            let what: &[u8] = if self.radar_loading() {
-                b"RADAR LOADING"
+            // Never a sample's rain or another place's map in its place
+            // (the owner, run today-0055: "it starts out over seattle").
+            let what: &[u8] = if self.radar_offline {
+                b"RADAR NEEDS THE DOCK"
             } else {
-                b"RAIN  SAMPLE"
+                b"RADAR LOADING"
             };
             f.text(chip.x + 14, chip.y + 27, label, TEXT, what);
         }
@@ -1897,19 +1889,8 @@ impl Shell {
                 color: 0xB000_0000 | (super::MENU_LEFT & 0xFF_FFFF),
             });
         }
-        // The frame's time and whether it is past or forecast.
-        let k = i16::from(self.radar_frame) - i16::from(now_frame);
-        let m = (i16::from(self.time.hour) * 60 + i16::from(self.time.minute) + k * STEP_MIN)
-            .rem_euclid(24 * 60);
-        let when = self
-            .region
-            .time((m / 60) as u8, (m % 60) as u8, true)
-            .push(match k {
-                0 => b"  now",
-                k if k < 0 => b"  past",
-                _ => b"  forecast",
-            });
-        // Real frames: how long ago each was taken.
+        // Real frames: how long ago each was taken; before they are in, a
+        // word (no sample's times: the sample is gone).
         let when = if real {
             let ago = self.radar_times[usize::from(n - 1)]
                 .saturating_sub(self.radar_times[usize::from(self.radar_frame.min(n - 1))])
@@ -1919,8 +1900,10 @@ impl Shell {
             } else {
                 Line::new().num(ago as i32).push(b" min ago")
             }
+        } else if self.radar_offline {
+            Line::new().push(b"No radar")
         } else {
-            when
+            Line::new().push(b"Loading")
         };
         f.text(TRACK_X, TIME_PANEL.y + 28, ui, TEXT, when.as_bytes());
         // The span the frames cover (two hours from RainViewer: R184 step
@@ -1946,7 +1929,7 @@ impl Shell {
                 }
             }
         } else {
-            Line::new().push(b"-1 h       +1 h")
+            Line::new()
         };
         let ends = span.as_bytes();
         f.text(
@@ -1963,8 +1946,8 @@ impl Shell {
         });
         // A tick per frame; on the real radar a frame not yet in is a
         // short stub, so the ticks fill in as they land.
-        for i in 0..n {
-            let missing = real && self.radar_shown_ready() & 1 << i == 0;
+        for i in (0..n).filter(|_| real) {
+            let missing = self.radar_shown_ready() & 1 << i == 0;
             let h = match (i == now_frame, missing) {
                 (_, true) => 2,
                 (true, false) => 12,
@@ -1975,15 +1958,17 @@ impl Shell {
                 color: if i == now_frame { WARM } else { DIM },
             });
         }
-        f.push(Cmd::Fill {
-            r: Rect::new(
-                frame_x(self.radar_frame, n).saturating_sub(5),
-                ty - 7,
-                12,
-                18,
-            ),
-            color: FOCUS,
-        });
+        if real {
+            f.push(Cmd::Fill {
+                r: Rect::new(
+                    frame_x(self.radar_frame, n).saturating_sub(5),
+                    ty - 7,
+                    12,
+                    18,
+                ),
+                color: FOCUS,
+            });
+        }
         // The scale: light to heavy.
         for (i, (c, _)) in STEPS.iter().enumerate() {
             f.push(Cmd::Fill {

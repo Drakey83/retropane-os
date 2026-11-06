@@ -58,8 +58,6 @@ pub(crate) enum Item {
     Forecast,
     /// T1: the station.
     Station,
-    /// T1: the radar's map.
-    Radar,
     /// T1: how often it refreshes.
     Updates,
     /// T1: light or dark.
@@ -109,7 +107,6 @@ impl Shell {
                 for i in [
                     Item::Forecast,
                     Item::Station,
-                    Item::Radar,
                     Item::Updates,
                     Item::Appearance,
                     Item::LivingSky,
@@ -171,10 +168,9 @@ impl Shell {
             (Screen::WeatherSettings, Item::Place(_) | Item::AllPlaces | Item::AddPlace) => {
                 b"PLACES"
             }
-            (
-                Screen::WeatherSettings,
-                Item::Forecast | Item::Station | Item::Radar | Item::Updates,
-            ) => b"WEATHER FROM",
+            (Screen::WeatherSettings, Item::Forecast | Item::Station | Item::Updates) => {
+                b"WEATHER FROM"
+            }
             (
                 Screen::WeatherSettings,
                 Item::Appearance | Item::LivingSky | Item::Units | Item::Icons,
@@ -285,10 +281,6 @@ impl Shell {
             (_, Item::AllPlaces) => self.open(Screen::WeatherPlaces),
             (_, Item::AddPlace) => self.open(Screen::AddPlace),
             (_, Item::Forecast | Item::Station) => self.open(Screen::WeatherFrom),
-            (_, Item::Radar) => {
-                self.wset.radar = self.wset.radar.next();
-                self.settings_changed(false);
-            }
             (_, Item::Updates) => {
                 self.wset.refresh =
                     (self.wset.refresh + 1) % rp_weather::settings::REFRESH.len() as u8;
@@ -629,10 +621,6 @@ impl Shell {
                 };
                 right(f, v, DIM);
                 chevron(f);
-            }
-            Item::Radar => {
-                f.text(r.x + 12, base, ui, TEXT, b"Radar map");
-                right(f, s.radar.name().as_bytes(), DIM);
             }
             Item::Updates => {
                 f.text(r.x + 12, base, ui, TEXT, b"Updates");

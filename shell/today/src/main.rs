@@ -429,8 +429,6 @@ mod image {
     /// A big picture's stream read from a card pack (the largest ~170 KB),
     /// and a pack's table.
     const STREAM_BUF: usize = 256 * 1024;
-    /// The radar map's file (`RPMAP`, 214 KB).
-    const MAP_FILE: usize = 512 * 1024;
     /// The picture store's slots (side, count): the shell's sizes
     /// (`rp_shell::Size`), as many of each as the screens show at once
     /// plus a spare, so a pick replaces a picture with no gap (the sheet's
@@ -459,9 +457,10 @@ mod image {
     /// The keeper's tag while no pack is in yet (apart from every pack).
     const NOT_YET: u8 = 0xFE;
 
-    /// The rain's PNG answers kept (R184 step 2): RainViewer's tiles were
-    /// 300-10,656 bytes in every run to 2026-11-04 (~100 KB a frame at
-    /// most), so 13 frames fit with room to spare; compacted when full.
+    /// The relay's rain frames kept (RPRN, R184 step 2): two live frames
+    /// measured 10,800 and 10,908 bytes (2026-11-06), the relay refuses
+    /// any over 240,000; 2 MB holds 13 typical frames many times over and
+    /// eight of the largest; compacted when full.
     const RAIN_STORE: usize = 2 << 20;
     /// The radar's frames composed in 2700G memory: 13 views at 16 bits at
     /// most (rain in every band of every frame); usually far less, only
@@ -515,18 +514,14 @@ mod image {
         );
     }
 
-    /// The scratch a frame is composed in: the view's rain, a tile, the
-    /// PNG reader's two buffers.
+    /// The scratch a frame is composed in: the view's rain.
     struct RainScratch<'a> {
         view: &'a mut [u32],
-        tile: &'a mut [u32],
-        data: &'a mut [u8],
-        raw: &'a mut [u8],
     }
 
     /// A frame being composed, a step a pass (run today-0054: a whole
-    /// frame in one pass held the loop 0.56 s): steps 0-8 decode a tile
-    /// each, 9 finds the rainy bands, 10 on write a band each.
+    /// frame in one pass held the loop 0.56 s): step 0 expands its RPRN
+    /// answer, 1 finds the rainy bands, 2 on write a band each.
     #[derive(Clone, Copy)]
     struct Job {
         f: usize,
@@ -573,32 +568,30 @@ mod image {
         pool: &mut Bands,
         store: &rp_today::rain::Store<'_>,
         job: &mut Job,
-        v: rp_weather::tiles::View,
         map: &[u32],
         look: rp_weather::maplayers::Look,
         s: &mut RainScratch<'_>,
     ) -> Result<bool, rp_graphics::Error> {
-        use rp_today::rain::{BAND_H, BANDS, TILES};
+        use rp_today::rain::{BAND_H, BANDS};
         use rp_weather::tiles::VIEW_W;
         let t0 = rt::ticks();
         let f = job.f;
         match usize::from(job.step) {
-            k if k < TILES => {
-                if k == 0 {
+            0 => {
+                // The relay's frame (RPRN), checked as hostile input; a
+                // damaged one shows no rain and is said so.
+                let got = store
+                    .tile(f, 0)
+                    .map(|b| rp_weather::rprn::decode(b, s.view));
+                if got != Some(Ok(())) {
                     s.view.fill(0);
-                }
-                if let Some(png) = store.tile(f, k) {
-                    if rp_weather::png::decode(png, s.tile, s.data, s.raw) == Ok((256, 256)) {
-                        v.place(k, s.tile, s.view);
-                    } else {
-                        let _ = writeln!(RunLog, "radar: frame {f}'s tile {k} wasn't read");
-                    }
+                    let _ = writeln!(RunLog, "radar: frame {f} wasn't read ({got:?})");
                 }
                 job.decode_us += rt::ticks().wrapping_sub(t0) / 13 * 4;
             }
-            TILES => job.comp.spans = rp_today::rain::bands_of(s.view),
+            1 => job.comp.spans = rp_today::rain::bands_of(s.view),
             k => {
-                let b = k - TILES - 1;
+                let b = k - 2;
                 if job.comp.spans[b].is_some() {
                     let Some((slot, (h, row))) = pool.take().and_then(|s| Some((s, pool.at(s)?)))
                     else {
@@ -667,8 +660,6 @@ mod image {
     /// Whose map the radar's layers are (R184).
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum MapOf {
-        /// The built-in place's, from the card.
-        BuiltIn,
         /// The place shown's, drawn by the dock's relay.
         Place,
     }
@@ -1093,25 +1084,18 @@ mod image {
         let def_file: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(def_words);
         let (stream_words, rest) = rest.split_at_mut(STREAM_BUF / 4);
         let stream_buf: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(stream_words);
-        let (map_file_words, rest) = rest.split_at_mut(MAP_FILE / 4);
-        let map_file = rp_hal_mem::words_as_bytes_mut(map_file_words);
         let (big_px, rest) = rest.split_at_mut(rp_today::BIG_WORDS);
         let (shrink_words, rest) = rest.split_at_mut(rp_today::Maker::shrink_words());
         let shrink_px: &'static mut [i32] = rp_hal_mem::words_as_i32_mut(shrink_words);
         // The real radar (R184 step 2, way C): the map's view, the rain
-        // frame being composed, the rain's PNG answers kept (2 MB, where
-        // eight 32-bit frames took 7.1 MB), a tile, and the PNG reader's
-        // scratch.
+        // frame being composed, and the relay's frames kept (RPRN, ~11 KB
+        // each; eight 32-bit frames took 7.1 MB, and the PNG reader's
+        // scratch 0.8 MB more, gone with the PNGs).
         let view_px = rp_weather::tiles::VIEW_W * rp_weather::tiles::VIEW_H;
         let (radar_view_map, rest) = rest.split_at_mut(view_px);
         let (rain_view, rest) = rest.split_at_mut(view_px);
         let (rain_words, rest) = rest.split_at_mut(RAIN_STORE / 4);
         let mut rain_store = rp_today::rain::Store::new(rp_hal_mem::words_as_bytes_mut(rain_words));
-        let (tile_px, rest) = rest.split_at_mut(256 * 256);
-        let (png_data_w, rest) = rest.split_at_mut(256 * 1024 / 4);
-        let (png_raw_w, rest) = rest.split_at_mut((256usize * (1 + 256 * 4)).div_ceil(4));
-        let png_data = rp_hal_mem::words_as_bytes_mut(png_data_w);
-        let png_raw = rp_hal_mem::words_as_bytes_mut(png_raw_w);
         // Weather's RAM (the sheet's target: under 8 MB): every part of the
         // pool this image takes, and the pictures' share (option C).
         let pictures = rp_draw::pics::Pics::words(&PIC_CLASSES) * 4
@@ -1139,16 +1123,13 @@ mod image {
         }
         let unpacked_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
         let wallpaper: &'static [u8] = wall_bytes;
-        // The radar's base map as layers (R184, rp_weather::maplayers), one
-        // set in RAM: the built-in place's (the card's `RPMAP`, put there by
-        // `cargo xtask load`, read the first time the radar shows without a
-        // place's map, kept packed in `map_file`) or the place's (drawn by
-        // the dock's relay); coloured into the view in the look the settings
-        // name, again only when the look or the layers change. None, or a
-        // damaged file, leaves the radar on the wallpaper.
+        // The radar's base map as layers (R184, rp_weather::maplayers): the
+        // place's, drawn by the dock's relay; coloured into the view in the
+        // look the app's appearance names, again only when the look or the
+        // layers change. Never another place's map (the owner, run
+        // today-0055: "it starts out over seattle"): until the place's is
+        // in, the radar shows the wallpaper and "Radar loading".
         let mut layers_of: Option<MapOf> = None;
-        let mut builtin_len: Option<usize> = None;
-        let mut builtin_tried = false;
         let mut coloured: Option<(MapOf, rp_weather::maplayers::Look)> = None;
         // The rain frames composed (R184 step 2) are kept with their PNGs in
         // `rain_store` (off the stack); the frame the wallpaper's bands
@@ -1164,12 +1145,7 @@ mod image {
         let mut pages_lent = 0u8;
         let mut spans_shown = [None; rp_today::rain::BANDS];
         let mut filling: Option<usize> = None;
-        let mut scratch = RainScratch {
-            view: rain_view,
-            tile: tile_px,
-            data: png_data,
-            raw: png_raw,
-        };
+        let mut scratch = RainScratch { view: rain_view };
         let _ = writeln!(
             RunLog,
             "wallpaper unpacked: {} -> {} bytes in {unpacked_us} us",
@@ -2495,7 +2471,10 @@ mod image {
                 // made again when Radar closes. Phones and browsers drop
                 // what isn't on screen the same way; here the pages' own
                 // client gives them back (ADR-0027: no service eviction).
-                if !bands_tried && have != 0 {
+                // Only with the page layer off: a page lent while the layer
+                // still showed one stopped the plane path from turning it
+                // off, and Now stayed over the radar (run today-0055).
+                if !bands_tried && have != 0 && gfx.layer().is_none() && !gfx.commit_pending() {
                     bands_tried = true;
                     while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
                     for round in [&[1usize][..], &[0, 2][..]] {
@@ -2545,14 +2524,12 @@ mod image {
                 }
                 if let (Some(mut job), Some(l)) = (radar_job, look) {
                     while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
-                    let v = shell.radar_view();
                     let mut got = job_step(
                         gfx,
                         rc,
                         &mut band_pool,
                         &rain_store,
                         &mut job,
-                        v,
                         radar_view_map,
                         l,
                         &mut scratch,
@@ -2692,53 +2669,8 @@ mod image {
                     );
                     pages_lent = 0;
                 }
-                // The built-in map, from the card the first time the radar
-                // wants it; its layers again from the packed copy after a
-                // place's map was in them.
-                if look.is_some() && !builtin_tried {
-                    builtin_tried = true;
-                    if !card_tried {
-                        card_tried = true;
-                        *card = take_card();
-                    }
-                    let t0 = rt::ticks();
-                    builtin_len = card
-                        .as_mut()
-                        .and_then(|(c, start)| read_pack(c, *start, *b"RPMAP", map_file));
-                    let _ = writeln!(
-                        RunLog,
-                        "radar map: the built-in's {} bytes read in {} us",
-                        builtin_len.unwrap_or(0),
-                        rt::ticks().wrapping_sub(t0) / 13 * 4
-                    );
-                }
-                if look.is_some()
-                    && layers_of != Some(MapOf::BuiltIn)
-                    && let Some(len) = builtin_len
-                {
-                    let t0 = rt::ticks();
-                    let got = rp_weather::maplayers::unpack(&map_file[..len], map_layers);
-                    let _ = writeln!(
-                        RunLog,
-                        "radar map: the built-in's layers unpacked {got:?} in {} us",
-                        rt::ticks().wrapping_sub(t0) / 13 * 4
-                    );
-                    if got.is_ok() {
-                        layers_of = Some(MapOf::BuiltIn);
-                        coloured = None;
-                    } else {
-                        builtin_len = None;
-                    }
-                }
-                let changed = recolour(
-                    MapOf::BuiltIn,
-                    look,
-                    layers_of,
-                    &mut coloured,
-                    map_layers,
-                    radar_view_map,
-                );
-                let want = look.filter(|_| layers_of == Some(MapOf::BuiltIn));
+                // No map of the place yet, or Radar closed: the wallpaper.
+                let (changed, want) = (false, None);
                 if changed || want != backdrop_shown {
                     while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
                     let t0 = rt::ticks();

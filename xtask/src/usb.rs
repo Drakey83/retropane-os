@@ -1538,6 +1538,10 @@ mod tests {
         .concat();
         assert!(src.contains(&check), "the frame number check");
         assert!(src.contains(&["Select-Object -Last ", "13)"].concat()));
+        // A frame stitched and encoded on the PC (RPRN), one answer each.
+        assert!(src.contains(&["'RA", "IN' {{"].concat()));
+        assert!(src.contains(&["Add-Type -Path '{", "rain_cs}'"].concat()));
+        assert!(src.contains(&["[RpRain]::", "Encode($tiles, $ox, $oy)"].concat()));
     }
 
     /// The restart task never shows a window over the owner's work and
@@ -1985,6 +1989,9 @@ $store = '{store}'
 $pack = '{pack}'
 $data = '{data}'
 $maps = '{maps}'
+# The rain's frames stitched and encoded for the X51v (R184 step 2):
+# compiled once here.
+Add-Type -Path '{rain_cs}' -ReferencedAssemblies System.Drawing
 $ua = 'RetroPaneOS-dev/0.1 (github.com/Drakey83/retropane-os)'
 "RELAY on $port"
 function Send-Bytes($b) {{ $sp.Write($b, 0, $b.Length) }}
@@ -2111,6 +2118,31 @@ while ($true) {{
                 "RADAR $($script:rv.Count) frames"
                 Answer ([Text.Encoding]::ASCII.GetBytes($t))
             }}
+            'RAIN' {{
+                # A rain frame for the device's view (R184 step 2, run
+                # today-0055: 117 tile asks and 549 ms of PNG decoding a
+                # frame on the X51v): RainViewer's nine tiles fetched here,
+                # stitched, cropped to the view and sent as RPRN
+                # (tools/maps/RpRain.cs, rp_weather::rprn). Every number
+                # checked; the URL fixed.
+                # RPNET RAIN <frame> <zoom> <tile x> <tile y> <x in it> <y in it>
+                if ($w.Length -ne 8 -or $w[2] -notmatch '^\d{{1,2}}$' -or ($w[3..7] | Where-Object {{ $_ -notmatch '^-?\d{{1,4}}$' }})) {{ Refuse 400 'not a frame'; continue }}
+                $f = [int]$w[2]; $z = [int]$w[3]; $tx = [int]$w[4]; $ty = [int]$w[5]; $ox = [int]$w[6]; $oy = [int]$w[7]
+                if ($z -lt 1 -or $z -gt 7 -or $ox -lt 0 -or $ox -gt 255 -or $oy -lt 0 -or $oy -gt 255) {{ Refuse 400 'not a frame'; continue }}
+                if (-not $canned -and $f -ge $script:rv.Count) {{ Refuse 404 'no such frame'; continue }}
+                $n = 1 -shl $z
+                $tiles = New-Object 'byte[][]' 9
+                for ($k = 0; $k -lt 9; $k++) {{
+                    $x = (($tx + $k % 3) % $n + $n) % $n; $y = $ty + [math]::Floor($k / 3)
+                    if ($y -lt 0 -or $y -ge $n) {{ continue }}
+                    if ($canned) {{ $tiles[$k] = [IO.File]::ReadAllBytes("$data\rainviewer-7-29-52.png"); continue }}
+                    $tiles[$k] = FetchRaw "$($script:rvHost)$($script:rv[$f].path)/256/$z/$x/$y/2/1_1.png"
+                }}
+                $b = [RpRain]::Encode($tiles, $ox, $oy)
+                if ($null -eq $b -or $b.Length -gt 240000) {{ Refuse 422 'too many colours or too big'; continue }}
+                "RAIN $f $($b.Length) bytes"
+                Answer $b
+            }}
             'LAYERS' {{
                 # The radar's base map for a place as layers (R184): drawn
                 # here once by tools/maps/radar_layers.py from Natural Earth
@@ -2235,6 +2267,7 @@ $sp.Close()
             .join("maps")
             .join("radar_layers.py")
             .display(),
+        rain_cs = root.join("tools").join("maps").join("RpRain.cs").display(),
         font = root
             .join("local")
             .join("fonts")

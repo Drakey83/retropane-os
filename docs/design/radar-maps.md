@@ -6,7 +6,11 @@ what the radar's maps are now, what is wrong with them, and the choices,
 each with its pros and cons, for the owner's votes (M1-M6).
 
 **Decided 2026-11-04: the owner adopted every proposal ("Adopt
-proposals"):** M1 Paper as the light map, Ink redone kept as a choice;
+proposals"):** M1 Paper as the light map, Ink redone kept as a choice
+(**changed 2026-11-06, the owner: "we need one dark mode one and one light
+mode one, and this should be set with the mode/theme in settings": the map
+follows Settings' Appearance, Paper light and Night dark; the radar's own
+map setting and Ink as a choice are gone**);
 M2 Night with its roads dimmed; M3 the X51v draws its own map from map
 data on the card, reached through maps drawn on the PC; M4 zooms 6-9,
 opening at 8, the rain enlarged past 7, NOAA's radar for the US once its

@@ -253,56 +253,6 @@ impl Appearance {
 /// provisional 3 hours is the default.
 pub const REFRESH: [u16; 5] = [15, 30, 60, 180, 0];
 
-/// The radar's base map.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RadarMap {
-    /// Paper by day, Night by night (ui.md "Light and dark"; the owner's
-    /// M1, 2026-11-04: Paper the light map).
-    Auto,
-    /// Dark land and water, under the smoked glass.
-    Night,
-    /// The newspaper look: off-white land with its terrain, charcoal water.
-    Ink,
-    /// Warm light land, steel-blue water.
-    Paper,
-}
-
-impl RadarMap {
-    /// As shown.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Auto => "Auto",
-            Self::Night => "Night",
-            Self::Ink => "Ink",
-            Self::Paper => "Paper",
-        }
-    }
-
-    /// The next choice.
-    #[must_use]
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Auto => Self::Paper,
-            Self::Paper => Self::Ink,
-            Self::Ink => Self::Night,
-            Self::Night => Self::Auto,
-        }
-    }
-
-    /// The map's look, by day or by night.
-    #[must_use]
-    pub const fn look(self, day: bool) -> crate::maplayers::Look {
-        use crate::maplayers::Look;
-        match self {
-            Self::Auto if day => Look::Paper,
-            Self::Auto | Self::Night => Look::Night,
-            Self::Ink => Look::Ink,
-            Self::Paper => Look::Paper,
-        }
-    }
-}
-
 /// The longest key kept (Tempest's personal access tokens are 36).
 pub const KEY_MAX: usize = 64;
 
@@ -407,8 +357,6 @@ pub struct Settings {
     pub refresh: u8,
     /// The icon pack: an index into [`PACKS`].
     pub pack: u8,
-    /// The radar's map.
-    pub radar: RadarMap,
     /// Light or dark.
     pub appearance: Appearance,
     /// The living sky behind the weather card (the owner, 2026-11-01: "a
@@ -444,7 +392,6 @@ impl Settings {
         pack: 0,
         // The owner, 2026-10-30, after the X51v run: "the dark map looks
         // way better then the ink map".
-        radar: RadarMap::Night,
         appearance: Appearance::Auto,
         living_sky: true,
         tempest_key: Secret::NONE,

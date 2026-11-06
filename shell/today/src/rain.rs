@@ -10,9 +10,10 @@
 //! into RGB565 band slots in 2700G memory (a few large pictures taken when
 //! Radar opens, handed out 42 rows at a time: no pool fragmentation); a
 //! loop step only points the renderer's wallpaper bands at that frame's
-//! slots and redraws the box where the rain changed. The rain itself is kept as the PNG answers
-//! that brought it (~0.1-0.4 MB for 13 frames, against 7.1 MB of 32-bit
-//! frames), decoded again only when a frame is composed (a look change,
+//! slots and redraws the areas where the rain changed. The rain itself is
+//! kept as the relay's answers (RPRN, rp_weather::rprn: a frame stitched and
+//! run-length coded on the PC, ~11 KB, against 7.1 MB of 32-bit frames
+//! before), expanded again only when a frame is composed (a look change,
 //! or Radar opened again).
 
 use rp_draw::Rect;
@@ -46,11 +47,11 @@ const AT: usize = 0;
 const ORDER: usize = AT + PAST * TILES * 8;
 const REC: usize = 1 + BANDS * 2 + BANDS * 4;
 const COMPOSED: usize = ORDER + PAST;
-/// Where the PNGs start in the store's bytes.
+/// Where the answers start in the store's bytes.
 pub const DATA: usize = COMPOSED + PAST * REC;
 
-/// The rain's PNG answers, by frame and tile, in one arena (compacted when
-/// full), and each frame's composed bands. Everything lives in the bytes
+/// The rain's answers, by frame (and tile: an RPRN frame is the first), in
+/// one arena (compacted when full), and each frame's composed bands. Everything lives in the bytes
 /// it is given (from the RAM pool, not the image's stack: P6, run
 /// emu-today 2026-11-04 at 85% with these tables on the stack). Each
 /// frame's records sit in a row; when RainViewer's list moves on only the

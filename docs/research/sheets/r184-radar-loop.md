@@ -288,3 +288,24 @@ radar's own map setting (Auto, Night, Ink, Paper) goes; the map follows
 Settings' Appearance (Light: Paper; Dark: Night; Auto: by the sun, as the
 app does). Ink's palette stays in the code unused until the owner says
 otherwise (it costs a few bytes; removing it is one line).
+
+### As built after run 2 (the owner's "Build them", 2026-11-06)
+
+- Pages lend their pictures only with the page layer off and no commit
+  pending (the fault behind the photo).
+- The radar never shows the built-in (Seattle) map or the sample's rain:
+  the built-in's card read and its 512 KB buffer are gone from the image;
+  until the place's map is in, the wallpaper, "RADAR LOADING" and
+  "Loading" on the timeline; with the frame list unanswered, "RADAR NEEDS
+  THE DOCK" and "No radar". Nothing loops without real frames.
+- `RPNET RAIN f z tx ty ox oy`: the relay fetches the nine tiles, stitches
+  and crops them (`tools/maps/RpRain.cs`, compiled once at relay start) and
+  answers RPRN (`rp_weather::rprn`, its parser and tests). Checked on the
+  PC: the C# output equals an independent stitch of live tiles pixel for
+  pixel (0 of 221,760 differ), 11,022 bytes in 20 ms; the relay's handler
+  run with stubs gave the same bytes and refused bad offsets, an unknown
+  frame and a short question. The PNG reader's 0.8 MB of scratch left the
+  image with the PNGs.
+- The radar's questions go first while Radar is open.
+- The map follows Appearance (Paper light, Night dark); the radar's own map
+  setting, its settings row and its store byte (now written 0) are gone.

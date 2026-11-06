@@ -1338,53 +1338,48 @@ fn every_notice_shown_is_listed() {
     }
 }
 
+/// The radar's map follows the app's appearance (the owner, 2026-11-06:
+/// "one dark mode one and one light mode one ... set with the mode/theme in
+/// settings"): Paper in the light look, Night in the dark, Auto by the
+/// sun; nothing under any other page. Without real frames nothing loops,
+/// and the page says it is loading (no sample's rain: run today-0055).
 #[test]
-fn the_radar_loops_its_frames_and_holds_on_the_last() {
-    use rp_weather::radar::FRAMES;
-    let mut s = weather(weather_app::RADAR);
+fn the_radar_map_follows_the_appearance_and_nothing_loops_without_real_frames() {
     use rp_weather::maplayers::Look;
-    assert_eq!(
-        s.backdrop(),
-        Some(Look::Night),
-        "Night by default (the owner's pick)"
-    );
-    s.wset.radar = rp_weather::settings::RadarMap::Auto;
+    use rp_weather::settings::Appearance;
+    let mut s = weather(weather_app::RADAR);
+    s.wset.appearance = Appearance::Light;
+    assert_eq!(s.backdrop(), Some(Look::Paper));
+    s.wset.appearance = Appearance::Dark;
+    assert_eq!(s.backdrop(), Some(Look::Night));
+    s.wset.appearance = Appearance::Auto;
     s.set_time(Time {
         hour: 12,
         ..Time::default()
     });
-    assert_eq!(
-        s.backdrop(),
-        Some(Look::Paper),
-        "noon: Paper under the page"
-    );
+    assert_eq!(s.backdrop(), Some(Look::Paper), "noon: light");
     s.set_time(Time {
         hour: 22,
         ..Time::default()
     });
-    assert_eq!(s.backdrop(), Some(Look::Night), "night: Night");
-    s.wset.radar = rp_weather::settings::RadarMap::Ink;
-    assert_eq!(s.backdrop(), Some(Look::Ink), "Ink at any hour");
+    assert_eq!(s.backdrop(), Some(Look::Night), "night: dark");
     s.radar_frame = 0;
     s.radar_at = 10_000;
-    s.tick(10_000);
-    s.tick(10_399);
-    assert_eq!(s.radar_frame, 0);
-    assert_eq!(s.tick(10_400), Action::Redraw);
-    assert_eq!(s.radar_frame, 1);
-    let mut t = 10_400;
-    while s.radar_frame < FRAMES - 1 {
-        t += 400;
+    for t in [10_000, 10_400, 12_000, 20_000] {
         s.tick(t);
+        assert_eq!(s.radar_frame, 0, "no real frames: nothing loops");
     }
-    // The last frame holds longer, then the loop starts again.
-    s.tick(t + 1_000);
-    assert_eq!(s.radar_frame, FRAMES - 1);
-    s.tick(t + 1_200);
-    assert_eq!(s.radar_frame, 0);
-    // Night by the setting; nothing under any other page.
-    s.wset.radar = rp_weather::settings::RadarMap::Night;
-    assert_eq!(s.backdrop(), Some(Look::Night));
+    let f = drawn(&mut s);
+    let t = texts(&f);
+    assert!(t.contains(&b"RADAR LOADING".to_vec()), "{t:?}");
+    assert!(!t.contains(&b"RAIN  SAMPLE".to_vec()));
+    assert!(
+        !f.cmds().any(|c| matches!(
+            c,
+            Cmd::Image { img, .. } if rp_weather::radar::CELLS.contains(&(img.w, img.h))
+        )),
+        "no sample rain cells"
+    );
     s.set_tab(0);
     assert_eq!(s.backdrop(), None);
 }
@@ -1779,7 +1774,7 @@ fn a_connected_station_becomes_the_place_shown_and_home() {
 }
 
 #[test]
-fn the_radar_asks_its_frames_then_the_map_then_each_rain_frame_tile_by_tile() {
+fn the_radar_asks_its_frames_then_the_map_then_each_rain_frame_in_one_answer() {
     let mut s = weather(0);
     while s.next_ask().is_some() {
         s.net_answer(false, b"");
@@ -1801,13 +1796,17 @@ fn the_radar_asks_its_frames_then_the_map_then_each_rain_frame_tile_by_tile() {
     }
     assert_eq!(
         lines.len(),
-        1 + 9 * 3,
-        "the map's layers (one answer, R184), then three frames, nine tiles each"
+        1 + 3,
+        "the map's layers (one answer, R184), then three frames, one answer each (RPRN)"
     );
     assert_eq!(lines[0], b"RPNET LAYERS 30.664 -97.922 7\n");
     // The newest frame first (R184 step 2), the oldest last.
-    assert_eq!(lines[1], b"RPNET TILE RAIN 2 7 28 51\n");
-    assert_eq!(lines[27], b"RPNET TILE RAIN 0 7 30 53\n");
+    // The frame, its zoom, the view's first tile and where the view starts
+    // in it: the relay stitches the nine tiles itself.
+    let v = rp_weather::tiles::View::centred(30_664, -97_922);
+    let want = format!("RPNET RAIN 2 7 28 51 {} {}\n", v.ox, v.oy);
+    assert_eq!(lines[1], want.as_bytes());
+    assert!(lines[3].starts_with(b"RPNET RAIN 0 7 28 51 "));
     assert_eq!(s.radar_frames(), 3);
     assert_eq!(s.radar_real(), Some(Some(2)), "the newest shown");
     let f = drawn(&mut s);
@@ -2200,7 +2199,7 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     let q = s.next_ask().expect("the frames");
     assert_eq!(q.ask, Ask::Frames);
     s.net_answer(true, b"100 200 300 400");
-    assert_eq!(all(&mut s), 1 + 9 * 4, "the map's layers, then four frames");
+    assert_eq!(all(&mut s), 1 + 4, "the map's layers, then four frames");
     assert_eq!(s.take_radar_moves(), None, "nothing kept the first time");
     assert!(s.radar_complete());
     // Ten minutes on: the same place.
@@ -2225,8 +2224,8 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
         Some(l)
     })
     .collect();
-    assert_eq!(tiles.len(), 9, "only the new frame's tiles");
-    assert!(tiles[0].starts_with(b"RPNET TILE RAIN 3 "));
+    assert_eq!(tiles.len(), 1, "only the new frame");
+    assert!(tiles[0].starts_with(b"RPNET RAIN 3 "));
     assert_eq!(s.radar_frames(), 4);
     assert!(s.radar_complete());
     // A frame the device couldn't keep is asked again, alone.
@@ -2239,8 +2238,8 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
         Some(l)
     })
     .collect();
-    assert_eq!(again.len(), 9);
-    assert!(again.iter().all(|l| l.starts_with(b"RPNET TILE RAIN 1 ")));
+    assert_eq!(again.len(), 1);
+    assert!(again[0].starts_with(b"RPNET RAIN 1 "));
     assert!(s.radar_complete());
     // Another place: nothing kept.
     s.wset.places[0].lat = 47_606;
@@ -2249,7 +2248,7 @@ fn a_radar_refresh_fetches_only_the_frames_it_has_not_got() {
     assert_eq!(q.ask, Ask::Frames);
     s.net_answer(true, b"200 300 400 500");
     assert_eq!(s.take_radar_moves(), None);
-    assert_eq!(all(&mut s), 1 + 9 * 4, "the map's layers, then four frames");
+    assert_eq!(all(&mut s), 1 + 4, "the map's layers, then four frames");
 }
 
 /// R184 step 2 (R177): two hours of frames (13, RainViewer's whole past
@@ -2278,12 +2277,10 @@ fn the_real_radar_holds_its_newest_frame_until_all_thirteen_are_in() {
     let layers = s.next_ask().expect("the map");
     assert!(layers.line().starts_with(b"RPNET LAYERS "));
     s.net_answer(true, b"");
-    // The newest frame's nine tiles: then it shows, still.
-    for _ in 0..9 {
-        let q = s.next_ask().expect("a tile");
-        assert!(q.line().starts_with(b"RPNET TILE RAIN 12 "));
-        s.net_answer(true, b"");
-    }
+    // The newest frame (one answer): then it shows, still.
+    let q = s.next_ask().expect("a frame");
+    assert!(q.line().starts_with(b"RPNET RAIN 12 "));
+    s.net_answer(true, b"");
     assert_eq!(s.radar_real(), Some(Some(12)));
     // Composed by the device: then it counts as in.
     s.set_radar_ready(1 << 12);
@@ -2302,9 +2299,7 @@ fn the_real_radar_holds_its_newest_frame_until_all_thirteen_are_in() {
     let mut order = Vec::new();
     while let Some(q) = s.next_ask() {
         let l = q.line().to_vec();
-        if order.last() != Some(&l[16..18].to_vec()) {
-            order.push(l[16..18].to_vec());
-        }
+        order.push(l[11..13].to_vec());
         s.net_answer(true, b"");
     }
     let want: Vec<Vec<u8>> = (0..12)
@@ -3309,15 +3304,11 @@ fn a_refused_rain_frame_is_asked_again_once_then_skipped_never_shown_dry() {
         lines.push(q.line().to_vec());
         s.net_answer(ok, b"");
     }
-    assert!(lines[0].starts_with(b"RPNET TILE RAIN 2 7 28 51"));
+    assert!(lines[0].starts_with(b"RPNET RAIN 2 7 28 51 "));
     assert_eq!(lines[0], lines[1], "asked again once");
     // Refused again: lost, and frame 1 asked next.
     let q = s.next_ask().expect("the next frame");
-    assert!(
-        q.line().starts_with(b"RPNET TILE RAIN 1 "),
-        "{:?}",
-        q.line()
-    );
+    assert!(q.line().starts_with(b"RPNET RAIN 1 "), "{:?}", q.line());
     assert_ne!(s.radar_real(), Some(Some(2)), "never shown as a dry frame");
     s.net_answer(true, b"");
     while s.next_ask().is_some() {
@@ -3331,4 +3322,30 @@ fn a_refused_rain_frame_is_asked_again_once_then_skipped_never_shown_dry() {
     assert_eq!(s.radar_frame, 1);
     assert!(s.radar_step(t + 4000));
     assert_eq!(s.radar_frame, 0, "the lost frame 2 skipped");
+}
+
+/// While Radar is open its questions go first (run today-0055: its frame
+/// list waited 4.4 s behind the station's history); with no dock the page
+/// says so, never a sample's rain.
+#[test]
+fn the_radar_asks_first_while_open_and_says_when_there_is_no_dock() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    s.wset.places[0].lat = 30_664;
+    s.wset.places[0].lon = -97_922;
+    s.refresh();
+    s.set_tab(weather_app::RADAR);
+    s.tick(s.now + 10);
+    assert!(s.wants(Ask::Forecast), "the forecast also waits");
+    assert_eq!(
+        s.next_ask().map(|q| q.ask),
+        Some(Ask::Frames),
+        "the radar's first"
+    );
+    s.net_answer(false, b"");
+    let t = texts(&drawn(&mut s));
+    assert!(t.contains(&b"RADAR NEEDS THE DOCK".to_vec()), "{t:?}");
+    assert!(t.contains(&b"No radar".to_vec()));
 }
