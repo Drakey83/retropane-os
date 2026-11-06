@@ -227,3 +227,64 @@ item). It beats D on step speed (measured engine rates), B on CPU and
 copies, C on data. D stays the fallback if a page can't give room.
 Owed with it: the 28 ms heavy-rain step (redraw only the bands whose
 pixels differ, not the box of both frames' rain).
+
+## Second X51v run (today-0055, 2026-11-06): what the owner saw, and why
+
+Log: `local/cardlog/today-0055.txt` (the serial log filled; the card has
+it all). The loop itself worked: 807 steps, each 36-44 us of CPU, the
+step's frame 33.0 ms median (90th percentile 42.2, worst 55.8; 2-4 areas,
+140,000-222,000 px each); 143 band slots, Hourly's picture lent; no
+freeze. Three faults, each proven in the log:
+
+1. **Seattle and the sample rain first** (the owner: "it starts out over
+   seattle and plays that rain animation for like 10 seconds"): Radar
+   opened at 12.8 s; with no map of the place yet the image showed the
+   built-in (Seattle) map (lines 86-87) and the shell drew the sample's
+   rain cells over it, until the place's map came at ~19 s.
+2. **The rain slow to come** ("the radar rain took quite a long time"):
+   the radar's asks waited behind LOAD, TEMPEST and HISTORY (1.4-1.5 s
+   each): FRAMES asked at 17.2 s, 4.4 s after opening; then 117 tiles one
+   at a time, ~260 ms each, the last at 49.5 s; each frame's nine PNGs took
+   549 ms to decode (61 ms a tile, whatever its size), composing 31-34 ms.
+   The loop started ~37 s after Radar opened.
+3. **The radar behind the Now page's boxes** (the owner's photo): on the
+   second and third openings frames were already kept, so Hourly's
+   picture was lent in the same pass Radar opened, before the plane path
+   turned the page layer off; with a page missing the plane path is
+   skipped, so the layer kept showing Now's picture over the radar (no
+   "the layer off" hand-off after lines 905 and 2316, as there is at 88).
+
+## The fixes (for the owner's go)
+
+- **3, a bug:** pages lend their pictures only once the page layer is off
+  (no page shown, no commit pending); a guard test that a lent page never
+  leaves the layer on.
+- **1:** the real radar never shows another place's map or the sample's
+  rain: until the place's map is in, the page shows the wallpaper and
+  "Radar loading"; with no relay at all, "Radar needs the dock" (the sample
+  rain removed from the radar; it was the stand-in before real frames).
+- **2, rule 0:**
+  - *What others do:* RainViewer's apps and web maps fetch a frame's tiles
+    in parallel (HTTP/2) and decode PNG on a GPU-backed image pipeline.
+  - *Ours over a serial dock link:* the PC does the work, as it already
+    draws the map (way C): **the relay stitches a frame's nine tiles,
+    crops them to the view and sends the rain as the device's own compact
+    format** (`RPNET RAIN f`): its palette (RainViewer's colours with
+    alpha, under 256) and each row's runs. One answer a frame (13 asks,
+    not 117), no PNG decoding on the device (runs expand at memory speed:
+    estimate ~5-10 ms a frame against 549 ms), its parser checked as
+    hostile input (docs/security.md). The device keeps these instead of
+    PNGs (smaller still).
+  - *And* the radar's asks go first while Radar is open (ahead of the
+    station's history, which nothing on screen waits for).
+  - Expected: the newest frame on screen ~1-2 s after opening (the place's
+    map cached after its first time), all 13 in ~4-6 s; to be measured.
+
+## The map's looks (the owner, 2026-11-06)
+
+"why do we have 3 map choices, we need one dark mode one and one light
+mode one, and this should be set with the mode/theme in settings": the
+radar's own map setting (Auto, Night, Ink, Paper) goes; the map follows
+Settings' Appearance (Light: Paper; Dark: Night; Auto: by the sun, as the
+app does). Ink's palette stays in the code unused until the owner says
+otherwise (it costs a few bytes; removing it is one line).
