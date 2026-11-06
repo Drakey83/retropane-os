@@ -116,6 +116,19 @@ public static class RpRain
     // `tiles`: the 3 x 3 grid row by row, each a PNG (null: none, past the
     // poles); the view's top left at (ox, oy) in the grid. Null if the
     // frame holds more than 255 colours.
+    // CRC-32 (IEEE, zlib's and rp_weather::store::crc32's): the relay
+    // compares the device's kept radar map with its own (R184 step 3).
+    public static uint Crc32(byte[] b)
+    {
+        uint c = 0xFFFFFFFF;
+        foreach (byte x in b)
+        {
+            c ^= x;
+            for (int k = 0; k < 8; k++) c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
+        }
+        return ~c;
+    }
+
     public static byte[] Encode(byte[][] tiles, int ox, int oy)
     {
         int[] grid = new int[768 * 768];

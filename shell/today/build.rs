@@ -69,12 +69,14 @@ fn main() {
     // on the device (`RPML`, rp_weather::maplayers; R184): made by
     // `tools/maps/radar_layers.py local/maps <font> local/maps/radar-builtin.rpml
     // 47.55 -122.40 9` from Natural Earth and open elevation data
-    // (`local/` is never committed), else a plain stand-in. Goes on the
-    // card as `RPMAP` (`cargo xtask load`).
+    // (`local/` is never committed), else a plain stand-in. The canned
+    // relay's map (emulator runs), ui-preview's and the emulator checks'.
     let map_src = Path::new(&dir).join("../../local/maps/radar-builtin.rpml");
     watch_local(&map_src);
     let packed = match std::fs::read(&map_src) {
-        Ok(m) if m.starts_with(b"RPML") => m,
+        // Version 2 only (one stream a layer): an older drawing is
+        // replaced by the stand-in until it is drawn again.
+        Ok(m) if m.starts_with(b"RPML") => m,
         _ => stand_in_map(),
     };
     println!("cargo:warning=radar map (layers) {} bytes", packed.len());
@@ -228,8 +230,8 @@ const MAP_H: usize = 462;
 
 /// A plain layered map when the real one isn't drawn: water with a coast
 /// running down the middle, flat land (CI, and anyone without the map data),
-/// as `RPML` (rp_weather::maplayers: each row as differences from its left,
-/// then zlib).
+/// as `RPML` version 2 (rp_weather::maplayers: each row as differences from
+/// its left, one zlib stream a layer).
 fn stand_in_map() -> Vec<u8> {
     let mut layers = vec![0u8; W * MAP_H * 8];
     for y in 0..MAP_H {
@@ -241,21 +243,28 @@ fn stand_in_map() -> Vec<u8> {
             }
         }
     }
-    let mut diff = Vec::with_capacity(layers.len());
-    for row in layers.chunks(W) {
-        let mut left = 0u8;
-        for &b in row {
-            diff.push(b.wrapping_sub(left));
-            left = b;
-        }
-    }
+    // Version 2: one zlib stream a layer, each length first (R184 step 3).
     let mut f = b"RPML".to_vec();
-    f.push(1);
+    f.push(2);
     f.extend((W as u16).to_le_bytes());
     f.extend((MAP_H as u16).to_le_bytes());
     f.push(8);
     f.extend(0..8u8);
-    f.extend(rp_inflate::pack::zlib(&diff));
+    let mut body = Vec::new();
+    for plane in layers.chunks(W * MAP_H) {
+        let mut diff = Vec::with_capacity(plane.len());
+        for row in plane.chunks(W) {
+            let mut left = 0u8;
+            for &b in row {
+                diff.push(b.wrapping_sub(left));
+                left = b;
+            }
+        }
+        let z = rp_inflate::pack::zlib(&diff);
+        f.extend((z.len() as u32).to_le_bytes());
+        body.extend(z);
+    }
+    f.extend(body);
     f
 }
 

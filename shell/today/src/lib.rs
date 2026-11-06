@@ -29,6 +29,7 @@
 
 pub mod clock;
 pub mod fonts;
+pub mod kept;
 pub mod rain;
 pub mod replay;
 
@@ -1571,7 +1572,7 @@ mod tests {
         assert_eq!(pics.used(), 0);
     }
 
-    /// The build's radar map (the card's `RPMAP`) is a layered map that
+    /// The build's radar map (the canned relay's) is a layered map that
     /// unpacks, has both water and land, and colours in every look; damage
     /// is refused.
     #[test]

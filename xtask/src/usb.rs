@@ -1183,9 +1183,10 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
 
 use rp_today::PACK_PART;
 
-/// rp-today's card files onto the SD card: its icon packs (`RPIC<n>`) and
-/// the radar's built-in base map (`RPMAP`, 214 KB that no longer fit the
-/// image area, 2026-10-31), each in parts (`<stem>A.PAK`, `B`, ...) and an
+/// rp-today's card files onto the SD card: its icon packs (`RPIC<n>`; the
+/// radar's built-in map `RPMAP` no longer: the image stopped reading it in
+/// R184 step 2, and each place's map is now the device's own on the card,
+/// R184 step 3), each in parts (`<stem>A.PAK`, `B`, ...) and an
 /// empty part after the last (the image joins parts up to the first missing
 /// or empty one); a part already sent with the same contents (its SHA-256
 /// kept in `target/load/sent-<name>.txt`) isn't sent again. Packs the build
@@ -1197,7 +1198,6 @@ fn icon_packs(root: &Path) -> Result<(), String> {
     let packs = rp_weather::settings::PACKS.iter().enumerate();
     let mut files: Vec<(Vec<u8>, String, &str)> = packs
         .map(|(n, what)| (format!("rp-icons{n}.pak"), format!("RPIC{n}"), *what))
-        .chain([("radar.zz".to_string(), "RPMAP".to_string(), "radar map")])
         .filter_map(|(out, stem, what)| {
             Some((crate::emu::today_output(&release, &out).ok()?, stem, what))
         })
@@ -1531,17 +1531,44 @@ mod tests {
     #[test]
     fn the_relay_serves_all_thirteen_rain_frames() {
         let src = include_str!("usb.rs");
-        let check = [
-            "$w[3] -notmatch '^",
-            r"\d{{1,2}}$' -or [int]$w[3] -ge $script:rv.Count",
-        ]
-        .concat();
-        assert!(src.contains(&check), "the frame number check");
+        // Two digits, and under the list's count (the tile branch that
+        // held this check went with R184 step 3).
+        let digits = ["$w[2] -notmatch '^", r"\d{{1,2}}$'"].concat();
+        assert!(src.contains(&digits), "the frame number's digits");
+        let count = ["$f -ge $script", ":rv.Count"].concat();
+        assert!(src.contains(&count), "the frame number under the count");
         assert!(src.contains(&["Select-Object -Last ", "13)"].concat()));
         // A frame stitched and encoded on the PC (RPRN), one answer each.
         assert!(src.contains(&["'RA", "IN' {{"].concat()));
         assert!(src.contains(&["Add-Type -Path '{", "rain_cs}'"].concat()));
         assert!(src.contains(&["[RpRain]::", "Encode($tiles, $ox, $oy)"].concat()));
+    }
+
+    /// The relay checks the device's kept radar map by its CRC-32 and
+    /// answers nothing when its own is the same (R184 step 3); the old
+    /// tile branch (OpenStreetMap's tiles, whose policy forbids a shipped
+    /// product, and single rain tiles) is gone: nothing asks for it.
+    #[test]
+    fn the_relay_checks_a_kept_map_and_serves_no_osm_tiles() {
+        let src = include_str!("usb.rs");
+        assert!(
+            src.contains(
+                &[
+                    "$w.Length -eq 6 -and ('{{0:x8}}' -f [RpRain]::",
+                    "Crc32($b)) -eq $w[5]"
+                ]
+                .concat()
+            )
+        );
+        assert!(src.contains(&["Answer ([byte[]]", "@())"].concat()));
+        assert!(
+            src.contains(&["_$($z)_", "v2.rpml"].concat()),
+            "version 2 maps cached apart"
+        );
+        assert!(!src.contains(&["tile.openstreet", "map.org"].concat()));
+        assert!(!src.contains(&["'TI", "LE' {{"].concat()));
+        let cs = include_str!("../../tools/maps/RpRain.cs");
+        assert!(cs.contains("public static uint Crc32(byte[] b)"));
     }
 
     /// The restart task never shows a window over the owner's work and
@@ -2007,11 +2034,6 @@ function Fetch($url) {{
     $r = Invoke-WebRequest -UseBasicParsing -UserAgent $ua $url
     [Text.Encoding]::UTF8.GetBytes($r.Content)
 }}
-# A picture as it came (bytes, not text).
-function FetchRaw($url) {{
-    $r = Invoke-WebRequest -UseBasicParsing -UserAgent $ua $url
-    $r.RawContentStream.ToArray()
-}}
 # A position the device sent: a number in range, three decimals at most.
 function Degrees($v, $max) {{
     if ($v -notmatch '^-?\d{{1,3}}(\.\d{{1,3}})?$') {{ return $null }}
@@ -2159,46 +2181,31 @@ while ($true) {{
             'LAYERS' {{
                 # The radar's base map for a place as layers (R184): drawn
                 # here once by tools/maps/radar_layers.py from Natural Earth
-                # and the open elevation tiles, kept in local/maps/cache.
-                # Every number checked; nothing else reaches the drawer.
-                if ($w.Length -ne 5 -or $w[2] -notmatch '^-?\d{{1,2}}\.\d{{3}}$' -or $w[3] -notmatch '^-?\d{{1,3}}\.\d{{3}}$' -or $w[4] -notmatch '^\d{{1,2}}$') {{ Refuse 400 'not a place'; continue }}
+                # and the open elevation tiles, kept in local/maps/cache
+                # (RPML version 2: one stream a layer). A sixth word is the
+                # CRC-32 of the map the device keeps on its card (R184 step
+                # 3): the same map answers nothing, a changed one (a redrawn
+                # style, finer data) answers the new file. Every number
+                # checked; nothing else reaches the drawer.
+                if (($w.Length -ne 5 -and $w.Length -ne 6) -or $w[2] -notmatch '^-?\d{{1,2}}\.\d{{3}}$' -or $w[3] -notmatch '^-?\d{{1,3}}\.\d{{3}}$' -or $w[4] -notmatch '^\d{{1,2}}$' -or ($w.Length -eq 6 -and $w[5] -notmatch '^[0-9a-f]{{8}}$')) {{ Refuse 400 'not a place'; continue }}
                 $lat = [double]$w[2]; $lon = [double]$w[3]; $z = [int]$w[4]
                 if ([math]::Abs($lat) -gt 85 -or [math]::Abs($lon) -gt 180 -or $z -lt 3 -or $z -gt 10) {{ Refuse 400 'not a place'; continue }}
                 if ($canned) {{ $f = "$maps\radar-builtin.rpml" }} else {{
-                    $f = "$maps\cache\$($w[2])_$($w[3])_$z.rpml"
+                    $f = "$maps\cache\$($w[2])_$($w[3])_$($z)_v2.rpml"
                     if (-not (Test-Path $f)) {{
                         New-Item -ItemType Directory -Force "$maps\cache" | Out-Null
                         & python -I '{drawer}' $maps '{font}' $f $w[2] $w[3] $z | Out-Null
                     }}
                 }}
                 if (-not (Test-Path $f)) {{ Refuse 404 'no map drawn'; continue }}
+                $b = [IO.File]::ReadAllBytes($f)
+                if ($w.Length -eq 6 -and ('{{0:x8}}' -f [RpRain]::Crc32($b)) -eq $w[5]) {{
+                    "LAYERS $($w[2]) $($w[3]) $z the same as the card's"
+                    Answer ([byte[]]@())
+                    continue
+                }}
                 "LAYERS $($w[2]) $($w[3]) $z"
-                Answer ([IO.File]::ReadAllBytes($f))
-            }}
-            'TILE' {{
-                # A map tile (OpenStreetMap's standard one, darkened on the
-                # device; CARTO's dark tiles went behind a key, 2026-10-31)
-                # or a rain frame's (RainViewer's): every number checked,
-                # the URL fixed.
-                $isRain = $w[2] -eq 'RAIN'
-                $o = if ($isRain) {{ 4 }} else {{ 3 }}
-                $nums = $w[$o..($o + 2)]
-                if ($w[2] -notin @('MAP', 'RAIN') -or $nums.Count -ne 3 -or ($nums | Where-Object {{ $_ -notmatch '^\d{{1,4}}$' }})) {{ Refuse 400 'not a tile'; continue }}
-                $z = [int]$nums[0]; $x = [int]$nums[1]; $y = [int]$nums[2]
-                if ($z -gt 10 -or $x -ge (1 -shl $z) -or $y -ge (1 -shl $z)) {{ Refuse 400 'not a tile'; continue }}
-                if ($canned) {{
-                    $f = if ($isRain) {{ 'rainviewer-7-29-52.png' }} else {{ 'osm-7-29-52.png' }}
-                    Answer ([IO.File]::ReadAllBytes("$data\$f")); continue
-                }}
-                if ($isRain) {{
-                    # Two digits: RainViewer's 13 frames (R184 step 2; one
-                    # digit refused frames 10-12, run today-0054).
-                    if ($w[3] -notmatch '^\d{{1,2}}$' -or [int]$w[3] -ge $script:rv.Count) {{ Refuse 404 'no such frame'; continue }}
-                    $url = "$($script:rvHost)$($script:rv[[int]$w[3]].path)/256/$z/$x/$y/2/1_1.png"
-                }} else {{
-                    $url = "https://tile.openstreetmap.org/$z/$x/$y.png"
-                }}
-                Answer (FetchRaw $url)
+                Answer $b
             }}
             'PACK' {{
                 # The default icon pack's file from an offset, 192 KiB at

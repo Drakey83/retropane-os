@@ -23,6 +23,7 @@
 
 pub mod alerts;
 mod json;
+pub mod mapcard;
 pub mod maplayers;
 pub mod open_meteo;
 pub mod png;

@@ -740,6 +740,14 @@ pub struct Shell {
     radar_refresh: bool,
     radar_moves: Option<[u8; rp_weather::radar::PAST]>,
     radar_asked: u32,
+    /// The place whose map is in (kept across a refused frame list for the
+    /// same place: the device's layers are still that place's), the
+    /// device's copy of the place's map (R184 step 3: on its card, read
+    /// and checked with the relay once the rain is in) and whether the
+    /// question in flight is the map's.
+    radar_map_for: Option<(i32, i32)>,
+    radar_card: weather_net::CardMap,
+    asked_map: bool,
     /// The default icon pack's offset asked next ([`Ask::Pack`]).
     pack_at: u32,
     /// The station's instruments and when they came (ms).
@@ -883,6 +891,9 @@ macro_rules! shell_start {
             radar_refresh: false,
             radar_moves: None,
             radar_asked: 0,
+            radar_map_for: None,
+            radar_card: weather_net::CardMap::Unknown,
+            asked_map: false,
             pack_at: 0,
             station: None,
             station_at: 0,

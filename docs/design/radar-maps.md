@@ -224,6 +224,16 @@ each through ui-preview first.
    the map for the place shown (the same drawer as step 1, Natural Earth
    and open elevation tiles) at each zoom, instead of OpenStreetMap's
    tiles; the device keeps them on the card.
+   **Built 2026-11-06 by way A** (sheet
+   [r184-radar-map-card.md](../research/sheets/r184-radar-map-card.md), the
+   owner's "Go, way A"; the relay half came with step 1): each place's map
+   kept on the SD card as the relay sent it (`RPMAPS/<name>.RPM`, a checked
+   `RPMC` header, `rp_weather::mapcard`), read when Radar opens beside the
+   rain's asks and unpacked a layer a pass (`RPML` version 2, one stream a
+   layer); the rain asked first, the map checked with the relay last by its
+   CRC-32 (an empty answer when unchanged); with no dock the kept map shows.
+   Run 4 for comparison: the map 1.29 s over the dock every start, the
+   newest frame 3.3 s after opening. Device run owed.
 4. **Zoom** (M4): + and &minus; for zooms 6-9, opening at 8, the rain past
    zoom 7 through the fitted 2x upscaler; the place's pin; "No radar
    coverage here" from RainViewer's coverage map.

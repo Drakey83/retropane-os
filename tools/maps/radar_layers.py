@@ -196,9 +196,13 @@ for pop, name, x, y in cand:
 layers[HALO] = down(halo)
 layers[TEXT] = down(text)
 
-# The file: header, then each row as differences from its left, zlib.
+# The file (version 2, R184 step 3): header, each layer's stream length,
+# then one zlib stream a layer (the device unpacks a layer a pass), each row
+# as differences from its left.
 diff = layers.copy()
 diff[:, :, 1:] = (layers[:, :, 1:].astype(np.int16) - layers[:, :, :-1]).astype(np.uint8)
-head = b'RPML' + bytes([1]) + W.to_bytes(2, 'little') + H.to_bytes(2, 'little') + bytes([8]) + bytes(range(8))
-out.write_bytes(head + zlib.compress(diff.tobytes(), 9))
+streams = [zlib.compress(diff[k].tobytes(), 9) for k in range(8)]
+head = b'RPML' + bytes([2]) + W.to_bytes(2, 'little') + H.to_bytes(2, 'little') + bytes([8]) + bytes(range(8))
+head += b''.join(len(z).to_bytes(4, 'little') for z in streams)
+out.write_bytes(head + b''.join(streams))
 print(f'{out}: {out.stat().st_size} bytes, {len(taken)} places')

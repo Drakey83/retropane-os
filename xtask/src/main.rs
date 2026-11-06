@@ -373,19 +373,76 @@ fn main() -> ExitCode {
         .iter()
         .try_for_each(|c| run_step(c))
         .and_then(|()| ci_stamp(&workspace_root())),
-        "eol" | "reminders" | "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross"
-        | "stacks" | "coverage" | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale"
-        | "emu-blend-filter" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat"
-        | "emu-mbx3d-api" | "emu-tabench" | "emu-gpubench" | "emu-cs3bus" | "emu-cpldbus"
-        | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-today-watch"
-        | "emu-today-steps" | "ui-preview" | "emu-crash" | "emu-probe" | "emu-cf"
-        | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace" | "emu-fullsize"
-        | "emu-usb" | "emu-mtp" | "emu-stale" | "emu-drive" | "emu-usb-suite" | "emu-storfast"
-        | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect" | "emu-display-cal"
-        | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep" | "emu-dma-restart"
-        | "emu-audio-s2" | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh"
-        | "emu-screen-measure" | "emu-scene" | "emu-scene-d1" | "emu-unplug" | "emu-keepfed"
-        | "emu-cardlog" | "emu-format" | "mutants" | "qemu" => run_step(&cmd),
+        "eol"
+        | "reminders"
+        | "fmt"
+        | "clippy"
+        | "lint"
+        | "gate"
+        | "adrs"
+        | "test"
+        | "cross"
+        | "stacks"
+        | "coverage"
+        | "emu"
+        | "emu-picture"
+        | "emu-blend"
+        | "emu-blend-scale"
+        | "emu-blend-filter"
+        | "emu-mbx"
+        | "emu-mbx-blend"
+        | "emu-mbx3d"
+        | "emu-glesfeat"
+        | "emu-mbx3d-api"
+        | "emu-tabench"
+        | "emu-gpubench"
+        | "emu-cs3bus"
+        | "emu-cpldbus"
+        | "emu-mved"
+        | "emu-clocks"
+        | "emu-noise"
+        | "emu-today"
+        | "emu-today-watch"
+        | "emu-today-steps"
+        | "emu-today-radar-card"
+        | "ui-preview"
+        | "emu-crash"
+        | "emu-probe"
+        | "emu-cf"
+        | "emu-kernel"
+        | "emu-quantum"
+        | "emu-threads"
+        | "emu-trace"
+        | "emu-fullsize"
+        | "emu-usb"
+        | "emu-mtp"
+        | "emu-stale"
+        | "emu-drive"
+        | "emu-usb-suite"
+        | "emu-storfast"
+        | "emu-loader"
+        | "emu-handover"
+        | "emu-nightlight"
+        | "emu-cfdetect"
+        | "emu-display-cal"
+        | "emu-looks"
+        | "emu-tone"
+        | "emu-audio-s1"
+        | "emu-audio-sleep"
+        | "emu-dma-restart"
+        | "emu-audio-s2"
+        | "emu-audio-e3"
+        | "emu-silent-pc"
+        | "emu-refresh"
+        | "emu-screen-measure"
+        | "emu-scene"
+        | "emu-scene-d1"
+        | "emu-unplug"
+        | "emu-keepfed"
+        | "emu-cardlog"
+        | "emu-format"
+        | "mutants"
+        | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -819,7 +876,9 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::today_watch(&workspace_root(), &args().nth(2).unwrap_or_default())),
         "emu-today" => cross()
             .and_then(|()| emu::boot_loader_today(&workspace_root()))
-            .and_then(|()| emu::today_replay(&workspace_root())),
+            .and_then(|()| emu::today_replay(&workspace_root()))
+            .and_then(|()| emu::today_radar_card(&workspace_root())),
+        "emu-today-radar-card" => cross().and_then(|()| emu::today_radar_card(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-probe" => cross().and_then(|()| emu::boot_probe(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),

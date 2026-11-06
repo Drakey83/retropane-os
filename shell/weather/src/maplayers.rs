@@ -12,15 +12,18 @@
 //! terrain, swelled the inlets and broke thin roads: the owner, 2026-11-04).
 //!
 //! The file, `RPML`: the magic, a version, the width and height (each two
-//! bytes, little-endian), the layer count and each layer's kind, then one
-//! zlib stream of the layers one after another, each row stored as the
-//! differences from its left neighbour. Every field is checked: it comes
-//! from a card or the dock (docs/security.md, hostile input).
+//! bytes, little-endian), the layer count and each layer's kind, each
+//! layer's stream length (four bytes, little-endian), then one zlib stream
+//! a layer, each row stored as the differences from its left neighbour.
+//! One stream a layer (version 2, R184 step 3) so a map read from the card
+//! is unpacked a layer a pass (~21 ms each) instead of one 167 ms pass (run
+//! 2026-11-06 r184s2d). Every field is checked: it comes from a card or the
+//! dock (docs/security.md, hostile input).
 
 /// The file's first bytes.
 pub const MAGIC: &[u8; 4] = b"RPML";
 /// The format's version.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 /// The view's width and height (the radar's page, as
 /// [`crate::tiles::VIEW_W`] and [`crate::tiles::VIEW_H`]).
 pub const W: usize = crate::tiles::VIEW_W;
@@ -30,8 +33,10 @@ pub const H: usize = crate::tiles::VIEW_H;
 pub const LAYERS: usize = 8;
 /// Bytes of the layers unpacked.
 pub const BYTES: usize = W * H * LAYERS;
-/// The header's length.
-pub const HEAD: usize = 4 + 1 + 2 + 2 + 1 + LAYERS;
+/// The header's length: the fields, then each layer's stream length.
+pub const HEAD: usize = 4 + 1 + 2 + 2 + 1 + LAYERS + 4 * LAYERS;
+/// Bytes of one layer unpacked.
+pub const PLANE: usize = W * H;
 
 /// A layer (its index in the file).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -66,18 +71,13 @@ pub enum Error {
     Room,
 }
 
-/// Unpacks a `RPML` file into `out` ([`BYTES`]: the layers one after
-/// another, a byte a pixel).
+/// Each layer's stream in `file` (its start and end), the header checked.
 ///
 /// # Errors
-/// A header that isn't this format's, a damaged stream, or `out` not
-/// [`BYTES`] long.
-pub fn unpack(file: &[u8], out: &mut [u8]) -> Result<(), Error> {
-    if out.len() != BYTES {
-        return Err(Error::Room);
-    }
+/// A header that isn't this format's, or streams past the file's end.
+pub fn streams(file: &[u8]) -> Result<[(usize, usize); LAYERS], Error> {
     let head = file.get(..HEAD).ok_or(Error::Header)?;
-    let kinds_ok = head[10..]
+    let kinds_ok = head[10..10 + LAYERS]
         .iter()
         .enumerate()
         .all(|(k, &kind)| usize::from(kind) == k);
@@ -90,8 +90,37 @@ pub fn unpack(file: &[u8], out: &mut [u8]) -> Result<(), Error> {
     {
         return Err(Error::Header);
     }
-    match rp_inflate::zlib(&file[HEAD..], out) {
-        Ok(n) if n == BYTES => {}
+    let mut out = [(0, 0); LAYERS];
+    let mut at = HEAD;
+    for (k, o) in out.iter_mut().enumerate() {
+        let i = 10 + LAYERS + 4 * k;
+        let n = u32::from_le_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]]) as usize;
+        let end = at
+            .checked_add(n)
+            .filter(|&e| e <= file.len())
+            .ok_or(Error::Header)?;
+        *o = (at, end);
+        at = end;
+    }
+    if at != file.len() {
+        return Err(Error::Header);
+    }
+    Ok(out)
+}
+
+/// Unpacks layer `k` of a `RPML` file into `out` ([`PLANE`] bytes, a byte
+/// a pixel): a layer a pass for a map read from the card.
+///
+/// # Errors
+/// A header that isn't this format's, a damaged stream, `k` past the
+/// layers or `out` not [`PLANE`] long.
+pub fn unpack_layer(file: &[u8], k: usize, out: &mut [u8]) -> Result<(), Error> {
+    if out.len() != PLANE || k >= LAYERS {
+        return Err(Error::Room);
+    }
+    let (a, b) = streams(file)?[k];
+    match rp_inflate::zlib(&file[a..b], out) {
+        Ok(n) if n == PLANE => {}
         _ => return Err(Error::Stream),
     }
     for row in out.as_chunks_mut::<W>().0 {
@@ -100,6 +129,53 @@ pub fn unpack(file: &[u8], out: &mut [u8]) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Unpacks a `RPML` file into `out` ([`BYTES`]: the layers one after
+/// another, a byte a pixel).
+///
+/// # Errors
+/// A header that isn't this format's, a damaged stream, or `out` not
+/// [`BYTES`] long.
+pub fn unpack(file: &[u8], out: &mut [u8]) -> Result<(), Error> {
+    if out.len() != BYTES {
+        return Err(Error::Room);
+    }
+    streams(file)?;
+    for (k, plane) in out.chunks_mut(PLANE).enumerate() {
+        unpack_layer(file, k, plane)?;
+    }
+    Ok(())
+}
+
+/// A layered map's file from its layers ([`BYTES`]), as the PC's drawer
+/// writes it (`tools/maps/radar_layers.py`, and rp-today's build for its
+/// stand-in): for the tests.
+#[cfg(test)]
+#[must_use]
+pub fn pack(layers: &[u8]) -> std::vec::Vec<u8> {
+    let mut f = MAGIC.to_vec();
+    f.push(VERSION);
+    f.extend((W as u16).to_le_bytes());
+    f.extend((H as u16).to_le_bytes());
+    f.push(LAYERS as u8);
+    f.extend(0..LAYERS as u8);
+    let mut body = std::vec::Vec::new();
+    for plane in layers.chunks(PLANE) {
+        let mut diff = std::vec::Vec::with_capacity(plane.len());
+        for row in plane.chunks(W) {
+            let mut left = 0u8;
+            for &b in row {
+                diff.push(b.wrapping_sub(left));
+                left = b;
+            }
+        }
+        let z = rp_inflate::pack::zlib(&diff);
+        f.extend((z.len() as u32).to_le_bytes());
+        body.extend(z);
+    }
+    f.extend(body);
+    f
 }
 
 /// A look of the map.
@@ -255,25 +331,8 @@ pub fn colour(layers: &[u8], look: Look, out: &mut [u32]) {
 mod tests {
     use super::*;
 
-    /// A file as the PC's drawer writes it (each row as differences from
-    /// its left, then zlib).
     fn file(layers: &[u8]) -> Vec<u8> {
-        let mut diff = Vec::with_capacity(layers.len());
-        for row in layers.chunks(W) {
-            let mut left = 0u8;
-            for &b in row {
-                diff.push(b.wrapping_sub(left));
-                left = b;
-            }
-        }
-        let mut f = MAGIC.to_vec();
-        f.push(VERSION);
-        f.extend((W as u16).to_le_bytes());
-        f.extend((H as u16).to_le_bytes());
-        f.push(LAYERS as u8);
-        f.extend(0..LAYERS as u8);
-        f.extend(rp_inflate::pack::zlib(&diff));
-        f
+        pack(layers)
     }
 
     /// A map: land on the right half, a road across, a label's text.
@@ -306,7 +365,15 @@ mod tests {
     fn a_damaged_or_foreign_file_is_refused() {
         let good = file(&layers());
         let mut out = vec![0u8; BYTES];
-        for (at, v) in [(0, b'X'), (4, 9), (5, 0), (7, 0), (9, 7), (12, 5)] {
+        for (at, v) in [
+            (0, b'X'),
+            (4, 1),
+            (5, 0),
+            (7, 0),
+            (9, 7),
+            (12, 5),
+            (20, 0xFF),
+        ] {
             let mut f = good.clone();
             f[at] = v;
             assert_eq!(unpack(&f, &mut out), Err(Error::Header), "byte {at}");
@@ -316,8 +383,33 @@ mod tests {
         f[n - 6] ^= 0x55;
         assert!(unpack(&f, &mut out).is_err(), "a damaged stream");
         assert_eq!(unpack(&good[..HEAD - 1], &mut out), Err(Error::Header));
-        assert_eq!(unpack(&good[..HEAD + 20], &mut out), Err(Error::Stream));
+        assert_eq!(
+            unpack(&good[..HEAD + 20], &mut out),
+            Err(Error::Header),
+            "short"
+        );
+        let mut long = good.clone();
+        long.push(0);
+        assert_eq!(unpack(&long, &mut out), Err(Error::Header), "bytes after");
         assert_eq!(unpack(&good, &mut out[1..]), Err(Error::Room));
+        let mut plane = vec![0u8; PLANE];
+        assert_eq!(unpack_layer(&good, LAYERS, &mut plane), Err(Error::Room));
+        // A stream length that wraps past the end.
+        let mut f = good.clone();
+        f[10 + LAYERS..14 + LAYERS].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(unpack(&f, &mut out), Err(Error::Header));
+    }
+
+    /// A layer a pass gives what the whole unpack gives (R184 step 3).
+    #[test]
+    fn a_layer_at_a_time_unpacks_the_same_map() {
+        let l = layers();
+        let f = file(&l);
+        let mut out = vec![0u8; BYTES];
+        for (k, plane) in out.chunks_mut(PLANE).enumerate() {
+            assert_eq!(unpack_layer(&f, k, plane), Ok(()));
+        }
+        assert!(out == l);
     }
 
     /// CIE DeltaE 2000 between two sRGB colours (the fit's measure, as

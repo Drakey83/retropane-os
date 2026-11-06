@@ -49,6 +49,22 @@ pub enum Ask {
     Pack,
 }
 
+/// The device's copy of the place's radar map (R184 step 3, sheet
+/// docs/research/sheets/r184-radar-map-card.md).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CardMap {
+    /// The device hasn't said yet.
+    Unknown,
+    /// On its card (its CRC-32): the rain is asked at once, the map
+    /// checked with the relay once the rain is in.
+    Kept(u32),
+    /// Kept and checked (the relay's answer: the same, or a new map the
+    /// device took).
+    Checked,
+    /// Not on the card: the dock's.
+    Absent,
+}
+
 const ORDER: [Ask; 12] = [
     Ask::Load,
     Ask::Save,
@@ -220,10 +236,13 @@ impl Shell {
                 q.push(b" ");
                 q.push(degrees(p.lon).as_bytes());
             }
-            // The map first: one layered map of the whole view, drawn by
-            // the relay for the place (R184; it took nine OpenStreetMap
-            // tiles, recoloured on the device).
-            Ask::Tile if !self.radar_map => {
+            // The map first when the card hasn't it: one layered map of
+            // the whole view, drawn by the relay for the place (R184; it
+            // took nine OpenStreetMap tiles, recoloured on the device).
+            // Kept on the card (R184 step 3): asked last, with the kept
+            // file's CRC-32, the relay answering nothing when its map is
+            // the same.
+            Ask::Tile if self.map_from_dock() || self.map_to_check().is_some() => {
                 let v = self.radar_view();
                 let p = self.wset.place();
                 q.push(b"LAYERS ");
@@ -236,6 +255,14 @@ impl Shell {
                         .num(i32::from(rp_weather::tiles::ZOOM))
                         .as_bytes(),
                 );
+                if let (false, Some(crc)) = (self.map_from_dock(), self.map_to_check()) {
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    q.push(b" ");
+                    for i in 0..8 {
+                        q.push(&[HEX[(crc >> (28 - 4 * i)) as usize & 15]]);
+                    }
+                }
+                self.asked_map = true;
                 q.tile = Some((None, 0, v));
             }
             // Then the rain, the newest frame missing first, a frame an
@@ -245,6 +272,7 @@ impl Shell {
             Ask::Tile => {
                 let v = self.radar_view();
                 let (f, _) = self.radar_tile?;
+                self.asked_map = false;
                 q.push(Line::new().push(b"RAIN ").num(i32::from(f)).as_bytes());
                 let (tx, ty) = (v.tx, v.ty);
                 let z = Line::new()
@@ -605,16 +633,41 @@ impl Shell {
         let done = self.radar_have | self.radar_lost;
         let missing = (0..self.radar_n).rev().find(|&f| done & 1 << f == 0);
         self.radar_tile = missing.map(|f| (f, 0));
-        if !self.radar_map || self.radar_tile.is_some() {
+        if self.map_from_dock() || self.radar_tile.is_some() || self.map_to_check().is_some() {
             self.want(Ask::Tile);
+        }
+    }
+
+    /// The map is the dock's to send: not in, and not on the device's card
+    /// (or the device hasn't said, R184 step 3: the device looks in the
+    /// pass Radar opens, before the frame list can answer).
+    fn map_from_dock(&self) -> bool {
+        !self.radar_map && matches!(self.radar_card, CardMap::Unknown | CardMap::Absent)
+    }
+
+    /// The kept map's CRC-32 to check with the relay, once every rain
+    /// frame is in or lost (the rain first: nothing on screen waits for
+    /// the check).
+    fn map_to_check(&self) -> Option<u32> {
+        match self.radar_card {
+            CardMap::Kept(crc) if self.radar_tile.is_none() && self.radar_n > 0 => Some(crc),
+            _ => None,
         }
     }
 
     /// The map or a rain frame answered (or the map not): on to the next.
     fn tile_done(&mut self) {
-        if !self.radar_map {
-            self.radar_map = true;
-            self.dirty(Rect::new(0, 0, W, super::H));
+        if core::mem::take(&mut self.asked_map) {
+            if matches!(self.radar_card, CardMap::Kept(_)) {
+                // The kept map checked: the same (an empty answer), or the
+                // relay's new one, which the device took.
+                self.radar_card = CardMap::Checked;
+            } else if !self.radar_map {
+                self.radar_map = true;
+                let p = self.wset.place();
+                self.radar_map_for = Some((p.lat, p.lon));
+                self.dirty(Rect::new(0, 0, W, super::H));
+            }
         } else if let Some((f, _)) = self.radar_tile {
             self.radar_have |= 1 << f;
             self.dirty(Rect::new(0, 0, W, super::H));
@@ -622,11 +675,74 @@ impl Shell {
         self.next_radar_frame();
     }
 
+    /// The place whose radar map the device should look for on its card
+    /// (R184 step 3): Radar open on a place whose map isn't in and that
+    /// the device hasn't answered for. Answered with
+    /// [`Self::radar_map_card`] in the same pass.
+    #[must_use]
+    pub fn radar_map_wanted(&self) -> Option<rp_weather::mapcard::Key> {
+        let p = self.wset.place();
+        (self.screen == Screen::Weather
+            && self.tab == super::weather_app::RADAR
+            && self.radar_for == Some((p.lat, p.lon))
+            && !self.radar_map
+            && self.radar_card == CardMap::Unknown)
+            .then(|| self.radar_key())
+    }
+
+    /// The radar map's key for the place shown (its place and zoom).
+    #[must_use]
+    pub fn radar_key(&self) -> rp_weather::mapcard::Key {
+        let p = self.wset.place();
+        rp_weather::mapcard::Key {
+            lat: p.lat,
+            lon: p.lon,
+            zoom: rp_weather::tiles::ZOOM,
+        }
+    }
+
+    /// The device's answer for [`Self::radar_map_wanted`]: the kept map's
+    /// CRC-32 (it reads and unpacks it, then [`Self::radar_map_in`]), or
+    /// `None` (not on its card, or not readable: the dock sends it).
+    pub fn radar_map_card(&mut self, crc: Option<u32>) {
+        self.radar_card = crc.map_or(CardMap::Absent, CardMap::Kept);
+        if self.radar_card == CardMap::Absent && self.radar_n > 0 && !self.radar_map {
+            self.want(Ask::Tile);
+        }
+    }
+
+    /// The device has the place's map from its card (or its RAM): shown.
+    pub fn radar_map_in(&mut self) {
+        let p = self.wset.place();
+        self.radar_map = true;
+        self.radar_map_for = Some((p.lat, p.lon));
+        self.dirty(Rect::new(0, 0, W, super::H));
+    }
+
+    /// The newest rain frame's time (Unix seconds; 0 before the list):
+    /// when a kept map was written, for the card's cap.
+    #[must_use]
+    pub fn radar_newest(&self) -> u32 {
+        self.radar_n
+            .checked_sub(1)
+            .map_or(0, |i| self.radar_times[usize::from(i)])
+    }
+
+    /// The saved places (thousandths of a degree): their kept maps stay.
+    pub fn saved_places(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.wset.places[..usize::from(self.wset.n_places)]
+            .iter()
+            .map(|p| (p.lat, p.lon))
+    }
+
     /// A frame refused or unanswered: asked again, once; refused again, the frame is lost (a stub on the
     /// timeline, skipped by the loop), never shown as dry (run today-0054:
     /// the relay refused frames 10-12 and the newest showed no rain).
     fn tile_failed(&mut self) {
-        let Some((f, _)) = self.radar_tile.filter(|_| self.radar_map) else {
+        let Some((f, _)) = self.radar_tile.filter(|_| !self.asked_map) else {
+            // The map refused: from the dock, the page goes on without it
+            // (dark water, never another place's); the check of a kept one,
+            // the kept one stays.
             self.tile_done();
             return;
         };
@@ -745,7 +861,15 @@ impl Shell {
             // frames stay shown until the new list says which still hold.
             self.radar_refresh = self.radar_for == Some((p.lat, p.lon)) && self.radar_map;
             if !self.radar_refresh {
-                self.radar_map = false;
+                // The map stays for the same place (a frame list refused
+                // with no dock: the map from the card stays shown, R184
+                // step 3); another place's goes.
+                if self.radar_map_for != Some((p.lat, p.lon)) {
+                    self.radar_map = false;
+                    self.radar_map_for = None;
+                    self.radar_card = CardMap::Unknown;
+                    self.asked_map = false;
+                }
                 self.radar_have = 0;
                 self.radar_tile = None;
                 self.radar_lost = 0;

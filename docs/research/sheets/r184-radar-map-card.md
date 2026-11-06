@@ -154,3 +154,51 @@ image touches only its own folder). The image's FAT use goes through
 - The rain asked before Radar opens: changes the dock's load for a page
   not open; a design of its own if wanted.
 - Zooms 6, 8 and 9: step 4 (the files are keyed by zoom already).
+
+## As built (2026-11-06, the owner's "Go, way A")
+
+- **The card file:** `RPMAPS/<CRC-32 of the key>.RPM` at the card's root
+  (8.3, beside the image's own `RPIC` packs; the sheet's `RetroPane/Maps`
+  became one short folder name because rp-fat writes 8.3 names), holding
+  `RPMC` (32 bytes: magic, version, zoom, latitude and longitude in
+  thousandths, the map's length and CRC-32, when it was written in Unix
+  seconds from the newest rain frame's time, the header's own CRC-32) and
+  the relay's bytes (`rp_weather::mapcard`). Checked on reading: header,
+  key, file length, then the whole map's CRC-32 before it is used.
+- **The format went to version 2** (`rp_weather::maplayers`, the drawer
+  `tools/maps/radar_layers.py`, rp-today's stand-in): one zlib stream a
+  layer with each stream's length in the header, so the card's map is
+  unpacked a layer a pass. The Liberty Hill map: 176,574 bytes (180,918 as
+  one stream). The relay caches version 2 apart (`..._v2.rpml`).
+- **The image** (`shell/today`: `kept.rs` on the host, `kept_map_pass` in
+  the image): in the pass the shell asks (`Shell::radar_map_wanted`, before
+  the frame list can answer) it reads the header and says so
+  (`radar_map_card`); the map is read 32 KB a pass and unpacked a layer a
+  pass (`radar_map_in` at the end); the same place again in a run uses the
+  layers still in RAM. A dock map is unpacked as before (one pass, only the
+  first time for a place) and written to the card in the pass after it was
+  shown, pen up, in one `put` (32 KB FAT-search scratch); past 32 maps the
+  oldest of a place neither shown nor saved is removed (a damaged one
+  first). Every step is a log line after the card is let go.
+- **The shell** (`weather_net`): the rain is asked at once when the card
+  has the map; the check `LAYERS lat lon z <crc32>` goes last, once the
+  rain is in or lost; a refused check keeps the kept map. With no dock the
+  map from the card shows, the chip says "RADAR NEEDS THE DOCK" over it and
+  the timeline "No radar"; the map stays for the same place across refused
+  frame lists.
+- **The relay** answers the check with nothing when its map's CRC-32 is the
+  same (the C# `RpRain.Crc32` equals zlib's: 8afb84fd on the built-in), the
+  new file otherwise. Its old `TILE` branch (OpenStreetMap's tiles and
+  single rain tiles, unasked since steps 1-2) is gone, and `cargo xtask
+  load` no longer puts the built-in `RPMAP` on the card (unread since step
+  2).
+- **Checks:** host tests of the header (each byte), the per-layer unpack,
+  the shell's order (rain first, check last, unreadable kept map to the
+  dock, no-dock map), and `kept` on a FAT32 card image (write, rewrite,
+  read back in pieces, a foreign, short, damaged or headerless file
+  refused, the cap keeping saved places, the shared card's other file
+  untouched); `cargo xtask emu-today-radar-card` (part of `emu-today`): the
+  image with a kept map for its default place and no relay shows it, reads
+  it in 8 unpack passes, and leaves the file as it was.
+- Not measurable off the device: the read, unpack and write times, and the
+  opening's timings with the dock; the X51v run measures them.

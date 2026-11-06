@@ -3350,6 +3350,161 @@ fn the_radar_asks_first_while_open_and_says_when_there_is_no_dock() {
     assert!(t.contains(&b"No radar".to_vec()));
 }
 
+/// R184 step 3: a map kept on the device's card: the device says so in the
+/// pass Radar opens; the rain is asked at once (no map over the dock), the
+/// map shows when the device has unpacked it, and once the rain is in the
+/// map is checked with the relay by its CRC-32 (an empty answer: the same).
+#[test]
+fn a_map_kept_on_the_card_lets_the_rain_go_first_and_is_checked_last() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    s.wset.places[0].lat = 30_664;
+    s.wset.places[0].lon = -97_922;
+    assert_eq!(s.radar_map_wanted(), None, "Radar not open");
+    s.set_tab(weather_app::RADAR);
+    s.tick(s.now + 10);
+    let key = s.radar_map_wanted().expect("the device looks on its card");
+    assert_eq!((key.lat, key.lon, key.zoom), (30_664, -97_922, 7));
+    s.radar_map_card(Some(0x0012_ABCD));
+    assert_eq!(s.radar_map_wanted(), None, "answered once");
+    assert_eq!(s.next_ask().map(|q| q.ask), Some(Ask::Frames));
+    s.net_answer(true, b"100 200 300");
+    let q = s.next_ask().expect("the rain");
+    assert!(q.line().starts_with(b"RPNET RAIN 2 "), "{:?}", q.line());
+    s.net_answer(true, b"");
+    assert_eq!(s.radar_real(), None, "the map not unpacked yet");
+    s.radar_map_in();
+    assert_eq!(s.radar_real(), Some(Some(2)));
+    let mut lines = Vec::new();
+    while let Some(q) = s.next_ask() {
+        lines.push(q.line().to_vec());
+        s.net_answer(true, b"");
+    }
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines[0].starts_with(b"RPNET RAIN 1 "));
+    assert!(lines[1].starts_with(b"RPNET RAIN 0 "));
+    assert_eq!(
+        lines[2], b"RPNET LAYERS 30.664 -97.922 7 0012abcd\n",
+        "the check last"
+    );
+    assert!(s.radar_complete());
+    assert_eq!(s.next_ask().map(|q| q.ask), None, "checked once");
+    // The ten-minute refresh keeps the map: no check again.
+    s.tick(s.now + 600_001);
+    assert_eq!(s.next_ask().map(|q| q.ask), Some(Ask::Frames));
+    s.net_answer(true, b"200 300 400");
+    let rest: Vec<Vec<u8>> = core::iter::from_fn(|| {
+        let q = s.next_ask()?;
+        let l = q.line().to_vec();
+        s.net_answer(true, b"");
+        Some(l)
+    })
+    .collect();
+    assert_eq!(rest.len(), 1, "only the new frame: {rest:?}");
+    assert!(rest[0].starts_with(b"RPNET RAIN 2 "));
+}
+
+/// A kept map that turns out unreadable (its CRC wrong) is the dock's
+/// after all; a refused check keeps the kept map.
+#[test]
+fn an_unreadable_kept_map_is_asked_of_the_dock() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    s.wset.places[0].lat = 30_664;
+    s.wset.places[0].lon = -97_922;
+    s.set_tab(weather_app::RADAR);
+    s.tick(s.now + 10);
+    s.radar_map_card(Some(7));
+    assert_eq!(s.next_ask().map(|q| q.ask), Some(Ask::Frames));
+    s.net_answer(true, b"100 200");
+    let q = s.next_ask().expect("the newest rain");
+    assert!(q.line().starts_with(b"RPNET RAIN 1 "));
+    // The card's file failed its check while the rain came.
+    s.radar_map_card(None);
+    s.net_answer(true, b"");
+    let q = s.next_ask().expect("the map");
+    assert_eq!(q.line(), b"RPNET LAYERS 30.664 -97.922 7\n");
+    s.net_answer(true, b"");
+    assert!(s.radar_real().is_some(), "the dock's map in");
+    // Not on the card from the start: the map first, as before.
+    let mut t = weather(0);
+    while t.next_ask().is_some() {
+        t.net_answer(false, b"");
+    }
+    t.wset.places[0].lat = 47_606;
+    t.wset.places[0].lon = -122_332;
+    t.set_tab(weather_app::RADAR);
+    t.tick(t.now + 10);
+    t.radar_map_card(None);
+    assert_eq!(t.next_ask().map(|q| q.ask), Some(Ask::Frames));
+    t.net_answer(true, b"100 200");
+    let q = t.next_ask().expect("the map");
+    assert_eq!(q.line(), b"RPNET LAYERS 47.606 -122.332 7\n");
+    // A refused check keeps the kept map, asked no more.
+    let mut u = weather(0);
+    while u.next_ask().is_some() {
+        u.net_answer(false, b"");
+    }
+    u.set_tab(weather_app::RADAR);
+    u.tick(u.now + 10);
+    u.radar_map_card(Some(9));
+    u.radar_map_in();
+    assert_eq!(u.next_ask().map(|q| q.ask), Some(Ask::Frames));
+    u.net_answer(true, b"100");
+    assert!(
+        u.next_ask()
+            .is_some_and(|q| q.line().starts_with(b"RPNET RAIN 0 "))
+    );
+    u.net_answer(true, b"");
+    assert!(
+        u.next_ask()
+            .is_some_and(|q| q.line().starts_with(b"RPNET LAYERS "))
+    );
+    u.net_answer(false, b"");
+    assert_eq!(u.next_ask().map(|q| q.ask), None);
+    assert!(u.radar_real().is_some());
+}
+
+/// With no dock, a place's map from the card still shows (R184 step 3),
+/// with the page saying the rain needs the dock; a refused frame list
+/// asked again doesn't take the map away.
+#[test]
+fn with_no_dock_the_kept_map_shows_and_says_the_rain_needs_the_dock() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    s.wset.places[0].lat = 30_664;
+    s.wset.places[0].lon = -97_922;
+    s.set_tab(weather_app::RADAR);
+    s.tick(s.now + 10);
+    s.radar_map_card(Some(1));
+    s.radar_map_in();
+    assert_eq!(s.next_ask().map(|q| q.ask), Some(Ask::Frames));
+    s.net_answer(false, b"");
+    let t = texts(&drawn(&mut s));
+    assert!(s.radar_real().is_some(), "the map shown");
+    assert!(t.contains(&b"RADAR NEEDS THE DOCK".to_vec()), "{t:?}");
+    assert!(t.contains(&b"No radar".to_vec()));
+    assert!(
+        !t.contains(&b"latest".to_vec()),
+        "no frame times without frames"
+    );
+    assert!(
+        t.contains(&b"Natural Earth, Mapzen".to_vec()),
+        "the map's sources shown with the map: {t:?}"
+    );
+    // Asked again: the map stays, and the device isn't asked to look again.
+    s.tick(s.now + 10);
+    assert_eq!(s.next_ask().map(|q| q.ask), Some(Ask::Frames));
+    assert!(s.radar_real().is_some());
+    assert_eq!(s.radar_map_wanted(), None);
+}
+
 /// The living sky's report for the device's log (the owner, 2026-11-06:
 /// "it doesnt do the animation at all"): why it isn't running, and once it
 /// runs, its steps and those that moved something.

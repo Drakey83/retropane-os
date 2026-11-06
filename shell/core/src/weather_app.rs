@@ -1822,18 +1822,28 @@ impl Shell {
     fn radar_page(&self, f: &mut Frame) {
         use rp_weather::radar::{NOW_FRAME, STEPS};
         let (ui, label) = (self.fonts.ui, self.fonts.label);
-        let real = self.radar_real().is_some();
+        // The map can be in before the frame list (from the card, R184
+        // step 3, or with no dock): the timeline waits for the rain.
+        let real = self.radar_real().is_some() && self.radar_n > 0;
+        let map_in = self.radar_real().is_some();
         let n = self.radar_frames();
         let now_frame = if real { n - 1 } else { NOW_FRAME };
         // The real radar's sources, small over the map's corner: the rain's
         // (RainViewer) and the map's (ours from Natural Earth, public
         // domain, and the open elevation tiles, whose terms ask for
         // "Mapzen"); while loading or on the sample, a note says so.
-        if real && !self.radar_loading() {
-            let credit = b"Natural Earth, Mapzen, RainViewer";
+        // The map's own sources whenever the map shows (a kept map with no
+        // dock too: R184 step 3), the rain's once it's real.
+        if map_in && !self.radar_loading() {
+            let credit: &[u8] = if self.radar_offline {
+                b"Natural Earth, Mapzen"
+            } else {
+                b"Natural Earth, Mapzen, RainViewer"
+            };
             let w = label.width(credit);
             f.text(W - 12 - w, TIME_PANEL.y - 8, label, DIM, credit);
-        } else {
+        }
+        if !map_in || self.radar_loading() || self.radar_offline {
             let chip = Rect::new(16, 80, 300, 40);
             // The menus' denser glass: readable over the map.
             self.glass(f, chip, super::MENU_LEFT, super::MENU_RIGHT);
@@ -1848,7 +1858,7 @@ impl Shell {
         }
         // You are here: a round dot, white-edged, at the view's centre
         // (the view is centred on the place shown).
-        if real {
+        if map_in {
             let (cx, cy) = (W / 2, PAGE.y + rp_weather::tiles::VIEW_H as u16 / 2);
             for (r, color) in [
                 (Rect::new(cx - 4, cy - 7, 8, 14), TEXT),

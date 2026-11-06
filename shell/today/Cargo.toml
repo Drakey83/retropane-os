@@ -21,6 +21,9 @@ rp-touch-cal = { path = "../../drivers/touch-cal" }
 rp-mbx-render = { path = "../../drivers/mbx-render" }
 rp-drv-blit2d = { path = "../../drivers/blit2d" }
 rp-inflate = { path = "../../kernel/inflate" }
+# The radar map kept on the card (R184 step 3, `kept`): also on the host,
+# where its tests write and read a card image.
+rp-fat = { path = "../../kernel/fat" }
 
 [build-dependencies]
 rp-draw = { path = "../../drivers/draw" }
@@ -28,6 +31,7 @@ rp-inflate = { path = "../../kernel/inflate", features = ["pack"] }
 
 [dev-dependencies]
 rp-inflate = { path = "../../kernel/inflate", features = ["pack"] }
+rp-fat = { path = "../../kernel/fat", features = ["std"] }
 rp-mbx-render = { path = "../../drivers/mbx-render", features = ["model"] }
 
 [target.'cfg(target_os = "none")'.dependencies]
@@ -46,7 +50,6 @@ rp-drv-pxa-udc = { path = "../../drivers/pxa-udc" }
 rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
 rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-drv-cf = { path = "../../drivers/cf" }
-rp-fat = { path = "../../kernel/fat" }
 
 [lints]
 workspace = true

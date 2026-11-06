@@ -691,6 +691,222 @@ mod image {
         true
     }
 
+    /// One pass of the place's kept radar map (R184 step 3): looked for on
+    /// the card when the shell asks, a piece read, a layer unpacked, or the
+    /// dock's map written (pen up). Each step logged after the card is let
+    /// go (a log line mid-read would send the card log's sector).
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn kept_map_pass(
+        shell: &mut rp_shell::Shell,
+        kept: &mut KeptMap,
+        card: &mut Option<(Card, u32)>,
+        card_tried: &mut bool,
+        map_file: &mut [u8],
+        map_layers: &mut [u8],
+        scratch: &mut [u8],
+        layers_of: &mut Option<MapOf>,
+        coloured: &mut Option<(MapOf, rp_weather::maplayers::Look)>,
+        pen_down: bool,
+        now_ms: u64,
+    ) {
+        use rp_weather::mapcard::HEAD;
+        use rp_weather::maplayers::{LAYERS, PLANE};
+        let us = |t0: u32| rt::ticks().wrapping_sub(t0) / 13 * 4;
+        if let Some(key) = shell.radar_map_wanted() {
+            if kept.ram == Some(key) {
+                // Still in RAM (the same place after a refused frame list).
+                shell.radar_map_card(Some(kept.crc));
+                shell.radar_map_in();
+                let _ = writeln!(RunLog, "radar map: the place's layers still in RAM");
+            } else {
+                if !*card_tried {
+                    *card_tried = true;
+                    *card = take_card();
+                }
+                let t0 = rt::ticks();
+                let got = match card.as_mut() {
+                    Some((c, start)) => map_head(c, *start, key, map_file),
+                    None => Err("no SD card"),
+                };
+                kept.asked_ms = now_ms;
+                kept.read_us = us(t0);
+                kept.unpack_us = 0;
+                match got {
+                    Ok(h) => {
+                        shell.radar_map_card(Some(h.crc));
+                        // The layers in RAM become this place's.
+                        kept.ram = None;
+                        kept.key = None;
+                        *layers_of = None;
+                        *coloured = None;
+                        kept.step = MapStep::Read {
+                            key,
+                            head: h,
+                            got: 0,
+                        };
+                        let _ = writeln!(
+                            RunLog,
+                            "radar map: the place's on the card ({} bytes, written at {}): reading it, its header in {} us",
+                            h.len, h.at, kept.read_us
+                        );
+                    }
+                    Err(why) => {
+                        shell.radar_map_card(None);
+                        let _ = writeln!(
+                            RunLog,
+                            "radar map: not from the card ({why}, {} us): the dock's",
+                            kept.read_us
+                        );
+                    }
+                }
+            }
+        }
+        // A step under way for a place no longer shown stops.
+        let current = shell.radar_key();
+        let fail = |shell: &mut rp_shell::Shell, kept: &mut KeptMap, why: &str| {
+            shell.radar_map_card(None);
+            kept.key = None;
+            kept.ram = None;
+            kept.step = MapStep::Idle;
+            let _ = writeln!(RunLog, "radar map: the card's not used ({why}): the dock's");
+        };
+        match kept.step {
+            MapStep::Idle => {}
+            MapStep::Read { key, .. } | MapStep::Unpack { key, .. } if key != current => {
+                kept.step = MapStep::Idle;
+                let _ = writeln!(RunLog, "radar map: the card's read stopped (another place)");
+            }
+            MapStep::Read { key, head, got } => {
+                let t0 = rt::ticks();
+                let n = match (card.as_mut(), map_file.get_mut(HEAD + got..HEAD + head.len)) {
+                    (Some((c, start)), Some(out)) => {
+                        map_chunk(c, *start, key, (HEAD + got) as u64, out)
+                    }
+                    _ => None,
+                };
+                kept.read_us += us(t0);
+                match n {
+                    Some(n) if n > 0 && got + n < head.len => {
+                        kept.step = MapStep::Read {
+                            key,
+                            head,
+                            got: got + n,
+                        };
+                    }
+                    Some(n) if n > 0 => {
+                        let t0 = rt::ticks();
+                        let ok =
+                            rp_weather::mapcard::check_map(&head, &map_file[HEAD..HEAD + head.len]);
+                        kept.read_us += us(t0);
+                        if ok.is_ok() {
+                            kept.key = Some(key);
+                            kept.len = head.len;
+                            kept.crc = head.crc;
+                            kept.step = MapStep::Unpack { key, layer: 0 };
+                        } else {
+                            fail(shell, kept, "its bytes not its checksum");
+                        }
+                    }
+                    _ => fail(shell, kept, "a piece not readable"),
+                }
+            }
+            MapStep::Unpack { key, layer } => {
+                let t0 = rt::ticks();
+                let got = rp_weather::maplayers::unpack_layer(
+                    &map_file[HEAD..HEAD + kept.len],
+                    layer,
+                    &mut map_layers[layer * PLANE..(layer + 1) * PLANE],
+                );
+                kept.unpack_us += us(t0);
+                match got {
+                    Ok(()) if layer + 1 < LAYERS => {
+                        kept.step = MapStep::Unpack {
+                            key,
+                            layer: layer + 1,
+                        };
+                    }
+                    Ok(()) => {
+                        kept.ram = Some(key);
+                        kept.step = MapStep::Idle;
+                        *layers_of = Some(MapOf::Place);
+                        *coloured = None;
+                        shell.radar_map_in();
+                        let _ = writeln!(
+                            RunLog,
+                            "radar map: the place's from the card, {} bytes: read in {} us, unpacked in {} us ({LAYERS} passes), in {} ms after Radar asked",
+                            kept.len,
+                            kept.read_us,
+                            kept.unpack_us,
+                            now_ms.wrapping_sub(kept.asked_ms)
+                        );
+                    }
+                    Err(e) => {
+                        let _ = writeln!(RunLog, "radar map: the card's layer {layer}: {e:?}");
+                        fail(shell, kept, "a layer not unpacked");
+                    }
+                }
+            }
+            MapStep::Write { key, wait: true } => {
+                kept.step = MapStep::Write { key, wait: false };
+            }
+            MapStep::Write { key, .. } if !pen_down => {
+                kept.step = MapStep::Idle;
+                if kept.key != Some(key) {
+                    return;
+                }
+                let len = kept.len;
+                let head = rp_weather::mapcard::head(
+                    key,
+                    &map_file[HEAD..HEAD + len],
+                    shell.radar_newest(),
+                );
+                map_file[..HEAD].copy_from_slice(&head);
+                let mut saved = [(i32::MIN, i32::MIN); rp_weather::settings::PLACES_MAX];
+                for (s, p) in saved.iter_mut().zip(shell.saved_places()) {
+                    *s = p;
+                }
+                if !*card_tried {
+                    *card_tried = true;
+                    *card = take_card();
+                }
+                let t0 = rt::ticks();
+                let got = match card.as_mut() {
+                    Some((c, start)) => map_write(
+                        c,
+                        *start,
+                        key,
+                        &map_file[..HEAD + len],
+                        &|k| saved.contains(&(k.lat, k.lon)),
+                        scratch,
+                    )
+                    .map_err(|e| e.name()),
+                    None => Err("no SD card"),
+                };
+                let took = us(t0);
+                match got {
+                    Ok(dropped) => {
+                        let _ = writeln!(
+                            RunLog,
+                            "radar map: kept on the card ({} bytes) in {took} us{}",
+                            HEAD + len,
+                            if dropped.is_some() {
+                                ", the oldest other place's dropped (the cap)"
+                            } else {
+                                ""
+                            }
+                        );
+                    }
+                    Err(why) => {
+                        let _ =
+                            writeln!(RunLog, "radar map: not kept on the card ({why}, {took} us)");
+                    }
+                }
+            }
+            MapStep::Write { .. } => {}
+        }
+    }
+
     /// The Today screen's forecast cards in the run log: each day's
     /// condition and its picture (its key, and whether the store still
     /// holds it), or "none" (R181: a card drawn without its icon said
@@ -860,7 +1076,7 @@ mod image {
     /// (`<stem>A.PAK`, `B`, ...: the loader takes files up to its image
     /// area's size, a pack is 1.2-1.6 MB) joined, up to the first missing
     /// or empty one; the length, or `None` (no card, no part, too big).
-    /// Icon pack `n` is `RPIC<n>`, the radar's base map `RPMAP`.
+    /// Icon pack `n` is `RPIC<n>`.
     /// Nothing is logged while it reads (a log line would send the card
     /// log's sector mid-read).
     fn read_pack(card: &mut Card, start: u32, stem: [u8; 5], out: &mut [u8]) -> Option<usize> {
@@ -940,10 +1156,90 @@ mod image {
         (!over).then_some(at)
     }
 
+    /// The kept radar map's header for `key` (R184 step 3,
+    /// [`rp_today::kept::head`]), the card log's controller settled first.
+    /// Nothing is logged while it reads.
+    fn map_head(
+        card: &mut Card,
+        start: u32,
+        key: rp_weather::mapcard::Key,
+        out: &mut [u8],
+    ) -> Result<rp_weather::mapcard::Head, &'static str> {
+        rp_hal_x51v::cardsink::settle();
+        rp_today::kept::head(&mut *card, start, key, out)
+    }
+
+    /// The next piece of `key`'s kept map ([`rp_today::kept::piece`]).
+    fn map_chunk(
+        card: &mut Card,
+        start: u32,
+        key: rp_weather::mapcard::Key,
+        off: u64,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        rp_hal_x51v::cardsink::settle();
+        rp_today::kept::piece(&mut *card, start, key, off, out)
+    }
+
+    /// Writes `key`'s kept map and keeps the folder to its cap
+    /// ([`rp_today::kept::write`]). Nothing is logged while it writes.
+    fn map_write(
+        card: &mut Card,
+        start: u32,
+        key: rp_weather::mapcard::Key,
+        file: &[u8],
+        keep: &dyn Fn(rp_weather::mapcard::Key) -> bool,
+        scratch: &mut [u8],
+    ) -> Result<Option<rp_weather::mapcard::Key>, rp_fat::Error> {
+        rp_hal_x51v::cardsink::settle();
+        rp_today::kept::write(&mut *card, start, key, file, keep, scratch)
+    }
+
+    /// Where the place's kept radar map is (R184 step 3).
+    #[derive(Clone, Copy)]
+    enum MapStep {
+        /// Nothing under way.
+        Idle,
+        /// Read from the card a piece a pass: `got` bytes of the map so far.
+        Read {
+            key: rp_weather::mapcard::Key,
+            head: rp_weather::mapcard::Head,
+            got: usize,
+        },
+        /// Unpacked a layer a pass (~21 ms each; 167 ms in one pass before).
+        Unpack {
+            key: rp_weather::mapcard::Key,
+            layer: usize,
+        },
+        /// The dock's map to write to the card: in the pass after it was
+        /// shown, the pen up (`wait` the pass between).
+        Write {
+            key: rp_weather::mapcard::Key,
+            wait: bool,
+        },
+    }
+
+    /// The place's radar map: whose bytes the map file holds (after its
+    /// header), their length and CRC-32, whose layers are unpacked in RAM,
+    /// the step under way, and its times for the log.
+    struct KeptMap {
+        key: Option<rp_weather::mapcard::Key>,
+        len: usize,
+        crc: u32,
+        ram: Option<rp_weather::mapcard::Key>,
+        step: MapStep,
+        asked_ms: u64,
+        read_us: u32,
+        unpack_us: u32,
+    }
+
     /// The USB D+ pull-up's GPIO (docs/hw/udc.md).
     const USB_PULLUP: u8 = 2;
     /// The largest answer kept (a `better_forecast` is ~30-60 KB).
     const NET_BUF: usize = 256 * 1024;
+    /// The scratch a kept radar map's write searches the FAT with (R184
+    /// step 3: up to 64 sectors a command).
+    const MAP_SCRATCH: usize = 32 * 1024;
 
     /// The longest a question waits for the relay's answer (a search or
     /// a forecast through the PC is well under a second; a slow network
@@ -1096,6 +1392,25 @@ mod image {
         let (rain_view, rest) = rest.split_at_mut(view_px);
         let (rain_words, rest) = rest.split_at_mut(RAIN_STORE / 4);
         let mut rain_store = rp_today::rain::Store::new(rp_hal_mem::words_as_bytes_mut(rain_words));
+        // The place's radar map as a file (R184 step 3): its header and the
+        // relay's bytes, read from the card or kept from the dock to write
+        // there; and the write's scratch (rp-fat searches the FAT for free
+        // clusters in runs: a sector at a time took 3.7 s once, docs/hw/sd.md).
+        let (map_file_words, rest) =
+            rest.split_at_mut((rp_weather::mapcard::HEAD + rp_weather::mapcard::MAX) / 4);
+        let map_file: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(map_file_words);
+        let (map_scratch_words, rest) = rest.split_at_mut(MAP_SCRATCH / 4);
+        let map_scratch: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(map_scratch_words);
+        let mut kept = KeptMap {
+            key: None,
+            len: 0,
+            crc: 0,
+            ram: None,
+            step: MapStep::Idle,
+            asked_ms: 0,
+            read_us: 0,
+            unpack_us: 0,
+        };
         // Weather's RAM (the sheet's target: under 8 MB): every part of the
         // pool this image takes, and the pictures' share (option C).
         let pictures = rp_draw::pics::Pics::words(&PIC_CLASSES) * 4
@@ -2284,17 +2599,53 @@ mod image {
                     // A tile: decoded here into the map or its rain frame
                     // (the shell only moves on to the next).
                     if let Some((None, _, _)) = n.tile {
-                        // The place's map: its layers in one answer (R184).
-                        let t0 = rt::ticks();
-                        let got = rp_weather::maplayers::unpack(&net_buf[..l], map_layers);
-                        let _ = writeln!(
-                            RunLog,
-                            "radar map: the place's layers, {l} bytes, unpacked {got:?} in {} us",
-                            rt::ticks().wrapping_sub(t0) / 13 * 4
-                        );
-                        layers_of = got.is_ok().then_some(MapOf::Place);
-                        coloured = None;
-                        shell.net_answer(got.is_ok(), &[]);
+                        use rp_weather::mapcard::HEAD;
+                        if l == 0 {
+                            // The check of the card's map (R184 step 3): the
+                            // relay's is the same.
+                            let _ = writeln!(
+                                RunLog,
+                                "radar map: the card's is the relay's ({} ms to check)",
+                                now_ms.wrapping_sub(n.asked_ms)
+                            );
+                            shell.net_answer(true, &[]);
+                        } else {
+                            // The place's map: its layers in one answer (R184),
+                            // the first for the place or the relay's newer one
+                            // (a card read under way stops), kept to write to
+                            // the card in a later pass.
+                            let key = shell.radar_key();
+                            let t0 = rt::ticks();
+                            let got = match map_file.get_mut(HEAD..HEAD + l) {
+                                Some(f) => {
+                                    f.copy_from_slice(&net_buf[..l]);
+                                    rp_weather::maplayers::unpack(f, map_layers)
+                                }
+                                None => Err(rp_weather::maplayers::Error::Room),
+                            };
+                            let _ = writeln!(
+                                RunLog,
+                                "radar map: the place's layers, {l} bytes, unpacked {got:?} in {} us",
+                                rt::ticks().wrapping_sub(t0) / 13 * 4
+                            );
+                            layers_of = got.is_ok().then_some(MapOf::Place);
+                            coloured = None;
+                            if got.is_ok() {
+                                kept.key = Some(key);
+                                kept.len = l;
+                                kept.crc = rp_weather::store::crc32(&map_file[HEAD..HEAD + l]);
+                                kept.ram = Some(key);
+                                kept.step = MapStep::Write { key, wait: true };
+                            } else {
+                                kept.key = None;
+                                kept.ram = None;
+                                kept.step = MapStep::Idle;
+                            }
+                            shell.net_answer(got.is_ok(), &[]);
+                            if got.is_ok() {
+                                shell.radar_map_in();
+                            }
+                        }
                     } else if let Some((Some(f), k, _)) = n.tile {
                         // Kept as it came (R184 step 2): decoded when its
                         // frame is composed. A frame's first tile starts it
@@ -2395,6 +2746,24 @@ mod image {
                     n.reset();
                 }
             }
+
+            // The place's radar map kept on the card (R184 step 3, way A):
+            // looked for in the pass Radar asks for it (before the frame
+            // list can answer), read a piece a pass beside the rain's asks,
+            // unpacked a layer a pass, and the dock's written there once.
+            kept_map_pass(
+                shell,
+                &mut kept,
+                card,
+                &mut card_tried,
+                map_file,
+                map_layers,
+                map_scratch,
+                &mut layers_of,
+                &mut coloured,
+                filter.down(),
+                now_ms,
+            );
 
             // The radar's map under the page while Radar is open, the
             // wallpaper again after (the frame in flight may read it).
