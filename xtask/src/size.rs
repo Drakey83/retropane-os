@@ -554,9 +554,12 @@ pub const BUDGETS: &[Budget] = &[
     // panel), the renderer's per-command arrays with it; 48.0 KiB measured.
     // Then load 165 -> 168 KiB (2026-11-01): the glass panel command
     // (drawn from pre-rendered art: rows, rim, corners), 165.0 KiB measured.
+    // Then 168 -> 170 KiB (2026-11-06, test image): the 2D renderer's
+    // wallpaper bands and their redraw areas (R184 step 2, the radar's
+    // loop), 168.1 KiB measured.
     Budget {
         image: "rp-scene",
-        max_load: 168 * 1024,
+        max_load: 170 * 1024,
         max_zero: 50 * 1024,
         device: OnDevice::Returns,
     },
