@@ -12110,6 +12110,8 @@ fn preview_net(shell: &mut rp_shell::Shell) {
             _ => shell.net_answer(false, b""),
         }
     }
+    // The preview composes every frame alike (`preview_bands`): all ready.
+    shell.set_radar_ready((1 << 13) - 1);
 }
 
 /// The previews' rain composed over the coloured map as the image does
@@ -12162,7 +12164,7 @@ fn preview_bands(
         rp_today::MAP_TOP,
         BAND_H,
         &bands,
-        rp_draw::Rect::new(0, 0, 480, 640),
+        &[rp_draw::Rect::new(0, 0, 480, 640)],
     );
 }
 
@@ -12186,7 +12188,7 @@ fn backdrop(
             rp_weather::maplayers::colour(layers, look, &mut view);
             view
         });
-        gpu.wallpaper_bands(0, 1, &[], rp_draw::Rect::new(0, 0, 0, 0));
+        gpu.wallpaper_bands(0, 1, &[], &[]);
         rp_today::show_backdrop(
             gpu,
             wall,

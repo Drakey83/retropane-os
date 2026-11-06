@@ -323,7 +323,7 @@ impl Shell {
                     self.n_alerts = 0;
                     self.dirty(super::weather_app::HEAD);
                 }
-                Ask::Tile => self.tile_done(),
+                Ask::Tile => self.tile_failed(),
                 Ask::Pack | Ask::History => {}
             }
             return;
@@ -564,6 +564,8 @@ impl Shell {
         }
         self.radar_moves = (have != 0).then_some(moves);
         self.radar_have = have;
+        self.radar_lost = 0;
+        self.radar_retried = 0;
         // The frame shown stays the same picture if it was kept, else the
         // newest kept (the newest, when none is).
         self.radar_frame = shown
@@ -579,9 +581,8 @@ impl Shell {
     /// Asks for the next frame's tiles, the newest missing first; the
     /// loop starts once none is.
     fn next_radar_frame(&mut self) {
-        let missing = (0..self.radar_n)
-            .rev()
-            .find(|&f| self.radar_have & 1 << f == 0);
+        let done = self.radar_have | self.radar_lost;
+        let missing = (0..self.radar_n).rev().find(|&f| done & 1 << f == 0);
         self.radar_tile = missing.map(|f| (f, self.first_tile(0)));
         if !self.radar_map || self.radar_tile.is_some() {
             self.want(Ask::Tile);
@@ -616,6 +617,40 @@ impl Shell {
         self.next_radar_frame();
     }
 
+    /// A tile refused or unanswered: its frame asked again from its first
+    /// tile, once; refused again, the frame is lost (a stub on the
+    /// timeline, skipped by the loop), never shown as dry (run today-0054:
+    /// the relay refused frames 10-12 and the newest showed no rain).
+    fn tile_failed(&mut self) {
+        let Some((f, _)) = self.radar_tile.filter(|_| self.radar_map) else {
+            self.tile_done();
+            return;
+        };
+        if self.radar_retried & 1 << f == 0 {
+            self.radar_retried |= 1 << f;
+            self.radar_tile = Some((f, self.first_tile(0)));
+            self.want(Ask::Tile);
+            return;
+        }
+        self.radar_lost |= 1 << f;
+        self.dirty(super::weather_app::PAGE);
+        self.next_radar_frame();
+    }
+
+    /// The frames the device has composed and can show (a bit each): the
+    /// loop waits until every frame in is ready.
+    pub fn set_radar_ready(&mut self, ready: u16) {
+        if ready != self.radar_ready {
+            self.radar_ready = ready;
+            self.dirty(super::weather_app::TIME_PANEL);
+        }
+    }
+
+    /// Frames in and ready to show (a bit each).
+    pub(crate) fn radar_shown_ready(&self) -> u16 {
+        self.radar_have & self.radar_ready
+    }
+
     /// The device couldn't keep frame `f` (its tiles' room was full, or a
     /// tile wasn't readable): asked again, after the frames still missing
     /// newer than it.
@@ -638,12 +673,13 @@ impl Shell {
         self.radar_moves.take()
     }
 
-    /// Whether every listed rain frame is in (the loop plays only then).
+    /// Whether every listed rain frame is in or lost (the loop plays only
+    /// then, and once the device has every one in ready).
     #[must_use]
     pub fn radar_complete(&self) -> bool {
         self.radar_map
             && self.radar_n > 0
-            && self.radar_have.count_ones() == u32::from(self.radar_n)
+            && (self.radar_have | self.radar_lost).count_ones() == u32::from(self.radar_n)
     }
 
     /// Which rain frames are in (a bit each, oldest first).
@@ -709,6 +745,8 @@ impl Shell {
                 self.radar_map = false;
                 self.radar_have = 0;
                 self.radar_tile = None;
+                self.radar_lost = 0;
+                self.radar_retried = 0;
             }
             self.radar_for = Some((p.lat, p.lon));
             self.radar_asked = self.now;

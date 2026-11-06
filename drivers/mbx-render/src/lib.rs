@@ -427,8 +427,11 @@ pub struct Mbx2dRenderer<R, M> {
     bands: (u16, u16, [Option<usize>; BANDS]),
     /// Where the wallpaper changed since the last frame (a band switch):
     /// its background made again and its screen area drawn there only.
-    wall_box: Option<Rect>,
+    wall_box: ([Rect; WALL_BOXES], usize),
 }
+
+/// Areas a band switch redraws at most (more are merged).
+pub const WALL_BOXES: usize = 4;
 
 /// Bands of the wallpaper that can be read from elsewhere
 /// ([`Mbx2dRenderer::wallpaper_bands`]).
@@ -519,7 +522,7 @@ macro_rules! renderer_start {
             hoist: [false; MAX_CMDS],
             bounds: [Rect::new(0, 0, 0, 0); MAX_CMDS],
             bands: (0, 1, [None; BANDS]),
-            wall_box: None,
+            wall_box: ([Rect::new(0, 0, 0, 0); WALL_BOXES], 0),
         })
     };
 }
@@ -566,34 +569,40 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// from `bands[k]` (an RGB565 picture `W` pixels wide, its rows
     /// `STRIDE16` apart, from the allocator: the graphics service checks
     /// it) or, where `None` or past the list, from the wallpaper itself;
-    /// `changed` is all the screen this changes (R184 step 2: a radar
-    /// frame composed once into its bands, a loop step switching them). The
-    /// background and the screen are made again there only, not whole, and
-    /// cached areas over it are dropped. No bands (`&[]`) reads the
-    /// wallpaper alone again.
-    pub fn wallpaper_bands(&mut self, top: u16, h: u16, bands: &[Option<usize>], changed: Rect) {
+    /// `changed` is all the screen this changes, in up to [`WALL_BOXES`]
+    /// areas (more are merged; R184 step 2: a radar frame composed once into
+    /// its bands, a loop step switching them, the areas where the rain
+    /// differs). The background and the screen are made again there only,
+    /// not whole, and cached areas over them are dropped. No bands (`&[]`)
+    /// reads the wallpaper alone again.
+    pub fn wallpaper_bands(&mut self, top: u16, h: u16, bands: &[Option<usize>], changed: &[Rect]) {
         let mut b = [None; BANDS];
         for (k, (out, at)) in b.iter_mut().zip(bands).enumerate() {
             let row = usize::from(top) + k * usize::from(h);
             *out = at.map(|a| a.wrapping_sub(row * STRIDE16));
         }
         self.bands = (top, h.max(1), b);
-        let changed = changed.intersect(&SCREEN);
-        if changed.is_empty() {
-            return;
-        }
-        self.wall_box = Some(match self.wall_box {
-            Some(w) => w.union(&changed),
-            None => changed,
-        });
-        // A cached area over the change holds the old wallpaper.
-        let mut k = 0;
-        while k < self.cached_n {
-            if self.cached[k].1.intersect(&changed).is_empty() {
-                k += 1;
+        for c in changed {
+            let c = c.intersect(&SCREEN);
+            if c.is_empty() {
+                continue;
+            }
+            let (boxes, n) = &mut self.wall_box;
+            if *n < WALL_BOXES {
+                boxes[*n] = c;
+                *n += 1;
             } else {
-                self.cached_n -= 1;
-                self.cached[k] = self.cached[self.cached_n];
+                boxes[WALL_BOXES - 1] = boxes[WALL_BOXES - 1].union(&c);
+            }
+            // A cached area over the change holds the old wallpaper.
+            let mut k = 0;
+            while k < self.cached_n {
+                if self.cached[k].1.intersect(&c).is_empty() {
+                    k += 1;
+                } else {
+                    self.cached_n -= 1;
+                    self.cached[k] = self.cached[self.cached_n];
+                }
             }
         }
     }
@@ -1577,7 +1586,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let whole = self.bg_hash.is_none();
         // A band switch: the background and the screen there (all of it
         // anyway when whole).
-        let wall_box = self.wall_box.take().filter(|_| !whole);
+        let (boxes, nb) =
+            core::mem::replace(&mut self.wall_box, ([Rect::new(0, 0, 0, 0); WALL_BOXES], 0));
+        let wall_box = &boxes[..if whole { 0 } else { nb }];
         if whole {
             redo[0] = SCREEN;
             nr = 1;
@@ -1608,7 +1619,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                     redo[best] = redo[best].union(&r);
                 }
             };
-            if let Some(b) = wall_box {
+            for &b in wall_box {
                 add(b);
             }
             for &(k, r) in &self.bg_keys[..self.bg_n] {
@@ -1704,7 +1715,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         self.prev[..self.prev_n].copy_from_slice(&frame.dirty()[..self.prev_n]);
         // The band switch's area, brought forward into the other picture
         // next frame as the frame's own changes are.
-        if let Some(b) = wall_box {
+        for &b in wall_box {
             if self.prev_n < MAX_DIRTY {
                 self.prev[self.prev_n] = b;
                 self.prev_n += 1;

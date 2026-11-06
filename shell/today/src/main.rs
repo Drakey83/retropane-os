@@ -524,80 +524,118 @@ mod image {
         raw: &'a mut [u8],
     }
 
-    /// Frame `f`'s rain (its kept PNGs, decoded and placed) composed over
-    /// `map` in `look`, each rainy band written into a slot of the radar's
-    /// band pictures (client `rc`). The caller has waited for the engine (a
-    /// slot given back may have been read by the last frame). No slot
-    /// free: `NoMemory`, every slot it took given back.
+    /// A frame being composed, a step a pass (run today-0054: a whole
+    /// frame in one pass held the loop 0.56 s): steps 0-8 decode a tile
+    /// each, 9 finds the rainy bands, 10 on write a band each.
+    #[derive(Clone, Copy)]
+    struct Job {
+        f: usize,
+        step: u8,
+        comp: Composed,
+        /// When it started, and the time its steps took (decoding, the
+        /// rest), us.
+        t0: u32,
+        decode_us: u32,
+        write_us: u32,
+    }
+
+    impl Job {
+        fn new(f: usize) -> Self {
+            use rp_today::rain::BANDS;
+            Self {
+                f,
+                step: 0,
+                comp: Composed {
+                    slots: [None; BANDS],
+                    spans: [None; BANDS],
+                },
+                t0: rt::ticks(),
+                decode_us: 0,
+                write_us: 0,
+            }
+        }
+
+        /// Its band slots given back (abandoned).
+        fn give_back(self, pool: &mut Bands) {
+            give_back(pool, &mut Some(self.comp));
+        }
+    }
+
+    /// One step of `job` (frame `job.f`'s rain over `map` in `look`):
+    /// true once the frame is composed. `NoMemory`: no band slot free for
+    /// the band due (the job stays at that step). The caller has waited for
+    /// the engine (a slot given back may have been read by the last frame).
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
-    fn compose_frame(
+    fn job_step(
         gfx: &mut Graphics<'static, Mmio, Vram>,
         rc: ClientId,
         pool: &mut Bands,
         store: &rp_today::rain::Store<'_>,
-        f: usize,
+        job: &mut Job,
         v: rp_weather::tiles::View,
         map: &[u32],
         look: rp_weather::maplayers::Look,
         s: &mut RainScratch<'_>,
-    ) -> Result<Composed, rp_graphics::Error> {
+    ) -> Result<bool, rp_graphics::Error> {
         use rp_today::rain::{BAND_H, BANDS, TILES};
         use rp_weather::tiles::VIEW_W;
-        s.view.fill(0);
-        for k in 0..TILES {
-            let Some(png) = store.tile(f, k) else {
-                continue;
-            };
-            if rp_weather::png::decode(png, s.tile, s.data, s.raw) == Ok((256, 256)) {
-                v.place(k, s.tile, s.view);
-            } else {
-                let _ = writeln!(RunLog, "radar: frame {f}'s tile {k} wasn't read");
-            }
-        }
-        let spans = rp_today::rain::bands_of(s.view);
-        let mut c = Some(Composed {
-            slots: [None; BANDS],
-            spans,
-        });
-        // A row a quarter at a time: a whole row's words (960 bytes) sat on
-        // the image's stack (P6).
-        let mut words = [0u32; VIEW_W / 8];
-        for b in 0..BANDS {
-            if spans[b].is_none() {
-                continue;
-            }
-            let Some((slot, (h, row))) = pool.take().and_then(|s| Some((s, pool.at(s)?))) else {
-                give_back(pool, &mut c);
-                return Err(rp_graphics::Error::NoMemory);
-            };
-            if let Some(c) = c.as_mut() {
-                c.slots[b] = Some(slot);
-            }
-            for y in 0..BAND_H {
-                for q in 0..4 {
-                    let at = usize::from(b as u16 * BAND_H + y) * VIEW_W + q * VIEW_W / 4;
-                    rp_today::rain::row565(
-                        &map[at..at + VIEW_W / 4],
-                        &s.view[at..at + VIEW_W / 4],
-                        look,
-                        &mut words,
-                    );
-                    let off =
-                        u32::from(row + y) * (VIEW_W as u32 * 2) + q as u32 * (VIEW_W as u32 / 2);
-                    if let Err(e) = gfx.write_picture(rc, h, off, &words) {
-                        give_back(pool, &mut c);
-                        return Err(e);
+        let t0 = rt::ticks();
+        let f = job.f;
+        match usize::from(job.step) {
+            k if k < TILES => {
+                if k == 0 {
+                    s.view.fill(0);
+                }
+                if let Some(png) = store.tile(f, k) {
+                    if rp_weather::png::decode(png, s.tile, s.data, s.raw) == Ok((256, 256)) {
+                        v.place(k, s.tile, s.view);
+                    } else {
+                        let _ = writeln!(RunLog, "radar: frame {f}'s tile {k} wasn't read");
                     }
                 }
+                job.decode_us += rt::ticks().wrapping_sub(t0) / 13 * 4;
             }
-            rt::check_in();
+            TILES => job.comp.spans = rp_today::rain::bands_of(s.view),
+            k => {
+                let b = k - TILES - 1;
+                if job.comp.spans[b].is_some() {
+                    let Some((slot, (h, row))) = pool.take().and_then(|s| Some((s, pool.at(s)?)))
+                    else {
+                        return Err(rp_graphics::Error::NoMemory);
+                    };
+                    job.comp.slots[b] = Some(slot);
+                    // A row a quarter at a time: a whole row's words (960
+                    // bytes) sat on the image's stack (P6).
+                    let mut words = [0u32; VIEW_W / 8];
+                    for y in 0..BAND_H {
+                        for q in 0..4 {
+                            let at = usize::from(b as u16 * BAND_H + y) * VIEW_W + q * VIEW_W / 4;
+                            rp_today::rain::row565(
+                                &map[at..at + VIEW_W / 4],
+                                &s.view[at..at + VIEW_W / 4],
+                                look,
+                                &mut words,
+                            );
+                            let off = u32::from(row + y) * (VIEW_W as u32 * 2)
+                                + q as u32 * (VIEW_W as u32 / 2);
+                            gfx.write_picture(rc, h, off, &words)?;
+                        }
+                    }
+                }
+                job.write_us += rt::ticks().wrapping_sub(t0) / 13 * 4;
+                if b + 1 == BANDS {
+                    return Ok(true);
+                }
+            }
         }
-        c.ok_or(rp_graphics::Error::NoMemory)
+        job.step += 1;
+        Ok(false)
     }
 
-    /// The wallpaper's bands pointed at frame `frame`'s slots (`None`: the
-    /// map alone), the screen redrawn only where the rain was or is.
+    /// The wallpaper's bands pointed at `frame`'s slots (`None`: the map
+    /// alone); the areas where the rain differs from the frame shown
+    /// before, redrawn there only, returned for the shell.
     #[inline(never)]
     fn show_bands(
         gfx: &mut Graphics<'static, Mmio, Vram>,
@@ -605,25 +643,25 @@ mod image {
         pool: &Bands,
         frame: Option<&Composed>,
         spans_shown: &mut [Option<(u16, u16)>; rp_today::rain::BANDS],
-    ) -> Result<rp_draw::Rect, rp_graphics::Error> {
+    ) -> Result<([rp_draw::Rect; rp_today::rain::AREAS], usize), rp_graphics::Error> {
         use rp_today::rain::{BAND_H, BANDS};
         let none = [None; BANDS];
         let spans = frame.map_or(none, |c| c.spans);
-        let box_ = rp_today::rain::changed(spans_shown, &spans, rp_today::MAP_TOP);
+        let (areas, n) = rp_today::rain::changed(spans_shown, &spans, rp_today::MAP_TOP);
         let mut bands = [None; BANDS];
         if let Some(c) = frame {
             for (b, s) in bands.iter_mut().zip(c.slots) {
                 *b = s.and_then(|s| pool.at(s));
             }
         }
-        let n = if bands.iter().any(Option::is_some) {
+        let nb = if bands.iter().any(Option::is_some) {
             BANDS
         } else {
             0
         };
-        gfx.wallpaper_bands(rc, rp_today::MAP_TOP, BAND_H, &bands[..n], box_)?;
+        gfx.wallpaper_bands(rc, rp_today::MAP_TOP, BAND_H, &bands[..nb], &areas[..n])?;
         *spans_shown = spans;
-        Ok(box_)
+        Ok((areas, n))
     }
 
     /// Whose map the radar's layers are (R184).
@@ -1119,6 +1157,11 @@ mod image {
         let mut banded: Option<usize> = None;
         let mut band_pool = Bands::new();
         let mut bands_tried = false;
+        // The frame being composed, a step a pass; whether the background
+        // composing waits for room; the pages whose pictures Radar holds.
+        let mut radar_job: Option<Job> = None;
+        let mut no_band_room = false;
+        let mut pages_lent = 0u8;
         let mut spans_shown = [None; rp_today::rain::BANDS];
         let mut filling: Option<usize> = None;
         let mut scratch = RainScratch {
@@ -2324,13 +2367,16 @@ mod image {
                             // whose frame went give their band slots back
                             // (the bands first stop reading them).
                             let gone = rain_store.moved(&m);
+                            if let Some(j) = radar_job.take() {
+                                j.give_back(&mut band_pool);
+                            }
                             banded =
                                 banded.and_then(|b| m.iter().position(|&j| usize::from(j) == b));
                             if banded.is_none() {
-                                if let Ok(b) =
+                                if let Ok((a, n)) =
                                     show_bands(gfx, rc, &band_pool, None, &mut spans_shown)
                                 {
-                                    shell.redraw(b);
+                                    a[..n].iter().for_each(|&r| shell.redraw(r));
                                 }
                             }
                             for r in 0..rp_weather::radar::PAST {
@@ -2381,9 +2427,9 @@ mod image {
                 // The place's map: its layers coloured in the look shown
                 // when either changed (Paper, Ink or Night from the same
                 // layers: R184, way C), written once into the wallpaper;
-                // the rain frames composed over it once each, in their own
-                // pictures (R184 step 2), a loop step only switching the
-                // wallpaper's bands to the frame shown.
+                // the rain frames composed over it once each, a step a
+                // pass, into band slots (R184 step 2), a loop step only
+                // switching the wallpaper's bands to the frame shown.
                 let changed = recolour(
                     MapOf::Place,
                     look,
@@ -2396,13 +2442,17 @@ mod image {
                 if changed || look != backdrop_shown {
                     // A new map or look: every composed frame is the old
                     // one's, given back (bands off first) and made again.
-                    if let Ok(b) = show_bands(gfx, rc, &band_pool, None, &mut spans_shown) {
-                        shell.redraw(b);
+                    if let Ok((a, n)) = show_bands(gfx, rc, &band_pool, None, &mut spans_shown) {
+                        a[..n].iter().for_each(|&r| shell.redraw(r));
                     }
                     banded = None;
+                    if let Some(j) = radar_job.take() {
+                        j.give_back(&mut band_pool);
+                    }
                     for f in 0..rp_weather::radar::PAST {
                         give_back(&mut band_pool, &mut rain_store.take_composed(f));
                     }
+                    no_band_room = false;
                     let t0 = rt::ticks();
                     if layers_of != Some(MapOf::Place) {
                         // The place's map failed: dark water, never another
@@ -2419,116 +2469,179 @@ mod image {
                     );
                 }
                 // A frame no longer in (fetched again, or a new list) is
-                // given back.
+                // given back, and its job dropped.
+                if radar_job.is_some_and(|j| have & 1 << j.f == 0)
+                    && let Some(j) = radar_job.take()
+                {
+                    j.give_back(&mut band_pool);
+                }
                 for f in 0..rp_weather::radar::PAST {
                     if have & 1 << f == 0 && rain_store.composed(f).is_some() {
-                        if banded == Some(f) {
-                            if let Ok(b) = show_bands(gfx, rc, &band_pool, None, &mut spans_shown) {
-                                shell.redraw(b);
-                            }
+                        if banded == Some(f)
+                            && let Ok((a, n)) =
+                                show_bands(gfx, rc, &band_pool, None, &mut spans_shown)
+                        {
+                            a[..n].iter().for_each(|&r| shell.redraw(r));
                             banded = None;
                         }
                         give_back(&mut band_pool, &mut rain_store.take_composed(f));
+                        no_band_room = false;
                     }
                 }
-                // The frame to show composed now if it isn't yet; else one
-                // more in the background, the newest first, so the loop
-                // finds every frame ready.
-                let want = real.flatten().map(usize::from);
-                let next = want
-                    .filter(|&f| rain_store.composed(f).is_none())
-                    .or_else(|| {
-                        (0..rp_weather::radar::PAST)
-                            .rev()
-                            .find(|&f| have & 1 << f != 0 && rain_store.composed(f).is_none())
-                    });
-                if let (Some(f), Some(l)) = (next, look)
-                    && (band_pool.total() > 0 || !bands_tried)
-                {
+                // Room for the frames, once per opening (the owner's way A,
+                // 2026-11-06): the pages not on screen give their pictures
+                // back while Radar needs the room, Hourly's first (the
+                // largest), the others only if that isn't enough; each is
+                // made again when Radar closes. Phones and browsers drop
+                // what isn't on screen the same way; here the pages' own
+                // client gives them back (ADR-0027: no service eviction).
+                if !bands_tried && have != 0 {
+                    bands_tried = true;
                     while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
-                    if band_pool.total() == 0 {
-                        // Once per opening: with no room at all the frames
-                        // aren't composed (the map alone, logged), never
-                        // tried again every pass.
-                        bands_tried = true;
+                    for round in [&[1usize][..], &[0, 2][..]] {
+                        if band_pool.total() >= rp_today::rain::SLOTS {
+                            break;
+                        }
+                        if let Some(pc) = pc {
+                            for &i in round {
+                                if let Some((h, k)) = pages[i].take() {
+                                    if gfx.free_picture(pc, h).is_ok() {
+                                        pages_lent |= 1 << i;
+                                    } else {
+                                        pages[i] = Some((h, k));
+                                    }
+                                }
+                            }
+                        }
+                        for h in band_pool.take_pics().into_iter().flatten() {
+                            let _ = gfx.free_picture(rc, h);
+                        }
                         take_band_pics(gfx, rc, &mut band_pool);
                     }
-                    let t0 = rt::ticks();
+                    let _ = writeln!(
+                        RunLog,
+                        "radar: the pages lent their pictures for it: {pages_lent:#05b} (Hourly 0b010)"
+                    );
+                }
+                // The frame to show composed first; the others behind it,
+                // the newest first, while there are slots (never by giving
+                // way: run today-0054's frames 1 and 2 took each other's
+                // slots 83 times).
+                let want = real.flatten().map(usize::from);
+                let needed = |f: usize| have & 1 << f != 0 && rain_store.composed(f).is_none();
+                if let Some(w) = want.filter(|&w| needed(w))
+                    && radar_job.is_some_and(|j| j.f != w)
+                    && let Some(j) = radar_job.take()
+                {
+                    j.give_back(&mut band_pool);
+                }
+                if radar_job.is_none() {
+                    radar_job = want.filter(|&w| needed(w)).map(Job::new).or_else(|| {
+                        (0..rp_weather::radar::PAST)
+                            .rev()
+                            .find(|&f| needed(f) && !no_band_room && band_pool.free() > 0)
+                            .map(Job::new)
+                    });
+                }
+                if let (Some(mut job), Some(l)) = (radar_job, look) {
+                    while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
                     let v = shell.radar_view();
-                    let mut got = compose_frame(
+                    let mut got = job_step(
                         gfx,
                         rc,
                         &mut band_pool,
                         &rain_store,
-                        f,
+                        &mut job,
                         v,
                         radar_view_map,
                         l,
                         &mut scratch,
                     );
-                    // No slot free (the pool gave fewer than every band of
-                    // every frame): frames not on screen give way, oldest
-                    // first, until it fits (the loop makes them again when
-                    // it comes round: slower, never wrong).
-                    while matches!(got, Err(rp_graphics::Error::NoMemory))
-                        && let Some(j) = (0..rp_weather::radar::PAST).find(|&j| {
-                            j != f
-                                && Some(j) != banded
-                                && rain_store
-                                    .composed(j)
-                                    .is_some_and(|c| c.slots.iter().any(Option::is_some))
-                        })
-                    {
-                        give_back(&mut band_pool, &mut rain_store.take_composed(j));
-                        let _ = writeln!(RunLog, "radar: frame {j}'s bands given way for {f}");
-                        got = compose_frame(
-                            gfx,
-                            rc,
-                            &mut band_pool,
-                            &rain_store,
-                            f,
-                            v,
-                            radar_view_map,
-                            l,
-                            &mut scratch,
-                        );
+                    // No slot for the frame on screen: one composed frame
+                    // not shown gives way (one, then the next pass tries
+                    // again); for one behind it, it waits for room.
+                    if matches!(got, Err(rp_graphics::Error::NoMemory)) {
+                        let victim = (Some(job.f) == want)
+                            .then(|| {
+                                (0..rp_weather::radar::PAST).find(|&j| {
+                                    Some(j) != banded
+                                        && rain_store
+                                            .composed(j)
+                                            .is_some_and(|c| c.slots.iter().any(Option::is_some))
+                                })
+                            })
+                            .flatten();
+                        match victim {
+                            Some(j) => {
+                                give_back(&mut band_pool, &mut rain_store.take_composed(j));
+                                let _ = writeln!(
+                                    RunLog,
+                                    "radar: frame {j}'s bands given way for {}",
+                                    job.f
+                                );
+                                got = Ok(false);
+                            }
+                            None => {
+                                no_band_room = true;
+                                let _ = writeln!(
+                                    RunLog,
+                                    "radar: no band slot for frame {} ({} of {} free): it waits",
+                                    job.f,
+                                    band_pool.free(),
+                                    band_pool.total()
+                                );
+                            }
+                        }
                     }
                     match got {
-                        Ok(c) => {
-                            let bands = c.spans.iter().filter(|b| b.is_some()).count();
-                            rain_store.set_composed(f, Some(c));
+                        Ok(true) => {
+                            let bands = job.comp.spans.iter().filter(|b| b.is_some()).count();
+                            rain_store.set_composed(job.f, Some(job.comp));
+                            radar_job = None;
                             let _ = writeln!(
                                 RunLog,
-                                "radar: frame {f} composed over the map in {} us ({bands} of {} bands rain; {} of {} band slots free; the rain's PNGs {} bytes)",
-                                rt::ticks().wrapping_sub(t0) / 13 * 4,
+                                "radar: frame {} composed over the map in {} us of steps ({} decoding, {} composing; {} us since it began; {bands} of {} bands rain; {} of {} band slots free; the rain's PNGs {} bytes)",
+                                job.f,
+                                job.decode_us + job.write_us,
+                                job.decode_us,
+                                job.write_us,
+                                rt::ticks().wrapping_sub(job.t0) / 13 * 4,
                                 rp_today::rain::BANDS,
                                 band_pool.free(),
                                 band_pool.total(),
                                 rain_store.used()
                             );
                         }
+                        Ok(false) => radar_job = Some(job),
                         Err(e) => {
-                            let _ = writeln!(RunLog, "radar: frame {f} not composed ({e:?})");
+                            job.give_back(&mut band_pool);
+                            radar_job = None;
+                            if !matches!(e, rp_graphics::Error::NoMemory) {
+                                let _ =
+                                    writeln!(RunLog, "radar: frame {} not composed ({e:?})", job.f);
+                            }
                         }
                     }
                 }
+                let ready = (0..rp_weather::radar::PAST)
+                    .filter(|&f| rain_store.composed(f).is_some())
+                    .fold(0u16, |m, f| m | 1 << f);
+                shell.set_radar_ready(ready);
                 // A loop step: the bands switched to the frame shown.
                 let target = want.filter(|&f| rain_store.composed(f).is_some());
                 if target != banded {
                     let t0 = rt::ticks();
                     let c = target.and_then(|f| rain_store.composed(f));
                     match show_bands(gfx, rc, &band_pool, c.as_ref(), &mut spans_shown) {
-                        Ok(b) => {
+                        Ok((a, n)) => {
                             banded = target;
-                            shell.redraw(b);
+                            a[..n].iter().for_each(|&r| shell.redraw(r));
+                            let px: u32 =
+                                a[..n].iter().map(|r| u32::from(r.w) * u32::from(r.h)).sum();
                             let _ = writeln!(
                                 RunLog,
-                                "radar: frame {target:?} shown in {} us (redrawn {}x{} at {},{})",
+                                "radar: frame {target:?} shown in {} us ({n} areas, {px} px redrawn)",
                                 rt::ticks().wrapping_sub(t0) / 13 * 4,
-                                b.w,
-                                b.h,
-                                b.x,
-                                b.y
                             );
                         }
                         Err(e) => {
@@ -2538,21 +2651,46 @@ mod image {
                 }
             } else {
                 bands_tried = false;
+                no_band_room = false;
                 // The radar's frames given back while it isn't shown (the
-                // pages have the pool to themselves again); their PNGs kept.
-                if band_pool.total() > 0 {
-                    if let Ok(b) = show_bands(gfx, rc, &band_pool, None, &mut spans_shown) {
-                        shell.redraw(b);
+                // pages have the pool to themselves again); their PNGs kept;
+                // the pages that lent their pictures made again now.
+                if band_pool.total() > 0 || radar_job.is_some() {
+                    if let Ok((a, n)) = show_bands(gfx, rc, &band_pool, None, &mut spans_shown) {
+                        a[..n].iter().for_each(|&r| shell.redraw(r));
                     }
                     banded = None;
+                    radar_job = None;
                     for f in 0..rp_weather::radar::PAST {
                         rain_store.set_composed(f, None);
                     }
+                    shell.set_radar_ready(0);
                     while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
                     for h in band_pool.take_pics().into_iter().flatten() {
                         let _ = gfx.free_picture(rc, h);
                     }
                     let _ = writeln!(RunLog, "radar: its band pictures given back");
+                }
+                if pages_lent != 0
+                    && let Some(pc) = pc
+                {
+                    let t0 = rt::ticks();
+                    for (i, p) in pages.iter_mut().enumerate() {
+                        if pages_lent & 1 << i != 0 && p.is_none() {
+                            *p = build_page(gfx, pc, shell, &mut cpu, frame, i as u8);
+                        }
+                    }
+                    let _ = writeln!(
+                        RunLog,
+                        "radar: the pages it borrowed from ({pages_lent:#05b}) made again in {} us{}",
+                        rt::ticks().wrapping_sub(t0) / 13 * 4,
+                        if pages.iter().all(Option::is_some) {
+                            ""
+                        } else {
+                            ": not all (no room), the plane path off"
+                        }
+                    );
+                    pages_lent = 0;
                 }
                 // The built-in map, from the card the first time the radar
                 // wants it; its layers again from the packed copy after a
@@ -3398,34 +3536,38 @@ mod image {
                 phantom = phantom.saturating_add(1);
             }
             let net_busy = net.as_ref().is_some_and(|n| n.waiting);
-            let wait_ms: u32 =
-                if showing.is_some() || gfx.busy() || gfx.commit_pending() || net_busy {
-                    // A frame is with the engine or waiting for the blanking:
-                    // flip it as soon as it's due.
-                    1
-                } else if shell.animating() {
-                    // A fling, a rebound or an entrance: the next frame as soon
-                    // as the last is on the screen.
-                    1
-                } else if REPLAY && !replay_touching {
-                    // The pause before the next touch.
-                    replay_until.map_or(1, |u| u.saturating_sub(now_ms).clamp(1, 50) as u32)
-                } else if filter.down() || touch.pen_down() || replay_touching {
-                    PEN_DOWN_SLEEP_MS
-                } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
-                    20
-                } else if let Some(due) = shell.sky_due_in(now_ms as u32) {
-                    // The living sky's next step, when it is due.
-                    due
-                } else if shell.notice().is_some() {
-                    100
-                } else {
-                    // The next minute, but look at the pen line every 50 ms
-                    // too: a touch must never depend on one interrupt alone
-                    // (on the device touch went dead after a hold, as if one
-                    // were missed; the counts in the run log will say).
-                    (60_000 - (now_ms % 60_000) as u32).clamp(1, 50)
-                };
+            let wait_ms: u32 = if showing.is_some()
+                || gfx.busy()
+                || gfx.commit_pending()
+                || net_busy
+                || radar_job.is_some()
+            {
+                // A frame is with the engine or waiting for the blanking:
+                // flip it as soon as it's due.
+                1
+            } else if shell.animating() {
+                // A fling, a rebound or an entrance: the next frame as soon
+                // as the last is on the screen.
+                1
+            } else if REPLAY && !replay_touching {
+                // The pause before the next touch.
+                replay_until.map_or(1, |u| u.saturating_sub(now_ms).clamp(1, 50) as u32)
+            } else if filter.down() || touch.pen_down() || replay_touching {
+                PEN_DOWN_SLEEP_MS
+            } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
+                20
+            } else if let Some(due) = shell.sky_due_in(now_ms as u32) {
+                // The living sky's next step, when it is due.
+                due
+            } else if shell.notice().is_some() {
+                100
+            } else {
+                // The next minute, but look at the pen line every 50 ms
+                // too: a touch must never depend on one interrupt alone
+                // (on the device touch went dead after a hold, as if one
+                // were missed; the counts in the run log will say).
+                (60_000 - (now_ms % 60_000) as u32).clamp(1, 50)
+            };
             if !filter.down() {
                 // Re-arm pen-down, then re-check the level: an edge while it
                 // was disarmed isn't remembered.

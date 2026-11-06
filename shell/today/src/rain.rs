@@ -412,23 +412,46 @@ pub fn row565(map: &[u32], rain: &[u32], look: Look, out: &mut [u32]) {
     }
 }
 
+/// Areas a loop step redraws at most.
+pub const AREAS: usize = rp_mbx_render::WALL_BOXES;
+
 /// The screen a switch from frame bands `a` to `b` changes (the view's
-/// top at screen row `top`): every band either rains in, across the
-/// columns either does; empty if neither has rain.
+/// top at screen row `top`): each band either rains in, across the columns
+/// either does; neighbouring bands joined where that wastes under a
+/// quarter of their area, the rest kept apart (rain at the left of one band
+/// and the right of the next: two areas, not their bounding box), at most
+/// [`AREAS`] (the last takes the rest). Empty where neither has rain.
 #[must_use]
-pub fn changed(a: &[Option<(u16, u16)>; BANDS], b: &[Option<(u16, u16)>; BANDS], top: u16) -> Rect {
-    let mut r: Option<Rect> = None;
+pub fn changed(
+    a: &[Option<(u16, u16)>; BANDS],
+    b: &[Option<(u16, u16)>; BANDS],
+    top: u16,
+) -> ([Rect; AREAS], usize) {
+    let area = |r: &Rect| u32::from(r.w) * u32::from(r.h);
+    let mut out = [Rect::new(0, 0, 0, 0); AREAS];
+    let mut n = 0;
     for k in 0..BANDS {
         let span = match (a[k], b[k]) {
             (Some((s, e)), Some((s2, e2))) => Some((s.min(s2), e.max(e2))),
             (x, y) => x.or(y),
         };
-        if let Some((s, e)) = span {
-            let band = Rect::new(s, top + k as u16 * BAND_H, e - s + 1, BAND_H);
-            r = Some(r.map_or(band, |r| r.union(&band)));
+        let Some((s, e)) = span else {
+            continue;
+        };
+        let band = Rect::new(s, top + k as u16 * BAND_H, e - s + 1, BAND_H);
+        if n > 0 {
+            let last = out[n - 1];
+            let joined = last.union(&band);
+            let adjacent = last.y + last.h == band.y;
+            if n == AREAS || adjacent && area(&joined) * 4 <= (area(&last) + area(&band)) * 5 {
+                out[n - 1] = joined;
+                continue;
+            }
         }
+        out[n] = band;
+        n += 1;
     }
-    r.unwrap_or(Rect::new(0, 0, 0, 0))
+    (out, n)
 }
 
 #[cfg(test)]
@@ -506,11 +529,43 @@ mod tests {
         assert_eq!(b[BANDS - 1], Some((479, 479)));
         assert!(b[1..BANDS - 1].iter().all(Option::is_none));
         let mut none = [None; BANDS];
-        assert_eq!(changed(&none, &none, 70), Rect::new(0, 0, 0, 0));
+        assert_eq!(changed(&none, &none, 70).1, 0, "no rain: nothing redrawn");
         none[2] = Some((10, 20));
-        let r = changed(&b, &none, 70);
-        assert_eq!((r.x, r.y), (10, 70));
-        assert_eq!((r.x + r.w, r.y + r.h), (480, 70 + 462));
+        let (r, n) = changed(&b, &none, 70);
+        // Bands 0, 2 and 10 apart: three areas, each its own columns.
+        assert_eq!(n, 3);
+        assert_eq!(r[0], Rect::new(100, 70, 201, BAND_H));
+        assert_eq!(r[1], Rect::new(10, 70 + 2 * BAND_H, 11, BAND_H));
+        assert_eq!(r[2], Rect::new(479, 70 + 10 * BAND_H, 1, BAND_H));
+        // Neighbours with like columns join; more than AREAS go in the last.
+        let wide = [Some((0, 479)); BANDS];
+        assert_eq!(
+            changed(&wide, &none, 70),
+            (
+                [
+                    Rect::new(0, 70, 480, 462),
+                    Rect::new(0, 0, 0, 0),
+                    Rect::new(0, 0, 0, 0),
+                    Rect::new(0, 0, 0, 0)
+                ],
+                1
+            )
+        );
+        let zig: [Option<(u16, u16)>; BANDS] =
+            core::array::from_fn(|k| Some(if k % 2 == 0 { (0, 9) } else { (470, 479) }));
+        let (z, zn) = changed(&zig, &zig, 70);
+        assert_eq!(zn, AREAS);
+        let covered: u32 = (0..BANDS as u16)
+            .map(|k| Rect::new(0, 70 + k * BAND_H, 480, BAND_H))
+            .map(|band| {
+                z[..zn]
+                    .iter()
+                    .map(|r| u32::from(r.intersect(&band).w))
+                    .sum::<u32>()
+            })
+            .min()
+            .unwrap_or(0);
+        assert!(covered >= 10, "every band's rain inside an area");
     }
 
     #[test]

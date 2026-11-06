@@ -2285,6 +2285,8 @@ fn the_real_radar_holds_its_newest_frame_until_all_thirteen_are_in() {
         s.net_answer(true, b"");
     }
     assert_eq!(s.radar_real(), Some(Some(12)));
+    // Composed by the device: then it counts as in.
+    s.set_radar_ready(1 << 12);
     let f = drawn(&mut s);
     assert!(
         texts(&f).contains(&b"1 of 13 in".to_vec()),
@@ -2311,6 +2313,11 @@ fn the_real_radar_holds_its_newest_frame_until_all_thirteen_are_in() {
         .collect();
     assert_eq!(order, want);
     assert!(s.radar_complete());
+    assert!(
+        !s.radar_step(t + 50_000),
+        "held until the device has composed them"
+    );
+    s.set_radar_ready(0x1FFF);
     let f = drawn(&mut s);
     assert!(
         texts(&f).contains(&b"past 2 hours".to_vec()),
@@ -3272,4 +3279,49 @@ fn the_sky_drawn_where_it_changes_matches_it_drawn_whole() {
     // A dry sky's clouds move a pixel every 4 steps: most steps draw nothing.
     assert!(drawn_steps < 1200 / 2, "{drawn_steps} of 1200 steps drawn");
     assert_eq!(whole, 0, "a dry sky never redraws the whole card");
+}
+
+/// R184 step 2 (run today-0054: the relay refused frames 10-12 and the
+/// newest showed dry): a refused tile asks its frame again from its first
+/// tile, once; refused again, the frame is lost (a stub, skipped by the
+/// loop), and the next frame is asked.
+#[test]
+fn a_refused_rain_frame_is_asked_again_once_then_skipped_never_shown_dry() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    s.wset.places[0].lat = 30_664;
+    s.wset.places[0].lon = -97_922;
+    s.set_tab(weather_app::RADAR);
+    s.tick(s.now + 10);
+    assert_eq!(s.next_ask().map(|q| q.ask), Some(Ask::Frames));
+    s.net_answer(true, b"100 200 300");
+    assert!(s.next_ask().is_some_and(|q| q.line().starts_with(b"RPNET LAYERS")));
+    s.net_answer(true, b"");
+    // Frame 2's first tile refused: asked again from its first tile.
+    let mut lines = Vec::new();
+    for ok in [false, false] {
+        let q = s.next_ask().expect("a tile");
+        lines.push(q.line().to_vec());
+        s.net_answer(ok, b"");
+    }
+    assert!(lines[0].starts_with(b"RPNET TILE RAIN 2 7 28 51"));
+    assert_eq!(lines[0], lines[1], "asked again once");
+    // Refused again: lost, and frame 1 asked next.
+    let q = s.next_ask().expect("the next frame");
+    assert!(q.line().starts_with(b"RPNET TILE RAIN 1 "), "{:?}", q.line());
+    assert_ne!(s.radar_real(), Some(Some(2)), "never shown as a dry frame");
+    s.net_answer(true, b"");
+    while s.next_ask().is_some() {
+        s.net_answer(true, b"");
+    }
+    assert!(s.radar_complete(), "in or lost: the loop may start");
+    s.set_radar_ready(0b011);
+    s.radar_frame = 0;
+    let t = s.now;
+    assert!(s.radar_step(t + 2000));
+    assert_eq!(s.radar_frame, 1);
+    assert!(s.radar_step(t + 4000));
+    assert_eq!(s.radar_frame, 0, "the lost frame 2 skipped");
 }

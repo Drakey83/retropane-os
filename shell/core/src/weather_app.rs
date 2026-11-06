@@ -49,7 +49,7 @@ pub(crate) const TAB_NAMES: [&[u8]; 4] = [b"Now", b"Hourly", b"10 Day", b"Radar"
 /// The radar's page.
 pub(crate) const RADAR: u8 = 3;
 /// The radar's timeline panel, its play control and its track.
-const TIME_PANEL: Rect = Rect::new(16, 468, 448, 80);
+pub(crate) const TIME_PANEL: Rect = Rect::new(16, 468, 448, 80);
 pub(crate) const PLAY: Rect = Rect::new(20, 474, 56, 68);
 pub(crate) const TIMELINE: Rect = Rect::new(80, 468, 384, 80);
 const TRACK_X: u16 = 96;
@@ -1759,7 +1759,8 @@ impl Shell {
     pub(crate) fn radar_step(&mut self, now: u32) -> bool {
         // The real radar holds its newest frame until every frame is in
         // (R177: the loop played what had come, the bare map between).
-        let held = self.radar_real().is_some() && !self.radar_complete();
+        let held = self.radar_real().is_some()
+            && (!self.radar_complete() || self.radar_shown_ready() != self.radar_have());
         if self.screen != super::Screen::Weather || self.tab != RADAR || !self.radar_play || held {
             self.radar_at = now;
             return false;
@@ -1774,11 +1775,16 @@ impl Shell {
             return false;
         }
         self.radar_at = now;
-        self.radar_frame = if self.radar_frame >= last {
-            0
-        } else {
-            self.radar_frame + 1
-        };
+        // The next frame in (a lost one is skipped).
+        let real = self.radar_real().is_some();
+        let mut next = self.radar_frame;
+        for _ in 0..=last {
+            next = if next >= last { 0 } else { next + 1 };
+            if !real || self.radar_have() & 1 << next != 0 {
+                break;
+            }
+        }
+        self.radar_frame = next;
         // The real rain is the device's to redraw (its wallpaper bands, only
         // where the rain changed: R184 step 2); here only the timeline. The
         // sample's cells are page commands: the page.
@@ -1883,7 +1889,8 @@ impl Shell {
         self.decorate(f, Target::Play);
         // Play waits for the frames: dimmed by the panel's own glass until
         // they are all in.
-        let waiting = real && !self.radar_complete();
+        let waiting = real
+            && (!self.radar_complete() || self.radar_shown_ready() != self.radar_have());
         if waiting {
             f.push(Cmd::Fill {
                 r: Rect::new(px - 4, py - 4, 34, 36),
@@ -1919,7 +1926,7 @@ impl Shell {
         // The span the frames cover (two hours from RainViewer: R184 step
         // 2), or how many are in while they come.
         let span = if real {
-            let have = self.radar_have().count_ones();
+            let have = self.radar_shown_ready().count_ones();
             if waiting {
                 Line::new()
                     .num(have as i32)
@@ -1957,7 +1964,7 @@ impl Shell {
         // A tick per frame; on the real radar a frame not yet in is a
         // short stub, so the ticks fill in as they land.
         for i in 0..n {
-            let missing = real && self.radar_have() & 1 << i == 0;
+            let missing = real && self.radar_shown_ready() & 1 << i == 0;
             let h = match (i == now_frame, missing) {
                 (_, true) => 2,
                 (true, false) => 12,

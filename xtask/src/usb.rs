@@ -1525,6 +1525,21 @@ fn stderr_note(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
 
+    /// The relay takes every frame number RainViewer's two hours give
+    /// (R184 step 2: 13 frames; a one-digit check refused 10-12 and the
+    /// newest frames showed dry, run today-0054), and keeps all of them.
+    #[test]
+    fn the_relay_serves_all_thirteen_rain_frames() {
+        let src = include_str!("usb.rs");
+        let check = [
+            "$w[3] -notmatch '^",
+            r"\d{{1,2}}$' -or [int]$w[3] -ge $script:rv.Count",
+        ]
+        .concat();
+        assert!(src.contains(&check), "the frame number check");
+        assert!(src.contains(&["Select-Object -Last ", "13)"].concat()));
+    }
+
     /// The restart task never shows a window over the owner's work and
     /// runs nothing a user program could edit (2026-10-26).
     #[test]
@@ -2131,7 +2146,9 @@ while ($true) {{
                     Answer ([IO.File]::ReadAllBytes("$data\$f")); continue
                 }}
                 if ($isRain) {{
-                    if ($w[3] -notmatch '^\d$' -or [int]$w[3] -ge $script:rv.Count) {{ Refuse 404 'no such frame'; continue }}
+                    # Two digits: RainViewer's 13 frames (R184 step 2; one
+                    # digit refused frames 10-12, run today-0054).
+                    if ($w[3] -notmatch '^\d{{1,2}}$' -or [int]$w[3] -ge $script:rv.Count) {{ Refuse 404 'no such frame'; continue }}
                     $url = "$($script:rvHost)$($script:rv[[int]$w[3]].path)/256/$z/$x/$y/2/1_1.png"
                 }} else {{
                     $url = "https://tile.openstreetmap.org/$z/$x/$y.png"

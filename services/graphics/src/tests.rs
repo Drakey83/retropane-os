@@ -2234,25 +2234,25 @@ fn wallpaper_bands_take_only_the_clients_own_pictures_and_hold_them() {
         (&[None; 17][..], "more bands than the renderer has"),
     ] {
         assert_eq!(
-            r.g.wallpaper_bands(c, 70, 40, bands, all),
+            r.g.wallpaper_bands(c, 70, 40, bands, &[all]),
             Err(Error::BadWindow),
             "{why}"
         );
     }
     assert_eq!(
-        r.g.wallpaper_bands(c, 70, 40, &[Some((theirs, 0))], all),
+        r.g.wallpaper_bands(c, 70, 40, &[Some((theirs, 0))], &[all]),
         Err(Error::BadHandle),
         "another client's picture"
     );
     assert_eq!(
-        r.g.wallpaper_bands(c, 70, 40, &[None, Some((a, 40))], all),
+        r.g.wallpaper_bands(c, 70, 40, &[None, Some((a, 40))], &[all]),
         Ok(())
     );
     assert_eq!(r.g.free_picture(c, a), Err(Error::Busy), "a band reads it");
-    assert_eq!(r.g.wallpaper_bands(c, 70, 40, &[], all), Ok(()));
+    assert_eq!(r.g.wallpaper_bands(c, 70, 40, &[], &[all]), Ok(()));
     assert_eq!(r.g.free_picture(c, a), Ok(()));
     assert_eq!(
-        r.g.wallpaper_bands(c, 70, 40, &[Some((a, 0))], all),
+        r.g.wallpaper_bands(c, 70, 40, &[Some((a, 0))], &[all]),
         Err(Error::BadHandle),
         "a picture given back"
     );

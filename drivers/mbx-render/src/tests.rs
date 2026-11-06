@@ -957,7 +957,7 @@ fn a_band_switch_redraws_only_its_box_and_matches_a_rewritten_wallpaper() {
     let before = shown(&mut r, &mem);
     write_bands(&mut r, &at, usize::from(h));
     let changed = Rect::new(0, top + h, W, 2 * h);
-    r.wallpaper_bands(top, h, &[None, Some(at[0]), Some(at[1])], changed);
+    r.wallpaper_bands(top, h, &[None, Some(at[0]), Some(at[1])], &[changed]);
     for k in 0..3 {
         scene(&mut f, 0);
         if k == 0 {
@@ -980,7 +980,7 @@ fn a_band_switch_redraws_only_its_box_and_matches_a_rewritten_wallpaper() {
         );
     }
     // Back to the wallpaper alone.
-    r.wallpaper_bands(0, 1, &[], changed);
+    r.wallpaper_bands(0, 1, &[], &[changed]);
     for k in 0..2 {
         scene(&mut f, 0);
         r.draw(&f);
@@ -1002,7 +1002,7 @@ fn bands_read_their_rows_and_the_wallpaper_the_rest() {
     let (mut r, mem) = gpu();
     write_bands(&mut r, &[pool], usize::from(h));
     let mut f = Frame::new();
-    r.wallpaper_bands(top, h, &[None, None, Some(pool)], Rect::new(0, 0, W, H));
+    r.wallpaper_bands(top, h, &[None, None, Some(pool)], &[Rect::new(0, 0, W, H)]);
     f.damage(Rect::new(0, 0, W, H));
     r.draw(&f);
     assert!(r.poll());
@@ -1019,6 +1019,56 @@ fn bands_read_their_rows_and_the_wallpaper_the_rest() {
                 want & 0xFF_FFFF,
                 "({x}, {y})"
             );
+        }
+    }
+}
+
+/// A band switch's areas are redrawn each on its own (rain at the left of
+/// one band and the right of another: two areas, not their bounding box),
+/// and the screen still equals a rewritten wallpaper's.
+#[test]
+fn a_band_switch_redraws_each_changed_area_not_their_bounding_box() {
+    let (top, h) = (100u16, 40u16);
+    let pool = rp_vram_map::POOL.at as usize;
+    let at = [pool, pool + usize::from(h) * STRIDE16];
+    let (mut r, mem) = gpu();
+    let (mut want, wmem) = gpu();
+    for y in top..top + 2 * h {
+        let k = usize::from((y - top) / h);
+        let row: Vec<u32> = (0..480)
+            .map(|x| band_px(k, x, usize::from((y - top) % h)))
+            .collect();
+        want.wallpaper_row(y, &row);
+    }
+    want.wallpaper_changed();
+    let mut f = Frame::new();
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    write_bands(&mut r, &at, usize::from(h));
+    // The bands differ everywhere, so the areas name all of them, apart.
+    let areas = [Rect::new(0, top, 200, h), Rect::new(200, top + h, 280, h)];
+    r.wallpaper_bands(top, h, &[Some(at[0]), Some(at[1])], &[areas[0], areas[1]]);
+    // Nothing else changed: the areas are the band switch's alone.
+    let f = Frame::new();
+    r.draw(&f);
+    assert!(r.poll());
+    assert_eq!(
+        r.last.background_px,
+        200 * 40 + 280 * 40,
+        "the two areas only"
+    );
+    let mut w = Frame::new();
+    w.damage(Rect::new(0, 0, W, H));
+    want.draw(&w);
+    assert!(want.poll());
+    let (got, exp) = (shown(&mut r, &mem), shown(&mut want, &wmem));
+    for a in areas {
+        for y in a.y..a.y + a.h {
+            for x in a.x..a.x + a.w {
+                let i = usize::from(y) * 480 + usize::from(x);
+                assert_eq!(got[i], exp[i], "({x}, {y})");
+            }
         }
     }
 }

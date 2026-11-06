@@ -262,7 +262,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         top: u16,
         h: u16,
         bands: &[Option<(Handle, u16)>],
-        changed: rp_draw::Rect,
+        changed: &[rp_draw::Rect],
     ) -> Result<(), Error> {
         self.rec(c)?;
         if bands.len() > rp_mbx_render::BANDS
