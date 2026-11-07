@@ -1442,8 +1442,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "card check's cluster bitmap too small for a full-size card (fine on test cards)",
         file: "boot/loader/src/main.rs",
-        from: "card_check(&mut lun, seen, scratch, &mut status);",
-        to: "card_check(&mut lun, &mut seen[..64 * 1024], scratch, &mut status);",
+        from: "card_check(&mut *lun, seen, scratch, &mut status);",
+        to: "card_check(&mut *lun, &mut seen[..64 * 1024], scratch, &mut status);",
         check: Check::Emu(crate::emu::boot_loader_full_size),
     },
     Mutant {
@@ -1503,7 +1503,7 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "CF card in at start-up attached only after the drive is offered (the PC's \"USB Drive\" with no size)",
         file: "boot/loader/src/main.rs",
-        from: "        if cf_in {\n            cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);\n        }\n",
+        from: "        if cf_in {\n            cf_attach(&mut *cf, &mut gpio, cpld.as_mut(), false);\n        }\n",
         to: "",
         check: Check::Emu(crate::emu::boot_loader_cf),
     },

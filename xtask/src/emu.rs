@@ -18988,6 +18988,11 @@ struct Boot<'a> {
 /// stack and an older build froze the Axim into the watchdog error screen,
 /// 2026-10-17). Returns the deepest report seen, as (used, size).
 fn check_stack(text: &str) -> Result<Option<(u32, u32)>, String> {
+    // The stack's guard words (quality audit C27, C90): written means an
+    // overflow, whatever the depth read says.
+    if let Some(l) = text.lines().find(|l| l.contains("OVERFLOWED")) {
+        return Err(format!("the stack overflowed: {l:?}"));
+    }
     let mut deepest: Option<(u32, u32)> = None;
     for rest in text.split("stack: deepest ").skip(1) {
         let mut n = rest.split(" of ").map(|p| {
@@ -19818,6 +19823,9 @@ mod tests",
     fn the_stack_check_passes_80_percent_and_fails_above() {
         use super::check_stack;
         assert_eq!(check_stack("no report").unwrap(), None);
+        // The guard words written (quality audit C27, C90): a failure
+        // whatever the depth says.
+        assert!(check_stack("stack: deepest 100 of 16384 bytes - OVERFLOWED: the guard words at its bottom were written").is_err());
         assert_eq!(
             check_stack("stack: deepest 6108 of 12288 bytes\n").unwrap(),
             Some((6108, 12288))

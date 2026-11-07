@@ -679,6 +679,10 @@ pub fn return_to_loader() {
         let (used, size) = rp_hal_pxa27x::rt::stack_used();
         let warn = if used >= size {
             " - OVERFLOWED: .bss below it is corrupt"
+        } else if !rp_hal_pxa27x::rt::stack_guard_intact() {
+            // The guard words (C27, C90): reached even when a frame skipped
+            // over some painted words.
+            " - OVERFLOWED: the guard words at its bottom were written"
         } else if used * 4 > size * 3 {
             " - over 75%"
         } else {

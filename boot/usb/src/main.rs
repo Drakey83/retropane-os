@@ -102,6 +102,7 @@ mod image {
 
         let mut last_draw = rt::ticks().wrapping_sub(REDRAW);
         let mut was_open = false;
+        let mut guard_said = false;
         let mut buf = [0u8; 64];
         loop {
             udc.poll();
@@ -109,6 +110,18 @@ mod image {
             if open && !was_open {
                 udc.write(super::BANNER.as_bytes());
                 let _ = writeln!(log, "host opened the port");
+                // It never returns to the loader, where images report their
+                // stack (quality audit C90): reported on the serial port the
+                // emulator's checks read, its guard words too.
+                let (used, size) = rt::stack_used();
+                let _ = writeln!(uart, "stack: deepest {used} of {size} bytes");
+            }
+            if !guard_said && !rt::stack_guard_intact() {
+                guard_said = true;
+                let _ = writeln!(
+                    uart,
+                    "stack: OVERFLOWED: the guard words at its bottom were written"
+                );
             }
             was_open = open;
             let n = udc.read(&mut buf);

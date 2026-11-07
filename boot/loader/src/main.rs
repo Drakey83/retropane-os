@@ -287,10 +287,12 @@ mod image {
             let was = self.read_only();
             self.part_start = self.card.as_mut().and_then(|sd| partition_start(sd).ok());
             let start = self.part_start;
-            self.guard = self.card.as_mut().zip(start).and_then(|(sd, start)| {
-                let mut vol = AnyVolume::mount(Fed::Sd(sd), start).ok()?;
-                guard_with_icon(&mut vol, &BOOT_FILES, DEVICE_ICON)
-            });
+            self.guard = None;
+            if let Some((sd, start)) = self.card.as_mut().zip(start)
+                && let Ok(mut vol) = AnyVolume::mount(Fed::Sd(sd), start)
+            {
+                guard_with_icon(&mut vol, &BOOT_FILES, DEVICE_ICON, &mut self.guard);
+            }
             was != self.read_only()
         }
     }
@@ -1033,11 +1035,29 @@ mod image {
     /// it names, in the card's root: hidden from the PC and kept like the
     /// boot files, the owner, 2026-10-25) and the device's icon
     /// (`device_icon`). `None` when it can't be built.
+    /// The CF card's first partition's start (0 with no MBR), `None` if
+    /// its first sector can't be read. Its own frame (quality audit C89):
+    /// the sector it reads isn't on the stack while the guard is built.
+    #[inline(never)]
+    fn cf_partition_start<C: BlockDevice>(card: &mut C) -> Option<u32> {
+        let mut block = [0u8; rp_drv_cf::SECTOR];
+        card.read_blocks(0, &mut block).ok()?;
+        Some(
+            mbr_partitions(&block)
+                .and_then(|p| p[0])
+                .map_or(0, |p| p.start),
+        )
+    }
+
+    // Into the caller's slot (quality audit C89): the guard isn't carried
+    // back through this frame and the caller's.
+    #[inline(never)]
     fn guard_with_icon(
         vol: &mut AnyVolume<Fed<'_>>,
         boot: &[&str],
         device_icon: &str,
-    ) -> Option<Guard> {
+        out: &mut Option<Guard>,
+    ) {
         let mut text = [0u8; 256];
         let mut n = 0;
         let mut scratch = [0u8; rp_drv_sdcard::BLOCK];
@@ -1062,7 +1082,7 @@ mod image {
             names[k] = icon;
             k += 1;
         }
-        vol.guard(&names[..k]).ok()
+        vol.guard_into(&names[..k], out);
     }
 
     /// `rm <path>`: deletes a file or an empty folder (crash-safe), never a
@@ -1921,15 +1941,11 @@ mod image {
             if let CfSlot::Card(card) = &mut self.slot
                 && self.inserted
             {
-                let mut block = [0u8; rp_drv_cf::SECTOR];
-                if card.read_blocks(0, &mut block).is_ok() {
-                    let start = mbr_partitions(&block)
-                        .and_then(|p| p[0])
-                        .map_or(0, |p| p.start);
+                if let Some(start) = cf_partition_start(card) {
                     self.part_start = Some(start);
-                    self.guard = AnyVolume::mount(Fed::Cf(card), start)
-                        .ok()
-                        .and_then(|mut v| guard_with_icon(&mut v, &CF_BOOT_FILES, CF_DEVICE_ICON));
+                    if let Ok(mut v) = AnyVolume::mount(Fed::Cf(card), start) {
+                        guard_with_icon(&mut v, &CF_BOOT_FILES, CF_DEVICE_ICON, &mut self.guard);
+                    }
                 }
             }
             was != self.read_only()
@@ -2981,7 +2997,12 @@ mod image {
         // reading of the switch can't hide a working card).
         let inserted = !gpio.read(SD_DETECT) || card.is_some();
         let locked = gpio.read(SD_LOCK);
-        let mut lun = Lun {
+        // The two cards' LUNs in static slots, not `main`'s frame (quality
+        // audit C89: each holds a ~1.3 KiB guard; `main`'s frame lay under
+        // every path, the deepest MTP's at 84% of the stack).
+        static LUN: rt::Slot<Lun> = rt::Slot::new();
+        static CF_LUN: rt::Slot<CfLun> = rt::Slot::new();
+        let Some(lun) = LUN.put_with(|| Lun {
             card,
             spare,
             writable: true,
@@ -2993,8 +3014,10 @@ mod image {
             seen: (inserted, locked),
             dirty_found: None,
             init_error: if inserted { sd_error } else { None },
+        }) else {
+            halt()
         };
-        let dma = check_dma(&mut lun, msc_buf);
+        let dma = check_dma(&mut *lun, msc_buf);
         lun.refresh_guard();
         lun.dirty_found = lun.dirty_flag();
         stages[1] = rt::since_start();
@@ -3005,7 +3028,7 @@ mod image {
         // the drive empty and its icon only minutes later. Now the PC finds
         // it ready from its first question, as the SD card.
         let cf_in = cf_card_in(&mut gpio, cpld.as_mut());
-        let mut cf = CfLun {
+        let Some(cf) = CF_LUN.put_with(|| CfLun {
             slot: CfSlot::Untried,
             inserted: cf_in,
             seen: cf_in,
@@ -3026,15 +3049,17 @@ mod image {
             tune_pending: false,
             tuned: None,
             wtuned: None,
+        }) else {
+            halt()
         };
         cf.events.push(if cf.ready { b'1' } else { b'0' });
         if cf_in {
-            cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
+            cf_attach(&mut *cf, &mut gpio, cpld.as_mut(), false);
         }
         stages[2] = rt::since_start();
         // A card new to this loader: its timings now, before the PC looks
         // (after the attach's stage, which `emu-cf` times for a power cycle).
-        cf_attached(&mut cf, &mut fat_scratch[..SCRATCH]);
+        cf_attached(&mut *cf, &mut fat_scratch[..SCRATCH]);
 
         let Some((mut regs, vram)) = devices::take_mbx() else {
             halt()
@@ -3069,7 +3094,7 @@ mod image {
         // The previous program's run: if it crashed or hung, the crash
         // screen goes above the log.
         // The previous run's card log first: its run log is still open.
-        let logged = card_log_finish(&mut LogCards(&mut lun, &mut cf));
+        let logged = card_log_finish(&mut LogCards(&mut *lun, &mut *cf));
         let mut pending = devices::log_take();
         // Kept for `log`: a log sent while Windows was re-finding the
         // device can be lost on the way; its bytes stay in RAM until the
@@ -3135,7 +3160,7 @@ mod image {
             // A crash or a hang is kept on the card first, so the report
             // survives whatever happens next (the PC may not be there).
             if !run.handover && (run.crashed || !run.returned) {
-                let saved = save_report(&mut lun, run, &mut fat_scratch[..SCRATCH]);
+                let saved = save_report(&mut *lun, run, &mut fat_scratch[..SCRATCH]);
                 let _ = writeln!(
                     log,
                     "report {} on the card",
@@ -3210,8 +3235,8 @@ mod image {
                 if (state.taken | state.changed) & (1 << unit) == 0
                     && state.files[unit].sectors > 0
                     && still_the_runs_card(
-                        &mut lun,
-                        &mut cf,
+                        &mut *lun,
+                        &mut *cf,
                         unit,
                         &state,
                         &mut fat_scratch[..SCRATCH],
@@ -3330,7 +3355,7 @@ mod image {
             if udc.take_msc_reset() {
                 msc.reset();
                 if let Some(t) = mtp_t.as_mut() {
-                    t.bus_reset(&mut udc, &mut lun, &mut cf, &mut log);
+                    t.bus_reset(&mut udc, &mut *lun, &mut *cf, &mut log);
                 }
             }
             if patience.due(now_ms(), udc.configured(), udc.stats().resets) {
@@ -3385,11 +3410,11 @@ mod image {
             }
             match mtp_t.as_mut() {
                 Some(t) if udc.layout() == Layout::Mtp => {
-                    t.poll(&mut udc, &mut lun, &mut cf, &mut log);
+                    t.poll(&mut udc, &mut *lun, &mut *cf, &mut log);
                 }
                 _ => msc.poll(
                     &mut Pipe(&mut udc, udc_dma.as_mut()),
-                    &mut [&mut lun, &mut cf],
+                    &mut [&mut *lun, &mut *cf],
                     now_ms(),
                 ),
             }
@@ -3501,8 +3526,8 @@ mod image {
                     }
                     let mut reply = Line::new();
                     put_file(
-                        &mut lun,
-                        &mut cf,
+                        &mut *lun,
+                        &mut *cf,
                         &mut msc,
                         mtp_busy,
                         &mut put_seen,
@@ -3511,7 +3536,7 @@ mod image {
                         &mut reply,
                     );
                     if let Some(t) = mtp_t.as_mut() {
-                        t.put_done(&put_seen, &mut lun, &mut cf, &mut log);
+                        t.put_done(&put_seen, &mut *lun, &mut *cf, &mut log);
                     }
                     send(&mut uart, &mut udc, reply.as_str());
                     let _ = writeln!(log, "{}", reply.as_str().trim_ascii_end());
@@ -3582,8 +3607,8 @@ mod image {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 ls_command(
-                                    &mut lun,
-                                    &mut cf,
+                                    &mut *lun,
+                                    &mut *cf,
                                     &c[2..],
                                     &mut stream(&mut udc),
                                     &mut status,
@@ -3596,8 +3621,8 @@ mod image {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 hash_command(
-                                    &mut lun,
-                                    &mut cf,
+                                    &mut *lun,
+                                    &mut *cf,
                                     &c[5..],
                                     &mut fat_scratch[..SCRATCH],
                                     &mut status,
@@ -3610,8 +3635,8 @@ mod image {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 get_command(
-                                    &mut lun,
-                                    &mut cf,
+                                    &mut *lun,
+                                    &mut *cf,
                                     &c[4..],
                                     &mut fat_scratch[..SCRATCH],
                                     &mut stream(&mut udc),
@@ -3741,7 +3766,7 @@ mod image {
                         Ok(c @ (b"cf" | b"cf soft")) => {
                             let had = matches!(cf.slot, CfSlot::Card(_));
                             cf_command(
-                                &mut cf,
+                                &mut *cf,
                                 &mut gpio,
                                 cpld.as_mut(),
                                 c == b"cf soft",
@@ -3759,7 +3784,7 @@ mod image {
                             if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
-                                card_layout(&mut lun, &mut cf, &c[12..], &mut status);
+                                card_layout(&mut *lun, &mut *cf, &c[12..], &mut status);
                                 status.as_str()
                             }
                         }
@@ -3776,8 +3801,8 @@ mod image {
                             } else {
                                 let scratch = &mut fat_scratch[..SCRATCH];
                                 let wrote = format_command(
-                                    &mut lun,
-                                    &mut cf,
+                                    &mut *lun,
+                                    &mut *cf,
                                     &args[..n],
                                     dest,
                                     scratch,
@@ -3797,8 +3822,9 @@ mod image {
                             if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
-                                let gone = arg_path(&c[3..]).and_then(|p| mtp::locate(&mut lun, p));
-                                rm_command(&mut lun, &c[3..], &mut status);
+                                let gone =
+                                    arg_path(&c[3..]).and_then(|p| mtp::locate(&mut *lun, p));
+                                rm_command(&mut *lun, &c[3..], &mut status);
                                 // The PC must re-read the volume (MTP: the
                                 // object is gone, rule 10).
                                 msc.medium_changed(0);
@@ -3867,7 +3893,13 @@ mod image {
                         }
                         Ok(b"loader stack") => {
                             let (deep, size) = rt::stack_used();
-                            let _ = write!(status, "RPL OK stack {deep} of {size}\r\n");
+                            // The guard words (C27): written means overflowed.
+                            let guard = if rt::stack_guard_intact() {
+                                ""
+                            } else {
+                                " OVERFLOWED"
+                            };
+                            let _ = write!(status, "RPL OK stack {deep} of {size}{guard}\r\n");
                             status.as_str()
                         }
                         Ok(b"card check") => {
@@ -3875,16 +3907,16 @@ mod image {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
                                 let (scratch, seen) = fat_scratch.split_at_mut(SCRATCH);
-                                card_check(&mut lun, seen, scratch, &mut status);
+                                card_check(&mut *lun, seen, scratch, &mut status);
                                 status.as_str()
                             }
                         }
                         Ok(c) if c.starts_with(b"card dma") => {
-                            card_dma(&mut lun, &dma, &c[8..], &mut status);
+                            card_dma(&mut *lun, &dma, &c[8..], &mut status);
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"card peek ") => {
-                            card_peek(&mut lun, &c[10..], &mut status);
+                            card_peek(&mut *lun, &c[10..], &mut status);
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"card repair ") => {
@@ -3894,7 +3926,7 @@ mod image {
                             if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
-                                card_repair(&mut lun, &c[12..], &mut status);
+                                card_repair(&mut *lun, &c[12..], &mut status);
                                 card_changed!(0);
                                 status.as_str()
                             }
@@ -3906,7 +3938,7 @@ mod image {
                             if msc.host_writing(now_ms()) || mtp_busy {
                                 "RPL ERR card busy: the PC is writing\r\n"
                             } else {
-                                card_scrub(&mut lun, &c[11..], &mut status);
+                                card_scrub(&mut *lun, &c[11..], &mut status);
                                 card_changed!(0);
                                 status.as_str()
                             }
@@ -3915,7 +3947,7 @@ mod image {
                             if watchdog.armed() {
                                 watchdog.feed(RUN_LIMIT);
                             }
-                            card_scan(&mut lun, &c[10..], &mut status, &mut || {
+                            card_scan(&mut *lun, &c[10..], &mut status, &mut || {
                                 if watchdog.armed() {
                                     watchdog.feed(RUN_LIMIT);
                                 }
@@ -3995,8 +4027,8 @@ mod image {
                         cardsink::end();
                     } else {
                         card_log_begin(
-                            &mut lun,
-                            &mut cf,
+                            &mut *lun,
+                            &mut *cf,
                             &run_name[..run_name_len],
                             &mut fat_scratch[..SCRATCH],
                             &mut card_note,
@@ -4017,7 +4049,7 @@ mod image {
                         b"[loader: image CHANGED after the cache flush]\n"
                     });
                     devices::log_append(card_note.as_str().as_bytes());
-                    cardsink::sync_with(&mut LogCards(&mut lun, &mut cf));
+                    cardsink::sync_with(&mut LogCards(&mut *lun, &mut *cf));
                     // A run limit: an image that hangs (never returns, never
                     // feeds the watchdog) resets the device, and the loader
                     // comes back (started again by Windows Mobile's StartUp
@@ -4062,8 +4094,8 @@ mod image {
                 // A card that goes in (or was in at start-up) is attached
                 // at once, as the SD card is, so it shows up next to it.
                 if cf.inserted {
-                    cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
-                    cf_attached(&mut cf, &mut fat_scratch[..SCRATCH]);
+                    cf_attach(&mut *cf, &mut gpio, cpld.as_mut(), false);
+                    cf_attached(&mut *cf, &mut fat_scratch[..SCRATCH]);
                 }
                 card_changed!(1);
                 let _ = writeln!(
@@ -4083,11 +4115,11 @@ mod image {
                 && !msc.busy()
                 && core::mem::take(&mut cf.tune_pending)
             {
-                cf_tune(&mut cf);
+                cf_tune(&mut *cf);
                 if let Some(t) = cf.tuned {
                     let _ = writeln!(log, "CF card timing: {}", TunedText(t));
                 }
-                if cf_write_tune(&mut cf, &mut fat_scratch[..SCRATCH]) {
+                if cf_write_tune(&mut *cf, &mut fat_scratch[..SCRATCH]) {
                     // Its files changed (the write timing found and kept):
                     // the PC re-reads the card.
                     card_changed!(1);
@@ -4107,8 +4139,8 @@ mod image {
                 cf.retry_at =
                     rt::ticks().wrapping_add(CF_RETRY_SECS[usize::from(cf.retries)] * TICK_1S);
                 cf.retries += 1;
-                cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
-                cf_attached(&mut cf, &mut fat_scratch[..SCRATCH]);
+                cf_attach(&mut *cf, &mut gpio, cpld.as_mut(), false);
+                cf_attached(&mut *cf, &mut fat_scratch[..SCRATCH]);
                 card_changed!(1);
                 let _ = writeln!(
                     log,

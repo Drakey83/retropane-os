@@ -34,10 +34,6 @@ const DEPTH_LIMIT_PERCENT: u32 = 75;
 /// its measured deepest path: it may shrink, never grow, until its fix
 /// (docs/reminders.md R149) brings it under the limit and it leaves the list.
 pub const DEPTH_OVER: &[(&str, u32)] = &[
-    // The MTP format path: main's 10.6 KB frame, the guard rebuilt with
-    // its Guard and volume on the stack (5.2 + 3.2 + 5.0 KB), then a
-    // panic's report: 87% of 32 KiB, static and through direct calls.
-    ("rp-loader", 28_696),
     // A test image: main 4.4 KB, save 2.4 KB, mount 4.0 KB.
     ("rp-noise", 12_296),
 ];
@@ -246,6 +242,38 @@ pub fn deepest(root: &str, graph: &HashMap<String, Calls>, frames: &HashMap<Stri
     }
 }
 
+/// The deepest chain through each function `main` calls (quality audit
+/// C89: the deep paths known offline, not only the deepest): for each
+/// callee, its depth counted from `main`'s entry and its chain, deepest
+/// first.
+pub fn paths_through(
+    main: &str,
+    graph: &HashMap<String, Calls>,
+    frames: &HashMap<String, u32>,
+) -> Vec<(u32, Vec<String>)> {
+    let frame = frames.get(main).copied().unwrap_or(0);
+    let Some(c) = graph.get(main) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(u32, Vec<String>)> = Vec::new();
+    for (callee, tail) in c
+        .calls
+        .iter()
+        .map(|x| (x, false))
+        .chain(c.tails.iter().map(|x| (x, true)))
+    {
+        if out.iter().any(|(_, p)| p.get(1) == Some(callee)) {
+            continue;
+        }
+        let d = deepest(callee, graph, frames);
+        let mut path = vec![main.to_string()];
+        path.extend(d.path);
+        out.push((if tail { d.bytes } else { frame + d.bytes }, path));
+    }
+    out.sort_by_key(|p| core::cmp::Reverse(p.0));
+    out
+}
+
 /// `llvm-nm -n` lines: (address, name) of every symbol.
 fn symbols(nm: &str) -> Vec<(u32, String)> {
     nm.lines()
@@ -355,6 +383,16 @@ pub fn check(elfs: &[PathBuf]) -> Result<(), String> {
                 )
             );
         }
+        // `RP_STACK_PATHS=<image>`: the deepest chain through each function
+        // its `main` calls, deepest first (C89).
+        if std::env::var("RP_STACK_PATHS").is_ok_and(|v| v == image)
+            && let Some(main) = depth.path.iter().find(|f| is_main(&name(f)))
+        {
+            for (bytes, chain) in paths_through(main, &graph, &frames).iter().take(16) {
+                let names: Vec<String> = chain.iter().map(|f| name(f)).collect();
+                eprintln!("      {bytes:>6} B  {}", names.join(" > "));
+            }
+        }
         let over = DEPTH_OVER
             .iter()
             .find(|(i, _)| *i == image)
@@ -390,6 +428,35 @@ pub fn check(elfs: &[PathBuf]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C89: the deepest chain through each of `main`'s callees, deepest
+    /// first, counted from `main`'s entry (a tail call without its frame).
+    #[test]
+    fn each_path_from_main_is_reported_deepest_first() {
+        let mut g: HashMap<String, Calls> = HashMap::new();
+        let calls = |c: &[&str], t: &[&str]| Calls {
+            calls: c.iter().map(|s| s.to_string()).collect(),
+            tails: t.iter().map(|s| s.to_string()).collect(),
+            indirect: 0,
+        };
+        g.insert("main".into(), calls(&["a", "b"], &["t"]));
+        g.insert("a".into(), calls(&["leaf"], &[]));
+        let f: HashMap<String, u32> =
+            [("main", 100), ("a", 10), ("b", 50), ("leaf", 5), ("t", 400)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+        let p = paths_through("main", &g, &f);
+        let got: Vec<(u32, String)> = p.iter().map(|(b, c)| (*b, c.join(">"))).collect();
+        assert_eq!(
+            got,
+            [
+                (400, "main>t".to_string()),
+                (150, "main>b".to_string()),
+                (115, "main>a>leaf".to_string()),
+            ]
+        );
+    }
 
     #[test]
     fn reads_frames_with_folded_names() {

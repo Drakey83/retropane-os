@@ -276,6 +276,12 @@ pub fn finish() -> ! {
     let (used, size) = rt::stack_used();
     let mut uart = PxaUart::new(rt::emergency_uart());
     let _ = writeln!(uart, "stack: deepest {used} of {size} bytes");
+    if !rt::stack_guard_intact() {
+        let _ = writeln!(
+            uart,
+            "stack: OVERFLOWED: the guard words at its bottom were written"
+        );
+    }
     stop()
 }
 

@@ -2171,6 +2171,17 @@ impl<D: BlockDevice> AnyVolume<D> {
         }
     }
 
+    /// The guard (as [`Self::guard`]) put straight into `out`, `None` if
+    /// it can't be made: the ~1.3 KiB guard is never carried back through
+    /// the caller's frames (quality audit C89: the loader's stack).
+    #[inline(never)]
+    pub fn guard_into(&mut self, names: &[&str], out: &mut Option<Guard>) {
+        *out = None;
+        if let Ok(g) = self.guard(names) {
+            *out = Some(g);
+        }
+    }
+
     /// Checks the volume, read-only ([`check`]).
     pub fn check(&mut self, seen: &mut [u8], scratch: &mut [u8]) -> Result<Health, Error> {
         match self {

@@ -1036,6 +1036,11 @@ pub fn check_in_every_ms() -> u32 {
 /// images check in (2026-10-13: images feeding the watchdog only as long as
 /// the run limit let it win the race, and an idle image reset the device).
 pub fn check_in() {
+    // The stack's guard (C27): an overflow stops here with its name, before
+    // what it overwrote below the stack is used.
+    if !stack_guard_intact() {
+        panic!("stack overflow: the guard words at the SVC stack's bottom were written");
+    }
     // SAFETY: as in `on_check_in`.
     if let Some(f) = unsafe { core::ptr::addr_of!(CHECK_IN_HOOK).read() } {
         f();
@@ -1125,6 +1130,29 @@ extern "C" fn rp_abort(kind: u32, pc: u32) -> u32 {
 
 /// What `_start` paints the SVC stack with.
 const STACK_PAINT: u32 = 0x5741_434B;
+
+/// The words at the SVC stack's bottom that must still hold the paint: its
+/// guard (quality audit C27, C90). A frame that reaches them has used all
+/// but 32 bytes of the stack, and one more call writes `.bss` below it;
+/// [`check_in`] and every image's return and crash report check them, so
+/// an overflow is a named report, not a silent corruption or a hang.
+pub const STACK_GUARD_WORDS: usize = 8;
+
+/// Whether the stack's guard words ([`STACK_GUARD_WORDS`]) still hold the
+/// paint `_start` laid.
+#[must_use]
+pub fn stack_guard_intact() -> bool {
+    unsafe extern "C" {
+        static __stack_bottom: [u32; 0];
+    }
+    // SAFETY: the linker script reserves the SVC stack from
+    // `__stack_bottom` (boot/link.x), at least 16 KiB: its first words are
+    // only read.
+    unsafe {
+        let bottom = core::ptr::addr_of!(__stack_bottom).cast::<u32>();
+        (0..STACK_GUARD_WORDS).all(|i| bottom.add(i).read_volatile() == STACK_PAINT)
+    }
+}
 
 /// The SVC stack: (bytes the deepest call reached, bytes it has), from the
 /// paint `_start` laid down. Deepest = the lowest word no longer painted;

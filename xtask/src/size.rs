@@ -369,7 +369,13 @@ pub const BUDGETS: &[Budget] = &[
         // the loader's stack 16 -> 32 KiB, after the CF card's timing
         // searches at the attach overflowed 16 (17,376 B deepest; quality
         // audit C83); 36,656 B measured, the stack in its own 1 MiB home.
-        max_zero: 36 * 1024,
+        // 36 -> 42 KiB on 2026-11-07 (branch fix/deep-dive-2026-11-06,
+        // quality audit C89, NOT YET APPROVED: a tick-box in
+        // docs/reports/decisions-2026-11-06.md): the two card LUNs moved
+        // from main's frame into static slots (5.6 KiB), so the stack's
+        // deepest path fell 87% -> 67%; the same bytes, counted here instead
+        // of in the stack. 42,304 B measured.
+        max_zero: 42 * 1024,
         device: OnDevice::Loader,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.
@@ -885,7 +891,9 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 30.2 KiB measured, + ~10%.
     Budget {
         image: "rp-reconnect",
-        max_load: 34 * 1024,
+        // Load 34 -> 35 KiB on 2026-11-07 (test image): every image's stack
+        // guard check in rt::check_in (quality audit C27), ~450 B measured.
+        max_load: 35 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -897,7 +905,9 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 29.7 KiB measured, + ~10%.
     Budget {
         image: "rp-unplug",
-        max_load: 34 * 1024,
+        // Load 34 -> 35 KiB on 2026-11-07 (test image): every image's stack
+        // guard check in rt::check_in (quality audit C27), ~450 B measured.
+        max_load: 35 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -1047,7 +1057,9 @@ pub const BUDGETS: &[Budget] = &[
     // catches up at check-ins); 32.7 KiB measured.
     Budget {
         image: "rp-refresh",
-        max_load: 34 * 1024,
+        // Load 34 -> 35 KiB on 2026-11-07 (test image): every image's stack
+        // guard check in rt::check_in (quality audit C27), ~450 B measured.
+        max_load: 35 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

@@ -14,3 +14,12 @@ rule. Each item's code is built on branch `fix/deep-dive-2026-11-06`
   `rp-scene` divide-1 variant, P8 judged by DSIG. Owed; not made.
 - [ ] **Which divide-1 rungs ship** stays amendment D's vote (Q1-Q3),
   unchanged by E.
+
+## Item 5: the stack
+
+- [ ] **Approve the loader's zeroed-RAM budget 36 -> 42 KiB** (`xtask/src/size.rs`):
+  the two card LUNs moved from `main`'s frame into static slots, the
+  loader's deepest stack path 87% -> 67% of its 32 KiB. The same bytes,
+  counted in the zeroed RAM instead of the stack. Unticked, the LUNs go
+  back on the stack and the loader stays on R149's list.
+
