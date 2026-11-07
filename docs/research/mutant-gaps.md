@@ -11,6 +11,13 @@ adding mutants.
 
 **1074 tests, 107 test filters named by mutants, 172 guard-like tests without a mutant naming them.**
 
+**Back in the list 2026-11-07 (quality audit C18, item 6 of the owner's
+list):** "mixer: wakes only when the mix is about to run out" is killed by
+`the_low_water_mark_feeds_a_decoder_slow_to_refill`: with only background
+media (the 200 ms interval) a program needing 90 ms after each wake to
+refill runs dry 8 times in 3.5 s without the mark (24 with three streams),
+never with it. The note below is how it was retired.
+
 **Retired 2026-10-19 late night, as near-equivalent in the host model:**
 "mixer: wakes only when the mix is about to run out" (the low-water mark
 dropped from the wake's timing). Killed until ADR-0032 A6-B's follow-up

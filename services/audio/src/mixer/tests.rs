@@ -1217,6 +1217,36 @@ fn a_program_slow_to_refill_has_the_low_water_s_time() {
     assert_eq!(sim.m.stats().late, 0);
 }
 
+/// Quality audit C18: the low-water mark is what saves a slow decoder. With
+/// only background media (the 200 ms interval) a program that needs 90 ms
+/// after each wake to refill (a decoder's work on this CPU, no FPU) is fed
+/// only because the mixer wakes at the lead less one interval; waking only
+/// as the mix runs out starves it (measured: 8 dry stretches in 3.5 s with
+/// one stream, 24 with three, against none with the mark).
+#[test]
+fn the_low_water_mark_feeds_a_decoder_slow_to_refill() {
+    for streams in [1usize, 3] {
+        let mut sim = Sim::new(false);
+        sim.refill_delay = 90;
+        let mut fs: Vec<Feeder> = (0..streams)
+            .map(|k| music(&mut sim, 21 + k as u32, 8_000, 3))
+            .collect();
+        sim.run(3_500, &mut |m, now| {
+            let mut any = false;
+            for f in &mut fs {
+                any |= f.feed(m, now);
+            }
+            any
+        });
+        assert_eq!(
+            sim.m.stats().starved,
+            0,
+            "{streams} streams: {:?}",
+            sim.m.stats()
+        );
+    }
+}
+
 #[test]
 fn a_player_trickling_small_writes_over_a_deep_queue_is_not_interactive() {
     // Condition 13's queue. While a click's hold keeps the wakes short, a

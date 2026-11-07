@@ -48,6 +48,18 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "mixer: wakes only when the mix is about to run out",
+        file: "services/audio/src/mixer.rs",
+        from: "            .min(ahead_ms.saturating_sub(low_water))
+",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_low_water_mark_feeds_a_decoder_slow_to_refill",
+        ]),
+    },
+    Mutant {
         name: "C99: another client reads the layer's pixels",
         file: "services/graphics/src/layer.rs",
         from: "        if owner != c.0 || !inside {",
