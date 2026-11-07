@@ -196,6 +196,11 @@ const CHUNK: usize = 32;
 struct Atlas {
     font: usize,
     color: Argb,
+    /// Where it starts in the glyph memory and its bytes (whole 16s).
+    off: usize,
+    bytes: usize,
+    /// The frame that last drew with it (eviction takes the oldest).
+    used: u32,
     at: [u16; GLYPHS],
 }
 
@@ -236,6 +241,8 @@ pub struct FrameStats {
     pub rows_reused: u32,
     /// Text atlases built (a font in a colour not cached).
     pub atlases: u32,
+    /// Atlases evicted to make room (the oldest drawn with first).
+    pub atlases_evicted: u32,
     /// Pictures uploaded to the image cache.
     pub images: u32,
     /// Times the frame waited for the engine mid-way (row buffers or a
@@ -339,7 +346,8 @@ pub struct Mbx2dRenderer<R, M> {
     /// nothing).
     pics: Option<&'static rp_draw::pics::Pics<'static>>,
     atlases: [Option<Atlas>; ATLASES],
-    glyphs_top: usize,
+    /// Frames drawn (stamps the atlases' last use).
+    frame_no: u32,
     /// Flips written after waiting [`FLIP_WAIT_US`] for the blanking
     /// without seeing it (written anyway: a refresh may tear).
     pub late_flips: u32,
@@ -486,7 +494,7 @@ macro_rules! renderer_start {
             images_top: 0,
             pics: None,
             atlases: [None; ATLASES],
-            glyphs_top: 0,
+            frame_no: 0,
             late_flips: 0,
             hold: false,
             landed: None,
@@ -1168,13 +1176,26 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     }
 
     /// The atlas for (`font`, `color`), uploading it if needed.
+    ///
+    /// Each atlas holds its own span of the glyph memory. A new one goes in
+    /// the first gap that fits; when none does, the atlas drawn with
+    /// longest ago (never one this frame draws with) is evicted, one at a
+    /// time, until one does. A look switch's new colours then push out the
+    /// old look's atlases only, never the ones both looks draw with (R172:
+    /// flushing the whole memory when full uploaded every atlas still in
+    /// use again, 10 in one frame). All are dropped only if this frame's
+    /// own atlases fill the memory.
     fn atlas(&mut self, font: &'static rp_draw::Font, color: Argb) -> Option<usize> {
         let key = font as *const rp_draw::Font as usize;
+        let now = self.frame_no;
         if let Some(k) = self
             .atlases
             .iter()
             .position(|a| a.is_some_and(|a| a.font == key && a.color == color))
         {
+            if let Some(a) = self.atlases[k].as_mut() {
+                a.used = now;
+            }
             return Some(k);
         }
         let bytes: usize = font
@@ -1185,13 +1206,28 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         if bytes > self.l.glyphs.1 || font.glyphs.len() > GLYPHS {
             return None;
         }
-        let slot = match self.atlases.iter().position(Option::is_none) {
-            Some(k) if self.glyphs_top + bytes <= self.l.glyphs.1 => k,
-            _ => {
-                self.wait();
-                self.atlases = [None; ATLASES];
-                self.glyphs_top = 0;
-                0
+        let (slot, off) = loop {
+            let gap = self.atlas_gap(bytes);
+            match (self.atlases.iter().position(Option::is_none), gap) {
+                (Some(k), Some(off)) => break (k, off),
+                _ => {
+                    // The oldest not drawn with this frame (the engine is
+                    // done with the frames before: `draw` waits for them).
+                    let oldest = self
+                        .atlases
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(k, a)| a.filter(|a| a.used != now).map(|a| (a.used, k)))
+                        .min();
+                    if let Some((_, k)) = oldest {
+                        self.atlases[k] = None;
+                        self.last.atlases_evicted += 1;
+                    } else {
+                        self.wait();
+                        self.atlases = [None; ATLASES];
+                        break (0, 0);
+                    }
+                }
             }
         };
         let (rgb, a) = (color & 0x00FF_FFFF, color >> 24);
@@ -1200,15 +1236,19 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         self.atlases[slot] = Some(Atlas {
             font: key,
             color,
+            off,
+            bytes,
+            used: now,
             at: [0; GLYPHS],
         });
         let mut buf = [0u32; CHUNK];
+        let mut top = off;
         for (k, g) in font.glyphs.iter().enumerate() {
             let (w, h) = (usize::from(g.w), usize::from(g.h));
             if w == 0 || h == 0 || g.cover.len() < w * h {
                 continue;
             }
-            let at = self.l.glyphs.0 + self.glyphs_top;
+            let at = self.l.glyphs.0 + top;
             for (i0, cover) in g.cover[..w * h].chunks(CHUNK).enumerate() {
                 for (p, &c) in buf.iter_mut().zip(cover) {
                     *p = div255(a * u32::from(c)) << 24 | rgb;
@@ -1216,12 +1256,50 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 self.mem.store(at + 4 * CHUNK * i0, &buf[..cover.len()]);
             }
             if let Some(atlas) = self.atlases[slot].as_mut() {
-                atlas.at[k] = (self.glyphs_top / 16 + 1) as u16;
+                atlas.at[k] = (top / 16 + 1) as u16;
             }
-            self.glyphs_top += (w * h * 4).next_multiple_of(16);
+            top += (w * h * 4).next_multiple_of(16);
         }
         self.mem.sync();
         Some(slot)
+    }
+
+    /// Stamps every atlas `frame`'s text draws with as this frame's before
+    /// anything is drawn, so making room for a new pair never evicts one
+    /// the frame needs later (a look switch's first new colour came before
+    /// the pairs it shares, all stamped alike).
+    fn mark_atlases(&mut self, frame: &Frame) {
+        let now = self.frame_no;
+        for c in frame.cmds() {
+            if let Cmd::Text { font, color, .. } = *c {
+                let key = font as *const rp_draw::Font as usize;
+                for a in self.atlases.iter_mut().flatten() {
+                    if a.font == key && a.color == color {
+                        a.used = now;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The first offset in the glyph memory with `bytes` free after it,
+    /// between the atlases kept.
+    fn atlas_gap(&self, bytes: usize) -> Option<usize> {
+        let mut spans = [(0usize, 0usize); ATLASES];
+        let mut n = 0;
+        for a in self.atlases.iter().flatten() {
+            spans[n] = (a.off, a.off + a.bytes);
+            n += 1;
+        }
+        spans[..n].sort_unstable();
+        let mut free = 0;
+        for &(start, end) in &spans[..n] {
+            if start - free >= bytes {
+                return Some(free);
+            }
+            free = free.max(end);
+        }
+        (self.l.glyphs.1 - free >= bytes).then_some(free)
     }
 
     /// What decides how `clip` looks: the background, the commands that
@@ -1513,6 +1591,8 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         // into; usually long done by the time anything changes.
         let t0 = (self.now)();
         self.last = FrameStats::default();
+        self.frame_no = self.frame_no.wrapping_add(1);
+        self.mark_atlases(frame);
         self.dropping = false;
         // A held frame nobody flipped: show it now.
         self.flip();

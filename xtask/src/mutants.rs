@@ -2457,6 +2457,29 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "mbx-render: a full glyph memory drops every atlas (R172)",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "                    if let Some((_, k)) = oldest {",
+        to: "                    if let Some((_, k)) = oldest.filter(|_| false) {",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_look_switch_uploads_only_its_new_atlases",
+        ]),
+    },
+    Mutant {
+        name: "mbx-render: the frame's atlases not marked before drawing (R172)",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "        self.mark_atlases(frame);
+",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_look_switch_uploads_only_its_new_atlases",
+        ]),
+    },
+    Mutant {
         name: "mbx-render: a dropped frame's half-made background kept",
         file: "drivers/mbx-render/src/lib.rs",
         from: "            // made again, the next two frames drawn whole.

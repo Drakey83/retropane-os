@@ -1072,3 +1072,94 @@ fn a_band_switch_redraws_each_changed_area_not_their_bounding_box() {
         }
     }
 }
+
+/// A font of `n` 32 x 32 glyphs from 'A', its coverage a ramp (leaked: a
+/// test's fonts live as long as the renderer).
+fn big_font(n: usize, seed: u8) -> &'static Font {
+    let glyphs: Vec<Glyph> = (0..n)
+        .map(|k| {
+            let cover: Vec<u8> = (0..32 * 32)
+                .map(|i| {
+                    (i as u8)
+                        .wrapping_mul(7)
+                        .wrapping_add(seed)
+                        .wrapping_add(k as u8)
+                })
+                .collect();
+            Glyph {
+                w: 32,
+                h: 32,
+                left: 0,
+                top: 32,
+                advance: 34,
+                cover: std::boxed::Box::leak(cover.into_boxed_slice()),
+            }
+        })
+        .collect();
+    std::boxed::Box::leak(std::boxed::Box::new(Font {
+        line: 36,
+        ascent: 32,
+        first: b'A',
+        glyphs: std::boxed::Box::leak(glyphs.into_boxed_slice()),
+    }))
+}
+
+/// Each font in its colour, a line of six glyphs a font, the whole screen
+/// damaged.
+fn text_frame(fonts: &[(&'static Font, u32)]) -> Frame {
+    let mut f = Frame::new();
+    for (i, &(font, colour)) in fonts.iter().enumerate() {
+        f.text(8, 40 + 40 * i as u16, font, colour, b"ABCDEF");
+    }
+    f.damage(Rect::new(0, 0, W, H));
+    f
+}
+
+/// R172: a look switch that keeps some (font, colour) pairs and adds new
+/// ones, with the glyph memory full, uploads only the new pairs: the old
+/// look's unused atlases are evicted one at a time, the shared ones stay
+/// (flushing the whole memory uploaded every atlas still in use again).
+/// The text stays right through the evictions.
+#[test]
+fn a_look_switch_uploads_only_its_new_atlases() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    // Five fonts that fill the glyph memory between them.
+    let n = (Layout::X51V.glyphs.1 / 5 / 4096).min(super::GLYPHS);
+    let fonts: Vec<&'static Font> = (0..5).map(|k| big_font(n, k as u8 * 31)).collect();
+    let (dark, light) = (0xFFE0_E0E0, 0xFF20_2020);
+    // The second look draws its new pairs first, as a screen may: a flush
+    // then would drop the shared ones in the same frame.
+    let look = |second: bool| -> Vec<(&'static Font, u32)> {
+        let mut v: Vec<_> = fonts
+            .iter()
+            .enumerate()
+            .map(|(k, &f)| (f, if k >= 3 && second { light } else { dark }))
+            .collect();
+        if second {
+            v.reverse();
+        }
+        v
+    };
+    let a = text_frame(&look(false));
+    r.draw(&a);
+    assert!(r.poll());
+    assert_eq!(r.last.atlases, 5, "the first look uploads its five");
+    same(&shown(&mut r, &mem), &cpu.draw(&a), 2).unwrap();
+    // The switch: three pairs kept, two new, no room for them.
+    let b = text_frame(&look(true));
+    r.draw(&b);
+    assert!(r.poll());
+    assert_eq!(r.last.atlases, 2, "only the two new pairs are uploaded");
+    assert_eq!(
+        r.last.atlases_evicted, 2,
+        "the old look's two unused ones go"
+    );
+    same(&shown(&mut r, &mem), &cpu.draw(&b), 2).unwrap();
+    // And back: the same again the other way.
+    r.draw(&a);
+    assert!(r.poll());
+    assert_eq!(r.last.atlases, 2);
+    same(&shown(&mut r, &mem), &cpu.draw(&a), 2).unwrap();
+    assert_eq!(r.stalls, 0);
+}
