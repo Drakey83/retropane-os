@@ -268,7 +268,9 @@ pub fn check_run_reports(path: &str, text: &str) -> Option<String> {
     }
     let cites_local = text.match_indices("local/").any(|(i, _)| {
         let rest = &text[i..];
-        let end = rest.find(|c: char| c.is_whitespace() || c == '`' || c == ')').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == '`' || c == ')')
+            .unwrap_or(rest.len());
         rest[..end].ends_with(".txt")
     });
     (cites_local && !text.contains("reports/runs/")).then(|| {
@@ -320,7 +322,10 @@ mod tests {
         // No run log named: nothing to point at.
         assert_eq!(check_run_reports(p, "the local/maps cache"), None);
         // Sheets written before the rule, and files elsewhere, are left alone.
-        assert_eq!(check_run_reports("docs/research/sheets/r120-speed-switch.md", bad), None);
+        assert_eq!(
+            check_run_reports("docs/research/sheets/r120-speed-switch.md", bad),
+            None
+        );
         assert_eq!(check_run_reports("docs/hw/2700g.md", bad), None);
     }
 
