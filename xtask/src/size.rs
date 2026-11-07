@@ -369,9 +369,9 @@ pub const BUDGETS: &[Budget] = &[
         // the loader's stack 16 -> 32 KiB, after the CF card's timing
         // searches at the attach overflowed 16 (17,376 B deepest; quality
         // audit C83); 36,656 B measured, the stack in its own 1 MiB home.
-        // 36 -> 42 KiB on 2026-11-07 (branch fix/deep-dive-2026-11-06,
-        // quality audit C89, NOT YET APPROVED: a tick-box in
-        // docs/reports/decisions-2026-11-06.md): the two card LUNs moved
+        // 36 -> 42 KiB on 2026-11-07 (approved by the owner 2026-11-07:
+        // "the bytes moved off the stack, they are not new"; quality audit
+        // C89, docs/reports/decisions-2026-11-06.md): the two card LUNs moved
         // from main's frame into static slots (5.6 KiB), so the stack's
         // deepest path fell 87% -> 67%; the same bytes, counted here instead
         // of in the stack. 42,304 B measured.
@@ -566,9 +566,12 @@ pub const BUDGETS: &[Budget] = &[
     // Then 170 -> 174 KiB (2026-11-06, test image): the divide-1 variant's
     // P8 (the cures left to the clock, ADR-0035 amendment proposed) and the
     // service's rung read, 172.1 KiB measured.
+    // Then 174 -> 177 KiB (2026-11-07, test image): the 2D renderer's
+    // atlases evicted singly, the frame's own pinned (R172, fix c), the
+    // divide-1 variant 179,808 B (175.6 KiB) measured.
     Budget {
         image: "rp-scene",
-        max_load: 174 * 1024,
+        max_load: 177 * 1024,
         max_zero: 50 * 1024,
         device: OnDevice::Returns,
     },
