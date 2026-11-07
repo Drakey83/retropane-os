@@ -202,3 +202,34 @@ image touches only its own folder). The image's FAT use goes through
   it in 8 unpack passes, and leaves the file as it was.
 - Not measurable off the device: the read, unpack and write times, and the
   opening's timings with the dock; the X51v run measures them.
+
+## X51v run (2026-11-06, `local/rp-today-run-2026-11-06-r184s3a.txt` and `-r184s3b.txt`)
+
+**Start 1 (no map on the card: the dock's, then written):**
+- The card looked at in 74 ms ("not on the card"); the map over the dock
+  1,395 ms (176,574 bytes), unpacked in one pass 169 ms, as before.
+- **The write took 532 ms in one pass** (176,606 bytes to `RPMAPS/`),
+  over the sheet's ~50 ms hitch line: the overturn the sheet names (a
+  piece writer). The newest frame's answer came 1,587 ms after its ask
+  (~1.1 s usual) because the write held the loop in between.
+
+**Start 2 (the map from the card):**
+- The header in 59 ms (mount and folder walk in one pass); the map read in
+  445 ms over 6 passes (~74 ms a pass: each piece mounts the volume and
+  walks the folder again), checked, then **unpacked in 168 ms over 8
+  passes** (~21 ms each, as estimated); **the map in 655 ms after Radar
+  asked** (~740 ms on screen with colouring and the wallpaper write),
+  under the 0.8 s line: way A holds, B not needed. Run 4: ~1.55 s.
+- **The newest frame answered 1.8 s after opening** (the frame list
+  0.77 s, then `RAIN 12` 1.03 s), against 3.3 s in run 4.
+- **The check:** `LAYERS ... 4c08daa0` answered empty in 59 ms ("the card's
+  is the relay's"), once, after the rain.
+
+**Proposed next (for the owner's go):**
+1. The piece writer: the file reserved in one run of clusters and written
+   32 KB a pass, its header last (a torn file fails its CRC), so no pass
+   holds the loop for ~0.5 s.
+2. The read through the file's extent (`rp_fat::Volume::extent`: one
+   lookup, then plain sector reads a pass) instead of a mount and folder
+   walk per piece: ~445 ms toward ~110 ms at the card's 1.7 MB/s
+   (estimate), the map on screen ~0.4 s after opening.
