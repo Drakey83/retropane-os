@@ -3097,7 +3097,7 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
 
 /// rp-mbx-blend's run on the owner's X51v (2026-10-14): the lines the
 /// emulator must reproduce.
-const MBX_BLEND_DEVICE: &str = include_str!("../data/rp-mbx-blend-device.txt");
+const MBX_BLEND_DEVICE: &str = include_str!("../../data/rp-mbx-blend-device.txt");
 
 /// The 4-digit hex pixels after a run-log line's colon, before any verdict.
 fn logged_pixels(rest: &str) -> Vec<&str> {
@@ -10897,7 +10897,7 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
 
 /// rp-mbx-blend B7's run on the owner's X51v (2026-10-21): the lines the
 /// emulator must reproduce.
-const MBX_BLEND_B7_DEVICE: &str = include_str!("../data/rp-mbx-blend-b7-device.txt");
+const MBX_BLEND_B7_DEVICE: &str = include_str!("../../data/rp-mbx-blend-b7-device.txt");
 
 /// The B7 result line the emulator doesn't model (docs/hw/emulator.md):
 /// header bit 21 wrote nothing on the X51v, meaning unknown.
@@ -10925,12 +10925,12 @@ fn device_mismatches(log: &str, device: &str, skip: &[&str]) -> Vec<String> {
 
 /// rp-mbx-blend B9's and B10's runs on the owner's X51v: the lines an
 /// emulator with `mbx-2d-pal` (and `mbx-2d-rop`) must reproduce exactly.
-const MBX_BLEND_B9_DEVICE: &str = include_str!("../data/rp-mbx-blend-b9-device.txt");
-const MBX_BLEND_B10_DEVICE: &str = include_str!("../data/rp-mbx-blend-b10-device.txt");
+const MBX_BLEND_B9_DEVICE: &str = include_str!("../../data/rp-mbx-blend-b9-device.txt");
+const MBX_BLEND_B10_DEVICE: &str = include_str!("../../data/rp-mbx-blend-b10-device.txt");
 
 /// rp-mbx-blend B11's run on the owner's X51v (2026-10-22): the lines an
 /// emulator with `mbx-2d-rop` must reproduce exactly.
-const MBX_BLEND_B11_DEVICE: &str = include_str!("../data/rp-mbx-blend-b11-device.txt");
+const MBX_BLEND_B11_DEVICE: &str = include_str!("../../data/rp-mbx-blend-b11-device.txt");
 
 /// B10 alone (`RP_MBX_BLEND_B10`, the performance gate's P13, V15, V17):
 /// all 256 raster operations run (none stuck), each part to its line, the
@@ -12059,7 +12059,7 @@ fn preview_clock(noon: rp_shell::Time) -> rp_shell::Time {
 
 /// The relay's canned alerts answer (`ALERTS`), for the previews.
 pub(crate) const NWS_ALERTS: &[u8] =
-    include_bytes!("../../shell/weather/tests/data/nws-alerts-two.json");
+    include_bytes!("../../../shell/weather/tests/data/nws-alerts-two.json");
 
 /// Icon pack `n` as the image unpacks it from the card, if the build made it.
 pub(crate) fn today_pack(release: &Path, n: usize) -> Option<rp_shell::Icons> {
@@ -19551,6 +19551,13 @@ fn boot_loader_tabench_isolate(root: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// Every file of the emulator harness (emu/), for the tests that read
+    /// its source.
+    fn sources() -> &'static str {
+        static ALL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        ALL.get_or_init(|| [include_str!("mod.rs"), include_str!("mtp.rs")].concat())
+    }
+
     /// A reference without its quad passes only where the fork can't draw
     /// the way's object forms (or G4's way 2); a modelled way losing its
     /// quad fails, and an unmodelled way showing one fails too (R58).
@@ -19601,7 +19608,7 @@ mod tests {
     /// folder), or relied on a file an earlier check left in target/emu.
     #[test]
     fn emulator_files_go_through_the_helpers() {
-        let src = include_str!("emu.rs");
+        let src = sources();
         let code = src.split("#[cfg(test)]\nmod tests").next().expect("code");
         let code: String = code
             .lines()
@@ -19690,7 +19697,7 @@ mod tests {
         assert!(!ere_finds(p, &format!("bash -c {stop}")), "its own shell");
 
         // No other pkill: every kill goes through these two.
-        let src = include_str!("emu.rs");
+        let src = sources();
         let code = src.split("#[cfg(test)]\nmod tests").next().expect("code");
         let kills = code
             .lines()
@@ -19701,7 +19708,7 @@ mod tests {
 
     /// The body of `pub fn name` in this file.
     fn body(name: &str) -> &'static str {
-        let src = include_str!("emu.rs");
+        let src = sources();
         let start = src.find(&format!("pub fn {name}(")).expect(name);
         let body = &src[start..];
         &body[..body.find("\n}\n").expect("end")]
@@ -19727,7 +19734,7 @@ mod tests {
     /// `GuestClock`), or a short pause inside a wait loop (`poll_pause`).
     #[test]
     fn no_fixed_sleeps_of_half_a_second_or_more() {
-        let src = include_str!("emu.rs");
+        let src = sources();
         let code = src
             .split(
                 "#[cfg(test)]
@@ -19779,12 +19786,12 @@ mod tests",
             "drive checks the count"
         );
         assert!(!drive.contains("elapsed() >"), "drive: no wall-clock bound");
-        let loader = include_str!("../../boot/loader/src/main.rs");
+        let loader = include_str!("../../../boot/loader/src/main.rs");
         assert!(
             loader.contains("naps mid-command {}"),
             "the loader reports it"
         );
-        let src = include_str!("emu.rs");
+        let src = sources();
         let code = src.split("#[cfg(test)]\nmod tests").next().expect("code");
         let bounds = code.matches("elapsed() >").count() + code.matches("took >").count();
         assert_eq!(
@@ -19813,7 +19820,7 @@ mod tests",
 
     #[test]
     fn today_presses_wait_for_the_screen() {
-        let src = include_str!("emu.rs");
+        let src = sources();
         let start = src.find("pub fn boot_loader_today").expect("today");
         let body = &src[start..];
         let body = &body[..body.find("\n}\n").expect("end")];
@@ -19856,7 +19863,7 @@ mod tests",
     #[test]
     fn a_local_file_is_watched_through_the_nearest_existing_folder() {
         mod local_input {
-            include!("../../tools/build/local_input.rs");
+            include!("../../../tools/build/local_input.rs");
             pub fn nearest(p: &std::path::Path) -> Option<std::path::PathBuf> {
                 nearest_existing_dir(p)
             }
@@ -20068,7 +20075,7 @@ mod tests",
     /// test reaches past it into another run's ports.
     #[test]
     fn usb_ports_fit_the_port_block() {
-        let src = [include_str!("emu.rs"), include_str!("emu/mtp.rs")].concat();
+        let src = sources();
         let mut seen = 0;
         for call in [
             "usb_connect(",
