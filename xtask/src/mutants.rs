@@ -48,6 +48,17 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "R185 look check's eyes: the page layer never seen over the screen",
+        file: "drivers/mbx-display/src/layers.rs",
+        from: "    let over_graphics = SCADR_BLEND_POS.extract(vscadr) > SCADR_BLEND_POS.extract(gscadr);",
+        to: "    let over_graphics = false;",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "shown_at_rebuilds_the_planes_from_the_registers",
+        ]),
+    },
+    Mutant {
         name: "gpubench GC2Q: the climb up to the memory's failing 156 MHz",
         file: "boot/gpubench/src/gc2.rs",
         from: "pub const ABOVE_PLL: [(u32, u32); 4] = [(41, 4), (43, 4), (45, 4), (23, 2)];",

@@ -635,10 +635,182 @@ impl Snapshot {
     }
 }
 
+/// What the panel shows at screen point (`x`, `y`), as 0xRRGGBB, rebuilt
+/// from the display's live registers and its memory (`load`: the 32-bit
+/// word at a byte offset of the 2700G's local memory, `vram` bytes of it):
+/// the graphics plane's pixel, and over it the video plane's where its
+/// window covers the point, blended by its mode. The eyes of an unattended
+/// run (sheet `docs/research/sheets/r185-look-check-unattended.md`): it
+/// reads what the hardware scans out, not what the program believes it
+/// asked for. `None` when the graphics plane is off or isn't RGB565, the
+/// point is off it, or the video plane is scaled or of a format it doesn't
+/// read (YUV): unknown, never guessed.
+pub fn shown_at<B: RegisterBus>(
+    regs: &mut B,
+    load: impl Fn(usize) -> Option<u32>,
+    vram: usize,
+    x: u16,
+    y: u16,
+) -> Option<u32> {
+    shown_parts_at(regs, load, vram, x, y).map(|s| s.out)
+}
+
+/// What [`shown_parts_at`] found: the graphics plane's pixel, the video
+/// plane's over it (its colour and alpha, `None` where it doesn't cover the
+/// point or sits under), and the pixel shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shown {
+    /// The graphics plane's pixel, 0xRRGGBB.
+    pub under: u32,
+    /// The video plane's colour and alpha (0-255) at the point.
+    pub over: Option<(u32, u32)>,
+    /// The pixel shown, 0xRRGGBB.
+    pub out: u32,
+}
+
+/// As [`shown_at`], with each plane's part: why a pixel looks as it does.
+pub fn shown_parts_at<B: RegisterBus>(
+    regs: &mut B,
+    load: impl Fn(usize) -> Option<u32>,
+    vram: usize,
+    x: u16,
+    y: u16,
+) -> Option<Shown> {
+    let only = |under: u32| Shown { under, over: None, out: under };
+    let half = |at: usize| -> Option<u32> {
+        let w = load(at & !3)?;
+        Some(if at & 2 == 0 { w & 0xFFFF } else { w >> 16 })
+    };
+    let gscadr = regs.read32(crate::reg::GSCADR);
+    let g = crate::Plane::decode(
+        regs.read32(crate::reg::GSCTRL),
+        gscadr,
+        regs.read32(crate::reg::GSADR),
+        vram,
+    )?;
+    if g.format != crate::PixelFormat::Rgb565 || x >= g.width || y >= g.height {
+        return None;
+    }
+    let p = half(g.offset + usize::from(y) * g.stride + usize::from(x) * 2)?;
+    let under = rgb565_888(p);
+    let vscadr = regs.read32(reg::VSCADR);
+    if SCADR_STR_EN.extract(vscadr) == 0 {
+        return Some(only(under));
+    }
+    let vsctrl = regs.read32(reg::VSCTRL);
+    let vsadr = regs.read32(reg::VSADR);
+    let (w, h) = (VSCTRL_WIDTH.extract(vsctrl) + 1, VSCTRL_HEIGHT.extract(vsctrl) + 1);
+    let size = regs.read32(reg::SSSIZE);
+    if size != ((w - 1) << 16) | (h - 1) {
+        return None;
+    }
+    let (wx, wy) = (VSADR_X.extract(vsadr), VSADR_Y.extract(vsadr));
+    let (px, py) = (u32::from(x), u32::from(y));
+    if px < wx || py < wy || px >= wx + w || py >= wy + h {
+        return Some(only(under));
+    }
+    let stride = (VSADR_STRIDE.extract(vsadr) as usize + 1) * 16;
+    let row = SCADR_BASE.extract(vscadr) as usize * 16 + (py - wy) as usize * stride;
+    let (rgb, alpha) = match VSCTRL_FMT.extract(vsctrl) {
+        0x4 => {
+            let v = half(row + (px - wx) as usize * 2)?;
+            let n = |s: u32| ((v >> s) & 0xF) * 0x11;
+            ((n(8) << 16) | (n(4) << 8) | n(0), n(12))
+        }
+        0x8 => {
+            let v = load(row + (px - wx) as usize * 4)?;
+            (v & 0xFF_FFFF, v >> 24)
+        }
+        0x7 => (rgb565_888(half(row + (px - wx) as usize * 2)?), 0xFF),
+        _ => return None,
+    };
+    let over_graphics = SCADR_BLEND_POS.extract(vscadr) > SCADR_BLEND_POS.extract(gscadr);
+    let a = match SCADR_BLEND_M.extract(vscadr) {
+        0 => 0xFF,
+        1 => 0xFF - alpha,
+        2 => BBASE_GLALPHA.extract(regs.read32(reg::VBBASE)),
+        _ => alpha,
+    };
+    // The video plane under an opaque graphics plane doesn't show.
+    if !over_graphics {
+        return Some(only(under));
+    }
+    let mix = |s: u32| {
+        let (t, b) = ((rgb >> s) & 0xFF, (under >> s) & 0xFF);
+        ((t * a + b * (0xFF - a) + 127) / 0xFF) << s
+    };
+    Some(Shown {
+        under,
+        over: Some((rgb, a)),
+        out: mix(16) | mix(8) | mix(0),
+    })
+}
+
+/// An RGB565 pixel as 0xRRGGBB, each channel's top bits repeated low.
+const fn rgb565_888(p: u32) -> u32 {
+    let (r, g, b) = ((p >> 11) & 0x1F, (p >> 5) & 0x3F, p & 0x1F);
+    (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rp_hal_mock::MockBus;
+
+    /// The panel's pixel rebuilt from the registers: the graphics plane
+    /// alone, then a pixel-alpha ARGB4444 video plane over it (the page
+    /// layer), outside and inside its window, half and fully opaque.
+    #[test]
+    fn shown_at_rebuilds_the_planes_from_the_registers() {
+        let mut mem = vec![0u32; 0x4_0000];
+        let g = crate::Plane {
+            format: crate::PixelFormat::Rgb565,
+            width: 480,
+            height: 640,
+            offset: 0,
+            stride: 960,
+        };
+        // The graphics plane: pure red at (10, 20).
+        let at = 20 * 960 + 10 * 2;
+        mem[at / 4] |= 0xF800 << (8 * (at & 2));
+        let mut bus = MockBus::new();
+        for (o, v) in g.registers() {
+            bus.preset(o, v);
+        }
+        let load = |m: &[u32]| {
+            let m = m.to_vec();
+            move |a: usize| m.get(a / 4).copied()
+        };
+        assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 10, 20), Some(0xFF_0000));
+        assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 11, 20), Some(0));
+        assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 480, 0), None);
+        // A 16 x 16 ARGB4444 plane at screen (8, 16), over it, pixel alpha.
+        let v = VideoPlane::new(VideoFormat::Argb4444, 16, 16, 0xA_0000);
+        let top = Layer {
+            slot: Slot::Middle,
+            blend: Blend::PixelAlpha,
+        };
+        for (o, val) in v.registers_scaled(top, false, v.scale_to(16, 16, 8, 16)) {
+            bus.preset(o, val);
+        }
+        // Its pixel (2, 4) = screen (10, 20): white at alpha 8 of 15; its
+        // pixel (3, 4): blue, opaque.
+        let put = |m: &mut [u32], at: usize, px: u32| m[at / 4] |= px << (8 * (at & 2));
+        put(&mut mem, 0xA_0000 + 4 * 32 + 2 * 2, 0x8FFF);
+        put(&mut mem, 0xA_0000 + 4 * 32 + 3 * 2, 0xF00F);
+        let half = (0xFF * 0x88 + 0xFF * (0xFF - 0x88) + 127) / 0xFF;
+        let green = (0xFF * 0x88 + 127) / 0xFF;
+        assert_eq!(
+            shown_at(&mut bus, load(&mem), 0x10_0000, 10, 20),
+            Some((half << 16) | (green << 8) | green),
+            "white half over red"
+        );
+        assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 11, 20), Some(0xFF), "opaque blue");
+        assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 7, 20), Some(0), "left of the window");
+        // Scaled: unknown.
+        bus.preset(reg::SSSIZE, (31 << 16) | 31);
+        assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 10, 20), None);
+    }
 
     #[test]
     fn layer_bits_match_mbxfb() {

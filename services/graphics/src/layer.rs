@@ -671,6 +671,29 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         Ok(())
     }
 
+    /// What the panel shows at (`x`, `y`) now, as 0xRRGGBB, read back from
+    /// the display's registers and memory ([`layers::shown_at`]): the
+    /// unattended look check's eyes (R185, sheet
+    /// `docs/research/sheets/r185-look-check-unattended.md`). A few
+    /// uncached reads; nothing written.
+    pub fn shown_at(&mut self, x: u16, y: u16) -> Option<u32> {
+        self.shown_parts_at(x, y).map(|s| s.out)
+    }
+
+    /// As [`Self::shown_at`], with each plane's part
+    /// ([`layers::shown_parts_at`]).
+    pub fn shown_parts_at(&mut self, x: u16, y: u16) -> Option<layers::Shown> {
+        let (e, mem) = self.two_d.parts();
+        let mem = &*mem;
+        layers::shown_parts_at(
+            &mut e.regs,
+            |at| mem.load(at),
+            rp_vram_map::SIZE as usize,
+            x,
+            y,
+        )
+    }
+
     /// The layer on screen (`None`: off).
     #[must_use]
     pub fn layer(&self) -> Option<LayerState> {

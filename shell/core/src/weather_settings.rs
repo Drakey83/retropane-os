@@ -82,6 +82,19 @@ pub(crate) enum Item {
 pub(crate) type Items = ([Item; 16], u8);
 
 impl Shell {
+    /// Weather settings' Appearance row, when that screen is up: where the
+    /// unattended look check's recording taps (R185, `cargo xtask
+    /// look-replay`), found as the screen lays it out (its row moves with
+    /// the places kept).
+    #[must_use]
+    pub fn appearance_row(&self) -> Option<Target> {
+        let (items, n) = self.items();
+        items[..usize::from(n)]
+            .iter()
+            .position(|i| *i == Item::Appearance)
+            .map(|k| Target::Row(k as u8))
+    }
+
     /// The rows of the screen up, in order.
     pub(crate) fn items(&self) -> Items {
         let mut out = ([Item::Icons; 16], 0u8);

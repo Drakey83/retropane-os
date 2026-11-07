@@ -11943,7 +11943,7 @@ fn preview_set(file: &[u8]) -> rp_shell::Icons {
 /// The pictures the Today image shows with no other pack chosen: the
 /// default pack (pack 0, VClouds) as it makes them, if the build made it
 /// (the image carries none of its own: option C).
-fn today_icons() -> rp_shell::Icons {
+pub(crate) fn today_icons() -> rp_shell::Icons {
     let release = crate::arm_release(&crate::workspace_root());
     preview_set(&today_output(&release, "rp-icons0.pak").unwrap_or_default())
 }
@@ -13062,6 +13062,54 @@ pub fn today_watch(root: &Path, recording: &str) -> Result<(), String> {
         std::fs::write(&path, log).map_err(|e| e.to_string())?;
         eprintln!("    watch: run log in {}", path.display());
     }
+    Ok(())
+}
+
+/// `cargo xtask emu-today-look`: R185's look check unattended (sheet
+/// `docs/research/sheets/r185-look-check-unattended.md`): the image built
+/// with the look check and the recording `cargo xtask look-replay` makes
+/// for the default settings (Weather, then Appearance three times round
+/// with every page after each), run in the emulator to the loader; passes
+/// when no pass saw the wrong look, both looks were judged right on every
+/// page, and few passes were unknown.
+pub fn today_look(root: &Path) -> Result<(), String> {
+    crate::lookcheck::recording(root, None, crate::lookcheck::RECORDING_EMU)?;
+    let gap = crate::lookcheck::GAP_MS.to_string();
+    let envs = [
+        ("RP_TODAY_REPLAY", "1"),
+        ("RP_TODAY_REPLAY_FILE", crate::lookcheck::RECORDING_EMU),
+        ("RP_TODAY_REPLAY_GAP_MS", gap.as_str()),
+        ("RP_TODAY_LOOK_CHECK", "1"),
+    ];
+    let bin = variant_image_envs(root, "rp-today", &envs)?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    crate::sdkit::raw_binary(&crate::arm_release(root).join("rp-loader"), &loader)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), rp_today::MARKER)),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("today look: never came back to the loader")?;
+    if crashed(log) || log.contains("did not return") {
+        return Err(format!("today look: didn't return cleanly:{log}"));
+    }
+    let _ = std::fs::write(root.join("target/emulator/today-look-log.txt"), log);
+    crate::lookcheck::judge(log).map_err(|e| format!("today look: {e}"))?;
+    eprintln!("    today look OK (log target/emulator/today-look-log.txt)");
     Ok(())
 }
 

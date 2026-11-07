@@ -152,6 +152,13 @@ mod image {
     /// on to measure what those lines cost.
     const REPLAY: bool = option_env!("RP_TODAY_REPLAY").is_some();
     const REPLAY_RECORD: bool = option_env!("RP_TODAY_REPLAY_RECORD").is_some();
+    /// R185's look check (`RP_TODAY_LOOK_CHECK`, sheet
+    /// `docs/research/sheets/r185-look-check-unattended.md`): while the
+    /// Weather app is up and nothing is in flight, the look the panel
+    /// shows (`rp_today::look`, from pixels read back off the display) is
+    /// checked against the look chosen, every pass; a mismatch is logged
+    /// `LOOK WRONG`.
+    const LOOK_CHECK: bool = option_env!("RP_TODAY_LOOK_CHECK").is_some();
 
     /// The profile (`RP_TODAY_PROFILE`, with the replay; R81 item 1, the
     /// owner's "measure first"): the performance monitor around each hot
@@ -2008,6 +2015,12 @@ mod image {
         let mut windowless = [(0u32, [(0u16, 0u16, 0u32); 3], 0usize, None::<(u32, u32)>); 16];
         let mut windowless_n = 0usize;
         let mut no_window_seen = 0u32;
+        // R185's look check: passes judged right per look (dark, light) and
+        // page, wrong, unknown; the look last seen chosen.
+        let mut look_seen = [[0u32; 4]; 2];
+        let mut look_wrong = 0u32;
+        let mut look_unknown = 0u32;
+        let mut look_last: Option<bool> = None;
         // When the frame in flight next wants a poll (the service's clock,
         // us): its flip's deadline, or the engine's next look (R115).
         let mut flip_due: Option<u32> = None;
@@ -2043,6 +2056,75 @@ mod image {
                 Step::Wait(t) => Some(t),
                 _ => None,
             };
+            if LOOK_CHECK
+                && matches!(shell.screen(), rp_shell::Screen::Weather)
+                && !shell.needs_frame()
+                && !gfx.busy()
+                && !gfx.commit_pending()
+            {
+                let want = shell.light();
+                let tab = shell.weather_page().0;
+                let look = &rp_today::look::CHROME;
+                let page = rp_today::look::page_points(tab);
+                // The chrome and the page vote apart: a page of the wrong
+                // look under the right chrome (run r184s3c) is wrong.
+                let mut cpx = [None; rp_today::look::CHROME.len()];
+                let mut ppx = [None; 9];
+                for (o, p) in cpx.iter_mut().zip(look) {
+                    *o = gfx.shown_at(p.x, p.y);
+                }
+                // A page on the layer is judged only where the layer covers
+                // it (a page growing in shows the wallpaper below its
+                // window: the emulator's run, 2026-11-06).
+                let on_layer = gfx.layer().is_some();
+                for (o, p) in ppx.iter_mut().zip(page) {
+                    *o = gfx
+                        .shown_parts_at(p.x, p.y)
+                        .filter(|s| !on_layer || s.over.is_some())
+                        .map(|s| s.out);
+                }
+                let chrome = rp_today::look::verdict(look, &cpx);
+                let on_page = rp_today::look::verdict(page, &ppx[..page.len()]);
+                let wrong = chrome == Some(!want) || on_page == Some(!want);
+                let right = chrome == Some(want) && (page.is_empty() || on_page == Some(want));
+                if wrong {
+                    look_wrong += 1;
+                    if look_wrong <= 8 {
+                        let l = |v: &Option<u32>| v.map_or(0, rp_today::look::luma);
+                        let (cl, pl) = (cpx.map(|v| l(&v)), ppx.map(|v| l(&v)));
+                        let _ = writeln!(
+                            RunLog,
+                            "LOOK WRONG at {now_ms} ms: page {tab}, the look is {}; the chrome says {chrome:?} {cl:?}, the page {on_page:?} {:?} (Some(true) light)",
+                            if want { "light" } else { "dark" },
+                            &pl[..page.len()],
+                        );
+                        // Why: each plane's part at the page's first
+                        // points, and the layer as the service has it.
+                        for p in page.iter().take(3) {
+                            let _ = writeln!(
+                                RunLog,
+                                "  at ({}, {}): {:x?}; the layer {:?}",
+                                p.x,
+                                p.y,
+                                gfx.shown_parts_at(p.x, p.y),
+                                gfx.layer()
+                            );
+                        }
+                    }
+                } else if right {
+                    look_seen[usize::from(want)][usize::from(tab.min(3))] += 1;
+                } else {
+                    look_unknown += 1;
+                }
+                if look_last != Some(want) {
+                    look_last = Some(want);
+                    let _ = writeln!(
+                        RunLog,
+                        "look check: the {} look chosen at {now_ms} ms",
+                        if want { "light" } else { "dark" }
+                    );
+                }
+            }
             let nw = gfx.starts().flips_no_window;
             if nw != no_window_seen {
                 no_window_seen = nw;
@@ -2362,6 +2444,13 @@ mod image {
                 back = true;
             }
 
+            if back && LOOK_CHECK {
+                let _ = writeln!(
+                    RunLog,
+                    "look check: {look_wrong} wrong; right: dark on pages 0-3 {:?}, light on pages 0-3 {:?}; {look_unknown} passes unknown (too few points agreeing)",
+                    look_seen[0], look_seen[1]
+                );
+            }
             if back {
                 let (n, median, worst) = latency.summary();
                 let (stalls, fifo_full) = (gfx.two_d().stalls, gfx.two_d().fifo_full);

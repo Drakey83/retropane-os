@@ -11,6 +11,7 @@ mod eol;
 mod frames;
 mod g7;
 mod gate;
+mod lookcheck;
 mod measure;
 mod mutants;
 mod perf;
@@ -265,6 +266,11 @@ commands:
             renderer code: PNGs and an index page in target/ui-preview/
   emu-today the shell's Today screen (ADR-0021): pixel-exact, a tap on
             Start opens the menu, Back to loader returns with latencies
+  emu-today-look  R185's look check unattended: the image taps its way
+            through Appearance three times round, every page judged light or
+            dark from the pixels the display shows (also part of emu-today)
+  look-replay  makes the look check's tap recordings from the shell's
+            layout (target/look-check-taps.txt for the X51v, -emu.txt)
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
   emu-probe only the probe's check (rp-probe: the device report, its
@@ -405,6 +411,8 @@ fn main() -> ExitCode {
         | "emu-today-watch"
         | "emu-today-steps"
         | "emu-today-radar-card"
+        | "look-replay"
+        | "emu-today-look"
         | "ui-preview"
         | "emu-crash"
         | "emu-probe"
@@ -877,8 +885,11 @@ fn run_step(step: &str) -> Result {
         "emu-today" => cross()
             .and_then(|()| emu::boot_loader_today(&workspace_root()))
             .and_then(|()| emu::today_replay(&workspace_root()))
-            .and_then(|()| emu::today_radar_card(&workspace_root())),
+            .and_then(|()| emu::today_radar_card(&workspace_root()))
+            .and_then(|()| emu::today_look(&workspace_root())),
         "emu-today-radar-card" => cross().and_then(|()| emu::today_radar_card(&workspace_root())),
+        "look-replay" => lookcheck::make(&workspace_root()),
+        "emu-today-look" => cross().and_then(|()| emu::today_look(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-probe" => cross().and_then(|()| emu::boot_probe(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),

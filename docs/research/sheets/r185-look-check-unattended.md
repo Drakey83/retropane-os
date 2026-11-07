@@ -72,3 +72,49 @@ every frame, and works the same for any future theme.
 
 A run whose log passes while the owner later sees a flash: then the pixel
 probe reads the wrong place or the wrong moment, and is fixed first.
+
+## As built (the owner's "Yes, go", 2026-11-06)
+
+- **The recording:** `cargo xtask look-replay` drives the shell itself on
+  the PC (its own button places, `Shell::rect_of`, and the Appearance
+  row found where the screen lays it out, `Shell::appearance_row`) with
+  the device's settings (`local/weather-settings.bin`), checking each
+  step lands on the screen meant, and turns each tap into the touch
+  panel's raw readings through the X51v's default alignment (every point
+  maps back exactly: a test). Appearance is tapped three times round
+  (Auto, Light, Dark in turn), so the setting ends where it began and both
+  switches, light to dark and dark to light, are seen. Two recordings:
+  `target/look-check-taps.txt` (the device's settings) and
+  `-emu.txt` (the defaults the emulator starts with).
+- **The eyes:** `layers::shown_at` rebuilds the pixel the panel shows at a
+  point from the display's live registers and memory (the graphics plane,
+  the video plane over it by its slot, window and blend mode; scaled or
+  YUV: unknown), `Graphics::shown_at` lends it the service's registers
+  and memory. `rp_today::look` judges the look from fitted points; the
+  image (`RP_TODAY_LOOK_CHECK`) checks every pass while Weather is up and
+  nothing is in flight, logs `LOOK WRONG` with the points' brightness, and
+  a summary at the end (right per look and page, wrong, unknown).
+- **The verdict:** `lookcheck::judge`: no wrong pass, both looks judged
+  right on every page, at most a tenth of the passes unknown. In the
+  emulator: `cargo xtask emu-today-look`.
+
+## The emulator's runs (2026-11-06)
+
+- **The points fitted** from 55 shots of the replay (`emu-today-watch`):
+  the tab bar's five points split the looks by 187-206 brightness levels,
+  each page's nine glass points by 68-95; page and chrome vote apart (two
+  thirds of the points read).
+- **First run: 27 passes flagged, none a look bug.** All on 10 Day just
+  after its hand-over, the page points near black: the evidence logged
+  per plane showed the layer's window 2, then 48 rows tall (the page
+  growing in) and the points below it reading the wallpaper. Fixed in
+  the check: a page on the layer is judged only where the layer covers it.
+- **Pass:** `look check: 0 wrong; right: dark on pages 0-3 [497, 249,
+  243, 220], light on pages 0-3 [207, 127, 112, 111]; 72 passes unknown`
+  (4%).
+- **The check bites:** with R185's fix taken out (no rebuild ahead on a
+  look change, no rebuild at the hand-over, the chrome not filtered),
+  `2 wrong`: at 21,292 ms the Now page dark under the light chrome, at
+  43,249 ms the Now page light under the dark chrome: the owner's flash,
+  both ways. The probe's own mutant is in `cargo xtask mutants`;
+  `emu-today` now runs `emu-today-look` too.
