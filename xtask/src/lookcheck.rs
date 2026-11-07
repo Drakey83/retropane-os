@@ -14,8 +14,8 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use rp_shell::{Action, Input, Screen, Shell, Target};
 use rp_shell::Calibration;
+use rp_shell::{Action, Input, Screen, Shell, Target};
 
 /// The alignment's fixed point (`rp_touch_cal::ONE`).
 const ONE: i32 = 1 << 16;
@@ -42,13 +42,24 @@ const Z1: u16 = 1_450;
 /// the inverse of its affine map, rounded.
 fn raw_for(cal: &Calibration, x: u16, y: u16) -> (u16, u16) {
     let one = f64::from(ONE);
-    let (a, b, c) = (f64::from(cal.a) / one, f64::from(cal.b) / one, f64::from(cal.c) / one);
-    let (d, e, f) = (f64::from(cal.d) / one, f64::from(cal.e) / one, f64::from(cal.f) / one);
+    let (a, b, c) = (
+        f64::from(cal.a) / one,
+        f64::from(cal.b) / one,
+        f64::from(cal.c) / one,
+    );
+    let (d, e, f) = (
+        f64::from(cal.d) / one,
+        f64::from(cal.e) / one,
+        f64::from(cal.f) / one,
+    );
     let (sx, sy) = (f64::from(x) - c, f64::from(y) - f);
     let det = a * e - b * d;
     let rx = (sx * e - b * sy) / det;
     let ry = (a * sy - d * sx) / det;
-    (rx.round().clamp(0.0, 4095.0) as u16, ry.round().clamp(0.0, 4095.0) as u16)
+    (
+        rx.round().clamp(0.0, 4095.0) as u16,
+        ry.round().clamp(0.0, 4095.0) as u16,
+    )
 }
 
 /// The recording being made, and the shell it is checked on.
@@ -157,8 +168,14 @@ pub fn make(root: &Path) -> Result<(), String> {
     let set = std::fs::read(root.join("local/weather-settings.bin")).ok();
     for (out, set) in [(RECORDING, set.as_deref()), (RECORDING_EMU, None)] {
         let (taps, looks) = recording(root, set, out)?;
-        let names: Vec<&str> = looks.iter().map(|&l| if l { "light" } else { "dark" }).collect();
-        eprintln!("    {out}: {taps} taps; the looks in turn: {}", names.join(", "));
+        let names: Vec<&str> = looks
+            .iter()
+            .map(|&l| if l { "light" } else { "dark" })
+            .collect();
+        eprintln!(
+            "    {out}: {taps} taps; the looks in turn: {}",
+            names.join(", ")
+        );
     }
     Ok(())
 }
@@ -167,7 +184,10 @@ pub fn make(root: &Path) -> Result<(), String> {
 /// pass saw the wrong look, a look wasn't judged right on every page, or
 /// more than a tenth of the passes were unknown. Prints the summary.
 pub fn judge(log: &str) -> Result<(), String> {
-    let wrong: Vec<&str> = log.lines().filter(|l| l.starts_with("LOOK WRONG")).collect();
+    let wrong: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("LOOK WRONG"))
+        .collect();
     let sum = log
         .lines()
         .find(|l| l.starts_with("look check: ") && l.contains(" wrong; "))
@@ -183,7 +203,10 @@ pub fn judge(log: &str) -> Result<(), String> {
     let nums = |after: &str| -> Option<Vec<u32>> {
         let i = sum.find(after)? + after.len();
         let j = sum[i..].find(']')? + i;
-        sum[i..j].split(',').map(|n| n.trim().parse().ok()).collect()
+        sum[i..j]
+            .split(',')
+            .map(|n| n.trim().parse().ok())
+            .collect()
     };
     let dark = nums("dark on pages 0-3 [").ok_or("summary unreadable")?;
     let light = nums("light on pages 0-3 [").ok_or("summary unreadable")?;
@@ -194,11 +217,17 @@ pub fn judge(log: &str) -> Result<(), String> {
         .and_then(|n| n.parse().ok())
         .ok_or("summary unreadable")?;
     if dark.iter().chain(&light).any(|&n| n == 0) {
-        return Err(format!("a page wasn't judged in both looks: {}", sum.trim_end()));
+        return Err(format!(
+            "a page wasn't judged in both looks: {}",
+            sum.trim_end()
+        ));
     }
     let right: u32 = dark.iter().chain(&light).sum();
     if unknown * 10 > right + unknown {
-        return Err(format!("over a tenth of the passes unknown: {}", sum.trim_end()));
+        return Err(format!(
+            "over a tenth of the passes unknown: {}",
+            sum.trim_end()
+        ));
     }
     Ok(())
 }
@@ -210,8 +239,13 @@ mod tests {
     fn the_verdict_needs_no_wrong_and_both_looks_on_every_page() {
         let ok = "look check: 0 wrong; right: dark on pages 0-3 [5, 6, 7, 8], light on pages 0-3 [1, 2, 3, 4]; 2 passes unknown (too few points agreeing)";
         assert_eq!(judge(ok), Ok(()));
-        assert!(judge(&format!("LOOK WRONG at 5 ms: x
-{ok}")).is_err());
+        assert!(
+            judge(&format!(
+                "LOOK WRONG at 5 ms: x
+{ok}"
+            ))
+            .is_err()
+        );
         assert!(judge(&ok.replace("0 wrong", "1 wrong")).is_err());
         assert!(judge(&ok.replace("[1, 2, 3, 4]", "[1, 0, 3, 4]")).is_err());
         assert!(judge(&ok.replace("2 passes", "9 passes")).is_err());

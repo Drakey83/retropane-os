@@ -676,7 +676,11 @@ pub fn shown_parts_at<B: RegisterBus>(
     x: u16,
     y: u16,
 ) -> Option<Shown> {
-    let only = |under: u32| Shown { under, over: None, out: under };
+    let only = |under: u32| Shown {
+        under,
+        over: None,
+        out: under,
+    };
     let half = |at: usize| -> Option<u32> {
         let w = load(at & !3)?;
         Some(if at & 2 == 0 { w & 0xFFFF } else { w >> 16 })
@@ -699,7 +703,10 @@ pub fn shown_parts_at<B: RegisterBus>(
     }
     let vsctrl = regs.read32(reg::VSCTRL);
     let vsadr = regs.read32(reg::VSADR);
-    let (w, h) = (VSCTRL_WIDTH.extract(vsctrl) + 1, VSCTRL_HEIGHT.extract(vsctrl) + 1);
+    let (w, h) = (
+        VSCTRL_WIDTH.extract(vsctrl) + 1,
+        VSCTRL_HEIGHT.extract(vsctrl) + 1,
+    );
     let size = regs.read32(reg::SSSIZE);
     if size != ((w - 1) << 16) | (h - 1) {
         return None;
@@ -781,7 +788,10 @@ mod tests {
             let m = m.to_vec();
             move |a: usize| m.get(a / 4).copied()
         };
-        assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 10, 20), Some(0xFF_0000));
+        assert_eq!(
+            shown_at(&mut bus, load(&mem), 0x10_0000, 10, 20),
+            Some(0xFF_0000)
+        );
         assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 11, 20), Some(0));
         assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 480, 0), None);
         // A 16 x 16 ARGB4444 plane at screen (8, 16), over it, pixel alpha.
@@ -805,8 +815,16 @@ mod tests {
             Some((half << 16) | (green << 8) | green),
             "white half over red"
         );
-        assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 11, 20), Some(0xFF), "opaque blue");
-        assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 7, 20), Some(0), "left of the window");
+        assert_eq!(
+            shown_at(&mut bus, load(&mem), 0x10_0000, 11, 20),
+            Some(0xFF),
+            "opaque blue"
+        );
+        assert_eq!(
+            shown_at(&mut bus, load(&mem), 0x10_0000, 7, 20),
+            Some(0),
+            "left of the window"
+        );
         // Scaled: unknown.
         bus.preset(reg::SSSIZE, (31 << 16) | 31);
         assert_eq!(shown_at(&mut bus, load(&mem), 0x10_0000, 10, 20), None);
