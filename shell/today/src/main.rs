@@ -1780,12 +1780,22 @@ mod image {
             },
         );
         let mut pages: [Page; 3] = [None; 3];
+        // The look (light or not) each page's picture and the app's chrome
+        // picture were made in: a picture of the other look is never shown
+        // (the owner, 2026-11-06, run r184s3c: after switching to dark in
+        // Weather settings the light Now page showed before its rebuild,
+        // "this looks broken"; the page's picture was handed over as built,
+        // and a look change asked no page to be rebuilt ahead).
+        let mut page_light: [Option<bool>; 3] = [None; 3];
+        let mut chrome_light: Option<bool> = None;
+        let mut last_light = shell.light();
         if let Some(pc) = pc {
             shell.use_planes(true);
             // The clock first: the Now page's Sunset bar follows it.
             shell.set_time(clock::time_at(start_minutes()));
             for (tab, p) in pages.iter_mut().enumerate() {
                 *p = build_page(gfx, pc, shell, &mut cpu, frame, tab as u8);
+                page_light[tab] = Some(shell.light());
             }
             if pages.iter().any(Option::is_none) {
                 // Without every picture, the 2D way throughout.
@@ -2899,6 +2909,22 @@ mod image {
                 }
             }
 
+            // A look change (Settings' Appearance, or Auto at sunrise or
+            // sunset): every page and the app's pictures are made again
+            // ahead, while still, as for any change of their draw lists (run
+            // r184s3c: none was asked, and the light page showed after the
+            // switch to dark).
+            if shell.light() != last_light {
+                last_light = shell.light();
+                pages_check = true;
+                app_check = true;
+                let _ = writeln!(
+                    RunLog,
+                    "look: {} at {now_ms} ms: the pages and the app's pictures made again ahead",
+                    if last_light { "light" } else { "dark" }
+                );
+            }
+
             // The place's radar map kept on the card (R184 step 3, way A):
             // looked for in the pass Radar asks for it (before the frame
             // list can answer), read a piece a pass beside the rain's asks,
@@ -3211,6 +3237,7 @@ mod image {
                     for (i, p) in pages.iter_mut().enumerate() {
                         if pages_lent & 1 << i != 0 && p.is_none() {
                             *p = build_page(gfx, pc, shell, &mut cpu, frame, i as u8);
+                            page_light[i] = Some(shell.light());
                         }
                     }
                     let _ = writeln!(
@@ -3293,6 +3320,7 @@ mod image {
                                     let _ = gfx.free_picture(pc, h);
                                 }
                                 pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, v.tab);
+                                page_light[i] = Some(shell.light());
                             }
                         }
                         shell.redraw_all();
@@ -3363,6 +3391,7 @@ mod image {
                                 .is_none()
                                 .then_some(chrome_pic)
                                 .flatten()
+                                .filter(|_| chrome_light == Some(shell.light()))
                                 .zip(shell.reveal_page())
                                 .and_then(|((ch, _), v)| {
                                     pages[usize::from(v.tab)].map(|(h, _)| (ch, h, v))
@@ -3402,7 +3431,8 @@ mod image {
                             trace_tail = 30;
                         }
                     } else if revealing
-                        && let Some((ch, _)) = chrome_pic
+                        && let Some((ch, _)) =
+                            chrome_pic.filter(|_| chrome_light == Some(shell.light()))
                         && let Some(v) = shell.page_layer()
                         && let Some((h, _)) = pages[usize::from(v.tab)]
                     {
@@ -3494,7 +3524,26 @@ mod image {
                             // drawn on the tap (the first device run: 40-70
                             // ms of CPU here); checks run while still.
                             if let Some(v) = want {
-                                if let Some((h, _)) = pages[usize::from(v.tab)] {
+                                // A page made in the other look is made
+                                // again first (~110 ms once, only when the
+                                // ahead-of-time rebuild hasn't reached it):
+                                // never shown light in the dark look or the
+                                // other way (run r184s3c).
+                                let i = usize::from(v.tab);
+                                if pages[i].is_some() && page_light[i] != Some(shell.light()) {
+                                    let t0 = rt::ticks();
+                                    if let Some((h, _)) = pages[i].take() {
+                                        let _ = gfx.free_picture(pc, h);
+                                    }
+                                    pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, v.tab);
+                                    page_light[i] = Some(shell.light());
+                                    let _ = writeln!(
+                                        RunLog,
+                                        "page {i}: made again in the look shown before it was handed over ({} us)",
+                                        rt::ticks().wrapping_sub(t0) / 13 * 4
+                                    );
+                                }
+                                if let Some((h, _)) = pages[i] {
                                     commit = Some((Some(page_state(h, v)), false, true));
                                     shown_tab = Some(v.tab);
                                 }
@@ -3590,7 +3639,9 @@ mod image {
                         Some(t) if Some(t) == shown_tab => {
                             let i = usize::from(t);
                             let old = pages[i].take();
+                            let old_light = page_light[i];
                             pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, t);
+                            page_light[i] = Some(shell.light());
                             match (pages[i], shell.page_layer()) {
                                 (Some((h, _)), Some(v)) => {
                                     commit = Some((Some(page_state(h, v)), false, true));
@@ -3600,10 +3651,12 @@ mod image {
                                 (Some((h, _)), None) => {
                                     let _ = gfx.free_picture(pc, h);
                                     pages[i] = old;
+                                    page_light[i] = old_light;
                                 }
                                 (None, _) => {
                                     no_room[i] = Some(page_key(shell, frame, t));
                                     pages[i] = old;
+                                    page_light[i] = old_light;
                                 }
                             }
                         }
@@ -3613,6 +3666,7 @@ mod image {
                                 let _ = gfx.free_picture(pc, h);
                             }
                             pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, t);
+                            page_light[i] = Some(shell.light());
                             if pages[i].is_none() {
                                 no_room[i] = Some(page_key(shell, frame, t));
                             }
@@ -3664,7 +3718,10 @@ mod image {
                             match h.and_then(|h| {
                                 gfx.compose_into(pc, frame, h, &mut gclock).map(|_| h)
                             }) {
-                                Ok(h) => chrome_pic = Some((h, key)),
+                                Ok(h) => {
+                                    chrome_pic = Some((h, key));
+                                    chrome_light = Some(shell.light());
+                                }
                                 Err(e) => {
                                     let _ =
                                         writeln!(RunLog, "chrome picture: not composed ({e:?})");

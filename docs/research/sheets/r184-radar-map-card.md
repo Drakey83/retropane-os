@@ -255,3 +255,35 @@ image touches only its own folder). The image's FAT use goes through
   in pieces. The host test reads both ways and checks they agree.
 - Emulator (`emu-today-radar-card`): "one run", read 12.6 ms, unpacked in
   8 passes. The X51v run measures both.
+
+## Second X51v run (2026-11-06, `local/rp-today-run-2026-11-06-r184s3c.txt` and `-r184s3d.txt`)
+
+The kept map removed first (`cargo xtask rm RPMAPS/56A5C299.RPM`).
+
+- **The write a piece a pass (start 1):** 8 passes, 317 ms in all (532 ms
+  in one pass before): the stage pass 134 ms (finding the free run), six
+  pieces ~20 ms each, the commit 60 ms. The longest pass is still over the
+  50 ms line: the free-run search.
+- **The read (start 2):** the header pass 124 ms (mount, folder, header
+  and the extent's walk of the chain), the sectors 236 ms over 6 passes
+  (445 ms through the folder before), unpacked 168 ms in 8 passes: **the
+  map in 476 ms after Radar asked** (655 ms in run 1, ~1.55 s in run 4).
+- **The newest frame 1.58 s after opening** (1.8 s run 1, 3.3 s run 4); the
+  check empty in 12 ms.
+- The owner: start 2 (run 1) "took a second to load but it wasnt too bad".
+- **The owner found a look bug** (start 1, Weather settings Light to Dark):
+  "the light mode popped up for a second before switching to dark mode,
+  this looks broken". Proven in the log: the switch at ~64.4 s; back on
+  Weather at 65,754 ms the Now page's picture made in the light look was
+  handed over as built, and redrawn dark only at 65,802 ms (51.7 ms drawn,
+  61.8 ms written); a look change asked no page to be rebuilt ahead
+  (`pages_check` only on changes while a page is shown). Fixed as a class
+  (not a radar fault): each page's and the chrome picture's look recorded;
+  a look change rebuilds them ahead while still; a page of the other look
+  is made again before it is handed over; the chrome picture of the other
+  look is never used for an opening. Device proof owed (R185).
+- Left over the 50 ms line: the stage's free-run search (134 ms) and the
+  header pass (124 ms). Ideas for the owner: keep the FAT's free-run hint
+  from the last write (the search starts where the last file ended), and
+  remember the kept file's run from the write so the header pass doesn't
+  walk the chain.
