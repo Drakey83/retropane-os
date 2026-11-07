@@ -930,7 +930,7 @@ fn the_divide_1_cures_are_on_for_renders_into_screen_1_alone_and_off_by_default(
 /// the rung read from the 2700G's registers at each render.
 #[test]
 fn the_divide_1_cures_follow_the_clock_for_screen_1_renders() {
-    use rp_drv_mbx_display::clock::{COREPLL, MBXCLK};
+    use rp_drv_mbx_display::clock::{self, COREPLL};
     // (COREPLL, MBXCLK, cures wanted into screen 1)
     let cases = [
         (11 << 7 | 1 << 4 | 1, 0x2, true),           // 143.00 / 1
@@ -946,7 +946,7 @@ fn the_divide_1_cures_follow_the_clock_for_screen_1_renders() {
         {
             let regs = &mut r.g.two_d().parts().0.regs;
             regs.write32(COREPLL, pll);
-            regs.write32(MBXCLK, mbxclk);
+            let _ = clock::restore(regs, mbxclk);
         }
         let (mut aside, mut behind) = (0, 0);
         for k in 0..12 {
