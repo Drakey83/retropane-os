@@ -1,4 +1,4 @@
-# Run sheet: the divide-1 cures by the clock on the X51v (ADR-0035 amendment E, PROPOSED)
+# Run sheet: the divide-1 cures by the clock on the X51v (ADR-0035 amendment E, accepted 2026-11-07)
 
 **Status: OWED. This run has not been made.** The rule is built and
 checked in the emulator only (`cargo xtask emu-scene-d1`, 2026-11-06). The
@@ -7,7 +7,7 @@ owner was away when it was built. Nothing here is device proof.
 ## What it proves
 
 That with the cures left to the clock (the default the amendment
-proposes), every 3D render into screen 1 at 143.00 / 1 takes the underlay
+sets), every 3D render into screen 1 at 143.00 / 1 takes the underlay
 and the alpha-0 overlay, and its refreshes are as right as with them held
 on (R121's P5).
 

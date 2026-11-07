@@ -1,6 +1,8 @@
 # Game Mode: the owner's brief and first thoughts
 
-**Status: brief recorded (2026-11-01), design not started.** The owner asked
+**Status: brief recorded (2026-11-01); sheet A approved 2026-11-07
+(alternative 3); design B drafted ([game-mode-b.md](game-mode-b.md)), for
+the owner's go.** The owner asked
 for this to be kept so it isn't forgotten. Per the brief itself, no code,
 ADR, roadmap or other doc changes until the owner approves the design in
 his own words. Deliverables when the work starts: A, a one-page

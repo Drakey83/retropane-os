@@ -30,8 +30,8 @@ that set the floor (at least one unit of the number).
 | `probe.cache_walk_256k` | 1910229 | 0.0322 | noise 5 runs, run-1793284682 |  |
 | `probe.cache_walk_28k` | 24503 | 2.5115 | noise 5 runs, run-1793284682 |  |
 | `probe.cache_walk_32k` | 47191 | 1.3040 | noise 5 runs, run-1793284682 |  |
-| `probe.cache_walk_40k` | 295100 | 0.2085 | noise 5 runs, run-1793284682 |  |
-| `probe.cache_walk_48k` | 353757 | 0.1740 | noise 5 runs, run-1793284682 |  |
+| `probe.cache_walk_40k` | 298534 | 0.2085 | the last session's median (4 runs, run-1793368325 to run-1793371107) | owner 2026-11-07 (slower floor approved, decisions-2026-11-06 item 8; last session run-1793368325 to run-1793371107) |
+| `probe.cache_walk_48k` | 357904 | 0.1740 | the last session's median (4 runs, run-1793368325 to run-1793371107) | owner 2026-11-07 (slower floor approved, decisions-2026-11-06 item 8; last session run-1793368325 to run-1793371107) |
 | `probe.cache_walk_4k` | 3558 | 17.2958 | noise 5 runs, run-1793284682 |  |
 | `probe.cache_walk_64k` | 478076 | 0.1287 | noise 5 runs, run-1793284682 |  |
 | `probe.cache_walk_8k` | 7050 | 8.7289 | noise 5 runs, run-1793284682 |  |
@@ -115,10 +115,10 @@ that set the floor (at least one unit of the number).
 | `probe.wmmx_mix_8k` | 12792 | 4.8107 | noise 5 runs, run-1793284682 |  |
 | `tr_touch_replay.frame_and_queueing_median` | 380 | 3.1579 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
 | `tr_touch_replay.frame_and_queueing_worst` | 62388 | 0.0192 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
-| `tr_touch_replay.landing_to_verdict_median` | 8920 | 0.0448 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
+| `tr_touch_replay.landing_to_verdict_median` | 8924 | 0.0448 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan); owner 2026-11-07 (slower floor approved, decisions-2026-11-06 item 8; last session run-1793368325 to run-1793371107) |
 | `tr_touch_replay.landing_to_verdict_worst` | 15884 | 0.0504 | noise 5 runs, run-1793284682 |  |
 | `tr_touch_replay.pen_down_period_median` | 6952 | 0.1151 | noise 5 runs, run-1793284682 |  |
-| `tr_touch_replay.pen_down_period_worst` | 12664 | 0.3832 | noise 5 runs, run-1793284682 |  |
+| `tr_touch_replay.pen_down_period_worst` | 12724 | 0.3832 | the last session's median (4 runs, run-1793368325 to run-1793371107) | owner 2026-11-07 (slower floor approved, decisions-2026-11-06 item 8; last session run-1793368325 to run-1793371107) |
 | `tr_touch_replay.queue_to_flip_median` | 5593 | 12.0200 | noise 5 runs, run-1793284682 |  |
 | `tr_touch_replay.queue_to_flip_worst` | 18325 | 0.6697 | noise 5 runs, run-1793284682 |  |
 | `tr_touch_replay.touch_to_flush_median` | 16204 | 0.0494 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |

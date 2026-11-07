@@ -1,6 +1,9 @@
-# Sheet A: Game Mode, the alternatives (DRAFT for the owner's vote)
+# Sheet A: Game Mode, the alternatives (alternative 3 approved 2026-11-07)
 
-**Status: DRAFT, 2026-11-07.** Written while the owner was away (his list of
+**Status: APPROVED 2026-11-07, alternative 3** (the owner: "yes, go. One
+kernel, two user-space profiles, fast tier under 2 s keeping programs in
+RAM, full tier up to ~15 s writing them to flash or SD"); design B:
+[game-mode-b.md](../../design/game-mode-b.md). Drafted 2026-11-07. Written while the owner was away (his list of
 2026-11-06, item 9; reminder R173; his brief in
 [docs/design/game-mode.md](../../design/game-mode.md)). No code, no ADR, no
 roadmap change. Design B follows only after his go on this sheet. Numbers
@@ -131,6 +134,6 @@ Windows Mobile games run unchanged. There are three ways to do this:
 
 ## For the owner
 
-- [ ] Go on alternative 3 (one kernel, two profiles, fast and full tiers)
+- [x] Go on alternative 3 (one kernel, two profiles, fast and full tiers)
   as the design B is written from.
 - [ ] Or a change (say which).

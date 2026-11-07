@@ -1,6 +1,8 @@
 # Deep dive fix, 2026-11-06/07: what changed, what proves it, what's owed
 
-Branch `fix/deep-dive-2026-11-06` from 4f60eebe; **not pushed**. Every item's
+Branch `fix/deep-dive-2026-11-06` from 4f60eebe; **pushed 2026-11-07 at HEAD
+3b8e02f1** (the branch, `backup/main-2026-11-07`, and GitHub main
+fast-forwarded to it on the owner's "push to live"). Every item's
 commit passed `cargo xtask ci` in a separate checkout of exactly that
 commit. Decisions that are the owner's are tick-boxes in
 [decisions-2026-11-06.md](decisions-2026-11-06.md). **No device run was made
@@ -41,4 +43,6 @@ one: all pass but two, after fixes:
 ## Notes
 
 - **Stopped there.** No new feature started; no settled ruling reopened.
-- **Pushing:** not done (the list said not to).
+- **Pushing:** not done while the list ran (it said not to); on the owner's
+  "push to live" of 2026-11-07, `fix/deep-dive-2026-11-06` and GitHub main
+  went to 3b8e02f1 after `cargo xtask ci` passed on it in the main checkout.
