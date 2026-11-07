@@ -690,9 +690,10 @@ pub(crate) fn today_card(root: &Path, release: &Path) -> Result<Option<PathBuf>,
         format!("RPIC0{}.PAK", (b'A' + parts.len() as u8) as char),
         &[],
     ));
-    // The PC's time at the load, as `cargo xtask load` puts it (R182):
-    // Monday 2026-11-02 23:11 in UTC-6.
-    let time = rp_today::clock::card_time(20_760 * 24 * 60 + 5 * 60 + 11, -360);
+    // The PC's time at the load, as `cargo xtask load` puts it (R182): the
+    // build's, so the screens match the references drawn at that time.
+    let (utc, off) = rp_today::build_minutes();
+    let time = rp_today::clock::card_time(utc, off);
     parts.push(("RPTIMA.PAK".to_string(), &time[..]));
     parts.push(("RPTIMB.PAK".to_string(), &[]));
     let files: Vec<rp_fat::format::Entry> = parts

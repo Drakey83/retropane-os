@@ -784,9 +784,13 @@ pub const BUDGETS: &[Budget] = &[
     // (`GC2CA_HELD`), as GC2CP's, GC2CY's and GC2DA's are; GC2CA back under
     // 75%, every GC2C run's check passing; GC2CP 41,048 B (72%) on the
     // X51v. Zeroed RAM within 76 KiB (GC2CA's variant 61,160 B): no change.
+    // Load 200 -> 204 KiB on 2026-11-07 (test image): the GC2 writeout,
+    // renders and force variant measured 207,108 B with every image's stack
+    // guard check (quality audit C27) and the service's cures by clock
+    // (ADR-0035 amendment E, proposed).
     Budget {
         image: "rp-gpubench",
-        max_load: 200 * 1024,
+        max_load: 204 * 1024,
         max_zero: 76 * 1024,
         device: OnDevice::Returns,
     },

@@ -46,9 +46,17 @@ pub const MARKER: &str = "RETROPANE-TODAY-UP";
 /// build's).
 #[must_use]
 pub fn build_time() -> rp_shell::Time {
+    let (utc, off) = build_minutes();
+    clock::time_at(utc + i64::from(off))
+}
+
+/// The build machine's UTC minutes and offset (the emulator's card carries
+/// them as its time file, R182, so its screens match the PC's references).
+#[must_use]
+pub fn build_minutes() -> (i64, i32) {
     let utc: i64 = env!("RP_TODAY_UTC_MIN").parse().unwrap_or(0);
-    let off: i64 = env!("RP_TODAY_OFFSET_MIN").parse().unwrap_or(0);
-    clock::time_at(utc + off)
+    let off: i32 = env!("RP_TODAY_OFFSET_MIN").parse().unwrap_or(0);
+    (utc, off)
 }
 
 /// The shell's fonts, as generated.
