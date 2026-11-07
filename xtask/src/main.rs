@@ -480,6 +480,8 @@ fn main() -> ExitCode {
                     Some(Ok(n)) => perf::noise(&workspace_root(), n),
                     _ => Err("usage: cargo xtask perf noise <runs>".into()),
                 }
+            } else if flag == "sessions" {
+                perf::session_report(&workspace_root())
             } else if flag == "refloor" {
                 match args().nth(3).map(|n| n.parse::<usize>()) {
                     Some(Ok(n)) => perf::refloor(&workspace_root(), n),

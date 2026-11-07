@@ -23,3 +23,23 @@ rule. Each item's code is built on branch `fix/deep-dive-2026-11-06`
   counted in the zeroed RAM instead of the stack. Unticked, the LUNs go
   back on the stack and the loader stays on R149's list.
 
+## Item 8: the ratchet's floors
+
+Fourteen drift-type tolerances (R109's list) were widened to four standard
+deviations of their 11 session medians in `local/perf` (`cargo xtask perf
+sessions`); no floor value changed. These floors' latest session is slower
+than the floor allows, so each needs your call (a slower floor is yours):
+
+- [ ] **`probe.cache_walk_40k`**: last session +1.16%, tolerance 0.21% (R115
+  saw +1.2% there, unrelated to its change). Approve a slower floor, or a
+  chase first.
+- [ ] **`probe.cache_walk_48k`**: last session +1.17%, tolerance 0.17% (the same).
+- [ ] **`tr_touch_replay.pen_down_period_worst`**: last session +0.47%, tolerance 0.38%.
+- [ ] **`tr_touch_replay.landing_to_verdict_median`**: last session +0.045%,
+  tolerance 0.0448% (on the line).
+- [ ] **Re-measure the floors on the X51v** (`cargo xtask perf noise 5` in
+  three sessions, a soft reset between, the same build): now that every run
+  file records its build, the spread can be taken build for build and the
+  other 34 numbers whose sessions differ (most of them real code changes,
+  e.g. `probe.chase_sdram_256k` after its benchmark changed) re-floored.
+

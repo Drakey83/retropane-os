@@ -48,7 +48,7 @@ that set the floor (at least one unit of the number).
 | `probe.copy_pld_128_256k` | 2409306 | 0.0255 | noise 5 runs, run-1793284682 |  |
 | `probe.copy_pld_192_256k` | 2410076 | 0.0255 | noise 5 runs, run-1793284682 |  |
 | `probe.copy_pld_256_256k` | 2410769 | 0.0255 | noise 5 runs, run-1793284682 |  |
-| `probe.copy_pld_32_256k` | 3401614 | 0.0181 | noise 5 runs, run-1793284682 |  |
+| `probe.copy_pld_32_256k` | 3401614 | 0.3137 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0181%) |
 | `probe.copy_pld_64_256k` | 2739692 | 0.0225 | noise 5 runs, run-1793284682 |  |
 | `probe.copy_pld_96_256k` | 2408923 | 0.0255 | noise 5 runs, run-1793284682 |  |
 | `probe.copy_pld_none_256k` | 5600999 | 0.0110 | noise 5 runs, run-1793284682 |  |
@@ -58,20 +58,20 @@ that set the floor (at least one unit of the number).
 | `probe.dma_copy_128k_b16_word` | 4541922 | 0.0135 | noise 5 runs, run-1793284682 |  |
 | `probe.dma_copy_128k_b32_w0` | 2906999 | 0.0212 | noise 5 runs, run-1793284682 |  |
 | `probe.dma_copy_128k_b8_word` | 8250383 | 0.0075 | noise 5 runs, run-1793284682 |  |
-| `probe.dma_copy_128k_paced` | 2903152 | 0.0212 | noise 5 runs, run-1793284682 |  |
+| `probe.dma_copy_128k_paced` | 2903152 | 0.2907 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0212%) |
 | `probe.dot48_mixer_shape_block` | 15982 | 3.8505 | noise 5 runs, run-1793284682 |  |
 | `probe.dot48_plain_flat_block` | 15059 | 4.0865 | noise 5 runs, run-1793284682 |  |
 | `probe.dot48_wmmx_block` | 11294 | 5.4488 | noise 5 runs, run-1793284682 |  |
-| `probe.fb_pattern_vga` | 14478461 | 0.0043 | noise 5 runs, run-1793284682 |  |
+| `probe.fb_pattern_vga` | 14478461 | 0.0053 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0043%) |
 | `probe.fb_solid_fill_vga` | 14473846 | 0.0043 | noise 5 runs, run-1793284682 |  |
 | `probe.frames_alloc_free_split` | 1230 | 50.0313 | noise 5 runs, run-1793284682 |  |
 | `probe.frames_fill_drain_1024` | 420583 | 0.1463 | noise 5 runs, run-1793284682 | re-measured, not approved slower: code placement, the old probe gave the same (R97, ruling 6, 2026-10-29) |
-| `probe.gfx_blend_fill_vga` | 13607845 | 0.0045 | noise 5 runs, run-1793284682 |  |
-| `probe.gfx_blend_reference_vga` | 20547537 | 0.0030 | noise 5 runs, run-1793284682 |  |
+| `probe.gfx_blend_fill_vga` | 13607845 | 0.0513 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0045%) |
+| `probe.gfx_blend_reference_vga` | 20547537 | 0.8271 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0030%) |
 | `probe.gfx_fill_vga` | 1569128 | 0.0392 | noise 5 runs, run-1793284682 |  |
 | `probe.gfx_flush_clock` | 114251 | 0.5386 | noise 5 runs, run-1793284682 |  |
 | `probe.gfx_flush_vga` | 17795589 | 0.1727 | noise 5 runs, run-1793284682 | tolerance between sessions: four standard deviations of the medians of the five sessions in local/perf, 2026-10-22 to 10-29 (17,792,512 to 17,808,717; sd 7,683), the tool's own 4-sd rule; five back-to-back runs (0.0035%) can't see the drift between boots and builds (code placement, R97). Floor unchanged; not approved slower (R97, ruling 6, 2026-10-29) |
-| `probe.gfx_glass_vga` | 15340768 | 0.0040 | noise 5 runs, run-1793284682 |  |
+| `probe.gfx_glass_vga` | 15340768 | 0.1718 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0040%) |
 | `probe.gfx_icon_64` | 107753 | 0.5711 | noise 5 runs, run-1793284682 |  |
 | `probe.gfx_photo_row_480` | 30183 | 2.0388 | noise 5 runs, run-1793284682 |  |
 | `probe.lz4_compress_noise` | 54172 | 1.1360 | noise 5 runs, run-1793284682 |  |
@@ -83,7 +83,7 @@ that set the floor (at least one unit of the number).
 | `probe.memcpy_128k` | 1207152 | 0.0510 | noise 5 runs, run-1793284682 |  |
 | `probe.memcpy_64k` | 605383 | 0.1017 | noise 5 runs, run-1793284682 |  |
 | `probe.memcpy_naive_64k` | 2189107 | 0.0281 | noise 5 runs, run-1793284682 |  |
-| `probe.memcpy_sdram_to_sram_64k` | 397768 | 0.1547 | noise 5 runs, run-1793284682 | re-measured, not approved slower: within the spread across runs (R97, ruling 6, 2026-10-29) |
+| `probe.memcpy_sdram_to_sram_64k` | 397768 | 0.7183 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.1547%) |
 | `probe.memcpy_sram_64k` | 228907 | 0.2688 | noise 5 runs, run-1793284682 |  |
 | `probe.memset_64k` | 173922 | 0.3538 | noise 5 runs, run-1793284682 |  |
 | `probe.memset_sram_64k` | 137922 | 0.4462 | noise 5 runs, run-1793284682 |  |
@@ -96,12 +96,12 @@ that set the floor (at least one unit of the number).
 | `probe.plain_avg_8k` | 36235 | 1.6983 | noise 5 runs, run-1793284682 |  |
 | `probe.plain_mix_128k` | 3860615 | 0.0159 | noise 5 runs, run-1793284682 |  |
 | `probe.plain_mix_8k` | 85403 | 0.7206 | noise 5 runs, run-1793284682 |  |
-| `probe.sd_read_256_blocks` | 67749691 | 0.0019 | noise 5 runs, run-1793284682 |  |
-| `probe.sd_read_256_blocks_dma` | 15950769 | 0.0096 | noise 5 runs, run-1793284682 |  |
-| `probe.sd_read_4_blocks` | 1673672 | 0.0368 | noise 5 runs, run-1793284682 |  |
-| `probe.sd_read_64_blocks` | 17179614 | 0.0065 | noise 5 runs, run-1793284682 |  |
-| `probe.sd_read_64_blocks_dma` | 4493460 | 0.0215 | noise 5 runs, run-1793284682 |  |
-| `probe.sd_read_block` | 886634 | 0.1037 | noise 5 runs, run-1793284682 |  |
+| `probe.sd_read_256_blocks` | 67749691 | 0.0025 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0019%) |
+| `probe.sd_read_256_blocks_dma` | 15950769 | 0.0172 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0096%) |
+| `probe.sd_read_4_blocks` | 1673672 | 0.0814 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0368%) |
+| `probe.sd_read_64_blocks` | 17179614 | 0.0089 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0065%) |
+| `probe.sd_read_64_blocks_dma` | 4493460 | 0.0624 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0215%) |
+| `probe.sd_read_block` | 886634 | 0.1489 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.1037%) |
 | `probe.timer_read` | 846 | 72.7405 | noise 5 runs, run-1793284682 |  |
 | `probe.tlb_fit_16` | 253 | 243.2350 | noise 5 runs, run-1793284682 |  |
 | `probe.tlb_fit_16_l1sram` | 254 | 242.2774 | noise 5 runs, run-1793284682 |  |
@@ -111,7 +111,7 @@ that set the floor (at least one unit of the number).
 | `probe.wmmx_avg_8k` | 12812 | 4.8032 | noise 5 runs, run-1793284682 |  |
 | `probe.wmmx_copy_256k` | 2408615 | 0.0255 | noise 5 runs, run-1793284682 |  |
 | `probe.wmmx_memcpy_256k` | 2409306 | 0.0255 | noise 5 runs, run-1793284682 |  |
-| `probe.wmmx_mix_128k` | 1807614 | 0.0340 | noise 5 runs, run-1793284682 |  |
+| `probe.wmmx_mix_128k` | 1807614 | 0.1342 | noise 5 runs, run-1793284682 | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0340%) |
 | `probe.wmmx_mix_8k` | 12792 | 4.8107 | noise 5 runs, run-1793284682 |  |
 | `tr_touch_replay.frame_and_queueing_median` | 380 | 3.1579 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
 | `tr_touch_replay.frame_and_queueing_worst` | 62388 | 0.0192 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |

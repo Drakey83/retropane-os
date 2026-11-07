@@ -440,7 +440,17 @@ fn run_suite(root: &Path) -> Result<BTreeMap<String, f64>, String> {
 fn save_run(root: &Path, stamp: &str, nums: &BTreeMap<String, f64>) -> Result<(), String> {
     let dir = root.join("local/perf");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let text: String = nums.iter().map(|(k, v)| format!("{k} {v}\n")).collect();
+    // The build first (R109: sessions compared build for build; the
+    // readers skip a line whose value isn't a number).
+    let build = std::process::Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let mut text = format!("build {build}\n");
+    text.extend(nums.iter().map(|(k, v)| format!("{k} {v}\n")));
     let p = dir.join(format!("{stamp}.txt"));
     std::fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))
 }
@@ -450,6 +460,98 @@ fn stamp() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     format!("run-{secs}")
+}
+
+/// Saved runs within this of the one before belong to one session (one
+/// boot and build: the noise runs are minutes apart, sessions hours).
+const SESSION_GAP_S: u64 = 1800;
+
+/// The tolerance a number's spread between sessions asks for: four
+/// standard deviations of its session medians over its floor (R109; the
+/// rule `gfx_flush_vga`'s between-sessions tolerance used).
+#[must_use]
+pub fn between_sessions(medians: &[f64], floor: f64) -> f64 {
+    let n = medians.len() as f64;
+    let mean = medians.iter().sum::<f64>() / n;
+    let var = medians.iter().map(|m| (m - mean).powi(2)).sum::<f64>() / n;
+    4.0 * var.sqrt() / floor
+}
+
+/// Saved runs `(seconds, numbers)` sorted by time, grouped into sessions.
+#[must_use]
+pub fn sessions(mut runs: Vec<(u64, BTreeMap<String, f64>)>) -> Vec<Vec<BTreeMap<String, f64>>> {
+    runs.sort_by_key(|r| r.0);
+    let mut out: Vec<Vec<BTreeMap<String, f64>>> = Vec::new();
+    let mut last = None;
+    for (t, nums) in runs {
+        match (last, out.last_mut()) {
+            (Some(l), Some(s)) if t - l < SESSION_GAP_S => s.push(nums),
+            _ => out.push(vec![nums]),
+        }
+        last = Some(t);
+    }
+    out
+}
+
+/// `cargo xtask perf sessions`: every floor against the spread of its
+/// session medians in `local/perf` (no device run): those whose spread
+/// asks for more than their tolerance, the tolerance it asks for, and the
+/// last session's median against the floor (R109).
+pub fn session_report(root: &Path) -> Result<(), String> {
+    let dir = root.join("local/perf");
+    let mut runs = Vec::new();
+    for e in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let p = e.map_err(|e| e.to_string())?.path();
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some(secs) = name
+            .strip_prefix("run-")
+            .and_then(|r| r.split(['-', '.']).next())
+            .and_then(|s| s.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let nums = text
+            .lines()
+            .filter_map(|l| l.split_once(' '))
+            .filter_map(|(k, v)| v.parse::<f64>().ok().map(|v| (k.to_string(), v)))
+            .collect();
+        runs.push((secs, nums));
+    }
+    let ss = sessions(runs);
+    let floors = old_floors(root);
+    eprintln!("    perf sessions: {} sessions in local/perf", ss.len());
+    let median = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    for (name, f) in &floors {
+        let meds: Vec<f64> = ss
+            .iter()
+            .filter_map(|s| {
+                let mut v: Vec<f64> = s.iter().filter_map(|r| r.get(name).copied()).collect();
+                (!v.is_empty()).then(|| median(&mut v))
+            })
+            .collect();
+        if meds.len() < 3 {
+            continue;
+        }
+        let need = between_sessions(&meds, f.floor);
+        let last = (meds[meds.len() - 1] - f.floor) / f.floor;
+        if need > f.tolerance {
+            eprintln!(
+                "      {name}: tolerance {:.4}%, the sessions ask {:.4}% ({} sessions; the last {:+.3}% from the floor)",
+                f.tolerance * 100.0,
+                need * 100.0,
+                meds.len(),
+                last * 100.0
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `cargo xtask perf noise N`: `n` runs, the floors written afresh.
@@ -579,6 +681,29 @@ pub fn check(root: &Path, update: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R109: runs minutes apart are one session, hours apart another; the
+    /// spread asked is four standard deviations of the session medians.
+    #[test]
+    fn sessions_group_by_time_and_their_spread_sets_the_tolerance() {
+        let run = |v: f64| BTreeMap::from([("x".to_string(), v)]);
+        let ss = sessions(vec![
+            (10_000, run(100.0)),
+            (100, run(10.0)),
+            (200, run(11.0)),
+            (10_100, run(101.0)),
+        ]);
+        assert_eq!(ss.len(), 2);
+        assert_eq!(ss[0].len(), 2);
+        assert_eq!(ss[0][0]["x"], 10.0);
+        // Medians 99, 100, 101 over a floor of 100: sd 0.8165, four of it.
+        let t = between_sessions(&[99.0, 100.0, 101.0], 100.0);
+        assert!(
+            (t - 4.0 * (2.0f64 / 3.0).sqrt() / 100.0).abs() < 1e-12,
+            "{t}"
+        );
+        assert_eq!(between_sessions(&[5.0, 5.0, 5.0], 5.0), 0.0);
+    }
 
     #[test]
     fn lines_name_each_number_by_head_and_part() {
