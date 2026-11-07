@@ -31,7 +31,12 @@ pub fn today_look(root: &Path) -> Result<(), String> {
             screenshot: None,
             sd_image: None,
             steps: &[],
-            extra: &[],
+            // Guest time from instructions, 2 ns each (500 million a
+            // second: the nearest power of two at or below the PXA270's
+            // 624 MHz, one a cycle at best), so the frame budget measures
+            // the work, not the PC's load (R171: host time read the same
+            // still frame 20 ms idle and 68 ms beside a build).
+            extra: &["-icount", "shift=1"],
             input: Some((&rp_loadproto::frame(&payload), rp_today::MARKER)),
             during: None,
             then: Some("RPL END"),
@@ -51,7 +56,7 @@ pub fn today_look(root: &Path) -> Result<(), String> {
     let (still, moving) =
         crate::lookcheck::frame_budget(log).map_err(|e| format!("today look: {e}"))?;
     eprintln!(
-        "      frame budget (R171): the worst still frame {still} us (33,000 allowed), the worst moving frame {moving} us"
+        "      frame budget (R171, guest time under -icount): the worst still frame {still} us, the worst moving frame {moving} us (33,000 allowed each)"
     );
     eprintln!("    today look OK (log {})", kept.display());
     Ok(())

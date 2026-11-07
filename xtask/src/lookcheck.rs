@@ -232,13 +232,14 @@ pub fn judge(log: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The frame budget over the look check's replay (R171, item 4 of the
-/// owner's list of 2026-11-06): no still frame's preparation over 33 ms
-/// (30 fps) in the emulator's own time. Moving frames (a page sliding in)
-/// are reported with their worst, not failed: the Radar page's slide is
-/// drawn by the 2D path whole each frame and runs over (46.9 ms measured
-/// 2026-11-07; its fix is open, docs/reports/deep-dive-2026-11-06-fix.md).
-/// The still worst and the moving worst, us.
+/// The frame budget over the look check's replay (R171): no frame, still
+/// or moving, over 33 ms (30 fps) in the emulator's guest time, which the
+/// look check counts from instructions (`-icount`, so a busy PC can't move
+/// it). On host time the same commit's still Radar frame read 20 ms on an
+/// idle PC and 68 ms beside a build (2026-11-07): the 42-47 ms "Radar
+/// slide-in" of item 4 was that, its frame 5.8 ms of CPU and 16.5 ms
+/// waiting for the scan under `-icount`. The still worst and the moving
+/// worst, us.
 pub fn frame_budget(log: &str) -> Result<(u32, u32), String> {
     const BUDGET_US: u32 = 33_000;
     let (mut still, mut moving) = (0u32, 0u32);
@@ -254,11 +255,9 @@ pub fn frame_budget(log: &str) -> Result<(u32, u32), String> {
             moving = moving.max(us);
         } else {
             still = still.max(us);
-            if us > BUDGET_US {
-                return Err(format!(
-                    "a still frame over the {BUDGET_US} us budget: {l:?}"
-                ));
-            }
+        }
+        if us > BUDGET_US {
+            return Err(format!("a frame over the {BUDGET_US} us budget: {l:?}"));
         }
     }
     Ok((still, moving))
@@ -268,12 +267,13 @@ pub fn frame_budget(log: &str) -> Result<(u32, u32), String> {
 mod tests {
 
     #[test]
-    fn the_budget_fails_a_slow_still_frame_and_reports_moving_ones() {
+    fn the_budget_fails_any_slow_frame_and_reports_the_worst_of_each() {
         let log = "slow frame 4 at 12622 ms: 16460 us (queueing)
-slow frame 9 at 20000 ms (moving): 46924 us (queueing)
+slow frame 9 at 20000 ms (moving): 22368 us (queueing)
 ";
-        assert_eq!(frame_budget(log), Ok((16460, 46924)));
+        assert_eq!(frame_budget(log), Ok((16460, 22368)));
         assert!(frame_budget("slow frame 5 at 1 ms: 33001 us (x)").is_err());
+        assert!(frame_budget("slow frame 6 at 1 ms (moving): 33001 us (x)").is_err());
         assert_eq!(frame_budget("nothing"), Ok((0, 0)));
     }
 
