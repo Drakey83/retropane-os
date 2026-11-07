@@ -13228,6 +13228,11 @@ pub fn today_look(root: &Path) -> Result<(), String> {
     let kept = scratch(root, "today-look-log.txt")?;
     let _ = std::fs::write(&kept, log);
     crate::lookcheck::judge(log).map_err(|e| format!("today look: {e}"))?;
+    let (still, moving) =
+        crate::lookcheck::frame_budget(log).map_err(|e| format!("today look: {e}"))?;
+    eprintln!(
+        "      frame budget (R171): the worst still frame {still} us (33,000 allowed), the worst moving frame {moving} us"
+    );
     eprintln!("    today look OK (log {})", kept.display());
     Ok(())
 }

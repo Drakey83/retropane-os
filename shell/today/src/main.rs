@@ -2014,6 +2014,9 @@ mod image {
         let mut missed_lines = 0u32;
         let mut overflow_logged = false;
         let mut draw_us_worst = 0u32;
+        // When the worst frame was drawn and on what (R171: the budget's
+        // failures name their frame).
+        let mut draw_worst_at = (0u64, rp_shell::Screen::Today, 0u8, false);
         // The CPU time of the frame last queued (for the slow-answer line).
         let mut last_frame_us = 0u32;
         // Samples to what the person meant (rp_touch_cal::Filter).
@@ -2181,7 +2184,7 @@ mod image {
                 // A slow answer, taken apart (2026-10-14: one of 57 took
                 // 101 ms on the device, every part's worst far less).
                 // Not in the replay: a line mid-run is a card write in the loop (C59).
-                if total > SLOW_ANSWER_US && !REPLAY {
+                if total > SLOW_ANSWER_US && (!REPLAY || LOOK_CHECK) {
                     let _ = writeln!(
                         RunLog,
                         "slow answer at {} ms: {total} us; its frame's CPU {last_frame_us} us, wait {} us, engine {} us; {} glyph atlases and {} pictures uploaded",
@@ -2495,6 +2498,14 @@ mod image {
                     stalls,
                     fifo_full,
                     key_events.missed()
+                );
+                let _ = writeln!(
+                    RunLog,
+                    "worst draw: {draw_us_worst} us at {} ms on {:?} page {}{}",
+                    draw_worst_at.0,
+                    draw_worst_at.1,
+                    draw_worst_at.2,
+                    if draw_worst_at.3 { ", moving" } else { "" }
                 );
                 let cm = gfx.commits();
                 let _ = writeln!(
@@ -3378,27 +3389,36 @@ mod image {
                     }
                     let _ = writeln!(RunLog, "radar: its band pictures given back");
                 }
-                if pages_lent != 0
-                    && let Some(pc) = pc
-                {
+                // Only the page about to be shown is made now; the others
+                // the radar borrowed are made ahead while still, one a pass
+                // (item 4, R172: the X51v's run r184s3d held the loop 465 ms
+                // leaving Radar for Weather settings, 212 ms of it Hourly's
+                // picture, which settings never shows).
+                let now_tab = matches!(shell.screen(), rp_shell::Screen::Weather)
+                    .then(|| shell.weather_page().0)
+                    .filter(|&t| t < 3 && pages_lent & 1 << t != 0);
+                if pages_lent != 0 && now_tab.is_none() {
+                    pages_check = true;
+                }
+                if let (Some(t), Some(pc)) = (now_tab, pc) {
                     let t0 = rt::ticks();
-                    for (i, p) in pages.iter_mut().enumerate() {
-                        if pages_lent & 1 << i != 0 && p.is_none() {
-                            *p = build_page(gfx, pc, shell, &mut cpu, frame, i as u8);
-                            page_light[i] = Some(shell.light());
-                        }
+                    let i = usize::from(t);
+                    if pages[i].is_none() {
+                        pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, t);
+                        page_light[i] = Some(shell.light());
                     }
                     let _ = writeln!(
                         RunLog,
-                        "radar: the pages it borrowed from ({pages_lent:#05b}) made again in {} us{}",
+                        "radar: the page shown ({t}) of those it borrowed from ({pages_lent:#05b}) made again in {} us{}",
                         rt::ticks().wrapping_sub(t0) / 13 * 4,
-                        if pages.iter().all(Option::is_some) {
+                        if pages[i].is_some() {
                             ""
                         } else {
-                            ": not all (no room), the plane path off"
+                            ": not made (no room), the plane path off"
                         }
                     );
-                    pages_lent = 0;
+                    pages_lent &= !(1 << i);
+                    pages_check |= pages_lent != 0;
                 }
                 // No map of the place yet, or Radar closed: the wallpaper.
                 let (changed, want) = (false, None);
@@ -3772,14 +3792,18 @@ mod image {
                     // lost (today-0036: with the place menu open, each pass
                     // built one and kept none, until the pool ran out).
                     let layer_on = shell.page_layer().is_some();
+                    let radar_open = shell.weather_page().0 >= 3
+                        && matches!(shell.screen(), rp_shell::Screen::Weather);
                     let stale = (0..3u8).find(|&t| {
                         let i = usize::from(t);
                         let shown_now = Some(t) == shown_tab;
+                        let lent = pages_lent & 1 << t != 0 && pages[i].is_none() && !radar_open;
                         (!shown_now || (layer_on && retire.is_none()))
-                            && pages[i].is_some_and(|(_, k)| {
-                                let key = page_key(shell, frame, t);
-                                k != key && no_room[i] != Some(key)
-                            })
+                            && (lent
+                                || pages[i].is_some_and(|(_, k)| {
+                                    let key = page_key(shell, frame, t);
+                                    k != key && no_room[i] != Some(key)
+                                }))
                     });
                     match stale {
                         // The page shown: a new picture, swapped in by a
@@ -3810,6 +3834,8 @@ mod image {
                         }
                         Some(t) => {
                             let i = usize::from(t);
+                            let was_lent = pages[i].is_none() && pages_lent & 1 << i != 0;
+                            let t0 = rt::ticks();
                             if let Some((h, _)) = pages[i].take() {
                                 let _ = gfx.free_picture(pc, h);
                             }
@@ -3817,6 +3843,13 @@ mod image {
                             page_light[i] = Some(shell.light());
                             if pages[i].is_none() {
                                 no_room[i] = Some(page_key(shell, frame, t));
+                            } else if was_lent {
+                                pages_lent &= !(1 << i);
+                                let _ = writeln!(
+                                    RunLog,
+                                    "radar: page {i}, lent to it, made again ahead while still in {} us",
+                                    rt::ticks().wrapping_sub(t0) / 13 * 4
+                                );
                             }
                         }
                         None => pages_check = false,
@@ -4094,6 +4127,14 @@ mod image {
                         "compare: the whole screen redrawn over it: CPU {us} us"
                     );
                 }
+                if us > draw_us_worst {
+                    draw_worst_at = (
+                        now_ms,
+                        shell.screen(),
+                        shell.weather_page().0,
+                        shell.animating(),
+                    );
+                }
                 draw_us_worst = draw_us_worst.max(us);
                 queueing.add(us);
                 last_frame_us = us;
@@ -4117,15 +4158,26 @@ mod image {
                 burst_rows += s.rows_written;
                 burst_reused += s.rows_reused;
                 let moving = shell.animating() || burst_cpu.summary().0 > 1;
-                if us > SLOW_FRAME_US && frames > 0 && !REPLAY && !moving {
+                if us > SLOW_FRAME_US
+                    && frames > 0
+                    && (!REPLAY || LOOK_CHECK)
+                    && (!moving || LOOK_CHECK)
+                {
                     let _ = writeln!(
                         RunLog,
-                        "slow frame {} at {} ms: {us} us (queueing {} us, wait {} us, background {}; {} glyph atlases and {} pictures uploaded)",
+                        "slow frame {} at {} ms{}: {us} us (queueing {} us, wait {} us, background {} ({} px), rows written {} reused {}, {} rects, {} command words, {} commands drawn; {} glyph atlases and {} pictures uploaded)",
                         frames + 1,
                         now_ms,
+                        if moving { " (moving)" } else { "" },
                         s.queue_us,
                         s.wait_us,
                         s.background,
+                        s.background_px,
+                        s.rows_written,
+                        s.rows_reused,
+                        s.rects,
+                        s.words,
+                        frame.cmds().count(),
                         s.atlases,
                         s.images
                     );

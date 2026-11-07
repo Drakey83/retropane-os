@@ -232,8 +232,50 @@ pub fn judge(log: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The frame budget over the look check's replay (R171, item 4 of the
+/// owner's list of 2026-11-06): no still frame's preparation over 33 ms
+/// (30 fps) in the emulator's own time. Moving frames (a page sliding in)
+/// are reported with their worst, not failed: the Radar page's slide is
+/// drawn by the 2D path whole each frame and runs over (46.9 ms measured
+/// 2026-11-07; its fix is open, docs/reports/deep-dive-2026-11-06-fix.md).
+/// The still worst and the moving worst, us.
+pub fn frame_budget(log: &str) -> Result<(u32, u32), String> {
+    const BUDGET_US: u32 = 33_000;
+    let (mut still, mut moving) = (0u32, 0u32);
+    for l in log.lines().filter(|l| l.starts_with("slow frame ")) {
+        let us: u32 = l
+            .split("ms")
+            .nth(1)
+            .and_then(|t| t.split(": ").nth(1))
+            .and_then(|t| t.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| format!("an unreadable slow frame: {l:?}"))?;
+        if l.contains("(moving)") {
+            moving = moving.max(us);
+        } else {
+            still = still.max(us);
+            if us > BUDGET_US {
+                return Err(format!(
+                    "a still frame over the {BUDGET_US} us budget: {l:?}"
+                ));
+            }
+        }
+    }
+    Ok((still, moving))
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_budget_fails_a_slow_still_frame_and_reports_moving_ones() {
+        let log = "slow frame 4 at 12622 ms: 16460 us (queueing)
+slow frame 9 at 20000 ms (moving): 46924 us (queueing)
+";
+        assert_eq!(frame_budget(log), Ok((16460, 46924)));
+        assert!(frame_budget("slow frame 5 at 1 ms: 33001 us (x)").is_err());
+        assert_eq!(frame_budget("nothing"), Ok((0, 0)));
+    }
 
     #[test]
     fn the_verdict_needs_no_wrong_and_both_looks_on_every_page() {
