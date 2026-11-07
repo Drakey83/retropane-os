@@ -770,18 +770,44 @@ impl Shell {
         self.radar_have & self.radar_ready
     }
 
-    /// The device couldn't keep frame `f` (its tiles' room was full, or a
-    /// tile wasn't readable): asked again, after the frames still missing
-    /// newer than it.
+    /// The device couldn't keep or read frame `f` (the rain's store full,
+    /// its answer damaged, or composing it refused): asked again once,
+    /// after the frames still missing newer than it; failed again, the
+    /// frame is lost (a stub on the timeline, skipped by the loop, and
+    /// "RAIN UNAVAILABLE" while it is the one shown), never shown dry
+    /// (audit C97; before, it was asked again for ever).
     pub fn radar_forget(&mut self, f: u8) {
         if self.radar_have & 1 << f == 0 {
             return;
         }
         self.radar_have &= !(1 << f);
+        if self.radar_retried & 1 << f == 0 {
+            self.radar_retried |= 1 << f;
+        } else {
+            self.radar_lost |= 1 << f;
+        }
         if self.radar_tile.is_none() && self.radar_map {
             self.next_radar_frame();
         }
         self.dirty(super::weather_app::PAGE);
+    }
+
+    /// Whether the device has 2700G memory to compose the frame shown
+    /// (audit C97): without it the radar says the rain is unavailable.
+    pub fn set_radar_rain_room(&mut self, room: bool) {
+        if self.radar_no_room == room {
+            self.radar_no_room = !room;
+            self.dirty(super::weather_app::PAGE);
+        }
+    }
+
+    /// Whether the rain of the frame shown can't be shown (lost after its
+    /// retry, or no memory to compose it): the radar says so (audit C97).
+    pub(crate) fn radar_rain_unavailable(&self) -> bool {
+        self.radar_n > 0
+            && (self.radar_no_room
+                || self.radar_lost & 1 << self.radar_frame != 0
+                || (self.radar_lost.count_ones() == u32::from(self.radar_n)))
     }
 
     /// The rain frames a refresh kept, by their time (P7): for each new

@@ -1843,7 +1843,8 @@ impl Shell {
             let w = label.width(credit);
             f.text(W - 12 - w, TIME_PANEL.y - 8, label, DIM, credit);
         }
-        if !map_in || self.radar_loading() || self.radar_offline {
+        let unavailable = map_in && !self.radar_offline && self.radar_rain_unavailable();
+        if !map_in || self.radar_loading() || self.radar_offline || unavailable {
             let chip = Rect::new(16, 80, 300, 40);
             // The menus' denser glass: readable over the map.
             self.glass(f, chip, super::MENU_LEFT, super::MENU_RIGHT);
@@ -1851,6 +1852,10 @@ impl Shell {
             // (the owner, run today-0055: "it starts out over seattle").
             let what: &[u8] = if self.radar_offline {
                 b"RADAR NEEDS THE DOCK"
+            } else if unavailable && !self.radar_loading() {
+                // Audit C97: a frame that couldn't be kept or read, asked
+                // again once, never shown as a dry map.
+                b"RAIN UNAVAILABLE"
             } else {
                 b"RADAR LOADING"
             };

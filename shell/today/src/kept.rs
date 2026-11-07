@@ -7,8 +7,9 @@
 //! held the loop 532 ms, run r184s3a), with the folder's cap.
 //! Generic over the card so the host tests run them on a card image; the
 //! image settles its card log's controller first and logs only after.
+//! FAT and exFAT cards alike (`rp_fat::AnyVolume`, audit C98).
 
-use rp_fat::{Error, Reserved, Staged, Volume};
+use rp_fat::{AnyVolume, Error, Reserved, Staged};
 use rp_hal_api::BlockDevice;
 use rp_weather::mapcard::{self, CAP, DIR, HEAD, Head, Key};
 
@@ -39,20 +40,23 @@ pub fn head<D: BlockDevice>(
     key: Key,
     out: &mut [u8],
 ) -> Result<(Head, Option<Reserved>), &'static str> {
-    let mut vol = Volume::mount(card, start).map_err(|_| "the card not readable")?;
+    let mut vol = AnyVolume::mount(card, start).map_err(|_| "the card not readable")?;
     let path = key.path();
     let path = core::str::from_utf8(&path).map_err(|_| "no name")?;
-    let file = vol.find(path).map_err(|_| "not on the card")?;
     let mut scratch = [0u8; SCRATCH];
     let mut at = 0usize;
     let out = out.get_mut(..HEAD).ok_or("no room")?;
-    vol.read_range(&file, 0, HEAD as u64, &mut scratch, |c| {
-        if let Some(o) = out.get_mut(at..at + c.len()) {
-            o.copy_from_slice(c);
-        }
-        at += c.len();
-    })
-    .map_err(|_| "its header not readable")?;
+    let (size, _) = vol
+        .read_range(path, 0, HEAD as u64, &mut scratch, &mut |c| {
+            if let Some(o) = out.get_mut(at..at + c.len()) {
+                o.copy_from_slice(c);
+            }
+            at += c.len();
+        })
+        .map_err(|e| match e {
+            Error::NotFound => "not on the card",
+            _ => "its header not readable",
+        })?;
     if at != HEAD {
         return Err("too short");
     }
@@ -60,7 +64,7 @@ pub fn head<D: BlockDevice>(
         mapcard::Error::Key => "another place's under its name",
         _ => "its header damaged",
     })?;
-    if u64::from(file.size()) != (HEAD + h.len) as u64 {
+    if size != (HEAD + h.len) as u64 {
         return Err("its length not its header's");
     }
     Ok((h, vol.extent(path).ok()))
@@ -99,7 +103,7 @@ pub fn stage<D: BlockDevice>(
     bytes: usize,
     scratch: &mut [u8],
 ) -> Result<Staged, Error> {
-    let mut vol = Volume::mount(card, start)?;
+    let mut vol = AnyVolume::mount(card, start)?;
     let path = key.path();
     let path = core::str::from_utf8(&path).map_err(|_| Error::BadName)?;
     vol.stage(path, bytes, scratch)
@@ -116,7 +120,7 @@ pub fn stage_piece<D: BlockDevice>(
     at: u32,
     data: &[u8],
 ) -> Result<(), Error> {
-    Volume::mount(card, start)?.stage_write(s, at, data)
+    AnyVolume::mount(card, start)?.stage_write(s, at, data)
 }
 
 /// Links a staged map as `key`'s kept map (the old one whole until then),
@@ -133,7 +137,7 @@ pub fn commit<D: BlockDevice>(
     keep: &dyn Fn(Key) -> bool,
     scratch: &mut [u8],
 ) -> Result<Option<Key>, Error> {
-    let mut vol = Volume::mount(card, start)?;
+    let mut vol = AnyVolume::mount(card, start)?;
     let path = key.path();
     let path = core::str::from_utf8(&path).map_err(|_| Error::BadName)?;
     vol.commit(path, s, scratch)?;
@@ -149,14 +153,14 @@ pub fn piece<D: BlockDevice>(
     off: u64,
     out: &mut [u8],
 ) -> Option<usize> {
-    let mut vol = Volume::mount(card, start).ok()?;
+    let mut vol = AnyVolume::mount(card, start).ok()?;
     let path = key.path();
-    let file = vol.find(core::str::from_utf8(&path).ok()?).ok()?;
+    let path = core::str::from_utf8(&path).ok()?;
     let mut scratch = [0u8; SCRATCH];
     let mut at = 0usize;
     let mut over = false;
     let len = PIECE.min(out.len() as u64);
-    vol.read_range(&file, off, len, &mut scratch, |c| {
+    vol.read_range(path, off, len, &mut scratch, &mut |c| {
         match out.get_mut(at..at + c.len()) {
             Some(o) => o.copy_from_slice(c),
             None => over = true,
@@ -184,7 +188,7 @@ pub fn write<D: BlockDevice>(
     keep: &dyn Fn(Key) -> bool,
     scratch: &mut [u8],
 ) -> Result<Option<Key>, Error> {
-    let mut vol = Volume::mount(card, start)?;
+    let mut vol = AnyVolume::mount(card, start)?;
     let path = key.path();
     let path = core::str::from_utf8(&path).map_err(|_| Error::BadName)?;
     vol.put(path, file, scratch)?;
@@ -196,19 +200,19 @@ pub fn write<D: BlockDevice>(
 /// The folder's maps listed by name, their headers read only when there
 /// are too many.
 fn cap<D: BlockDevice>(
-    vol: &mut Volume<D>,
+    vol: &mut AnyVolume<D>,
     key: Key,
     keep: &dyn Fn(Key) -> bool,
 ) -> Result<Option<Key>, Error> {
     let mut names = [[0u8; 12]; CAP + 4];
     let (mut n, mut all) = (0usize, 0usize);
-    vol.for_each_in(DIR, |e| {
-        if e.is_dir || e.name.len() != 12 || !e.name[8..].eq_ignore_ascii_case(b".RPM") {
+    vol.list(DIR, &mut |name, is_dir, _| {
+        if is_dir || name.len() != 12 || !name[8..].eq_ignore_ascii_case(b".RPM") {
             return;
         }
         all += 1;
         if n < names.len() {
-            names[n].copy_from_slice(e.name);
+            names[n].copy_from_slice(name);
             n += 1;
         }
     })?;
@@ -229,14 +233,12 @@ fn cap<D: BlockDevice>(
         };
         let mut h = [0u8; HEAD];
         let mut at = 0usize;
-        if let Ok(f) = vol.find(p) {
-            let _ = vol.read_range(&f, 0, HEAD as u64, &mut small, |c| {
-                if let Some(o) = h.get_mut(at..at + c.len()) {
-                    o.copy_from_slice(c);
-                }
-                at += c.len();
-            });
-        }
+        let _ = vol.read_range(p, 0, HEAD as u64, &mut small, &mut |c| {
+            if let Some(o) = h.get_mut(at..at + c.len()) {
+                o.copy_from_slice(c);
+            }
+            at += c.len();
+        });
         kept[i] = mapcard::read(&h).map_or((DAMAGED, 0), |h| (h.key, h.at));
     }
     let Some(i) = mapcard::evict(&kept[..n], |k| k == key || keep(k)) else {
@@ -251,6 +253,7 @@ fn cap<D: BlockDevice>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rp_fat::Volume;
     use rp_hal_api::BlockError;
 
     /// A card in RAM.
@@ -290,6 +293,36 @@ mod tests {
         });
         let start = u32::from_le_bytes([img[454], img[455], img[456], img[457]]);
         (Card(img), start)
+    }
+
+    /// An exFAT card (SDXC, or formatted exFAT by `cargo xtask format`)
+    /// with the same other file on it (audit C98), and where its
+    /// partition starts.
+    fn exfat_card() -> (Card, u32) {
+        let sectors = 64 * 1024 * 1024 / 512;
+        let o = rp_fat::mkfs::Options {
+            fs: Some(rp_fat::mkfs::Fs::ExFat),
+            cluster_bytes: Some(4096),
+            align_sectors: None,
+            label: "KEPT",
+            serial: 0x1234_5678,
+        };
+        let l = rp_fat::mkfs::plan(sectors, &o).expect("an exFAT layout");
+        let mut c = Card(vec![0; sectors as usize * 512]);
+        rp_fat::mkfs::write(&mut c, &l, &mut vec![0u8; 16 * 1024]).expect("formatted");
+        let mut v = AnyVolume::mount(&mut c, l.part_start).expect("mounted");
+        assert!(matches!(v, AnyVolume::ExFat(_)), "an exFAT card");
+        v.put("RPIC0A.PAK", b"the icon pack", &mut [0u8; 4096])
+            .expect("the other file");
+        (c, l.part_start)
+    }
+
+    /// The card's other file, untouched (the shared card rule): its size.
+    fn other_size(c: &mut Card, start: u32) -> u64 {
+        let mut v = AnyVolume::mount(c, start).unwrap();
+        v.read_range("RPIC0A.PAK", 0, 0, &mut [0u8; 512], &mut |_| {})
+            .unwrap()
+            .0
     }
 
     const LH: Key = Key {
@@ -354,7 +387,19 @@ mod tests {
 
     #[test]
     fn a_written_map_reads_back_whole_a_piece_at_a_time() {
-        let (mut c, start) = card();
+        let (c, start) = card();
+        written_map_reads_back(c, start);
+    }
+
+    /// Audit C98: the same on an exFAT card (the folder made, the map
+    /// replaced, read back both ways).
+    #[test]
+    fn a_written_map_reads_back_on_an_exfat_card() {
+        let (c, start) = exfat_card();
+        written_map_reads_back(c, start);
+    }
+
+    fn written_map_reads_back(mut c: Card, start: u32) {
         let mut h = [0u8; HEAD];
         assert_eq!(head(&mut c, start, LH, &mut h), Err("not on the card"));
         let map: Vec<u8> = (0..180_000u32).map(|i| (i * 7 + i / 300) as u8).collect();
@@ -374,9 +419,7 @@ mod tests {
         );
         assert_eq!(read_back(&mut c, start, LH), Ok(newer));
         // The other file on the card untouched (the shared card rule).
-        let mut vol = Volume::mount(&mut c, start).unwrap();
-        let other = vol.find("RPIC0A.PAK").unwrap();
-        assert_eq!(other.size(), 13);
+        assert_eq!(other_size(&mut c, start), 13);
     }
 
     /// The image's write: staged, a piece a pass (the volume mounted again
@@ -384,7 +427,19 @@ mod tests {
     /// leaves the old map whole.
     #[test]
     fn a_map_written_a_piece_a_pass_reads_back_and_a_reset_keeps_the_old() {
-        let (mut c, start) = card();
+        let (c, start) = card();
+        staged_write_reads_back(c, start);
+    }
+
+    /// Audit C98: the staged write on an exFAT card, a reset before the
+    /// commit leaving the old map whole there too.
+    #[test]
+    fn a_map_written_a_piece_a_pass_on_an_exfat_card() {
+        let (c, start) = exfat_card();
+        staged_write_reads_back(c, start);
+    }
+
+    fn staged_write_reads_back(mut c: Card, start: u32) {
         let mut scratch = vec![0u8; 32 * 1024];
         let old: Vec<u8> = (0..90_000u32).map(|i| (i * 3) as u8).collect();
         let f = kept_file(LH, &old, 1);
@@ -425,6 +480,7 @@ mod tests {
             Ok(old),
             "the old map whole"
         );
+        assert_eq!(other_size(&mut c, start), 13);
     }
 
     /// Hostile or broken files on the card: never used, never a fault.

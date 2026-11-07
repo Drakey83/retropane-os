@@ -12912,6 +12912,39 @@ pub fn today_steps(root: &Path) -> Result<(), String> {
 /// rain needs the dock (the emulator has no relay), and the card's file must
 /// be left as it was (reading never writes).
 pub fn today_radar_card(root: &Path) -> Result<(), String> {
+    today_radar_card_on(root, false)?;
+    // Audit C98: the same on an exFAT card (SDXC, or one formatted exFAT):
+    // the kept map, the icon pack's parts, read through rp_fat::AnyVolume.
+    today_radar_card_on(root, true)
+}
+
+/// An exFAT card image of the emulator's SD size holding `files` in its
+/// root, and where its partition starts.
+fn exfat_card_image(files: &[(String, Vec<u8>)]) -> Result<(Vec<u8>, u32), String> {
+    let sectors = (SD_IMAGE_BYTES / 512) as u32;
+    let o = rp_fat::mkfs::Options {
+        fs: Some(rp_fat::mkfs::Fs::ExFat),
+        cluster_bytes: Some(32 * 1024),
+        align_sectors: None,
+        label: "RPEXFAT",
+        serial: 0x5250_4558,
+    };
+    let l = rp_fat::mkfs::plan(sectors, &o).map_err(|e| format!("exFAT card: {}", e.name()))?;
+    let mut d = Disk(vec![0; SD_IMAGE_BYTES]);
+    rp_fat::mkfs::write(&mut d, &l, &mut vec![0u8; 64 * 1024])
+        .map_err(|e| format!("exFAT card: {}", e.name()))?;
+    let mut v = rp_fat::AnyVolume::mount(d, l.part_start)
+        .map_err(|e| format!("exFAT card: {}", e.name()))?;
+    let mut sc = vec![0u8; 64 * 1024];
+    for (name, data) in files {
+        v.put(name, data, &mut sc)
+            .map_err(|e| format!("exFAT card {name}: {}", e.name()))?;
+    }
+    Ok((v.device().0.clone(), l.part_start))
+}
+
+/// [`today_radar_card`] on a FAT card (`exfat` false) or an exFAT one.
+fn today_radar_card_on(root: &Path, exfat: bool) -> Result<(), String> {
     use rp_weather::mapcard::{self, Key};
     let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
@@ -12929,25 +12962,57 @@ pub fn today_radar_card(root: &Path) -> Result<(), String> {
     };
     let mut file = mapcard::head(key, &map, 1_793_457_000).to_vec();
     file.extend_from_slice(&map);
-    // The icon pack's card when the build made it, else a bare one.
-    let base = match today_card(root, &release)? {
-        Some(path) => std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?,
-        None => rp_fat::format::build(&rp_fat::format::Image {
-            total_sectors: (SD_IMAGE_BYTES / 512) as u32,
-            sectors_per_cluster: 8,
-            files: &[],
-            blocked_clusters: &[],
-            ballast: 0,
-        }),
+    // The icon pack's card when the build made it, else a bare one; on
+    // exFAT the pack's parts put on as `cargo xtask load` names them.
+    let (base, start) = if exfat {
+        let parts: Vec<(String, Vec<u8>)> = match today_output(&release, "rp-icons0.pak") {
+            Ok(pack) => {
+                let mut v: Vec<(String, Vec<u8>)> = pack
+                    .chunks(rp_today::PACK_PART)
+                    .enumerate()
+                    .map(|(p, c)| (format!("RPIC0{}.PAK", (b'A' + p as u8) as char), c.to_vec()))
+                    .collect();
+                v.push((
+                    format!("RPIC0{}.PAK", (b'A' + v.len() as u8) as char),
+                    Vec::new(),
+                ));
+                v
+            }
+            Err(_) => Vec::new(),
+        };
+        exfat_card_image(&parts)?
+    } else {
+        let img = match today_card(root, &release)? {
+            Some(path) => std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+            None => rp_fat::format::build(&rp_fat::format::Image {
+                total_sectors: (SD_IMAGE_BYTES / 512) as u32,
+                sectors_per_cluster: 8,
+                files: &[],
+                blocked_clusters: &[],
+                ballast: 0,
+            }),
+        };
+        (img, rp_fat::format::PARTITION_START)
     };
-    let mut vol = rp_fat::AnyVolume::mount(Disk(base), rp_fat::format::PARTITION_START)
+    let kind = if exfat { "exFAT" } else { "FAT" };
+    let mut vol = rp_fat::AnyVolume::mount(Disk(base), start)
         .map_err(|e| format!("card image: {}", e.name()))?;
+    if matches!(vol, rp_fat::AnyVolume::ExFat(_)) != exfat {
+        return Err(format!("radar card: the card image isn't {kind}"));
+    }
     let path = key.path();
     let path = std::str::from_utf8(&path).map_err(|e| e.to_string())?;
     let mut fat_scratch = vec![0u8; 64 * 1024];
     vol.put(path, &file, &mut fat_scratch)
         .map_err(|e| format!("seeding the card: {}", e.name()))?;
-    let sd = scratch(root, "today-radar-card.img")?;
+    let sd = scratch(
+        root,
+        if exfat {
+            "today-radar-card-exfat.img"
+        } else {
+            "today-radar-card.img"
+        },
+    )?;
     std::fs::write(&sd, &vol.device().0).map_err(|e| format!("{}: {e}", sd.display()))?;
     let wsl = matches!(emulator(root)?, Emulator::Wsl);
     let steps = || -> Result<(), String> {
@@ -13010,12 +13075,16 @@ pub fn today_radar_card(root: &Path) -> Result<(), String> {
         },
     )
     .unwrap_or_else(|e| e);
-    let _ = std::fs::write(scratch(root, "today-radar-card.txt")?, &log);
+    let log_name = if exfat {
+        "today-radar-card-exfat.txt"
+    } else {
+        "today-radar-card.txt"
+    };
+    let _ = std::fs::write(scratch(root, log_name)?, &log);
     if !log.contains("RPL LOG") {
-        return Err(
-            "radar card: the image never came back to the loader (target/emulator/today-radar-card.txt)"
-                .into(),
-        );
+        return Err(format!(
+            "radar card ({kind}): the image never came back to the loader (target/emulator/{log_name})"
+        ));
     }
     for want in [
         "radar map: the place's on the card (",
@@ -13024,36 +13093,32 @@ pub fn today_radar_card(root: &Path) -> Result<(), String> {
     ] {
         if !log.contains(want) {
             return Err(format!(
-                "radar card: no {want:?} in the run log (target/emulator/today-radar-card.txt)"
+                "radar card ({kind}): no {want:?} in the run log (target/emulator/{log_name})"
             ));
         }
     }
     if log.contains("radar map: the card's not used") || log.contains("RPNET LAYERS") {
-        return Err(
-            "radar card: the kept map wasn't used (target/emulator/today-radar-card.txt)".into(),
-        );
+        return Err(format!(
+            "radar card ({kind}): the kept map wasn't used (target/emulator/{log_name})"
+        ));
     }
     // Reading leaves the card's file as it was.
     let img = std::fs::read(&sd).map_err(|e| format!("{}: {e}", sd.display()))?;
-    let mut vol = rp_fat::AnyVolume::mount(Disk(img), rp_fat::format::PARTITION_START)
+    let mut vol = rp_fat::AnyVolume::mount(Disk(img), start)
         .map_err(|e| format!("card image after: {}", e.name()))?;
     let mut back = Vec::new();
     let mut small = vec![0u8; 4096];
-    match &mut vol {
-        rp_fat::AnyVolume::Fat(v) => {
-            let f = v
-                .find(path)
-                .map_err(|e| format!("card after: {}", e.name()))?;
-            v.read_file(&f, &mut small, |c| back.extend_from_slice(c))
-                .map_err(|e| format!("card after: {}", e.name()))?;
-        }
-        rp_fat::AnyVolume::ExFat(_) => return Err("radar card: the card image isn't FAT".into()),
-    }
+    vol.read_range(path, 0, u64::MAX, &mut small, &mut |c| {
+        back.extend_from_slice(c)
+    })
+    .map_err(|e| format!("card after: {}", e.name()))?;
     if back != file {
-        return Err("radar card: the kept map changed on the card".into());
+        return Err(format!(
+            "radar card ({kind}): the kept map changed on the card"
+        ));
     }
     eprintln!(
-        "    radar card: the place's map from the card with no dock (target/emulator/today-radar-card.ppm)"
+        "    radar card ({kind}): the place's map from the card with no dock (target/emulator/today-radar-card.ppm)"
     );
     Ok(())
 }

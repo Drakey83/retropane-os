@@ -48,6 +48,39 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "C99: another client reads the layer's pixels",
+        file: "services/graphics/src/layer.rs",
+        from: "        if owner != c.0 || !inside {",
+        to: "        if !inside {",
+        check: Check::Host(&[
+            "-p",
+            "rp-graphics",
+            "a_client_reads_back_only_its_own_pixels_unless_granted",
+        ]),
+    },
+    Mutant {
+        name: "C97: an unkept rain frame asked again for ever",
+        file: "shell/core/src/weather_net.rs",
+        from: "        } else {
+            self.radar_lost |= 1 << f;
+        }
+        if self.radar_tile.is_none() && self.radar_map {",
+        to: "        }
+        if self.radar_tile.is_none() && self.radar_map {",
+        check: Check::Host(&[
+            "-p",
+            "rp-shell",
+            "a_rain_frame_that_cannot_be_kept_is_asked_once_then_said_unavailable",
+        ]),
+    },
+    Mutant {
+        name: "C98: exFAT's staged commit skips the free check",
+        file: "kernel/fat/src/exfat.rs",
+        from: "            if self.scan(st.first_cluster, st.clusters, scratch)?.0 != Some(st.first_cluster) {",
+        to: "            if false {",
+        check: Check::Host(&["-p", "rp-fat", "an_exfat_staged_file_is_linked_only_at_the_commit"]),
+    },
+    Mutant {
         name: "divide-1 cures: taken at divide 2 too",
         file: "drivers/mbx-display/src/clock.rs",
         from: "        self.div == 1 && self.speed.khz() > CURES_ABOVE_KHZ",

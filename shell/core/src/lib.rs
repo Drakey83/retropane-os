@@ -731,6 +731,9 @@ pub struct Shell {
     radar_lost: u16,
     radar_retried: u16,
     radar_ready: u16,
+    /// The device has no 2700G memory to compose the frame shown (audit
+    /// C97): the radar says the rain is unavailable, never a dry map.
+    radar_no_room: bool,
     /// The relay didn't answer the radar's frame list (no dock): said so
     /// on the radar, never a sample's rain instead.
     radar_offline: bool,
@@ -887,6 +890,7 @@ macro_rules! shell_start {
             radar_lost: 0,
             radar_retried: 0,
             radar_ready: 0,
+            radar_no_room: false,
             radar_offline: false,
             radar_refresh: false,
             radar_moves: None,

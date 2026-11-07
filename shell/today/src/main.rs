@@ -22,7 +22,7 @@ mod image {
     use rp_drv_pxa_udc::{Layout as UsbLayout, Udc};
     use rp_drv_sdcard::{BLOCK, Identity, SdCard, mbr_partitions};
     use rp_drv_tsc2046::Tsc2046;
-    use rp_fat::Volume;
+    use rp_fat::AnyVolume;
     use rp_gfx::layer::{Layer, PlaneFormat};
     use rp_gfx::render::CpuRenderer;
     use rp_graphics::{ClientId, Graphics, Handle, LayerState, Source, Step, Window};
@@ -539,6 +539,9 @@ mod image {
         t0: u32,
         decode_us: u32,
         write_us: u32,
+        /// Its answer didn't decode (audit C97): never composed as dry;
+        /// the shell asks for it again once, then marks it lost.
+        bad: bool,
     }
 
     impl Job {
@@ -554,6 +557,7 @@ mod image {
                 t0: rt::ticks(),
                 decode_us: 0,
                 write_us: 0,
+                bad: false,
             }
         }
 
@@ -591,8 +595,15 @@ mod image {
                     .tile(f, 0)
                     .map(|b| rp_weather::rprn::decode(b, s.view));
                 if got != Some(Ok(())) {
-                    s.view.fill(0);
-                    let _ = writeln!(RunLog, "radar: frame {f} wasn't read ({got:?})");
+                    // Never composed as a dry frame (audit C97): the caller
+                    // gives it back to the shell, which asks again once.
+                    job.bad = true;
+                    let _ = writeln!(
+                        RunLog,
+                        "radar: frame {f} wasn't read ({got:?}): asked again once, never shown dry"
+                    );
+                    job.decode_us += rt::ticks().wrapping_sub(t0) / 13 * 4;
+                    return Ok(true);
                 }
                 job.decode_us += rt::ticks().wrapping_sub(t0) / 13 * 4;
             }
@@ -1040,7 +1051,8 @@ mod image {
     /// logged while it reads.
     fn read_span(card: &mut Card, start: u32, stem: [u8; 5], off: u64, out: &mut [u8]) -> bool {
         rp_hal_x51v::cardsink::settle();
-        let Ok(mut vol) = Volume::mount(&mut *card, start) else {
+        // FAT or exFAT alike (audit C98).
+        let Ok(mut vol) = AnyVolume::mount(&mut *card, start) else {
             return false;
         };
         let mut scratch = [0u8; 2 * BLOCK];
@@ -1064,17 +1076,14 @@ mod image {
                 b'A',
                 b'K',
             ];
-            let Some(file) = core::str::from_utf8(&name)
-                .ok()
-                .and_then(|n| vol.find(n).ok())
-            else {
+            let Ok(file) = core::str::from_utf8(&name) else {
                 return false;
             };
             let in_part = at % part_len;
             let n = (out.len() - done).min((part_len - in_part) as usize);
             let mut got = 0usize;
             let dst = &mut out[done..done + n];
-            let ok = vol.read_range(&file, in_part, n as u64, &mut scratch, |c| {
+            let ok = vol.read_range(file, in_part, n as u64, &mut scratch, &mut |c| {
                 if let Some(o) = dst.get_mut(got..got + c.len()) {
                     o.copy_from_slice(c);
                 }
@@ -1187,25 +1196,27 @@ mod image {
     /// log's sector mid-read).
     fn read_pack(card: &mut Card, start: u32, stem: [u8; 5], out: &mut [u8]) -> Option<usize> {
         rp_hal_x51v::cardsink::settle();
-        let mut vol = Volume::mount(&mut *card, start).ok()?;
+        // FAT or exFAT alike (audit C98).
+        let mut vol = AnyVolume::mount(&mut *card, start).ok()?;
         let mut scratch = [0u8; 2 * BLOCK];
         let (mut at, mut over) = (0usize, false);
         for part in b'A'..=b'Z' {
             let name = [
                 stem[0], stem[1], stem[2], stem[3], stem[4], part, b'.', b'P', b'A', b'K',
             ];
-            let Ok(file) = vol.find(core::str::from_utf8(&name).ok()?) else {
-                break;
-            };
+            let file = core::str::from_utf8(&name).ok()?;
             let before = at;
-            vol.read_file(&file, &mut scratch, |chunk| {
+            match vol.read_range(file, 0, u64::MAX, &mut scratch, &mut |chunk| {
                 match out.get_mut(at..at + chunk.len()) {
                     Some(o) => o.copy_from_slice(chunk),
                     None => over = true,
                 }
                 at += chunk.len();
-            })
-            .ok()?;
+            }) {
+                Ok(_) => {}
+                Err(rp_fat::Error::NotFound) => break,
+                Err(_) => return None,
+            }
             if at == before {
                 break;
             }
@@ -1230,7 +1241,8 @@ mod image {
         out: &mut [u8],
     ) -> Option<usize> {
         rp_hal_x51v::cardsink::settle();
-        let mut vol = Volume::mount(&mut *card, start).ok()?;
+        // FAT or exFAT alike (audit C98).
+        let mut vol = AnyVolume::mount(&mut *card, start).ok()?;
         let name = [
             stem[0],
             stem[1],
@@ -1243,22 +1255,24 @@ mod image {
             b'A',
             b'K',
         ];
-        let file = vol.find(core::str::from_utf8(&name).ok()?).ok()?;
-        if part > 0 && off == 0 && file.size() == 0 {
-            return None;
-        }
+        let file = core::str::from_utf8(&name).ok()?;
         let mut scratch = [0u8; 2 * BLOCK];
         let mut at = 0usize;
         let mut over = false;
         let len = PACK_CHUNK.min(out.len() as u64);
-        vol.read_range(&file, off, len, &mut scratch, |c| {
-            match out.get_mut(at..at + c.len()) {
-                Some(o) => o.copy_from_slice(c),
-                None => over = true,
-            }
-            at += c.len();
-        })
-        .ok()?;
+        let (size, _) = vol
+            .read_range(file, off, len, &mut scratch, &mut |c| {
+                match out.get_mut(at..at + c.len()) {
+                    Some(o) => o.copy_from_slice(c),
+                    None => over = true,
+                }
+                at += c.len();
+            })
+            .ok()?;
+        // An empty part past the first ends the file.
+        if part > 0 && off == 0 && size == 0 {
+            return None;
+        }
         (!over).then_some(at)
     }
 
@@ -1753,6 +1767,12 @@ mod image {
         } else {
             None
         };
+        // The look check reads the whole screen back: the image, the
+        // service's owner here, grants it to its pages' client (audit C99:
+        // no client asks for that itself).
+        if LOOK_CHECK {
+            gfx.grant_readback(pc);
+        }
         // The radar's frames (R184 step 2): their own client, so their
         // pictures are counted and given back apart from the pages'.
         let Some(rc) = gfx.client(RADAR_QUOTA) else {
@@ -2057,6 +2077,7 @@ mod image {
                 _ => None,
             };
             if LOOK_CHECK
+                && let Some(pc) = pc
                 && matches!(shell.screen(), rp_shell::Screen::Weather)
                 && !shell.needs_frame()
                 && !gfx.busy()
@@ -2079,7 +2100,7 @@ mod image {
                 let mut cpx = [None; rp_today::look::CHROME.len()];
                 let mut ppx = [None; 9];
                 for (o, p) in cpx.iter_mut().zip(look) {
-                    *o = gfx.shown_at(p.x, p.y);
+                    *o = gfx.shown_at(pc, p.x, p.y);
                 }
                 // A page on the layer is judged only where the layer covers
                 // it (a page growing in shows the wallpaper below its
@@ -2087,7 +2108,7 @@ mod image {
                 let on_layer = gfx.layer().is_some();
                 for (o, p) in ppx.iter_mut().zip(page) {
                     *o = gfx
-                        .shown_parts_at(p.x, p.y)
+                        .shown_parts_at(pc, p.x, p.y)
                         .filter(|s| !on_layer || s.over.is_some())
                         .map(|s| s.out);
                 }
@@ -2115,7 +2136,7 @@ mod image {
                                 "  at ({}, {}): {:x?}; the layer {:?}",
                                 p.x,
                                 p.y,
-                                gfx.shown_parts_at(p.x, p.y),
+                                gfx.shown_parts_at(pc, p.x, p.y),
                                 gfx.layer()
                             );
                         }
@@ -2921,11 +2942,16 @@ mod image {
                         if !ok {
                             let _ = writeln!(
                                 RunLog,
-                                "radar: frame {f}'s tile {k} ({l} bytes) not kept: the rain's store is full ({} bytes held)",
+                                "radar: frame {f}'s tile {k} ({l} bytes) not kept: the rain's store is full ({} bytes held): asked again once, never shown dry",
                                 rain_store.used()
                             );
                         }
                         shell.net_answer(true, &[]);
+                        if !ok {
+                            // Audit C97: never composed without its rain.
+                            rain_store.clear(f);
+                            shell.radar_forget(f as u8);
+                        }
                     } else if n.pack {
                         // The default pack's next piece, kept where the
                         // card's copy would be; a short piece is its end.
@@ -3253,6 +3279,13 @@ mod image {
                         }
                     }
                     match got {
+                        Ok(true) if job.bad => {
+                            // Unreadable (audit C97): never shown dry.
+                            job.give_back(&mut band_pool);
+                            rain_store.clear(job.f);
+                            radar_job = None;
+                            shell.radar_forget(job.f as u8);
+                        }
                         Ok(true) => {
                             let bands = job.comp.spans.iter().filter(|b| b.is_some()).count();
                             rain_store.set_composed(job.f, Some(job.comp));
@@ -3276,11 +3309,26 @@ mod image {
                             job.give_back(&mut band_pool);
                             radar_job = None;
                             if !matches!(e, rp_graphics::Error::NoMemory) {
-                                let _ =
-                                    writeln!(RunLog, "radar: frame {} not composed ({e:?})", job.f);
+                                let _ = writeln!(
+                                    RunLog,
+                                    "radar: frame {} not composed ({e:?}): asked again once",
+                                    job.f
+                                );
+                                // Audit C97: asked again once, then lost.
+                                rain_store.clear(job.f);
+                                shell.radar_forget(job.f as u8);
                             }
                         }
                     }
+                    // The frame shown with no room to compose it (audit
+                    // C97): the radar says the rain is unavailable.
+                    let shown_waits = no_band_room
+                        && want.is_some_and(|w| {
+                            have & 1 << w != 0
+                                && rain_store.composed(w).is_none()
+                                && radar_job.is_none_or(|j| j.f == w)
+                        });
+                    shell.set_radar_rain_room(!shown_waits && band_pool.total() > 0);
                 }
                 let ready = (0..rp_weather::radar::PAST)
                     .filter(|&f| rain_store.composed(f).is_some())

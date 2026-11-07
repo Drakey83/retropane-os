@@ -3324,6 +3324,59 @@ fn a_refused_rain_frame_is_asked_again_once_then_skipped_never_shown_dry() {
     assert_eq!(s.radar_frame, 0, "the lost frame 2 skipped");
 }
 
+/// Audit C97: a rain frame the device can't keep or read is asked again
+/// once, then lost, and while the frame shown is lost (or there is no
+/// memory to compose it) the radar says "RAIN UNAVAILABLE", never a dry
+/// map.
+#[test]
+fn a_rain_frame_that_cannot_be_kept_is_asked_once_then_said_unavailable() {
+    let mut s = weather(0);
+    while s.next_ask().is_some() {
+        s.net_answer(false, b"");
+    }
+    s.wset.places[0].lat = 30_664;
+    s.wset.places[0].lon = -97_922;
+    s.set_tab(weather_app::RADAR);
+    s.tick(s.now + 10);
+    let lines = |s: &mut Shell| -> Vec<Vec<u8>> {
+        core::iter::from_fn(|| {
+            let q = s.next_ask()?;
+            let l = q.line().to_vec();
+            s.net_answer(true, b"");
+            Some(l)
+        })
+        .collect()
+    };
+    let q = s.next_ask().expect("the frames");
+    assert_eq!(q.ask, Ask::Frames);
+    s.net_answer(true, b"100 200 300 400");
+    assert_eq!(lines(&mut s).len(), 1 + 4, "the map, then four frames");
+    assert!(s.radar_complete());
+    let chip = |s: &mut Shell| texts(&drawn(s)).contains(&b"RAIN UNAVAILABLE".to_vec());
+    assert!(!chip(&mut s), "all frames in: no chip");
+    // The newest (shown) unreadable: asked again, once.
+    s.radar_frame = 3;
+    s.radar_forget(3);
+    let again = lines(&mut s);
+    assert_eq!(again.len(), 1);
+    assert!(again[0].starts_with(b"RPNET RAIN 3 "));
+    assert!(s.radar_complete());
+    assert!(!chip(&mut s), "the retry came: no chip");
+    // Unreadable again: lost, not asked a third time, and said so.
+    s.radar_forget(3);
+    assert!(lines(&mut s).is_empty(), "never asked a third time");
+    assert!(s.radar_complete(), "lost counts as done: the loop plays");
+    assert!(chip(&mut s), "the frame shown is lost: RAIN UNAVAILABLE");
+    // Another frame shown: its rain is there.
+    s.radar_frame = 2;
+    assert!(!chip(&mut s));
+    // No memory to compose the frame shown: said so until there is.
+    s.set_radar_rain_room(false);
+    assert!(chip(&mut s), "no room: RAIN UNAVAILABLE");
+    s.set_radar_rain_room(true);
+    assert!(!chip(&mut s));
+}
+
 /// While Radar is open its questions go first (run today-0055: its frame
 /// list waited 4.4 s behind the station's history); with no dock the page
 /// says so, never a sample's rain.

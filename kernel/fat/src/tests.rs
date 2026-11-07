@@ -1505,6 +1505,63 @@ fn small_fat(fs: crate::mkfs::Fs, total: u32, cluster: u32) -> (MemDisk, u32) {
     (d, l.part_start)
 }
 
+/// Audit C98: the staged write on exFAT as on FAT: nothing allocated until
+/// the commit (a reset part way leaves the old file whole), the commit
+/// links one run (created with its folder or replacing), and a run taken
+/// meanwhile is refused with the old file whole.
+#[test]
+fn an_exfat_staged_file_is_linked_only_at_the_commit() {
+    let (d, base) = small_fat(crate::mkfs::Fs::ExFat, 64 * 1024 * 1024 / 512, 4096);
+    let mut v = AnyVolume::mount(d, base).unwrap();
+    assert!(matches!(v, AnyVolume::ExFat(_)));
+    let mut scratch = vec![0u8; 4096];
+    let read = |v: &mut AnyVolume<MemDisk>, p: &str| {
+        let mut out = Vec::new();
+        v.read_range(p, 0, u64::MAX, &mut [0u8; 512], &mut |c| {
+            out.extend_from_slice(c)
+        })
+        .map(|_| out)
+    };
+    let old = pattern(3000, 1);
+    v.put("maps/a.rpm", &old, &mut scratch).unwrap();
+    let new = pattern(9000, 9);
+    let s = v.stage("maps/a.rpm", new.len(), &mut scratch).unwrap();
+    let mut padded = new.clone();
+    padded.resize(new.len().div_ceil(512) * 512, 0);
+    v.stage_write(&s, 0, &padded[..4096]).unwrap();
+    // A reset here: the old file whole.
+    let AnyVolume::ExFat(ex) = &v else {
+        unreachable!()
+    };
+    let copy = MemDisk::new(ex.device().data.clone());
+    let mut r = AnyVolume::mount(copy, base).unwrap();
+    assert_eq!(
+        read(&mut r, "maps/a.rpm"),
+        Ok(old.clone()),
+        "the old file whole"
+    );
+    v.stage_write(&s, 8, &padded[4096..]).unwrap();
+    v.commit("maps/a.rpm", s, &mut scratch).unwrap();
+    assert_eq!(read(&mut v, "maps/a.rpm"), Ok(new.clone()));
+    // Created with its folder, one run.
+    let s = v.stage("other/b.rpm", 700, &mut scratch).unwrap();
+    let mut b = pattern(700, 3);
+    b.resize(1024, 0);
+    v.stage_write(&s, 0, &b).unwrap();
+    v.commit("other/b.rpm", s, &mut scratch).unwrap();
+    assert_eq!(read(&mut v, "other/b.rpm"), Ok(pattern(700, 3)));
+    assert!(v.extent("other/b.rpm").is_ok(), "one run");
+    // A run taken between the stage and the commit: refused, old one whole.
+    let s = v.stage("maps/a.rpm", 6000, &mut scratch).unwrap();
+    v.put("thief.bin", &pattern(20_000, 5), &mut scratch)
+        .unwrap();
+    assert_eq!(
+        v.commit("maps/a.rpm", s, &mut scratch),
+        Err(Error::Fragmented)
+    );
+    assert_eq!(read(&mut v, "maps/a.rpm"), Ok(new));
+}
+
 #[test]
 fn fat12_entries_straddling_a_sector_keep_their_neighbours() {
     // 512-byte clusters: entry 341 starts at FAT byte 511 and ends in the

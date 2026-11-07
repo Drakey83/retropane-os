@@ -671,18 +671,50 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         Ok(())
     }
 
+    /// Lets client `c` read back the whole screen with [`Self::shown_at`]
+    /// (`None`: nobody). For the service's owner only, never a client's to
+    /// ask for itself (audit C99): in one process the program that made
+    /// the service (the test image's look check); hosted (ADR-0030 G4),
+    /// the compositor's own process or the test harness, never a request
+    /// over IPC.
+    pub fn grant_readback(&mut self, c: Option<ClientId>) {
+        self.readback = c;
+    }
+
     /// What the panel shows at (`x`, `y`) now, as 0xRRGGBB, read back from
     /// the display's registers and memory ([`layers::shown_at`]): the
     /// unattended look check's eyes (R185, sheet
     /// `docs/research/sheets/r185-look-check-unattended.md`). A few
-    /// uncached reads; nothing written.
-    pub fn shown_at(&mut self, x: u16, y: u16) -> Option<u32> {
-        self.shown_parts_at(x, y).map(|s| s.out)
+    /// uncached reads; nothing written. Only what client `c` may see
+    /// (audit C99): the whole screen if it holds the grant
+    /// ([`Self::grant_readback`]); else only its own layer's pixel inside
+    /// its own window (its own picture, not what lies under it); else
+    /// `None`. One client never reads another's pixels.
+    pub fn shown_at(&mut self, c: ClientId, x: u16, y: u16) -> Option<u32> {
+        if self.readback == Some(c) {
+            return self.shown_parts_at(c, x, y).map(|s| s.out);
+        }
+        let (st, owner) = self.layer.shown?;
+        let w = st.win;
+        let inside = x >= w.x && y >= w.y && x < w.x + w.w && y < w.y + w.h;
+        if owner != c.0 || !inside {
+            return None;
+        }
+        self.read_parts(x, y)?.over.map(|(rgb, _)| rgb)
     }
 
-    /// As [`Self::shown_at`], with each plane's part
-    /// ([`layers::shown_parts_at`]).
-    pub fn shown_parts_at(&mut self, x: u16, y: u16) -> Option<layers::Shown> {
+    /// As [`Self::shown_at`] with each plane's part
+    /// ([`layers::shown_parts_at`]): the whole screen's, so for the
+    /// client holding the grant alone (`None` for any other).
+    pub fn shown_parts_at(&mut self, c: ClientId, x: u16, y: u16) -> Option<layers::Shown> {
+        if self.readback != Some(c) {
+            return None;
+        }
+        self.read_parts(x, y)
+    }
+
+    /// The panel's pixel and its planes' parts, unchecked.
+    fn read_parts(&mut self, x: u16, y: u16) -> Option<layers::Shown> {
         let (e, mem) = self.two_d.parts();
         let mem = &*mem;
         layers::shown_parts_at(

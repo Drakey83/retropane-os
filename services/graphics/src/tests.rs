@@ -2131,6 +2131,44 @@ fn the_screen_and_its_layer_compose_as_the_display_mixes_them() {
     assert_eq!(px(1, 94), px(1, 93), "clear: the screen");
 }
 
+/// Audit C99: the screen read back only by the client holding the grant;
+/// any other sees its own layer's pixels inside its own window and
+/// nothing else, never another client's.
+#[test]
+fn a_client_reads_back_only_its_own_pixels_unless_granted() {
+    let (mut r, c, h) = page_rig(0);
+    // Row 120 (the window's top at scroll 0): an opaque white pixel.
+    r.g.write_picture(c, h, 120 * 960, &[0x0000_FFFF]).unwrap();
+    let st = LayerState {
+        src: Source::Picture(h),
+        win: page_win(0),
+    };
+    r.g.frame_commit(c, &Frame::new(), Some(st), false, &mut r.clock)
+        .unwrap();
+    settle_commit(&mut r);
+    let other = r.g.client(64 * 1024).expect("a second client");
+    let w = page_win(0);
+    let (x, y) = (w.x, w.y);
+    // The layer's owner: its own pixel inside its window, nothing outside.
+    assert_eq!(r.g.shown_at(c, x, y), Some(0xFF_FFFF), "its own picture");
+    assert_eq!(r.g.shown_at(c, x, w.y - 1), None, "outside its window");
+    assert_eq!(
+        r.g.shown_parts_at(c, x, y),
+        None,
+        "no planes without the grant"
+    );
+    // Another client: nothing of the first's, inside or out.
+    assert_eq!(r.g.shown_at(other, x, y), None, "another client's pixel");
+    assert_eq!(r.g.shown_at(other, x, w.y - 1), None, "the screen under it");
+    // Granted: the whole screen (the composed pixel), then taken back.
+    r.g.grant_readback(Some(other));
+    assert_eq!(r.g.shown_at(other, x, y), Some(0xFF_FFFF));
+    assert!(r.g.shown_at(other, x, w.y - 1).is_some(), "the screen too");
+    assert!(r.g.shown_parts_at(other, x, y).is_some());
+    r.g.grant_readback(None);
+    assert_eq!(r.g.shown_at(other, x, y), None);
+}
+
 #[test]
 fn the_layer_takes_the_screens_gamma_and_never_starts_on_the_windows_last_line() {
     let (mut r, c, h) = page_rig(0);

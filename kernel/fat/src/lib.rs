@@ -2041,12 +2041,37 @@ impl<D: BlockDevice> AnyVolume<D> {
         }
     }
 
-    /// Replaces or creates the file (crash-safe on either). exFAT: root
-    /// directory only for now.
+    /// Replaces or creates the file, its missing folders made (crash-safe
+    /// on either).
     pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
         match self {
             Self::Fat(v) => v.put(path, data, scratch),
             Self::ExFat(v) => v.put(path, data, scratch),
+        }
+    }
+
+    /// Finds one free run for a file written a piece at a time
+    /// ([`Volume::stage`], [`exfat::ExVolume::stage`]).
+    pub fn stage(&mut self, path: &str, bytes: usize, scratch: &mut [u8]) -> Result<Staged, Error> {
+        match self {
+            Self::Fat(v) => v.stage(path, bytes, scratch),
+            Self::ExFat(v) => v.stage(path, bytes, scratch),
+        }
+    }
+
+    /// Writes whole sectors of a staged file ([`Volume::stage_write`]).
+    pub fn stage_write(&mut self, s: &Staged, at: u32, data: &[u8]) -> Result<(), Error> {
+        match self {
+            Self::Fat(v) => v.stage_write(s, at, data),
+            Self::ExFat(v) => v.stage_write(s, at, data),
+        }
+    }
+
+    /// Links a staged file as `path` ([`Volume::commit`]).
+    pub fn commit(&mut self, path: &str, s: Staged, scratch: &mut [u8]) -> Result<Written, Error> {
+        match self {
+            Self::Fat(v) => v.commit(path, s, scratch),
+            Self::ExFat(v) => v.commit(path, s, scratch),
         }
     }
 

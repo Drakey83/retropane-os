@@ -441,6 +441,9 @@ pub struct Graphics<'a, R, M> {
     /// R119/R121: the divide-1 cures on renders into screen 1 (SDRAM):
     /// by the clock (the default) or held on or off.
     sdram_cures: Cures,
+    /// The client allowed to read back the whole screen (audit C99:
+    /// `Graphics::grant_readback`).
+    readback: Option<ClientId>,
     starts: Starts,
     /// The page layer (ADR-0034 C4 as changed, L2).
     layer: layer::LayerRec,
@@ -474,6 +477,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             screen1_3d: true,
             lists_on_die: true,
             sdram_cures: Cures::ByClock,
+            readback: None,
             starts: Starts {
                 behind: 0,
                 held: 0,
