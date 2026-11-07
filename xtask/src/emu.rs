@@ -13107,9 +13107,10 @@ pub fn today_look(root: &Path) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("today look: didn't return cleanly:{log}"));
     }
-    let _ = std::fs::write(root.join("target/emulator/today-look-log.txt"), log);
+    let kept = scratch(root, "today-look-log.txt")?;
+    let _ = std::fs::write(&kept, log);
     crate::lookcheck::judge(log).map_err(|e| format!("today look: {e}"))?;
-    eprintln!("    today look OK (log target/emulator/today-look-log.txt)");
+    eprintln!("    today look OK (log {})", kept.display());
     Ok(())
 }
 
