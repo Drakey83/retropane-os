@@ -16,7 +16,7 @@ records its build (`build <hash>`, item 8), so no session mixes builds.
 ## Before
 
 - The X51v docked, Windows Mobile up, nothing else using it
-  (`cargo xtask axim` names no holder; `local/DEVICE-IN-USE.txt` free).
+  (`cargo xtask axim` names no holder, and the device lock file is free).
 - One commit for all three sessions: note `git rev-parse --short=12 HEAD`
   and don't commit, pull or build anything else between sessions.
 - The loader started by the owner (HaRET), the screen saying the loader
