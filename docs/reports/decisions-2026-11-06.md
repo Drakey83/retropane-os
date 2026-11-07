@@ -2,9 +2,10 @@
 
 Written while the owner was away; **the owner ruled on every box
 2026-11-07** (his answers under each). Each item's code is built on branch
-`fix/deep-dive-2026-11-06`, **pushed 2026-11-07 at HEAD 3b8e02f1** (the
-branch, `backup/main-2026-11-07`, and GitHub main fast-forwarded to it on
-the owner's "push to live").
+`fix/deep-dive-2026-11-06`, **merged to main at 3b8e02f1** on 2026-11-07
+(GitHub main fast-forwarded to it on the owner's "push to live"; the
+branch and `backup/main-2026-11-07` pushed with it). The follow-up work is
+on `fix/deep-dive-2026-11-07` ([its report](deep-dive-2026-11-07-fix.md)).
 
 ## Item 1: the divide-1 cures
 
@@ -17,7 +18,7 @@ the owner's "push to live").
   device check has run; GitHub main already held 3b8e02f1 from his "push
   to live" earlier the same day, so main carries the rule ahead of its
   device check (nothing rewritten; the check stays owed).
-- [ ] **Run the device check** (still owed, the owner 2026-11-07) ([run sheet](../research/sheets/divide1-cures-by-clock.md)):
+- [x] **Run the device check** (**passed on the X51v 2026-11-07**, run scene-0001: [report](runs/2026-11-07-scene-p8.md)) ([run sheet](../research/sheets/divide1-cures-by-clock.md)):
   `rp-scene` divide-1 variant, P8 judged by DSIG. Owed; not made.
 - [ ] **Which divide-1 rungs ship** stays amendment D's vote (Q1-Q3),
   unchanged by E.

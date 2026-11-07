@@ -1,8 +1,9 @@
 # Deep dive fix, 2026-11-06/07: what changed, what proves it, what's owed
 
-Branch `fix/deep-dive-2026-11-06` from 4f60eebe; **pushed 2026-11-07 at HEAD
-3b8e02f1** (the branch, `backup/main-2026-11-07`, and GitHub main
-fast-forwarded to it on the owner's "push to live"). Every item's
+Branch `fix/deep-dive-2026-11-06` from 4f60eebe; **merged to main at
+3b8e02f1** on 2026-11-07 (GitHub main fast-forwarded to it on the owner's
+"push to live"; the branch and `backup/main-2026-11-07` pushed with it).
+Follow-up: [deep-dive-2026-11-07-fix.md](deep-dive-2026-11-07-fix.md). Every item's
 commit passed `cargo xtask ci` in a separate checkout of exactly that
 commit. Decisions that are the owner's are tick-boxes in
 [decisions-2026-11-06.md](decisions-2026-11-06.md). **No device run was made

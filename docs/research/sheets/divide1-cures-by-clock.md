@@ -1,8 +1,11 @@
 # Run sheet: the divide-1 cures by the clock on the X51v (ADR-0035 amendment E, accepted 2026-11-07)
 
-**Status: OWED. This run has not been made.** The rule is built and
-checked in the emulator only (`cargo xtask emu-scene-d1`, 2026-11-06). The
-owner was away when it was built. Nothing here is device proof.
+**Status: PASSED on the X51v, 2026-11-07** (run scene-0001, unattended on
+the loader at 8f1dd72a: [report](../../reports/runs/2026-11-07-scene-p8.md)).
+P8 took the cures on every screen-1 render (150 of 150 and 50 of 50), torn
+0 of 152 and 0 of 173, DSIG equal to the reference on all 8 one-offs,
+failed 0; the control P7 tore every refresh judged. Built and checked in
+the emulator first (`cargo xtask emu-scene-d1`, 2026-11-06).
 
 ## What it proves
 

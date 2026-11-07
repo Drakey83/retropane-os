@@ -133,7 +133,11 @@ no four-corner objects (list layouts 5 and 9). The local build
 Windows Mobile's clocks and the four-corner objects) is **not released**
 (R86: `emu-mbx3d` never returns on it, audit C41); the overnight checks of
 2026-10-28/29 that needed it ran on it with `RETROPANE_QEMU_ANY=1`, and
-each was proven on the X51v, not by the emulator.
+each was proven on the X51v, not by the emulator. Since the renderer drew quads as four-corner objects by default
+(55e6e220), `emu-mbx3d-api` and `emu-gpubench` fail on the release (R186);
+the four-corner commit alone on rp-v0.31.0 (local branch `quad-objects`,
+cbba0bae4f, 2026-11-07, without the clocks commit R86 holds back) passes
+both, and awaits release as rp-v0.31.1.
 
 ## How to add a row
 

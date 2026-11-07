@@ -38,5 +38,6 @@ copied from the log.
 | r184s3c | 2026-11-06 | R184 step 3, run 2 start 1 | [2026-11-06-r184s3c.md](2026-11-06-r184s3c.md) |
 | r184s3d | 2026-11-06 | R184 step 3, run 2 start 2 | [2026-11-06-r184s3d.md](2026-11-06-r184s3d.md) |
 | today-0062 | 2026-11-06 | R185 look check, run 1 | [2026-11-06-today-0062-r185-run-1.md](2026-11-06-today-0062-r185-run-1.md) |
+| scene-0001 (P8) | 2026-11-07 | ADR-0035 amendment E's device check: passed | [2026-11-07-scene-p8.md](2026-11-07-scene-p8.md) |
 | r185a | 2026-11-06 | R185 look check, run 2 | [2026-11-06-r185a.md](2026-11-06-r185a.md) |
 | r185b | 2026-11-06 | R185 look check, run 3 (the pass) | [2026-11-06-r185b.md](2026-11-06-r185b.md) |
