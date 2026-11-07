@@ -287,3 +287,12 @@ The kept map removed first (`cargo xtask rm RPMAPS/56A5C299.RPM`).
   from the last write (the search starts where the last file ended), and
   remember the kept file's run from the write so the header pass doesn't
   walk the chain.
+
+## Committed run reports
+
+The device-run evidence this sheet quotes, committed (the logs in `local/` are not in git; [the rule](../../reports/runs/README.md)):
+
+- r184s3a: [2026-11-06-r184s3a.md](../../reports/runs/2026-11-06-r184s3a.md)
+- r184s3b: [2026-11-06-r184s3b.md](../../reports/runs/2026-11-06-r184s3b.md)
+- r184s3c: [2026-11-06-r184s3c.md](../../reports/runs/2026-11-06-r184s3c.md)
+- r184s3d: [2026-11-06-r184s3d.md](../../reports/runs/2026-11-06-r184s3d.md)

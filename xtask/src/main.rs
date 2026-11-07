@@ -1320,6 +1320,8 @@ fn lint() -> Result {
             violations.extend(policy::check_crash_path(path, &text));
             violations.extend(policy::check_unchecked_2d(path, &text));
             violations.extend(policy::check_mbxclk_writes(path, &text));
+            // Device-run claims point at committed reports (item 2).
+            violations.extend(policy::check_run_reports(path, &text));
             // Copied values (quality-audit D1), in Rust sources outside xtask
             // (whose policy code names the tag itself).
             if path.ends_with(".rs") && !path.starts_with("xtask/") {

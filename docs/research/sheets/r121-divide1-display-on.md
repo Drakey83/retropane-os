@@ -111,3 +111,15 @@ Built (knob off until a divide-1 rung ships, ADR-0035 amendment D):
 - **Length:** about 10 minutes, unattended once loaded.
 - **What would overturn it:** any wrongly judged refresh in the first two
   phases. The cure isn't enough through the service: back to the sheet.
+
+## Committed run reports
+
+The device-run evidence this sheet quotes, committed (the logs in `local/` are not in git; [the rule](../../reports/runs/README.md)):
+
+- gpubench-0237: [2026-10-30-gpubench-0237.md](../../reports/runs/2026-10-30-gpubench-0237.md)
+- gpubench-0238: [2026-10-30-gpubench-0238.md](../../reports/runs/2026-10-30-gpubench-0238.md)
+- gpubench-0239: [2026-10-30-gpubench-0239.md](../../reports/runs/2026-10-30-gpubench-0239.md)
+- gpubench-0240: [2026-10-30-gpubench-0240.md](../../reports/runs/2026-10-30-gpubench-0240.md)
+- gpubench-0241: [2026-10-30-gpubench-0241.md](../../reports/runs/2026-10-30-gpubench-0241.md)
+- scene-0008: [2026-10-30-scene-0008.md](../../reports/runs/2026-10-30-scene-0008.md)
+- scene-0009: [2026-10-30-scene-0009.md](../../reports/runs/2026-10-30-scene-0009.md)

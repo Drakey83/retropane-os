@@ -226,6 +226,58 @@ pub struct Inherited {
     pub item: String,
 }
 
+/// Sheets written before the run-report rule (the owner's list of
+/// 2026-11-06, item 2): their run claims may cite `local/` logs alone.
+/// Every other sheet that names a `local/` run log must also point at a
+/// committed report in `docs/reports/runs/`.
+pub const RUN_REPORT_EXEMPT: &[&str] = &[
+    "c2-cpu-overclock-test1.md",
+    "night-2026-11-01-optimizations.md",
+    "r110-2d-into-the-shown-screen.md",
+    "r110-service-device-run.md",
+    "r113-flip-timing.md",
+    "r115-flip-without-waiting.md",
+    "r115-no-flip-2d.md",
+    "r116-use-the-on-die-memory.md",
+    "r117-divide1-sdram-render.md",
+    "r118-flat-frame-sdram.md",
+    "r120-speed-switch.md",
+    "r132-dock-internet.md",
+    "r134-reveal-tears.md",
+    "r176-panel-cost.md",
+    "r184-radar-map-looks.md",
+    "r20-proof-run.md",
+    "r20-screen1-address.md",
+    "r20-startup-copy-timing.md",
+    "r23-on-die-target.md",
+    "r23-safe-region-edge.md",
+    "today-image-room.md",
+    "weather-drag-speed.md",
+    "weather-frame-speed.md",
+    "weather-gpu-movement.md",
+];
+
+/// A sheet (`docs/research/sheets/*.md`) that names a device-run log in
+/// `local/` without pointing at a committed report (`reports/runs/`): a
+/// claim no reviewer can check from the repository.
+#[must_use]
+pub fn check_run_reports(path: &str, text: &str) -> Option<String> {
+    let name = path.strip_prefix("docs/research/sheets/")?;
+    if !name.ends_with(".md") || RUN_REPORT_EXEMPT.contains(&name) {
+        return None;
+    }
+    let cites_local = text.match_indices("local/").any(|(i, _)| {
+        let rest = &text[i..];
+        let end = rest.find(|c: char| c.is_whitespace() || c == '`' || c == ')').unwrap_or(rest.len());
+        rest[..end].ends_with(".txt")
+    });
+    (cites_local && !text.contains("reports/runs/")).then(|| {
+        format!(
+            "{path}: names a device-run log in local/ but no committed report: add one to docs/reports/runs/ and link it (docs/reports/runs/README.md)"
+        )
+    })
+}
+
 /// The `inherited:` tags in `text`, and a violation for each malformed one
 /// (an empty audit item or no source after the comma).
 #[must_use]
@@ -257,6 +309,20 @@ pub fn inherited_tags(path: &str, text: &str) -> (Vec<Inherited>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_sheet_citing_a_local_run_log_needs_a_committed_report() {
+        let p = "docs/research/sheets/r999-new.md";
+        let bad = "Run 1 (`local/rp-today-run-x.txt`): 0 wrong.";
+        assert!(check_run_reports(p, bad).is_some());
+        let good = "Run 1 (`local/rp-today-run-x.txt`, report docs/reports/runs/x.md): 0 wrong.";
+        assert_eq!(check_run_reports(p, good), None);
+        // No run log named: nothing to point at.
+        assert_eq!(check_run_reports(p, "the local/maps cache"), None);
+        // Sheets written before the rule, and files elsewhere, are left alone.
+        assert_eq!(check_run_reports("docs/research/sheets/r120-speed-switch.md", bad), None);
+        assert_eq!(check_run_reports("docs/hw/2700g.md", bad), None);
+    }
 
     #[test]
     fn unchecked_2d_commands_only_in_their_homes() {

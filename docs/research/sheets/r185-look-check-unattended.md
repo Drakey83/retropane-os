@@ -140,3 +140,11 @@ probe reads the wrong place or the wrong moment, and is fixed first.
 - **The command:** `cargo xtask look-replay`, then `RP_TODAY_REPLAY=1
   RP_TODAY_REPLAY_FILE=target/look-check-taps.txt RP_TODAY_REPLAY_GAP_MS=12000
   RP_TODAY_LOOK_CHECK=1 RETROPANE_LOG_WAIT_SECS=360 cargo xtask load rp-today`.
+
+## Committed run reports
+
+The device-run evidence this sheet quotes, committed (the logs in `local/` are not in git; [the rule](../../reports/runs/README.md)):
+
+- today-0062: [2026-11-06-today-0062-r185-run-1.md](../../reports/runs/2026-11-06-today-0062-r185-run-1.md)
+- r185a: [2026-11-06-r185a.md](../../reports/runs/2026-11-06-r185a.md)
+- r185b: [2026-11-06-r185b.md](../../reports/runs/2026-11-06-r185b.md)

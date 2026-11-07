@@ -361,3 +361,10 @@ The owner: "looks good". The log:
 Left for later steps: the place's map sent every opening (1.3 s; step 3
 keeps it on the card); the step's 30 ms in widespread rain (a sheet if the
 owner wants it lower).
+
+## Committed run reports
+
+The device-run evidence this sheet quotes, committed (the logs in `local/` are not in git; [the rule](../../reports/runs/README.md)):
+
+- today-0054: [2026-11-06-today-0054.md](../../reports/runs/2026-11-06-today-0054.md)
+- today-0055: [2026-11-06-today-0055.md](../../reports/runs/2026-11-06-today-0055.md)
