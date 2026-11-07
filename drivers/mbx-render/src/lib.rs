@@ -1282,24 +1282,23 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         }
     }
 
-    /// The first offset in the glyph memory with `bytes` free after it,
-    /// between the atlases kept.
+    /// The lowest offset in the glyph memory with `bytes` free after it,
+    /// between the atlases kept: a span can only start at 0 or where one
+    /// ends, so each such start is tried against every atlas (16 at most;
+    /// no sort, whose code cost the images 5 KB).
     fn atlas_gap(&self, bytes: usize) -> Option<usize> {
-        let mut spans = [(0usize, 0usize); ATLASES];
-        let mut n = 0;
-        for a in self.atlases.iter().flatten() {
-            spans[n] = (a.off, a.off + a.bytes);
-            n += 1;
-        }
-        spans[..n].sort_unstable();
-        let mut free = 0;
-        for &(start, end) in &spans[..n] {
-            if start - free >= bytes {
-                return Some(free);
-            }
-            free = free.max(end);
-        }
-        (self.l.glyphs.1 - free >= bytes).then_some(free)
+        let fits = |at: usize| {
+            at + bytes <= self.l.glyphs.1
+                && self
+                    .atlases
+                    .iter()
+                    .flatten()
+                    .all(|a| at + bytes <= a.off || at >= a.off + a.bytes)
+        };
+        core::iter::once(0)
+            .chain(self.atlases.iter().flatten().map(|a| a.off + a.bytes))
+            .filter(|&at| fits(at))
+            .min()
     }
 
     /// What decides how `clip` looks: the background, the commands that
