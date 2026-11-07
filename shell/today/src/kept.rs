@@ -1,11 +1,14 @@
 //! The radar map kept on the card for a place (R184 step 3, sheet
 //! docs/research/sheets/r184-radar-map-card.md, way A; the file's header
-//! in [`rp_weather::mapcard`]): its header read and checked, its bytes read
-//! a piece at a time, and the dock's map written with the folder's cap.
+//! in [`rp_weather::mapcard`]): its header read and checked with where the
+//! file lies (its sectors then read straight off the card a pass at a
+//! time: run r184s3b's reads through the folder took 445 ms), and the
+//! dock's map written a piece a pass by rp-fat's staged write (one `put`
+//! held the loop 532 ms, run r184s3a), with the folder's cap.
 //! Generic over the card so the host tests run them on a card image; the
 //! image settles its card log's controller first and logs only after.
 
-use rp_fat::{Error, Volume};
+use rp_fat::{Error, Reserved, Staged, Volume};
 use rp_hal_api::BlockDevice;
 use rp_weather::mapcard::{self, CAP, DIR, HEAD, Head, Key};
 
@@ -23,8 +26,9 @@ fn path_of(name: &[u8; 12]) -> [u8; 19] {
 }
 
 /// `key`'s kept map's header, checked as hostile input and as `key`'s,
-/// into `out` ([`HEAD`] bytes at least). The reason in words when it isn't
-/// usable.
+/// into `out` ([`HEAD`] bytes at least), and where the file lies when its
+/// clusters are one run (then read with [`sectors`]; else with
+/// [`piece`]). The reason in words when it isn't usable.
 ///
 /// # Errors
 /// No volume, no file, a short or damaged header, another place's map
@@ -34,7 +38,7 @@ pub fn head<D: BlockDevice>(
     start: u32,
     key: Key,
     out: &mut [u8],
-) -> Result<Head, &'static str> {
+) -> Result<(Head, Option<Reserved>), &'static str> {
     let mut vol = Volume::mount(card, start).map_err(|_| "the card not readable")?;
     let path = key.path();
     let path = core::str::from_utf8(&path).map_err(|_| "no name")?;
@@ -59,7 +63,81 @@ pub fn head<D: BlockDevice>(
     if u64::from(file.size()) != (HEAD + h.len) as u64 {
         return Err("its length not its header's");
     }
-    Ok(h)
+    Ok((h, vol.extent(path).ok()))
+}
+
+/// Sectors `at..` of a kept map lying at `run` straight off the card into
+/// `out` (whole sectors, up to [`PIECE`]): the bytes read, or `None`. The
+/// file was found one run by [`head`] in this run of the program, and
+/// nothing writes it while it is read (a new map from the dock stops the
+/// read first).
+pub fn sectors<D: BlockDevice>(
+    mut card: D,
+    run: Reserved,
+    at: u32,
+    out: &mut [u8],
+) -> Option<usize> {
+    let left = run.sectors.checked_sub(at).filter(|&n| n > 0)? as usize * 512;
+    let n = left.min(PIECE as usize).min(out.len() / 512 * 512);
+    if n == 0 {
+        return None;
+    }
+    card.read_blocks(run.lba + at, &mut out[..n]).ok()?;
+    Some(n)
+}
+
+/// Finds the free run for `key`'s new kept map of `bytes` (the header and
+/// the map), its folder made if missing: the first step of a write a
+/// piece a pass ([`stage_piece`], then [`commit`]).
+///
+/// # Errors
+/// The card's or the volume's ([`Error::Fragmented`]: no run that long).
+pub fn stage<D: BlockDevice>(
+    card: D,
+    start: u32,
+    key: Key,
+    bytes: usize,
+    scratch: &mut [u8],
+) -> Result<Staged, Error> {
+    let mut vol = Volume::mount(card, start)?;
+    let path = key.path();
+    let path = core::str::from_utf8(&path).map_err(|_| Error::BadName)?;
+    vol.stage(path, bytes, scratch)
+}
+
+/// Writes sectors `at..` of a staged map from `data` (whole sectors).
+///
+/// # Errors
+/// The card's, or a piece past the run.
+pub fn stage_piece<D: BlockDevice>(
+    card: D,
+    start: u32,
+    s: &Staged,
+    at: u32,
+    data: &[u8],
+) -> Result<(), Error> {
+    Volume::mount(card, start)?.stage_write(s, at, data)
+}
+
+/// Links a staged map as `key`'s kept map (the old one whole until then),
+/// then keeps the folder to its cap as [`write`] does: the place removed,
+/// if any.
+///
+/// # Errors
+/// The card's or the volume's ([`Error::Fragmented`]: the run was taken).
+pub fn commit<D: BlockDevice>(
+    card: D,
+    start: u32,
+    key: Key,
+    s: Staged,
+    keep: &dyn Fn(Key) -> bool,
+    scratch: &mut [u8],
+) -> Result<Option<Key>, Error> {
+    let mut vol = Volume::mount(card, start)?;
+    let path = key.path();
+    let path = core::str::from_utf8(&path).map_err(|_| Error::BadName)?;
+    vol.commit(path, s, scratch)?;
+    cap(&mut vol, key, keep)
 }
 
 /// The next piece (up to [`PIECE`]) of `key`'s kept map from byte `off`
@@ -110,8 +188,18 @@ pub fn write<D: BlockDevice>(
     let path = key.path();
     let path = core::str::from_utf8(&path).map_err(|_| Error::BadName)?;
     vol.put(path, file, scratch)?;
-    // The cap: the folder's maps listed by name, their headers read only
-    // when there are too many.
+    cap(&mut vol, key, keep)
+}
+
+/// Past [`CAP`] maps, removes the oldest whose place is neither `key`'s
+/// nor one `keep` names (a damaged one first): the place removed, if any.
+/// The folder's maps listed by name, their headers read only when there
+/// are too many.
+fn cap<D: BlockDevice>(
+    vol: &mut Volume<D>,
+    key: Key,
+    keep: &dyn Fn(Key) -> bool,
+) -> Result<Option<Key>, Error> {
     let mut names = [[0u8; 12]; CAP + 4];
     let (mut n, mut all) = (0usize, 0usize);
     vol.for_each_in(DIR, |e| {
@@ -217,10 +305,41 @@ mod tests {
         f
     }
 
-    /// Reads `key`'s kept map back a piece at a time, as the image does.
+    /// Reads `key`'s kept map back a piece at a time, as the image does:
+    /// straight off the card when it lies in one run (checked equal to the
+    /// read through the folder), else through the folder.
     fn read_back(c: &mut Card, start: u32, key: Key) -> Result<Vec<u8>, &'static str> {
         let mut h = [0u8; HEAD];
-        let head = head(&mut *c, start, key, &mut h)?;
+        let (head, run) = head(&mut *c, start, key, &mut h)?;
+        if let Some(run) = run {
+            let mut all = vec![0u8; run.sectors as usize * 512];
+            let mut at = 0u32;
+            while (at as usize) < run.sectors as usize {
+                let n =
+                    sectors(&mut *c, run, at, &mut all[at as usize * 512..]).ok_or("sectors")?;
+                assert!(n > 0 && n as u64 <= PIECE && n % 512 == 0);
+                at += (n / 512) as u32;
+            }
+            assert_eq!(sectors(&mut *c, run, at, &mut all), None, "past the end");
+            let map = all[HEAD..HEAD + head.len].to_vec();
+            if mapcard::check_map(&head, &map).is_err() {
+                return Err("checksum");
+            }
+            let mut through = vec![0u8; head.len];
+            let mut got = 0;
+            while got < head.len {
+                got += piece(
+                    &mut *c,
+                    start,
+                    key,
+                    (HEAD + got) as u64,
+                    &mut through[got..],
+                )
+                .ok_or("a piece")?;
+            }
+            assert!(through == map, "both reads agree");
+            return Ok(map);
+        }
         let mut map = vec![0u8; head.len];
         let mut got = 0;
         while got < head.len {
@@ -258,6 +377,54 @@ mod tests {
         let mut vol = Volume::mount(&mut c, start).unwrap();
         let other = vol.find("RPIC0A.PAK").unwrap();
         assert_eq!(other.size(), 13);
+    }
+
+    /// The image's write: staged, a piece a pass (the volume mounted again
+    /// each time), committed; read back the same; a reset before the commit
+    /// leaves the old map whole.
+    #[test]
+    fn a_map_written_a_piece_a_pass_reads_back_and_a_reset_keeps_the_old() {
+        let (mut c, start) = card();
+        let mut scratch = vec![0u8; 32 * 1024];
+        let old: Vec<u8> = (0..90_000u32).map(|i| (i * 3) as u8).collect();
+        let f = kept_file(LH, &old, 1);
+        assert_eq!(
+            write(&mut c, start, LH, &f, &|_| false, &mut scratch),
+            Ok(None)
+        );
+        let map: Vec<u8> = (0..176_574u32).map(|i| (i * 7 + i / 300) as u8).collect();
+        let mut f = kept_file(LH, &map, 2);
+        let len = f.len();
+        f.resize(len.div_ceil(512) * 512, 0);
+        let s = stage(&mut c, start, LH, len, &mut scratch).unwrap();
+        let mut at = 0usize;
+        let mut pieces = 0;
+        let before_commit = loop {
+            let n = (f.len() - at).min(PIECE as usize);
+            stage_piece(&mut c, start, &s, (at / 512) as u32, &f[at..at + n]).unwrap();
+            at += n;
+            pieces += 1;
+            if pieces == 3 {
+                // A copy of the card mid-way: as if reset here.
+                break Card(c.0.clone());
+            }
+        };
+        while at < f.len() {
+            let n = (f.len() - at).min(PIECE as usize);
+            stage_piece(&mut c, start, &s, (at / 512) as u32, &f[at..at + n]).unwrap();
+            at += n;
+        }
+        assert_eq!(
+            commit(&mut c, start, LH, s, &|_| false, &mut scratch),
+            Ok(None)
+        );
+        assert_eq!(read_back(&mut c, start, LH), Ok(map));
+        let mut reset = before_commit;
+        assert_eq!(
+            read_back(&mut reset, start, LH),
+            Ok(old),
+            "the old map whole"
+        );
     }
 
     /// Hostile or broken files on the card: never used, never a fault.

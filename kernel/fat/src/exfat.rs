@@ -1213,6 +1213,10 @@ impl<D: BlockDevice> ExVolume<D> {
     /// chain if there is one long enough, else chained through the FAT.
     #[inline(never)]
     fn store(&mut self, data: Fill<'_>, scratch: &mut [u8]) -> Result<Written, Error> {
+        if let Fill::Staged(_) = data {
+            // Staged writes are FAT's only (`Volume::stage`).
+            return Err(Error::NotExFat);
+        }
         let cb = self.cluster_bytes();
         let n = u32::try_from(data.len().div_ceil(cb)).map_err(|_| Error::NoRoom)?;
         if n == 0 {

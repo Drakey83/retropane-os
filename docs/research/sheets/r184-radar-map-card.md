@@ -233,3 +233,25 @@ image touches only its own folder). The image's FAT use goes through
    lookup, then plain sector reads a pass) instead of a mount and folder
    walk per piece: ~445 ms toward ~110 ms at the card's 1.7 MB/s
    (estimate), the map on screen ~0.4 s after opening.
+
+### As built after the run (the owner's "Build them", 2026-11-06)
+
+- **The write a piece a pass:** rp-fat's new staged write
+  (`Volume::stage`, `stage_write`, `commit`; `rp_fat::Staged`): the stage
+  makes the folder if missing and finds one free run without writing it;
+  the data goes into those still-free clusters 32 KB a pass (the volume
+  mounted again each pass); the commit checks the run is still free, links
+  the FAT, then switches or creates the entry: copy-then-swap's crash order
+  across passes, so a reset part way leaves the old map whole and nothing
+  allocated (rp-fat test, `kept` test with a card copied mid-write). The
+  stage makes the folder first because a commit into a new folder took the
+  very cluster the stage had found (the test caught it). Every pass skips
+  while the pen is down; the log gives the passes, the total and the
+  longest pass.
+- **The read straight off the card:** `kept::head` also returns where the
+  file lies when it is one run (`Volume::extent`); the image then reads its
+  sectors 32 KB a pass with no mount or folder walk (the file's start, its
+  header again, then the map), and through the folder only if the file is
+  in pieces. The host test reads both ways and checks they agree.
+- Emulator (`emu-today-radar-card`): "one run", read 12.6 ms, unpacked in
+  8 passes. The X51v run measures both.

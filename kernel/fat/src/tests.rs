@@ -1616,3 +1616,74 @@ fn hostile_fat12_and_fat16_cards_never_panic_or_loop() {
         }
     }
 }
+
+/// A staged write (R184 step 3's kept radar map, written a piece a pass):
+/// nothing allocated until the commit, so a reset part way leaves the old
+/// file whole and no space lost; the commit links the run as `put` would
+/// (replaced or created with its folder); a run taken meanwhile is refused.
+#[test]
+fn a_staged_file_is_written_a_piece_at_a_time_and_linked_at_the_commit() {
+    let img = small_image(
+        &[Entry {
+            name: "keep.txt",
+            data: b"other",
+        }],
+        &[],
+    );
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    let old = pattern(3000, 1);
+    v.put("maps/a.rpm", &old, &mut scratch).unwrap();
+    let new = pattern(5000, 9);
+    // Staged and two pieces written, then a reset before the commit.
+    let s = v.stage("maps/a.rpm", new.len(), &mut scratch).unwrap();
+    assert_eq!(s.sectors, 10);
+    let mut padded = new.clone();
+    padded.resize(5120, 0);
+    v.stage_write(&s, 0, &padded[..2048]).unwrap();
+    v.stage_write(&s, 4, &padded[2048..4096]).unwrap();
+    let data = v.into_inner().data;
+    let mut v = Volume::mount(MemDisk::new(data.clone()), PARTITION_START).unwrap();
+    assert_eq!(
+        read_all(&mut v, "maps/a.rpm", 512),
+        old,
+        "the old file whole"
+    );
+    let h = health(&mut v);
+    assert!(h.clean() && h.lost == 0, "nothing allocated: {h:?}");
+    // Mounted again each piece (the image's passes), then committed.
+    let mut v = Volume::mount(MemDisk::new(data), PARTITION_START).unwrap();
+    v.stage_write(&s, 8, &padded[4096..]).unwrap();
+    assert_eq!(
+        v.stage_write(&s, 9, &padded[..1024]),
+        Err(Error::NoRoom),
+        "past the run"
+    );
+    assert_eq!(
+        v.stage_write(&s, 0, &padded[..100]),
+        Err(Error::NoRoom),
+        "not sectors"
+    );
+    v.commit("maps/a.rpm", s, &mut scratch).unwrap();
+    assert_eq!(read_all(&mut v, "maps/a.rpm", 512), new);
+    assert_eq!(read_all(&mut v, "keep.txt", 512), b"other");
+    let h = health(&mut v);
+    assert!(h.clean() && h.lost == 0, "{h:?}");
+    // Created with its folder.
+    let s = v.stage("other/b.rpm", 700, &mut scratch).unwrap();
+    let mut b = pattern(700, 3);
+    b.resize(1024, 0);
+    v.stage_write(&s, 0, &b).unwrap();
+    v.commit("other/b.rpm", s, &mut scratch).unwrap();
+    assert_eq!(read_all(&mut v, "other/b.rpm", 512), pattern(700, 3));
+    // A run taken between the stage and the commit: refused, old one whole.
+    let s = v.stage("maps/a.rpm", 2000, &mut scratch).unwrap();
+    v.put("thief.bin", &pattern(4000, 5), &mut scratch).unwrap();
+    assert_eq!(
+        v.commit("maps/a.rpm", s, &mut scratch),
+        Err(Error::Fragmented)
+    );
+    assert_eq!(read_all(&mut v, "maps/a.rpm", 512), new);
+    assert!(health(&mut v).clean());
+    assert_eq!(v.stage("maps/c.rpm", 0, &mut scratch), Err(Error::NoRoom));
+}

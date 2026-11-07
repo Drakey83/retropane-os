@@ -733,22 +733,33 @@ mod image {
                 kept.read_us = us(t0);
                 kept.unpack_us = 0;
                 match got {
-                    Ok(h) => {
+                    Ok((h, run)) => {
                         shell.radar_map_card(Some(h.crc));
                         // The layers in RAM become this place's.
                         kept.ram = None;
                         kept.key = None;
                         *layers_of = None;
                         *coloured = None;
+                        // Straight off the card from the file's start (its
+                        // header again, then the map); through the folder
+                        // from the map's start if it isn't one run.
                         kept.step = MapStep::Read {
                             key,
                             head: h,
-                            got: 0,
+                            run,
+                            got: if run.is_some() { 0 } else { HEAD },
                         };
                         let _ = writeln!(
                             RunLog,
-                            "radar map: the place's on the card ({} bytes, written at {}): reading it, its header in {} us",
-                            h.len, h.at, kept.read_us
+                            "radar map: the place's on the card ({} bytes, written at {}, {}): reading it, its header in {} us",
+                            h.len,
+                            h.at,
+                            if run.is_some() {
+                                "one run"
+                            } else {
+                                "in pieces"
+                            },
+                            kept.read_us
                         );
                     }
                     Err(why) => {
@@ -777,20 +788,29 @@ mod image {
                 kept.step = MapStep::Idle;
                 let _ = writeln!(RunLog, "radar map: the card's read stopped (another place)");
             }
-            MapStep::Read { key, head, got } => {
+            MapStep::Read {
+                key,
+                head,
+                run,
+                got,
+            } => {
                 let t0 = rt::ticks();
-                let n = match (card.as_mut(), map_file.get_mut(HEAD + got..HEAD + head.len)) {
-                    (Some((c, start)), Some(out)) => {
-                        map_chunk(c, *start, key, (HEAD + got) as u64, out)
-                    }
+                let n = match (run, card.as_mut()) {
+                    (Some(run), Some((c, _))) => map_file
+                        .get_mut(got..)
+                        .and_then(|out| map_sectors(c, run, (got / 512) as u32, out)),
+                    (None, Some((c, start))) => map_file
+                        .get_mut(got..HEAD + head.len)
+                        .and_then(|out| map_chunk(c, *start, key, got as u64, out)),
                     _ => None,
                 };
                 kept.read_us += us(t0);
                 match n {
-                    Some(n) if n > 0 && got + n < head.len => {
+                    Some(n) if n > 0 && got + n < HEAD + head.len => {
                         kept.step = MapStep::Read {
                             key,
                             head,
+                            run,
                             got: got + n,
                         };
                     }
@@ -851,6 +871,9 @@ mod image {
                 kept.step = MapStep::Write { key, wait: false };
             }
             MapStep::Write { key, .. } if !pen_down => {
+                // The first pass of the write a piece a pass (run r184s3a:
+                // one put held the loop 532 ms): the header, the folder if
+                // missing and the free run found; nothing linked yet.
                 kept.step = MapStep::Idle;
                 if kept.key != Some(key) {
                     return;
@@ -862,21 +885,92 @@ mod image {
                     shell.radar_newest(),
                 );
                 map_file[..HEAD].copy_from_slice(&head);
-                let mut saved = [(i32::MIN, i32::MIN); rp_weather::settings::PLACES_MAX];
-                for (s, p) in saved.iter_mut().zip(shell.saved_places()) {
-                    *s = p;
-                }
+                // The last sector's tail zeroed (the file's length bounds it).
+                let end = (HEAD + len).div_ceil(512) * 512;
+                map_file[HEAD + len..end].fill(0);
                 if !*card_tried {
                     *card_tried = true;
                     *card = take_card();
                 }
                 let t0 = rt::ticks();
                 let got = match card.as_mut() {
-                    Some((c, start)) => map_write(
+                    Some((c, start)) => {
+                        map_stage(c, *start, key, HEAD + len, scratch).map_err(|e| e.name())
+                    }
+                    None => Err("no SD card"),
+                };
+                let took = us(t0);
+                kept.write = (took, took, 1);
+                match got {
+                    Ok(st) => {
+                        kept.step = MapStep::Pieces { key, st, at: 0 };
+                        let _ = writeln!(
+                            RunLog,
+                            "radar map: writing it to the card ({} bytes, {} sectors): its run found in {took} us",
+                            HEAD + len,
+                            st.sectors
+                        );
+                    }
+                    Err(why) => {
+                        let _ =
+                            writeln!(RunLog, "radar map: not kept on the card ({why}, {took} us)");
+                    }
+                }
+            }
+            MapStep::Pieces { key, st, at } if !pen_down => {
+                if kept.key != Some(key) {
+                    kept.step = MapStep::Idle;
+                    let _ = writeln!(RunLog, "radar map: its write stopped (a new map)");
+                    return;
+                }
+                let n = (st.sectors - at).min(rp_today::kept::PIECE as u32 / 512);
+                let from = at as usize * 512;
+                let t0 = rt::ticks();
+                let got = match card.as_mut() {
+                    Some((c, start)) => {
+                        map_piece(c, *start, &st, at, &map_file[from..from + n as usize * 512])
+                            .map_err(|e| e.name())
+                    }
+                    None => Err("no SD card"),
+                };
+                let took = us(t0);
+                kept.write = (
+                    kept.write.0 + took,
+                    kept.write.1.max(took),
+                    kept.write.2 + 1,
+                );
+                match got {
+                    Ok(()) if at + n < st.sectors => {
+                        kept.step = MapStep::Pieces {
+                            key,
+                            st,
+                            at: at + n,
+                        };
+                    }
+                    Ok(()) => kept.step = MapStep::Commit { key, st },
+                    Err(why) => {
+                        kept.step = MapStep::Idle;
+                        let _ =
+                            writeln!(RunLog, "radar map: not kept on the card (a piece: {why})");
+                    }
+                }
+            }
+            MapStep::Commit { key, st } if !pen_down => {
+                kept.step = MapStep::Idle;
+                if kept.key != Some(key) {
+                    return;
+                }
+                let mut saved = [(i32::MIN, i32::MIN); rp_weather::settings::PLACES_MAX];
+                for (s, p) in saved.iter_mut().zip(shell.saved_places()) {
+                    *s = p;
+                }
+                let t0 = rt::ticks();
+                let got = match card.as_mut() {
+                    Some((c, start)) => map_commit(
                         c,
                         *start,
                         key,
-                        &map_file[..HEAD + len],
+                        st,
                         &|k| saved.contains(&(k.lat, k.lon)),
                         scratch,
                     )
@@ -884,12 +978,17 @@ mod image {
                     None => Err("no SD card"),
                 };
                 let took = us(t0);
+                let (total, worst, passes) = (
+                    kept.write.0 + took,
+                    kept.write.1.max(took),
+                    kept.write.2 + 1,
+                );
                 match got {
                     Ok(dropped) => {
                         let _ = writeln!(
                             RunLog,
-                            "radar map: kept on the card ({} bytes) in {took} us{}",
-                            HEAD + len,
+                            "radar map: kept on the card ({} bytes) in {passes} passes, {total} us, the longest pass {worst} us (linked in {took} us){}",
+                            kept.len + HEAD,
                             if dropped.is_some() {
                                 ", the oldest other place's dropped (the cap)"
                             } else {
@@ -903,7 +1002,7 @@ mod image {
                     }
                 }
             }
-            MapStep::Write { .. } => {}
+            MapStep::Write { .. } | MapStep::Pieces { .. } | MapStep::Commit { .. } => {}
         }
     }
 
@@ -1164,7 +1263,7 @@ mod image {
         start: u32,
         key: rp_weather::mapcard::Key,
         out: &mut [u8],
-    ) -> Result<rp_weather::mapcard::Head, &'static str> {
+    ) -> Result<(rp_weather::mapcard::Head, Option<rp_fat::Reserved>), &'static str> {
         rp_hal_x51v::cardsink::settle();
         rp_today::kept::head(&mut *card, start, key, out)
     }
@@ -1181,18 +1280,54 @@ mod image {
         rp_today::kept::piece(&mut *card, start, key, off, out)
     }
 
-    /// Writes `key`'s kept map and keeps the folder to its cap
-    /// ([`rp_today::kept::write`]). Nothing is logged while it writes.
-    fn map_write(
+    /// The free run for `key`'s kept map ([`rp_today::kept::stage`]).
+    fn map_stage(
         card: &mut Card,
         start: u32,
         key: rp_weather::mapcard::Key,
-        file: &[u8],
+        bytes: usize,
+        scratch: &mut [u8],
+    ) -> Result<rp_fat::Staged, rp_fat::Error> {
+        rp_hal_x51v::cardsink::settle();
+        rp_today::kept::stage(&mut *card, start, key, bytes, scratch)
+    }
+
+    /// A piece of a staged kept map ([`rp_today::kept::stage_piece`]).
+    fn map_piece(
+        card: &mut Card,
+        start: u32,
+        st: &rp_fat::Staged,
+        at: u32,
+        data: &[u8],
+    ) -> Result<(), rp_fat::Error> {
+        rp_hal_x51v::cardsink::settle();
+        rp_today::kept::stage_piece(&mut *card, start, st, at, data)
+    }
+
+    /// Links a staged kept map and keeps the folder to its cap
+    /// ([`rp_today::kept::commit`]). Nothing is logged while it writes.
+    fn map_commit(
+        card: &mut Card,
+        start: u32,
+        key: rp_weather::mapcard::Key,
+        st: rp_fat::Staged,
         keep: &dyn Fn(rp_weather::mapcard::Key) -> bool,
         scratch: &mut [u8],
     ) -> Result<Option<rp_weather::mapcard::Key>, rp_fat::Error> {
         rp_hal_x51v::cardsink::settle();
-        rp_today::kept::write(&mut *card, start, key, file, keep, scratch)
+        rp_today::kept::commit(&mut *card, start, key, st, keep, scratch)
+    }
+
+    /// Sectors of a kept map lying in one run, straight off the card
+    /// ([`rp_today::kept::sectors`]).
+    fn map_sectors(
+        card: &mut Card,
+        run: rp_fat::Reserved,
+        at: u32,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        rp_hal_x51v::cardsink::settle();
+        rp_today::kept::sectors(&mut *card, run, at, out)
     }
 
     /// Where the place's kept radar map is (R184 step 3).
@@ -1200,10 +1335,13 @@ mod image {
     enum MapStep {
         /// Nothing under way.
         Idle,
-        /// Read from the card a piece a pass: `got` bytes of the map so far.
+        /// Read from the card a piece a pass: `got` bytes of the file so far
+        /// (its header and map: whole sectors straight off the card when it
+        /// lies in one run, `run`; else through the folder, from the map).
         Read {
             key: rp_weather::mapcard::Key,
             head: rp_weather::mapcard::Head,
+            run: Option<rp_fat::Reserved>,
             got: usize,
         },
         /// Unpacked a layer a pass (~21 ms each; 167 ms in one pass before).
@@ -1212,10 +1350,21 @@ mod image {
             layer: usize,
         },
         /// The dock's map to write to the card: in the pass after it was
-        /// shown, the pen up (`wait` the pass between).
+        /// shown, the pen up (`wait` the pass between): its run found.
         Write {
             key: rp_weather::mapcard::Key,
             wait: bool,
+        },
+        /// Written a piece a pass (32 KB) into its run, from sector `at`.
+        Pieces {
+            key: rp_weather::mapcard::Key,
+            st: rp_fat::Staged,
+            at: u32,
+        },
+        /// Linked as the place's kept map (the old one whole until then).
+        Commit {
+            key: rp_weather::mapcard::Key,
+            st: rp_fat::Staged,
         },
     }
 
@@ -1231,6 +1380,8 @@ mod image {
         asked_ms: u64,
         read_us: u32,
         unpack_us: u32,
+        /// The write a piece a pass: its time, its longest pass, its passes.
+        write: (u32, u32, u32),
     }
 
     /// The USB D+ pull-up's GPIO (docs/hw/udc.md).
@@ -1397,7 +1548,7 @@ mod image {
         // there; and the write's scratch (rp-fat searches the FAT for free
         // clusters in runs: a sector at a time took 3.7 s once, docs/hw/sd.md).
         let (map_file_words, rest) =
-            rest.split_at_mut((rp_weather::mapcard::HEAD + rp_weather::mapcard::MAX) / 4);
+            rest.split_at_mut((rp_weather::mapcard::HEAD + rp_weather::mapcard::MAX + 512) / 4);
         let map_file: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(map_file_words);
         let (map_scratch_words, rest) = rest.split_at_mut(MAP_SCRATCH / 4);
         let map_scratch: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(map_scratch_words);
@@ -1410,6 +1561,7 @@ mod image {
             asked_ms: 0,
             read_us: 0,
             unpack_us: 0,
+            write: (0, 0, 0),
         };
         // Weather's RAM (the sheet's target: under 8 MB): every part of the
         // pool this image takes, and the pictures' share (option C).

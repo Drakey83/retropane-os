@@ -299,12 +299,32 @@ pub struct Reserved {
     pub sectors: u32,
 }
 
+/// A file's free run found by [`Volume::stage`] and written a piece at a
+/// time with [`Volume::stage_write`] (each piece in its own pass of a
+/// program's loop, the volume mounted again each time), then linked by
+/// [`Volume::commit`]: the copy-then-swap order across passes (the data
+/// in clusters still free, then the FAT links, then the directory entry),
+/// so a reset part way leaves the old file whole and nothing allocated.
+/// Nothing else may allocate clusters on the volume between the stage and
+/// the commit (the commit checks the run is still free).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Staged {
+    /// The run's first sector on the device.
+    pub lba: u32,
+    /// Its sectors (the file's length rounded up to whole sectors).
+    pub sectors: u32,
+    first_cluster: u32,
+    clusters: u32,
+    len: usize,
+}
+
 /// What a store writes: bytes, or zeros (a reservation, written without a
-/// buffer of its size).
+/// buffer of its size), or a staged run already written (only linked).
 #[derive(Clone, Copy)]
 pub(crate) enum Fill<'a> {
     Bytes(&'a [u8]),
     Zeros(usize),
+    Staged(Staged),
 }
 
 impl<'a> Fill<'a> {
@@ -312,6 +332,7 @@ impl<'a> Fill<'a> {
         match self {
             Self::Bytes(b) => b.len(),
             Self::Zeros(n) => n,
+            Self::Staged(s) => s.len,
         }
     }
 
@@ -320,6 +341,8 @@ impl<'a> Fill<'a> {
         match self {
             Self::Bytes(b) => Self::Bytes(&b[at..at + len]),
             Self::Zeros(_) => Self::Zeros(len),
+            // Never split: a staged run is one run.
+            Self::Staged(s) => Self::Staged(s),
         }
     }
 
@@ -332,6 +355,10 @@ impl<'a> Fill<'a> {
         lba: u32,
         scratch: &mut [u8],
     ) -> Result<(), Error> {
+        if let Self::Staged(_) = self {
+            // Written already, a piece at a time.
+            return Ok(());
+        }
         let mut one = [0u8; SECTOR];
         let scratch = if scratch.len() < SECTOR {
             &mut one[..]
@@ -347,7 +374,7 @@ impl<'a> Fill<'a> {
                 }
                 whole
             }
-            Self::Zeros(_) => 0,
+            Self::Zeros(_) | Self::Staged(_) => 0,
         };
         let total = n.div_ceil(SECTOR) * SECTOR;
         if whole < total {
@@ -1509,6 +1536,67 @@ impl<D: BlockDevice> Volume<D> {
         })
     }
 
+    /// Finds one free run for `path`'s new contents of `bytes`: its data
+    /// goes in with [`Self::stage_write`], a piece at a time, then
+    /// [`Self::commit`] links it (see [`Staged`]). `path`'s missing folders
+    /// are made first (`mkdir -p`: the only writes), so the commit
+    /// allocates nothing the run could need.
+    ///
+    /// # Errors
+    /// [`Error::NoRoom`] for an empty file, [`Error::Fragmented`] with no
+    /// free run that long, a folder's, or the device's.
+    pub fn stage(&mut self, path: &str, bytes: usize, scratch: &mut [u8]) -> Result<Staged, Error> {
+        let mut parts = components(path)?;
+        parts.next_back();
+        for d in parts {
+            match self.mkdir(prefix_to(path, d)?, scratch) {
+                Ok(()) | Err(Error::Exists) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        let cb = self.cluster_bytes();
+        let need = u32::try_from(bytes.div_ceil(cb)).map_err(|_| Error::NoRoom)?;
+        if need == 0 {
+            return Err(Error::NoRoom);
+        }
+        let hint = self.fsinfo_hint()?;
+        let start = self
+            .find_free_run(hint, need, scratch)?
+            .ok_or(Error::Fragmented)?;
+        Ok(Staged {
+            lba: self.cluster_lba(start),
+            sectors: u32::try_from(bytes.div_ceil(SECTOR)).map_err(|_| Error::NoRoom)?,
+            first_cluster: start,
+            clusters: need,
+            len: bytes,
+        })
+    }
+
+    /// Writes whole sectors of a staged file from its sector `at` (the last
+    /// piece zero-padded by the caller).
+    ///
+    /// # Errors
+    /// [`Error::NoRoom`] for a piece not whole sectors or past the run, or
+    /// the device's.
+    pub fn stage_write(&mut self, s: &Staged, at: u32, data: &[u8]) -> Result<(), Error> {
+        let n = u32::try_from(data.len() / SECTOR).map_err(|_| Error::NoRoom)?;
+        if !data.len().is_multiple_of(SECTOR) || at.checked_add(n).is_none_or(|e| e > s.sectors) {
+            return Err(Error::NoRoom);
+        }
+        self.dev.write_blocks(s.lba + at, data)?;
+        Ok(())
+    }
+
+    /// Links a staged file as `path` (replaced by copy-then-swap, or
+    /// created with its missing folders, as [`Self::put`]).
+    ///
+    /// # Errors
+    /// [`Error::Fragmented`] if a cluster of the run was taken since the
+    /// stage (the old file stays whole), or as [`Self::put`].
+    pub fn commit(&mut self, path: &str, s: Staged, scratch: &mut [u8]) -> Result<Written, Error> {
+        self.put_fill(path, Fill::Staged(s), scratch)
+    }
+
     /// Where an existing file lies, if its clusters are one run: its first
     /// sector and its sectors (the size rounded up), as [`Self::reserve`]
     /// gives for a new one, without changing anything on the card (the run
@@ -1808,6 +1896,31 @@ impl<D: BlockDevice> Volume<D> {
     /// searching from `hint`), writes it and links the chain in every FAT
     /// copy. The data is reachable only through what the caller links next.
     fn store(&mut self, data: Fill<'_>, hint: u32, scratch: &mut [u8]) -> Result<Written, Error> {
+        if let Fill::Staged(s) = data {
+            // Its data written a piece at a time into clusters still free:
+            // still free (nothing else allocated meanwhile), then linked.
+            let end = s
+                .first_cluster
+                .checked_add(s.clusters)
+                .ok_or(Error::Corrupt)?;
+            if s.clusters == 0 || s.first_cluster < 2 || end > self.clusters() + 2 {
+                return Err(Error::Corrupt);
+            }
+            for c in s.first_cluster..end {
+                if self.fat_get(c)? != 0 {
+                    return Err(Error::Fragmented);
+                }
+            }
+            for c in s.first_cluster..end {
+                self.fat_set(c, if c + 1 == end { EOC } else { c + 1 })?;
+            }
+            self.fat_flush()?;
+            return Ok(Written {
+                first_cluster: s.first_cluster,
+                clusters: s.clusters,
+                contiguous: true,
+            });
+        }
         let cb = self.cluster_bytes();
         let need = u32::try_from(data.len().div_ceil(cb)).map_err(|_| Error::NoRoom)?;
 
