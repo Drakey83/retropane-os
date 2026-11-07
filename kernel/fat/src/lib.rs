@@ -2030,15 +2030,25 @@ pub enum AnyVolume<D> {
 }
 
 impl<D: BlockDevice> AnyVolume<D> {
-    /// Mounts the volume whose boot sector is at `base`.
+    /// Mounts the volume whose boot sector is at `base`. Its own frame:
+    /// the boot sector read here never sits under a caller's deepest
+    /// calls (the image's stack rule).
+    #[inline(never)]
     pub fn mount(mut dev: D, base: u32) -> Result<Self, Error> {
+        if Self::is_exfat(&mut dev, base)? {
+            Ok(Self::ExFat(exfat::ExVolume::mount(dev, base)?))
+        } else {
+            Ok(Self::Fat(Volume::mount(dev, base)?))
+        }
+    }
+
+    /// Whether the boot sector at `base` names exFAT. Its own frame: the
+    /// sector it reads is gone before either volume is made.
+    #[inline(never)]
+    fn is_exfat(dev: &mut D, base: u32) -> Result<bool, Error> {
         let mut boot = [0u8; SECTOR];
         dev.read_blocks(base, &mut boot)?;
-        if &boot[3..11] == b"EXFAT   " {
-            exfat::ExVolume::mount(dev, base).map(Self::ExFat)
-        } else {
-            Volume::mount(dev, base).map(Self::Fat)
-        }
+        Ok(&boot[3..11] == b"EXFAT   ")
     }
 
     /// Replaces or creates the file, its missing folders made (crash-safe

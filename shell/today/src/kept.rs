@@ -34,6 +34,7 @@ fn path_of(name: &[u8; 12]) -> [u8; 19] {
 /// # Errors
 /// No volume, no file, a short or damaged header, another place's map
 /// under its name, or a file whose length isn't its header's.
+#[inline(never)]
 pub fn head<D: BlockDevice>(
     card: D,
     start: u32,
@@ -96,6 +97,7 @@ pub fn sectors<D: BlockDevice>(
 ///
 /// # Errors
 /// The card's or the volume's ([`Error::Fragmented`]: no run that long).
+#[inline(never)]
 pub fn stage<D: BlockDevice>(
     card: D,
     start: u32,
@@ -113,6 +115,7 @@ pub fn stage<D: BlockDevice>(
 ///
 /// # Errors
 /// The card's, or a piece past the run.
+#[inline(never)]
 pub fn stage_piece<D: BlockDevice>(
     card: D,
     start: u32,
@@ -129,6 +132,7 @@ pub fn stage_piece<D: BlockDevice>(
 ///
 /// # Errors
 /// The card's or the volume's ([`Error::Fragmented`]: the run was taken).
+#[inline(never)]
 pub fn commit<D: BlockDevice>(
     card: D,
     start: u32,
@@ -141,11 +145,12 @@ pub fn commit<D: BlockDevice>(
     let path = key.path();
     let path = core::str::from_utf8(&path).map_err(|_| Error::BadName)?;
     vol.commit(path, s, scratch)?;
-    cap(&mut vol, key, keep)
+    cap(&mut vol, key, keep, scratch)
 }
 
 /// The next piece (up to [`PIECE`]) of `key`'s kept map from byte `off`
 /// into `out`: the bytes read, or `None`.
+#[inline(never)]
 pub fn piece<D: BlockDevice>(
     card: D,
     start: u32,
@@ -180,6 +185,7 @@ pub fn piece<D: BlockDevice>(
 ///
 /// # Errors
 /// The card's or the volume's.
+#[inline(never)]
 pub fn write<D: BlockDevice>(
     card: D,
     start: u32,
@@ -192,17 +198,21 @@ pub fn write<D: BlockDevice>(
     let path = key.path();
     let path = core::str::from_utf8(&path).map_err(|_| Error::BadName)?;
     vol.put(path, file, scratch)?;
-    cap(&mut vol, key, keep)
+    cap(&mut vol, key, keep, scratch)
 }
 
 /// Past [`CAP`] maps, removes the oldest whose place is neither `key`'s
 /// nor one `keep` names (a damaged one first): the place removed, if any.
 /// The folder's maps listed by name, their headers read only when there
 /// are too many.
+// Its own frame (the stack rule, P6): its name and header arrays (~2 KB)
+// never sit under a commit's or a put's deepest calls.
+#[inline(never)]
 fn cap<D: BlockDevice>(
     vol: &mut AnyVolume<D>,
     key: Key,
     keep: &dyn Fn(Key) -> bool,
+    scratch: &mut [u8],
 ) -> Result<Option<Key>, Error> {
     let mut names = [[0u8; 12]; CAP + 4];
     let (mut n, mut all) = (0usize, 0usize);
@@ -225,7 +235,6 @@ fn cap<D: BlockDevice>(
         zoom: 0,
     };
     let mut kept = [(DAMAGED, 0u32); CAP + 4];
-    let mut small = [0u8; SCRATCH];
     for (i, name) in names[..n].iter().enumerate() {
         let p = path_of(name);
         let Ok(p) = core::str::from_utf8(&p) else {
@@ -233,7 +242,7 @@ fn cap<D: BlockDevice>(
         };
         let mut h = [0u8; HEAD];
         let mut at = 0usize;
-        let _ = vol.read_range(p, 0, HEAD as u64, &mut small, &mut |c| {
+        let _ = vol.read_range(p, 0, HEAD as u64, scratch, &mut |c| {
             if let Some(o) = h.get_mut(at..at + c.len()) {
                 o.copy_from_slice(c);
             }
