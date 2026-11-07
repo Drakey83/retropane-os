@@ -12017,6 +12017,11 @@ fn today_card(root: &Path, release: &Path) -> Result<Option<PathBuf>, String> {
         format!("RPIC0{}.PAK", (b'A' + parts.len() as u8) as char),
         &[],
     ));
+    // The PC's time at the load, as `cargo xtask load` puts it (R182):
+    // Monday 2026-11-02 23:11 in UTC-6.
+    let time = rp_today::clock::card_time(20_760 * 24 * 60 + 5 * 60 + 11, -360);
+    parts.push(("RPTIMA.PAK".to_string(), &time[..]));
+    parts.push(("RPTIMB.PAK".to_string(), &[]));
     let files: Vec<rp_fat::format::Entry> = parts
         .iter()
         .map(|(name, data)| rp_fat::format::Entry { name, data })
@@ -13086,11 +13091,16 @@ fn today_radar_card_on(root: &Path, exfat: bool) -> Result<(), String> {
             "radar card ({kind}): the image never came back to the loader (target/emulator/{log_name})"
         ));
     }
-    for want in [
+    let mut wants = vec![
         "radar map: the place's on the card (",
         "radar map: the place's from the card, ",
         "(8 passes)",
-    ] {
+    ];
+    // R182: the clock from the card's time file (the FAT card carries one).
+    if !exfat {
+        wants.push("clock: the PC's time at the load");
+    }
+    for want in wants {
         if !log.contains(want) {
             return Err(format!(
                 "radar card ({kind}): no {want:?} in the run log (target/emulator/{log_name})"

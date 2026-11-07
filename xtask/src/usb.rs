@@ -637,6 +637,42 @@ fn show_card_log(
     Ok(())
 }
 
+/// The PC's offset from UTC, minutes (0 if it can't be read): Windows by
+/// .NET's offset (no window: an output-captured child), elsewhere `date
+/// +%z`.
+fn local_offset_minutes() -> i32 {
+    let run = |cmd: &str, args: &[&str]| {
+        Command::new(cmd)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    if cfg!(windows)
+        && let Some(m) = run(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "[DateTimeOffset]::Now.Offset.TotalMinutes",
+            ],
+        )
+        .and_then(|s| s.parse::<f64>().ok())
+    {
+        return m as i32;
+    }
+    run("date", &["+%z"])
+        .filter(|z| z.len() == 5)
+        .and_then(|z| {
+            let sign = if z.starts_with('-') { -1 } else { 1 };
+            let h: i32 = z[1..3].parse().ok()?;
+            let m: i32 = z[3..5].parse().ok()?;
+            Some(sign * (h * 60 + m))
+        })
+        .unwrap_or(0)
+}
+
 /// How long `cargo xtask put` waits for the loader's verdict on a file.
 const PUT_WAIT_SECS: u32 = 90;
 
@@ -1209,6 +1245,17 @@ fn icon_packs(root: &Path) -> Result<(), String> {
     if let Ok(set) = std::fs::read(root.join("local").join("weather-settings.bin")) {
         files.push((set, "RPSET".to_string(), "Weather settings"));
     }
+    // The PC's time now (R182): the image's clock starts from it, not from
+    // the minute its build.rs last ran (a day stale in the owner's run of
+    // 2026-11-02). Sent every load: it differs each time.
+    let utc_min = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| (d.as_secs() / 60) as i64);
+    files.push((
+        rp_today::clock::card_time(utc_min, local_offset_minutes()).to_vec(),
+        "RPTIM".to_string(),
+        "the PC's time",
+    ));
     for (pack, stem, what) in files {
         let mut parts: Vec<&[u8]> = pack.chunks(PACK_PART).collect();
         parts.push(&[]);

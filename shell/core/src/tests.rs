@@ -2766,6 +2766,65 @@ fn the_sky_test_cycles_through_the_weathers_and_back() {
     assert!(last.y + last.h <= H - 40);
 }
 
+/// R183: the hero's words name the sky drawn behind them: with the sky
+/// test's rain on, never the forecast's "Cloudy" over falling rain.
+#[test]
+fn the_heros_words_name_the_sky_drawn() {
+    let mut s = shell(true);
+    let mut wx = s.wx;
+    wx.now.sky.wmo = 3;
+    wx.now.sky.cover = 60;
+    s.set_forecast(wx);
+    let t = texts(&drawn(&mut s));
+    assert!(t.contains(&b"Cloudy".to_vec()), "{t:?}");
+    let entry = (0..s.menu_len())
+        .find(|&i| s.menu_label(i) == "Sky test")
+        .expect("the test image's menu has it");
+    tap(&mut s, START);
+    tap(&mut s, Shell::menu_entry(entry));
+    assert_eq!(weather_of_test(&s), 63, "the sky test's rain");
+    let t = texts(&drawn(&mut s));
+    let words = rp_weather::Icon::of(s.sky_now())
+        .words()
+        .as_bytes()
+        .to_vec();
+    assert!(t.contains(&words), "the rain named: {t:?}");
+    assert!(
+        !t.contains(&b"Cloudy".to_vec()),
+        "never Cloudy over the rain: {t:?}"
+    );
+}
+
+/// R183's class: the sky's weather changing between steps (here straight
+/// in the forecast, as a path that skips the full redraw would) redraws
+/// the whole card once, so no streak of the old rain stays on a dry step.
+#[test]
+fn a_change_of_the_skys_weather_redraws_the_whole_card_once() {
+    let mut s = shell(false);
+    let mut wx = s.wx;
+    wx.now.sky.wmo = 63;
+    s.set_forecast(wx);
+    s.preview_sky(true);
+    drawn(&mut s);
+    assert_eq!(s.tick(2000), Action::Redraw);
+    drawn(&mut s);
+    // Dry now, with no full redraw asked.
+    s.wx.now.sky.wmo = 3;
+    let mut t = 2000;
+    let mut whole = false;
+    for _ in 0..8 {
+        t += sky::STEP_MS;
+        if s.tick(t) == Action::Redraw {
+            whole |= drawn(&mut s).dirty().contains(&sky::AREA);
+            break;
+        }
+    }
+    assert!(
+        whole,
+        "the first step after the change redraws the whole card"
+    );
+}
+
 fn weather_of_test(s: &Shell) -> u8 {
     s.sky_now().wmo
 }

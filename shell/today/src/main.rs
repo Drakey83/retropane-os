@@ -1733,12 +1733,31 @@ mod image {
         // The Weather settings `cargo xtask load` put on the card (the
         // relay's record): the chosen icon pack and place known before the
         // first picture is made (the relay answers ~15 s in).
+        // The PC's time at the load, from the card (R182).
+        let card_min: Option<i64>;
         let Some(card) = CARD.put_with(|| None) else {
             crash(format_args!("started twice"))
         };
         let mut card_tried = true;
         *card = take_card();
         let t0 = rt::ticks();
+        // The PC's time at the load (R182), else the build's.
+        card_min = card
+            .as_mut()
+            .and_then(|(c, start)| read_pack(c, *start, *b"RPTIM", stream_buf))
+            .and_then(|n| clock::from_card(&stream_buf[..n]));
+        match card_min {
+            Some(m) => {
+                shell.set_time(clock::time_at(m));
+                let _ = writeln!(RunLog, "clock: the PC's time at the load");
+            }
+            None => {
+                let _ = writeln!(
+                    RunLog,
+                    "clock: the build's time (no time file on the card: R182)"
+                );
+            }
+        }
         match card
             .as_mut()
             .and_then(|(c, start)| read_pack(c, *start, *b"RPSET", stream_buf))
@@ -1819,7 +1838,7 @@ mod image {
         if let Some(pc) = pc {
             shell.use_planes(true);
             // The clock first: the Now page's Sunset bar follows it.
-            shell.set_time(clock::time_at(start_minutes()));
+            shell.set_time(clock::time_at(card_min.unwrap_or_else(start_minutes)));
             for (tab, p) in pages.iter_mut().enumerate() {
                 *p = build_page(gfx, pc, shell, &mut cpu, frame, tab as u8);
                 page_light[tab] = Some(shell.light());
@@ -1977,7 +1996,7 @@ mod image {
         let mut last_ticks = rt::ticks();
         let mut sub_ms = 0u32;
         let mut now_ms = 0u64;
-        let start_min = start_minutes();
+        let start_min = card_min.unwrap_or_else(start_minutes);
         let mut minute_shown = -1i64;
 
         // Touch to flush, and the parts of a tap's answer, for their medians.

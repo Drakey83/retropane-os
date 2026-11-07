@@ -445,7 +445,13 @@ impl Shell {
         let w = weather_of(self.sky_now());
         let before = self.cloud_places(w, i64::from(self.sky_n));
         self.sky_n = self.sky_n.wrapping_add(1);
-        if w.rain > 0 || w.snow || w.storm {
+        // The weather changed since the last step (a new forecast, the sky
+        // test): the whole card once (R183: a dry step redraws only moved
+        // clouds, which would leave the old rain's streaks standing).
+        let now_w = (w.rain, w.snow, w.storm, w.clouds);
+        let changed = self.sky_was.is_some_and(|was| was != now_w);
+        self.sky_was = Some(now_w);
+        if changed || w.rain > 0 || w.snow || w.storm {
             self.dirty(AREA);
             self.sky_moved += 1;
             return true;

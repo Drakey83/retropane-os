@@ -962,7 +962,10 @@ impl Shell {
         let feels = live.and_then(|n| n.feels).unwrap_or(wx.now.feels);
         let t = Line::new().num(rg.degrees(temp)).push(&[DEG_BIG]);
         Self::shadowed(f, sh, x + 20, y + 116, big, TEXT, t.as_bytes());
-        let icon = Icon::of(wx.now.sky);
+        // The words name the sky drawn behind them (R183: the sky test's
+        // rain fell under the forecast's "Cloudy"): the forecast's, or the
+        // test image's sky test while one is on.
+        let icon = Icon::of(self.sky_now());
         Self::shadowed(f, sh, x + 20, y + 146, ui, TEXT, icon.words().as_bytes());
         let d = &wx.days[0];
         let hl = Line::new()

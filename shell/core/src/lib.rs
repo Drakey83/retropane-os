@@ -770,6 +770,9 @@ pub struct Shell {
     sky_n: u32,
     sky_moved: u32,
     sky_forced: bool,
+    /// The sky's weather at its last step (R183: a change, rain to dry,
+    /// redraws the whole card once, so no streak of the old weather stays).
+    sky_was: Option<(u8, bool, bool, u8)>,
     /// The light look's style, and its panels' ([`soft`]).
     light_style: LightStyle,
     /// The previews' panels left out (mock-ups composite their own).
@@ -905,6 +908,7 @@ macro_rules! shell_start {
             history_at: 0,
             chart: None,
             sky_at: 0,
+            sky_was: None,
             sky_n: 0,
             sky_moved: 0,
             sky_forced: false,
