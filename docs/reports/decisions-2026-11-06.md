@@ -43,3 +43,16 @@ than the floor allows, so each needs your call (a slower floor is yours):
   other 34 numbers whose sessions differ (most of them real code changes,
   e.g. `probe.chase_sdram_256k` after its benchmark changed) re-floored.
 
+## Item 9: games, design only
+
+- [ ] **Game Mode sheet A** ([DRAFT](../research/sheets/game-mode-alternatives-a.md)):
+  go on alternative 3 (one kernel, two user-space profiles; a fast tier
+  under 2 s that keeps frozen programs in RAM, a full tier up to ~15 s that
+  writes them to flash or SD), or a change. Design B waits for this.
+- [ ] **The R90 game-path ADR:** no new draft was written. It already exists
+  as [ADR-0038](../adr/0038-game-render-path.md), accepted by you on
+  2026-10-29 (G1-G6: the three display routes ranked by measured time,
+  dynamic resolution per frame, the per-game override). Writing a new draft
+  would reopen a settled ruling, which the list forbade. Tick if you want a
+  fresh draft anyway; what is left of R90 is the driver itself.
+
