@@ -118,3 +118,25 @@ probe reads the wrong place or the wrong moment, and is fixed first.
   43,249 ms the Now page light under the dark chrome: the owner's flash,
   both ways. The probe's own mutant is in `cargo xtask mutants`;
   `emu-today` now runs `emu-today-look` too.
+
+## The X51v's runs (2026-11-06, unattended)
+
+- **r185 run 1** (today-0062, dock link on): `2 wrong`, each a single pass
+  on Hourly in the dark look while the page grew in (window 198 and 202
+  rows): the pixels were the dark glass (0x484850 at alpha 0xE6, the
+  dark look drawn right), the points on its graph while the content moved
+  under them. Fixed in the check: the page is judged only at rest
+  (`Shell::animating`), the chrome always; the emulator's unknown passes
+  went from 72 to 0 and the fix-removed run still fails both ways.
+- **r185 run 2** (`local/rp-today-run-2026-11-06-r185a.txt`, dock link on):
+  `0 wrong`, but the light look only on Now: the relay's settings arrived
+  60 s in and set Appearance back mid-round. The device's runs go without
+  the dock link: the settings only from the card, nothing saved back.
+- **r185 run 3** (`local/rp-today-run-2026-11-06-r185b.txt`, no dock
+  link): **`look check: 0 wrong; right: dark on pages 0-3 [325, 98, 94,
+  188], light on pages 0-3 [134, 48, 50, 97]; 0 passes unknown`**: dark to
+  light at 40.6 s, light to dark at 62.5 s, every page in both, the run
+  back at the loader by itself.
+- **The command:** `cargo xtask look-replay`, then `RP_TODAY_REPLAY=1
+  RP_TODAY_REPLAY_FILE=target/look-check-taps.txt RP_TODAY_REPLAY_GAP_MS=12000
+  RP_TODAY_LOOK_CHECK=1 RETROPANE_LOG_WAIT_SECS=360 cargo xtask load rp-today`.

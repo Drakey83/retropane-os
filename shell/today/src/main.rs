@@ -2065,7 +2065,15 @@ mod image {
                 let want = shell.light();
                 let tab = shell.weather_page().0;
                 let look = &rp_today::look::CHROME;
-                let page = rp_today::look::page_points(tab);
+                // The page is judged only at rest: while it grows in its
+                // content passes under the points (X51v run today-0062: two
+                // single passes on Hourly, the dark glass right, the points
+                // on its graph); the chrome always.
+                let page = if shell.animating() {
+                    &[]
+                } else {
+                    rp_today::look::page_points(tab)
+                };
                 // The chrome and the page vote apart: a page of the wrong
                 // look under the right chrome (run r184s3c) is wrong.
                 let mut cpx = [None; rp_today::look::CHROME.len()];
@@ -2086,6 +2094,7 @@ mod image {
                 let chrome = rp_today::look::verdict(look, &cpx);
                 let on_page = rp_today::look::verdict(page, &ppx[..page.len()]);
                 let wrong = chrome == Some(!want) || on_page == Some(!want);
+                let moving = shell.animating() && !rp_today::look::page_points(tab).is_empty();
                 let right = chrome == Some(want) && (page.is_empty() || on_page == Some(want));
                 if wrong {
                     look_wrong += 1;
@@ -2111,6 +2120,8 @@ mod image {
                             );
                         }
                     }
+                } else if moving {
+                    // The chrome right, the page not judged while it moves.
                 } else if right {
                     look_seen[usize::from(want)][usize::from(tab.min(3))] += 1;
                 } else {
