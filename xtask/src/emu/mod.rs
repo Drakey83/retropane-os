@@ -5099,6 +5099,15 @@ fn clocks_fault_path(root: &Path, loader: &Path, modelled: bool) -> Result<(), S
 /// as `<shot>-<tag>.ppm` for a person to look at. The image's steps start
 /// after work whose length depends on the emulator's speed, so the check
 /// waits for the picture instead of a time.
+/// A gpubench run that refused cleanly because the clocks start at 0 (the
+/// release fork: Windows Mobile's COREPLL never modelled), with nothing
+/// else run: no render measured, so no other part's checks are skipped.
+fn gpubench_refused_clocks(log: &str) -> bool {
+    log.contains("  as found: COREPLL 0x0,")
+        && log.contains("not Windows Mobile's clock and bus timing: nothing changed")
+        && log.contains("RETROPANE-GPUBENCH: done, 0 renders measured")
+}
+
 fn gpubench_until(
     mon: &mut crate::screen::Monitor,
     guest: &str,
@@ -10144,9 +10153,26 @@ fn variant_images_gpubench(
         } else {
             &["everything given back: true", "RETROPANE-GPUBENCH: done"]
         };
+        // A run that steps the clocks from Windows Mobile's refuses on a
+        // fork that starts them at 0 (the release; R186: the R69 runs from
+        // GC2AX on were written against the unreleased wm-clocks build and
+        // failed on rp-v0.31.0 for want of lines a refusal never prints).
+        // The X51v always starts at Windows Mobile's COREPLL, so this can
+        // only be the emulator: the plumbing is checked, as for runs G, Y,
+        // Q and W one by one.
+        let refused_clocks = gpubench_refused_clocks(log);
+        if refused_clocks {
+            eprintln!(
+                "    gpubench {name}: refused cleanly (this fork doesn't start the clocks as Windows Mobile leaves them)"
+            );
+        }
         // Without the 3D model every render is refused (`NoCore`): only
         // the plumbing is checked for runs A and B.
-        let checked: &[&str] = if modelled || !needs_model { want } else { &[] };
+        let checked: &[&str] = if refused_clocks || !(modelled || !needs_model) {
+            &[]
+        } else {
+            want
+        };
         for w in always.iter().chain(checked) {
             if !log.contains(w) {
                 return Err(format!("gpubench {name}: the run log has no `{w}`:{log}"));
@@ -17419,6 +17445,24 @@ mod tests {
             ]
             .concat()
         })
+    }
+
+    /// R186: a run refusing on a fork whose clocks start at 0 is clean
+    /// only if nothing else ran; a refusal beside measured renders, or at
+    /// Windows Mobile's own COREPLL, is not.
+    #[test]
+    fn a_gpubench_clock_refusal_counts_only_when_nothing_else_ran() {
+        let refused = "  as found: COREPLL 0x0, MBXCLK 0x0, MSC1 0x24842481
+  not Windows Mobile's clock and bus timing: nothing changed
+RETROPANE-GPUBENCH: done, 0 renders measured, 0 hung renders recovered
+";
+        assert!(gpubench_refused_clocks(refused));
+        assert!(!gpubench_refused_clocks(
+            &refused.replace("0 renders measured", "12 renders measured")
+        ));
+        assert!(!gpubench_refused_clocks(
+            &refused.replace("COREPLL 0x0,", "COREPLL 0xbb1,")
+        ));
     }
 
     /// A reference without its quad passes only where the fork can't draw
