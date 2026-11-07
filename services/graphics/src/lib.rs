@@ -282,6 +282,8 @@ pub struct Starts {
     pub held: u32,
     /// Into screen 1, then copied into screen 0 behind the scan.
     pub screen1: u32,
+    /// Of those, with the divide-1 cures (R119/R121).
+    pub screen1_cured: u32,
     /// The scan line the last frame on screen 0 started on.
     pub last_line: Option<u32>,
     /// The scan line the last fallback copy started on.
@@ -327,6 +329,18 @@ enum Start {
     Screen1 { from: u32, to: u32 },
     /// Not started: no tear-free way yet (the owner, 2026-10-29).
     Hold,
+}
+
+/// The divide-1 cures' setting ([`Graphics::sdram_cures`],
+/// [`Graphics::sdram_cures_by_clock`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cures {
+    /// By the 2700G's rung at each render (the default).
+    ByClock,
+    /// Held on.
+    On,
+    /// Held off.
+    Off,
 }
 
 /// What [`Graphics::poll`] found.
@@ -424,8 +438,9 @@ pub struct Graphics<'a, R, M> {
     /// R116: the next scene's parameter memory on die (spilling to SDRAM
     /// if a frame's lists outgrow it), else in SDRAM.
     lists_on_die: bool,
-    /// R119/R121: the divide-1 cures on renders into screen 1 (SDRAM).
-    sdram_cures: bool,
+    /// R119/R121: the divide-1 cures on renders into screen 1 (SDRAM):
+    /// by the clock (the default) or held on or off.
+    sdram_cures: Cures,
     starts: Starts,
     /// The page layer (ADR-0034 C4 as changed, L2).
     layer: layer::LayerRec,
@@ -458,11 +473,12 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             copies: Schedule::new(),
             screen1_3d: true,
             lists_on_die: true,
-            sdram_cures: false,
+            sdram_cures: Cures::ByClock,
             starts: Starts {
                 behind: 0,
                 held: 0,
                 screen1: 0,
+                screen1_cured: 0,
                 last_line: None,
                 last_copy_line: None,
                 last_window: None,
@@ -512,18 +528,37 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         self.lists_on_die = on;
     }
 
-    /// The divide-1 cures on R20's fallback renders into screen 1 (SDRAM):
-    /// the underlay (R118/R119) and the alpha-0 overlay (R121, the owner's
-    /// pick 2026-10-30 over R120's speed switch), switched on for each
-    /// render into screen 1 and off for each into screen 0 (on die, where
-    /// neither is needed and the overlay would cost ~3 ms). At 143.00 / 1
-    /// with the display scanning out, renders into SDRAM with both were
-    /// right 32,592 times in an hour (gpubench-0241). Off by default:
-    /// ADR-0035 holds the divide-1 rungs (amendment D); whoever sets a
-    /// divide-1 rung above 74.75 MHz turns it on. Switching redraws
-    /// nothing (the picture is the same).
+    /// Holds the divide-1 cures on R20's fallback renders into screen 1
+    /// (SDRAM) on or off whatever the clock: the underlay (R118/R119) and
+    /// the alpha-0 overlay (R121, the owner's pick 2026-10-30 over R120's
+    /// speed switch). Renders into screen 0 (on die) never take them (the
+    /// overlay would cost ~3 ms there). For comparisons (`rp-scene`'s
+    /// phases); [`Self::sdram_cures_by_clock`] is the default. Switching
+    /// redraws nothing (the picture is the same).
     pub fn sdram_cures(&mut self, on: bool) {
-        self.sdram_cures = on;
+        self.sdram_cures = if on { Cures::On } else { Cures::Off };
+    }
+
+    /// The divide-1 cures by the clock (the default; ADR-0035 amendment
+    /// proposed 2026-11-06): each render into screen 1 takes them when the
+    /// 2700G's rung, read from its registers at that render, has the cores
+    /// at divide 1 above 74.75 MHz (`Rung::needs_sdram_cures`); at divide
+    /// 2 and below, and on die, never. At 143.00 / 1 with the display
+    /// scanning out, renders into SDRAM with both were right 32,592 times
+    /// in an hour (gpubench-0241). Device proof of the switch by clock is
+    /// owed (`docs/research/sheets/divide1-cures-by-clock.md`).
+    pub fn sdram_cures_by_clock(&mut self) {
+        self.sdram_cures = Cures::ByClock;
+    }
+
+    /// Whether the next render into screen 1 takes the divide-1 cures.
+    fn screen1_cures(&mut self) -> bool {
+        match self.sdram_cures {
+            Cures::On => true,
+            Cures::Off => false,
+            Cures::ByClock => rp_drv_mbx_display::clock::Rung::now(&mut self.two_d.parts().0.regs)
+                .needs_sdram_cures(),
+        }
     }
 
     /// Times the open scene's lists outgrew the on die and moved to SDRAM.
@@ -1231,10 +1266,11 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         (from, to): (u32, u32),
         clock: &mut C,
     ) -> Step {
+        let on = self.screen1_cures();
         let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) else {
             return Step::Idle;
         };
-        Self::cures(s, self.sdram_cures);
+        Self::cures(s, on);
         let target = Self::target(s, other);
         let (e, mem) = self.two_d.parts();
         let t0 = clock.now_us();
@@ -1244,6 +1280,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             Ok(Some(due)) => {
                 self.starts.last_start_us = Some(t0);
                 self.starts.screen1 += 1;
+                self.starts.screen1_cured += u32::from(on);
                 self.job = Job::Aside { held, from, to };
                 Step::Wait(due)
             }

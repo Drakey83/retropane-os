@@ -48,6 +48,29 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "divide-1 cures: taken at divide 2 too",
+        file: "drivers/mbx-display/src/clock.rs",
+        from: "        self.div == 1 && self.speed.khz() > CURES_ABOVE_KHZ",
+        to: "        self.div <= 2 && self.speed.khz() > CURES_ABOVE_KHZ",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "the_cures_are_wanted_only_at_divide_1_above_74_75",
+        ]),
+    },
+    Mutant {
+        name: "divide-1 cures: the service ignores the clock",
+        file: "services/graphics/src/lib.rs",
+        from: "            Cures::ByClock => rp_drv_mbx_display::clock::Rung::now(&mut self.two_d.parts().0.regs)
+                .needs_sdram_cures(),",
+        to: "            Cures::ByClock => false,",
+        check: Check::Host(&[
+            "-p",
+            "rp-graphics",
+            "the_divide_1_cures_follow_the_clock_for_screen_1_renders",
+        ]),
+    },
+    Mutant {
         name: "R185 look check's eyes: the page layer never seen over the screen",
         file: "drivers/mbx-display/src/layers.rs",
         from: "    let over_graphics = SCADR_BLEND_POS.extract(vscadr) > SCADR_BLEND_POS.extract(gscadr);",

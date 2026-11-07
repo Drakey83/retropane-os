@@ -1742,7 +1742,7 @@ pub fn boot_loader_scene(root: &Path, divide1: bool) -> Result<(), String> {
     }
     if divide1 {
         eprintln!(
-            "    scene OK (divide 1): four phases, 800 frames through the graphics service, nothing refused, recovered or stalled; the clock stepped to 149.50 / 2, then 143.00 / 1, and put back"
+            "    scene OK (divide 1): five phases, 1,000 frames through the graphics service, nothing refused, recovered or stalled; the cures on every screen-1 render held on (P5, P6) or left to the clock (P8), none held off (P7); the clock stepped to 149.50 / 2, then 143.00 / 1, and put back"
         );
     } else {
         eprintln!(
@@ -1758,9 +1758,8 @@ fn scene_log(log: &str, divide1: bool) -> Result<(), String> {
     let d1: &[&str] = if divide1 {
         &[
             "clock to 143.00 / 1: Some(",
-            "P5 references against the last phase's (below the label): the same",
-            "P6 references against the last phase's (below the label): the same",
             "P7 done; underrun flag",
+            "P8 done; underrun flag",
         ]
     } else {
         &[]
@@ -1777,6 +1776,27 @@ fn scene_log(log: &str, divide1: bool) -> Result<(), String> {
             return Err(format!("scene: no {want:?} in the run log:{log}"));
         }
     }
+    // The divide-1 phases' references against P3's: the same, but for
+    // row 544 (band 34) alone, the fork's known write one row past a 3D
+    // area (docs/hw/emulator.md "Known emulator issues"; the X51v doesn't,
+    // scene-0002), which varies with the clock in the emulator.
+    if divide1 {
+        for p in [5, 6, 7, 8] {
+            let want = format!("P{p} references against the last phase's (below the label): ");
+            let line = log
+                .lines()
+                .find(|l| l.starts_with(&want))
+                .ok_or_else(|| format!("scene: no {want:?} line:{log}"))?;
+            let verdict = &line[want.len()..];
+            if !verdict.starts_with("the same;")
+                && verdict != "DIFFERENT; bands that differ 0400000000"
+            {
+                return Err(format!(
+                    "scene: P{p}'s references differ beyond row 544: {line:?}"
+                ));
+            }
+        }
+    }
     for what in ["back to back", "one-off"] {
         let want = format!("P4 2D flips (no scene) {what}: 60 frames;");
         let line = log
@@ -1787,7 +1807,11 @@ fn scene_log(log: &str, divide1: bool) -> Result<(), String> {
             return Err(format!("scene: P4 {what}: {line:?}"));
         }
     }
-    let phases: &[usize] = if divide1 { &[3, 5, 6, 7] } else { &[1, 2, 3] };
+    let phases: &[usize] = if divide1 {
+        &[3, 5, 6, 7, 8]
+    } else {
+        &[1, 2, 3]
+    };
     for &p in phases {
         for (what, n) in [("back to back", 150), ("one-off", 50)] {
             let line = log
@@ -1805,9 +1829,38 @@ fn scene_log(log: &str, divide1: bool) -> Result<(), String> {
                     return Err(format!("scene: P{p} {what}: no {want:?} in {line:?}"));
                 }
             }
+            // The divide-1 cures on screen-1 renders: none at divide 2 or
+            // held off (P7), all when held on (P5, P6) or left to the
+            // clock at 143.00 / 1 (P8, the shipped rule).
+            let (one, cured) = scene_screen1(line)
+                .ok_or_else(|| format!("scene: P{p} {what}: no screen-1 counts in {line:?}"))?;
+            let want_cured = match p {
+                5 | 6 | 8 => one,
+                _ => 0,
+            };
+            if cured != want_cured || (p == 8 && one == 0) {
+                return Err(format!(
+                    "scene: P{p} {what}: {cured} of {one} renders into screen 1 with the cures, want {want_cured}: {line:?}"
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// A phase line's renders into screen 1 and how many took the divide-1
+/// cures (`screen1 N (with the cures M)`).
+fn scene_screen1(line: &str) -> Option<(u32, u32)> {
+    let rest = line.split(" screen1 ").nth(1)?;
+    let one = rest.split(' ').next()?.parse().ok()?;
+    let cured = rest
+        .split("(with the cures ")
+        .nth(1)?
+        .split(')')
+        .next()?
+        .parse()
+        .ok()?;
+    Some((one, cured))
 }
 
 /// Judges `rp-refresh`'s P17 ladder log: every step of `rp_refresh::LADDER`

@@ -924,6 +924,58 @@ fn the_divide_1_cures_are_on_for_renders_into_screen_1_alone_and_off_by_default(
     }
 }
 
+/// The cures by the clock (the default; ADR-0035 amendment proposed
+/// 2026-11-06): renders into screen 1 take them at divide 1 above 74.75
+/// MHz, never at divide 2 or at 74.75 / 1, and renders into screen 0 never;
+/// the rung read from the 2700G's registers at each render.
+#[test]
+fn the_divide_1_cures_follow_the_clock_for_screen_1_renders() {
+    use rp_drv_mbx_display::clock::{COREPLL, MBXCLK};
+    // (COREPLL, MBXCLK, cures wanted into screen 1)
+    let cases = [
+        (11 << 7 | 1 << 4 | 1, 0x2, true),           // 143.00 / 1
+        (23 << 7 | 2 << 4 | 1, 0x2, true),           // 149.50 / 1
+        (23 << 7 | 2 << 4 | 1, 1 << 2 | 0x2, false), // 149.50 / 2
+        (0xBC1, 0x2, false),                         // 74.75 / 1
+        (0xBB1, 1 << 2 | 0x2, false),                // Windows Mobile's 99.67 / 2
+    ];
+    for (pll, mbxclk, want) in cases {
+        let mut r = rig();
+        let (c, tex) = scene(&mut r);
+        copies_timed(&mut r);
+        {
+            let regs = &mut r.g.two_d().parts().0.regs;
+            regs.write32(COREPLL, pll);
+            regs.write32(MBXCLK, mbxclk);
+        }
+        let (mut aside, mut behind) = (0, 0);
+        for k in 0..12 {
+            let f = if k == 0 {
+                moved(&mut r, c, tex, 4, WHITE)
+            } else {
+                scene_only(&mut r, c, tex, 4 + 2 * k)
+            };
+            let before = r.g.starts();
+            assert_eq!(r.frame(&f), Step::Shown, "frame {k}");
+            let after = r.g.starts();
+            let (under, over) = (scene_r(&mut r).underlay(), scene_r(&mut r).overlay());
+            if after.screen1 > before.screen1 {
+                assert_eq!(
+                    (under, over),
+                    (want, want),
+                    "pll 0x{pll:x} mbxclk 0x{mbxclk:x}: into screen 1"
+                );
+                aside += 1;
+            } else {
+                assert_eq!((under, over), (false, false), "into screen 0");
+                behind += 1;
+            }
+            both_hold(&r, 4 + 2 * k, WHITE, "frame");
+        }
+        assert!(aside >= 1 && behind >= 9, "{aside} {behind}");
+    }
+}
+
 #[test]
 fn frames_the_scan_can_lead_start_behind_it_and_never_tear() {
     let mut r = rig();

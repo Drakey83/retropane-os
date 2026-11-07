@@ -557,9 +557,12 @@ pub const BUDGETS: &[Budget] = &[
     // Then 168 -> 170 KiB (2026-11-06, test image): the 2D renderer's
     // wallpaper bands and their redraw areas (R184 step 2, the radar's
     // loop), 168.1 KiB measured.
+    // Then 170 -> 174 KiB (2026-11-06, test image): the divide-1 variant's
+    // P8 (the cures left to the clock, ADR-0035 amendment proposed) and the
+    // service's rung read, 172.1 KiB measured.
     Budget {
         image: "rp-scene",
-        max_load: 170 * 1024,
+        max_load: 174 * 1024,
         max_zero: 50 * 1024,
         device: OnDevice::Returns,
     },

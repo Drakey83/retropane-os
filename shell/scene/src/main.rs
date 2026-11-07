@@ -617,11 +617,12 @@ mod image {
         let n = mark(r);
         let s = n.starts;
         log!(
-            "P{} {} {what}: {frames} frames; starts behind {} screen1 {} held {}, 2D behind the scan {} at once {} (last line {:?}, last copy line {:?}); copy times {:?} us; copy stalls {}; refreshes judged {}: torn {} (of them 2D-first mixes {}, 3D-first mixes {}), back {}, unread {}; failed {}, recovered {}; 2D engine stalls {}, FIFO full {}; {extra}",
+            "P{} {} {what}: {frames} frames; starts behind {} screen1 {} (with the cures {}) held {}, 2D behind the scan {} at once {} (last line {:?}, last copy line {:?}); copy times {:?} us; copy stalls {}; refreshes judged {}: torn {} (of them 2D-first mixes {}, 3D-first mixes {}), back {}, unread {}; failed {}, recovered {}; 2D engine stalls {}, FIFO full {}; {extra}",
             PLAN[p].n,
             PLAN[p].name,
             s.behind - m.starts.behind,
             s.screen1 - m.starts.screen1,
+            s.screen1_cured - m.starts.screen1_cured,
             s.held - m.starts.held,
             s.two_d_behind - m.starts.two_d_behind,
             s.two_d_now - m.starts.two_d_now,
@@ -690,7 +691,10 @@ mod image {
         if r.gfx.set_tile_order(r.c, order).is_err() {
             r.failed += 1;
         }
-        r.gfx.sdram_cures(ph.cures);
+        match ph.cures {
+            Some(on) => r.gfx.sdram_cures(on),
+            None => r.gfx.sdram_cures_by_clock(),
+        }
         let before = r.ref_bands;
         // The references: whole, then the two hand-off mixes.
         for k in 0..SCENES {

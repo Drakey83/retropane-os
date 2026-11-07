@@ -295,6 +295,11 @@ pub const CS3_WM: Cs3 = (8, 4, 2);
 /// set while the clock moves.
 pub const CS3_LONG: Cs3 = (13, 9, 7);
 
+/// The divide-1 clock at and below which renders into SDRAM need no cures:
+/// 74.75 MHz ([`Speed::A75`], the owner's option A, run on the X51v since
+/// 2026-10-15 with no SDRAM fault).
+pub const CURES_ABOVE_KHZ: u32 = 74_750;
+
 /// A rung of ADR-0035's ladder: the system clock with its memory timing,
 /// and the cores' divider (1-4, `MBXCLK` bits 3-2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,6 +324,33 @@ impl Rung {
         speed: Speed::ladder(23 << 7 | 2 << 4 | 1),
         div: 2,
     };
+
+    /// The rung as the 2700G holds it now: `COREPLL`'s clock with the
+    /// memory timing read back, and `MBXCLK`'s divider (bits 3-2, the
+    /// divider less one).
+    pub fn now<B: RegisterBus>(bus: &mut B) -> Self {
+        Self {
+            speed: Speed::now(bus),
+            div: ((bus.read32(MBXCLK) >> 2) & 3) + 1,
+        }
+    }
+
+    /// The cores' clock in kHz (the system clock over the divider).
+    #[must_use]
+    pub const fn core_khz(self) -> u32 {
+        self.speed.khz() / if self.div == 0 { 1 } else { self.div }
+    }
+
+    /// Whether a 3D render into SDRAM needs the divide-1 cures (the
+    /// underlay and the alpha-0 overlay, R119/R121; ADR-0035 amendment
+    /// proposed 2026-11-06): the cores at divide 1 above 74.75 MHz, the
+    /// highest divide-1 clock with no SDRAM fault (`Speed::A75`; R118's
+    /// faults from 133.25 / 1 up, all cured by both, gpubench-0239 and
+    /// -0241). Never at divide 2 or more, and never needed on die.
+    #[must_use]
+    pub const fn needs_sdram_cures(self) -> bool {
+        self.div == 1 && self.speed.khz() > CURES_ABOVE_KHZ
+    }
 
     /// The CS3 tier for the rung's system clock (Dell's: the long one below
     /// 99 MHz).
@@ -582,6 +614,42 @@ impl Gate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cures by rung (ADR-0035 amendment proposed 2026-11-06): on only
+    /// at divide 1 above 74.75 MHz; the rung read back from the registers.
+    #[test]
+    fn the_cures_are_wanted_only_at_divide_1_above_74_75() {
+        let rung = |pll: u32, div: u32| Rung {
+            speed: Speed::ladder(pll),
+            div,
+        };
+        // 74.75 / 1 (option A): no fault, no cures.
+        assert!(!rung(0xBC1, 1).needs_sdram_cures());
+        // 99.67 / 1, 133.25 / 1, 143.00 / 1, 149.50 / 1: cures.
+        for pll in [
+            0xBB1,
+            41 << 7 | 4 << 4 | 1,
+            11 << 7 | 1 << 4 | 1,
+            23 << 7 | 2 << 4 | 1,
+        ] {
+            assert!(rung(pll, 1).needs_sdram_cures(), "pll 0x{pll:x} / 1");
+            for div in 2..=4 {
+                assert!(!rung(pll, div).needs_sdram_cures(), "pll 0x{pll:x} / {div}");
+            }
+        }
+        assert!(!Rung::WM.needs_sdram_cures());
+        assert!(!Rung::TOP.needs_sdram_cures());
+        assert_eq!(Rung::TOP.core_khz(), 74_750);
+        // Read back: MBXCLK bits 3-2 hold the divider less one.
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(COREPLL, 23 << 7 | 2 << 4 | 1);
+        bus.preset(MBXCLK, 0x2);
+        let now = Rung::now(&mut bus);
+        assert_eq!((now.div, now.speed.khz()), (1, 149_500));
+        assert!(now.needs_sdram_cures());
+        bus.preset(MBXCLK, 1 << 2 | 0x2);
+        assert!(!Rung::now(&mut bus).needs_sdram_cures());
+    }
 
     #[test]
     fn the_ladder_runs_cl2_at_every_clock_with_dells_timings() {

@@ -69,9 +69,11 @@ pub struct Phase {
     pub clock: Clock,
     /// The checkerboard tile order, else rows (top down).
     pub checker: bool,
-    /// `Graphics::sdram_cures` (R121: the underlay and the alpha-0 overlay
-    /// on renders into screen 1).
-    pub cures: bool,
+    /// The divide-1 cures on renders into screen 1 (R121: the underlay and
+    /// the alpha-0 overlay): held on or off (`Graphics::sdram_cures`), or
+    /// `None`: by the clock (`Graphics::sdram_cures_by_clock`, the shipped
+    /// rule, ADR-0035 amendment proposed 2026-11-06).
+    pub cures: Option<bool>,
 }
 
 /// The phases, in order: the clock moves once, between the first two.
@@ -82,7 +84,7 @@ pub const PHASES: [Phase; 3] = [
         label: "WM CLOCK, ROWS",
         clock: Clock::Wm,
         checker: false,
-        cures: false,
+        cures: Some(false),
     },
     Phase {
         n: 2,
@@ -90,7 +92,7 @@ pub const PHASES: [Phase; 3] = [
         label: "149.50 / 2, ROWS",
         clock: Clock::Top,
         checker: false,
-        cures: false,
+        cures: Some(false),
     },
     Phase {
         n: 3,
@@ -98,7 +100,7 @@ pub const PHASES: [Phase; 3] = [
         label: "149.50 / 2, CHECKER",
         clock: Clock::Top,
         checker: true,
-        cures: false,
+        cures: Some(false),
     },
 ];
 
@@ -110,8 +112,11 @@ pub const PHASES: [Phase; 3] = [
 /// then (after the 2D flips, P4) three at 143.00 / 1: every frame by the copy
 /// into SDRAM with the cures; rows, frames led behind the scan (cures off,
 /// on die) mixed with the copy's (cures on); the copy without the cures
-/// (the control: some refreshes should come out wrong).
-pub const DIVIDE1: [Phase; 4] = [
+/// (the control: some refreshes should come out wrong); then P8, the copy
+/// with the cures left to the clock (the shipped rule, ADR-0035 amendment
+/// proposed 2026-11-06): every render into screen 1 must take them, and
+/// its refreshes must be as right as P5's.
+pub const DIVIDE1: [Phase; 5] = [
     PHASES[2],
     Phase {
         n: 5,
@@ -119,7 +124,7 @@ pub const DIVIDE1: [Phase; 4] = [
         label: "143 / 1, CHECKER, CURES",
         clock: Clock::Divide1,
         checker: true,
-        cures: true,
+        cures: Some(true),
     },
     Phase {
         n: 6,
@@ -127,7 +132,7 @@ pub const DIVIDE1: [Phase; 4] = [
         label: "143 / 1, ROWS, CURES",
         clock: Clock::Divide1,
         checker: false,
-        cures: true,
+        cures: Some(true),
     },
     Phase {
         n: 7,
@@ -135,7 +140,15 @@ pub const DIVIDE1: [Phase; 4] = [
         label: "143 / 1, CHECKER, NO CURE",
         clock: Clock::Divide1,
         checker: true,
-        cures: false,
+        cures: Some(false),
+    },
+    Phase {
+        n: 8,
+        name: "143.00 / 1, checkerboard, the cures by the clock (the shipped rule)",
+        label: "143 / 1, CHECKER, BY CLOCK",
+        clock: Clock::Divide1,
+        checker: true,
+        cures: None,
     },
 ];
 
@@ -402,9 +415,9 @@ mod tests {
         assert_eq!(
             PHASES.map(|p| (p.clock, p.checker, p.cures)),
             [
-                (Clock::Wm, false, false),
-                (Clock::Top, false, false),
-                (Clock::Top, true, false)
+                (Clock::Wm, false, Some(false)),
+                (Clock::Top, false, Some(false)),
+                (Clock::Top, true, Some(false))
             ]
         );
         assert_eq!(plan(false), &PHASES[..]);
@@ -414,10 +427,12 @@ mod tests {
     }
 
     #[test]
-    fn the_divide_1_plan_adds_the_cured_copy_the_switching_and_the_control() {
+    fn the_divide_1_plan_adds_the_cured_copy_the_switching_the_control_and_the_clock_rule() {
         // R121's sheet: R110's P3 (the references), then at 143.00 / 1 the
         // copy with the cures, rows with the cures (both targets), and the
-        // copy without (the control); numbered after the flips (P4).
+        // copy without (the control); numbered after the flips (P4); then
+        // P8, the copy with the cures left to the clock (ADR-0035
+        // amendment E, proposed 2026-11-06).
         let d = plan(true);
         assert_eq!(d[0], PHASES[2]);
         assert_eq!(
@@ -426,14 +441,15 @@ mod tests {
                 .map(|p| (p.clock, p.checker, p.cures))
                 .collect::<std::vec::Vec<_>>(),
             [
-                (Clock::Divide1, true, true),
-                (Clock::Divide1, false, true),
-                (Clock::Divide1, true, false)
+                (Clock::Divide1, true, Some(true)),
+                (Clock::Divide1, false, Some(true)),
+                (Clock::Divide1, true, Some(false)),
+                (Clock::Divide1, true, None)
             ]
         );
         assert_eq!(
             d.iter().map(|p| p.n).collect::<std::vec::Vec<_>>(),
-            [3, 5, 6, 7]
+            [3, 5, 6, 7, 8]
         );
         assert_eq!(PHASES.map(|p| p.n), [1, 2, 3]);
         // The label: 3x glyphs of 6 pixels from x 12 across 480: 26 a line.
