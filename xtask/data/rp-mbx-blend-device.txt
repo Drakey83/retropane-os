@@ -3,9 +3,10 @@
 # E1 and E4's GPIO85 lines below are at 60 Hz: the device run above was at Windows
 # Mobile's 56.46 Hz (`E1 frame: ... 17712 us a frame (56458 mHz), 27460 ns a line`,
 # 5 edges a 100 ms), before every program's Display::adopt moved the panel to 60 Hz
-# (2026-10-17). The 60 Hz values are the fork's (rp-v0.29.0: the line time from
-# DISPPLL), which match the 60.0-60.5 Hz the X51v measured at 0xFC5 (display
-# calibration C3); a device re-run of this image replaces them (quality audit C21).
+# (2026-10-17). They were the fork's (rp-v0.29.0: the line time from DISPPLL) until
+# the X51v re-ran this image at 60 Hz, 2026-11-08 (card log mbx-blend-0050,
+# local/rp-mbx-blend-run2.txt): E1 and both E4 lines equal, digit for digit (quality
+# audit C21, closed); every other compared line equal too.
 E1 frame: lines 0..644 (645), 16568 us a frame (60357 mHz), 25686 ns a line
 E3 HBLNK0: set again 16/16 times, lines Some((1, 605)), after Some((20, 28)) us: sets within a few lines (per-line event)
 E3 VEVENT0: set again 16/16 times, lines Some((643, 643)), after Some((1076, 17680)) us: sets on one line (frame event)
