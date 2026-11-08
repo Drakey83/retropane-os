@@ -1,8 +1,6 @@
 # Run sheet: re-measure the performance floors across sessions (R109)
 
-**Status: READY, NOT RUN.** The owner approved the re-measure on
-2026-11-07 ("yes, but not now"): it needs him and the X51v, and he is
-recovering. Nothing here has been run. Run it only on his go.
+**Status: RUN 2026-11-08** (the owner's "run them all"): three sessions of build aa8d9a4c, 15 runs, all one build. **Pass, with one finding:** between boots 113 of 115 floors stay inside their tolerance (the two past it are the touch replay's); 40 floors faster and taken, 33 slower (27 inside their tolerance, six past it, all the touch replay's: R188), kept at the old floors for the owner; no approval note lost (the floors merged by hand: `refloor 15` drops the notes).
 
 ## What it proves
 

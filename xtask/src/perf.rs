@@ -231,6 +231,44 @@ pub fn keep_session_tolerances(old: &BTreeMap<String, Floor>, new: &mut BTreeMap
     }
 }
 
+/// `new` floors written over `old` never loosen a floor or lose a note: a
+/// number slower than its old floor keeps its old row (a slower floor is
+/// the owner's to approve, the file's own rule), and a faster or equal one
+/// keeps the old row's approval note. Returns the held numbers with the
+/// old and new floors, for the caller to name. (R109's re-measure,
+/// 2026-11-08: `refloor 15` wrote 33 slower floors and dropped five
+/// approval notes; the floors were merged by hand.)
+pub fn hold_slower_and_notes(
+    old: &BTreeMap<String, Floor>,
+    new: &mut BTreeMap<String, Floor>,
+) -> Vec<(String, f64, f64)> {
+    let mut held = Vec::new();
+    for (name, f) in new.iter_mut() {
+        let Some(o) = old.get(name) else { continue };
+        if f.floor > o.floor {
+            held.push((name.clone(), o.floor, f.floor));
+            *f = o.clone();
+        } else if f.approved.is_empty() {
+            f.approved.clone_from(&o.approved);
+        }
+    }
+    held
+}
+
+/// Says which floors [`hold_slower_and_notes`] held at their old values.
+fn report_held(held: &[(String, f64, f64)]) {
+    if held.is_empty() {
+        return;
+    }
+    eprintln!(
+        "    perf: {} slower, held at the old floor (a slower floor needs the owner's approval):",
+        held.len()
+    );
+    for (name, o, n) in held {
+        eprintln!("      {name}: {o} -> {n} (+{:.2}%)", (n - o) * 100.0 / o);
+    }
+}
+
 /// The floors file's rows now, if there is one.
 fn old_floors(root: &Path) -> BTreeMap<String, Floor> {
     std::fs::read_to_string(root.join(FLOORS))
@@ -567,7 +605,9 @@ pub fn noise(root: &Path, n: usize) -> Result<(), String> {
         runs.push(nums);
     }
     let mut floors = floors_from_runs(&runs, &format!("noise {n} runs, {}", stamp()));
-    keep_session_tolerances(&old_floors(root), &mut floors);
+    let old = old_floors(root);
+    keep_session_tolerances(&old, &mut floors);
+    report_held(&hold_slower_and_notes(&old, &mut floors));
     let p = root.join(FLOORS);
     std::fs::write(&p, floors_text(&floors)).map_err(|e| format!("{}: {e}", p.display()))?;
     eprintln!("    perf: {} floors written to {FLOORS}", floors.len());
@@ -601,7 +641,9 @@ pub fn refloor(root: &Path, n: usize) -> Result<(), String> {
         );
     }
     let mut floors = floors_from_runs(&runs, &format!("noise {n} runs, refloored"));
-    keep_session_tolerances(&old_floors(root), &mut floors);
+    let old = old_floors(root);
+    keep_session_tolerances(&old, &mut floors);
+    report_held(&hold_slower_and_notes(&old, &mut floors));
     let p = root.join(FLOORS);
     std::fs::write(&p, floors_text(&floors)).map_err(|e| format!("{}: {e}", p.display()))?;
     eprintln!(
@@ -801,6 +843,44 @@ mod tests {
         let back = parse_floors(&floors_text(&new));
         assert_eq!(back["held"].approved, reason);
         assert!((back["held"].tolerance - 0.002).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_re_measure_never_loosens_a_floor_or_drops_a_note() {
+        let row = |floor: f64, approved: &str| Floor {
+            floor,
+            tolerance: 0.001,
+            set_by: "old".into(),
+            approved: approved.into(),
+        };
+        let old = BTreeMap::from([
+            ("slower".to_string(), row(100.0, "owner 2026-11-07")),
+            ("faster".to_string(), row(100.0, "owner 2026-10-30")),
+            ("equal".to_string(), row(100.0, "a note")),
+        ]);
+        let fresh = |floor: f64| Floor {
+            floor,
+            tolerance: 0.002,
+            set_by: "new".into(),
+            approved: String::new(),
+        };
+        let mut new = BTreeMap::from([
+            ("slower".to_string(), fresh(101.0)),
+            ("faster".to_string(), fresh(99.0)),
+            ("equal".to_string(), fresh(100.0)),
+            ("unknown".to_string(), fresh(50.0)),
+        ]);
+        let held = hold_slower_and_notes(&old, &mut new);
+        // Slower: the old row whole, and named.
+        assert_eq!(new["slower"], old["slower"]);
+        assert_eq!(held, vec![("slower".to_string(), 100.0, 101.0)]);
+        // Faster or equal: the fresh floor, the old note.
+        assert_eq!(new["faster"].floor, 99.0);
+        assert_eq!(new["faster"].set_by, "new");
+        assert_eq!(new["faster"].approved, "owner 2026-10-30");
+        assert_eq!(new["equal"].approved, "a note");
+        // A number without an old row is new: taken as measured.
+        assert_eq!(new["unknown"].floor, 50.0);
     }
 
     #[test]
