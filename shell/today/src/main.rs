@@ -2136,7 +2136,13 @@ mod image {
                 }
                 let chrome = rp_today::look::verdict(look, &cpx);
                 let on_page = rp_today::look::verdict(page, &ppx[..page.len()]);
-                let wrong = chrome == Some(!want) || on_page == Some(!want);
+                // A Weather page the shell has on the layer but the display
+                // shows no layer: the page is missing, whatever the pixels
+                // say (the X51v's run today-0065: past Radar the bare
+                // wallpaper showed, read "light", so only the dark look
+                // caught it).
+                let missing = !page.is_empty() && shell.page_layer().is_some() && !on_layer;
+                let wrong = missing || chrome == Some(!want) || on_page == Some(!want);
                 let moving = shell.animating() && !rp_today::look::page_points(tab).is_empty();
                 let right = chrome == Some(want) && (page.is_empty() || on_page == Some(want));
                 if wrong {
@@ -2146,9 +2152,14 @@ mod image {
                         let (cl, pl) = (cpx.map(|v| l(&v)), ppx.map(|v| l(&v)));
                         let _ = writeln!(
                             RunLog,
-                            "LOOK WRONG at {now_ms} ms: page {tab}, the look is {}; the chrome says {chrome:?} {cl:?}, the page {on_page:?} {:?} (Some(true) light)",
+                            "LOOK WRONG at {now_ms} ms: page {tab}, the look is {}; the chrome says {chrome:?} {cl:?}, the page {on_page:?} {:?} (Some(true) light){}",
                             if want { "light" } else { "dark" },
                             &pl[..page.len()],
+                            if missing {
+                                "; no page on the layer"
+                            } else {
+                                ""
+                            },
                         );
                         // Why: each plane's part at the page's first
                         // points, and the layer as the service has it.
@@ -3470,7 +3481,44 @@ mod image {
             // (the layer, the frame kept aside, this pass's 2D frame drawn
             // with it)
             let mut commit: Option<(Option<LayerState>, bool, bool)> = None;
-            if let Some(pc) = pc.filter(|_| pages.iter().all(Option::is_some)) {
+            // Past Radar, a page it borrowed and that isn't shown is made
+            // again ahead while still (below), so it may be missing here;
+            // the one to show is made now. The X51v's run today-0065
+            // (2026-11-08): this block waited for every page, so leaving
+            // Radar for Now (Hourly still lent) put no page back on the
+            // layer, the bare wallpaper showing 4 s each time, until
+            // Settings; and the rebuild ahead, inside this block, never ran.
+            let on_radar =
+                shell.weather_page().0 >= 3 && matches!(shell.screen(), rp_shell::Screen::Weather);
+            if let Some(pc) = pc
+                && !on_radar
+                && let Some(v) = shell.page_layer()
+            {
+                let i = usize::from(v.tab);
+                if i < 3 && pages[i].is_none() && pages_lent & 1 << i != 0 {
+                    let t0 = rt::ticks();
+                    pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, v.tab);
+                    page_light[i] = Some(shell.light());
+                    if pages[i].is_some() {
+                        pages_lent &= !(1 << i);
+                    }
+                    let _ = writeln!(
+                        RunLog,
+                        "radar: page {i}, lent to it, made again to be shown in {} us{}",
+                        rt::ticks().wrapping_sub(t0) / 13 * 4,
+                        if pages[i].is_some() {
+                            ""
+                        } else {
+                            ": not made (no room), the plane path off"
+                        }
+                    );
+                }
+            }
+            let shown_want = shell.page_layer().map(|v| usize::from(v.tab));
+            let pages_ready = pages.iter().enumerate().all(|(i, p)| {
+                p.is_some() || (!on_radar && pages_lent & 1 << i != 0 && shown_want != Some(i))
+            });
+            if let Some(pc) = pc.filter(|_| pages_ready) {
                 if !gfx.busy() && !gfx.commit_pending() {
                     // Resting on the opening's picture: handed to the app's
                     // own planes (its chrome drawn, its page on the layer)
@@ -3737,6 +3785,39 @@ mod image {
                             } else {
                                 commit = Some((None, false, true));
                                 shown_tab = None;
+                            }
+                            pages_check = true;
+                        } else if let Some(v) = want
+                            && retire.is_none()
+                            && pages[usize::from(v.tab)].is_some()
+                            && page_light[usize::from(v.tab)] != Some(shell.light())
+                        {
+                            // The look changed under the page on the layer
+                            // (Auto at sunrise or sunset, or the dock's
+                            // settings arriving: the X51v's run today-0065,
+                            // 2026-11-08, the relay's settings turned the
+                            // look dark and the chrome went dark 84 ms
+                            // before the light page was made again): the
+                            // page made again now and swapped in with the
+                            // chrome's frame, one commit, the old picture
+                            // given back after it (R185's class).
+                            let i = usize::from(v.tab);
+                            let t0 = rt::ticks();
+                            let old = pages[i].take();
+                            let old_light = page_light[i];
+                            pages[i] = build_page(gfx, pc, shell, &mut cpu, frame, v.tab);
+                            page_light[i] = Some(shell.light());
+                            if let Some((h, _)) = pages[i] {
+                                commit = Some((Some(page_state(h, v)), false, true));
+                                retire = old.map(|(h, _)| h);
+                                let _ = writeln!(
+                                    RunLog,
+                                    "page {i}: made again in the look shown under the layer, one commit with the chrome ({} us)",
+                                    rt::ticks().wrapping_sub(t0) / 13 * 4
+                                );
+                            } else {
+                                pages[i] = old;
+                                page_light[i] = old_light;
                             }
                             pages_check = true;
                         } else if want.is_some() && shell.needs_frame() && still {
