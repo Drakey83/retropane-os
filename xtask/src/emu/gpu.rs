@@ -609,11 +609,18 @@ pub(crate) fn glesfeat_no_quad(log: &str, name: &str, test: u8) -> Result<usize,
         let n = way.split(' ').next().unwrap_or("");
         let refused_here = way.contains("the reference holds no quad");
         // The fork's own test (`m3_render`): a list word whose flags (bits
-        // 21-31) are neither a flat nor a textured strip ends the tile.
+        // 21-31) are none of the forms it draws ends the tile. Since
+        // rp-v0.31.1 it draws the four-corner objects too (layouts 5 and 9,
+        // `0x60A00000` flat and `0x61200000` textured, R186), as the X51v
+        // does (rp-glesfeat G2), so a reference without its quad there is
+        // a lost quad, not the fork's gap.
         let unmodelled = way.split("list word 0x").skip(1).any(|w| {
             let hex: String = w.chars().take_while(char::is_ascii_hexdigit).collect();
             u32::from_str_radix(&hex, 16).map_or(true, |p| {
-                !matches!(p & 0xFFE0_0000, 0x4080_0000 | 0x4100_0000)
+                !matches!(
+                    p & 0xFFE0_0000,
+                    0x4080_0000 | 0x4100_0000 | 0x60A0_0000 | 0x6120_0000
+                )
             })
         });
         let rendered = way.contains("rendered true then true");

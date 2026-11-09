@@ -127,17 +127,15 @@ says nothing about any of these; each needs the X51v:
   self-test passes every timing here (R71).
 
 **Which build:** CI and `cargo xtask emu` use the pinned release
-`QEMU_RELEASE` = rp-v0.31.0, which starts the 2700G's clocks at 0 and has
-no four-corner objects (list layouts 5 and 9). The local build
-`rp-next-032` (`~/retropane-qemu-032` in WSL, `rp-v0.31.0-2-g7fad420638`:
-Windows Mobile's clocks and the four-corner objects) is **not released**
-(R86: `emu-mbx3d` never returns on it, audit C41); the overnight checks of
+`QEMU_RELEASE` = rp-v0.31.1 (2026-11-09, the owner's go): rp-v0.31.0 plus
+the four-corner objects (list layouts 5 and 9, commit cbba0bae4f, R186),
+which the renderer has drawn each quad as since 55e6e220; it still starts
+the 2700G's clocks at 0. The local build `rp-next-032`
+(`~/retropane-qemu-032` in WSL, `rp-v0.31.0-2-g7fad420638`: Windows
+Mobile's clocks and the four-corner objects) is **not released** (R86:
+`emu-mbx3d` never returns on it, audit C41); the overnight checks of
 2026-10-28/29 that needed it ran on it with `RETROPANE_QEMU_ANY=1`, and
-each was proven on the X51v, not by the emulator. Since the renderer drew quads as four-corner objects by default
-(55e6e220), `emu-mbx3d-api` and `emu-gpubench` fail on the release (R186);
-the four-corner commit alone on rp-v0.31.0 (local branch `quad-objects`,
-cbba0bae4f, 2026-11-07, without the clocks commit R86 holds back) passes
-both, and awaits release as rp-v0.31.1.
+each was proven on the X51v, not by the emulator.
 
 ## How to add a row
 

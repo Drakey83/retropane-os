@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 const WAV_VOICE: &str = ",out.buffer-length=250000";
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.31.0";
+pub const QEMU_RELEASE: &str = "rp-v0.31.1";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -2891,16 +2891,34 @@ RETROPANE-GPUBENCH: done, 0 renders measured, 0 hung renders recovered
     #[test]
     fn glesfeat_no_quad_is_judged_way_by_way() {
         let modelled = "\nG2 way 1 (ours):\n    list word 0x40800000 (layout 4), object: e0000000; background: list word 0x40800000, 17 words\n  reference at Windows Mobile's clock: rendered true then true\n";
-        // G3's way 2: a four-corner background, its word logged unlabelled.
-        let quad_bg = "\nG3 way 2 (Dell's clear (a flat quad)):\n    list word 0x40800000 (layout 4), object: e0000000; background: list word 0x60a00000, 22 words\n  the reference holds no quad\n  reference at Windows Mobile's clock: rendered true then true\n";
+        // G3's way 2: a four-corner background, modelled since rp-v0.31.1
+        // (R186): drawn, not refused; refused, a lost quad.
+        let quad_bg = "\nG3 way 2 (Dell's clear (a flat quad)):\n    list word 0x40800000 (layout 4), object: e0000000; background: list word 0x60a00000, 22 words\n  reference at Windows Mobile's clock: rendered true then true\n";
         assert_eq!(
             super::glesfeat_no_quad(&format!("test G3{quad_bg}"), "G3", 3),
-            Ok(1)
+            Ok(0)
         );
-        let corner = "\nG2 way 2 (one 4-corner object):\n    list word 0x60a00000 (layout 5), object: e0000000; background: list word 0x40800000, 17 words\n  the reference holds no quad (its background alone)\n  reference at Windows Mobile's clock: rendered true then true\n";
+        let quad_bg_lost = quad_bg.replace(
+            "  reference at",
+            "  the reference holds no quad\n  reference at",
+        );
+        assert!(super::glesfeat_no_quad(&format!("test G3{quad_bg_lost}"), "G3", 3).is_err());
+        // The four-corner object, flat (layout 5) and textured (layout 9):
+        // modelled, so drawn; refused, a lost quad.
+        let corner = "\nG2 way 2 (one 4-corner object):\n    list word 0x60a00000 (layout 5), object: e0000000; background: list word 0x40800000, 17 words\n  reference at Windows Mobile's clock: rendered true then true\n";
+        let textured = corner
+            .replace("way 2", "way 3")
+            .replace("0x60a00000 (layout 5)", "0x61200000 (layout 9)");
         let clear = "\nG2 way 4 (the clear underneath):\n    list word 0x40800000 (layout 4), object: e0000000; background: list word 0x40000000, 10 words\n  the reference holds no quad (its background alone)\n  reference at Windows Mobile's clock: rendered true then true\n";
-        let log = format!("test G2{modelled}{corner}{clear}");
-        assert_eq!(super::glesfeat_no_quad(&log, "G2", 2), Ok(2));
+        let log = format!("test G2{modelled}{corner}{textured}{clear}");
+        assert_eq!(super::glesfeat_no_quad(&log, "G2", 2), Ok(1));
+        for way in [corner.to_string(), textured] {
+            let lost = way.replace(
+                "  reference at",
+                "  the reference holds no quad (its background alone)\n  reference at",
+            );
+            assert!(super::glesfeat_no_quad(&format!("test G2{lost}"), "G2", 2).is_err());
+        }
         // A modelled way that lost its quad.
         let lost = modelled.replace(
             "  reference at",
@@ -2908,7 +2926,7 @@ RETROPANE-GPUBENCH: done, 0 renders measured, 0 hung renders recovered
         );
         assert!(super::glesfeat_no_quad(&format!("test G2{lost}"), "G2", 2).is_err());
         // An unmodelled way that showed one (the fork drew it after all).
-        let shown = corner.replace("  the reference holds no quad (its background alone)\n", "");
+        let shown = clear.replace("  the reference holds no quad (its background alone)\n", "");
         assert!(super::glesfeat_no_quad(&format!("test G2{shown}"), "G2", 2).is_err());
         // An unmodelled way that never rendered (the TA silent): no refusal.
         let silent = clear
