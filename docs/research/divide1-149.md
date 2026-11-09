@@ -388,6 +388,7 @@ All warm (TEMP0 864-870), 100 rounds of four frames a setting, a 149.50 /
 | GC2DT | GC2BY's four frames each moved across and down (3,5 / -5,3 / 5,-7 / -3,9 px) | **137.80 / 1 right: 1,200 of 1,200** in three parts, 136.50 and 135.20 right; the chip healthy (references repeatable, no reset, the control and Windows Mobile's clock right after) |
 | GC2DU | every texture in 2700G memory summed before and after 149.50, 146.25, 137.80 / 1 and 149.50 / 2 | no texture changed; no reset; the control and Windows Mobile's clock right after: the damage of GC2DR and GC2DS didn't recur (2 of the 7 runs past the line to the control; its cause, a stray write past the line or the chip's state after hours of runs, unproven) |
 | GC2DV | GC2DT's moved frames at 137.80 / 1, 12 parts | **4,800 of 4,800 right**, render times flat from the first part to the last; the control and Windows Mobile's clock right after, no reset |
+| GC2DW | GC2DU's sums and every free pool block (15 of 64 KiB, 960 KiB, 0xF06700-0xFF6700) filled with its addresses, read back after each of five parts at 149.50 / 1 | **no stray write in 2,000 renders**, every one wrong: the free blocks as filled and the textures as before after each part; no reset; the control and Windows Mobile's clock right after. The damage lead closes by its stop rule (the chip's state after hours of runs, most likely). Not guarded: the renderer's region array and parameter memory, the targets |
 
 **What the faults are:** deterministic for a given frame (the same pixels
 every render, in any tile order, any texture place or size), dependent on
@@ -429,9 +430,14 @@ inputs. Software can change the inputs (GC2DS cleared 143.00 for one frame
 by adding whole texture repeats) but no change helps every frame, so no
 driver rule makes an arbitrary game right past the line.
 
-**Safety:** past the line a frame isn't only wrong; twice in seven runs the
-next setting hung or drew damaged after (GC2DR, GC2DS; not seen with the
-guard on, GC2DU). Divide 1 must never run past the proven step.
+**Safety:** twice in seven runs the setting after a run past the line hung
+or drew damaged (GC2DR, GC2DS). Guarded, it didn't recur: no texture
+changed (GC2DU), and in 2,000 renders at 149.50 / 1 no word of 960 KiB of
+free 2700G memory changed (GC2DW), so renders past the line are not shown
+to write outside their targets; the damage is most likely the chip's state
+after hours of runs. The renderer's own memory (region array, parameter
+memory) wasn't guarded. Divide 1 still must never ship past the proven
+step: its pictures are wrong there.
 
 **Still untried (why it isn't "impossible" yet):** other units (the any-
 Axim rule: the margin is per chip; R71's self-test measures it per device,

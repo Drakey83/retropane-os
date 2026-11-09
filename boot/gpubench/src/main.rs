@@ -8630,7 +8630,20 @@ mod image {
     /// first setting and after each: does a faulty render past the line
     /// write outside its target (GC2DR and GC2DS: the control hung and
     /// Windows Mobile's clock drew wrong after).
-    const GC2_GUARD: bool = option_env!("RP_GPUBENCH_GC2_GUARD").is_some();
+    const GC2_GUARD: bool = option_env!("RP_GPUBENCH_GC2_GUARD").is_some() || GC2_GUARD2;
+    /// Run GC2DW (`RP_GPUBENCH_GC2_GUARD2`, R189 item 3): GC2DU's texture sums
+    /// and, besides, every free block of the 2700G pool (64 KiB each, up to
+    /// [`GC2DW_BLOCKS`]) filled with a word unique to its address and read
+    /// back after each setting; the four game frames at 149.50 / 1 for five
+    /// parts, then 149.50 / 2 ([`gc2::GAME_GUARD2`]). Stop rule (written
+    /// first): any changed word proves a stray write past the line, and says
+    /// where; none in 2,000 renders closes the lead (the chip's state, most
+    /// likely).
+    const GC2_GUARD2: bool = option_env!("RP_GPUBENCH_GC2_GUARD2").is_some();
+    /// GC2DW's free-memory blocks at most (64 KiB each: 4 MiB).
+    const GC2DW_BLOCKS: usize = 64;
+    /// GC2DW's block size, bytes.
+    const GC2DW_BLOCK: u32 = 64 * 1024;
     /// Run GC2DI (`RP_GPUBENCH_GC2_MARGIN`, the chase's margin): GC2BY's game
     /// frames, warm, at 145.60 / 1 and then 143.00 / 1 for 4,800 renders,
     /// [`gc2::GAME_MARGIN`].
@@ -10132,6 +10145,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2CA, R78: no map; the four game frames at 480 x 640, 360 x 480 and 240 x 320 shown full screen by the video plane's scaler, Dell's doubling and the native screen, timed at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_TEAR {
                 "the 16-bit kinds' targets inside the safe region (GC2BZ, R20: no map; each tile row of the four game frames watched as it lands against the scan line, in four tile orders, started at three scan lines, at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
+            } else if GC2_GUARD2 {
+                "the 16-bit kinds' targets inside the safe region (GC2DW: no map; GC2BY's four game frames at 149.50 / 1 for 500 rounds, then 149.50 / 2, the textures summed and every free block of the 2700G pool filled with its addresses and read back after each setting; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_SOAK137 {
                 "the 16-bit kinds' targets inside the safe region (GC2DV: no map; GC2DT's moved game frames at 137.80 / 1 for 1,200 rounds, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_GUARD {
@@ -29156,6 +29171,31 @@ mod image {
         })
     }
 
+    /// GC2DW: the word every guard block holds at `a` (its address, mixed).
+    const fn guard_word(a: u32) -> u32 {
+        a ^ 0x5A5A_C3C3 ^ a.rotate_left(13)
+    }
+
+    /// GC2DW: the first word of the guard blocks `blocks` not as filled, if
+    /// any (its address, what it holds), and how many differ.
+    fn guard_check(g: &mut Rig, blocks: &[u32]) -> (Option<(u32, u32)>, u32) {
+        let mut first = None;
+        let mut n = 0u32;
+        for &b in blocks {
+            for w in 0..GC2DW_BLOCK / 4 {
+                let a = b + 4 * w;
+                let v = g.mem.load(a as usize);
+                if v != Some(guard_word(a)) {
+                    n += 1;
+                    if first.is_none() {
+                        first = Some((a, v.unwrap_or(0xDEAD_DEAD)));
+                    }
+                }
+            }
+        }
+        (first, n)
+    }
+
     /// Frame `f`'s shift down in pixels (GC2DT only).
     fn mesh_dy(f: usize) -> i32 {
         if GC2_MOVED { gc2::MOVED_DXY[f].1 } else { 0 }
@@ -29395,7 +29435,9 @@ mod image {
         });
         let mut clean_steps = 0u32;
         let ladder = gc2::ladder_levers();
-        let steps: &[gc2::Lever] = if GC2_SOAK137 {
+        let steps: &[gc2::Lever] = if GC2_GUARD2 {
+            &gc2::GAME_GUARD2
+        } else if GC2_SOAK137 {
             &gc2::GAME_SOAK137
         } else if GC2_GUARD {
             &gc2::GAME_GUARD
@@ -29426,11 +29468,37 @@ mod image {
         } else {
             &ladder
         };
+        // GC2DW: every free pool block it can take, filled with its words.
+        let mut guard = [0u32; GC2DW_BLOCKS];
+        let mut nguard = 0usize;
+        if GC2_GUARD2 {
+            while nguard < GC2DW_BLOCKS {
+                let Some(b) = g.pool.alloc(GC2DW_BLOCK, 128) else {
+                    break;
+                };
+                for w in 0..GC2DW_BLOCK / 4 {
+                    let a = b + 4 * w;
+                    g.mem.store(a as usize, &[guard_word(a)]);
+                }
+                guard[nguard] = b;
+                nguard += 1;
+            }
+            g.mem.sync();
+            let (first, n) = guard_check(g, &guard[..nguard]);
+            log!(
+                "  GC2DW {nguard} free blocks of 64 KiB guarded ({} KiB, from 0x{:x} to 0x{:x}); read back before the ladder: {n} words differ, first {first:x?}",
+                nguard * 64,
+                guard[..nguard].iter().min().copied().unwrap_or(0),
+                guard[..nguard].iter().max().copied().unwrap_or(0) + GC2DW_BLOCK
+            );
+        }
         let sums0 = GC2_GUARD.then(|| tex_sums(g, tex));
         if let Some(s0) = sums0 {
             log!("  GC2DU the textures' sums before the ladder: {s0:08x?}");
         }
-        let tag = if GC2_SOAK137 {
+        let tag = if GC2_GUARD2 {
+            "GC2DW"
+        } else if GC2_SOAK137 {
             "GC2DV"
         } else if GC2_GUARD {
             "GC2DU"
@@ -29485,7 +29553,9 @@ mod image {
             soak_label(
                 g,
                 [
-                    if GC2_SOAK137 {
+                    if GC2_GUARD2 {
+                        "GC2DW MEMORY GUARD 2"
+                    } else if GC2_SOAK137 {
                         "GC2DV 137.80 SOAK"
                     } else if GC2_GUARD {
                         "GC2DU MEMORY GUARD"
@@ -29584,6 +29654,16 @@ mod image {
             let all_right =
                 wrong.iter().all(|&w| w == 0) && done.iter().all(|&d| d == GC2BY_ROUNDS);
             clean_steps |= u32::from(all_right) << si;
+            if GC2_GUARD2 {
+                let (first, n) = guard_check(g, &guard[..nguard]);
+                match first {
+                    Some((a, v)) => log!(
+                        "  GC2DW after {name}: the free blocks: {n} words differ, first at 0x{a:x} (0x{v:08x} for 0x{:08x}): CHANGED",
+                        guard_word(a)
+                    ),
+                    None => log!("  GC2DW after {name}: the free blocks: all as filled"),
+                }
+            }
             if let Some(s0) = sums0 {
                 let now = tex_sums(g, tex);
                 log!(
@@ -29654,6 +29734,9 @@ mod image {
         g.centred = false;
         g.uv_mode = 0;
         g.mesh_dy = 0;
+        for &b in &guard[..nguard] {
+            let _ = g.pool.free(b, GC2DW_BLOCK);
+        }
         ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
         for t in copies.into_iter().flatten() {
             let _ = g.pool.free(t.at, t.bytes());
