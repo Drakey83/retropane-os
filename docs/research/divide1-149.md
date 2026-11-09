@@ -364,6 +364,81 @@ the lock read every setting; (3) the x = 255 column (each wrong render
 counted as on that column alone or not); then the refresh interval
 (`LMREFRESH`, more frequent only) and the rest of "Next" below.
 
+## The 2026-11-08 runs (report: docs/reports/runs/2026-11-08-gc2d-chase.md)
+
+All warm (TEMP0 864-870), 100 rounds of four frames a setting, a 149.50 /
+2 control in each; Windows Mobile's clock put back after.
+
+| Run | Lever | Result |
+|---|---|---|
+| GC2DG | the underlay, the alpha-0 overlay, both | **closed:** worse (146.25: the flat frame 100 of 100 with the underlay, the textured 100 with the overlay; the overlay doubles render time) |
+| GC2DG | 149.50 from PLL 46 / 4 | **closed:** 400 of 400 wrong, as 23 / 2 |
+| GC2DG | P = 1 (VCO doubled): 23 / 1, 46 / 2, 45 / 2 | **not a real clock:** `PLLSTAT` 0xB (lock lost), renders 7% slower (~139 MHz) |
+| GC2DH | `LMREFRESH` twice and four times as often | **closed:** 149.50 unchanged, 146.25 32 -> 27 -> 25 of 400 |
+| GC2DI | 145.60 / 1 (56 / 5), 143.00 / 1 for 4,800 renders | 145.60: the textured frame 207 of 300 (203 a single pixel at (255, 75)); 143.00: 1 of 4,800 (that pixel) |
+| GC2DJ | the textured frame shifted 0, +8, +3, -8 px | **143.00 / 1 is not game-safe:** shifted, wrong 73-100 of 100; the pixel moves with the picture |
+| GC2DK | the shifted frames down the ladder | right at 133.25 / 1 and below; 139.75 and 143.00 wrong |
+| GC2DL | the texture at four addresses | **closed:** the same 88 pixels every time |
+| GC2DM | the texture 32, 64, 128, 256 a side | **closed:** every size fails in the same place |
+| GC2DN | flat colours centred in their 565 step | **closed:** worse (the core's colour errs by 2+ steps) |
+| GC2DO | four tile orders | **closed:** the same pixels in every order |
+| GC2DP | flat colours at the bottom of their step | **closed:** 149.50 errs downward then |
+| GC2DR | every locked clock 133.25-139.75 | **137.80 / 1 right** on the shifted frames; 138.67 10 of 400; 139.75 99 |
+| GC2DS | texture coordinates moved by whole repeats | 143.00 right with +1 or +2 repeats (100 of 100 wrong as built); 146.25 34 of 100 at +1, worse at +2; 149.50 all wrong: the fault follows the exact input values, no direction always helps |
+| GC2DT | GC2BY's four frames each moved across and down (3,5 / -5,3 / 5,-7 / -3,9 px) | **137.80 / 1 right: 1,200 of 1,200** in three parts, 136.50 and 135.20 right; the chip healthy (references repeatable, no reset, the control and Windows Mobile's clock right after) |
+| GC2DU | every texture in 2700G memory summed before and after 149.50, 146.25, 137.80 / 1 and 149.50 / 2 | no texture changed; no reset; the control and Windows Mobile's clock right after: the damage of GC2DR and GC2DS didn't recur (2 of the 7 runs past the line to the control; its cause, a stray write past the line or the chip's state after hours of runs, unproven) |
+| GC2DV | GC2DT's moved frames at 137.80 / 1, 12 parts | **4,800 of 4,800 right**, render times flat from the first part to the last; the control and Windows Mobile's clock right after, no reset |
+
+**What the faults are:** deterministic for a given frame (the same pixels
+every render, in any tile order, any texture place or size), dependent on
+the exact geometry and texture-coordinate values, rising with the clock:
+the 3D core's per-triangle arithmetic running out of time for some input
+values. At 149.50 / 1 several kinds at once (colour off by 2+ steps either
+way, the neighbouring texel, another object's colour, pixels not written).
+
+**A safety finding (GC2DR, GC2DS):** twice a run's 149.50 / 2 control then
+failed or hung on every render (386 resets) and Windows Mobile's clock drew
+wrong after, after divide-1 renders at or past the line: a faulty render
+may write outside its target, so running past the line risks damage to
+other data in 2700G memory, not only wrong pixels.
+
+## The verdict (2026-11-08): what is possible for games at divide 1
+
+**Possible, proven warm on this X51v:** **137.80 / 1** (PLL 53 / 5), the
+fastest step at which every game frame drew right wherever its geometry
+landed: GC2BY's four frames moved across and down (GC2DT, 1,200 of 1,200;
+GC2DV, 4,800 of 4,800 hot), the textured frame in four positions (GC2DR). The core
+at 137.80 MHz: 1.84x Dell's fastest divide-1 setting (74.75 / 1), about
+2.77x Windows Mobile's (99.67 / 2, the core at 49.8 MHz); 149.50 / 1
+would be 3.0x Windows Mobile's, 8.5% more than 137.80.
+
+**Not reached, with every software lever we have:** 149.50 / 1 for games.
+Every frame drew wrong there in every run, with each lever of this chase
+(the write-out cures, other PLL settings, the refresh, texture place and
+size, tile order, colours moved in their 565 step, texture coordinates
+moved by whole repeats) and of October's (every bit of the render and
+TA blocks, the per-tile wait, memory timing and drive, the display's
+reads, tile orders, depth, shading, sub-pixel offsets; the core's supply
+has no software control: "Can the 2700G's core voltage be raised").
+138.67 / 1 is the first step that fails (10 of 400 on the shifted frames).
+
+**Why:** the faults are deterministic for a given frame and follow the
+exact geometry and texture-coordinate values (GC2DJ, GC2DL, GC2DM, GC2DO,
+GC2DS): the 3D core's per-triangle arithmetic running out of time for some
+inputs. Software can change the inputs (GC2DS cleared 143.00 for one frame
+by adding whole texture repeats) but no change helps every frame, so no
+driver rule makes an arbitrary game right past the line.
+
+**Safety:** past the line a frame isn't only wrong; twice in seven runs the
+next setting hung or drew damaged after (GC2DR, GC2DS; not seen with the
+guard on, GC2DU). Divide 1 must never run past the proven step.
+
+**Still untried (why it isn't "impossible" yet):** other units (the any-
+Axim rule: the margin is per chip; R71's self-test measures it per device,
+and the owner's X50v is a second 2700G); a cold chip (every run here was
+warm, as a game is); a per-frame search of input changes (GC2DS's effect)
+is not a driver rule, so it isn't counted as a lever.
+
 ## Next, when the chase resumes
 
 **Added 2026-10-30 (R118, R121, after the chase was parked): two cures

@@ -2945,6 +2945,99 @@ pub const GAME_ORDER: [Lever; 4] = [
     lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
 ];
 
+/// GC2DR's ladder: every clock a locked PLL gives (N 1-7, M under 64, P
+/// 0) from 139.75 down to 133.25 / 1, then 149.50 / 2.
+pub const GAME_FINE: [Lever; 8] = [
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1"),
+    lever((32, 3, 0), 1, (false, false), "138.67 / 1"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1"),
+    lever((21, 2, 0), 1, (false, false), "136.50 / 1"),
+    lever((52, 5, 0), 1, (false, false), "135.20 / 1"),
+    lever((31, 3, 0), 1, (false, false), "134.33 / 1"),
+    lever((41, 4, 0), 1, (false, false), "133.25 / 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2"),
+];
+
+/// GC2DS's settings: 143.00, 146.25 and 149.50 / 1, 149.50 / 2 the control.
+pub const GAME_REBASE: [Lever; 4] = [
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 1"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 1"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// `d`'s texture coordinates moved by whole repeats (GC2DS; a wrapping
+/// texture draws the same picture): `mode` 1 takes the whole repeats under
+/// the quad's least u and least v off each axis (every corner then under
+/// one repeat past 0), 2 and 3 add one and two repeats to both axes; 0 and
+/// anything not textured as it is.
+#[must_use]
+pub fn rebased(d: Draw, mode: u8) -> Draw {
+    let Paint::Texture { tex, uv, tint } = d.paint else {
+        return d;
+    };
+    let (du, dv) = match mode {
+        1 => {
+            let (mu, mv) = uv
+                .iter()
+                .fold((i32::MAX, i32::MAX), |(a, b), &(u, v)| (a.min(u), b.min(v)));
+            (
+                -(mu.div_euclid(UV_ONE) * UV_ONE),
+                -(mv.div_euclid(UV_ONE) * UV_ONE),
+            )
+        }
+        2 => (UV_ONE, UV_ONE),
+        3 => (2 * UV_ONE, 2 * UV_ONE),
+        _ => (0, 0),
+    };
+    let uv = uv.map(|(u, v)| (u + du, v + dv));
+    Draw {
+        paint: Paint::Texture { tex, uv, tint },
+        ..d
+    }
+}
+
+/// GC2DT's moves of GC2BY's four frames, pixels across and down: none of
+/// them a whole tile (8 x 16), so every edge lands somewhere new.
+pub const MOVED_DXY: [(i32, i32); 4] = [(3, 5), (-5, 3), (5, -7), (-3, 9)];
+
+/// GC2DT's settings: 137.80 / 1 three times, 136.50 and 135.20 / 1,
+/// 149.50 / 2 the control.
+pub const GAME_MOVED: [Lever; 6] = [
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 1"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 2"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 3"),
+    lever((21, 2, 0), 1, (false, false), "136.50 / 1 part 1"),
+    lever((52, 5, 0), 1, (false, false), "135.20 / 1 part 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// GC2DU's settings: past the line first (149.50, 146.25 / 1), then the
+/// line (137.80 / 1) and 149.50 / 2 the control.
+pub const GAME_GUARD: [Lever; 4] = [
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 1"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 1"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// GC2DV's soak: 137.80 / 1 twelve times over, then 149.50 / 2.
+pub const GAME_SOAK137: [Lever; 13] = [
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 1"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 2"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 3"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 4"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 5"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 6"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 7"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 8"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 9"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 10"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 11"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 12"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
 /// GC2BY's rounds of the four game frames at each step (100: a frame
 /// wrong in 3% of renders shows with ~95%).
 pub const GAME_LADDER_ROUNDS: u32 = 100;

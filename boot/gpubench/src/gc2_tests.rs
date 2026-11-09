@@ -3287,6 +3287,10 @@ fn gc2di_margin_names_its_clocks() {
         .chain(&GAME_TEXSIZE)
         .chain(&GAME_CENTRE)
         .chain(&GAME_ORDER)
+        .chain(&GAME_REBASE)
+        .chain(&GAME_MOVED)
+        .chain(&GAME_GUARD)
+        .chain(&GAME_SOAK137)
     {
         let (m, n, p) = lv.pll;
         assert!(m < 64 && (1..8).contains(&n) && p == 0, "{}", lv.name);
@@ -3414,5 +3418,83 @@ fn gc2dp_flooring_keeps_the_565_pixel_with_room_above() {
         for (sh, up) in [(16, 7u32), (8, 3), (0, 7)] {
             assert_eq!(pack(m + (up << sh)), pack(m), "{c:08x} ch {sh}");
         }
+    }
+}
+
+#[test]
+fn gc2dr_covers_every_locked_clock_between() {
+    let mut last = u32::MAX;
+    let mut have = std::vec::Vec::new();
+    for lv in GAME_FINE.iter().filter(|l| l.div == 1) {
+        let (m, n, p) = lv.pll;
+        assert!(m < 64 && (1..8).contains(&n) && p == 0);
+        let khz = 13_000 * m / n;
+        assert_eq!(
+            lv.name,
+            format!("{}.{:02} / 1", khz / 1000, (khz % 1000 + 5) / 10)
+        );
+        assert!(khz < last);
+        last = khz;
+        have.push(khz);
+    }
+    // Every distinct clock from 133.25 to 139.75 MHz is in it.
+    let mut all: std::vec::Vec<u32> = (1..8u32)
+        .flat_map(|n| (1..64u32).map(move |m| 13_000 * m / n))
+        .filter(|&k| (133_250..=139_750).contains(&k))
+        .collect();
+    all.sort_unstable();
+    all.dedup();
+    all.reverse();
+    assert_eq!(have, all);
+}
+
+#[test]
+fn gc2ds_rebasing_moves_by_whole_repeats_only() {
+    let t = TEXTURES[0];
+    let d = Draw {
+        paint: Paint::Texture {
+            tex: t,
+            uv: [
+                (UV_ONE * 3 / 2, UV_ONE / 3),
+                (UV_ONE * 5 / 2, UV_ONE / 3),
+                (UV_ONE * 5 / 2, UV_ONE),
+                (UV_ONE * 3 / 2, UV_ONE),
+            ],
+            tint: 0xFFFF_FFFF,
+        },
+        ..Draw::rect(0, 0, 8, 8, Paint::Flat(0))
+    };
+    let uv_of = |d: Draw| match d.paint {
+        Paint::Texture { uv, .. } => uv,
+        _ => panic!("not textured"),
+    };
+    let orig = uv_of(d);
+    for mode in 0..4u8 {
+        let got = uv_of(rebased(d, mode));
+        for (a, b) in orig.iter().zip(&got) {
+            // Whole repeats only: the same place in a wrapping texture.
+            assert_eq!((b.0 - a.0) % UV_ONE, 0);
+            assert_eq!((b.1 - a.1) % UV_ONE, 0);
+            // Every corner moved alike, so the gradients are unchanged.
+            assert_eq!(b.0 - a.0, got[0].0 - orig[0].0);
+            assert_eq!(b.1 - a.1, got[0].1 - orig[0].1);
+        }
+    }
+    // Rebased: the least u and v under one repeat, none negative.
+    let r = uv_of(rebased(d, 1));
+    let (mu, mv) = r
+        .iter()
+        .fold((i32::MAX, i32::MAX), |(a, b), &(u, v)| (a.min(u), b.min(v)));
+    assert!((0..UV_ONE).contains(&mu) && (0..UV_ONE).contains(&mv));
+    // Flat paint untouched.
+    let f = Draw::rect(0, 0, 8, 8, Paint::Flat(5));
+    assert_eq!(rebased(f, 1), f);
+}
+
+#[test]
+fn gc2dt_moves_are_off_the_tile_grid() {
+    for (dx, dy) in MOVED_DXY {
+        assert!(dx % 8 != 0 && dy % 16 != 0, "({dx}, {dy})");
+        assert!(dx.abs() < 8 && dy.abs() < 16);
     }
 }

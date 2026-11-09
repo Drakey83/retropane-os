@@ -637,6 +637,12 @@ mod image {
         /// Run GC2DN: every flat colour of the game mesh centred in its
         /// RGB565 step ([`gc2::centre565`], [`gc2_set_mesh`]).
         centred: bool,
+        /// Run GC2DS: the game mesh's texture coordinates moved by whole
+        /// repeats ([`gc2::rebased`]): 0 as built, 1 per quad to under one,
+        /// 2 and 3 one and two repeats added.
+        uv_mode: u8,
+        /// Run GC2DT: the game mesh moved this many pixels down.
+        mesh_dy: i32,
         /// Run GC2AF: microseconds [`Rig::frame`] waits on the CPU's own
         /// timer after starting a render before it first reads the 3D
         /// core's status (0: it reads the status register throughout, as
@@ -8546,6 +8552,8 @@ mod image {
     /// (the temperature guard's step; GC2BX: every mesh render wrong at
     /// 149.50 / 1). About 25 minutes, unattended.
     const GC2_GAMES: bool = option_env!("RP_GPUBENCH_GC2_GAMES").is_some()
+        || GC2_MOVED
+        || GC2_GUARD
         || GC2_LEVERS
         || GC2_REFRESH
         || GC2_MARGIN
@@ -8556,6 +8564,7 @@ mod image {
     /// wrong pixel stay on x = 255 (the tile grid or the address) or move
     /// with the picture.
     const GC2_SHIFT: bool = option_env!("RP_GPUBENCH_GC2_SHIFT").is_some()
+        || GC2_REBASE
         || GC2_SHIFT_LADDER
         || GC2_TEXAT
         || GC2_TEXSIZE
@@ -8593,7 +8602,35 @@ mod image {
     /// frames down the whole divide-1 ladder to Dell's 74.75 / 1
     /// ([`gc2::GAME_SHIFT_LADDER`]): GC2DJ drew them wrong at 143.00 / 1,
     /// the step GC2BY's unshifted frames called game-safe.
-    const GC2_SHIFT_LADDER: bool = option_env!("RP_GPUBENCH_GC2_SHIFT_LADDER").is_some();
+    const GC2_SHIFT_LADDER: bool =
+        option_env!("RP_GPUBENCH_GC2_SHIFT_LADDER").is_some() || GC2_FINE;
+    /// Run GC2DR (`RP_GPUBENCH_GC2_FINE`): GC2DJ's shifted textured frames at
+    /// every clock a locked PLL gives between 133.25 (right, GC2DK) and
+    /// 139.75 / 1 (wrong) ([`gc2::GAME_FINE`]): where the line falls.
+    const GC2_FINE: bool = option_env!("RP_GPUBENCH_GC2_FINE").is_some();
+    /// Run GC2DS (`RP_GPUBENCH_GC2_REBASE`): GC2DJ's textured frame shifted
+    /// +3 with its texture coordinates as built, rebased per quad (whole
+    /// repeats taken off so each quad starts under one), and with one and
+    /// two whole repeats added ([`gc2::rebased`]; the texture wraps, so the
+    /// picture is the same): the fault starts where u passes 1.5; does it
+    /// follow the coordinates' size.
+    const GC2_REBASE: bool = option_env!("RP_GPUBENCH_GC2_REBASE").is_some();
+    /// Run GC2DT (`RP_GPUBENCH_GC2_MOVED`): GC2BY's four game frames each
+    /// moved across and down ([`gc2::MOVED_DXY`]) at 137.80 / 1 (GC2DR's
+    /// highest step right on the shifted textured frames) and the two below:
+    /// is the line right for every kind of frame, wherever it lands.
+    const GC2_MOVED: bool = option_env!("RP_GPUBENCH_GC2_MOVED").is_some() || GC2_SOAK137;
+    /// Run GC2DV (`RP_GPUBENCH_GC2_SOAK137`): GC2DT's moved frames at 137.80
+    /// / 1 for 12 parts (4,800 renders, the chip at its hottest), then 149.50
+    /// / 2 ([`gc2::GAME_SOAK137`]): the line held with time and heat.
+    const GC2_SOAK137: bool = option_env!("RP_GPUBENCH_GC2_SOAK137").is_some();
+    /// Run GC2DU (`RP_GPUBENCH_GC2_GUARD`): GC2BY's four game frames at
+    /// 149.50 and 146.25 / 1, then 137.80 / 1 and 149.50 / 2
+    /// ([`gc2::GAME_GUARD`]), every texture in 2700G memory summed before the
+    /// first setting and after each: does a faulty render past the line
+    /// write outside its target (GC2DR and GC2DS: the control hung and
+    /// Windows Mobile's clock drew wrong after).
+    const GC2_GUARD: bool = option_env!("RP_GPUBENCH_GC2_GUARD").is_some();
     /// Run GC2DI (`RP_GPUBENCH_GC2_MARGIN`, the chase's margin): GC2BY's game
     /// frames, warm, at 145.60 / 1 and then 143.00 / 1 for 4,800 renders,
     /// [`gc2::GAME_MARGIN`].
@@ -10095,6 +10132,16 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2CA, R78: no map; the four game frames at 480 x 640, 360 x 480 and 240 x 320 shown full screen by the video plane's scaler, Dell's doubling and the native screen, timed at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_TEAR {
                 "the 16-bit kinds' targets inside the safe region (GC2BZ, R20: no map; each tile row of the four game frames watched as it lands against the scan line, in four tile orders, started at three scan lines, at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
+            } else if GC2_SOAK137 {
+                "the 16-bit kinds' targets inside the safe region (GC2DV: no map; GC2DT's moved game frames at 137.80 / 1 for 1,200 rounds, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_GUARD {
+                "the 16-bit kinds' targets inside the safe region (GC2DU: no map; GC2BY's four game frames at 149.50 and 146.25 / 1, then 137.80 / 1 and 149.50 / 2, every texture in 2700G memory summed before and after each setting; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_MOVED {
+                "the 16-bit kinds' targets inside the safe region (GC2DT: no map; GC2BY's four game frames each moved across and down, each its own reference, at 137.80 / 1 three times, 136.50 and 135.20 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_REBASE {
+                "the 16-bit kinds' targets inside the safe region (GC2DS: no map; the textured game frame shifted +3 with its texture coordinates as built, rebased per quad, plus one and plus two whole repeats, each its own reference, at 143.00, 146.25 and 149.50 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_FINE {
+                "the 16-bit kinds' targets inside the safe region (GC2DR: no map; GC2DJ's shifted textured frames (0, +8, +3, -8 px), each its own reference, at 139.75, 138.67, 137.80, 136.50, 135.20, 134.33 and 133.25 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_FLOOR {
                 "the 16-bit kinds' targets inside the safe region (GC2DP: no map; the flat mesh on black and over a layer, each as built and with its colours at the bottom of their RGB565 steps, each its own reference, at 146.25, 149.50 and 143.00 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_ORDER4 {
@@ -29095,11 +29142,32 @@ mod image {
         }
     }
 
+    /// GC2DU: a sum of every word of each of `tex`'s textures in 2700G
+    /// memory (a word unreadable counts as its address).
+    fn tex_sums(g: &mut Rig, tex: gc2::Tex) -> [u32; 4] {
+        [tex.t565, tex.t4444, tex.t8888, tex.plane].map(|t| {
+            let mut sum = 0u32;
+            for w in 0..t.bytes() / 4 {
+                let a = t.at + 4 * w;
+                let v = g.mem.load(a as usize).unwrap_or(a);
+                sum = sum.rotate_left(5) ^ v;
+            }
+            sum
+        })
+    }
+
+    /// Frame `f`'s shift down in pixels (GC2DT only).
+    fn mesh_dy(f: usize) -> i32 {
+        if GC2_MOVED { gc2::MOVED_DXY[f].1 } else { 0 }
+    }
+
     /// Frame `f`'s sideways shift in pixels (GC2DJ only).
     fn mesh_dx(f: usize) -> i32 {
-        if GC2_CENTRE {
+        if GC2_MOVED {
+            gc2::MOVED_DXY[f].0
+        } else if GC2_CENTRE {
             0
-        } else if GC2_TEXAT || GC2_TEXSIZE || GC2_ORDER4 {
+        } else if GC2_TEXAT || GC2_TEXSIZE || GC2_ORDER4 || GC2_REBASE {
             3
         } else if GC2_SHIFT {
             gc2::SHIFT_DX[f]
@@ -29110,7 +29178,21 @@ mod image {
 
     /// Frame `f`'s name in the log.
     fn frame_name(f: usize) -> &'static str {
-        if GC2_FLOOR {
+        if GC2_MOVED {
+            [
+                "the flat mesh on black moved",
+                "the flat mesh over a layer moved",
+                "the textured mesh moved",
+                "the mesh depth tested moved",
+            ][f]
+        } else if GC2_REBASE {
+            [
+                "+3, coordinates as built",
+                "+3, coordinates rebased per quad",
+                "+3, coordinates plus one repeat",
+                "+3, coordinates plus two repeats",
+            ][f]
+        } else if GC2_FLOOR {
             [
                 "the flat mesh on black as built",
                 "the flat mesh on black floored",
@@ -29291,6 +29373,8 @@ mod image {
         let mut ok = true;
         for (f, &kind) in game_frames().iter().enumerate() {
             g.mesh_dx = mesh_dx(f);
+            g.mesh_dy = mesh_dy(f);
+            g.uv_mode = if GC2_REBASE { f as u8 } else { 0 };
             g.centred = GC2_CENTRE && f % 2 == 1;
             g.tex565 = copies[f];
             gc2_set_mesh(g, &mut ondie, kind, tex);
@@ -29311,7 +29395,17 @@ mod image {
         });
         let mut clean_steps = 0u32;
         let ladder = gc2::ladder_levers();
-        let steps: &[gc2::Lever] = if GC2_ORDER4 {
+        let steps: &[gc2::Lever] = if GC2_SOAK137 {
+            &gc2::GAME_SOAK137
+        } else if GC2_GUARD {
+            &gc2::GAME_GUARD
+        } else if GC2_MOVED {
+            &gc2::GAME_MOVED
+        } else if GC2_REBASE {
+            &gc2::GAME_REBASE
+        } else if GC2_FINE {
+            &gc2::GAME_FINE
+        } else if GC2_ORDER4 {
             &gc2::GAME_ORDER
         } else if GC2_CENTRE {
             &gc2::GAME_CENTRE
@@ -29332,7 +29426,21 @@ mod image {
         } else {
             &ladder
         };
-        let tag = if GC2_FLOOR {
+        let sums0 = GC2_GUARD.then(|| tex_sums(g, tex));
+        if let Some(s0) = sums0 {
+            log!("  GC2DU the textures' sums before the ladder: {s0:08x?}");
+        }
+        let tag = if GC2_SOAK137 {
+            "GC2DV"
+        } else if GC2_GUARD {
+            "GC2DU"
+        } else if GC2_MOVED {
+            "GC2DT"
+        } else if GC2_REBASE {
+            "GC2DS"
+        } else if GC2_FINE {
+            "GC2DR"
+        } else if GC2_FLOOR {
             "GC2DP"
         } else if GC2_ORDER4 {
             "GC2DO"
@@ -29377,7 +29485,17 @@ mod image {
             soak_label(
                 g,
                 [
-                    if GC2_FLOOR {
+                    if GC2_SOAK137 {
+                        "GC2DV 137.80 SOAK"
+                    } else if GC2_GUARD {
+                        "GC2DU MEMORY GUARD"
+                    } else if GC2_MOVED {
+                        "GC2DT FRAMES MOVED"
+                    } else if GC2_REBASE {
+                        "GC2DS UV REBASED"
+                    } else if GC2_FINE {
+                        "GC2DR FINE LADDER"
+                    } else if GC2_FLOOR {
                         "GC2DP FLOORED COLOURS"
                     } else if GC2_ORDER4 {
                         "GC2DO TILE ORDERS"
@@ -29414,6 +29532,8 @@ mod image {
             for round in 0..GC2BY_ROUNDS {
                 for (f, &kind) in game_frames().iter().enumerate() {
                     g.mesh_dx = mesh_dx(f);
+                    g.mesh_dy = mesh_dy(f);
+                    g.uv_mode = if GC2_REBASE { f as u8 } else { 0 };
                     g.centred = GC2_CENTRE && f % 2 == 1;
                     g.tex565 = copies[f];
                     gc2_set_mesh(g, &mut ondie, kind, tex);
@@ -29464,6 +29584,17 @@ mod image {
             let all_right =
                 wrong.iter().all(|&w| w == 0) && done.iter().all(|&d| d == GC2BY_ROUNDS);
             clean_steps |= u32::from(all_right) << si;
+            if let Some(s0) = sums0 {
+                let now = tex_sums(g, tex);
+                log!(
+                    "  GC2DU after {name}: the textures' sums {now:08x?} ({})",
+                    if now == s0 {
+                        "all as before"
+                    } else {
+                        "CHANGED"
+                    }
+                );
+            }
             log!(
                 "  {tag} {name} (lock {lock}): wrong of {GC2BY_ROUNDS} by frame {wrong:?} ({col255:?} on x = 255 alone), drawn {done:?}, fastest by frame {best:?} us; every frame right: {all_right}; TEMP0 {:?}",
                 gc2ba_temp(&mut touch)
@@ -29493,6 +29624,8 @@ mod image {
         let mut right = 0;
         for (f, &kind) in game_frames().iter().enumerate() {
             g.mesh_dx = mesh_dx(f);
+            g.mesh_dy = mesh_dy(f);
+            g.uv_mode = if GC2_REBASE { f as u8 } else { 0 };
             g.centred = GC2_CENTRE && f % 2 == 1;
             g.tex565 = copies[f];
             gc2_set_mesh(g, &mut ondie, kind, tex);
@@ -29519,6 +29652,8 @@ mod image {
         g.mesh_dx = 0;
         g.tex565 = None;
         g.centred = false;
+        g.uv_mode = 0;
+        g.mesh_dy = 0;
         ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
         for t in copies.into_iter().flatten() {
             let _ = g.pool.free(t.at, t.bytes());
@@ -30569,13 +30704,20 @@ mod image {
         let (bg, slots) = gc2::mesh_frame(kind, tex);
         let _ = r.set_background(Some(bg));
         let dx = g.mesh_dx * rp_mbx3d_render::SUB;
+        let dy = g.mesh_dy * rp_mbx3d_render::SUB;
         for (n, mut d) in slots.into_iter().enumerate() {
-            if dx != 0
+            if (dx != 0 || dy != 0)
                 && let Some(d) = d.as_mut()
             {
                 for c in &mut d.corners {
                     c.x += dx;
+                    c.y += dy;
                 }
+            }
+            if g.uv_mode != 0
+                && let Some(d) = d.as_mut()
+            {
+                *d = gc2::rebased(*d, g.uv_mode);
             }
             if g.centred
                 && let Some(d) = d.as_mut()
@@ -35457,6 +35599,8 @@ mod image {
             mesh_dx: 0,
             tex565: None,
             centred: false,
+            uv_mode: 0,
+            mesh_dy: 0,
             quiet_us: 0,
             at_override: u32::MAX,
             tear: None,
