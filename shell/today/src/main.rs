@@ -152,6 +152,31 @@ mod image {
     /// on to measure what those lines cost.
     const REPLAY: bool = option_env!("RP_TODAY_REPLAY").is_some();
     const REPLAY_RECORD: bool = option_env!("RP_TODAY_REPLAY_RECORD").is_some();
+    /// A build switch's decimal digits (anything else ends the number).
+    const fn parse_u64(v: &str) -> u64 {
+        let b = v.as_bytes();
+        let mut n = 0u64;
+        let mut i = 0;
+        while i < b.len() && b[i].is_ascii_digit() {
+            n = n * 10 + (b[i] - b'0') as u64;
+            i += 1;
+        }
+        n
+    }
+    /// R188's measurement: the Weather app not composed ahead on Today
+    /// (`RP_TODAY_NO_APP_AHEAD`; the bisect named 4fa4dbad, the app
+    /// composed ahead for Reveal, the first slow commit). Reveal then opens
+    /// without its picture: a measurement only.
+    const NO_APP_AHEAD: bool = option_env!("RP_TODAY_NO_APP_AHEAD").is_some();
+    /// R188's measurement (the owner's list of 2026-11-09 item 4): the
+    /// touch replay held until this many ms after the Today screen first
+    /// shows (`RP_TODAY_REPLAY_HOLD_MS`; 0, the ratchet's, starts at once),
+    /// so the icon pack's reading and the pictures' making (2.8 s and 1.8 s
+    /// on the X51v, run today-0081) are done before the first touch.
+    const REPLAY_HOLD_MS: u64 = match option_env!("RP_TODAY_REPLAY_HOLD_MS") {
+        Some(v) => parse_u64(v),
+        None => 0,
+    };
     /// R185's look check (`RP_TODAY_LOOK_CHECK`, sheet
     /// `docs/research/sheets/r185-look-check-unattended.md`): while the
     /// Weather app is up and nothing is in flight, the look the panel
@@ -2268,6 +2293,7 @@ mod image {
                 // A touch's samples one a pass, as the pen gives them; a
                 // pause before the next touch, the pen up.
                 let step = match replay.peek() {
+                    Some(_) if now_ms < REPLAY_HOLD_MS => None,
                     Some(st) if st.wait_ms > 0 && !replay_touching => {
                         let until = *replay_until.get_or_insert(now_ms + u64::from(st.wait_ms));
                         if now_ms >= until {
@@ -3959,6 +3985,7 @@ mod image {
                 // key the draw list's: the header's clock makes it stale),
                 // so a tap opens Reveal's window at the next refresh.
                 if app_check
+                    && !NO_APP_AHEAD
                     && commit.is_none()
                     && shell.screen() == rp_shell::Screen::Today
                     && !shell.animating()
