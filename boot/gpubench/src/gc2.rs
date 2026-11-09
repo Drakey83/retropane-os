@@ -3053,7 +3053,12 @@ pub const GAME_GUARD2: [Lever; 6] = [
 /// each frame's sums of the renderer's own memory), 149.50 / 1 five times
 /// over (2,000 renders judged against them), 149.50 / 2 again.
 pub const GAME_GUARD3: [Lever; 7] = [
-    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1 (the sums)"),
+    lever(
+        (23, 2, 0),
+        2,
+        (false, false),
+        "149.50 / 2 part 1 (the sums)",
+    ),
     lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 1"),
     lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 2"),
     lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 3"),
