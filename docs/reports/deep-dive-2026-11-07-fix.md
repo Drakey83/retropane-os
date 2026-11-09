@@ -1,7 +1,9 @@
 # Deep dive fix, 2026-11-07: the owner's rulings, fixes a-f, what proves them
 
 Branch `fix/deep-dive-2026-11-07`, from main at 3b8e02f1 (the 2026-11-06
-branch, merged). **Not pushed** (the owner's list: do not push). Each commit
+branch, merged). **Pushed since** (corrected 2026-11-09): GitHub main holds
+the whole branch (its last commit ad4c7e67 is in main at 070aa9bf); the
+list itself said not to push, and the owner's later go pushed it. Each commit
 named below; CI (`cargo xtask ci`) run in a separate checkout as noted. Gate:
 30 of 30 architectural lines for phases 2, 4 and 5 (`cargo xtask gate`).
 

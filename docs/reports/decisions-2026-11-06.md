@@ -17,9 +17,11 @@ on `fix/deep-dive-2026-11-07` ([its report](deep-dive-2026-11-07-fix.md)).
   built."** He also said not to merge the branch to main until the P8
   device check has run; GitHub main already held 3b8e02f1 from his "push
   to live" earlier the same day, so main carries the rule ahead of its
-  device check (nothing rewritten; the check stays owed).
+  device check (nothing rewritten). The check then passed on the X51v
+  2026-11-07 (run scene-0001, P8 judged by DSIG; corrected 2026-11-09:
+  this line said it stayed owed).
 - [x] **Run the device check** (**passed on the X51v 2026-11-07**, run scene-0001: [report](runs/2026-11-07-scene-p8.md)) ([run sheet](../research/sheets/divide1-cures-by-clock.md)):
-  `rp-scene` divide-1 variant, P8 judged by DSIG. Owed; not made.
+  `rp-scene` divide-1 variant, P8 judged by DSIG. Made and passed (scene-0001).
 - [ ] **Which divide-1 rungs ship** stays amendment D's vote (Q1-Q3),
   unchanged by E.
 
