@@ -127,6 +127,13 @@ on the engine, not the CPU, and only where something changed.
      atlas (coverage x the colour's alpha, the colour baked in: 256 levels,
      the reference's exact maths), then blended per glyph. Fallback when the
      atlas cache is full: Dell's 4 bpp coverage path (16 levels).
+     *(Refined 2026-11-09, R172: each glyph is uploaded the first time its
+     pair draws it, into 2 KiB chunks of the glyph memory the pair holds,
+     not the whole font at once; 32 pairs kept. Same format and maths; the
+     glyph memory of rule 4 unchanged. On the look check's route the pairs
+     took 1,297 KiB as whole fonts and take 279 KiB as the glyphs drawn, so
+     the return to Today uploads nothing, where it uploaded 12 + 3 atlases
+     on the X51v, today-0071.)*
    Nothing in today's shell needs the CPU to draw pixels; the trait's
    "which commands did you take" (ADR-0022) stays for later commands.
 4. **2700G memory layout** (a table in docs/memory-budget.md): two

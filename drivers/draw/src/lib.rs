@@ -575,25 +575,10 @@ impl Frame {
             .unwrap_or(&[])
     }
 
-    /// Marks `r` as changed; past [`MAX_DIRTY`] rectangles it is merged
-    /// into the one it grows least.
+    /// Marks `r` as changed ([`add_damage`]: never drawn twice where it
+    /// covers or overlaps one already marked).
     pub fn damage(&mut self, r: Rect) {
-        if r.is_empty() {
-            return;
-        }
-        if self.dirty[..self.dn].iter().any(|d| d.intersect(&r) == r) {
-            return;
-        }
-        if self.dn < MAX_DIRTY {
-            self.dirty[self.dn] = r;
-            self.dn += 1;
-            return;
-        }
-        let area = |r: &Rect| u32::from(r.w) * u32::from(r.h);
-        let best = (0..self.dn)
-            .min_by_key(|&i| area(&self.dirty[i].union(&r)) - area(&self.dirty[i]))
-            .unwrap_or(0);
-        self.dirty[best] = self.dirty[best].union(&r);
+        add_damage(&mut self.dirty, &mut self.dn, r);
     }
 
     /// The commands, in drawing order (`Clip`s included).
@@ -667,6 +652,47 @@ pub trait Renderer {
 
 pub mod pics;
 pub mod shrink;
+
+/// Adds `r` to the changed rectangles `list[..*n]` so no pixel is listed
+/// twice where it can be helped: `r` inside one already adds nothing; any
+/// already listed inside `r` goes; `r` and one it overlaps merge when their
+/// union is no bigger than the two (drawing the union costs no more pixels
+/// and one rectangle's work less); past `list`'s length it is merged into
+/// the one it grows least. (R172, 2026-11-09: a look switch listed a row,
+/// a panel, then the whole screen, kept all three, and the 2D engine drew
+/// 1.84 screens of glass and dither, ~93 ms on the X51v.)
+pub fn add_damage(list: &mut [Rect], n: &mut usize, r: Rect) {
+    let area = |r: &Rect| u32::from(r.w) * u32::from(r.h);
+    let mut r = r;
+    if r.is_empty() || list[..*n].iter().any(|d| d.intersect(&r) == r) {
+        return;
+    }
+    // Every one inside `r`, or worth merging with it, folds into it (and
+    // the grown `r` is checked again against the rest).
+    let mut k = 0;
+    while k < *n {
+        let d = list[k];
+        let u = d.union(&r);
+        if d.intersect(&r) == d || (!d.intersect(&r).is_empty() && area(&u) <= area(&d) + area(&r))
+        {
+            r = u;
+            *n -= 1;
+            list[k] = list[*n];
+            k = 0;
+        } else {
+            k += 1;
+        }
+    }
+    if *n < list.len() {
+        list[*n] = r;
+        *n += 1;
+        return;
+    }
+    let best = (0..*n)
+        .min_by_key(|&i| area(&list[i].union(&r)) - area(&list[i]))
+        .unwrap_or(0);
+    list[best] = list[best].union(&r);
+}
 
 #[cfg(test)]
 mod tests;

@@ -92,9 +92,23 @@ const IMAGES: usize = 32;
 // 16: Today with the living sky and its card's soft shadows draws text in
 // 10 font-and-colour pairs (ADR-0023 rule 3); with 8 slots every frame
 // reset the cache and uploaded the fonts again, a stutter (the run of
-// 2026-11-01 logged 7 atlases uploaded in its slowest frames). The 512 KiB
-// they share (rule 4) is unchanged; a slot is ~330 bytes of RAM.
-const ATLASES: usize = 16;
+// 2026-11-01 logged 7 atlases uploaded in its slowest frames). 32 since
+// R172's return leg (2026-11-09): Today with the sky and Weather in both
+// looks draw 25 pairs between them, so 16 slots evicted Today's on the way
+// back however small the glyphs. The 512 KiB they share (rule 4) is
+// unchanged; a slot is ~370 bytes of RAM.
+const ATLASES: usize = 32;
+/// The glyph memory is handed out in chunks of this many bytes: an atlas
+/// takes chunks as its glyphs are first drawn (small glyphs packed into its
+/// open chunk, a big one in a run of whole chunks), so a pair holds only the
+/// glyphs it has drawn (R172: whole fonts per colour took 443 KiB for
+/// Today's ten pairs and 854 KiB for Weather's 23, of 512; the glyphs they
+/// draw, 279 KiB for all 25).
+const GCHUNK: usize = 2048;
+/// Chunks the glyph memory may hold (512 KiB).
+const GCHUNKS: usize = 256;
+/// A set of chunks, a bit each.
+type Chunks = [u64; GCHUNKS / 64];
 /// Glyphs a font may have.
 const GLYPHS: usize = 160;
 /// Areas kept in the cache at once.
@@ -196,12 +210,46 @@ const CHUNK: usize = 32;
 struct Atlas {
     font: usize,
     color: Argb,
-    /// Where it starts in the glyph memory and its bytes (whole 16s).
-    off: usize,
-    bytes: usize,
+    /// The glyph memory's chunks it holds.
+    chunks: Chunks,
+    /// The chunk its next small glyph goes into, and the bytes already
+    /// used there (`fill` [`GCHUNK`]: none open).
+    open: u16,
+    fill: u16,
     /// The frame that last drew with it (eviction takes the oldest).
     used: u32,
     at: [u16; GLYPHS],
+}
+
+impl Atlas {
+    /// A pair with nothing uploaded yet.
+    const fn new(font: usize, color: Argb, used: u32) -> Self {
+        Self {
+            font,
+            color,
+            chunks: [0; GCHUNKS / 64],
+            open: 0,
+            fill: GCHUNK as u16,
+            used,
+            at: [0; GLYPHS],
+        }
+    }
+}
+
+/// The first run of `k` chunks below `n` that `taken` leaves free.
+fn free_run(taken: &Chunks, n: usize, k: usize) -> Option<usize> {
+    let mut run = 0;
+    for i in 0..n {
+        if taken[i / 64] >> (i % 64) & 1 == 0 {
+            run += 1;
+            if run == k {
+                return Some(i + 1 - k);
+            }
+        } else {
+            run = 0;
+        }
+    }
+    None
 }
 
 /// What a row of the ring holds, exactly: `w` columns of `gradient_at(a,
@@ -243,6 +291,8 @@ pub struct FrameStats {
     pub atlases: u32,
     /// Atlases evicted to make room (the oldest drawn with first).
     pub atlases_evicted: u32,
+    /// Glyphs uploaded (each pair's glyphs as they are first drawn).
+    pub glyphs: u32,
     /// Pictures uploaded to the image cache.
     pub images: u32,
     /// Times the frame waited for the engine mid-way (row buffers or a
@@ -1175,16 +1225,13 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         Some(at)
     }
 
-    /// The atlas for (`font`, `color`), uploading it if needed.
+    /// The atlas for (`font`, `color`): its slot, made (empty) if needed.
     ///
-    /// Each atlas holds its own span of the glyph memory. A new one goes in
-    /// the first gap that fits; when none does, the atlas drawn with
-    /// longest ago (never one this frame draws with) is evicted, one at a
-    /// time, until one does. A look switch's new colours then push out the
-    /// old look's atlases only, never the ones both looks draw with (R172:
-    /// flushing the whole memory when full uploaded every atlas still in
-    /// use again, 10 in one frame). All are dropped only if this frame's
-    /// own atlases fill the memory.
+    /// A pair's glyphs are uploaded as they are first drawn
+    /// ([`Self::glyph_at`]). With every slot taken, the pair drawn with
+    /// longest ago (never one this frame draws with) gives its slot and its
+    /// chunks up; a look switch's new colours push out the old look's pairs
+    /// only, never the ones both looks draw with (R172).
     fn atlas(&mut self, font: &'static rp_draw::Font, color: Argb) -> Option<usize> {
         let key = font as *const rp_draw::Font as usize;
         let now = self.frame_no;
@@ -1198,70 +1245,120 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             }
             return Some(k);
         }
-        let bytes: usize = font
-            .glyphs
-            .iter()
-            .map(|g| (usize::from(g.w) * usize::from(g.h) * 4).next_multiple_of(16))
-            .sum();
-        if bytes > self.l.glyphs.1 || font.glyphs.len() > GLYPHS {
+        if font.glyphs.len() > GLYPHS {
             return None;
         }
-        let (slot, off) = loop {
-            let gap = self.atlas_gap(bytes);
-            match (self.atlases.iter().position(Option::is_none), gap) {
-                (Some(k), Some(off)) => break (k, off),
-                _ => {
-                    // The oldest not drawn with this frame (the engine is
-                    // done with the frames before: `draw` waits for them).
-                    let oldest = self
-                        .atlases
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(k, a)| a.filter(|a| a.used != now).map(|a| (a.used, k)))
-                        .min();
-                    if let Some((_, k)) = oldest {
-                        self.atlases[k] = None;
-                        self.last.atlases_evicted += 1;
-                    } else {
-                        self.wait();
-                        self.atlases = [None; ATLASES];
-                        break (0, 0);
-                    }
-                }
+        let slot = match self.atlases.iter().position(Option::is_none) {
+            Some(k) => k,
+            None => {
+                let k = self.oldest_atlas(None)?;
+                self.atlases[k] = None;
+                self.last.atlases_evicted += 1;
+                k
             }
         };
-        let (rgb, a) = (color & 0x00FF_FFFF, color >> 24);
         self.last.atlases += 1;
-        // Built in place: no copy of the table on the stack.
-        self.atlases[slot] = Some(Atlas {
-            font: key,
-            color,
-            off,
-            bytes,
-            used: now,
-            at: [0; GLYPHS],
-        });
-        let mut buf = [0u32; CHUNK];
-        let mut top = off;
-        for (k, g) in font.glyphs.iter().enumerate() {
-            let (w, h) = (usize::from(g.w), usize::from(g.h));
-            if w == 0 || h == 0 || g.cover.len() < w * h {
-                continue;
-            }
-            let at = self.l.glyphs.0 + top;
-            for (i0, cover) in g.cover[..w * h].chunks(CHUNK).enumerate() {
-                for (p, &c) in buf.iter_mut().zip(cover) {
-                    *p = div255(a * u32::from(c)) << 24 | rgb;
+        self.atlases[slot] = Some(Atlas::new(key, color, now));
+        Some(slot)
+    }
+
+    /// The slot of the pair drawn with longest ago that this frame doesn't
+    /// draw with (the engine is done with the frames before: `draw` waits
+    /// for them), never `keep`.
+    fn oldest_atlas(&self, keep: Option<usize>) -> Option<usize> {
+        let now = self.frame_no;
+        self.atlases
+            .iter()
+            .enumerate()
+            .filter(|&(k, _)| Some(k) != keep)
+            .filter_map(|(k, a)| a.filter(|a| a.used != now).map(|a| (a.used, k)))
+            .min()
+            .map(|(_, k)| k)
+    }
+
+    /// Glyph `idx` of `font` in slot `slot`'s colour: its address in 2700G
+    /// memory, uploaded first if this pair hasn't drawn it before. A small
+    /// glyph goes into the pair's open chunk if it fits, else into a free
+    /// chunk that becomes the open one; a big one into a run of free
+    /// chunks. With none free, the pairs drawn with longest ago give theirs
+    /// up one at a time; if this frame's own glyphs fill the memory, the
+    /// engine is let finish and every other pair is dropped.
+    fn glyph_at(&mut self, slot: usize, font: &'static rp_draw::Font, idx: usize) -> Option<usize> {
+        let g = font.glyphs.get(idx)?;
+        let a = self.atlases[slot]?;
+        if a.at[idx] != 0 {
+            return Some(self.l.glyphs.0 + (usize::from(a.at[idx]) - 1) * 16);
+        }
+        let (w, h) = (usize::from(g.w), usize::from(g.h));
+        if w == 0 || h == 0 || g.cover.len() < w * h {
+            return None;
+        }
+        let bytes = (w * h * 4).next_multiple_of(16);
+        let n = (self.l.glyphs.1 / GCHUNK).min(GCHUNKS);
+        let k = bytes.div_ceil(GCHUNK);
+        if k > n {
+            return None;
+        }
+        let off = if bytes <= GCHUNK - usize::from(a.fill) {
+            usize::from(a.open) * GCHUNK + usize::from(a.fill)
+        } else {
+            let first = loop {
+                let mut taken = [0u64; GCHUNKS / 64];
+                for b in self.atlases.iter().flatten() {
+                    for (t, c) in taken.iter_mut().zip(&b.chunks) {
+                        *t |= c;
+                    }
                 }
-                self.mem.store(at + 4 * CHUNK * i0, &buf[..cover.len()]);
+                if let Some(i) = free_run(&taken, n, k) {
+                    break i;
+                }
+                if let Some(o) = self.oldest_atlas(Some(slot)) {
+                    self.atlases[o] = None;
+                    self.last.atlases_evicted += 1;
+                } else {
+                    // This frame's own glyphs fill the memory: let the
+                    // engine finish what's queued, then start again.
+                    self.wait();
+                    for (o, b) in self.atlases.iter_mut().enumerate() {
+                        if o == slot {
+                            if let Some(b) = b.as_mut() {
+                                *b = Atlas::new(b.font, b.color, b.used);
+                            }
+                        } else if b.is_some() {
+                            *b = None;
+                            self.last.atlases_evicted += 1;
+                        }
+                    }
+                }
+            };
+            let b = self.atlases[slot].as_mut()?;
+            for c in first..first + k {
+                b.chunks[c / 64] |= 1 << (c % 64);
             }
-            if let Some(atlas) = self.atlases[slot].as_mut() {
-                atlas.at[k] = (top / 16 + 1) as u16;
+            if k == 1 {
+                b.open = first as u16;
+                b.fill = 0;
             }
-            top += (w * h * 4).next_multiple_of(16);
+            first * GCHUNK
+        };
+        let b = self.atlases[slot].as_mut()?;
+        if k == 1 && off / GCHUNK == usize::from(b.open) {
+            b.fill = (off % GCHUNK + bytes) as u16;
+        }
+        b.at[idx] = (off / 16 + 1) as u16;
+        let color = b.color;
+        let (rgb, alpha) = (color & 0x00FF_FFFF, color >> 24);
+        let at = self.l.glyphs.0 + off;
+        let mut buf = [0u32; CHUNK];
+        for (i0, cover) in g.cover[..w * h].chunks(CHUNK).enumerate() {
+            for (p, &c) in buf.iter_mut().zip(cover) {
+                *p = div255(alpha * u32::from(c)) << 24 | rgb;
+            }
+            self.mem.store(at + 4 * CHUNK * i0, &buf[..cover.len()]);
         }
         self.mem.sync();
-        Some(slot)
+        self.last.glyphs += 1;
+        Some(at)
     }
 
     /// Stamps every atlas `frame`'s text draws with as this frame's before
@@ -1280,25 +1377,6 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 }
             }
         }
-    }
-
-    /// The lowest offset in the glyph memory with `bytes` free after it,
-    /// between the atlases kept: a span can only start at 0 or where one
-    /// ends, so each such start is tried against every atlas (16 at most;
-    /// no sort, whose code cost the images 5 KB).
-    fn atlas_gap(&self, bytes: usize) -> Option<usize> {
-        let fits = |at: usize| {
-            at + bytes <= self.l.glyphs.1
-                && self
-                    .atlases
-                    .iter()
-                    .flatten()
-                    .all(|a| at + bytes <= a.off || at >= a.off + a.bytes)
-        };
-        core::iter::once(0)
-            .chain(self.atlases.iter().flatten().map(|a| a.off + a.bytes))
-            .filter(|&at| fits(at))
-            .min()
     }
 
     /// What decides how `clip` looks: the background, the commands that
@@ -1562,13 +1640,12 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                     let gy = i32::from(baseline) - i32::from(g.top);
                     pen += i32::from(g.advance);
                     let idx = usize::from(ch - font.first);
-                    let unit = self.atlases[k].as_ref().map_or(0, |a| a.at[idx]);
-                    if unit == 0 {
-                        continue;
-                    }
-                    let at = self.l.glyphs.0 + (usize::from(unit) - 1) * 16;
                     let (w, h) = (u16::from(g.w), u16::from(g.h));
+                    // Uploaded only if some of it shows.
                     if let Some((to, sx, sy)) = place(w, h, gx, gy, clip) {
+                        let Some(at) = self.glyph_at(k, font, idx) else {
+                            continue;
+                        };
                         self.blend_from(dst, to, (at, usize::from(w) * 4), sx, sy);
                         let a = u32::from(to.w) * u32::from(to.h);
                         self.last.px_text += a;
@@ -1768,17 +1845,10 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                 forward[0] = SCREEN;
                 nf = 1;
             }
+            // The frame's own and the band switch's, never a pixel twice
+            // where it can be helped (rp_draw::add_damage, R172).
             for r in frame.dirty().iter().chain(wall_box.iter()) {
-                let r = r.intersect(&SCREEN);
-                if r.is_empty() || rects[..n].iter().any(|d| d.intersect(&r) == r) {
-                    continue;
-                }
-                if n < MAX_DIRTY {
-                    rects[n] = r;
-                    n += 1;
-                } else {
-                    rects[n - 1] = rects[n - 1].union(&r);
-                }
+                rp_draw::add_damage(&mut rects, &mut n, r.intersect(&SCREEN));
             }
             // (Nothing more to bring forward when it's all coming.)
             let prev = if nf == 0 { self.prev_n } else { 0 };

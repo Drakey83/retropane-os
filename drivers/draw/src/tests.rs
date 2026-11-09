@@ -97,6 +97,70 @@ fn dirty_rectangles_merge_when_full() {
     assert_eq!(all, Rect::new(0, 0, 362, 10));
 }
 
+/// R172: a rectangle that covers ones already listed replaces them, and
+/// overlapping ones merge when the union is no bigger than the two: the
+/// look switch's row, panel and whole screen are one whole screen, not
+/// 1.84 screens drawn.
+#[test]
+fn dirty_rectangles_never_list_a_pixel_twice_where_avoidable() {
+    let area = |rs: &[Rect]| {
+        rs.iter()
+            .map(|r| u32::from(r.w) * u32::from(r.h))
+            .sum::<u32>()
+    };
+    let mut f = Frame::new();
+    f.damage(Rect::new(16, 383, 448, 36));
+    f.damage(Rect::new(0, 98, 480, 502));
+    f.damage(Rect::new(0, 0, 480, 640));
+    assert_eq!(f.dirty(), &[Rect::new(0, 0, 480, 640)]);
+    // Two that overlap mostly: one union.
+    let mut f = Frame::new();
+    f.damage(Rect::new(0, 0, 100, 100));
+    f.damage(Rect::new(10, 0, 100, 100));
+    assert_eq!(f.dirty(), &[Rect::new(0, 0, 110, 100)]);
+    // Two that barely touch at a corner: kept apart (the union would draw
+    // far more).
+    let mut f = Frame::new();
+    f.damage(Rect::new(0, 0, 100, 100));
+    f.damage(Rect::new(99, 99, 100, 100));
+    assert_eq!(f.dirty().len(), 2);
+    // A merge that grows into a third: that one folds in too.
+    let mut f = Frame::new();
+    f.damage(Rect::new(0, 0, 50, 100));
+    f.damage(Rect::new(100, 0, 50, 100));
+    f.damage(Rect::new(40, 0, 70, 100));
+    assert_eq!(f.dirty(), &[Rect::new(0, 0, 150, 100)]);
+    // Every pixel damaged stays covered, and no more pixels listed than
+    // the rectangles given, in every order.
+    let given = [
+        Rect::new(16, 383, 448, 36),
+        Rect::new(0, 98, 480, 502),
+        Rect::new(0, 0, 480, 640),
+        Rect::new(240, 556, 120, 44),
+    ];
+    for start in 0..given.len() {
+        let mut f = Frame::new();
+        for k in 0..given.len() {
+            f.damage(given[(start + k) % given.len()]);
+        }
+        for g in &given {
+            assert!(
+                f.dirty().iter().any(|d| d.intersect(g) == *g) || {
+                    // Covered by several together: check pixel by pixel.
+                    (g.y..g.y + g.h).all(|y| {
+                        (g.x..g.x + g.w).all(|x| {
+                            f.dirty().iter().any(|d| {
+                                d.intersect(&Rect::new(x, y, 1, 1)) == Rect::new(x, y, 1, 1)
+                            })
+                        })
+                    })
+                }
+            );
+        }
+        assert!(area(f.dirty()) <= area(&given));
+    }
+}
+
 /// A glyph lying wholly left of its pen (the living sky's clouds) is
 /// within its text's bounds: bounded by the line box alone, a cloud whose
 /// pen passed the sky's right edge was skipped while still on screen (the

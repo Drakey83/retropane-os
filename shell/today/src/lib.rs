@@ -2078,4 +2078,103 @@ mod tests {
             }
         }
     }
+
+    /// R172's return leg and look switch on the X51v (run today-0071): the
+    /// look check's route (Today with the living sky, Weather, three look
+    /// switches with every page between, back to Today) through the 2D
+    /// renderer on the engine model. Whole fonts per colour (443 KiB for
+    /// Today's ten pairs, 854 KiB for Weather's 23, of 512) evicted Today's
+    /// on the way and the return uploaded 11 atlases (the device 12 + 3);
+    /// with each pair holding only the glyphs it draws, once both looks
+    /// have been seen nothing is uploaded again. And the look switch's
+    /// damage (a row, a panel, the whole screen) is drawn as one screen,
+    /// not 1.84 (12,217 command words, the device 12,637-12,672: ~93 ms).
+    #[test]
+    fn the_look_route_uploads_nothing_once_seen_and_draws_a_screen_once() {
+        use rp_draw::Renderer;
+        use rp_mbx_render::model::{self, Bus, Mem};
+        use rp_mbx_render::{FrameStats, Layout, Mbx2dRenderer};
+        use rp_shell::{Input, Screen, Shell, Target};
+        let mem = model::memory();
+        let mut r = Mbx2dRenderer::new(
+            Bus::new(mem.clone()),
+            Mem(mem.clone()),
+            Layout::X51V,
+            || 0,
+            1,
+        );
+        let mut shell = Shell::new(shell_fonts(), rp_shell::Icons::NONE, true);
+        shell.set_time(rp_shell::Time {
+            hour: 16,
+            minute: 0,
+            weekday: 0,
+            day: 8,
+            month: 11,
+        });
+        let mut wx = *shell.forecast();
+        wx.now.sky.wmo = 61;
+        wx.now.sky.cover = 80;
+        shell.set_forecast(wx);
+        shell.preview_sky(true);
+        let mut f = rp_draw::Frame::new();
+        // Every frame of a step, its stats.
+        let mut step = |shell: &mut Shell, r: &mut Mbx2dRenderer<_, _>| -> Vec<FrameStats> {
+            (0..20)
+                .map(|_| {
+                    f.clear();
+                    shell.frame(&mut f);
+                    let _ = r.draw(&f);
+                    r.settle();
+                    r.last
+                })
+                .collect()
+        };
+        let tap = |shell: &mut Shell, t: Target| {
+            let q = shell.rect_of(t);
+            let (x, y) = (q.x + q.w / 2, q.y + q.h / 2);
+            shell.input(Input::PenDown { x, y });
+            shell.input(Input::PenUp { x, y });
+        };
+        let uploads = |v: &[FrameStats]| v.iter().map(|s| s.atlases + s.glyphs).sum::<u32>();
+        let today = step(&mut shell, &mut r);
+        assert!(uploads(&today) > 0, "Today's first frame uploads its text");
+        tap(&mut shell, Target::Hero);
+        step(&mut shell, &mut r);
+        let mut last_round = 0;
+        for round in 0..3 {
+            let mut seen = 0;
+            tap(&mut shell, Target::SoftRight);
+            seen += uploads(&step(&mut shell, &mut r));
+            let row = shell.appearance_row().expect("an Appearance row");
+            tap(&mut shell, row);
+            let switch = step(&mut shell, &mut r);
+            seen += uploads(&switch);
+            // The switch's frame draws the screen once: a screen's pixels
+            // dithered, no more.
+            let worst = switch.iter().map(|s| s.px_dither).max().unwrap_or(0);
+            assert!(
+                worst <= u32::from(rp_shell::W) * u32::from(rp_shell::H),
+                "round {round}: the look switch dithered {worst} px"
+            );
+            tap(&mut shell, Target::SoftLeft);
+            seen += uploads(&step(&mut shell, &mut r));
+            for tab in [1u8, 2, 3, 0] {
+                tap(&mut shell, Target::Tab(tab));
+                seen += uploads(&step(&mut shell, &mut r));
+            }
+            last_round = seen;
+        }
+        // Both looks seen twice over: the third round uploads nothing.
+        assert_eq!(last_round, 0, "the third round uploaded text again");
+        tap(&mut shell, Target::Back);
+        assert_eq!(shell.screen(), Screen::Today);
+        let back = step(&mut shell, &mut r);
+        assert_eq!(
+            back.iter()
+                .map(|s| (s.atlases, s.glyphs, s.atlases_evicted))
+                .fold((0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2)),
+            (0, 0, 0),
+            "the return to Today uploaded or evicted text"
+        );
+    }
 }

@@ -2217,8 +2217,8 @@ mod image {
                 if total > SLOW_ANSWER_US && (!REPLAY || LOOK_CHECK) {
                     let _ = writeln!(
                         RunLog,
-                        "slow answer at {} ms: {total} us; its frame's CPU {last_frame_us} us, wait {} us, engine {} us; {} glyph atlases and {} pictures uploaded",
-                        now_ms, s.wait_us, s.engine_us, s.atlases, s.images
+                        "slow answer at {} ms: {total} us; its frame's CPU {last_frame_us} us, wait {} us, engine {} us; {} glyph atlases begun, {} glyphs and {} pictures uploaded",
+                        now_ms, s.wait_us, s.engine_us, s.atlases, s.glyphs, s.images
                     );
                 }
                 engine_worst = engine_worst.max(s.engine_us);
@@ -4265,7 +4265,7 @@ mod image {
                 {
                     let _ = writeln!(
                         RunLog,
-                        "slow frame {} at {} ms{}: {us} us (queueing {} us, wait {} us, background {} ({} px), rows written {} reused {}, {} rects, {} command words, {} commands drawn; {} glyph atlases and {} pictures uploaded)",
+                        "slow frame {} at {} ms{}: {us} us (queueing {} us, wait {} us, background {} ({} px), rows written {} reused {}, {} rects, {} px dithered, {} command words, {} commands drawn; {} glyph atlases begun ({} evicted), {} glyphs and {} pictures uploaded)",
                         frames + 1,
                         now_ms,
                         if moving { " (moving)" } else { "" },
@@ -4276,9 +4276,12 @@ mod image {
                         s.rows_written,
                         s.rows_reused,
                         s.rects,
+                        s.px_dither,
                         s.words,
                         frame.cmds().count(),
                         s.atlases,
+                        s.atlases_evicted,
+                        s.glyphs,
                         s.images
                     );
                 }

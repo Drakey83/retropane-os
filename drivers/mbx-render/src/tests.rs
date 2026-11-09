@@ -1104,12 +1104,20 @@ fn big_font(n: usize, seed: u8) -> &'static Font {
     }))
 }
 
-/// Each font in its colour, a line of six glyphs a font, the whole screen
+/// Each font in its colour, every one of its glyphs drawn (in lines of
+/// 13: the glyph memory takes only the glyphs drawn), the whole screen
 /// damaged.
-fn text_frame(fonts: &[(&'static Font, u32)]) -> Frame {
+fn all_glyphs_frame(fonts: &[(&'static Font, u32)]) -> Frame {
     let mut f = Frame::new();
-    for (i, &(font, colour)) in fonts.iter().enumerate() {
-        f.text(8, 40 + 40 * i as u16, font, colour, b"ABCDEF");
+    let mut line = 0u16;
+    for &(font, colour) in fonts {
+        let chars: Vec<u8> = (0..font.glyphs.len())
+            .map(|k| font.first + k as u8)
+            .collect();
+        for part in chars.chunks(13) {
+            f.text(8, 40 + 38 * line, font, colour, part);
+            line += 1;
+        }
     }
     f.damage(Rect::new(0, 0, W, H));
     f
@@ -1141,13 +1149,13 @@ fn a_look_switch_uploads_only_its_new_atlases() {
         }
         v
     };
-    let a = text_frame(&look(false));
+    let a = all_glyphs_frame(&look(false));
     r.draw(&a);
     assert!(r.poll());
     assert_eq!(r.last.atlases, 5, "the first look uploads its five");
     same(&shown(&mut r, &mem), &cpu.draw(&a), 2).unwrap();
     // The switch: three pairs kept, two new, no room for them.
-    let b = text_frame(&look(true));
+    let b = all_glyphs_frame(&look(true));
     r.draw(&b);
     assert!(r.poll());
     assert_eq!(r.last.atlases, 2, "only the two new pairs are uploaded");
