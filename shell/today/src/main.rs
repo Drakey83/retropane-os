@@ -1914,6 +1914,14 @@ mod image {
         // Movements not given a line of their own (smooth, or a tap's two
         // frames).
         let mut movements_quiet = 0u32;
+        // Slow moving frames left out of the log as like the last one
+        // logged (the same screen, nothing uploaded, words within 64, time
+        // within a tenth): the living sky's steady frames after a return to
+        // Today filled the 64 KiB log and dropped the look check's verdict
+        // (run today-0110, 2026-11-09). Counted, and the worst kept.
+        let mut slow_alike = 0u32;
+        let mut slow_alike_worst = 0u32;
+        let mut slow_last: Option<(rp_shell::Screen, u32, u32)> = None;
         let mut batch = Batch::default();
         let mut screen_logged = (rp_shell::Screen::Today, u8::MAX, u8::MAX);
         // The opening's trace: refreshes recorded, the last refresh's
@@ -2205,6 +2213,20 @@ mod image {
                     look_seen[usize::from(want)][usize::from(tab.min(3))] += 1;
                 } else {
                     look_unknown += 1;
+                    // Why it couldn't judge (R187: 1,688 unknown and the dark
+                    // Hourly page never judged at 4 PM, today-0071, with no
+                    // pixel logged): the first few, each point's brightness
+                    // (0 where not read), the chrome's and the page's.
+                    if look_unknown <= 8 {
+                        let l = |v: &Option<u32>| v.map_or(0, rp_today::look::luma);
+                        let (cl, pl) = (cpx.map(|v| l(&v)), ppx.map(|v| l(&v)));
+                        let _ = writeln!(
+                            RunLog,
+                            "LOOK UNKNOWN at {now_ms} ms: page {tab}, the look is {}; the chrome says {chrome:?} {cl:?}, the page {on_page:?} {:?}; on the layer {on_layer}",
+                            if want { "light" } else { "dark" },
+                            &pl[..page.len()],
+                        );
+                    }
                 }
                 if look_last != Some(want) {
                     look_last = Some(want);
@@ -2602,6 +2624,12 @@ mod image {
                     RunLog,
                     "movement: {movements_quiet} more at 30 fps or better, or of a frame or two (not logged one by one)"
                 );
+                if slow_alike > 0 {
+                    let _ = writeln!(
+                        RunLog,
+                        "slow frames: {slow_alike} more while moving, each like the one logged before it (worst {slow_alike_worst} us)"
+                    );
+                }
                 if PROFILE {
                     for (name, z) in [
                         ("touch sample (SPI)", &z_touch),
@@ -4289,6 +4317,23 @@ mod image {
                     && frames > 0
                     && (!REPLAY || LOOK_CHECK)
                     && (!moving || LOOK_CHECK)
+                    && {
+                        let uploads = s.atlases + s.glyphs + s.images;
+                        let alike = moving
+                            && uploads == 0
+                            && slow_last.is_some_and(|(scr, w, t)| {
+                                scr == shell.screen()
+                                    && s.words.abs_diff(w) < 64
+                                    && us.abs_diff(t) * 10 < t
+                            });
+                        if alike {
+                            slow_alike += 1;
+                            slow_alike_worst = slow_alike_worst.max(us);
+                        } else {
+                            slow_last = Some((shell.screen(), s.words, us));
+                        }
+                        !alike
+                    }
                 {
                     let _ = writeln!(
                         RunLog,
