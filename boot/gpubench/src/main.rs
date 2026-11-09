@@ -8639,7 +8639,22 @@ mod image {
     /// first): any changed word proves a stray write past the line, and says
     /// where; none in 2,000 renders closes the lead (the chip's state, most
     /// likely).
-    const GC2_GUARD2: bool = option_env!("RP_GPUBENCH_GC2_GUARD2").is_some();
+    const GC2_GUARD2: bool = option_env!("RP_GPUBENCH_GC2_GUARD2").is_some() || GC2_GUARD3;
+    /// Run GC2DX (`RP_GPUBENCH_GC2_GUARD3`, R189 item 3's hole, the owner's
+    /// list of 2026-11-09 item 5): GC2DW, and the renderer's own memory too:
+    /// its region array, the parameter memory on the die and the memory
+    /// manager's block, summed after every render. The CPU writes the same
+    /// region array and lists for a frame every render, so a frame's sums
+    /// are fixed; each frame's are taken over [`GC2DX_REFS`] renders at
+    /// Windows Mobile's clock first (a part whose sums vary there is
+    /// written by the core itself and isn't a guard: logged so). Stop rule
+    /// (written first): a sum past the line not among its frame's is a write
+    /// into the renderer's own memory, and closes the hole the other way;
+    /// none in 2,000 renders closes it (renders past the line write only
+    /// their targets).
+    const GC2_GUARD3: bool = option_env!("RP_GPUBENCH_GC2_GUARD3").is_some();
+    /// GC2DX: renders a frame at Windows Mobile's clock for its sums.
+    const GC2DX_REFS: usize = 4;
     /// GC2DW's free-memory blocks at most (64 KiB each: 4 MiB).
     const GC2DW_BLOCKS: usize = 64;
     /// GC2DW's block size, bytes.
@@ -10145,6 +10160,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2CA, R78: no map; the four game frames at 480 x 640, 360 x 480 and 240 x 320 shown full screen by the video plane's scaler, Dell's doubling and the native screen, timed at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_TEAR {
                 "the 16-bit kinds' targets inside the safe region (GC2BZ, R20: no map; each tile row of the four game frames watched as it lands against the scan line, in four tile orders, started at three scan lines, at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
+            } else if GC2_GUARD3 {
+                "the 16-bit kinds' targets inside the safe region (GC2DX: no map; GC2BY's four game frames at 149.50 / 1 for 500 rounds, then 149.50 / 2; GC2DW's guard of the textures and the free pool, and the renderer's own region array, on-die parameter memory and memory manager's block summed after every render against each frame's sums at Windows Mobile's clock; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_GUARD2 {
                 "the 16-bit kinds' targets inside the safe region (GC2DW: no map; GC2BY's four game frames at 149.50 / 1 for 500 rounds, then 149.50 / 2, the textures summed and every free block of the 2700G pool filled with its addresses and read back after each setting; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_SOAK137 {
@@ -29171,6 +29188,31 @@ mod image {
         })
     }
 
+    /// GC2DX: a sum of every word of each of the renderer's own parts:
+    /// its region array, the parameter memory on the die, the memory
+    /// manager's block.
+    fn own_sums(g: &mut Rig, regions: u32) -> [u32; 3] {
+        let parts = [
+            (regions, 480 / 8 * (640 / 16) * 8),
+            (GC2BB_PARAMS.at, GC2BB_PARAMS.size),
+            (map::PM_TABLE.at, map::PM_TABLE.size),
+        ];
+        parts.map(|(at, bytes)| {
+            let mut sum = 0u32;
+            for w in 0..bytes / 4 {
+                let a = at + 4 * w;
+                let v = g.mem.load(a as usize).unwrap_or(a);
+                sum = sum.rotate_left(5) ^ v;
+            }
+            sum
+        })
+    }
+
+    /// GC2DX: whether `v` is among the first `n` of `seen`.
+    fn seen_in(seen: &[u32; GC2DX_REFS], n: usize, v: u32) -> bool {
+        seen[..n].contains(&v)
+    }
+
     /// GC2DW: the word every guard block holds at `a` (its address, mixed).
     const fn guard_word(a: u32) -> u32 {
         a ^ 0x5A5A_C3C3 ^ a.rotate_left(13)
@@ -29430,12 +29472,62 @@ mod image {
             g.nudge = 0;
             return;
         }
+        // GC2DX: each frame's own-memory sums over renders at Windows
+        // Mobile's clock (the clock the references were made at).
+        let mut own_seen = [[[0u32; GC2DX_REFS]; 3]; gc2::GAME_FRAMES.len()];
+        let mut own_n = [[0usize; 3]; gc2::GAME_FRAMES.len()];
+        // GC2DX: the sums each frame's own memory held at 149.50 / 2 (step
+        // 0, right on every frame), and how many kinds.
+        let mut ctl_seen = [[[0u32; GC2DX_REFS]; 3]; gc2::GAME_FRAMES.len()];
+        let mut ctl_n = [[0usize; 3]; gc2::GAME_FRAMES.len()];
+        if GC2_GUARD3 {
+            let wm = gc2_regs(g).0;
+            for (f, &kind) in game_frames().iter().enumerate() {
+                g.mesh_dx = mesh_dx(f);
+                g.mesh_dy = mesh_dy(f);
+                g.tex565 = copies[f];
+                gc2_set_mesh(g, &mut ondie, kind, tex);
+                ondie.set_tile_order(order_of(f));
+                let want = &refs[f * words..(f + 1) * words];
+                for _ in 0..GC2DX_REFS {
+                    let mut side = Gc2Side::new(false);
+                    let mut base = Gc2Baseline(None);
+                    let _ = gc2_render_at(
+                        g,
+                        &mut ondie,
+                        (k, at),
+                        want,
+                        first,
+                        wm,
+                        &mut base,
+                        &mut side,
+                    );
+                    let now = own_sums(g, ondie.regions_at());
+                    for p in 0..3 {
+                        if !seen_in(&own_seen[f][p], own_n[f][p], now[p])
+                            && own_n[f][p] < GC2DX_REFS
+                        {
+                            own_seen[f][p][own_n[f][p]] = now[p];
+                            own_n[f][p] += 1;
+                        }
+                    }
+                }
+                log!(
+                    "  GC2DX frame {f} at Windows Mobile's clock, {GC2DX_REFS} renders: distinct sums of the region array {}, the parameter memory on the die {}, the memory manager's block {} (1: fixed, a guard; more: written by the core itself)",
+                    own_n[f][0],
+                    own_n[f][1],
+                    own_n[f][2]
+                );
+            }
+        }
         let poisons: [Option<u16>; gc2::GAME_FRAMES.len()] = core::array::from_fn(|f| {
             gc2::absent16(&refs[f * words..(f + 1) * words], &gc2::POISON)
         });
         let mut clean_steps = 0u32;
         let ladder = gc2::ladder_levers();
-        let steps: &[gc2::Lever] = if GC2_GUARD2 {
+        let steps: &[gc2::Lever] = if GC2_GUARD3 {
+            &gc2::GAME_GUARD3
+        } else if GC2_GUARD2 {
             &gc2::GAME_GUARD2
         } else if GC2_SOAK137 {
             &gc2::GAME_SOAK137
@@ -29496,7 +29588,9 @@ mod image {
         if let Some(s0) = sums0 {
             log!("  GC2DU the textures' sums before the ladder: {s0:08x?}");
         }
-        let tag = if GC2_GUARD2 {
+        let tag = if GC2_GUARD3 {
+            "GC2DX"
+        } else if GC2_GUARD2 {
             "GC2DW"
         } else if GC2_SOAK137 {
             "GC2DV"
@@ -29553,7 +29647,9 @@ mod image {
             soak_label(
                 g,
                 [
-                    if GC2_GUARD2 {
+                    if GC2_GUARD3 {
+                        "GC2DX OWN MEMORY GUARD"
+                    } else if GC2_GUARD2 {
                         "GC2DW MEMORY GUARD 2"
                     } else if GC2_SOAK137 {
                         "GC2DV 137.80 SOAK"
@@ -29599,6 +29695,8 @@ mod image {
             // Wrong renders whose every wrong pixel is on x = 255 (GC2BY's
             // one fault left at 146.25 / 1).
             let mut col255 = [0u32; gc2::GAME_FRAMES.len()];
+            // GC2DX: renders whose own-memory sum (per part) wasn't its frame's.
+            let mut own_changed = [0u32; 3];
             for round in 0..GC2BY_ROUNDS {
                 for (f, &kind) in game_frames().iter().enumerate() {
                     g.mesh_dx = mesh_dx(f);
@@ -29630,6 +29728,43 @@ mod image {
                     };
                     done[f] += 1;
                     best[f] = best[f].min(side.best_us);
+                    if GC2_GUARD3 && si == 0 {
+                        // 149.50 / 2, right on every frame: the sums a
+                        // frame's own memory may hold.
+                        let now = own_sums(g, ondie.regions_at());
+                        for p in 0..3 {
+                            if !seen_in(&ctl_seen[f][p], ctl_n[f][p].min(GC2DX_REFS), now[p]) {
+                                if ctl_n[f][p] < GC2DX_REFS {
+                                    ctl_seen[f][p][ctl_n[f][p]] = now[p];
+                                }
+                                ctl_n[f][p] += 1;
+                            }
+                        }
+                    } else if GC2_GUARD3 {
+                        let now = own_sums(g, ondie.regions_at());
+                        for p in 0..3 {
+                            // Judged where the control's sums were few
+                            // enough to keep (at most GC2DX_REFS kinds).
+                            if ctl_n[f][p] <= GC2DX_REFS
+                                && !seen_in(&ctl_seen[f][p], ctl_n[f][p], now[p])
+                            {
+                                own_changed[p] += 1;
+                                if own_changed[p] <= 2 {
+                                    log!(
+                                        "  GC2DX {name} {} round {round}: {} sum 0x{:08x}, none of the control's {:08x?}: CHANGED",
+                                        frame_name(f),
+                                        [
+                                            "the region array",
+                                            "the parameter memory on the die",
+                                            "the memory manager's block"
+                                        ][p],
+                                        now[p],
+                                        &ctl_seen[f][p][..ctl_n[f][p]]
+                                    );
+                                }
+                            }
+                        }
+                    }
                     if w != 0 {
                         wrong[f] += 1;
                         let (np, b, (x, y, gp, wp)) = gc2_diff565(&first[..words], want);
@@ -29654,6 +29789,26 @@ mod image {
             let all_right =
                 wrong.iter().all(|&w| w == 0) && done.iter().all(|&d| d == GC2BY_ROUNDS);
             clean_steps |= u32::from(all_right) << si;
+            if GC2_GUARD3 && si == 0 {
+                log!(
+                    "  GC2DX the control's sums, kinds by frame: the region array {:?}, the parameter memory on the die {:?}, the memory manager's block {:?}",
+                    ctl_n.map(|n| n[0]),
+                    ctl_n.map(|n| n[1]),
+                    ctl_n.map(|n| n[2])
+                );
+            } else if GC2_GUARD3 {
+                log!(
+                    "  GC2DX after {name}: renders whose own memory changed: the region array {}, the parameter memory on the die {}, the memory manager's block {}{}",
+                    own_changed[0],
+                    own_changed[1],
+                    own_changed[2],
+                    if own_changed.iter().all(|&c| c == 0) {
+                        " (all as in the control)"
+                    } else {
+                        ": CHANGED"
+                    }
+                );
+            }
             if GC2_GUARD2 {
                 let (first, n) = guard_check(g, &guard[..nguard]);
                 match first {

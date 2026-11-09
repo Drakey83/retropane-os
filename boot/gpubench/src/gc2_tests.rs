@@ -3292,6 +3292,7 @@ fn gc2di_margin_names_its_clocks() {
         .chain(&GAME_GUARD)
         .chain(&GAME_SOAK137)
         .chain(&GAME_GUARD2)
+        .chain(&GAME_GUARD3)
     {
         let (m, n, p) = lv.pll;
         assert!(m < 64 && (1..8).contains(&n) && p == 0, "{}", lv.name);

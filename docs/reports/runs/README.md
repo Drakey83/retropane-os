@@ -46,4 +46,5 @@ copied from the log.
 | today-0082 | 2026-11-09 | R172's fixes on the look route: look switch 88-95 -> 40-43 ms, no glyphs uploaded again, the return 53.5 ms (pictures left); look check 0 wrong, 0 unknown | [2026-11-09-today-0082.md](2026-11-09-today-0082.md) |
 | R188 bisect, today-0083 to -0109 | 2026-11-09 | The touch replay's slowdown: first slow commit 4fa4dbad (the app composed ahead), about half the rise | [2026-11-09-r188-touch-replay.md](2026-11-09-r188-touch-replay.md) |
 | glesfeat-0028, -0029 | 2026-11-09 | C53: after a TA hang the reset alone leaves the core hung; the 3D clock cycled first brings it back, 3 of 3 | [2026-11-09-glesfeat-m2.md](2026-11-09-glesfeat-m2.md) |
+| gpubench-0126, -0127 | 2026-11-09 | GC2DX: the renderer's own memory guarded past the line: 0 changes in 2,000 renders at 149.50 / 1 (R189) | [2026-11-09-gc2dx.md](2026-11-09-gc2dx.md) |
 | gpubench-0110 to -0124 (GC2DG-GC2DV) | 2026-11-08 | The divide-1 chase for games: 137.80 / 1 proven, 149.50 / 1 not reached | [2026-11-08-gc2d-chase.md](2026-11-08-gc2d-chase.md) |

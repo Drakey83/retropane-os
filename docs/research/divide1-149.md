@@ -389,6 +389,7 @@ All warm (TEMP0 864-870), 100 rounds of four frames a setting, a 149.50 /
 | GC2DU | every texture in 2700G memory summed before and after 149.50, 146.25, 137.80 / 1 and 149.50 / 2 | no texture changed; no reset; the control and Windows Mobile's clock right after: the damage of GC2DR and GC2DS didn't recur (2 of the 7 runs past the line to the control; its cause, a stray write past the line or the chip's state after hours of runs, unproven) |
 | GC2DV | GC2DT's moved frames at 137.80 / 1, 12 parts | **4,800 of 4,800 right**, render times flat from the first part to the last; the control and Windows Mobile's clock right after, no reset |
 | GC2DW | GC2DU's sums and every free pool block (15 of 64 KiB, 960 KiB, 0xF06700-0xFF6700) filled with its addresses, read back after each of five parts at 149.50 / 1 | **no stray write in 2,000 renders**, every one wrong: the free blocks as filled and the textures as before after each part; no reset; the control and Windows Mobile's clock right after. The damage lead closes by its stop rule (the chip's state after hours of runs, most likely). Not guarded: the renderer's region array and parameter memory, the targets |
+| GC2DX | GC2DW, and the renderer's own region array, on-die lists and memory manager's block summed after every render, judged against the 149.50 / 2 control | **no write into the renderer's own memory in 2,000 renders at 149.50 / 1** (gpubench-0127; the first build's baseline, at Windows Mobile's clock, was confounded: gpubench-0126) |
 
 **What the faults are:** deterministic for a given frame (the same pixels
 every render, in any tile order, any texture place or size), dependent on
@@ -435,8 +436,9 @@ or drew damaged (GC2DR, GC2DS). Guarded, it didn't recur: no texture
 changed (GC2DU), and in 2,000 renders at 149.50 / 1 no word of 960 KiB of
 free 2700G memory changed (GC2DW), so renders past the line are not shown
 to write outside their targets; the damage is most likely the chip's state
-after hours of runs. The renderer's own memory (region array, parameter
-memory) wasn't guarded. Divide 1 still must never ship past the proven
+after hours of runs. The renderer's own memory (region array, lists,
+memory manager's block) is guarded too since GC2DX (2026-11-09): not one
+change in 2,000 renders at 149.50 / 1. Divide 1 still must never ship past the proven
 step: its pictures are wrong there.
 
 **Still untried (why it isn't "impossible" yet):** other units (the any-

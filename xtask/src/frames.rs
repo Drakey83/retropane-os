@@ -38,6 +38,13 @@ pub const REVIEWED: &[&str] = &[
     "rp-gpubench: rp_gpubench::image::g4a",
     "rp-gpubench: rp_gpubench::image::w2",
     "rp-gpubench: rp_gpubench::image::w3",
+    // The game runs' set-up, in the GC2DX variant's build (R189, 2026-11-09;
+    // other variants inline them away): the mesh and its texture copies
+    // built once a render and the content map once a run, outside the
+    // render the run times (its time is the 3D core's, polled).
+    "rp-gpubench: rp_gpubench::image::gc2_set_mesh",
+    "rp-gpubench: rp_gpubench::image::content_map2",
+    "rp-gpubench: rp_gpubench::image::gc2_games",
     "rp-cftime: rp_cftime::image::run",
     "rp-storfast: rp_storfast::image::run",
     "rp-noise: rp_noise::image::main",

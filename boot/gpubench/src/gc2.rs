@@ -3049,6 +3049,19 @@ pub const GAME_GUARD2: [Lever; 6] = [
     lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
 ];
 
+/// GC2DX's settings: 149.50 / 2 first (right on every game frame: it sets
+/// each frame's sums of the renderer's own memory), 149.50 / 1 five times
+/// over (2,000 renders judged against them), 149.50 / 2 again.
+pub const GAME_GUARD3: [Lever; 7] = [
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1 (the sums)"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 1"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 2"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 3"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 4"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 5"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 2"),
+];
+
 /// GC2BY's rounds of the four game frames at each step (100: a frame
 /// wrong in 3% of renders shows with ~95%).
 pub const GAME_LADDER_ROUNDS: u32 = 100;
