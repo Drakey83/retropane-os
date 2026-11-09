@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 rp-drv-blit2d = { path = "../blit2d" }
+rp-drv-mbx-display = { path = "../mbx-display" }
 rp-hal-api = { path = "../../hal/api" }
 rp-hal-mem = { path = "../../hal/mem" }
 

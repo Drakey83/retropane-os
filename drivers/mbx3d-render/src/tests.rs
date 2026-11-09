@@ -775,6 +775,52 @@ fn a_hung_render_is_recovered_and_the_next_frame_redraws_everything() {
     assert_eq!(g.px(104, 104), BLUE);
 }
 
+/// Audit C53: a hang that a core reset alone doesn't clear (the TA path's
+/// two-unit hang on the X51v, rp-glesfeat M2: the control drew 0 of 3
+/// after the reset, 3 of 3 with the 3D clock off and on first) is
+/// recovered: the clock cycled before the reset, the next frame drawn.
+#[test]
+fn a_hang_a_reset_alone_keeps_is_recovered_by_cycling_the_3d_clock() {
+    let mut g = rig(480, 640);
+    g.r.set_background(Some(GREY)).unwrap();
+    g.frame();
+    g.set(0, Some(square(100, 100, 8, Paint::Flat(BLUE))));
+    g.gpu.hang_next = true;
+    g.gpu.hang_needs_clock = true;
+    let due =
+        g.r.render(&mut g.gpu, &mut g.mem, &mut g.clock, FULL)
+            .unwrap()
+            .unwrap();
+    g.clock.set(due);
+    let mut recovered = false;
+    for _ in 0..5000 {
+        match g.r.poll(&mut g.gpu, &mut g.mem, &mut g.clock) {
+            Poll::Wait(t) => g.clock.set(t),
+            Poll::Recovered => {
+                recovered = true;
+                break;
+            }
+            p => panic!("{p:?}"),
+        }
+    }
+    assert!(recovered);
+    assert!(!g.gpu.hung(), "the clock cycled, then the reset");
+    // The clock went off then on, ahead of the core's reset.
+    let w = &g.gpu.writes;
+    let reset = w
+        .iter()
+        .rposition(|x| *x == (MBX + reg::RESET, 0x111))
+        .unwrap();
+    let off = w[..reset]
+        .iter()
+        .rposition(|x| x.0 == MBXCLK && x.1 & 3 == 1)
+        .unwrap();
+    assert!(w[off..reset].iter().any(|x| x.0 == MBXCLK && x.1 & 3 == 2));
+    let s = g.frame();
+    assert_eq!(s.tiles, 2400);
+    assert_eq!(g.px(104, 104), BLUE);
+}
+
 #[test]
 fn the_3d_clock_is_on_for_work_and_off_when_idle() {
     let mut g = rig(480, 640);

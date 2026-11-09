@@ -145,6 +145,11 @@ pub struct Gpu {
     pub status_reads: u32,
     /// The next render hangs (as TSP bit 16 did on the device).
     pub hang_next: bool,
+    /// The hang outlasts a core reset unless the 3D clock went off after
+    /// it (a two-unit hang on the TA path, audit C53, rp-glesfeat M2).
+    pub hang_needs_clock: bool,
+    /// The 3D clock went off since the core hung.
+    clock_cycled: bool,
     /// Renders started.
     pub renders: u32,
     /// Tiles the last render covered.
@@ -179,6 +184,8 @@ impl Gpu {
             writes: Vec::new(),
             status_reads: 0,
             hang_next: false,
+            hang_needs_clock: false,
+            clock_cycled: false,
             renders: 0,
             tiles: 0,
             irqs: 0,
@@ -399,8 +406,11 @@ impl RegisterBus for Gpu {
                 self.done_at = None;
                 self.ready_at = None;
                 self.pm_set = false;
-                self.hung = false;
+                if !self.hang_needs_clock || self.clock_cycled {
+                    self.hung = false;
+                }
             }
+            o if o == MBXCLK && v & 3 != 2 && self.hung => self.clock_cycled = true,
             o if o == MBX + 0x838 && v == 1 && self.clock_3d() => {
                 self.pm_set = true;
                 self.ready_at = Some(self.now.get().wrapping_add(164));
@@ -414,6 +424,7 @@ impl RegisterBus for Gpu {
                 self.renders += 1;
                 if core::mem::take(&mut self.hang_next) {
                     self.hung = true;
+                    self.clock_cycled = false;
                     return;
                 }
                 let (n, quads) = self.render();

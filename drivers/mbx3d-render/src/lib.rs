@@ -2107,8 +2107,10 @@ impl Renderer {
             self.targets = [None; 2];
             self.regions_full = None;
             self.invalidate_all();
-            // Stop the hung core now; a failure here is retried by the
-            // next render's set-up.
+            // Stop the hung core now: the 3D clock cycled first (a reset
+            // alone left a TA hang hung: audit C53, rp-glesfeat M2); a
+            // failure here is retried by the next render's set-up.
+            rp_drv_mbx_display::clock::cycle_3d(bus, |us| clock.delay_us(us));
             let _ = self.bring_up(bus, mem, clock);
             return Poll::Recovered;
         }

@@ -1154,6 +1154,17 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g21`).
     const TEST_G21: bool = option_env!("RP_GLESFEAT_G21").is_some();
+    /// Test M2 (`RP_GLESFEAT_M2`, audit C53, the owner's list of 2026-11-09
+    /// item 8): what brings the 3D core back after a two-unit hang on the
+    /// TA path. M showed the one-unit control hanging after every two-unit
+    /// hang with the recovery as built (core reset, memory manager set up),
+    /// and drawing again only at the next image's start-up, which also
+    /// writes `MBXCLK` (the 3D clock) before its reset. Each way below is
+    /// tried after a forced hang ([`m_hang`]), then the control is drawn;
+    /// three times a way. Stop rule (written first): the first way whose
+    /// control draws 3 of 3 is the recovery the renderer takes; none, and
+    /// the start-up's other steps are next (C53 stays open).
+    const TEST_M2: bool = option_env!("RP_GLESFEAT_M2").is_some();
     const _: () = assert!(
         !TEST_G21 || cfg!(rp_g7),
         "test G21 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -1992,6 +2003,166 @@ mod image {
             log!("    (render timed out: core reset, memory manager ready again: {ok})");
         }
         out
+    }
+
+    /// Test M's draw: the one-unit control (`units` 1) or a two-unit
+    /// draw with unit 1's combine word `tex2b`, through the TA; the target
+    /// filled grey first. A hung render is recovered as built inside
+    /// [`through_ta`] (core reset, memory manager set up).
+    #[inline(never)]
+    fn m_draw(e: &mut Engine<Mmio>, vram: &mut [u8], units: usize, tsp: u32, tex2b: u32) -> TaOut {
+        let tex = |addr: usize, tex2: u32| {
+            let mut w = m3::ta::dell_texture(addr as u32);
+            w[0] = m3::tex::tex0(0, 10);
+            w[2] = tex2;
+            w
+        };
+        let a = tex(TEX, 0x8608_4610);
+        let b = tex(TEX_B, tex2b);
+        let clip = m3::ta::clip(W, H);
+        let corners = [
+            (100.0f32, 100.0f32, 0.0f32, 0.0f32),
+            (380.0, 100.0, 1.0, 0.0),
+            (100.0, 540.0, 0.0, 1.0),
+        ];
+        let fill = rp_image::need(
+            cmd::fill(
+                Format::BPP32,
+                TARGET,
+                STRIDE,
+                (0, 0, W as u16, H as u16),
+                GREY,
+            ),
+            "a 2D rectangle",
+        );
+        let _ = e.submit(&fill).and_then(|()| e.finish(vram, 200_000));
+        let mut st = [0u32; 48];
+        let mut n = 0;
+        let mut put = |v: u32| {
+            st[n] = v;
+            n += 1;
+        };
+        put(if units == 2 { 0x1000_005F } else { 0x1000_0057 });
+        put(tsp);
+        put(ISP_ALWAYS);
+        a.iter().for_each(|&v| put(v));
+        if units == 2 {
+            b.iter().for_each(|&v| put(v));
+        }
+        put(clip);
+        put(0);
+        put(m3::ta::STRIP);
+        for &(x, y, u, v) in &corners {
+            for word in [
+                x.to_bits(),
+                y.to_bits(),
+                1.0f32.to_bits(),
+                1.0f32.to_bits(),
+                0xFFFF_FFFF,
+                u.to_bits(),
+                v.to_bits(),
+            ] {
+                put(word);
+            }
+            if units == 2 {
+                put(u.to_bits());
+                put(v.to_bits());
+            }
+        }
+        through_ta(e, vram, &[&st[..n]], 0, &[])
+    }
+
+    /// Test M2's forced hang: a two-unit draw (M's second case, which hung
+    /// every render on the X51v); whether it hung.
+    fn m_hang(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        let two = (m3::ta::TSP_DELL_TEXTURED & !(0xF << 16)) | 1 << 17 | 1 << 16;
+        !m_draw(e, vram, 2, two, 0x8608_4610).done
+    }
+
+    /// Test M2 (audit C53): each recovery way after a forced two-unit hang,
+    /// three times, the one-unit control drawn after each.
+    #[inline(never)]
+    fn c53_ladder(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        for k in 0..16 {
+            let _ = store32_volatile(vram, TEX + 4 * k, 0x8080_8080);
+            let _ = store32_volatile(vram, TEX_B + 4 * k, 0x4040_4040);
+        }
+        cpu::drain_write_buffer();
+        let control = |e: &mut Engine<Mmio>, vram: &mut [u8]| -> bool {
+            let o = m_draw(e, vram, 1, m3::ta::TSP_DELL_TEXTURED, 0);
+            o.done && px(vram, 150, 200) != GREY
+        };
+        let first = control(e, vram);
+        log!("  M2 the control before any hang: drew {first}");
+        // The ways, after the hang and the built recovery (inside
+        // through_ta): A nothing more; B the 3D clock off 1 ms then on, then
+        // the reset and set-up (the start-up's order); C the same with the
+        // clock off 10 ms; D the 2D and 3D clocks both off 10 ms; E the
+        // recovery the drivers ship since (ta::Ready::recover). Every
+        // MBXCLK write through the clock module (quality audit C43).
+        let names = [
+            "A: the recovery as built (core reset, manager set up)",
+            "B: then the 3D clock off 1 ms and on, reset, manager set up",
+            "C: then the 3D clock off 10 ms and on, reset, manager set up",
+            "D: then both MBX clocks off 10 ms and on, reset, manager set up",
+            "E: then the shipped recovery (ta::Ready::recover: the 3D clock cycled, reset, manager set up)",
+        ];
+        let clk0 = e.regs.read32(MBXCLK);
+        for (way, name) in names.iter().enumerate() {
+            let mut hung = 0;
+            let mut drew = 0;
+            for _ in 0..3 {
+                rt::check_in();
+                hung += u32::from(m_hang(e, vram));
+                match way {
+                    1 => clock::cycle_3d(&mut e.regs, rt::delay_us),
+                    2 => {
+                        let _ = clock::restore(&mut e.regs, clock::two_d_only(clk0));
+                        rt::delay_us(10_000);
+                        let _ = clock::restore(&mut e.regs, clock::with_3d(clk0));
+                        rt::delay_us(1_000);
+                    }
+                    3 => {
+                        {
+                            let _off = clock::stop_whole(&mut e.regs);
+                            rt::delay_us(10_000);
+                        }
+                        let _ = clock::restore(&mut e.regs, clock::with_3d(clk0));
+                        rt::delay_us(1_000);
+                    }
+                    _ => {}
+                }
+                if (1..=3).contains(&way) {
+                    e.reset(rt::delay_us);
+                    let _ = pm_init(e, vram);
+                } else if way == 4 {
+                    let l = lay();
+                    let mut ready = m3::ta::Ready::set_up_by_caller(m3::ta::ParamMemory {
+                        at: l.pm as u32,
+                        size: l.pm_size,
+                        table: l.pm_table as u32,
+                    });
+                    let _ = ready.recover(
+                        &mut e.regs,
+                        vram,
+                        rt::delay_us,
+                        cpu::drain_write_buffer,
+                        m3::ta::Clock {
+                            now: rt::ticks,
+                            ticks_per_ms: rt::TICK_HZ / 1000,
+                        },
+                    );
+                }
+                drew += u32::from(control(e, vram));
+            }
+            log!(
+                "  M2 way {name}: the two-unit draw hung {hung} of 3; the control after drew {drew} of 3"
+            );
+        }
+        log!(
+            "  M2 MBXCLK as found 0x{clk0:x}, at the end 0x{:x}",
+            e.regs.read32(MBXCLK)
+        );
     }
 
     /// M: the second texture unit (the performance gate's P5): two flat
@@ -5426,7 +5597,14 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G21 {
+        if ready && TEST_M2 {
+            say(
+                vram,
+                &["RP-GLESFEAT M2", "STEP 1 OF 1", "C53: AFTER A 3D HANG"],
+            );
+            log!("M2: recovering the 3D core after a two-unit hang on the TA path (audit C53)");
+            c53_ladder(&mut e, vram);
+        } else if ready && TEST_G21 {
             test_g21(&mut e, vram);
         } else if ready && TEST_G20 {
             test_g20(&mut e, vram);

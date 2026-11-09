@@ -44,4 +44,6 @@ copied from the log.
 | today-0065 | 2026-11-08 | Look check at 4 PM: failed, two faults found (no page after Radar; a stale page on a late settings change) | [2026-11-08-today-0065.md](2026-11-08-today-0065.md) |
 | today-0071 | 2026-11-08 | The fix for today-0065: 0 wrong, a hand-off after every Radar exit | [2026-11-08-today-0071.md](2026-11-08-today-0071.md) |
 | today-0082 | 2026-11-09 | R172's fixes on the look route: look switch 88-95 -> 40-43 ms, no glyphs uploaded again, the return 53.5 ms (pictures left); look check 0 wrong, 0 unknown | [2026-11-09-today-0082.md](2026-11-09-today-0082.md) |
+| R188 bisect, today-0083 to -0109 | 2026-11-09 | The touch replay's slowdown: first slow commit 4fa4dbad (the app composed ahead), about half the rise | [2026-11-09-r188-touch-replay.md](2026-11-09-r188-touch-replay.md) |
+| glesfeat-0028, -0029 | 2026-11-09 | C53: after a TA hang the reset alone leaves the core hung; the 3D clock cycled first brings it back, 3 of 3 | [2026-11-09-glesfeat-m2.md](2026-11-09-glesfeat-m2.md) |
 | gpubench-0110 to -0124 (GC2DG-GC2DV) | 2026-11-08 | The divide-1 chase for games: 137.80 / 1 proven, 149.50 / 1 not reached | [2026-11-08-gc2d-chase.md](2026-11-08-gc2d-chase.md) |

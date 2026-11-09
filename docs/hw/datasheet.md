@@ -332,6 +332,11 @@ watching.
   WM's clock: `0x61C`'s low nibble, `0x644` bits 0-1, `0x614` / `0x618`
   bits 28-31 (address-like: the scene not drawn). No sample-position or
   delay field; none cures divide 1's faults.
+- **A TA hang clears only with the 3D clock stopped** (`rp-glesfeat` M2,
+  X51v, 2026-11-09): after a two-unit TA hang, a core reset and the memory
+  manager's set-up leave the core hung (0 of 3 drawn after); `MBXCLK`'s 3D
+  enable off 1 ms and on before them clears it (3 of 3). Direct-path hangs
+  clear with the reset alone (G4c).
 - **The divide-1 step by picture size** (`rp-gpubench` GC2CR, X51v,
   2026-10-28, warm, 100 renders a frame): 480 x 640 right from 143.00 / 1
   down; 480 x 320 right from 139.75 / 1 down (its textured frame wrong in

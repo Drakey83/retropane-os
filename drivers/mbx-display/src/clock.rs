@@ -555,6 +555,21 @@ pub const fn has_3d(mbxclk: u32) -> bool {
     mbxclk & 3 == 2
 }
 
+/// After a hung 3D render, before the core's reset: the 3D clock off for
+/// a millisecond and on again (the 2D clock and the divider kept). A core
+/// reset alone left a two-unit hang on the TA path hung on the X51v (audit
+/// C53, `rp-glesfeat` M2, 2026-11-09: the control after it drew 0 of 3
+/// with the reset and the manager's set-up, 3 of 3 with this first; 10 ms
+/// off, or both clocks off, the same 3 of 3); the next image's start-up,
+/// which writes `MBXCLK` before its reset, was what had brought it back.
+pub fn cycle_3d<B: RegisterBus>(bus: &mut B, mut delay_us: impl FnMut(u32)) {
+    let v = bus.read32(MBXCLK);
+    bus.write32(MBXCLK, two_d_only(v));
+    delay_us(1_000);
+    bus.write32(MBXCLK, with_3d(v));
+    delay_us(1_000);
+}
+
 /// Keeps the 3D clock on while 3D work comes and switches it off after
 /// `idle_us` without any. Times are microseconds from any wrapping clock.
 #[derive(Clone, Copy, Debug)]

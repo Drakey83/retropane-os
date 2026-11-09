@@ -61,8 +61,10 @@ impl Ready {
         self.pm
     }
 
-    /// After a render that hung (and only then): the core reset and the
-    /// manager set up again in the same place.
+    /// After a render that hung (and only then): the 3D clock off and on
+    /// (a reset alone left a two-unit hang hung: audit C53, rp-glesfeat M2,
+    /// 2026-11-09), the core reset and the manager set up again in the same
+    /// place.
     ///
     /// # Errors
     ///
@@ -75,6 +77,8 @@ impl Ready {
         drain: fn(),
         clock: Clock,
     ) -> Result<(), SetUpError> {
+        let mut delay_us = delay_us;
+        rp_drv_mbx_display::clock::cycle_3d(regs, &mut delay_us);
         bring_up(regs, vram, self.pm, delay_us, drain, clock)
     }
 

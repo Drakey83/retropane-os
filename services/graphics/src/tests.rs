@@ -426,6 +426,53 @@ fn the_3d_core_draws_only_into_screen_0_on_screen() {
     assert_eq!(r.on_screen(210, 310), BLUE & 0xFF_FFFF);
 }
 
+/// R190 (C71 R-B): a scene opened while 2D frames have screen 1 on screen
+/// brings screen 0 back before the 3D core works, the frame whole there.
+#[test]
+fn a_scene_opened_on_screen_1_starts_with_screen_0_shown() {
+    let mut r = rig();
+    let bar = Rect::new(0, 0, 480, 32);
+    for k in 0..6u16 {
+        let colour = if k % 2 == 0 { 0xFF00_00FF } else { WHITE };
+        let mut f = Frame::new();
+        f.damage(bar);
+        f.push(Cmd::Fill {
+            r: bar,
+            color: colour,
+        });
+        assert_eq!(r.frame(&f), Step::Shown, "2D frame {k}");
+        if r.shown().at == SCREENS[1].at {
+            break;
+        }
+    }
+    assert_eq!(r.shown().at, SCREENS[1].at, "2D frames flip to screen 1");
+    let shown_bar = r.on_screen(5, 5);
+    let c = r.g.client(64 * 1024).unwrap();
+    let (x, y, w, h) = AREA;
+    r.g.open_scene(c, x, y, w, h).unwrap();
+    r.g.set_background(c, Some(BLUE)).unwrap();
+    let tex =
+        r.g.upload_texture(c, 0, format::RGB565, &[0xF800; 64])
+            .unwrap();
+    r.g.set(c, 0, Some(&Quad::rect(40, 16, 32, 32, Fill::texture(tex))))
+        .unwrap();
+    let mut step = r.frame(&Frame::new());
+    for _ in 0..3 {
+        if step == Step::Shown {
+            break;
+        }
+        step = r.frame(&Frame::new());
+    }
+    assert_eq!(step, Step::Shown, "the 3D frame");
+    assert_eq!(r.shown().at, SCREENS[0].at, "3D shown from screen 0");
+    assert_eq!(r.on_screen(5, 5), shown_bar, "the 2D frame kept");
+    assert_eq!(
+        r.on_screen(u32::from(x) + 40 + 16, 336),
+        0xFF_0000,
+        "the quad"
+    );
+}
+
 #[test]
 fn one_job_at_a_time() {
     let mut r = rig();

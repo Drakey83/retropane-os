@@ -1223,6 +1223,13 @@ mod set_up {
             .recover(&mut bus, &mut vram, |_| {}, drain, CLOCK)
             .unwrap();
         let all = bus.writes();
-        assert_eq!(all[first.len()..], first[..]);
+        // The 3D clock off and on first (audit C53), then the set-up again.
+        let clk = rp_drv_mbx_display::clock::MBXCLK;
+        let again = &all[first.len()..];
+        assert_eq!(again[0].0, clk);
+        assert_eq!(again[0].1 & 3, 1, "the 3D clock off");
+        assert_eq!(again[1].0, clk);
+        assert_eq!(again[1].1 & 3, 2, "and on");
+        assert_eq!(again[2..], first[..]);
     }
 }

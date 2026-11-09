@@ -2468,6 +2468,13 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "vram-map: screen 0 back outside the safe region, where the scan-out spoils 3D (C71)",
+        file: "drivers/vram-map/src/lib.rs",
+        from: "    r(\"screen 0\", 0, SCREEN_BYTES, 0x1000),",
+        to: "    r(\"screen 0\", 0x9D_6000, SCREEN_BYTES, 0x1000),",
+        check: Check::Host(&["-p", "rp-vram-map", "screen_0_alone_in_the_safe_region"]),
+    },
+    Mutant {
         name: "draw: damage under a later rectangle kept, drawn twice (R172)",
         file: "drivers/draw/src/lib.rs",
         from: "        if d.intersect(&r) == d || (!d.intersect(&r).is_empty() && area(&u) <= area(&d) + area(&r))
