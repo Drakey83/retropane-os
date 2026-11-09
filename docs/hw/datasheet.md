@@ -337,7 +337,12 @@ watching.
   down; 480 x 320 right from 139.75 / 1 down (its textured frame wrong in
   every render at 143.00 / 1); 240 x 320 the same, plus a one-pixel fault
   on its flat mesh in ~1% of renders at every divide-1 step (143.00 to
-  108.33 / 1).
+  108.33 / 1). **Superseded for games by the 2026-11-08 chase
+  (GC2DJ-GC2DW, [divide1-149.md](../research/divide1-149.md)):** moved
+  a few pixels, game frames are wrong at 143.00 and 139.75 / 1; 137.80 /
+  1 (PLL 53 / 5) is right on every moved frame (GC2DT 1,200 of 1,200,
+  GC2DV 4,800 hot), 138.67 the first step wrong; the owner's game step
+  (2026-11-09) is 136.50 / 1.
 - **The video plane's vertical-only scale of RGB565** (`rp-gpubench`
   GC2CS, X51v, 2026-10-28, the owner's photos): right for a 240-wide
   source (GC2CE), **wrong for a 480-wide one** (right over the left ~40%,

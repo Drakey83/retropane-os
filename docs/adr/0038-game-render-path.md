@@ -51,7 +51,12 @@ first game port measures it (R90's proof).
 (GC2CP runs 3 and 4 and GC2CU run 2; whole frames: the CPU's set-up, the
 render, the poll. Fastest of 10.)
 
-- **Clocks** (ADR-0035): native clean at 143.00 / 1 (GC2BY); 480 x 320
+- **Clocks** (ADR-0035): **every route's divide-1 step is ruled by the
+  owner 2026-11-09: games ship up to 136.50 / 1 on this unit, 133.25 / 1
+  at peak heat** (ADR-0035 amendment D "The game step"; GC2DJ moved
+  GC2BY's frame a few pixels and found 143.00 wrong, GC2DR 139.75 wrong;
+  the per-route values below are the October findings it supersedes).
+  Native clean at 143.00 / 1 (GC2BY); 480 x 320
   clean at 139.75 / 1 (GC2CR), and at 143.00 / 1 as four-corner objects
   (GC2CU run 2: the textured fault two triangles hit there is gone);
   240 x 320 has a one-pixel fault at every divide-1 step (R80, GC2CR) and

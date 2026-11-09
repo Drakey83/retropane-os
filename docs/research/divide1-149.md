@@ -445,6 +445,16 @@ and the owner's X50v is a second 2700G); a cold chip (every run here was
 warm, as a game is); a per-frame search of input changes (GC2DS's effect)
 is not a driver rule, so it isn't counted as a lever.
 
+## The owner's ruling (2026-11-09): the game step
+
+The guard's game step is **136.50 / 1**, one step below the proven
+ceiling 137.80 / 1, stepping down to **133.25 / 1** at peak heat; no
+game frame runs past the proven step, the guard's top for games is the
+game step (not 149.50 / 1), and the 146.25 fallback is struck (GC2DG).
+It closes the provisional ruling of 2026-10-28 (139.75 / 1; GC2DR: 99 of
+400 wrong). Recorded in ADR-0035 amendment D "The game step" and R76.
+Every other unit ships only up to its own proven step (R71).
+
 ## Next, when the chase resumes
 
 **Added 2026-10-30 (R118, R121, after the chase was parked): two cures
