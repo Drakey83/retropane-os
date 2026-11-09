@@ -2459,12 +2459,25 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "mbx-render: a full glyph memory drops every atlas (R172)",
         file: "drivers/mbx-render/src/lib.rs",
-        from: "                    if let Some((_, k)) = oldest {",
-        to: "                    if let Some((_, k)) = oldest.filter(|_| false) {",
+        from: "                if let Some(o) = self.oldest_atlas(Some(slot)) {",
+        to: "                if let Some(o) = self.oldest_atlas(Some(slot)).filter(|_| false) {",
         check: Check::Host(&[
             "-p",
             "rp-mbx-render",
             "a_look_switch_uploads_only_its_new_atlases",
+        ]),
+    },
+    Mutant {
+        name: "draw: damage under a later rectangle kept, drawn twice (R172)",
+        file: "drivers/draw/src/lib.rs",
+        from: "        if d.intersect(&r) == d || (!d.intersect(&r).is_empty() && area(&u) <= area(&d) + area(&r))
+",
+        to: "        if false && (d.intersect(&r) == d || (!d.intersect(&r).is_empty() && area(&u) <= area(&d) + area(&r)))
+",
+        check: Check::Host(&[
+            "-p",
+            "rp-draw",
+            "dirty_rectangles_never_list_a_pixel_twice_where_avoidable",
         ]),
     },
     Mutant {

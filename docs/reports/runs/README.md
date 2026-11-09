@@ -43,4 +43,5 @@ copied from the log.
 | r185b | 2026-11-06 | R185 look check, run 3 (the pass) | [2026-11-06-r185b.md](2026-11-06-r185b.md) |
 | today-0065 | 2026-11-08 | Look check at 4 PM: failed, two faults found (no page after Radar; a stale page on a late settings change) | [2026-11-08-today-0065.md](2026-11-08-today-0065.md) |
 | today-0071 | 2026-11-08 | The fix for today-0065: 0 wrong, a hand-off after every Radar exit | [2026-11-08-today-0071.md](2026-11-08-today-0071.md) |
+| today-0082 | 2026-11-09 | R172's fixes on the look route: look switch 88-95 -> 40-43 ms, no glyphs uploaded again, the return 53.5 ms (pictures left); look check 0 wrong, 0 unknown | [2026-11-09-today-0082.md](2026-11-09-today-0082.md) |
 | gpubench-0110 to -0124 (GC2DG-GC2DV) | 2026-11-08 | The divide-1 chase for games: 137.80 / 1 proven, 149.50 / 1 not reached | [2026-11-08-gc2d-chase.md](2026-11-08-gc2d-chase.md) |
