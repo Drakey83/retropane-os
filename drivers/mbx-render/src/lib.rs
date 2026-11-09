@@ -107,10 +107,10 @@ const ATLASES: usize = 32;
 const GCHUNK: usize = 2048;
 /// Chunks the glyph memory may hold (512 KiB).
 const GCHUNKS: usize = 256;
-/// A set of chunks, a bit each.
-type Chunks = [u64; GCHUNKS / 64];
 /// Glyphs a font may have.
-const GLYPHS: usize = 160;
+// 130: the largest shipped font has 129 (BIG; UI and LABEL 97), and every
+// slot's table is this long (32 slots: the RAM is the slots' tables).
+const GLYPHS: usize = 130;
 /// Areas kept in the cache at once.
 const CACHED: usize = 8;
 /// Keys of areas drawn recently: an area is kept the second time it's
@@ -210,8 +210,6 @@ const CHUNK: usize = 32;
 struct Atlas {
     font: usize,
     color: Argb,
-    /// The glyph memory's chunks it holds.
-    chunks: Chunks,
     /// The chunk its next small glyph goes into, and the bytes already
     /// used there (`fill` [`GCHUNK`]: none open).
     open: u16,
@@ -227,7 +225,6 @@ impl Atlas {
         Self {
             font,
             color,
-            chunks: [0; GCHUNKS / 64],
             open: 0,
             fill: GCHUNK as u16,
             used,
@@ -236,11 +233,11 @@ impl Atlas {
     }
 }
 
-/// The first run of `k` chunks below `n` that `taken` leaves free.
-fn free_run(taken: &Chunks, n: usize, k: usize) -> Option<usize> {
+/// The first run of `k` free chunks (owner 0) below `n`.
+fn free_run(owner: &[u8; GCHUNKS], n: usize, k: usize) -> Option<usize> {
     let mut run = 0;
-    for i in 0..n {
-        if taken[i / 64] >> (i % 64) & 1 == 0 {
+    for (i, &o) in owner[..n].iter().enumerate() {
+        if o == 0 {
             run += 1;
             if run == k {
                 return Some(i + 1 - k);
@@ -396,6 +393,8 @@ pub struct Mbx2dRenderer<R, M> {
     /// nothing).
     pics: Option<&'static rp_draw::pics::Pics<'static>>,
     atlases: [Option<Atlas>; ATLASES],
+    /// Each glyph-memory chunk's pair: its slot + 1, 0 free.
+    chunk_owner: [u8; GCHUNKS],
     /// Frames drawn (stamps the atlases' last use).
     frame_no: u32,
     /// Flips written after waiting [`FLIP_WAIT_US`] for the blanking
@@ -544,6 +543,7 @@ macro_rules! renderer_start {
             images_top: 0,
             pics: None,
             atlases: [None; ATLASES],
+            chunk_owner: [0; GCHUNKS],
             frame_no: 0,
             late_flips: 0,
             hold: false,
@@ -1252,14 +1252,25 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             Some(k) => k,
             None => {
                 let k = self.oldest_atlas(None)?;
-                self.atlases[k] = None;
-                self.last.atlases_evicted += 1;
+                self.drop_atlas(k);
                 k
             }
         };
         self.last.atlases += 1;
         self.atlases[slot] = Some(Atlas::new(key, color, now));
         Some(slot)
+    }
+
+    /// Slot `k`'s pair dropped, its chunks freed.
+    fn drop_atlas(&mut self, k: usize) {
+        if self.atlases[k].take().is_some() {
+            self.last.atlases_evicted += 1;
+        }
+        for o in &mut self.chunk_owner {
+            if usize::from(*o) == k + 1 {
+                *o = 0;
+            }
+        }
     }
 
     /// The slot of the pair drawn with longest ago that this frame doesn't
@@ -1303,38 +1314,31 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             usize::from(a.open) * GCHUNK + usize::from(a.fill)
         } else {
             let first = loop {
-                let mut taken = [0u64; GCHUNKS / 64];
-                for b in self.atlases.iter().flatten() {
-                    for (t, c) in taken.iter_mut().zip(&b.chunks) {
-                        *t |= c;
-                    }
-                }
-                if let Some(i) = free_run(&taken, n, k) {
+                if let Some(i) = free_run(&self.chunk_owner, n, k) {
                     break i;
                 }
                 if let Some(o) = self.oldest_atlas(Some(slot)) {
-                    self.atlases[o] = None;
-                    self.last.atlases_evicted += 1;
+                    self.drop_atlas(o);
                 } else {
                     // This frame's own glyphs fill the memory: let the
                     // engine finish what's queued, then start again.
                     self.wait();
-                    for (o, b) in self.atlases.iter_mut().enumerate() {
-                        if o == slot {
-                            if let Some(b) = b.as_mut() {
-                                *b = Atlas::new(b.font, b.color, b.used);
-                            }
-                        } else if b.is_some() {
-                            *b = None;
-                            self.last.atlases_evicted += 1;
+                    for o in 0..ATLASES {
+                        if o != slot && self.atlases[o].is_some() {
+                            self.drop_atlas(o);
                         }
+                    }
+                    if let Some(b) = self.atlases[slot] {
+                        self.drop_atlas(slot);
+                        self.last.atlases_evicted -= 1;
+                        self.atlases[slot] = Some(Atlas::new(b.font, b.color, b.used));
                     }
                 }
             };
-            let b = self.atlases[slot].as_mut()?;
-            for c in first..first + k {
-                b.chunks[c / 64] |= 1 << (c % 64);
+            for o in &mut self.chunk_owner[first..first + k] {
+                *o = slot as u8 + 1;
             }
+            let b = self.atlases[slot].as_mut()?;
             if k == 1 {
                 b.open = first as u16;
                 b.fill = 0;

@@ -527,11 +527,15 @@ pub const BUDGETS: &[Budget] = &[
     // measured); back down when they do. Then 84 -> 76 KiB (option C's
     // step 6): the pack tables, the built-in pictures' and the 49 line
     // pieces' descriptions gone, a frame 208 commands not 256 (68.1 KiB
-    // measured, + ~11%).
+    // measured, + ~11%). Then 76 -> 80 KiB on 2026-11-09 (test image):
+    // the 2D renderer's glyph pairs 16 -> 32 slots (R172's return leg: Today
+    // with the sky and Weather in both looks draw 25 pairs; each slot's
+    // glyph table cut 160 -> 130 entries and one 256-byte chunk table for
+    // all, ~3.4 KiB more in `.bss`); 78.6 KiB measured.
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 76 * 1024,
+        max_zero: 80 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D
@@ -569,10 +573,12 @@ pub const BUDGETS: &[Budget] = &[
     // Then 174 -> 177 KiB (2026-11-07, test image): the 2D renderer's
     // atlases evicted singly, the frame's own pinned (R172, fix c), the
     // divide-1 variant 179,808 B (175.6 KiB) measured.
+    // Zeroed RAM 50 -> 53 KiB on 2026-11-09 (test image): the 2D renderer's
+    // glyph pairs 16 -> 32 slots (R172's return leg), 52.1 KiB measured.
     Budget {
         image: "rp-scene",
         max_load: 177 * 1024,
-        max_zero: 50 * 1024,
+        max_zero: 53 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),
