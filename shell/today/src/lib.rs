@@ -2178,3 +2178,204 @@ mod tests {
         );
     }
 }
+#[cfg(test)]
+mod look_hourly {
+    use super::*;
+    use rp_draw::Renderer as _;
+    use rp_gfx::layer::{Layer, PlaneFormat};
+    use rp_gfx::render::CpuRenderer;
+    const W: usize = 480;
+
+    /// The forecasts swept: hourly temperature shapes and rain.
+    fn forecasts() -> std::vec::Vec<rp_weather::Forecast> {
+        let base = *rp_shell::Shell::new(shell_fonts(), rp_shell::Icons::NONE, true).forecast();
+        let mut out = std::vec::Vec::new();
+        for shape in 0..12 {
+            let mut f = base;
+            for (k, h) in f.hours.iter_mut().enumerate() {
+                let k = k as i32;
+                let t = match shape {
+                    0 => 150 - 8 * k,                              // falling into the evening
+                    1 => 20 + 8 * k,                               // rising
+                    2 => 300,                                      // flat hot
+                    3 => -50,                                      // flat cold
+                    4 => 100 + if k % 6 < 3 { 120 } else { -120 }, // zigzag
+                    5 => 200 - (k - 12) * (k - 12) * 2,            // peak midday
+                    6 => -20 + (k - 12) * (k - 12) * 2,            // dip
+                    7 => 120 - 4 * k,
+                    8 => 60 + 3 * k,
+                    9 => {
+                        if k < 12 {
+                            250
+                        } else {
+                            0
+                        }
+                    }
+                    10 => {
+                        if k < 12 {
+                            0
+                        } else {
+                            250
+                        }
+                    }
+                    _ => 90,
+                };
+                h.temp = t as i16;
+                h.feels = t as i16 - 10;
+                h.precip = match shape {
+                    4 | 7 | 9 => ((k * 13) % 100) as u8,
+                    11 => 90,
+                    _ => h.precip,
+                };
+                // The card's other lines at their widest and narrowest.
+                h.humidity = [5, 100, 47, 88][shape % 4];
+                h.sky.wind = [0, 1500, 333, 999][(shape / 4) % 4];
+                h.sky.wmo = [0, 3, 61, 95, 71, 45][shape % 6];
+                h.sky.cover = [0, 100, 60][shape % 3];
+                h.sky.night = shape % 2 == 1;
+            }
+            out.push(f);
+        }
+        out
+    }
+
+    /// Hourly's composite pixels (page over the sunset wallpaper) in look
+    /// `want`, under forecast `fc`, at every pixel of the page window.
+    fn hourly(
+        fc: rp_weather::Forecast,
+        want: bool,
+        wall: &[u32],
+    ) -> (rp_shell::PageView, std::vec::Vec<u32>) {
+        let mut shell = rp_shell::Shell::new(shell_fonts(), rp_shell::Icons::NONE, true);
+        shell.set_time(rp_shell::Time {
+            hour: 16,
+            minute: 0,
+            weekday: 0,
+            day: 8,
+            month: 11,
+        });
+        shell.set_forecast(fc);
+        shell.use_planes(true);
+        let mut f = rp_draw::Frame::new();
+        shell.frame(&mut f);
+        let tap = |shell: &mut rp_shell::Shell, t: rp_shell::Target| {
+            let q = shell.rect_of(t);
+            let (x, y) = (q.x + q.w / 2, q.y + q.h / 2);
+            shell.input(rp_shell::Input::PenDown { x, y });
+            shell.input(rp_shell::Input::PenUp { x, y });
+            shell.settle();
+        };
+        tap(&mut shell, rp_shell::Target::Hero);
+        let mut n = 0;
+        while shell.light() != want && n < 4 {
+            tap(&mut shell, rp_shell::Target::SoftRight);
+            let row = shell.appearance_row().unwrap();
+            tap(&mut shell, row);
+            tap(&mut shell, rp_shell::Target::SoftLeft);
+            n += 1;
+        }
+        tap(&mut shell, rp_shell::Target::Tab(1));
+        for _ in 0..60 {
+            shell.frame(&mut f);
+            shell.settle();
+        }
+        let rows = usize::from(rp_shell::picture_rows(1));
+        let mut px = std::vec![0u32; W * rows];
+        let mut plane = std::vec![0u8; W * 4 * rows];
+        {
+            let mut cpu = CpuRenderer::new(
+                Layer::new(&mut px, W as u32, rows as u32, W).unwrap(),
+                &mut plane,
+                W * 4,
+                PlaneFormat::Argb8888,
+            );
+            let mut top = 0;
+            while top < rows {
+                let nn = usize::from(PAGE_BAND).min(rows - top);
+                shell.page_band(1, &mut f, top as u16, nn as u16);
+                let _ = cpu.draw(&f);
+                top += nn;
+            }
+        }
+        let page: std::vec::Vec<u32> = plane
+            .chunks(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let v = shell.page_layer().unwrap();
+        let mut out = std::vec![0u32; W * 640];
+        for y in usize::from(v.win.y)..usize::from(v.win.y + v.win.h) {
+            for x in usize::from(v.win.x)..usize::from(v.win.x + v.win.w) {
+                let pp = page[(usize::from(v.row) + y - usize::from(v.win.y)) * W + x];
+                let d = wall[y * W + x];
+                let a = (pp >> 24) as u8;
+                let ch = |s: u32| {
+                    u32::from(rp_drv_mbx_display::scanout::mix(
+                        (pp >> s) as u8,
+                        (d >> s) as u8,
+                        a,
+                    )) << s
+                };
+                out[y * W + x] = ch(16) | ch(8) | ch(0);
+            }
+        }
+        (v, out)
+    }
+
+    /// R187 (the X51v at 4 PM, today-0113: dark Hourly never judged, 48
+    /// passes unknown): Hourly's look-check points lie off its graph and off
+    /// the hour card's picture column, both store pictures the device paints
+    /// from the forecast (the host draws neither, so points fitted on its
+    /// screens could sit under the device's curve), and vote each look right
+    /// under every forecast swept (temperatures, rain, humidity, wind, sky).
+    #[test]
+    fn hourly_look_points_hold_off_the_graph_under_every_forecast() {
+        let graph = rp_draw::Rect::new(16, 78, 448, 240); // weather_app::HOURLY_GRAPH
+        let raw = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.yuv"));
+        let mut wall = std::vec::Vec::with_capacity(W * 640);
+        wallpaper_rows(raw, Depth::Full, &mut WallScratch::new(), |_, row| {
+            wall.extend_from_slice(row);
+        });
+        let pts = look::page_points(1);
+        for (i, fc) in forecasts().into_iter().enumerate() {
+            for want in [false, true] {
+                let (v, img) = hourly(fc, want, &wall);
+                for p in pts {
+                    let py = i32::from(p.y) - i32::from(v.win.y) + i32::from(v.row);
+                    let inside = |r: rp_draw::Rect| {
+                        py >= i32::from(r.y) - 4
+                            && py < i32::from(r.y + r.h) + 4
+                            && i32::from(p.x) >= i32::from(r.x) - 4
+                            && i32::from(p.x) < i32::from(r.x + r.w) + 4
+                    };
+                    assert!(!inside(graph), "({}, {}) on the graph", p.x, p.y);
+                    assert!(
+                        !(py >= 326 && p.x < 196),
+                        "({}, {}) on the card's picture",
+                        p.x,
+                        p.y
+                    );
+                }
+                let read: std::vec::Vec<Option<u32>> = pts
+                    .iter()
+                    .map(|p| Some(img[usize::from(p.y) * W + usize::from(p.x)]))
+                    .collect();
+                assert_eq!(
+                    look::verdict(pts, &read),
+                    Some(want),
+                    "forecast {i}, light {want}"
+                );
+                // Every point on its side, not only the vote.
+                for (p, r) in pts.iter().zip(&read) {
+                    let l = look::luma(r.unwrap());
+                    assert_eq!(
+                        (l > p.split) == p.light_above,
+                        want,
+                        "({}, {}) read {l}",
+                        p.x,
+                        p.y
+                    );
+                }
+            }
+        }
+    }
+}

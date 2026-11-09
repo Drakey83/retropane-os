@@ -48,4 +48,5 @@ copied from the log.
 | glesfeat-0028, -0029 | 2026-11-09 | C53: after a TA hang the reset alone leaves the core hung; the 3D clock cycled first brings it back, 3 of 3 | [2026-11-09-glesfeat-m2.md](2026-11-09-glesfeat-m2.md) |
 | gpubench-0126, -0127 | 2026-11-09 | GC2DX: the renderer's own memory guarded past the line: 0 changes in 2,000 renders at 149.50 / 1 (R189) | [2026-11-09-gc2dx.md](2026-11-09-gc2dx.md) |
 | today-0110, -0111 | 2026-11-09 | The look check by day: 0110 lost its verdict to a full log (fixed), 0111 0 wrong, 0 unknown, both looks on every page (R187) | [2026-11-09-today-0110-0111.md](2026-11-09-today-0110-0111.md) |
+| today-0113, -0114 | 2026-11-09 | R187 at 4 PM: the old Hourly points on the graph left 48 unknown; refitted off it: 0 unknown, dark Hourly judged | [2026-11-09-today-0110-0111.md](2026-11-09-today-0110-0111.md) |
 | gpubench-0110 to -0124 (GC2DG-GC2DV) | 2026-11-08 | The divide-1 chase for games: 137.80 / 1 proven, 149.50 / 1 not reached | [2026-11-08-gc2d-chase.md](2026-11-08-gc2d-chase.md) |
