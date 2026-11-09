@@ -332,6 +332,38 @@ which the owner's rules exclude (never open the device; the any-Axim
 rule). The voltage lever is closed with proof, not from the datasheet
 alone.
 
+## The chase resumed (2026-11-08): the owner's brief and the stop rules
+
+**The owner, 2026-11-08:** "keep running tests by yourself ... until you
+get enough information to say what is possible and what isnt with this
+overclock for games". The question: the fastest divide-1 step at which
+game frames (GC2BY's four meshes) draw right warm, and whether 149.50 / 1
+can be made right for games by any lever we can reach.
+
+**The stop rules, written before the first run:**
+- One lever changed at a time, against the same frames, warm, 100 rounds
+  of each of the four frames (400 renders a setting); 149.50 / 2 with the
+  lever on as the control (a lever that changes pixels shows there).
+- A lever **helps** when it cuts a step's wrong renders by half or more
+  (GC2BY's counts: 149.50 / 1 383 of 400, 146.25 / 1 8 of 400); it
+  **cures** a step when that step draws 400 of 400 right and holds in a
+  confirming run of 400 more. A lever that doesn't help is closed after
+  its one run and never run again (the stop rule of 2026-10-27).
+- The chase ends when every lead below has had its one decisive run, or a
+  step above 143.00 / 1 is cured and confirmed; then the verdict is
+  written here: what is possible for games, what isn't with every lever
+  tried, and what stays untried and why.
+- The runs are unattended on the loader, Windows Mobile's clock put back
+  after each; any hang or reset is data (the card log), never retried
+  without a change.
+
+**The leads, in order:** (1) the underlay and the alpha-0 overlay (R118,
+R121), never tried past 143.00 / 1; (2) other PLL settings for 149.50
+and 146.25 MHz (other N, and P = 1: the internal frequency doubled), with
+the lock read every setting; (3) the x = 255 column (each wrong render
+counted as on that column alone or not); then the refresh interval
+(`LMREFRESH`, more frequent only) and the rest of "Next" below.
+
 ## Next, when the chase resumes
 
 **Added 2026-10-30 (R118, R121, after the chase was parked): two cures

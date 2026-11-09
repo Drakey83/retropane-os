@@ -625,6 +625,18 @@ mod image {
         /// Run GC2T: `LMTIM` in place of the rated timing at every step but
         /// Windows Mobile's (see [`step_speed`]).
         tim: Option<u32>,
+        /// Run GC2DH: `LMREFRESH` divided by this at every step but Windows
+        /// Mobile's (refresh more often, never less; see [`step_speed`]).
+        refresh_div: u32,
+        /// Run GC2DJ: the game mesh moved this many pixels sideways
+        /// ([`gc2_set_mesh`]).
+        mesh_dx: i32,
+        /// Run GC2DL: the 565 texture the game mesh uses in place of the
+        /// run's ([`gc2_set_mesh`]).
+        tex565: Option<Texture>,
+        /// Run GC2DN: every flat colour of the game mesh centred in its
+        /// RGB565 step ([`gc2::centre565`], [`gc2_set_mesh`]).
+        centred: bool,
         /// Run GC2AF: microseconds [`Rig::frame`] waits on the CPU's own
         /// timer after starting a render before it first reads the 3D
         /// core's status (0: it reads the status register throughout, as
@@ -7242,6 +7254,9 @@ mod image {
         {
             v.lmtim = t;
         }
+        if s.pll() != WM_STEP.pll() {
+            v.lmrefresh /= g.refresh_div.max(1);
+        }
         v
     }
 
@@ -8530,7 +8545,71 @@ mod image {
     /// 2, with the shipped cures, to find the highest step clean for games
     /// (the temperature guard's step; GC2BX: every mesh render wrong at
     /// 149.50 / 1). About 25 minutes, unattended.
-    const GC2_GAMES: bool = option_env!("RP_GPUBENCH_GC2_GAMES").is_some();
+    const GC2_GAMES: bool = option_env!("RP_GPUBENCH_GC2_GAMES").is_some()
+        || GC2_LEVERS
+        || GC2_REFRESH
+        || GC2_MARGIN
+        || GC2_SHIFT;
+    /// Run GC2DJ (`RP_GPUBENCH_GC2_SHIFT`, the x = 255 pixel): the textured
+    /// game frame shifted 0, +8, +3 and -8 pixels, each against its own
+    /// reference, at 145.60 / 1 warm ([`gc2::GAME_SHIFT`]): does the one
+    /// wrong pixel stay on x = 255 (the tile grid or the address) or move
+    /// with the picture.
+    const GC2_SHIFT: bool = option_env!("RP_GPUBENCH_GC2_SHIFT").is_some()
+        || GC2_SHIFT_LADDER
+        || GC2_TEXAT
+        || GC2_TEXSIZE
+        || GC2_CENTRE
+        || GC2_ORDER4;
+    /// Run GC2DO (`RP_GPUBENCH_GC2_ORDER4`): GC2DJ's textured frame shifted
+    /// +3 in four tile orders (checker, rows, scrambled, interleaved,
+    /// [`order_of`]): GC2DJ-GC2DM's faults stay in one place on the screen
+    /// (tile columns 30-37, rows 2-5, late in the checker's passes); does the
+    /// place follow the order (when in the render) or the screen.
+    const GC2_ORDER4: bool = option_env!("RP_GPUBENCH_GC2_ORDER4").is_some();
+    /// Run GC2DN (`RP_GPUBENCH_GC2_CENTRE`): the flat mesh on black and over
+    /// a layer, each as built and with every colour centred in its RGB565
+    /// step ([`gc2::centre565`]: the same pixels written, a small error in
+    /// the core's colour no longer crosses a step): GC2DG's flat faults at
+    /// 146.25 and 149.50 / 1 are one 565 step on flat colour.
+    const GC2_CENTRE: bool = option_env!("RP_GPUBENCH_GC2_CENTRE").is_some() || GC2_FLOOR;
+    /// Run GC2DP (`RP_GPUBENCH_GC2_FLOOR`): GC2DN with each colour at the
+    /// bottom of its RGB565 step instead ([`gc2::floor565`]): GC2DN's
+    /// centred colours failed more (the core's flat colour errs upward by
+    /// two or more 8-bit steps), so the most room above.
+    const GC2_FLOOR: bool = option_env!("RP_GPUBENCH_GC2_FLOOR").is_some();
+    /// Run GC2DM (`RP_GPUBENCH_GC2_TEXSIZE`): GC2DJ's textured frame shifted
+    /// +3 with its 565 texture 128 texels a side (as before), 64, 32 and 256
+    /// ([`gc2::TEXSIZE_CODES`]): GC2DL's fault sits where the texel index
+    /// crosses 64 on u and stays under it on v; does a smaller texture
+    /// (indices that never reach 64) clear it.
+    const GC2_TEXSIZE: bool = option_env!("RP_GPUBENCH_GC2_TEXSIZE").is_some();
+    /// Run GC2DL (`RP_GPUBENCH_GC2_TEXAT`): GC2DJ's textured frame shifted
+    /// +3 (wrong in every render at 143.00 / 1) with its 565 texture copied
+    /// to four places ([`gc2::TEXAT_PAD`] of padding before each copy): does
+    /// the fault follow where the texture sits.
+    const GC2_TEXAT: bool = option_env!("RP_GPUBENCH_GC2_TEXAT").is_some();
+    /// Run GC2DK (`RP_GPUBENCH_GC2_SHIFT_LADDER`): GC2DJ's shifted textured
+    /// frames down the whole divide-1 ladder to Dell's 74.75 / 1
+    /// ([`gc2::GAME_SHIFT_LADDER`]): GC2DJ drew them wrong at 143.00 / 1,
+    /// the step GC2BY's unshifted frames called game-safe.
+    const GC2_SHIFT_LADDER: bool = option_env!("RP_GPUBENCH_GC2_SHIFT_LADDER").is_some();
+    /// Run GC2DI (`RP_GPUBENCH_GC2_MARGIN`, the chase's margin): GC2BY's game
+    /// frames, warm, at 145.60 / 1 and then 143.00 / 1 for 4,800 renders,
+    /// [`gc2::GAME_MARGIN`].
+    const GC2_MARGIN: bool = option_env!("RP_GPUBENCH_GC2_MARGIN").is_some();
+    /// Run GC2DH (`RP_GPUBENCH_GC2_REFRESH`, the chase's refresh lead, the
+    /// owner's of 2026-10-26): GC2BY's game frames, warm, at 149.50 and
+    /// 146.25 / 1 with `LMREFRESH` as set, halved and quartered (refresh
+    /// more often only; rarer loses data), [`gc2::GAME_REFRESH`].
+    const GC2_REFRESH: bool = option_env!("RP_GPUBENCH_GC2_REFRESH").is_some();
+    /// Run GC2DG (`RP_GPUBENCH_GC2_LEVERS`, the divide-1 chase resumed
+    /// 2026-11-08, docs/research/divide1-149.md): GC2BY's game frames, warm,
+    /// at [`gc2::GAME_LEVERS`] instead of the ladder: the write-out cures
+    /// and other PLL settings, one lever at a time, each wrong render
+    /// counted as on the x = 255 column alone or not. About 25 minutes,
+    /// unattended.
+    const GC2_LEVERS: bool = option_env!("RP_GPUBENCH_GC2_LEVERS").is_some();
 
     /// Run GC2BZ, reminder R20 (`RP_GPUBENCH_GC2_TEAR`): C's tearing design
     /// (ADR-0034 P1 = C) measured before it is designed: when each tile row
@@ -10016,6 +10095,26 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2CA, R78: no map; the four game frames at 480 x 640, 360 x 480 and 240 x 320 shown full screen by the video plane's scaler, Dell's doubling and the native screen, timed at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_TEAR {
                 "the 16-bit kinds' targets inside the safe region (GC2BZ, R20: no map; each tile row of the four game frames watched as it lands against the scan line, in four tile orders, started at three scan lines, at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
+            } else if GC2_FLOOR {
+                "the 16-bit kinds' targets inside the safe region (GC2DP: no map; the flat mesh on black and over a layer, each as built and with its colours at the bottom of their RGB565 steps, each its own reference, at 146.25, 149.50 and 143.00 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_ORDER4 {
+                "the 16-bit kinds' targets inside the safe region (GC2DO: no map; the textured game frame shifted +3 in the checker, rows, scrambled and interleaved tile orders, each its own reference, at 143.00 and 146.25 / 1, then 149.50 / 2; the lists on the die; each target poisoned first),"
+            } else if GC2_CENTRE {
+                "the 16-bit kinds' targets inside the safe region (GC2DN: no map; the flat mesh on black and over a layer, each as built and with its colours centred in their RGB565 steps, each its own reference, at 146.25, 149.50 and 143.00 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_TEXSIZE {
+                "the 16-bit kinds' targets inside the safe region (GC2DM: no map; the textured game frame shifted +3 with its 565 texture 128, 64, 32 and 256 texels a side, each its own reference, at 143.00, 146.25 and 149.50 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_TEXAT {
+                "the 16-bit kinds' targets inside the safe region (GC2DL: no map; the textured game frame shifted +3 with its 565 texture copied to four places (as placed, 128 B, 4 KiB and 64 KiB on), each its own reference, at 143.00 and 139.75 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_SHIFT_LADDER {
+                "the 16-bit kinds' targets inside the safe region (GC2DK: no map; GC2DJ's shifted textured frames (0, +8, +3, -8 px), each its own reference, down the divide-1 ladder 143.00 to 74.75 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_SHIFT {
+                "the 16-bit kinds' targets inside the safe region (GC2DJ, the x = 255 pixel: no map; the textured game frame shifted 0, +8, +3 and -8 pixels, each its own reference, at 145.60 / 1 300 rounds, then 143.00 / 1 and 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_MARGIN {
+                "the 16-bit kinds' targets inside the safe region (GC2DI, the chase's margin: no map; GC2BY's game frames, warm, at 145.60 / 1 (PLL 56 / 5) 300 rounds, then 143.00 / 1 1,200 rounds; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_REFRESH {
+                "the 16-bit kinds' targets inside the safe region (GC2DH, the chase's refresh lead: no map; GC2BY's game frames, warm, at 149.50 and 146.25 / 1 with LMREFRESH as set, halved and quartered, 149.50 / 2 quartered as the control; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_LEVERS {
+                "the 16-bit kinds' targets inside the safe region (GC2DG, the divide-1 chase resumed: no map; GC2BY's game frames, warm, with the write-out cures alone and together at 149.50, 146.25 and 143.00 / 1, both at 149.50 / 2 as the control, then other PLL settings for 149.50 and 146.25; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_GAMES {
                 "the 16-bit kinds' targets inside the safe region (GC2BY, R76: no map; the game frames, watertight meshes flat, layered, textured and depth tested, on the warm ladder 149.50 down to 108.33 / 1 and 149.50 / 2 with the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_SCALED {
@@ -28964,6 +29063,100 @@ mod image {
     /// and `TEMP0` logged, its first two wrong renders described; the
     /// steps that drew every frame right named at the end.
     #[inline(never)]
+    /// GC2DJ's frames: the textured mesh four times, shifted by
+    /// [`gc2::SHIFT_DX`]; else GC2BY's four.
+    fn game_frames() -> [u8; 4] {
+        if GC2_CENTRE {
+            [
+                gc2::MESH_FLAT,
+                gc2::MESH_FLAT,
+                gc2::MESH_LAYERED,
+                gc2::MESH_LAYERED,
+            ]
+        } else if GC2_SHIFT {
+            [gc2::MESH_TEXTURED; 4]
+        } else {
+            gc2::GAME_FRAMES
+        }
+    }
+
+    /// Frame `f`'s tile order (GC2DO; else the checker, the shipped one).
+    fn order_of(f: usize) -> rp_mbx3d_render::TileOrder {
+        use rp_mbx3d_render::TileOrder;
+        if GC2_ORDER4 {
+            [
+                TileOrder::Checker,
+                TileOrder::Rows,
+                TileOrder::Scrambled,
+                TileOrder::Interleaved,
+            ][f]
+        } else {
+            TileOrder::Checker
+        }
+    }
+
+    /// Frame `f`'s sideways shift in pixels (GC2DJ only).
+    fn mesh_dx(f: usize) -> i32 {
+        if GC2_CENTRE {
+            0
+        } else if GC2_TEXAT || GC2_TEXSIZE || GC2_ORDER4 {
+            3
+        } else if GC2_SHIFT {
+            gc2::SHIFT_DX[f]
+        } else {
+            0
+        }
+    }
+
+    /// Frame `f`'s name in the log.
+    fn frame_name(f: usize) -> &'static str {
+        if GC2_FLOOR {
+            [
+                "the flat mesh on black as built",
+                "the flat mesh on black floored",
+                "the flat mesh over a layer as built",
+                "the flat mesh over a layer floored",
+            ][f]
+        } else if GC2_ORDER4 {
+            [
+                "+3 in the checker order",
+                "+3 in the rows order",
+                "+3 in the scrambled order",
+                "+3 in the interleaved order",
+            ][f]
+        } else if GC2_CENTRE {
+            [
+                "the flat mesh on black as built",
+                "the flat mesh on black centred",
+                "the flat mesh over a layer as built",
+                "the flat mesh over a layer centred",
+            ][f]
+        } else if GC2_TEXSIZE {
+            [
+                "+3, the texture 128 a side",
+                "+3, the texture 64 a side",
+                "+3, the texture 32 a side",
+                "+3, the texture 256 a side",
+            ][f]
+        } else if GC2_TEXAT {
+            [
+                "+3, the texture as placed",
+                "+3, the texture 128 B on",
+                "+3, the texture 4 KiB on",
+                "+3, the texture 64 KiB on",
+            ][f]
+        } else if GC2_SHIFT {
+            [
+                "the textured mesh +0",
+                "the textured mesh +8",
+                "the textured mesh +3",
+                "the textured mesh -8",
+            ][f]
+        } else {
+            GC2BY_NAMES[f]
+        }
+    }
+
     fn gc2_games(g: &mut Rig, r: &mut Renderer, (tex, all, dsig): (gc2::Tex, &mut [u32], bool)) {
         let k = gc2::FT2;
         let words = gc2::words(k) as usize;
@@ -29025,14 +29218,83 @@ mod image {
             clock_restore(&mut g.e.regs);
             clock_readback(g);
         }
+        // GC2DL: the 565 texture copied to four places, a pad before each
+        // (the pads given back once the copies are placed).
+        let mut copies: [Option<Texture>; 4] = [None; 4];
+        if GC2_TEXAT {
+            let d = tex.t565;
+            for (c, &pad) in copies.iter_mut().zip(gc2::TEXAT_PAD.iter()) {
+                let spacer = if pad > 0 {
+                    g.pool.alloc(pad, 128)
+                } else {
+                    None
+                };
+                if let Some(at) = g.pool.alloc(d.bytes(), 128) {
+                    // Written from the texture's own words, as the run
+                    // placed the first (index 0 is the 565 texture).
+                    gc2::texture_words(0, |i, w| g.mem.store((at + 4 * i) as usize, &[w]));
+                    *c = Some(Texture { at, ..d });
+                }
+                if let Some(sp) = spacer {
+                    let _ = g.pool.free(sp, pad);
+                }
+            }
+            g.mem.sync();
+            log!(
+                "  GC2DL the 565 texture ({} bytes) at 0x{:x}; copies at {:x?}",
+                d.bytes(),
+                d.at,
+                copies.map(|c| c.map(|t| t.at))
+            );
+            if copies.iter().any(Option::is_none) {
+                log!("  GC2DL: no memory for a copy: nothing run");
+                for t in copies.into_iter().flatten() {
+                    let _ = g.pool.free(t.at, t.bytes());
+                }
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+        }
+        // GC2DM: the 565 texture at four sizes, each written from the
+        // pattern at its own side.
+        if GC2_TEXSIZE {
+            for (c, &code) in copies.iter_mut().zip(gc2::TEXSIZE_CODES.iter()) {
+                let d = Texture {
+                    code,
+                    ..gc2::TEXTURES[0]
+                };
+                if let Some(at) = g.pool.alloc(d.bytes(), 128) {
+                    gc2::texture565_words(code, |i, w| g.mem.store((at + 4 * i) as usize, &[w]));
+                    *c = Some(Texture { at, ..d });
+                }
+            }
+            g.mem.sync();
+            log!(
+                "  GC2DM the 565 texture at sides {:?} placed at {:x?}",
+                gc2::TEXSIZE_CODES.map(|c| 8u32 << c),
+                copies.map(|c| c.map(|t| t.at))
+            );
+            if copies.iter().any(Option::is_none) {
+                log!("  GC2DM: no memory for a texture: nothing run");
+                for t in copies.into_iter().flatten() {
+                    let _ = g.pool.free(t.at, t.bytes());
+                }
+                let _ = ondie.release(&mut g.pool);
+                return;
+            }
+        }
         // The references at Windows Mobile's clock.
         g.nudge = GC2BO_NUDGE;
         ondie.core_taken();
         ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
         let (first, refs) = all.split_at_mut(words);
         let mut ok = true;
-        for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+        for (f, &kind) in game_frames().iter().enumerate() {
+            g.mesh_dx = mesh_dx(f);
+            g.centred = GC2_CENTRE && f % 2 == 1;
+            g.tex565 = copies[f];
             gc2_set_mesh(g, &mut ondie, kind, tex);
+            ondie.set_tile_order(order_of(f));
             let want = &mut refs[f * words..(f + 1) * words];
             let mut name = heapless_name();
             let _ = write!(name, "GC2BY frame {f}");
@@ -29048,25 +29310,114 @@ mod image {
             gc2::absent16(&refs[f * words..(f + 1) * words], &gc2::POISON)
         });
         let mut clean_steps = 0u32;
-        for (si, ((m, n), div, name)) in gc2::GAME_LADDER.iter().enumerate() {
-            let step = gc2_step(*m, *n, 0, *div);
+        let ladder = gc2::ladder_levers();
+        let steps: &[gc2::Lever] = if GC2_ORDER4 {
+            &gc2::GAME_ORDER
+        } else if GC2_CENTRE {
+            &gc2::GAME_CENTRE
+        } else if GC2_TEXSIZE {
+            &gc2::GAME_TEXSIZE
+        } else if GC2_TEXAT {
+            &gc2::GAME_TEXAT
+        } else if GC2_SHIFT_LADDER {
+            &gc2::GAME_SHIFT_LADDER
+        } else if GC2_SHIFT {
+            &gc2::GAME_SHIFT
+        } else if GC2_MARGIN {
+            &gc2::GAME_MARGIN
+        } else if GC2_REFRESH {
+            &gc2::GAME_REFRESH
+        } else if GC2_LEVERS {
+            &gc2::GAME_LEVERS
+        } else {
+            &ladder
+        };
+        let tag = if GC2_FLOOR {
+            "GC2DP"
+        } else if GC2_ORDER4 {
+            "GC2DO"
+        } else if GC2_CENTRE {
+            "GC2DN"
+        } else if GC2_TEXSIZE {
+            "GC2DM"
+        } else if GC2_TEXAT {
+            "GC2DL"
+        } else if GC2_SHIFT_LADDER {
+            "GC2DK"
+        } else if GC2_SHIFT {
+            "GC2DJ"
+        } else if GC2_MARGIN {
+            "GC2DI"
+        } else if GC2_REFRESH {
+            "GC2DH"
+        } else if GC2_LEVERS {
+            "GC2DG"
+        } else {
+            "GC2BY"
+        };
+        for (si, lv) in steps.iter().enumerate() {
+            let name = &lv.name;
+            let (m, n, p) = lv.pll;
+            let step = gc2_step(m, n, p, lv.div);
+            g.refresh_div = lv.refresh_div;
+            if ondie.set_underlay(lv.underlay).is_err() || ondie.set_overlay(lv.overlay).is_err() {
+                log!("  {tag} {name}: a cure couldn't be set; skipped");
+                continue;
+            }
             clock_restore(&mut g.e.regs);
             let Some(lock) = clock_apply(g, step) else {
                 clock_restore(&mut g.e.regs);
-                log!("  GC2BY {name}: the clock didn't take; skipped");
+                log!("  {tag} {name}: the clock didn't take; skipped");
                 continue;
             };
             clock_readback(g);
             let regs = gc2_clock_want(step_speed(g, step), step.div);
             let mut l3 = heapless_name();
-            let _ = write!(l3, "STEP {} OF {}", si + 1, gc2::GAME_LADDER.len());
-            soak_label(g, ["GC2BY GAME LADDER", name, l3.as_str()], SOAK_BLUE);
+            let _ = write!(l3, "STEP {} OF {}", si + 1, steps.len());
+            soak_label(
+                g,
+                [
+                    if GC2_FLOOR {
+                        "GC2DP FLOORED COLOURS"
+                    } else if GC2_ORDER4 {
+                        "GC2DO TILE ORDERS"
+                    } else if GC2_CENTRE {
+                        "GC2DN CENTRED COLOURS"
+                    } else if GC2_TEXSIZE {
+                        "GC2DM TEXTURE SIZES"
+                    } else if GC2_TEXAT {
+                        "GC2DL TEXTURE PLACES"
+                    } else if GC2_SHIFT_LADDER {
+                        "GC2DK SHIFTED LADDER"
+                    } else if GC2_SHIFT {
+                        "GC2DJ X = 255 SHIFT"
+                    } else if GC2_MARGIN {
+                        "GC2DI GAME MARGIN"
+                    } else if GC2_REFRESH {
+                        "GC2DH GAME REFRESH"
+                    } else if GC2_LEVERS {
+                        "GC2DG GAME LEVERS"
+                    } else {
+                        "GC2BY GAME LADDER"
+                    },
+                    name,
+                    l3.as_str(),
+                ],
+                SOAK_BLUE,
+            );
             let mut wrong = [0u32; gc2::GAME_FRAMES.len()];
             let mut done = [0u32; gc2::GAME_FRAMES.len()];
             let mut best = [u32::MAX; gc2::GAME_FRAMES.len()];
+            // Wrong renders whose every wrong pixel is on x = 255 (GC2BY's
+            // one fault left at 146.25 / 1).
+            let mut col255 = [0u32; gc2::GAME_FRAMES.len()];
             for round in 0..GC2BY_ROUNDS {
-                for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+                for (f, &kind) in game_frames().iter().enumerate() {
+                    g.mesh_dx = mesh_dx(f);
+                    g.centred = GC2_CENTRE && f % 2 == 1;
+                    g.tex565 = copies[f];
                     gc2_set_mesh(g, &mut ondie, kind, tex);
+                    ondie.set_tile_order(order_of(f));
                     if let Some(c) = poisons[f]
                         && !poison_fill(g, at, c)
                     {
@@ -29091,11 +29442,14 @@ mod image {
                     best[f] = best[f].min(side.best_us);
                     if w != 0 {
                         wrong[f] += 1;
+                        let (np, b, (x, y, gp, wp)) = gc2_diff565(&first[..words], want);
+                        if b[0] == 255 && b[2] == 255 {
+                            col255[f] += 1;
+                        }
                         if wrong[f] <= 2 {
-                            let (np, b, (x, y, gp, wp)) = gc2_diff565(&first[..words], want);
                             log!(
-                                "  GC2BY {name} {} wrong render {} (round {round}): {np} pixels, box ({}, {})-({}, {}), first ({x}, {y}) 0x{gp:04x} for 0x{wp:04x}",
-                                GC2BY_NAMES[f],
+                                "  {tag} {name} {} wrong render {} (round {round}): {np} pixels, box ({}, {})-({}, {}), first ({x}, {y}) 0x{gp:04x} for 0x{wp:04x}",
+                                frame_name(f),
                                 wrong[f],
                                 b[0],
                                 b[1],
@@ -29111,20 +29465,23 @@ mod image {
                 wrong.iter().all(|&w| w == 0) && done.iter().all(|&d| d == GC2BY_ROUNDS);
             clean_steps |= u32::from(all_right) << si;
             log!(
-                "  GC2BY {name} (lock {lock}): wrong of {GC2BY_ROUNDS} by frame {wrong:?}, drawn {done:?}, fastest by frame {best:?} us; every frame right: {all_right}; TEMP0 {:?}",
+                "  {tag} {name} (lock {lock}): wrong of {GC2BY_ROUNDS} by frame {wrong:?} ({col255:?} on x = 255 alone), drawn {done:?}, fastest by frame {best:?} us; every frame right: {all_right}; TEMP0 {:?}",
                 gc2ba_temp(&mut touch)
             );
         }
+        let _ = ondie.set_underlay(false);
+        let _ = ondie.set_overlay(false);
+        g.refresh_div = 1;
         clock_restore(&mut g.e.regs);
         clock_readback(g);
-        let mut list = Name::<256>::new();
-        for (si, (_, _, name)) in gc2::GAME_LADDER.iter().enumerate() {
+        let mut list = Name::<512>::new();
+        for (si, lv) in steps.iter().enumerate() {
             if clean_steps & (1 << si) != 0 {
-                let _ = write!(list, "{name}; ");
+                let _ = write!(list, "{}; ", lv.name);
             }
         }
         log!(
-            "  GC2BY steps with every game frame right: {}",
+            "  {tag} settings with every game frame right: {}",
             if list.as_str().is_empty() {
                 "none"
             } else {
@@ -29134,8 +29491,12 @@ mod image {
         // The controls at Windows Mobile's clock after.
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         let mut right = 0;
-        for (f, &kind) in gc2::GAME_FRAMES.iter().enumerate() {
+        for (f, &kind) in game_frames().iter().enumerate() {
+            g.mesh_dx = mesh_dx(f);
+            g.centred = GC2_CENTRE && f % 2 == 1;
+            g.tex565 = copies[f];
             gc2_set_mesh(g, &mut ondie, kind, tex);
+            ondie.set_tile_order(order_of(f));
             let want = &refs[f * words..(f + 1) * words];
             let mut side = Gc2Side::new(dsig);
             let mut base = Gc2Baseline(None);
@@ -29155,6 +29516,13 @@ mod image {
         }
         log!("  GC2BY controls at Windows Mobile's clock after: {right} of {nf} right");
         g.nudge = 0;
+        g.mesh_dx = 0;
+        g.tex565 = None;
+        g.centred = false;
+        ondie.set_tile_order(rp_mbx3d_render::TileOrder::Checker);
+        for t in copies.into_iter().flatten() {
+            let _ = g.pool.free(t.at, t.bytes());
+        }
         if !ondie.release(&mut g.pool) {
             log!("  GC2BY: the on-die renderer's memory not given back");
         }
@@ -30194,9 +30562,31 @@ mod image {
 
     /// A mesh frame set into all of the renderer's slots.
     fn gc2_set_mesh(g: &mut Rig, r: &mut Renderer, kind: u8, tex: gc2::Tex) {
+        let mut tex = tex;
+        if let Some(t) = g.tex565 {
+            tex.t565 = t;
+        }
         let (bg, slots) = gc2::mesh_frame(kind, tex);
         let _ = r.set_background(Some(bg));
-        for (n, d) in slots.into_iter().enumerate() {
+        let dx = g.mesh_dx * rp_mbx3d_render::SUB;
+        for (n, mut d) in slots.into_iter().enumerate() {
+            if dx != 0
+                && let Some(d) = d.as_mut()
+            {
+                for c in &mut d.corners {
+                    c.x += dx;
+                }
+            }
+            if g.centred
+                && let Some(d) = d.as_mut()
+                && let rp_mbx3d_render::Paint::Flat(c) = d.paint
+            {
+                d.paint = rp_mbx3d_render::Paint::Flat(if GC2_FLOOR {
+                    gc2::floor565(c)
+                } else {
+                    gc2::centre565(c)
+                });
+            }
             g.set(r, n, d);
         }
     }
@@ -35063,6 +35453,10 @@ mod image {
             checks: 0,
             writeout_hits: Over::NONE,
             tim: None,
+            refresh_div: 1,
+            mesh_dx: 0,
+            tex565: None,
+            centred: false,
             quiet_us: 0,
             at_override: u32::MAX,
             tear: None,

@@ -3223,3 +3223,196 @@ fn gc2df_a_copy_landing_out_of_order_is_counted() {
     let up: std::vec::Vec<_> = (0..40u16).rev().map(Some).collect();
     assert_eq!(landing_out_of_order(&up), (0, 39));
 }
+
+#[test]
+fn gc2dg_levers_name_their_clocks() {
+    // Each lever's label starts with its clock, 13 MHz x m / (n x 2^p),
+    // and the cores' divide; the fields fit COREPLL (M 6 bits, N 3, P 3).
+    for lv in GAME_LEVERS {
+        let (m, n, p) = lv.pll;
+        assert!(m < 64 && (1..8).contains(&n) && p < 8, "{}", lv.name);
+        let khz = 13_000 * m / (n << p);
+        let want = format!("{}.{:02} / {}", khz / 1000, (khz % 1000 + 5) / 10, lv.div);
+        assert!(lv.name.starts_with(&want), "{} is not {want}", lv.name);
+        // A PLL other than the ladder's says so in its name, and only then.
+        let ladder = GAME_LADDER.iter().any(|s| s.0 == (m, n) && p == 0);
+        assert_eq!(!ladder, lv.name.contains("PLL"), "{}", lv.name);
+        // A cure is named when it is on.
+        assert_eq!(lv.underlay, lv.name.contains("underlay"), "{}", lv.name);
+        assert_eq!(lv.overlay, lv.name.contains("overlay"), "{}", lv.name);
+    }
+    // The ladder as levers is the ladder, no cure.
+    for (lv, ((m, n), div, name)) in ladder_levers().iter().zip(GAME_LADDER) {
+        assert_eq!(
+            *lv,
+            Lever {
+                pll: (m, n, 0),
+                div,
+                underlay: false,
+                overlay: false,
+                refresh_div: 1,
+                name
+            }
+        );
+    }
+}
+
+#[test]
+fn gc2dh_refresh_only_more_often() {
+    // Never rarer (data loss): every divisor 1, 2 or 4, named, no cure on.
+    for lv in GAME_REFRESH {
+        assert!([1, 2, 4].contains(&lv.refresh_div), "{}", lv.name);
+        let label = if lv.refresh_div == 1 {
+            String::from("refresh as set")
+        } else {
+            format!("refresh x {}", lv.refresh_div)
+        };
+        assert!(lv.name.ends_with(&label), "{}", lv.name);
+        assert!(!lv.underlay && !lv.overlay);
+        let (m, n, p) = lv.pll;
+        let khz = 13_000 * m / (n << p);
+        let want = format!("{}.{:02} / {}", khz / 1000, (khz % 1000 + 5) / 10, lv.div);
+        assert!(lv.name.starts_with(&want), "{}", lv.name);
+    }
+    // The levers of GC2DG keep the refresh as set.
+    assert!(GAME_LEVERS.iter().all(|l| l.refresh_div == 1));
+}
+
+#[test]
+fn gc2di_margin_names_its_clocks() {
+    for lv in GAME_MARGIN
+        .iter()
+        .chain(&GAME_SHIFT)
+        .chain(&GAME_TEXAT)
+        .chain(&GAME_TEXSIZE)
+        .chain(&GAME_CENTRE)
+        .chain(&GAME_ORDER)
+    {
+        let (m, n, p) = lv.pll;
+        assert!(m < 64 && (1..8).contains(&n) && p == 0, "{}", lv.name);
+        let khz = 13_000 * m / n;
+        let want = format!(
+            "{}.{:02} / {} part ",
+            khz / 1000,
+            (khz % 1000 + 5) / 10,
+            lv.div
+        );
+        assert!(lv.name.starts_with(&want), "{} is not {want}", lv.name);
+        assert!(!lv.underlay && !lv.overlay && lv.refresh_div == 1);
+    }
+    // 145.60 is the only locked clock between 143.00 and 146.25 (N 1-7,
+    // M under 64, P 0).
+    let between: Vec<(u32, u32)> = (1..8u32)
+        .flat_map(|n| (1..64u32).map(move |m| (m, n)))
+        .filter(|&(m, n)| {
+            let khz = 13_000 * m / n;
+            khz > 143_000 && khz < 146_250
+        })
+        .collect();
+    assert!(
+        between.iter().all(|&(m, n)| 13_000 * m / n == 145_600),
+        "{between:?}"
+    );
+}
+
+#[test]
+fn gc2dj_shifts_are_distinct_and_small() {
+    // The first is the unshifted control; each shift a tile or less.
+    assert_eq!(SHIFT_DX[0], 0);
+    assert!(SHIFT_DX.iter().all(|d| d.abs() <= 8));
+    for (i, a) in SHIFT_DX.iter().enumerate() {
+        assert!(SHIFT_DX[i + 1..].iter().all(|b| b != a));
+    }
+}
+
+#[test]
+fn gc2dk_ladder_names_its_clocks_falling() {
+    let mut last = u32::MAX;
+    for lv in GAME_SHIFT_LADDER {
+        let (m, n, p) = lv.pll;
+        assert!(m < 64 && (1..8).contains(&n) && p == 0);
+        let khz = 13_000 * m / n;
+        assert_eq!(
+            lv.name,
+            format!("{}.{:02} / {}", khz / 1000, (khz % 1000 + 5) / 10, lv.div)
+        );
+        if lv.div == 1 {
+            assert!(khz < last, "{}", lv.name);
+            last = khz;
+        }
+    }
+    assert_eq!(GAME_SHIFT_LADDER[GAME_SHIFT_LADDER.len() - 1].div, 2);
+}
+
+#[test]
+fn gc2dl_pads_rise_and_keep_the_alignment() {
+    assert_eq!(TEXAT_PAD[0], 0);
+    assert!(TEXAT_PAD.windows(2).all(|w| w[0] < w[1]));
+    assert!(TEXAT_PAD.iter().all(|p| p % 128 == 0));
+}
+
+#[test]
+fn gc2dm_sized_texture_matches_texture_zero_at_its_size() {
+    // At code 4 the sized writer is texture 0's, word for word.
+    let mut a = std::vec::Vec::new();
+    let mut b = std::vec::Vec::new();
+    texture_words(0, |i, w| a.push((i, w)));
+    texture565_words(TEXTURES[0].code, |i, w| b.push((i, w)));
+    assert_eq!(a, b);
+    // Each size writes side * side / 2 words, indices 0 up.
+    for code in TEXSIZE_CODES {
+        let mut n = 0u32;
+        texture565_words(code, |i, _| {
+            assert_eq!(i, n);
+            n += 1;
+        });
+        assert_eq!(n, (8u32 << code) * (8u32 << code) / 2);
+    }
+    assert_eq!(TEXSIZE_CODES[0], TEXTURES[0].code);
+}
+
+#[test]
+fn gc2dn_centring_keeps_the_565_pixel_and_the_margin() {
+    let pack = |c: u32| ((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x001F);
+    for c in [
+        0xFF00_0000u32,
+        0xFFFF_FFFF,
+        0xFF7B_7B7B,
+        0x8012_3456,
+        0xFFD3_CE00,
+    ] {
+        let m = centre565(c);
+        // The same 565 pixel, alpha kept.
+        assert_eq!(pack(m), pack(c), "{c:08x}");
+        assert_eq!(m >> 24, c >> 24);
+        // Each channel two 8-bit steps from either edge of its 565 step at
+        // least (green's step is 4 wide, red's and blue's 8).
+        for (sh, step) in [(16, 8u32), (8, 4), (0, 8)] {
+            let v = (m >> sh) & 0xFF;
+            let low = v % step;
+            assert!(low >= 2 && step - 1 - low >= 1, "{c:08x} ch {sh}");
+            assert_eq!(pack(m + (1 << sh)), pack(m), "+1 crosses: {c:08x} ch {sh}");
+            assert_eq!(pack(m - (1 << sh)), pack(m), "-1 crosses: {c:08x} ch {sh}");
+        }
+    }
+}
+
+#[test]
+fn gc2dp_flooring_keeps_the_565_pixel_with_room_above() {
+    let pack = |c: u32| ((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x001F);
+    for c in [
+        0xFF00_0000u32,
+        0xFFFF_FFFF,
+        0xFF7B_7B7B,
+        0x8012_3456,
+        0xFFD3_CE00,
+    ] {
+        let m = floor565(c);
+        assert_eq!(pack(m), pack(c), "{c:08x}");
+        assert_eq!(m >> 24, c >> 24);
+        // Green may rise 3 steps, red and blue 7, without a new pixel.
+        for (sh, up) in [(16, 7u32), (8, 3), (0, 7)] {
+            assert_eq!(pack(m + (up << sh)), pack(m), "{c:08x} ch {sh}");
+        }
+    }
+}

@@ -2649,6 +2649,27 @@ fn mesh_colour(seed: u32, i: u32) -> u32 {
     0xFF00_0000 | ((h & 0x00BF_BFBF) + 0x0040_4040)
 }
 
+/// `c` (0xAARRGGBB) with each channel at the bottom of its RGB565 step
+/// (the low bits 0): the same RGB565 pixel, the most room for an error that
+/// only rises (GC2DN: the core's flat colour errs upward). Alpha as it is.
+#[must_use]
+pub const fn floor565(c: u32) -> u32 {
+    c & 0xFFF8_FCF8
+}
+
+/// `c` (0xAARRGGBB) with each channel moved to the middle of its RGB565
+/// step: red and blue `x5 << 3 | 0b100`, green `g6 << 2 | 0b10`. Written to
+/// an RGB565 target it gives the same pixel (the top bits kept); a small
+/// error in the core's 8-bit colour (GC2DG: +1 tipped green 30 to 31) no
+/// longer crosses a step. Alpha as it is.
+#[must_use]
+pub const fn centre565(c: u32) -> u32 {
+    let r = (c >> 16) & 0xF8 | 0x04;
+    let g = (c >> 8) & 0xFC | 0x02;
+    let b = c & 0xF8 | 0x04;
+    c & 0xFF00_0000 | r << 16 | g << 8 | b
+}
+
 /// GC2BW's frame `kind` ([`MESH_FLAT`], [`MESH_LAYERED`],
 /// [`MESH_TEXTURED`], [`MESH_DEPTH`]): its background and the renderer's
 /// [`MESH_SLOTS`] slots.
@@ -2734,6 +2755,196 @@ pub const GAME_LADDER: [((u32, u32), u32, &str); 8] = [
     ((25, 3), 1, "108.33 / 1"),
     ((23, 2), 2, "149.50 / 2"),
 ];
+/// One setting of GC2DG's lever run: the PLL (`13 MHz x m / (n x 2^p)`),
+/// the cores' divider, and the two write-out cures (R118's underlay,
+/// R121's alpha-0 overlay).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lever {
+    pub pll: (u32, u32, u32),
+    pub div: u32,
+    pub underlay: bool,
+    pub overlay: bool,
+    /// `LMREFRESH` divided by this (1: as the clock sets it; more is more
+    /// often).
+    pub refresh_div: u32,
+    pub name: &'static str,
+}
+
+const fn lever(pll: (u32, u32, u32), div: u32, cures: (bool, bool), name: &'static str) -> Lever {
+    Lever {
+        pll,
+        div,
+        underlay: cures.0,
+        overlay: cures.1,
+        refresh_div: 1,
+        name,
+    }
+}
+
+const fn refresh(pll: (u32, u32, u32), div: u32, refresh_div: u32, name: &'static str) -> Lever {
+    Lever {
+        refresh_div,
+        ..lever(pll, div, (false, false), name)
+    }
+}
+
+/// GC2BY's ladder as levers: no cure, `p` 0.
+#[must_use]
+pub const fn ladder_levers() -> [Lever; GAME_LADDER.len()] {
+    let mut out = [lever((0, 1, 0), 1, (false, false), ""); GAME_LADDER.len()];
+    let mut i = 0;
+    while i < GAME_LADDER.len() {
+        let ((m, n), div, name) = GAME_LADDER[i];
+        out[i] = lever((m, n, 0), div, (false, false), name);
+        i += 1;
+    }
+    out
+}
+
+/// GC2DG's settings (the chase resumed 2026-11-08, docs/research/
+/// divide1-149.md "The chase resumed"): one lever at a time on the game
+/// frames, warm. The cures alone and together at the top three divide-1
+/// steps; both at 149.50 / 2 as the control (a cure that changed pixels
+/// would show there); then the same clocks from other PLL settings (`n`
+/// 4 for 149.50, the comparison at half the rate; `p` 1, the internal
+/// frequency doubled), last, as a setting the PLL can't hold may hang.
+pub const GAME_LEVERS: [Lever; 15] = [
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1"),
+    lever((23, 2, 0), 1, (true, false), "149.50 / 1 underlay"),
+    lever((23, 2, 0), 1, (false, true), "149.50 / 1 overlay"),
+    lever((23, 2, 0), 1, (true, true), "149.50 / 1 underlay + overlay"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1"),
+    lever((45, 4, 0), 1, (true, false), "146.25 / 1 underlay"),
+    lever((45, 4, 0), 1, (false, true), "146.25 / 1 overlay"),
+    lever((45, 4, 0), 1, (true, true), "146.25 / 1 underlay + overlay"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1"),
+    lever((44, 4, 0), 1, (true, true), "143.00 / 1 underlay + overlay"),
+    lever((23, 2, 0), 2, (true, true), "149.50 / 2 underlay + overlay"),
+    lever((46, 4, 0), 1, (false, false), "149.50 / 1 PLL 46 / 4"),
+    lever((23, 1, 1), 1, (false, false), "149.50 / 1 PLL 23 / 1 / 2"),
+    lever((46, 2, 1), 1, (false, false), "149.50 / 1 PLL 46 / 2 / 2"),
+    lever((45, 2, 1), 1, (false, false), "146.25 / 1 PLL 45 / 2 / 2"),
+];
+
+/// GC2DH's settings (the refresh lead, divide1-149.md "Next" item 2): the
+/// two failing steps with the refresh as the clock sets it, twice and four
+/// times as often; 149.50 / 2 at four times as the control.
+pub const GAME_REFRESH: [Lever; 7] = [
+    refresh((23, 2, 0), 1, 1, "149.50 / 1 refresh as set"),
+    refresh((23, 2, 0), 1, 2, "149.50 / 1 refresh x 2"),
+    refresh((23, 2, 0), 1, 4, "149.50 / 1 refresh x 4"),
+    refresh((45, 4, 0), 1, 1, "146.25 / 1 refresh as set"),
+    refresh((45, 4, 0), 1, 2, "146.25 / 1 refresh x 2"),
+    refresh((45, 4, 0), 1, 4, "146.25 / 1 refresh x 4"),
+    refresh((23, 2, 0), 2, 4, "149.50 / 2 refresh x 4"),
+];
+
+/// GC2DI's settings (the margin): 145.60 / 1 (PLL 56 / 5, the only clock
+/// a locked PLL gives between 143.00 and 146.25) three times, then 143.00
+/// / 1 twelve times over (4,800 game renders, the chip at its hottest by
+/// then): does the game-safe step hold with time and heat.
+pub const GAME_MARGIN: [Lever; 15] = [
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 1"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 2"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 3"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 1"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 2"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 3"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 4"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 5"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 6"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 7"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 8"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 9"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 10"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 11"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 12"),
+];
+
+/// GC2DJ's sideways shifts of the textured frame, pixels: none, a tile,
+/// part of a tile, a tile back.
+pub const SHIFT_DX: [i32; 4] = [0, 8, 3, -8];
+
+/// GC2DJ's settings: 145.60 / 1 (the x = 255 pixel in 70 of 100 textured
+/// renders, GC2DI) three times, 143.00 / 1, and 149.50 / 2 as the control.
+pub const GAME_SHIFT: [Lever; 5] = [
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 1"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 2"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 3"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// GC2DK's ladder for GC2DJ's shifted frames: every divide-1 step GC2BY
+/// ran from 143.00 down, then 99.67 and Dell's 74.75 / 1, then 149.50 / 2.
+pub const GAME_SHIFT_LADDER: [Lever; 8] = [
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1"),
+    lever((41, 4, 0), 1, (false, false), "133.25 / 1"),
+    lever((27, 3, 0), 1, (false, false), "117.00 / 1"),
+    lever((25, 3, 0), 1, (false, false), "108.33 / 1"),
+    lever((23, 3, 0), 1, (false, false), "99.67 / 1"),
+    lever((23, 4, 0), 1, (false, false), "74.75 / 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2"),
+];
+
+/// GC2DL's padding before each copy of the 565 texture, bytes: none (the
+/// first free place), then 128 B, 4 KiB and 64 KiB further on.
+pub const TEXAT_PAD: [u32; 4] = [0, 128, 4096, 65536];
+
+/// GC2DL's settings: 143.00 / 1 twice, 139.75 / 1, 149.50 / 2 the control.
+pub const GAME_TEXAT: [Lever; 4] = [
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 1"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 2"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// GC2DM's 565 texture sizes (`code`: side `8 << code`): 128 as before,
+/// then 64, 32 and 256.
+pub const TEXSIZE_CODES: [u8; 4] = [4, 3, 2, 5];
+
+/// GC2DM's settings: 143.00, 146.25 and 149.50 / 1, 149.50 / 2 the control.
+pub const GAME_TEXSIZE: [Lever; 4] = [
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 1"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 1"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// The RGB565 texture of side `8 << code` word by word in its twiddled
+/// order, [`texel565`]'s pattern (GC2DM: [`texture_words`]'s texture 0 at
+/// other sizes).
+pub fn texture565_words(code: u8, mut put: impl FnMut(u32, u32)) {
+    let side = 8u32 << code;
+    for k in 0..side * side / 2 {
+        let (x0, y0) = untwiddle(2 * k);
+        let (x1, y1) = untwiddle(2 * k + 1);
+        put(
+            k,
+            u32::from(texel565(x0, y0)) | u32::from(texel565(x1, y1)) << 16,
+        );
+    }
+}
+
+/// GC2DN's settings: 146.25 / 1, 149.50 / 1 twice, 143.00 / 1, 149.50 / 2
+/// the control.
+pub const GAME_CENTRE: [Lever; 5] = [
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 1"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 1"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 2"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// GC2DO's settings: 143.00 / 1 twice, 146.25 / 1, 149.50 / 2 the control.
+pub const GAME_ORDER: [Lever; 4] = [
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 1"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 2"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
 /// GC2BY's rounds of the four game frames at each step (100: a frame
 /// wrong in 3% of renders shows with ~95%).
 pub const GAME_LADDER_ROUNDS: u32 = 100;
