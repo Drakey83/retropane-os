@@ -2479,6 +2479,19 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "graphics: the flip back to screen 0 before 3D work skipped (C71 R-B, R190)",
+        file: "services/graphics/src/lib.rs",
+        from: "        let flipped = self.two_d.front() != safe;
+        if flipped {",
+        to: "        let flipped = self.two_d.front() != safe;
+        if false && flipped {",
+        check: Check::Host(&[
+            "-p",
+            "rp-graphics",
+            "a_scene_after_an_idle_frame_on_screen_1_flips_back_to_screen_0",
+        ]),
+    },
+    Mutant {
         name: "vram-map: screen 0 back outside the safe region, where the scan-out spoils 3D (C71)",
         file: "drivers/vram-map/src/lib.rs",
         from: "    r(\"screen 0\", 0, SCREEN_BYTES, 0x1000),",

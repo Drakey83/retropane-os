@@ -2394,3 +2394,67 @@ fn wallpaper_bands_take_only_the_clients_own_pictures_and_hold_them() {
         "a picture given back"
     );
 }
+
+/// R190 (C71 R-B): the flip back to screen 0 in `Graphics::frame` itself.
+/// 2D frames flip to screen 1 with no scene open; an idle frame then
+/// catches screen 0 up without a flip (both screens hold the frame,
+/// screen 1 still on screen). A scene opened after that leaves the 2D
+/// renderer nothing to draw, so only that branch can bring screen 0 back
+/// before the 3D core draws (the scene opened right after the 2D frames
+/// reaches screen 0 by the 2D renderer's own catch-up instead).
+#[test]
+fn a_scene_after_an_idle_frame_on_screen_1_flips_back_to_screen_0() {
+    let mut r = rig();
+    let bar = Rect::new(0, 0, 480, 32);
+    for k in 0..6u16 {
+        let colour = if k % 2 == 0 { 0xFF00_00FF } else { WHITE };
+        let mut f = Frame::new();
+        f.damage(bar);
+        f.push(Cmd::Fill {
+            r: bar,
+            color: colour,
+        });
+        r.frame(&f);
+        if r.shown().at == SCREENS[1].at {
+            break;
+        }
+    }
+    assert_eq!(r.shown().at, SCREENS[1].at, "2D frames flip to screen 1");
+    // An idle frame: screen 0 caught up, screen 1 kept on screen.
+    r.frame(&Frame::new());
+    assert_eq!(r.shown().at, SCREENS[1].at, "the idle frame flips nothing");
+    assert_eq!(
+        r.g.two_d().back(),
+        Some(SCREENS[0].at as usize),
+        "screen 0 holds the frame"
+    );
+    let shown_bar = r.on_screen(5, 5);
+    let c = r.g.client(64 * 1024).unwrap();
+    let (x, y, w, h) = AREA;
+    r.g.open_scene(c, x, y, w, h).unwrap();
+    let tex =
+        r.g.upload_texture(c, 0, format::RGB565, &[0xF800; 64])
+            .unwrap();
+    r.g.set(c, 0, Some(&Quad::rect(40, 16, 32, 32, Fill::texture(tex))))
+        .unwrap();
+    // The branch: screen 0 shown before the 3D core is started.
+    let mut step = r.g.frame(&Frame::new(), &mut r.clock).unwrap();
+    assert!(matches!(step, Step::Wait(_)), "{step:?}");
+    assert_eq!(
+        r.shown().at,
+        SCREENS[0].at,
+        "screen 0 back before the 3D work"
+    );
+    while let Step::Wait(t) = step {
+        r.clock.set(t);
+        step = r.g.poll(&mut r.clock);
+    }
+    assert_eq!(step, Step::Shown, "the 3D frame");
+    assert_eq!(r.shown().at, SCREENS[0].at, "3D shown from screen 0");
+    assert_eq!(r.on_screen(5, 5), shown_bar, "the 2D frame kept");
+    assert_eq!(
+        r.on_screen(u32::from(x) + 40 + 16, 336),
+        0xFF_0000,
+        "the quad"
+    );
+}
