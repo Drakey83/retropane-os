@@ -1266,19 +1266,13 @@ mod tests {
         }
     }
 
-    /// The Today screen's text and the living sky fit the 2D engine's glyph
-    /// memory together (an atlas a font and colour, as the renderer builds
-    /// them): over it, every frame would reset the atlases and upload the
-    /// fonts again. Counted from the fonts and colours a storm's Today
-    /// frame draws, by day and by night.
+    /// The text a storm's Today frame draws, by day and by night, fits the
+    /// glyph memory (384 KiB since the owner's ruling of 2026-11-10): each
+    /// (font, colour) pair holds the glyphs it draws (R172: uploaded as
+    /// first drawn into 2 KiB chunks), at most one part-filled chunk a pair
+    /// beside them. Over it, the frame would evict its own pairs.
     #[test]
     fn the_sky_and_the_screens_fonts_fit_the_glyph_memory() {
-        let atlas = |f: &rp_draw::Font| -> usize {
-            f.glyphs
-                .iter()
-                .map(|g| (usize::from(g.w) * usize::from(g.h) * 4).next_multiple_of(16))
-                .sum()
-        };
         let room = rp_mbx_render::Layout::X51V.glyphs.1;
         for hour in [12, 22] {
             let mut shell = rp_shell::Shell::new(shell_fonts(), rp_shell::Icons::NONE, true);
@@ -1296,20 +1290,33 @@ mod tests {
             shell.preview_sky(true);
             let mut f = rp_draw::Frame::new();
             shell.frame(&mut f);
-            let mut seen: std::vec::Vec<(usize, u32)> = std::vec::Vec::new();
+            let mut pairs: std::vec::Vec<(usize, u32)> = std::vec::Vec::new();
+            let mut glyphs: std::vec::Vec<(usize, u32, u8)> = std::vec::Vec::new();
             let mut total = 0;
             for c in f.cmds() {
-                if let rp_draw::Cmd::Text { font, color, .. } = *c {
+                if let rp_draw::Cmd::Text {
+                    font, color, text, ..
+                } = *c
+                {
                     let key = (core::ptr::from_ref(font) as usize, color);
-                    if !seen.contains(&key) {
-                        seen.push(key);
-                        total += atlas(font);
+                    if !pairs.contains(&key) {
+                        pairs.push(key);
+                    }
+                    for &b in f.text_of(text) {
+                        let Some(g) = font.glyphs.get(usize::from(b.wrapping_sub(font.first)))
+                        else {
+                            continue;
+                        };
+                        if !glyphs.contains(&(key.0, key.1, b)) {
+                            glyphs.push((key.0, key.1, b));
+                            total += (usize::from(g.w) * usize::from(g.h) * 4).next_multiple_of(16);
+                        }
                     }
                 }
             }
-            // The renderer's slots (ADR-0023): more, and every frame
-            // would reset the cache.
-            assert!(seen.len() <= 16, "{} atlases", seen.len());
+            let total = total + 2048 * pairs.len();
+            // The renderer's slots (ADR-0023, 32 since R172).
+            assert!(pairs.len() <= 16, "{} pairs", pairs.len());
             assert!(total <= room, "at {hour}:00 {total} of {room} bytes");
         }
     }
