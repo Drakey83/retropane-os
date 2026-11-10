@@ -36,10 +36,14 @@
 pub const MARKER: &str = "RETROPANE-TABENCH";
 
 #[cfg(target_os = "none")]
+// The nested modules' files sit beside this one: `src` named outright, so
+// no path goes through `src/image/..`, which Windows resolves and Linux
+// can't (no such folder; GitHub's CI failed on it from 2026-10-24).
+#[path = "."]
 mod image {
     use core::fmt::Write;
 
-    #[path = "../isolate.rs"]
+    #[path = "isolate.rs"]
     mod isolate;
 
     /// Run 8 instead of run 1 (`RP_TABENCH_ISOLATE=1`; device build

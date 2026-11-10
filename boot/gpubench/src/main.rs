@@ -106,6 +106,10 @@ mod g21;
 mod wg;
 
 #[cfg(target_os = "none")]
+// The nested modules' files sit beside this one: `src` named outright, so
+// no path goes through `src/image/..`, which Windows resolves and Linux
+// can't (no such folder; GitHub's CI failed on it from 2026-10-24).
+#[path = "."]
 mod image {
     use core::cell::{Cell, RefCell};
     use core::fmt::Write;
@@ -149,20 +153,20 @@ mod image {
     }
 
     /// Run BX, DMA bursts into local memory and status bit 10 (backlog).
-    #[path = "../busx.rs"]
+    #[path = "busx.rs"]
     mod busx;
     /// Run CH, the compositor harness (docs/design/compositor-harness.md).
-    #[path = "../harness.rs"]
+    #[path = "harness.rs"]
     mod harness;
     /// Run LIM, the 3D core's limits (the gate's P14).
-    #[path = "../limits.rs"]
+    #[path = "limits.rs"]
     mod limits;
     /// Run FI2, the status bits run FI left (the gate's P18).
-    #[path = "../statusbits.rs"]
+    #[path = "statusbits.rs"]
     mod statusbits;
     /// Run WG, the Weather movement on the planes
     /// (docs/research/sheets/weather-gpu-movement.md).
-    #[path = "../weather.rs"]
+    #[path = "weather.rs"]
     mod weather;
 
     /// Run B: the texture-word probes instead of run A.
