@@ -47,7 +47,8 @@ to 146.25 / 1 at peak heat (R76 builds it). The chase resumes from
 - **The goal:** the 2700G's 3D core at divide 1 with the system clock at
   149.50 MHz (PLL 23 / 2), lossless, at full speed, **games included**,
   on every X51v (the any-Axim rule), proven warm. 149.50 / 1 is 3.0x
-  Windows Mobile's 3D speed.
+  Windows Mobile's 3D speed. *(Not reached for games: they ship up to
+  137.80 / 1, about 2.77x; see the verdict below.)*
 - **The fallback (the owner, 2026-10-27):** a temperature guard, 149.50 /
   1 that steps down to 146.25 / 1 when `TEMP0` reads peak heat. 146.25 /
   1 was clean warm in every ladder (GC2BB, GC2BF; 300 of 300 on the worst
@@ -413,6 +414,8 @@ GC2DV, 4,800 of 4,800 hot), the textured frame in four positions (GC2DR). The co
 at 137.80 MHz: 1.84x Dell's fastest divide-1 setting (74.75 / 1), about
 2.77x Windows Mobile's (99.67 / 2, the core at 49.8 MHz); 149.50 / 1
 would be 3.0x Windows Mobile's, 8.5% more than 137.80.
+
+**The ceiling the game ports read against (the owner's list of 2026-11-10, item 5):** games ship up to **137.80 / 1**, about **2.77x** Windows Mobile's 3D speed (the core at 137.80 MHz against 49.8), not the 3.0x of 149.50 / 1 the chase aimed for. Every port's speed expectation is read against 137.80 / 1; the step games run at is the owner's ruling of 2026-11-09 (ADR-0035 amendment D): 136.50 / 1, 133.25 / 1 at peak heat. No port plan changes, only the ceiling.
 
 **Not reached, with every software lever we have:** 149.50 / 1 for games.
 Every frame drew wrong there in every run, with each lever of this chase

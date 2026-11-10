@@ -117,6 +117,9 @@ region** as option C needs: GC2I, 2026-10-24; the soak status from GC2J):
 | **108.33 / 1** | **2.17x** | **1.79x** | **1.89x** | **soaked clean 20 min (GC2J)** |
 | 117.00 / 1 | 2.35x | 1.94x | 2.06x | 1 wrong pixel in 4,578 renders |
 | 133.25 / 1 | 2.67x | 2.12x | 2.22x | 1 wrong pixel in ~470 renders |
+| **137.80 / 1 (the games' ceiling)** | **2.77x** | **2.18x** | **2.28x** | **game frames right warm (GC2DT, GC2DV); texturing and blending fitted (performance-outlook.md)** |
+
+**The ceiling the game ports read against (the owner's list of 2026-11-10, item 5):** games ship up to **137.80 / 1**, about **2.77x** Windows Mobile's 3D speed (the core at 137.80 MHz against 49.8), not the 3.0x of 149.50 / 1 the chase aimed for. Every port's speed expectation is read against 137.80 / 1; the step games run at is the owner's ruling of 2026-11-09 (ADR-0035 amendment D): 136.50 / 1, 133.25 / 1 at peak heat. No port plan changes, only the ceiling.
 
 Texturing gains less than shading because texels come from local memory,
 which runs on the system clock. With the target outside the region
@@ -145,6 +148,7 @@ RetroPane on a fast SD card, our drivers, option C:
 | Our own port (A, B), today's 149.50 / 2 | ~60 fps | ~37 fps |
 | Our own port (A, B), **108.33 / 1 (proven step)** | ~60 fps | **~45 fps** |
 | Our own port (A, B), 133.25 / 1 (if the edge fault is fixed) | ~60 fps | ~53 fps |
+| Our own port (A, B), 137.80 / 1 (the games' ceiling, 2026-11-10) | ~60 fps | ~55 fps |
 
 The binary's ranges: the low end with Sync Every Frame's lockstep (CPU
 then core, added), the high end with the pipeline (the longer of the

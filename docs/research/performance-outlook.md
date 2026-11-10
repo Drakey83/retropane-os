@@ -27,6 +27,9 @@ status from GC2I/GC2J:
 | **108.33 / 1** | **2.17x** | **1.79x** | **1.89x** | **1.79x** | **soaked clean 20 min (GC2J)** |
 | 117.00 / 1 | 2.35x | 1.94x | 2.06x | 1.93x | 1 wrong pixel in 4,578 renders |
 | 133.25 / 1 | 2.67x | 2.12x | 2.22x | 2.07x | 1 wrong pixel in ~470 renders, one patch in one scene |
+| **137.80 / 1 (the games' ceiling)** | **2.77x** | **2.18x** | **2.28x** | **2.12x** | **game frames right warm (GC2DT 1,200 of 1,200, GC2DV 4,800 of 4,800); Gouraud from the clock (its fixed part zero), the other kinds from the fit below through 108.33 and 133.25 / 1** |
+
+**The ceiling the game ports read against (the owner's list of 2026-11-10, item 5):** games ship up to **137.80 / 1**, about **2.77x** Windows Mobile's 3D speed (the core at 137.80 MHz against 49.8), not the 3.0x of 149.50 / 1 the chase aimed for. Every port's speed expectation is read against 137.80 / 1; the step games run at is the owner's ruling of 2026-11-09 (ADR-0035 amendment D): 136.50 / 1, 133.25 / 1 at peak heat. No port plan changes, only the ceiling.
 
 - **Untested steps, extrapolated** (2026-10-24, not run at divide 1):
   fitting each kind's GC2I times at 108.33 and 133.25 / 1 as a fixed part

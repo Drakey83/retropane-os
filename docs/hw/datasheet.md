@@ -347,7 +347,7 @@ watching.
   a few pixels, game frames are wrong at 143.00 and 139.75 / 1; 137.80 /
   1 (PLL 53 / 5) is right on every moved frame (GC2DT 1,200 of 1,200,
   GC2DV 4,800 hot), 138.67 the first step wrong; the owner's game step
-  (2026-11-09) is 136.50 / 1.
+  (2026-11-09) is 136.50 / 1; the game ports' ceiling 137.80 / 1, about 2.77x Windows Mobile's 3D speed (the owner's list of 2026-11-10).
 - **The video plane's vertical-only scale of RGB565** (`rp-gpubench`
   GC2CS, X51v, 2026-10-28, the owner's photos): right for a 240-wide
   source (GC2CE), **wrong for a 480-wide one** (right over the left ~40%,
