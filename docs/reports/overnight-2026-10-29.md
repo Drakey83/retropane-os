@@ -11,6 +11,8 @@ gate`, re-run this morning: unchanged; the 4 left are the clock ladder,
 held with the divide-1 work). Nothing at divide 1 above 74.75 was run.
 Nothing was pushed except the backup branch.
 
+**Push state (checked 2026-11-10 against GitHub):** every commit this report cites is on GitHub `main` (at 04d3d142 since the owner's "push to live" of 2026-11-09). The line above about pushing was true when written.
+
 ## What closed (with numbers)
 
 - **R89, the colours for smooth 2x:** the GPU now stores exactly what the

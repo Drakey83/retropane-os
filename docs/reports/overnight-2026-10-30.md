@@ -5,6 +5,8 @@ said otherwise; every result is recorded in `docs/hw/2700g.md` with its
 card log. Gate: 30 of 30 (phases 2, 4, 5 lifted). Nothing was pushed to
 GitHub `main`; all of it is on `backup/main-2026-10-29` after CI passed.
 
+**Push state (checked 2026-11-10 against GitHub):** every commit this report cites (it cites none; its work is on `backup/main-2026-10-29`, which `main` contains) is on GitHub `main` (at 04d3d142 since the owner's "push to live" of 2026-11-09). The line above about pushing was true when written.
+
 ## The short version
 
 1. **The safe area's edge is exactly the end of the chip's fast memory

@@ -1,7 +1,10 @@
 # Deep dive fix, 2026-11-09: the owner's eight items
 
-Branch `fix/deep-dive-2026-11-09`, from main at 070aa9bf. **Not pushed**
-(the list authorizes only the fork's release, rp-v0.31.1, pushed). One or
+Branch `fix/deep-dive-2026-11-09`, from main at 070aa9bf. **Pushed**
+(corrected 2026-11-10): GitHub `main` was fast-forwarded to 04d3d142, the
+branch's last commit, on the owner's "push to live" of 2026-11-09, after
+`cargo xtask ci` passed on that commit; the branch itself is on GitHub too.
+The list had authorized only the fork's release, rp-v0.31.1, also pushed. One or
 more commits per item, each item's last commit through `cargo xtask ci`
 (in a clean second checkout, `../rp-ci`). Device runs only on the X51v
 already on the loader, unattended. Gate: 30 of 30 architectural lines for
@@ -22,4 +25,4 @@ phases 2, 4 and 5 (`cargo xtask gate`). Decisions left to the owner:
 Reminders that came due and what happened: R76, R171, R172, R186, R187,
 R188, R189 (worked, above); device-run reminders R3, R4, R12, R22 and
 others need other images or the owner watching, so none were folded into
-these unattended runs. Opened: R190. Extra runs on your "do any runs now": GC2DR after ~1.25 h idle (gpubench-0128: the same line, 137.80 / 1 right, 138.67 first wrong) and the look route at 3:18 PM (today-0112: 0 unknown). All eight items: done or prepared with your steps; nothing pushed but the fork release.
+these unattended runs. Opened: R190. Extra runs on your "do any runs now": GC2DR after ~1.25 h idle (gpubench-0128: the same line, 137.80 / 1 right, 138.67 first wrong) and the look route at 3:18 PM (today-0112: 0 unknown). All eight items: done or prepared with your steps; pushed to GitHub `main` (04d3d142) on your later "push to live".
