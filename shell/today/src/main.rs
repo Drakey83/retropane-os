@@ -1900,6 +1900,9 @@ mod image {
         // and the open under way's start (ms, commits).
         let mut app_pic: Option<(Handle, u32)> = None;
         let mut app_check = true;
+        // When Today last changed (ms): the app is composed ahead only after
+        // a second still (R188, `rp_today::ahead_due`).
+        let mut still_since = 0u64;
         // The opening's picture (the app composed ahead) while the screen
         // plane rests on it after the opening: the very pixels the opening
         // ended on, until something on the app changes or the pen comes
@@ -4009,11 +4012,23 @@ mod image {
                         None => pages_check = false,
                     }
                 }
+                // Today changing (a screen, a movement, the pen, anything but
+                // the sky) restarts the second it must be still for.
+                if shell.screen() != rp_shell::Screen::Today
+                    || shell.animating()
+                    || filter.down()
+                    || (shell.needs_frame() && !shell.only_sky_changed())
+                {
+                    still_since = now_ms;
+                }
                 // The app composed ahead while the Today screen is still (its
                 // key the draw list's: the header's clock makes it stale),
-                // so a tap opens Reveal's window at the next refresh.
+                // so a tap opens Reveal's window at the next refresh; only
+                // after a second still (R188, the owner's ruling of
+                // 2026-11-10).
                 if app_check
                     && !NO_APP_AHEAD
+                    && rp_today::ahead_due(still_since, now_ms)
                     && commit.is_none()
                     && shell.screen() == rp_shell::Screen::Today
                     && !shell.animating()

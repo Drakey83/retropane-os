@@ -1033,6 +1033,21 @@ pub fn frame_key(f: &rp_draw::Frame, mut h: u32) -> u32 {
 /// The FNV-1a start for [`frame_key`].
 pub const KEY_START: u32 = 0x811C_9DC5;
 
+/// How long Today must have been still before the Weather app is composed
+/// ahead for Reveal (R188, the owner's ruling of 2026-11-10): composing
+/// replaces the 2D renderer's background and pushes Today's pictures out,
+/// so the next Today frame redid both (about half of the touch replay's
+/// rise, 4fa4dbad). A tap on the hero within this second of a change opens
+/// Reveal the old way, the app composed on the tap.
+pub const STILL_BEFORE_AHEAD_MS: u64 = 1000;
+
+/// Whether the app may be composed ahead: Today unchanged since `still_since`
+/// (ms) for [`STILL_BEFORE_AHEAD_MS`] at `now` (ms).
+#[must_use]
+pub const fn ahead_due(still_since: u64, now: u64) -> bool {
+    now.saturating_sub(still_since) >= STILL_BEFORE_AHEAD_MS
+}
+
 /// Reveal's window on the video plane (place x, y, size w, h, the app's row
 /// and column at its top left) from the shell's window `r` and how many
 /// rows lower the app is read in it (screen row y shows the app's row
@@ -2463,5 +2478,19 @@ mod look_hourly {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ahead {
+    /// R188, the owner's ruling of 2026-11-10: the app is composed ahead
+    /// only once Today has been still for a second.
+    #[test]
+    fn the_app_is_composed_ahead_only_after_a_second_still() {
+        assert!(!super::ahead_due(5_000, 5_000));
+        assert!(!super::ahead_due(5_000, 5_999));
+        assert!(super::ahead_due(5_000, 6_000));
+        // A change "later" than now (a clock read out of order) waits.
+        assert!(!super::ahead_due(7_000, 6_000));
     }
 }

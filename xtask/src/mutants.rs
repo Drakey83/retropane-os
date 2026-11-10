@@ -2492,6 +2492,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "today: the app composed ahead at once, not after a second still (R188, ruling 2026-11-10)",
+        file: "shell/today/src/lib.rs",
+        from: "    now.saturating_sub(still_since) >= STILL_BEFORE_AHEAD_MS",
+        to: "    now.saturating_sub(still_since) >= 0",
+        check: Check::Host(&[
+            "-p",
+            "rp-today",
+            "the_app_is_composed_ahead_only_after_a_second_still",
+        ]),
+    },
+    Mutant {
         name: "vram-map: screen 0 back outside the safe region, where the scan-out spoils 3D (C71)",
         file: "drivers/vram-map/src/lib.rs",
         from: "    r(\"screen 0\", 0, SCREEN_BYTES, 0x1000),",
