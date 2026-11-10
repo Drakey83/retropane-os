@@ -50,3 +50,38 @@ well. No new code is needed for either run: both use runs already in
   2026-11-08. (An X51v sitting idle on the loader for an hour is cooler
   but not cold: the display and the 2700G's clocks stay on. If one comes
   up this session it is run and reported as "idle an hour", not as cold.)
+
+## Item 2: the touch replay's last 0.25 ms (R188)
+
+- [ ] **The rise the second bisect couldn't pin to one commit.** **Why:**
+  with the compose held off in every build, the touch replay's frame and
+  queueing goes from 508 us (4fa4dbad) to 752 (main), climbing 60-85 us at
+  a time across the features of 2026-10-30 to 11-01. The first commit over
+  the line is f4ffea28 (the card's word shadows, whole clouds, 16 glyph
+  atlases: +60 us), about a quarter of the rise
+  ([report](runs/2026-11-10-r188-compose-rule.md)). Touch to flush barely
+  moves with it (16,472 against 16,704 us), and the "~2 ms" of 11-09 was
+  mostly run-to-run spread. This branch: 784 us with your compose rule.
+  **Options:** (a) accept it as the cost of those features and re-set the
+  touch floors to this branch's numbers (frame and queueing ~784 us, touch
+  to flush 16.9-18.6 ms); (b) time Today's frame by feature (the word
+  shadows, the clouds, the glass) on the X51v and cut the costliest first,
+  keeping the floors at 384 / 16,248; (c) both: re-set now, cut later.
+
+## GitHub's CI (found re-verifying the list)
+
+- [ ] **Let GitHub's CI run on this branch.** **Why:** GitHub's own
+  workflow (`.github/workflows/ci.yml`, Linux) has been red on every main
+  push since 2026-10-24, 04d3d142 included
+  ([run 42731190233](https://github.com/Drakey83/retropane-os/actions/runs/42731190233),
+  failure). Two test images named their module files through a folder
+  that doesn't exist, which Windows resolves and Linux can't. Fixed on this
+  branch (e18bd531), with a lint that refuses the pattern (5a66eafc).
+  `cargo xtask ci` passes here on every commit, but this PC runs Windows,
+  and the workflow runs only on a push to main or a pull request. Your
+  list says not to push, so no GitHub run exists for this branch, and
+  other Linux-only failures hidden behind this one since 2026-10-24 can't
+  be ruled out from here. **What you'd do:** say "push", and I'd push the
+  branch (a pull request runs the workflow without touching main), then
+  read the run and fix anything red before main moves.
+
