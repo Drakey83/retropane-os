@@ -232,18 +232,65 @@ pub fn judge(log: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The frame budget over the look check's replay (R171): no frame, still
-/// or moving, over 33 ms (30 fps) in the emulator's guest time, which the
-/// look check counts from instructions (`-icount`, so a busy PC can't move
-/// it). On host time the same commit's still Radar frame read 20 ms on an
-/// idle PC and 68 ms beside a build (2026-11-07): the 42-47 ms "Radar
-/// slide-in" of item 4 was that, its frame 5.8 ms of CPU and 16.5 ms
-/// waiting for the scan under `-icount`. The still worst and the moving
-/// worst, us.
-pub fn frame_budget(log: &str) -> Result<(u32, u32), String> {
-    const BUDGET_US: u32 = 33_000;
-    let (mut still, mut moving) = (0u32, 0u32);
-    for l in log.lines().filter(|l| l.starts_with("slow frame ")) {
+/// Every frame's budget: 33 ms (30 fps).
+pub const BUDGET_US: u32 = 33_000;
+/// A single whole-screen change's (a look switch, a screen change): one
+/// late frame up to ~45 ms (the owner's ruling, 2026-11-10: a whole-screen
+/// frame is ~40 ms of 2D engine work on the X51v whatever the caches do,
+/// the 4 x 4 dither alone 18.9 ms).
+pub const WHOLE_SCREEN_US: u32 = 45_000;
+/// The screen's pixels: a frame that dithers this many changed it whole.
+const SCREEN_PX: u32 = 480 * 640;
+
+/// The worst frames a replay logged, us.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Worst {
+    /// Of frames with nothing moving.
+    pub still: u32,
+    /// Of frames that move (scrolls, slides, the sky).
+    pub moving: u32,
+    /// Of single whole-screen changes over 33 ms (held to 45 ms).
+    pub whole: u32,
+}
+
+/// The frame budget over the look check's replay (R171), the owner's rule
+/// of 2026-11-10: 33 ms (30 fps) for every frame, moving ones too, except a
+/// single whole-screen change (the frame dithers the whole screen), allowed
+/// up to 45 ms as one late frame: the frame right after it (the next frame
+/// number) over 33 ms fails it. The folded line for a run of moving frames
+/// like the last logged ("slow frames: N more while moving") is held to 33
+/// ms. In the emulator the times are guest time, counted from instructions
+/// (`-icount`, so a busy PC can't move them; on host time the same still
+/// Radar frame read 20 ms idle and 68 ms beside a build, 2026-11-07); on
+/// the X51v (`cargo xtask look-judge <card log>`) they are its own.
+pub fn frame_budget(log: &str) -> Result<Worst, String> {
+    let mut w = Worst::default();
+    // The last whole-screen change let through: its frame number.
+    let mut late: Option<u64> = None;
+    for l in log.lines() {
+        if let Some(t) = l.strip_prefix("slow frames: ") {
+            let us: u32 = t
+                .split("(worst ")
+                .nth(1)
+                .and_then(|t| t.split(' ').next())
+                .and_then(|n| n.parse().ok())
+                .ok_or_else(|| format!("an unreadable slow-frames line: {l:?}"))?;
+            w.moving = w.moving.max(us);
+            if us > BUDGET_US {
+                return Err(format!(
+                    "moving frames over the {BUDGET_US} us budget: {l:?}"
+                ));
+            }
+            continue;
+        }
+        let Some(t) = l.strip_prefix("slow frame ") else {
+            continue;
+        };
+        let no: u64 = t
+            .split(' ')
+            .next()
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| format!("an unreadable slow frame: {l:?}"))?;
         let us: u32 = l
             .split("ms")
             .nth(1)
@@ -251,16 +298,48 @@ pub fn frame_budget(log: &str) -> Result<(u32, u32), String> {
             .and_then(|t| t.split(' ').next())
             .and_then(|n| n.parse().ok())
             .ok_or_else(|| format!("an unreadable slow frame: {l:?}"))?;
-        if l.contains("(moving)") {
-            moving = moving.max(us);
-        } else {
-            still = still.max(us);
-        }
+        let dithered: u32 = l
+            .split(" px dithered")
+            .next()
+            .and_then(|t| t.rsplit(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
         if us > BUDGET_US {
-            return Err(format!("a frame over the {BUDGET_US} us budget: {l:?}"));
+            let whole = dithered >= SCREEN_PX;
+            let after_late = late.is_some_and(|n| no == n + 1);
+            if !whole || us > WHOLE_SCREEN_US || after_late {
+                return Err(format!(
+                    "a frame over the {BUDGET_US} us budget{}: {l:?}",
+                    if !whole {
+                        " (not a whole-screen change)"
+                    } else if after_late {
+                        " (right after a late whole-screen change: one late frame allowed)"
+                    } else {
+                        " (a whole-screen change, over its 45,000 us)"
+                    }
+                ));
+            }
+            late = Some(no);
+            w.whole = w.whole.max(us);
+        } else if l.contains("(moving)") {
+            w.moving = w.moving.max(us);
+        } else {
+            w.still = w.still.max(us);
         }
     }
-    Ok((still, moving))
+    Ok(w)
+}
+
+/// A device run's card log judged as the emulator's look check is: the
+/// verdict and the frame budget.
+pub fn judge_file(path: &str) -> Result<(), String> {
+    let log = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let verdict = judge(&log);
+    let w = frame_budget(&log);
+    eprintln!("look-judge {path}:");
+    eprintln!("  verdict: {verdict:?}");
+    eprintln!("  frame budget: {w:?}");
+    verdict.and(w.map(|_| ()))
 }
 
 #[cfg(test)]
@@ -271,10 +350,53 @@ mod tests {
         let log = "slow frame 4 at 12622 ms: 16460 us (queueing)
 slow frame 9 at 20000 ms (moving): 22368 us (queueing)
 ";
-        assert_eq!(frame_budget(log), Ok((16460, 22368)));
+        let w = |still, moving, whole| Worst {
+            still,
+            moving,
+            whole,
+        };
+        assert_eq!(frame_budget(log), Ok(w(16460, 22368, 0)));
         assert!(frame_budget("slow frame 5 at 1 ms: 33001 us (x)").is_err());
         assert!(frame_budget("slow frame 6 at 1 ms (moving): 33001 us (x)").is_err());
-        assert_eq!(frame_budget("nothing"), Ok((0, 0)));
+        assert_eq!(frame_budget("nothing"), Ok(w(0, 0, 0)));
+    }
+
+    /// The owner's rule of 2026-11-10: 33 ms for frames that move, a single
+    /// whole-screen change up to ~45 ms as one late frame.
+    #[test]
+    fn a_single_whole_screen_change_may_take_45_ms_and_a_moving_frame_33() {
+        let f = |no: u32, us: u32, px: u32| {
+            format!(
+                "slow frame {no} at 40534 ms (moving): {us} us (queueing {us} us, wait 27 us, background true (69198 px), rows written 33 reused 228, 1 rects, {px} px dithered, 6423 command words, 78 commands drawn; 5 glyph atlases begun (0 evicted), 94 glyphs and 4 pictures uploaded)\n"
+            )
+        };
+        // The look switch on the X51v (today-0082): 39,516 us, the screen.
+        let switch = f(68, 39_516, 307_200);
+        assert_eq!(
+            frame_budget(&switch),
+            Ok(Worst {
+                still: 0,
+                moving: 0,
+                whole: 39_516
+            })
+        );
+        assert!(frame_budget(&f(68, 45_000, 307_200)).is_ok());
+        // Over 45 ms, even whole: fails (the return's 53,548 us).
+        assert!(frame_budget(&f(153, 53_548, 307_200)).is_err());
+        // A moving frame over 33 ms that isn't the whole screen: fails.
+        assert!(frame_budget(&f(70, 33_001, 120_000)).is_err());
+        // Two late whole-screen frames running: only one is allowed.
+        assert!(frame_budget(&(f(80, 40_000, 307_200) + &f(81, 34_000, 307_200))).is_err());
+        // Two whole-screen changes apart: each its own late frame.
+        assert!(frame_budget(&(f(80, 40_000, 307_200) + &f(95, 41_000, 307_200))).is_ok());
+        // The folded moving frames are held to 33 ms.
+        let folded = |us| {
+            format!(
+                "slow frames: 114 more while moving, each like the one logged before it (worst {us} us)\n"
+            )
+        };
+        assert_eq!(frame_budget(&folded(21_964)).map(|w| w.moving), Ok(21_964));
+        assert!(frame_budget(&folded(33_001)).is_err());
     }
 
     #[test]

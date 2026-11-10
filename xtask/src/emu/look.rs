@@ -53,10 +53,10 @@ pub fn today_look(root: &Path) -> Result<(), String> {
     let kept = scratch(root, "today-look-log.txt")?;
     let _ = std::fs::write(&kept, log);
     crate::lookcheck::judge(log).map_err(|e| format!("today look: {e}"))?;
-    let (still, moving) =
-        crate::lookcheck::frame_budget(log).map_err(|e| format!("today look: {e}"))?;
+    let w = crate::lookcheck::frame_budget(log).map_err(|e| format!("today look: {e}"))?;
     eprintln!(
-        "      frame budget (R171, guest time under -icount): the worst still frame {still} us, the worst moving frame {moving} us (33,000 allowed each)"
+        "      frame budget (R171, guest time under -icount): the worst still frame {} us, the worst moving frame {} us (33,000 allowed each), the worst single whole-screen change over 33 ms {} us (45,000 allowed, the owner's rule of 2026-11-10)",
+        w.still, w.moving, w.whole
     );
     eprintln!("    today look OK (log {})", kept.display());
     Ok(())

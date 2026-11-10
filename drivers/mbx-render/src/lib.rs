@@ -95,8 +95,8 @@ const IMAGES: usize = 32;
 // 2026-11-01 logged 7 atlases uploaded in its slowest frames). 32 since
 // R172's return leg (2026-11-09): Today with the sky and Weather in both
 // looks draw 25 pairs between them, so 16 slots evicted Today's on the way
-// back however small the glyphs. The 512 KiB they share (rule 4) is
-// unchanged; a slot is ~370 bytes of RAM.
+// back however small the glyphs. The memory they share (rule 4, 384 KiB
+// since 2026-11-10) is apart; a slot is ~370 bytes of RAM.
 const ATLASES: usize = 32;
 /// The glyph memory is handed out in chunks of this many bytes: an atlas
 /// takes chunks as its glyphs are first drawn (small glyphs packed into its
@@ -105,8 +105,10 @@ const ATLASES: usize = 32;
 /// Today's ten pairs and 854 KiB for Weather's 23, of 512; the glyphs they
 /// draw, 279 KiB for all 25).
 const GCHUNK: usize = 2048;
-/// Chunks the glyph memory may hold (512 KiB).
-const GCHUNKS: usize = 256;
+/// Chunks the glyph memory may hold (384 KiB, the owner's ruling of
+/// 2026-11-10: 279 KiB of glyphs for every pair on the look route, at most
+/// 64 KiB more part-filled).
+const GCHUNKS: usize = 192;
 /// Glyphs a font may have.
 // 130: the largest shipped font has 129 (BIG; UI and LABEL 97), and every
 // slot's table is this long (32 slots: the RAM is the slots' tables).
@@ -292,6 +294,11 @@ pub struct FrameStats {
     pub glyphs: u32,
     /// Pictures uploaded to the image cache.
     pub images: u32,
+    /// Pictures dropped from the image cache to make room (the oldest
+    /// drawn first).
+    pub images_evicted: u32,
+    /// Bytes of pictures uploaded.
+    pub image_bytes: u32,
     /// Times the frame waited for the engine mid-way (row buffers or a
     /// cache full).
     pub waits: u32,
@@ -386,9 +393,9 @@ pub struct Mbx2dRenderer<R, M> {
     /// Frames still to draw whole (the pictures' contents unknown).
     fresh: u8,
     row: usize,
-    images: [(usize, usize); IMAGES],
-    images_n: usize,
-    images_top: usize,
+    /// Uploaded pictures: (key, offset in the cache, bytes, frame last
+    /// drawn in).
+    images: [Option<(usize, usize, usize, u32)>; IMAGES],
     /// The RAM store `Cmd::Pic` names pictures in (none: they draw
     /// nothing).
     pics: Option<&'static rp_draw::pics::Pics<'static>>,
@@ -538,9 +545,7 @@ macro_rules! renderer_start {
             prev_n: 0,
             fresh: 2,
             row: 0,
-            images: [(0, 0); IMAGES],
-            images_n: 0,
-            images_top: 0,
+            images: [None; IMAGES],
             pics: None,
             atlases: [None; ATLASES],
             chunk_owner: [0; GCHUNKS],
@@ -1195,33 +1200,71 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         }
     }
 
-    /// An uploaded picture's place, by key.
-    fn cached(&self, key: usize) -> Option<usize> {
-        self.images[..self.images_n]
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|&(_, at)| at)
+    /// An uploaded picture's place, by key (marked drawn this frame).
+    fn cached(&mut self, key: usize) -> Option<usize> {
+        let now = self.frame_no;
+        let e = self.images.iter_mut().flatten().find(|e| e.0 == key)?;
+        e.3 = now;
+        Some(self.l.images.0 + e.1)
     }
 
-    /// Puts `px` in the image cache under `key`.
+    /// The lowest free run of `bytes` in the image cache, with a free slot.
+    fn image_gap(&self, bytes: usize) -> Option<usize> {
+        self.images.iter().position(Option::is_none)?;
+        let mut at = 0;
+        loop {
+            // The first picture at or past `at` that overlaps [at, at + bytes).
+            let hit = self
+                .images
+                .iter()
+                .flatten()
+                .filter(|e| e.1 < at + bytes && e.1 + e.2 > at)
+                .map(|e| e.1 + e.2)
+                .max();
+            match hit {
+                None if at + bytes <= self.l.images.1 => return Some(at),
+                None => return None,
+                Some(end) => at = end,
+            }
+        }
+    }
+
+    /// Puts `px` in the image cache under `key`. With no room, the picture
+    /// drawn longest ago that this frame doesn't draw goes, one at a time
+    /// (the owner's ruling of 2026-11-10; the cache used to empty whole, so
+    /// Today's 315 KB never stayed); if this frame's own pictures fill it,
+    /// the engine is let finish and the cache starts again.
     fn upload(&mut self, key: usize, px: &[Argb]) -> Option<usize> {
-        let bytes = px.len() * 4;
+        let bytes = (px.len() * 4).next_multiple_of(16);
         if bytes > self.l.images.1 {
             return None;
         }
-        if self.images_n == IMAGES || self.images_top + bytes > self.l.images.1 {
-            // Full: everything queued finishes, then the cache starts again.
-            self.wait();
-            self.images_n = 0;
-            self.images_top = 0;
-        }
-        let at = self.l.images.0 + self.images_top;
+        let now = self.frame_no;
+        let off = loop {
+            if let Some(off) = self.image_gap(bytes) {
+                break off;
+            }
+            let oldest = self
+                .images
+                .iter()
+                .enumerate()
+                .filter_map(|(k, e)| e.filter(|e| e.3 != now).map(|e| (e.3, k)))
+                .min();
+            if let Some((_, k)) = oldest {
+                self.images[k] = None;
+                self.last.images_evicted += 1;
+            } else {
+                self.wait();
+                self.images = [None; IMAGES];
+            }
+        };
+        let at = self.l.images.0 + off;
         self.last.images += 1;
+        self.last.image_bytes += bytes as u32;
         self.mem.store(at, px);
         self.mem.sync();
-        self.images[self.images_n] = (key, at);
-        self.images_n += 1;
-        self.images_top += bytes.next_multiple_of(16);
+        let slot = self.images.iter().position(Option::is_none)?;
+        self.images[slot] = Some((key, off, bytes, now));
         Some(at)
     }
 
@@ -1372,13 +1415,30 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     fn mark_atlases(&mut self, frame: &Frame) {
         let now = self.frame_no;
         for c in frame.cmds() {
-            if let Cmd::Text { font, color, .. } = *c {
-                let key = font as *const rp_draw::Font as usize;
-                for a in self.atlases.iter_mut().flatten() {
-                    if a.font == key && a.color == color {
-                        a.used = now;
+            match *c {
+                Cmd::Text { font, color, .. } => {
+                    let key = font as *const rp_draw::Font as usize;
+                    for a in self.atlases.iter_mut().flatten() {
+                        if a.font == key && a.color == color {
+                            a.used = now;
+                        }
                     }
                 }
+                // The frame's pictures too: an upload early in the frame
+                // never evicts one it draws later.
+                Cmd::Image { img, .. } => self.mark_image(img.px.as_ptr() as usize),
+                Cmd::Pic { pic, .. } => self.mark_image((pic.key() as usize) << 2 | 1),
+                _ => {}
+            }
+        }
+    }
+
+    /// Picture `key`, if uploaded, marked as this frame's.
+    fn mark_image(&mut self, key: usize) {
+        let now = self.frame_no;
+        for e in self.images.iter_mut().flatten() {
+            if e.0 == key {
+                e.3 = now;
             }
         }
     }

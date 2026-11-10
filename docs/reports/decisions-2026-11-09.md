@@ -6,7 +6,7 @@ until its box is ticked.
 
 ## Item 3: the device frame budget
 
-- [ ] **Give the 2D renderer's picture cache room for Today's pictures**
+- [x] **Give the 2D renderer's picture cache room for Today's pictures** *(ruled yes by the owner, 2026-11-10; built on fix/deep-dive-2026-11-10, run today-0115)*
   (ADR-0023 rule 4's memory table). **Why:** on the X51v the return to
   Today still takes 53.5 ms, and 9 pictures are uploaded again in that
   frame ([today-0082](runs/2026-11-09-today-0082.md)). Today draws a
@@ -23,7 +23,7 @@ until its box is ticked.
   font and colour pairs (the cache then evicts the oldest, as now).
   **What overturns it:** a screen whose glyph pairs need more than 384
   KiB, measured with the route test.
-- [ ] **Whole-screen frames and the 33 ms budget.** **Why:** after today's
+- [x] **Whole-screen frames and the 33 ms budget.** *(the owner, 2026-11-10: (b), 33 ms for frames that move, a single whole-screen change up to ~45 ms as one late frame)* **Why:** after today's
   fixes the look switch is 39.5-42.6 ms and the return 53.5 ms on the
   X51v. A whole-screen frame costs about 40 ms of 2D engine work: the
   4 x 4 dither alone is 18.9 ms a screen (perf row
@@ -42,7 +42,7 @@ Prepared; nothing here needs your decision, only your hands, when you're
 well. No new code is needed for either run: both use runs already in
 `rp-gpubench`.
 
-- [ ] **A second 2700G: your X50v.** **Why:** every divide-1 number so far
+- [ ] **A second 2700G: your X50v.** *(the owner, 2026-11-10: no decision; stays prepared, carried to decisions-2026-11-10.md)* **Why:** every divide-1 number so far
   is one chip's (the X51v's); the margin is per chip, and the X50v is a
   second 2700G. **What you'd do:** put the same SD card in the X50v, boot
   Windows Mobile, start HaRET as on the X51v, and tell me "X50v loader is
@@ -52,7 +52,7 @@ well. No new code is needed for either run: both use runs already in
   rp-gpubench`, every locked clock from 133.25 to 139.75 / 1 on the four
   game frames moved, about 10 minutes), then GC2DT's 137.80 / 1 check.
   Each unit then ships only up to its own proven step (your ruling, item 1).
-- [ ] **A cold chip.** **Why:** every run past the line was warm. **What
+- [ ] **A cold chip.** *(the owner, 2026-11-10: no decision; stays prepared, carried to decisions-2026-11-10.md)* **Why:** every run past the line was warm. **What
   you'd do:** nothing beyond leaving the X51v off for an hour or more, then
   booting it to the loader and saying "cold, loader is up" before
   anything else runs. **What I'd run:** GC2DR first, its TEMP0 reading
@@ -63,7 +63,7 @@ well. No new code is needed for either run: both use runs already in
 
 ## Item 4: the touch replay's slowdown (R188)
 
-- [ ] **The compose-ahead's cost (proven: about half the rise).** On the
+- [x] **The compose-ahead's cost (proven: about half the rise).** *(the owner, 2026-11-10: (a), compose ahead only after Today has been still for 1 s)* On the
   X51v the touch replay's touch-to-flush median is 19.2-20.3 ms against
   the 16.2 ms floor; with the Weather app not composed ahead it is
   18.1-18.4 ms ([report](runs/2026-11-09-r188-touch-replay.md); the
@@ -81,7 +81,7 @@ well. No new code is needed for either run: both use runs already in
     Plus: Reveal unchanged, no cost. Minus: memory taken from the pool.
   - (c) Keep it, and take the touch floors as they are now (the
     compose's 1.5 ms is Reveal's price).
-- [ ] **The other ~2 ms (not yet attributed).** It needs a second bisect
+- [x] **The other ~2 ms (not yet attributed).** *(the owner, 2026-11-10: yes, run it next time the X51v is on the loader)* It needs a second bisect
   with the compose held off in every build. Old commits can't switch it
   off, so the way is to bisect with a patch applied per commit. That's
   about an hour of unattended device runs. Tick to have it run next time

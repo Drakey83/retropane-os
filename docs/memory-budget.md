@@ -75,8 +75,8 @@ engine and has no SDRAM layer; the 1.2 MiB is back. The 2700G's own
 | Work picture (32-bit; each changed rectangle composed, dithered, converted) | 0x32C000 | 1.17 MiB |
 | Wallpaper (RGB565, Floyd-Steinberg once on the CPU) | 0x458000 | 600 KiB |
 | Row ring | 0x4EE000 | 160 KiB |
-| Image cache | 0x516000 | 256 KiB |
-| Glyph atlases | 0x556000 | 512 KiB |
+| Image cache | 0x516000 | 384 KiB (256 until 2026-11-10) |
+| Glyph atlases | 0x576000 | 384 KiB (512 at 0x556000 until 2026-11-10) |
 | Background (32-bit: wallpaper plus the glass, drawn once) | 0x5D6000 | 1.17 MiB |
 | Dither pattern (4 rows, the 3D core's matrix) | 0x702000 | 7.5 KiB |
 | Area cache (RGB565 screen pixels) | 0x704000 | 600 KiB |

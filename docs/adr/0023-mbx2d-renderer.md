@@ -141,6 +141,18 @@ on the engine, not the CPU, and only where something changed.
    glyph atlases (about 4 colours of the shell's two fonts), a 64 KiB
    row ring, the fence. About 4.4 MiB; the rest stays for program
    surfaces (ADR-0022 decision 2).
+   *(Amended by the owner, 2026-11-10: the image cache and the glyph
+   memory, side by side at `0x516000`-`0x5D6000`, split 384 / 384 KiB
+   (was 256 / 512); nothing else moves. Pictures are evicted one at a
+   time, the oldest not drawn this frame, as the glyphs are, where the
+   cache used to empty whole. Today's own pictures (a 176,000-byte hero,
+   five 17,424-byte cards and small ones, about 265 KB) didn't fit 256
+   KiB; the glyphs need 279 KiB for every pair on the look route plus at
+   most 64 KiB part-filled, 343 of 384. Hourly's own 316 KB (its graph
+   214,080 bytes, the hour's picture 102,400) and Today's set don't fit
+   384 KiB together, so a return from Hourly still uploads the cards it
+   pushed out: on the route test 5 pictures, 87,120 bytes, where the old
+   cache uploaded 9, 89,424.)*
 5. **Uploads by DMA** (30 MB/s, CPU 84% free, measured) for the wallpaper
    and large images; small glyph uploads by the CPU.
 6. **Checked against the reference.** A host model of the engine (the

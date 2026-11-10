@@ -2468,6 +2468,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "mbx-render: a full picture cache empties whole, not the oldest picture (ruling 2026-11-10)",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "            if let Some((_, k)) = oldest {",
+        to: "            if let Some((_, k)) = oldest.filter(|_| false) {",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_full_picture_cache_evicts_the_oldest_picture_not_the_whole_cache",
+        ]),
+    },
+    Mutant {
         name: "vram-map: screen 0 back outside the safe region, where the scan-out spoils 3D (C71)",
         file: "drivers/vram-map/src/lib.rs",
         from: "    r(\"screen 0\", 0, SCREEN_BYTES, 0x1000),",

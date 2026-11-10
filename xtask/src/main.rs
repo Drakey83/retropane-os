@@ -412,6 +412,7 @@ fn main() -> ExitCode {
         | "emu-today-steps"
         | "emu-today-radar-card"
         | "look-replay"
+        | "look-judge"
         | "emu-today-look"
         | "ui-preview"
         | "emu-crash"
@@ -891,6 +892,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::today_look(&workspace_root())),
         "emu-today-radar-card" => cross().and_then(|()| emu::today_radar_card(&workspace_root())),
         "look-replay" => lookcheck::make(&workspace_root()),
+        "look-judge" => lookcheck::judge_file(&args().nth(2).unwrap_or_default()),
         "emu-today-look" => cross().and_then(|()| emu::today_look(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-probe" => cross().and_then(|()| emu::boot_probe(&workspace_root())),

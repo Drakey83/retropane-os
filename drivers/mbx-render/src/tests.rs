@@ -1171,3 +1171,62 @@ fn a_look_switch_uploads_only_its_new_atlases() {
     same(&shown(&mut r, &mem), &cpu.draw(&a), 2).unwrap();
     assert_eq!(r.stalls, 0);
 }
+
+/// The owner's ruling of 2026-11-10 (ADR-0023 rule 4 amended): the image
+/// cache evicts one picture at a time, the oldest not drawn this frame,
+/// where it used to empty whole. Two big pictures fit, a third doesn't:
+/// the one not drawn goes, the one drawn every frame stays uploaded.
+#[test]
+fn a_full_picture_cache_evicts_the_oldest_picture_not_the_whole_cache() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    // Three pictures of ~150 KB: two fit the 384 KiB cache, three don't.
+    let big = |k: u32| -> &'static Image {
+        let (w, h) = (250u16, 150u16);
+        let px: &'static [u32] = Box::leak(
+            (0..u32::from(w) * u32::from(h))
+                .map(|i| 0xFF00_0000 | (i % 251) << 16 | k * 60 << 8 | i % 7)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        Box::leak(Box::new(Image { w, h, px }))
+    };
+    assert!(2 * 250 * 150 * 4 <= Layout::X51V.images.1);
+    assert!(3 * 250 * 150 * 4 > Layout::X51V.images.1);
+    let (a, b, c) = (big(1), big(2), big(3));
+    let frame = |imgs: &[&'static Image]| {
+        let mut f = Frame::new();
+        f.clear();
+        f.push(Cmd::Fill {
+            r: Rect::new(0, 0, 480, 640),
+            color: 0xFF10_2030,
+        });
+        for (k, &img) in imgs.iter().enumerate() {
+            f.push(Cmd::Image {
+                x: 20 + k as u16 * 200,
+                y: 20 + k as u16 * 160,
+                img,
+            });
+        }
+        f.damage(Rect::new(0, 0, W, H));
+        f
+    };
+    for (imgs, uploaded, evicted) in [
+        (vec![a], 1, 0),
+        (vec![b], 1, 0),
+        // A drawn again, C new: B (not drawn this frame) goes, A stays.
+        (vec![a, c], 1, 1),
+        // Both kept: nothing uploaded.
+        (vec![a, c], 0, 0),
+    ] {
+        let f = frame(&imgs);
+        r.draw(&f);
+        assert!(r.poll());
+        assert_eq!(
+            (r.last.images, r.last.images_evicted),
+            (uploaded, evicted),
+            "pictures uploaded, evicted"
+        );
+        same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
+    }
+}

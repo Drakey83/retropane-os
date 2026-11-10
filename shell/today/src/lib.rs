@@ -2103,7 +2103,18 @@ mod tests {
             || 0,
             1,
         );
-        let mut shell = Shell::new(shell_fonts(), rp_shell::Icons::NONE, true);
+        // Every picture at the device's sizes (the image's store classes),
+        // each slot filled, so the route draws Today's 315 KB and Weather's
+        // pictures as the X51v does (item 1 of 2026-11-10).
+        let (icons, pics) = route_pictures();
+        r.set_pics(pics);
+        let mut shell = Shell::new(shell_fonts(), icons, true);
+        let (gw, gh) = rp_shell::weather_app::GRAPH_PIC;
+        let graph = pics.alloc(gw, gh);
+        if let Some(g) = graph {
+            pics.write(g, |px| shell.paint_graph(px));
+        }
+        shell.set_graph(graph);
         shell.set_time(rp_shell::Time {
             hour: 16,
             minute: 0,
@@ -2176,6 +2187,74 @@ mod tests {
             (0, 0, 0),
             "the return to Today uploaded or evicted text"
         );
+        // And its pictures: the 256 KiB cache emptied whole and the return
+        // uploaded Today's nine again, 315 KB (run today-0082; nine here
+        // too). With 384 KiB and the oldest picture evicted one at a time
+        // (the owner's ruling, 2026-11-10) the hero stays; Hourly's own
+        // 316 KB (its graph 214,080 bytes, the hour's picture 102,400) and
+        // Today's set don't fit 384 KiB together, so the five cards Hourly
+        // pushed out (17,424 bytes each) are the most uploaded again.
+        let (n, bytes) = back
+            .iter()
+            .fold((0, 0), |a, s| (a.0 + s.images, a.1 + s.image_bytes));
+        assert!(
+            n <= 5 && bytes <= 5 * 17_424,
+            "the return to Today uploaded {n} pictures, {bytes} bytes"
+        );
+        // A visit that doesn't open Hourly keeps all of Today's pictures:
+        // Weather's Now and 10 Day, back to Today, nothing uploaded.
+        tap(&mut shell, Target::Hero);
+        step(&mut shell, &mut r);
+        tap(&mut shell, Target::Tab(2));
+        step(&mut shell, &mut r);
+        tap(&mut shell, Target::Back);
+        assert_eq!(shell.screen(), Screen::Today);
+        let again: u32 = step(&mut shell, &mut r).iter().map(|s| s.images).sum();
+        assert_eq!(
+            again, 0,
+            "Today's pictures uploaded again after Now and 10 Day"
+        );
+    }
+
+    /// The device's picture store classes, every condition at every size
+    /// allocated and filled.
+    fn route_pictures() -> (rp_shell::Icons, &'static Pics<'static>) {
+        use rp_shell::Size;
+        let classes: &'static [(u16, u16, u8)] = Box::leak(Box::new([
+            (Size::Hero.side(), rp_shell::HERO_PIC_H, 22),
+            (Size::Mid.side(), Size::Mid.side(), 22),
+            (Size::Card.side(), Size::Card.side(), 22),
+            (Size::Row.side(), Size::Row.side(), 22),
+            (
+                rp_shell::weather_app::GRAPH_PIC.0,
+                rp_shell::weather_app::GRAPH_PIC.1,
+                1,
+            ),
+            (
+                rp_shell::chart::CHART_PIC.0,
+                rp_shell::chart::CHART_PIC.1,
+                1,
+            ),
+        ]));
+        let pics: &'static Pics<'static> = Box::leak(Box::new(Pics::new(
+            Box::leak(vec![0; Pics::words(classes)].into_boxed_slice()),
+            classes,
+        )));
+        let mut icons = rp_shell::Icons::NONE;
+        for size in Size::ALL {
+            let h = if size == Size::Hero {
+                rp_shell::HERO_PIC_H
+            } else {
+                size.side()
+            };
+            for (i, p) in icons.of_mut(size).iter_mut().enumerate() {
+                *p = pics.alloc(size.side(), h);
+                if let Some(pic) = *p {
+                    pics.write(pic, |px| px.fill(0x8040_2000 | i as u32));
+                }
+            }
+        }
+        (icons, pics)
     }
 }
 #[cfg(test)]

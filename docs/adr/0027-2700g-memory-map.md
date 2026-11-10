@@ -35,8 +35,8 @@ is a pool, handed out at run time.
 | `0x32C000` | 1.17 MiB | work picture (32-bit: each changed rectangle composed, then converted) | accepted (L1) |
 | `0x458000` | 600 KiB | wallpaper, RGB565 | accepted (L1) |
 | `0x4EE000` | 160 KiB | row ring | accepted |
-| `0x516000` | 256 KiB | image cache | accepted |
-| `0x556000` | 512 KiB | glyph atlases | accepted |
+| `0x516000` | 384 KiB | image cache (256 KiB until the owner's ruling of 2026-11-10) | accepted |
+| `0x576000` | 384 KiB | glyph atlases (512 KiB at `0x556000` until the same ruling) | accepted |
 | `0x5D6000` | 1.17 MiB | background (wallpaper + glass, 32-bit) | accepted |
 | `0x702000` | 7.5 KiB | dither rows | accepted |
 | `0x704000` | 600 KiB | area cache, RGB565 | accepted (L1) |

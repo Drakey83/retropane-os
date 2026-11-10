@@ -123,10 +123,15 @@ pub const WORK: Region = r("work picture", 0x0032_C000, PICTURE32_BYTES, 0x1000)
 pub const WALLPAPER: Region = r("wallpaper", 0x0045_8000, SCREEN_BYTES, 0x1000);
 /// The 2D renderer's row ring (64 rows of 2.5 KiB).
 pub const ROWS: Region = r("row ring", 0x004E_E000, 64 * 2560, 4);
-/// The 2D renderer's image cache.
-pub const IMAGES: Region = r("image cache", 0x0051_6000, 256 * 1024, 4);
-/// The glyph atlases.
-pub const GLYPHS: Region = r("glyph atlases", 0x0055_6000, 512 * 1024, 4);
+/// The 2D renderer's image cache. 384 KiB since the owner's ruling of
+/// 2026-11-10 (was 256): Today's own pictures (a 250 x 176 hero and eight
+/// 66 x 66 cards, 315 KB) never fitted in 256 KiB, so every return to Today
+/// uploaded them again (run today-0082).
+pub const IMAGES: Region = r("image cache", 0x0051_6000, 384 * 1024, 4);
+/// The glyph atlases: 384 KiB (was 512) since the same ruling; every pair
+/// on the look route draws 279 KiB of glyphs, at most 64 KiB more in
+/// part-filled chunks (R172).
+pub const GLYPHS: Region = r("glyph atlases", 0x0057_6000, 384 * 1024, 4);
 /// The background: wallpaper and hoisted glass, 32-bit.
 pub const BACKGROUND: Region = r("background", 0x005D_6000, PICTURE32_BYTES, 0x1000);
 /// The dither pattern's four rows (32-bit, the work picture's stride
