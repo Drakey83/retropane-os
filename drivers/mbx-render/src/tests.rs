@@ -1185,7 +1185,7 @@ fn a_full_picture_cache_evicts_the_oldest_picture_not_the_whole_cache() {
         let (w, h) = (250u16, 150u16);
         let px: &'static [u32] = Box::leak(
             (0..u32::from(w) * u32::from(h))
-                .map(|i| 0xFF00_0000 | (i % 251) << 16 | k * 60 << 8 | i % 7)
+                .map(|i| 0xFF00_0000 | ((i % 251) << 16) | ((k * 60) << 8) | (i % 7))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         );
