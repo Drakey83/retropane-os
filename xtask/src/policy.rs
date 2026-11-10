@@ -210,6 +210,33 @@ pub fn check_mbxclk_writes(path: &str, text: &str) -> Vec<String> {
         .collect()
 }
 
+/// A `#[path]` inside an inline module (indented, as rustfmt lays it out)
+/// that climbs with `..`: the module's folder (`src/<module>/`) needn't
+/// exist, and Windows resolves `<module>/..` while Linux can't. GitHub's
+/// CI failed on six of these from 2026-10-24 to 2026-11-10 while the
+/// Windows checks passed; name the module's folder instead
+/// (`#[path = "."]` on the inline module).
+pub fn check_climbing_paths(path: &str, text: &str) -> Vec<String> {
+    // xtask's own tests name the pattern.
+    if !path.ends_with(".rs") || path.starts_with("xtask/") {
+        return Vec::new();
+    }
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with([' ', '\t']))
+        .filter(|(_, l)| {
+            let t = l.trim_start();
+            t.starts_with("#[path") && t.contains("\"..") 
+        })
+        .map(|(i, _)| {
+            format!(
+                "{path}:{}: a #[path] inside an inline module climbs with `..` through a folder that may not exist (Linux fails where Windows passes; GitHub CI 2026-10-24 to 2026-11-10): put #[path = \".\"] on the inline module and name the file",
+                i + 1
+            )
+        })
+        .collect()
+}
+
 /// The marker of a value copied from Windows Mobile, Dell or another
 /// original (docs/quality-audit.md D1): `// inherited: <audit item>,
 /// <source>`.
@@ -485,6 +512,28 @@ const B: u32 = 2;
         assert!(check_unsafe_policy("drv", CORE, "#![no_std]").is_some());
         assert!(check_unsafe_policy("drv", CORE, "#![forbid(unsafe_code)]").is_none());
         assert!(check_unsafe_policy("xtask", Placement::Host, "").is_none());
+    }
+
+    #[test]
+    fn an_inline_modules_path_never_climbs_through_its_folder() {
+        let bad = "mod image {
+    #[path = \"../busx.rs\"]
+    mod busx;
+}
+";
+        assert_eq!(check_climbing_paths("boot/x/src/main.rs", bad).len(), 1);
+        let good = "#[path = \".\"]
+mod image {
+    #[path = \"busx.rs\"]
+    mod busx;
+}
+";
+        assert!(check_climbing_paths("boot/x/src/main.rs", good).is_empty());
+        // A top-level one is relative to the file's own folder: allowed.
+        let top = "#[path = \"../../boot/glesfeat/src/frame.rs\"]
+mod frame;
+";
+        assert!(check_climbing_paths("xtask/src/g7.rs", top).is_empty());
     }
 
     #[test]
