@@ -70,7 +70,7 @@ well. No new code is needed for either run: both use runs already in
 
 ## GitHub's CI (found re-verifying the list)
 
-- [ ] **Let GitHub's CI run on this branch.** **Why:** GitHub's own
+- [x] **Let GitHub's CI run on this branch.** **Ruled 2026-11-10:** the owner's "Yes, push"; pushed, pull request 13, [run 42950562626](https://github.com/Drakey83/retropane-os/actions/runs/42950562626) **success** on a4caf626 (all five jobs). **Why:** GitHub's own
   workflow (`.github/workflows/ci.yml`, Linux) has been red on every main
   push since 2026-10-24, 04d3d142 included
   ([run 42731190233](https://github.com/Drakey83/retropane-os/actions/runs/42731190233),

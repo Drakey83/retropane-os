@@ -1,8 +1,9 @@
 # Deep dive fix, 2026-11-10: the owner's seven items
 
-Branch `fix/deep-dive-2026-11-10`, from main at 04d3d142. **Not pushed**
-(checked last, below: the branch isn't on GitHub, and GitHub `main` is
-still at 04d3d142). Device runs only on the X51v already
+Branch `fix/deep-dive-2026-11-10`, from main at 04d3d142. **Pushed as a
+branch with a pull request, main not moved** (the owner's "Yes, push",
+2026-11-10: [pull request 13](https://github.com/Drakey83/retropane-os/pull/13);
+GitHub `main` still at 04d3d142; checked last, below). Device runs only on the X51v already
 on the loader, unattended. Decisions left to the owner:
 [decisions-2026-11-10.md](decisions-2026-11-10.md).
 
@@ -36,17 +37,22 @@ of GitHub's workflow, which I didn't check. Fixed on this branch (e18bd531),
 and the lint now refuses the pattern (5a66eafc), with a scan of every
 include and path in the repo finding no other. **The CI run for this
 branch's last commit:** `cargo xtask ci` passed on every commit of the
-branch in a clean second checkout (`../rp-ci`) except the two of item 1 named in its row, 4b69acfe and the commit that adds this report included. No GitHub
-workflow run exists for the branch: the workflow runs on a push or a pull
-request, and the list says not to push. That run is a tick-box
-(decisions-2026-11-10.md), and Linux-only failures hidden behind this one
-since 2026-10-24 can't be ruled out until it runs.
+branch in a clean second checkout (`../rp-ci`) except the two of item 1
+named in its row. After the owner's "Yes, push", GitHub's workflow ran on
+a4caf626 through pull request 13:
+[run 42950562626](https://github.com/Drakey83/retropane-os/actions/runs/42950562626),
+conclusion **success**, all five jobs (fmt, clippy, lint and test; the
+X51v cross-build; the emulator boot; the benchmarks; coverage). The first
+green Linux run since 2026-10-24: no other Linux-only failure was hiding
+behind the path one.
 
 ## Push state (settled last, then checked)
 
-Not pushed: `git ls-remote origin` shows no `fix/deep-dive-2026-11-10`,
-and GitHub `main` is at 04d3d142, the start of this branch. Nothing was
-force-pushed and no history rewritten.
+The branch is on GitHub (`git ls-remote origin` shows
+`fix/deep-dive-2026-11-10`, pushed on the owner's "Yes, push") with pull
+request 13 open against main, not merged; GitHub `main` is at 04d3d142,
+the start of this branch. Nothing was force-pushed and no history
+rewritten.
 
 **The rule, so the next report doesn't go stale:** a report's push claim
 is written last, after the push state is settled. It is checked against
