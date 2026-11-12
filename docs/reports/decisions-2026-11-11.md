@@ -65,3 +65,25 @@ reviewer recommended an answer, it is written as his recommendation.
   **The reviewer's recommendation, for you to rule on:** (a), accept the
   5-card re-upload on that one route; rebalancing would starve the
   glyphs, which need 343 of their 384 KiB.
+
+## Item 3: the touch replay's rise no single commit explains (carried from decisions-2026-11-10.md, item 2)
+
+- [ ] **What to do about the rise R188's second bisect couldn't pin to
+  one commit.** **Why:** with the compose held off in every build, the
+  touch replay's frame-and-queueing median climbs from 508 us at 4fa4dbad
+  to 752 at main, in 60-85 us steps over the features of 2026-10-30 to
+  11-01; the first commit over the line (680 us) is f4ffea28 (the card's
+  word shadows, whole clouds, 16 glyph atlases: +60 us, about a quarter
+  of the rise). Touch to flush barely moves with it (16,472 against 16,704
+  us with the compose off), so 11-09's "~2 ms" was mostly run-to-run
+  spread (two identical runs differed by 1.7 ms). This branch's starting
+  point (main at 79b0536f) measured 784 us with the 1 s compose rule.
+  Evidence: [the bisect's table](runs/2026-11-10-r188-compose-rule.md)
+  (card logs today-0119 to today-0136). **Options:** (a) accept it as
+  unattributed and re-set the touch floors to the measured numbers (frame
+  and queueing ~784 us, touch to flush 16.9-18.6 ms); (b) time Today's
+  frame by feature on the X51v (the word shadows, the clouds, the glass)
+  and cut the costliest first, floors kept at 384 / 16,248; (c) both. No
+  device time goes into re-bisecting 60 us steps unless you say so.
+  **The reviewer's recommendation, for you to rule on:** accept it as
+  unattributed: gradual drift, no single cause, and the floors hold it.
