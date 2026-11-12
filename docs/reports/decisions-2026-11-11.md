@@ -87,3 +87,32 @@ reviewer recommended an answer, it is written as his recommendation.
   device time goes into re-bisecting 60 us steps unless you say so.
   **The reviewer's recommendation, for you to rule on:** accept it as
   unattributed: gradual drift, no single cause, and the floors hold it.
+
+## Item 5: the divide-1 runs that stay prepared (R189; carried from decisions-2026-11-10.md, item 3, word for word)
+
+The owner, 2026-11-11: "Item 5 stays prepared, not forced." Neither run
+happens until he says the device is up; no new code is needed for either.
+The steps, as written on 2026-11-09:
+
+Prepared; nothing here needs your decision, only your hands, when you're
+well. No new code is needed for either run: both use runs already in
+`rp-gpubench`.
+
+- [ ] **A second 2700G: your X50v.** **Why:** every divide-1 number so far
+  is one chip's (the X51v's); the margin is per chip, and the X50v is a
+  second 2700G. **What you'd do:** put the same SD card in the X50v, boot
+  Windows Mobile, start HaRET as on the X51v, and tell me "X50v loader is
+  up". RetroPane's loader has never run on the X50v, so the first step is
+  only to see that it comes up (it may not: the board differs). **What I'd
+  run then:** GC2DR (`RP_GPUBENCH_GC2_FINE=1 cargo xtask load
+  rp-gpubench`, every locked clock from 133.25 to 139.75 / 1 on the four
+  game frames moved, about 10 minutes), then GC2DT's 137.80 / 1 check.
+  Each unit then ships only up to its own proven step (your ruling, item 1).
+- [ ] **A cold chip.** **Why:** every run past the line was warm. **What
+  you'd do:** nothing beyond leaving the X51v off for an hour or more, then
+  booting it to the loader and saying "cold, loader is up" before
+  anything else runs. **What I'd run:** GC2DR first, its TEMP0 reading
+  logged before and after each setting, against the warm GC2DR of
+  2026-11-08. (An X51v sitting idle on the loader for an hour is cooler
+  but not cold: the display and the 2700G's clocks stay on. If one comes
+  up this session it is run and reported as "idle an hour", not as cold.)
