@@ -24,3 +24,44 @@ reviewer recommended an answer, it is written as his recommendation.
   still; (c) leave them over the rule, logged. Each is a design change
   (ADR-0023's renderer or Today's list), so nothing is built until you
   pick.
+
+## Item 2: a return from Hourly re-uploads Today's cards (carried from decisions-2026-11-10.md, item 1)
+
+- [ ] **What to do about the five cards a return from Hourly uploads.**
+  **Why:** the picture cache is 384 KiB (393,216 bytes; the owner's split
+  of 2026-11-10). Today's own pictures are about 265 KB (the hero 176,000
+  bytes, five cards 17,424 each, small ones); Hourly's are 316,480 bytes
+  (its graph 214,080, the hour's picture 102,400). Together, about 581 KB:
+  they don't fit, so whichever was drawn last pushes the other out.
+  **Measured so far:**
+  - **On the host, the worst case** (the route test, every page drawn by
+    the 2D renderer on screen 0): the return through Hourly uploads 5
+    cards, 87,120 bytes; the old 256 KiB cache uploaded 9 pictures,
+    89,424 bytes. At the bus's measured 30-33 MB/s (DMA), that is
+    2.6-2.9 ms of the return frame. A route that skips Hourly uploads 0.
+  - **On the X51v** (run today-0115, the look route, which visits Hourly):
+    the return to Today uploaded 1 picture, not 5. With the plane path on,
+    the Weather pages are pictures on the page layer, so Hourly's graph
+    reaches the 2D renderer's cache only when Hourly is drawn on screen 0
+    (the plane path off, or a hand-off).
+  **Options, with their numbers:**
+  - **(a) Accept the re-upload on that one route.** 87,120 bytes, about
+    2.6-2.9 ms, only on a return from Hourly drawn on screen 0; 1 picture
+    on the X51v's route. Nothing changes.
+  - **(b) Rebalance the 384 / 384 split.** Holding both sets needs about
+    581 KB (567 KiB) of pictures, leaving the glyphs about 201 KiB. The
+    glyphs need 343 of their 384 KiB: 279 KiB for every font-and-colour
+    pair on the look route plus up to 64 KiB part-filled (ADR-0023 rule
+    4's measurement). About 142 KiB short: glyph atlases would be evicted
+    and uploaded again at screen changes and look switches, the cost the
+    11-09 split was made to remove (12 + 3 atlases on the return,
+    today-0071). It also reopens the owner's settled 384 / 384 ruling.
+  - **(c) Don't cache Hourly's graph** (draw it from a fresh upload each
+    frame that shows it). 214,080 bytes at 30-33 MB/s is 6.5-7.1 ms added
+    to every Hourly frame drawn on screen 0, scrolling included, to save
+    2.6-2.9 ms once on the way back. (Drawing the graph at 16 bits, 107 KB,
+    still leaves the two sets about 474 KB together, over 384 KiB, and
+    loses the soft fill's alpha: no help here.)
+  **The reviewer's recommendation, for you to rule on:** (a), accept the
+  5-card re-upload on that one route; rebalancing would starve the
+  glyphs, which need 343 of their 384 KiB.
