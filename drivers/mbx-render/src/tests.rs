@@ -600,6 +600,191 @@ fn a_new_wallpaper_redraws_everything_and_no_cached_area_shows_the_old_one() {
     }
 }
 
+/// [`scene`] at `shift`, drawn whole by the CPU reference from nothing.
+fn scene_whole(shift: u16) -> Vec<u32> {
+    let mut g = Frame::new();
+    scene(&mut g, shift);
+    g.damage(SCREEN);
+    Reference::new().draw(&g)
+}
+
+/// Where a frame drawn from `new` differs from one drawn from `old`, the
+/// shell's way (`rp_draw::changes`), marked on `new`.
+fn damage_from_lists(old: &Frame, new: &mut Frame) {
+    use rp_draw::changes::{KEY_WORDS, changed_areas, cmd_keys};
+    let (mut a, mut b) = (
+        std::vec![0; MAX_CMDS * KEY_WORDS],
+        std::vec![0; MAX_CMDS * KEY_WORDS],
+    );
+    let m = cmd_keys(old, &mut a).expect("room");
+    let n = cmd_keys(new, &mut b).expect("room");
+    let mut marks = Vec::new();
+    changed_areas(&a[..m * KEY_WORDS], &b[..n * KEY_WORDS], |r| marks.push(r));
+    for r in marks {
+        new.damage(r);
+    }
+}
+
+/// The owner's ruling of 2026-11-12 on R191: the screen kept as it is left
+/// and a return started from it, drawing only where the list differs from
+/// the kept screen's, shows exactly what a whole redraw would, at a
+/// fraction of its drawing; the frames after it stay right (the other
+/// picture brought forward whole once).
+#[test]
+fn a_return_started_from_the_kept_screen_matches_a_whole_redraw() {
+    let (mut r, mem) = gpu();
+    let mut today = Frame::new();
+    scene(&mut today, 0);
+    today.damage(SCREEN);
+    r.draw(&today);
+    assert!(r.poll());
+    same(&shown(&mut r, &mem), &scene_whole(0), 2).unwrap();
+    // Left: the next frame keeps it, then another screen, twice (both
+    // pictures hold the other screen).
+    r.keep_shown();
+    assert!(!r.kept_ok(), "nothing kept until a frame copies it");
+    let other = fill_frame(SCREEN, 0xFF30_6090);
+    r.draw(&other);
+    assert!(r.last.kept);
+    assert!(!r.kept_ok(), "not until that frame lands");
+    assert!(r.poll());
+    assert!(r.kept_ok());
+    r.draw(&other);
+    assert!(r.poll());
+    // Back, the list changed a little (the panel and the icon moved).
+    assert!(r.seed());
+    let mut back = Frame::new();
+    scene(&mut back, 3);
+    damage_from_lists(&today, &mut back);
+    assert!(!back.dirty().is_empty() && back.dirty().iter().all(|d| *d != SCREEN));
+    r.draw(&back);
+    assert!(r.poll());
+    assert!(r.last.seeded);
+    assert!(
+        r.last.px_convert < u32::from(W) * u32::from(H) / 2,
+        "only the change drawn"
+    );
+    same(&shown(&mut r, &mem), &scene_whole(3), 2).unwrap();
+    // Nothing changes: still right; then a small change: right in the
+    // picture brought forward.
+    let mut still = Frame::new();
+    scene(&mut still, 3);
+    r.draw(&still);
+    assert!(r.poll());
+    assert!(!r.last.seeded);
+    same(&shown(&mut r, &mem), &scene_whole(3), 2).unwrap();
+    let mut next = Frame::new();
+    scene(&mut next, 6);
+    damage_from_lists(&still, &mut next);
+    r.draw(&next);
+    assert!(r.poll());
+    same(&shown(&mut r, &mem), &scene_whole(6), 2).unwrap();
+    // Back with nothing changed: no damage at all, the kept screen shown.
+    r.keep_shown();
+    r.draw(&other);
+    assert!(r.poll());
+    assert!(r.seed());
+    let mut same_again = Frame::new();
+    scene(&mut same_again, 6);
+    r.draw(&same_again);
+    assert!(r.poll());
+    assert!(r.last.seeded);
+    same(&shown(&mut r, &mem), &scene_whole(6), 2).unwrap();
+}
+
+/// The kept screen is used only while it is whole and drawn over the
+/// wallpaper as it is: a new wallpaper, or a band read from elsewhere,
+/// refuses it; one turning unusable after the frame asked for it is drawn
+/// whole, never the stale base under a partial damage.
+#[test]
+fn a_kept_screen_is_refused_after_the_wallpaper_changes_and_a_late_refusal_draws_whole() {
+    let (mut r, mem) = gpu();
+    let mut today = Frame::new();
+    scene(&mut today, 0);
+    today.damage(SCREEN);
+    r.draw(&today);
+    assert!(r.poll());
+    r.keep_shown();
+    let other = fill_frame(SCREEN, 0xFF30_6090);
+    r.draw(&other);
+    assert!(r.poll());
+    assert!(r.kept_ok());
+    // A band read from elsewhere: refused while it is.
+    let pool = rp_vram_map::POOL.at as usize;
+    write_bands(&mut r, &[pool], 40);
+    r.wallpaper_bands(100, 40, &[Some(pool)], &[Rect::new(0, 100, W, 40)]);
+    assert!(!r.kept_ok() && !r.seed());
+    r.wallpaper_bands(100, 40, &[], &[Rect::new(0, 100, W, 40)]);
+    assert!(r.kept_ok());
+    // Asked for, then a band switched in before the frame: drawn whole.
+    assert!(r.seed());
+    r.wallpaper_bands(100, 40, &[Some(pool)], &[]);
+    let mut back = Frame::new();
+    scene(&mut back, 3);
+    damage_from_lists(&today, &mut back);
+    r.draw(&back);
+    assert!(r.poll());
+    assert!(!r.last.seeded);
+    r.wallpaper_bands(100, 40, &[], &[Rect::new(0, 100, W, 40)]);
+    r.draw(&back);
+    assert!(r.poll());
+    same(&shown(&mut r, &mem), &scene_whole(3), 2).unwrap();
+    // A new wallpaper: refused.
+    r.keep_shown();
+    r.draw(&other);
+    assert!(r.poll());
+    assert!(r.kept_ok());
+    r.wallpaper_changed();
+    assert!(!r.kept_ok() && !r.seed());
+    // A named wallpaper: kept over it, another written over it (unnamed:
+    // refused, or named otherwise: refused), then it written again: the
+    // kept screen usable, and a return from it right (run today-0138: the
+    // radar's map into the wallpaper and back refused Today's kept screen).
+    r.wallpaper_is(7);
+    r.draw(&today_whole());
+    assert!(r.poll());
+    r.keep_shown();
+    r.draw(&other);
+    assert!(r.poll());
+    assert!(r.kept_ok());
+    let mut row = [0xFF10_2030u32; W as usize];
+    for y in 0..H {
+        r.wallpaper_row(y, &row);
+    }
+    r.wallpaper_changed();
+    assert!(!r.kept_ok());
+    r.wallpaper_is(8);
+    assert!(!r.kept_ok());
+    for y in 0..H {
+        for (x, p) in row.iter_mut().enumerate() {
+            *p = wall(x as u16, y);
+        }
+        r.wallpaper_row(y, &row);
+    }
+    r.wallpaper_changed();
+    r.wallpaper_is(7);
+    r.draw(&other);
+    assert!(r.poll());
+    r.draw(&other);
+    assert!(r.poll());
+    assert!(r.kept_ok() && r.seed());
+    let mut back = Frame::new();
+    scene(&mut back, 3);
+    damage_from_lists(&today, &mut back);
+    r.draw(&back);
+    assert!(r.poll());
+    assert!(r.last.seeded);
+    same(&shown(&mut r, &mem), &scene_whole(3), 2).unwrap();
+}
+
+/// [`scene`] at 0, damaged whole.
+fn today_whole() -> Frame {
+    let mut f = Frame::new();
+    scene(&mut f, 0);
+    f.damage(SCREEN);
+    f
+}
+
 /// A frame filling `r` with `colour`, damaged.
 fn fill_frame(r: Rect, colour: u32) -> Frame {
     let mut f = Frame::new();

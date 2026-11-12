@@ -602,7 +602,10 @@ const NOTICE_MS: u32 = 2000;
 const MAX_DAMAGE: usize = 8;
 
 /// Words [`Shell::keep_lists`] takes: two frames' command keys.
-pub const SHOWN_WORDS: usize = 2 * rp_draw::MAX_CMDS * rp_draw::changes::KEY_WORDS;
+pub const SHOWN_WORDS: usize = 2 * LIST_WORDS;
+
+/// Words one frame's command keys take ([`Shell::keep_today_list`]).
+pub const LIST_WORDS: usize = rp_draw::MAX_CMDS * rp_draw::changes::KEY_WORDS;
 
 /// What a stroke on the Weather app's page has turned out to be.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -672,6 +675,20 @@ pub struct Shell {
     shown: Option<&'static mut [u32]>,
     shown_at: usize,
     shown_n: Option<usize>,
+    /// Today's last list as it was left ([`LIST_WORDS`], the device's RAM
+    /// pool) and its length: a return to Today marks only where its list
+    /// differs from it, the device starting the frame from Today's kept
+    /// picture (the owner's ruling of 2026-11-12 on R191). `None`: the
+    /// caller keeps no picture, and a return is drawn whole.
+    today_kept: Option<&'static mut [u32]>,
+    today_kept_n: Option<usize>,
+    /// The screen of the last frame built (`None`: none yet).
+    drawn_screen: Option<Screen>,
+    /// The last frame left Today (the caller keeps the picture shown), or
+    /// returned to it marking only what differs from the kept list (the
+    /// caller starts it from that picture or marks the whole screen).
+    left_today: bool,
+    from_kept: bool,
     /// The align screen, while it runs (over everything).
     align: Option<align::Align>,
     /// The test image's comparison: the wallpaper plainly truncated (not
@@ -868,6 +885,11 @@ macro_rules! shell_start {
             shown: None,
             shown_at: 0,
             shown_n: None,
+            today_kept: None,
+            today_kept_n: None,
+            drawn_screen: None,
+            left_today: false,
+            from_kept: false,
             align: None,
             wall_plain: false,
             bare: false,
@@ -1431,6 +1453,70 @@ impl Shell {
             self.shown = Some(words);
             self.shown_n = None;
         }
+    }
+
+    /// Room for Today's last list as it is left ([`LIST_WORDS`] words or
+    /// more), for a caller that keeps Today's picture as it leaves
+    /// ([`Self::take_left_today`]) and starts the return from it
+    /// ([`Self::take_from_kept`]): the return then marks only where Today's
+    /// list differs from the kept one (the owner's ruling of 2026-11-12 on
+    /// R191: the return was drawn whole, 706 blits, 55.5 ms on the X51v).
+    /// Needs [`Self::keep_lists`] too.
+    pub fn keep_today_list(&mut self, words: &'static mut [u32]) {
+        if words.len() >= LIST_WORDS {
+            self.today_kept = Some(words);
+            self.today_kept_n = None;
+        }
+    }
+
+    /// While another screen is up: Today's frame as a return would draw it
+    /// now (the menu closed, nothing focused), built into `f` with the
+    /// whole screen marked, the shell's state unchanged; and whether the
+    /// list kept as Today was left still matches it. `None` on Today or
+    /// with no kept list. Stale, the caller composes `f` into the kept
+    /// picture and calls [`Self::today_composed`] (the owner's ruling of
+    /// 2026-11-12 on R191, the Reveal pattern: run today-0139 kept Today in
+    /// the light look and came back in the dark, half the screen redrawn).
+    pub fn today_ahead(&mut self, f: &mut Frame) -> Option<bool> {
+        if self.screen == Screen::Today || self.today_kept.is_none() {
+            return None;
+        }
+        let saved = (self.screen, self.menu_open, self.focus, self.pressed);
+        (self.screen, self.menu_open, self.focus, self.pressed) =
+            (Screen::Today, false, None, None);
+        f.clear();
+        f.damage(Rect::new(0, 0, W, H));
+        self.scene(f);
+        self.look(f);
+        (self.screen, self.menu_open, self.focus, self.pressed) = saved;
+        let k = rp_draw::changes::KEY_WORDS;
+        let kept = self.today_kept.as_deref()?;
+        Some(
+            self.today_kept_n
+                .is_some_and(|m| rp_draw::changes::same_keys(f, &kept[..m * k])),
+        )
+    }
+
+    /// `f` (from [`Self::today_ahead`]) was composed into the kept picture:
+    /// a return now marks only where Today differs from it.
+    pub fn today_composed(&mut self, f: &Frame) {
+        if let Some(kept) = self.today_kept.as_deref_mut() {
+            self.today_kept_n = rp_draw::changes::cmd_keys(f, kept);
+        }
+    }
+
+    /// Whether the last frame left Today (once): the caller keeps the
+    /// picture shown before that frame draws.
+    pub fn take_left_today(&mut self) -> bool {
+        core::mem::take(&mut self.left_today)
+    }
+
+    /// Whether the last frame returned to Today marking only where its list
+    /// differs from the one kept as it was left (once): the caller starts
+    /// that frame from the picture kept then, or, if it can't, marks the
+    /// whole screen.
+    pub fn take_from_kept(&mut self) -> bool {
+        core::mem::take(&mut self.from_kept)
     }
 
     fn menu_len(&self) -> u8 {
@@ -2240,9 +2326,22 @@ impl Shell {
             self.layer_was = layer;
             self.dirty(weather_app::PAGE);
         }
+        // Leaving Today, or back to it (the owner's ruling of 2026-11-12
+        // on R191): back, with Today's list kept as it was left, the frame
+        // marks only where its list differs from that one (the caller
+        // starts it from the picture kept then), not the change of screen.
+        let was = self.drawn_screen.replace(self.screen);
+        let today = self.screen == Screen::Today;
+        let leaving = !today && was == Some(Screen::Today);
+        let from_kept = today
+            && was.is_some_and(|s| s != Screen::Today)
+            && self.today_kept_n.is_some()
+            && self.shown.is_some();
         f.clear();
-        for d in &self.damage[..self.damaged] {
-            f.damage(*d);
+        if !from_kept {
+            for d in &self.damage[..self.damaged] {
+                f.damage(*d);
+            }
         }
         self.damaged = 0;
         self.scene(f);
@@ -2256,15 +2355,35 @@ impl Shell {
             }
             return;
         };
-        let (lo, hi) = shown.split_at_mut(SHOWN_WORDS / 2);
+        let (lo, hi) = shown.split_at_mut(LIST_WORDS);
         let (last, now) = if self.shown_at == 0 {
             (lo, hi)
         } else {
             (hi, lo)
         };
+        let k = rp_draw::changes::KEY_WORDS;
         let n = rp_draw::changes::cmd_keys(f, now);
-        if restated {
-            let k = rp_draw::changes::KEY_WORDS;
+        if leaving {
+            // Today's last list, as the picture the caller keeps shows it.
+            self.left_today = true;
+            self.today_kept_n = None;
+            if let (Some(kept), Some(m)) = (self.today_kept.as_deref_mut(), self.shown_n) {
+                kept[..m * k].copy_from_slice(&last[..m * k]);
+                self.today_kept_n = Some(m);
+            }
+        }
+        if from_kept {
+            let kept = self.today_kept.as_deref().unwrap_or_default();
+            match (self.today_kept_n, n) {
+                (Some(m), Some(n)) => {
+                    rp_draw::changes::changed_areas(&kept[..m * k], &now[..n * k], |r| {
+                        f.damage(r);
+                    });
+                    self.from_kept = true;
+                }
+                _ => f.damage(Rect::new(0, 0, W, H)),
+            }
+        } else if restated {
             match (self.shown_n, n) {
                 (Some(m), Some(n)) => {
                     rp_draw::changes::changed_areas(&last[..m * k], &now[..n * k], |r| {

@@ -7,7 +7,10 @@ reviewer recommended an answer, it is written as his recommendation.
 
 ## Item 1: the frames R191 leaves over the rule (the rule itself stays)
 
-- [ ] **Today's whole list costs more than the 45 ms allowance.** **Why:**
+- [x] **Ruled 2026-11-12: (a).** Applied in decisions-2026-11-12.md item 1
+  (the return to Today 1,172 us from the kept picture, run today-0140; the
+  Start menu carried there as a new box).
+  **Today's whole list costs more than the 45 ms allowance.** **Why:**
   run [today-0137](runs/2026-11-11-today-0137.md): the start-up burst and
   Settings' redraws on network answers are fixed, but the return to Today
   takes 55.5 ms (706 blits, 278,442 blended px) and the Start menu over

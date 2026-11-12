@@ -1574,6 +1574,9 @@ mod image {
         // The shell's last two draw lists' keys (R191: a picture or an
         // answer draws only where the list changed), 8 KB.
         let (shown_words, rest) = rest.split_at_mut(rp_shell::SHOWN_WORDS);
+        // Today's list as it is left (the owner's ruling of 2026-11-12 on
+        // R191: the return starts from Today's kept picture), 4 KB.
+        let (today_words, rest) = rest.split_at_mut(rp_shell::LIST_WORDS);
         // The pictures (option C): the default pack's file, a card pack's
         // picture stream read in, the radar map's file, the filter's rows.
         let (def_words, rest) = rest.split_at_mut(DEF_FILE / 4);
@@ -1821,6 +1824,12 @@ mod image {
         if LOOK_CHECK {
             gfx.grant_readback(pc);
         }
+        // Today's picture kept as it is left and the return started from it
+        // (the owner's ruling of 2026-11-12 on R191), with the pages'
+        // client (the 2D-only build draws the return whole).
+        if pc.is_some() {
+            shell.keep_today_list(today_words);
+        }
         // The radar's frames (R184 step 2): their own client, so their
         // pictures are counted and given back apart from the pages'.
         let Some(rc) = gfx.client(RADAR_QUOTA) else {
@@ -1943,6 +1952,12 @@ mod image {
         let mut trace_due = false;
         let mut meant = (0u16, 0u16, 0u16, 0u16, 0u16);
         let mut retire: Option<Handle> = None;
+        // A return to Today this frame: whether it could start from the
+        // kept picture, and the areas it marked (for its log line).
+        let mut back_from_kept: Option<(bool, usize)> = None;
+        // Since when another screen has been up and still (ms): Today is
+        // composed ahead into its kept picture only after a second of it.
+        let mut away_quiet_since = 0u64;
         // A page whose build found no room, by its draw list's key: not
         // tried again until that changes (today-0036 retried every pass,
         // 487 times).
@@ -4085,6 +4100,45 @@ mod image {
                         }
                     }
                 }
+                // Today composed ahead into its kept picture while another
+                // screen is up and still for a second, when Today's list no
+                // longer matches the kept one (a look switch, a new minute),
+                // so a return finds it drawn (the owner's ruling of
+                // 2026-11-12 on R191, the app-ahead pattern above; run
+                // today-0139: kept light, back dark, half the screen drawn).
+                if shell.screen() == rp_shell::Screen::Today
+                    || shell.animating()
+                    || filter.down()
+                    || shell.needs_frame()
+                {
+                    away_quiet_since = now_ms;
+                }
+                if now_ms.saturating_sub(away_quiet_since) >= 1000
+                    && commit.is_none()
+                    && !revealing
+                    && !gfx.busy()
+                    && !gfx.commit_pending()
+                    && !gfx.aside_held()
+                {
+                    away_quiet_since = now_ms;
+                    let t0 = rt::ticks();
+                    if shell.today_ahead(frame) == Some(false) {
+                        match gfx.compose_kept(pc, frame, &mut gclock) {
+                            Ok(_) => {
+                                shell.today_composed(frame);
+                                let _ = writeln!(
+                                    RunLog,
+                                    "today: composed ahead into its kept picture at {now_ms} ms ({} us of CPU)",
+                                    rt::ticks().wrapping_sub(t0) / 13 * 4
+                                );
+                            }
+                            Err(e) => {
+                                let _ = writeln!(RunLog, "today: not composed ahead ({e:?})");
+                            }
+                        }
+                    }
+                    frame.clear();
+                }
                 // A replaced picture goes back once nothing shows it.
                 if let Some(h) = retire
                     && !gfx.commit_pending()
@@ -4246,6 +4300,27 @@ mod image {
                     }
                     rp_today::keep_chart(shell, pics, &mut chart_key);
                     z_shell.run(|| shell.frame(frame));
+                    // Today left: its picture kept by the next draw (one
+                    // engine copy). Back to it: the frame starts from that
+                    // picture, drawing only where Today's list differs from
+                    // the one kept, or whole if it can't (the owner's ruling
+                    // of 2026-11-12 on R191).
+                    if shell.take_left_today()
+                        && let Some(pc) = pc
+                    {
+                        let _ = gfx.keep_screen(pc);
+                        let _ = writeln!(
+                            RunLog,
+                            "today: left at {now_ms} ms, its picture kept by the next draw"
+                        );
+                    }
+                    if shell.take_from_kept() {
+                        let ok = pc.is_some_and(|pc| gfx.seed_next_frame(pc).is_ok());
+                        if !ok {
+                            frame.damage(rp_draw::Rect::new(0, 0, W as u16, H as u16));
+                        }
+                        back_from_kept = Some((ok, frame.dirty().len()));
+                    }
                     // Commands past the frame's room are dropped: never
                     // quietly (the tests walk every screen with the device's
                     // pictures; this names one they missed).
@@ -4265,7 +4340,7 @@ mod image {
                 if shell.screen() == rp_shell::Screen::Today && !sky_only {
                     app_check = true;
                 }
-                let _ = z_compositor.run(|| match (commit, pc) {
+                let drew = z_compositor.run(|| match (commit, pc) {
                     (Some((layer, aside, _)), Some(pc)) => {
                         let r = gfx.frame_commit(pc, frame, layer, aside, &mut gclock);
                         if r.is_ok() && layer.is_some_and(|l| matches!(l.src, Source::Picture(_))) && shell.reveal_plane().is_some() {
@@ -4293,8 +4368,31 @@ mod image {
                     }
                     _ => gfx.frame(frame, &mut gclock),
                 });
+                // A frame refused draws nothing, yet the shell keeps its list
+                // as drawn (the base the next frame's changes, a return to
+                // Today's among them, are found against): the next frame is
+                // drawn whole instead.
+                if drew.is_err() {
+                    shell.redraw_all();
+                }
                 let t1 = rt::ticks();
                 let us = t1.wrapping_sub(t0) / 13 * 4;
+                if let Some((ok, areas)) = back_from_kept.take() {
+                    let s = gfx.two_d().last;
+                    let _ = writeln!(
+                        RunLog,
+                        "today: back at {now_ms} ms, CPU {us} us, {} ({areas} areas marked; {} blits, {} px converted)",
+                        if ok && s.seeded {
+                            "started from the picture kept as it was left"
+                        } else if ok {
+                            "the kept picture turned unusable: drawn whole"
+                        } else {
+                            "no kept picture to start from: drawn whole"
+                        },
+                        s.blits,
+                        s.px_convert
+                    );
+                }
                 if core::mem::take(&mut compare_frame) {
                     let _ = writeln!(
                         RunLog,

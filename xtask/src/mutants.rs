@@ -2505,6 +2505,44 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "2D renderer: a return started from the kept screen without copying it in (R191, ruling 2026-11-12)",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "        if seeded {
+            self.copy_as(narrow(dst), narrow(self.l.kept), SCREEN);",
+        to: "        if seeded {
+            let _ = dst;",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_return_started_from_the_kept_screen_matches_a_whole_redraw",
+        ]),
+    },
+    Mutant {
+        name: "2D renderer: a kept screen used over a changed wallpaper (R191, ruling 2026-11-12)",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "            g == self.wall_gen || id.is_some_and(|id| self.wall_id == Some(id))",
+        to: "            let _ = (g, id);
+            true",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_kept_screen_is_refused_after_the_wallpaper_changes_and_a_late_refusal_draws_whole",
+        ]),
+    },
+    Mutant {
+        name: "shell: a return to Today marks nothing that changed while away (R191, ruling 2026-11-12)",
+        file: "shell/core/src/lib.rs",
+        from: "                    rp_draw::changes::changed_areas(&kept[..m * k], &now[..n * k], |r| {
+                        f.damage(r);
+                    });",
+        to: "                    let _ = (kept, m, n);",
+        check: Check::Host(&[
+            "-p",
+            "rp-shell",
+            "today_kept_and_back_marks_only_where_today_changed",
+        ]),
+    },
+    Mutant {
         name: "graphics: the flip back to screen 0 before 3D work skipped (C71 R-B, R190)",
         file: "services/graphics/src/lib.rs",
         from: "        let flipped = self.two_d.front() != safe;

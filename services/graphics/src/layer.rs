@@ -315,6 +315,33 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         Ok(self.poll(clock))
     }
 
+    /// Composes client `c`'s screen `frame` (drawn whole: its damage the
+    /// screen) into the kept picture, not shown, as [`Self::compose_into`]
+    /// does into a picture: Today composed ahead while it isn't shown, so
+    /// a return to it finds its list already drawn (the owner's ruling of
+    /// 2026-11-12 on R191, the Reveal pattern reused; run today-0139: kept
+    /// in the light look and come back to in the dark, the return drew half
+    /// the screen, 60.3 ms). The kept screen is unusable until it lands,
+    /// then `c`'s ([`Self::seed_next_frame`]).
+    pub fn compose_kept<C: Clock>(
+        &mut self,
+        c: ClientId,
+        frame: &Frame,
+        clock: &mut C,
+    ) -> Result<Step, Error> {
+        self.rec(c)?;
+        if self.job != Job::None || self.layer.aside || self.commit_pending() {
+            return Err(Error::Busy);
+        }
+        self.kept_owner = Some(c.0);
+        self.two_d.kept_composed(None);
+        self.two_d.draw(frame);
+        self.job = Job::Compose {
+            at: self.two_d.kept_at() as u32,
+        };
+        Ok(self.poll(clock))
+    }
+
     /// The composed frame landed: copied into its picture, the renderer
     /// told its back picture is stale.
     pub(crate) fn compose_landed<C: Clock>(&mut self, at: u32, clock: &mut C) -> Step {
@@ -335,6 +362,9 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         self.two_d.keep_front();
         if !ok {
             self.two_d.invalidate_all();
+        }
+        if at as usize == self.two_d.kept_at() {
+            self.two_d.kept_composed(Some(ok));
         }
         self.job = Job::None;
         if ok { Step::Shown } else { Step::Recovered }
@@ -527,6 +557,9 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         aside: bool,
         clock: &mut C,
     ) -> Result<Step, Error> {
+        // A start from the kept screen is this call's whether it draws or
+        // not (`Graphics::seed_next_frame`).
+        let seed = core::mem::take(&mut self.seed);
         self.rec(c)?;
         if self.job != Job::None || self.layer.aside || self.layer.staged.is_some_and(|s| s.flip) {
             return Err(Error::Busy);
@@ -555,8 +588,15 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         });
         // Nothing to draw: the layer alone (Reveal's start), no 2D work (a
         // renderer told to redraw whole would redraw and flip the screen).
-        if frame.dirty().is_empty() && !aside {
+        // A start from the kept screen draws (its copy) even with nothing
+        // changed since it was kept.
+        if frame.dirty().is_empty() && !aside && !seed {
             return Ok(self.poll(clock));
+        }
+        // Unusable since it was asked for: drawn whole (the frame's damage
+        // assumed the kept screen under it).
+        if seed && !self.two_d.seed() {
+            self.two_d.invalidate_all();
         }
         self.two_d.draw(frame);
         if self.two_d.landed().is_some() || !self.two_d.poll() {

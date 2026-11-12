@@ -3679,6 +3679,162 @@ fn the_sky_report_says_why_it_waits_and_counts_its_moves() {
 /// start-up, 35.6-47.6 ms a frame), and a forecast answered while Settings
 /// is open, which shows none of it, draws nothing (52.3 and 46.1 ms).
 #[test]
+fn today_kept_and_back_marks_only_where_today_changed() {
+    use rp_gfx::layer::{Layer, PlaneFormat};
+    use rp_gfx::render::CpuRenderer;
+    // A frame drawn whole on a fresh plane.
+    let plane_of = |g: &Frame| -> std::vec::Vec<u8> {
+        let (w, h) = (u32::from(W), u32::from(H));
+        let mut px = vec![0; (w * h) as usize];
+        let mut plane = vec![0u8; (w * h * 4) as usize];
+        let mut r = CpuRenderer::new(
+            Layer::new(&mut px, w, h, w as usize).unwrap(),
+            &mut plane,
+            w as usize * 4,
+            PlaneFormat::Argb8888,
+        );
+        r.set_pics(store());
+        rp_draw::Renderer::draw(&mut r, g);
+        r.plane().to_vec()
+    };
+    // The screen a state shows, drawn whole.
+    let whole = |s: &Shell| -> std::vec::Vec<u8> {
+        let (w, h) = (u32::from(W), u32::from(H));
+        let mut px = vec![0; (w * h) as usize];
+        let mut plane = vec![0u8; (w * h * 4) as usize];
+        let mut r = CpuRenderer::new(
+            Layer::new(&mut px, w, h, w as usize).unwrap(),
+            &mut plane,
+            w as usize * 4,
+            PlaneFormat::Argb8888,
+        );
+        r.set_pics(store());
+        let mut g = Frame::new();
+        s.scene(&mut g);
+        s.look(&mut g);
+        g.damage(Rect::new(0, 0, W, H));
+        rp_draw::Renderer::draw(&mut r, &g);
+        r.plane().to_vec()
+    };
+    let mut f = Frame::new();
+    let mut s = shell(true);
+    s.keep_today_list(vec![0; LIST_WORDS].leak());
+    s.frame(&mut f);
+    assert!(!s.take_left_today() && !s.take_from_kept());
+    let t = Time {
+        hour: 9,
+        minute: 41,
+        weekday: 3,
+        day: 12,
+        month: 11,
+    };
+    for case in 0..5 {
+        s.set_time(t);
+        s.frame(&mut f);
+        let mut kept = whole(&s);
+        // Away: the Weather app, a frame or two there.
+        tap(&mut s, HERO);
+        assert_eq!(s.screen(), Screen::Weather);
+        s.frame(&mut f);
+        assert!(s.take_left_today(), "case {case}: leaving Today is said");
+        s.settle();
+        s.frame(&mut f);
+        assert!(!s.take_left_today());
+        let mut g = Frame::new();
+        assert_eq!(
+            s.today_ahead(&mut g),
+            Some(true),
+            "case {case}: the kept list current"
+        );
+        assert_eq!(s.screen(), Screen::Weather, "the state unchanged");
+        // What changes while away.
+        match case {
+            4 => {
+                // The other look: Today composed ahead into the kept picture.
+                s.wset.appearance = if s.light() {
+                    rp_weather::settings::Appearance::Dark
+                } else {
+                    rp_weather::settings::Appearance::Light
+                };
+                assert_eq!(
+                    s.today_ahead(&mut g),
+                    Some(false),
+                    "stale in the other look"
+                );
+                kept = plane_of(&g);
+                s.today_composed(&g);
+                assert_eq!(s.today_ahead(&mut g), Some(true));
+            }
+            1 => {
+                s.set_time(Time { minute: 42, ..t });
+            }
+            2 => {
+                let (id, _) = s.today_cards()[0];
+                s.set_pic(Size::Card, usize::from(id), None);
+            }
+            3 => {
+                let mut w = *s.forecast();
+                w.now.temp += 4;
+                s.set_forecast(w);
+            }
+            _ => {}
+        }
+        s.frame(&mut f);
+        // Back.
+        s.input(Input::Key(Key::Home));
+        assert_eq!(s.screen(), Screen::Today);
+        s.frame(&mut f);
+        assert!(
+            s.take_from_kept(),
+            "case {case}: the return starts from the kept list"
+        );
+        let now = whole(&s);
+        let px = |i: usize| ((i / 4) % usize::from(W), (i / 4) / usize::from(W));
+        for (i, (a, b)) in kept.iter().zip(&now).enumerate() {
+            if a != b {
+                let (x, y) = px(i);
+                assert!(
+                    f.dirty()
+                        .iter()
+                        .any(|d| d.contains_point(x as u16, y as u16)),
+                    "case {case}: ({x}, {y}) changed since Today was kept but isn't marked ({:?})",
+                    f.dirty()
+                );
+            }
+        }
+        let area: u32 = f
+            .dirty()
+            .iter()
+            .map(|d| u32::from(d.w) * u32::from(d.h))
+            .sum();
+        if case == 0 || case == 4 {
+            assert!(
+                f.dirty().is_empty(),
+                "case {case}: nothing changed: {:?}",
+                f.dirty()
+            );
+        } else {
+            assert!(
+                area > 0 && area < u32::from(W) * u32::from(H) / 4,
+                "case {case}: {:?}",
+                f.dirty()
+            );
+        }
+        s.frame(&mut f);
+        assert!(!s.take_from_kept(), "once");
+    }
+    // Without the kept list the return is drawn whole, as before.
+    let mut s = shell(true);
+    s.frame(&mut f);
+    tap(&mut s, HERO);
+    s.frame(&mut f);
+    s.input(Input::Key(Key::Home));
+    s.frame(&mut f);
+    assert!(!s.take_from_kept());
+    assert!(f.dirty().contains(&Rect::new(0, 0, W, H)));
+}
+
+#[test]
 fn data_that_shows_little_or_nowhere_marks_only_that() {
     let full = u32::from(W) * u32::from(H);
     let area = |f: &Frame| -> u32 {

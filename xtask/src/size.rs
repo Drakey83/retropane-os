@@ -575,9 +575,13 @@ pub const BUDGETS: &[Budget] = &[
     // divide-1 variant 179,808 B (175.6 KiB) measured.
     // Zeroed RAM 50 -> 53 KiB on 2026-11-09 (test image): the 2D renderer's
     // glyph pairs 16 -> 32 slots (R172's return leg), 52.1 KiB measured.
+    // Then load 177 -> 180 KiB (2026-11-12, test image): the 2D renderer's
+    // kept screen and the service's start from it (the owner's ruling on
+    // R191: Today's return a copy, not a redraw), 182,636 B (178.4 KiB)
+    // measured.
     Budget {
         image: "rp-scene",
-        max_load: 177 * 1024,
+        max_load: 180 * 1024,
         max_zero: 53 * 1024,
         device: OnDevice::Returns,
     },

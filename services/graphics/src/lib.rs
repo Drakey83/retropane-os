@@ -444,6 +444,13 @@ pub struct Graphics<'a, R, M> {
     /// The client allowed to read back the whole screen (audit C99:
     /// `Graphics::grant_readback`).
     readback: Option<ClientId>,
+    /// The client whose screen the kept picture holds
+    /// ([`Graphics::keep_screen`]): only it may start a frame from it.
+    kept_owner: Option<u8>,
+    /// The next [`Graphics::frame`] or [`Graphics::frame_commit`] starts
+    /// from the kept picture ([`Graphics::seed_next_frame`]); taken by that
+    /// call whether it draws or not.
+    seed: bool,
     starts: Starts,
     /// The page layer (ADR-0034 C4 as changed, L2).
     layer: layer::LayerRec,
@@ -478,6 +485,8 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             lists_on_die: true,
             sdram_cures: Cures::ByClock,
             readback: None,
+            kept_owner: None,
+            seed: false,
             starts: Starts {
                 behind: 0,
                 held: 0,
@@ -890,6 +899,9 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             return Err(Error::Busy);
         }
         self.free_pictures(c)?;
+        if self.kept_owner == Some(c.0) {
+            self.kept_owner = None;
+        }
         for k in 0..BLOCKS {
             if self
                 .three_d
@@ -1182,10 +1194,43 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         s.r.set(mem, slot, draw.as_ref()).map_err(Error::Scene)
     }
 
+    /// Keeps client `c`'s screen as shown now for a return to it (the
+    /// owner's ruling of 2026-11-12 on R191: Today's last picture): the
+    /// next frame drawn copies it into the kept picture (one engine copy,
+    /// `Mbx2dRenderer::keep_shown`). Call as the screen is left, before
+    /// anything else is drawn. Replaces any client's kept screen.
+    pub fn keep_screen(&mut self, c: ClientId) -> Result<(), Error> {
+        self.rec(c)?;
+        self.kept_owner = Some(c.0);
+        self.two_d.keep_shown();
+        Ok(())
+    }
+
+    /// The next [`Self::frame`] or [`Self::frame_commit`] of client `c`
+    /// starts from its kept screen ([`Self::keep_screen`]) and draws only
+    /// the frame's damage over it: the caller marks only where its list
+    /// differs from the kept screen's (`rp_draw::changes`). Refused
+    /// (`BadHandle`: another client's or none; `Busy`: not usable, the
+    /// wallpaper changed or its copy didn't land whole) when it can't:
+    /// the caller then marks the whole screen. One frame only: the next
+    /// call takes it whether it draws or not.
+    pub fn seed_next_frame(&mut self, c: ClientId) -> Result<(), Error> {
+        self.rec(c)?;
+        if self.kept_owner != Some(c.0) {
+            return Err(Error::BadHandle);
+        }
+        if !self.two_d.kept_ok() {
+            return Err(Error::Busy);
+        }
+        self.seed = true;
+        Ok(())
+    }
+
     /// Starts a frame: the 2D `frame`, then the 3D area over it in the
     /// same picture, then the flip ([`Self::poll`] drives it). A frame with
     /// no 2D change still shows the scene's changes.
     pub fn frame<C: Clock>(&mut self, frame: &Frame, clock: &mut C) -> Result<Step, Error> {
+        let seed = core::mem::take(&mut self.seed);
         if self.job != Job::None || self.aside_held() {
             return Err(Error::Busy);
         }
@@ -1194,6 +1239,11 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         // C94); 2D frames with no scene go by the copy too (R115 part 2).
         if self.copies.band().is_none() {
             self.time_copy(clock);
+        }
+        // Unusable since it was asked for: drawn whole (the frame's damage
+        // assumed the kept screen under it).
+        if seed && !self.two_d.seed() {
+            self.two_d.invalidate_all();
         }
         self.two_d.draw(frame);
         if self.two_d.landed().is_some() || !self.two_d.poll() {

@@ -505,6 +505,9 @@ pub fn show_backdrop<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
         None => load_wallpaper(r, wallpaper, Depth::Rgb565, s),
     }
     r.wallpaper_changed();
+    if map.is_none() {
+        r.wallpaper_is(WALL_BASE);
+    }
 }
 
 /// The real radar as the page's background (the radar built for real,
@@ -688,8 +691,15 @@ pub fn show_gpu<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
     scratch: &mut WallScratch,
 ) {
     load_wallpaper(r, wallpaper, Depth::Rgb565, scratch);
+    r.wallpaper_is(WALL_BASE);
     r.show(delay_us);
 }
+
+/// The renderer's name for the image's own wallpaper, dithered to RGB565
+/// (`Mbx2dRenderer::wallpaper_is`): every load of it writes the same
+/// pixels, so Today's kept screen stays usable after the radar's map has
+/// been written over it and the wallpaper put back.
+pub const WALL_BASE: u32 = 1;
 
 /// How the wallpaper's rows are made. The renderer keeps the wallpaper as
 /// RGB565 (ADR-0023 Q2 L1, 2026-10-21), taking each channel's top bits, so

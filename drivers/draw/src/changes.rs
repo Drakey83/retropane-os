@@ -79,7 +79,39 @@ pub fn cmd_keys(f: &Frame, out: &mut [u32]) -> Option<usize> {
     }
     let mut n = 0;
     for (c, clip) in f.cmds_clipped() {
-        let slot = out.get_mut(n * KEY_WORDS..(n + 1) * KEY_WORDS)?;
+        let Some(k) = key(f, c, clip) else {
+            continue;
+        };
+        out.get_mut(n * KEY_WORDS..(n + 1) * KEY_WORDS)?
+            .copy_from_slice(&k);
+        n += 1;
+    }
+    Some(n)
+}
+
+/// Whether `f`'s commands' keys are exactly `keys` (from [`cmd_keys`]),
+/// worked out one at a time, with no room needed: a list kept for a
+/// screen still matches the screen as it would be drawn now. `false` for
+/// a frame that dropped commands.
+#[must_use]
+pub fn same_keys(f: &Frame, keys: &[u32]) -> bool {
+    if f.overflowed() {
+        return false;
+    }
+    let mut kept = keys.as_chunks::<KEY_WORDS>().0.iter();
+    for (c, clip) in f.cmds_clipped() {
+        if let Some(k) = key(f, c, clip)
+            && kept.next() != Some(&k)
+        {
+            return false;
+        }
+    }
+    kept.next().is_none()
+}
+
+/// One command's key (`None`: a `Clip`, folded into the commands after it).
+fn key(f: &Frame, c: &Cmd, clip: Rect) -> Option<[u32; KEY_WORDS]> {
+    {
         let mut h = Hash::new();
         h.rect(clip);
         match *c {
@@ -131,18 +163,16 @@ pub fn cmd_keys(f: &Frame, out: &mut [u32]) -> Option<usize> {
                 h.addr(art);
             }
             // Folded into the commands after it by `cmds_clipped`.
-            Cmd::Clip { .. } => continue,
+            Cmd::Clip { .. } => return None,
         }
         let b = c.bounds(f).intersect(&clip);
-        slot.copy_from_slice(&[
+        Some([
             h.0 as u32,
             (h.0 >> 32) as u32,
             u32::from(b.x) | u32::from(b.y) << 16,
             u32::from(b.w) | u32::from(b.h) << 16,
-        ]);
-        n += 1;
+        ])
     }
-    Some(n)
 }
 
 /// Each area where a frame drawn from `new` differs from one drawn from
@@ -246,6 +276,24 @@ mod tests {
         fill(&mut b, 40, 3);
         assert_eq!(marked(&a, &b), [Rect::new(20, 0, 10, 10)]);
         assert_eq!(marked(&b, &a), [Rect::new(20, 0, 10, 10)]);
+    }
+
+    #[test]
+    fn same_keys_is_exactly_the_kept_list() {
+        let (mut a, mut b) = (Frame::new(), Frame::new());
+        fill(&mut a, 0, 1);
+        fill(&mut a, 20, 2);
+        fill(&mut b, 0, 1);
+        fill(&mut b, 20, 2);
+        let k = keys(&a);
+        assert!(same_keys(&b, &k));
+        fill(&mut b, 40, 3);
+        assert!(!same_keys(&b, &k), "a command more");
+        assert!(!same_keys(&a, &k[..KEY_WORDS]), "a command fewer");
+        b.clear();
+        fill(&mut b, 0, 1);
+        fill(&mut b, 20, 9);
+        assert!(!same_keys(&b, &k), "one changed");
     }
 
     #[test]

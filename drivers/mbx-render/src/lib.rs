@@ -147,6 +147,8 @@ pub struct Layout {
     /// Finished areas kept for reuse (an opened menu: one copy instead
     /// of drawing it again), RGB565, and its size.
     pub cache: (usize, usize),
+    /// A screen kept for a return (RGB565, [`Mbx2dRenderer::keep_shown`]).
+    pub kept: usize,
 }
 
 impl Layout {
@@ -167,6 +169,7 @@ impl Layout {
             dither: m::DITHER.at as usize,
             fence: m::FENCE.at as usize,
             cache: (m::CACHE.at as usize, m::CACHE.size as usize),
+            kept: m::KEPT.at as usize,
         }
     };
 }
@@ -329,6 +332,12 @@ pub struct FrameStats {
     /// Pictures not drawn (`Cmd::Pic` whose pixels couldn't be had or
     /// placed), and the last of them (R181: never silent).
     pub pics_missed: rp_draw::pics::Misses,
+    /// The screen shown copied into the kept picture with this frame
+    /// ([`Mbx2dRenderer::keep_shown`]).
+    pub kept: bool,
+    /// The frame started from the kept picture, drawing only its changes
+    /// ([`Mbx2dRenderer::seed`]).
+    pub seeded: bool,
 }
 
 /// The 3D core's dither matrix (`0x650` bit 3, `rp-gpubench` run P2 on
@@ -492,6 +501,19 @@ pub struct Mbx2dRenderer<R, M> {
     /// Where the wallpaper changed since the last frame (a band switch):
     /// its background made again and its screen area drawn there only.
     wall_box: ([Rect; WALL_BOXES], usize),
+    /// The kept picture ([`Layout::kept`]): the wallpaper generation the
+    /// screen copied into it was drawn over, and whether the frame that
+    /// copied it landed whole (`None`: nothing kept, or not usable).
+    kept: Option<(u32, Option<u32>, bool)>,
+    /// The wallpaper written since the last change, named by the caller
+    /// ([`Self::wallpaper_is`]; `None`: unnamed).
+    wall_id: Option<u32>,
+    /// The screen shown is copied into the kept picture by the next frame.
+    keep_next: bool,
+    /// The frame in flight copies it (confirmed when it lands).
+    keep_landing: bool,
+    /// The next frame starts from the kept picture.
+    seed_next: bool,
 }
 
 /// Areas a band switch redraws at most (more are merged).
@@ -586,6 +608,11 @@ macro_rules! renderer_start {
             bounds: [Rect::new(0, 0, 0, 0); MAX_CMDS],
             bands: (0, 1, [None; BANDS]),
             wall_box: ([Rect::new(0, 0, 0, 0); WALL_BOXES], 0),
+            kept: None,
+            wall_id: None,
+            keep_next: false,
+            keep_landing: false,
+            seed_next: false,
         })
     };
 }
@@ -623,6 +650,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// whole screen is drawn afresh.
     pub fn wallpaper_changed(&mut self) {
         self.wall_gen = self.wall_gen.wrapping_add(1);
+        self.wall_id = None;
         self.bg_hash = None;
         self.row_keys = [None; ROWS];
         self.fresh = 2;
@@ -675,6 +703,65 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     pub fn invalidate_all(&mut self) {
         self.fresh = 2;
         self.row_keys = [None; ROWS];
+    }
+
+    /// Keeps the screen as shown now: the next frame first copies the
+    /// picture on screen into the kept picture ([`Layout::kept`]), one
+    /// engine copy queued ahead of its drawing (no CPU wait), so a later
+    /// frame can start from it ([`Self::seed`]). For a screen being left
+    /// that will be come back to (the owner's ruling of 2026-11-12 on R191:
+    /// Today's last picture). Nothing is kept while the wallpaper reads
+    /// bands from elsewhere (their pictures may change unseen).
+    pub fn keep_shown(&mut self) {
+        self.keep_next = true;
+    }
+
+    /// Names the wallpaper written since the last change ([`Self::wallpaper_row`],
+    /// [`Self::wallpaper_changed`]): the caller's word that the same `id`
+    /// always means the same pixels. A screen kept over it stays usable
+    /// across changes that end with the same wallpaper written again (the
+    /// radar's map written into the wallpaper's rows and the wallpaper put
+    /// back: run today-0138 refused Today's kept screen after three such
+    /// round trips, its pixels the same).
+    pub fn wallpaper_is(&mut self, id: u32) {
+        self.wall_id = Some(id);
+    }
+
+    /// Whether the kept picture holds a whole screen drawn over the
+    /// wallpaper as it is now (unchanged since, or the same named one
+    /// written again; the wallpaper alone, no bands).
+    #[must_use]
+    pub fn kept_ok(&self) -> bool {
+        let same_wall = |g: u32, id: Option<u32>| {
+            g == self.wall_gen || id.is_some_and(|id| self.wall_id == Some(id))
+        };
+        matches!(self.kept, Some((g, id, true)) if same_wall(g, id))
+            && self.bands.2.iter().all(Option::is_none)
+    }
+
+    /// The kept picture's address ([`Layout::kept`]): a screen composed
+    /// ahead into it by the graphics service, then [`Self::kept_composed`].
+    #[must_use]
+    pub const fn kept_at(&self) -> usize {
+        self.l.kept
+    }
+
+    /// A screen is being composed into the kept picture (`None`: nothing
+    /// usable until it lands), or has landed (`Some(whole)`): over the
+    /// wallpaper as it is now.
+    pub fn kept_composed(&mut self, landed: Option<bool>) {
+        self.kept = landed.map(|whole| (self.wall_gen, self.wall_id, whole));
+    }
+
+    /// The next frame starts from the kept picture: copied whole into the
+    /// picture drawn into, then only the frame's damage drawn over it, so
+    /// the caller marks only where its list differs from the kept screen's
+    /// (`rp_draw::changes`). `false` (nothing changes) when the kept
+    /// picture can't be used: the caller then draws whole. If the kept
+    /// picture turns unusable before the frame, the frame is drawn whole.
+    pub fn seed(&mut self) -> bool {
+        self.seed_next = self.kept_ok();
+        self.seed_next
     }
 
     /// Shows the frame held by [`Self::hold`].
@@ -1740,6 +1827,11 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             if self.us_since(t0) > 200_000 {
                 self.stalls += 1;
                 self.pending = None;
+                // A copy into the kept picture in that frame may not have
+                // run whole.
+                if core::mem::take(&mut self.keep_landing) {
+                    self.kept = None;
+                }
                 self.fresh = 2;
                 self.bg_hash = None;
                 self.e.reset(self.delay_us);
@@ -1893,11 +1985,22 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         // the picture on screen, one plain copy instead of drawing it again
         // (2026-10-14: the frame after the Start menu opened drew the whole
         // menu a second time, glass, text and dither: ~30 ms of engine).
+        // Started from the kept picture (`seed`): its copy is the frame's
+        // base, so nothing is brought forward and only the damage (where
+        // the list differs from the kept screen's) is drawn. Asked for but
+        // unusable now, or the pictures' contents unknown (a reset, a new
+        // wallpaper): drawn whole, as the caller's damage assumed the base.
+        let asked = core::mem::take(&mut self.seed_next);
+        let seeded = asked && self.kept_ok() && self.fresh <= 1;
+        if asked && !seeded {
+            self.fresh = 2;
+        }
+        self.last.seeded = seeded;
         let mut rects = [Rect::default(); MAX_DIRTY];
         let mut n = 0;
         let mut forward = [Rect::default(); MAX_DIRTY];
         let mut nf = 0;
-        if self.fresh > 1 || (self.fresh == 1 && !self.front_whole) {
+        if !seeded && (self.fresh > 1 || (self.fresh == 1 && !self.front_whole)) {
             rects[0] = SCREEN;
             n = 1;
         } else {
@@ -1905,7 +2008,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             // other picture is two frames old, so all of it comes forward
             // (2026-10-14: the first tap after start-up drew the whole
             // screen again, 14.7 ms of CPU and 23.7 of engine).
-            if self.fresh == 1 {
+            if self.fresh == 1 && !seeded {
                 forward[0] = SCREEN;
                 nf = 1;
             }
@@ -1914,8 +2017,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             for r in frame.dirty().iter().chain(wall_box.iter()) {
                 rp_draw::add_damage(&mut rects, &mut n, r.intersect(&SCREEN));
             }
-            // (Nothing more to bring forward when it's all coming.)
-            let prev = if nf == 0 { self.prev_n } else { 0 };
+            // (Nothing more to bring forward when it's all coming, or the
+            // kept picture is the base.)
+            let prev = if nf == 0 && !seeded { self.prev_n } else { 0 };
             for r in &self.prev[..prev] {
                 let r = r.intersect(&SCREEN);
                 if !r.is_empty() && !rects[..n].iter().any(|d| d.intersect(&r) == r) {
@@ -1936,15 +2040,39 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                 self.prev[MAX_DIRTY - 1] = self.prev[MAX_DIRTY - 1].union(&b);
             }
         }
-        self.drawn_n = n;
-        self.drawn[..n].copy_from_slice(&rects[..n]);
-        if n == 0 && nf == 0 {
+        if seeded {
+            // Against the picture on screen, the whole screen changed.
+            self.drawn[0] = SCREEN;
+            self.drawn_n = 1;
+        } else {
+            self.drawn_n = n;
+            self.drawn[..n].copy_from_slice(&rects[..n]);
+        }
+        if n == 0 && nf == 0 && !seeded {
+            // (A keep waits for a frame that draws: the screen is as shown.)
             return drawn;
         }
         let back = 1 - self.front;
         let dst = self.l.screens[back];
         let shown = self.l.screens[self.front];
         let work = self.l.work;
+        // The screen shown into the kept picture, ahead of everything this
+        // frame draws (it reads the picture on screen, which this frame
+        // doesn't write).
+        if core::mem::take(&mut self.keep_next) {
+            if self.bands.2.iter().all(Option::is_none) {
+                self.copy_as(narrow(self.l.kept), narrow(shown), SCREEN);
+                self.kept = Some((self.wall_gen, self.wall_id, false));
+                self.keep_landing = true;
+                self.last.kept = true;
+            } else {
+                self.kept = None;
+            }
+        }
+        if seeded {
+            self.copy_as(narrow(dst), narrow(self.l.kept), SCREEN);
+            drawn.pixels += u64::from(W) * u64::from(H);
+        }
         // First: drawing over these afterwards is still right.
         for &r in &forward[..nf] {
             self.copy_as(narrow(dst), narrow(shown), r);
@@ -2006,6 +2134,11 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         }
         self.pending = Some((back, n, (self.now)()));
         self.pending_whole = self.stalls == stalls0 && !self.dropping;
+        if seeded {
+            // The other picture differs from this one everywhere: the next
+            // frame brings the whole screen forward (as after a whole one).
+            self.fresh = self.fresh.max(2);
+        }
         self.pending_dropped = self.dropping;
         self.last.queue_us = self.us_since(t0);
         drawn
@@ -2024,6 +2157,12 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         }
         self.pending = None;
         self.last.engine_us = self.us_since(queued);
+        // A copy into the kept picture rode this frame: usable only if the
+        // frame ran whole (no stall, nothing dropped).
+        if core::mem::take(&mut self.keep_landing) {
+            let whole = self.pending_whole && !self.pending_dropped;
+            self.kept = self.kept.filter(|_| whole).map(|(g, id, _)| (g, id, true));
+        }
         if self.pending_dropped {
             // Missing commands: never shown. The picture on screen stays,
             // and the next two frames are drawn whole (`drop_frame`).

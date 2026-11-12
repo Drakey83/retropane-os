@@ -105,6 +105,13 @@ pub const PM_TABLE: Region = r("3D memory manager block", 0x000F_C000, 0x4000, 0
 /// manager's pages misbehaved above 8 MiB, `rp-mbx3d` version 14).
 /// **Proposed.**
 pub const PARAMS: Region = r("3D parameter memory", 0x0010_0000, 0x0010_0000, 0x1000);
+/// A screen kept for a return (RGB565, the owner's ruling of 2026-11-12 on
+/// R191: Today's last picture, so coming back to it is one copy, not a
+/// redraw of its 706 blits): screen 0's old place, unused since screen 0
+/// moved to `0x0` (docs/design/c71-screen-place.md), so it costs the pool
+/// nothing. Outside the safe region: never shown, only copied by the 2D
+/// engine.
+pub const KEPT: Region = r("kept screen", 0x0020_0000, SCREEN_BYTES, 0x1000);
 /// ADR-0023's two screen pictures, RGB565 (option L1, 2026-10-21).
 /// Screen 0 at `0x0`, inside the safe region ([`SAFE_END`]): the one
 /// shown, and drawn by the 3D core, while the 3D core works (ADR-0034
@@ -143,8 +150,8 @@ pub const CACHE: Region = r("area cache", 0x0070_4000, SCREEN_BYTES, 0x1000);
 pub const FENCE: Region = r("2D fence", 0x00FF_F000, 0x1000, 4);
 
 /// Every fixed region, in address order.
-pub const MAP: [Region; 15] = [
-    SCREENS[0], PLANES, PM_TABLE, PARAMS, SCREENS[1], WORK, WALLPAPER, ROWS, IMAGES, GLYPHS,
+pub const MAP: [Region; 16] = [
+    SCREENS[0], PLANES, PM_TABLE, PARAMS, KEPT, SCREENS[1], WORK, WALLPAPER, ROWS, IMAGES, GLYPHS,
     BACKGROUND, DITHER, CACHE, POOL, FENCE,
 ];
 

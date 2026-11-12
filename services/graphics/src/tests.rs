@@ -796,6 +796,125 @@ fn a_2d_flip_waits_for_the_blanking_without_the_cpu() {
     assert_eq!(r.g.starts().flips_slipped, 1);
 }
 
+/// The owner's ruling of 2026-11-12 on R191: a client's screen kept as it
+/// leaves it; a return started from it shows the kept screen with only the
+/// frame's damage drawn over it, by `frame` or by a commit (one with
+/// nothing changed since included); only the keeper may start from it, a
+/// start is one call's (taken even when refused as busy), and one that
+/// turned unusable draws the frame whole.
+#[test]
+fn a_return_starts_from_the_kept_screen_for_its_keeper_only() {
+    let mut r = rig();
+    let a = r.g.client(4096).unwrap();
+    let b = r.g.client(4096).unwrap();
+    // Today: blue with a white bar.
+    let today = |damage: Option<Rect>| {
+        let mut f = scene_2d(false, damage);
+        f.push(Cmd::Fill {
+            r: Rect::new(0, 100, 480, 40),
+            color: BLUE,
+        });
+        f
+    };
+    assert_eq!(
+        r.frame(&today(Some(Rect::new(0, 0, 480, 640)))),
+        Step::Shown
+    );
+    assert_eq!(
+        r.g.seed_next_frame(a),
+        Err(Error::BadHandle),
+        "nothing kept"
+    );
+    // Left: kept by the next frame, another screen (grey) drawn twice.
+    r.g.keep_screen(a).unwrap();
+    let away = fill(Rect::new(0, 0, 480, 640), GREY);
+    r.frame(&away);
+    r.frame(&away);
+    assert_eq!(r.on_screen(10, 110), GREY & 0xFF_FFFF);
+    assert_eq!(
+        r.g.seed_next_frame(b),
+        Err(Error::BadHandle),
+        "another client's"
+    );
+    // Back by `frame`, nothing marked: the kept screen.
+    r.g.seed_next_frame(a).unwrap();
+    r.frame(&today(None));
+    assert!(r.g.two_d().last.seeded);
+    assert_eq!(r.on_screen(10, 10), WHITE & 0xFF_FFFF);
+    assert_eq!(r.on_screen(10, 110), BLUE & 0xFF_FFFF);
+    assert_eq!(r.on_screen(10, 300), GREY & 0xFF_FFFF);
+    // A start is the next call's: that call refused, it is gone.
+    r.g.keep_screen(a).unwrap();
+    r.frame(&away);
+    r.g.seed_next_frame(a).unwrap();
+    r.g.close(b).unwrap();
+    assert_eq!(
+        r.g.frame_commit(b, &today(None), None, false, &mut r.clock),
+        Err(Error::NoClient)
+    );
+    r.frame(&away);
+    assert!(!r.g.two_d().last.seeded);
+    assert_eq!(r.on_screen(10, 110), GREY & 0xFF_FFFF);
+    // Back by a commit with nothing changed: the kept screen all the same.
+    r.g.seed_next_frame(a).unwrap();
+    let mut step =
+        r.g.frame_commit(a, &today(None), None, false, &mut r.clock)
+            .unwrap();
+    for _ in 0..10_000 {
+        if !r.g.commit_pending() && !r.g.busy() {
+            break;
+        }
+        if let Step::Wait(t) = step {
+            r.clock.set(t);
+        }
+        step = r.g.poll(&mut r.clock);
+    }
+    assert!(r.g.two_d().last.seeded);
+    assert_eq!(r.on_screen(10, 110), BLUE & 0xFF_FFFF);
+    // Asked for, then the wallpaper changed: drawn whole, marked or not.
+    r.g.keep_screen(a).unwrap();
+    r.frame(&away);
+    r.g.seed_next_frame(a).unwrap();
+    r.g.two_d().wallpaper_changed();
+    r.frame(&today(None));
+    assert!(!r.g.two_d().last.seeded);
+    assert_eq!(r.on_screen(10, 110), BLUE & 0xFF_FFFF);
+    assert_eq!(r.on_screen(10, 10), WHITE & 0xFF_FFFF);
+    // Composed ahead while away (nothing shown changes), then back from it.
+    r.frame(&away);
+    r.frame(&away);
+    let mut ahead = today(Some(Rect::new(0, 0, 480, 640)));
+    ahead.push(Cmd::Fill {
+        r: Rect::new(0, 400, 480, 20),
+        color: WHITE,
+    });
+    let mut step = r.g.compose_kept(a, &ahead, &mut r.clock).unwrap();
+    while r.g.busy() {
+        if let Step::Wait(t) = step {
+            r.clock.set(t);
+        }
+        step = r.g.poll(&mut r.clock);
+    }
+    assert!(r.g.two_d().kept_ok(), "usable once landed");
+    assert_eq!(
+        r.on_screen(10, 410),
+        GREY & 0xFF_FFFF,
+        "nothing shown changed"
+    );
+    r.frame(&away);
+    r.g.seed_next_frame(a).unwrap();
+    let mut back = today(None);
+    back.push(Cmd::Fill {
+        r: Rect::new(0, 400, 480, 20),
+        color: WHITE,
+    });
+    r.frame(&back);
+    assert!(r.g.two_d().last.seeded);
+    assert_eq!(r.on_screen(10, 410), WHITE & 0xFF_FFFF);
+    assert_eq!(r.on_screen(10, 110), BLUE & 0xFF_FFFF);
+    assert_eq!(r.on_screen(10, 300), GREY & 0xFF_FFFF);
+}
+
 #[test]
 fn the_service_stays_small() {
     // It lives next to the 2D renderer and a frame (rp-today overflowed its

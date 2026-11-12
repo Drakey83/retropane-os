@@ -153,6 +153,19 @@ on the engine, not the CPU, and only where something changed.
    384 KiB together, so a return from Hourly still uploads the cards it
    pushed out: on the route test 5 pictures, 87,120 bytes, where the old
    cache uploaded 9, 89,424.)*
+   *(Amended by the owner's ruling of 2026-11-12 on R191: a kept screen,
+   RGB565, 600 KiB at `0x200000`, screen 0's old place, unused since C71's
+   ruling: the pool gives nothing up.)*
+   *(Also from that ruling, to rule 2: a frame may start from the kept
+   screen instead of the back picture's catch-up: one engine copy of it
+   into the back picture, then only the frame's damage drawn, and the
+   whole screen brought forward on the next frame. The screen shown is
+   copied into it by the next frame after `keep_shown` (one blit, no CPU
+   wait), or a screen composed into it by the graphics service; it is used
+   only if that copy landed whole, over the same wallpaper (its generation
+   or the caller's name for it), with no bands read from elsewhere; else
+   the frame is drawn whole. Today's return: 55.5 ms drawn whole, 1.2 ms
+   from the kept screen (runs today-0137 and today-0140).)*
 5. **Uploads by DMA** (30 MB/s, CPU 84% free, measured) for the wallpaper
    and large images; small glyph uploads by the CPU.
 6. **Checked against the reference.** A host model of the engine (the

@@ -70,7 +70,8 @@ engine and has no SDRAM layer; the 1.2 MiB is back. The 2700G's own
 | 2700G local memory | Offset | Size |
 |---|---|---|
 | Loader's / Windows Mobile's plane (left alone) | below 1 MiB | ~600 KiB |
-| Screen 0 (RGB565, 480 x 640) | 0x200000 | 600 KiB |
+| Screen 0 (RGB565, 480 x 640; at 0x200000 until C71's ruling moved it inside the safe region) | 0x0 | 600 KiB |
+| Kept screen (RGB565: Today's last picture for its return, the owner's ruling of 2026-11-12 on R191; screen 0's old place) | 0x200000 | 600 KiB |
 | Screen 1 | 0x296000 | 600 KiB |
 | Work picture (32-bit; each changed rectangle composed, dithered, converted) | 0x32C000 | 1.17 MiB |
 | Wallpaper (RGB565, Floyd-Steinberg once on the CPU) | 0x458000 | 600 KiB |
