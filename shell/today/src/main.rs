@@ -1571,6 +1571,9 @@ mod image {
         let (trace_words, rest) = rest.split_at_mut(TRACE * 10);
         // The relay's answer (the dock's dev relay).
         let (net_words, rest) = rest.split_at_mut(NET_BUF / 4);
+        // The shell's last two draw lists' keys (R191: a picture or an
+        // answer draws only where the list changed), 8 KB.
+        let (shown_words, rest) = rest.split_at_mut(rp_shell::SHOWN_WORDS);
         // The pictures (option C): the default pack's file, a card pack's
         // picture stream read in, the radar map's file, the filter's rows.
         let (def_words, rest) = rest.split_at_mut(DEF_FILE / 4);
@@ -1755,6 +1758,7 @@ mod image {
             crash(format_args!("started twice"))
         };
         shell.set_dials(dials);
+        shell.keep_lists(shown_words);
         // The Weather settings `cargo xtask load` put on the card (the
         // relay's record): the chosen icon pack and place known before the
         // first picture is made (the relay answers ~15 s in).
@@ -4352,7 +4356,7 @@ mod image {
                 {
                     let _ = writeln!(
                         RunLog,
-                        "slow frame {} at {} ms{}: {us} us (queueing {} us, wait {} us, background {} ({} px), rows written {} reused {}, {} rects, {} px dithered, {} command words, {} commands drawn; {} glyph atlases begun ({} evicted), {} glyphs and {} pictures uploaded)",
+                        "slow frame {} at {} ms{}: {us} us (queueing {} us, wait {} us, background {} ({} px), rows written {} reused {}, {} rects, {} px dithered, {} command words, {} commands drawn; {} glyph atlases begun ({} evicted), {} glyphs and {} pictures uploaded; the engine's pixels {} copied, {} blended, {} text, {} converted, in {} blits; {} waits for the engine mid-frame, {} copied forward, {} from the cache)",
                         frames + 1,
                         now_ms,
                         if moving { " (moving)" } else { "" },
@@ -4369,7 +4373,15 @@ mod image {
                         s.atlases,
                         s.atlases_evicted,
                         s.glyphs,
-                        s.images
+                        s.images,
+                        s.px_copy,
+                        s.px_blend,
+                        s.px_text,
+                        s.px_convert,
+                        s.blits,
+                        s.waits,
+                        s.forward,
+                        s.cache_hits
                     );
                 }
                 // Pictures drawn as nothing, by either renderer (R181).

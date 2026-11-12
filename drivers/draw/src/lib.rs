@@ -650,6 +650,7 @@ pub trait Renderer {
     }
 }
 
+pub mod changes;
 pub mod pics;
 pub mod shrink;
 

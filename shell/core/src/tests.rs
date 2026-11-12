@@ -76,6 +76,8 @@ fn shell(dev: bool) -> Shell {
         every_pic(),
         dev,
     );
+    // The lists the device keeps in its RAM pool (R191).
+    s.keep_lists(std::vec![0; SHOWN_WORDS].leak());
     // Hourly's graph, painted as the device paints it.
     let pics = store();
     let (gw, gh) = weather_app::GRAPH_PIC;
@@ -401,6 +403,32 @@ fn incremental_frames_match_full_redraws() {
                 now += 700;
                 s.tick(now);
             }
+            // Data that may show anywhere, or nowhere on the screen open:
+            // the frame marks only where its draw list changed (R191).
+            5 => match (r >> 3) % 3 {
+                0 => {
+                    let size =
+                        [Size::Hero, Size::Card, Size::Mid, Size::Row][(r >> 5) as usize % 4];
+                    let icon = (r >> 7) as usize % 22;
+                    let other = s.pic(size, (icon + 1) % 22);
+                    s.set_pic(size, icon, if r & 0x8000 == 0 { None } else { other });
+                }
+                1 => {
+                    let mut w = *s.forecast();
+                    w.now.temp += i16::from(r & 0x400 == 0) * 2 - 1;
+                    if r & 0x800 == 0 {
+                        w.days.rotate_left(1);
+                    }
+                    s.set_forecast(w);
+                }
+                _ => {
+                    let g = s.graph();
+                    s.set_graph(None);
+                    s.frame(&mut f);
+                    inc.draw(&f);
+                    s.set_graph(g);
+                }
+            },
             // Into the Weather app's lower screens and their keys (the
             // key-entry count once sat outside what it marked changed).
             6 if r & 0x100 == 0 => {
@@ -3644,4 +3672,52 @@ fn the_sky_report_says_why_it_waits_and_counts_its_moves() {
     s.wset.living_sky = true;
     tap(&mut s, HERO);
     assert_eq!(s.sky_report().why, "not on Today");
+}
+
+/// R191 (run today-0115): an icon decoded on Today marks only where it
+/// shows, not the whole screen (Today was drawn whole for each icon at
+/// start-up, 35.6-47.6 ms a frame), and a forecast answered while Settings
+/// is open, which shows none of it, draws nothing (52.3 and 46.1 ms).
+#[test]
+fn data_that_shows_little_or_nowhere_marks_only_that() {
+    let full = u32::from(W) * u32::from(H);
+    let area = |f: &Frame| -> u32 {
+        f.dirty()
+            .iter()
+            .map(|d| u32::from(d.w) * u32::from(d.h))
+            .sum()
+    };
+    let mut f = Frame::new();
+    let mut s = shell(true);
+    s.frame(&mut f);
+    assert_eq!(s.screen(), Screen::Today);
+    let (id, pic) = s.today_cards()[0];
+    assert!(pic.is_some(), "the card shows a picture");
+    s.set_pic(Size::Card, usize::from(id), None);
+    assert!(s.needs_frame());
+    s.frame(&mut f);
+    assert!(
+        area(&f) > 0 && area(&f) < full / 8,
+        "a card's picture gone: {:?}",
+        f.dirty()
+    );
+    s.set_pic(Size::Card, usize::from(id), pic);
+    s.frame(&mut f);
+    assert!(
+        area(&f) > 0 && area(&f) < full / 8,
+        "a card's picture in: {:?}",
+        f.dirty()
+    );
+
+    let mut s = weather(0);
+    tap(&mut s, SOFT_RIGHT);
+    assert_eq!(s.screen(), Screen::WeatherSettings);
+    s.frame(&mut f);
+    let mut w = *s.forecast();
+    w.now.temp += 3;
+    w.days.rotate_left(1);
+    s.set_forecast(w);
+    assert!(s.needs_frame());
+    s.frame(&mut f);
+    assert!(f.dirty().is_empty(), "Settings: {:?}", f.dirty());
 }

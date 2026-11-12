@@ -2479,6 +2479,32 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "shell: data that may show anywhere marks the whole screen again (R191)",
+        file: "shell/core/src/lib.rs",
+        from: "    fn restate(&mut self) {
+        self.restated = true;",
+        to: "    fn restate(&mut self) {
+        self.dirty(Rect::new(0, 0, W, H));",
+        check: Check::Host(&[
+            "-p",
+            "rp-shell",
+            "data_that_shows_little_or_nowhere_marks_only_that",
+        ]),
+    },
+    Mutant {
+        name: "draw: a command added between the matched ends left unmarked (R191)",
+        file: "drivers/draw/src/changes.rs",
+        from: "    for k in &new[head..new.len() - tail] {
+        mark(area(k));",
+        to: "    for k in &new[head..new.len() - tail] {
+        let _ = k;",
+        check: Check::Host(&[
+            "-p",
+            "rp-draw",
+            "a_command_added_or_taken_away_marks_only_its_area",
+        ]),
+    },
+    Mutant {
         name: "graphics: the flip back to screen 0 before 3D work skipped (C71 R-B, R190)",
         file: "services/graphics/src/lib.rs",
         from: "        let flipped = self.two_d.front() != safe;

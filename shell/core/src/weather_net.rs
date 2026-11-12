@@ -443,9 +443,7 @@ impl Shell {
             .get_or_insert(rp_weather::tempest::History::EMPTY);
         if rp_weather::tempest::history_into(body, h) {
             self.history_at = self.now;
-            if self.chart.is_some() {
-                self.dirty(Rect::new(0, 0, W, super::H));
-            }
+            self.restate();
         }
     }
 
@@ -509,11 +507,7 @@ impl Shell {
             }
             self.station = Some(n);
             self.station_at = self.now;
-            self.dirty(if first || self.screen == Screen::Station {
-                Rect::new(0, 0, W, super::H)
-            } else {
-                super::weather_app::HEAD
-            });
+            self.restate();
         }
         // Its place is added and made home once, when it first connects:
         // after that, picking another place keeps it (today-0036: every
@@ -669,8 +663,10 @@ impl Shell {
                 self.dirty(Rect::new(0, 0, W, super::H));
             }
         } else if let Some((f, _)) = self.radar_tile {
+            // A rain frame's PNG in: the timeline's marks may change (the
+            // device marks the bands it draws over the map itself).
             self.radar_have |= 1 << f;
-            self.dirty(Rect::new(0, 0, W, super::H));
+            self.restate();
         }
         self.next_radar_frame();
     }

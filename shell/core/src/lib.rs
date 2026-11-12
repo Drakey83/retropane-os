@@ -601,6 +601,9 @@ const NOTICE_MS: u32 = 2000;
 /// Dirty rectangles the shell gathers between frames.
 const MAX_DAMAGE: usize = 8;
 
+/// Words [`Shell::keep_lists`] takes: two frames' command keys.
+pub const SHOWN_WORDS: usize = 2 * rp_draw::MAX_CMDS * rp_draw::changes::KEY_WORDS;
+
 /// What a stroke on the Weather app's page has turned out to be.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Gesture {
@@ -656,6 +659,19 @@ pub struct Shell {
     now: u32,
     damage: [Rect; MAX_DAMAGE],
     damaged: usize,
+    /// Data changed that may show anywhere (a picture, a forecast, a radar
+    /// frame): the next frame finds where by comparing its draw list with
+    /// the last one drawn ([`rp_draw::changes`], R191), not by drawing the
+    /// whole screen.
+    restated: bool,
+    /// The last two frames' command keys ([`SHOWN_WORDS`], the device's
+    /// RAM pool: its zeroed RAM budget had no 8 KB left), a list in each
+    /// half: `shown_at` names the half holding the last frame drawn,
+    /// `shown_n` its length (`None`: unknown, or no lists given, and a
+    /// restatement draws whole).
+    shown: Option<&'static mut [u32]>,
+    shown_at: usize,
+    shown_n: Option<usize>,
     /// The align screen, while it runs (over everything).
     align: Option<align::Align>,
     /// The test image's comparison: the wallpaper plainly truncated (not
@@ -848,6 +864,10 @@ macro_rules! shell_start {
             now: 0,
             damage: [Rect::default(); MAX_DAMAGE],
             damaged: 0,
+            restated: false,
+            shown: None,
+            shown_at: 0,
+            shown_n: None,
             align: None,
             wall_plain: false,
             bare: false,
@@ -1016,14 +1036,14 @@ impl Shell {
     /// checked against their draw lists and rebuilt.
     pub fn set_forecast(&mut self, f: rp_weather::Forecast) {
         self.wx = f;
-        self.dirty(Rect::new(0, 0, W, H));
+        self.restate();
     }
 
     /// The units and formats shown (the settings set them; tests and
     /// previews show a country's at once).
     pub fn set_region(&mut self, r: Region) {
         self.region = r;
-        self.dirty(Rect::new(0, 0, W, H));
+        self.restate();
     }
 
     /// The icon pack the settings name (the device loads it from the card
@@ -1037,7 +1057,7 @@ impl Shell {
     /// every screen redrawn with them.
     pub fn set_icons(&mut self, icons: Icons) {
         self.icons = icons;
-        self.dirty(Rect::new(0, 0, W, H));
+        self.restate();
     }
 
     /// One picture decoded (or given back, `None`): `icon` is the pack id
@@ -1048,7 +1068,7 @@ impl Shell {
             && *p != pic
         {
             *p = pic;
-            self.dirty(Rect::new(0, 0, W, H));
+            self.restate();
         }
     }
 
@@ -1305,7 +1325,7 @@ impl Shell {
     pub fn set_station_from_tempest(&mut self, json: &[u8]) {
         self.station = rp_weather::tempest::station_now(json);
         self.station_at = self.now;
-        self.dirty(Rect::new(0, 0, W, H));
+        self.restate();
     }
 
     /// Hourly's graph picture, painted by the device with
@@ -1313,7 +1333,7 @@ impl Shell {
     pub fn set_graph(&mut self, pic: Option<Pic>) {
         if self.graph != pic {
             self.graph = pic;
-            self.dirty(Rect::new(0, 0, W, H));
+            self.restate();
         }
     }
 
@@ -1341,9 +1361,7 @@ impl Shell {
     pub fn set_chart_pic(&mut self, pic: Option<Pic>) {
         if self.chart_pic != pic {
             self.chart_pic = pic;
-            if self.chart.is_some() {
-                self.dirty(Rect::new(0, 0, W, H));
-            }
+            self.restate();
         }
     }
 
@@ -1392,7 +1410,27 @@ impl Shell {
     /// Whether anything waits to be drawn.
     #[must_use]
     pub fn needs_frame(&self) -> bool {
-        self.damaged > 0
+        self.damaged > 0 || self.restated
+    }
+
+    /// Data changed that may show on any screen, or none: the next frame
+    /// draws only where its draw list differs from the last one's (R191:
+    /// marked whole, Today was drawn whole for each icon decoded at
+    /// start-up and Settings for each forecast and radar answer, though
+    /// nothing on it changed, run today-0115). Never for a change under
+    /// the list (the wallpaper, the radar map): those mark their area.
+    fn restate(&mut self) {
+        self.restated = true;
+    }
+
+    /// Room for the last two frames' command keys ([`SHOWN_WORDS`] words
+    /// or more), so a restatement draws only what changed. Without it every
+    /// restatement draws the whole screen.
+    pub fn keep_lists(&mut self, words: &'static mut [u32]) {
+        if words.len() >= SHOWN_WORDS {
+            self.shown = Some(words);
+            self.shown_n = None;
+        }
     }
 
     fn menu_len(&self) -> u8 {
@@ -2209,6 +2247,35 @@ impl Shell {
         self.damaged = 0;
         self.scene(f);
         self.look(f);
+        // The list kept for the next frame, and a restatement's areas:
+        // where this list differs from the last one drawn.
+        let restated = core::mem::take(&mut self.restated);
+        let Some(shown) = self.shown.as_deref_mut() else {
+            if restated {
+                f.damage(Rect::new(0, 0, W, H));
+            }
+            return;
+        };
+        let (lo, hi) = shown.split_at_mut(SHOWN_WORDS / 2);
+        let (last, now) = if self.shown_at == 0 {
+            (lo, hi)
+        } else {
+            (hi, lo)
+        };
+        let n = rp_draw::changes::cmd_keys(f, now);
+        if restated {
+            let k = rp_draw::changes::KEY_WORDS;
+            match (self.shown_n, n) {
+                (Some(m), Some(n)) => {
+                    rp_draw::changes::changed_areas(&last[..m * k], &now[..n * k], |r| {
+                        f.damage(r);
+                    });
+                }
+                _ => f.damage(Rect::new(0, 0, W, H)),
+            }
+        }
+        self.shown_at ^= 1;
+        self.shown_n = n;
     }
 
     /// Whether the light look is on: the settings' Light, or Auto between
