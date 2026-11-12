@@ -1,9 +1,11 @@
 # Deep dive fix, 2026-11-10: the owner's seven items
 
-Branch `fix/deep-dive-2026-11-10`, from main at 04d3d142. **Pushed as a
-branch with a pull request, main not moved** (the owner's "Yes, push",
-2026-11-10: [pull request 13](https://github.com/Drakey83/retropane-os/pull/13);
-GitHub `main` still at 04d3d142; checked last, below). Device runs only on the X51v already
+Branch `fix/deep-dive-2026-11-10`, from main at 04d3d142. **Merged:**
+GitHub `main` fast-forwarded to the branch's last commit, 79b0536f, on
+the owner's "Yes, merge" of 2026-11-11
+([pull request 13](https://github.com/Drakey83/retropane-os/pull/13),
+merged 2026-11-12 01:08 UTC; corrected 2026-11-11 on the owner's list of
+that day, below). Device runs only on the X51v already
 on the loader, unattended. Decisions left to the owner:
 [decisions-2026-11-10.md](decisions-2026-11-10.md).
 
@@ -48,11 +50,20 @@ behind the path one.
 
 ## Push state (settled last, then checked)
 
-The branch is on GitHub (`git ls-remote origin` shows
-`fix/deep-dive-2026-11-10`, pushed on the owner's "Yes, push") with pull
-request 13 open against main, not merged; GitHub `main` is at 04d3d142,
-the start of this branch. Nothing was force-pushed and no history
-rewritten.
+When this report was written, the branch was on GitHub (pushed on the
+owner's "Yes, push") with pull request 13 open against main, and GitHub
+`main` was at 04d3d142, the start of this branch. Nothing was
+force-pushed and no history rewritten.
+
+**Merge record (added 2026-11-11):** on the owner's "Yes, merge", GitHub
+`main` was fast-forwarded from 04d3d142 to 79b0536f, this branch's last
+commit (`git push origin 79b0536f:main`, no merge commit, no rewrite);
+pull request 13 shows merged at 2026-11-12 01:08 UTC (GitHub's clock).
+Checked: `git ls-remote origin main` gives 79b0536f. GitHub's workflow
+on main for that push:
+[run 43132345975](https://github.com/Drakey83/retropane-os/actions/runs/43132345975)
+(its conclusion is recorded in
+[deep-dive-2026-11-11-fix.md](deep-dive-2026-11-11-fix.md)).
 
 **The rule, so the next report doesn't go stale:** a report's push claim
 is written last, after the push state is settled. It is checked against

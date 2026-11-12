@@ -37,7 +37,10 @@
    it, and add no architectural line without the owner's yes.
 2. Before answering "have we done X?", look in the docs that plan X (the
    roadmap, the two full-potential pages, `docs/quality-audit.md`, the
-   ADRs) instead of answering from memory.
+   ADRs) instead of answering from memory. Before writing any report's
+   push, merge or CI claim, follow [docs/reports/README.md](docs/reports/README.md)
+   (a push or merge after a report is written gets its own dated merge
+   record in that report, in the same session).
 3. A plan written down is a plan to follow: when a session's work is
    decided, the roadmap's step list is where it goes, and where the next
    session picks it up.

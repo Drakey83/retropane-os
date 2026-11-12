@@ -11,7 +11,7 @@ gate`, re-run this morning: unchanged; the 4 left are the clock ladder,
 held with the divide-1 work). Nothing at divide 1 above 74.75 was run.
 Nothing was pushed except the backup branch.
 
-**Push state (checked 2026-11-10 against GitHub):** every commit this report cites is on GitHub `main` (at 04d3d142 since the owner's "push to live" of 2026-11-09). The line above about pushing was true when written.
+**Push state (checked 2026-11-10 against GitHub):** every commit this report cites is on GitHub `main` (at 04d3d142 since the owner's "push to live" of 2026-11-09). The line above about pushing was true when written. **Since (checked 2026-11-11):** GitHub `main` is at 79b0536f (pull request 13 merged on the owner's "Yes, merge"), which still holds every commit cited here.
 
 ## What closed (with numbers)
 
