@@ -1,7 +1,8 @@
 # Deep dive fix, 2026-11-11: the owner's six items
 
-Branch `fix/deep-dive-2026-11-11`, from main at 79b0536f. **Not pushed**
-(the list says not to; checked last, below). Device runs only on the X51v
+Branch `fix/deep-dive-2026-11-11`, from main at 79b0536f. **Merged
+2026-11-12** on the owner's "Yes, push": main 79b0536f -> 37c815c9 (merge
+record below). When written, not pushed (the list said not to). Device runs only on the X51v
 already on the loader, unattended. Decisions left to the owner:
 [decisions-2026-11-11.md](decisions-2026-11-11.md). Gate: 30 of 30
 architectural lines for phases 2, 4, 5 (`cargo xtask gate`).
@@ -34,8 +35,20 @@ images, so none was folded into this unattended run.
 
 ## Push state (settled last, then checked)
 
-Not pushed: `git ls-remote origin` shows no `fix/deep-dive-2026-11-11`, and
-GitHub `main` is at 79b0536f, this branch's start. Nothing force-pushed, no
-history rewritten. If the owner later pushes or merges this branch, the
-merge is recorded here as a dated merge record ([README.md](README.md),
-rule 2).
+When this report was written (2026-11-12, before the owner's push), the
+branch was not pushed: `git ls-remote origin` showed no
+`fix/deep-dive-2026-11-11`, and GitHub `main` was at 79b0536f, this
+branch's start. Nothing force-pushed, no history rewritten.
+
+**Merge record, 2026-11-12 20:10 UTC** ([README.md](README.md), rule 2):
+on the owner's "Yes, push", `cargo xtask ci` passed on 37c815c9 in this
+checkout, the branch was pushed and
+[pull request 14](https://github.com/Drakey83/retropane-os/pull/14)
+opened; its checks
+([run 43275165321](https://github.com/Drakey83/retropane-os/actions/runs/43275165321))
+passed, all five jobs, conclusion **success** (the emulator boot 2 h 11 min);
+then `main` was fast-forwarded 79b0536f -> 37c815c9 (no force), and pull
+request 14 shows merged at 2026-11-12 20:10:55 UTC. Checked with
+`git ls-remote origin main` = 37c815c9 and `gh pr view 14`. This record
+itself is a later commit on the branch, pushed after its own
+`cargo xtask ci`.
