@@ -44,3 +44,18 @@ rule on; nothing in it is decided here.
   reopens the settled 384 / 384 ruling; (c) not caching Hourly's graph
   costs 6.5-7.1 ms on every Hourly frame drawn on screen 0 to save
   2.6-2.9 ms once.
+
+## Item 3: the touch replay's rise no single commit explains (ruled: accept, floors re-set)
+
+- [x] **Ruled by the owner, 2026-11-12: (a), accept the rise as
+  unattributed and re-set the touch floors to the measured numbers.** The
+  rise is gradual, 60-85 us steps over 2026-10-30 to 11-01 (508 us at
+  4fa4dbad to 752 at main with the compose held off; the first commit over
+  the line f4ffea28, +60 us), touch to flush barely moves with it, and
+  11-09's "~2 ms" was mostly run-to-run spread. **The floors, as set in
+  [docs/perf-floors.md](../perf-floors.md):** frame and queueing median
+  **784 us** (was 380; runs today-0116 and today-0117, 784 and 784);
+  touch to flush median **16,912 us** with a tolerance of 10.0993% (was
+  16,204 at 0.0494%), so the pair's 18,620 passes: the two runs differ by
+  where the taps land against the refresh. Both rows name this ruling as
+  the slower floor's approval. No device time went into re-bisecting.

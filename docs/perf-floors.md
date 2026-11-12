@@ -113,7 +113,7 @@ that set the floor (at least one unit of the number).
 | `probe.wmmx_memcpy_256k` | 2409306 | 0.0255 | noise 15 runs, refloored |  |
 | `probe.wmmx_mix_128k` | 1807537 | 0.1342 | noise 15 runs, refloored | tolerance between sessions: 4 sd of 11 session medians (perf sessions, 2026-11-07, item 8, R109's drift-type list; was 0.0340%) |
 | `probe.wmmx_mix_8k` | 12792 | 4.8107 | noise 15 runs, refloored |  |
-| `tr_touch_replay.frame_and_queueing_median` | 380 | 3.1579 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
+| `tr_touch_replay.frame_and_queueing_median` | 784 | 3.1579 | runs today-0116 and today-0117 (main's 1 s compose rule, R188; docs/reports/runs/2026-11-10-r188-compose-rule.md) | owner 2026-11-12 (slower floor approved: decisions-2026-11-11 item 3, the rise accepted as unattributed, 60-85 us steps over 2026-10-30 to 11-01, no re-bisect) |
 | `tr_touch_replay.frame_and_queueing_worst` | 56652 | 1.8018 | noise 15 runs, refloored | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
 | `tr_touch_replay.landing_to_verdict_median` | 8924 | 0.0448 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan); owner 2026-11-07 (slower floor approved, decisions-2026-11-06 item 8; last session run-1793368325 to run-1793371107) |
 | `tr_touch_replay.landing_to_verdict_worst` | 15884 | 0.0504 | noise 5 runs, run-1793284682 |  |
@@ -121,5 +121,5 @@ that set the floor (at least one unit of the number).
 | `tr_touch_replay.pen_down_period_worst` | 12724 | 0.3832 | the last session's median (4 runs, run-1793368325 to run-1793371107) | owner 2026-11-07 (slower floor approved, decisions-2026-11-06 item 8; last session run-1793368325 to run-1793371107) |
 | `tr_touch_replay.queue_to_flip_median` | 5088 | 0.1572 | noise 15 runs, refloored |  |
 | `tr_touch_replay.queue_to_flip_worst` | 18032 | 0.1975 | noise 15 runs, refloored |  |
-| `tr_touch_replay.touch_to_flush_median` | 16204 | 0.0494 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |
+| `tr_touch_replay.touch_to_flush_median` | 16912 | 10.0993 | runs today-0116 and today-0117 (16,912 and 18,620 us: the tolerance their spread, where the taps land against the refresh; docs/reports/runs/2026-11-10-r188-compose-rule.md) | owner 2026-11-12 (slower floor approved: decisions-2026-11-11 item 3, the rise accepted as unattributed, no re-bisect) |
 | `tr_touch_replay.touch_to_flush_worst` | 43624 | 14.3041 | runs run-1793369429, run-1793370352, run-1793371107 (today-0016 to -0018, R115 part 2) | owner 2026-10-30 ("Approve the new limits": tear-free touch, the flip in the blanking or the copy behind the scan) |

@@ -73,7 +73,10 @@ reviewer recommended an answer, it is written as his recommendation.
 
 ## Item 3: the touch replay's rise no single commit explains (carried from decisions-2026-11-10.md, item 2)
 
-- [ ] **What to do about the rise R188's second bisect couldn't pin to
+- [x] **Ruled 2026-11-12: (a), accept as unattributed, floors re-set**
+  (frame and queueing 784 us, touch to flush 16,912 us at 10.0993%, in
+  docs/perf-floors.md; decisions-2026-11-12.md item 3).
+  **What to do about the rise R188's second bisect couldn't pin to
   one commit.** **Why:** with the compose held off in every build, the
   touch replay's frame-and-queueing median climbs from 508 us at 4fa4dbad
   to 752 at main, in 60-85 us steps over the features of 2026-10-30 to
