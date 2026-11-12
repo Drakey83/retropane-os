@@ -30,7 +30,9 @@ reviewer recommended an answer, it is written as his recommendation.
 
 ## Item 2: a return from Hourly re-uploads Today's cards (carried from decisions-2026-11-10.md, item 1)
 
-- [ ] **What to do about the five cards a return from Hourly uploads.**
+- [x] **Ruled 2026-11-12: (a), accept.** Recorded in
+  decisions-2026-11-12.md item 2; nothing changes in code.
+  **What to do about the five cards a return from Hourly uploads.**
   **Why:** the picture cache is 384 KiB (393,216 bytes; the owner's split
   of 2026-11-10). Today's own pictures are about 265 KB (the hero 176,000
   bytes, five cards 17,424 each, small ones); Hourly's are 316,480 bytes
