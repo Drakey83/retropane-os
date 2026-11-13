@@ -1,7 +1,8 @@
 # Deep dive fix, 2026-11-12 evening: the owner's remaining list
 
-Branch `fix/remaining-2026-11-12`, from main at fc2d733b. **Not pushed**
-(the list says not to; checked last, below). Device runs only on the X51v
+Branch `fix/remaining-2026-11-12`, from main at fc2d733b. **Merged
+2026-11-13 on the owner's "push it all live": main fc2d733b -> cb52aa94**
+(not pushed while the list ran, as it said; the merge record is below). Device runs only on the X51v
 already on the loader, unattended (look route today-0141; rp-gpubench
 gpubench-0132 to -0137). Decisions left to the owner:
 [decisions-2026-11-12-evening.md](decisions-2026-11-12-evening.md). Item 5
@@ -32,17 +33,32 @@ owner watching or other images, so none was folded into these runs.
   [43345644916](https://github.com/Drakey83/retropane-os/actions/runs/43345644916)
   (fc2d733b) and
   [43344845042](https://github.com/Drakey83/retropane-os/actions/runs/43344845042)
-  (1aa9d746): conclusion **success**, both, all five jobs. No GitHub run
-  exists for this branch: the workflow runs on a push to main or a pull
-  request, and the list says not to push.
+  (1aa9d746): conclusion **success**, both, all five jobs. While the list
+  ran no GitHub run existed for this branch (the workflow runs on a push
+  to main or a pull request, and the list said not to push). On the
+  owner's "push it all live", the pull request's run
+  [43380549085](https://github.com/Drakey83/retropane-os/actions/runs/43380549085)
+  on cb52aa94: conclusion **success**, all five jobs (the emulator boot
+  2 h 10 min).
 - **`cargo xtask ci` (this PC, Windows):** run on every commit of the
   branch in a clean second checkout (`../rp-ci`); each commit's result is
   in the table, the last commits' written after this report's commit runs.
 
 ## Push state (settled last, then checked)
 
-Not pushed: `git ls-remote origin` shows no `fix/remaining-2026-11-12`,
-and GitHub `main` is at fc2d733b, this branch's start. Nothing
-force-pushed, no history rewritten. If the owner later pushes or merges
-this branch, the merge is recorded here as a dated merge record
-([README.md](README.md), rule 2).
+When the list finished, nothing was pushed: `git ls-remote origin`
+showed no `fix/remaining-2026-11-12`, and GitHub `main` was at fc2d733b,
+this branch's start. Nothing force-pushed, no history rewritten.
+
+**Merge record, 2026-11-13 08:53 UTC** ([README.md](README.md), rule 2).
+On the owner's "is this all pushed live, if not please push it all
+live": the branch pushed at cb52aa94 and
+[pull request 16](https://github.com/Drakey83/retropane-os/pull/16)
+opened; its run
+[43380549085](https://github.com/Drakey83/retropane-os/actions/runs/43380549085)
+on cb52aa94 concluded **success** on all five jobs (08:53:02 UTC);
+`cargo xtask ci` had passed in this checkout on cb52aa94. `main`
+fast-forwarded fc2d733b -> cb52aa94 (no force, no merge commit); GitHub
+shows pull request 16 merged at 08:53:55 UTC with cb52aa94 as its merge
+commit. This record is committed after the merge and pushed to the
+branch and to `main` the same way.
