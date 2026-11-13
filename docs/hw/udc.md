@@ -205,6 +205,17 @@ AxDroid's X50 board file at boot). The earlier reading in the first row
 ("the PC's hub sees a device") is withdrawn: the resets are explained
 without the PC. Not proven until bit 3 is set in a watched run.
 
+**The bit 3 run (built 2026-11-13, emulator-proven; not yet run on the
+X50v; sheet `docs/research/sheets/r193-x50v-cpld1c-bit3.md`):** the CF
+card's `RetroPaneX50v` folder boots the same loader with
+`rp.x50v-usb-bit3` on HaRET's command line (ATAG list, `r2`; the X51v's
+`RetroPane` folder passes an empty one). At its first start the loader
+logs the command line, sets CPLD `0x1C` bit 3 at 30 s through the shadow
+(Windows Mobile's slot and the board record follow, so a return keeps it)
+and replugs; the start-up log adds a line per GPIO level change (a pin
+that changes 8 times is called noisy and dropped) and the `GPLR` words
+every 10 s, to find the X50v's cable pin from a cable pull.
+
 ## Open questions
 
 ### The first enumeration after a hand-over from Windows Mobile (2026-10-16)

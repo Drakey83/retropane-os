@@ -47,6 +47,7 @@ mod image {
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, dma_map, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
+    use rp_hal_x51v::atags::{self, Bit3};
     use rp_hal_x51v::bootlog::{self, BootLog};
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
     use rp_hal_x51v::{cardlog, cardsink};
@@ -2979,6 +2980,10 @@ mod image {
         // start-up log on the cards.
         let mut found_regs = [0u32; diag::COUNT];
         diag::snapshot(&mut found_regs);
+        // R193: the command line HaRET passed (its script's `set cmdline`),
+        // read before anything else runs; acted on at the first start only.
+        let mut cmd_line = [0u8; atags::LINE];
+        let cmd = devices::boot_cmdline(&mut cmd_line);
         // GPIO, the USB detach and the card first: they run during the
         // display's settle time after the hand-off (`devices::take_mbx`)
         // instead of after it (boot time, docs/design-brief.md).
@@ -3177,7 +3182,7 @@ mod image {
                 &mut log,
             );
         }
-        let mut blog_track = BootTrack::new(now_ms());
+        let mut blog_track = BootTrack::new(now_ms(), gpio.levels());
         // A line in the start-up log, with its time (nothing once closed).
         macro_rules! blog {
             ($($a:tt)*) => {{
@@ -3197,6 +3202,37 @@ mod image {
         // drives SE0 on the connector instead (~155 ms), the PC takes it as
         // an unplug, and the enable below is a fresh plug-in (docs/hw/udc.md
         // T4). Right before the enable: the PC asks at once.
+        // R193's opt-in (`docs/research/sheets/r193-x50v-cpld1c-bit3.md`):
+        // CPLD `0x1C` bit 3 set at its time, chosen by HaRET's command line
+        // at the first start only; without it no CPLD bit changes here.
+        let mut bit3 = match (&cmd, board.first) {
+            (Ok(n), true) => atags::bit3(&cmd_line[..*n]),
+            _ => Bit3::Off,
+        };
+        if board.first {
+            match &cmd {
+                Ok(n) => blog!(
+                    "command line: \"{}\"; {}",
+                    core::str::from_utf8(&cmd_line[..*n]).unwrap_or("(not text)"),
+                    match bit3 {
+                        Bit3::Off => "no opt-in: no CPLD bit changes",
+                        Bit3::At(_) => "opt-in rp.x50v-usb-bit3: CPLD 0x1C bit 3 set at its time",
+                        Bit3::Bad =>
+                            "rp.x50v-usb-bit3 with a value that isn't 0-300 seconds: nothing set",
+                    }
+                ),
+                Err(e) => blog!("command line: none ({}); no CPLD bit changes", e.says()),
+            }
+            if let Bit3::At(at) = bit3 {
+                let _ = writeln!(log, "X50v opt-in: CPLD 0x1C bit 3 at {} s", at / 1000);
+            }
+        }
+        if bit3 == Bit3::At(0) {
+            // Dell's order: the bit, then the controller.
+            let r = x50v_bit3(cpld.as_mut());
+            blog_bit3(blog.as_mut(), r, &mut log);
+            bit3 = Bit3::Off;
+        }
         let mut uhc = rt::take_uhc();
         let usb = replug(&mut udc, uhc.as_mut());
         // The controller's interrupt wakes the waiting loop (item 74).
@@ -3425,15 +3461,33 @@ mod image {
             }
             // R193: the start-up log's USB events, closed when the PC
             // configures the device (before the drive serves anything).
+            if let Bit3::At(at) = bit3
+                && now_ms().wrapping_sub(blog_track.start) >= at
+            {
+                bit3 = Bit3::Off;
+                if udc.configured() {
+                    blog!("CPLD 0x1C bit 3 not set: the PC configured the device without it");
+                    let _ = writeln!(log, "X50v opt-in: not needed, the PC configured the device");
+                } else {
+                    let r = x50v_bit3(cpld.as_mut());
+                    blog_bit3(blog.as_mut(), r, &mut log);
+                    // A fresh attach for the PC, as Dell's driver starts
+                    // the controller after the bit.
+                    replug(&mut udc, uhc.as_mut());
+                    blog!("plugged in again after bit 3");
+                }
+            }
             if let Some(b) = blog.as_mut()
                 && b.open()
             {
+                let levels = gpio.levels();
                 let cable = gpio.read(USB_DETECT);
                 boot_log_tick(
                     b,
                     &mut blog_track,
                     &mut udc,
                     cable,
+                    levels,
                     &mut LogCards(&mut *lun, &mut *cf),
                     msc.busy(),
                 );
@@ -4727,18 +4781,65 @@ mod image {
         line_at: u32,
         change_at: u32,
         beat_at: u32,
+        /// The GPIO levels' changes (the X50v's cable pin, R193).
+        pins: bootlog::Pins,
     }
 
     impl BootTrack {
-        fn new(now: u32) -> Self {
+        fn new(now: u32, levels: [u32; 4]) -> Self {
             Self {
                 start: now,
                 seen: None,
                 line_at: now,
                 change_at: now,
                 beat_at: now,
+                pins: bootlog::Pins::new(levels),
             }
         }
+    }
+
+    /// R193's opt-in: CPLD `0x1C` bit 3 on through the shadow (Windows
+    /// Mobile's table slot follows), and in the board record so a return
+    /// from an image keeps it (C39's put-back would clear it). The register
+    /// before and after (as the shadow holds it); `None` with no CPLD.
+    #[inline(never)]
+    fn x50v_bit3(cpld: Option<&mut BoardCpld>) -> Option<(u16, u16)> {
+        let c = cpld?;
+        let before = c.shadow(0x1C);
+        c.set(0x1C, 0x0008);
+        if let Some(mut r) = devices::board_record() {
+            r.cpld1c |= 0x0008;
+            devices::set_board_record(&r);
+        }
+        Some((before, c.shadow(0x1C)))
+    }
+
+    /// The opt-in's line, in the start-up log and on screen.
+    fn blog_bit3(
+        b: Option<&mut BootLog<'_>>,
+        r: Option<(u16, u16)>,
+        log: &mut impl core::fmt::Write,
+    ) {
+        let rec = devices::board_record().map(|r| r.cpld1c);
+        if let Some(b) = b {
+            blog_line(b, |l| {
+                let _ = match (r, rec) {
+                    (Some((was, now)), Some(rec)) => write!(
+                        l,
+                        "CPLD 0x1C bit 3 on (opt-in rp.x50v-usb-bit3): {was:04X} -> {now:04X} (WM slot the same), record {rec:04X}"
+                    ),
+                    (Some((was, now)), None) => write!(
+                        l,
+                        "CPLD 0x1C bit 3 on (opt-in rp.x50v-usb-bit3): {was:04X} -> {now:04X} (WM slot the same), no record"
+                    ),
+                    (None, _) => write!(l, "CPLD 0x1C bit 3 not set: no CPLD"),
+                };
+            });
+        }
+        let _ = match r {
+            Some((was, now)) => writeln!(log, "X50v opt-in: CPLD 0x1C {was:04X} -> {now:04X}"),
+            None => writeln!(log, "X50v opt-in: no CPLD, bit 3 not set"),
+        };
     }
 
     /// The start-up log's turn in the loop: a line when USB's state changed
@@ -4752,10 +4853,18 @@ mod image {
         t: &mut BootTrack,
         udc: &mut Udc<Mmio>,
         cable: bool,
+        levels: [u32; 4],
         cards: &mut LogCards<'_>,
         busy: bool,
     ) {
         let now = now_ms();
+        let pins = t.pins.look(levels);
+        if !pins.none() {
+            blog_line(b, |l| {
+                let _ = bootlog::pins_line(l, &pins, &levels);
+            });
+            t.change_at = now;
+        }
         let s = udc.stats();
         let configured = udc.configured();
         let cur = (
@@ -4795,6 +4904,14 @@ mod image {
                 let _ = write!(l, "beat: UDCCR {udccr:08X} UP2OCR {up2:08X} (");
                 let _ = bootlog::up2ocr(l, up2);
                 let _ = write!(l, ") cable {}", u8::from(cable));
+            });
+            let noisy = t.pins.noisy();
+            blog_line(b, |l| {
+                let _ = write!(
+                    l,
+                    "beat: GPLR {:08X} {:08X} {:08X} {:08X}, {noisy} noisy pins",
+                    levels[0], levels[1], levels[2], levels[3]
+                );
             });
             t.beat_at = now;
         }

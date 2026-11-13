@@ -481,10 +481,19 @@ pub(crate) fn cardlog_checks(root: &Path) -> Result<(), String> {
         "] CPLD 0x1C (bit 3: the X50v lead): bus ",
         "] cards: SD in, CF in",
         "] usb: resets ",
+        // QEMU's -kernel passes an ATAG list as HaRET does; without -append
+        // its command line is empty, and nothing is switched (R193's opt-in
+        // only on asking: a loader that always set bit 3 fails here).
+        "] command line: \"\"; no opt-in: no CPLD bit changes",
     ] {
         if !boot.contains(want) {
             return Err(format!("cardlog loader: no `{want}` in:\n{boot}"));
         }
+    }
+    if boot.contains("CPLD 0x1C bit 3 on") {
+        return Err(format!(
+            "cardlog loader: bit 3 set without the opt-in:\n{boot}"
+        ));
     }
     let closing = boot.lines().last().unwrap_or("");
     if !closing.contains("[start-up log closed: ")
@@ -599,6 +608,71 @@ pub(crate) fn cardlog_checks(root: &Path) -> Result<(), String> {
     check("hang", 1, &out, "did not return")?;
     eprintln!(
         "    cardlog hang OK: a watchdog reset with RAM kept, closed at the loader's next start"
+    );
+
+    // R193's opt-in (docs/research/sheets/r193-x50v-cpld1c-bit3.md): the
+    // command line through the ATAG list (QEMU's -append, as HaRET's `set
+    // cmdline`), bit 3 at 0 s: set before the controller starts, in the
+    // shadow and the board record, logged, then the PC configures.
+    let n = (1..=64u32)
+        .filter(|&k| slot_file(&sd, "loader", k).is_ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let input = rp_loadproto::control_frame("board");
+    let settle = || {
+        // The PC's configuration (~1 s in) closes the log; its last sectors
+        // go to the cards right after.
+        std::thread::sleep(Duration::from_secs(4));
+        Ok(())
+    };
+    let out = super::boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &["-drive", &cf_drive, "-append", "rp.x50v-usb-bit3=0"],
+            input: Some((&input, "RPL OK")),
+            during: Some(&settle),
+            then: None,
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    if !out.contains("RPL OK board: ") {
+        return Err(format!(
+            "cardlog x50v: the loader didn't answer:
+{out}"
+        ));
+    }
+    let x50v = joined_card_log(&sd, &cf, "loader", n).map_err(|e| format!("cardlog x50v: {e}"))?;
+    let at = |want: &str| {
+        x50v.find(want)
+            .ok_or_else(|| format!("cardlog x50v: no `{want}` in:\n{x50v}"))
+    };
+    at(
+        "] command line: \"rp.x50v-usb-bit3=0\"; opt-in rp.x50v-usb-bit3: CPLD 0x1C bit 3 set at its time",
+    )?;
+    let bit = at(
+        "] CPLD 0x1C bit 3 on (opt-in rp.x50v-usb-bit3): 0000 -> 0008 (WM slot the same), record 0008",
+    )?;
+    // Dell's order: the bit before the controller's first event.
+    if at("] usb: resets ")? < bit {
+        return Err(format!("cardlog x50v: USB started before bit 3:\n{x50v}"));
+    }
+    if !x50v.ends_with("]") || !x50v.contains("[start-up log closed: the PC configured the device;")
+    {
+        return Err(format!(
+            "cardlog x50v: not closed at the configuration:\n{x50v}"
+        ));
+    }
+    let kept = scratch(root, "loader-startup-log-x50v.txt")?;
+    std::fs::write(&kept, &x50v).map_err(|e| format!("{}: {e}", kept.display()))?;
+    eprintln!(
+        "    cardlog x50v OK: with rp.x50v-usb-bit3=0 on the command line, bit 3 set before USB (0000 -> 0008, shadow and record), then configured (loader-{n:04}, kept in {})",
+        kept.display()
     );
 
     for (card, what) in [(&sd, "SD"), (&cf, "CF")] {

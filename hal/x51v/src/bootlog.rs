@@ -308,6 +308,102 @@ pub const fn bit3(v: u16) -> &'static str {
     if v & 8 != 0 { "on" } else { "off" }
 }
 
+/// A pin whose level has changed this many times is called noisy: it gets
+/// one more line saying so, then none (a clock or a busy line would fill the
+/// log; the cable pin changes a few times in a run).
+pub const NOISY: u8 = 8;
+
+/// Which GPIO levels changed since the last look (R193: the X50v's cable
+/// pin, found by pulling the cable while the log runs).
+pub struct Pins {
+    last: [u32; 4],
+    counts: [u8; 128],
+}
+
+/// One look's changes: pins still reported, and pins just found noisy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Changes {
+    /// Pins that changed (bit `n % 32` of word `n / 32`), noisy ones out.
+    pub changed: [u32; 4],
+    /// Pins that reached [`NOISY`] changes at this look.
+    pub noisy: [u32; 4],
+}
+
+impl Changes {
+    /// Nothing to say.
+    #[must_use]
+    pub fn none(&self) -> bool {
+        self.changed == [0; 4] && self.noisy == [0; 4]
+    }
+}
+
+impl Pins {
+    /// Starting from `levels` (`GPLR0-3`).
+    #[must_use]
+    pub const fn new(levels: [u32; 4]) -> Self {
+        Self {
+            last: levels,
+            counts: [0; 128],
+        }
+    }
+
+    /// The changes from the last look to `levels`.
+    pub fn look(&mut self, levels: [u32; 4]) -> Changes {
+        let mut c = Changes::default();
+        for w in 0..4 {
+            let mut diff = (levels[w] ^ self.last[w]) & if w == 3 { 0x01FF_FFFF } else { !0 };
+            while diff != 0 {
+                let b = diff.trailing_zeros();
+                diff &= diff - 1;
+                let n = &mut self.counts[w * 32 + b as usize];
+                if *n < NOISY {
+                    *n += 1;
+                    if *n == NOISY {
+                        c.noisy[w] |= 1 << b;
+                    } else {
+                        c.changed[w] |= 1 << b;
+                    }
+                }
+            }
+        }
+        self.last = levels;
+        c
+    }
+
+    /// The pins called noisy so far.
+    #[must_use]
+    pub fn noisy(&self) -> u32 {
+        self.counts.iter().filter(|&&n| n >= NOISY).count() as u32
+    }
+}
+
+/// A look's line: `gpio: 14 1>0 35 0>1; noisy now: 23` (the new level from
+/// `levels`).
+pub fn pins_line(out: &mut dyn Write, c: &Changes, levels: &[u32; 4]) -> fmt::Result {
+    out.write_str("gpio:")?;
+    for w in 0..4 {
+        let mut m = c.changed[w];
+        while m != 0 {
+            let b = m.trailing_zeros();
+            m &= m - 1;
+            let now = levels[w] >> b & 1;
+            write!(out, " {} {}>{}", w as u32 * 32 + b, now ^ 1, now)?;
+        }
+    }
+    if c.noisy != [0; 4] {
+        out.write_str("; noisy now (no more lines):")?;
+        for (w, &word) in (0u32..).zip(&c.noisy) {
+            let mut m = word;
+            while m != 0 {
+                let b = m.trailing_zeros();
+                m &= m - 1;
+                write!(out, " {}", w * 32 + b)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -541,5 +637,38 @@ mod tests {
         let mut t = Text::<4>::new();
         assert!(write!(t, "abcdef").is_ok());
         assert_eq!(t.bytes(), b"abcd");
+    }
+    #[test]
+    fn pins_say_each_change_until_noisy_then_nothing() {
+        let mut p = Pins::new([1 << 14, 0, 0, 0]);
+        assert!(p.look([1 << 14, 0, 0, 0]).none());
+        // GPIO14 falls, GPIO120 rises (bank 3's last pin), bank 3's high bits ignored.
+        let lv = [0, 0, 0, 1 << 24 | 0xFE00_0000];
+        let c = p.look(lv);
+        assert_eq!(c.changed, [1 << 14, 0, 0, 1 << 24]);
+        let mut t = Text::<200>::new();
+        pins_line(&mut t, &c, &lv).unwrap();
+        assert_eq!(t.bytes(), b"gpio: 14 1>0 120 0>1");
+        // GPIO40 toggles: NOISY - 1 lines, then the noisy line, then none.
+        let mut lines = 0;
+        let mut said_noisy = false;
+        for k in 0..30u32 {
+            let lv = [0, (k & 1) << 8, 0, 1 << 24];
+            let c = p.look(lv);
+            if c.changed[1] != 0 {
+                lines += 1;
+            }
+            if c.noisy[1] != 0 {
+                let mut t = Text::<200>::new();
+                pins_line(&mut t, &c, &lv).unwrap();
+                assert_eq!(t.bytes(), b"gpio:; noisy now (no more lines): 40");
+                said_noisy = true;
+            }
+        }
+        assert_eq!(lines, usize::from(NOISY) - 1);
+        assert!(said_noisy);
+        assert_eq!(p.noisy(), 1);
+        // Another pin still reported.
+        assert_eq!(p.look([1 << 14, 0, 0, 1 << 24]).changed, [1 << 14, 0, 0, 0]);
     }
 }

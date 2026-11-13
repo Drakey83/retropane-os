@@ -1,5 +1,8 @@
 # Sheet: R193, one watched X50v run setting CPLD `0x1C` bit 3 (rule 0, before code)
 
+**Built 2026-11-13 (the owner's "go, build way A"), emulator-proven; the
+X50v run waits for his go.**
+
 The X50v's start-up log (2026-11-13, `local/cardlog/loader-0001.txt`;
 docs/hw/udc.md "The X50v") ruled out the transceiver: `UP2OCR`
 `0x00020000` and `UDCCR` match the working X51v. In 5 minutes there were
