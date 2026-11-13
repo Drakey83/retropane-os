@@ -302,6 +302,13 @@ pub struct SkyReport {
     pub moved: u32,
     /// Whether the weather shown has anything that moves.
     pub moving: bool,
+    /// The sky drawn (its weather code and cloud cover) and the words the
+    /// hero shows under it (R183: they name the same sky).
+    pub wmo: u8,
+    /// See [`SkyReport::wmo`].
+    pub cover: u8,
+    /// See [`SkyReport::wmo`].
+    pub words: &'static str,
 }
 
 /// The sky test's weathers: its notice, the weather code, the cloud cover.
@@ -494,8 +501,12 @@ impl Shell {
         } else {
             ""
         };
-        let w = weather_of(self.sky_now());
+        let sky = self.sky_now();
+        let w = weather_of(sky);
         SkyReport {
+            wmo: sky.wmo,
+            cover: sky.cover,
+            words: rp_weather::Icon::of(sky).words(),
             live: why.is_empty(),
             why,
             test: self.sky_test,

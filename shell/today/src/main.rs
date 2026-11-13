@@ -1662,7 +1662,12 @@ mod image {
         let mut radar_job: Option<Job> = None;
         // The living sky's last logged state, when, and its counts then.
         #[allow(clippy::type_complexity)]
-        let mut sky_logged: Option<((bool, &'static str, u8, bool), u64, u32, u32)> = None;
+        let mut sky_logged: Option<(
+            (bool, &'static str, u8, bool, u8, u8),
+            u64,
+            u32,
+            u32,
+        )> = None;
         let mut no_band_room = false;
         let mut pages_lent = 0u8;
         let mut spans_shown = [None; rp_today::rain::BANDS];
@@ -1780,8 +1785,19 @@ mod image {
             .and_then(|n| clock::from_card(&stream_buf[..n]));
         match card_min {
             Some(m) => {
-                shell.set_time(clock::time_at(m));
-                let _ = writeln!(RunLog, "clock: the PC's time at the load");
+                let t = clock::time_at(m);
+                shell.set_time(t);
+                // The date and time set, to check against the PC's (R182).
+                const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+                let _ = writeln!(
+                    RunLog,
+                    "clock: the PC's time at the load, set to {} {}/{} {:02}:{:02} (local)",
+                    DAYS[usize::from(t.weekday % 7)],
+                    t.month,
+                    t.day,
+                    t.hour,
+                    t.minute
+                );
             }
             None => {
                 let _ = writeln!(
@@ -3194,11 +3210,11 @@ mod image {
             // do the animation at all"): when it starts or stops and why,
             // and while it runs its steps and moves every 5 s.
             let sky = shell.sky_report();
-            let key = (sky.live, sky.why, sky.test, sky.moving);
+            let key = (sky.live, sky.why, sky.test, sky.moving, sky.wmo, sky.cover);
             if sky_logged.map(|(k, _, _, _)| k) != Some(key) {
                 let _ = writeln!(
                     RunLog,
-                    "sky: {} (test {} {}; the weather shown {}) at {now_ms} ms",
+                    "sky: {} (test {} {}; the weather shown {}; the sky drawn WMO {} cover {}%, the hero's words \"{}\") at {now_ms} ms",
                     if sky.live { "running" } else { sky.why },
                     sky.test,
                     sky.test_name,
@@ -3206,7 +3222,10 @@ mod image {
                         "moves"
                     } else {
                         "has nothing that moves"
-                    }
+                    },
+                    sky.wmo,
+                    sky.cover,
+                    sky.words
                 );
                 sky_logged = Some((key, now_ms, sky.steps, sky.moved));
             } else if let Some((k, at, steps, moved)) = sky_logged
