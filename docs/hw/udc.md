@@ -197,7 +197,7 @@ none refused (below).
 | CPLD `0x1C` | bus 0000, WM slot 0004, kept 0004: bit 3 off | bit 3 not needed (pull-up hard-wired) | the lead stands |
 | CPLD shadow at `0xAC001320` | valid, taken as Windows Mobile's | the same place | Windows Mobile 2003 keeps it where WM5 does |
 | GPIO14 (the X51v's cable pin) | 1 at start, 0 from 1.7 s on, cable attached | 1 with the cable | not the X50v's cable pin |
-| USB | 0 setups; 34 resets, one per loader replug (plus 2 at start) | setups within a second | the resets are the loader's own SE0 unplugs: the PC most likely never saw an attach |
+| USB | 0 setups; 37 resets, one per loader replug (plus 2 at start) | setups within a second | the resets are the loader's own SE0 unplugs: the PC most likely never saw an attach |
 
 The likely cause is the D+ pull-up: hard-wired on the X51v, switched on
 the X50v by CPLD `0x1C` bit 3 (Dell's X50v driver sets it with the cable,

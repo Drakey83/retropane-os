@@ -3,10 +3,12 @@
 **Built 2026-11-13 (the owner's "go, build way A"), emulator-proven; the
 X50v run waits for his go.**
 
-The X50v's start-up log (2026-11-13, `local/cardlog/loader-0001.txt`;
+The X50v's start-up log (2026-11-13, report
+[docs/reports/runs/2026-11-13-loader-0001-x50v.md](../../reports/runs/2026-11-13-loader-0001-x50v.md),
+the whole log in `local/cardlog/loader-0001.txt`;
 docs/hw/udc.md "The X50v") ruled out the transceiver: `UP2OCR`
 `0x00020000` and `UDCCR` match the working X51v. In 5 minutes there were
-0 setups, and the 34 resets came one per loader replug, so the PC most
+0 setups, and the 37 resets came one per loader replug, so the PC most
 likely never saw an attach. CPLD `0x1C` bit 3 was off at every stage.
 This sheet is the first run that **switches a board bit on purpose**, so
 it needs the owner's go (no-blind-board-bits rule: one unknown bit per
