@@ -53,3 +53,4 @@ copied from the log.
 | loader-0001 | 2026-11-13 | R193, the X50v's start-up log | [2026-11-13-loader-0001-x50v.md](2026-11-13-loader-0001-x50v.md) |
 | loader-0002 | 2026-11-13 | R193, X50v: CPLD 0x1C bit 3 on, USB configured | [2026-11-13-loader-0002-x50v-bit3.md](2026-11-13-loader-0002-x50v-bit3.md) |
 | loader-0003 | 2026-11-13 | R193, X50v: found by itself, the stale EMCE cleared | [2026-11-13-loader-0003-x50v-detect.md](2026-11-13-loader-0003-x50v-detect.md) |
+| gpubench-0001 (X50v) | 2026-11-13 | GC2DR on the X50v: every game frame right to 139.75 / 1 | [2026-11-13-gpubench-0001-x50v-gc2dr.md](2026-11-13-gpubench-0001-x50v-gc2dr.md) |
