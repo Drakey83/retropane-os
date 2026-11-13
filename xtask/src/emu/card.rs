@@ -621,10 +621,20 @@ pub(crate) fn cardlog_checks(root: &Path) -> Result<(), String> {
         + 1;
     let input = rp_loadproto::control_frame("board");
     let settle = || {
-        // The PC's configuration (~1 s in) closes the log; its last sectors
-        // go to the cards right after.
-        std::thread::sleep(Duration::from_secs(4));
-        Ok(())
+        // The PC's configuration (~1 s in) closes the log: waited on by
+        // reading the cards' images until its closing line is there.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if joined_card_log(&sd, &cf, "loader", n)
+                .is_ok_and(|t| t.contains("[start-up log closed: "))
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("cardlog x50v: loader-{n:04} never closed"));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
     };
     let out = super::boot(
         root,
