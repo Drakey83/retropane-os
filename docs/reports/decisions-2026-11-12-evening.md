@@ -20,6 +20,24 @@ glass) by a different means than its words (copying Today's pixels): the
 copy would only have been read at the corners. If you want the copy
 itself instead, say so; nothing else waits on it.
 
+## Item 2: the temperature guard (R76): built; R71 the remaining dependency
+
+Built and proven on the X51v ([run GC2EA](runs/2026-11-12-gc2ea-heat-guard.md)):
+the guard stepped 136.50 / 1 down to 133.25 / 1 at the run's peak heat
+and back up as it cooled, every render right on both rungs, the display's
+underrun flag clear after each change. Its design is in ADR-0035 ("The
+temperature guard for games").
+
+- [ ] **R71, the per-device self-test, is what sets each unit's
+  thresholds** (recorded as the list asks; no box for you to tick now).
+  Until R71 runs, every unit ships the defaults measured on your X51v:
+  **step down at `TEMP0` 866, back up at 868** (the hottest reading of
+  every run that proved the game step was 867; one count of the
+  reading's spread each side), one reading every 10 s. No threshold was
+  invented: each is a measurement. **What is not proven:** neither rung
+  has ever run hotter than 867, so past the trip 133.25 / 1 is your ruled
+  peak-heat rung, not a measured one; R71 measures both on each unit.
+
 ## A question from item 5's sky run (R183)
 
 - [ ] **Should a clear sky drift clouds?** **Why:** run today-0141 ran

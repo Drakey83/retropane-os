@@ -2543,6 +2543,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "temperature guard: no hysteresis, back up as soon as the reading leaves the trip (R76)",
+        file: "drivers/mbx-display/src/heat.rs",
+        from: "            Some(v) if v >= self.clear => false,",
+        to: "            Some(v) if v > self.trip => false,",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "it_steps_down_at_the_trip_and_up_only_past_the_band",
+        ]),
+    },
+    Mutant {
         name: "2D renderer: the commands under a panel's body drawn again (R191 Start menu, ruling (b) 2026-11-12)",
         file: "drivers/mbx-render/src/lib.rs",
         from: "    let (p, _, clears) = best?;",

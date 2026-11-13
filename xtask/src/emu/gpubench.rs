@@ -1036,6 +1036,14 @@ pub(crate) fn variant_images_gpubench(
             ("RP_GPUBENCH_GC2_RENDERS", "3"),
         ],
     )?;
+    let run_gc2ea = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_TEMPGUARD", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "3"),
+        ],
+    )?;
     let run_gc2by = variant_image_envs(
         root,
         "rp-gpubench",
@@ -1328,7 +1336,7 @@ pub(crate) fn variant_images_gpubench(
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 177] = [
+    let runs: [GpubenchRun; 178] = [
         (
             "run A",
             &run_a,
@@ -3001,6 +3009,24 @@ pub(crate) fn variant_images_gpubench(
                 // must draw the same; the X51v must show 13 of 13.
                 "kinds drawn the same both ways at Windows Mobile's clock: 12 of 13 (different: 1); game frames wrong against their own form's references: triangles 0, four-corner objects 0",
                 "GC2CA done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2EA (R76): the temperature guard on the moved game frames,
+        // its limits 30 s in this build; the emulator's TEMP0 doesn't heat,
+        // so the guard stays at the game step and every render is right.
+        (
+            "run GC2EA",
+            &run_gc2ea,
+            &[
+                "GC2EA (R76): the temperature guard",
+                "GC2EA the clock set to 136.50 / 1",
+                "GC2EA check at 136.50 / 1 before heating: 4 right, 0 wrong, 0 not finished of 4",
+                "GC2EA done: stepped down",
+                "every check and render right: true",
+                "GC2BY controls at Windows Mobile's clock after: 4 of 4 right",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

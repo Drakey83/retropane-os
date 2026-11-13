@@ -8556,6 +8556,7 @@ mod image {
     /// (the temperature guard's step; GC2BX: every mesh render wrong at
     /// 149.50 / 1). About 25 minutes, unattended.
     const GC2_GAMES: bool = option_env!("RP_GPUBENCH_GC2_GAMES").is_some()
+        || GC2_TEMPGUARD
         || GC2_MOVED
         || GC2_GUARD
         || GC2_LEVERS
@@ -8623,7 +8624,8 @@ mod image {
     /// moved across and down ([`gc2::MOVED_DXY`]) at 137.80 / 1 (GC2DR's
     /// highest step right on the shifted textured frames) and the two below:
     /// is the line right for every kind of frame, wherever it lands.
-    const GC2_MOVED: bool = option_env!("RP_GPUBENCH_GC2_MOVED").is_some() || GC2_SOAK137;
+    const GC2_MOVED: bool =
+        option_env!("RP_GPUBENCH_GC2_MOVED").is_some() || GC2_SOAK137 || GC2_TEMPGUARD;
     /// Run GC2DV (`RP_GPUBENCH_GC2_SOAK137`): GC2DT's moved frames at 137.80
     /// / 1 for 12 parts (4,800 renders, the chip at its hottest), then 149.50
     /// / 2 ([`gc2::GAME_SOAK137`]): the line held with time and heat.
@@ -10164,6 +10166,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2CA, R78: no map; the four game frames at 480 x 640, 360 x 480 and 240 x 320 shown full screen by the video plane's scaler, Dell's doubling and the native screen, timed at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
             } else if GC2_TEAR {
                 "the 16-bit kinds' targets inside the safe region (GC2BZ, R20: no map; each tile row of the four game frames watched as it lands against the scan line, in four tile orders, started at three scan lines, at Windows Mobile's clock and 74.75 / 1; each target poisoned first),"
+            } else if GC2_TEMPGUARD {
+                "the 16-bit kinds' targets inside the safe region (GC2EA, R76: no map; the temperature guard on GC2DT's moved game frames, 136.50 / 1 stepping down to 133.25 / 1 at this run's peak heat and back up as it cools, TEMP0 every 10 s; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_GUARD3 {
                 "the 16-bit kinds' targets inside the safe region (GC2DX: no map; GC2BY's four game frames at 149.50 / 1 for 500 rounds, then 149.50 / 2; GC2DW's guard of the textures and the free pool, and the renderer's own region array, on-die parameter memory and memory manager's block summed after every render against each frame's sums at Windows Mobile's clock; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_GUARD2 {
@@ -29379,7 +29383,9 @@ mod image {
                 let w = gc2_render_at(g, r, (k, at), want, first, regs, &mut base, &mut side);
                 (w, side.best_us)
             };
-            if !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BY", &["A"]) {
+            // GC2EA starts from the chip as it rests: its own heating is
+            // what the guard is shown against.
+            if !GC2_TEMPGUARD && !gc2_hot_phases(g, r, &mut one, &mut touch, s, "GC2BY", &["A"]) {
                 let _ = ondie.release(&mut g.pool);
                 return;
             }
@@ -29529,7 +29535,9 @@ mod image {
         });
         let mut clean_steps = 0u32;
         let ladder = gc2::ladder_levers();
-        let steps: &[gc2::Lever] = if GC2_GUARD3 {
+        let steps: &[gc2::Lever] = if GC2_TEMPGUARD {
+            &[]
+        } else if GC2_GUARD3 {
             &gc2::GAME_GUARD3
         } else if GC2_GUARD2 {
             &gc2::GAME_GUARD2
@@ -29592,7 +29600,9 @@ mod image {
         if let Some(s0) = sums0 {
             log!("  GC2DU the textures' sums before the ladder: {s0:08x?}");
         }
-        let tag = if GC2_GUARD3 {
+        let tag = if GC2_TEMPGUARD {
+            "GC2EA"
+        } else if GC2_GUARD3 {
             "GC2DX"
         } else if GC2_GUARD2 {
             "GC2DW"
@@ -29629,6 +29639,18 @@ mod image {
         } else {
             "GC2BY"
         };
+        if GC2_TEMPGUARD {
+            let mut run = Gc2ea {
+                k,
+                at,
+                first: &mut *first,
+                refs: &*refs,
+                poisons: &poisons,
+                tex,
+                copies: &copies,
+            };
+            gc2_temp_guard(g, &mut ondie, &mut touch, &mut run);
+        }
         for (si, lv) in steps.iter().enumerate() {
             let name = &lv.name;
             let (m, n, p) = lv.pll;
@@ -29905,6 +29927,294 @@ mod image {
         }
         r.set_tile_order(rp_mbx3d_render::TileOrder::Rows);
         log!("  GC2BY done, TEMP0 {:?}", gc2ba_temp(&mut touch));
+    }
+
+    /// Run GC2EA, reminder R76 (`RP_GPUBENCH_GC2_TEMPGUARD`): the temperature
+    /// guard (`rp_drv_mbx_display::heat`) on GC2DT's moved game frames. The
+    /// frames drawn at the guard's rung, every render against its
+    /// reference, `TEMP0` read every 10 s and given to the guard; it steps
+    /// down to 133.25 / 1 at this run's peak heat, then the core idles (its
+    /// 3D clock off, as the OS's gate leaves it) until the guard steps back
+    /// up to 136.50 / 1 as it cools; a check part of renders after each
+    /// change. The shipped thresholds (866 / 868, the hottest reading of
+    /// any run that proved the game step) are hotter than a night's room
+    /// lets the chip reach in a run (GC2DV held 867 for 4,800 renders), so
+    /// this run trips [`GC2EA_TRIP_BELOW_START`] counts warmer than its own
+    /// start and clears two counts cooler than that: the mechanism on the
+    /// device, the shipped numbers in the host tests.
+    const GC2_TEMPGUARD: bool = option_env!("RP_GPUBENCH_GC2_TEMPGUARD").is_some();
+    /// GC2EA's heating limit: drawing until the guard steps down.
+    const GC2EA_HEAT_MS: u32 = if GC2_RENDERS < 20 {
+        30_000
+    } else {
+        20 * 60_000
+    };
+    /// GC2EA's cooling limit: idle until the guard steps back up.
+    const GC2EA_COOL_MS: u32 = if GC2_RENDERS < 20 {
+        30_000
+    } else {
+        25 * 60_000
+    };
+    /// GC2EA's trip, counts warmer (lower) than its first reading.
+    const GC2EA_TRIP_BELOW_START: u32 = 3;
+    /// GC2EA's check rounds after each clock change (four frames a round).
+    const GC2EA_CHECK_ROUNDS: u32 = if GC2_RENDERS < 20 { 1 } else { 25 };
+
+    /// Milliseconds of the run so far (`total`, moved on from the 3.25 MHz
+    /// tick `t`, which wraps every 22 minutes: read at least that often).
+    fn gc2ea_ms(t: &mut u32, total: &mut u32) -> u32 {
+        let d = rt::ticks().wrapping_sub(*t) / 3250;
+        *t = t.wrapping_add(d * 3250);
+        *total = total.wrapping_add(d);
+        *total
+    }
+
+    /// The guard's rung as `rp-gpubench`'s step, and its name.
+    fn gc2ea_step(r: clock::Rung) -> (ClockStep, &'static str) {
+        use rp_drv_mbx_display::heat;
+        if r == heat::GAME_STEP {
+            (gc2_step(21, 2, 0, 1), "136.50 / 1")
+        } else if r == heat::PEAK_HEAT {
+            (gc2_step(41, 4, 0, 1), "133.25 / 1")
+        } else {
+            (WM_STEP, "Windows Mobile's 99.67 / 2")
+        }
+    }
+
+    /// The guard's rung set: the registers renders are checked against.
+    fn gc2ea_set(g: &mut Rig, r: clock::Rung) -> Option<[u32; 5]> {
+        let (step, name) = gc2ea_step(r);
+        clock_restore(&mut g.e.regs);
+        let lock = clock_apply(g, step)?;
+        let under = underrun_take(&mut g.e.regs);
+        log!(
+            "  GC2EA the clock set to {name} (lock {lock} us; the display's underrun flag after: {under}, cleared)"
+        );
+        clock_readback(g);
+        Some(gc2_clock_want(step_speed(g, step), step.div))
+    }
+
+    /// GC2EA's renders: the moved game frames, the references, the target.
+    struct Gc2ea<'a> {
+        k: usize,
+        at: u32,
+        first: &'a mut [u32],
+        refs: &'a [u32],
+        poisons: &'a [Option<u16>],
+        tex: gc2::Tex,
+        copies: &'a [Option<Texture>; 4],
+    }
+
+    impl Gc2ea<'_> {
+        /// One round: each frame once at `regs`: (right, wrong, not done).
+        fn round(&mut self, g: &mut Rig, ondie: &mut Renderer, regs: [u32; 5]) -> (u32, u32, u32) {
+            let words = gc2::words(self.k) as usize;
+            let mut n = (0, 0, 0);
+            for (f, &kind) in game_frames().iter().enumerate() {
+                g.mesh_dx = mesh_dx(f);
+                g.mesh_dy = mesh_dy(f);
+                g.uv_mode = 0;
+                g.centred = false;
+                g.tex565 = self.copies[f];
+                gc2_set_mesh(g, ondie, kind, self.tex);
+                ondie.set_tile_order(order_of(f));
+                if let Some(c) = self.poisons[f]
+                    && !poison_fill(g, self.at, c)
+                {
+                    n.2 += 1;
+                    continue;
+                }
+                let want = &self.refs[f * words..(f + 1) * words];
+                let mut side = Gc2Side::new(false);
+                let mut base = Gc2Baseline(None);
+                match gc2_render_at(
+                    g,
+                    ondie,
+                    (self.k, self.at),
+                    want,
+                    self.first,
+                    regs,
+                    &mut base,
+                    &mut side,
+                ) {
+                    Some(0) => n.0 += 1,
+                    Some(_) => n.1 += 1,
+                    None => n.2 += 1,
+                }
+            }
+            n
+        }
+
+        /// [`GC2EA_CHECK_ROUNDS`] rounds after a clock change: all right?
+        fn check(&mut self, g: &mut Rig, ondie: &mut Renderer, regs: [u32; 5], when: &str) -> bool {
+            let mut n = (0, 0, 0);
+            for _ in 0..GC2EA_CHECK_ROUNDS {
+                let r = self.round(g, ondie, regs);
+                n = (n.0 + r.0, n.1 + r.1, n.2 + r.2);
+                rt::check_in();
+            }
+            log!(
+                "  GC2EA check {when}: {} right, {} wrong, {} not finished of {}",
+                n.0,
+                n.1,
+                n.2,
+                GC2EA_CHECK_ROUNDS * game_frames().len() as u32
+            );
+            n.1 == 0 && n.2 == 0
+        }
+    }
+
+    /// Run GC2EA (see [`GC2_TEMPGUARD`]).
+    fn gc2_temp_guard(
+        g: &mut Rig,
+        ondie: &mut Renderer,
+        touch: &mut Option<Touch<'_>>,
+        run: &mut Gc2ea<'_>,
+    ) {
+        use rp_drv_mbx_display::heat::{self, HeatGuard};
+        let Some(t0) = gc2ba_temp(touch) else {
+            log!("  GC2EA: no TEMP0 reading: nothing run");
+            return;
+        };
+        let trip = t0.saturating_sub(GC2EA_TRIP_BELOW_START) as u16;
+        let mut guard = HeatGuard::new(trip, trip + 2);
+        log!(
+            "  GC2EA (R76): the temperature guard on GC2DT's moved game frames; TEMP0 at the start {t0}; the shipped trip {} and clear {} (the proven edge 867); this run's trip {} and clear {} (start - {GC2EA_TRIP_BELOW_START}, then + 2); a reading every {} s; heating at most {} min, cooling at most {} min",
+            heat::TRIP,
+            heat::CLEAR,
+            guard.thresholds().0,
+            guard.thresholds().1,
+            heat::PERIOD_MS / 1000,
+            GC2EA_HEAT_MS / 60_000,
+            GC2EA_COOL_MS / 60_000
+        );
+        let (mut tick, mut ms) = (rt::ticks(), 0u32);
+        let Some(mut regs) = gc2ea_set(g, guard.rung()) else {
+            log!("  GC2EA: the game step didn't take: nothing run");
+            clock_restore(&mut g.e.regs);
+            return;
+        };
+        let _ = guard.reading(gc2ea_ms(&mut tick, &mut ms), Some(t0 as u16));
+        let mut ok = run.check(g, ondie, regs, "at 136.50 / 1 before heating");
+        // Heating: drawing at the guard's rung until it steps down.
+        soak_label(
+            g,
+            ["GC2EA HEAT GUARD", "HEATING AT 136.50 / 1", "STEP 1 OF 2"],
+            SOAK_BLUE,
+        );
+        let start = ms;
+        let mut next = ms + heat::PERIOD_MS;
+        let mut tot = (0u32, 0u32, 0u32);
+        let mut down_at = None;
+        while ms.wrapping_sub(start) < GC2EA_HEAT_MS {
+            let r = run.round(g, ondie, regs);
+            tot = (tot.0 + r.0, tot.1 + r.1, tot.2 + r.2);
+            rt::check_in();
+            gc2ea_ms(&mut tick, &mut ms);
+            if ms < next {
+                continue;
+            }
+            next = ms + heat::PERIOD_MS;
+            let t = gc2ba_temp(touch);
+            log!(
+                "  GC2EA heating {} s: TEMP0 {t:?} at {} ({} right, {} wrong, {} not finished so far)",
+                (ms - start) / 1000,
+                gc2ea_step(guard.rung()).1,
+                tot.0,
+                tot.1,
+                tot.2
+            );
+            if let Some(r) = guard.reading(ms, t.map(|v| v as u16)) {
+                log!(
+                    "  GC2EA STEP DOWN at {} s, TEMP0 {t:?} at or under the trip {}: to {}",
+                    (ms - start) / 1000,
+                    guard.thresholds().0,
+                    gc2ea_step(r).1
+                );
+                if let Some(v) = gc2ea_set(g, r) {
+                    regs = v;
+                    ok &= run.check(g, ondie, regs, "at 133.25 / 1 after the step down");
+                    down_at = Some(ms);
+                } else {
+                    let wm = guard.change_failed();
+                    log!(
+                        "  GC2EA: the step didn't take: {} latched",
+                        gc2ea_step(wm).1
+                    );
+                    ok = false;
+                }
+                break;
+            }
+        }
+        ok &= tot.1 == 0 && tot.2 == 0;
+        // Cooling: nothing drawn, the 3D clock off as the OS's gate leaves
+        // an idle core, until the guard steps back up.
+        let mut up_at = None;
+        if down_at.is_some() && !guard.failed() {
+            soak_label(
+                g,
+                ["GC2EA HEAT GUARD", "COOLING AT 133.25 / 1", "STEP 2 OF 2"],
+                SOAK_BLUE,
+            );
+            let v = g.e.regs.read32(MBXCLK);
+            g.e.regs.write32(MBXCLK, clock::two_d_only(v));
+            let start = ms;
+            while ms.wrapping_sub(start) < GC2EA_COOL_MS {
+                for _ in 0..heat::PERIOD_MS / 100 {
+                    rt::delay_us(100_000);
+                    rt::check_in();
+                }
+                gc2ea_ms(&mut tick, &mut ms);
+                let t = gc2ba_temp(touch);
+                log!(
+                    "  GC2EA cooling {} s: TEMP0 {t:?} at {}, the 3D clock off",
+                    (ms - start) / 1000,
+                    gc2ea_step(guard.rung()).1
+                );
+                if let Some(r) = guard.reading(ms, t.map(|v| v as u16)) {
+                    log!(
+                        "  GC2EA STEP UP at {} s of cooling, TEMP0 {t:?} at or over the clear {}: to {}",
+                        (ms - start) / 1000,
+                        guard.thresholds().1,
+                        gc2ea_step(r).1
+                    );
+                    clock::cycle_3d(&mut g.e.regs, rt::delay_us);
+                    ondie.core_taken();
+                    if let Some(v) = gc2ea_set(g, r) {
+                        regs = v;
+                        ok &= run.check(g, ondie, regs, "at 136.50 / 1 after the step up");
+                        up_at = Some(ms);
+                    } else {
+                        let wm = guard.change_failed();
+                        log!(
+                            "  GC2EA: the step didn't take: {} latched",
+                            gc2ea_step(wm).1
+                        );
+                        ok = false;
+                    }
+                    break;
+                }
+            }
+            if up_at.is_none() {
+                clock::cycle_3d(&mut g.e.regs, rt::delay_us);
+                ondie.core_taken();
+            }
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        log!(
+            "  GC2EA done: stepped down {}, stepped up {}; heating renders {} right, {} wrong, {} not finished; every check and render right: {ok}; TEMP0 at the end {:?}",
+            if down_at.is_some() {
+                "yes"
+            } else {
+                "no (the trip never reached)"
+            },
+            if up_at.is_some() { "yes" } else { "no" },
+            tot.0,
+            tot.1,
+            tot.2,
+            gc2ba_temp(touch)
+        );
     }
 
     /// GC2BX's game rounds (part 1), proof rounds (part 3), and confirming
