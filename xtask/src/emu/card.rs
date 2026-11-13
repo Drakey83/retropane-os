@@ -485,6 +485,10 @@ pub(crate) fn cardlog_checks(root: &Path) -> Result<(), String> {
         // its command line is empty, and nothing is switched (R193's opt-in
         // only on asking: a loader that always set bit 3 fails here).
         "] command line: \"\"; no opt-in: no CPLD bit changes",
+        // R193's detect: the emulator's CPLD reads the X51v's 0x06, so the
+        // unit is the X51v and nothing is switched.
+        "] unit: X51v (CPLD 0x06 0002; 0x14 0002)
+",
     ] {
         if !boot.contains(want) {
             return Err(format!("cardlog loader: no `{want}` in:\n{boot}"));
@@ -665,9 +669,7 @@ pub(crate) fn cardlog_checks(root: &Path) -> Result<(), String> {
     at(
         "] command line: \"rp.x50v-usb-bit3=0\"; opt-in rp.x50v-usb-bit3: CPLD 0x1C bit 3 set at its time",
     )?;
-    let bit = at(
-        "] CPLD 0x1C bit 3 on (opt-in rp.x50v-usb-bit3): 0000 -> 0008 (WM slot the same), record 0008",
-    )?;
+    let bit = at("] CPLD 0x1C bit 3 on (R193): 0000 -> 0008 (WM slot the same), record 0008")?;
     // Dell's order: the bit before the controller's first event.
     if at("] usb: resets ")? < bit {
         return Err(format!("cardlog x50v: USB started before bit 3:\n{x50v}"));

@@ -3209,6 +3209,26 @@ mod image {
             (Ok(n), true) => atags::bit3(&cmd_line[..*n]),
             _ => Bit3::Off,
         };
+        // Which Axim (CPLD 0x06, a status input; R193's detect sheet): on
+        // the X50v the loader switches its USB on by itself, before USB,
+        // as the opt-in's `=0` does; the X51v and unknown boards as before.
+        let unit = rp_hal_x51v::board::unit(cpld_found[3]);
+        if board.first {
+            blog!(
+                "unit: {} (CPLD 0x06 {:04X}; 0x14 {:04X}){}",
+                unit.name(),
+                cpld_found[3],
+                cpld_found[10],
+                if unit == rp_hal_x51v::board::Unit::X50v && bit3 == Bit3::Off {
+                    ": CPLD 0x1C bit 3 on at the start, its USB switch"
+                } else {
+                    ""
+                }
+            );
+            if unit == rp_hal_x51v::board::Unit::X50v && bit3 == Bit3::Off {
+                bit3 = Bit3::At(0);
+            }
+        }
         if board.first {
             match &cmd {
                 Ok(n) => blog!(
@@ -4826,11 +4846,11 @@ mod image {
                 let _ = match (r, rec) {
                     (Some((was, now)), Some(rec)) => write!(
                         l,
-                        "CPLD 0x1C bit 3 on (opt-in rp.x50v-usb-bit3): {was:04X} -> {now:04X} (WM slot the same), record {rec:04X}"
+                        "CPLD 0x1C bit 3 on (R193): {was:04X} -> {now:04X} (WM slot the same), record {rec:04X}"
                     ),
                     (Some((was, now)), None) => write!(
                         l,
-                        "CPLD 0x1C bit 3 on (opt-in rp.x50v-usb-bit3): {was:04X} -> {now:04X} (WM slot the same), no record"
+                        "CPLD 0x1C bit 3 on (R193): {was:04X} -> {now:04X} (WM slot the same), no record"
                     ),
                     (None, _) => write!(l, "CPLD 0x1C bit 3 not set: no CPLD"),
                 };
