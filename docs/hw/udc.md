@@ -143,7 +143,7 @@ rows above are unchanged.
 | Fact | Status | Source |
 |---|---|---|
 | **X50v, Windows Mobile 2003:** the loader (the CF card's copy, started by HaRET from the CF card; the 4 GB SDHC card is unreadable under Windows Mobile 2003) runs and draws its screen, but USB never enumerates: `cable 0 configured no open no`, `usb resets 30 setups 0`, the layout fallback alternating both layouts; the PC listed no new device. The PC's hub sees a device (it resets the port) but no SETUP reaches the UDC: the X51v's "transceiver not driving for the device" symptom (`HXOE` off, 2026-10-11) | confirmed (X50v) | the owner's photo, 2026-11-13; the PC's device list |
-| The boot left no card log: the loader writes the card log only for an image's run; its own start-up stays in RAM and on screen | confirmed | `rplog/index.txt` on the CF card read on the X51v (newest gpubench-0137) |
+| The boot left no card log: the loader (before 2026-11-13) wrote the card log only for an image's run; its own start-up stayed in RAM and on screen (the start-up log below fixes it) | confirmed | `rplog/index.txt` on the CF card read on the X51v (newest gpubench-0137) |
 | **Dell's X50v USB driver switches CPLD `0x1C` bit 3 itself:** on when its cable check says attached, off when not and at its power-down (`usbfndrv` `0x257abf0`, `0x257b390`, through `0x257b45c`; Windows Mobile's shared shadow at `0xAC001320`, as on the X51v). AxDroid's X50 board file sets the same bit at boot ("USB power?") | likely (X50v; code) | (D) `usbfndrv.dll` of `WM50_K_A12_X50v` (a WM6.5 ROM built on Dell's X50v A12; romdump reads its StrataFlash layout since 2026-11-13); AxDroid `aximx50.c` |
 | Dell's X50v USB driver turns the USB client clock on itself (`CKEN` bit 11, mapping `0x41300000`) and steps power through `KernelIoControl` `0x010100A0` / `0x010100A4` (`0x257a3b8`, `0x2578fe4`); the X51v A08 driver does neither (89 of its 347 functions identical to the X50v's) | likely (X50v; code) | (D) the same two drivers, `tools/rea/fdiff.py` |
 | Neither driver writes `UP2OCR`, and neither kernel (the X51v's OAL, the X50v A12 `nk.exe`) names the UDC block's address as a literal: the transceiver set-up Windows Mobile leaves is not found in code yet | open | (D) a search of both drivers and both kernels |
@@ -154,10 +154,38 @@ Windows Mobile 2003 on the X50v had it off when HaRET started, the X50v's
 USB path is unpowered under the loader. Not yet told apart from the
 transceiver (`UP2OCR`) and the X50v's cable-detect pin. The X50v's own
 Windows Mobile 2003 driver is not read (only Dell's later X50v build), and
-its shadow may not be where the WM5 builds keep it. Next: the loader logs
-its start-up to the card (the X50v can't be read over USB), with
-`UP2OCR`, `CKEN`, the CPLD shadow and the GPIO levels at start; then one
-change at a time, the owner watching.
+its shadow may not be where the WM5 builds keep it.
+
+**The loader's start-up log (built 2026-11-13, emulator-proven; not yet
+run on the X50v):** at its first start after HaRET the loader now keeps
+its own log on the cards (`rplog/`, a run slot named `loader`, read with
+`cargo xtask cardlog loader <n>`; `hal/x51v/src/bootlog.rs`, the sheet
+`docs/research/sheets/r193-loader-startup-log.md`). It reads only:
+
+- before its first register write: `CKEN`, `PSSR`, `GPLR0-3`, `GPDR0-3`,
+  every `GAFR` word, `GRER`/`GFER`/`PWER` (the `diag` whitelist), with
+  `CKEN` bit 11 named (on or OFF) and GPIO14 and GPIO2 decoded;
+- `UDCCR`, `UP2OCR` (decoded: `HXOE`, `HXS`, `SEOS`, the resistors) and
+  `UP3OCR` before its first write to the controller (read with the
+  client clock on, which `take_udc` turns on; a gated unit's read is
+  undefined);
+- the CPLD shadow table at `0xA8001320` raw before adoption and the
+  verdict (Windows Mobile's, RetroPane's, or the defaults with the
+  reason), every CPLD register as read on the bus, and `0x1C` on the
+  bus, in Windows Mobile's slot, as kept and in the board record, bit 3
+  named in each;
+- then a line per USB change (resets, setups, configured, port open, the
+  cable pin, the layout; bursts closer than 50 ms share a line), the
+  fallback and "PC silent" replugs, and every 10 s `UDCCR` and `UP2OCR`
+  again; queued in RAM and written when USB has been quiet 100 ms;
+  closed when the PC configures the device, after 5 minutes, or when a
+  run starts.
+
+In the emulator (`cargo xtask emu-cardlog`, 2026-11-13) the log is the
+same on both cards and closes at the PC's configuration with 14 sector
+writes, none refused. Next: install it on the CF card, boot the X50v from
+it, read the log on the X51v; then one change at a time, the owner
+watching.
 
 ## Open questions
 

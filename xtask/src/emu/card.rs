@@ -465,6 +465,49 @@ pub(crate) fn cardlog_checks(root: &Path) -> Result<(), String> {
         "    cardlog light OK: the run log on the SD card line for line, numbered 41 (after the 40 old files), 32 slots and an index made on each card"
     );
 
+    // R193: each boot is the loader's first start, so each keeps its own
+    // start-up log (`loader-NNNN`): the clocks boot's is 1, light's 2. The
+    // board as found, then USB, closed (the PC configured the device, or
+    // the run started), the same bytes on both cards.
+    let boot =
+        joined_card_log(&sd, &cf, "loader", 2).map_err(|e| format!("cardlog loader: {e}"))?;
+    for want in [
+        "RetroPane loader start-up log (R193), loader-0002 on the SD and CF cards",
+        "] CKEN ",
+        "] UDCCR ",
+        " UP2OCR ",
+        "] GPIO14 level ",
+        "] CPLD table at 0xA8001320",
+        "] CPLD 0x1C (bit 3: the X50v lead): bus ",
+        "] cards: SD in, CF in",
+        "] usb: resets ",
+    ] {
+        if !boot.contains(want) {
+            return Err(format!("cardlog loader: no `{want}` in:\n{boot}"));
+        }
+    }
+    let closing = boot.lines().last().unwrap_or("");
+    if !closing.contains("[start-up log closed: ")
+        || !closing.contains(" 0 refused, 0 bytes dropped]")
+    {
+        return Err(format!(
+            "cardlog loader: the closing line is wrong: {closing}"
+        ));
+    }
+    let halves =
+        [&sd, &cf].map(|card| slot_file(card, "loader", 2).and_then(|f| card_file(card, &f)));
+    match halves {
+        [Ok(a), Ok(b)] if a == b => {}
+        _ => return Err("cardlog loader: the SD and CF cards' start-up logs differ".into()),
+    }
+    // Kept for reading: the emulator's board as the loader found it.
+    let kept = scratch(root, "loader-startup-log.txt")?;
+    std::fs::write(&kept, &boot).map_err(|e| format!("{}: {e}", kept.display()))?;
+    eprintln!(
+        "    cardlog loader OK: the start-up log (loader-0002) on both cards alike, the board as found, USB, closed: {closing} (kept in {})",
+        kept.display()
+    );
+
     let out = run("sdtime", &image("rp-sdtime")?, None, "RPL END")?;
     let card = check("sdtime", 1, &out, "returned")?;
     let moved = "[card log: the SD card was taken by the program; continuing on the CF card]";
