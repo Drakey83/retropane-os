@@ -60,6 +60,7 @@ use rp_mbx3d_render::{
 use rp_vram_map::Pool;
 
 mod layer;
+pub mod route;
 pub use layer::{Commits, LayerState, PICTURES, Source, Window};
 
 /// Clients at once.

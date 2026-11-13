@@ -19109,19 +19109,8 @@ mod image {
             return;
         }
         if way == 3 {
-            // C': the video plane reads the shown picture while hidden; the
-            // UYVY when shown (repointed first going in, last coming out).
-            let base = |g: &mut Rig, a: u32| {
-                let v = g.e.regs.read32(lreg::VSCADR);
-                g.e.regs.write32(lreg::VSCADR, (v & !0x7F_FFFF) | (a >> 4));
-            };
-            if route == gc2::ROUTE_SMOOTH {
-                base(g, at[2]);
-                gc2dc_way_show(g, 2, route, at, planes0);
-            } else {
-                gc2dc_way_show(g, 2, route, at, planes0);
-                base(g, at[usize::from(route)]);
-            }
+            // C', the game path's switch: the display driver's copy (R90).
+            rp_drv_mbx_display::game_route::show(&mut g.e.regs, route, at);
             return;
         }
         let under = Layer {
@@ -19625,7 +19614,7 @@ mod image {
         };
         let nudge = core::mem::replace(&mut g.nudge, GC2BO_NUDGE);
         log!(
-            "  GC2DD (R108 layout B): way C' at 149.50 / 2 with the next frame rendering across each switch; the lines route's 480 x 320 at 0x{:x}, the smooth route's 240 x 320 render at 0x{GC2DD_SMALL:x} and UYVY at 0x{:x}, the lists at 0x{:x}: all inside the safe region (to 0x{:x}); renders start at line {GC2DD_START}; a switch every {GC2DC_GAPS:?} frames, {GC2DC_LONG_FRAMES} frames each, every frame judged by DSIG",
+            "  GC2DD (R108 layout B): way C' at {GC2DD_NAME} with the next frame rendering across each switch; the lines route's 480 x 320 at 0x{:x}, the smooth route's 240 x 320 render at 0x{GC2DD_SMALL:x} and UYVY at 0x{:x}, the lists at 0x{:x}: all inside the safe region (to 0x{:x}); renders start at line {GC2DD_START}; a switch every {GC2DC_GAPS:?} frames, {GC2DC_LONG_FRAMES} frames each, every frame judged by DSIG",
             GC2DD_AT[1],
             GC2DD_AT[2],
             GC2BB_PARAMS.at,
@@ -19635,7 +19624,11 @@ mod image {
             g,
             planes0,
             [
-                "R108: WAY C' AT 149.50 / 2",
+                if GC2DD_GAME {
+                    "R108: WAY C' AT 136.50 / 1"
+                } else {
+                    "R108: WAY C' AT 149.50 / 2"
+                },
                 "STEP 1 OF 4: DRAWING",
                 "NOTHING TO DO",
             ],
@@ -19645,7 +19638,7 @@ mod image {
         let lock = clock_apply(g, GC2DD_STEP);
         if lock.is_none() {
             clock_restore(&mut g.e.regs);
-            log!("  GC2DD: 149.50 / 2 didn't take; Windows Mobile's clock put back: nothing run");
+            log!("  GC2DD: {GC2DD_NAME} didn't take; Windows Mobile's clock put back: nothing run");
             gc2ca_card(g, planes0, ["GC2DD STOPPED", "CLOCK NOT TAKEN", ""]);
             g.nudge = nudge;
             return;
@@ -19653,14 +19646,14 @@ mod image {
         // ADR-0035 rule 8: every clock change followed by the underrun
         // flag's check and Dell's clear.
         let short = underrun_take(&mut g.e.regs);
-        log!("  GC2DD 149.50 / 2: lock {lock:?}, the display's underrun flag {short}");
+        log!("  GC2DD {GC2DD_NAME}: lock {lock:?}, the display's underrun flag {short}");
         clock_readback(g);
         if let Some((_, rr)) = cur.as_mut() {
             rr.start_clean();
         }
         let refs = gc2dd_draw(g, cur, tex);
         log!(
-            "  GC2DD at 149.50 / 2: the pictures' hashes {refs:x?}{}",
+            "  GC2DD at {GC2DD_NAME}: the pictures' hashes {refs:x?}{}",
             if refs.is_some() && refs == wm {
                 ", the same as at Windows Mobile's clock"
             } else {
@@ -19669,7 +19662,7 @@ mod image {
         );
         let Some(refs) = refs else {
             clock_restore(&mut g.e.regs);
-            log!("  GC2DD: a picture not drawn at 149.50 / 2: nothing more run");
+            log!("  GC2DD: a picture not drawn at {GC2DD_NAME}: nothing more run");
             g.nudge = nudge;
             return;
         };
@@ -19714,7 +19707,15 @@ mod image {
             );
             soak_label(
                 g,
-                ["R108: WAY C' AT 149.50 / 2", l2.as_str(), "NOTHING TO DO"],
+                [
+                    if GC2DD_GAME {
+                        "R108: WAY C' AT 136.50 / 1"
+                    } else {
+                        "R108: WAY C' AT 149.50 / 2"
+                    },
+                    l2.as_str(),
+                    "NOTHING TO DO",
+                ],
                 SOAK_BLUE,
             );
             let mut route = gc2::ROUTE_LINES;
@@ -19864,7 +19865,7 @@ mod image {
             };
             let hashes = gc2dd_hashes(g);
             log!(
-                "  GC2DD long {} way C' at 149.50 / 2 a switch every {gap} frames, rendering across each: {GC2DC_LONG_FRAMES} passes over {span} display frames (a line {} ns{}, {} frames passed between looks): {} judged by DSIG, {} not read; {} the route in place whole, {} the other route whole, {} NEITHER ROUTE (first {:x?}), {missed} lines missed{}; {switches} switches, {busy_switch} written with the core drawing, the first frame after {} of them judged; {busy_other} of the other frames' line 0 with it drawing; renders {rendered} done, {failed} failed, {late} still running at line {GC2DD_START}, start to seen done fastest {} us slowest {span_max} us mean {} us; {takes} new renderers set up after a switch, the slowest {take_max} us, {take_late} past line {GC2DD_START}; the pictures afterwards {}",
+                "  GC2DD long {} way C' at {GC2DD_NAME} a switch every {gap} frames, rendering across each: {GC2DC_LONG_FRAMES} passes over {span} display frames (a line {} ns{}, {} frames passed between looks): {} judged by DSIG, {} not read; {} the route in place whole, {} the other route whole, {} NEITHER ROUTE (first {:x?}), {missed} lines missed{}; {switches} switches, {busy_switch} written with the core drawing, the first frame after {} of them judged; {busy_other} of the other frames' line 0 with it drawing; renders {rendered} done, {failed} failed, {late} still running at line {GC2DD_START}, start to seen done fastest {} us slowest {span_max} us mean {} us; {takes} new renderers set up after a switch, the slowest {take_max} us, {take_late} past line {GC2DD_START}; the pictures afterwards {}",
                 gi + 1,
                 frames.line_ns,
                 if timed {
@@ -19902,7 +19903,11 @@ mod image {
             (GC2DD_AT, "GC2DD", 2),
             planes0,
             [
-                "R108: WAY C' AT 149.50 / 2",
+                if GC2DD_GAME {
+                    "R108: WAY C' AT 136.50 / 1"
+                } else {
+                    "R108: WAY C' AT 149.50 / 2"
+                },
                 "STEP 4 OF 4: RENDER COST",
                 "NOTHING TO DO",
             ],
@@ -19911,7 +19916,7 @@ mod image {
         clock_restore(&mut g.e.regs);
         let back = underrun_take(&mut g.e.regs);
         log!(
-            "  GC2DD done: Windows Mobile's clock put back; the display's underrun flag at 149.50 / 2 {short}, after the change back {back}"
+            "  GC2DD done: Windows Mobile's clock put back; the display's underrun flag at {GC2DD_NAME} {short}, after the change back {back}"
         );
         if let Some((_, rr)) = cur.take() {
             let _ = rr.release(&mut g.pool);
@@ -26119,6 +26124,13 @@ mod image {
     /// frame and poisoned again before the next conversion. Its times
     /// include the checks: the speed is GC2CP low's.
     const GC2CP_R102: bool = option_env!("RP_GPUBENCH_GC2CP_R102").is_some();
+    /// R102 at the game clock (`RP_GPUBENCH_GC2CP_GAME`, with
+    /// `RP_GPUBENCH_GC2CP_R102` for every frame checked or
+    /// `RP_GPUBENCH_GC2_HALF_ROUTES_LOW` for the speed run; the owner's
+    /// remaining list of 2026-11-12 item 3): Windows Mobile's clock and
+    /// the ruled game step 136.50 / 1 (ADR-0035 amendment D) in place of
+    /// 74.75 / 1 and 149.50 / 2.
+    const GC2CP_AT_GAME_CLOCK: bool = option_env!("RP_GPUBENCH_GC2CP_GAME").is_some();
     /// Way (d)'s pipelined frames.
     const GC2CP_OV_REPS: u32 = if GC2CP_R102 { 100 } else { GC2CP_REPS };
     /// Way (e)'s frames a kind.
@@ -26270,7 +26282,18 @@ mod image {
     /// back is layout C (R108 part 2, after R20's wiring). Not covered: the
     /// smooth route's conversion (the CPU's, made once: R89 is the GPU's).
     /// Unattended, about two minutes.
-    const GC2DD: bool = option_env!("RP_GPUBENCH_GC2_HALF_R108").is_some();
+    const GC2DD: bool = option_env!("RP_GPUBENCH_GC2_HALF_R108").is_some() || GC2DD_GAME;
+    /// GC2DD at the game clock (`RP_GPUBENCH_GC2_HALF_R108_GAME`, the
+    /// owner's remaining list of 2026-11-12 item 3): way C' while rendering
+    /// at the ruled game step 136.50 / 1 (ADR-0035 amendment D), not
+    /// 149.50 / 2; the switch the display driver's (`game_route::show`).
+    const GC2DD_GAME: bool = option_env!("RP_GPUBENCH_GC2_HALF_R108_GAME").is_some();
+    /// GC2DD's clock's name.
+    const GC2DD_NAME: &str = if GC2DD_GAME {
+        "136.50 / 1"
+    } else {
+        "149.50 / 2"
+    };
     /// GC2DD's pictures by route (native's unused but in part A, drawn over
     /// all three at A).
     const GC2DD_AT: [u32; 3] = [GC2CA_A, GC2CA_A, GC2DD_SMALL + 2 * 240 * 320];
@@ -26282,7 +26305,11 @@ mod image {
     /// (26 us a line), so the core is drawing when the switch is written.
     const GC2DD_START: u32 = 600;
     /// The game clock (ADR-0035's ruling, 2026-10-29).
-    const GC2DD_STEP: ClockStep = gc2_step(23, 2, 0, 2);
+    const GC2DD_STEP: ClockStep = if GC2DD_GAME {
+        gc2_step(21, 2, 0, 1)
+    } else {
+        gc2_step(23, 2, 0, 2)
+    };
     /// Run GC2DE (`RP_GPUBENCH_GC2_HALF_R20`, with `RP_GPUBENCH_GC2_HALF`),
     /// R20's fallback soak (the owner 2026-10-29, "Option 1", ADR-0034
     /// under rule 5): a 3D frame the scheduler can't start behind the scan
@@ -27110,7 +27137,12 @@ mod image {
         let (cur, conv) = (&mut held.0, &mut held.1);
         {
             if gc2cp_references(g, cur, (tex, Objects::default()), (first, refs)) {
-                let clocks: &[(Option<ClockStep>, &str)] = if GC2CP_R102 {
+                let clocks: &[(Option<ClockStep>, &str)] = if GC2CP_AT_GAME_CLOCK {
+                    &[
+                        (None, "WM 99.67 / 2"),
+                        (Some(gc2_step(21, 2, 0, 1)), "136.50 / 1"),
+                    ]
+                } else if GC2CP_R102 {
                     &[
                         (None, "WM 99.67 / 2"),
                         (Some(gc2_step(23, 4, 0, 1)), "74.75 / 1"),

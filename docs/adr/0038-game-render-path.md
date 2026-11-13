@@ -185,3 +185,33 @@ path.
 
 The clock values (divide-1 work), R80's one-pixel fault, the per-game
 settings' screen (the shell's design).
+
+## Built (2026-11-12 evening, the owner's remaining list item 3; R90)
+
+[Run report](../reports/runs/2026-11-12-game-path-routes.md). Nothing in
+G1-G6 changes; this is the driver they rule.
+
+- **The route choice, G2 as ruled** (`services/graphics/src/route.rs`,
+  `rp_graphics::route::Picker`): a step down when the mean of the last 8
+  frames passes 33.3 ms, to the sharpest lighter route measured faster for
+  this game (or not measured yet); a step up after 60 frames in a row under
+  the budget, only to a sharper route whose own time fits; G3's hold; G4's
+  in-flight counts (two on the lines route) and the smooth route's
+  placements apart ((d') only); G1's smooth route never chosen before R89's
+  colour check. Seven host tests, a mutant.
+- **The switch, way C'** (`drivers/mbx-display/src/game_route.rs`,
+  `game_route::show`): `rp-gpubench`'s way 3 moved into the driver and
+  called from there, so the device runs prove the shipped copy. Two host
+  tests (the video base first going into the smooth route and last coming
+  out; line doubling without pixel doubling).
+- **On the X51v:** R101 through the driver's switch 1,200 of 1,200 frames
+  whole switching every frame and 1,200 of 1,200 every 8, +0.26% render
+  cost (gpubench-0134); **R108 at the game step 136.50 / 1** while
+  rendering, 2,399 of 2,399 and 1,349 of 1,349 judged frames whole, 0
+  torn, the pictures equal to Windows Mobile's clock's (gpubench-0135);
+  **R102 at 136.50 / 1**: (d') every frame equal to the serial output (404
+  of 404, gpubench-0136), and 9.7-12.7% less a frame than serial (c') in
+  the same image (gpubench-0137).
+- **Left:** the graphics service's game frame entry point, with the first
+  game port (where G2's 8 and 60 frames are fitted); the smooth route's
+  colour (R89).

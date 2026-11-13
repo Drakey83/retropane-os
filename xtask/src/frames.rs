@@ -45,6 +45,27 @@ pub const REVIEWED: &[&str] = &[
     "rp-gpubench: rp_gpubench::image::gc2_set_mesh",
     "rp-gpubench: rp_gpubench::image::content_map2",
     "rp-gpubench: rp_gpubench::image::gc2_games",
+    // The half-size routes' mesh set-up (GC2CA's, used by R101, R102 and
+    // R108's route runs; first built since this review on 2026-11-12, the
+    // owner's remaining list item 3): `mesh_frame_in`'s slots built once a
+    // render, before it, outside the render the runs time (the 3D core's,
+    // polled), as `gc2_set_mesh` above.
+    "rp-gpubench: rp_gpubench::image::gc2ca_set_mesh",
+    // GC2CP's set-up in R102's builds (the same day): a route's renderer
+    // taken or made (`gc2cp_take`, `gc2cp_conv_new`) before each frame, and
+    // the per-clock loop over ways and frames (`gc2cp_clock`), which only
+    // calls the functions that time the frames (the times are taken inside
+    // `gc2cp_plain` and `gc2cp_inflight`, not across this frame).
+    "rp-gpubench: rp_gpubench::image::gc2cp_take",
+    "rp-gpubench: rp_gpubench::image::gc2cp_clock",
+    "rp-gpubench: rp_gpubench::image::gc2cp_conv_new",
+    // `gc2cp_conv_release` gives the conversion renderer back (set-up);
+    // `gc2cp_inflight` is way (e)'s frame loop (route 2, two in flight): its
+    // locals are touched a few times a frame against 2-5 ms frames, the
+    // lists written and the core polled in the renderer's own functions,
+    // so a stall a local is under 0.01% of the time it measures.
+    "rp-gpubench: rp_gpubench::image::gc2cp_conv_release",
+    "rp-gpubench: rp_gpubench::image::gc2cp_inflight",
     "rp-cftime: rp_cftime::image::run",
     "rp-storfast: rp_storfast::image::run",
     "rp-noise: rp_noise::image::main",

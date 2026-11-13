@@ -15,6 +15,7 @@ pub mod console;
 pub mod crash;
 pub mod filter;
 pub mod font;
+pub mod game_route;
 pub mod heat;
 pub mod layers;
 pub mod pattern;

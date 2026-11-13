@@ -2543,6 +2543,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "game path: a step down by pixel count, not the game's measured times (R90, ADR-0038 G2)",
+        file: "services/graphics/src/route.rs",
+        from: ".find(|&r| self.allowed(r) && self.times[r as usize].is_none_or(|t| t < now));",
+        to: ".find(|&r| self.allowed(r) && (now > 0 || self.times[r as usize].is_some()));",
+        check: Check::Host(&[
+            "-p",
+            "rp-graphics",
+            "the_ranking_is_by_measured_time_not_by_pixels",
+        ]),
+    },
+    Mutant {
         name: "temperature guard: no hysteresis, back up as soon as the reading leaves the trip (R76)",
         file: "drivers/mbx-display/src/heat.rs",
         from: "            Some(v) if v >= self.clear => false,",

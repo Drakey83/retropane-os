@@ -38,6 +38,16 @@ temperature guard for games").
   has ever run hotter than 867, so past the trip 133.25 / 1 is your ruled
   peak-heat rung, not a measured one; R71 measures both on each unit.
 
+## Item 3: the game path's route switch (R90): built, all three proofs passed
+
+Nothing to decide. The route choice and way C' are built (ADR-0038
+"Built"); on the X51v through the driver's switch R101 passed (0 torn
+switching every frame and every 8), R108 passed at the game step 136.50 /
+1 while rendering (0 torn), and R102 passed at 136.50 / 1 (every frame
+equal to serial; 9.7-12.7% less a frame) ([runs](runs/2026-11-12-game-path-routes.md)).
+The smooth route still waits for your colour check (R89), as ADR-0038 G1
+rules; the service's game entry point comes with the first game port.
+
 ## A question from item 5's sky run (R183)
 
 - [ ] **Should a clear sky drift clouds?** **Why:** run today-0141 ran
