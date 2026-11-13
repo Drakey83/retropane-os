@@ -51,3 +51,4 @@ copied from the log.
 | today-0113, -0114 | 2026-11-09 | R187 at 4 PM: the old Hourly points on the graph left 48 unknown; refitted off it: 0 unknown, dark Hourly judged | [2026-11-09-today-0110-0111.md](2026-11-09-today-0110-0111.md) |
 | gpubench-0110 to -0124 (GC2DG-GC2DV) | 2026-11-08 | The divide-1 chase for games: 137.80 / 1 proven, 149.50 / 1 not reached | [2026-11-08-gc2d-chase.md](2026-11-08-gc2d-chase.md) |
 | loader-0001 | 2026-11-13 | R193, the X50v's start-up log | [2026-11-13-loader-0001-x50v.md](2026-11-13-loader-0001-x50v.md) |
+| loader-0002 | 2026-11-13 | R193, X50v: CPLD 0x1C bit 3 on, USB configured | [2026-11-13-loader-0002-x50v-bit3.md](2026-11-13-loader-0002-x50v-bit3.md) |

@@ -1,7 +1,11 @@
 # Sheet: R193, one watched X50v run setting CPLD `0x1C` bit 3 (rule 0, before code)
 
-**Built 2026-11-13 (the owner's "go, build way A"), emulator-proven; the
-X50v run waits for his go.**
+**Built 2026-11-13 (the owner's "go, build way A"), emulator-proven, and
+run on the X50v the same day: bit 3 is the X50v's USB switch** (the PC
+configured the device 2.4 s after it went on; report
+[docs/reports/runs/2026-11-13-loader-0002-x50v-bit3.md](../../reports/runs/2026-11-13-loader-0002-x50v-bit3.md)).
+The stop rule's first branch: next, the X50v's board detection (way C)
+and bit 3 set by the loader on the X50v without an opt-in.
 
 The X50v's start-up log (2026-11-13, report
 [docs/reports/runs/2026-11-13-loader-0001-x50v.md](../../reports/runs/2026-11-13-loader-0001-x50v.md),

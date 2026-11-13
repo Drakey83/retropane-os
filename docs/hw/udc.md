@@ -216,6 +216,19 @@ and replugs; the start-up log adds a line per GPIO level change (a pin
 that changes 8 times is called noisy and dropped) and the `GPLR` words
 every 10 s, to find the X50v's cable pin from a cable pull.
 
+**Proven on the X50v (2026-11-13, `loader-0002`; report
+`docs/reports/runs/2026-11-13-loader-0002-x50v-bit3.md`): CPLD `0x1C`
+bit 3 is the X50v's USB switch** (most likely its D+ pull-up). Bit 3 off
+for 30 s: 0 setups, as before. Bit 3 on at 30.764 s (`0004 -> 000C`),
+replug at 30.920 s, the first SETUP at 32.951 s, configured at 33.137 s;
+the PC listed the loader's serial port. A cable pull and replug at about
+2 minutes: the PC dropped the device and took it back with no software
+step on the X50v, so bit 3 can stay on (Dell clears it on detach; not
+needed for the link). Still open: the X50v's cable pin (the log closed at
+configuration, before the pull; GPIO14 fell at 1.3 s with the cable in,
+so it isn't it), and the drive layout (the PC took the serial-only
+fallback).
+
 ## Open questions
 
 ### The first enumeration after a hand-over from Windows Mobile (2026-10-16)

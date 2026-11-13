@@ -176,8 +176,11 @@ pub fn build(root: &Path) -> Result<(), String> {
         ),
     ] {
         // Windows Mobile tools expect CRLF.
-        std::fs::write(kit.join(name), text.replace('\n', "\r\n"))
-            .map_err(|e| format!("{name}: {e}"))?;
+        let path = kit.join(name);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(&path, text.replace('\n', "\r\n")).map_err(|e| format!("{name}: {e}"))?;
     }
 
     // The cards' drive icons (assets/cards, used with the author's
