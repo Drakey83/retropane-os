@@ -40,6 +40,17 @@ inside it (TEMP0 880 five times while cooling: no step, the hysteresis
 holding). Each change took the clock through `clock::begin` (the writes
 read back) and left the display's underrun flag clear.
 
+## Run again on the committed code (9:34 PM, gpubench-0133)
+
+The first run idled the core by writing `MBXCLK` itself; the policy lint
+refuses that outside the driver (audit C43), so the cooling phase now uses
+the driver's own gate (`clock::Gate`, as the OS idles the core: the same
+register value). Run again on exactly that code: TEMP0 881 at the start
+(trip 878, clear 880); **step down at 31 s** (878), 100 of 100 right at
+133.25 / 1; **step up after 60 s cooling** (880), 100 of 100 right at
+136.50 / 1; 188 of 188 while heating; the underrun flag clear after each
+change; Windows Mobile's controls 4 of 4; 0 hung.
+
 ## What it doesn't show
 
 - **The shipped trip itself:** the chip never read hotter than 879 here;

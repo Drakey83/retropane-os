@@ -30156,8 +30156,11 @@ mod image {
                 ["GC2EA HEAT GUARD", "COOLING AT 133.25 / 1", "STEP 2 OF 2"],
                 SOAK_BLUE,
             );
-            let v = g.e.regs.read32(MBXCLK);
-            g.e.regs.write32(MBXCLK, clock::two_d_only(v));
+            // The driver's gate, as the OS idles the core (no direct write:
+            // audit C43).
+            let mut gate = clock::Gate::new(0);
+            gate.work(&mut g.e.regs, 0);
+            gate.idle(&mut g.e.regs, 0);
             let start = ms;
             while ms.wrapping_sub(start) < GC2EA_COOL_MS {
                 for _ in 0..heat::PERIOD_MS / 100 {
