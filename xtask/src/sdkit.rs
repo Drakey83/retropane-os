@@ -33,12 +33,13 @@ bootlinux
 /// R193's X50v USB test (`docs/research/sheets/r193-x50v-cpld1c-bit3.md`):
 /// the same boot, with the opt-in on HaRET's command line, from its own
 /// folder on the CF card, so the X51v booting the card's `RetroPane` folder
-/// never sees it. The loader sets CPLD `0x1C` bit 3 30 s after its start.
+/// never sees it. The loader sets CPLD `0x1C` bit 3 at its start, before
+/// USB (proven the X50v's USB switch 2026-11-13, loader-0002).
 pub const X50V_USB_TXT: &str = "\
-# RetroPane 26: the X50v USB test (R193): CPLD 0x1C bit 3 at 30 s
+# RetroPane 26 on the X50v (R193): CPLD 0x1C bit 3, its USB switch, at the start
 set ramaddr 0xa8000000
 set kernel retropane.bin
-set cmdline \"rp.x50v-usb-bit3\"
+set cmdline \"rp.x50v-usb-bit3=0\"
 bootlinux
 ";
 
@@ -292,15 +293,15 @@ mod tests {
         assert_eq!(usual.len(), x50v.len());
         for (a, b) in usual.iter().zip(&x50v) {
             if a.starts_with("set cmdline") {
-                assert_eq!(*b, "set cmdline \"rp.x50v-usb-bit3\"");
+                assert_eq!(*b, "set cmdline \"rp.x50v-usb-bit3=0\"");
             } else {
                 assert_eq!(a, b);
             }
         }
         // The loader's reader takes exactly this word.
         assert_eq!(
-            rp_hal_x51v::atags::bit3(b"rp.x50v-usb-bit3"),
-            rp_hal_x51v::atags::Bit3::At(rp_hal_x51v::atags::X50V_BIT3_AT_MS)
+            rp_hal_x51v::atags::bit3(b"rp.x50v-usb-bit3=0"),
+            rp_hal_x51v::atags::Bit3::At(0)
         );
     }
 }
