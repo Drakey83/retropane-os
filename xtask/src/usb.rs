@@ -629,12 +629,31 @@ fn show_card_log(
         },
         dest.display()
     );
-    if !text.contains("[card log closed: ") {
-        eprintln!(
-            "    no closing line: this run didn't come back and the loader hasn't closed it (a watchdog reset clears what it needs); the log ends at its last line written"
-        );
+    if let Some(missing) = missing_close(&text) {
+        eprintln!("    no closing line: {missing}; the log ends at its last line written");
     }
     Ok(())
+}
+
+/// What a card log without its closing line means, or `None` when it has
+/// one: a run's (`[card log closed: `) or the loader's start-up log's
+/// (`[start-up log closed: `, R193), which closes itself and never with
+/// the run's line.
+fn missing_close(text: &str) -> Option<&'static str> {
+    let startup = text.contains("RetroPane loader start-up log");
+    match (
+        startup,
+        text.contains("[card log closed: "),
+        text.contains("[start-up log closed: "),
+    ) {
+        (false, true, _) | (true, _, true) => None,
+        (true, _, false) => Some(
+            "the loader stopped before its start-up log closed (a reset or a hang inside its first 5 minutes)",
+        ),
+        (false, false, _) => Some(
+            "this run didn't come back and the loader hasn't closed it (a watchdog reset clears what it needs)",
+        ),
+    }
 }
 
 /// The PC's offset from UTC, minutes (0 if it can't be read): Windows by
@@ -2373,3 +2392,36 @@ $sp.Close()
 /// `cargo xtask net --canned`'s answer: a forecast in Tempest's shape
 /// (metric), so the dock link is checked end to end without a key.
 const CANNED_FORECAST: &str = r#"{"timezone_offset_minutes":-300,"location_name":"Canned Test Station","current_conditions":{"icon":"partly-cloudy-day","air_temperature":11.5,"feels_like":9.8,"relative_humidity":61,"wind_avg":12.0,"wind_direction":270,"uv":3},"forecast":{"daily":[{"day_start_local":1761886800,"icon":"rainy","sunrise":1761911400,"sunset":1761950400,"air_temp_high":14.0,"air_temp_low":4.5,"precip_probability":70}],"hourly":[{"icon":"cloudy","air_temperature":11.0,"precip_probability":20,"local_hour":9,"wind_avg":10.0}]}}"#;
+
+#[cfg(test)]
+mod close_tests {
+    use super::missing_close;
+
+    #[test]
+    fn a_start_up_log_closes_with_its_own_line_and_a_run_with_its() {
+        let run = "line
+[card log closed: the run ended]
+";
+        let boot = "[   0.624] RetroPane loader start-up log (R193), loader-0001
+";
+        assert_eq!(missing_close(run), None);
+        assert!(
+            missing_close(
+                "line
+"
+            )
+            .unwrap()
+            .contains("didn't come back")
+        );
+        assert_eq!(
+            missing_close(&format!(
+                "{boot}[start-up log closed: 5 minutes]
+"
+            )),
+            None
+        );
+        assert!(missing_close(boot).unwrap().contains("start-up log closed"));
+        // A run's closing line doesn't close a start-up log.
+        assert!(missing_close(&format!("{boot}{run}")).is_some());
+    }
+}

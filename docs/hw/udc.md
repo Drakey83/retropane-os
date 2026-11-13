@@ -156,8 +156,8 @@ transceiver (`UP2OCR`) and the X50v's cable-detect pin. The X50v's own
 Windows Mobile 2003 driver is not read (only Dell's later X50v build), and
 its shadow may not be where the WM5 builds keep it.
 
-**The loader's start-up log (built 2026-11-13, emulator-proven; not yet
-run on the X50v):** at its first start after HaRET the loader now keeps
+**The loader's start-up log (built 2026-11-13, emulator-proven, run on
+the X50v the same day):** at its first start after HaRET the loader now keeps
 its own log on the cards (`rplog/`, a run slot named `loader`, read with
 `cargo xtask cardlog loader <n>`; `hal/x51v/src/bootlog.rs`, the sheet
 `docs/research/sheets/r193-loader-startup-log.md`). It reads only:
@@ -183,9 +183,27 @@ its own log on the cards (`rplog/`, a run slot named `loader`, read with
 
 In the emulator (`cargo xtask emu-cardlog`, 2026-11-13) the log is the
 same on both cards and closes at the PC's configuration with 14 sector
-writes, none refused. Next: install it on the CF card, boot the X50v from
-it, read the log on the X51v; then one change at a time, the owner
-watching.
+writes, none refused. On the X50v the same day it ran 5 minutes, 89 sector writes,
+none refused (below).
+
+**The X50v's start-up log (2026-11-13, `loader-0001` on the CF card,
+`local/cardlog/loader-0001.txt`):**
+
+| Read | X50v | The working X51v | Meaning |
+|---|---|---|---|
+| `UP2OCR` | `0x00020000` (`HXOE`), all 5 minutes | `0x00020000` | the transceiver set-up is the same: ruled out |
+| `UDCCR` | UDE on (beats) | on | the controller runs |
+| `CKEN` bit 11 as found | off | (on under WM5) | Windows Mobile 2003 left the client clock off; the loader turns it on |
+| CPLD `0x1C` | bus 0000, WM slot 0004, kept 0004: bit 3 off | bit 3 not needed (pull-up hard-wired) | the lead stands |
+| CPLD shadow at `0xAC001320` | valid, taken as Windows Mobile's | the same place | Windows Mobile 2003 keeps it where WM5 does |
+| GPIO14 (the X51v's cable pin) | 1 at start, 0 from 1.7 s on, cable attached | 1 with the cable | not the X50v's cable pin |
+| USB | 0 setups; 34 resets, one per loader replug (plus 2 at start) | setups within a second | the resets are the loader's own SE0 unplugs: the PC most likely never saw an attach |
+
+The likely cause is the D+ pull-up: hard-wired on the X51v, switched on
+the X50v by CPLD `0x1C` bit 3 (Dell's X50v driver sets it with the cable,
+AxDroid's X50 board file at boot). The earlier reading in the first row
+("the PC's hub sees a device") is withdrawn: the resets are explained
+without the PC. Not proven until bit 3 is set in a watched run.
 
 ## Open questions
 
