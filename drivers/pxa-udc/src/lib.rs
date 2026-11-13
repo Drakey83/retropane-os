@@ -412,6 +412,21 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         self.bus.write32(reg::UDCICR0, 0);
         self.bus.write32(reg::UDCICR1, 0);
         self.udccr(0, reg::UDE);
+        // A configuration error the previous owner left (the X50v's Windows
+        // Mobile 2003 with ActiveSync connected handed over UDCCR 0x808,
+        // 2026-11-13, R193: every enable then read it as this table's
+        // fault and USB never came up) is cleared before the table goes in:
+        // EMCE is write-one-to-clear (Linux's pxa27x_udc keeps it out of its
+        // UDCCR writes for that reason). Only this write carries it, and
+        // only when it is set: an EMCE after the enable below is the
+        // table's own.
+        let found = self.bus.read32(reg::UDCCR);
+        if found & reg::EMCE != 0 {
+            self.bus.write32(
+                reg::UDCCR,
+                (found & reg::UDCCR_WRITABLE & !reg::UDE) | reg::EMCE,
+            );
+        }
         let table: &[(usize, u32)] = if self.cdc.layout() == Layout::Mtp {
             &TABLE_MTP
         } else {
