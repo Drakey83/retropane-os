@@ -179,7 +179,7 @@ impl<'a> BootLog<'a> {
         let mut line = Text::<160>::new();
         let _ = writeln!(
             line,
-            "[start-up log closed: {why}; {} sector writes, {} refused, {} bytes dropped]\n",
+            "[start-up log closed: {why}; {} sector writes, {} refused, {} bytes dropped]",
             self.writes, self.failed, self.dropped
         );
         self.push(line.bytes());
