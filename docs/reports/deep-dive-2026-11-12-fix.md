@@ -1,7 +1,8 @@
 # Deep dive fix, 2026-11-12: the owner's rulings on the 11-11 boxes
 
-Branch `fix/deep-dive-2026-11-12`, from main at 1bb345a9. **Not pushed**
-(the list says not to; checked last, below). Device runs only on the X51v
+Branch `fix/deep-dive-2026-11-12`, from main at 1bb345a9. **Merged
+2026-11-13** on the owner's "Yes, push": main 1bb345a9 -> 1aa9d746 (merge
+record below). When written, not pushed (the list said not to). Device runs only on the X51v
 already on the loader, unattended (three look-route runs, today-0138 to
 -0140). Decisions left to the owner:
 [decisions-2026-11-12.md](decisions-2026-11-12.md). Item 5 of the 11-11
@@ -27,17 +28,30 @@ into these unattended runs.
   [43298504569](https://github.com/Drakey83/retropane-os/actions/runs/43298504569)
   (1bb345a9) and
   [43297706032](https://github.com/Drakey83/retropane-os/actions/runs/43297706032)
-  (37c815c9): conclusion **success**, both. No GitHub run exists for this
-  branch: the workflow runs on a push to main or a pull request, and the
-  list says not to push.
+  (37c815c9): conclusion **success**, both. When this report was written
+  no GitHub run existed for this branch (the workflow runs on a push to
+  main or a pull request, and the list said not to push); the run on its
+  pull request is in the merge record below.
 - **`cargo xtask ci` (this PC, Windows):** run on every commit of the
   branch in a clean second checkout (`../rp-ci`); each commit's result is
   in the table, the last commit's written after this report's commit runs.
 
 ## Push state (settled last, then checked)
 
-Not pushed: `git ls-remote origin` shows no `fix/deep-dive-2026-11-12`,
-and GitHub `main` is at 1bb345a9, this branch's start. Nothing
-force-pushed, no history rewritten. If the owner later pushes or merges
-this branch, the merge is recorded here as a dated merge record
-([README.md](README.md), rule 2).
+When this report was written (2026-11-12, before the owner's push), the
+branch was not pushed: `git ls-remote origin` showed no
+`fix/deep-dive-2026-11-12`, and GitHub `main` was at 1bb345a9, this
+branch's start. Nothing force-pushed, no history rewritten.
+
+**Merge record, 2026-11-13 01:25 UTC** ([README.md](README.md), rule 2):
+on the owner's "Yes, push", `cargo xtask ci` passed on 1aa9d746 in this
+checkout, the branch was pushed and
+[pull request 15](https://github.com/Drakey83/retropane-os/pull/15)
+opened; its checks
+([run 43327543934](https://github.com/Drakey83/retropane-os/actions/runs/43327543934))
+passed, all five jobs, conclusion **success** (the emulator boot 2 h 8 min);
+then `main` was fast-forwarded 1bb345a9 -> 1aa9d746 (no force), and pull
+request 15 shows merged at 2026-11-13 01:25:42 UTC. Checked with
+`git ls-remote origin main` = 1aa9d746 and `gh pr view 15`. This record
+itself is a later commit on the branch, pushed after its own
+`cargo xtask ci`.
