@@ -4454,7 +4454,7 @@ mod image {
                 {
                     let _ = writeln!(
                         RunLog,
-                        "slow frame {} at {} ms{}: {us} us (queueing {} us, wait {} us, background {} ({} px), rows written {} reused {}, {} rects, {} px dithered, {} command words, {} commands drawn; {} glyph atlases begun ({} evicted), {} glyphs and {} pictures uploaded; the engine's pixels {} copied, {} blended, {} text, {} converted, in {} blits; {} waits for the engine mid-frame, {} copied forward, {} from the cache)",
+                        "slow frame {} at {} ms{}: {us} us (queueing {} us, wait {} us, background {} ({} px), rows written {} reused {}, {} rects, {} px dithered, {} command words, {} commands drawn; {} glyph atlases begun ({} evicted), {} glyphs and {} pictures uploaded; the engine's pixels {} copied, {} blended, {} text, {} converted, in {} blits; {} waits for the engine mid-frame, {} copied forward, {} from the cache, {} commands hidden under a panel)",
                         frames + 1,
                         now_ms,
                         if moving { " (moving)" } else { "" },
@@ -4479,7 +4479,8 @@ mod image {
                         s.blits,
                         s.waits,
                         s.forward,
-                        s.cache_hits
+                        s.cache_hits,
+                        s.hidden
                     );
                 }
                 // Pictures drawn as nothing, by either renderer (R181).

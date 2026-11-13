@@ -2543,6 +2543,28 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "2D renderer: the commands under a panel's body drawn again (R191 Start menu, ruling (b) 2026-11-12)",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "    let (p, _, clears) = best?;",
+        to: "    let (p, _, clears) = best.filter(|_| false)?;",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_panel_opened_over_the_screen_draws_nothing_under_its_body",
+        ]),
+    },
+    Mutant {
+        name: "2D renderer: nothing drawn through a panel's corners (R191 Start menu, ruling (b) 2026-11-12)",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "                    Some((p, pieces)) if i < *p => pieces.all(),",
+        to: "                    Some((p, pieces)) if i < *p => &pieces.all()[..0],",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_panel_opened_over_the_screen_draws_nothing_under_its_body",
+        ]),
+    },
+    Mutant {
         name: "graphics: the flip back to screen 0 before 3D work skipped (C71 R-B, R190)",
         file: "services/graphics/src/lib.rs",
         from: "        let flipped = self.two_d.front() != safe;

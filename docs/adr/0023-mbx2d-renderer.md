@@ -134,6 +134,17 @@ on the engine, not the CPU, and only where something changed.
      took 1,297 KiB as whole fonts and take 279 KiB as the glyphs drawn, so
      the return to Today uploads nothing, where it uploaded 12 + 3 atlases
      on the X51v, today-0071.)*
+   - `Panel` *(amended 2026-11-12 evening, the owner's ruling (b) on
+     R191's Start menu)*: its body starts from its clears, the wallpaper
+     itself (`rp_draw::panel_cmds`), so nothing drawn before it shows
+     there. In each dirty rectangle the panel that clears the most of it
+     splits it: the commands before the panel, and the background copy,
+     go only into the pieces it leaves (its four corners, and whatever of
+     the rectangle lies outside it), the panel and everything after it
+     into the whole rectangle. The pixels are the same as drawing every
+     command (pixel-checked against the reference); the Start menu over
+     Today no longer draws Today's commands under its glass (run
+     today-0140, frame 191: 38.6 ms, 610 blits).
    Nothing in today's shell needs the CPU to draw pixels; the trait's
    "which commands did you take" (ADR-0022) stays for later commands.
 4. **2700G memory layout** (a table in docs/memory-budget.md): two

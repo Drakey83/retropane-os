@@ -579,9 +579,13 @@ pub const BUDGETS: &[Budget] = &[
     // kept screen and the service's start from it (the owner's ruling on
     // R191: Today's return a copy, not a redraw), 182,636 B (178.4 KiB)
     // measured.
+    // Then load 180 -> 184 KiB (2026-11-12 evening, test image): the 2D
+    // renderer draws nothing under a panel's body (the owner's ruling (b)
+    // on R191's Start menu: the panel search 1.9 KB, the pieces 0.7 KB),
+    // 186,976 B (182.6 KiB) measured.
     Budget {
         image: "rp-scene",
-        max_load: 180 * 1024,
+        max_load: 184 * 1024,
         max_zero: 53 * 1024,
         device: OnDevice::Returns,
     },

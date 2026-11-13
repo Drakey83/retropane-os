@@ -267,6 +267,97 @@ struct RowKey {
     w: u16,
 }
 
+/// The most pieces an area splits into around a panel's body (a rect
+/// over a panel: its four corners and up to four sides outside it).
+const UNDER: usize = 8;
+
+/// Disjoint pieces of an area ([`under_panel`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Pieces {
+    r: [Rect; UNDER],
+    n: usize,
+}
+
+impl Pieces {
+    /// These pieces less `hole`, each split into at most four around it:
+    /// `None` if they don't fit.
+    #[inline(never)]
+    fn minus(&self, hole: Rect) -> Option<Self> {
+        let mut out = Self::default();
+        let mut push = |r: Rect| {
+            if r.is_empty() {
+                return Some(());
+            }
+            *out.r.get_mut(out.n)? = r;
+            out.n += 1;
+            Some(())
+        };
+        for q in &self.r[..self.n] {
+            let t = q.intersect(&hole);
+            if t.is_empty() {
+                push(*q)?;
+                continue;
+            }
+            push(Rect::new(q.x, q.y, q.w, t.y - q.y))?;
+            push(Rect::new(q.x, t.bottom(), q.w, q.bottom() - t.bottom()))?;
+            push(Rect::new(q.x, t.y, t.x - q.x, t.h))?;
+            push(Rect::new(t.right(), t.y, q.right() - t.right(), t.h))?;
+        }
+        Some(out)
+    }
+
+    fn all(&self) -> &[Rect] {
+        &self.r[..self.n]
+    }
+}
+
+/// The panel that hides the most of `clip`, and the pieces of `clip`
+/// where what was drawn before it still shows: its four corners and
+/// whatever of `clip` lies outside it (at most [`UNDER`]).
+///
+/// A panel's body starts from its clears, the wallpaper itself
+/// (`rp_draw::panel_cmds`, ADR-0023 rule 3), so every command before it
+/// is invisible there: the Start menu over Today drew Today's 85
+/// commands under the menu's glass for nothing, 610 blits and 38.6 ms
+/// (run today-0140, frame 191). Commands before the panel are drawn in
+/// the pieces only, the background copied only there; the pixels are
+/// the same. `None`: no panel clears any of `clip`, or the pieces
+/// don't fit (drawn as before).
+#[inline(never)]
+fn under_panel(frame: &Frame, cmds: usize, clip: Rect) -> Option<(usize, Pieces)> {
+    let area = |r: &Rect| u32::from(r.w) * u32::from(r.h);
+    let mut best: Option<(usize, u32, [Rect; 3])> = None;
+    for (i, (c, own)) in frame.cmds_clipped().take(cmds).enumerate() {
+        let Cmd::Panel { r, art } = *c else {
+            continue;
+        };
+        let k = art.radius;
+        if r.w < 2 * k + 2 || r.h < 2 * k + 2 {
+            continue;
+        }
+        // `panel_cmds`' clears, in the panel's own clip.
+        let clears = [
+            Rect::new(r.x + k, r.y, r.w - 2 * k, k),
+            Rect::new(r.x, r.y + k, r.w, r.h - 2 * k),
+            Rect::new(r.x + k, r.y + r.h - k, r.w - 2 * k, k),
+        ]
+        .map(|q| q.intersect(&own).intersect(&clip));
+        // (The three don't overlap.)
+        let a = clears.iter().map(area).sum::<u32>();
+        if a > 0 && best.is_none_or(|(_, b, _)| a >= b) {
+            best = Some((i, a, clears));
+        }
+    }
+    let (p, _, clears) = best?;
+    let mut pieces = Pieces::default();
+    pieces.r[0] = clip;
+    pieces.n = 1;
+    for hole in clears {
+        pieces = pieces.minus(hole)?;
+    }
+    Some((p, pieces))
+}
+
 /// What one frame cost, for the run log (microseconds).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameStats {
@@ -338,6 +429,10 @@ pub struct FrameStats {
     /// The frame started from the kept picture, drawing only its changes
     /// ([`Mbx2dRenderer::seed`]).
     pub seeded: bool,
+    /// Commands not drawn at all: wholly under a later panel's body in
+    /// every area drawn (a command reaching its corners or past it is
+    /// drawn there only; R191, ADR-0023 rule 3).
+    pub hidden: u32,
 }
 
 /// The 3D core's dither matrix (`0x650` bit 3, `rp-gpubench` run P2 on
@@ -1675,6 +1770,9 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         }
     }
 
+    // Out of line: called from two places in `draw` (under a panel and
+    // not), one copy (inlined twice it grew rp-scene ~5 KB).
+    #[inline(never)]
     fn command(&mut self, frame: &Frame, c: &Cmd, clip: Rect, dst: usize) {
         match *c {
             Cmd::Clip { .. } => {}
@@ -2095,14 +2193,41 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             }
             // Composed at 32 bits in the work picture, dithered there, then
             // converted into the screen (ADR-0023 Q1 A).
+            // Under a panel's body nothing before it shows: the background
+            // and the commands before it go only where it leaves them.
             let bg = self.l.background;
-            self.copy(work, bg, clip);
+            let under = under_panel(frame, cmds, clip);
+            match &under {
+                Some((_, pieces)) => {
+                    for &q in pieces.all() {
+                        self.copy(work, bg, q);
+                    }
+                }
+                None => self.copy(work, bg, clip),
+            }
             for (i, (c, own)) in frame.cmds_clipped().take(cmds).enumerate() {
                 if self.hoist[i] || self.bounds[i].intersect(&clip).is_empty() {
                     continue;
                 }
-                self.command(frame, c, own.intersect(&clip), work);
-                drawn.cmds += 1;
+                // Before the panel: only its pieces; else the whole area.
+                let whole = [clip];
+                let parts = match &under {
+                    Some((p, pieces)) if i < *p => pieces.all(),
+                    _ => &whole[..],
+                };
+                let mut any = false;
+                for q in parts {
+                    let t = own.intersect(q);
+                    if !self.bounds[i].intersect(&t).is_empty() {
+                        self.command(frame, c, t, work);
+                        any = true;
+                    }
+                }
+                if any {
+                    drawn.cmds += 1;
+                } else {
+                    self.last.hidden += 1;
+                }
             }
             if self.dither {
                 self.dither_rect(work, clip);

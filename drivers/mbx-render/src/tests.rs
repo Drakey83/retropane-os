@@ -777,6 +777,122 @@ fn a_kept_screen_is_refused_after_the_wallpaper_changes_and_a_late_refusal_draws
     same(&shown(&mut r, &mem), &scene_whole(3), 2).unwrap();
 }
 
+/// The owner's ruling (b) of 2026-11-12 on R191's Start menu: a panel
+/// opened over the screen draws only itself, what is over it, and what
+/// shows through its corners. Its body starts from the wallpaper, so the
+/// commands under it are never drawn there (run today-0140, frame 191:
+/// Today's 85 commands under the menu's glass, 38.6 ms); the screen is
+/// what a whole redraw makes, corners included, and a later frame changing
+/// what lies under a corner stays right.
+#[test]
+fn a_panel_opened_over_the_screen_draws_nothing_under_its_body() {
+    let (mut r, mem) = gpu();
+    let menu = Rect::new(0, 36, 280, 300);
+    // The screen under it: an opaque fill across the corners (they show
+    // it through their clear pixels), glass, text, an icon.
+    let under = |f: &mut Frame, c: u32| {
+        scene(f, 0);
+        f.push(Cmd::Fill {
+            r: Rect::new(0, 30, 300, 320),
+            color: c,
+        });
+        f.text(20, 120, &FONT, 0xFFFF_FFFF, b"ABBA");
+    };
+    let mut f = Frame::new();
+    under(&mut f, 0xFF60_2040);
+    f.damage(SCREEN);
+    r.draw(&f);
+    assert!(r.poll());
+    r.draw(&f);
+    assert!(r.poll());
+    // Opened: the menu's area marked, as `set_menu` does.
+    let open = |f: &mut Frame, c: u32| {
+        under(f, c);
+        f.push(Cmd::Panel {
+            r: menu,
+            art: &PANEL,
+        });
+        f.text(16, 70, &FONT, 0xFFFF_FFFF, b"AB");
+    };
+    let mut g = Frame::new();
+    open(&mut g, 0xFF60_2040);
+    g.damage(menu);
+    r.draw(&g);
+    assert!(r.poll());
+    let mut whole = Frame::new();
+    open(&mut whole, 0xFF60_2040);
+    whole.damage(SCREEN);
+    let reference = Reference::new().draw(&whole);
+    same(&shown(&mut r, &mem), &reference, 2).unwrap();
+    // Under the body: the scene's image and text, and the new text (the
+    // fill across the corners is drawn there, and the glass is in the
+    // background, copied only into the corners).
+    assert_eq!(r.last.hidden, 4, "commands under the body not drawn");
+    // The frame after: the other picture brought forward, still right.
+    r.draw(&g);
+    assert!(r.poll());
+    same(&shown(&mut r, &mem), &reference, 2).unwrap();
+    // What lies under changes while it is open (the corners show it).
+    let mut h = Frame::new();
+    open(&mut h, 0xFF20_8040);
+    h.damage(Rect::new(0, 30, 300, 320));
+    r.draw(&h);
+    assert!(r.poll());
+    let mut whole = Frame::new();
+    open(&mut whole, 0xFF20_8040);
+    whole.damage(SCREEN);
+    same(&shown(&mut r, &mem), &Reference::new().draw(&whole), 2).unwrap();
+    // A damage area reaching past the panel draws what is outside it.
+    let mut k = Frame::new();
+    open(&mut k, 0xFF20_8040);
+    k.damage(Rect::new(0, 20, 320, 340));
+    r.draw(&k);
+    assert!(r.poll());
+    same(&shown(&mut r, &mem), &Reference::new().draw(&whole), 2).unwrap();
+}
+
+#[test]
+fn pieces_around_a_hole_cover_the_rest_exactly() {
+    let c = Rect::new(0, 0, 100, 60);
+    let p = Pieces {
+        r: [
+            c,
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+        ],
+        n: 1,
+    };
+    let q = p.minus(Rect::new(10, 10, 20, 20)).unwrap();
+    assert_eq!(q.n, 4);
+    let area: u32 = q
+        .all()
+        .iter()
+        .map(|r| u32::from(r.w) * u32::from(r.h))
+        .sum();
+    assert_eq!(area, 100 * 60 - 400);
+    for (i, a) in q.all().iter().enumerate() {
+        assert!(a.intersect(&Rect::new(10, 10, 20, 20)).is_empty());
+        for b in &q.all()[i + 1..] {
+            assert!(a.intersect(b).is_empty());
+        }
+    }
+    // A hole missing it keeps it; one covering it leaves nothing.
+    assert_eq!(p.minus(Rect::new(200, 0, 5, 5)).unwrap(), p);
+    assert_eq!(p.minus(Rect::new(0, 0, 100, 60)).unwrap().n, 0);
+    // Too many pieces: refused.
+    let mut many = Pieces::default();
+    for (i, r) in many.r.iter_mut().enumerate() {
+        *r = Rect::new(i as u16 * 10, 0, 10, 10);
+    }
+    many.n = UNDER;
+    assert_eq!(many.minus(Rect::new(3, 3, 2, 2)), None);
+}
+
 /// [`scene`] at 0, damaged whole.
 fn today_whole() -> Frame {
     let mut f = Frame::new();
