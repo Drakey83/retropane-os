@@ -135,6 +135,30 @@ buffering either", and no DMA), so none of this came from it.
 | **Windows moves at most 128 blocks (64 KiB) per READ(10)/WRITE(10)** to this full-speed drive | confirmed | (U) `udc stats` "largest transfer" |
 | Windows sometimes refuses to reopen the serial port for a moment after a program closed it ("access denied"): xtask's scripts retry the open | likely | (U) the first of several back-to-back commands died right after finding the port |
 
+## The X50v (2026-11-13: first run, and Dell's X50v USB driver read)
+
+Facts for the X50v port (R193); every row names the unit. The X51v's
+rows above are unchanged.
+
+| Fact | Status | Source |
+|---|---|---|
+| **X50v, Windows Mobile 2003:** the loader (the CF card's copy, started by HaRET from the CF card; the 4 GB SDHC card is unreadable under Windows Mobile 2003) runs and draws its screen, but USB never enumerates: `cable 0 configured no open no`, `usb resets 30 setups 0`, the layout fallback alternating both layouts; the PC listed no new device. The PC's hub sees a device (it resets the port) but no SETUP reaches the UDC: the X51v's "transceiver not driving for the device" symptom (`HXOE` off, 2026-10-11) | confirmed (X50v) | the owner's photo, 2026-11-13; the PC's device list |
+| The boot left no card log: the loader writes the card log only for an image's run; its own start-up stays in RAM and on screen | confirmed | `rplog/index.txt` on the CF card read on the X51v (newest gpubench-0137) |
+| **Dell's X50v USB driver switches CPLD `0x1C` bit 3 itself:** on when its cable check says attached, off when not and at its power-down (`usbfndrv` `0x257abf0`, `0x257b390`, through `0x257b45c`; Windows Mobile's shared shadow at `0xAC001320`, as on the X51v). AxDroid's X50 board file sets the same bit at boot ("USB power?") | likely (X50v; code) | (D) `usbfndrv.dll` of `WM50_K_A12_X50v` (a WM6.5 ROM built on Dell's X50v A12; romdump reads its StrataFlash layout since 2026-11-13); AxDroid `aximx50.c` |
+| Dell's X50v USB driver turns the USB client clock on itself (`CKEN` bit 11, mapping `0x41300000`) and steps power through `KernelIoControl` `0x010100A0` / `0x010100A4` (`0x257a3b8`, `0x2578fe4`); the X51v A08 driver does neither (89 of its 347 functions identical to the X50v's) | likely (X50v; code) | (D) the same two drivers, `tools/rea/fdiff.py` |
+| Neither driver writes `UP2OCR`, and neither kernel (the X51v's OAL, the X50v A12 `nk.exe`) names the UDC block's address as a literal: the transceiver set-up Windows Mobile leaves is not found in code yet | open | (D) a search of both drivers and both kernels |
+
+**The lead (unproven):** the loader keeps CPLD `0x1C`'s bits as Windows
+Mobile left them (quality audit C39) and never sets bit 3 itself. If
+Windows Mobile 2003 on the X50v had it off when HaRET started, the X50v's
+USB path is unpowered under the loader. Not yet told apart from the
+transceiver (`UP2OCR`) and the X50v's cable-detect pin. The X50v's own
+Windows Mobile 2003 driver is not read (only Dell's later X50v build), and
+its shadow may not be where the WM5 builds keep it. Next: the loader logs
+its start-up to the card (the X50v can't be read over USB), with
+`UP2OCR`, `CKEN`, the CPLD shadow and the GPIO levels at start; then one
+change at a time, the owner watching.
+
 ## Open questions
 
 ### The first enumeration after a hand-over from Windows Mobile (2026-10-16)

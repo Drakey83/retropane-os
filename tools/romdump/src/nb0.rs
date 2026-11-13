@@ -14,6 +14,10 @@ pub const SECTOR: usize = 512;
 pub const TYPE_XIP_ULDR: u8 = 0x20;
 /// Partition type: XIP kernel image.
 pub const TYPE_XIP: u8 = 0x23;
+/// Partition type: XIP kernel image, as the X50v's StrataFlash ROM numbers
+/// it (`WM50_K_A12_X50v`, 2026-11-13: its `ECEC` header at the partition's
+/// +0x40, as the X51v's 0x23).
+pub const TYPE_XIP_X50V: u8 = 0x22;
 /// Partition type: IMGFS.
 pub const TYPE_IMGFS: u8 = 0x25;
 
@@ -34,15 +38,21 @@ impl Partition {
     pub fn kind_name(&self) -> &'static str {
         match self.kind {
             TYPE_XIP_ULDR => "XIP (update loader)",
-            TYPE_XIP => "XIP",
+            TYPE_XIP | TYPE_XIP_X50V => "XIP",
             TYPE_IMGFS => "IMGFS",
             _ => "unknown",
         }
     }
 }
 
-/// Parses the partition table in sector 0.
+/// Parses the partition table in sector 0 (512-byte sectors, the X51v's).
 pub fn partitions(image: &[u8]) -> Result<Vec<Partition>, Error> {
+    partitions_with(image, SECTOR)
+}
+
+/// Parses the partition table in sector 0, its sectors `sector` bytes (the
+/// X50v's StrataFlash counts 4 KiB logical sectors: [`crate::flash`]).
+pub fn partitions_with(image: &[u8], sector: usize) -> Result<Vec<Partition>, Error> {
     if u16_at(image, 0x1FE)? != 0xAA55 {
         return Err(Error::Format(
             "no partition table signature (0x55AA)".into(),
@@ -59,8 +69,8 @@ pub fn partitions(image: &[u8]) -> Result<Vec<Partition>, Error> {
         }
         let p = Partition {
             kind,
-            offset: lba * SECTOR,
-            len: count * SECTOR,
+            offset: lba * sector,
+            len: count * sector,
         };
         if p.offset + p.len > image.len() {
             return Err(Error::Format(format!(

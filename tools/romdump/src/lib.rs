@@ -1,4 +1,4 @@
-//! romdump: unpacks Dell Axim X51v Windows Mobile ROM images (`.nb0`) and
+//! romdump: unpacks Dell Axim X51v (and X50v StrataFlash) Windows Mobile ROM images (`.nb0`) and
 //! rebuilds the driver modules, for interoperability research
 //! (docs/CLEANROOM.md §4).
 //!
@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bytes;
+pub mod flash;
 pub mod imgfs;
 pub mod nb0;
 pub mod pe;

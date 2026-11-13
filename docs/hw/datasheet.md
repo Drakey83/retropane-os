@@ -560,6 +560,10 @@ watching.
   is hard-wired**, so the PC sees an unplug only by SE0 from the host
   controller (`UP2OCR.HXS`) or a board reset; double-buffered bulk
   endpoints by DMA. Page: [udc.md](udc.md).
+- **The X50v (2026-11-13):** the loader runs but USB never enumerates
+  (30 bus resets, 0 SETUPs); Dell's X50v USB driver switches CPLD `0x1C`
+  bit 3 and the USB client clock itself, which the X51v's doesn't. The
+  cause is open (R193). Page: [udc.md](udc.md) "The X50v".
 - **Host**: the OHCI controller; its port 2 shares that connector (the
   loader uses it for the unplug). Windows Mobile has **no USB host
   drivers** on the X51v; power to a device (VBUS): unknown, to check
