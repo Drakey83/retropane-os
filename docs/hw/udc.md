@@ -229,6 +229,15 @@ configuration, before the pull; GPIO14 fell at 1.3 s with the cable in,
 so it isn't it), and the drive layout (the PC took the serial-only
 fallback).
 
+**The handover's stale configuration error (2026-11-13, X50v, loader-0002
+and -0003):** Windows Mobile 2003 in its cradle with ActiveSync connected
+hands over `UDCCR` `0x808`: EMCE set by its own session. The loader's
+enable checked EMCE after setting UDE and took the leftover flag for its
+own table's fault, so USB never came up ("USB unavailable"). The driver
+now writes EMCE back (write-one-to-clear) before the table when it is
+found set; with that the PC configured the X50v at 1.4 s (loader-0003).
+Not seen on the X51v (WM5 left `0x800` or 0).
+
 ## Open questions
 
 ### The first enumeration after a hand-over from Windows Mobile (2026-10-16)
