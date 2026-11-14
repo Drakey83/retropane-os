@@ -31,6 +31,15 @@ LOOKS = {
 # the card gone for the press, the owner's video of 2026-11-01).
 LOOKS["LIGHT_PRESSED"] = dict(LOOKS["LIGHT"], dim=0.80)
 LOOKS["DARK_PRESSED"] = dict(LOOKS["DARK"], dim=0.70)
+# The Aero buttons (design-language.md version 2, the owner 2026-11-14:
+# "Aero / Windows XP", not Metro's flat colour): an 8 px corner for chips
+# and keys, and the classic gloss: a bright upper half, a hard line at the
+# middle, a deeper lower half, a bright rim. KEY is a chip or key at rest,
+# KEY_DOWN under the pen, ON the chosen one (the blue glow of XP and Vista
+# selection).
+LOOKS["KEY"] = dict(top=(92, 98, 112), bottom=(30, 34, 42), alpha=0.92, rim=0.75, sheen=0.0, gloss=0.30, k=8)
+LOOKS["KEY_DOWN"] = dict(LOOKS["KEY"], dim=0.65, gloss=0.12)
+LOOKS["ON"] = dict(top=(120, 196, 246), bottom=(22, 92, 176), alpha=0.95, rim=0.85, sheen=0.0, gloss=0.38, k=8)
 
 
 def smooth(e0, e1, v):
@@ -45,6 +54,11 @@ def body(look, f):
     t, b = look["top"], look["bottom"]
     c = [t[i] + (b[i] - t[i]) * f for i in range(3)]
     g = look["sheen"] * math.exp(-(((f - 0.05) / 0.25) ** 2))
+    # The Aero gloss: the upper half lifted toward white, cut sharply at
+    # the middle (a slight fade into the line keeps it from banding).
+    gl = look.get("gloss", 0.0)
+    if gl and f < 0.48:
+        g += gl * (1 - f / 0.48 * 0.4)
     return [(c[i] * (1 - g) + 255 * g) * look.get("dim", 1.0) for i in range(3)]
 
 
@@ -65,7 +79,8 @@ def mix(rgb, w):
 
 def corner(look, k):
     """Corner k (0 top left, 1 top right, 2 bottom left, 3 bottom right),
-    K x K, from a rounded rectangle of radius K."""
+    K x K, from a rounded rectangle of radius K (the look's own `k`)."""
+    K = look.get("k", globals()["K"])
     ss = 4
     px = []
     left = k % 2 == 0
@@ -110,6 +125,7 @@ def shown(rgb):
 
 
 def art(name, look):
+    K = look.get("k", globals()["K"])
     rows = [argb(shown(body(look, i / 63)), look["alpha"]) for i in range(64)]
     top_lit, bottom_lit, side_lit = 0.8, 0.57, 0.73
     top = [argb(mix(body(look, 0.0), rim_at(look, y + 0.5, top_lit)), look["alpha"]) for y in range(2)]

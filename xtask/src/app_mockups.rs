@@ -8,7 +8,7 @@ use rp_app::DayWeather;
 use rp_app::kit::IDENTITY;
 use rp_app_calculator::{Calculator, Mode};
 use rp_app_calendar::{Cal, Calendar, View};
-use rp_app_contacts::{Contacts, EditField, Place};
+use rp_app_contacts::{Contacts, EditField};
 use rp_app_notes::{Block, Note, Notes};
 use rp_app_tasks::{List, Tasks};
 
@@ -541,20 +541,9 @@ pub fn mocks() -> Vec<Mock> {
                 sample_people(s);
                 let mut c = contacts(rp_app_contacts::View::Edit(EditField::Street));
                 c.typed(b"Mae", b"2065550142", b"410 Pi");
-                c.set_places(&[
-                    Place {
-                        street: b"410 Pine St",
-                        city: b"Seattle, WA 98101",
-                    },
-                    Place {
-                        street: b"410 Pike St",
-                        city: b"Seattle, WA 98101",
-                    },
-                    Place {
-                        street: b"410 Pinehurst Way NE",
-                        city: b"Seattle, WA 98125",
-                    },
-                ]);
+                c.set_places_from(include_bytes!(
+                    "../../shell/weather/tests/data/photon-410-pi.json"
+                ));
                 open(s, c);
             }),
         },

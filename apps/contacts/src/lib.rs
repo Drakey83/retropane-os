@@ -87,13 +87,25 @@ pub enum EditField {
     Street,
 }
 
-/// An address the network service suggested.
+/// An address suggested: by the network (Photon) or, offline, from the
+/// addresses already kept.
 #[derive(Clone, Copy, Debug)]
 pub struct Place {
     /// The street line.
-    pub street: &'static [u8],
+    pub street: Text<48>,
     /// City, state and postal code.
-    pub city: &'static [u8],
+    pub city: Text<48>,
+}
+
+/// Where suggestion `k` lies under the street field (the form folded
+/// above it).
+const fn suggestion_row(k: u16) -> Rect {
+    Rect::new(
+        MARGIN,
+        36 + kit::TITLE_BAND + 6 + 40 + 48 + 2 + k * 46,
+        WIDE,
+        46,
+    )
 }
 
 /// The Contacts program.
@@ -111,6 +123,15 @@ pub struct Contacts {
     street_n: usize,
     /// Suggestions for the street (from the network service).
     places: [Option<Place>; 5],
+    /// The city line a suggestion filled.
+    city: [u8; 48],
+    city_n: usize,
+    /// The street text last asked about, and whether the last answer came
+    /// from the device's own addresses (no connection).
+    asked: Text<64>,
+    offline: bool,
+    /// First names kept that start as the one typed (the strip).
+    names: [Text<24>; 3],
     /// The avatars: one disc per identity colour at 40 px, the card's 96 px.
     discs: [Option<Pic>; 8],
     big: Option<Pic>,
@@ -164,6 +185,11 @@ impl Contacts {
             street: [0; 48],
             street_n: 0,
             places: [None; 5],
+            city: [0; 48],
+            city_n: 0,
+            asked: Text::EMPTY,
+            offline: false,
+            names: [Text::EMPTY; 3],
             discs: [None; 8],
             big: None,
             painted: false,
@@ -199,10 +225,18 @@ impl Contacts {
         } else {
             mobile.get()
         };
+        let mut address = [0u8; 97];
+        let mut an = self.street_n;
+        address[..an].copy_from_slice(&self.street[..self.street_n]);
+        if self.city_n > 0 {
+            address[an] = b'\n';
+            address[an + 1..an + 1 + self.city_n].copy_from_slice(&self.city[..self.city_n]);
+            an += 1 + self.city_n;
+        }
         let fields: [(u8, &[u8]); 3] = [
             (tag::FIRST, &self.first[..self.first_n]),
             (tag::MOBILE, mobile),
-            (tag::ADDRESS, &self.street[..self.street_n]),
+            (tag::ADDRESS, &address[..an]),
         ];
         let Some(cell) = cx.pim else { return false };
         let Ok(mut guard) = cell.try_borrow_mut() else {
@@ -238,10 +272,85 @@ impl Contacts {
         put(&mut self.street, &mut self.street_n, street);
     }
 
-    /// The network service's answer for the street typed.
-    pub fn set_places(&mut self, places: &[Place]) {
-        for (k, s) in self.places.iter_mut().enumerate() {
-            *s = places.get(k).copied();
+    /// Suggestions read from an address service's answer (Photon's
+    /// GeoJSON): the network's answer, and the previews' canned one.
+    pub fn set_places_from(&mut self, answer: &[u8]) {
+        let mut found = [rp_pim::net::Place {
+            street: rp_pim::net::Short::default(),
+            city: rp_pim::net::Short::default(),
+        }; 5];
+        let n = rp_pim::net::photon(answer, &mut found);
+        self.places = [None; 5];
+        for (slot, p) in self.places.iter_mut().zip(&found[..n]) {
+            *slot = Some(Place {
+                street: Text::of(p.street.get()),
+                city: Text::of(p.city.get()),
+            });
+        }
+        self.offline = false;
+    }
+
+    /// Offline: the addresses already kept whose street starts as typed.
+    fn places_kept(&mut self, cx: &Ctx) {
+        self.places = [None; 5];
+        self.offline = true;
+        let typed = &self.street[..self.street_n];
+        let Some(cell) = cx.pim else { return };
+        let Ok(guard) = cell.try_borrow() else { return };
+        let Some(store) = guard.as_ref() else { return };
+        let mut k = 0;
+        for r in store.all(Kind::Contact) {
+            let a = r.text(tag::ADDRESS);
+            if k < 5 && a.len() >= typed.len() && a[..typed.len()].eq_ignore_ascii_case(typed) {
+                let (st, ci) = match a.iter().position(|&c| c == b'\n') {
+                    Some(i) => (&a[..i], &a[i + 1..]),
+                    None => (a, &b""[..]),
+                };
+                self.places[k] = Some(Place {
+                    street: Text::of(st),
+                    city: Text::of(ci),
+                });
+                k += 1;
+            }
+        }
+    }
+
+    /// Suggestion `k` taken: street and city filled, the list gone.
+    fn take_place(&mut self, k: usize) {
+        let Some(p) = self.places.get(k).copied().flatten() else {
+            return;
+        };
+        let st = p.street.get();
+        self.street[..st.len()].copy_from_slice(st);
+        self.street_n = st.len();
+        let ci = p.city.get();
+        self.city[..ci.len()].copy_from_slice(ci);
+        self.city_n = ci.len();
+        self.places = [None; 5];
+        self.asked = Text::of(st);
+    }
+
+    /// The first names kept that start as the one typed (the strip).
+    fn names_like(&mut self, cx: &Ctx) {
+        self.names = [Text::EMPTY; 3];
+        let typed = &self.first[..self.first_n];
+        if typed.is_empty() {
+            return;
+        }
+        let Some(cell) = cx.pim else { return };
+        let Ok(guard) = cell.try_borrow() else { return };
+        let Some(store) = guard.as_ref() else { return };
+        let mut k = 0;
+        for r in store.all(Kind::Contact) {
+            let f = r.text(tag::FIRST);
+            if k < 3
+                && f.len() > typed.len()
+                && f[..typed.len()].eq_ignore_ascii_case(typed)
+                && !self.names[..k].iter().any(|n| n.get() == f)
+            {
+                self.names[k] = Text::of(f);
+                k += 1;
+            }
         }
     }
 
@@ -423,11 +532,7 @@ impl Contacts {
         let nn = name(&p, &mut nm);
         // The band: the big avatar on the person's colour.
         let band = Rect::new(0, 36, W, 200);
-        f.push(rp_app::Cmd::HGradient {
-            r: band,
-            left: kit::alpha(kit::colour_of(&nm[..nn]), 0x90),
-            right: kit::alpha(kit::colour_of(&nm[..nn]), 0x30),
-        });
+        kit::panel(f, cx, Rect::new(8, band.y + 4, W - 16, band.h - 8));
         kit::avatar(f, self.big, (W - 96) / 2, 48, 96, cx.fonts.title, &nm[..nn]);
         kit::centred(
             f,
@@ -457,9 +562,11 @@ impl Contacts {
         .enumerate()
         {
             let r = Rect::new(MARGIN + k as u16 * 112, y, 104, 64);
-            kit::tinted(f, cx, r, tint::CONTACTS, 0x50);
-            kit::centred(f, r, r.y + 30, cx.fonts.title, TEXT, mark);
-            kit::centred(f, r, r.y + 56, cx.fonts.label, TEXT, word);
+            // Words, not stand-in marks, until the Aero icon set draws
+            // these (icon-brief.md).
+            let _ = mark;
+            kit::key(f, cx, r, kit::KeyState::Rest);
+            kit::centred(f, r, r.y + 40, cx.fonts.ui, TEXT, word);
         }
         y += 76;
         // Details, grouped.
@@ -583,8 +690,11 @@ impl Contacts {
             kit::panel(f, cx, sheet);
             for (k, pl) in self.places.iter().flatten().take(3).enumerate() {
                 let ry = sheet.y + 4 + k as u16 * 46;
-                kit::text(f, sheet.x + 14, ry + 20, cx.fonts.ui, TEXT, pl.street);
-                kit::text(f, sheet.x + 14, ry + 40, cx.fonts.ui, DIM, pl.city);
+                kit::text(f, sheet.x + 14, ry + 20, cx.fonts.ui, TEXT, pl.street.get());
+                kit::text(f, sheet.x + 14, ry + 40, cx.fonts.ui, DIM, pl.city.get());
+                if k == 0 && self.offline {
+                    kit::right(f, sheet.right() - 12, ry + 20, cx.fonts.label, DIM, b"KEPT");
+                }
                 if k > 0 {
                     f.push(rp_app::Cmd::Fill {
                         r: Rect::new(sheet.x + 12, ry, sheet.w - 24, 1),
@@ -593,7 +703,14 @@ impl Contacts {
                 }
             }
         } else {
-            field(f, y, b"CITY", b"", false, b"City");
+            field(
+                f,
+                y,
+                b"CITY",
+                &self.city[..self.city_n],
+                false,
+                b"City, state, ZIP",
+            );
         }
     }
 }
@@ -653,15 +770,48 @@ impl Program for Contacts {
                 self.view = View::Edit(EditField::First);
                 Reply::Redraw
             }
-            (Event::Char(c), View::Edit(at)) => {
+            (Event::Char(_) | Event::Delete, View::Edit(at)) => {
                 let (buf, n): (&mut [u8], &mut usize) = match at {
                     EditField::First => (&mut self.first, &mut self.first_n),
                     EditField::Mobile => (&mut self.mobile, &mut self.mobile_n),
                     EditField::Street => (&mut self.street, &mut self.street_n),
                 };
-                if *n < buf.len() {
-                    buf[*n] = c;
-                    *n += 1;
+                match e {
+                    Event::Char(c) if *n < buf.len() => {
+                        buf[*n] = c;
+                        *n += 1;
+                    }
+                    Event::Delete => *n = n.saturating_sub(1),
+                    _ => {}
+                }
+                if at == EditField::First {
+                    self.names_like(cx);
+                }
+                if at == EditField::Street && self.street_n < 3 {
+                    self.places = [None; 5];
+                }
+                Reply::Redraw
+            }
+            (Event::PenUp { x, y }, View::Edit(EditField::Street)) => {
+                match (0..3u16).find(|&k| suggestion_row(k).contains_point(x, y)) {
+                    Some(k) => {
+                        self.take_place(usize::from(k));
+                        Reply::Redraw
+                    }
+                    None => Reply::Nothing,
+                }
+            }
+            (Event::Suggestion(k), View::Edit(EditField::Street)) => {
+                self.take_place(usize::from(k));
+                Reply::Redraw
+            }
+            (Event::Suggestion(k), View::Edit(EditField::First)) => {
+                let name = self.names[usize::from(k).min(2)];
+                if !name.is_empty() {
+                    let t = name.get();
+                    self.first[..t.len()].copy_from_slice(t);
+                    self.first_n = t.len();
+                    self.names = [Text::EMPTY; 3];
                 }
                 Reply::Redraw
             }
@@ -687,9 +837,46 @@ impl Program for Contacts {
 
     fn suggestions(&self) -> [&[u8]; 3] {
         match self.view {
-            View::Edit(EditField::First) => [b"Mae", b"Maeve", b"Mark"],
-            View::Edit(EditField::Street) => [b"Pine St", b"Pike Pl", b"Pinehurst"],
+            View::Edit(EditField::First) => [
+                self.names[0].get(),
+                self.names[1].get(),
+                self.names[2].get(),
+            ],
+            View::Edit(EditField::Street) => {
+                let st = |k: usize| self.places[k].as_ref().map_or(&b""[..], |p| p.street.get());
+                [st(0), st(1), st(2)]
+            }
             _ => [&[], &[], &[]],
         }
+    }
+
+    /// The street typed, once it has three characters and differs from
+    /// the last one asked: Photon is asked over whatever connection there
+    /// is; the answer's round trip paces the asking.
+    fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        if self.view != View::Edit(EditField::Street) || self.street_n < 3 {
+            return None;
+        }
+        let typed = &self.street[..self.street_n];
+        if self.asked.get() == typed {
+            return None;
+        }
+        self.asked = Text::of(typed);
+        Some(rp_app::NetAsk {
+            what: b"ADDR",
+            arg: Text::of(typed),
+        })
+    }
+
+    fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        if ok {
+            self.set_places_from(body);
+            if self.places[0].is_none() {
+                self.places_kept(cx);
+            }
+        } else {
+            self.places_kept(cx);
+        }
+        Reply::Redraw
     }
 }

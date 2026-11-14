@@ -56,6 +56,9 @@ pub enum Kind {
     Calendar = 5,
     /// A task list (version 2): its name and colour.
     List = 6,
+    /// An app's kept data (version 2), by name: the money rates and their
+    /// day.
+    Data = 7,
 }
 
 impl Kind {
@@ -68,6 +71,7 @@ impl Kind {
             4 => Self::Note,
             5 => Self::Calendar,
             6 => Self::List,
+            7 => Self::Data,
             _ => return None,
         })
     }

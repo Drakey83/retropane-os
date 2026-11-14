@@ -49,9 +49,6 @@ const CHIPS: Rect = Rect::new(8, 42, W - 16, 30);
 const TOP: u16 = 80;
 const BOTTOM: u16 = 596;
 
-const GRAPHITE: u32 = 0xFF2A_2F36;
-const GRAPHITE_HI: u32 = 0xFF3A_414A;
-
 /// A key: its face, what it types (or does), and its kind (0 digit, 1
 /// operator, 2 equals, 3 function).
 type KeyDef = (&'static [u8], &'static [u8], u8);
@@ -438,13 +435,16 @@ impl Calculator {
     }
 
     fn key(f: &mut Frame, cx: &Ctx, r: Rect, word: &[u8], kind: u8) {
-        let (fill, col) = match kind {
-            0 => (GRAPHITE_HI, TEXT),
-            1 => (tint::CALCULATOR, 0xFF10_1418),
-            2 => (0xFFFF_B35C, 0xFF10_1418),
-            _ => (GRAPHITE, DIM),
+        // Aero glass keys (the owner, 2026-11-14: XP, not Metro): the
+        // digits bright, the operators' signs in the tint, the functions
+        // quieter, and = the blue glow of the main action.
+        let (state, col) = match kind {
+            0 => (kit::KeyState::Rest, TEXT),
+            1 => (kit::KeyState::Rest, tint::CALCULATOR),
+            2 => (kit::KeyState::On, TEXT),
+            _ => (kit::KeyState::Rest, DIM),
         };
-        kit::round_rect(f, cx, r, fill);
+        kit::key(f, cx, r, state);
         let font = if word.len() <= 2 && word.iter().all(|c| b"0123456789.,-+x/=%".contains(c)) {
             cx.fonts.num
         } else {
@@ -462,7 +462,7 @@ impl Calculator {
             y += 46;
         }
         let d = Rect::new(MARGIN, y + 4, WIDE, 92);
-        kit::round_rect(f, cx, d, 0xFF10_1418);
+        kit::panel(f, cx, d);
         let mut marks = [0u8; 16];
         let mut mn = 0;
         for (on, word) in [
@@ -584,15 +584,15 @@ impl Calculator {
         let mut y = TOP + 38;
         for (k, (unit, value)) in [(self.from, Some(v)), (self.to, out)].iter().enumerate() {
             let r = Rect::new(MARGIN, y, WIDE, 86);
-            kit::round_rect(f, cx, r, if k == 0 { 0xFF1E_2A36 } else { 0xFF1A_2028 });
+            kit::panel(f, cx, r);
             let u = Rect::new(r.x + 12, r.y + 12, 96, 32);
-            kit::round_rect(f, cx, u, tint::CALCULATOR);
+            kit::key(f, cx, u, kit::KeyState::On);
             kit::centred(
                 f,
                 u,
                 u.y + 22,
                 cx.fonts.ui,
-                0xFF10_1418,
+                TEXT,
                 UNITS[self.cat].1[*unit].0,
             );
             let mut b = [0u8; 32];
@@ -620,7 +620,7 @@ impl Calculator {
 
     fn money(&self, f: &mut Frame, cx: &Ctx) {
         let r = Rect::new(MARGIN, TOP + 8, WIDE, 150);
-        kit::round_rect(f, cx, r, 0xFF1E_2A36);
+        kit::panel(f, cx, r);
         kit::text(f, r.x + 16, r.y + 36, cx.fonts.title, TEXT, b"No rates yet");
         kit::text(
             f,
@@ -651,7 +651,7 @@ impl Calculator {
 
     fn tip(&self, f: &mut Frame, cx: &Ctx) {
         let bill = Rect::new(MARGIN, TOP, WIDE, 64);
-        kit::round_rect(f, cx, bill, 0xFF1E_2A36);
+        kit::panel(f, cx, bill);
         kit::text(f, bill.x + 14, bill.y + 22, cx.fonts.label, DIM, b"BILL");
         let shown: &[u8] = if self.entry_n == 0 {
             b"0"
@@ -673,7 +673,7 @@ impl Calculator {
             tint::CALCULATOR,
         );
         let people = Rect::new(MARGIN, TOP + 110, WIDE, 44);
-        kit::round_rect(f, cx, people, 0xFF1E_2A36);
+        kit::panel(f, cx, people);
         kit::text(
             f,
             people.x + 14,
@@ -722,7 +722,7 @@ impl Calculator {
         let mut y = TOP;
         for (label, d) in [(&b"FROM"[..], self.d0), (b"TO", self.d1)] {
             let r = Rect::new(MARGIN, y, WIDE, 56);
-            kit::round_rect(f, cx, r, 0xFF1E_2A36);
+            kit::panel(f, cx, r);
             kit::text(f, r.x + 14, r.y + 22, cx.fonts.label, DIM, label);
             let dd = date::date_of(d);
             let wd = [&b"Mon"[..], b"Tue", b"Wed", b"Thu", b"Fri", b"Sat", b"Sun"]

@@ -2122,6 +2122,8 @@ $store = '{store}'
 $pack = '{pack}'
 $data = '{data}'
 $maps = '{maps}'
+# The repository (local/calendars.txt: the owner's calendar links).
+$root = '{root_dir}'
 # The rain's frames stitched and encoded for the X51v (R184 step 2):
 # compiled once here.
 Add-Type -Path '{rain_cs}' -ReferencedAssemblies System.Drawing, System.Net.Http
@@ -2178,6 +2180,69 @@ while ($true) {{
                 if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\open-meteo-find-perryville.json")); continue }}
                 $b = Fetch "https://geocoding-api.open-meteo.com/v1/search?name=$([uri]::EscapeDataString($q))&count=8&language=en&format=json"
                 "FOUND for '$q': $($b.Length) bytes"
+                Answer $b
+            }}
+            'ADDR' {{
+                # Address suggestions as typed (contacts-rule0.md version 2):
+                # Photon, OpenStreetMap's search built for typing (Nominatim's
+                # public server forbids as-you-type use). Raw GeoJSON: the
+                # device reads it (rp_pim::net::photon), as it will over Wi-Fi.
+                $q = $line.Substring(11)
+                if ($q -notmatch "^[A-Za-z0-9 ,.'#/-]{{2,60}}$") {{ Refuse 400 'not an address'; continue }}
+                if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\photon-410-pi.json")); continue }}
+                $b = Fetch "https://photon.komoot.io/api/?q=$([uri]::EscapeDataString($q))&limit=5&lang=en"
+                "ADDR for '$q': $($b.Length) bytes"
+                Answer $b
+            }}
+            'RATES' {{
+                # The European Central Bank's daily reference rates (the
+                # calculator's money; no key, no account).
+                if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\ecb-daily.xml")); continue }}
+                $b = Fetch 'https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml'
+                "RATES: $($b.Length) bytes"
+                Answer $b
+            }}
+            'ICALS' {{
+                # The calendars the owner listed on the PC (local/calendars.txt,
+                # "Name|https://...ics" a line, never committed): their numbers
+                # and names only. The links never cross the cable.
+                $f = Join-Path $root 'local\calendars.txt'
+                $out = ''
+                if (Test-Path $f) {{
+                    $i = 0
+                    foreach ($l in Get-Content $f) {{
+                        $p = $l.Split('|')
+                        if ($p.Length -ge 2 -and $p[1].StartsWith('https://')) {{ $out += "$i|$($p[0].Trim())`n"; $i++ }}
+                    }}
+                }}
+                "ICALS: $([regex]::Matches($out, "`n").Count) calendars"
+                Answer ([Text.Encoding]::UTF8.GetBytes($out))
+            }}
+            'ICAL' {{
+                # Calendar n's events (calendar-rule0.md: an iCal link, read
+                # only): from last year on, and every repeating one, at most
+                # 240 KB, so a calendar of many years fits the device's answer.
+                $n = $line.Substring(11)
+                if ($n -notmatch '^[0-9]{{1,2}}$') {{ Refuse 400 'not a calendar number'; continue }}
+                $f = Join-Path $root 'local\calendars.txt'
+                $urls = @()
+                if (Test-Path $f) {{ foreach ($l in Get-Content $f) {{ $p = $l.Split('|'); if ($p.Length -ge 2 -and $p[1].StartsWith('https://')) {{ $urls += $p[1].Trim() }} }} }}
+                if ([int]$n -ge $urls.Count) {{ Refuse 404 'no such calendar'; continue }}
+                $text = [Text.Encoding]::UTF8.GetString((Fetch $urls[[int]$n]))
+                $from = (Get-Date).Year - 1
+                $keep = New-Object Text.StringBuilder
+                [void]$keep.Append("BEGIN:VCALENDAR`r`n")
+                foreach ($ev in [regex]::Matches($text, '(?s)BEGIN:VEVENT.*?END:VEVENT')) {{
+                    $v = $ev.Value
+                    $y = [regex]::Match($v, 'DTSTART[^:]*:(\d{{4}})')
+                    if ($v -match 'RRULE:' -or ($y.Success -and [int]$y.Groups[1].Value -ge $from)) {{
+                        if ($keep.Length + $v.Length -gt 240000) {{ break }}
+                        [void]$keep.Append($v + "`r`n")
+                    }}
+                }}
+                [void]$keep.Append("END:VCALENDAR`r`n")
+                $b = [Text.Encoding]::UTF8.GetBytes($keep.ToString())
+                "ICAL $n: $($b.Length) bytes"
                 Answer $b
             }}
             'HERE' {{
@@ -2388,6 +2453,7 @@ $sp.Close()
         pack_chunk = rp_weather::settings::PACK_CHUNK,
         data = data.display(),
         maps = root.join("local").join("maps").display(),
+        root_dir = root.display(),
         drawer = root
             .join("tools")
             .join("maps")

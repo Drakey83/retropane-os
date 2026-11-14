@@ -387,7 +387,7 @@ impl Tasks {
             kit::text(f, r.x + 14, r.y + 26, cx.fonts.label, TEXT, name);
             let mut b = [0u8; 10];
             let bn = num(&mut b, *n);
-            kit::right(f, r.right() - 14, r.y + 66, cx.fonts.num, TEXT, &b[..bn]);
+            kit::right(f, r.right() - 14, r.y + 66, cx.fonts.num, *c, &b[..bn]);
         }
         y += 178;
         kit::section(f, cx, y, b"MY LISTS", tint::TASKS);

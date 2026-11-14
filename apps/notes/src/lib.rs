@@ -568,7 +568,7 @@ impl Notes {
         for (k, t) in tools.iter().enumerate() {
             let r = Rect::new(strip.x + 6 + k as u16 * 76, strip.y + 6, 70, 36);
             if k == 0 {
-                kit::tinted(f, cx, r, tint::NOTES, 0xB0);
+                kit::key(f, cx, r, kit::KeyState::On);
             }
             kit::centred(f, r, r.y + 23, cx.fonts.label, TEXT, t);
         }

@@ -468,7 +468,7 @@ impl Calendar {
                 WEEKDAYS[usize::from(i)],
             );
             if d == self.day {
-                kit::dot(f, self.chosen, x + 12, y + 18);
+                kit::key(f, cx, Rect::new(x + 10, y + 18, 44, 40), kit::KeyState::On);
             } else if d == cx.now.day {
                 kit::dot(f, self.ring, x + 12, y + 18);
             }
@@ -771,16 +771,13 @@ impl Calendar {
                 let by = y0 + (a.start - h0 * 60) * per / 60;
                 let bh = (a.len * per / 60).max(16);
                 let r = Rect::new(cx0 + 1 + lane * lw, by + 1, lw - 2, bh - 2);
-                f.push(rp_app::Cmd::Fill {
-                    r,
-                    color: kit::alpha(self.colour(a), 0xD0),
-                });
+                kit::tinted(f, cx, r, self.colour(a), 0x40);
                 kit::fitted(
                     f,
-                    r.x + 3,
+                    r.x + 12,
                     r.y + 15,
                     cx.fonts.label,
-                    0xFF10_1418,
+                    TEXT,
                     a.title.get(),
                     r.w - 4,
                 );
@@ -823,12 +820,11 @@ impl Calendar {
                 let cy = y + r * ch;
                 let inside = date::date_of(day).month == d.month;
                 if day == self.day {
-                    kit::tinted(
+                    kit::key(
                         f,
                         cx,
                         Rect::new(x + 2, cy + 1, 60, ch - 2),
-                        tint::CALENDAR,
-                        0x90,
+                        kit::KeyState::On,
                     );
                 } else if day == cx.now.day {
                     f.push(rp_app::Cmd::Outline {

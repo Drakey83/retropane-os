@@ -62,6 +62,12 @@ pub struct Look {
     pub panel: &'static PanelArt,
     /// The glass panel under the pen.
     pub pressed: &'static PanelArt,
+    /// An Aero glass key or chip (8 px corners, the gloss line).
+    pub key: &'static PanelArt,
+    /// A key under the pen.
+    pub key_down: &'static PanelArt,
+    /// The chosen chip, the main key: the blue glow glass.
+    pub on: &'static PanelArt,
 }
 
 /// The wall clock as days and minutes, in the device's zone.
@@ -325,6 +331,20 @@ impl Opening {
     }
 }
 
+/// A question an app puts to the network (the shell sends it over
+/// whatever connection there is, one at a time): what, by name, and its
+/// argument. The app names what it wants, never an address (security.md:
+/// the relay, or later the device's own client, maps each name to a fixed
+/// service).
+#[derive(Clone, Copy, Debug)]
+pub struct NetAsk {
+    /// `ADDR` (address suggestions), `RATES` (money), `ICAL` (a calendar
+    /// link by its number).
+    pub what: &'static [u8],
+    /// Its argument: the typed text, a number.
+    pub arg: Text<64>,
+}
+
 /// An app program.
 pub trait Program {
     /// The name in the title bar.
@@ -344,5 +364,15 @@ pub trait Program {
     /// The keyboard strip's suggestions for the field being typed.
     fn suggestions(&self) -> [&[u8]; 3] {
         [&[], &[], &[]]
+    }
+    /// A question for the network, if the app has one (taken: asked once).
+    fn net_ask(&mut self) -> Option<NetAsk> {
+        None
+    }
+    /// The answer to the app's last question (`ok` false: no connection or
+    /// the service refused).
+    fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        let _ = (ok, body, cx);
+        Reply::Nothing
     }
 }

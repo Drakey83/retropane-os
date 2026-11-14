@@ -2309,6 +2309,9 @@ impl Shell {
             light,
             panel: panel::art(light),
             pressed: panel::pressed(light),
+            key: &panel_art::KEY,
+            key_down: &panel_art::KEY_DOWN,
+            on: &panel_art::ON,
         }
     }
 
@@ -2360,7 +2363,23 @@ impl Shell {
                 if let Some(r) = at
                     && lens[k] > 0
                 {
-                    keyboard::centre_in(f, r, self.fonts.ui, TEXT, &w[..lens[k]]);
+                    // Cut to the key at a character with "..", never over
+                    // its neighbour.
+                    let ui = self.fonts.ui;
+                    let mut n = lens[k];
+                    let mut cut = [0u8; 26];
+                    while n > 0 && ui.width(&w[..n]) + 6 > r.w {
+                        n -= 1;
+                    }
+                    let shown: &[u8] = if n < lens[k] {
+                        let n = n.saturating_sub(1);
+                        cut[..n].copy_from_slice(&w[..n]);
+                        cut[n..n + 2].copy_from_slice(b"..");
+                        &cut[..n + 2]
+                    } else {
+                        &w[..n]
+                    };
+                    keyboard::centre_in(f, r, ui, TEXT, shown);
                 }
             }
         }
@@ -2400,6 +2419,31 @@ impl Shell {
         f.clip(Some(area));
         p.draw(f, &cx);
         f.clip(None);
+    }
+
+    /// The answer to the open program's network question.
+    pub(crate) fn program_net(&mut self, ok: bool, body: &[u8]) {
+        let (fonts, look) = (self.program_fonts(), self.program_look());
+        let reply = {
+            let cx = rp_app::Ctx {
+                fonts: &fonts,
+                look: &look,
+                now: self.program_now(),
+                pics: self.app_pics,
+                forecast: &self.forecast[..usize::from(self.forecast_n)],
+                us: true,
+                shapes: &self.shapes,
+                pim: Some(&self.apps.store),
+            };
+            let mut p = self.program.borrow_mut();
+            match p.as_mut() {
+                Some(p) => p.net_answer(ok, body, &cx),
+                None => rp_app::Reply::Nothing,
+            }
+        };
+        if reply != rp_app::Reply::Nothing {
+            self.dirty(Rect::new(0, 0, W, H));
+        }
     }
 
     /// Sends `e` to the open program and does what it answers.

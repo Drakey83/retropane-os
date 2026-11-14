@@ -145,10 +145,42 @@ pub fn round_rect(f: &mut Frame, cx: &Ctx, r: Rect, c: Argb) {
     }
 }
 
-/// A tinted card: `c` mixed at `strength` into the dark glass, as one
-/// rounded shape ([`round_rect`]).
+/// A card that belongs to something with a colour (a calendar, a list, a
+/// note): the glass panel with the colour as an accent bar on its left
+/// edge. Aero, not Metro (the owner, 2026-11-14): colour marks a thing, it
+/// never floods a tile. `strength` above half makes the bar a little
+/// wider, for the one card a screen wants to stand out.
 pub fn tinted(f: &mut Frame, cx: &Ctx, r: Rect, c: Argb, strength: u8) {
-    round_rect(f, cx, r, mix(0xFF14_181E, c, strength));
+    panel(f, cx, r);
+    let w = if strength > 0x80 { 6 } else { 4 };
+    if r.h > 16 {
+        f.push(Cmd::Fill {
+            r: Rect::new(r.x + 6, r.y + 7, w, r.h - 14),
+            color: c | 0xFF00_0000,
+        });
+    }
+}
+
+/// An Aero glass key: at rest, under the pen, or the chosen one (the
+/// blue glow).
+pub fn key(f: &mut Frame, cx: &Ctx, r: Rect, state: KeyState) {
+    let art = match state {
+        KeyState::Rest => cx.look.key,
+        KeyState::Down => cx.look.key_down,
+        KeyState::On => cx.look.on,
+    };
+    f.push(Cmd::Panel { r, art });
+}
+
+/// How a key is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyState {
+    /// At rest.
+    Rest,
+    /// Under the pen.
+    Down,
+    /// Chosen: the blue glow.
+    On,
 }
 
 /// A row's colour bar: 4 px on its left edge.
@@ -249,14 +281,20 @@ pub fn chips(f: &mut Frame, cx: &Ctx, r: Rect, labels: &[&[u8]], chosen: usize, 
     let cw = (r.w - gap * (n - 1)) / n;
     for (i, l) in labels.iter().enumerate() {
         let c = Rect::new(r.x + i as u16 * (cw + gap), r.y, cw, r.h);
-        // The chosen chip is itself the colour: one rounded shape.
-        let (fill, ink) = if i == chosen {
-            (tint, 0xFF10_1418)
-        } else {
-            (GLASS, TEXT)
-        };
-        round_rect(f, cx, c, fill);
-        centred(f, c, c.y + c.h / 2 + 6, cx.fonts.label, ink, l);
+        // Aero glass keys; the chosen one glows blue (XP and Vista's
+        // selection), whatever the app's tint.
+        let _ = tint;
+        key(
+            f,
+            cx,
+            c,
+            if i == chosen {
+                KeyState::On
+            } else {
+                KeyState::Rest
+            },
+        );
+        centred(f, c, c.y + c.h / 2 + 6, cx.fonts.label, TEXT, l);
     }
 }
 
@@ -295,8 +333,32 @@ pub fn paint_disc(px: &mut [Argb], size: u16, fill: Argb, ring: Option<Argb>) {
                 } else {
                     fill
                 };
+                // The Aero orb: a soft highlight over the upper part, an
+                // ellipse lit from above, and the lower edge a shade deeper.
+                let lit = if ring.is_none() {
+                    let (hx, hy) = (x * 2 - s, y * 4 - s);
+                    let d = (hx * hx + hy * hy) as u32;
+                    let r2 = (s * s) as u32;
+                    if y * 2 < s && d < r2 {
+                        110 - 110 * d / r2
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                let shade = if ring.is_none() && y * 4 > s * 3 {
+                    24
+                } else {
+                    0
+                };
+                let ch = |sh: u32| {
+                    let v = (base >> sh) & 0xFF;
+                    let v = v + (255 - v) * lit / 255;
+                    (v * (255 - shade) / 255) << sh
+                };
                 let a = (base >> 24) * cover / 16;
-                (base & 0x00FF_FFFF) | (a << 24)
+                ch(16) | ch(8) | ch(0) | (a << 24)
             };
         }
     }

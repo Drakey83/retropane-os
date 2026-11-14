@@ -47,6 +47,8 @@ pub enum Ask {
     /// with no card: option C, docs/design/weather-rule0.md); the device
     /// keeps the answer, the shell only asks.
     Pack,
+    /// The open app program's question ([`rp_app::NetAsk`]).
+    Program,
 }
 
 /// The device's copy of the place's radar map (R184 step 3, sheet
@@ -162,6 +164,30 @@ impl Shell {
         if self.asking.is_some() {
             return None;
         }
+        // The open program's question, when the Weather app has none.
+        if self.wants == 0
+            && let Some(ask) = self.program.borrow_mut().as_mut().and_then(|p| p.net_ask())
+        {
+            let mut q = Question {
+                ask: Ask::Program,
+                line: [0; 96],
+                n: 0,
+                body: None,
+                tile: None,
+            };
+            q.push(b"RPNET ");
+            // Its name and argument as the relay checks them: letters,
+            // digits, a few signs.
+            q.push(ask.what);
+            q.push(b" ");
+            for &c in ask.arg.get() {
+                if c.is_ascii_alphanumeric() || b" -',.#/".contains(&c) {
+                    q.push(&[c]);
+                }
+            }
+            self.asking = Some(Ask::Program);
+            return Some(q);
+        }
         // The radar's questions first while it is open (run today-0055:
         // its frames waited 4.4 s behind the station's history, which
         // nothing on screen waits for).
@@ -199,6 +225,8 @@ impl Shell {
             }
             Ask::Here => q.push(b"HERE"),
             Ask::Clip => q.push(b"CLIP"),
+            // Asked above, never wanted by a bit.
+            Ask::Program => {}
             Ask::Pack => {
                 q.push(b"PACK ");
                 q.push(Line::new().num(self.pack_at as i32).as_bytes());
@@ -341,6 +369,10 @@ impl Shell {
     /// again only if it still matters, by the next refresh or tap).
     pub fn net_answer(&mut self, ok: bool, body: &[u8]) {
         let Some(a) = self.asking.take() else { return };
+        if a == Ask::Program {
+            self.program_net(ok, body);
+            return;
+        }
         self.dock = ok || self.dock;
         if !ok {
             match a {
@@ -372,7 +404,8 @@ impl Shell {
                     self.dirty(super::weather_app::HEAD);
                 }
                 Ask::Tile => self.tile_failed(),
-                Ask::Pack | Ask::History => {}
+                // A program's answer never reaches here (`program_net`).
+                Ask::Pack | Ask::History | Ask::Program => {}
             }
             return;
         }
@@ -384,7 +417,7 @@ impl Shell {
                 self.want(Ask::Forecast);
                 self.dirty(Rect::new(0, 0, W, super::H));
             }
-            Ask::Save | Ask::Pack => {}
+            Ask::Save | Ask::Pack | Ask::Program => {}
             Ask::Find | Ask::Here => {
                 // Straight into the list kept (a copy on the stack was most
                 // of a 4.5 KB frame, the P6 stack rule).
