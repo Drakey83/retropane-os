@@ -1,129 +1,107 @@
-# Calendar, Rule 0
+# Calendar, Rule 0 (version 2, 2026-11-14)
 
-Batch 1 of [core-apps-list.md](core-apps-list.md). The look follows
-[design-language.md](design-language.md); the records live in the one
-store ([pim-store.md](pim-store.md)). Method: [principles.md](principles.md).
-Built without a stop for the owner's go (his order of 2026-11-13); his
-morning test is the review, and the notes for it are at the end.
+Version 1 (2026-11-13) surveyed the modern calendars and then built a
+2005 one: grey rows, an empty hour grid, no colour, no sync, every modern
+feature under "Later". The owner rejected it on 2026-11-14. This version
+builds what the survey found, under the rules gate's rule 6
+([app-scope.md](app-scope.md)): the build list below is the build.
+Look: [design-language.md](design-language.md) version 2. Records: the one
+store ([pim-store.md](pim-store.md)) in **internal storage**. Plans it
+answers to: [apps-and-packs.md](apps-and-packs.md) (the Calendar row and
+§7, connected services, decided 2026-10-17: iCal link, then CalDAV, then
+Google sign-in), [ui.md](ui.md) ("a PDA, proudly": the organiser first;
+page turns for the calendar's days), [interaction.md](interaction.md) (the
+Calendar button).
 
 ## The core job
 
-See what is coming, and put something new in, on a 3.7-inch screen with a
-stylus or the D-pad. v1: day, agenda and month views; add and edit
-appointments; reminders. No sync, no accounts, no network.
+See what is coming at a glance, add something in a few seconds, and have
+the same calendar as the phone and the PC (Google, iCloud, Outlook,
+Nextcloud), on a 3.7-inch VGA screen with a stylus or the D-pad, online or
+not.
 
 ## What others do (findings, not the answer)
 
-| System | Views | Adding | What it costs the user |
-|---|---|---|---|
-| Windows Mobile 5 Calendar | Agenda, Day, Week, Month, Year behind a softkey that cycles them; Month shows a triangle or block per day | A form of about ten rows, most of them drop-down pickers 12 px tall; "All Day", "Occurs", "Sensitivity" | Eight or more precise taps to add one appointment; Month says a day is busy but not with what |
-| Palm OS Datebook | Day by default, the hour rows always there | Tap an hour line and write | The fastest add of its time; little overview |
-| iOS Calendar | Month over a list of the chosen day; Day as a timeline | A form with wheels | Good overview; adding is a form again |
-| Google Calendar (Android) | Schedule (an agenda) by default | Quick add from one typed sentence, "Lunch with Sam tomorrow 12pm" | The agenda answers "what's next" at a glance; the sentence is the fastest add anyone has shipped |
-| Lean Linux (`calcurse`, `remind`) | Text agenda | One typed line per event | Fast for those who know the syntax; nothing to discover |
+| System | What it does well | What it costs |
+|---|---|---|
+| Windows Mobile 5 | Agenda, Day, Week, Month, Year behind a softkey; the Calendar button; ActiveSync with Outlook | A ten-row form of 12 px drop-downs to add one appointment; Month says busy, not with what; sync only with a desktop Outlook |
+| Google Calendar (Android, 2024) | Schedule view: days with coloured event chips, a month illustration; one sentence quick add; a colour per calendar; every account syncs | Needs Google's servers for the parse; dense on a small screen |
+| iOS Calendar 18 | Month over the chosen day's list; Day as a timeline with blocks sized to their length and a red "now" line; CalDAV for any server | Adding is a form with wheels |
+| Fantastical 3 | The DayTicker (a strip of days you slide); the parse shown as you type with the words it understood highlighted; weather on the days | Busy when a day is full; a subscription |
+| Palm Datebook | Tap an hour line and write | Little overview |
+| Lean Linux (calcurse, khal + vdirsyncer) | khal shows CalDAV calendars offline, synced by vdirsyncer on a timer | Text only; setup by hand |
 
 ## Borrow and beat
 
 | Problem | Borrowed | How ours goes further on the X51v |
 |---|---|---|
-| "What's next?" | Google's Schedule: the agenda is the first view | It opens on today with the days grouped under spaced-capital labels, and is built when the records change, not when the pen moves (P1) |
-| Adding | Google's one-sentence quick add; Palm's tap-an-hour | **One line on the keyboard, with what it understood shown as you type** ("Tue 17 Nov, 3:00 PM - 4:00 PM") so a misread is seen before Add, not after. Tapping an hour in Day view starts that line at that hour. Parsed on the device, no network (Google's runs on a server) |
-| Changing the details | The form | Rows with **steppers** (`<` value `>`, 40 px targets) for day, start, length and reminder: no drop-down, no picker wheel, nothing smaller than a stylus tip; every row also works from the D-pad |
-| Month overview | iOS's month over the day's list | The chosen day's appointments are listed under the grid, so Month answers "with what?" without leaving it; dots under a date count up to three |
-| Reminders | WM's modal box with a sound | A banner under the title bar on whatever screen is up, with Dismiss and Open; it never takes the screen or the keys away from what you were doing |
-| Losing data | WM needed ActiveSync as its backup | The store: a pulled battery loses at most the change in flight (pim-store.md) |
+| "What's next?" | Google's Schedule and Fantastical's DayTicker | The **large title** says "Saturday 14 / 3 today, next 3:00 PM Dentist"; a **week strip** under it slides by the pen; the agenda's days carry **the Weather app's icon and high/low** for days the forecast covers (Fantastical does this from a server; ours uses the forecast the device already holds, no extra fetch) |
+| Telling things apart | Google's colour per calendar | A 4 px **colour bar** and tinted block per calendar, and the calendar's name in the editor (colour never alone) |
+| A day's shape | iOS's timeline | **Blocks sized to their length** in the calendar's tint, overlaps side by side, a coral **now line**, all-day items in a strip on top; the empty evening folds into one "Free after 6 PM" row instead of empty hour lines |
+| Month | iOS's month over the day | Each day shows up to three **coloured bars** (not dots: a bar's colour says which calendar), and a tap **zooms** the month into that day (the 2700G scales the month's picture: one repoint a frame) and back out |
+| Week | WM's week view; Google's 7-column week | Portrait 7-column week with tinted blocks and the times on the left; tap a block opens it, tap a day's header zooms into it |
+| Adding | Fantastical's highlighted parse; Palm's tap-an-hour | One line ("Dentist tue 3pm 1h every 6 months") with **the understood words highlighted in the tint** as you type and a preview card; tapping an empty time in Day or Week starts the line at that time. Parsed on the device, offline |
+| Details | iOS's grouped form | Grouped cards: what/where (Where uses **address suggestions**), when (steppers, all-day switch, time zone), repeat, alerts (several), calendar (colour chips), notes; field-aware keyboard (capitals at each word in a title) |
+| Reminders | WM's modal box | A banner over whatever is up (the notification centre), **with a sound** through the audio service's notification volume and **Snooze 5 / 15 min**; never steals the keys |
+| Same calendar everywhere | ActiveSync's Outlook sync; vdirsyncer | §7's order: **an iCal link** (read; Google, Outlook, iCloud and Nextcloud all give one), **CalDAV** (read and write; iCloud, Fastmail, Nextcloud, Google), **Google sign-in** by a code shown on the device (OAuth device flow, read and write). Synced on a timer and on opening, over **any connection** (Wi-Fi, or the dock's PC relay now); the local copy always opens instantly; offline changes queue with a "not yet synced" mark |
+| The PDA's own touches | WM's Calendar button; paper diaries | The **Calendar button** cycles Agenda, Day, Week, Month as on WM; days turn like pages with the pen (ui.md) |
 
-## The design (v1 as built)
+## The design
 
-- **The frame:** header "CALENDAR" with a three-way chip row (Agenda,
-  Day, Month); softkeys **Today** (left: jump to today) and **New**
-  (right).
-- **Agenda:** from today on, 60 days ahead. A section label per day that
-  has something ("TODAY - FRI 13 NOV", "TOMORROW - SAT 14 NOV", then the
-  date). A row per appointment: start time (or "All day") left, title,
-  the place in secondary text on the right. Tap opens it. Empty: a panel
-  saying "Nothing planned. New adds an appointment."
-- **Day:** the date with `<` and `>`; all-day appointments as rows on top;
-  then hour rows from 6 AM to 10 PM (the list scrolls; other hours appear
-  when something is in them). An appointment is a panel across its hours
-  with its title and times. Tapping an empty hour starts New at that hour.
-- **Month:** the month's name with `<` and `>`; weekday letters; a 7 x 6
-  grid of 64 x 44 cells with the day number and up to three dots; today
-  ringed in the accent, the chosen day filled; under it the chosen day's
-  appointments (up to four rows). A tap chooses a day; a tap on the chosen
-  day opens it in Day view.
-- **New:** the quick-add field on the keyboard, a preview panel under it
-  that says what was understood and when, and a "More details" row that
-  opens the editor with those values. Softkeys Cancel and Add.
-- **The editor** (New's details, or an existing appointment): Title and
-  Where (text), Day, Starts, Lasts and Remind me (steppers), Notes (text),
-  and Delete for an existing one (asks once, in place: the row then reads
-  "Tap again to delete"). Softkeys
-  Cancel and Done.
-- **Reminders:** each appointment may carry "remind me N minutes before"
-  (none, at the start, 5, 15, 30 minutes, 1 hour, 1 day; new ones default
-  to 15 minutes). When it comes due the notification centre shows it.
+- **Home (Agenda):** large title (weekday and date in light 36 px, the
+  summary under it), the week strip (seven 64 px day cells, today ringed,
+  days with events marked by a colour tick), then the agenda: a day label
+  ("TODAY", "TOMORROW", "MON 16 NOV") with the weather icon and high/low
+  on its right, and a row per event: colour bar, start and end times
+  stacked in secondary text, title, place with a pin mark. Softkeys
+  **Today** and **New**; a tint chip row Agenda / Day / Week / Month.
+- **Day:** the week strip, the all-day strip, then the timeline from the
+  first event's hour (or 8 AM) with blocks sized to their length; free
+  stretches over two hours fold into one row; the now line in the tint.
+- **Week:** seven columns of tinted blocks, hours on the left.
+- **Month:** a 7 x 6 grid with up to three colour bars a day and "+2" past
+  three; the chosen day's events under the grid; tap the chosen day zooms
+  into Day.
+- **New:** a sheet rising over the dimmed screen: the line, the preview
+  card (title, the day and time, the calendar's colour, repeat and alert
+  marks), Add; "More" opens the full editor.
+- **Editor:** grouped cards as in the table above; Delete asks in place.
+- **Accounts** (Settings, Connections, shared with every app): add an
+  iCal link (pasted, or sent From PC), a CalDAV server, or Google (a code
+  to type at google.com/device on any phone or PC); each calendar's colour
+  and on/off.
 
-## How the design was iterated (the sheet arguing with itself)
+## Build list
 
-1. *Draft:* Day view as the first view (WM's and Palm's default).
-   **Lost:** most days on a handheld have zero to three appointments, so
-   Day view is mostly empty hour rows; the agenda shows the same day *and*
-   the next ones in the same space. Agenda first; Day one tap away.
-2. *Draft:* a week view, because WM had one. **Lost on the screen's
-   width:** seven columns in 448 px are 64 px each, too narrow for a word;
-   WM's own week view showed only coloured blocks. Agenda covers the
-   week's content better. Week goes on the later list for landscape.
-3. *Draft:* the full form as the only way to add (the safe default).
-   **Lost:** it is WM's design with bigger rows. Quick add is the way in;
-   the form is behind "More details" and for edits.
-4. *Draft:* quick add with no preview (Google's). **Lost:** without a
-   server-grade parser a misread would only show after adding. The preview
-   makes the parser's reading visible before it is kept, and bare numbers
-   are never taken as times ("Room 12" stays in the title).
-5. *Draft:* a reminder as a full-screen alert. **Lost:** it steals the
-   keys from a game or a note being typed. A banner in the notification
-   centre keeps the screen yours.
-
-## The practices (principles.md)
-
-- **P1:** the views' lists are built when the store changes or the view
-  opens, never while the pen moves; the next reminder's time is worked out
-  at a change and compared once a minute.
-- **P3, P5:** no pictures of its own; panels and text only.
-- **P6:** no frame over 4 KB; the views share one list of 64 rows in the
-  shell's own memory.
-- **Frame rule:** every screen is under 256 draw commands (Month, the
-  largest, is about 150).
-
-## Later (not in v1)
-
-Week view (landscape); repeating appointments; a snooze on reminders and a
-reminder sound; time zones and travel; categories and colours; attendees;
-search in Calendar; import and export of iCal files; LegacySync; birthdays
-from Contacts; a Today-screen calendar panel fed from the store (the panel
-exists; wiring it is a small follow-on, kept out of this batch's scope);
-drag to move an appointment in Day view; languages other than English in
-the quick-add line (the international rule: the parser's word tables are
-data, the strings table decides them).
-
-## Notes for the owner's morning test
-
-Decided and built; each is a note, not a wait
-([decisions-2026-11-13-apps.md](../reports/decisions-2026-11-13-apps.md)):
-
-- **Agenda is the first view.** The alternative is Day or Month first.
-- **A weekday name means the coming one, today included** ("fri" typed on
-  a Friday is today). The alternative: always the next one.
-- **New appointments get a 15-minute reminder and last an hour** unless
-  the line says otherwise. Alternatives: no default reminder; 30 minutes.
-- **The week starts on Monday.** The alternative is Sunday (a setting
-  later; the US default may want Sunday).
-- **Dates typed with a slash read month first** (11/14), as the region's
-  units do; day first when the region isn't the US.
+| Item | From | Status | Code |
+|---|---|---|---|
+| Agenda with colour bars, times, places and the large title with a live summary | sheet | pending | |
+| Week strip that slides under the title | sheet | pending | |
+| The forecast's icon and high/low on the agenda's days | apps-and-packs: weather on the agenda's days | pending | |
+| Day view: blocks sized to their length, overlaps side by side, now line, all-day strip, free time folded | sheet | pending | |
+| Week view (portrait, seven columns) | apps-and-packs: week view | pending | |
+| Month view with coloured bars and the chosen day's list | sheet | pending | |
+| Smooth zoom between month, week and day | apps-and-packs: Smooth zoom between views | pending | |
+| Quick add with the understood words highlighted and a preview card | apps-and-packs: quick add | pending | |
+| Editor as grouped cards; address suggestions for Where; capitals at each word in titles | sheet | pending | |
+| Several calendars, a colour each, shown and hidden | apps-and-packs: a colour per calendar | pending | |
+| Repeating appointments (daily, weekly on days, monthly by date or weekday, yearly; every N; until or N times; one occurrence changed or skipped) | apps-and-packs: repeating appointments | pending | |
+| Reminders as a banner over any screen, several per appointment | apps-and-packs: reminders through the notification centre | pending | |
+| Reminder sound and snooze | apps-and-packs: reminder sound and snooze | pending | |
+| Online calendars: iCal link (read), CalDAV (read and write), Google sign-in (device code, read and write), over any connection, offline queue | apps-and-packs: Google Calendar and other online calendars (iCal link, CalDAV, Google sign-in: §7) | pending | |
+| Birthdays from Contacts as a calendar | apps-and-packs: birthdays from Contacts | pending | |
+| Tasks on their due days in the agenda | sheet | pending | |
+| Today screen's calendar panel fed from the store | sheet | pending | |
+| Search in Calendar | sheet | pending | |
+| .ics import and export (a file from the PC or the card) | sheet | pending | |
+| Time zones: events kept in UTC with their zone; shown in the device's zone | sheet | pending | |
+| Week starts on the region's day (Sunday in the US) | sheet | pending | |
+| The Calendar button cycles the views | sheet | pending | |
+| Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
+| Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |
 
 ## What would overturn it
 
-- The owner finding the typed line slower than the steppers on the real
-  keyboard: then New opens the editor and quick add becomes its first row.
-- Days with many appointments being common for him: then Day view first.
+- The owner finding the week strip or the zoom slower to use than plain
+  chips on the device: then the chips lead and the strip goes.
+- A day with many events being common for him: then Day opens first.

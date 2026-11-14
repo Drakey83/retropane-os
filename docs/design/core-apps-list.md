@@ -22,11 +22,11 @@ System, Connections), and the X51v's own additions from Dell. Lines marked
 
 ## Batch 1: the organiser (report: [core-apps-2026-11-13.md](../reports/core-apps-2026-11-13.md))
 
-- [x] **Calendar** (WM5: Calendar): appointments by day, agenda and month; reminders.
-- [x] **Contacts** (WM5: Contacts): the people list with a letter strip and search.
-- [x] **Tasks** (WM5: Tasks): a to-do list with due dates and priority.
-- [x] **Notes** (WM5: Notes): short typed notes, searchable.
-- [x] **Calculator** (WM5: Calculator): a basic calculator.
+- [ ] **Calendar** (WM5: Calendar; version 1 rejected by the owner 2026-11-14, version 2 building: its sheet's build list): appointments by day, agenda and month; reminders.
+- [ ] **Contacts** (WM5: Contacts; version 1 rejected by the owner 2026-11-14, version 2 building: its sheet's build list): the people list with a letter strip and search.
+- [ ] **Tasks** (WM5: Tasks; version 1 rejected by the owner 2026-11-14, version 2 building: its sheet's build list): a to-do list with due dates and priority.
+- [ ] **Notes** (WM5: Notes; version 1 rejected by the owner 2026-11-14, version 2 building: its sheet's build list): short typed notes, searchable.
+- [ ] **Calculator** (WM5: Calculator; version 1 rejected by the owner 2026-11-14, version 2 building: its sheet's build list): a basic calculator.
 
 ## Batch 2: time, files and finding things
 

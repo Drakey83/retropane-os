@@ -1,90 +1,79 @@
-# Tasks, Rule 0
+# Tasks, Rule 0 (version 2, 2026-11-14)
 
-Batch 1 of [core-apps-list.md](core-apps-list.md). Look:
-[design-language.md](design-language.md). Store: [pim-store.md](pim-store.md).
-Method: [principles.md](principles.md). Built without a stop for the
-owner's go; the notes for his morning test are at the end.
+Version 1 (2026-11-13) was one list of grey rows with a "!" for
+priority, everything modern under "Later"; the owner rejected it on
+2026-11-14. This version builds what the survey found, under the rules
+gate's rule 6 ([app-scope.md](app-scope.md)). Look:
+[design-language.md](design-language.md) version 2. Records: the one store
+in **internal storage**. Plans it answers to: [apps-and-packs.md](apps-and-packs.md)
+(the Tasks row), [ui.md](ui.md) ("tasks with real checkboxes", one tap
+from Today).
 
 ## The core job
 
-Keep a list of things to do, see what is due, tick them off. v1: a list
-with due dates and priority; add, edit, complete. Calendar tie-ins are on
-the later list.
+Get a task out of your head in two seconds, see what matters today, and
+tick it off with a satisfying tap.
 
 ## What others do (findings, not the answer)
 
-| System | The list | Adding | Completing |
-|---|---|---|---|
-| Windows Mobile 5 Tasks | One list; a sort menu (status, priority, subject, start, due) and a filter menu; overdue in red; an entry bar at the top ("Tap here to add a new task") with `!` and down-arrow buttons for priority | The entry bar for the subject, or a form of about twelve rows | A 12 px tick box |
-| Palm OS To Do | Priority numbers 1-5 in a column, due dates in another | Write on a new line | A tick box |
-| iOS Reminders | Lists; due items first in "Today"; done items hidden | Type a line; "i" for details | A round box; the row fades away |
-| Things, Todoist | "Today" and "Upcoming"; natural-language dates typed in the title ("fri", "tomorrow") | One line | A box; swipe |
-| Lean Linux (`todo.txt`) | A text file; priority `(A)`, sorted by it | One line | `x` |
+| System | What it does well | What it costs |
+|---|---|---|
+| Windows Mobile 5 Tasks | Real checkboxes; categories; due dates and priority; Outlook sync | A menu to sort; a form to add; no lists, no repeats visible |
+| Things 3 | Today / Upcoming / Anytime / Someday; projects with a progress ring; the tick animates; a calm, tinted look | Apple only, no sync to others |
+| Todoist | Natural-language quick add ("pay rent every 1st p1 #home") with the words highlighted; colours per project; priorities as coloured flags | Its server for sync |
+| Microsoft To Do / Google Tasks | My Day; lists; subtasks (steps); sync with Outlook or Google | Plain look |
+| iOS Reminders 18 | Smart lists with counts (Today, Scheduled, Flagged); list colours and icons; subtasks; CalDAV sync | Some features need iCloud |
+| Lean Linux (taskwarrior, todo.txt) | Fast typed syntax; urgency computed | Text only |
 
 ## Borrow and beat
 
 | Problem | Borrowed | How ours goes further on the X51v |
 |---|---|---|
-| What to do now | iOS and Things: due things first | **One order, no sort menu:** late, then due today, then by due date, then the undated; within a day, high priority first. WM made the user pick a sort; the list that answers "what now?" needs no choosing. Done tasks sink to the bottom, dimmed |
-| Adding | WM's entry bar, Todoist's typed dates | The entry field is always at the top; the same quick-add line as Calendar: "Pay rent fri !" is the task, due Friday, high priority. One parser, tested once (`rp_pim::quick`) |
-| Saying when | WM's date picker | The due date reads as a person says it: "Late 2 days", "Today", "Tomorrow", "Fri", then "14 Nov". Late is red and says "Late", so colour never carries it alone |
-| Completing | The tick box | A 30 px box (WM's was 12): one tap, a green tick, and the row moves down. A second tap undoes it: nothing is lost by a slip |
-| Priority | Palm's five levels, WM's three | Three (Low, Normal, High) as a chip row in the editor; in the list only High is marked (`!`) and Low is dimmed. Five levels are four more than most lists use |
+| What matters now | Things' Today; Reminders' smart lists | The home opens on **smart tiles** (Today, Upcoming, Late, All, Flagged) with counts in large numerals over the user's **lists with their colours and a progress ring each**; Today pulls in late tasks first |
+| Adding | Todoist's highlighted quick add | One line: "Pay rent fri !1 #home every month" with **date, priority, list and repeat highlighted** as typed and a preview chip row; added to the list on screen |
+| Ticking off | Things' animated tick; WM's real boxes | A **round checkbox** in the list's colour that fills with a tick (200 ms) and the row slides to the done group; **swipe right** to complete, **swipe left** for Tomorrow / Next week / Delete |
+| Priority | Todoist's coloured flags | **Flags** in red, amber, blue (and none), with the word in the editor (colour never alone) |
+| Big jobs | To Do's steps | **Subtasks** under a task with "2 of 5" and a small ring |
+| Repeats and reminders | Reminders' alerts | Repeats (daily, weekdays, weekly on days, monthly, yearly, every N, after done); a **reminder** through the same banner and sound as Calendar |
+| Calendar | Fantastical's tasks in the calendar | Tasks show on their due days in Calendar's agenda; **"Make a task"** from an appointment |
+| Same list everywhere | To Do and Google Tasks sync; Reminders' CalDAV | **CalDAV tasks (VTODO)** and **Google Tasks** through the shared Connections page, over any connection |
 
-## The design (v1 as built)
+## The design
 
-- **The list:** header "TASKS"; the entry field "Add a task" under it;
-  rows of 36 px: the box, the title, the due words right-aligned (and `!`
-  before a high one's title). Softkeys **Back** and **Hide done** /
-  **Show done**. Empty: "Nothing to do. Type a task above."
-- **Adding:** tap the field, type, Done on the keyboard adds it and keeps
-  the field for the next one (several tasks are typed in a row).
-- **A tap on the box** completes or reopens; **a tap on the row** opens
-  the editor.
-- **The editor:** Title (text), Due (a stepper: none, then a day at a
-  time; it starts at today), Priority (Low, Normal, High chips), Notes
-  (text), Delete (asks once). Softkeys Cancel and Done.
+- **Home:** large title "Tasks / 4 due today, 1 late"; a 2 x 2 grid of
+  smart tiles (Today, Upcoming, Late, Flagged) with counts in the tint;
+  then **My lists**: rows of colour dot, name, progress ring and count;
+  "+ List". Softkeys **Back** and **New**.
+- **A list:** its name in the list's colour, the add line at the top, open
+  tasks grouped by due (Late, Today, Tomorrow, Later this week, Someday),
+  each row: round checkbox, title, flag, subtask count, due in words
+  ("Tomorrow", "Late 2 days" in red). Done tasks folded at the bottom
+  ("12 done").
+- **Editor:** title, notes, due date and time, reminder, repeat, flag,
+  list (colour chips), subtasks with their own checkboxes. Delete asks in
+  place.
 
-## How the design was iterated
+## Build list
 
-1. *Draft:* WM's sort and filter menus. **Lost:** they exist because one
-   fixed order was wrong for someone; an order by urgency is right for the
-   question the screen is opened to answer, and one softkey (hide done)
-   covers the filter people use.
-2. *Draft:* swipe to complete (the Oct 16 table's idea). **Lost for v1,
-   kept for later:** on a resistive screen a sideways drag on a 36 px row
-   fights the list's own scroll, and the box is already one tap. It needs
-   the gesture work of interaction.md first; recorded there, not built
-   here.
-3. *Draft:* a start date as well as a due date (WM). **Lost:** two dates
-   to set for a to-do; due is the one people mean.
-4. *Draft:* done tasks vanish at once (iOS). **Lost:** a slip of the
-   stylus would hide the row before it can be undone. They sink and dim;
-   Hide done removes them from view.
-
-## The practices (principles.md)
-
-- **P1:** the order is worked out when the store changes or the day
-  turns, never while the pen moves.
-- **P6:** the list shares Contacts' 1,024 entries; no frame over 4 KB.
-- **Frame rule:** 13 rows with boxes are about 90 draw commands.
-
-## Later (not in v1)
-
-Calendar tie-ins (a task on its due day in Agenda; a task made from an
-appointment); swipe to complete; repeating tasks; reminders for tasks
-(through the same notification centre); categories and lists; subtasks;
-percent complete; a Today-screen tasks line fed from the store; export.
-
-## Notes for the owner's morning test
-
-- **No sort menu:** the order is fixed by urgency. Alternative: add a
-  sort softkey.
-- **Done tasks stay at the bottom, dimmed,** until Hide done.
-- **The `!` in the typed line means high priority.**
-- **Due dates read as words** ("Tomorrow", "Late 2 days").
+| Item | From | Status | Code |
+|---|---|---|---|
+| Home with smart tiles and counts (Today, Upcoming, Late, Flagged) and the large title | sheet | pending | |
+| Lists with colours, a progress ring each, made and renamed by the user | apps-and-packs: lists with colours | pending | |
+| Quick add with date, priority, list and repeat highlighted as typed | sheet | pending | |
+| Round checkbox that fills with an animated tick; the row moves to done | sheet | pending | |
+| Swipe right to complete, swipe left for Tomorrow, Next week, Delete | apps-and-packs: Swipe to complete | pending | |
+| Coloured priority flags (word in the editor) | sheet | pending | |
+| Subtasks with "2 of 5" | apps-and-packs: subtasks | pending | |
+| Repeating tasks (daily, weekdays, weekly on days, monthly, yearly, every N, after done) | apps-and-packs: repeating tasks | pending | |
+| Reminders through the notification banner and sound | apps-and-packs: reminders | pending | |
+| Tasks on their due days in Calendar; make a task from an appointment | apps-and-packs: tie-ins with Calendar | pending | |
+| Today screen's tasks line fed from the store | sheet | pending | |
+| CalDAV tasks and Google Tasks sync over any connection | sheet | pending | |
+| Search across tasks | sheet | pending | |
+| Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
+| Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |
 
 ## What would overturn it
 
-- The owner wanting his own order (by priority first): then one softkey
-  cycling two orders, not WM's menu.
+- Swipes misfiring with the stylus on the real panel: then the swipe
+  needs a longer travel, or the left swipe's choices move to a hold.

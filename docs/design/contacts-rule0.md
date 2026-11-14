@@ -1,101 +1,96 @@
-# Contacts, Rule 0
+# Contacts, Rule 0 (version 2, 2026-11-14)
 
-Batch 1 of [core-apps-list.md](core-apps-list.md). Look:
-[design-language.md](design-language.md). Store: [pim-store.md](pim-store.md)
-(the one made for Calendar; no second store). Method:
-[principles.md](principles.md). Built without a stop for the owner's go;
-the notes for his morning test are at the end.
+Version 1 (2026-11-13) built a list of grey rows and a plain form: phone
+numbers not formatted, no capitals in names or addresses, no address
+help, no photos, everything modern under "Later". The owner rejected it
+on 2026-11-14 ("these are all modern normalcies"). This version builds
+what the survey found, under the rules gate's rule 6
+([app-scope.md](app-scope.md)). Look: [design-language.md](design-language.md)
+version 2 (its field-aware keyboard is where phone formatting, capitals
+and address suggestions live, shared by every app). Records: the one store
+in **internal storage**. Plans it answers to: [apps-and-packs.md](apps-and-packs.md)
+(the Contacts row; §7's sync machinery, now for contacts too),
+[ui.md](ui.md) (SPB Mobile Shell's favourite contacts as large photos),
+[interaction.md](interaction.md) I10 (the Contacts button opens Contacts).
 
 ## The core job
 
-Find a person fast and read their details; add and change people. v1:
-the card list, the letter strip, fast search, add and edit. Photos and
-vCard import and export are on the later list.
+Find a person in a second, see how to reach them, and add or fix a card
+without fighting the keyboard; the same people as the phone and the PC.
 
 ## What others do (findings, not the answer)
 
-| System | Finding someone | The card | Adding |
-|---|---|---|---|
-| Windows Mobile 5 Contacts | A list by "Last, First"; letter tabs in groups (`#ab`, `cde`...) that cycle on repeated taps; a "quick find" box matching name prefixes only | A summary page, then an edit form of some forty fields in one long scroll | The forty-field form, every field shown whether used or not |
-| Palm OS Address | A list with the phone number beside the name; "Look Up" by last-name prefix | One page | A shorter form; five phone lines with a type picker each |
-| iOS Contacts | The A-Z index strip down the right edge, dragged to scrub; a search bar that matches any part of any field | A page showing only the fields filled | A form that starts short and grows ("add phone") |
-| Android Contacts | Search first; favourites on top | Only filled fields | As iOS |
-| Lean Linux (`abook`) | Type to filter | A text card | A few fields |
+| System | What it does well | What it costs |
+|---|---|---|
+| Windows Mobile 5 | A card list with a letter strip; Outlook sync over ActiveSync | Plain "Last, First" rows; a long form of small fields; numbers kept as typed; no photos in the list |
+| iOS Contacts 18 | A contact poster (large photo or initials on colour); an action row (message, call, mail); grouped fields; numbers formatted as typed; capitals by field | One long list; favourites live in Phone |
+| Google Contacts (Android) | Coloured initials for everyone without a photo; search across every field; duplicates found and merged; address fields with Maps suggestions; CardDAV-like sync of any Google account | Needs Google for the suggestions |
+| SPB Mobile Shell (WM) | Favourite contacts as a 3-across grid of large photos; an action sheet of big tiles | Photos needed for it to look right |
+| Lean Linux (khard + vdirsyncer) | Plain vCards on disk, synced by CardDAV | Text only |
 
 ## Borrow and beat
 
 | Problem | Borrowed | How ours goes further on the X51v |
 |---|---|---|
-| Jumping in a long list | iOS's index strip: one letter per position, tap or drag | A 26-letter strip down the right edge, 17 px a letter (a stylus hits it; WM grouped letters because fingers couldn't). Letters with nobody under them are dimmed, so a tap is never wasted. Up and down on the D-pad move a row; left and right jump a letter |
-| Search | iOS's any-field search | The field is always at the top of the list, and it matches **names, company, any phone's digits and e-mail, and initials** ("jd" finds John Doe; "555" finds a number). WM matched name prefixes only. The search runs in RAM over the store when a key is typed: under 2,048 records it is a few milliseconds, with no index to keep |
-| Reading a card | iOS: only what is filled | The card shows only filled fields, each a row with its label in secondary text; nothing to scroll past |
-| Adding | iOS's form that starts short | Nine rows that fit one screen above the keyboard without scrolling for the first five: First, Last, Company, Mobile, Home, Work, E-mail, Address, Notes. The keyboard's Done moves to the next row, so a card is typed top to bottom without lifting to tap each field |
-| Sort order | WM's "Last, First" | By last name, then first; a card with no last name sorts by first name, one with neither by company. Shown as "First Last" with the sort letter in the strip, so the list reads as names, not as a filing system |
+| Finding someone | Google's search over every field; WM's letter strip | Search matches **initials, any part of a name, company, phone digits ignoring formatting, e-mail and city**, with the match highlighted; the letter strip shows a **large letter bubble** under the pen; the list has letter headers |
+| Seeing who it is | iOS's initials on colour; SPB's photo grid | **A favourites grid** of large photos or coloured initials (3 across) at the top of the list; every row has a 36 px avatar; a person's colour is a hash of their name (never changes) |
+| The card | iOS's poster and action row | A card with the photo or initials large, the name in 28 px, the company under it, then an **action row** (E-mail, Map, Copy, Send to PC) and grouped details; tapping a number or address copies it with a toast |
+| Typing a number | iOS's formatting | A **phone pad** opens for phone fields; the number **formats as typed** for its country ((206) 555-0142; +44 20 7946 0958) from a compact per-region table; stored as digits plus country (E.164), shown in the region's format |
+| Typing a name or address | phones' capitals by field | **Capitals at each word** in names, companies and addresses; e-mail fields get `@` and `.com` keys and no capitals |
+| Typing an address | Google's Maps suggestions | **Suggestions as you type** from Photon (OpenStreetMap) over any connection, after a 300 ms pause, five answers; a tap fills street, city, state, ZIP and country; offline, a US ZIP fills city and state from a table in internal storage, and past addresses are offered |
+| Where they are | Google's map link | **Map** opens the address on the radar's own map tiles (the Weather app's map work, ui.md), with a pin |
+| Many fields | iOS's "add field" | Fixed groups for the common (phones, e-mails, address) with **+ add** for more of each, custom labels, birthday, anniversary, website, notes |
+| Duplicates | Google's merge | Cards with the same phone or e-mail are offered as **one merge** at import or sync |
+| Same people everywhere | WM's Outlook sync | **vCard 3/4 import and export** (one file or many, from the PC or the card) and **CardDAV** (iCloud, Fastmail, Nextcloud) and **Google** through the same Connections page and sync scheduler as Calendar, over any connection |
+| Birthdays | phones' contact birthdays | A contact's birthday shows in Calendar's Birthdays calendar |
+| The PDA's own touches | WM's Contacts button | The **Contacts button** opens Contacts (I10) |
 
-## The design (v1 as built)
+## The design
 
-- **The list:** header "CONTACTS"; the search field (40 px) under it; rows
-  of 36 px: the name left, the first of mobile, home, work or company in
-  secondary text right; the letter strip on the right edge. Softkeys
-  **Back** and **New**. Empty: "No contacts yet. New adds the first one."
-  A search with no match says "No one matches".
-- **Search:** tapping the field brings the keyboard; the list filters at
-  each key; the softkeys become Cancel (clears the search) and Done
-  (keeps the filter, hides the keyboard).
-- **The card:** the name as the header; a row per filled field (label
-  left, value right; the address and notes wrap to two lines). Softkeys
+- **Home:** large title "Contacts / 128 people", search field, the
+  favourites grid (two rows of three, scrolling away with the list), then
+  the list: letter header, rows of avatar, "First Last" in `ui`, company or
+  the first number in secondary text. Letter strip on the right with its
+  bubble. Softkeys **Back** and **New**.
+- **Card:** avatar 96 px on a tinted band, name, company and title, the
+  action row (four 64 px tiles), then cards: phones (label and formatted
+  number), e-mails, address (multi-line, Map), birthday, notes. Softkeys
   **Back** and **Edit**.
-- **The editor:** the nine rows; tapping one types into it. Delete (for
-  an existing card) asks once, in place (the row then reads "Tap again
-  to delete"). Softkeys Cancel and
-  Done; a card with every field empty isn't kept.
+- **Editor:** photo (choose from a picture file, cropped to a circle and
+  kept small in internal storage), name fields (First, Last, Company,
+  Title), then groups with + add: Phone (label picker: Mobile, Home, Work,
+  custom), E-mail, Address (Street, City, State, ZIP, Country, with
+  suggestions), Birthday, Website, Notes, Favourite switch. Delete asks in
+  place. Softkeys **Cancel** and **Done**.
 
-## How the design was iterated
+## Build list
 
-1. *Draft:* WM's grouped letter tabs across the top. **Lost:** two taps
-   to reach most letters, and a row of height the list needs. The strip
-   on the edge costs 18 px of width and one tap.
-2. *Draft:* search behind a softkey. **Lost:** search is the faster way
-   past about fifty people; hiding it makes the strip the only way. The
-   field stays on screen.
-3. *Draft:* the phone number shown under the name (two-line rows).
-   **Lost:** it halves the people on screen (13 to 8). One line, the
-   number right-aligned.
-4. *Draft:* separate "File as" and display name (WM, Outlook). **Lost:**
-   a setting to explain for no gain in v1; one rule (last, first,
-   company) sorts every card sensibly.
-5. *Draft:* a field per phone type with a picker (Palm). **Lost:** three
-   fixed phone rows cover what people carry, with no picker.
-
-## The practices (principles.md)
-
-- **P1:** the sorted list and the strip's letters are rebuilt when the
-  store changes or the search text does, never while the pen moves.
-- **P6:** the list is 1,024 two-byte entries in the shell's own memory;
-  no frame over 4 KB.
-- **Frame rule:** a screen of 13 rows, the strip and the header is about
-  110 draw commands.
-
-## Later (not in v1)
-
-Photos; vCard import and export; birthdays and anniversaries (with the
-Calendar tie-in); more than three phones and custom labels; categories
-and groups; favourites; dialing and messaging hooks (no phone in the
-X51v; Bluetooth later); beaming a card; duplicate merging; names in
-scripts beyond ASCII (the font's limit today: the store keeps UTF-8, the
-fonts decide what shows); sorting by first name as a setting.
-
-## Notes for the owner's morning test
-
-- **Sorted by last name, shown "First Last".** Alternative: shown "Last,
-  First" as WM did.
-- **Search matches initials and phone digits** as well as text.
-- **Three phone rows** (Mobile, Home, Work), no type picker.
-- **The keyboard's Done goes to the next field**; the softkey Done keeps
-  the card.
+| Item | From | Status | Code |
+|---|---|---|---|
+| Large title with the count; list with letter headers, avatars and secondary lines | sheet | pending | |
+| Favourites grid of large photos or initials | apps-and-packs: favourites | pending | |
+| Coloured initials for everyone without a photo | apps-and-packs: initials when there's no photo | pending | |
+| Photos: chosen from a picture file, cropped to a circle, kept small in internal storage, from vCard PHOTO too | apps-and-packs: photos | pending | |
+| Search over every field with the match highlighted | apps-and-packs: Fast search | pending | |
+| Letter strip with the large letter bubble | sheet | pending | |
+| The card with the action row (E-mail, Map, Copy, Send to PC) | sheet | pending | |
+| Phone pad for phone fields; numbers formatted as typed for their country, stored as E.164 | apps-and-packs: phone numbers formatted as typed | pending | |
+| Address suggestions while typing (Photon over any connection; ZIP table and past addresses offline) | apps-and-packs: address suggestions while typing | pending | |
+| Capitals at each word in names, companies and addresses; e-mail keyboard | apps-and-packs: capitals at each word in names and addresses | pending | |
+| Structured address, + add for more phones and e-mails, custom labels, birthday, anniversary, website | sheet | pending | |
+| Map: the address on the radar's map tiles with a pin | sheet | pending | |
+| Duplicates offered as one merge | sheet | pending | |
+| vCard 3 and 4 import and export | apps-and-packs: vCard import/export | pending | |
+| CardDAV and Google contacts sync, read and write, over any connection | apps-and-packs: online contacts (CardDAV, Google) | pending | |
+| Birthdays feed Calendar's Birthdays calendar | sheet | pending | |
+| The Contacts button opens Contacts | sheet | pending | |
+| Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
+| Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |
 
 ## What would overturn it
 
-- The 17 px strip letters being too small for his stylus on the panel:
-  then 13 groups of two letters at 34 px.
-- More than about 1,500 contacts: the store's paging design.
+- The favourites grid pushing the list too far down for him: then it
+  folds to one row of five small avatars.
+- Photon refusing as-you-type use from the device's volume: then the PC
+  relay keeps a local Photon index of the user's region, or a keyed
+  service the owner picks.

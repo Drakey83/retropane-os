@@ -1,96 +1,77 @@
-# Notes, Rule 0
+# Notes, Rule 0 (version 2, 2026-11-14)
 
-Batch 1 of [core-apps-list.md](core-apps-list.md). Look:
-[design-language.md](design-language.md). Store: [pim-store.md](pim-store.md).
-Method: [principles.md](principles.md). Built without a stop for the
-owner's go; the notes for his morning test are at the end.
+Version 1 (2026-11-13) was a list of grey rows and a plain text box,
+with handwriting, the PDA's heart (ui.md: "notes written with the
+stylus"), put off to a later batch. The owner rejected it on 2026-11-14.
+This version builds what the survey found, under the rules gate's rule 6
+([app-scope.md](app-scope.md)). Look: [design-language.md](design-language.md)
+version 2. Records: the one store in **internal storage** (ink strokes
+included). Plans it answers to: [apps-and-packs.md](apps-and-packs.md)
+(the Notes row: smooth ink on the GPU), [ui.md](ui.md) (capture; page
+turns for the notes; the Today screen's Note button).
 
 ## The core job
 
-Write something down before it is forgotten, and find it again. v1: typed
-notes, search, add, edit, delete. Ink and handwriting are a later item.
+Catch a thought in a second, by stylus or keyboard, and find it again.
 
 ## What others do (findings, not the answer)
 
-| System | The list | Writing | Keeping |
-|---|---|---|---|
-| Windows Mobile 5 Notes | Files (`Note1.pwi`) in My Documents: name, date, size; names had to be given or were "Note1", "Note2" | A page that takes ink or typing; a recording bar | A file per note; "ok" saves; renaming through a menu |
-| Palm OS Memo Pad | The first line of each memo | A plain text page | Kept as typed |
-| iOS Notes | Title (the first line) and a snippet, newest first; search across all text | Type; no save | Saved as typed, always |
-| Google Keep | A wall of cards | Type; no save | Saved as typed |
-| Lean Linux (a folder of `.txt`) | File names | Any editor | Explicit save |
+| System | What it does well | What it costs |
+|---|---|---|
+| Windows Mobile 5 Notes | Writing and typing modes; ink on ruled lines; a voice recording in a note; the Record button | One-colour ink, jagged strokes; a plain list of names |
+| Apple Notes 18 | Folders, pinned notes, checklists, search, ink mixed with text, smart handwriting (straightens, searchable) | Heavy; iCloud |
+| Google Keep | A staggered grid of coloured cards; pinned; checklists; labels; quick capture | Little structure for long notes |
+| Samsung Notes / GoodNotes | Smooth ink with pressure and palm rejection; paper styles | Tablets and pens |
+| Lean Linux (Xournal++, plain Markdown) | Ink to SVG/PDF; text notes as files | Desktop sized |
 
 ## Borrow and beat
 
 | Problem | Borrowed | How ours goes further on the X51v |
 |---|---|---|
-| Naming | Palm and iOS: the first line is the title | No name to give and nothing called "Note1". The list shows the first line, then the date and the next line in secondary text |
-| Losing a note | iOS: never ask to save | **Every way out keeps the note:** Done, Back, the title bar's ok, Home. There is no Cancel to lose a page by. Deleting is the one deliberate act (a softkey that asks once). And the store keeps it through a pulled battery, which WM's open file did not |
-| Finding | iOS: search all the text | The search field is always above the list and matches anywhere in any note as it is typed: a scan of the store's notes in RAM (2,000 notes of 200 bytes is 400 KB of plain bytes: tens of milliseconds, with no index to keep in step) |
-| Writing with a stylus keyboard | The phone keyboard | The keyboard's Done key becomes **Return** while a note is open (a note needs new lines; the softkey says Done); the text wraps at words; **a tap in the text moves the caret there**, so a note is corrected in the middle, not only at its end. WM's SIP had the caret but 15 px keys; ours keeps K1's 30 px keys |
-| Order | iOS: newest first | By last change, newest first: the note just written is on top |
+| Seeing your notes | Keep's grid of coloured cards; Apple's pinned | A **two-column grid of cards** in the note's colour, each showing the first lines or a **miniature of the ink**, pinned notes first; a list view one tap away |
+| Writing | WM's ink on ruled lines; Samsung's smooth strokes | **Ink smoothed on the fly** (points from the touch controller filtered, then drawn as anti-aliased strokes by the 2700G, so the pen never waits on the CPU); width from speed (no pressure on the TSC2046), five colours, a highlighter, an eraser by stroke; **ruled paper**, plain or grid |
+| Mixing | Apple's text and ink together | A note is **blocks**: text paragraphs, ink panels and checklists, in any order; the keyboard or the pen at any point |
+| Lists | Keep's checklists | **Checklists** with the same round tick as Tasks; ticked items sink |
+| Finding | Apple's search | **Search** over the typed text and titles with the match highlighted |
+| Keeping it | WM's sync | **Export** a note as text or Markdown, and its ink as an SVG or PNG, to the PC or the card; import text files |
+| Length | n/a | Notes **as long as the user writes** (the store's chained groups; version 1 stopped at 2,000 bytes) |
+| Mistakes | Apple's undo | **Undo and redo** for typing and strokes |
+| The PDA's own touches | the paper notebook; WM's Record button | Pages turn with the pen between notes (ui.md); the Today screen's Note button opens a new ink note at once |
 
-## The design (v1 as built)
+## The design
 
-- **The list:** header "NOTES"; the search field; two-line rows (52 px):
-  the first line, then "13 Nov - " and the start of the rest in secondary
-  text. Softkeys **Back** and **New**. Empty: "No notes yet. New starts
-  one." A search with no match says "No note has that".
-- **A note:** the text in a panel above the keyboard (ten lines of 24 px
-  show; it scrolls to keep the caret in view), the caret in the accent.
-  The keyboard's big key reads RETURN. Softkeys **Delete** (asks once:
-  "Delete?") and **Done**. An empty note isn't kept.
-- **Limits:** a note is up to 2,000 bytes (about 300 words); the count
-  left shows in secondary text once under 200.
+- **Home:** large title "Notes / 23 notes", search field, pinned cards,
+  then the grid (two columns of 216 px cards, heights from their content,
+  up to 180 px). Softkeys **Back** and **New** (New asks nothing: a new
+  note opens ready for the pen, the keyboard one tap away).
+- **A note:** the title line (first line if not set), then its blocks on
+  ruled paper in the note's colour; a tool strip at the bottom over the
+  softkeys: Pen (colours), Highlighter, Eraser, Text, Checklist, Undo.
+  Softkeys **Back** (keeps it) and **Menu** (Pin, Colour, Paper, Export,
+  Delete; Delete asks in place).
 
-## How the design was iterated
+## Build list
 
-1. *Draft:* Cancel and Done, as the design language gives an editor.
-   **Lost for this app:** a note is the one thing that is all typing; a
-   Cancel that throws away a page is the costliest slip there is. The
-   design language's rule ("nothing is kept until Done") is for forms;
-   this sheet records the exception: **a note keeps itself**, and the
-   left softkey is Delete. design-language.md is unchanged: its editor
-   rule names forms.
-2. *Draft:* the caret only at the end (the settings fields' way: type and
-   delete at the end). **Lost:** fixing a word in the first line would
-   mean deleting everything after it. The text gets a real caret: tap to
-   place it, the D-pad to move it, insert and delete where it stands.
-3. *Draft:* a title field above the text (WM's file name). **Lost:** a
-   field to fill before the thought is written down. The first line is
-   the title.
-4. *Draft:* notes as `.txt` files on the card (way C of pim-store.md).
-   **Lost on the store's own sheet:** a FAT change per keystroke-save.
-   Export as text files is on the later list.
-
-## The practices (principles.md)
-
-- **P1:** the list is built when the store or the search text changes;
-  the text's line breaks are worked out when the text changes (a key),
-  never while the pen moves.
-- **P6:** the note being edited is one 2,000-byte buffer in the shell's
-  own memory; no frame over 4 KB.
-- **Frame rule:** the editor is ten text runs and the keyboard, about
-  100 draw commands.
-
-## Later (not in v1)
-
-Ink and handwriting (batch 6); voice notes (batch 5); longer notes (the
-store's group size is the limit today); undo; copy and paste beyond the
-keyboard's Paste; folders or tags; a note pinned to Today; export as text
-files; text beyond ASCII on screen (the fonts' limit: the store keeps
-UTF-8).
-
-## Notes for the owner's morning test
-
-- **There is no Cancel in a note:** leaving keeps it; Delete removes it.
-  Alternative: Cancel and Done like the other editors.
-- **The keyboard's Done key reads RETURN in a note.**
-- **A tap in the text moves the caret.**
-- **2,000 bytes a note.** Alternative: longer notes need the store's
-  larger group (later).
+| Item | From | Status | Code |
+|---|---|---|---|
+| Home grid of cards in their colours with text previews and ink miniatures; list view | apps-and-packs: a grid of note cards | pending | |
+| Pinned notes first | apps-and-packs: pinned notes | pending | |
+| Smooth ink drawn by the GPU: filtered points, anti-aliased strokes, width from speed, five colours, highlighter, stroke eraser | apps-and-packs: Smooth ink on the GPU | pending | |
+| Ruled, plain and grid paper | sheet | pending | |
+| A note as blocks: text, ink and checklists in any order | sheet | pending | |
+| Checklists with the round tick | apps-and-packs: checklists | pending | |
+| Search over typed text and titles with the match highlighted | apps-and-packs: search typed notes | pending | |
+| Export as text or Markdown, ink as SVG or PNG; import text files | apps-and-packs: export | pending | |
+| Notes of any length | sheet | pending | |
+| Undo and redo for typing and strokes | sheet | pending | |
+| Sentence capitals and word suggestions in text blocks | sheet | pending | |
+| The Today screen's Note button opens a new ink note | sheet | pending | |
+| Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
+| Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |
 
 ## What would overturn it
 
-- The owner wanting Cancel: then the note opened is kept aside until Done
-  (one more buffer), with Cancel restoring it.
+- Ink feeling laggy on the device past one frame: then strokes are drawn
+  by the CPU into the layer as the pen moves and only re-smoothed on lift.
+- Handwriting recognition becoming the owner's wish: a separate item with
+  its own Rule 0 (an on-device recogniser's size against 64 MB).
