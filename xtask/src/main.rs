@@ -108,6 +108,8 @@ commands:
   stacks    every image again with the compiler's frame sizes (target-stack):
             no frame of 4 KB or more but main's, the deepest call path
             under 75% of the image's stack (docs/design/weather-rule0.md P6)
+  scope     Rule 0 reaches the build: each app's build list (docs/design/
+            app-scope.md) covers its plan, nothing pending or unblocked-later
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
   gate      count the performance gate's checklist lines (docs/ROADMAP.md)
   adrs      the ADR index (docs/adr/README.md) must match the records
@@ -365,6 +367,31 @@ commands:
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
+/// Rule 0 reaches the build (the owner, 2026-11-14): every app in
+/// docs/design/app-scope.md has a build list covering its row of
+/// apps-and-packs.md's "Modernize" column, with nothing left pending or
+/// waiting without a named blocker. The rules gate checks the same at each
+/// commit touching an app; here it is strict, so no push carries an app
+/// whose survey stopped short of its build.
+fn scope_check() -> Result {
+    let root = workspace_root();
+    let script = root.join("tools/remind/rules_gate.py");
+    for python in ["python", "python3"] {
+        match std::process::Command::new(python)
+            .arg("-I")
+            .arg(&script)
+            .args(["scope", "--strict"])
+            .current_dir(&root)
+            .status()
+        {
+            Ok(st) if st.success() => return Ok(()),
+            Ok(_) => return Err("scope: an app's build list falls short of its plan (above)".into()),
+            Err(_) => continue,
+        }
+    }
+    Err("scope: no python found to run tools/remind/rules_gate.py".into())
+}
+
 fn main() -> ExitCode {
     let cmd = args().nth(1).unwrap_or_default();
     let flag = args().nth(2).unwrap_or_default();
@@ -380,6 +407,7 @@ fn main() -> ExitCode {
             "test",
             "cross",
             "stacks",
+            "scope",
         ]
         .iter()
         .try_for_each(|c| run_step(c))
@@ -394,6 +422,7 @@ fn main() -> ExitCode {
         | "test"
         | "cross"
         | "stacks"
+        | "scope"
         | "coverage"
         | "emu"
         | "emu-picture"
@@ -868,6 +897,7 @@ fn run_step(step: &str) -> Result {
         "test" => cargo(&["test", "--workspace"]),
         "cross" => cross(),
         "stacks" => stack_check(),
+        "scope" => scope_check(),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
         "emu-blend-scale" => cross().and_then(|()| emu::boot_loader_blend_scale(&workspace_root())),

@@ -23,21 +23,28 @@ from public behaviour and our own artwork (`CLEANROOM.md`). The
 and works: survey modern alternatives first, keep what WM did only where it
 measurably wins.
 
+The organiser rows (Calendar, Contacts, Tasks, Notes, Calculator) gained
+the owner's asks of 2026-11-14; each phrase of a registered app's
+Modernize cell must be built or blocked by name in its sheet's build list
+(the rules gate's rule 6, [app-scope.md](app-scope.md)). Every connected
+feature works over any internet connection (Wi-Fi or the dock), and the
+base OS keeps its data in internal storage, never only on a card.
+
 | WM5 app | Keep (nostalgia, muscle memory) | Modernize (first ideas, to vote on) |
 |---|---|---|
 | Today screen | The layout idea: date, owner, appointments, tasks, unread | Live, GPU-composited cards; themes; dark mode (Phase 5 has started it) |
 | Start menu, task switcher | Start in the corner, recent programs | Real task switcher with previews; search |
-| Calendar | Day / week / month / agenda views | Smooth zoom between views; quick add; reminders through the notification centre |
-| Contacts | Card list, letter strip | Fast search; photos; vCard import/export |
-| Tasks | List with due dates and priority | Swipe to complete; tie-ins with Calendar |
-| Notes | Typed and handwritten (ink) notes | Smooth ink on the GPU; search typed notes; export |
+| Calendar | Day / week / month / agenda views | Smooth zoom between views; quick add; reminders through the notification centre; Google Calendar and other online calendars (iCal link, CalDAV, Google sign-in: §7); a colour per calendar; repeating appointments; reminder sound and snooze; week view; birthdays from Contacts; weather on the agenda's days |
+| Contacts | Card list, letter strip | Fast search; photos; vCard import/export; phone numbers formatted as typed; address suggestions while typing; capitals at each word in names and addresses; favourites; initials when there's no photo; online contacts (CardDAV, Google) |
+| Tasks | List with due dates and priority | Swipe to complete; tie-ins with Calendar; lists with colours; repeating tasks; reminders; subtasks |
+| Notes | Typed and handwritten (ink) notes | Smooth ink on the GPU; search typed notes; export; checklists; pinned notes; a grid of note cards |
 | Messaging (Inbox) | Mail folders, SMS-less as on the X51v | Modern mail protocols (IMAP with TLS) when networking lands (Phase 6) |
 | Internet Explorer Mobile | A browser in the Start menu | RetroPane's own browser (DESIGN.md) |
 | Word / Excel / PowerPoint Mobile | Open and edit simple documents | Open modern formats (.docx/.xlsx) read-first; plain-text and Markdown editing |
 | Windows Media Player | Music and video player | Hardware video decode on the 2700G; modern codecs where the hardware allows |
 | Pictures & Videos | Album grid, camera-less on the X51v | Fast thumbnails, pinch-like stylus zoom, slideshows |
 | File Explorer | Folders, storage card, copy/paste | Two-pane mode, both cards side by side, search, previews, the PC drive view |
-| Calculator | Basic calculator | Basic + scientific + unit conversion; history |
+| Calculator | Basic calculator | Basic + scientific + unit conversion; history; memory keys; brackets; currency conversion; tip and split; days between dates |
 | Solitaire | A throwback to the original Klondike | Same game, new card art and smooth animation; undo; stats |
 | Bubble Breaker | The puzzle game | Same rules, new paint |
 | Clock & Alarms | Time, date, alarms | Multiple alarms, world clock |
@@ -575,7 +582,7 @@ live in the encrypted store, never in plain files on the card; the smallest
 permission that does the job (events only, never the whole account); TLS only,
 certificates checked, no password stored for Google; one switch in Settings
 removes an account and wipes its token and cached data; a failed sync never
-loses local events. Contacts stay out (RetroPane is not a phone).
+loses local events. ~~Contacts stay out (RetroPane is not a phone).~~ Contacts sync too (the owner, 2026-11-14: modern normal features in every app; CardDAV and Google, read and write, by the same machinery).
 
 Other apps follow the same pattern later (Tasks, Reader feeds, weather
 providers); each gets its own line here when picked up.

@@ -31,6 +31,16 @@ never checked.
    nothing forced, deleted or pushed to another branch (`fork_push_verdict`).
 5. **One session**: starting another session or agent only when the
    owner's latest message asks for one.
+6. **Rule 0 reaches the build** (the owner, 2026-11-14: core apps batch 1
+   surveyed modern apps, then built a 2005 baseline and filed every modern
+   feature under "Later"): a commit touching an app's code (the registry,
+   docs/design/app-scope.md) needs that app's sheet to carry a `## Build
+   list` holding every item of the app's row in apps-and-packs.md's
+   "Modernize" column, and every row `built` (with code paths that exist),
+   `pending`, or `blocked:` naming a hardware limit, an `arch` line or an
+   owner ruling. A heading with "Later" in it is refused: what waits is a
+   blocked row with its blocker. `rules_gate.py scope --strict` (in `cargo
+   xtask ci`, so before any push) refuses `pending` as well.
 
 The files a commit holds: those staged now, those named by a `git add` in
 the same command, and with `-a` every tracked change; when they can't be
@@ -179,7 +189,132 @@ def commit_verdict(command, paths, rows):
                 f"ADR before code: {p} is decided by {names} (docs/adr-areas.md); read its numbered "
                 f"rules, check the change against them, and name the ADR in the message"
             )
+    if paths is not None and has_code:
+        reason = scope_verdict(paths)
+        if reason:
+            return reason
     return None
+
+
+# Rule 6: Rule 0 reaches the build (scope).
+STATUS_BLOCKED = re.compile(r"^blocked:\s*(hardware|arch\s*\d+|owner\s+\d{4}-\d{2}-\d{2}).{20,}", re.I)
+
+
+def norm(text):
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def table_rows(lines):
+    """A markdown table's body rows as cell lists (the header and rule skipped)."""
+    out = []
+    for line in lines:
+        t = line.strip()
+        if not t.startswith("|"):
+            if out or t:
+                if out:
+                    break
+            continue
+        cells = [c.strip() for c in t.strip("|").split("|")]
+        if all(re.fullmatch(r":?-{3,}:?", c) for c in cells):
+            continue
+        out.append(cells)
+    return out[1:] if out else []
+
+
+def read(path):
+    with open(os.path.join(REPO, path), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def scope_registry():
+    """docs/design/app-scope.md: [(app, sheet, [code prefixes])]."""
+    try:
+        text = read("docs/design/app-scope.md")
+    except OSError:
+        return []
+    lines = text.splitlines()
+    start = next((i for i, l in enumerate(lines) if l.startswith("## Registry")), None)
+    if start is None:
+        return []
+    rows = []
+    for cells in table_rows(lines[start + 1 :]):
+        if len(cells) >= 3:
+            prefixes = [p.strip(" `") for p in cells[2].split(",") if p.strip(" `")]
+            rows.append((cells[0], cells[1].strip(" `"), prefixes))
+    return rows
+
+
+def modern_items(app):
+    """The app's items in apps-and-packs.md's "Modernize" column."""
+    for line in read("docs/design/apps-and-packs.md").splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) == 3 and norm(cells[0]) == norm(app):
+            return [norm(i) for i in cells[2].split(";") if i.strip()]
+    return []
+
+
+def scope_problems(app, sheet, strict):
+    """The reasons app's sheet fails rule 6 (empty when it passes)."""
+    try:
+        text = read(sheet)
+    except OSError:
+        return [f"{app}: its sheet {sheet} is missing"]
+    lines = text.splitlines()
+    bad = []
+    for l in lines:
+        if l.startswith("#") and "later" in l.lower():
+            bad.append(f"{app}: {sheet} has a \"Later\" heading ({l.strip()}); what waits is a `blocked:` row naming its blocker")
+    start = next((i for i, l in enumerate(lines) if l.strip().lower() == "## build list"), None)
+    if start is None:
+        return bad + [f"{app}: {sheet} has no `## Build list` table"]
+    rows = table_rows(lines[start + 1 :])
+    froms = set()
+    for cells in rows:
+        if len(cells) < 4:
+            bad.append(f"{app}: build list row too short: {cells}")
+            continue
+        item, source, status, code = cells[0], cells[1], cells[2], cells[3]
+        for part in source.split(";"):
+            m = re.match(r"\s*apps-and-packs:\s*(.+)", part, re.I)
+            if m:
+                froms.add(norm(m.group(1)))
+        st = status.strip().lower()
+        if st == "built":
+            paths = [c.strip(" `") for c in code.split(",") if c.strip(" `")]
+            if not paths:
+                bad.append(f"{app}: \"{item}\" is built but names no code")
+            for c in paths:
+                if not os.path.exists(os.path.join(REPO, c.split("#")[0].split(":")[0])):
+                    bad.append(f"{app}: \"{item}\" names code {c} that does not exist")
+        elif st == "pending":
+            if strict:
+                bad.append(f"{app}: \"{item}\" is still pending (build it, or block it with its named blocker)")
+        elif not STATUS_BLOCKED.match(status.strip()):
+            bad.append(
+                f"{app}: \"{item}\" has status \"{status}\"; only built, pending, or "
+                "\"blocked: hardware|arch N|owner YYYY-MM-DD <why, 20+ characters>\""
+            )
+    for want in modern_items(app):
+        if want not in froms:
+            bad.append(f"{app}: apps-and-packs.md plans \"{want}\" and the build list has no row from it")
+    return bad
+
+
+def scope_verdict(paths, strict=False):
+    """None, or the reason a commit touching paths breaks rule 6."""
+    reg = scope_registry()
+    hit = [
+        (app, sheet)
+        for app, sheet, prefixes in reg
+        if paths is None or strict or any(p.startswith(x) for p in paths for x in prefixes)
+    ]
+    bad = []
+    for app, sheet in hit:
+        bad += scope_problems(app, sheet, strict)
+    if not bad:
+        return None
+    more = f" (and {len(bad) - 3} more)" if len(bad) > 3 else ""
+    return "rule 0 reaches the build: " + "; ".join(bad[:3]) + more
 
 
 def push_verdict(head, clean, stamp):
@@ -560,9 +695,54 @@ def self_test():
         if not nums <= have or not os.path.exists(os.path.join(ROOT, prefix)):
             bad += 1
             print("WRONG areas.md row:", prefix, sorted(nums - have))
+    bad += scope_self_test()
     print("rules_gate self-test:", "ok" if not bad else f"{bad} wrong")
     return 1 if bad else 0
 
+
+def scope_self_test():
+    """Rule 6 on a made-up tree: each case a sheet's build list and the verdict."""
+    import tempfile
+
+    global REPO
+    nl = chr(10)
+    saved, bad = REPO, 0
+    plan = nl.join(["| WM5 app | Keep | Modernize |", "|---|---|---|", "| Calculator | Basic | History; unit conversion |", ""])
+    reg = nl.join(["## Registry", "", "| App | Sheet | Code |", "|---|---|---|", "| Calculator | docs/design/calc.md | apps/calc/ |", ""])
+    head = nl.join(["| Item | From | Status | Code |", "|---|---|---|---|", ""])
+    tape = "| Tape | apps-and-packs: History | built | apps/calc/src/lib.rs |"
+    full = nl.join([tape, "| Units | apps-and-packs: Unit conversion | pending | |", ""])
+    cases = [
+        ("both rows, one pending, commit", full, False, True),
+        ("both rows, one pending, strict", full, True, False),
+        ("a planned item missing", tape + nl, False, False),
+        ("built naming no file", full.replace("lib.rs", "nope.rs"), False, False),
+        ("a bare later status", full.replace("| pending |", "| later |"), False, False),
+        ("blocked without a blocker", full.replace("| pending |", "| blocked: soon |"), False, False),
+        ("blocked by a hardware limit", full.replace("| pending |", "| blocked: hardware the X51v has no radio for rates |"), True, True),
+        ("blocked by an arch line", full.replace("| pending |", "| blocked: arch 12 the network service is not decided yet |"), True, True),
+        ("a Later heading", full + nl + "## Later" + nl + nl + "x" + nl, False, False),
+    ]
+    for name, body, strict, want_ok in cases:
+        with tempfile.TemporaryDirectory() as d:
+            files = [
+                ("docs/design/apps-and-packs.md", plan),
+                ("docs/design/app-scope.md", reg),
+                ("apps/calc/src/lib.rs", "//"),
+                ("docs/design/calc.md", nl.join(["# Calc", "", "## Build list", "", head + body])),
+            ]
+            for rel, text in files:
+                os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+                with open(os.path.join(d, rel), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            REPO = d
+            verdict = scope_verdict({"apps/calc/src/lib.rs"}, strict)
+            untouched = scope_verdict({"docs/other.md"}) is None
+            if (verdict is None) != want_ok or not untouched:
+                bad += 1
+                print("WRONG scope case:", name, verdict)
+    REPO = saved
+    return bad
 
 def git_hook(mode):
     """Git's own commit-msg and pre-push hooks (tools/githooks): the same
@@ -590,6 +770,17 @@ def main():
     if "--self-test" in sys.argv:
         return self_test()
     mode = sys.argv[1] if len(sys.argv) > 1 else "bash"
+    if mode == "scope":
+        global REPO
+        REPO = repo_of(os.getcwd())
+        reg = scope_registry()
+        bad = []
+        for app, sheet, _ in reg:
+            bad += scope_problems(app, sheet, "--strict" in sys.argv)
+        for b in bad:
+            print("  " + b)
+        print(f"scope: {len(reg)} apps, {len(bad)} problems" + (" (strict)" if "--strict" in sys.argv else ""))
+        return 1 if bad else 0
     if mode in ("commit-msg", "pre-push"):
         try:
             return git_hook(mode)
