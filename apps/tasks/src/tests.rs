@@ -76,15 +76,7 @@ fn draw(t: &mut Tasks, cx: &Ctx) {
     t.draw(&mut f, cx);
 }
 
-fn tasks(
-    pim: &core::cell::RefCell<Option<Store<'static>>>,
-) -> std::vec::Vec<(
-    std::vec::Vec<u8>,
-    bool,
-    Option<u32>,
-    Option<u32>,
-    Option<u32>,
-)> {
+fn tasks(pim: &core::cell::RefCell<Option<Store<'static>>>) -> std::vec::Vec<Row> {
     let g = pim.borrow();
     let s = g.as_ref().unwrap();
     s.all(Kind::Task)
