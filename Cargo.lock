@@ -57,6 +57,7 @@ name = "rp-app"
 version = "0.0.0"
 dependencies = [
  "rp-draw",
+ "rp-pim",
 ]
 
 [[package]]
@@ -64,6 +65,7 @@ name = "rp-app-calculator"
 version = "0.0.0"
 dependencies = [
  "rp-app",
+ "rp-hal-user",
 ]
 
 [[package]]
@@ -71,6 +73,7 @@ name = "rp-app-calendar"
 version = "0.0.0"
 dependencies = [
  "rp-app",
+ "rp-hal-user",
  "rp-pim",
 ]
 
@@ -79,6 +82,7 @@ name = "rp-app-contacts"
 version = "0.0.0"
 dependencies = [
  "rp-app",
+ "rp-hal-user",
  "rp-pim",
 ]
 
@@ -87,6 +91,8 @@ name = "rp-app-notes"
 version = "0.0.0"
 dependencies = [
  "rp-app",
+ "rp-hal-user",
+ "rp-pim",
 ]
 
 [[package]]
@@ -94,6 +100,8 @@ name = "rp-app-tasks"
 version = "0.0.0"
 dependencies = [
  "rp-app",
+ "rp-hal-user",
+ "rp-pim",
 ]
 
 [[package]]
@@ -1106,6 +1114,7 @@ dependencies = [
  "rp-hal-x51v",
  "rp-image",
  "rp-inflate",
+ "rp-kernel-pe",
  "rp-mbx-render",
  "rp-mbx3d-render",
  "rp-pim",

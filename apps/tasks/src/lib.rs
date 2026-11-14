@@ -12,7 +12,12 @@
 #![forbid(unsafe_code)]
 
 use rp_app::kit::{self, DIM, LATE, TEXT, tint};
-use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, WIDE};
+use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, Text, WIDE};
+use rp_pim::date;
+use rp_pim::store::{Kind, tag};
+
+/// The add line under a list's title.
+const ADD_LINE: Rect = Rect::new(MARGIN, 36 + kit::TITLE_BAND + 4, WIDE, 40);
 
 /// Tasks a view holds.
 pub const MAX: usize = 64;
@@ -26,11 +31,21 @@ pub struct List {
     pub colour: u32,
 }
 
+/// A list as the store holds it.
+#[derive(Clone, Copy, Debug)]
+struct ListRow {
+    id: u32,
+    name: Text<24>,
+    colour: u32,
+}
+
 /// One task.
 #[derive(Clone, Copy, Debug)]
 pub struct Task {
+    /// Its record.
+    pub id: u32,
     /// Its title.
-    pub title: &'static [u8],
+    pub title: Text<48>,
     /// Due day (days from 1970), if any.
     pub due: Option<i32>,
     /// Priority: 0 none, 1 low, 2 medium, 3 high.
@@ -56,8 +71,16 @@ pub enum View {
 
 /// The Tasks program.
 pub struct Tasks {
-    lists: &'static [List],
+    lists: [ListRow; 8],
+    n_lists: usize,
     tasks: [Option<Task>; MAX],
+    /// The store's change count the lists and tasks were copied at.
+    seen: Option<u32>,
+    /// Where each open task's round box was drawn, to tick it by a tap.
+    boxes: [(Rect, u32); 12],
+    n_boxes: usize,
+    /// The add line is being typed.
+    typing: bool,
     view: View,
     line: [u8; 64],
     line_n: usize,
@@ -89,9 +112,23 @@ impl Tasks {
     /// No tasks yet.
     #[must_use]
     pub fn new(lists: &'static [List]) -> Self {
+        let mut rows = [ListRow {
+            id: 0,
+            name: Text::EMPTY,
+            colour: kit::IDENTITY[4],
+        }; 8];
+        for (r, l) in rows.iter_mut().zip(lists) {
+            r.name = Text::of(l.name);
+            r.colour = l.colour;
+        }
         Self {
-            lists,
+            lists: rows,
+            n_lists: lists.len().clamp(1, 8),
             tasks: [None; MAX],
+            seen: None,
+            boxes: [(Rect::new(0, 0, 0, 0), 0); 12],
+            n_boxes: 0,
+            typing: false,
             view: View::Home,
             line: [0; 64],
             line_n: 0,
@@ -101,14 +138,180 @@ impl Tasks {
         }
     }
 
-    /// Adds a task (false when full).
-    pub fn add(&mut self, t: Task) -> bool {
-        match self.tasks.iter_mut().find(|s| s.is_none()) {
-            Some(s) => {
-                *s = Some(t);
-                true
+    /// The lists and tasks copied again from the store when its records
+    /// changed: a task's steps are counted from the tasks naming it as
+    /// their parent.
+    fn refresh(&mut self, cx: &Ctx) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(guard) = cell.try_borrow() else { return };
+        let Some(store) = guard.as_ref() else { return };
+        if self.seen == Some(store.changes()) {
+            return;
+        }
+        self.seen = Some(store.changes());
+        let mut n = 0;
+        for r in store.all(Kind::List) {
+            if n < self.lists.len() {
+                self.lists[n] = ListRow {
+                    id: r.id,
+                    name: Text::of(r.text(tag::NAME)),
+                    colour: kit::IDENTITY[(r.num(tag::COLOUR).unwrap_or(4) % 8) as usize],
+                };
+                n += 1;
             }
-            None => false,
+        }
+        if n > 0 {
+            self.n_lists = n;
+        }
+        self.tasks = [None; MAX];
+        let mut k = 0;
+        for r in store
+            .all(Kind::Task)
+            .filter(|r| r.num(tag::PARENT).is_none())
+        {
+            if k == MAX {
+                break;
+            }
+            let steps = store
+                .all(Kind::Task)
+                .filter(|c| c.num(tag::PARENT) == Some(r.id));
+            let (mut done, mut of) = (0u8, 0u8);
+            for c in steps {
+                of = of.saturating_add(1);
+                if c.num(tag::DONE).is_some() {
+                    done = done.saturating_add(1);
+                }
+            }
+            let list = r
+                .num(tag::LIST)
+                .and_then(|id| self.lists[..self.n_lists].iter().position(|l| l.id == id))
+                .unwrap_or(0) as u8;
+            self.tasks[k] = Some(Task {
+                id: r.id,
+                title: Text::of(r.text(tag::TITLE)),
+                due: r.num(tag::DUE).map(|d| d as i32),
+                flag: r.num(tag::PRIORITY).unwrap_or(0).min(3) as u8,
+                list,
+                done: r.num(tag::DONE).is_some(),
+                steps: (done, of),
+                repeats: r.num(tag::REPEAT).is_some(),
+            });
+            k += 1;
+        }
+    }
+
+    /// The typed line kept as a task: the quick parser's date and "!"
+    /// priority (`!1` high .. `!3` low, as Todoist writes them; a bare `!`
+    /// high), `#list` names a list.
+    fn add_typed(&mut self, cx: &Ctx) -> bool {
+        let line = &self.line[..self.line_n];
+        let mut title = [0u8; rp_pim::quick::TITLE_MAX];
+        let (q, tn) = rp_pim::quick::parse(line, cx.now.day, cx.us, &mut title);
+        // The title without "#list" and "!n" words the parser left in.
+        let mut clean = [0u8; rp_pim::quick::TITLE_MAX];
+        let mut cn = 0;
+        let mut flag = q.priority.map_or(0u32, |p| if p >= 2 { 3 } else { 1 });
+        let mut list_id = self.lists[0].id;
+        for w in title[..tn].split(|&b| b == b' ').filter(|w| !w.is_empty()) {
+            if let Some(name) = w.strip_prefix(b"#") {
+                if let Some(l) = self.lists[..self.n_lists]
+                    .iter()
+                    .find(|l| l.name.get().eq_ignore_ascii_case(name))
+                {
+                    list_id = l.id;
+                }
+                continue;
+            }
+            if w.len() == 2 && w[0] == b'!' && (b'1'..=b'3').contains(&w[1]) {
+                flag = u32::from(b'4' - w[1]);
+                continue;
+            }
+            for &c in w.iter().chain(b" ") {
+                if cn < clean.len() {
+                    clean[cn] = c;
+                    cn += 1;
+                }
+            }
+        }
+        let cn = cn.saturating_sub(1);
+        if cn == 0 {
+            return false;
+        }
+        let n = |v: u32| v.to_le_bytes();
+        let (due, fl, li) = (n(q.day.unwrap_or(cx.now.day) as u32), n(flag), n(list_id));
+        let mut fields: [(u8, &[u8]); 4] = [
+            (tag::TITLE, &clean[..cn]),
+            (tag::DUE, &due),
+            (tag::PRIORITY, &[]),
+            (tag::LIST, &[]),
+        ];
+        if flag > 0 {
+            fields[2].1 = &fl;
+        }
+        if list_id != 0 {
+            fields[3].1 = &li;
+        }
+        let Some(cell) = cx.pim else { return false };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return false;
+        };
+        let Some(store) = guard.as_mut() else {
+            return false;
+        };
+        let ok = store.put(Kind::Task, None, &fields).is_ok();
+        if ok {
+            self.seen = None;
+            self.line_n = 0;
+        }
+        ok
+    }
+
+    /// Task `id` ticked done (its record kept with the minute it was
+    /// done), or opened again.
+    fn tick(&mut self, cx: &Ctx, id: u32) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(store) = guard.as_mut() else { return };
+        let Some(r) = store.get(id) else { return };
+        // Every field but DONE, copied out before the record is replaced.
+        let mut keep = [(0u8, [0u8; 64], 0usize); 12];
+        let mut k = 0;
+        let mut was_done = false;
+        for t in [
+            tag::TITLE,
+            tag::DUE,
+            tag::PRIORITY,
+            tag::LIST,
+            tag::PARENT,
+            tag::REPEAT,
+            tag::NOTE,
+            tag::REMIND_AT,
+        ] {
+            let v = r.text(t);
+            if !v.is_empty() && k < keep.len() {
+                let n = v.len().min(64);
+                keep[k].0 = t;
+                keep[k].1[..n].copy_from_slice(&v[..n]);
+                keep[k].2 = n;
+                k += 1;
+            }
+        }
+        if r.num(tag::DONE).is_some() {
+            was_done = true;
+        }
+        let minute = (date::start_of(cx.now.day) + u32::from(cx.now.minute)).to_le_bytes();
+        let mut fields: [(u8, &[u8]); 13] = [(0, &[]); 13];
+        for (i, (t, b, n)) in keep[..k].iter().enumerate() {
+            fields[i] = (*t, &b[..*n]);
+        }
+        if !was_done {
+            fields[k] = (tag::DONE, &minute);
+        }
+        let used = if was_done { k } else { k + 1 };
+        if store.put(Kind::Task, Some(id), &fields[..used]).is_ok() {
+            self.seen = None;
         }
     }
 
@@ -192,7 +395,7 @@ impl Tasks {
         y += 178;
         kit::section(f, cx, y, b"MY LISTS", tint::TASKS);
         y += 24;
-        for (i, list) in self.lists.iter().enumerate() {
+        for (i, list) in self.lists[..self.n_lists].iter().enumerate() {
             if y + 52 > 596 {
                 break;
             }
@@ -211,7 +414,7 @@ impl Tasks {
             let r = Rect::new(MARGIN, y, WIDE, 48);
             kit::panel(f, cx, r);
             kit::colour_bar(f, r, list.colour);
-            kit::text(f, r.x + 22, r.y + 30, cx.fonts.ui, TEXT, list.name);
+            kit::text(f, r.x + 22, r.y + 30, cx.fonts.ui, TEXT, list.name.get());
             let mut b = [0u8; 16];
             let mut bn = num(&mut b, u32::from(all - done));
             for &c in b" open" {
@@ -256,13 +459,14 @@ impl Tasks {
         (w.len(), false)
     }
 
-    fn list(&self, f: &mut Frame, cx: &Ctx, which: Option<u8>) {
+    fn list(&mut self, f: &mut Frame, cx: &Ctx, which: Option<u8>) {
         let today = cx.now.day;
+        self.n_boxes = 0;
         let (name, colour): (&[u8], u32) = match which {
             Some(i) => self
                 .lists
                 .get(usize::from(i))
-                .map_or((b"List", tint::TASKS), |l| (l.name, l.colour)),
+                .map_or((b"List", tint::TASKS), |l| (l.name.get(), l.colour)),
             None => (b"Today", tint::TASKS),
         };
         let mut y = kit::large_title(f, cx, 36, name, b"Tap the circle when it's done", colour);
@@ -354,7 +558,12 @@ impl Tasks {
                 self.full[ci],
                 false,
             );
-            kit::fitted(f, r.x + 48, r.y + 21, cx.fonts.ui, TEXT, t.title, 250);
+            if self.n_boxes < self.boxes.len() {
+                // The box's target: the row's left 44 px, a stylus' width.
+                self.boxes[self.n_boxes] = (Rect::new(r.x, r.y, 44, r.h), t.id);
+                self.n_boxes += 1;
+            }
+            kit::fitted(f, r.x + 48, r.y + 21, cx.fonts.ui, TEXT, t.title.get(), 250);
             let mut w = [0u8; 16];
             let (wn, late) = Self::due_words(t.due, today, &mut w);
             let mut sub = [0u8; 40];
@@ -425,6 +634,18 @@ impl Tasks {
     }
 }
 
+/// The list a first opening shows.
+pub static FIRST_LISTS: [List; 1] = [List {
+    name: b"Tasks",
+    colour: kit::IDENTITY[4],
+}];
+
+/// Tasks as it first opens (the program's entry and the PC's model).
+#[must_use]
+pub fn opened(_today: i32) -> Tasks {
+    Tasks::new(&FIRST_LISTS)
+}
+
 impl Program for Tasks {
     fn title(&self) -> &'static str {
         "Tasks"
@@ -439,6 +660,7 @@ impl Program for Tasks {
 
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
+        self.refresh(cx);
         kit::backdrop(f);
         match self.view {
             View::Home => self.home(f, cx),
@@ -446,11 +668,38 @@ impl Program for Tasks {
         }
     }
 
-    fn event(&mut self, e: Event, _cx: &Ctx) -> Reply {
+    fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
         match (e, self.view) {
+            (Event::PenUp { x, y }, View::List(_)) => {
+                if ADD_LINE.contains_point(x, y) {
+                    self.typing = true;
+                    return Reply::Redraw;
+                }
+                let hit = self.boxes[..self.n_boxes]
+                    .iter()
+                    .find(|(r, _)| r.contains_point(x, y));
+                if let Some(&(_, id)) = hit {
+                    self.tick(cx, id);
+                    return Reply::Redraw;
+                }
+                Reply::Nothing
+            }
+            (Event::Key(Key::SoftRight) | Event::Done, View::List(_)) if self.typing => {
+                self.add_typed(cx);
+                Reply::Redraw
+            }
+            (Event::Key(Key::SoftRight), View::List(_)) => {
+                self.typing = true;
+                Reply::Redraw
+            }
             (Event::Key(Key::SoftLeft), View::Home) => Reply::Close,
             (Event::Key(Key::SoftLeft), _) => {
-                self.view = View::Home;
+                if self.typing {
+                    self.typing = false;
+                    self.line_n = 0;
+                } else {
+                    self.view = View::Home;
+                }
                 Reply::Redraw
             }
             (Event::Key(Key::SoftRight), View::Home) => {
@@ -471,6 +720,7 @@ impl Program for Tasks {
     }
 
     fn keyboard(&self) -> Option<Field> {
-        (matches!(self.view, View::List(_)) && self.line_n > 0).then_some(Field::Line)
+        (matches!(self.view, View::List(_)) && (self.typing || self.line_n > 0))
+            .then_some(Field::Line)
     }
 }

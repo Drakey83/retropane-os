@@ -5,7 +5,6 @@
 
 mod adrs;
 mod app_mockups;
-mod apps_preview;
 mod calib;
 mod devlock;
 mod emu;
@@ -270,10 +269,9 @@ commands:
             renderer code: PNGs and an index page in target/ui-preview/
   emu-today the shell's Today screen (ADR-0021): pixel-exact, a tap on
             Start opens the menu, Back to loader returns with latencies
-  emu-apps  the organiser apps (Calendar, Contacts, Tasks, Notes, Calculator)
-            on the image with a card of sample records: every screen
-            pixel-exact against the PC's model, the changes read back from
-            the card, and a restart showing them and a reminder
+  emu-apps  the organiser's app programs (version 2) on the image: each
+            read from the card, loaded, hosted, its screen pixel-exact
+            against the PC's model
   emu-today-look  R185's look check unattended: the image taps its way
             through Appearance three times round, every page judged light or
             dark from the pixels the display shows (also part of emu-today)
@@ -428,6 +426,7 @@ fn main() -> ExitCode {
         | "scope"
         | "coverage"
         | "emu"
+        | "emu-apps"
         | "emu-picture"
         | "emu-blend"
         | "emu-blend-scale"
@@ -447,7 +446,6 @@ fn main() -> ExitCode {
         | "emu-today"
         | "emu-today-watch"
         | "emu-today-steps"
-        | "emu-apps"
         | "emu-today-radar-card"
         | "look-replay"
         | "look-judge"
@@ -901,6 +899,7 @@ fn run_step(step: &str) -> Result {
         "cross" => cross(),
         "stacks" => stack_check(),
         "scope" => scope_check(),
+        "emu-apps" => cross().and_then(|()| emu::apps(&workspace_root())),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
         "emu-blend-scale" => cross().and_then(|()| emu::boot_loader_blend_scale(&workspace_root())),
@@ -922,7 +921,6 @@ fn run_step(step: &str) -> Result {
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
         "ui-preview" => cross().and_then(|()| ui_preview::run(&workspace_root())),
         "emu-today-steps" => cross().and_then(|()| emu::today_steps(&workspace_root())),
-        "emu-apps" => cross().and_then(|()| emu::apps(&workspace_root())),
         "emu-today-watch" => cross()
             .and_then(|()| emu::today_watch(&workspace_root(), &args().nth(2).unwrap_or_default())),
         "emu-today" => cross()
@@ -1542,10 +1540,14 @@ fn build_images(crates: &[Crate], stack_dir: Option<&str>) -> Result {
         "-Zjson-target-spec",
     ];
     user.extend(&dir_args);
+    // One build each: a build's features are unified, and a process's
+    // runtime (`runtime`) and an app program's (`app`) each bring a panic
+    // handler.
     for name in userimg::IMAGES {
-        user.extend(["-p", name]);
+        let mut one = user.clone();
+        one.extend(["-p", name]);
+        cargo_with(&mut env(None), &one)?;
     }
-    cargo_with(&mut env(None), &user)?;
     userimg::package_all(&release)?;
     let mut args = vec![
         "build".to_string(),

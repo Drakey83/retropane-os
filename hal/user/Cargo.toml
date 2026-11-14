@@ -14,6 +14,9 @@ rp-hal-api = { path = "../api" }
 # The process entry and panic handler (programs only; the kernel uses the
 # ABI constants).
 runtime = []
+# The app-program entry and panic handler (app programs, rp-app): an app
+# is loaded and called by the shell, not started by the kernel.
+app = []
 
 [lints]
 workspace = true

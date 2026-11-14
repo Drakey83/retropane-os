@@ -19,6 +19,8 @@
 
 use rp_hal_api::RegisterBus;
 
+pub mod app;
+
 /// Call a port (`r0` handle, `r1`-`r3` arguments): the server's answer.
 pub const SYS_CALL: u32 = 1;
 /// End the call this activation serves, answering `r0`.

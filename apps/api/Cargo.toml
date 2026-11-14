@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 rp-draw = { path = "../../drivers/draw" }
+rp-pim = { path = "../../shell/pim" }
 
 [lints]
 workspace = true

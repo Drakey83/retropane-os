@@ -10,5 +10,9 @@ publish.workspace = true
 [dependencies]
 rp-app = { path = "../api" }
 
+# The program's runtime (entry, panic) only in the device build.
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-user = { path = "../../hal/user", features = ["app"] }
+
 [lints]
 workspace = true

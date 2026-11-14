@@ -27,6 +27,8 @@ rp-inflate = { path = "../../kernel/inflate" }
 rp-fat = { path = "../../kernel/fat" }
 # The organiser store on the card (`organiser`).
 rp-pim = { path = "../pim" }
+# App programs loaded from storage (`program`): the kernel's own PE loader.
+rp-kernel-pe = { path = "../../kernel/pe" }
 
 [build-dependencies]
 rp-draw = { path = "../../drivers/draw" }

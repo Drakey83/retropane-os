@@ -1965,6 +1965,32 @@ pub fn fault_probe(addr: usize) -> u32 {
     unsafe { (addr as *const u32).read_volatile() }
 }
 
+/// Calls an app program's entry (`rp_hal_user::app_entry!`) with `arg`:
+/// first writes back and discards the caches over `image` (the program's
+/// bytes just written there are code now), then calls `entry` as
+/// `extern "Rust" fn(&mut A)` and returns when it does.
+///
+/// The caller loaded `image` from a PE file it checked (`rp_today::program`:
+/// the machine, the size, the layout, relocated to where it lies) and
+/// `entry` is that file's entry point inside `image`; the program was built
+/// from the same sources in the same build, its `A` the caller's. In the
+/// test stage the program shares the shell's address space (quality audit
+/// C99); under the kernel it is a process instead (ADR-0016).
+pub fn call_program<A>(entry: usize, image: &[u8], arg: &mut A) {
+    let at = image.as_ptr() as usize;
+    if entry < at || entry >= at + image.len() {
+        return;
+    }
+    crate::cpu::clean_invalidate_range(at as u32, image.len() as u32);
+    // SAFETY: `entry` lies inside `image`, which holds a relocated program
+    // the caller loaded and checked, whose entry is `extern "Rust" fn(&mut
+    // A)` (`app_entry!`); the caches over it were cleaned and the I-cache
+    // discarded, so the CPU fetches what was written.
+    let f: extern "Rust" fn(&mut A) =
+        unsafe { core::mem::transmute::<usize, extern "Rust" fn(&mut A)>(entry) };
+    f(arg);
+}
+
 /// Jumps to `addr` to exercise the fault path's prefetch abort: an
 /// unmapped address can't be fetched, so the runtime reports it through
 /// the fault handler, which doesn't return. Only for self-tests

@@ -10,4 +10,5 @@ pub mod calc;
 pub mod date;
 pub mod phone;
 pub mod quick;
+pub mod repeat;
 pub mod store;

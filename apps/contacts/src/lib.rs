@@ -13,30 +13,56 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+use rp_app::Text;
 use rp_app::kit::{self, DIM, TEXT, tint};
 use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, W, WIDE};
 use rp_pim::phone;
+use rp_pim::store::{Kind, tag};
 
 /// People a view holds.
 pub const MAX: usize = 48;
 
-/// One person as the views show them.
+/// One person as the views show them (copied from the store's record).
 #[derive(Clone, Copy, Debug)]
 pub struct Person {
     /// First name.
-    pub first: &'static [u8],
+    pub first: Text<24>,
     /// Last name.
-    pub last: &'static [u8],
+    pub last: Text<24>,
     /// Company.
-    pub company: &'static [u8],
+    pub company: Text<32>,
     /// Phones: a label and the number as kept (E.164).
-    pub phones: [(&'static [u8], &'static [u8]); 2],
+    pub phones: [(&'static [u8], Text<20>); 3],
     /// E-mail.
-    pub email: &'static [u8],
+    pub email: Text<40>,
     /// The address, as lines.
-    pub address: [&'static [u8]; 2],
+    pub address: [Text<40>; 2],
     /// A favourite.
     pub favourite: bool,
+}
+
+impl Person {
+    /// A person from the store's record.
+    fn of(r: &rp_pim::store::Rec<'_>) -> Self {
+        let addr = r.text(tag::ADDRESS);
+        let (a0, a1) = match addr.iter().position(|&c| c == b'\n') {
+            Some(k) => (&addr[..k], &addr[k + 1..]),
+            None => (addr, &b""[..]),
+        };
+        Self {
+            first: Text::of(r.text(tag::FIRST)),
+            last: Text::of(r.text(tag::LAST)),
+            company: Text::of(r.text(tag::COMPANY)),
+            phones: [
+                (b"MOBILE", Text::of(r.text(tag::MOBILE))),
+                (b"HOME", Text::of(r.text(tag::HOME))),
+                (b"WORK", Text::of(r.text(tag::WORK))),
+            ],
+            email: Text::of(r.text(tag::EMAIL)),
+            address: [Text::of(a0), Text::of(a1)],
+            favourite: r.num(tag::FAVOURITE) == Some(1),
+        }
+    }
 }
 
 /// The views.
@@ -73,6 +99,8 @@ pub struct Place {
 /// The Contacts program.
 pub struct Contacts {
     people: [Option<Person>; MAX],
+    /// The store's change count the people were copied at.
+    seen: Option<u32>,
     view: View,
     /// Typed text per editor field.
     first: [u8; 32],
@@ -104,13 +132,14 @@ fn name(p: &Person, out: &mut [u8; 64]) -> usize {
     let mut n = 0;
     for &c in p
         .first
+        .get()
         .iter()
         .chain(if p.first.is_empty() {
             &b""[..]
         } else {
             &b" "[..]
         })
-        .chain(p.last)
+        .chain(p.last.get())
     {
         if n < out.len() {
             out[n] = c;
@@ -126,6 +155,7 @@ impl Contacts {
     pub fn new() -> Self {
         Self {
             people: [None; MAX],
+            seen: None,
             view: View::List,
             first: [0; 32],
             first_n: 0,
@@ -140,15 +170,55 @@ impl Contacts {
         }
     }
 
-    /// Adds a person (false when full).
-    pub fn add(&mut self, p: Person) -> bool {
-        match self.people.iter_mut().find(|s| s.is_none()) {
-            Some(s) => {
-                *s = Some(p);
-                true
-            }
-            None => false,
+    /// The people made again from the store when its records changed.
+    fn refresh(&mut self, cx: &Ctx) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(guard) = cell.try_borrow() else { return };
+        let Some(store) = guard.as_ref() else { return };
+        if self.seen == Some(store.changes()) {
+            return;
         }
+        self.seen = Some(store.changes());
+        self.people = [None; MAX];
+        for (slot, r) in self.people.iter_mut().zip(store.all(Kind::Contact)) {
+            *slot = Some(Person::of(&r));
+        }
+    }
+
+    /// The new person typed in the editor kept in the store: the name,
+    /// the mobile as E.164 (formatted for the region when shown), the
+    /// street.
+    fn keep_new(&mut self, cx: &Ctx) -> bool {
+        if self.first_n == 0 {
+            return false;
+        }
+        let home = phone::plan(*b"US").unwrap_or(&phone::PLANS[0]);
+        let mobile = phone::e164(&self.mobile[..self.mobile_n], home);
+        let mobile: &[u8] = if self.mobile_n == 0 {
+            &[]
+        } else {
+            mobile.get()
+        };
+        let fields: [(u8, &[u8]); 3] = [
+            (tag::FIRST, &self.first[..self.first_n]),
+            (tag::MOBILE, mobile),
+            (tag::ADDRESS, &self.street[..self.street_n]),
+        ];
+        let Some(cell) = cx.pim else { return false };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return false;
+        };
+        let Some(store) = guard.as_mut() else {
+            return false;
+        };
+        let ok = store.put(Kind::Contact, None, &fields).is_ok();
+        if ok {
+            self.seen = None;
+            self.first_n = 0;
+            self.mobile_n = 0;
+            self.street_n = 0;
+        }
+        ok
     }
 
     /// Shows `view`.
@@ -184,8 +254,15 @@ impl Contacts {
                 n += 1;
             }
         }
-        let key = |i: &u8| self.people[usize::from(*i)].map_or(&b""[..], |p| p.last);
-        idx[..n].sort_unstable_by(|a, b| key(a).cmp(key(b)));
+        let key = |i: &u8| {
+            self.people[usize::from(*i)].map_or([0u8; 24], |p| {
+                let mut k = [0u8; 24];
+                let l = p.last.get();
+                k[..l.len()].copy_from_slice(l);
+                k
+            })
+        };
+        idx[..n].sort_unstable_by(|a, b| key(a).cmp(&key(b)));
         (idx, n)
     }
 
@@ -269,7 +346,7 @@ impl Contacts {
                 y + 60,
                 cx.fonts.ui,
                 TEXT,
-                p.first,
+                p.first.get(),
             );
             col += 1;
         }
@@ -280,7 +357,13 @@ impl Contacts {
             let Some(p) = self.people[usize::from(i)] else {
                 continue;
             };
-            let l = p.last.first().copied().unwrap_or(b'#').to_ascii_uppercase();
+            let l = p
+                .last
+                .get()
+                .first()
+                .copied()
+                .unwrap_or(b'#')
+                .to_ascii_uppercase();
             if l != letter {
                 if y + 24 + 48 > 596 {
                     break;
@@ -307,13 +390,13 @@ impl Contacts {
             );
             kit::fitted(f, r.x + 56, r.y + 21, cx.fonts.ui, TEXT, &nm[..nn], 240);
             let sub = if p.company.is_empty() {
-                p.email
+                p.email.get()
             } else {
-                p.company
+                p.company.get()
             };
             kit::fitted(f, r.x + 56, r.y + 41, cx.fonts.ui, DIM, sub, 240);
             if !p.phones[0].1.is_empty() {
-                let ph = shown(p.phones[0].1);
+                let ph = shown(p.phones[0].1.get());
                 kit::right(f, r.right() - 10, r.y + 21, cx.fonts.ui, DIM, ph.get());
             }
             y += 50;
@@ -354,7 +437,14 @@ impl Contacts {
             TEXT,
             &nm[..nn],
         );
-        kit::centred(f, Rect::new(0, 0, W, 1), 206, cx.fonts.ui, DIM, p.company);
+        kit::centred(
+            f,
+            Rect::new(0, 0, W, 1),
+            206,
+            cx.fonts.ui,
+            DIM,
+            p.company.get(),
+        );
         // The action row.
         let mut y = 246;
         for (k, (word, mark)) in [
@@ -373,7 +463,8 @@ impl Contacts {
         }
         y += 76;
         // Details, grouped.
-        for (label, number) in p.phones {
+        for (label, number) in &p.phones {
+            let number = number.get();
             if number.is_empty() {
                 continue;
             }
@@ -394,15 +485,15 @@ impl Contacts {
             let r = Rect::new(MARGIN, y, WIDE, 52);
             kit::panel(f, cx, r);
             kit::text(f, r.x + 14, r.y + 20, cx.fonts.label, DIM, b"E-MAIL");
-            kit::text(f, r.x + 14, r.y + 44, cx.fonts.ui, TEXT, p.email);
+            kit::text(f, r.x + 14, r.y + 44, cx.fonts.ui, TEXT, p.email.get());
             y += 56;
         }
         if !p.address[0].is_empty() && y + 74 < 596 {
             let r = Rect::new(MARGIN, y, WIDE, 74);
             kit::panel(f, cx, r);
             kit::text(f, r.x + 14, r.y + 20, cx.fonts.label, DIM, b"HOME");
-            kit::text(f, r.x + 14, r.y + 44, cx.fonts.ui, TEXT, p.address[0]);
-            kit::text(f, r.x + 14, r.y + 66, cx.fonts.ui, TEXT, p.address[1]);
+            kit::text(f, r.x + 14, r.y + 44, cx.fonts.ui, TEXT, p.address[0].get());
+            kit::text(f, r.x + 14, r.y + 66, cx.fonts.ui, TEXT, p.address[1].get());
             kit::right(
                 f,
                 r.right() - 14,
@@ -507,6 +598,12 @@ impl Contacts {
     }
 }
 
+/// Contacts as it first opens (the program's entry and the PC's model).
+#[must_use]
+pub fn opened(_today: i32) -> Contacts {
+    Contacts::new()
+}
+
 impl Default for Contacts {
     fn default() -> Self {
         Self::new()
@@ -528,6 +625,7 @@ impl Program for Contacts {
 
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
+        self.refresh(cx);
         kit::backdrop(f);
         match self.view {
             View::List => self.list(f, cx),
@@ -536,8 +634,16 @@ impl Program for Contacts {
         }
     }
 
-    fn event(&mut self, e: Event, _cx: &Ctx) -> Reply {
+    fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
         match (e, self.view) {
+            // The softkey Done keeps the new person (the keyboard's Done
+            // moves to the next field).
+            (Event::Key(Key::SoftRight), View::Edit(_)) => {
+                if self.keep_new(cx) {
+                    self.view = View::List;
+                }
+                Reply::Redraw
+            }
             (Event::Key(Key::SoftLeft), View::List) => Reply::Close,
             (Event::Key(Key::SoftLeft), _) => {
                 self.view = View::List;

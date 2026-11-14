@@ -212,7 +212,6 @@ impl Shell {
     /// Whether the screen up has the keyboard.
     pub(crate) fn has_keyboard(&self) -> bool {
         matches!(self.screen, Screen::AddPlace | Screen::KeyEntry)
-            || (self.view().is_some() && self.apps.typing.is_some())
     }
 
     /// Opens a screen below the Weather app.
@@ -257,7 +256,6 @@ impl Shell {
             }
             Screen::Weather => self.go_today(),
             Screen::Today => {}
-            Screen::App(v) => self.app_back(v),
             Screen::Program => self.go_today(),
         }
     }

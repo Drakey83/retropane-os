@@ -1264,6 +1264,23 @@ fn icon_packs(root: &Path) -> Result<(), String> {
     if let Ok(set) = std::fs::read(root.join("local").join("weather-settings.bin")) {
         files.push((set, "RPSET".to_string(), "Weather settings"));
     }
+    // The organiser's app programs (rp_today::program::PROGRAMS: loaded by
+    // the image when opened). On the card in this test stage, standing in
+    // for internal storage.
+    for (crate_name, (name, stem)) in [
+        "rp-app-calendar",
+        "rp-app-contacts",
+        "rp-app-tasks",
+        "rp-app-notes",
+        "rp-app-calculator",
+    ]
+    .iter()
+    .zip(rp_today::program::PROGRAMS)
+    {
+        let pe = release.join(format!("{crate_name}.pe"));
+        let bytes = std::fs::read(&pe).map_err(|e| format!("{}: {e}", pe.display()))?;
+        files.push((bytes, String::from_utf8_lossy(&stem).into_owned(), name));
+    }
     // The PC's time now (R182): the image's clock starts from it, not from
     // the minute its build.rs last ran (a day stale in the owner's run of
     // 2026-11-02). Sent every load: it differs each time.

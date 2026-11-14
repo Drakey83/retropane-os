@@ -313,6 +313,13 @@ impl Calculator {
     }
 }
 
+/// The calculator as it first opens (the program's entry and the PC's
+/// model).
+#[must_use]
+pub fn opened(_today: i32) -> Calculator {
+    Calculator::new(Mode::Basic, b"", b"0", &[], false)
+}
+
 impl Program for Calculator {
     fn title(&self) -> &'static str {
         "Calculator"

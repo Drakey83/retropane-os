@@ -255,34 +255,6 @@ pub fn run(root: &Path) -> Result<(), String> {
             w = m.what
         ));
     }
-    // The organiser apps (batch 1 of docs/design/core-apps-list.md), with
-    // the sample records: every screen each app shows.
-    let app_shots = crate::apps_preview::shots();
-    let steps: Vec<Input> = app_shots
-        .iter()
-        .flat_map(|s| s.steps.iter().copied())
-        .collect();
-    let all = crate::emu::today_screens(
-        &wall,
-        map.as_deref(),
-        &steps,
-        true,
-        None,
-        &crate::apps_preview::sample,
-    );
-    let mut at = 0;
-    page.push_str("<h2>The organiser apps</h2>\n");
-    for s in &app_shots {
-        at += s.steps.len();
-        let rgb = all.get(at).ok_or("ui-preview: an app screen missing")?;
-        let file = format!("{}.png", s.name);
-        std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
-            .map_err(|e| format!("{file}: {e}"))?;
-        page.push_str(&format!(
-            "<figure><img src=\"{file}\" alt=\"{w}\"><figcaption>{w}</figcaption></figure>\n",
-            w = s.what
-        ));
-    }
     // Hourly as the X51v shows it on the plane path: the app's chrome on
     // screen 0 and the page's picture (drawn by the CPU, its line painted
     // per pixel, ARGB4444 dithered) blended over it.

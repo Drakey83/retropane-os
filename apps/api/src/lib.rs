@@ -90,6 +90,12 @@ pub struct Ctx<'a> {
     /// The region writes dates month first (the US) and starts the week on
     /// Sunday.
     pub us: bool,
+    /// The rounded shapes' corner pictures, painted once per colour and
+    /// kept by the shell ([`Shapes`]).
+    pub shapes: &'a Shapes,
+    /// The organiser's one store (docs/design/pim-store.md), when it is
+    /// given and loaded: read while drawing, changed while answering.
+    pub pim: Option<&'a core::cell::RefCell<Option<rp_pim::store::Store<'static>>>>,
 }
 
 /// One day of the forecast, in the units the user chose.
@@ -196,6 +202,127 @@ pub enum Reply {
     Animate,
     /// The app is done: back to where it was opened from.
     Close,
+}
+
+/// The corner pictures of rounded shapes (`kit::round_rect`): a 24 px
+/// disc per colour, painted once into the picture store and kept for every
+/// app that draws that colour.
+pub struct Shapes {
+    discs: core::cell::RefCell<[(Argb, Option<Pic>); 32]>,
+}
+
+impl Shapes {
+    /// None painted yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            discs: core::cell::RefCell::new([(0, None); 32]),
+        }
+    }
+
+    /// The disc of colour `c`, painted the first time it is asked for.
+    pub fn disc(&self, pics: &Pics<'static>, c: Argb) -> Option<Pic> {
+        let mut d = self.discs.try_borrow_mut().ok()?;
+        if let Some((_, p)) = d.iter().find(|(k, p)| *k == c && p.is_some()) {
+            return *p;
+        }
+        let free = d.iter().position(|(_, p)| p.is_none())?;
+        let p = kit::disc(pics, kit::CORNER * 2, c, None);
+        d[free] = (c, p);
+        p
+    }
+}
+
+impl Default for Shapes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A short text kept with a list's entry, cut to `N` bytes: a store's own
+/// bytes can't be held across a change, so views copy what they show.
+#[derive(Clone, Copy, Debug)]
+pub struct Text<const N: usize> {
+    b: [u8; N],
+    n: usize,
+}
+
+impl<const N: usize> Text<N> {
+    /// No text.
+    pub const EMPTY: Self = Self { b: [0; N], n: 0 };
+
+    /// `s`, cut to `N` bytes.
+    #[must_use]
+    pub fn of(s: &[u8]) -> Self {
+        let mut t = Self::EMPTY;
+        let n = s.len().min(N);
+        t.b[..n].copy_from_slice(&s[..n]);
+        t.n = n;
+        t
+    }
+
+    /// The bytes.
+    #[must_use]
+    pub fn get(&self) -> &[u8] {
+        &self.b[..self.n]
+    }
+
+    /// Nothing in it.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+}
+
+/// What the shell hands an app program's entry when it opens it, and the
+/// program it hands back (`rp_hal_user::app_entry!`).
+///
+/// The shell and the program are built from the same sources by the same
+/// compiler in one `cargo xtask` run, so the types they share have one
+/// layout; [`Opening::layout`] is checked anyway, and a program built
+/// apart from its shell refuses to open rather than read a wrong shape.
+pub struct Opening {
+    /// The shell's [`Opening::layout`].
+    pub layout: [u32; 6],
+    /// The program's own, written when it refuses (the shell logs both).
+    pub theirs: [u32; 6],
+    /// Today, days since 1970 (the app's first screen).
+    pub today: i32,
+    /// The program, when the entry agreed to open.
+    pub program: Option<&'static mut dyn Program>,
+}
+
+impl Opening {
+    /// The sizes of the types the shell and a program share.
+    #[must_use]
+    pub const fn layout() -> [u32; 6] {
+        [
+            core::mem::size_of::<Frame>() as u32,
+            core::mem::size_of::<Ctx>() as u32,
+            core::mem::size_of::<Event>() as u32,
+            core::mem::size_of::<Fonts>() as u32,
+            core::mem::size_of::<rp_draw::Cmd>() as u32,
+            core::mem::size_of::<Look>() as u32,
+        ]
+    }
+
+    /// An opening record for `today`.
+    #[must_use]
+    pub const fn new(today: i32) -> Self {
+        Self {
+            layout: Self::layout(),
+            theirs: [0; 6],
+            today,
+            program: None,
+        }
+    }
+
+    /// Whether the shell's shapes are this program's; when not, the
+    /// program's own are written for the shell to log.
+    pub fn fits(&mut self) -> bool {
+        self.theirs = Self::layout();
+        self.layout == self.theirs
+    }
 }
 
 /// An app program.

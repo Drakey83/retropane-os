@@ -102,8 +102,11 @@ pub(crate) fn today_screens(
     let mut painted = None;
     let mut chart_painted = None;
     for step in std::iter::once(None).chain(steps.iter().map(Some)) {
-        if let Some(&e) = step {
-            shell.input(e);
+        if let Some(&e) = step
+            && let rp_shell::Action::OpenProgram(n) = shell.input(e)
+            && let Some(p) = model_program(n, shell.today_days())
+        {
+            shell.open_program(p);
         }
         if settle {
             shell.settle();
@@ -129,6 +132,19 @@ pub(crate) fn today_screens(
         screens.push(out);
     }
     screens
+}
+
+/// App program `n` as the image's entry opens it (`rp_today::program`'s
+/// order): the PC's model of a loaded program.
+pub(crate) fn model_program(n: u8, today: i32) -> Option<&'static mut dyn rp_app::Program> {
+    Some(match n {
+        0 => Box::leak(Box::new(rp_app_calendar::opened(today))),
+        1 => Box::leak(Box::new(rp_app_contacts::opened(today))),
+        2 => Box::leak(Box::new(rp_app_tasks::opened(today))),
+        3 => Box::leak(Box::new(rp_app_notes::opened(today))),
+        4 => Box::leak(Box::new(rp_app_calculator::opened(today))),
+        _ => return None,
+    })
 }
 
 /// The organiser apps' memory with an empty store, as the image has it on

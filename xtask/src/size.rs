@@ -546,10 +546,12 @@ pub const BUDGETS: &[Budget] = &[
     // build to it. 2026-11-14: 920 KiB (938,380 B plain) for the version 2
     // apps' host, kit and the 30 px title font while the version 1 apps
     // are still in the image; the apps leave the image as their own
-    // programs (the owner, 2026-11-14), which brings it back down.
+    // programs (the owner, 2026-11-14), which brings it back down: with
+    // them out, 880,920 B plain (the program host and the title font in),
+    // so 880 KiB.
     Budget {
         image: "rp-today",
-        max_load: 920 * 1024,
+        max_load: 880 * 1024,
         max_zero: 84 * 1024,
         device: OnDevice::Returns,
     },

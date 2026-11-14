@@ -36,7 +36,6 @@ pub mod station;
 pub mod weather_app;
 mod weather_net;
 mod weather_settings;
-pub use apps::View;
 pub use weather_net::{Ask, Question};
 
 pub use weather_app::{LAYER_MARGIN, Motion, PageView, picture_rows};
@@ -332,9 +331,6 @@ pub enum Screen {
     Station,
     /// A weather alert in full.
     Alert,
-    /// An organiser app's screen ([`apps`]: Calendar, Contacts, Tasks,
-    /// Notes, the Calculator).
-    App(apps::View),
     /// An app program ([`rp_app::Program`]): the shell keeps the bars, the
     /// program draws its area (the owner, 2026-11-14: every app its own
     /// program).
@@ -406,6 +402,11 @@ pub enum Action {
     Redraw,
     /// The test image's "Back to loader" entry was chosen.
     BackToLoader,
+    /// App program `n` (the Start menu's organiser entries, in order:
+    /// Calendar, Contacts, Tasks, Notes, the Calculator) is to be loaded
+    /// and opened ([`Shell::open_program`]); only when the caller said it
+    /// has programs ([`Shell::use_programs`]).
+    OpenProgram(u8),
     /// The align screen finished: map touches with this from now on.
     Calibrated(Calibration),
     /// The test image's wallpaper comparison: show the wallpaper dithered
@@ -474,9 +475,6 @@ pub enum Target {
     Reading(u8),
     /// The chart's span chip (0: 12 hours, 1: 2 days).
     Span(u8),
-    /// A control of an organiser app's screen, or of the reminder banner
-    /// (its place in the screen's list of targets).
-    App(u8),
 }
 
 // ---- Layout (480 x 640, portrait) --------------------------------------
@@ -676,8 +674,13 @@ const PULL_REFRESH: i32 = 56;
 pub struct Shell {
     /// The organiser apps' state ([`apps`]).
     apps: apps::Apps,
+    /// Programs' rounded shapes' corners, painted once per colour.
+    shapes: rp_app::Shapes,
     /// The app program open, if any ([`Screen::Program`]).
     program: core::cell::RefCell<Option<&'static mut dyn rp_app::Program>>,
+    /// The organiser's entries open app programs (the caller loads them)
+    /// rather than the apps built into the shell.
+    programs: bool,
     /// The field the program's keyboard was set for, and the last
     /// character typed (the automatic capitals).
     prog_field: Option<rp_app::Field>,
@@ -908,7 +911,9 @@ macro_rules! shell_start {
     ($fonts:expr, $icons:expr, $dev_exit:expr; $($how:tt)*) => {
         rp_hal_mem::in_place!($($how)* Shell {
             apps: apps::Apps::new(),
+            shapes: rp_app::Shapes::new(),
             program: core::cell::RefCell::new(None),
+            programs: false,
             prog_field: None,
             prog_last: b' ',
             app_pics: None,
@@ -1380,7 +1385,6 @@ impl Shell {
             Screen::KeyEntry => "Station key",
             Screen::Station => "Your station",
             Screen::Alert => "Weather alert",
-            Screen::App(v) => Self::app_title(v),
             Screen::Program => self.program.borrow().as_ref().map_or("", |p| p.title()),
         }
     }
@@ -1655,7 +1659,6 @@ impl Shell {
             Target::Timeline => weather_app::TIMELINE,
             Target::Reading(i) => self.reading_rect(i),
             Target::Span(i) => chart::span_chip(i),
-            Target::App(i) => self.app_rect(i),
         }
     }
 
@@ -1680,7 +1683,6 @@ impl Shell {
         // before what they may lie over (the banner over Today's hero).
         let today = [Target::Start]
             .into_iter()
-            .chain((0..self.app_targets()).map(Target::App))
             .chain(self.shows_ok().then_some(Target::Ok))
             .chain((0..back).map(|_| Target::Back))
             .chain((0..hero).map(|_| Target::Hero))
@@ -1781,14 +1783,7 @@ impl Shell {
         let was_light = self.light();
         self.time = t;
         self.dirty(TITLE_CLOCK);
-        // The organiser: reminders by the minute, the lists by the day.
-        if date_changed {
-            if self.view().is_some() {
-                self.app_changed();
-            } else {
-                self.apps.forget_lists();
-            }
-        }
+        let _ = date_changed;
         self.reminders_tick();
         // Auto's change at sunrise or sunset: every screen in the other look.
         if self.light() != was_light {
@@ -1839,6 +1834,12 @@ impl Shell {
         self.pressed = p;
     }
 
+    /// Shows `what` in the notice for a moment (the caller's word, as a
+    /// program that could not be opened).
+    pub fn tell(&mut self, what: &'static str) {
+        self.show_notice(what);
+    }
+
     fn show_notice(&mut self, what: &'static str) {
         self.notice = Some((what, self.now.wrapping_add(NOTICE_MS)));
         self.dirty(NOTICE);
@@ -1881,15 +1882,15 @@ impl Shell {
         }
         match t {
             Target::Start => self.set_menu(!self.menu_open),
-            // The first quick button starts a note.
-            Target::Quick(0) => self.note_open(None),
+            // The first quick button starts a note (the Notes program).
+            Target::Quick(0) if self.programs => return Action::OpenProgram(3),
             Target::Quick(i) => {
                 self.show_notice(not_yet(QUICK[usize::from(i).min(QUICK.len() - 1)]))
             }
-            Target::App(i) => self.app_tapped(i),
             Target::SoftLeft => match self.screen {
-                Screen::Today => self.open_app(View::Agenda),
-                Screen::App(v) => self.app_soft(v, false),
+                // Today's left softkey opens Calendar (the Calendar program).
+                Screen::Today if self.programs => return Action::OpenProgram(0),
+                Screen::Today => self.show_notice(not_yet("Calendar")),
                 Screen::Program => {
                     self.program_event(rp_app::Event::Key(rp_app::Key::SoftLeft));
                 }
@@ -1909,7 +1910,6 @@ impl Shell {
                 }
                 Screen::WeatherSettings | Screen::WeatherFrom | Screen::Alert => {}
                 Screen::Station => self.refresh(),
-                Screen::App(v) => self.app_soft(v, true),
                 Screen::Program => {
                     self.program_event(rp_app::Event::Key(rp_app::Key::SoftRight));
                 }
@@ -1935,7 +1935,6 @@ impl Shell {
             Target::Tab(i) => self.set_tab(i),
             Target::Back => self.go_back(),
             Target::Row(i) => self.row_tapped(i),
-            Target::Cap(i) if self.view().is_some() => self.app_cap(i),
             Target::Cap(i) => self.cap_tapped(i),
             Target::Play => {
                 self.radar_play = !self.radar_play;
@@ -1972,20 +1971,15 @@ impl Shell {
                     return Action::Redraw;
                 }
                 self.set_menu(false);
-                let app = match label {
-                    "Calendar" => Some(View::Agenda),
-                    "Contacts" => Some(View::Contacts),
-                    "Tasks" => Some(View::Tasks),
-                    "Notes" => Some(View::Notes),
-                    "Calculator" => Some(View::Calculator),
-                    _ => None,
-                };
+                if self.programs
+                    && let Some(n) = ["Calendar", "Contacts", "Tasks", "Notes", "Calculator"]
+                        .iter()
+                        .position(|&p| p == label)
+                {
+                    return Action::OpenProgram(n as u8);
+                }
                 if label == "Today" {
                     self.go_today();
-                } else if let Some(v) = app {
-                    // A note open is kept on the way.
-                    self.app_leave();
-                    self.open_app(v);
                 } else {
                     self.show_notice(not_yet(label));
                 }
@@ -1996,7 +1990,6 @@ impl Shell {
 
     /// Back to the Today screen (from anywhere).
     fn go_today(&mut self) {
-        self.app_leave();
         if self.screen == Screen::Program {
             *self.program.borrow_mut() = None;
         }
@@ -2012,7 +2005,6 @@ impl Shell {
             if self.focus.is_some() {
                 self.focus = Some(Target::Hero);
             }
-            self.app_refresh();
             self.dirty(Rect::new(0, 0, W, H));
         }
     }
@@ -2057,7 +2049,6 @@ impl Shell {
             Screen::KeyEntry => ("Cancel", "Done"),
             Screen::Station => ("Back", "Refresh"),
             Screen::Alert => ("Back", ""),
-            Screen::App(v) => self.app_softkeys(v),
             Screen::Program => self
                 .program
                 .borrow()
@@ -2235,7 +2226,6 @@ impl Shell {
 
     /// Opens the app program `p` ([`Screen::Program`]).
     pub fn open_program(&mut self, p: &'static mut dyn rp_app::Program) {
-        self.app_leave();
         self.set_menu(false);
         *self.program.borrow_mut() = Some(p);
         self.screen = Screen::Program;
@@ -2271,6 +2261,12 @@ impl Shell {
             };
             self.dirty(Rect::new(0, 0, W, H));
         }
+    }
+
+    /// The organiser's Start menu entries open app programs from now on
+    /// ([`Action::OpenProgram`]).
+    pub fn use_programs(&mut self, yes: bool) {
+        self.programs = yes;
     }
 
     /// The picture store programs paint into (the renderer's own).
@@ -2323,25 +2319,14 @@ impl Shell {
         }
     }
 
-    /// A program's area, with the keyboard when it types.
+    /// A program's keyboard and its strip's suggestions, when it types
+    /// (its area is drawn after the look's pass, [`Self::program_content`]).
     fn program_scene(&self, f: &mut Frame) {
-        let (fonts, look) = (self.program_fonts(), self.program_look());
-        let cx = rp_app::Ctx {
-            fonts: &fonts,
-            look: &look,
-            now: self.program_now(),
-            pics: self.app_pics,
-            forecast: &self.forecast[..usize::from(self.forecast_n)],
-            us: true,
-        };
         let mut words: [[u8; 24]; 3] = [[0; 24]; 3];
         let mut lens = [0usize; 3];
         let typing = {
             let mut p = self.program.borrow_mut();
             let Some(p) = p.as_mut() else { return };
-            f.clip(Some(rp_app::CONTENT));
-            p.draw(f, &cx);
-            f.clip(None);
             for (k, w) in p.suggestions().iter().enumerate() {
                 let n = w.len().min(24);
                 words[k][..n].copy_from_slice(&w[..n]);
@@ -2381,6 +2366,42 @@ impl Shell {
         }
     }
 
+    /// The open program's area, drawn after the look's pass: a program
+    /// chooses its own colours (its rounded shapes' corners are pictures
+    /// the pass can't recolour, so the pass would split body from corner).
+    fn program_content(&self, f: &mut Frame) {
+        if self.screen != Screen::Program {
+            return;
+        }
+        let (fonts, look) = (self.program_fonts(), self.program_look());
+        let cx = rp_app::Ctx {
+            fonts: &fonts,
+            look: &look,
+            now: self.program_now(),
+            pics: self.app_pics,
+            forecast: &self.forecast[..usize::from(self.forecast_n)],
+            us: true,
+            shapes: &self.shapes,
+            pim: Some(&self.apps.store),
+        };
+        let mut p = self.program.borrow_mut();
+        let Some(p) = p.as_mut() else { return };
+        // Under the keyboard when one is up.
+        let area = if p.keyboard().is_some() {
+            Rect::new(
+                0,
+                rp_app::CONTENT.y,
+                W,
+                keyboard::PANEL.y - rp_app::CONTENT.y,
+            )
+        } else {
+            rp_app::CONTENT
+        };
+        f.clip(Some(area));
+        p.draw(f, &cx);
+        f.clip(None);
+    }
+
     /// Sends `e` to the open program and does what it answers.
     fn program_event(&mut self, e: rp_app::Event) -> Action {
         let (fonts, look) = (self.program_fonts(), self.program_look());
@@ -2392,6 +2413,8 @@ impl Shell {
                 pics: self.app_pics,
                 forecast: &self.forecast[..usize::from(self.forecast_n)],
                 us: true,
+                shapes: &self.shapes,
+                pim: Some(&self.apps.store),
             };
             let mut p = self.program.borrow_mut();
             match p.as_mut() {
@@ -2523,12 +2546,11 @@ impl Shell {
         if let Some(a) = self.program_input(e) {
             return a;
         }
-        // An organiser app's list under the pen, its caret under the keys.
-        if let Some(a) = self.app_pen(e) {
-            return match a {
-                Action::Nothing if self.damaged != before => Action::Redraw,
-                a => a,
-            };
+        // The reminder banner's buttons, over any screen.
+        if let Input::PenUp { x, y } = e
+            && let Some(a) = self.banner_tap(x, y)
+        {
+            return a;
         }
         let act = match e {
             Input::PenDown { x, y } => {
@@ -2627,7 +2649,6 @@ impl Shell {
                     Some(f) => self.neighbour(f, k).or(Some(f)),
                 };
                 self.set_focus(next);
-                self.app_follow_focus();
                 Action::Nothing
             }
         };
@@ -2718,6 +2739,7 @@ impl Shell {
         self.damaged = 0;
         self.scene(f);
         self.look(f);
+        self.program_content(f);
         // The list kept for the next frame, and a restatement's areas:
         // where this list differs from the last one drawn.
         let restated = core::mem::take(&mut self.restated);
@@ -3078,7 +3100,6 @@ impl Shell {
             Screen::KeyEntry => self.key_scene(f),
             Screen::Station => self.station_scene(f),
             Screen::Alert => self.alert_scene(f),
-            Screen::App(v) => self.app_scene(f, v),
             Screen::Program => self.program_scene(f),
         }
         if self.chart.is_some() {

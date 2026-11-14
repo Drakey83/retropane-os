@@ -15,14 +15,16 @@
 
 use rp_app::kit::{self, DIM, TEXT, tint};
 use rp_app::{
-    Argb, Ctx, Event, Field, Frame, Key, MARGIN, Pic, Pics, Program, Rect, Reply, W, WIDE,
+    Argb, Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, Text, W, WIDE,
 };
+use rp_pim::store::{Kind, tag};
 
 /// The ink panel's picture and a card's miniature (the picture store's
 /// classes for Notes).
 pub const PIC_CLASSES: [(u16, u16, u8); 2] = [(448, 196, 1), (212, 84, 4)];
 
-/// One block of a note.
+/// One block of a note, as a note is written (the previews' samples, and
+/// the store's text and ink once parsed).
 #[derive(Clone, Copy, Debug)]
 pub enum Block {
     /// A paragraph.
@@ -33,7 +35,7 @@ pub enum Block {
     Ink(&'static [&'static [(i16, i16)]]),
 }
 
-/// One note.
+/// One note, as written (the previews' samples).
 #[derive(Clone, Copy, Debug)]
 pub struct Note {
     /// Its title.
@@ -51,20 +53,185 @@ pub struct Note {
 pub enum View {
     /// The grid of cards.
     Home,
-    /// One note.
+    /// One note (its place in the store's order).
     Note(u8),
+}
+
+/// The line in a note's text that stands for its ink panel.
+const INK_LINE: u8 = 0x01;
+/// Points a note's ink holds, and strokes.
+const POINTS: usize = 900;
+const STROKES: usize = 48;
+
+/// Packs `strokes` into `out` (the store's `INK` field): per stroke its
+/// point count, the first point as two little-endian i16, then each next
+/// one as a byte pair of signed steps (a longer step is split, so nothing
+/// is lost). The length, or `None` when it doesn't fit.
+pub fn encode_ink(strokes: &[&[(i16, i16)]], out: &mut [u8]) -> Option<usize> {
+    let mut n = 0;
+    let mut put = |b: u8, n: &mut usize| -> Option<()> {
+        *out.get_mut(*n)? = b;
+        *n += 1;
+        Some(())
+    };
+    for st in strokes.iter().filter(|s| !s.is_empty()) {
+        // The points with long steps split into steps of at most 127.
+        let mut pts = [(0i16, 0i16); 255];
+        let mut k = 0;
+        let mut last = st[0];
+        pts[0] = last;
+        k += 1;
+        for &p in &st[1..] {
+            while k < pts.len() && ((p.0 - last.0).abs() > 127 || (p.1 - last.1).abs() > 127) {
+                last = (
+                    last.0 + (p.0 - last.0).clamp(-127, 127),
+                    last.1 + (p.1 - last.1).clamp(-127, 127),
+                );
+                pts[k] = last;
+                k += 1;
+            }
+            if k < pts.len() {
+                pts[k] = p;
+                k += 1;
+                last = p;
+            }
+        }
+        put(k as u8, &mut n)?;
+        for b in pts[0].0.to_le_bytes().iter().chain(&pts[0].1.to_le_bytes()) {
+            put(*b, &mut n)?;
+        }
+        for w in pts[..k].windows(2) {
+            put((w[1].0 - w[0].0) as i8 as u8, &mut n)?;
+            put((w[1].1 - w[0].1) as i8 as u8, &mut n)?;
+        }
+    }
+    Some(n)
+}
+
+/// Unpacks the store's `INK` field into `pts`, each stroke's end in
+/// `ends`: the strokes read (a damaged field stops where it breaks).
+pub fn decode_ink(ink: &[u8], pts: &mut [(i16, i16)], ends: &mut [u16]) -> usize {
+    let (mut at, mut np, mut ns) = (0usize, 0usize, 0usize);
+    while at + 5 <= ink.len() && ns < ends.len() {
+        let count = usize::from(ink[at]);
+        let x = i16::from_le_bytes([ink[at + 1], ink[at + 2]]);
+        let y = i16::from_le_bytes([ink[at + 3], ink[at + 4]]);
+        at += 5;
+        if count == 0 || np + count > pts.len() || at + 2 * (count - 1) > ink.len() {
+            break;
+        }
+        let (mut px, mut py) = (x, y);
+        pts[np] = (px, py);
+        for k in 1..count {
+            px = px.saturating_add(i16::from(ink[at] as i8));
+            py = py.saturating_add(i16::from(ink[at + 1] as i8));
+            at += 2;
+            pts[np + k] = (px, py);
+        }
+        np += count;
+        ends[ns] = np as u16;
+        ns += 1;
+    }
+    ns
+}
+
+/// A note's text and ink for the store from its blocks (the previews put
+/// their samples in through it): the text's lines (`[ ] ` and `[x] ` mark
+/// checklist items, a line of byte 1 the ink's place) and the packed ink.
+/// The lengths.
+pub fn fields_of(blocks: &[Block], text: &mut [u8], ink: &mut [u8]) -> (usize, usize) {
+    let (mut t, mut i) = (0usize, 0usize);
+    let mut push = |b: &[u8], t: &mut usize| {
+        for &c in b {
+            if *t < text.len() {
+                text[*t] = c;
+                *t += 1;
+            }
+        }
+    };
+    for (k, b) in blocks.iter().enumerate() {
+        if k > 0 {
+            push(b"\n", &mut t);
+        }
+        match b {
+            Block::Text(s) => push(s, &mut t),
+            Block::Check(s, done) => {
+                push(if *done { b"[x] " } else { b"[ ] " }, &mut t);
+                push(s, &mut t);
+            }
+            Block::Ink(st) => {
+                push(&[INK_LINE], &mut t);
+                i = encode_ink(st, ink).unwrap_or(0);
+            }
+        }
+    }
+    (t, i)
+}
+
+/// A line of a note as a view shows it.
+#[derive(Clone, Copy, Debug)]
+enum Line {
+    Text(Text<48>),
+    Check(Text<48>, bool),
+    Ink,
+}
+
+/// A note as the views show it (copied from the store).
+#[derive(Clone, Copy, Debug)]
+struct Row {
+    id: u32,
+    title: Text<32>,
+    colour: Argb,
+    pinned: bool,
+    lines: [Line; 12],
+    n: usize,
+}
+
+impl Row {
+    fn of(r: &rp_pim::store::Rec<'_>) -> Self {
+        let mut row = Self {
+            id: r.id,
+            title: Text::of(r.text(tag::TITLE)),
+            colour: kit::IDENTITY[(r.num(tag::COLOUR).unwrap_or(1) % 8) as usize],
+            pinned: r.num(tag::PINNED) == Some(1),
+            lines: [Line::Ink; 12],
+            n: 0,
+        };
+        for l in r.text(tag::TEXT).split(|&c| c == b'\n') {
+            if row.n == row.lines.len() {
+                break;
+            }
+            row.lines[row.n] = if l == [INK_LINE] {
+                Line::Ink
+            } else if let Some(t) = l.strip_prefix(b"[x] ") {
+                Line::Check(Text::of(t), true)
+            } else if let Some(t) = l.strip_prefix(b"[ ] ") {
+                Line::Check(Text::of(t), false)
+            } else {
+                Line::Text(Text::of(l))
+            };
+            row.n += 1;
+        }
+        row
+    }
+
+    fn has_ink(&self) -> bool {
+        self.lines[..self.n].iter().any(|l| matches!(l, Line::Ink))
+    }
 }
 
 /// The Notes program.
 pub struct Notes {
-    notes: &'static [Note],
+    rows: [Option<Row>; 24],
+    /// The store's change count the rows were copied at.
+    seen: Option<u32>,
     view: View,
     /// The open note's ink and the cards' miniatures, painted once.
     ink: Option<Pic>,
     minis: [Option<Pic>; 4],
     ring: Option<Pic>,
     full: Option<Pic>,
-    painted: Option<View>,
+    painted: Option<(View, u32)>,
 }
 
 /// Paints `strokes` (in a 448 x 196 box) into `px` (`w` x `h`, scaled to
@@ -128,12 +295,35 @@ pub fn paint_ink(px: &mut [Argb], w: u16, h: u16, strokes: &[&[(i16, i16)]], c: 
     }
 }
 
+/// Paints the ink of note `id` from the store into a new picture of
+/// `w` x `h` in `c`.
+fn ink_pic(cx: &Ctx, id: u32, w: u16, h: u16, c: Argb) -> Option<Pic> {
+    let pics = cx.pics?;
+    let guard = cx.pim?.try_borrow().ok()?;
+    let store = guard.as_ref()?;
+    let rec = store.get(id)?;
+    let mut pts = [(0i16, 0i16); POINTS];
+    let mut ends = [0u16; STROKES];
+    let ns = decode_ink(rec.text(tag::INK), &mut pts, &mut ends);
+    let mut strokes: [&[(i16, i16)]; STROKES] = [&[]; STROKES];
+    let mut from = 0usize;
+    for (k, &e) in ends[..ns].iter().enumerate() {
+        strokes[k] = &pts[from..usize::from(e)];
+        from = usize::from(e);
+    }
+    let p = pics.alloc(w, h)?;
+    pics.write(p, |px| paint_ink(px, w, h, &strokes[..ns], c));
+    Some(p)
+}
+
 impl Notes {
-    /// The notes `notes`.
+    /// No notes until the store gives them (`_samples` is the previews'
+    /// old way in: the store now holds them).
     #[must_use]
-    pub fn new(notes: &'static [Note]) -> Self {
+    pub fn new(_samples: &'static [Note]) -> Self {
         Self {
-            notes,
+            rows: [None; 24],
+            seen: None,
             view: View::Home,
             ink: None,
             minis: [None; 4],
@@ -148,52 +338,67 @@ impl Notes {
         self.view = view;
     }
 
-    fn ink_of(n: &Note) -> Option<&'static [&'static [(i16, i16)]]> {
-        n.blocks.iter().find_map(|b| match b {
-            Block::Ink(s) => Some(*s),
-            _ => None,
-        })
-    }
-
-    fn paint(&mut self, pics: Option<&Pics<'static>>) {
-        if self.painted == Some(self.view) {
+    /// The notes copied again from the store when its records changed.
+    fn refresh(&mut self, cx: &Ctx) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(guard) = cell.try_borrow() else { return };
+        let Some(store) = guard.as_ref() else { return };
+        if self.seen == Some(store.changes()) {
             return;
         }
-        let Some(pics) = pics else { return };
+        self.seen = Some(store.changes());
+        self.rows = [None; 24];
+        for (slot, r) in self.rows.iter_mut().zip(store.all(Kind::Note)) {
+            *slot = Some(Row::of(&r));
+        }
+        self.painted = None;
+    }
+
+    fn paint(&mut self, cx: &Ctx) {
+        let key = (self.view, self.seen.unwrap_or(0));
+        if self.painted == Some(key) {
+            return;
+        }
+        let Some(pics) = cx.pics else { return };
         if self.ring.is_none() {
             self.ring = kit::disc(pics, 24, 0, Some(tint::NOTES));
             self.full = kit::disc(pics, 24, tint::NOTES, None);
         }
         match self.view {
             View::Home => {
+                // Pinned first, as the grid shows them.
                 let mut k = 0;
-                for n in self.notes {
-                    if let Some(s) = Self::ink_of(n)
-                        && k < self.minis.len()
+                for want in [true, false] {
+                    for row in self
+                        .rows
+                        .iter()
+                        .flatten()
+                        .filter(|r| r.pinned == want && r.has_ink())
                     {
-                        if let Some(p) = pics.alloc(212, 84) {
-                            pics.write(p, |px| paint_ink(px, 212, 84, s, 0xFF20_2A38));
-                            self.minis[k] = Some(p);
+                        if k < self.minis.len() {
+                            if self.minis[k].is_none() {
+                                self.minis[k] = ink_pic(cx, row.id, 212, 84, 0xFF20_2A38);
+                            }
+                            k += 1;
                         }
-                        k += 1;
                     }
                 }
             }
             View::Note(i) => {
-                if let Some(s) = self.notes.get(usize::from(i)).and_then(Self::ink_of)
-                    && let Some(p) = pics.alloc(448, 196)
+                if let Some(row) = self.rows.get(usize::from(i)).copied().flatten()
+                    && row.has_ink()
+                    && self.ink.is_none()
                 {
-                    pics.write(p, |px| paint_ink(px, 448, 196, s, 0xFF1C_3A6E));
-                    self.ink = Some(p);
+                    self.ink = ink_pic(cx, row.id, 448, 196, 0xFF1C_3A6E);
                 }
             }
         }
-        self.painted = Some(self.view);
+        self.painted = Some(key);
     }
 
     fn home(&self, f: &mut Frame, cx: &Ctx) {
         let mut s = [0u8; 16];
-        let n = self.notes.len();
+        let n = self.rows.iter().flatten().count();
         let mut k = 0;
         if n >= 10 {
             s[k] = b'0' + (n / 10) as u8;
@@ -221,18 +426,18 @@ impl Notes {
         let mut col_y = [y, y];
         let mut mini = 0;
         let order = self
-            .notes
+            .rows
             .iter()
+            .flatten()
             .filter(|n| n.pinned)
-            .chain(self.notes.iter().filter(|n| !n.pinned));
+            .chain(self.rows.iter().flatten().filter(|n| !n.pinned));
         for note in order {
             let c = if col_y[0] <= col_y[1] { 0 } else { 1 };
             let x = MARGIN + c as u16 * 228;
-            let ink = Self::ink_of(note).is_some();
-            let lines = note
-                .blocks
+            let ink = note.has_ink();
+            let lines = note.lines[..note.n]
                 .iter()
-                .filter(|b| !matches!(b, Block::Ink(_)))
+                .filter(|b| !matches!(b, Line::Ink))
                 .count()
                 .min(3) as u16;
             let h = 40 + lines * 22 + if ink { 88 } else { 0 };
@@ -241,7 +446,15 @@ impl Notes {
             }
             let r = Rect::new(x, col_y[c], 220, h);
             kit::tinted(f, cx, r, note.colour, 0x40);
-            kit::fitted(f, r.x + 12, r.y + 26, cx.fonts.ui, TEXT, note.title, 170);
+            kit::fitted(
+                f,
+                r.x + 12,
+                r.y + 26,
+                cx.fonts.ui,
+                TEXT,
+                note.title.get(),
+                170,
+            );
             if note.pinned {
                 kit::right(
                     f,
@@ -253,19 +466,19 @@ impl Notes {
                 );
             }
             let mut ly = r.y + 48;
-            for b in note.blocks.iter().take(4) {
+            for b in note.lines[..note.n].iter().take(4) {
                 match b {
-                    Block::Text(t) => {
-                        kit::fitted(f, r.x + 12, ly, cx.fonts.ui, DIM, t, 196);
+                    Line::Text(t) => {
+                        kit::fitted(f, r.x + 12, ly, cx.fonts.ui, DIM, t.get(), 196);
                         ly += 22;
                     }
-                    Block::Check(t, done) => {
+                    Line::Check(t, done) => {
                         let mark: &[u8] = if *done { b"[x] " } else { b"[ ] " };
                         kit::text(f, r.x + 12, ly, cx.fonts.ui, DIM, mark);
-                        kit::fitted(f, r.x + 44, ly, cx.fonts.ui, DIM, t, 164);
+                        kit::fitted(f, r.x + 44, ly, cx.fonts.ui, DIM, t.get(), 164);
                         ly += 22;
                     }
-                    Block::Ink(_) => {
+                    Line::Ink => {
                         if let Some(p) = self.minis.get(mini).copied().flatten() {
                             f.push(rp_app::Cmd::Fill {
                                 r: Rect::new(r.x + 4, ly - 14, 212, 84),
@@ -287,7 +500,7 @@ impl Notes {
     }
 
     fn note(&self, f: &mut Frame, cx: &Ctx, i: u8) {
-        let Some(note) = self.notes.get(usize::from(i)) else {
+        let Some(note) = self.rows.get(usize::from(i)).copied().flatten() else {
             return;
         };
         // The paper: warm, ruled every 28 px.
@@ -313,16 +526,18 @@ impl Notes {
             paper.y + 44,
             cx.fonts.title,
             ink,
-            note.title,
+            note.title.get(),
         );
         let mut y = paper.y + 84;
-        for b in note.blocks {
+        for b in &note.lines[..note.n] {
             match b {
-                Block::Text(t) => {
+                Line::Text(t) => {
+                    let t = t.get();
                     kit::fitted(f, paper.x + 24, y, cx.fonts.ui, ink, t, paper.w - 40);
                     y += 28;
                 }
-                Block::Check(t, done) => {
+                Line::Check(t, done) => {
+                    let t = t.get();
                     kit::round_check(f, cx, paper.x + 24, y - 18, self.ring, self.full, *done);
                     let col = if *done { 0x9020_2A38 } else { ink };
                     kit::text(f, paper.x + 58, y, cx.fonts.ui, col, t);
@@ -334,7 +549,7 @@ impl Notes {
                     }
                     y += 28;
                 }
-                Block::Ink(_) => {
+                Line::Ink => {
                     if let Some(p) = self.ink {
                         f.push(rp_app::Cmd::Pic {
                             x: paper.x + 8,
@@ -376,6 +591,12 @@ impl Notes {
     }
 }
 
+/// Notes as it first opens (the program's entry and the PC's model).
+#[must_use]
+pub fn opened(_today: i32) -> Notes {
+    Notes::new(&[])
+}
+
 impl Program for Notes {
     fn title(&self) -> &'static str {
         "Notes"
@@ -389,7 +610,8 @@ impl Program for Notes {
     }
 
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
-        self.paint(cx.pics);
+        self.refresh(cx);
+        self.paint(cx);
         kit::backdrop(f);
         match self.view {
             View::Home => self.home(f, cx),

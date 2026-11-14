@@ -101,21 +101,54 @@ pub const fn mix(base: Argb, top: Argb, strength: u8) -> Argb {
     0xFF00_0000 | ch(base, top, s, 16) | ch(base, top, s, 8) | ch(base, top, s, 0)
 }
 
-/// A tinted panel: the glass with `c` laid in its body (inset past the
-/// rounded corners, so the rim and corners stay the art's).
+/// The rounded shapes' corner radius.
+pub const CORNER: u16 = 12;
+
+/// The dark glass of a shape with no tint of its own.
+pub const GLASS: Argb = 0xFF2A_3038;
+
+/// A rounded rectangle in one opaque colour: two fills crossing and a disc
+/// picture at each corner (painted once per colour, `Shapes`), so the
+/// shape is one colour edge to edge with anti-aliased corners.
 ///
-/// One fill, the tint already mixed into a dark base: the 2D engine lays
-/// every translucent fill over the wallpaper itself, not over what was
-/// drawn before it (`rp_mbx_render`'s `Fill`), so layered fills don't add
-/// up and a bright wallpaper showed through stacked ones.
-pub fn tinted(f: &mut Frame, cx: &Ctx, r: Rect, c: Argb, strength: u8) {
-    panel(f, cx, r);
-    if r.w > 8 && r.h > 6 {
-        f.push(Cmd::Fill {
-            r: Rect::new(r.x + 3, r.y + 3, r.w - 6, r.h - 6),
-            color: alpha(mix(0xFF14_181E, c, strength), 0xE8),
-        });
+/// Version 2's first chips and cards laid a tint inside the glass panel's
+/// art: the chosen chip read as a box on a button and the art's corners
+/// showed as light squares at chip height (the owner, 2026-11-14). The
+/// colour is opaque on purpose: the 2D engine lays a translucent fill over
+/// the wallpaper itself (`rp_mbx_render`'s `Fill`), so a translucent body
+/// and its corner pictures would blend twice where they meet.
+pub fn round_rect(f: &mut Frame, cx: &Ctx, r: Rect, c: Argb) {
+    let c = c | 0xFF00_0000;
+    let k = CORNER;
+    let disc = cx.pics.and_then(|p| cx.shapes.disc(p, c));
+    if r.w < 2 * k || r.h < 2 * k || disc.is_none() {
+        f.push(Cmd::Fill { r, color: c });
+        return;
     }
+    f.push(Cmd::Fill {
+        r: Rect::new(r.x + k, r.y, r.w - 2 * k, r.h),
+        color: c,
+    });
+    f.push(Cmd::Fill {
+        r: Rect::new(r.x, r.y + k, r.w, r.h - 2 * k),
+        color: c,
+    });
+    if let Some(pic) = disc {
+        let (x1, y1) = (r.x + r.w - 2 * k, r.y + r.h - 2 * k);
+        for (x, y) in [(r.x, r.y), (x1, r.y), (r.x, y1), (x1, y1)] {
+            f.push(Cmd::Pic {
+                x,
+                y: y as i16,
+                pic,
+            });
+        }
+    }
+}
+
+/// A tinted card: `c` mixed at `strength` into the dark glass, as one
+/// rounded shape ([`round_rect`]).
+pub fn tinted(f: &mut Frame, cx: &Ctx, r: Rect, c: Argb, strength: u8) {
+    round_rect(f, cx, r, mix(0xFF14_181E, c, strength));
 }
 
 /// A row's colour bar: 4 px on its left edge.
@@ -216,12 +249,14 @@ pub fn chips(f: &mut Frame, cx: &Ctx, r: Rect, labels: &[&[u8]], chosen: usize, 
     let cw = (r.w - gap * (n - 1)) / n;
     for (i, l) in labels.iter().enumerate() {
         let c = Rect::new(r.x + i as u16 * (cw + gap), r.y, cw, r.h);
-        if i == chosen {
-            tinted(f, cx, c, tint, 0xC0);
+        // The chosen chip is itself the colour: one rounded shape.
+        let (fill, ink) = if i == chosen {
+            (tint, 0xFF10_1418)
         } else {
-            panel(f, cx, c);
-        }
-        centred(f, c, c.y + c.h / 2 + 6, cx.fonts.label, TEXT, l);
+            (GLASS, TEXT)
+        };
+        round_rect(f, cx, c, fill);
+        centred(f, c, c.y + c.h / 2 + 6, cx.fonts.label, ink, l);
     }
 }
 

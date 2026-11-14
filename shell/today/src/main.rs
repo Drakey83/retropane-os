@@ -1620,6 +1620,14 @@ mod image {
         let (apps_words, rest) = rest.split_at_mut(rp_shell::apps::MEMORY.div_ceil(4));
         let (org_words, rest) = rest.split_at_mut(rp_today::organiser::BUF / 4);
         let org_buf: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(org_words);
+        // The app programs (rp_today::program): the slot the open one is
+        // laid out in, and the file it is read into first.
+        let (slot_words, rest) = rest.split_at_mut(rp_today::program::SLOT / 4);
+        let prog_slot: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(slot_words);
+        let (file_words, rest) = rest.split_at_mut(rp_today::program::FILE / 4);
+        let prog_file: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(file_words);
+        let (scratch_words, rest) = rest.split_at_mut(rp_today::program::SCRATCH / 4);
+        let prog_scratch: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(scratch_words);
         let mut kept = KeptMap {
             key: None,
             len: 0,
@@ -1784,6 +1792,9 @@ mod image {
         shell.set_dials(dials);
         shell.keep_lists(shown_words);
         shell.give_apps(rp_hal_mem::words_as_bytes_mut(apps_words));
+        // The organiser's entries open the app programs on the card.
+        shell.give_pics(pics);
+        shell.use_programs(true);
         // The Weather settings `cargo xtask load` put on the card (the
         // relay's record): the chosen icon pack and place known before the
         // first picture is made (the relay answers ~15 s in).
@@ -2642,6 +2653,52 @@ mod image {
                         rt::ticks().wrapping_sub(t0) / 13 * 4
                     );
                     compare_frame = true;
+                    pending.get_or_insert(since);
+                }
+                Action::OpenProgram(n) => {
+                    let (name, stem) = rp_today::program::PROGRAMS[usize::from(n).min(4)];
+                    let t0 = rt::ticks();
+                    let read = card
+                        .as_mut()
+                        .and_then(|(c, start)| read_pack(c, *start, stem, prog_file));
+                    let read_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
+                    let at = prog_slot.as_ptr() as u32;
+                    let loaded = read.map(|len| {
+                        rp_today::program::load(&prog_file[..len], prog_slot, at, prog_scratch)
+                    });
+                    let mut opening = rp_app::Opening::new(shell.today_days());
+                    match loaded {
+                        Some(Ok(entry)) => {
+                            rt::call_program(entry as usize, prog_slot, &mut opening);
+                            match opening.program.take() {
+                                Some(p) => {
+                                    let _ = writeln!(
+                                        RunLog,
+                                        "program: {name} read in {read_us} us ({} bytes), loaded in {} us",
+                                        read.unwrap_or(0),
+                                        rt::ticks().wrapping_sub(t0) / 13 * 4 - read_us
+                                    );
+                                    shell.open_program(p);
+                                }
+                                None => {
+                                    let _ = writeln!(
+                                        RunLog,
+                                        "program: {name} refused to open: the shell's shapes {:?}, the program's {:?}",
+                                        opening.layout, opening.theirs
+                                    );
+                                    shell.tell("This app needs updating");
+                                }
+                            }
+                        }
+                        Some(Err(why)) => {
+                            let _ = writeln!(RunLog, "program: {name} not loaded: {why:?}");
+                            shell.tell("This app's file is damaged");
+                        }
+                        None => {
+                            let _ = writeln!(RunLog, "program: {name}: no file on the card");
+                            shell.tell("This app isn't on the card");
+                        }
+                    }
                     pending.get_or_insert(since);
                 }
                 Action::Nothing => {}

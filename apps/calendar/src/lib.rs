@@ -16,9 +16,41 @@
 use rp_app::kit::{self, DIM, TEXT, tint};
 use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, W, WIDE};
 use rp_pim::date;
+use rp_pim::store::{Kind, tag};
 
-/// Appointments a view holds.
-pub const MAX: usize = 64;
+/// Appointments a view holds (a repeat's days count each).
+pub const MAX: usize = 96;
+/// The days a view's list covers, from a week before the chosen day.
+const WINDOW: i32 = 49;
+
+/// A short text kept with a list's entry (the store's own bytes can't be
+/// held across a change).
+#[derive(Clone, Copy, Debug)]
+pub struct Text {
+    b: [u8; 40],
+    n: u8,
+}
+
+impl Text {
+    /// No text.
+    pub const EMPTY: Self = Self { b: [0; 40], n: 0 };
+
+    /// `s`, cut to 40 bytes.
+    #[must_use]
+    pub fn of(s: &[u8]) -> Self {
+        let mut t = Self::EMPTY;
+        let n = s.len().min(40);
+        t.b[..n].copy_from_slice(&s[..n]);
+        t.n = n as u8;
+        t
+    }
+
+    /// The bytes.
+    #[must_use]
+    pub fn get(&self) -> &[u8] {
+        &self.b[..usize::from(self.n)]
+    }
+}
 
 /// One calendar: a name and its colour.
 #[derive(Clone, Copy, Debug)]
@@ -27,6 +59,14 @@ pub struct Cal {
     pub name: &'static [u8],
     /// Its identity colour.
     pub colour: u32,
+}
+
+/// A calendar as the store holds it: its record, name and colour.
+#[derive(Clone, Copy, Debug)]
+struct CalRow {
+    id: u32,
+    name: Text,
+    colour: u32,
 }
 
 /// One appointment as a view shows it.
@@ -39,10 +79,10 @@ pub struct Appt {
     /// Length in minutes (0: all day).
     pub len: u16,
     /// Its title.
-    pub title: &'static [u8],
+    pub title: Text,
     /// Where, if anywhere.
-    pub place: &'static [u8],
-    /// Which calendar.
+    pub place: Text,
+    /// Which calendar (an index in the view's calendars).
     pub cal: u8,
     /// It repeats.
     pub repeats: bool,
@@ -65,8 +105,12 @@ pub enum View {
 
 /// The Calendar program.
 pub struct Calendar {
-    cals: &'static [Cal],
+    cals: [CalRow; 8],
+    n_cals: usize,
     appts: [Option<Appt>; MAX],
+    /// The store's change count and the window's first day the list was
+    /// made at (P1: made when the records change, not each frame).
+    seen: Option<(u32, i32)>,
     view: View,
     /// The chosen day.
     day: i32,
@@ -173,12 +217,24 @@ fn hour(h: u16) -> Buf<6> {
 }
 
 impl Calendar {
-    /// A calendar with `cals` and no appointments, on `today`.
+    /// A calendar on `today` showing the store's calendars, `cals` until
+    /// the store holds one.
     #[must_use]
     pub fn new(cals: &'static [Cal], today: i32) -> Self {
+        let mut rows = [CalRow {
+            id: 0,
+            name: Text::EMPTY,
+            colour: kit::IDENTITY[0],
+        }; 8];
+        for (r, c) in rows.iter_mut().zip(cals) {
+            r.name = Text::of(c.name);
+            r.colour = c.colour;
+        }
         Self {
-            cals,
+            cals: rows,
+            n_cals: cals.len().clamp(1, 8),
             appts: [None; MAX],
+            seen: None,
             view: View::Agenda,
             day: today,
             line: [0; 64],
@@ -189,15 +245,126 @@ impl Calendar {
         }
     }
 
-    /// Adds an appointment (false when full).
-    pub fn add(&mut self, a: Appt) -> bool {
-        match self.appts.iter_mut().find(|s| s.is_none()) {
-            Some(s) => {
-                *s = Some(a);
-                true
-            }
-            None => false,
+    /// The list made again from the store when its records changed or
+    /// the chosen day left the window: the calendars, then every
+    /// appointment in the window, a repeating one on each day it occurs.
+    fn refresh(&mut self, cx: &Ctx) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(guard) = cell.try_borrow() else { return };
+        let Some(store) = guard.as_ref() else { return };
+        let from = self.day - 7;
+        let changes = store.changes();
+        if self
+            .seen
+            .is_some_and(|(c, f)| c == changes && self.day >= f + 7 && self.day < f + WINDOW - 7)
+        {
+            return;
         }
+        self.seen = Some((changes, from));
+        let mut n_cals = 0;
+        for r in store.all(Kind::Calendar) {
+            if n_cals < self.cals.len() {
+                self.cals[n_cals] = CalRow {
+                    id: r.id,
+                    name: Text::of(r.text(tag::NAME)),
+                    colour: kit::IDENTITY[(r.num(tag::COLOUR).unwrap_or(0) % 8) as usize],
+                };
+                n_cals += 1;
+            }
+        }
+        if n_cals > 0 {
+            self.n_cals = n_cals;
+        }
+        self.appts = [None; MAX];
+        let mut k = 0;
+        for r in store.all(Kind::Appointment) {
+            let start = r.num(tag::START).unwrap_or(0);
+            let first = date::day_of(start);
+            let minute = (start % date::DAY_MIN) as u16;
+            let len = if r.num(tag::ALL_DAY) == Some(1) {
+                0
+            } else {
+                r.num(tag::MINUTES).unwrap_or(60).clamp(1, 24 * 60) as u16
+            };
+            let cal = r
+                .num(tag::CAL)
+                .and_then(|id| self.cals[..self.n_cals].iter().position(|c| c.id == id))
+                .unwrap_or(0) as u8;
+            let rule = r
+                .num(tag::REPEAT)
+                .and_then(|v| rp_pim::repeat::Rule::unpack(v, first));
+            let make = |day: i32| Appt {
+                day,
+                start: minute,
+                len,
+                title: Text::of(r.text(tag::TITLE)),
+                place: Text::of(r.text(tag::PLACE)),
+                cal,
+                repeats: rule.is_some(),
+            };
+            match rule {
+                None if first >= from && first < from + WINDOW && k < MAX => {
+                    self.appts[k] = Some(make(first));
+                    k += 1;
+                }
+                None => {}
+                Some(rule) => {
+                    for day in from.max(first)..from + WINDOW {
+                        if k < MAX && rule.occurs(first, day) {
+                            self.appts[k] = Some(make(day));
+                            k += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The quick-add line kept as an appointment in the store: what the
+    /// parser understood, an hour long and reminded 15 minutes before
+    /// unless the line says otherwise, in the first calendar.
+    fn add_typed(&mut self, cx: &Ctx) -> bool {
+        let line = &self.line[..self.line_n];
+        let mut title = [0u8; rp_pim::quick::TITLE_MAX];
+        let (q, tn) = rp_pim::quick::parse(line, cx.now.day, cx.us, &mut title);
+        if tn == 0 {
+            return false;
+        }
+        let day = q.day.unwrap_or(cx.now.day);
+        let start = date::start_of(day) + u32::from(q.time.unwrap_or(0));
+        let all_day: u32 = u32::from(q.time.is_none());
+        let minutes = u32::from(q.minutes.unwrap_or(60));
+        let cal = self.cals[0].id;
+        let n = |v: u32| v.to_le_bytes();
+        let (s, m, a, rmd, c) = (n(start), n(minutes), n(all_day), n(15), n(cal));
+        let mut fields: [(u8, &[u8]); 6] = [
+            (tag::TITLE, &title[..tn]),
+            (tag::START, &s),
+            (tag::MINUTES, &m),
+            (tag::REMIND, &rmd),
+            (tag::ALL_DAY, &[]),
+            (tag::CAL, &[]),
+        ];
+        if all_day == 1 {
+            fields[4].1 = &a;
+        }
+        if cal != 0 {
+            fields[5].1 = &c;
+        }
+        let Some(cell) = cx.pim else { return false };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return false;
+        };
+        let Some(store) = guard.as_mut() else {
+            return false;
+        };
+        let ok = store.put(Kind::Appointment, None, &fields).is_ok();
+        if ok {
+            self.day = day;
+            self.seen = None;
+            self.line_n = 0;
+        }
+        ok
     }
 
     /// Shows `view`.
@@ -223,8 +390,8 @@ impl Calendar {
             day: 0,
             start: 0,
             len: 0,
-            title: b"",
-            place: b"",
+            title: Text::EMPTY,
+            place: Text::EMPTY,
             cal: 0,
             repeats: false,
         }; 16];
@@ -240,7 +407,7 @@ impl Calendar {
     }
 
     fn colour(&self, a: &Appt) -> u32 {
-        self.cals
+        self.cals[..self.n_cals]
             .get(usize::from(a.cal))
             .map_or(kit::IDENTITY[0], |c| c.colour)
     }
@@ -278,7 +445,7 @@ impl Calendar {
                 .s(b" today \x80 next ")
                 .s(clock(a.start).get())
                 .s(b" ")
-                .s(a.title),
+                .s(a.title.get()),
             (n, None) => sum.num(n as u32).s(b" today \x80 nothing more"),
         };
         kit::large_title(f, cx, 36, t.get(), sum.get(), tint::CALENDAR)
@@ -399,17 +566,17 @@ impl Calendar {
                         y + 22,
                         cx.fonts.ui,
                         TEXT,
-                        a.title,
+                        a.title.get(),
                         WIDE - 130,
                     );
-                    if !a.place.is_empty() {
+                    if !a.place.get().is_empty() {
                         kit::fitted(
                             f,
                             MARGIN + 122,
                             y + 44,
                             cx.fonts.ui,
                             DIM,
-                            a.place,
+                            a.place.get(),
                             WIDE - 130,
                         );
                     }
@@ -428,7 +595,15 @@ impl Calendar {
         for a in list[..n].iter().filter(|a| a.len == 0) {
             let r = Rect::new(MARGIN + 52, y, WIDE - 52, 30);
             kit::tinted(f, cx, r, self.colour(a), 0x70);
-            kit::fitted(f, r.x + 12, y + 21, cx.fonts.ui, TEXT, a.title, r.w - 20);
+            kit::fitted(
+                f,
+                r.x + 12,
+                y + 21,
+                cx.fonts.ui,
+                TEXT,
+                a.title.get(),
+                r.w - 20,
+            );
             y += 34;
         }
         let timed = || list[..n].iter().filter(|a| a.len != 0);
@@ -494,7 +669,15 @@ impl Calendar {
             let r = Rect::new(x0 + lane * wide, by + 1, wide - 4, bh - 2);
             kit::tinted(f, cx, r, self.colour(a), 0x80);
             kit::colour_bar(f, r, self.colour(a));
-            kit::fitted(f, r.x + 16, r.y + 20, cx.fonts.ui, TEXT, a.title, r.w - 22);
+            kit::fitted(
+                f,
+                r.x + 16,
+                r.y + 20,
+                cx.fonts.ui,
+                TEXT,
+                a.title.get(),
+                r.w - 22,
+            );
             if bh > 48 {
                 let mut t = Buf::<24>::new();
                 t.s(clock(a.start).get())
@@ -598,7 +781,7 @@ impl Calendar {
                     r.y + 15,
                     cx.fonts.label,
                     0xFF10_1418,
-                    a.title,
+                    a.title.get(),
                     r.w - 4,
                 );
             }
@@ -694,7 +877,7 @@ impl Calendar {
                 y + 26,
                 cx.fonts.ui,
                 TEXT,
-                a.title,
+                a.title.get(),
                 WIDE - 130,
             );
             y += 42;
@@ -776,7 +959,8 @@ impl Calendar {
         }
         kit::text(f, card.x + 20, card.y + 58, cx.fonts.ui, TEXT, when.get());
         let mut cal = Buf::<48>::new();
-        cal.s(self.cals[0].name).s(b" \x80 alert 15 min before");
+        cal.s(self.cals[0].name.get())
+            .s(b" \x80 alert 15 min before");
         kit::text(f, card.x + 20, card.y + 82, cx.fonts.ui, DIM, cal.get());
         let more = Rect::new(24, 322, W - 48, 44);
         kit::panel(f, cx, more);
@@ -790,6 +974,20 @@ impl Calendar {
         );
         kit::right(f, more.right() - 14, more.y + 29, cx.fonts.ui, DIM, b">");
     }
+}
+
+/// The calendars a first opening shows (the store's own come with the
+/// records).
+pub static FIRST_CALS: [Cal; 1] = [Cal {
+    name: b"Calendar",
+    colour: kit::IDENTITY[0],
+}];
+
+/// Calendar as it first opens on `today`: the program's entry and the PC's
+/// model both make it here, so the two agree.
+#[must_use]
+pub fn opened(today: i32) -> Calendar {
+    Calendar::new(&FIRST_CALS, today)
 }
 
 impl Program for Calendar {
@@ -806,6 +1004,7 @@ impl Program for Calendar {
 
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
+        self.refresh(cx);
         kit::backdrop(f);
         let under = self.title(f, cx);
         let shown = if self.view == View::New {
@@ -855,12 +1054,14 @@ impl Program for Calendar {
                 }
                 Reply::Redraw
             }
+            Event::Key(Key::SoftRight) | Event::Done if self.view == View::New => {
+                if self.add_typed(cx) {
+                    self.view = View::Agenda;
+                }
+                Reply::Redraw
+            }
             Event::Key(Key::SoftRight) => {
-                self.view = if self.view == View::New {
-                    View::Agenda
-                } else {
-                    View::New
-                };
+                self.view = View::New;
                 Reply::Redraw
             }
             Event::Char(c) if self.view == View::New && self.line_n < self.line.len() => {

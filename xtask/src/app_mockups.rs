@@ -7,10 +7,10 @@
 use rp_app::DayWeather;
 use rp_app::kit::IDENTITY;
 use rp_app_calculator::{Calculator, Mode};
-use rp_app_calendar::{Appt, Cal, Calendar, View};
-use rp_app_contacts::{Contacts, EditField, Person, Place};
+use rp_app_calendar::{Cal, Calendar, View};
+use rp_app_contacts::{Contacts, EditField, Place};
 use rp_app_notes::{Block, Note, Notes};
-use rp_app_tasks::{List, Task, Tasks};
+use rp_app_tasks::{List, Tasks};
 
 /// One mock-up: a file name, what it shows, and how the shell is set up.
 pub struct Mock {
@@ -44,51 +44,77 @@ static CALS: [Cal; 4] = [
     },
 ];
 
-fn appt(
-    day: i32,
-    start: u16,
-    len: u16,
-    title: &'static [u8],
-    place: &'static [u8],
-    cal: u8,
-) -> Appt {
-    Appt {
-        day: TODAY + day,
-        start,
-        len,
-        title,
-        place,
-        cal,
-        repeats: false,
+/// The sample week's appointments: (day from today, start minute,
+/// length (0: all day), title, place, calendar), as records of the store.
+const WEEK: [(i32, u32, u32, &[u8], &[u8], usize); 12] = [
+    (0, 9 * 60 + 30, 30, b"Stand-up", b"Zoom", 1),
+    (0, 12 * 60 + 30, 60, b"Lunch with Sam", b"Cafe Vita", 0),
+    (0, 15 * 60, 60, b"Dentist", b"Dr. Lee, 410 Pine St", 0),
+    (0, 15 * 60 + 30, 45, b"Review with Jo", b"Room 4B", 1),
+    (0, 18 * 60 + 30, 90, b"Book club", b"Library", 2),
+    (1, 8 * 60, 120, b"Car service", b"Main St garage", 0),
+    (1, 18 * 60, 60, b"Gym", b"City gym", 0),
+    (2, 0, 0, b"Mum's birthday", b"", 3),
+    (2, 10 * 60, 60, b"Design review", b"Room 2", 1),
+    (
+        3,
+        7 * 60 + 15,
+        135,
+        b"Flight to Portland",
+        b"SEA gate C9",
+        0,
+    ),
+    (4, 19 * 60, 120, b"Dinner with the Parks", b"Their place", 2),
+    (6, 11 * 60, 60, b"Brunch", b"The Diner", 2),
+];
+
+/// The shell's store given and loaded (empty), then the four calendars
+/// and the sample week put in it, as the app keeps them.
+pub fn sample_week(s: &mut rp_shell::Shell) {
+    use rp_pim::store::{Kind, tag};
+    crate::emu::empty_organiser(s);
+    let Some(store) = s.pim() else { return };
+    let n = |v: u32| v.to_le_bytes();
+    let mut ids = Vec::new();
+    for (k, c) in CALS.iter().enumerate() {
+        let colour = IDENTITY.iter().position(|&x| x == c.colour).unwrap_or(k) as u32;
+        let col = n(colour);
+        ids.push(
+            store
+                .put(
+                    Kind::Calendar,
+                    None,
+                    &[(tag::NAME, c.name), (tag::COLOUR, &col)],
+                )
+                .expect("the sample calendars fit"),
+        );
     }
+    for (day, start, len, title, place, cal) in WEEK {
+        let at = n(rp_pim::date::start_of(TODAY + day) + start);
+        let minutes = n(len.max(1));
+        let all = n(1);
+        let calid = n(ids[cal]);
+        let remind = n(15);
+        let mut fields: Vec<(u8, &[u8])> = vec![
+            (tag::TITLE, title),
+            (tag::PLACE, place),
+            (tag::START, &at),
+            (tag::MINUTES, &minutes),
+            (tag::CAL, &calid),
+            (tag::REMIND, &remind),
+        ];
+        if len == 0 {
+            fields.push((tag::ALL_DAY, &all));
+        }
+        store
+            .put(Kind::Appointment, None, &fields)
+            .expect("the sample week fits");
+    }
+    s.pim_loaded();
 }
 
-/// The sample week.
 fn calendar(view: View, line: &[u8]) -> Calendar {
     let mut c = Calendar::new(&CALS, TODAY);
-    for a in [
-        appt(0, 9 * 60 + 30, 30, b"Stand-up", b"Zoom", 1),
-        appt(0, 12 * 60 + 30, 60, b"Lunch with Sam", b"Cafe Vita", 0),
-        appt(0, 15 * 60, 60, b"Dentist", b"Dr. Lee, 410 Pine St", 0),
-        appt(0, 15 * 60 + 30, 45, b"Review with Jo", b"Room 4B", 1),
-        appt(0, 18 * 60 + 30, 90, b"Book club", b"Library", 2),
-        appt(1, 8 * 60, 120, b"Car service", b"Main St garage", 0),
-        appt(1, 18 * 60, 60, b"Gym", b"City gym", 0),
-        appt(2, 0, 0, b"Mum's birthday", b"", 3),
-        appt(2, 10 * 60, 60, b"Design review", b"Room 2", 1),
-        appt(
-            3,
-            7 * 60 + 15,
-            135,
-            b"Flight to Portland",
-            b"SEA gate C9",
-            0,
-        ),
-        appt(4, 19 * 60, 120, b"Dinner with the Parks", b"Their place", 2),
-        appt(6, 11 * 60, 60, b"Brunch", b"The Diner", 2),
-    ] {
-        c.add(a);
-    }
     c.show(view);
     c.set_line(line);
     c
@@ -117,56 +143,63 @@ fn open(shell: &mut rp_shell::Shell, c: impl rp_app::Program + 'static) {
     shell.open_program(Box::leak(Box::new(c)));
 }
 
-fn person(
-    first: &'static [u8],
-    last: &'static [u8],
-    company: &'static [u8],
-    mobile: &'static [u8],
-    fav: bool,
-) -> Person {
-    Person {
-        first,
-        last,
-        company,
-        phones: [(b"MOBILE", mobile), (b"HOME", b"")],
-        email: b"",
-        address: [b"", b""],
-        favourite: fav,
+/// The sample people: first, last, company, mobile (E.164), favourite,
+/// and Grace's e-mail, work number and address.
+const PEOPLE: [(&[u8], &[u8], &[u8], &[u8], bool); 9] = [
+    (b"Grace", b"Hopper", b"US Navy", b"+17035550107", true),
+    (
+        b"Ada",
+        b"Lovelace",
+        b"Analytical Engines",
+        b"+12065550142",
+        true,
+    ),
+    (b"Alan", b"Turing", b"", b"+442079460958", true),
+    (
+        b"Katherine",
+        b"Johnson",
+        b"NASA Langley",
+        b"+17575550116",
+        true,
+    ),
+    (b"Edsger", b"Dijkstra", b"", b"+15125550133", false),
+    (b"Margaret", b"Hamilton", b"MIT", b"+16175550111", false),
+    (b"Donald", b"Knuth", b"Stanford", b"+16505550188", false),
+    (b"Barbara", b"Liskov", b"MIT", b"+16175550170", false),
+    (b"Hedy", b"Lamarr", b"", b"+13105550105", false),
+];
+
+/// The shell's store given and loaded (empty), then the sample people put
+/// in it, as Contacts keeps them.
+pub fn sample_people(s: &mut rp_shell::Shell) {
+    use rp_pim::store::{Kind, tag};
+    crate::emu::empty_organiser(s);
+    let Some(store) = s.pim() else { return };
+    let fav = 1u32.to_le_bytes();
+    for (first, last, company, mobile, favourite) in PEOPLE {
+        let mut fields: Vec<(u8, &[u8])> = vec![
+            (tag::FIRST, first),
+            (tag::LAST, last),
+            (tag::COMPANY, company),
+            (tag::MOBILE, mobile),
+        ];
+        if favourite {
+            fields.push((tag::FAVOURITE, &fav));
+        }
+        if first == b"Grace" {
+            fields.push((tag::EMAIL, b"grace@example.org"));
+            fields.push((tag::WORK, b"+17035550155"));
+            fields.push((tag::ADDRESS, b"2100 Clarendon Blvd\nArlington, VA 22201"));
+        }
+        store
+            .put(Kind::Contact, None, &fields)
+            .expect("the sample people fit");
     }
+    s.pim_loaded();
 }
 
 fn contacts(view: rp_app_contacts::View) -> Contacts {
     let mut c = Contacts::new();
-    for p in [
-        Person {
-            email: b"grace@example.org",
-            address: [b"2100 Clarendon Blvd", b"Arlington, VA 22201"],
-            phones: [(b"MOBILE", b"+17035550107"), (b"WORK", b"+17035550155")],
-            ..person(b"Grace", b"Hopper", b"US Navy", b"", true)
-        },
-        person(
-            b"Ada",
-            b"Lovelace",
-            b"Analytical Engines",
-            b"+12065550142",
-            true,
-        ),
-        person(b"Alan", b"Turing", b"", b"+442079460958", true),
-        person(
-            b"Katherine",
-            b"Johnson",
-            b"NASA Langley",
-            b"+17575550116",
-            true,
-        ),
-        person(b"Edsger", b"Dijkstra", b"", b"+15125550133", false),
-        person(b"Margaret", b"Hamilton", b"MIT", b"+16175550111", false),
-        person(b"Donald", b"Knuth", b"Stanford", b"+16505550188", false),
-        person(b"Barbara", b"Liskov", b"MIT", b"+16175550170", false),
-        person(b"Hedy", b"Lamarr", b"", b"+13105550105", false),
-    ] {
-        c.add(p);
-    }
     c.show(view);
     c
 }
@@ -190,41 +223,81 @@ static LISTS: [List; 4] = [
     },
 ];
 
-fn task(title: &'static [u8], due: Option<i32>, flag: u8, list: u8, done: bool) -> Task {
-    Task {
-        title,
-        due: due.map(|d| TODAY + d),
-        flag,
-        list,
-        done,
-        steps: (0, 0),
-        repeats: false,
+/// The sample tasks: title, due (days from today), flag (0-3), list,
+/// done, repeats, steps (done, of).
+const TASKS: [(&[u8], Option<i32>, u32, usize, bool, bool, (u8, u8)); 11] = [
+    (b"Renew passport", Some(-2), 3, 3, false, false, (0, 0)),
+    (b"Pay rent", Some(0), 3, 0, false, true, (0, 0)),
+    (b"Call the bank", Some(0), 0, 2, false, false, (0, 0)),
+    (b"Pack for Portland", Some(1), 2, 3, false, false, (2, 5)),
+    (b"Book flights", Some(1), 2, 3, false, false, (0, 0)),
+    (b"Water the plants", Some(4), 0, 0, false, false, (0, 0)),
+    (b"Quarterly report", Some(3), 2, 1, false, false, (0, 0)),
+    (b"Fix the gate", Some(20), 0, 0, false, false, (0, 0)),
+    (b"Return library books", Some(-1), 0, 2, true, false, (0, 0)),
+    (b"Buy stamps", Some(0), 0, 2, true, false, (0, 0)),
+    (b"Email Jo the slides", Some(0), 0, 1, true, false, (0, 0)),
+];
+
+/// The shell's store given and loaded, then the four lists and the sample
+/// tasks (with "Pack for Portland"'s five steps) put in it.
+pub fn sample_tasks(s: &mut rp_shell::Shell) {
+    use rp_pim::store::{Kind, tag};
+    crate::emu::empty_organiser(s);
+    let Some(store) = s.pim() else { return };
+    let n = |v: u32| v.to_le_bytes();
+    let mut ids = Vec::new();
+    for (k, l) in LISTS.iter().enumerate() {
+        let colour = n(IDENTITY.iter().position(|&x| x == l.colour).unwrap_or(k) as u32);
+        ids.push(
+            store
+                .put(
+                    Kind::List,
+                    None,
+                    &[(tag::NAME, l.name), (tag::COLOUR, &colour)],
+                )
+                .expect("lists fit"),
+        );
     }
+    let noon = rp_pim::date::start_of(TODAY) + 12 * 60;
+    for (title, due, flag, list, done, repeats, steps) in TASKS {
+        let d = n(due.map_or(0, |d| (TODAY + d) as u32));
+        let (fl, li, dn) = (n(flag), n(ids[list]), n(noon));
+        let rule = n(rp_pim::repeat::Rule {
+            every: rp_pim::repeat::Every::MonthDate,
+            n: 1,
+            days: 0,
+            until: None,
+        }
+        .pack(TODAY));
+        let mut fields: Vec<(u8, &[u8])> = vec![(tag::TITLE, title), (tag::LIST, &li)];
+        if due.is_some() {
+            fields.push((tag::DUE, &d));
+        }
+        if flag > 0 {
+            fields.push((tag::PRIORITY, &fl));
+        }
+        if done {
+            fields.push((tag::DONE, &dn));
+        }
+        if repeats {
+            fields.push((tag::REPEAT, &rule));
+        }
+        let id = store.put(Kind::Task, None, &fields).expect("tasks fit");
+        let parent = n(id);
+        for k in 0..steps.1 {
+            let mut step: Vec<(u8, &[u8])> = vec![(tag::TITLE, b"A step"), (tag::PARENT, &parent)];
+            if k < steps.0 {
+                step.push((tag::DONE, &dn));
+            }
+            store.put(Kind::Task, None, &step).expect("steps fit");
+        }
+    }
+    s.pim_loaded();
 }
 
 fn tasks(view: rp_app_tasks::View, line: &[u8]) -> Tasks {
     let mut t = Tasks::new(&LISTS);
-    for x in [
-        task(b"Renew passport", Some(-2), 3, 3, false),
-        Task {
-            repeats: true,
-            ..task(b"Pay rent", Some(0), 3, 0, false)
-        },
-        task(b"Call the bank", Some(0), 0, 2, false),
-        Task {
-            steps: (2, 5),
-            ..task(b"Pack for Portland", Some(1), 2, 3, false)
-        },
-        task(b"Book flights", Some(1), 2, 3, false),
-        task(b"Water the plants", Some(4), 0, 0, false),
-        task(b"Quarterly report", Some(3), 2, 1, false),
-        task(b"Fix the gate", Some(20), 0, 0, false),
-        task(b"Return library books", Some(-1), 0, 2, true),
-        task(b"Buy stamps", Some(0), 0, 2, true),
-        task(b"Email Jo the slides", Some(0), 0, 1, true),
-    ] {
-        t.add(x);
-    }
     t.show(view);
     t.set_line(line);
     t
@@ -273,7 +346,41 @@ fn ink() -> &'static [&'static [(i16, i16)]] {
     Box::leak(strokes.into_boxed_slice())
 }
 
-fn notes(view: rp_app_notes::View) -> Notes {
+/// The sample notes put in the shell's store as Notes keeps them: the
+/// title, colour, pin, the text's lines and the packed ink.
+fn notes(s: &mut rp_shell::Shell, view: rp_app_notes::View) -> Notes {
+    use rp_pim::store::{Kind, tag};
+    crate::emu::empty_organiser(s);
+    for note in sample_notes() {
+        let mut text = vec![0u8; rp_pim::store::TEXT_MAX];
+        let mut ink = vec![0u8; rp_pim::store::TEXT_MAX];
+        let (t, i) = rp_app_notes::fields_of(note.blocks, &mut text, &mut ink);
+        let colour =
+            (IDENTITY.iter().position(|&x| x == note.colour).unwrap_or(1) as u32).to_le_bytes();
+        let pin = 1u32.to_le_bytes();
+        let mut fields: Vec<(u8, &[u8])> = vec![
+            (tag::TITLE, note.title),
+            (tag::TEXT, &text[..t]),
+            (tag::INK, &ink[..i]),
+            (tag::COLOUR, &colour),
+        ];
+        if note.pinned {
+            fields.push((tag::PINNED, &pin));
+        }
+        if let Some(store) = s.pim() {
+            store
+                .put(Kind::Note, None, &fields)
+                .expect("the sample notes fit");
+        }
+    }
+    s.pim_loaded();
+    let mut n = Notes::new(&[]);
+    n.show(view);
+    n
+}
+
+/// The sample notes, as written.
+fn sample_notes() -> &'static [Note] {
     let ink = ink();
     let blocks = |b: Vec<Block>| -> &'static [Block] { Box::leak(b.into_boxed_slice()) };
     let list: &'static [Note] = Box::leak(
@@ -333,9 +440,7 @@ fn notes(view: rp_app_notes::View) -> Notes {
         ]
         .into_boxed_slice(),
     );
-    let mut n = Notes::new(list);
-    n.show(view);
-    n
+    list
 }
 
 static TAPE: [(&[u8], &[u8]); 2] = [
@@ -349,37 +454,56 @@ pub fn mocks() -> Vec<Mock> {
         Mock {
             name: "v2-calendar-agenda",
             what: "Calendar: the agenda under the large title and the week strip, the forecast on each day",
-            prepare: Box::new(|s| open(s, calendar(View::Agenda, b""))),
+            prepare: Box::new(|s| {
+                sample_week(s);
+                open(s, calendar(View::Agenda, b""));
+            }),
         },
         Mock {
             name: "v2-calendar-day",
             what: "Calendar: Day, blocks sized to their length, overlaps side by side, the now line",
-            prepare: Box::new(|s| open(s, calendar(View::Day, b""))),
+            prepare: Box::new(|s| {
+                sample_week(s);
+                open(s, calendar(View::Day, b""));
+            }),
         },
         Mock {
             name: "v2-calendar-week",
             what: "Calendar: Week, seven columns of coloured blocks",
-            prepare: Box::new(|s| open(s, calendar(View::Week, b""))),
+            prepare: Box::new(|s| {
+                sample_week(s);
+                open(s, calendar(View::Week, b""));
+            }),
         },
         Mock {
             name: "v2-calendar-month",
             what: "Calendar: Month with coloured bars and the chosen day's list",
-            prepare: Box::new(|s| open(s, calendar(View::Month, b""))),
+            prepare: Box::new(|s| {
+                sample_week(s);
+                open(s, calendar(View::Month, b""));
+            }),
         },
         Mock {
             name: "v2-calendar-new",
             what: "Calendar: quick add, the understood words in the tint, the preview card",
-            prepare: Box::new(|s| open(s, calendar(View::New, b"Dentist tue 3pm 1h"))),
+            prepare: Box::new(|s| {
+                sample_week(s);
+                open(s, calendar(View::New, b"Dentist tue 3pm 1h"));
+            }),
         },
         Mock {
             name: "v2-contacts-list",
             what: "Contacts: favourites grid, avatars with initials, formatted numbers, the letter strip",
-            prepare: Box::new(|s| open(s, contacts(rp_app_contacts::View::List))),
+            prepare: Box::new(|s| {
+                sample_people(s);
+                open(s, contacts(rp_app_contacts::View::List));
+            }),
         },
         Mock {
             name: "v2-contacts-card",
             what: "Contacts: the card with its action row and grouped details",
             prepare: Box::new(|s| {
+                sample_people(s);
                 open(s, contacts(rp_app_contacts::View::Card(0)));
             }),
         },
@@ -387,6 +511,7 @@ pub fn mocks() -> Vec<Mock> {
             name: "v2-contacts-phone",
             what: "Contacts: the phone pad, the number formatted as typed",
             prepare: Box::new(|s| {
+                sample_people(s);
                 let mut c = contacts(rp_app_contacts::View::Edit(EditField::Mobile));
                 c.typed(b"Mae", b"2065550", b"");
                 open(s, c);
@@ -396,6 +521,7 @@ pub fn mocks() -> Vec<Mock> {
             name: "v2-contacts-address",
             what: "Contacts: address suggestions while typing, capitals at each word",
             prepare: Box::new(|s| {
+                sample_people(s);
                 let mut c = contacts(rp_app_contacts::View::Edit(EditField::Street));
                 c.typed(b"Mae", b"2065550142", b"410 Pi");
                 c.set_places(&[
@@ -418,35 +544,48 @@ pub fn mocks() -> Vec<Mock> {
         Mock {
             name: "v2-tasks-home",
             what: "Tasks: smart tiles with counts over the coloured lists and their progress",
-            prepare: Box::new(|s| open(s, tasks(rp_app_tasks::View::Home, b""))),
+            prepare: Box::new(|s| {
+                sample_tasks(s);
+                open(s, tasks(rp_app_tasks::View::Home, b""));
+            }),
         },
         Mock {
             name: "v2-tasks-today",
             what: "Tasks: Today, late first, round ticks in the list's colour, flags, subtasks",
-            prepare: Box::new(|s| open(s, tasks(rp_app_tasks::View::List(None), b""))),
+            prepare: Box::new(|s| {
+                sample_tasks(s);
+                open(s, tasks(rp_app_tasks::View::List(None), b""));
+            }),
         },
         Mock {
             name: "v2-tasks-add",
             what: "Tasks: the add line, the understood words in the tint",
             prepare: Box::new(|s| {
+                sample_tasks(s);
                 open(
                     s,
                     tasks(
                         rp_app_tasks::View::List(None),
                         b"Pay rent fri !1 every month #home",
                     ),
-                )
+                );
             }),
         },
         Mock {
             name: "v2-notes-home",
             what: "Notes: pinned first, cards in their colours with ink miniatures",
-            prepare: Box::new(|s| open(s, notes(rp_app_notes::View::Home))),
+            prepare: Box::new(|s| {
+                let n = notes(s, rp_app_notes::View::Home);
+                open(s, n);
+            }),
         },
         Mock {
             name: "v2-notes-note",
             what: "Notes: text, a checklist and handwriting in one note on ruled paper",
-            prepare: Box::new(|s| open(s, notes(rp_app_notes::View::Note(0)))),
+            prepare: Box::new(|s| {
+                let n = notes(s, rp_app_notes::View::Note(0));
+                open(s, n);
+            }),
         },
         Mock {
             name: "v2-calc-basic",

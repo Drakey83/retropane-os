@@ -52,6 +52,10 @@ pub enum Kind {
     Task = 3,
     /// A note.
     Note = 4,
+    /// A calendar (version 2): its name, colour and where it syncs from.
+    Calendar = 5,
+    /// A task list (version 2): its name and colour.
+    List = 6,
 }
 
 impl Kind {
@@ -62,6 +66,8 @@ impl Kind {
             2 => Self::Contact,
             3 => Self::Task,
             4 => Self::Note,
+            5 => Self::Calendar,
+            6 => Self::List,
             _ => return None,
         })
     }
@@ -110,6 +116,33 @@ pub mod tag {
     pub const TEXT: u8 = 30;
     /// Note: when it was last changed, local minutes.
     pub const CHANGED: u8 = 31;
+
+    // Version 2 (2026-11-14; a reader of version 1 skips them).
+    /// Appointment: its calendar's record id.
+    pub const CAL: u8 = 8;
+    /// Appointment, task: how it repeats ([`crate::repeat::Rule`], packed).
+    pub const REPEAT: u8 = 9;
+    /// Contact: 1 when a favourite.
+    pub const FAVOURITE: u8 = 18;
+    /// Contact: the birthday, days from 1970 (the year 0004 when unknown).
+    pub const BIRTHDAY: u8 = 19;
+    /// Task: its list's record id.
+    pub const LIST: u8 = 23;
+    /// Task: the task it is a step of.
+    pub const PARENT: u8 = 24;
+    /// Task: remind at, local minutes.
+    pub const REMIND_AT: u8 = 25;
+    /// Note, calendar, list: its identity colour (0-7).
+    pub const COLOUR: u8 = 32;
+    /// Note: 1 when pinned.
+    pub const PINNED: u8 = 33;
+    /// Note: handwriting, strokes as packed points (`rp_app_notes`).
+    pub const INK: u8 = 34;
+    /// Calendar, list: its name.
+    pub const NAME: u8 = 35;
+    /// Calendar: where it syncs from (an iCal link, a CalDAV address, or
+    /// "google"; absent: on this device only).
+    pub const SOURCE: u8 = 36;
 }
 
 /// A record as stored: read-only.

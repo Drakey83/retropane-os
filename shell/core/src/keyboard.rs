@@ -211,6 +211,7 @@ impl Keyboard {
 
     /// The key that types `c` (the tests type through it; upper case is
     /// Shift then the letter).
+    #[cfg(test)]
     pub(crate) fn cap_of(&self, c: u8) -> Option<u8> {
         (0..CAPS).find(|&i| matches!(self.cap(i), Some((Cap::Char(b), _)) if b == c))
     }

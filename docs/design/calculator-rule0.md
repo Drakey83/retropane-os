@@ -71,6 +71,8 @@ Get a right answer fast, see how you got it, and do the everyday sums
 | Copy the answer and paste a number | sheet | pending | |
 | Graphite keys, orange operators, tinted =, the mode chips | sheet | pending | |
 | The region's digit grouping and decimal mark | sheet | pending | |
+| The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
+| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | pending | |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
 
 ## What would overturn it

@@ -66,6 +66,8 @@ Catch a thought in a second, by stylus or keyboard, and find it again.
 | Undo and redo for typing and strokes | sheet | pending | |
 | Sentence capitals and word suggestions in text blocks | sheet | pending | |
 | The Today screen's Note button opens a new ink note | sheet | pending | |
+| The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
+| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | pending | |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
 | Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |
 

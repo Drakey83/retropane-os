@@ -17,10 +17,21 @@ use rp_kernel_pe::{Dir, MACHINE_ARM, scn};
 pub const BASE: u32 = 0x0001_0000;
 
 /// The programs packaged, by crate name (`target/.../release/<name>.pe`).
-pub const IMAGES: &[&str] = &["rp-display-host"];
+pub const IMAGES: &[&str] = &[
+    "rp-display-host",
+    // The organiser's app programs (docs/design/app-scope.md): loaded by
+    // the shell when opened, released when left.
+    "rp-app-calendar",
+    "rp-app-contacts",
+    "rp-app-tasks",
+    "rp-app-notes",
+    "rp-app-calculator",
+];
 
 const SHT_REL: u32 = 9;
 const SHT_RELA: u32 = 4;
+/// A section with no bytes in the file: zeroed RAM.
+const SHT_NOBITS: u32 = 8;
 /// ARM relocation types: absolute words (fixed up) and position-relative
 /// ones (nothing to do when the whole image moves).
 const R_ARM_NONE: u32 = 0;
@@ -28,6 +39,13 @@ const R_ARM_ABS32: u32 = 2;
 const R_ARM_REL32: u32 = 3;
 const R_ARM_CALL: u32 = 28;
 const R_ARM_JUMP24: u32 = 29;
+/// Thumb's calls and branches (cold code built as Thumb, ADR-0015, as
+/// rp-pim's is): PC-relative, nothing to do when the whole image moves.
+const R_ARM_THM_CALL: u32 = 10;
+const R_ARM_THM_JUMP24: u32 = 30;
+const R_ARM_THM_JUMP11: u32 = 102;
+const R_ARM_THM_JUMP8: u32 = 103;
+const R_ARM_THM_JUMP19: u32 = 51;
 const R_ARM_TARGET1: u32 = 38;
 const R_ARM_V4BX: u32 = 40;
 const R_ARM_PREL31: u32 = 42;
@@ -112,7 +130,8 @@ pub fn package(elf: &[u8]) -> Result<Vec<u8>, String> {
         (".rdata", scn::READ),
         (".data", scn::READ | scn::WRITE),
     ];
-    let mut kept: Vec<(usize, &[u8], u32, u32)> = Vec::new(); // (index, bytes, rva, flags)
+    // (index, bytes, its size in memory, rva, flags)
+    let mut kept: Vec<(usize, &[u8], u32, u32, u32)> = Vec::new();
     for (name, flags) in want {
         let Some(i) = secs.iter().position(|s| s.name == name) else {
             continue;
@@ -126,10 +145,16 @@ pub fn package(elf: &[u8]) -> Result<Vec<u8>, String> {
             .checked_sub(BASE)
             .filter(|r| r.is_multiple_of(0x1000) && *r >= 0x1000)
             .ok_or_else(|| format!("{name} at {:#x}: not page-aligned past the base", s.addr))?;
-        let bytes = elf
-            .get(s.offset..s.offset.checked_add(s.size).ok_or("overflow")?)
-            .ok_or_else(|| format!("{name} outside the file"))?;
-        kept.push((i, bytes, rva, flags));
+        // Zeroed RAM (SHT_NOBITS, an app's state: emu-apps 2026-11-14)
+        // has no bytes in the file: packed as memory the loader zeroes, not
+        // as whatever the file held at its offset.
+        let bytes = if s.kind == SHT_NOBITS {
+            &[][..]
+        } else {
+            elf.get(s.offset..s.offset.checked_add(s.size).ok_or("overflow")?)
+                .ok_or_else(|| format!("{name} outside the file"))?
+        };
+        kept.push((i, bytes, s.size as u32, rva, flags));
     }
     // Every absolute word in a kept section, by address.
     let mut fixups: Vec<u32> = Vec::new();
@@ -152,7 +177,8 @@ pub fn package(elf: &[u8]) -> Result<Vec<u8>, String> {
             match kind {
                 R_ARM_ABS32 | R_ARM_TARGET1 => fixups.push(at),
                 R_ARM_NONE | R_ARM_REL32 | R_ARM_CALL | R_ARM_JUMP24 | R_ARM_V4BX
-                | R_ARM_PREL31 => {}
+                | R_ARM_PREL31 | R_ARM_THM_CALL | R_ARM_THM_JUMP24 | R_ARM_THM_JUMP11
+                | R_ARM_THM_JUMP8 | R_ARM_THM_JUMP19 => {}
                 other => {
                     return Err(format!(
                         "{}: relocation type {other} at {at:#x} not supported",
@@ -167,7 +193,7 @@ pub fn package(elf: &[u8]) -> Result<Vec<u8>, String> {
     // `.reloc`: one block per page, after the last section.
     let end = kept
         .iter()
-        .map(|k| (k.2 + k.1.len() as u32).next_multiple_of(0x1000))
+        .map(|k| (k.3 + k.2).next_multiple_of(0x1000))
         .max()
         .ok_or("no code")?;
     let mut rel = vec![0u8; 16 + fixups.len() * 4 + 8 * fixups.len()];
@@ -186,10 +212,10 @@ pub fn package(elf: &[u8]) -> Result<Vec<u8>, String> {
     rel.truncate(len);
     let mut specs: Vec<SectionSpec<'_>> = kept
         .iter()
-        .map(|&(i, bytes, rva, flags)| SectionSpec {
+        .map(|&(i, bytes, vsize, rva, flags)| SectionSpec {
             name: secs[i].name.as_bytes(),
             rva,
-            vsize: bytes.len() as u32,
+            vsize,
             data: bytes,
             characteristics: flags,
         })
