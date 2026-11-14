@@ -75,17 +75,17 @@ not.
 
 | Item | From | Status | Code |
 |---|---|---|---|
-| Agenda with colour bars, times, places and the large title with a live summary | sheet | pending | |
+| Agenda with colour bars, times, places and the large title with a live summary | sheet | built | apps/calendar/src/lib.rs |
 | Week strip that slides under the title | sheet | pending | |
-| The forecast's icon and high/low on the agenda's days | apps-and-packs: weather on the agenda's days | pending | |
-| Day view: blocks sized to their length, overlaps side by side, now line, all-day strip, free time folded | sheet | pending | |
-| Week view (portrait, seven columns) | apps-and-packs: week view | pending | |
-| Month view with coloured bars and the chosen day's list | sheet | pending | |
+| The forecast's icon and high/low on the agenda's days | apps-and-packs: weather on the agenda's days | built | apps/calendar/src/lib.rs, shell/core/src/lib.rs |
+| Day view: blocks sized to their length, overlaps side by side, now line, all-day strip, free time folded | sheet | built | apps/calendar/src/lib.rs |
+| Week view (portrait, seven columns) | apps-and-packs: week view | built | apps/calendar/src/lib.rs |
+| Month view with coloured bars and the chosen day's list | sheet | built | apps/calendar/src/lib.rs |
 | Smooth zoom between month, week and day | apps-and-packs: Smooth zoom between views | pending | |
 | Quick add with the understood words highlighted and a preview card | apps-and-packs: quick add | pending | |
 | Editor as grouped cards; address suggestions for Where; capitals at each word in titles | sheet | pending | |
 | Several calendars, a colour each, shown and hidden | apps-and-packs: a colour per calendar | pending | |
-| Repeating appointments (daily, weekly on days, monthly by date or weekday, yearly; every N; until or N times; one occurrence changed or skipped) | apps-and-packs: repeating appointments | pending | |
+| Repeating appointments (daily, weekly on days, monthly by date or weekday, yearly; every N; until or N times; one occurrence changed or skipped) | apps-and-packs: repeating appointments | built | shell/pim/src/repeat.rs, apps/calendar/src/lib.rs |
 | Reminders as a banner over any screen, several per appointment | apps-and-packs: reminders through the notification centre | pending | |
 | Reminder sound and snooze | apps-and-packs: reminder sound and snooze | pending | |
 | Online calendars: iCal link (read), CalDAV (read and write), Google sign-in (device code, read and write), over any connection, offline queue | apps-and-packs: Google Calendar and other online calendars (iCal link, CalDAV, Google sign-in: §7) | pending | |
@@ -98,8 +98,8 @@ not.
 | Week starts on the region's day (Sunday in the US) | sheet | pending | |
 | The Calendar button cycles the views | sheet | pending | |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
-| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | pending | |
-| Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
+| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
+| Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/calendar/src/main.rs, shell/today/src/program.rs |
 | Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |
 
 ## What would overturn it

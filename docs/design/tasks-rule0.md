@@ -57,12 +57,12 @@ tick it off with a satisfying tap.
 
 | Item | From | Status | Code |
 |---|---|---|---|
-| Home with smart tiles and counts (Today, Upcoming, Late, Flagged) and the large title | sheet | pending | |
+| Home with smart tiles and counts (Today, Upcoming, Late, Flagged) and the large title | sheet | built | apps/tasks/src/lib.rs |
 | Lists with colours, a progress ring each, made and renamed by the user | apps-and-packs: lists with colours | pending | |
 | Quick add with date, priority, list and repeat highlighted as typed | sheet | pending | |
 | Round checkbox that fills with an animated tick; the row moves to done | sheet | pending | |
 | Swipe right to complete, swipe left for Tomorrow, Next week, Delete | apps-and-packs: Swipe to complete | pending | |
-| Coloured priority flags (word in the editor) | sheet | pending | |
+| Coloured priority flags (word in the editor) | sheet | built | apps/tasks/src/lib.rs |
 | Subtasks with "2 of 5" | apps-and-packs: subtasks | pending | |
 | Repeating tasks (daily, weekdays, weekly on days, monthly, yearly, every N, after done) | apps-and-packs: repeating tasks | pending | |
 | Reminders through the notification banner and sound | apps-and-packs: reminders | pending | |
@@ -71,8 +71,8 @@ tick it off with a satisfying tap.
 | CalDAV tasks and Google Tasks sync over any connection | sheet | pending | |
 | Search across tasks | sheet | pending | |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
-| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | pending | |
-| Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
+| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
+| Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/tasks/src/main.rs, shell/today/src/program.rs |
 | Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |
 
 ## What would overturn it

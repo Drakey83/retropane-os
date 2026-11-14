@@ -60,20 +60,20 @@ Get a right answer fast, see how you got it, and do the everyday sums
 
 | Item | From | Status | Code |
 |---|---|---|---|
-| The expression shown whole with the answer previewed live | sheet | pending | |
-| Brackets with precedence | apps-and-packs: brackets | pending | |
+| The expression shown whole with the answer previewed live | sheet | built | shell/pim/src/expr.rs, apps/calculator/src/lib.rs |
+| Brackets with precedence | apps-and-packs: brackets | built | shell/pim/src/expr.rs |
 | History tape: scroll, tap to reuse, hold to copy | apps-and-packs: history | pending | |
-| Memory keys MC, MR, M+, M- with the M mark | apps-and-packs: memory keys | pending | |
-| Scientific keypad page and unit conversion (length, weight, volume, temperature, area, speed, time, data) | apps-and-packs: Basic + scientific + unit conversion | pending | |
-| Currency conversion with the ECB's daily rates over any connection, kept with their date | apps-and-packs: currency conversion | pending | |
-| Tip and split | apps-and-packs: tip and split | pending | |
-| Days between dates and a date plus N days | apps-and-packs: days between dates | pending | |
+| Memory keys MC, MR, M+, M- with the M mark | apps-and-packs: memory keys | built | apps/calculator/src/lib.rs |
+| Scientific keypad page and unit conversion (length, weight, volume, temperature, area, speed, time, data) | apps-and-packs: Basic + scientific + unit conversion | built | shell/pim/src/expr.rs, apps/calculator/src/lib.rs |
+| Currency conversion with the ECB's daily rates over any connection, kept with their date | apps-and-packs: currency conversion | built | shell/pim/src/net.rs, apps/calculator/src/lib.rs, xtask/src/usb.rs |
+| Tip and split | apps-and-packs: tip and split | built | apps/calculator/src/lib.rs |
+| Days between dates and a date plus N days | apps-and-packs: days between dates | built | apps/calculator/src/lib.rs |
 | Copy the answer and paste a number | sheet | pending | |
-| Graphite keys, orange operators, tinted =, the mode chips | sheet | pending | |
+| Aero glass keys (the owner, 2026-11-14: not Metro): operators' signs in the tint, = the blue glow, the mode chips | sheet | built | apps/calculator/src/lib.rs, shell/core/src/panel_art.rs |
 | The region's digit grouping and decimal mark | sheet | pending | |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
-| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | pending | |
-| Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
+| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
+| Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/calculator/src/main.rs, shell/today/src/program.rs |
 
 ## What would overturn it
 

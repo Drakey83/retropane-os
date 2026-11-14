@@ -67,16 +67,16 @@ without fighting the keyboard; the same people as the phone and the PC.
 
 | Item | From | Status | Code |
 |---|---|---|---|
-| Large title with the count; list with letter headers, avatars and secondary lines | sheet | pending | |
-| Favourites grid of large photos or initials | apps-and-packs: favourites | pending | |
-| Coloured initials for everyone without a photo | apps-and-packs: initials when there's no photo | pending | |
+| Large title with the count; list with letter headers, avatars and secondary lines | sheet | built | apps/contacts/src/lib.rs |
+| Favourites grid of large photos or initials | apps-and-packs: favourites | built | apps/contacts/src/lib.rs |
+| Coloured initials for everyone without a photo | apps-and-packs: initials when there's no photo | built | apps/api/src/kit.rs, apps/contacts/src/lib.rs |
 | Photos: chosen from a picture file, cropped to a circle, kept small in internal storage, from vCard PHOTO too | apps-and-packs: photos | pending | |
 | Search over every field with the match highlighted | apps-and-packs: Fast search | pending | |
 | Letter strip with the large letter bubble | sheet | pending | |
 | The card with the action row (E-mail, Map, Copy, Send to PC) | sheet | pending | |
-| Phone pad for phone fields; numbers formatted as typed for their country, stored as E.164 | apps-and-packs: phone numbers formatted as typed | pending | |
-| Address suggestions while typing (Photon over any connection; ZIP table and past addresses offline) | apps-and-packs: address suggestions while typing | pending | |
-| Capitals at each word in names, companies and addresses; e-mail keyboard | apps-and-packs: capitals at each word in names and addresses | pending | |
+| Phone pad for phone fields; numbers formatted as typed for their country, stored as E.164 | apps-and-packs: phone numbers formatted as typed | built | shell/pim/src/phone.rs, shell/core/src/keyboard.rs |
+| Address suggestions while typing (Photon over any connection; ZIP table and past addresses offline) | apps-and-packs: address suggestions while typing | built | shell/pim/src/net.rs, apps/contacts/src/lib.rs, xtask/src/usb.rs |
+| Capitals at each word in names, companies and addresses; e-mail keyboard | apps-and-packs: capitals at each word in names and addresses | built | shell/core/src/lib.rs |
 | Structured address, + add for more phones and e-mails, custom labels, birthday, anniversary, website | sheet | pending | |
 | Map: the address on the radar's map tiles with a pin | sheet | pending | |
 | Duplicates offered as one merge | sheet | pending | |
@@ -85,8 +85,8 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Birthdays feed Calendar's Birthdays calendar | sheet | pending | |
 | The Contacts button opens Contacts | sheet | pending | |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
-| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | pending | |
-| Its own program, loaded when opened and released when left | owner 2026-11-14 | pending | |
+| Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
+| Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/contacts/src/main.rs, shell/today/src/program.rs |
 | Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |
 
 ## What would overturn it
