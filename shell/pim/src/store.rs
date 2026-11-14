@@ -149,6 +149,8 @@ pub mod tag {
     pub const SOURCE: u8 = 36;
     /// Calendar: 1 when hidden from the views.
     pub const HIDDEN: u8 = 37;
+    /// Note: its paper (0 ruled, 1 plain, 2 grid).
+    pub const PAPER: u8 = 38;
 }
 
 /// A record as stored: read-only.

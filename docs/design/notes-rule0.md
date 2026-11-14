@@ -54,10 +54,10 @@ Catch a thought in a second, by stylus or keyboard, and find it again.
 
 | Item | From | Status | Code |
 |---|---|---|---|
-| Home grid of cards in their colours with text previews and ink miniatures; list view | apps-and-packs: a grid of note cards | pending | |
+| Home grid of cards in their colours with text previews and ink miniatures; list view | apps-and-packs: a grid of note cards | built | apps/notes/src/lib.rs, apps/notes/src/tests.rs |
 | Pinned notes first | apps-and-packs: pinned notes | built | apps/notes/src/lib.rs |
 | Smooth ink drawn by the GPU: filtered points, anti-aliased strokes, width from speed, five colours, highlighter, stroke eraser | apps-and-packs: Smooth ink on the GPU | pending | |
-| Ruled, plain and grid paper | sheet | pending | |
+| Ruled, plain and grid paper | sheet | built | apps/notes/src/lib.rs, shell/pim/src/store.rs |
 | A note as blocks: text, ink and checklists in any order | sheet | pending | |
 | Checklists with the round tick | apps-and-packs: checklists | built | apps/notes/src/lib.rs, apps/notes/src/tests.rs |
 | Search over typed text and titles with the match highlighted | apps-and-packs: search typed notes | pending | |

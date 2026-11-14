@@ -211,6 +211,9 @@ struct Row {
     title: Text<32>,
     colour: Argb,
     pinned: bool,
+    paper: u8,
+    /// Whether the note holds the search typed (title or text).
+    found: bool,
     lines: [Line; 12],
     n: usize,
 }
@@ -222,6 +225,8 @@ impl Row {
             title: Text::of(r.text(tag::TITLE)),
             colour: kit::IDENTITY[(r.num(tag::COLOUR).unwrap_or(1) % 8) as usize],
             pinned: r.num(tag::PINNED) == Some(1),
+            paper: r.num(tag::PAPER).unwrap_or(0).min(2) as u8,
+            found: true,
             lines: [Line::Ink; 12],
             n: 0,
         };
@@ -258,6 +263,10 @@ enum Tool {
     List,
 }
 
+/// The home's search field and its grid/list chips.
+const SEARCH: Rect = Rect::new(MARGIN, 36 + kit::TITLE_BAND + 4, WIDE - 140, 36);
+const LAYOUT: Rect = Rect::new(W - MARGIN - 132, 36 + kit::TITLE_BAND + 7, 132, 30);
+
 /// The note's tool strip, its tools in order, and the pen colours' row.
 const STRIP: Rect = Rect::new(8, 548, W - 16, 48);
 const TOOLS: [&[u8]; 6] = [b"PEN", b"MARKER", b"ERASE", b"TEXT", b"LIST", b"UNDO"];
@@ -283,6 +292,14 @@ pub struct Notes {
     typing: bool,
     /// A new note to start on the first frame (the Note button).
     start_new: bool,
+    /// The home's search (being typed), grid or list; a note's menu open,
+    /// and Delete asked once.
+    query: [u8; 32],
+    query_n: usize,
+    searching: bool,
+    as_list: bool,
+    menu: bool,
+    confirm_delete: bool,
     /// The home grid's cards on screen and the notes they open.
     cards: [(Rect, u8); 12],
     n_cards: usize,
@@ -427,6 +444,12 @@ impl Notes {
             n_checks: 0,
             typing: false,
             start_new: false,
+            query: [0; 32],
+            query_n: 0,
+            searching: false,
+            as_list: false,
+            menu: false,
+            confirm_delete: false,
             cards: [(Rect::new(0, 0, 0, 0), 0); 12],
             n_cards: 0,
             rows: [None; 24],
@@ -467,6 +490,23 @@ impl Notes {
                     pics.free(pic);
                 }
             }
+        }
+    }
+
+    /// The search typed: each note found when its title or text holds it.
+    fn find(&mut self, cx: &Ctx) {
+        let q = &self.query[..self.query_n];
+        let Some(cell) = cx.pim else { return };
+        let Ok(guard) = cell.try_borrow() else { return };
+        let Some(store) = guard.as_ref() else { return };
+        for row in self.rows.iter_mut().flatten() {
+            row.found = q.is_empty()
+                || store.get(row.id).is_some_and(|r| {
+                    let has = |t: &[u8]| {
+                        t.len() >= q.len() && t.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q))
+                    };
+                    has(r.text(tag::TITLE)) || has(r.text(tag::TEXT))
+                });
         }
     }
 
@@ -528,17 +568,78 @@ impl Notes {
             k += 1;
         }
         let mut y = kit::large_title(f, cx, 36, b"Notes", &s[..k], tint::NOTES);
-        let field = Rect::new(MARGIN, y + 4, WIDE, 36);
+        let field = SEARCH;
         kit::panel(f, cx, field);
-        kit::text(
+        let q = &self.query[..self.query_n];
+        if self.searching {
+            f.push(rp_app::Cmd::Outline {
+                r: field,
+                color: kit::FOCUS,
+            });
+        }
+        if q.is_empty() {
+            kit::text(
+                f,
+                field.x + 12,
+                field.y + 25,
+                cx.fonts.ui,
+                DIM,
+                b"Search notes",
+            );
+        } else {
+            kit::text(f, field.x + 12, field.y + 25, cx.fonts.ui, TEXT, q);
+        }
+        kit::chips(
             f,
-            field.x + 12,
-            field.y + 25,
-            cx.fonts.ui,
-            DIM,
-            b"Search notes",
+            cx,
+            LAYOUT,
+            &[b"GRID", b"LIST"],
+            usize::from(self.as_list),
+            tint::NOTES,
         );
         y += 48;
+        if self.as_list {
+            // One row a note: its colour, title and first line.
+            let rows = self.rows;
+            for (place, note) in rows
+                .iter()
+                .enumerate()
+                .filter_map(|(k, n)| n.map(|n| (k, n)))
+                .filter(|(_, n)| n.found)
+            {
+                if y + 50 > 596 {
+                    break;
+                }
+                let r = Rect::new(MARGIN, y, WIDE, 46);
+                kit::tinted(f, cx, r, note.colour, 0x40);
+                kit::fitted(
+                    f,
+                    r.x + 22,
+                    r.y + 21,
+                    cx.fonts.ui,
+                    TEXT,
+                    if note.title.is_empty() {
+                        b"New note"
+                    } else {
+                        note.title.get()
+                    },
+                    300,
+                );
+                let first = note.lines[..note.n].iter().find_map(|l| match l {
+                    Line::Text(t) | Line::Check(t, _) if !t.is_empty() => Some(*t),
+                    _ => None,
+                });
+                if let Some(t) = first {
+                    kit::fitted(f, r.x + 22, r.y + 41, cx.fonts.ui, DIM, t.get(), 380);
+                }
+                if self.n_cards < self.cards.len() {
+                    self.cards[self.n_cards] = (r, place as u8);
+                    self.n_cards += 1;
+                }
+                y += 50;
+            }
+            return;
+        }
         // Pinned first, then the rest, two columns, heights by content.
         let mut col_y = [y, y];
         let mut mini = 0;
@@ -556,7 +657,7 @@ impl Notes {
                     .filter_map(|(k, n)| n.map(|n| (k, n)))
                     .filter(|(_, n)| !n.pinned),
             );
-        for (place, note) in order {
+        for (place, note) in order.filter(|(_, n)| n.found) {
             let note = &note;
             let c = if col_y[0] <= col_y[1] { 0 } else { 1 };
             let x = MARGIN + c as u16 * 228;
@@ -645,11 +746,22 @@ impl Notes {
             r: Rect::new(paper.x, paper.y, 6, paper.h),
             color: note.colour,
         });
-        for k in 0..17 {
-            f.push(rp_app::Cmd::Fill {
-                r: Rect::new(paper.x + 20, paper.y + 60 + k * 28, paper.w - 30, 1),
-                color: 0x5070_90B0,
-            });
+        // Ruled, plain or grid paper (the note's choice, Menu).
+        if note.paper != 1 {
+            for k in 0..17 {
+                f.push(rp_app::Cmd::Fill {
+                    r: Rect::new(paper.x + 20, paper.y + 60 + k * 28, paper.w - 30, 1),
+                    color: 0x5070_90B0,
+                });
+            }
+        }
+        if note.paper == 2 {
+            for k in 0..16 {
+                f.push(rp_app::Cmd::Fill {
+                    r: Rect::new(paper.x + 20 + k * 28, paper.y + 60, 1, paper.h - 70),
+                    color: 0x5070_90B0,
+                });
+            }
         }
         let ink: Argb = 0xFF20_2A38;
         let (title, tcol): (&[u8], Argb) = if note.title.is_empty() {
@@ -718,6 +830,42 @@ impl Notes {
                     color: c,
                 });
             }
+        }
+        // The menu, when open, over the tool strip.
+        if self.menu {
+            kit::panel(f, cx, STRIP);
+            let words: [&[u8]; 4] = [
+                if note.pinned { b"UNPIN" } else { b"PIN" },
+                b"COLOUR",
+                [&b"RULED"[..], b"PLAIN", b"GRID"][usize::from(note.paper)],
+                if self.confirm_delete {
+                    b"DELETE?"
+                } else {
+                    b"DELETE"
+                },
+            ];
+            for (k, w) in words.iter().enumerate() {
+                let r = Rect::new(STRIP.x + 6 + k as u16 * 114, STRIP.y + 6, 108, 36);
+                kit::key(
+                    f,
+                    cx,
+                    r,
+                    if k == 3 {
+                        kit::KeyState::Down
+                    } else {
+                        kit::KeyState::Rest
+                    },
+                );
+                kit::centred(
+                    f,
+                    r,
+                    r.y + 23,
+                    cx.fonts.label,
+                    if k == 3 { kit::LATE } else { TEXT },
+                    w,
+                );
+            }
+            return;
         }
         // The tool strip.
         let strip = STRIP;
@@ -939,6 +1087,51 @@ impl Notes {
             .map(|k| k as u8)
     }
 
+    /// Note `id`'s field `which` set to the number `v` (or left out for
+    /// `None`), the rest kept.
+    fn set_num(&self, cx: &Ctx, id: u32, which: u8, v: Option<u32>) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(store) = guard.as_mut() else { return };
+        let Some(r) = store.get(id) else { return };
+        let mut text = [0u8; rp_pim::store::TEXT_MAX];
+        let tn = r.text(tag::TEXT).len().min(text.len());
+        text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
+        let mut ink = [0u8; rp_pim::store::TEXT_MAX];
+        let inn = r.text(tag::INK).len().min(ink.len());
+        ink[..inn].copy_from_slice(&r.text(tag::INK)[..inn]);
+        let mut title = [0u8; 64];
+        let tl = r.text(tag::TITLE).len().min(64);
+        title[..tl].copy_from_slice(&r.text(tag::TITLE)[..tl]);
+        let mut nums = [
+            (tag::COLOUR, r.num(tag::COLOUR)),
+            (tag::PINNED, r.num(tag::PINNED)),
+            (tag::PAPER, r.num(tag::PAPER)),
+        ];
+        for n in nums.iter_mut() {
+            if n.0 == which {
+                n.1 = v;
+            }
+        }
+        let b = nums.map(|(_, v)| v.map(u32::to_le_bytes));
+        let mut fields: [(u8, &[u8]); 6] = [
+            (tag::TITLE, &title[..tl]),
+            (tag::TEXT, &text[..tn]),
+            (tag::INK, &ink[..inn]),
+            (0, &[]),
+            (0, &[]),
+            (0, &[]),
+        ];
+        for (k, (t, _)) in nums.iter().enumerate() {
+            if let Some(v) = &b[k] {
+                fields[3 + k] = (*t, v);
+            }
+        }
+        let _ = store.put(Kind::Note, Some(id), &fields);
+    }
+
     fn open_id(&self) -> Option<u32> {
         match self.view {
             View::Note(i) => self
@@ -986,6 +1179,7 @@ impl Program for Notes {
             self.view = View::Note(k);
         }
         self.refresh(cx);
+        self.find(cx);
         self.paint(cx);
         kit::backdrop(f);
         match self.view {
@@ -999,11 +1193,69 @@ impl Program for Notes {
         match (e, self.view) {
             (Event::Key(Key::SoftLeft), View::Home) => Reply::Close,
             (Event::Key(Key::SoftLeft), _) => {
-                if self.typing {
+                if self.menu {
+                    self.menu = false;
+                } else if self.typing {
                     self.typing = false;
                 } else {
                     self.view = View::Home;
                 }
+                Reply::Redraw
+            }
+            (Event::Key(Key::SoftRight), View::Note(_)) => {
+                self.menu = !self.menu;
+                self.confirm_delete = false;
+                Reply::Redraw
+            }
+            (Event::PenUp { x, y }, View::Note(i)) if self.menu && STRIP.contains_point(x, y) => {
+                let k = usize::from((x - STRIP.x - 6) / 114).min(3);
+                let Some(row) = self.rows.get(usize::from(i)).copied().flatten() else {
+                    return Reply::Nothing;
+                };
+                match k {
+                    0 => self.set_num(cx, row.id, tag::PINNED, (!row.pinned).then_some(1)),
+                    1 => {
+                        let c = kit::IDENTITY
+                            .iter()
+                            .position(|&x| x == row.colour)
+                            .unwrap_or(1);
+                        self.set_num(cx, row.id, tag::COLOUR, Some(((c + 1) % 8) as u32));
+                    }
+                    2 => self.set_num(cx, row.id, tag::PAPER, Some(u32::from((row.paper + 1) % 3))),
+                    _ if self.confirm_delete => {
+                        if let Some(cell) = cx.pim
+                            && let Ok(mut g) = cell.try_borrow_mut()
+                            && let Some(store) = g.as_mut()
+                        {
+                            let _ = store.remove(row.id);
+                        }
+                        self.menu = false;
+                        self.confirm_delete = false;
+                        self.view = View::Home;
+                    }
+                    _ => self.confirm_delete = true,
+                }
+                Reply::Redraw
+            }
+            (Event::PenUp { x, y }, View::Home) if SEARCH.contains_point(x, y) => {
+                self.searching = true;
+                Reply::Redraw
+            }
+            (Event::PenUp { x, y }, View::Home) if LAYOUT.contains_point(x, y) => {
+                self.as_list = x >= LAYOUT.x + LAYOUT.w / 2;
+                Reply::Redraw
+            }
+            (Event::Char(c), View::Home) if self.searching && self.query_n < self.query.len() => {
+                self.query[self.query_n] = c;
+                self.query_n += 1;
+                Reply::Redraw
+            }
+            (Event::Delete, View::Home) if self.searching => {
+                self.query_n = self.query_n.saturating_sub(1);
+                Reply::Redraw
+            }
+            (Event::Done, View::Home) if self.searching => {
+                self.searching = false;
                 Reply::Redraw
             }
             (Event::Key(Key::SoftRight), View::Home) => {
@@ -1123,7 +1375,11 @@ impl Program for Notes {
     }
 
     fn keyboard(&self) -> Option<Field> {
-        (self.typing && matches!(self.view, View::Note(_))).then_some(Field::Sentence)
+        match self.view {
+            View::Home if self.searching => Some(Field::Line),
+            View::Note(_) if self.typing => Some(Field::Sentence),
+            _ => None,
+        }
     }
 }
 

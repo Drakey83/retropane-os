@@ -224,3 +224,91 @@ fn ink_round_trips_with_each_stroke_s_style() {
         let _ = decode_ink(&out[..cut], &mut pts, &mut ends, &mut styles);
     }
 }
+
+#[test]
+fn search_finds_by_title_and_text_and_the_menu_pins_papers_and_deletes() {
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        s.put(
+            Kind::Note,
+            None,
+            &[(tag::TITLE, b"Garden"), (tag::TEXT, b"Plant tomatoes")],
+        )
+        .unwrap();
+        s.put(
+            Kind::Note,
+            None,
+            &[(tag::TITLE, b"Shopping"), (tag::TEXT, b"[ ] Milk")],
+        )
+        .unwrap();
+    }
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    assert_eq!(n.n_cards, 2);
+    n.event(
+        Event::PenUp {
+            x: SEARCH.x + 10,
+            y: SEARCH.y + 10,
+        },
+        &cx,
+    );
+    for &c in b"toma" {
+        n.event(Event::Char(c), &cx);
+    }
+    draw(&mut n, &cx);
+    assert_eq!(n.n_cards, 1);
+    // Open it: Menu, then PIN and PAPER (ruled to plain).
+    let (r, _) = n.cards[0];
+    n.event(
+        Event::PenUp {
+            x: r.x + 20,
+            y: r.y + 20,
+        },
+        &cx,
+    );
+    draw(&mut n, &cx);
+    n.event(Event::Key(Key::SoftRight), &cx);
+    n.event(
+        Event::PenUp {
+            x: STRIP.x + 20,
+            y: STRIP.y + 20,
+        },
+        &cx,
+    );
+    n.event(
+        Event::PenUp {
+            x: STRIP.x + 6 + 2 * 114 + 20,
+            y: STRIP.y + 20,
+        },
+        &cx,
+    );
+    {
+        let g = pim.borrow();
+        let r = g.as_ref().unwrap().all(Kind::Note).next().unwrap();
+        assert_eq!(r.num(tag::PINNED), Some(1));
+        assert_eq!(r.num(tag::PAPER), Some(1));
+        assert_eq!(r.text(tag::TEXT), b"Plant tomatoes");
+    }
+    // DELETE asks once, then deletes.
+    let del = STRIP.x + 6 + 3 * 114 + 20;
+    draw(&mut n, &cx);
+    n.event(
+        Event::PenUp {
+            x: del,
+            y: STRIP.y + 20,
+        },
+        &cx,
+    );
+    assert_eq!(pim.borrow().as_ref().unwrap().all(Kind::Note).count(), 2);
+    n.event(
+        Event::PenUp {
+            x: del,
+            y: STRIP.y + 20,
+        },
+        &cx,
+    );
+    assert_eq!(pim.borrow().as_ref().unwrap().all(Kind::Note).count(), 1);
+}
