@@ -1641,6 +1641,67 @@ fn build_images(crates: &[Crate], stack_dir: Option<&str>) -> Result {
 mod tests {
     use std::path::Path;
 
+    /// Class guard for the relay's PowerShell (2026-11-14: `"ICAL $n: ..."`
+    /// stopped the whole relay script from parsing, so the device run had
+    /// no internet): in PowerShell `$name:` inside a string is a drive or
+    /// scope reference; only the scopes are meant. Every `$word:` in the
+    /// xtask sources' PowerShell must be `$script:`, `$env:`, `$global:` or
+    /// `$using:` (a variable before a colon is written `${name}`).
+    #[test]
+    fn powershell_strings_have_no_variable_before_a_colon() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let scopes = ["script", "env", "global", "using", "local", "private"];
+        let mut found = Vec::new();
+        let mut dirs = vec![src];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if !path.extension().is_some_and(|e| e == "rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (n, line) in text.lines().enumerate() {
+                    // Comments explain the rule; scripts are in strings.
+                    if line.trim_start().starts_with("//") {
+                        continue;
+                    }
+                    let b = line.as_bytes();
+                    for k in 0..b.len() {
+                        if b[k] != b'$' {
+                            continue;
+                        }
+                        let w: Vec<u8> = b[k + 1..]
+                            .iter()
+                            .copied()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == b'_')
+                            .collect();
+                        let after = k + 1 + w.len();
+                        if !w.is_empty()
+                            && b.get(after) == Some(&b':')
+                            && b.get(after + 1) != Some(&b':')
+                            && !scopes.contains(
+                                &std::str::from_utf8(&w)
+                                    .unwrap()
+                                    .to_ascii_lowercase()
+                                    .as_str(),
+                            )
+                        {
+                            found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "a variable before a colon in PowerShell: {found:#?}"
+        );
+    }
+
     /// Class guard for the light look's keep mark (`rp_app::kit::keep`:
     /// an alpha whose low nibble is 0xD): no colour written in the shell,
     /// the apps or the renderer has it by accident, or the light look

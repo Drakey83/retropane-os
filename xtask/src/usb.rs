@@ -2242,7 +2242,7 @@ while ($true) {{
                 }}
                 [void]$keep.Append("END:VCALENDAR`r`n")
                 $b = [Text.Encoding]::UTF8.GetBytes($keep.ToString())
-                "ICAL $n: $($b.Length) bytes"
+                "ICAL ${{n}}: $($b.Length) bytes"
                 Answer $b
             }}
             'HERE' {{
