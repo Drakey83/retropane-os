@@ -537,9 +537,16 @@ pub const BUDGETS: &[Budget] = &[
     // KiB; their store and lists are in the RAM pool); 80.9 KiB measured.
     // The zeroed RAM and stacks lie above the image area since the same
     // day (boot/link.x, `__ram_at`), so the area holds the loaded bytes.
+    // Loaded bytes 900 -> 912 KiB on 2026-11-14 (test image): the
+    // organiser store on the card (shell/today/src/organiser.rs and the
+    // loop's load and save) brought the image to 909,936 B and its
+    // look-check variant (the replay and the look judge built in) to
+    // 923,164 B, 1,564 B over 900 KiB (emu-today's look check refused it).
+    // The image area holds 950,272 B and the span check below holds every
+    // build to it.
     Budget {
         image: "rp-today",
-        max_load: 900 * 1024,
+        max_load: 912 * 1024,
         max_zero: 84 * 1024,
         device: OnDevice::Returns,
     },

@@ -57,7 +57,8 @@ appointments; reminders. No sync, no accounts, no network.
   opens the editor with those values. Softkeys Cancel and Add.
 - **The editor** (New's details, or an existing appointment): Title and
   Where (text), Day, Starts, Lasts and Remind me (steppers), Notes (text),
-  and Delete for an existing one (asks once in the softkey bar). Softkeys
+  and Delete for an existing one (asks once, in place: the row then reads
+  "Tap again to delete"). Softkeys
   Cancel and Done.
 - **Reminders:** each appointment may carry "remind me N minutes before"
   (none, at the start, 5, 15, 30 minutes, 1 hour, 1 day; new ones default

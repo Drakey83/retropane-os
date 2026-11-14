@@ -46,7 +46,8 @@ vCard import and export are on the later list.
   left, value right; the address and notes wrap to two lines). Softkeys
   **Back** and **Edit**.
 - **The editor:** the nine rows; tapping one types into it. Delete (for
-  an existing card) asks once in the softkey bar. Softkeys Cancel and
+  an existing card) asks once, in place (the row then reads "Tap again
+  to delete"). Softkeys Cancel and
   Done; a card with every field empty isn't kept.
 
 ## How the design was iterated

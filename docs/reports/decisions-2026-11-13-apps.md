@@ -38,7 +38,9 @@ How to read a line: **built** / the alternative.
   not look; say if you want the other way): the five apps and their store
   are compiled as Thumb code, and rp-today's zeroed RAM and stack moved
   from the image area to the free RAM above it (`0xA8100000`). Loaded
-  size 909,936 B of the 921,600 budget (was 820,920 before the apps);
+  size 909,936 B (was 820,920 before the apps), and 923,164 B for the
+  look-check build; the test image's budget went from 900 to 912 KiB for
+  it (the image area holds 950,272 B);
   zeroed RAM 82,800 B (budget raised from 80 to 84 KiB for the store's
   state). The alternative was compiling older cold code (settings
   screens) as Thumb to make room; it would have touched proven code the
