@@ -69,7 +69,7 @@ the light look is derived from them (`light_twin`, `light_glass`,
 | Secondary text (labels, hints, times) | `0xFFCCD3DA` |
 | Focus ring, the caret | `0xFF7FD0FF` (the system accent: where you are) |
 | Under the pen (pressed) | `0xFF3C4656` |
-| Done, held, a ticked box | `0xFF5CE07A` |
+| Done, held, a ticked box | `0xFF81C08B` |
 | Warning, overdue, delete | the alert chip's amber and red (`weather_app`) |
 
 **App tints** (version 2). Each app has one tint: its header's glow, its
@@ -78,11 +78,19 @@ stays the system accent so "where am I" reads the same everywhere.
 
 | App | Tint | Why |
 |---|---|---|
-| Calendar | coral `0xFFFF7A5C` | warm, the day; reads on the cool glass |
-| Contacts | teal `0xFF35C2B0` | people; the icon set's teal |
-| Tasks | blue `0xFF4C9BFF` | calm, done-ness |
-| Notes | amber `0xFFFFC44D` | paper, the legal pad |
-| Calculator | orange operators `0xFFFF9F2E` on graphite keys | the operators found by eye, the digits quiet |
+| Calendar | coral `0xFFD9907E` | warm, the day; reads on the cool glass |
+| Contacts | teal `0xFF74B1A7` | people; the icon set's teal |
+| Tasks | blue `0xFF749DD3` | calm, done-ness |
+| Notes | amber `0xFFD2B37B` | paper, the legal pad |
+| Calculator | orange operators `0xFFD6A270` on graphite keys | the operators found by eye, the digits quiet |
+
+**Muted, not neon** (the owner, 2026-11-14: the bright accents clashed
+with the Aero / XP look; he chose 55% of four rendered strengths,
+docs/reports/apps-v2-2026-11-14/accents-compare.jpg). Every accent above
+and every identity colour keeps its hue with 55% of its chroma in OKLCH,
+and its lightness is lowered toward the lowest that still reads at 4.5:1
+on the glass cards: computed by `tools/shell-assets/accents.py`, never
+picked by hand, so a new accent is muted the same way.
 
 **Identity colours** (calendars, task lists, note colours, avatars): eight,
 chosen on the X51v's panel for contrast against the glass in both looks

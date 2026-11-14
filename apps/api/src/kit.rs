@@ -19,38 +19,38 @@ pub const DIM: Argb = theme(0xFFCC_D3DA);
 /// The system accent: focus, the caret.
 pub const FOCUS: Argb = theme(0xFF7F_D0FF);
 /// Done, a ticked box.
-pub const DONE: Argb = theme(0xFF5C_E07A);
+pub const DONE: Argb = theme(0xFF81_C08B);
 /// Late, delete.
-pub const LATE: Argb = theme(0xFFFF_7A6B);
+pub const LATE: Argb = theme(0xFFD9_9086);
 /// Warning.
-pub const AMBER: Argb = theme(0xFFFF_C44D);
+pub const AMBER: Argb = theme(0xFFD2_B37B);
 
 /// The app tints (design-language.md "App tints").
 pub mod tint {
     use super::{Argb, theme};
     /// Calendar.
-    pub const CALENDAR: Argb = theme(0xFFFF_7A5C);
+    pub const CALENDAR: Argb = theme(0xFFD9_907E);
     /// Contacts.
-    pub const CONTACTS: Argb = theme(0xFF35_C2B0);
+    pub const CONTACTS: Argb = theme(0xFF74_B1A7);
     /// Tasks.
-    pub const TASKS: Argb = theme(0xFF4C_9BFF);
+    pub const TASKS: Argb = theme(0xFF74_9DD3);
     /// Notes.
-    pub const NOTES: Argb = theme(0xFFFF_C44D);
+    pub const NOTES: Argb = theme(0xFFD2_B37B);
     /// The calculator's operators.
-    pub const CALCULATOR: Argb = theme(0xFFFF_9F2E);
+    pub const CALCULATOR: Argb = theme(0xFFD6_A270);
 }
 
 /// The eight identity colours (calendars, lists, notes, avatars): coral,
 /// amber, lime, teal, sky, indigo, violet, rose.
 pub const IDENTITY: [Argb; 8] = [
-    theme(0xFFFF_7A5C),
-    theme(0xFFFF_C44D),
-    theme(0xFFA6_E05A),
-    theme(0xFF35_C2B0),
-    theme(0xFF4C_B8FF),
-    theme(0xFF6C_7BFF),
-    theme(0xFFB0_7CFF),
-    theme(0xFFFF_6FA8),
+    theme(0xFFD9_907E),
+    theme(0xFFD2_B37B),
+    theme(0xFFA0_C07E),
+    theme(0xFF74_B1A7),
+    theme(0xFF7A_ADD3),
+    theme(0xFF78_86CD),
+    theme(0xFFA7_8ED4),
+    theme(0xFFD9_8BA6),
 ];
 
 /// A name's identity colour: a hash of its bytes, so it never changes.
