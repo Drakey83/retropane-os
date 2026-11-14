@@ -76,6 +76,15 @@ fn draw(t: &mut Tasks, cx: &Ctx) {
     t.draw(&mut f, cx);
 }
 
+/// A task as the tests read it back: title, done, due, flag, repeat.
+type Row = (
+    std::vec::Vec<u8>,
+    bool,
+    Option<u32>,
+    Option<u32>,
+    Option<u32>,
+);
+
 fn tasks(pim: &core::cell::RefCell<Option<Store<'static>>>) -> std::vec::Vec<Row> {
     let g = pim.borrow();
     let s = g.as_ref().unwrap();
