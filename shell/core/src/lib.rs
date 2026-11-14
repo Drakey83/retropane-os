@@ -685,6 +685,8 @@ pub struct Shell {
     programs: bool,
     /// The next program's intent (the Note button: a new note).
     intent: u8,
+    /// When the open program's motion wants its next step (ms).
+    prog_anim: Option<u32>,
     /// The field the program's keyboard was set for, and the last
     /// character typed (the automatic capitals).
     prog_field: Option<rp_app::Field>,
@@ -920,6 +922,7 @@ macro_rules! shell_start {
             program: core::cell::RefCell::new(None),
             programs: false,
             intent: 0,
+            prog_anim: None,
             prog_field: None,
             prog_last: b' ',
             app_pics: None,
@@ -1741,6 +1744,17 @@ impl Shell {
     pub fn tick(&mut self, now_ms: u32) -> Action {
         self.now = now_ms;
         self.net_tick();
+        // A program's motion: its next step when due.
+        if let Some(due) = self.prog_anim
+            && now_ms.wrapping_sub(due) < 1 << 31
+        {
+            self.prog_anim = None;
+            if self.screen == Screen::Program
+                && self.program_event(rp_app::Event::Tick) != Action::Nothing
+            {
+                return Action::Redraw;
+            }
+        }
         if self.radar_step(now_ms) && self.anim.is_none() && self.notice.is_none() {
             return Action::Redraw;
         }
@@ -2493,7 +2507,13 @@ impl Shell {
         self.program_keyboard();
         match reply {
             rp_app::Reply::Nothing => Action::Nothing,
-            rp_app::Reply::Redraw | rp_app::Reply::Animate => {
+            rp_app::Reply::Redraw => {
+                self.dirty(Rect::new(0, 0, W, H));
+                Action::Redraw
+            }
+            rp_app::Reply::Animate => {
+                // The next step about a frame later (the 33 ms rule).
+                self.prog_anim = Some(self.now.wrapping_add(30));
                 self.dirty(Rect::new(0, 0, W, H));
                 Action::Redraw
             }

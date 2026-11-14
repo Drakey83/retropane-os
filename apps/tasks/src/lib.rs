@@ -81,6 +81,15 @@ pub struct Tasks {
     n_boxes: usize,
     /// The add line is being typed.
     typing: bool,
+    /// The rows on screen (for swipes), where the pen went down, the row
+    /// whose actions a left swipe showed and their keys, and a tick in
+    /// motion (the task and its frame).
+    rows_at: [(Rect, u32); 12],
+    n_rows: usize,
+    press: Option<(u16, u32)>,
+    revealed: Option<u32>,
+    actions: [Rect; 3],
+    ticking: Option<(u32, u8)>,
     view: View,
     line: [u8; 64],
     line_n: usize,
@@ -129,6 +138,12 @@ impl Tasks {
             boxes: [(Rect::new(0, 0, 0, 0), 0); 12],
             n_boxes: 0,
             typing: false,
+            rows_at: [(Rect::new(0, 0, 0, 0), 0); 12],
+            n_rows: 0,
+            press: None,
+            revealed: None,
+            actions: [Rect::new(0, 0, 0, 0); 3],
+            ticking: None,
             view: View::Home,
             line: [0; 64],
             line_n: 0,
@@ -209,6 +224,8 @@ impl Tasks {
         let mut cn = 0;
         let mut flag = q.priority.map_or(0u32, |p| if p >= 2 { 3 } else { 1 });
         let mut list_id = self.lists[0].id;
+        let mut repeat: Option<rp_pim::repeat::Rule> = None;
+        let mut every_next = false;
         for w in title[..tn].split(|&b| b == b' ').filter(|w| !w.is_empty()) {
             if let Some(name) = w.strip_prefix(b"#") {
                 if let Some(l) = self.lists[..self.n_lists]
@@ -223,6 +240,33 @@ impl Tasks {
                 flag = u32::from(b'4' - w[1]);
                 continue;
             }
+            // "every day/weekday/week/month/year": the repeat, and its
+            // words out of the title.
+            if w.eq_ignore_ascii_case(b"every") {
+                every_next = true;
+                continue;
+            }
+            if every_next {
+                every_next = false;
+                use rp_pim::repeat::Every;
+                let (e, days) = match w {
+                    b"day" | b"daily" => (Some(Every::Day), 0),
+                    b"weekday" | b"weekdays" => (Some(Every::Week), 0b1_1111),
+                    b"week" | b"weekly" => (Some(Every::Week), 0),
+                    b"month" | b"monthly" => (Some(Every::MonthDate), 0),
+                    b"year" | b"yearly" => (Some(Every::Year), 0),
+                    _ => (None, 0),
+                };
+                if let Some(every) = e {
+                    repeat = Some(rp_pim::repeat::Rule {
+                        every,
+                        n: 1,
+                        days,
+                        until: None,
+                    });
+                    continue;
+                }
+            }
             for &c in w.iter().chain(b" ") {
                 if cn < clean.len() {
                     clean[cn] = c;
@@ -236,12 +280,18 @@ impl Tasks {
         }
         let n = |v: u32| v.to_le_bytes();
         let (due, fl, li) = (n(q.day.unwrap_or(cx.now.day) as u32), n(flag), n(list_id));
-        let mut fields: [(u8, &[u8]); 4] = [
+        let due_day = q.day.unwrap_or(cx.now.day);
+        let rep = repeat.map(|r| r.pack(due_day).to_le_bytes());
+        let mut fields: [(u8, &[u8]); 5] = [
             (tag::TITLE, &clean[..cn]),
             (tag::DUE, &due),
             (tag::PRIORITY, &[]),
             (tag::LIST, &[]),
+            (tag::REPEAT, &[]),
         ];
+        if let Some(r) = &rep {
+            fields[4].1 = r;
+        }
         if flag > 0 {
             fields[2].1 = &fl;
         }
@@ -265,17 +315,17 @@ impl Tasks {
 
     /// Task `id` ticked done (its record kept with the minute it was
     /// done), or opened again.
-    fn tick(&mut self, cx: &Ctx, id: u32) {
+    /// Task `id`'s record kept with field `which` set to `value` (or
+    /// left out for `None`), every other field as it was.
+    fn set_field(&mut self, cx: &Ctx, id: u32, which: u8, value: Option<&[u8]>) {
         let Some(cell) = cx.pim else { return };
         let Ok(mut guard) = cell.try_borrow_mut() else {
             return;
         };
         let Some(store) = guard.as_mut() else { return };
         let Some(r) = store.get(id) else { return };
-        // Every field but DONE, copied out before the record is replaced.
         let mut keep = [(0u8, [0u8; 64], 0usize); 12];
         let mut k = 0;
-        let mut was_done = false;
         for t in [
             tag::TITLE,
             tag::DUE,
@@ -285,8 +335,13 @@ impl Tasks {
             tag::REPEAT,
             tag::NOTE,
             tag::REMIND_AT,
+            tag::DONE,
         ] {
-            let v = r.text(t);
+            let v = if t == which {
+                value.unwrap_or(&[])
+            } else {
+                r.text(t)
+            };
             if !v.is_empty() && k < keep.len() {
                 let n = v.len().min(64);
                 keep[k].0 = t;
@@ -295,21 +350,52 @@ impl Tasks {
                 k += 1;
             }
         }
-        if r.num(tag::DONE).is_some() {
-            was_done = true;
+        if which != 0
+            && value.is_some()
+            && !keep[..k].iter().any(|(t, _, _)| *t == which)
+            && k < keep.len()
+        {
+            let v = value.unwrap_or(&[]);
+            let n = v.len().min(64);
+            keep[k] = (which, [0; 64], n);
+            keep[k].1[..n].copy_from_slice(&v[..n]);
+            k += 1;
         }
-        let minute = (date::start_of(cx.now.day) + u32::from(cx.now.minute)).to_le_bytes();
-        let mut fields: [(u8, &[u8]); 13] = [(0, &[]); 13];
+        let mut fields: [(u8, &[u8]); 12] = [(0, &[]); 12];
         for (i, (t, b, n)) in keep[..k].iter().enumerate() {
             fields[i] = (*t, &b[..*n]);
         }
-        if !was_done {
-            fields[k] = (tag::DONE, &minute);
-        }
-        let used = if was_done { k } else { k + 1 };
-        if store.put(Kind::Task, Some(id), &fields[..used]).is_ok() {
+        if store.put(Kind::Task, Some(id), &fields[..k]).is_ok() {
             self.seen = None;
         }
+    }
+
+    /// Task `id` ticked done (with the minute), or opened again.
+    fn tick(&mut self, cx: &Ctx, id: u32) {
+        let done = self.tasks.iter().flatten().any(|t| t.id == id && t.done);
+        let minute = (date::start_of(cx.now.day) + u32::from(cx.now.minute)).to_le_bytes();
+        self.set_field(cx, id, tag::DONE, (!done).then_some(&minute[..]));
+    }
+
+    /// A swipe's action on task `id`: 0 tomorrow, 1 next week, 2 delete.
+    fn act(&mut self, cx: &Ctx, id: u32, a: u8) {
+        if a == 2 {
+            if let Some(cell) = cx.pim
+                && let Ok(mut g) = cell.try_borrow_mut()
+                && let Some(store) = g.as_mut()
+                && store.remove(id).is_ok()
+            {
+                self.seen = None;
+            }
+            return;
+        }
+        let day = cx.now.day
+            + if a == 0 {
+                1
+            } else {
+                7 - i32::from(date::weekday(cx.now.day))
+            };
+        self.set_field(cx, id, tag::DUE, Some(&(day as u32).to_le_bytes()));
     }
 
     /// Shows `view`.
@@ -459,6 +545,7 @@ impl Tasks {
     fn list(&mut self, f: &mut Frame, cx: &Ctx, which: Option<u8>) {
         let today = cx.now.day;
         self.n_boxes = 0;
+        self.n_rows = 0;
         let (name, colour): (&[u8], u32) = match which {
             Some(i) => self
                 .lists
@@ -546,6 +633,9 @@ impl Tasks {
             let r = Rect::new(MARGIN, y, WIDE, 46);
             kit::panel(f, cx, r);
             let ci = self.colour_index(t.list);
+            // A tick in motion: the box fills over five frames (150 ms),
+            // then the task moves to the done group.
+            let frame = self.ticking.filter(|(id, _)| *id == t.id).map(|(_, k)| k);
             kit::round_check(
                 f,
                 cx,
@@ -553,14 +643,52 @@ impl Tasks {
                 r.y + 11,
                 self.ring[ci],
                 self.full[ci],
-                false,
+                frame.is_some_and(|k| k >= 3),
             );
+            if let Some(k) = frame.filter(|&k| k < 3) {
+                let d = 4 + u16::from(k) * 5;
+                f.push(rp_app::Cmd::Fill {
+                    r: Rect::new(r.x + 24 - d / 2, r.y + 23 - d / 2, d, d),
+                    color: kit::IDENTITY[ci],
+                });
+            }
+            if self.n_rows < self.rows_at.len() {
+                self.rows_at[self.n_rows] = (r, t.id);
+                self.n_rows += 1;
+            }
             if self.n_boxes < self.boxes.len() {
                 // The box's target: the row's left 44 px, a stylus' width.
                 self.boxes[self.n_boxes] = (Rect::new(r.x, r.y, 44, r.h), t.id);
                 self.n_boxes += 1;
             }
             kit::fitted(f, r.x + 48, r.y + 21, cx.fonts.ui, TEXT, t.title.get(), 250);
+            if self.revealed == Some(t.id) {
+                let words: [&[u8]; 3] = [b"TOMORROW", b"NEXT WEEK", b"DELETE"];
+                for (k, w) in words.iter().enumerate() {
+                    let a = Rect::new(r.right() - 3 * 98 + k as u16 * 98, r.y + 4, 94, r.h - 8);
+                    kit::key(
+                        f,
+                        cx,
+                        a,
+                        if k == 2 {
+                            kit::KeyState::Down
+                        } else {
+                            kit::KeyState::Rest
+                        },
+                    );
+                    kit::centred(
+                        f,
+                        a,
+                        a.y + a.h / 2 + 6,
+                        cx.fonts.label,
+                        if k == 2 { kit::LATE } else { TEXT },
+                        w,
+                    );
+                    self.actions[k] = a;
+                }
+                y += 50;
+                continue;
+            }
             let mut w = [0u8; 16];
             let (wn, late) = Self::due_words(t.due, today, &mut w);
             let mut sub = [0u8; 40];
@@ -667,7 +795,47 @@ impl Program for Tasks {
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
         match (e, self.view) {
+            (Event::PenDown { x, y }, View::List(_)) => {
+                self.press = self.rows_at[..self.n_rows]
+                    .iter()
+                    .find(|(r, _)| r.contains_point(x, y))
+                    .map(|&(_, id)| (x, id));
+                Reply::Nothing
+            }
+            (Event::Tick, View::List(_)) => match self.ticking {
+                Some((id, k)) if k >= 5 => {
+                    self.ticking = None;
+                    self.tick(cx, id);
+                    Reply::Redraw
+                }
+                Some((id, k)) => {
+                    self.ticking = Some((id, k + 1));
+                    Reply::Animate
+                }
+                None => Reply::Nothing,
+            },
             (Event::PenUp { x, y }, View::List(_)) => {
+                let press = self.press.take();
+                // A revealed row's actions.
+                if let Some(id) = self.revealed {
+                    self.revealed = None;
+                    if let Some(a) = self.actions.iter().position(|r| r.contains_point(x, y)) {
+                        self.act(cx, id, a as u8);
+                    }
+                    return Reply::Redraw;
+                }
+                // A swipe: right ticks, left shows the row's actions.
+                if let Some((x0, id)) = press {
+                    let dx = i32::from(x) - i32::from(x0);
+                    if dx >= 70 {
+                        self.ticking = Some((id, 0));
+                        return Reply::Animate;
+                    }
+                    if dx <= -70 {
+                        self.revealed = Some(id);
+                        return Reply::Redraw;
+                    }
+                }
                 if ADD_LINE.contains_point(x, y) {
                     self.typing = true;
                     return Reply::Redraw;
@@ -676,8 +844,13 @@ impl Program for Tasks {
                     .iter()
                     .find(|(r, _)| r.contains_point(x, y));
                 if let Some(&(_, id)) = hit {
-                    self.tick(cx, id);
-                    return Reply::Redraw;
+                    let done = self.tasks.iter().flatten().any(|t| t.id == id && t.done);
+                    if done {
+                        self.tick(cx, id);
+                        return Reply::Redraw;
+                    }
+                    self.ticking = Some((id, 0));
+                    return Reply::Animate;
                 }
                 Reply::Nothing
             }
@@ -721,3 +894,6 @@ impl Program for Tasks {
             .then_some(Field::Line)
     }
 }
+
+#[cfg(test)]
+mod tests;

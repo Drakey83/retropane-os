@@ -59,9 +59,9 @@ tick it off with a satisfying tap.
 |---|---|---|---|
 | Home with smart tiles and counts (Today, Upcoming, Late, Flagged) and the large title | sheet | built | apps/tasks/src/lib.rs |
 | Lists with colours, a progress ring each, made and renamed by the user | apps-and-packs: lists with colours | pending | |
-| Quick add with date, priority, list and repeat highlighted as typed | sheet | pending | |
-| Round checkbox that fills with an animated tick; the row moves to done | sheet | pending | |
-| Swipe right to complete, swipe left for Tomorrow, Next week, Delete | apps-and-packs: Swipe to complete | pending | |
+| Quick add with date, priority, list and repeat highlighted as typed | sheet | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
+| Round checkbox that fills with an animated tick; the row moves to done | sheet | built | apps/tasks/src/lib.rs, shell/core/src/lib.rs |
+| Swipe right to complete, swipe left for Tomorrow, Next week, Delete | apps-and-packs: Swipe to complete | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | Coloured priority flags (word in the editor) | sheet | built | apps/tasks/src/lib.rs |
 | Subtasks with "2 of 5" | apps-and-packs: subtasks | pending | |
 | Repeating tasks (daily, weekdays, weekly on days, monthly, yearly, every N, after done) | apps-and-packs: repeating tasks | pending | |
