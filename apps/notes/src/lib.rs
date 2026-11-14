@@ -921,32 +921,20 @@ impl Notes {
             return false;
         };
         let Some(r) = store.get(id) else { return false };
-        let mut title = [0u8; 64];
-        let tl = r.text(tag::TITLE).len().min(64);
-        title[..tl].copy_from_slice(&r.text(tag::TITLE)[..tl]);
         let mut text = [0u8; rp_pim::store::TEXT_MAX];
         let mut tn = r.text(tag::TEXT).len().min(text.len());
         text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
         let mut ink = [0u8; rp_pim::store::TEXT_MAX];
         let mut inn = r.text(tag::INK).len().min(ink.len());
         ink[..inn].copy_from_slice(&r.text(tag::INK)[..inn]);
-        let colour = r.num(tag::COLOUR).unwrap_or(1).to_le_bytes();
-        let pinned = r.num(tag::PINNED).is_some();
         if !change(&mut text, &mut tn, &mut ink, &mut inn) {
             return false;
         }
-        let one = 1u32.to_le_bytes();
-        let mut fields: [(u8, &[u8]); 5] = [
-            (tag::TITLE, &title[..tl]),
-            (tag::TEXT, &text[..tn]),
-            (tag::INK, &ink[..inn]),
-            (tag::COLOUR, &colour),
-            (tag::PINNED, &[]),
-        ];
-        if pinned {
-            fields[4].1 = &one;
-        }
-        store.put(Kind::Note, Some(id), &fields).is_ok()
+        // Text and ink only: the title, colour, pin, paper and any field
+        // a later version adds are kept by the store.
+        store
+            .change(id, &[(tag::TEXT, &text[..tn]), (tag::INK, &ink[..inn])])
+            .is_ok()
     }
 
     /// The stroke just written added to the note's ink (or, with the
@@ -1097,41 +1085,9 @@ impl Notes {
             return;
         };
         let Some(store) = guard.as_mut() else { return };
-        let Some(r) = store.get(id) else { return };
-        let mut text = [0u8; rp_pim::store::TEXT_MAX];
-        let tn = r.text(tag::TEXT).len().min(text.len());
-        text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
-        let mut ink = [0u8; rp_pim::store::TEXT_MAX];
-        let inn = r.text(tag::INK).len().min(ink.len());
-        ink[..inn].copy_from_slice(&r.text(tag::INK)[..inn]);
-        let mut title = [0u8; 64];
-        let tl = r.text(tag::TITLE).len().min(64);
-        title[..tl].copy_from_slice(&r.text(tag::TITLE)[..tl]);
-        let mut nums = [
-            (tag::COLOUR, r.num(tag::COLOUR)),
-            (tag::PINNED, r.num(tag::PINNED)),
-            (tag::PAPER, r.num(tag::PAPER)),
-        ];
-        for n in nums.iter_mut() {
-            if n.0 == which {
-                n.1 = v;
-            }
-        }
-        let b = nums.map(|(_, v)| v.map(u32::to_le_bytes));
-        let mut fields: [(u8, &[u8]); 6] = [
-            (tag::TITLE, &title[..tl]),
-            (tag::TEXT, &text[..tn]),
-            (tag::INK, &ink[..inn]),
-            (0, &[]),
-            (0, &[]),
-            (0, &[]),
-        ];
-        for (k, (t, _)) in nums.iter().enumerate() {
-            if let Some(v) = &b[k] {
-                fields[3 + k] = (*t, v);
-            }
-        }
-        let _ = store.put(Kind::Note, Some(id), &fields);
+        // Only this field changes: the store keeps every other one.
+        let b = v.map(u32::to_le_bytes);
+        let _ = store.change(id, &[(which, b.as_ref().map_or(&[][..], |b| &b[..]))]);
     }
 
     fn open_id(&self) -> Option<u32> {

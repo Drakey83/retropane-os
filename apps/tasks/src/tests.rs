@@ -239,3 +239,29 @@ fn a_left_swipe_offers_tomorrow_and_delete() {
     );
     assert_eq!(tasks(pim).len(), 1);
 }
+
+/// The class of 2026-11-14: a change rewrote the task with each field cut
+/// to 64 bytes and only the fields it listed.
+#[test]
+fn a_tick_keeps_a_long_note_whole_and_fields_it_doesnt_know() {
+    let pim = store();
+    let cx = ctx(pim);
+    let note = [b'n'; 300];
+    let id = pim
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .put(
+            Kind::Task,
+            None,
+            &[(tag::TITLE, b"Taxes"), (tag::NOTE, &note), (99, b"later")],
+        )
+        .unwrap();
+    let mut t = opened(19_723);
+    t.tick(&cx, id);
+    let s = pim.borrow();
+    let r = s.as_ref().unwrap().get(id).unwrap();
+    assert!(r.num(tag::DONE).is_some());
+    assert_eq!(r.text(tag::NOTE), &note[..]);
+    assert_eq!(r.text(99), b"later");
+}

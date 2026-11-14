@@ -604,7 +604,12 @@ impl Calendar {
         let Some(store) = guard.as_mut() else {
             return false;
         };
-        let ok = store.put(Kind::Appointment, e.id, &fields).is_ok();
+        // An edit changes the editor's fields only (an empty one removed):
+        // the store keeps the rest (its calendar, a synced id, later tags).
+        let ok = match e.id {
+            Some(id) => store.change(id, &fields).is_ok(),
+            None => store.put(Kind::Appointment, None, &fields).is_ok(),
+        };
         if ok {
             self.seen = None;
             self.day = e.day;
@@ -911,25 +916,14 @@ impl Calendar {
         };
         let Some(store) = guard.as_mut() else { return };
         let Some(r) = store.get(id) else { return };
-        let mut name = [0u8; 40];
-        let nn = r.text(tag::NAME).len().min(40);
-        name[..nn].copy_from_slice(&r.text(tag::NAME)[..nn]);
-        let mut source = [0u8; 16];
-        let sn = r.text(tag::SOURCE).len().min(16);
-        source[..sn].copy_from_slice(&r.text(tag::SOURCE)[..sn]);
-        let colour = r.num(tag::COLOUR).unwrap_or(0).to_le_bytes();
-        let hidden = r.num(tag::HIDDEN) == Some(1);
+        // HIDDEN only: the store keeps the name, colour, source and the rest.
         let one = 1u32.to_le_bytes();
-        let mut fields: [(u8, &[u8]); 4] = [
-            (tag::NAME, &name[..nn]),
-            (tag::COLOUR, &colour),
-            (tag::SOURCE, &source[..sn]),
-            (tag::HIDDEN, &[]),
-        ];
-        if !hidden {
-            fields[3].1 = &one;
-        }
-        if store.put(Kind::Calendar, Some(id), &fields).is_ok() {
+        let hidden: &[u8] = if r.num(tag::HIDDEN) == Some(1) {
+            &[]
+        } else {
+            &one
+        };
+        if store.change(id, &[(tag::HIDDEN, hidden)]).is_ok() {
             self.seen = None;
         }
     }

@@ -413,3 +413,91 @@ fn the_newer_generation_wins_and_a_refusing_card_stalls_then_recovers() {
     assert!(!s.dirty());
     assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
 }
+
+#[test]
+fn a_change_keeps_every_field_it_doesnt_name_and_survives_a_reload() {
+    let mut m = memory(8 * 1024);
+    let mut s = fresh(&mut m, 64);
+    let paper = 2u32.to_le_bytes();
+    // A field no caller of `change` names (a later program's tag, 99).
+    let id = s
+        .put(
+            Kind::Note,
+            None,
+            &[
+                (tag::TITLE, b"Shop"),
+                (tag::TEXT, b"eggs"),
+                (tag::PAPER, &paper),
+                (99, b"future"),
+            ],
+        )
+        .unwrap();
+    let other = s.put(Kind::Note, None, &[(tag::TITLE, b"Other")]).unwrap();
+    // The text changed, the title removed, a colour added.
+    let colour = 3u32.to_le_bytes();
+    assert_eq!(
+        s.change(
+            id,
+            &[
+                (tag::TEXT, b"eggs, milk"),
+                (tag::TITLE, b""),
+                (tag::COLOUR, &colour)
+            ]
+        ),
+        Ok(id)
+    );
+    let check = |s: &Store| {
+        let r = s.get(id).unwrap();
+        assert_eq!(r.kind, Kind::Note);
+        assert_eq!(r.text(tag::TEXT), b"eggs, milk");
+        assert_eq!(r.text(tag::TITLE), b"");
+        assert_eq!(r.num(tag::PAPER), Some(2));
+        assert_eq!(r.num(tag::COLOUR), Some(3));
+        assert_eq!(r.text(99), b"future");
+        assert_eq!(s.get(other).unwrap().text(tag::TITLE), b"Other");
+    };
+    check(&s);
+    // Through the card and back.
+    let mut card = Card::new(64);
+    card.flush(&mut s);
+    let mut m2 = memory(8 * 1024);
+    let mut back = Store::sized(&mut m2, 64);
+    card.load(&mut back);
+    check(&back);
+}
+
+#[test]
+fn a_change_packs_when_the_arena_is_full_and_refuses_what_cannot_fit() {
+    let mut m = memory(4 * 1024);
+    let mut s = fresh(&mut m, 64);
+    let id = s
+        .put(
+            Kind::Note,
+            None,
+            &[(tag::TITLE, b"T"), (tag::TEXT, &[b'a'; 900])],
+        )
+        .unwrap();
+    // Each change leaves the old copy behind until a pack: many of them
+    // fill the arena many times over, and every one still lands.
+    for k in 0..40u8 {
+        let text = [b'a' + k % 26; 900];
+        assert_eq!(s.change(id, &[(tag::TEXT, &text)]), Ok(id), "change {k}");
+        assert_eq!(s.get(id).unwrap().text(tag::TITLE), b"T");
+        assert_eq!(s.get(id).unwrap().text(tag::TEXT)[0], b'a' + k % 26);
+    }
+    assert_eq!(
+        s.change(id, &[(tag::TEXT, &[0u8; TEXT_MAX + 1])]),
+        Err(Error::TooLong)
+    );
+    assert_eq!(
+        s.change(id + 100, &[(tag::TEXT, b"x")]),
+        Err(Error::NotFound)
+    );
+    let many: Vec<(u8, &[u8])> = (100..117).map(|t| (t, &b"x"[..])).collect();
+    assert_eq!(s.change(id, &many), Err(Error::TooLong), "over 16 fields");
+    assert_eq!(
+        s.get(id).unwrap().text(tag::TITLE),
+        b"T",
+        "a refused change changes nothing"
+    );
+}

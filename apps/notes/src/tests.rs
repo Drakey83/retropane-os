@@ -312,3 +312,46 @@ fn search_finds_by_title_and_text_and_the_menu_pins_papers_and_deletes() {
     );
     assert_eq!(pim.borrow().as_ref().unwrap().all(Kind::Note).count(), 1);
 }
+
+/// The class of 2026-11-14: an edit that rewrote the note whole dropped
+/// the fields it didn't list (the paper was lost on the next stroke).
+#[test]
+fn typing_and_ink_keep_the_paper_colour_pin_and_unknown_fields() {
+    let pim = store();
+    let cx = ctx(pim);
+    let paper = 1u32.to_le_bytes();
+    let colour = 4u32.to_le_bytes();
+    let one = 1u32.to_le_bytes();
+    let id = pim
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .put(
+            Kind::Note,
+            None,
+            &[
+                (tag::TITLE, b"Kept"),
+                (tag::TEXT, b"a"),
+                (tag::PAPER, &paper),
+                (tag::COLOUR, &colour),
+                (tag::PINNED, &one),
+                (99, b"later"),
+            ],
+        )
+        .unwrap();
+    let n = opened(19_723);
+    n.rewrite(&cx, id, |text, tn, _, _| {
+        text[*tn] = b'b';
+        *tn += 1;
+        true
+    });
+    n.set_num(&cx, id, tag::COLOUR, Some(2));
+    let s = pim.borrow();
+    let r = s.as_ref().unwrap().get(id).unwrap();
+    assert_eq!(r.text(tag::TEXT), b"ab");
+    assert_eq!(r.text(tag::TITLE), b"Kept");
+    assert_eq!(r.num(tag::PAPER), Some(1));
+    assert_eq!(r.num(tag::COLOUR), Some(2));
+    assert_eq!(r.num(tag::PINNED), Some(1));
+    assert_eq!(r.text(99), b"later");
+}

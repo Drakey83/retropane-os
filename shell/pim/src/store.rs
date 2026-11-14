@@ -577,6 +577,96 @@ impl<'a> Store<'a> {
         Ok(id)
     }
 
+    /// Changes some of `id`'s fields and keeps every other field it has,
+    /// those the caller doesn't know included (an empty change removes
+    /// that field). A caller rewriting a record whole drops the fields it
+    /// didn't list: a note's paper was lost on its next stroke that way
+    /// (2026-11-14), and a newer program's tags would be lost to an older
+    /// one's edit. The old fields are copied store to store, no buffer on
+    /// the stack.
+    ///
+    /// # Errors
+    /// [`Error::NotFound`], [`Error::TooLong`] (over 16 fields, a field
+    /// over [`TEXT_MAX`], or a record over a group), [`Error::Full`],
+    /// [`Error::Loading`].
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+    pub fn change(&mut self, id: u32, changes: &[(u8, &[u8])]) -> Result<u32, Error> {
+        if !self.loaded {
+            return Err(Error::Loading);
+        }
+        if changes.iter().any(|f| f.1.len() > TEXT_MAX) {
+            return Err(Error::TooLong);
+        }
+        let named = |t: u8| changes.iter().any(|c| c.0 == t);
+        // The kept fields' room and count, then the changes'.
+        let measure = |s: &Self| -> Option<(Kind, usize, usize)> {
+            let r = s.get(id)?;
+            let (mut body, mut n) = (0, 0);
+            let mut b = r.body;
+            while let [t, l0, l1, rest @ ..] = b {
+                let l = usize::from(u16::from_le_bytes([*l0, *l1]));
+                if l > rest.len() {
+                    break;
+                }
+                if !named(*t) {
+                    body += 3 + l;
+                    n += 1;
+                }
+                b = &rest[l..];
+            }
+            Some((r.kind, body, n))
+        };
+        let (kind, kept, n_kept) = measure(self).ok_or(Error::NotFound)?;
+        let fresh = changes.iter().filter(|c| !c.1.is_empty());
+        let body = kept + fresh.clone().map(|c| 3 + c.1.len()).sum::<usize>();
+        if n_kept + fresh.count() > 16 {
+            return Err(Error::TooLong);
+        }
+        let len = REC_HEAD + body;
+        if len > GROUP_MAX {
+            return Err(Error::TooLong);
+        }
+        if self.used + len > self.arena {
+            self.pack();
+            if self.used + len > self.arena {
+                return Err(Error::Full);
+            }
+        }
+        // Where the old record lies now (packing moves records).
+        let old = self.entry(self.find(id).ok_or(Error::NotFound)?).0;
+        let (_, _, _, old_len) = rec_at(&self.buf[..self.used], old).ok_or(Error::NotFound)?;
+        let p = self.used;
+        self.buf[p] = kind as u8;
+        self.buf[p + 1] = 0;
+        self.buf[p + 2..p + 4].copy_from_slice(&(body as u16).to_le_bytes());
+        self.buf[p + 4..p + 8].copy_from_slice(&id.to_le_bytes());
+        let mut at = p + REC_HEAD;
+        let mut q = old + REC_HEAD;
+        while q + 3 <= old + old_len {
+            let t = self.buf[q];
+            let l = usize::from(u16::from_le_bytes([self.buf[q + 1], self.buf[q + 2]]));
+            if q + 3 + l > old + old_len {
+                break;
+            }
+            if !named(t) {
+                // The old record is below `used`, the new one above it.
+                self.buf.copy_within(q..q + 3 + l, at);
+                at += 3 + l;
+            }
+            q += 3 + l;
+        }
+        for (t, d) in changes.iter().filter(|c| !c.1.is_empty()) {
+            self.buf[at] = *t;
+            self.buf[at + 1..at + 3].copy_from_slice(&(d.len() as u16).to_le_bytes());
+            self.buf[at + 3..at + 3 + d.len()].copy_from_slice(d);
+            at += 3 + d.len();
+        }
+        self.index(p, 0, id)?;
+        self.used += len;
+        self.changes = self.changes.wrapping_add(1);
+        Ok(id)
+    }
+
     /// Removes `id`'s record.
     ///
     /// # Errors

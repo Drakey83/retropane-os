@@ -323,49 +323,13 @@ impl Tasks {
             return;
         };
         let Some(store) = guard.as_mut() else { return };
-        let Some(r) = store.get(id) else { return };
-        let mut keep = [(0u8, [0u8; 64], 0usize); 12];
-        let mut k = 0;
-        for t in [
-            tag::TITLE,
-            tag::DUE,
-            tag::PRIORITY,
-            tag::LIST,
-            tag::PARENT,
-            tag::REPEAT,
-            tag::NOTE,
-            tag::REMIND_AT,
-            tag::DONE,
-        ] {
-            let v = if t == which {
-                value.unwrap_or(&[])
-            } else {
-                r.text(t)
-            };
-            if !v.is_empty() && k < keep.len() {
-                let n = v.len().min(64);
-                keep[k].0 = t;
-                keep[k].1[..n].copy_from_slice(&v[..n]);
-                keep[k].2 = n;
-                k += 1;
-            }
+        // Only this field changes; the store keeps every other one whole
+        // (a copy here cut each to 64 bytes and dropped fields it didn't
+        // list: a long note was truncated by a tick, 2026-11-14).
+        if which == 0 {
+            return;
         }
-        if which != 0
-            && value.is_some()
-            && !keep[..k].iter().any(|(t, _, _)| *t == which)
-            && k < keep.len()
-        {
-            let v = value.unwrap_or(&[]);
-            let n = v.len().min(64);
-            keep[k] = (which, [0; 64], n);
-            keep[k].1[..n].copy_from_slice(&v[..n]);
-            k += 1;
-        }
-        let mut fields: [(u8, &[u8]); 12] = [(0, &[]); 12];
-        for (i, (t, b, n)) in keep[..k].iter().enumerate() {
-            fields[i] = (*t, &b[..*n]);
-        }
-        if store.put(Kind::Task, Some(id), &fields[..k]).is_ok() {
+        if store.change(id, &[(which, value.unwrap_or(&[]))]).is_ok() {
             self.seen = None;
         }
     }
