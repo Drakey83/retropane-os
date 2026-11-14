@@ -145,3 +145,107 @@ fn tasks_due_show_on_their_days_and_hidden_calendars_stay_out() {
             .any(|a| a.task && a.title.get() == b"Pay rent")
     );
 }
+
+#[test]
+fn the_editor_changes_start_repeat_and_alert_then_deletes_on_the_second_tap() {
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let at = (date::start_of(19_723) + 15 * 60).to_le_bytes();
+        s.put(
+            Kind::Appointment,
+            None,
+            &[(tag::TITLE, b"Dentist"), (tag::START, &at)],
+        )
+        .unwrap();
+    }
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    draw(&mut c, &cx);
+    let (r, _, _) = c.rows_at[0];
+    c.event(
+        Event::PenUp {
+            x: r.x + 100,
+            y: r.y + 20,
+        },
+        &cx,
+    );
+    assert!(matches!(c.view, View::Edit));
+    // Start a quarter later (the right key), weekly, an hour's alert.
+    c.event(
+        Event::PenUp {
+            x: W - 40,
+            y: E_START + 20,
+        },
+        &cx,
+    );
+    c.event(
+        Event::PenUp {
+            x: MARGIN + WIDE * 2 / 5 + 10,
+            y: E_REPEAT + 24,
+        },
+        &cx,
+    );
+    c.event(
+        Event::PenUp {
+            x: MARGIN + WIDE * 3 / 5 + 10,
+            y: E_ALERT + 24,
+        },
+        &cx,
+    );
+    c.event(Event::Key(Key::SoftRight), &cx);
+    assert!(matches!(c.view, View::Agenda));
+    {
+        let g = pim.borrow();
+        let s = g.as_ref().unwrap();
+        let r = s.all(Kind::Appointment).next().unwrap();
+        assert_eq!(
+            r.num(tag::START),
+            Some(date::start_of(19_723) + 15 * 60 + 15)
+        );
+        let rule = rp_pim::repeat::Rule::unpack(r.num(tag::REPEAT).unwrap(), 19_723).unwrap();
+        assert_eq!(rule.every, rp_pim::repeat::Every::Week);
+        assert_eq!(r.num(tag::REMIND), Some(60));
+    }
+    // Delete asks in place: the first tap only asks.
+    draw(&mut c, &cx);
+    let (r, _, _) = c.rows_at[0];
+    c.event(
+        Event::PenUp {
+            x: r.x + 100,
+            y: r.y + 20,
+        },
+        &cx,
+    );
+    c.event(
+        Event::PenUp {
+            x: 200,
+            y: E_DELETE + 20,
+        },
+        &cx,
+    );
+    assert_eq!(
+        pim.borrow()
+            .as_ref()
+            .unwrap()
+            .all(Kind::Appointment)
+            .count(),
+        1
+    );
+    c.event(
+        Event::PenUp {
+            x: 200,
+            y: E_DELETE + 20,
+        },
+        &cx,
+    );
+    assert_eq!(
+        pim.borrow()
+            .as_ref()
+            .unwrap()
+            .all(Kind::Appointment)
+            .count(),
+        0
+    );
+}

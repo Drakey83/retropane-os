@@ -83,7 +83,7 @@ not.
 | Month view with coloured bars and the chosen day's list | sheet | built | apps/calendar/src/lib.rs |
 | Smooth zoom between month, week and day | apps-and-packs: Smooth zoom between views | pending | |
 | Quick add with the understood words highlighted and a preview card | apps-and-packs: quick add | built | apps/calendar/src/lib.rs, shell/pim/src/quick.rs |
-| Editor as grouped cards; address suggestions for Where; capitals at each word in titles | sheet | pending | |
+| Editor as grouped cards; address suggestions for Where; capitals at each word in titles | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Several calendars, a colour each, shown and hidden | apps-and-packs: a colour per calendar | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Repeating appointments (daily, weekly on days, monthly by date or weekday, yearly; every N; until or N times; one occurrence changed or skipped) | apps-and-packs: repeating appointments | built | shell/pim/src/repeat.rs, apps/calendar/src/lib.rs |
 | Reminders as a banner over any screen, several per appointment | apps-and-packs: reminders through the notification centre | pending | |

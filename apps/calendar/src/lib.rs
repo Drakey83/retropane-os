@@ -89,6 +89,8 @@ pub struct Appt {
     pub repeats: bool,
     /// A task due that day (Tasks' record), not an appointment.
     pub task: bool,
+    /// Its record.
+    pub id: u32,
 }
 
 /// The views.
@@ -107,7 +109,54 @@ pub enum View {
     /// The calendars, and getting online ones (calendar-rule0.md: an iCal
     /// link first, CalDAV and Google sign-in after).
     Calendars,
+    /// An appointment's details as grouped cards.
+    Edit,
 }
+
+/// The editor's text field being typed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EditText {
+    Title,
+    Place,
+}
+
+/// An appointment being edited (a new one has no record yet).
+#[derive(Clone, Copy, Debug)]
+struct Edit {
+    id: Option<u32>,
+    title: [u8; 64],
+    title_n: usize,
+    place: [u8; 64],
+    place_n: usize,
+    day: i32,
+    start: u16,
+    len: u16,
+    all_day: bool,
+    /// 0 none, then Every's order: day, week, month, year.
+    repeat: u8,
+    /// 0 none, 1 at the start, 2 15 min, 3 1 h, 4 1 day before.
+    alert: u8,
+    cal: usize,
+    /// From a calendar link: shown, not changed.
+    read_only: bool,
+    typing: Option<EditText>,
+    confirm_delete: bool,
+}
+
+const ALERTS: [Option<u32>; 5] = [None, Some(0), Some(15), Some(60), Some(1440)];
+const ALERT_NAMES: [&[u8]; 5] = [b"NONE", b"AT START", b"15 MIN", b"1 HOUR", b"1 DAY"];
+const REPEAT_NAMES: [&[u8]; 5] = [b"NONE", b"DAILY", b"WEEKLY", b"MONTHLY", b"YEARLY"];
+
+/// The editor's rows (y), from under the title band.
+const E_TITLE: u16 = 118;
+const E_PLACE: u16 = 162;
+const E_DAY: u16 = 216;
+const E_START: u16 = 260;
+const E_LEN: u16 = 304;
+const E_REPEAT: u16 = 360;
+const E_ALERT: u16 = 412;
+const E_CAL: u16 = 464;
+const E_DELETE: u16 = 520;
 
 /// The key on the title band that opens the calendars.
 const CALENDARS_KEY: Rect = Rect::new(W - MARGIN - 128, 46, 128, 30);
@@ -122,6 +171,7 @@ enum Asked {
     Nothing,
     List,
     Link(u8),
+    Place,
 }
 
 /// The Calendar program.
@@ -130,6 +180,15 @@ pub struct Calendar {
     /// whether to ask for the list, what was asked, and what to say.
     queue: [u8; 8],
     n_queue: usize,
+    /// The appointment being edited, and the agenda's rows as drawn.
+    edit: Option<Edit>,
+    /// Where's suggestions (street and city lines), and the text last
+    /// asked about.
+    places: [(Text, Text); 3],
+    n_places: usize,
+    place_asked: Text,
+    rows_at: [(Rect, u32, bool); 12],
+    n_rows: usize,
     /// The calendars' rows as drawn (a tap shows or hides one).
     cal_rows: [(Rect, u32); 8],
     n_cal_rows: usize,
@@ -284,6 +343,12 @@ impl Calendar {
             queue: [0; 8],
             n_queue: 0,
             cal_rows: [(Rect::new(0, 0, 0, 0), 0); 8],
+            edit: None,
+            places: [(Text::EMPTY, Text::EMPTY); 3],
+            n_places: 0,
+            place_asked: Text::EMPTY,
+            rows_at: [(Rect::new(0, 0, 0, 0), 0, false); 12],
+            n_rows: 0,
             n_cal_rows: 0,
             want_list: false,
             asked: Asked::Nothing,
@@ -365,6 +430,7 @@ impl Calendar {
                 cal,
                 repeats: rule.is_some(),
                 task: false,
+                id: r.id,
             };
             match rule {
                 None if first >= from && first < from + WINDOW && k < MAX => {
@@ -401,10 +467,347 @@ impl Calendar {
                     cal: 0,
                     repeats: false,
                     task: true,
+                    id: r.id,
                 });
                 k += 1;
             }
         }
+    }
+
+    /// Opens appointment `id` (or a new one from the quick-add line) in the
+    /// editor.
+    fn open_edit(&mut self, cx: &Ctx, id: Option<u32>) {
+        let mut e = Edit {
+            id,
+            title: [0; 64],
+            title_n: 0,
+            place: [0; 64],
+            place_n: 0,
+            day: self.day,
+            start: 9 * 60,
+            len: 60,
+            all_day: false,
+            repeat: 0,
+            alert: 2,
+            cal: 0,
+            read_only: false,
+            typing: None,
+            confirm_delete: false,
+        };
+        match id {
+            Some(id) => {
+                let Some(cell) = cx.pim else { return };
+                let Ok(guard) = cell.try_borrow() else { return };
+                let Some(store) = guard.as_ref() else { return };
+                let Some(r) = store.get(id) else { return };
+                let t = r.text(tag::TITLE);
+                e.title_n = t.len().min(64);
+                e.title[..e.title_n].copy_from_slice(&t[..e.title_n]);
+                let pl = r.text(tag::PLACE);
+                e.place_n = pl.len().min(64);
+                e.place[..e.place_n].copy_from_slice(&pl[..e.place_n]);
+                let at = r.num(tag::START).unwrap_or(0);
+                e.day = date::day_of(at);
+                e.start = (at % date::DAY_MIN) as u16;
+                e.all_day = r.num(tag::ALL_DAY) == Some(1);
+                e.len = r.num(tag::MINUTES).unwrap_or(60).min(24 * 60) as u16;
+                e.repeat = r
+                    .num(tag::REPEAT)
+                    .and_then(|v| rp_pim::repeat::Rule::unpack(v, e.day))
+                    .map_or(0, |r| match r.every {
+                        rp_pim::repeat::Every::Day => 1,
+                        rp_pim::repeat::Every::Week => 2,
+                        rp_pim::repeat::Every::MonthDate | rp_pim::repeat::Every::MonthWeekday => 3,
+                        rp_pim::repeat::Every::Year => 4,
+                    });
+                e.alert = ALERTS
+                    .iter()
+                    .position(|a| *a == r.num(tag::REMIND))
+                    .unwrap_or(0) as u8;
+                let cal = r.num(tag::CAL);
+                e.cal = cal
+                    .and_then(|c| self.cals[..self.n_cals].iter().position(|x| x.id == c))
+                    .unwrap_or(0);
+                e.read_only = cal
+                    .and_then(|c| store.get(c))
+                    .is_some_and(|c| c.text(tag::SOURCE).starts_with(b"ical:"));
+            }
+            None => {
+                // From the quick-add line: what the parser understood.
+                let line = &self.line[..self.line_n];
+                let mut title = [0u8; rp_pim::quick::TITLE_MAX];
+                let (q, tn) = rp_pim::quick::parse(line, cx.now.day, cx.us, &mut title);
+                e.title_n = tn.min(64);
+                e.title[..e.title_n].copy_from_slice(&title[..e.title_n]);
+                e.day = q.day.unwrap_or(cx.now.day);
+                match q.time {
+                    Some(t) => e.start = t,
+                    None => e.all_day = true,
+                }
+                e.len = q.minutes.unwrap_or(60);
+            }
+        }
+        self.edit = Some(e);
+        self.view = View::Edit;
+    }
+
+    /// The editor kept to the store (a new appointment added), back to
+    /// the agenda.
+    fn save_edit(&mut self, cx: &Ctx) -> bool {
+        let Some(e) = self.edit else { return false };
+        if e.read_only || e.title_n == 0 {
+            return false;
+        }
+        let le = |v: u32| v.to_le_bytes();
+        let start = date::start_of(e.day) + if e.all_day { 0 } else { u32::from(e.start) };
+        let (st, mi, one) = (le(start), le(u32::from(e.len.max(5))), le(1));
+        let cal = le(self.cals[e.cal.min(self.n_cals - 1)].id);
+        let rule = (e.repeat > 0).then(|| {
+            use rp_pim::repeat::{Every, Rule};
+            let every =
+                [Every::Day, Every::Week, Every::MonthDate, Every::Year][usize::from(e.repeat - 1)];
+            le(Rule {
+                every,
+                n: 1,
+                days: 0,
+                until: None,
+            }
+            .pack(e.day))
+        });
+        let alert = ALERTS[usize::from(e.alert)].map(le);
+        let mut fields: [(u8, &[u8]); 8] = [
+            (tag::TITLE, &e.title[..e.title_n]),
+            (tag::PLACE, &e.place[..e.place_n]),
+            (tag::START, &st),
+            (tag::MINUTES, &mi),
+            (tag::CAL, &[]),
+            (tag::ALL_DAY, &[]),
+            (tag::REPEAT, &[]),
+            (tag::REMIND, &[]),
+        ];
+        if self.cals[e.cal.min(self.n_cals - 1)].id != 0 {
+            fields[4].1 = &cal;
+        }
+        if e.all_day {
+            fields[5].1 = &one;
+        }
+        if let Some(r) = &rule {
+            fields[6].1 = r;
+        }
+        if let Some(a) = &alert {
+            fields[7].1 = a;
+        }
+        let Some(cell) = cx.pim else { return false };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return false;
+        };
+        let Some(store) = guard.as_mut() else {
+            return false;
+        };
+        let ok = store.put(Kind::Appointment, e.id, &fields).is_ok();
+        if ok {
+            self.seen = None;
+            self.day = e.day;
+            self.line_n = 0;
+        }
+        ok
+    }
+
+    /// The editor's grouped cards.
+    fn edit_view(&self, f: &mut Frame, cx: &Ctx) {
+        let Some(e) = &self.edit else { return };
+        let field = |f: &mut Frame, y: u16, label: &[u8], value: &[u8], on: bool| {
+            let r = Rect::new(MARGIN, y, WIDE, 40);
+            kit::panel(f, cx, r);
+            if on {
+                f.push(rp_app::Cmd::Outline {
+                    r,
+                    color: kit::FOCUS,
+                });
+            }
+            kit::text(f, r.x + 12, r.y + 26, cx.fonts.label, DIM, label);
+            kit::fitted(f, r.x + 96, r.y + 27, cx.fonts.ui, TEXT, value, r.w - 108);
+        };
+        field(
+            f,
+            E_TITLE,
+            b"WHAT",
+            &e.title[..e.title_n],
+            e.typing == Some(EditText::Title),
+        );
+        field(
+            f,
+            E_PLACE,
+            b"WHERE",
+            &e.place[..e.place_n],
+            e.typing == Some(EditText::Place),
+        );
+        // When: steppers with Aero keys at either end.
+        let stepper = |f: &mut Frame, y: u16, label: &[u8], value: &[u8]| {
+            let r = Rect::new(MARGIN, y, WIDE, 40);
+            kit::panel(f, cx, r);
+            kit::text(f, r.x + 12, r.y + 26, cx.fonts.label, DIM, label);
+            for (x, w) in [(r.x + 120, b"<"), (r.right() - 52, b">")] {
+                let k = Rect::new(x, r.y + 4, 44, 32);
+                kit::key(f, cx, k, kit::KeyState::Rest);
+                kit::centred(f, k, k.y + 22, cx.fonts.ui, TEXT, w);
+            }
+            kit::centred(
+                f,
+                Rect::new(r.x + 164, 0, r.w - 216, 1),
+                r.y + 27,
+                cx.fonts.ui,
+                TEXT,
+                value,
+            );
+        };
+        let dd = date::date_of(e.day);
+        let mut d = Buf::<32>::new();
+        d.s(WEEKDAYS[usize::from(date::weekday(e.day))])
+            .s(b" ")
+            .num(u32::from(dd.day))
+            .s(b" ")
+            .s(&MONTHS[usize::from(dd.month - 1)][..3]);
+        stepper(f, E_DAY, b"DAY", d.get());
+        if e.all_day {
+            stepper(f, E_START, b"STARTS", b"All day");
+        } else {
+            stepper(f, E_START, b"STARTS", clock(e.start).get());
+        }
+        let mut l = Buf::<16>::new();
+        if e.len >= 60 && e.len % 60 == 0 {
+            l.num(u32::from(e.len / 60))
+                .s(if e.len == 60 { b" hour" } else { b" hours" });
+        } else {
+            l.num(u32::from(e.len)).s(b" min");
+        }
+        stepper(f, E_LEN, b"LASTS", l.get());
+        let chips_row = |f: &mut Frame, y: u16, label: &[u8], names: &[&[u8]], chosen: usize| {
+            kit::text(f, MARGIN + 4, y - 4, cx.fonts.label, DIM, label);
+            kit::chips(
+                f,
+                cx,
+                Rect::new(MARGIN, y, WIDE, 30),
+                names,
+                chosen,
+                tint::CALENDAR,
+            );
+        };
+        chips_row(
+            f,
+            E_REPEAT + 14,
+            b"REPEAT",
+            &REPEAT_NAMES,
+            usize::from(e.repeat),
+        );
+        chips_row(
+            f,
+            E_ALERT + 14,
+            b"ALERT",
+            &ALERT_NAMES,
+            usize::from(e.alert),
+        );
+        let mut names: [&[u8]; 4] = [b""; 4];
+        let n = self.n_cals.min(4);
+        for (k, c) in self.cals[..n].iter().enumerate() {
+            names[k] = c.name.get();
+        }
+        chips_row(
+            f,
+            E_CAL + 14,
+            b"CALENDAR",
+            &names[..n],
+            e.cal.min(n.saturating_sub(1)),
+        );
+        if e.read_only {
+            kit::text(
+                f,
+                MARGIN + 4,
+                E_DELETE + 28,
+                cx.fonts.ui,
+                DIM,
+                b"From a calendar link: read only",
+            );
+        } else if e.id.is_some() {
+            let r = Rect::new(MARGIN, E_DELETE, WIDE, 40);
+            kit::key(f, cx, r, kit::KeyState::Down);
+            kit::centred(
+                f,
+                r,
+                r.y + 27,
+                cx.fonts.ui,
+                kit::LATE,
+                if e.confirm_delete {
+                    b"Tap again to delete"
+                } else {
+                    b"Delete"
+                },
+            );
+        }
+    }
+
+    /// A tap in the editor.
+    fn edit_tap(&mut self, cx: &Ctx, x: u16, y: u16) -> Reply {
+        let n_cals = self.n_cals.min(4);
+        let Some(e) = self.edit.as_mut() else {
+            return Reply::Nothing;
+        };
+        let hit = |top: u16, h: u16| y >= top && y < top + h;
+        let chip = |n: usize| usize::from((x.saturating_sub(MARGIN)) * n as u16 / WIDE).min(n - 1);
+        let left = x < W / 2;
+        if e.read_only {
+            return Reply::Nothing;
+        }
+        if !hit(E_DELETE, 40) {
+            e.confirm_delete = false;
+        }
+        if hit(E_TITLE, 40) {
+            e.typing = Some(EditText::Title);
+        } else if hit(E_PLACE, 40) {
+            e.typing = Some(EditText::Place);
+        } else if hit(E_DAY, 40) {
+            e.day += if left { -1 } else { 1 };
+        } else if hit(E_START, 40) {
+            if e.all_day {
+                e.all_day = false;
+            } else if left {
+                e.start = e.start.saturating_sub(15);
+            } else {
+                e.start = (e.start + 15).min(23 * 60 + 45);
+            }
+        } else if hit(E_LEN, 40) {
+            let step = if e.len >= 60 { 30 } else { 15 };
+            e.len = if left {
+                e.len.saturating_sub(step).max(15)
+            } else {
+                (e.len + step).min(24 * 60)
+            };
+        } else if hit(E_REPEAT + 14, 30) {
+            e.repeat = chip(5) as u8;
+        } else if hit(E_ALERT + 14, 30) {
+            e.alert = chip(5) as u8;
+        } else if hit(E_CAL + 14, 30) && n_cals > 0 {
+            e.cal = chip(n_cals);
+        } else if hit(E_DELETE, 40) && e.id.is_some() {
+            if e.confirm_delete {
+                let id = e.id;
+                self.edit = None;
+                self.view = View::Agenda;
+                if let (Some(id), Some(cell)) = (id, cx.pim)
+                    && let Ok(mut g) = cell.try_borrow_mut()
+                    && let Some(store) = g.as_mut()
+                {
+                    let _ = store.remove(id);
+                }
+                self.seen = None;
+            } else {
+                e.confirm_delete = true;
+            }
+        } else {
+            e.typing = None;
+            return Reply::Redraw;
+        }
+        Reply::Redraw
     }
 
     /// The calendars and how to get online ones.
@@ -751,6 +1154,7 @@ impl Calendar {
             cal: 0,
             repeats: false,
             task: false,
+            id: 0,
         }; 16];
         let mut n = 0;
         for a in self.appts.iter().flatten() {
@@ -843,7 +1247,8 @@ impl Calendar {
         cx.forecast.iter().copied().find(|w| w.day == day)
     }
 
-    fn agenda(&self, f: &mut Frame, cx: &Ctx, top: u16) {
+    fn agenda(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
+        self.n_rows = 0;
         let mut y = top;
         let bottom = 596;
         let mut day = self.day;
@@ -891,6 +1296,10 @@ impl Calendar {
                         return;
                     }
                     let r = Rect::new(MARGIN, y, WIDE, 52);
+                    if self.n_rows < self.rows_at.len() {
+                        self.rows_at[self.n_rows] = (r, a.id, a.task);
+                        self.n_rows += 1;
+                    }
                     kit::panel(f, cx, r);
                     kit::colour_bar(f, r, self.colour(a));
                     if a.task {
@@ -1343,6 +1752,8 @@ impl Program for Calendar {
         match self.view {
             View::New => ("Cancel", "Add"),
             View::Calendars => ("Back", ""),
+            View::Edit if self.edit.is_some_and(|e| e.read_only) => ("Back", ""),
+            View::Edit => ("Cancel", "Done"),
             _ => ("Today", "New"),
         }
     }
@@ -1352,6 +1763,10 @@ impl Program for Calendar {
         self.refresh(cx);
         kit::backdrop(f);
         let under = self.title(f, cx);
+        if self.view == View::Edit {
+            self.edit_view(f, cx);
+            return;
+        }
         if self.view == View::Calendars {
             self.calendars_view(f, cx, under + 4);
             return;
@@ -1371,7 +1786,7 @@ impl Program for Calendar {
             self.view
         };
         let chosen = match shown {
-            View::Agenda | View::New | View::Calendars => 0,
+            View::Agenda | View::New | View::Calendars | View::Edit => 0,
             View::Day => 1,
             View::Week => 2,
             View::Month => 3,
@@ -1386,7 +1801,7 @@ impl Program for Calendar {
         );
         let y = under + 40;
         match shown {
-            View::Agenda | View::New | View::Calendars => {
+            View::Agenda | View::New | View::Calendars | View::Edit => {
                 self.strip(f, cx, y);
                 self.agenda(f, cx, y + 70);
             }
@@ -1403,6 +1818,76 @@ impl Program for Calendar {
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        if self.view == View::Edit {
+            match e {
+                Event::PenUp { x, y } => return self.edit_tap(cx, x, y),
+                Event::Key(Key::SoftLeft) => {
+                    self.edit = None;
+                    self.view = View::Agenda;
+                    return Reply::Redraw;
+                }
+                Event::Key(Key::SoftRight) => {
+                    if self.save_edit(cx) || self.edit.is_some_and(|e| e.read_only) {
+                        self.edit = None;
+                        self.view = View::Agenda;
+                    }
+                    return Reply::Redraw;
+                }
+                Event::Char(_) | Event::Delete | Event::Done | Event::Suggestion(_) => {
+                    if let Some(ed) = self.edit.as_mut() {
+                        let (buf, n): (&mut [u8; 64], &mut usize) = match ed.typing {
+                            Some(EditText::Title) => (&mut ed.title, &mut ed.title_n),
+                            Some(EditText::Place) => (&mut ed.place, &mut ed.place_n),
+                            None => return Reply::Nothing,
+                        };
+                        match e {
+                            Event::Char(c) if *n < buf.len() => {
+                                buf[*n] = c;
+                                *n += 1;
+                            }
+                            Event::Delete => *n = n.saturating_sub(1),
+                            Event::Done => ed.typing = None,
+                            // A suggested place: street and city in Where.
+                            Event::Suggestion(k)
+                                if ed.typing == Some(EditText::Place)
+                                    && usize::from(k) < self.n_places =>
+                            {
+                                let (st, ci) = self.places[usize::from(k)];
+                                let mut t = Buf::<64>::new();
+                                t.s(st.get());
+                                if !ci.get().is_empty() {
+                                    t.s(b", ").s(ci.get());
+                                }
+                                buf[..t.get().len()].copy_from_slice(t.get());
+                                *n = t.get().len();
+                                self.n_places = 0;
+                                self.place_asked = Text::of(&buf[..*n]);
+                            }
+                            _ => {}
+                        }
+                    }
+                    return Reply::Redraw;
+                }
+                _ => return Reply::Nothing,
+            }
+        }
+        if self.view == View::New
+            && let Event::PenUp { x: _, y } = e
+            && (322..366).contains(&y)
+        {
+            self.open_edit(cx, None);
+            return Reply::Redraw;
+        }
+        if let Event::PenUp { x, y } = e
+            && matches!(self.view, View::Agenda)
+            && let Some(&(_, id, task)) = self.rows_at[..self.n_rows]
+                .iter()
+                .find(|(r, _, _)| r.contains_point(x, y))
+            && !task
+        {
+            self.open_edit(cx, Some(id));
+            return Reply::Redraw;
+        }
         match e {
             Event::PenUp { x, y }
                 if self.view == View::Calendars
@@ -1478,11 +1963,43 @@ impl Program for Calendar {
     }
 
     fn keyboard(&self) -> Option<Field> {
-        (self.view == View::New).then_some(Field::Line)
+        match (self.view, self.edit.and_then(|e| e.typing)) {
+            (View::New, _) => Some(Field::Line),
+            (View::Edit, Some(EditText::Title)) => Some(Field::Name),
+            (View::Edit, Some(EditText::Place)) => Some(Field::Address),
+            _ => None,
+        }
     }
 
-    /// The online calendars: the PC's list first, then each link in turn.
+    fn suggestions(&self) -> [&[u8]; 3] {
+        let st = |k: usize| {
+            if k < self.n_places {
+                self.places[k].0.get()
+            } else {
+                &b""[..]
+            }
+        };
+        match self.edit.and_then(|e| e.typing) {
+            Some(EditText::Place) => [st(0), st(1), st(2)],
+            _ => [&[], &[], &[]],
+        }
+    }
+
+    /// The online calendars: the PC's list first, then each link in turn;
+    /// Where's address suggestions as it is typed.
     fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        if let Some(e) = self.edit
+            && e.typing == Some(EditText::Place)
+            && e.place_n >= 3
+            && self.place_asked.get() != &e.place[..e.place_n]
+        {
+            self.place_asked = Text::of(&e.place[..e.place_n]);
+            self.asked = Asked::Place;
+            return Some(rp_app::NetAsk {
+                what: b"ADDR",
+                arg: rp_app::Text::of(&e.place[..e.place_n]),
+            });
+        }
         if self.want_list {
             self.want_list = false;
             self.asked = Asked::List;
@@ -1507,6 +2024,22 @@ impl Program for Calendar {
 
     fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
         let asked = core::mem::replace(&mut self.asked, Asked::Nothing);
+        if asked == Asked::Place {
+            let mut found = [rp_pim::net::Place {
+                street: rp_pim::net::Short::default(),
+                city: rp_pim::net::Short::default(),
+            }; 3];
+            let n = if ok {
+                rp_pim::net::photon(body, &mut found)
+            } else {
+                0
+            };
+            for (slot, p) in self.places.iter_mut().zip(&found[..n]) {
+                *slot = (Text::of(p.street.get()), Text::of(p.city.get()));
+            }
+            self.n_places = n;
+            return Reply::Redraw;
+        }
         if !ok {
             self.status = b"No connection (Wi-Fi or the dock)";
             self.n_queue = 0;
@@ -1515,7 +2048,7 @@ impl Program for Calendar {
         match asked {
             Asked::List => self.take_list(body, cx),
             Asked::Link(n) => self.take_link(n, body, cx),
-            Asked::Nothing => {}
+            Asked::Nothing | Asked::Place => {}
         }
         Reply::Redraw
     }
