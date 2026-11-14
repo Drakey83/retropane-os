@@ -12,8 +12,8 @@
 //! frees nothing: the next opening loads over the slot.
 //!
 //! Iterate, don't imitate (rule 0): Windows Mobile ran each app as a
-//! process from ROM or RAM; a shell with its apps compiled in (our version
-//! 1) had to fit them all in one image. Ours keeps one slot and loads only
+//! process from ROM or RAM; a shell with its apps compiled in (our first
+//! version) had to fit them all in one image. Ours keeps one slot and loads only
 //! the app in use, from the same file format the kernel will start as a
 //! process, so a new app costs storage, not image space or RAM.
 

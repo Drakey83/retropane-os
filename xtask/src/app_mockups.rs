@@ -46,7 +46,10 @@ static CALS: [Cal; 4] = [
 
 /// The sample week's appointments: (day from today, start minute,
 /// length (0: all day), title, place, calendar), as records of the store.
-const WEEK: [(i32, u32, u32, &[u8], &[u8], usize); 12] = [
+/// One sample appointment.
+type Sample = (i32, u32, u32, &'static [u8], &'static [u8], usize);
+
+const WEEK: [Sample; 12] = [
     (0, 9 * 60 + 30, 30, b"Stand-up", b"Zoom", 1),
     (0, 12 * 60 + 30, 60, b"Lunch with Sam", b"Cafe Vita", 0),
     (0, 15 * 60, 60, b"Dentist", b"Dr. Lee, 410 Pine St", 0),
@@ -145,7 +148,16 @@ fn open(shell: &mut rp_shell::Shell, c: impl rp_app::Program + 'static) {
 
 /// The sample people: first, last, company, mobile (E.164), favourite,
 /// and Grace's e-mail, work number and address.
-const PEOPLE: [(&[u8], &[u8], &[u8], &[u8], bool); 9] = [
+/// One sample person.
+type SamplePerson = (
+    &'static [u8],
+    &'static [u8],
+    &'static [u8],
+    &'static [u8],
+    bool,
+);
+
+const PEOPLE: [SamplePerson; 9] = [
     (b"Grace", b"Hopper", b"US Navy", b"+17035550107", true),
     (
         b"Ada",
@@ -225,7 +237,10 @@ static LISTS: [List; 4] = [
 
 /// The sample tasks: title, due (days from today), flag (0-3), list,
 /// done, repeats, steps (done, of).
-const TASKS: [(&[u8], Option<i32>, u32, usize, bool, bool, (u8, u8)); 11] = [
+/// One sample task.
+type SampleTask = (&'static [u8], Option<i32>, u32, usize, bool, bool, (u8, u8));
+
+const TASKS: [SampleTask; 11] = [
     (b"Renew passport", Some(-2), 3, 3, false, false, (0, 0)),
     (b"Pay rent", Some(0), 3, 0, false, true, (0, 0)),
     (b"Call the bank", Some(0), 0, 2, false, false, (0, 0)),
@@ -443,10 +458,12 @@ fn sample_notes() -> &'static [Note] {
     list
 }
 
-static TAPE: [(&[u8], &[u8]); 2] = [
-    (b"1,250 x 12 =", b"15,000"),
-    (b"15,000 / 52 =", b"288.461538462"),
-];
+/// A calculator in `mode` with `keys` pressed, as taps would.
+fn calc_typed(mode: Mode, keys: &[&[u8]]) -> Calculator {
+    let mut c = Calculator::new(mode, TODAY);
+    c.type_keys(keys);
+    c
+}
 
 /// Every version 2 mock-up.
 pub fn mocks() -> Vec<Mock> {
@@ -593,7 +610,13 @@ pub fn mocks() -> Vec<Mock> {
             prepare: Box::new(|s| {
                 open(
                     s,
-                    Calculator::new(Mode::Basic, b"288.46 + 15% =", b"331.73", &TAPE, true),
+                    calc_typed(
+                        Mode::Basic,
+                        &[
+                            b"1", b"2", b"5", b"0", b"x", b"1", b"2", b"=", b"/", b"5", b"2", b"=",
+                            b"M+", b"+", b"1", b"5", b"%",
+                        ],
+                    ),
                 )
             }),
         },
@@ -603,12 +626,9 @@ pub fn mocks() -> Vec<Mock> {
             prepare: Box::new(|s| {
                 open(
                     s,
-                    Calculator::new(
+                    calc_typed(
                         Mode::Scientific,
-                        b"sin(30) + 2^10",
-                        b"1,024.5",
-                        &TAPE,
-                        false,
+                        &[b"s(", b"3", b"0", b")", b"+", b"2", b"^", b"1", b"0"],
                     ),
                 )
             }),
@@ -616,17 +636,29 @@ pub fn mocks() -> Vec<Mock> {
         Mock {
             name: "v2-calc-money",
             what: "Calculator: money at the ECB's daily rates, kept for offline",
-            prepare: Box::new(|s| open(s, Calculator::new(Mode::Money, b"", b"", &[], false))),
+            prepare: Box::new(|s| open(s, calc_typed(Mode::Money, &[]))),
         },
         Mock {
             name: "v2-calc-tip",
             what: "Calculator: tip and split",
-            prepare: Box::new(|s| open(s, Calculator::new(Mode::Tip, b"", b"", &[], false))),
+            prepare: Box::new(|s| {
+                open(s, {
+                    let mut c = calc_typed(Mode::Tip, &[]);
+                    c.set_entry(b"86.40");
+                    c
+                })
+            }),
         },
         Mock {
             name: "v2-calc-dates",
             what: "Calculator: days between dates",
-            prepare: Box::new(|s| open(s, Calculator::new(Mode::Dates, b"", b"", &[], false))),
+            prepare: Box::new(|s| {
+                open(s, {
+                    let mut c = calc_typed(Mode::Dates, &[]);
+                    c.set_dates(TODAY, TODAY + 359);
+                    c
+                })
+            }),
         },
     ]
 }

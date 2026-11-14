@@ -164,14 +164,12 @@ impl Tasks {
             self.n_lists = n;
         }
         self.tasks = [None; MAX];
-        let mut k = 0;
-        for r in store
+        for (k, r) in store
             .all(Kind::Task)
             .filter(|r| r.num(tag::PARENT).is_none())
+            .take(MAX)
+            .enumerate()
         {
-            if k == MAX {
-                break;
-            }
             let steps = store
                 .all(Kind::Task)
                 .filter(|c| c.num(tag::PARENT) == Some(r.id));
@@ -196,7 +194,6 @@ impl Tasks {
                 steps: (done, of),
                 repeats: r.num(tag::REPEAT).is_some(),
             });
-            k += 1;
         }
     }
 

@@ -262,7 +262,7 @@ impl Contacts {
                 k
             })
         };
-        idx[..n].sort_unstable_by(|a, b| key(a).cmp(&key(b)));
+        idx[..n].sort_unstable_by_key(key);
         (idx, n)
     }
 
