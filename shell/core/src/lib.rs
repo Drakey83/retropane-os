@@ -674,6 +674,8 @@ const PULL_REFRESH: i32 = 56;
 pub struct Shell {
     /// The organiser apps' state ([`apps`]).
     apps: apps::Apps,
+    /// The device's offset from UTC, minutes (the clock file's).
+    utc_offset: i32,
     /// Programs' rounded shapes' corners, painted once per colour.
     shapes: rp_app::Shapes,
     /// The app program open, if any ([`Screen::Program`]).
@@ -911,6 +913,7 @@ macro_rules! shell_start {
     ($fonts:expr, $icons:expr, $dev_exit:expr; $($how:tt)*) => {
         rp_hal_mem::in_place!($($how)* Shell {
             apps: apps::Apps::new(),
+            utc_offset: 0,
             shapes: rp_app::Shapes::new(),
             program: core::cell::RefCell::new(None),
             programs: false,
@@ -2269,6 +2272,12 @@ impl Shell {
         self.programs = yes;
     }
 
+    /// The device's offset from UTC (minutes): online calendars' UTC
+    /// times are moved by it.
+    pub fn set_utc_offset(&mut self, minutes: i32) {
+        self.utc_offset = minutes;
+    }
+
     /// The picture store programs paint into (the renderer's own).
     pub fn give_pics(&mut self, pics: &'static rp_draw::pics::Pics<'static>) {
         self.app_pics = Some(pics);
@@ -2400,6 +2409,7 @@ impl Shell {
             pics: self.app_pics,
             forecast: &self.forecast[..usize::from(self.forecast_n)],
             us: true,
+            utc_offset: self.utc_offset,
             shapes: &self.shapes,
             pim: Some(&self.apps.store),
         };
@@ -2432,6 +2442,7 @@ impl Shell {
                 pics: self.app_pics,
                 forecast: &self.forecast[..usize::from(self.forecast_n)],
                 us: true,
+                utc_offset: self.utc_offset,
                 shapes: &self.shapes,
                 pim: Some(&self.apps.store),
             };
@@ -2457,6 +2468,7 @@ impl Shell {
                 pics: self.app_pics,
                 forecast: &self.forecast[..usize::from(self.forecast_n)],
                 us: true,
+                utc_offset: self.utc_offset,
                 shapes: &self.shapes,
                 pim: Some(&self.apps.store),
             };

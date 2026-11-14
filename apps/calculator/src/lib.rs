@@ -17,6 +17,7 @@
 use rp_app::kit::{self, DIM, TEXT, tint};
 use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Program, Rect, Reply, Text, W, WIDE};
 use rp_pim::calc::Dec;
+use rp_pim::store::{Kind, tag};
 use rp_pim::{date, expr};
 
 /// The modes.
@@ -213,7 +214,22 @@ pub struct Calculator {
     /// A number typed in the units, money and tip modes.
     entry: [u8; 16],
     entry_n: usize,
+    /// Money: the rates (units per euro, millionths), their day, whether
+    /// the store was read for them and whether to ask the network; the
+    /// currencies converted between (indices in the rates, the euro last).
+    rates: [([u8; 3], u64); 40],
+    n_rates: usize,
+    rates_day: Option<i32>,
+    rates_read: bool,
+    want_rates: bool,
+    cur_from: usize,
+    cur_to: usize,
 }
+
+/// The currencies offered first, the US default first.
+const CURRENCIES: [&[u8; 3]; 8] = [
+    b"USD", b"EUR", b"GBP", b"CAD", b"MXN", b"JPY", b"AUD", b"CHF",
+];
 
 impl Calculator {
     /// A calculator in `mode` on `today`.
@@ -237,7 +253,137 @@ impl Calculator {
             d1: today,
             entry: [0; 16],
             entry_n: 0,
+            rates: [([0; 3], 0); 40],
+            n_rates: 0,
+            rates_day: None,
+            rates_read: false,
+            want_rates: false,
+            cur_from: 0,
+            cur_to: 1,
         }
+    }
+
+    /// The rates read from the ECB's daily file (the network's answer,
+    /// and the previews' canned one); the euro added as 1.
+    pub fn set_rates_from(&mut self, answer: &[u8]) -> bool {
+        let mut found = [rp_pim::net::Rate {
+            code: [0; 3],
+            micro: 0,
+        }; 39];
+        let (n, day) = rp_pim::net::ecb(answer, &mut found);
+        if n == 0 {
+            return false;
+        }
+        for (slot, r) in self.rates.iter_mut().zip(&found[..n]) {
+            *slot = (r.code, r.micro);
+        }
+        self.rates[n] = (*b"EUR", 1_000_000);
+        self.n_rates = n + 1;
+        self.rates_day = day;
+        true
+    }
+
+    /// The rates kept in the store as one record (`Data` "rates": the day,
+    /// then `CODE=millionths;` each), read once.
+    fn rates_kept(&mut self, cx: &Ctx) {
+        if self.rates_read {
+            return;
+        }
+        self.rates_read = true;
+        let Some(cell) = cx.pim else { return };
+        let Ok(guard) = cell.try_borrow() else { return };
+        let Some(store) = guard.as_ref() else { return };
+        let Some(r) = store
+            .all(Kind::Data)
+            .find(|r| r.text(tag::NAME) == b"rates")
+        else {
+            return;
+        };
+        let t = r.text(tag::TEXT);
+        let mut n = 0;
+        for part in t.split(|&c| c == b';') {
+            if let Some(day) = part.strip_prefix(b"day=") {
+                self.rates_day = day.iter().try_fold(0i32, |v, &c| {
+                    c.is_ascii_digit().then(|| v * 10 + i32::from(c - b'0'))
+                });
+            } else if part.len() > 4 && part[3] == b'=' && n < self.rates.len() {
+                let v = part[4..].iter().try_fold(0u64, |v, &c| {
+                    c.is_ascii_digit().then(|| v * 10 + u64::from(c - b'0'))
+                });
+                if let Some(v) = v {
+                    self.rates[n] = ([part[0], part[1], part[2]], v);
+                    n += 1;
+                }
+            }
+        }
+        self.n_rates = n;
+    }
+
+    /// The rates kept in the store for offline use.
+    fn keep_rates(&self, cx: &Ctx) {
+        let mut t = [0u8; 1200];
+        let mut k = 0;
+        let mut put = |b: &[u8], k: &mut usize| {
+            for &c in b {
+                if *k < t.len() {
+                    t[*k] = c;
+                    *k += 1;
+                }
+            }
+        };
+        if let Some(d) = self.rates_day {
+            put(b"day=", &mut k);
+            let mut b = [0u8; 12];
+            let n = num(&mut b, d.max(0) as u32);
+            put(&b[..n], &mut k);
+            put(b";", &mut k);
+        }
+        for (code, v) in &self.rates[..self.n_rates] {
+            put(code, &mut k);
+            put(b"=", &mut k);
+            let mut b = [0u8; 20];
+            let mut i = b.len();
+            let mut v = *v;
+            loop {
+                i -= 1;
+                b[i] = b'0' + (v % 10) as u8;
+                v /= 10;
+                if v == 0 {
+                    break;
+                }
+            }
+            put(&b[i..], &mut k);
+            put(b";", &mut k);
+        }
+        let Some(cell) = cx.pim else { return };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(store) = guard.as_mut() else { return };
+        let id = store
+            .all(Kind::Data)
+            .find(|r| r.text(tag::NAME) == b"rates")
+            .map(|r| r.id);
+        let _ = store.put(
+            Kind::Data,
+            id,
+            &[(tag::NAME, b"rates"), (tag::TEXT, &t[..k])],
+        );
+    }
+
+    /// Currency `code`'s rate (units per euro, millionths).
+    fn rate(&self, code: &[u8; 3]) -> Option<u64> {
+        self.rates[..self.n_rates]
+            .iter()
+            .find(|(c, _)| c == code)
+            .map(|(_, v)| *v)
+    }
+
+    /// `v` in currency `from` as currency `to`, through the euro.
+    fn exchange(&self, v: Dec, from: &[u8; 3], to: &[u8; 3]) -> Option<Dec> {
+        let (a, b) = (self.rate(from)?, self.rate(to)?);
+        let micro = |m: u64| Dec::whole(m as i64).over(Dec::whole(1_000_000)).ok();
+        v.over(micro(a)?).ok()?.times(micro(b)?).ok()
     }
 
     /// Types `keys` (faces' actions, as a tap would): the previews.
@@ -619,33 +765,85 @@ impl Calculator {
     }
 
     fn money(&self, f: &mut Frame, cx: &Ctx) {
-        let r = Rect::new(MARGIN, TOP + 8, WIDE, 150);
-        kit::panel(f, cx, r);
-        kit::text(f, r.x + 16, r.y + 36, cx.fonts.title, TEXT, b"No rates yet");
-        kit::text(
-            f,
-            r.x + 16,
-            r.y + 70,
-            cx.fonts.ui,
-            DIM,
-            b"The European Central Bank's daily",
-        );
-        kit::text(
-            f,
-            r.x + 16,
-            r.y + 94,
-            cx.fonts.ui,
-            DIM,
-            b"rates arrive with a connection",
-        );
-        kit::text(
-            f,
-            r.x + 16,
-            r.y + 118,
-            cx.fonts.ui,
-            DIM,
-            b"(Wi-Fi or the dock), kept offline.",
-        );
+        if self.n_rates == 0 {
+            let r = Rect::new(MARGIN, TOP + 8, WIDE, 150);
+            kit::panel(f, cx, r);
+            kit::text(f, r.x + 16, r.y + 36, cx.fonts.title, TEXT, b"No rates yet");
+            kit::text(
+                f,
+                r.x + 16,
+                r.y + 70,
+                cx.fonts.ui,
+                DIM,
+                b"The European Central Bank's daily",
+            );
+            kit::text(
+                f,
+                r.x + 16,
+                r.y + 94,
+                cx.fonts.ui,
+                DIM,
+                b"rates arrive with a connection",
+            );
+            kit::text(
+                f,
+                r.x + 16,
+                r.y + 118,
+                cx.fonts.ui,
+                DIM,
+                b"(Wi-Fi or the dock), kept offline.",
+            );
+            self.pad(f, cx);
+            return;
+        }
+        let (from, to) = (CURRENCIES[self.cur_from], CURRENCIES[self.cur_to]);
+        let v = self.entry_dec().unwrap_or(Dec::ZERO);
+        let out = self.exchange(v, from, to);
+        let mut y = TOP + 8;
+        for (k, (code, value)) in [(from, Some(v)), (to, out)].iter().enumerate() {
+            let r = Rect::new(MARGIN, y, WIDE, 86);
+            kit::panel(f, cx, r);
+            let u = Rect::new(r.x + 12, r.y + 12, 96, 32);
+            kit::key(f, cx, u, kit::KeyState::On);
+            kit::centred(f, u, u.y + 22, cx.fonts.ui, TEXT, *code);
+            let mut b = [0u8; 32];
+            let n = match value {
+                Some(_) if k == 0 && self.entry_n > 0 => {
+                    b[..self.entry_n].copy_from_slice(&self.entry[..self.entry_n]);
+                    self.entry_n
+                }
+                Some(d) => cents(*d, &mut b),
+                None => 0,
+            };
+            kit::right(f, r.right() - 14, r.y + 74, cx.fonts.num, TEXT, &b[..n]);
+            y += 92;
+        }
+        // Whose rates and of when.
+        let mut t = [0u8; 48];
+        let mut n = 0;
+        for &c in b"ECB rates of " {
+            t[n] = c;
+            n += 1;
+        }
+        if let Some(d) = self.rates_day {
+            let dd = date::date_of(d);
+            let months: [&[u8]; 12] = [
+                b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct",
+                b"Nov", b"Dec",
+            ];
+            for &c in months[usize::from(dd.month - 1)] {
+                t[n] = c;
+                n += 1;
+            }
+            t[n] = b' ';
+            n += 1;
+            n += num(&mut t[n..], u32::from(dd.day));
+        }
+        for &c in b" \x80 kept offline" {
+            t[n] = c;
+            n += 1;
+        }
+        kit::text(f, MARGIN + 8, y + 20, cx.fonts.ui, DIM, &t[..n]);
         self.pad(f, cx);
     }
 
@@ -878,7 +1076,13 @@ impl Program for Calculator {
                 self.keypad(f, cx);
             }
             Mode::Units => self.units(f, cx),
-            Mode::Money => self.money(f, cx),
+            Mode::Money => {
+                self.rates_kept(cx);
+                if self.n_rates == 0 {
+                    self.want_rates = true;
+                }
+                self.money(f, cx);
+            }
             Mode::Tip => self.tip(f, cx),
             Mode::Dates => self.dates(f, cx),
         }
@@ -946,6 +1150,16 @@ impl Program for Calculator {
                                 return Reply::Redraw;
                             }
                         }
+                        if self.mode == Mode::Money && self.n_rates > 0 {
+                            if Rect::new(MARGIN + 12, TOP + 20, 96, 32).contains_point(x, y) {
+                                self.cur_from = (self.cur_from + 1) % CURRENCIES.len();
+                                return Reply::Redraw;
+                            }
+                            if Rect::new(MARGIN + 12, TOP + 112, 96, 32).contains_point(x, y) {
+                                self.cur_to = (self.cur_to + 1) % CURRENCIES.len();
+                                return Reply::Redraw;
+                            }
+                        }
                         if self.mode == Mode::Tip {
                             let chips = Rect::new(MARGIN, TOP + 70, WIDE, 34);
                             if chips.contains_point(x, y) {
@@ -986,5 +1200,25 @@ impl Program for Calculator {
 
     fn keyboard(&self) -> Option<Field> {
         None
+    }
+
+    /// Money with no rates: the ECB's file, over whatever connection.
+    fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        if self.mode != Mode::Money || !self.want_rates {
+            return None;
+        }
+        self.want_rates = false;
+        Some(rp_app::NetAsk {
+            what: b"RATES",
+            arg: Text::EMPTY,
+        })
+    }
+
+    fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        if ok && self.set_rates_from(body) {
+            self.keep_rates(cx);
+            return Reply::Redraw;
+        }
+        Reply::Nothing
     }
 }

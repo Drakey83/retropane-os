@@ -1807,10 +1807,15 @@ mod image {
         *card = take_card();
         let t0 = rt::ticks();
         // The PC's time at the load (R182), else the build's.
-        card_min = card
+        let time_file = card
             .as_mut()
-            .and_then(|(c, start)| read_pack(c, *start, *b"RPTIM", stream_buf))
-            .and_then(|n| clock::from_card(&stream_buf[..n]));
+            .and_then(|(c, start)| read_pack(c, *start, *b"RPTIM", stream_buf));
+        card_min = time_file.and_then(|n| clock::from_card(&stream_buf[..n]));
+        // The zone's offset, for times kept in UTC (an online calendar's).
+        let utc_offset = time_file.and_then(|n| clock::offset_of(&stream_buf[..n]));
+        if let Some(off) = utc_offset {
+            shell.set_utc_offset(off);
+        }
         match card_min {
             Some(m) => {
                 let t = clock::time_at(m);

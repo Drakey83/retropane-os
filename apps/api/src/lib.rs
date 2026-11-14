@@ -96,6 +96,9 @@ pub struct Ctx<'a> {
     /// The region writes dates month first (the US) and starts the week on
     /// Sunday.
     pub us: bool,
+    /// The device's offset from UTC, minutes (a time kept in UTC, as an
+    /// online calendar's, is moved by it).
+    pub utc_offset: i32,
     /// The rounded shapes' corner pictures, painted once per colour and
     /// kept by the shell ([`Shapes`]).
     pub shapes: &'a Shapes,

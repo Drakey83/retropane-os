@@ -46,6 +46,15 @@ pub fn from_card(f: &[u8]) -> Option<i64> {
     (SANE.contains(&utc) && OFFSET.contains(&off)).then_some(utc + i64::from(off))
 }
 
+/// The offset from UTC (minutes) a time file holds, checked as
+/// [`from_card`] checks the file.
+#[must_use]
+pub fn offset_of(f: &[u8]) -> Option<i32> {
+    from_card(f)?;
+    let off = i32::from_le_bytes(f.get(12..16)?.try_into().ok()?);
+    Some(off)
+}
+
 /// The local time `minutes` after 1970-01-01 00:00.
 #[must_use]
 pub fn time_at(minutes: i64) -> Time {

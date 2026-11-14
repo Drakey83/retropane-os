@@ -465,6 +465,73 @@ fn calc_typed(mode: Mode, keys: &[&[u8]]) -> Calculator {
     c
 }
 
+/// The calendar synced through the shell's own question path: the PC's
+/// list of links answered, then link 0's file (a Google calendar,
+/// canned). Seattle's winter offset, so the UTC times land as they would.
+fn calendar_synced(s: &mut rp_shell::Shell, view: View) {
+    sample_week(s);
+    s.set_utc_offset(-480);
+    let mut c = calendar(View::Calendars, b"");
+    // The "Get calendars" key, as a tap.
+    let _ = rp_app::Program::event(&mut c, rp_app::Event::PenUp { x: 240, y: 560 }, &mock_ctx());
+    open(s, c);
+    let answers: [&[u8]; 2] = [
+        b"0|Work (Google)
+",
+        include_bytes!("../../shell/weather/tests/data/google-work.ics"),
+    ];
+    // The Weather app's own questions come first (no relay here: each
+    // refused), then the program's, each answered as the relay would.
+    for a in answers {
+        while let Some(q) = s.next_ask() {
+            if q.ask == rp_shell::Ask::Program {
+                s.net_answer(true, a);
+                break;
+            }
+            s.net_answer(false, &[]);
+        }
+    }
+    if view != View::Calendars {
+        // Back to the chosen view, as the Back softkey and its chip would.
+        s.input(rp_shell::Input::PenDown { x: 120, y: 620 });
+        s.input(rp_shell::Input::PenUp { x: 120, y: 620 });
+    }
+}
+
+/// A context for driving a program before the shell hosts it (no store,
+/// no pictures: only for events that don't need them).
+fn mock_ctx() -> rp_app::Ctx<'static> {
+    let fonts: &'static rp_app::Fonts = Box::leak(Box::new(rp_app::Fonts {
+        ui: &rp_today::fonts::UI,
+        label: &rp_today::fonts::LABEL,
+        big: &rp_today::fonts::BIG,
+        num: &rp_today::fonts::NUM,
+        title: &rp_today::fonts::TITLE,
+    }));
+    let look: &'static rp_app::Look = Box::leak(Box::new(rp_app::Look {
+        light: false,
+        panel: rp_shell::panel::art(false),
+        pressed: rp_shell::panel::pressed(false),
+        key: rp_shell::panel::art(false),
+        key_down: rp_shell::panel::art(false),
+        on: rp_shell::panel::art(false),
+    }));
+    rp_app::Ctx {
+        fonts,
+        look,
+        now: rp_app::Now {
+            day: TODAY,
+            minute: 720,
+        },
+        pics: None,
+        forecast: &[],
+        us: true,
+        utc_offset: 0,
+        shapes: Box::leak(Box::new(rp_app::Shapes::new())),
+        pim: None,
+    }
+}
+
 /// Every version 2 mock-up.
 pub fn mocks() -> Vec<Mock> {
     vec![
@@ -507,6 +574,16 @@ pub fn mocks() -> Vec<Mock> {
                 sample_week(s);
                 open(s, calendar(View::New, b"Dentist tue 3pm 1h"));
             }),
+        },
+        Mock {
+            name: "v2-calendar-calendars",
+            what: "Calendar: the calendars, a Google one got through its private link and synced",
+            prepare: Box::new(|s| calendar_synced(s, View::Calendars)),
+        },
+        Mock {
+            name: "v2-calendar-synced",
+            what: "Calendar: the agenda with the Google calendar's events in its own colour",
+            prepare: Box::new(|s| calendar_synced(s, View::Agenda)),
         },
         Mock {
             name: "v2-contacts-list",
@@ -625,7 +702,16 @@ pub fn mocks() -> Vec<Mock> {
         Mock {
             name: "v2-calc-money",
             what: "Calculator: money at the ECB's daily rates, kept for offline",
-            prepare: Box::new(|s| open(s, calc_typed(Mode::Money, &[]))),
+            prepare: Box::new(|s| {
+                open(s, {
+                    let mut c = calc_typed(Mode::Money, &[]);
+                    c.set_rates_from(include_bytes!(
+                        "../../shell/weather/tests/data/ecb-daily.xml"
+                    ));
+                    c.set_entry(b"120");
+                    c
+                })
+            }),
         },
         Mock {
             name: "v2-calc-tip",

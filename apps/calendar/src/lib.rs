@@ -101,10 +101,36 @@ pub enum View {
     Month,
     /// The quick-add sheet.
     New,
+    /// The calendars, and getting online ones (calendar-rule0.md: an iCal
+    /// link first, CalDAV and Google sign-in after).
+    Calendars,
+}
+
+/// The key on the title band that opens the calendars.
+const CALENDARS_KEY: Rect = Rect::new(W - MARGIN - 128, 46, 128, 30);
+/// The calendars screen's "Get calendars" key.
+const GET_KEY: Rect = Rect::new(MARGIN, 540, WIDE, 44);
+/// Events read from one calendar link at a time.
+const PARSED: usize = 160;
+
+/// What the calendar last asked the network.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Asked {
+    Nothing,
+    List,
+    Link(u8),
 }
 
 /// The Calendar program.
 pub struct Calendar {
+    /// Online calendars: the links to read next (their numbers on the PC),
+    /// whether to ask for the list, what was asked, and what to say.
+    queue: [u8; 8],
+    n_queue: usize,
+    want_list: bool,
+    asked: Asked,
+    status: &'static [u8],
+    synced: u32,
     cals: [CalRow; 8],
     n_cals: usize,
     appts: [Option<Appt>; MAX],
@@ -231,6 +257,12 @@ impl Calendar {
             r.colour = c.colour;
         }
         Self {
+            queue: [0; 8],
+            n_queue: 0,
+            want_list: false,
+            asked: Asked::Nothing,
+            status: b"",
+            synced: 0,
             cals: rows,
             n_cals: cals.len().clamp(1, 8),
             appts: [None; MAX],
@@ -317,6 +349,222 @@ impl Calendar {
                     }
                 }
             }
+        }
+    }
+
+    /// The calendars and how to get online ones.
+    fn calendars_view(&self, f: &mut Frame, cx: &Ctx, top: u16) {
+        let mut y = top;
+        let guard = cx.pim.and_then(|c| c.try_borrow().ok());
+        let store = guard.as_ref().and_then(|g| g.as_ref());
+        for c in &self.cals[..self.n_cals] {
+            if y + 56 > 520 {
+                break;
+            }
+            let r = Rect::new(MARGIN, y, WIDE, 52);
+            kit::tinted(f, cx, r, c.colour, 0x40);
+            kit::fitted(f, r.x + 22, r.y + 22, cx.fonts.ui, TEXT, c.name.get(), 300);
+            let src = store.and_then(|s| s.get(c.id)).map(|r| {
+                let t = r.text(tag::SOURCE);
+                t.starts_with(b"ical:")
+            });
+            let from: &[u8] = if src == Some(true) {
+                b"From a link on your PC \x80 read only"
+            } else {
+                b"On this device"
+            };
+            kit::text(f, r.x + 22, r.y + 44, cx.fonts.ui, DIM, from);
+            y += 56;
+        }
+        let note = Rect::new(MARGIN, y + 4, WIDE, 84);
+        kit::panel(f, cx, note);
+        kit::text(
+            f,
+            note.x + 14,
+            note.y + 24,
+            cx.fonts.ui,
+            TEXT,
+            b"Google, Outlook, iCloud: paste each",
+        );
+        kit::text(
+            f,
+            note.x + 14,
+            note.y + 48,
+            cx.fonts.ui,
+            TEXT,
+            b"calendar's private iCal link into",
+        );
+        kit::text(
+            f,
+            note.x + 14,
+            note.y + 72,
+            cx.fonts.ui,
+            DIM,
+            b"calendars.txt on your PC (Name|link)",
+        );
+        if !self.status.is_empty() {
+            kit::text(
+                f,
+                MARGIN + 6,
+                GET_KEY.y - 12,
+                cx.fonts.ui,
+                kit::FOCUS,
+                self.status,
+            );
+        }
+        kit::key(f, cx, GET_KEY, kit::KeyState::On);
+        kit::centred(
+            f,
+            GET_KEY,
+            GET_KEY.y + 29,
+            cx.fonts.ui,
+            TEXT,
+            b"Get calendars and sync",
+        );
+    }
+
+    /// The PC's list of calendar links (`n|Name` lines): a calendar each
+    /// in the store (its SOURCE `ical:n`), and each queued to read.
+    fn take_list(&mut self, body: &[u8], cx: &Ctx) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(store) = guard.as_mut() else { return };
+        self.n_queue = 0;
+        for line in body.split(|&c| c == b'\n') {
+            let Some(bar) = line.iter().position(|&c| c == b'|') else {
+                continue;
+            };
+            let (num, name) = (&line[..bar], &line[bar + 1..]);
+            let Some(n) = num.iter().try_fold(0u8, |v, &c| {
+                c.is_ascii_digit()
+                    .then(|| v.saturating_mul(10).saturating_add(c - b'0'))
+            }) else {
+                continue;
+            };
+            let mut source = [0u8; 8];
+            source[..5].copy_from_slice(b"ical:");
+            let sl = 5 + usize::from(n > 9);
+            if n > 9 {
+                source[5] = b'0' + n / 10;
+            }
+            source[sl] = b'0' + n % 10;
+            let source = &source[..=sl];
+            let known = store
+                .all(Kind::Calendar)
+                .any(|r| r.text(tag::SOURCE) == source);
+            if !known {
+                // The first colour no calendar has yet.
+                let used = store
+                    .all(Kind::Calendar)
+                    .fold(0u8, |m, r| m | 1 << (r.num(tag::COLOUR).unwrap_or(0) % 8));
+                let colour = (0..8u32)
+                    .find(|&k| used & (1 << k) == 0)
+                    .unwrap_or(5)
+                    .to_le_bytes();
+                let name = &name[..name.len().min(40)];
+                let _ = store.put(
+                    Kind::Calendar,
+                    None,
+                    &[
+                        (tag::NAME, name),
+                        (tag::COLOUR, &colour),
+                        (tag::SOURCE, source),
+                    ],
+                );
+            }
+            if self.n_queue < self.queue.len() {
+                self.queue[self.n_queue] = n;
+                self.n_queue += 1;
+            }
+        }
+        self.status = if self.n_queue == 0 {
+            b"No links in calendars.txt on the PC yet"
+        } else {
+            b"Reading your calendars..."
+        };
+        self.seen = None;
+    }
+
+    /// Calendar link `n`'s file: its events replace that calendar's in the
+    /// store (a link is read only: the copy here is the link's).
+    fn take_link(&mut self, n: u8, body: &[u8], cx: &Ctx) {
+        let mut events = [rp_pim::net::Event {
+            title: rp_pim::net::Short::default(),
+            place: rp_pim::net::Short::default(),
+            start: 0,
+            minutes: 0,
+            all_day: false,
+            rule: None,
+        }; PARSED];
+        let utc_offset = cx.utc_offset;
+        let count = rp_pim::net::ics(body, utc_offset, &mut events);
+        let Some(cell) = cx.pim else { return };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(store) = guard.as_mut() else { return };
+        let mut want = [0u8; 8];
+        want[..5].copy_from_slice(b"ical:");
+        let sl = 5 + usize::from(n > 9);
+        if n > 9 {
+            want[5] = b'0' + n / 10;
+        }
+        want[sl] = b'0' + n % 10;
+        let Some(cal) = store
+            .all(Kind::Calendar)
+            .find(|r| r.text(tag::SOURCE) == &want[..=sl])
+            .map(|r| r.id)
+        else {
+            return;
+        };
+        // The old copy out (ids gathered first: the store changes as they go).
+        let mut old = [0u32; 256];
+        let mut k = 0;
+        for r in store
+            .all(Kind::Appointment)
+            .filter(|r| r.num(tag::CAL) == Some(cal))
+        {
+            if k < old.len() {
+                old[k] = r.id;
+                k += 1;
+            }
+        }
+        for id in &old[..k] {
+            let _ = store.remove(*id);
+        }
+        let mut put = 0;
+        for e in &events[..count] {
+            let le = |v: u32| v.to_le_bytes();
+            let (st, mi, ca, one) = (le(e.start), le(e.minutes.max(1)), le(cal), le(1));
+            let rule = e.rule.map(|r| le(r.pack(date::day_of(e.start))));
+            let mut fields: [(u8, &[u8]); 7] = [
+                (tag::TITLE, e.title.get()),
+                (tag::PLACE, e.place.get()),
+                (tag::START, &st),
+                (tag::MINUTES, &mi),
+                (tag::CAL, &ca),
+                (tag::ALL_DAY, &[]),
+                (tag::REPEAT, &[]),
+            ];
+            if e.all_day {
+                fields[5].1 = &one;
+            }
+            if let Some(r) = &rule {
+                fields[6].1 = r;
+            }
+            if store.put(Kind::Appointment, None, &fields).is_ok() {
+                put += 1;
+            } else {
+                self.status = b"The calendar store is full";
+                break;
+            }
+        }
+        self.synced += put;
+        self.seen = None;
+        if self.n_queue == 0 && self.status != b"The calendar store is full" {
+            self.status = b"Synced";
         }
     }
 
@@ -994,6 +1242,7 @@ impl Program for Calendar {
     fn softkeys(&self) -> (&'static str, &'static str) {
         match self.view {
             View::New => ("Cancel", "Add"),
+            View::Calendars => ("Back", ""),
             _ => ("Today", "New"),
         }
     }
@@ -1003,13 +1252,26 @@ impl Program for Calendar {
         self.refresh(cx);
         kit::backdrop(f);
         let under = self.title(f, cx);
+        if self.view == View::Calendars {
+            self.calendars_view(f, cx, under + 4);
+            return;
+        }
+        kit::key(f, cx, CALENDARS_KEY, kit::KeyState::Rest);
+        kit::centred(
+            f,
+            CALENDARS_KEY,
+            CALENDARS_KEY.y + 21,
+            cx.fonts.label,
+            TEXT,
+            b"CALENDARS",
+        );
         let shown = if self.view == View::New {
             View::Agenda
         } else {
             self.view
         };
         let chosen = match shown {
-            View::Agenda | View::New => 0,
+            View::Agenda | View::New | View::Calendars => 0,
             View::Day => 1,
             View::Week => 2,
             View::Month => 3,
@@ -1024,7 +1286,7 @@ impl Program for Calendar {
         );
         let y = under + 40;
         match shown {
-            View::Agenda | View::New => {
+            View::Agenda | View::New | View::Calendars => {
                 self.strip(f, cx, y);
                 self.agenda(f, cx, y + 70);
             }
@@ -1041,6 +1303,26 @@ impl Program for Calendar {
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        match e {
+            Event::PenUp { x, y }
+                if self.view == View::Calendars && GET_KEY.contains_point(x, y) =>
+            {
+                self.want_list = true;
+                self.status = b"Asking your PC for its calendars...";
+                return Reply::Redraw;
+            }
+            Event::Key(Key::SoftLeft) if self.view == View::Calendars => {
+                self.view = View::Agenda;
+                return Reply::Redraw;
+            }
+            Event::PenUp { x, y }
+                if self.view != View::New && CALENDARS_KEY.contains_point(x, y) =>
+            {
+                self.view = View::Calendars;
+                return Reply::Redraw;
+            }
+            _ => {}
+        }
         match e {
             Event::Key(Key::SoftLeft) => {
                 if self.view == View::New {
@@ -1083,5 +1365,44 @@ impl Program for Calendar {
 
     fn keyboard(&self) -> Option<Field> {
         (self.view == View::New).then_some(Field::Line)
+    }
+
+    /// The online calendars: the PC's list first, then each link in turn.
+    fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        if self.want_list {
+            self.want_list = false;
+            self.asked = Asked::List;
+            return Some(rp_app::NetAsk {
+                what: b"ICALS",
+                arg: rp_app::Text::EMPTY,
+            });
+        }
+        if self.n_queue > 0 {
+            self.n_queue -= 1;
+            let n = self.queue[self.n_queue];
+            self.asked = Asked::Link(n);
+            let digits = [b'0' + n / 10, b'0' + n % 10];
+            let arg = if n > 9 { &digits[..] } else { &digits[1..] };
+            return Some(rp_app::NetAsk {
+                what: b"ICAL",
+                arg: rp_app::Text::of(arg),
+            });
+        }
+        None
+    }
+
+    fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        let asked = core::mem::replace(&mut self.asked, Asked::Nothing);
+        if !ok {
+            self.status = b"No connection (Wi-Fi or the dock)";
+            self.n_queue = 0;
+            return Reply::Redraw;
+        }
+        match asked {
+            Asked::List => self.take_list(body, cx),
+            Asked::Link(n) => self.take_link(n, body, cx),
+            Asked::Nothing => {}
+        }
+        Reply::Redraw
     }
 }
