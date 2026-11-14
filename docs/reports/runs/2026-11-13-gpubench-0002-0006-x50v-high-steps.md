@@ -92,3 +92,5 @@ GC2EG 149.50 / 2 part 1 (lock 0): wrong of 100 by frame [0, 0, 0, 0] ([0, 0, 0, 
 GC2EG settings with every game frame right: 143.00 / 1 part 1; 143.00 / 1 part 2; 143.00 / 1 part 3; 143.00 / 1 part 4; 143.00 / 1 part 5; 143.00 / 1 part 6; 143.00 / 1 part 7; 143.00 / 1 part 8; 143.00 / 1 part 9; 143.00 / 1 part 10; 143.0
 RETROPANE-GPUBENCH: done, 10975 renders measured, 0 hung renders recovered
 ```
+
+**Merge record (2026-11-13, 9:18 PM):** `main` moved from `732a49e0` to `87192d0c` (PR 17, merged on the owner's "push live"; `cargo xtask ci` passed on d806a95b, GitHub's CI on main then running, about 2.5 hours).
