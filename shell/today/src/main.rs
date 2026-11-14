@@ -2672,6 +2672,7 @@ mod image {
                         rp_today::program::load(&prog_file[..len], prog_slot, at, prog_scratch)
                     });
                     let mut opening = rp_app::Opening::new(shell.today_days());
+                    opening.intent = shell.take_intent();
                     match loaded {
                         Some(Ok(entry)) => {
                             rt::call_program(entry as usize, prog_slot, &mut opening);

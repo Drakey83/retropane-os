@@ -683,6 +683,8 @@ pub struct Shell {
     /// The organiser's entries open app programs (the caller loads them)
     /// rather than the apps built into the shell.
     programs: bool,
+    /// The next program's intent (the Note button: a new note).
+    intent: u8,
     /// The field the program's keyboard was set for, and the last
     /// character typed (the automatic capitals).
     prog_field: Option<rp_app::Field>,
@@ -917,6 +919,7 @@ macro_rules! shell_start {
             shapes: rp_app::Shapes::new(),
             program: core::cell::RefCell::new(None),
             programs: false,
+            intent: 0,
             prog_field: None,
             prog_last: b' ',
             app_pics: None,
@@ -1886,7 +1889,10 @@ impl Shell {
         match t {
             Target::Start => self.set_menu(!self.menu_open),
             // The first quick button starts a note (the Notes program).
-            Target::Quick(0) if self.programs => return Action::OpenProgram(3),
+            Target::Quick(0) if self.programs => {
+                self.intent = rp_app::INTENT_NEW;
+                return Action::OpenProgram(3);
+            }
             Target::Quick(i) => {
                 self.show_notice(not_yet(QUICK[usize::from(i).min(QUICK.len() - 1)]))
             }
@@ -2264,6 +2270,12 @@ impl Shell {
             };
             self.dirty(Rect::new(0, 0, W, H));
         }
+    }
+
+    /// What the next program opened is for ([`rp_app::Opening::intent`]),
+    /// taken once.
+    pub fn take_intent(&mut self) -> u8 {
+        core::mem::take(&mut self.intent)
     }
 
     /// The organiser's Start menu entries open app programs from now on

@@ -17,9 +17,9 @@ mod program {
             return;
         }
         static SLOT: AppSlot<rp_app_notes::Notes> = AppSlot::new();
-        let today = o.today;
+        let (today, intent) = (o.today, o.intent);
         o.program = SLOT
-            .put_with(|| rp_app_notes::opened(today))
+            .put_with(|| rp_app_notes::opened_for(today, intent))
             .map(|p| p as &mut dyn rp_app::Program);
     }
 

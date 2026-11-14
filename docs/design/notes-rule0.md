@@ -59,13 +59,13 @@ Catch a thought in a second, by stylus or keyboard, and find it again.
 | Smooth ink drawn by the GPU: filtered points, anti-aliased strokes, width from speed, five colours, highlighter, stroke eraser | apps-and-packs: Smooth ink on the GPU | pending | |
 | Ruled, plain and grid paper | sheet | pending | |
 | A note as blocks: text, ink and checklists in any order | sheet | pending | |
-| Checklists with the round tick | apps-and-packs: checklists | pending | |
+| Checklists with the round tick | apps-and-packs: checklists | built | apps/notes/src/lib.rs, apps/notes/src/tests.rs |
 | Search over typed text and titles with the match highlighted | apps-and-packs: search typed notes | pending | |
 | Export as text or Markdown, ink as SVG or PNG; import text files | apps-and-packs: export | pending | |
 | Notes of any length | sheet | pending | |
 | Undo and redo for typing and strokes | sheet | pending | |
 | Sentence capitals and word suggestions in text blocks | sheet | pending | |
-| The Today screen's Note button opens a new ink note | sheet | pending | |
+| The Today screen's Note button opens a new ink note | sheet | built | shell/core/src/lib.rs, apps/notes/src/lib.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/notes/src/main.rs, shell/today/src/program.rs |

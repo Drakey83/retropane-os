@@ -297,6 +297,9 @@ pub struct Opening {
     pub theirs: [u32; 6],
     /// Today, days since 1970 (the app's first screen).
     pub today: i32,
+    /// What the opening is for: [`INTENT_NEW`] (the Today screen's Note
+    /// button: a new note at once), else 0.
+    pub intent: u8,
     /// The program, when the entry agreed to open.
     pub program: Option<&'static mut dyn Program>,
 }
@@ -322,6 +325,7 @@ impl Opening {
             layout: Self::layout(),
             theirs: [0; 6],
             today,
+            intent: 0,
             program: None,
         }
     }
@@ -347,6 +351,9 @@ pub struct NetAsk {
     /// Its argument: the typed text, a number.
     pub arg: Text<64>,
 }
+
+/// [`Opening::intent`]: start something new at once.
+pub const INTENT_NEW: u8 = 1;
 
 /// An app program.
 pub trait Program {
