@@ -178,7 +178,12 @@ fn main() {
         // (today-0036) used all 16 KiB (the PNG reader's palette and the
         // inflater's tables, ~3.5 KiB, on top of the main loop's depth);
         // the radar's base map moved to the card, so the area has the room.
-        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=24576");
+        // 40 KiB since 2026-11-14: the app programs run on this stack
+        // (rp_today::program; their frames sit on the shell's), and the
+        // first emu-apps run with them overflowed 24 KiB. The stack is in
+        // the free RAM above the image (__ram_at), so the room costs no
+        // image space.
+        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=40960");
         // The image area (950 KB, up to the vector page) holds what is
         // loaded; the zeroed RAM and stacks (83 KB) go to the free RAM
         // above it (boot/link.x), since the organiser apps (2026-11-13).

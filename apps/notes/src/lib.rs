@@ -600,13 +600,12 @@ impl Notes {
         y += 48;
         if self.as_list {
             // One row a note: its colour, title and first line.
-            let rows = self.rows;
-            for (place, note) in rows
-                .iter()
-                .enumerate()
-                .filter_map(|(k, n)| n.map(|n| (k, n)))
-                .filter(|(_, n)| n.found)
-            {
+            for place in 0..self.rows.len() {
+                // One row at a time off the stack (a copy of all 24 was
+                // 17 KB: the image's stack overflowed, emu-apps 2026-11-14).
+                let Some(note) = self.rows[place].filter(|n| n.found) else {
+                    continue;
+                };
                 if y + 50 > 596 {
                     break;
                 }
@@ -645,19 +644,22 @@ impl Notes {
         let mut mini = 0;
         // Pinned first, then the rest, each with its place in the store's
         // order (what View::Note names).
-        let rows = self.rows;
-        let order = rows
-            .iter()
-            .enumerate()
-            .filter_map(|(k, n)| n.map(|n| (k, n)))
-            .filter(|(_, n)| n.pinned)
-            .chain(
-                rows.iter()
-                    .enumerate()
-                    .filter_map(|(k, n)| n.map(|n| (k, n)))
-                    .filter(|(_, n)| !n.pinned),
-            );
-        for (place, note) in order.filter(|(_, n)| n.found) {
+        // The order as indices (pinned first), each row read in turn: a
+        // copy of all the rows was 17 KB on the stack.
+        let mut order = [0u8; 24];
+        let mut no = 0;
+        for want in [true, false] {
+            for (k, r) in self.rows.iter().enumerate() {
+                if r.is_some_and(|r| r.pinned == want && r.found) {
+                    order[no] = k as u8;
+                    no += 1;
+                }
+            }
+        }
+        for &place in &order[..no] {
+            let Some(note) = self.rows[usize::from(place)] else {
+                continue;
+            };
             let note = &note;
             let c = if col_y[0] <= col_y[1] { 0 } else { 1 };
             let x = MARGIN + c as u16 * 228;

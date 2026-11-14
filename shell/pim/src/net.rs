@@ -430,13 +430,30 @@ fn ics_rule(v: &[u8], start_day: i32, utc_offset: i32) -> Option<Rule> {
     Some(rule)
 }
 
-/// The events of an iCalendar file, into `out`: how many. Times in UTC
-/// are moved by `utc_offset` minutes to the device's zone; a TZID'd time is
-/// taken as local (the zone database is a later item).
+/// The events of an iCalendar file, into `out`: how many (see
+/// [`ics_each`]).
 pub fn ics(text: &[u8], utc_offset: i32, out: &mut [Event]) -> usize {
+    let mut n = 0;
+    ics_each(text, utc_offset, |e| {
+        if n < out.len() {
+            out[n] = *e;
+            n += 1;
+            true
+        } else {
+            false
+        }
+    });
+    n
+}
+
+/// Each event of an iCalendar file handed to `take` as it is read (no
+/// array of them: a program's stack is the shell's, and 160 events were
+/// 27 KB), until it answers false. Times in UTC are moved by `utc_offset`
+/// minutes to the device's zone; a TZID'd time is taken as local (the
+/// zone database is a later item).
+pub fn ics_each(text: &[u8], utc_offset: i32, mut take: impl FnMut(&Event) -> bool) {
     let mut lines = Lines { text, at: 0 };
     let mut buf = [0u8; 256];
-    let mut n = 0;
     let mut cur: Option<Event> = None;
     let (mut end, mut dur, mut rrule) = (None::<u32>, None::<u32>, Short::<128>::new());
     let mut early = false;
@@ -462,7 +479,6 @@ pub fn ics(text: &[u8], utc_offset: i32, out: &mut [Event]) -> usize {
             b"END" if value == b"VEVENT" => {
                 if let Some(mut e) = cur.take()
                     && (e.start != 0 || early)
-                    && n < out.len()
                 {
                     e.minutes = match (end, dur) {
                         (Some(t), _) if t > e.start => t - e.start,
@@ -475,9 +491,8 @@ pub fn ics(text: &[u8], utc_offset: i32, out: &mut [Event]) -> usize {
                     }
                     // Before 1970 only a yearly repeat (a birthday) is kept,
                     // from its 1970 day.
-                    if !early || e.rule.is_some_and(|r| r.every == Every::Year) {
-                        out[n] = e;
-                        n += 1;
+                    if (!early || e.rule.is_some_and(|r| r.every == Every::Year)) && !take(&e) {
+                        return;
                     }
                 }
             }
@@ -507,7 +522,6 @@ pub fn ics(text: &[u8], utc_offset: i32, out: &mut [Event]) -> usize {
             _ => {}
         }
     }
-    n
 }
 
 /// RFC 5545's text escapes (`\,` `\;` `\n` `\\`) undone, cut to 64 bytes.

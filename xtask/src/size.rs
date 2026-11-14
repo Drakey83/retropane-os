@@ -552,7 +552,9 @@ pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-today",
         max_load: 880 * 1024,
-        max_zero: 84 * 1024,
+        // 100 KiB since 2026-11-14: the stack 24 -> 40 KiB (the app
+        // programs run on it; shell/today/build.rs).
+        max_zero: 100 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D

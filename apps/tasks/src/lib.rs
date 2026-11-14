@@ -609,19 +609,29 @@ impl Tasks {
             Some(i) => t.list == i,
             None => t.due.is_some_and(|d| d <= today),
         };
-        let mut open = [None; MAX];
+        // The open tasks as indices, sorted by urgency (a copy of the
+        // tasks themselves was 6 KB on the stack, which the programs share
+        // with the shell).
+        let mut open = [0u8; MAX];
         let mut n = 0;
-        for t in self.tasks.iter().flatten().filter(mine).filter(|t| !t.done) {
-            open[n] = Some(*t);
-            n += 1;
+        for (k, t) in self.tasks.iter().enumerate() {
+            if t.as_ref().is_some_and(|t| mine(&t) && !t.done) {
+                open[n] = k as u8;
+                n += 1;
+            }
         }
-        open[..n].sort_unstable_by_key(|t| {
-            t.map_or((i32::MAX, 0), |t| {
+        let key = |k: &u8| {
+            self.tasks[usize::from(*k)].map_or((i32::MAX, 0), |t| {
                 (t.due.unwrap_or(i32::MAX), 3 - i32::from(t.flag))
             })
-        });
+        };
+        open[..n].sort_unstable_by_key(key);
         let mut late_said = false;
-        for t in open[..n].iter().flatten() {
+        for &k in &open[..n] {
+            let Some(t) = self.tasks[usize::from(k)] else {
+                continue;
+            };
+            let t = &t;
             if y + 50 > 560 {
                 break;
             }

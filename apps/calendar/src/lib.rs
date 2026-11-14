@@ -1001,16 +1001,7 @@ impl Calendar {
     /// Calendar link `n`'s file: its events replace that calendar's in the
     /// store (a link is read only: the copy here is the link's).
     fn take_link(&mut self, n: u8, body: &[u8], cx: &Ctx) {
-        let mut events = [rp_pim::net::Event {
-            title: rp_pim::net::Short::default(),
-            place: rp_pim::net::Short::default(),
-            start: 0,
-            minutes: 0,
-            all_day: false,
-            rule: None,
-        }; PARSED];
         let utc_offset = cx.utc_offset;
-        let count = rp_pim::net::ics(body, utc_offset, &mut events);
         let Some(cell) = cx.pim else { return };
         let Ok(mut guard) = cell.try_borrow_mut() else {
             return;
@@ -1046,7 +1037,10 @@ impl Calendar {
             let _ = store.remove(*id);
         }
         let mut put = 0;
-        for e in &events[..count] {
+        let mut full = false;
+        // Each event put as the reader hands it over (no array of them on
+        // the stack), at most PARSED a link.
+        rp_pim::net::ics_each(body, utc_offset, |e| {
             let le = |v: u32| v.to_le_bytes();
             let (st, mi, ca, one) = (le(e.start), le(e.minutes.max(1)), le(cal), le(1));
             let rule = e.rule.map(|r| le(r.pack(date::day_of(e.start))));
@@ -1067,10 +1061,14 @@ impl Calendar {
             }
             if store.put(Kind::Appointment, None, &fields).is_ok() {
                 put += 1;
+                put < PARSED as u32
             } else {
-                self.status = b"The calendar store is full";
-                break;
+                full = true;
+                false
             }
+        });
+        if full {
+            self.status = b"The calendar store is full";
         }
         self.synced += put;
         self.seen = None;
