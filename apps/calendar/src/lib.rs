@@ -67,6 +67,7 @@ struct CalRow {
     id: u32,
     name: Text,
     colour: u32,
+    hidden: bool,
 }
 
 /// One appointment as a view shows it.
@@ -86,6 +87,8 @@ pub struct Appt {
     pub cal: u8,
     /// It repeats.
     pub repeats: bool,
+    /// A task due that day (Tasks' record), not an appointment.
+    pub task: bool,
 }
 
 /// The views.
@@ -127,6 +130,9 @@ pub struct Calendar {
     /// whether to ask for the list, what was asked, and what to say.
     queue: [u8; 8],
     n_queue: usize,
+    /// The calendars' rows as drawn (a tap shows or hides one).
+    cal_rows: [(Rect, u32); 8],
+    n_cal_rows: usize,
     want_list: bool,
     asked: Asked,
     status: &'static [u8],
@@ -174,6 +180,23 @@ const MONTHS: [&[u8]; 12] = [
     b"November",
     b"December",
 ];
+
+/// Day `day`'s place in its week (0 the week's first day): Sunday starts
+/// the week in the US (the region's custom), Monday elsewhere.
+fn in_week(day: i32, us: bool) -> i32 {
+    let w = i32::from(date::weekday(day)); // 0 Monday
+    if us { (w + 1) % 7 } else { w }
+}
+
+/// The weekday's short name for column `i` of a week.
+fn column_name(i: u16, us: bool) -> &'static [u8] {
+    let k = if us {
+        (usize::from(i) + 6) % 7
+    } else {
+        usize::from(i)
+    };
+    WEEKDAYS[k]
+}
 
 /// A small writer into a fixed buffer (no allocation).
 struct Buf<const N: usize> {
@@ -251,6 +274,7 @@ impl Calendar {
             id: 0,
             name: Text::EMPTY,
             colour: kit::IDENTITY[0],
+            hidden: false,
         }; 8];
         for (r, c) in rows.iter_mut().zip(cals) {
             r.name = Text::of(c.name);
@@ -259,6 +283,8 @@ impl Calendar {
         Self {
             queue: [0; 8],
             n_queue: 0,
+            cal_rows: [(Rect::new(0, 0, 0, 0), 0); 8],
+            n_cal_rows: 0,
             want_list: false,
             asked: Asked::Nothing,
             status: b"",
@@ -300,6 +326,7 @@ impl Calendar {
                     id: r.id,
                     name: Text::of(r.text(tag::NAME)),
                     colour: kit::IDENTITY[(r.num(tag::COLOUR).unwrap_or(0) % 8) as usize],
+                    hidden: r.num(tag::HIDDEN) == Some(1),
                 };
                 n_cals += 1;
             }
@@ -322,6 +349,10 @@ impl Calendar {
                 .num(tag::CAL)
                 .and_then(|id| self.cals[..self.n_cals].iter().position(|c| c.id == id))
                 .unwrap_or(0) as u8;
+            // A hidden calendar's appointments stay out of every view.
+            if self.cals[usize::from(cal)].hidden {
+                continue;
+            }
             let rule = r
                 .num(tag::REPEAT)
                 .and_then(|v| rp_pim::repeat::Rule::unpack(v, first));
@@ -333,6 +364,7 @@ impl Calendar {
                 place: Text::of(r.text(tag::PLACE)),
                 cal,
                 repeats: rule.is_some(),
+                task: false,
             };
             match rule {
                 None if first >= from && first < from + WINDOW && k < MAX => {
@@ -350,11 +382,35 @@ impl Calendar {
                 }
             }
         }
+        // Tasks on their due days (calendar-rule0.md, tasks-rule0.md: the
+        // tie-in), the open ones, in the tasks' blue.
+        for r in store
+            .all(Kind::Task)
+            .filter(|r| r.num(tag::DONE).is_none() && r.num(tag::PARENT).is_none())
+        {
+            let Some(due) = r.num(tag::DUE).map(|d| d as i32) else {
+                continue;
+            };
+            if k < MAX && due >= from && due < from + WINDOW {
+                self.appts[k] = Some(Appt {
+                    day: due,
+                    start: 0,
+                    len: 0,
+                    title: Text::of(r.text(tag::TITLE)),
+                    place: Text::EMPTY,
+                    cal: 0,
+                    repeats: false,
+                    task: true,
+                });
+                k += 1;
+            }
+        }
     }
 
     /// The calendars and how to get online ones.
-    fn calendars_view(&self, f: &mut Frame, cx: &Ctx, top: u16) {
+    fn calendars_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         let mut y = top;
+        self.n_cal_rows = 0;
         let guard = cx.pim.and_then(|c| c.try_borrow().ok());
         let store = guard.as_ref().and_then(|g| g.as_ref());
         for c in &self.cals[..self.n_cals] {
@@ -363,7 +419,27 @@ impl Calendar {
             }
             let r = Rect::new(MARGIN, y, WIDE, 52);
             kit::tinted(f, cx, r, c.colour, 0x40);
-            kit::fitted(f, r.x + 22, r.y + 22, cx.fonts.ui, TEXT, c.name.get(), 300);
+            if self.n_cal_rows < self.cal_rows.len() {
+                self.cal_rows[self.n_cal_rows] = (r, c.id);
+                self.n_cal_rows += 1;
+            }
+            kit::fitted(
+                f,
+                r.x + 22,
+                r.y + 22,
+                cx.fonts.ui,
+                if c.hidden { DIM } else { TEXT },
+                c.name.get(),
+                300,
+            );
+            kit::right(
+                f,
+                r.right() - 14,
+                r.y + 22,
+                cx.fonts.label,
+                if c.hidden { DIM } else { kit::DONE },
+                if c.hidden { b"HIDDEN" } else { b"SHOWN" },
+            );
             let src = store.and_then(|s| s.get(c.id)).map(|r| {
                 let t = r.text(tag::SOURCE);
                 t.starts_with(b"ical:")
@@ -421,6 +497,38 @@ impl Calendar {
             TEXT,
             b"Get calendars and sync",
         );
+    }
+
+    /// Calendar `id` shown or hidden (its record kept with HIDDEN set or
+    /// left out).
+    fn toggle_hidden(&mut self, cx: &Ctx, id: u32) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(store) = guard.as_mut() else { return };
+        let Some(r) = store.get(id) else { return };
+        let mut name = [0u8; 40];
+        let nn = r.text(tag::NAME).len().min(40);
+        name[..nn].copy_from_slice(&r.text(tag::NAME)[..nn]);
+        let mut source = [0u8; 16];
+        let sn = r.text(tag::SOURCE).len().min(16);
+        source[..sn].copy_from_slice(&r.text(tag::SOURCE)[..sn]);
+        let colour = r.num(tag::COLOUR).unwrap_or(0).to_le_bytes();
+        let hidden = r.num(tag::HIDDEN) == Some(1);
+        let one = 1u32.to_le_bytes();
+        let mut fields: [(u8, &[u8]); 4] = [
+            (tag::NAME, &name[..nn]),
+            (tag::COLOUR, &colour),
+            (tag::SOURCE, &source[..sn]),
+            (tag::HIDDEN, &[]),
+        ];
+        if !hidden {
+            fields[3].1 = &one;
+        }
+        if store.put(Kind::Calendar, Some(id), &fields).is_ok() {
+            self.seen = None;
+        }
     }
 
     /// The PC's list of calendar links (`n|Name` lines): a calendar each
@@ -642,6 +750,7 @@ impl Calendar {
             place: Text::EMPTY,
             cal: 0,
             repeats: false,
+            task: false,
         }; 16];
         let mut n = 0;
         for a in self.appts.iter().flatten() {
@@ -655,6 +764,9 @@ impl Calendar {
     }
 
     fn colour(&self, a: &Appt) -> u32 {
+        if a.task {
+            return tint::TASKS;
+        }
         self.cals[..self.n_cals]
             .get(usize::from(a.cal))
             .map_or(kit::IDENTITY[0], |c| c.colour)
@@ -702,19 +814,12 @@ impl Calendar {
     /// The week strip: the chosen day's week, today ringed, the chosen day
     /// filled, a colour tick per appointment (three at most).
     fn strip(&self, f: &mut Frame, cx: &Ctx, y: u16) {
-        let first = self.day - i32::from(date::weekday(self.day));
+        let first = self.day - in_week(self.day, cx.us);
         for i in 0..7u16 {
             let d = first + i32::from(i);
             let x = MARGIN + i * 64;
             let cell = Rect::new(x, y, 64, 62);
-            kit::centred(
-                f,
-                cell,
-                y + 14,
-                cx.fonts.label,
-                DIM,
-                WEEKDAYS[usize::from(i)],
-            );
+            kit::centred(f, cell, y + 14, cx.fonts.label, DIM, column_name(i, cx.us));
             if d == self.day {
                 kit::key(f, cx, Rect::new(x + 10, y + 18, 44, 40), kit::KeyState::On);
             } else if d == cx.now.day {
@@ -788,7 +893,9 @@ impl Calendar {
                     let r = Rect::new(MARGIN, y, WIDE, 52);
                     kit::panel(f, cx, r);
                     kit::colour_bar(f, r, self.colour(a));
-                    if a.len == 0 {
+                    if a.task {
+                        kit::text(f, MARGIN + 20, y + 32, cx.fonts.label, tint::TASKS, b"TASK");
+                    } else if a.len == 0 {
                         kit::text(f, MARGIN + 20, y + 32, cx.fonts.ui, DIM, b"All day");
                     } else {
                         kit::text(
@@ -952,7 +1059,7 @@ impl Calendar {
     }
 
     fn week_view(&self, f: &mut Frame, cx: &Ctx, top: u16) {
-        let first = self.day - i32::from(date::weekday(self.day));
+        let first = self.day - in_week(self.day, cx.us);
         let x0 = MARGIN + 36;
         let cw = (WIDE - 36) / 7;
         let (h0, h1) = (8u16, 21u16);
@@ -960,14 +1067,7 @@ impl Calendar {
             let d = first + i32::from(i);
             let c = Rect::new(x0 + i * cw, top, cw, 40);
             let col = if d == cx.now.day { tint::CALENDAR } else { DIM };
-            kit::centred(
-                f,
-                c,
-                top + 14,
-                cx.fonts.label,
-                col,
-                WEEKDAYS[usize::from(i)],
-            );
+            kit::centred(f, c, top + 14, cx.fonts.label, col, column_name(i, cx.us));
             let mut b = Buf::<4>::new();
             b.num(u32::from(date::date_of(d).day));
             kit::centred(
@@ -1040,7 +1140,7 @@ impl Calendar {
             month: d.month,
             day: 1,
         });
-        let lead = i32::from(date::weekday(start));
+        let lead = in_week(start, cx.us);
         let mut y = top;
         let mut name = Buf::<24>::new();
         name.s(MONTHS[usize::from(d.month - 1)])
@@ -1048,7 +1148,7 @@ impl Calendar {
             .num(d.year as u32);
         kit::text(f, MARGIN + 4, y + 20, cx.fonts.ui, TEXT, name.get());
         y += 28;
-        for (i, w) in WEEKDAYS.iter().enumerate() {
+        for (i, w) in (0..7u16).map(|i| column_name(i, cx.us)).enumerate() {
             kit::centred(
                 f,
                 Rect::new(MARGIN + i as u16 * 64, y, 64, 18),
@@ -1305,6 +1405,20 @@ impl Program for Calendar {
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
         match e {
             Event::PenUp { x, y }
+                if self.view == View::Calendars
+                    && self.cal_rows[..self.n_cal_rows]
+                        .iter()
+                        .any(|(r, _)| r.contains_point(x, y)) =>
+            {
+                if let Some(&(_, id)) = self.cal_rows[..self.n_cal_rows]
+                    .iter()
+                    .find(|(r, _)| r.contains_point(x, y))
+                {
+                    self.toggle_hidden(cx, id);
+                }
+                return Reply::Redraw;
+            }
+            Event::PenUp { x, y }
                 if self.view == View::Calendars && GET_KEY.contains_point(x, y) =>
             {
                 self.want_list = true;
@@ -1406,3 +1520,6 @@ impl Program for Calendar {
         Reply::Redraw
     }
 }
+
+#[cfg(test)]
+mod tests;

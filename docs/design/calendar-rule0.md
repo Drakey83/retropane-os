@@ -82,20 +82,20 @@ not.
 | Week view (portrait, seven columns) | apps-and-packs: week view | built | apps/calendar/src/lib.rs |
 | Month view with coloured bars and the chosen day's list | sheet | built | apps/calendar/src/lib.rs |
 | Smooth zoom between month, week and day | apps-and-packs: Smooth zoom between views | pending | |
-| Quick add with the understood words highlighted and a preview card | apps-and-packs: quick add | pending | |
+| Quick add with the understood words highlighted and a preview card | apps-and-packs: quick add | built | apps/calendar/src/lib.rs, shell/pim/src/quick.rs |
 | Editor as grouped cards; address suggestions for Where; capitals at each word in titles | sheet | pending | |
-| Several calendars, a colour each, shown and hidden | apps-and-packs: a colour per calendar | pending | |
+| Several calendars, a colour each, shown and hidden | apps-and-packs: a colour per calendar | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Repeating appointments (daily, weekly on days, monthly by date or weekday, yearly; every N; until or N times; one occurrence changed or skipped) | apps-and-packs: repeating appointments | built | shell/pim/src/repeat.rs, apps/calendar/src/lib.rs |
 | Reminders as a banner over any screen, several per appointment | apps-and-packs: reminders through the notification centre | pending | |
 | Reminder sound and snooze | apps-and-packs: reminder sound and snooze | pending | |
 | Online calendars: iCal link (read), CalDAV (read and write), Google sign-in (device code, read and write), over any connection, offline queue | apps-and-packs: Google Calendar and other online calendars (iCal link, CalDAV, Google sign-in: §7) | pending | |
 | Birthdays from Contacts as a calendar | apps-and-packs: birthdays from Contacts | pending | |
-| Tasks on their due days in the agenda | sheet | pending | |
+| Tasks on their due days in the agenda | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Today screen's calendar panel fed from the store | sheet | pending | |
 | Search in Calendar | sheet | pending | |
 | .ics import and export (a file from the PC or the card) | sheet | pending | |
 | Time zones: events kept in UTC with their zone; shown in the device's zone | sheet | pending | |
-| Week starts on the region's day (Sunday in the US) | sheet | pending | |
+| Week starts on the region's day (Sunday in the US) | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | The Calendar button cycles the views | sheet | pending | |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |

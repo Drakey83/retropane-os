@@ -147,6 +147,8 @@ pub mod tag {
     /// Calendar: where it syncs from (an iCal link, a CalDAV address, or
     /// "google"; absent: on this device only).
     pub const SOURCE: u8 = 36;
+    /// Calendar: 1 when hidden from the views.
+    pub const HIDDEN: u8 = 37;
 }
 
 /// A record as stored: read-only.
