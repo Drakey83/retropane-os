@@ -3510,6 +3510,7 @@ fn the_x50v_runs_name_their_clocks_and_soak_one_step() {
         .chain(&GAME_MOVED_HIGH)
         .chain(&GAME_SOAK139)
         .chain(&GAME_SOAK143)
+        .chain(&GAME_SOAK145)
         .chain(&GAME_SOAK146)
         .chain(&GAME_SOAK149)
     {
@@ -3523,6 +3524,7 @@ fn the_x50v_runs_name_their_clocks_and_soak_one_step() {
     for (soak, step) in [
         (&GAME_SOAK139, "139.75 / 1"),
         (&GAME_SOAK143, "143.00 / 1"),
+        (&GAME_SOAK145, "145.60 / 1"),
         (&GAME_SOAK146, "146.25 / 1"),
         (&GAME_SOAK149, "149.50 / 1"),
     ] {

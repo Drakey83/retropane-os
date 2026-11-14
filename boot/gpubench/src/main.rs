@@ -8639,10 +8639,14 @@ mod image {
     const GC2_SOAK139: bool = option_env!("RP_GPUBENCH_GC2_SOAK139").is_some()
         || GC2_SOAK149
         || GC2_SOAK146
-        || GC2_SOAK143;
+        || GC2_SOAK143
+        || GC2_SOAK145;
     /// Run GC2EG (`RP_GPUBENCH_GC2_SOAK143`, R72): the soak at 143.00 / 1
     /// ([`gc2::GAME_SOAK143`]), one step under GC2EF's 2%.
     const GC2_SOAK143: bool = option_env!("RP_GPUBENCH_GC2_SOAK143").is_some();
+    /// Run GC2EH (`RP_GPUBENCH_GC2_SOAK145`, R72): the soak at 145.60 / 1
+    /// ([`gc2::GAME_SOAK145`]), between GC2EG's clean 143.00 and GC2EF's 2%.
+    const GC2_SOAK145: bool = option_env!("RP_GPUBENCH_GC2_SOAK145").is_some();
     /// Run GC2EF (`RP_GPUBENCH_GC2_SOAK146`, R72): the soak at 146.25 / 1
     /// ([`gc2::GAME_SOAK146`]), the X50v's top step in GC2EE.
     const GC2_SOAK146: bool = option_env!("RP_GPUBENCH_GC2_SOAK146").is_some();
@@ -10199,6 +10203,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2DX: no map; GC2BY's four game frames at 149.50 / 1 for 500 rounds, then 149.50 / 2; GC2DW's guard of the textures and the free pool, and the renderer's own region array, on-die parameter memory and memory manager's block summed after every render against each frame's sums at Windows Mobile's clock; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_GUARD2 {
                 "the 16-bit kinds' targets inside the safe region (GC2DW: no map; GC2BY's four game frames at 149.50 / 1 for 500 rounds, then 149.50 / 2, the textures summed and every free block of the 2700G pool filled with its addresses and read back after each setting; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_SOAK145 {
+                "the 16-bit kinds' targets inside the safe region (GC2EH: no map; GC2DT's moved game frames at 145.60 / 1 for 1,200 rounds, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_SOAK143 {
                 "the 16-bit kinds' targets inside the safe region (GC2EG: no map; GC2DT's moved game frames at 143.00 / 1 for 1,200 rounds, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_SOAK146 {
@@ -29612,6 +29618,8 @@ mod image {
             &gc2::GAME_GUARD3
         } else if GC2_GUARD2 {
             &gc2::GAME_GUARD2
+        } else if GC2_SOAK145 {
+            &gc2::GAME_SOAK145
         } else if GC2_SOAK143 {
             &gc2::GAME_SOAK143
         } else if GC2_SOAK146 {
@@ -29689,6 +29697,8 @@ mod image {
             "GC2DX"
         } else if GC2_GUARD2 {
             "GC2DW"
+        } else if GC2_SOAK145 {
+            "GC2EH"
         } else if GC2_SOAK143 {
             "GC2EG"
         } else if GC2_SOAK146 {
@@ -29772,6 +29782,8 @@ mod image {
                         "GC2DX OWN MEMORY GUARD"
                     } else if GC2_GUARD2 {
                         "GC2DW MEMORY GUARD 2"
+                    } else if GC2_SOAK145 {
+                        "GC2EH 145.60 SOAK"
                     } else if GC2_SOAK143 {
                         "GC2EG 143.00 SOAK"
                     } else if GC2_SOAK146 {
