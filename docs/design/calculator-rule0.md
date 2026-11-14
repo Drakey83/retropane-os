@@ -62,7 +62,7 @@ Get a right answer fast, see how you got it, and do the everyday sums
 |---|---|---|---|
 | The expression shown whole with the answer previewed live | sheet | built | shell/pim/src/expr.rs, apps/calculator/src/lib.rs |
 | Brackets with precedence | apps-and-packs: brackets | built | shell/pim/src/expr.rs |
-| History tape: scroll, tap to reuse, hold to copy | apps-and-packs: history | pending | |
+| History tape: scroll, tap to reuse, hold to copy | apps-and-packs: history | built | apps/calculator/src/lib.rs, apps/calculator/src/tests.rs |
 | Memory keys MC, MR, M+, M- with the M mark | apps-and-packs: memory keys | built | apps/calculator/src/lib.rs |
 | Scientific keypad page and unit conversion (length, weight, volume, temperature, area, speed, time, data) | apps-and-packs: Basic + scientific + unit conversion | built | shell/pim/src/expr.rs, apps/calculator/src/lib.rs |
 | Currency conversion with the ECB's daily rates over any connection, kept with their date | apps-and-packs: currency conversion | built | shell/pim/src/net.rs, apps/calculator/src/lib.rs, xtask/src/usb.rs |

@@ -289,7 +289,15 @@ pub fn apps(root: &Path) -> Result<(), String> {
     if let Some(e) = failed.borrow().clone() {
         return Err(e);
     }
-    check_stack(log)?;
+    // The stack's depth is required, not only checked when present: a run
+    // whose image never reported it proves nothing about the programs'
+    // stack (the overflow of 2026-11-14 was found here).
+    let (used, size) = check_stack(log)?
+        .ok_or_else(|| format!("apps: the image never reported its stack depth:{log}"))?;
+    eprintln!(
+        "    stack: deepest {used} of {size} bytes ({}%)",
+        used * 100 / size.max(1)
+    );
     for (name, _) in rp_today::program::PROGRAMS {
         let line = log
             .lines()

@@ -189,6 +189,29 @@ const UNITS: [(&[u8], [Unit; 4]); 6] = [
     ),
 ];
 
+/// Tape lines kept (each about 70 bytes; three show, a drag scrolls).
+const TAPE_MAX: usize = 24;
+/// Tape lines shown at once.
+const TAPE_SHOWN: usize = 3;
+/// A tape line's height.
+const TAPE_LINE: u16 = 46;
+/// A hold this many ticks (about 30 ms each: half a second) copies.
+const HOLD_TICKS: u8 = 16;
+/// The COPIED mark shows this many ticks (about a second).
+const COPIED_TICKS: u8 = 32;
+/// A stylus that moves more than this (pixels) scrolls, not taps.
+const SLOP: u16 = 10;
+
+/// The stylus on the tape.
+#[derive(Clone, Copy)]
+struct TapePen {
+    y0: u16,
+    back0: usize,
+    line: Option<usize>,
+    moved: bool,
+    held: u8,
+}
+
 /// The Calculator program.
 pub struct Calculator {
     mode: Mode,
@@ -196,8 +219,15 @@ pub struct Calculator {
     expr: [u8; expr::MAX],
     n: usize,
     /// The tape: sums worked and their answers, newest last.
-    tape: [(Text<40>, Text<24>); 6],
+    tape: [(Text<40>, Text<24>); TAPE_MAX],
     n_tape: usize,
+    /// Lines scrolled back from the newest (a drag on the tape).
+    back: usize,
+    /// The stylus on the tape: where it went down, the scroll then, the
+    /// line under it, whether it moved and the ticks it has been held.
+    pen: Option<TapePen>,
+    /// A line copied by a hold, and the ticks its COPIED mark shows.
+    copied: Option<(usize, u8)>,
     memory: Option<Dec>,
     radians: bool,
     inverse: bool,
@@ -239,8 +269,11 @@ impl Calculator {
             mode,
             expr: [0; expr::MAX],
             n: 0,
-            tape: [(Text::EMPTY, Text::EMPTY); 6],
+            tape: [(Text::EMPTY, Text::EMPTY); TAPE_MAX],
             n_tape: 0,
+            back: 0,
+            pen: None,
+            copied: None,
             memory: None,
             radians: false,
             inverse: false,
@@ -467,6 +500,8 @@ impl Calculator {
                     }
                     self.tape[self.n_tape] = (Text::of(&shown[..sn]), Text::of(&ans[..an]));
                     self.n_tape += 1;
+                    // A new answer brings the tape back to its newest.
+                    self.back = 0;
                     self.n = 0;
                     self.put_dec(v);
                 }
@@ -602,7 +637,32 @@ impl Calculator {
 
     /// Where tape line `k` (of those shown) lies, and the display.
     fn tape_rect(&self, k: usize) -> Rect {
-        Rect::new(MARGIN + 140, TOP + k as u16 * 46, WIDE - 140, 44)
+        Rect::new(MARGIN + 140, TOP + k as u16 * TAPE_LINE, WIDE - 140, 44)
+    }
+
+    /// The tape lines shown: the first one's index and how many.
+    fn tape_window(&self) -> (usize, usize) {
+        let shown = self.n_tape.min(TAPE_SHOWN);
+        let back = self.back.min(self.n_tape - shown);
+        (self.n_tape - shown - back, shown)
+    }
+
+    /// The tape's area (the stylus scrolls and holds there).
+    fn tape_area(&self) -> Rect {
+        Rect::new(
+            MARGIN,
+            TOP,
+            WIDE,
+            self.n_tape.min(TAPE_SHOWN) as u16 * TAPE_LINE,
+        )
+    }
+
+    /// The tape line under x, y, as an index into the tape.
+    fn tape_line_at(&self, x: u16, y: u16) -> Option<usize> {
+        let (first, shown) = self.tape_window();
+        (0..shown)
+            .find(|&k| self.tape_rect(k).contains_point(x, y))
+            .map(|k| first + k)
     }
 
     fn display_rect(&self) -> Rect {
@@ -626,10 +686,37 @@ impl Calculator {
 
     fn display(&self, f: &mut Frame, cx: &Ctx) {
         let mut y = TOP;
-        for (sum, ans) in &self.tape[self.n_tape.saturating_sub(3)..self.n_tape] {
+        let (first, shown) = self.tape_window();
+        for (k, (sum, ans)) in self.tape[first..first + shown].iter().enumerate() {
             kit::right(f, W - MARGIN - 12, y + 18, cx.fonts.ui, DIM, sum.get());
             kit::right(f, W - MARGIN - 12, y + 40, cx.fonts.ui, TEXT, ans.get());
-            y += 46;
+            if self.copied.is_some_and(|(line, _)| line == first + k) {
+                kit::text(
+                    f,
+                    MARGIN + 150,
+                    y + 40,
+                    cx.fonts.label,
+                    tint::CALCULATOR,
+                    b"COPIED",
+                );
+            }
+            y += TAPE_LINE;
+        }
+        // Where the lines shown sit in the whole tape, when it scrolls.
+        if self.n_tape > TAPE_SHOWN {
+            let track = Rect::new(MARGIN + 132, TOP + 4, 4, shown as u16 * TAPE_LINE - 8);
+            let thumb_h = (u32::from(track.h) * shown as u32 / self.n_tape as u32).max(12) as u16;
+            let room = track.h - thumb_h;
+            let span = (self.n_tape - shown) as u32;
+            let thumb_y = track.y + (u32::from(room) * first as u32 / span) as u16;
+            f.push(rp_app::Cmd::Fill {
+                r: track,
+                color: kit::mix(DIM, 0xFF00_0000, 160),
+            });
+            f.push(rp_app::Cmd::Fill {
+                r: Rect::new(track.x, thumb_y, 4, thumb_h),
+                color: tint::CALCULATOR,
+            });
         }
         let d = Rect::new(MARGIN, y + 4, WIDE, 92);
         kit::panel(f, cx, d);
@@ -1141,7 +1228,72 @@ impl Program for Calculator {
                 self.mode = MODE_LIST[k];
                 Reply::Redraw
             }
+            Event::PenDown { x, y }
+                if matches!(self.mode, Mode::Basic | Mode::Scientific)
+                    && self.tape_area().contains_point(x, y) =>
+            {
+                self.pen = Some(TapePen {
+                    y0: y,
+                    back0: self.back,
+                    line: self.tape_line_at(x, y),
+                    moved: false,
+                    held: 0,
+                });
+                Reply::Animate
+            }
+            Event::PenMove { y, .. } => {
+                let Some(p) = self.pen.as_mut() else {
+                    return Reply::Nothing;
+                };
+                if y.abs_diff(p.y0) > SLOP {
+                    p.moved = true;
+                }
+                if !p.moved {
+                    return Reply::Nothing;
+                }
+                // Dragging down brings older lines into view.
+                let lines = (i32::from(y) - i32::from(p.y0)) / i32::from(TAPE_LINE);
+                let most = self.n_tape.saturating_sub(TAPE_SHOWN) as i32;
+                self.back = (p.back0 as i32 + lines).clamp(0, most) as usize;
+                Reply::Redraw
+            }
+            Event::Tick if self.pen.is_some() || self.copied.is_some() => {
+                if let Some(p) = self.pen.as_mut()
+                    && !p.moved
+                    && p.held < HOLD_TICKS
+                {
+                    p.held += 1;
+                    if p.held == HOLD_TICKS
+                        && let Some(line) = p.line
+                    {
+                        // Held: the line's answer onto the clipboard.
+                        let ans = self.tape[line].1;
+                        let mut b = [0u8; 24];
+                        let mut n = 0;
+                        for &c in ans.get().iter().filter(|c| **c != b',') {
+                            b[n] = c;
+                            n += 1;
+                        }
+                        *cx.clip.borrow_mut() = Text::of(&b[..n]);
+                        self.copied = Some((line, COPIED_TICKS));
+                        return Reply::Animate;
+                    }
+                }
+                if let Some((line, left)) = self.copied {
+                    self.copied = (left > 1).then(|| (line, left - 1));
+                    if self.copied.is_none() {
+                        return Reply::Redraw;
+                    }
+                }
+                Reply::Animate
+            }
             Event::PenUp { x, y } => {
+                // A drag or a hold on the tape is done by now.
+                if let Some(p) = self.pen.take()
+                    && (p.moved || p.held >= HOLD_TICKS)
+                {
+                    return Reply::Redraw;
+                }
                 // The mode chips.
                 if CHIPS.contains_point(x, y) {
                     let k = usize::from((x - CHIPS.x) * 6 / CHIPS.w).min(5);
@@ -1151,10 +1303,9 @@ impl Program for Calculator {
                 match self.mode {
                     Mode::Basic | Mode::Scientific => {
                         // A tape line's answer reused; the display pastes.
-                        let shown = self.n_tape.saturating_sub(3);
-                        for k in 0..self.n_tape.min(3) {
-                            if self.tape_rect(k).contains_point(x, y) {
-                                let ans = self.tape[shown + k].1;
+                        if let Some(line) = self.tape_line_at(x, y) {
+                            {
+                                let ans = self.tape[line].1;
                                 if self.last_is_value() {
                                     self.push(b"x");
                                 }
@@ -1291,3 +1442,6 @@ impl Program for Calculator {
         Reply::Nothing
     }
 }
+
+#[cfg(test)]
+mod tests;

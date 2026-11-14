@@ -15,5 +15,8 @@ rp-pim = { path = "../../shell/pim" }
 [target.'cfg(target_os = "none")'.dependencies]
 rp-hal-user = { path = "../../hal/user", features = ["app"] }
 
+[dev-dependencies]
+rp-draw = { path = "../../drivers/draw" }
+
 [lints]
 workspace = true

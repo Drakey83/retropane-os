@@ -65,6 +65,7 @@ name = "rp-app-calculator"
 version = "0.0.0"
 dependencies = [
  "rp-app",
+ "rp-draw",
  "rp-hal-user",
  "rp-pim",
 ]
