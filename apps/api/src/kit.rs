@@ -38,6 +38,59 @@ pub mod tint {
     pub const NOTES: Argb = theme(0xFFD2_B37B);
     /// The calculator's operators.
     pub const CALCULATOR: Argb = theme(0xFFD6_A270);
+    /// Weather (the shell's own app): the sky.
+    pub const WEATHER: Argb = theme(0xFF7A_ADD3);
+}
+
+/// Every accent's light-look twins, (dark look, fill, text): its hue and
+/// chroma kept in OKLCH, darkened until it reads on the light glass at
+/// its darkest, 3:1 for a fill (a bar, a dot) and 4.5:1 for text. Written
+/// by `tools/shell-assets/accents.py`, never by hand.
+pub const LIGHT_TWINS: [(Argb, Argb, Argb); 17] = [
+    (theme(0xFF81_C08B), theme(0xFF10_5223), theme(0xFF00_3310)),
+    (theme(0xFFD9_9086), theme(0xFF73_342D), theme(0xFF54_1713)),
+    (theme(0xFFD2_B37B), theme(0xFF5C_4100), theme(0xFF3C_2902)),
+    (theme(0xFFD9_907E), theme(0xFF73_3425), theme(0xFF53_1708)),
+    (theme(0xFF74_B1A7), theme(0xFF0C_5048), theme(0xFF00_322D)),
+    (theme(0xFF74_9DD3), theme(0xFF22_4777), theme(0xFF05_2C5A)),
+    (theme(0xFFD6_A270), theme(0xFF68_3C03), theme(0xFF44_2501)),
+    (theme(0xFFA0_C07E), theme(0xFF33_4E0A), theme(0xFF1E_3201)),
+    (theme(0xFF7A_ADD3), theme(0xFF18_4B6C), theme(0xFF01_2F4A)),
+    (theme(0xFF78_86CD), theme(0xFF38_4182), theme(0xFF1F_2462)),
+    (theme(0xFFA7_8ED4), theme(0xFF52_3A78), theme(0xFF38_1E5A)),
+    (theme(0xFFD9_8BA6), theme(0xFF73_2F4A), theme(0xFF53_112F)),
+    (theme(0xFF79_A6D5), theme(0xFF1E_4972), theme(0xFF00_2C52)),
+    (theme(0xFFD5_A275), theme(0xFF69_3D0C), theme(0xFF44_2300)),
+    (theme(0xFF8F_B4D2), theme(0xFF28_4963), theme(0xFF0C_2F47)),
+    (theme(0xFF76_94BB), theme(0xFF2D_486B), theme(0xFF13_2D4D)),
+    (theme(0xFFCC_AA7E), theme(0xFF5E_4115), theme(0xFF40_2700)),
+];
+
+/// An accent's light-look twin (`text` for lettering), its alpha kept;
+/// `None` for a colour that isn't one of the accents.
+#[must_use]
+pub fn light_twin(c: Argb, text: bool) -> Option<Argb> {
+    let rgb = c & 0x00FF_FFFF;
+    LIGHT_TWINS
+        .iter()
+        .find(|t| t.0 & 0x00FF_FFFF == rgb)
+        .map(|t| (c & 0xFF00_0000) | (if text { t.2 } else { t.1 } & 0x00FF_FFFF))
+}
+
+/// A colour that stays itself in every look (paper, ink on it): the
+/// shell's light look maps a program's colours (white text to dark, glass
+/// to frosted) but leaves a kept one alone. Marked in its alpha's low
+/// nibble, 0xD (no other colour in the system has it: a change of at most
+/// 13/255 in opacity, unseen), so translucent ones can be kept too.
+#[must_use]
+pub const fn keep(c: Argb) -> Argb {
+    (c & 0xF0FF_FFFF) | 0x0D00_0000
+}
+
+/// Whether `c` is [`keep`]'s.
+#[must_use]
+pub const fn kept(c: Argb) -> bool {
+    (c >> 24) & 0xF == 0xD
 }
 
 /// The eight identity colours (calendars, lists, notes, avatars): coral,

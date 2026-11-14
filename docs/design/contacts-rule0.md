@@ -84,7 +84,7 @@ without fighting the keyboard; the same people as the phone and the PC.
 | CardDAV and Google contacts sync, read and write, over any connection | apps-and-packs: online contacts (CardDAV, Google) | pending | |
 | Birthdays feed Calendar's Birthdays calendar | sheet | pending | |
 | The Contacts button opens Contacts | sheet | pending | |
-| The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
+| The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/contacts/src/main.rs, shell/today/src/program.rs |
 | Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |

@@ -509,7 +509,25 @@ impl Frame {
     /// `f` is told whether the colour is text's (text may need more
     /// contrast than a fill).
     pub fn map_colors(&mut self, f: impl Fn(Argb, bool) -> Argb) {
-        for c in self.cmds.iter_mut().take(self.n).flatten() {
+        self.map_colors_from(0, f);
+    }
+
+    /// The commands pushed so far (a mark for [`Self::map_colors_from`]).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    /// Whether nothing is pushed yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// [`Self::map_colors`] for the commands from `start` on (one part of
+    /// a frame: a hosted program's, drawn after the rest's pass).
+    pub fn map_colors_from(&mut self, start: usize, f: impl Fn(Argb, bool) -> Argb) {
+        for c in self.cmds.iter_mut().take(self.n).skip(start).flatten() {
             match c {
                 Cmd::Fill { color, .. } | Cmd::Outline { color, .. } => {
                     *color = f(*color, false);

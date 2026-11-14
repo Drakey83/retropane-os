@@ -221,6 +221,10 @@ pub enum Reply {
 /// app that draws that colour.
 pub struct Shapes {
     discs: core::cell::RefCell<[(Argb, Option<Pic>); 32]>,
+    /// The look's colour for a fill (the shell's light look maps every
+    /// colour a program draws; a corner picture is painted in the colour
+    /// its fills will have, so a shape stays one colour edge to edge).
+    paint: core::cell::Cell<fn(Argb) -> Argb>,
 }
 
 impl Shapes {
@@ -229,11 +233,20 @@ impl Shapes {
     pub const fn new() -> Self {
         Self {
             discs: core::cell::RefCell::new([(0, None); 32]),
+            paint: core::cell::Cell::new(same),
         }
     }
 
-    /// The disc of colour `c`, painted the first time it is asked for.
+    /// The look's fill colour, set by the shell before a program draws
+    /// (the identity in the dark look).
+    pub fn set_paint(&self, paint: fn(Argb) -> Argb) {
+        self.paint.set(paint);
+    }
+
+    /// The disc of colour `c` (in the look's paint), painted the first
+    /// time it is asked for.
     pub fn disc(&self, pics: &Pics<'static>, c: Argb) -> Option<Pic> {
+        let c = (self.paint.get())(c);
         let mut d = self.discs.try_borrow_mut().ok()?;
         if let Some((_, p)) = d.iter().find(|(k, p)| *k == c && p.is_some()) {
             return *p;
@@ -243,6 +256,11 @@ impl Shapes {
         d[free] = (c, p);
         p
     }
+}
+
+/// A colour as it is (the dark look's paint).
+fn same(c: Argb) -> Argb {
+    c
 }
 
 impl Default for Shapes {

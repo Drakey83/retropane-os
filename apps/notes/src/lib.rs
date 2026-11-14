@@ -65,11 +65,11 @@ const STROKES: usize = 48;
 
 /// The pen's five colours (`STYLE` bits 0-2 choose), dark first.
 pub const PEN: [Argb; 5] = [
-    0xFF20_2A38,
-    0xFF1C_3A6E,
-    0xFFC0_3030,
-    0xFF2E_8B57,
-    0xFFFF_9F2E,
+    kit::keep(0xFF20_2A38),
+    kit::keep(0xFF1C_3A6E),
+    kit::keep(0xFFC0_3030),
+    kit::keep(0xFF2E_8B57),
+    kit::keep(0xFFFF_9F2E),
 ];
 /// A stroke's style bit: the marker (wide, see-through yellow).
 pub const MARKER: u8 = 0x08;
@@ -367,7 +367,7 @@ pub fn paint_styled(
         let style = styles.get(si).copied().unwrap_or(0);
         let marker = style & MARKER != 0;
         let c = only.unwrap_or(if marker {
-            0x70FF_E040
+            kit::keep(0x70FF_E040)
         } else {
             PEN[usize::from(style & 7).min(4)]
         });
@@ -715,7 +715,7 @@ impl Notes {
                         if let Some(p) = self.minis.get(mini).copied().flatten() {
                             f.push(rp_app::Cmd::Fill {
                                 r: Rect::new(r.x + 4, ly - 14, 212, 84),
-                                color: 0xC0F4_EFE0,
+                                color: kit::keep(0xC0F4_EFE0),
                             });
                             f.push(rp_app::Cmd::Pic {
                                 x: r.x + 4,
@@ -742,7 +742,7 @@ impl Notes {
         let paper = PAPER;
         f.push(rp_app::Cmd::Fill {
             r: paper,
-            color: 0xF0F6_F0DC,
+            color: kit::keep(0xF0F6_F0DC),
         });
         f.push(rp_app::Cmd::Fill {
             r: Rect::new(paper.x, paper.y, 6, paper.h),
@@ -753,7 +753,7 @@ impl Notes {
             for k in 0..17 {
                 f.push(rp_app::Cmd::Fill {
                     r: Rect::new(paper.x + 20, paper.y + 60 + k * 28, paper.w - 30, 1),
-                    color: 0x5070_90B0,
+                    color: kit::keep(0x5070_90B0),
                 });
             }
         }
@@ -761,13 +761,13 @@ impl Notes {
             for k in 0..16 {
                 f.push(rp_app::Cmd::Fill {
                     r: Rect::new(paper.x + 20 + k * 28, paper.y + 60, 1, paper.h - 70),
-                    color: 0x5070_90B0,
+                    color: kit::keep(0x5070_90B0),
                 });
             }
         }
-        let ink: Argb = 0xFF20_2A38;
+        let ink: Argb = kit::keep(0xFF20_2A38);
         let (title, tcol): (&[u8], Argb) = if note.title.is_empty() {
-            (b"New note", 0x8020_2A38)
+            (b"New note", kit::keep(0x8020_2A38))
         } else {
             (note.title.get(), ink)
         };
@@ -791,7 +791,7 @@ impl Notes {
                         self.n_checks += 1;
                     }
                     kit::round_check(f, cx, paper.x + 24, y - 18, self.ring, self.full, *done);
-                    let col = if *done { 0x9020_2A38 } else { ink };
+                    let col = if *done { kit::keep(0x9020_2A38) } else { ink };
                     kit::text(f, paper.x + 58, y, cx.fonts.ui, col, t);
                     if *done {
                         f.push(rp_app::Cmd::Fill {
@@ -822,7 +822,7 @@ impl Notes {
         // panel's picture when the pen lifts).
         if let Some((ix, iy)) = self.ink_at {
             let c = if self.tool == Tool::Marker {
-                0x70FF_E040
+                kit::keep(0x70FF_E040)
             } else {
                 PEN[usize::from(self.pen).min(4)]
             };

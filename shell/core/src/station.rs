@@ -277,10 +277,22 @@ impl Shell {
         self.dial(f, d, cx - s / 2, cy - s / 2);
     }
 
-    /// A tile: glass and its name.
+    /// A tile: glass and its name, the name marked by a short bar in the
+    /// accent of what it measures (the apps' titles and Weather's Now
+    /// cards, 2026-11-14: one cohesive system). The tile's gauges keep the
+    /// full width, so the bar stays beside the name.
     fn tile(&self, f: &mut Frame, r: Rect, name: &[u8], color: Argb) {
         self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
-        f.text(r.x + 12, r.y + 24, self.fonts.label, color, name);
+        let accent = match name {
+            b"SUN" => super::weather_app::card_accent(b"SUNSET"),
+            b"UV" => super::weather_app::card_accent(b"UV INDEX"),
+            _ => super::weather_app::card_accent(name),
+        };
+        f.push(Cmd::Fill {
+            r: Rect::new(r.x + 12, r.y + 11, 3, 16),
+            color: accent | 0xFF00_0000,
+        });
+        f.text(r.x + 21, r.y + 24, self.fonts.label, color, name);
     }
 
     /// The Station screen.

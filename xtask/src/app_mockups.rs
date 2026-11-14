@@ -139,8 +139,8 @@ fn forecast(shell: &mut rp_shell::Shell) {
     shell.set_app_forecast(&days);
 }
 
+/// The look is the mock's ([`mocks`] sets it, both looks drawn).
 fn open(shell: &mut rp_shell::Shell, c: impl rp_app::Program + 'static) {
-    shell.set_appearance(rp_weather::settings::Appearance::Dark);
     shell.give_pics(crate::emu::preview_pics());
     forecast(shell);
     shell.open_program(Box::leak(Box::new(c)));
@@ -534,7 +534,29 @@ fn mock_ctx() -> rp_app::Ctx<'static> {
 }
 
 /// Every version 2 mock-up.
+/// Every mock-up in both looks (the owner, 2026-11-14: "make sure we
+/// are designing for both light and dark mode"): `<name>` in the light
+/// look, `<name>-dark` in the dark.
 pub fn mocks() -> Vec<Mock> {
+    use rp_weather::settings::Appearance;
+    let mut all = Vec::new();
+    for (suffix, look) in [("", Appearance::Light), ("-dark", Appearance::Dark)] {
+        for m in base() {
+            let prepare = m.prepare;
+            all.push(Mock {
+                name: Box::leak(format!("{}{suffix}", m.name).into_boxed_str()),
+                what: m.what,
+                prepare: Box::new(move |s| {
+                    prepare(s);
+                    s.set_appearance(look);
+                }),
+            });
+        }
+    }
+    all
+}
+
+fn base() -> Vec<Mock> {
     vec![
         Mock {
             name: "v2-calendar-agenda",

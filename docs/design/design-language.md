@@ -92,6 +92,22 @@ and its lightness is lowered toward the lowest that still reads at 4.5:1
 on the glass cards: computed by `tools/shell-assets/accents.py`, never
 picked by hand, so a new accent is muted the same way.
 
+**Both looks, one system** (the owner, 2026-11-14: "make sure we are
+designing for both light and dark mode", Weather and the apps "cohesive").
+The shell's light-look rule (`look_color`) maps the hosted programs'
+colours as it maps its own screens, so every app has a light look with
+no palette of its own; their corner pictures are painted in the mapped
+colour. Each accent's light twins (fill 3:1, text 4.5:1 on the light
+glass at its darkest, measured from the rendered screens) keep its hue and
+chroma in OKLCH and only darken: computed by `tools/shell-assets/accents.py`
+into `rp_app::kit::LIGHT_TWINS`. Paper and ink (Notes) are marked
+`kit::keep` and stay themselves in both looks. Weather's cards carry the
+apps' accent bar, by what each measures (wind teal, humidity and rain sky,
+pressure indigo, UV and lightning amber, sunset coral); its switches are
+the Aero keys and its section labels the Weather tint (the sky). Every
+mock-up is drawn in both looks (`<name>` and `<name>-dark`;
+docs/reports/apps-v2-2026-11-14/both-looks.jpg).
+
 **Identity colours** (calendars, task lists, note colours, avatars): eight,
 chosen on the X51v's panel for contrast against the glass in both looks
 and so no pair is told apart by red against green alone: coral, amber,

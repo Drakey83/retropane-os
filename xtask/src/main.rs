@@ -1641,6 +1641,53 @@ fn build_images(crates: &[Crate], stack_dir: Option<&str>) -> Result {
 mod tests {
     use std::path::Path;
 
+    /// Class guard for the light look's keep mark (`rp_app::kit::keep`:
+    /// an alpha whose low nibble is 0xD): no colour written in the shell,
+    /// the apps or the renderer has it by accident, or the light look
+    /// would leave it unmapped. The CRC constant and the mark itself are
+    /// allowed by name.
+    #[test]
+    fn no_colour_carries_the_keep_mark_by_accident() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let allowed = ["0xEDB8_8320", "0x0D00_0000"];
+        let mut found = Vec::new();
+        let mut dirs = vec![
+            root.join("apps"),
+            root.join("shell/core/src"),
+            root.join("drivers/draw/src"),
+        ];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let b = text.as_bytes();
+                    for k in 0..b.len().saturating_sub(11) {
+                        let w = &b[k..k + 11];
+                        let before = &b[k.saturating_sub(10)..k];
+                        if w[0] == b'0'
+                            && w[1] == b'x'
+                            && w[3].eq_ignore_ascii_case(&b'd')
+                            && w[6] == b'_'
+                            && w[2..].iter().all(|c| c.is_ascii_hexdigit() || *c == b'_')
+                            && !allowed.iter().any(|a| a.as_bytes() == w)
+                            && !before.windows(5).any(|x| x == b"keep(")
+                        {
+                            found.push(format!(
+                                "{}: {}",
+                                path.display(),
+                                String::from_utf8_lossy(w)
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "colours with the keep mark: {found:?}");
+    }
+
     /// Class guard for stale images: no xtask source names the X51v's build
     /// folder under `target` itself; every path comes from `arm_release`.
     #[test]

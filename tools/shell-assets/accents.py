@@ -44,7 +44,18 @@ ORIGINAL = {
     "ID5": 0x6C7BFF,
     "ID6": 0xB07CFF,
     "ID7": 0xFF6FA8,
+    # Weather's (shell/core/src/weather_app.rs), muted the same way so the
+    # whole system reads as one (the owner, 2026-11-14: "everything to
+    # feel cohesive"); Weather's own tint is the sky.
+    "WEATHER": 0x4CB8FF,
+    "W_COLD": 0x4FA8FF,
+    "W_WARM": 0xFFA040,
+    "W_RAIN": 0x7FC8FF,
+    "W_RAIN_BAR": 0x5C94DC,
+    "W_CURVE": 0xF2B45A,
+    "W_ALERT": 0xF2B45A,
 }
+WEATHER = os.path.join(os.path.dirname(__file__), "..", "..", "shell", "core", "src", "weather_app.rs")
 
 # The glass card under the accents, measured from the rendered agenda
 # (target/ui-preview/v2-calendar-agenda.png, card centres): the brightest
@@ -119,6 +130,43 @@ def mute(hex_rgb, strength):
     return mid if contrast(mid, GLASS) >= FLOOR else best
 
 
+# The light look's glass at its darkest, measured from the rendered app
+# screens in the light look (target/ui-preview/v2-*.png, card centres,
+# 2026-11-14): the hardest case for a dark accent's contrast.
+LIGHT_GLASS = (144, 148, 144)
+
+
+def in_gamut(L, C, h):
+    """The colour at L and h with the most chroma up to C that sRGB holds
+    (a dark colour keeps its colour instead of clipping to another hue)."""
+    while C > 0:
+        a, b = C * math.cos(h), C * math.sin(h)
+        l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3
+        m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3
+        s_ = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3
+        r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s_
+        g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s_
+        bl = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s_
+        if min(r, g, bl) >= -1e-4 and max(r, g, bl) <= 1 + 1e-4:
+            break
+        C -= 0.002
+    return from_oklch(L, max(C, 0), h)
+
+
+def light_twin(rgb, floor):
+    """The accent for the light look: its hue and chroma kept in OKLCH
+    (uniform RGB scaling, the first way, turned coral brown and blue
+    black), its lightness lowered until it reads at `floor` against the
+    light glass at its darkest."""
+    L, C, h = to_oklch(rgb)
+    while L > 0.05:
+        cand = in_gamut(L, C, h)
+        if contrast(cand, LIGHT_GLASS) >= floor:
+            return cand
+        L -= 0.005
+    return in_gamut(0.05, C, h)
+
+
 def palette(strength):
     return {k: mute(v, strength) for k, v in ORIGINAL.items()}
 
@@ -135,7 +183,7 @@ def write(p):
             rf"(pub const {name}: Argb = theme\()0xFF[0-9A-F_]+(\);)", rf"\g<1>{rust(p[name])}\2", s
         )
         assert n == 1, name
-    for name in ("CALENDAR", "CONTACTS", "TASKS", "NOTES", "CALCULATOR"):
+    for name in ("CALENDAR", "CONTACTS", "TASKS", "NOTES", "CALCULATOR", "WEATHER"):
         s, n = re.subn(
             rf"(    pub const {name}: Argb = theme\()0xFF[0-9A-F_]+(\);)", rf"\g<1>{rust(p[name])}\2", s
         )
@@ -144,7 +192,29 @@ def write(p):
     j = s.index("];", i)
     body = "".join(f"    theme({rust(p[f'ID{k}'])}),\n" for k in range(8))
     s = s[:i] + "pub const IDENTITY: [Argb; 8] = [\n" + body + s[j:]
+    # The light look's twins of every accent: (dark look, fill 3:1, text
+    # 4.5:1); the shell's look pass reads them (rp_app::kit::light_twin).
+    seen = []
+    for v in p.values():
+        if v not in seen:
+            seen.append(v)
+    rows = "".join(
+        f"    (theme({rust(v)}), theme({rust(light_twin(v, 3.0))}), theme({rust(light_twin(v, 4.5))})),\n"
+        for v in seen
+    )
+    i = s.index("pub const LIGHT_TWINS: [(Argb, Argb, Argb); ")
+    j = s.index("];", i)
+    s = s[:i] + f"pub const LIGHT_TWINS: [(Argb, Argb, Argb); {len(seen)}] = [\n" + rows + s[j:]
     io.open(KIT, "w", encoding="utf-8", newline="\n").write(s)
+    w = io.open(WEATHER, encoding="utf-8", newline="").read()
+    for name in ("COLD", "WARM", "RAIN", "RAIN_BAR", "CURVE", "ALERT"):
+        w, n = re.subn(
+            rf"(const {name}: Argb = (?:rp_draw::look::theme\()?)0xFF[0-9A-F_]+",
+            rf"\g<1>{rust(p['W_' + name])}",
+            w,
+        )
+        assert n == 1, name
+    io.open(WEATHER, "w", encoding="utf-8", newline="\n").write(w)
 
 
 if __name__ == "__main__":
@@ -153,7 +223,10 @@ if __name__ == "__main__":
     for k, v in p.items():
         o = ORIGINAL[k]
         orig = ((o >> 16) & 255, (o >> 8) & 255, o & 255)
-        print(f"{k:11} {rust(orig)} -> {rust(v)}  contrast {contrast(orig, GLASS):.1f} -> {contrast(v, GLASS):.1f}")
+        print(
+            f"{k:11} {rust(orig)} -> {rust(v)}  contrast {contrast(orig, GLASS):.1f} -> {contrast(v, GLASS):.1f}"
+            f"  light: fill {rust(light_twin(v, 3.0))} text {rust(light_twin(v, 4.5))}"
+        )
     if "--write" in sys.argv:
         write(p)
         print("written:", KIT)

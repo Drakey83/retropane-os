@@ -36,7 +36,7 @@ pub(crate) const PLACE_BTN: Rect = Rect::new(0, 36, 200, 34);
 /// light look (kept by the light look's mapping).
 pub(crate) const SHADOW_DARK: Argb = 0x8C00_0000;
 pub(crate) const SHADOW_LIGHT: Argb = 0xB4FF_FFFF;
-const ALERT: Argb = rp_draw::look::theme(0xFFF2_B45A);
+const ALERT: Argb = rp_draw::look::theme(0xFFCC_AA7E);
 /// The alert screen's name.
 pub(crate) const ALERT_TEXT: Argb = ALERT;
 const ALERT_BACK: Argb = rp_draw::look::theme(0xFF4A_3A24);
@@ -86,7 +86,7 @@ const SLIDE: u32 = 56;
 /// The whole entrance (the last row starts after nine gaps).
 pub(crate) const ANIM_MS: u32 = ITEM_MS + STAGGER_MS * ROWS as u32;
 
-const RAIN: Argb = rp_draw::look::theme(0xFF7F_C8FF);
+const RAIN: Argb = rp_draw::look::theme(0xFF8F_B4D2);
 /// Hourly's graph and the picked hour's card (R140, the mix mock-up X2).
 pub(crate) const HOURLY_GRAPH: Rect = Rect::new(16, 78, 448, 240);
 const HOURLY_CARD: Rect = Rect::new(16, 326, 448, 196);
@@ -181,7 +181,7 @@ pub(crate) const fn isqrt(v: i32) -> i32 {
 const fn hour_x(i: u8) -> u16 {
     GRAPH_X0 + i as u16 * HOUR_W
 }
-pub(crate) const CURVE: Argb = rp_draw::look::theme(0xFFF2_B45A);
+pub(crate) const CURVE: Argb = rp_draw::look::theme(0xFFCC_AA7E);
 /// Under the curve: the mock-up's band, a light frost over the panel's
 /// glass.
 pub(crate) const FROST: Argb = rp_draw::look::theme(0x50F4_F2EC);
@@ -207,7 +207,7 @@ pub(crate) const fn over(under: Argb, top: Argb) -> Argb {
 }
 
 /// The rain bars: the mock-up's softer blue.
-const RAIN_BAR: Argb = rp_draw::look::theme(0xFF5C_94DC);
+const RAIN_BAR: Argb = rp_draw::look::theme(0xFF76_94BB);
 /// The gauges' and timelines' track: solid (the owner, 2026-10-31: no
 /// see-through bars).
 const TRACK: Argb = rp_draw::look::theme(0xFF2C_3238);
@@ -224,8 +224,23 @@ pub(crate) const SEP: &[u8] = b" \x80 ";
 const HEAD_LEFT: Argb = rp_draw::look::theme(0xF021_2B35);
 const HEAD_RIGHT: Argb = rp_draw::look::theme(0xEC38_424E);
 /// The temperature scale's ends: cold to warm.
-const COLD: Argb = 0xFF4F_A8FF;
-const WARM: Argb = 0xFFFF_A040;
+const COLD: Argb = rp_draw::look::theme(0xFF79_A6D5);
+const WARM: Argb = rp_draw::look::theme(0xFFD5_A275);
+
+/// A Now card's accent by what it measures, from the apps' identity
+/// colours (the owner, 2026-11-14: Weather and the apps one cohesive
+/// system): wind and gusts teal, humidity and rain sky, pressure indigo,
+/// UV and lightning amber, the sunset coral.
+pub(crate) fn card_accent(name: &[u8]) -> Argb {
+    use rp_app::kit::IDENTITY;
+    match name {
+        b"WIND" | b"GUSTS" => IDENTITY[3],
+        b"HUMIDITY" | b"RAIN TODAY" => IDENTITY[4],
+        b"PRESSURE" => IDENTITY[5],
+        b"SUNSET" => IDENTITY[0],
+        _ => IDENTITY[1],
+    }
+}
 
 /// The page layer's clear rows above and below a page's picture: the
 /// rebound shows the still wallpaper through them (`motion.rs`'s
@@ -751,6 +766,23 @@ impl Shell {
         super::panel::draw(f, r, self.light());
     }
 
+    /// A card's accent bar at its left edge (the apps' tinted card,
+    /// `rp_app::kit::tinted`: colour marks the card, never floods it), at
+    /// a scrolled `y`, clipped at the top.
+    fn accent_at(&self, f: &mut Frame, x: u16, y: i32, h: u16, c: Argb) {
+        if self.panels_off {
+            return;
+        }
+        let top = (y + 7).max(0);
+        let bottom = y + i32::from(h) - 7;
+        if bottom > top {
+            f.push(Cmd::Fill {
+                r: Rect::new(x + 6, top as u16, 4, (bottom - top) as u16),
+                color: c | 0xFF00_0000,
+            });
+        }
+    }
+
     /// Text whose baseline is at a scrolled `y` (left out when its line is
     /// above the screen: the page's clip hides it anyway).
     fn text_at(f: &mut Frame, x: u16, y: i32, font: &'static rp_draw::Font, c: Argb, t: &[u8]) {
@@ -1083,8 +1115,9 @@ impl Shell {
             let cx = 16 + (i as u16 % 2) * 232 + self.slide(2 + i as u32);
             let cy = self.sy(CARD_Y + (i as u16 / 2) * CARD_STEP);
             self.glass_at(f, cx, cy, 216, 84);
-            Self::text_at(f, cx + 14, cy + 26, label, DIM, name);
-            Self::text_at(f, cx + 14, cy + 54, ui, TEXT, value.as_bytes());
+            self.accent_at(f, cx, cy, 84, card_accent(name));
+            Self::text_at(f, cx + 18, cy + 26, label, DIM, name);
+            Self::text_at(f, cx + 18, cy + 54, ui, TEXT, value.as_bytes());
             let bar_y = cy + i32::from(BAR_DY);
             if bar_y < 0 {
                 continue;
@@ -1096,14 +1129,17 @@ impl Shell {
             });
             let w = (u32::from(track.w) * amount / 1024 * e / 1024) as u16;
             if w > 0 {
-                let right = if *scale {
-                    mix(COLD, WARM, *amount)
+                // A measure fills in its card's accent, deepening to it;
+                // a scale runs cold to warm.
+                let accent = card_accent(name);
+                let (left, right) = if *scale {
+                    (mix(COLD, WARM, 0), mix(COLD, WARM, *amount))
                 } else {
-                    FOCUS
+                    (mix(TRACK, accent, 640), accent)
                 };
                 f.push(Cmd::HGradient {
                     r: Rect::new(track.x, track.y, w, track.h),
-                    left: if *scale { mix(COLD, WARM, 0) } else { RAIN },
+                    left,
                     right,
                 });
             }
@@ -1216,8 +1252,11 @@ impl Shell {
             let x = 16 + i as u16 * 152 + self.slide(2);
             let y = self.sy(STRIP.y);
             self.glass_at(f, x, y, 144, STRIP.h);
-            Self::text_at(f, x + 10, y + 20, label, *color, name);
-            Self::text_at(f, x + 10, y + 44, ui, TEXT, value.as_bytes());
+            // The reading's colour as the card's accent bar, its name in
+            // the quiet label colour (the apps' cards, 2026-11-14).
+            self.accent_at(f, x, y, STRIP.h, *color);
+            Self::text_at(f, x + 18, y + 20, label, DIM, name);
+            Self::text_at(f, x + 18, y + 44, ui, TEXT, value.as_bytes());
         }
         let minutes = u32::from(self.time.hour) * 60 + u32::from(self.time.minute);
         let (rise, set) = (u32::from(wx.sun.0), u32::from(wx.sun.1));
@@ -1277,14 +1316,15 @@ impl Shell {
             let cx = 16 + (i as u16 % 2) * 232 + self.slide(2 + i as u32);
             let cy = self.sy(SMART_CARD_Y + (i as u16 / 2) * SMART_CARD_STEP);
             self.glass_at(f, cx, cy, 216, SMART_CARD_H);
-            Self::text_at(f, cx + 14, cy + 22, label, DIM, name);
+            self.accent_at(f, cx, cy, SMART_CARD_H, card_accent(name));
+            Self::text_at(f, cx + 18, cy + 22, label, DIM, name);
             if *live && cy + 13 >= 0 {
                 f.push(Cmd::Fill {
-                    r: Rect::new(cx + 20 + label.width(name), (cy + 13) as u16, 7, 7),
+                    r: Rect::new(cx + 24 + label.width(name), (cy + 13) as u16, 7, 7),
                     color: super::station::LIVE,
                 });
             }
-            Self::text_at(f, cx + 14, cy + 48, ui, TEXT, value.as_bytes());
+            Self::text_at(f, cx + 18, cy + 48, ui, TEXT, value.as_bytes());
             let bar_y = cy + 58;
             if bar_y < 0 {
                 continue;
@@ -1296,14 +1336,17 @@ impl Shell {
             });
             let w = (u32::from(track.w) * amount / 1024 * e / 1024) as u16;
             if w > 0 {
-                let right = if *scale {
-                    mix(COLD, WARM, *amount)
+                // A measure fills in its card's accent, deepening to it;
+                // a scale runs cold to warm.
+                let accent = card_accent(name);
+                let (left, right) = if *scale {
+                    (mix(COLD, WARM, 0), mix(COLD, WARM, *amount))
                 } else {
-                    FOCUS
+                    (mix(TRACK, accent, 640), accent)
                 };
                 f.push(Cmd::HGradient {
                     r: Rect::new(track.x, track.y, w, track.h),
-                    left: if *scale { mix(COLD, WARM, 0) } else { RAIN },
+                    left,
                     right,
                 });
             }

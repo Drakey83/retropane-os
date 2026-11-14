@@ -251,7 +251,10 @@ pub(crate) const LIGHT_GLASS_ALPHA: u32 = 0xB8;
 pub const fn light_glass(c: Argb, style: LightStyle) -> Argb {
     // (Dark glass's channels are under 0x80: lifted to 0xE0-0xFF, tinted.)
     let t = light_twin(c);
-    if t == c || matches!(style, LightStyle::Grey) {
+    if t == c {
+        return light_accent_fill(c);
+    }
+    if matches!(style, LightStyle::Grey) {
         return t;
     }
     let (r, g, b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
@@ -282,6 +285,60 @@ pub const fn light_glass(c: Argb, style: LightStyle) -> Argb {
     } else {
         (a / 2) << 24 | 0x0030_3640
     }
+}
+
+/// A colour in the light look's `style` (`text` for lettering): the one
+/// rule for the shell's screens and the hosted programs' (the owner,
+/// 2026-11-14: design for both looks, everything cohesive).
+#[must_use]
+pub fn look_color(c: Argb, text: bool, style: LightStyle) -> Argb {
+    if sky::is_ink(c)
+        || panel::is_panel(c)
+        || c == WASH
+        || c == keyboard::DONE_TEXT
+        || c == weather_app::SHADOW_LIGHT
+        || rp_app::kit::kept(c)
+    {
+        // The living sky's own colours, chosen for each look, the washed
+        // wallpaper's veil, the dark text on an accent fill (a lit switch,
+        // Done), which stays light in both looks (mirrored it was light
+        // grey on light blue, 1.4:1, the light look's contrast test), and
+        // a program's kept colours (paper and its ink).
+        c
+    } else if let Some(t) = rp_app::kit::light_twin(c, text) {
+        // An accent: its computed twin (hue and chroma kept).
+        t
+    } else if text {
+        light_text(c)
+    } else {
+        light_glass(c, style)
+    }
+}
+
+/// The fill colour a program's corner pictures are painted in, per light
+/// style (a function, not a closure: `rp_app::Shapes` keeps a plain `fn`).
+const LIGHT_FILLS: [fn(Argb) -> Argb; 4] = [
+    |c| look_color(c, false, LightStyle::Grey),
+    |c| look_color(c, false, LightStyle::Frosted),
+    |c| look_color(c, false, LightStyle::Tonal),
+    |c| look_color(c, false, LightStyle::Washed),
+];
+
+/// An accent fill (a card's bar, a meter, the rain bars, the temperature
+/// scale) in the light look: its hue kept, darkened until it stands at 3:1
+/// (WCAG's floor for marks that aren't text) against the light glass at
+/// its brightest. The muted accents (2026-11-14) are tuned for the dark
+/// glass; on the frosted white they washed out. Luminance with gamma
+/// taken as 2, as [`light_text`]: 0.25 or under.
+#[must_use]
+pub const fn light_accent_fill(c: Argb) -> Argb {
+    let (mut r, mut g, mut b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+    while (2126 * r * r + 7152 * g * g + 722 * b * b) / (255 * 255) > 2500 {
+        r = r * 15 / 16;
+        g = g * 15 / 16;
+        b = b * 15 / 16;
+    }
+    (c & 0xFF00_0000) | r << 16 | g << 8 | b
 }
 
 /// Text's colour in the light look: a neutral one as [`light_twin`]; a
@@ -2347,8 +2404,19 @@ impl Shell {
             light,
             panel: panel::art(light),
             pressed: panel::pressed(light),
-            key: &panel_art::KEY,
-            key_down: &panel_art::KEY_DOWN,
+            // The graphite keys read as holes in the frosted white: the
+            // light look's keys are its glass, a shade down under the pen;
+            // the chosen one is the blue glow in both.
+            key: if light {
+                panel::art(true)
+            } else {
+                &panel_art::KEY
+            },
+            key_down: if light {
+                panel::pressed(true)
+            } else {
+                &panel_art::KEY_DOWN
+            },
             on: &panel_art::ON,
         }
     }
@@ -2456,9 +2524,28 @@ impl Shell {
         } else {
             rp_app::CONTENT
         };
+        // In the light look the program's colours take the same rule as
+        // the shell's (its own pass ran before the program drew), its
+        // corner pictures painted to match.
+        let light = self.light();
+        let style = self.light_style;
+        self.shapes.set_paint(if light {
+            LIGHT_FILLS[match style {
+                LightStyle::Grey => 0,
+                LightStyle::Frosted => 1,
+                LightStyle::Tonal => 2,
+                LightStyle::Washed => 3,
+            }]
+        } else {
+            |c| c
+        });
+        let start = f.len();
         f.clip(Some(area));
         p.draw(f, &cx);
         f.clip(None);
+        if light {
+            f.map_colors_from(start, |c, text| look_color(c, text, style));
+        }
     }
 
     /// The answer to the open program's network question.
@@ -2925,25 +3012,7 @@ impl Shell {
     fn look(&self, f: &mut Frame) {
         if self.light() {
             let style = self.light_style;
-            f.map_colors(|c, text| {
-                if sky::is_ink(c)
-                    || panel::is_panel(c)
-                    || c == WASH
-                    || c == keyboard::DONE_TEXT
-                    || c == weather_app::SHADOW_LIGHT
-                {
-                    // The living sky's own colours, chosen for each look,
-                    // the washed wallpaper's veil, and the dark text on an
-                    // accent fill (a lit switch, Done), which stays light
-                    // in both looks: mirrored it was light grey on light
-                    // blue (1.4:1, the light look's contrast test).
-                    c
-                } else if text {
-                    light_text(c)
-                } else {
-                    light_glass(c, style)
-                }
-            });
+            f.map_colors(|c, text| look_color(c, text, style));
         }
     }
 

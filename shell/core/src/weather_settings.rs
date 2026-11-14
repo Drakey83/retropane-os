@@ -175,6 +175,26 @@ impl Shell {
         None
     }
 
+    /// A switch's segment as the apps' Aero keys (the owner, 2026-11-14:
+    /// one cohesive system, Aero not Metro): the chosen one the blue glow,
+    /// the others the graphite key (dark) or the frosted glass a shade down
+    /// (light: the graphite key read as a hole in the white).
+    fn segment(&self, f: &mut Frame, r: Rect, lit: bool) {
+        if lit {
+            f.push(Cmd::Panel {
+                r,
+                art: &super::panel_art::ON,
+            });
+        } else if self.light() {
+            super::panel::draw_pressed(f, r, true);
+        } else {
+            f.push(Cmd::Panel {
+                r,
+                art: &super::panel_art::KEY,
+            });
+        }
+    }
+
     /// The section label a row sits under (drawn above its first row).
     fn section(&self, it: Item) -> Option<&'static [u8]> {
         Some(match (self.screen, it) {
@@ -555,7 +575,8 @@ impl Shell {
                 let w = label.width(s) + 12;
                 let lr = Rect::new(r.x - 2, r.y - LABEL_H - 2, w, LABEL_H);
                 self.glass(f, lr, GLASS_LEFT, GLASS_RIGHT);
-                centre_in(f, lr, label, TEXT, s);
+                // In Weather's tint, as the apps' section labels.
+                centre_in(f, lr, label, rp_app::kit::tint::WEATHER, s);
             }
             last = sec;
             self.glass(f, r, GLASS_LEFT, GLASS_RIGHT);
@@ -647,22 +668,15 @@ impl Shell {
                 let mut x = r.x + r.w - 12 - 3 * 58;
                 for a in Appearance::ALL {
                     let seg = Rect::new(x, r.y + 7, 58, r.h - 14);
-                    if a == s.appearance {
-                        f.push(Cmd::Fill {
-                            r: seg,
-                            color: FOCUS,
-                        });
-                    }
-                    f.push(Cmd::Outline {
-                        r: seg,
-                        color: GLASS_EDGE,
-                    });
-                    let c = if a == s.appearance {
-                        keyboard::DONE_TEXT
-                    } else {
-                        DIM
-                    };
-                    centre_in(f, seg, label, c, a.name().as_bytes());
+                    let lit = a == s.appearance;
+                    self.segment(f, seg, lit);
+                    centre_in(
+                        f,
+                        seg,
+                        label,
+                        if lit { TEXT } else { DIM },
+                        a.name().as_bytes(),
+                    );
                     x += 58;
                 }
             }
@@ -673,18 +687,8 @@ impl Shell {
                 for (on, name) in [(true, b"On" as &[u8]), (false, b"Off")] {
                     let seg = Rect::new(x, r.y + 7, 58, r.h - 14);
                     let lit = on == s.living_sky;
-                    if lit {
-                        f.push(Cmd::Fill {
-                            r: seg,
-                            color: FOCUS,
-                        });
-                    }
-                    f.push(Cmd::Outline {
-                        r: seg,
-                        color: GLASS_EDGE,
-                    });
-                    let c = if lit { keyboard::DONE_TEXT } else { DIM };
-                    centre_in(f, seg, label, c, name);
+                    self.segment(f, seg, lit);
+                    centre_in(f, seg, label, if lit { TEXT } else { DIM }, name);
                     x += 58;
                 }
             }
