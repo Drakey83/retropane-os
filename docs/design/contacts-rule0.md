@@ -71,8 +71,8 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Favourites grid of large photos or initials | apps-and-packs: favourites | built | apps/contacts/src/lib.rs |
 | Coloured initials for everyone without a photo | apps-and-packs: initials when there's no photo | built | apps/api/src/kit.rs, apps/contacts/src/lib.rs |
 | Photos: chosen from a picture file, cropped to a circle, kept small in internal storage, from vCard PHOTO too | apps-and-packs: photos | pending | |
-| Search over every field with the match highlighted | apps-and-packs: Fast search | pending | |
-| Letter strip with the large letter bubble | sheet | pending | |
+| Search over every field with the match highlighted | apps-and-packs: Fast search | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
+| Letter strip with the large letter bubble | sheet | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
 | The card with the action row (E-mail, Map, Copy, Send to PC) | sheet | pending | |
 | Phone pad for phone fields; numbers formatted as typed for their country, stored as E.164 | apps-and-packs: phone numbers formatted as typed | built | shell/pim/src/phone.rs, shell/core/src/keyboard.rs |
 | Address suggestions while typing (Photon over any connection; ZIP table and past addresses offline) | apps-and-packs: address suggestions while typing | built | shell/pim/src/net.rs, apps/contacts/src/lib.rs, xtask/src/usb.rs |

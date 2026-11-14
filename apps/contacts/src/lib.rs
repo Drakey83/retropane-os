@@ -87,6 +87,69 @@ pub enum EditField {
     Street,
 }
 
+/// The list's search field and letter strip.
+const SEARCH: Rect = Rect::new(MARGIN, 36 + kit::TITLE_BAND + 4, WIDE - 24, 36);
+const STRIP: Rect = Rect::new(W - MARGIN - 22, 120, 26, 470);
+
+/// Whether `hay` holds `needle`, ignoring case.
+fn holds(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    hay.windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle))
+}
+
+/// Whether person `p` matches the search `q`: any part of the name, the
+/// company, the e-mail, the city, the initials ("gh"), or the digits of a
+/// number however it was typed ("617 555").
+fn matches(p: &Person, q: &[u8]) -> bool {
+    let mut nm = [0u8; 64];
+    let nn = name(p, &mut nm);
+    if holds(&nm[..nn], q).is_some()
+        || holds(p.company.get(), q).is_some()
+        || holds(p.email.get(), q).is_some()
+        || holds(p.address[1].get(), q).is_some()
+    {
+        return true;
+    }
+    let (ini, n) = kit::initials(&nm[..nn]);
+    if q.len() == n && ini[..n].eq_ignore_ascii_case(q) {
+        return true;
+    }
+    let mut qd = [0u8; 24];
+    let mut qn = 0;
+    for &c in q.iter().filter(|c| c.is_ascii_digit()) {
+        if qn < qd.len() {
+            qd[qn] = c;
+            qn += 1;
+        }
+    }
+    qn >= 3
+        && q.iter()
+            .all(|c| c.is_ascii_digit() || *c == b' ' || *c == b'-')
+        && p.phones.iter().any(|(_, num)| {
+            let digits: [u8; 24] = {
+                let mut d = [0u8; 24];
+                let mut k = 0;
+                for &c in num.get().iter().filter(|c| c.is_ascii_digit()) {
+                    if k < d.len() {
+                        d[k] = c;
+                        k += 1;
+                    }
+                }
+                d
+            };
+            let dn = num
+                .get()
+                .iter()
+                .filter(|c| c.is_ascii_digit())
+                .count()
+                .min(24);
+            holds(&digits[..dn], &qd[..qn]).is_some()
+        })
+}
+
 /// An address suggested: by the network (Photon) or, offline, from the
 /// addresses already kept.
 #[derive(Clone, Copy, Debug)]
@@ -132,6 +195,16 @@ pub struct Contacts {
     offline: bool,
     /// First names kept that start as the one typed (the strip).
     names: [Text<24>; 3],
+    /// The list's search typed (and being typed), the letter the list
+    /// starts at, the letter under the pen on the strip (shown large), and
+    /// the rows on screen with the people they open.
+    query: [u8; 32],
+    query_n: usize,
+    searching: bool,
+    jump: Option<u8>,
+    bubble: Option<u8>,
+    rows_at: [(Rect, u8); 12],
+    n_rows: usize,
     /// The avatars: one disc per identity colour at 40 px, the card's 96 px.
     discs: [Option<Pic>; 8],
     big: Option<Pic>,
@@ -190,6 +263,13 @@ impl Contacts {
             asked: Text::EMPTY,
             offline: false,
             names: [Text::EMPTY; 3],
+            query: [0; 32],
+            query_n: 0,
+            searching: false,
+            jump: None,
+            bubble: None,
+            rows_at: [(Rect::new(0, 0, 0, 0), 0); 12],
+            n_rows: 0,
             discs: [None; 8],
             big: None,
             painted: false,
@@ -394,8 +474,29 @@ impl Contacts {
         self.discs[k]
     }
 
-    fn list(&self, f: &mut Frame, cx: &Ctx) {
-        let (idx, n) = self.sorted();
+    fn list(&mut self, f: &mut Frame, cx: &Ctx) {
+        self.n_rows = 0;
+        let (all, total) = self.sorted();
+        // The search keeps who matches; the strip's letter starts the list.
+        let q = &self.query[..self.query_n];
+        let mut idx = [0u8; MAX];
+        let mut n = 0;
+        for &i in &all[..total] {
+            let Some(p) = self.people[usize::from(i)] else {
+                continue;
+            };
+            let initial = p
+                .last
+                .get()
+                .first()
+                .copied()
+                .unwrap_or(b'#')
+                .to_ascii_uppercase();
+            if (q.is_empty() || matches(&p, q)) && self.jump.is_none_or(|j| initial >= j) {
+                idx[n] = i;
+                n += 1;
+            }
+        }
         let mut s = [0u8; 24];
         let mut k = 0;
         let mut num = n;
@@ -415,51 +516,65 @@ impl Contacts {
         }
         let mut y = kit::large_title(f, cx, 36, b"Contacts", &s[..k], tint::CONTACTS);
         // Search.
-        let field = Rect::new(MARGIN, y + 4, WIDE - 24, 36);
+        let field = SEARCH;
         kit::panel(f, cx, field);
-        kit::text(
-            f,
-            field.x + 12,
-            field.y + 25,
-            cx.fonts.ui,
-            DIM,
-            b"Search name, number, city",
-        );
-        y += 46;
-        // The favourites grid: large discs with initials, three across.
-        kit::section(f, cx, y, b"FAVOURITES", tint::CONTACTS);
-        y += 22;
-        let mut col = 0u16;
-        for &i in &idx[..n] {
-            let Some(p) = self.people[usize::from(i)] else {
-                continue;
-            };
-            if !p.favourite || col == 4 {
-                continue;
-            }
-            let x = MARGIN + 6 + col * 108;
-            let mut nm = [0u8; 64];
-            let nn = name(&p, &mut nm);
-            kit::avatar(
-                f,
-                self.disc_for(&nm[..nn]),
-                x + 24,
-                y,
-                40,
-                cx.fonts.ui,
-                &nm[..nn],
-            );
-            kit::centred(
-                f,
-                Rect::new(x - 4, y, 96, 10),
-                y + 60,
-                cx.fonts.ui,
-                TEXT,
-                p.first.get(),
-            );
-            col += 1;
+        if self.searching {
+            f.push(rp_app::Cmd::Outline {
+                r: field,
+                color: kit::FOCUS,
+            });
         }
-        y += 72;
+        if q.is_empty() {
+            kit::text(
+                f,
+                field.x + 12,
+                field.y + 25,
+                cx.fonts.ui,
+                DIM,
+                b"Search name, number, city",
+            );
+        } else {
+            kit::text(f, field.x + 12, field.y + 25, cx.fonts.ui, TEXT, q);
+        }
+        y += 46;
+        let searching = !q.is_empty() || self.jump.is_some();
+        // The favourites grid: large discs with initials, three across
+        // (not while searching: the matches come first).
+        if !searching {
+            kit::section(f, cx, y, b"FAVOURITES", tint::CONTACTS);
+            y += 22;
+            let mut col = 0u16;
+            for &i in &idx[..n] {
+                let Some(p) = self.people[usize::from(i)] else {
+                    continue;
+                };
+                if !p.favourite || col == 4 {
+                    continue;
+                }
+                let x = MARGIN + 6 + col * 108;
+                let mut nm = [0u8; 64];
+                let nn = name(&p, &mut nm);
+                kit::avatar(
+                    f,
+                    self.disc_for(&nm[..nn]),
+                    x + 24,
+                    y,
+                    40,
+                    cx.fonts.ui,
+                    &nm[..nn],
+                );
+                kit::centred(
+                    f,
+                    Rect::new(x - 4, y, 96, 10),
+                    y + 60,
+                    cx.fonts.ui,
+                    TEXT,
+                    p.first.get(),
+                );
+                col += 1;
+            }
+            y += 72;
+        }
         // Everyone, by letter.
         let mut letter = 0u8;
         for &i in &idx[..n] {
@@ -486,6 +601,10 @@ impl Contacts {
             }
             let r = Rect::new(MARGIN, y, WIDE - 24, 46);
             kit::panel(f, cx, r);
+            if self.n_rows < self.rows_at.len() {
+                self.rows_at[self.n_rows] = (r, i);
+                self.n_rows += 1;
+            }
             let mut nm = [0u8; 64];
             let nn = name(&p, &mut nm);
             kit::avatar(
@@ -498,6 +617,18 @@ impl Contacts {
                 &nm[..nn],
             );
             kit::fitted(f, r.x + 56, r.y + 21, cx.fonts.ui, TEXT, &nm[..nn], 240);
+            // The match in the name, in the system accent.
+            if let Some(at) = holds(&nm[..nn], q) {
+                let x = r.x + 56 + cx.fonts.ui.width(&nm[..at]);
+                kit::text(
+                    f,
+                    x,
+                    r.y + 21,
+                    cx.fonts.ui,
+                    kit::FOCUS,
+                    &nm[at..at + q.len()],
+                );
+            }
             let sub = if p.company.is_empty() {
                 p.email.get()
             } else {
@@ -510,17 +641,35 @@ impl Contacts {
             }
             y += 50;
         }
-        // The letter strip.
-        let strip = Rect::new(W - MARGIN - 18, 120, 18, 470);
+        if n == 0 {
+            kit::text(f, MARGIN + 8, y + 24, cx.fonts.ui, DIM, b"No one matches");
+        }
+        // The letter strip; the letter under the pen large beside it.
+        let strip = STRIP;
         for (k, c) in (b'A'..=b'Z').enumerate() {
+            let col = if self.jump == Some(c) {
+                kit::FOCUS
+            } else {
+                DIM
+            };
             kit::centred(
                 f,
-                Rect::new(strip.x, 0, 18, 1),
+                Rect::new(strip.x, 0, strip.w, 1),
                 strip.y + 12 + k as u16 * 18,
                 cx.fonts.label,
-                DIM,
+                col,
                 &[c],
             );
+        }
+        if let Some(c) = self.bubble {
+            let r = Rect::new(
+                strip.x - 96,
+                strip.y + (u16::from(c - b'A')) * 18 - 30,
+                80,
+                72,
+            );
+            kit::key(f, cx, r, kit::KeyState::On);
+            kit::centred(f, r, r.y + 50, cx.fonts.title, TEXT, &[c]);
         }
     }
 
@@ -761,7 +910,56 @@ impl Program for Contacts {
                 }
                 Reply::Redraw
             }
+            (Event::Key(Key::SoftLeft), View::List)
+                if self.searching || self.query_n > 0 || self.jump.is_some() =>
+            {
+                self.searching = false;
+                self.query_n = 0;
+                self.jump = None;
+                Reply::Redraw
+            }
             (Event::Key(Key::SoftLeft), View::List) => Reply::Close,
+            (Event::PenDown { x, y } | Event::PenMove { x, y }, View::List)
+                if STRIP.contains_point(x, y) =>
+            {
+                let k = ((y.saturating_sub(STRIP.y)) / 18).min(25) as u8;
+                let c = b'A' + k;
+                self.bubble = Some(c);
+                self.jump = Some(c);
+                Reply::Redraw
+            }
+            (Event::PenUp { x, y }, View::List) => {
+                if self.bubble.take().is_some() {
+                    return Reply::Redraw;
+                }
+                if SEARCH.contains_point(x, y) {
+                    self.searching = true;
+                    return Reply::Redraw;
+                }
+                match self.rows_at[..self.n_rows]
+                    .iter()
+                    .find(|(r, _)| r.contains_point(x, y))
+                {
+                    Some(&(_, i)) => {
+                        self.view = View::Card(i);
+                        Reply::Redraw
+                    }
+                    None => Reply::Nothing,
+                }
+            }
+            (Event::Char(c), View::List) if self.searching && self.query_n < self.query.len() => {
+                self.query[self.query_n] = c;
+                self.query_n += 1;
+                Reply::Redraw
+            }
+            (Event::Delete, View::List) if self.searching => {
+                self.query_n = self.query_n.saturating_sub(1);
+                Reply::Redraw
+            }
+            (Event::Done, View::List) if self.searching => {
+                self.searching = false;
+                Reply::Redraw
+            }
             (Event::Key(Key::SoftLeft), _) => {
                 self.view = View::List;
                 Reply::Redraw
@@ -827,6 +1025,9 @@ impl Program for Contacts {
     }
 
     fn keyboard(&self) -> Option<Field> {
+        if self.view == View::List && self.searching {
+            return Some(Field::Line);
+        }
         match self.view {
             View::Edit(EditField::First) => Some(Field::Name),
             View::Edit(EditField::Mobile) => Some(Field::Phone),
@@ -880,3 +1081,6 @@ impl Program for Contacts {
         Reply::Redraw
     }
 }
+
+#[cfg(test)]
+mod tests;
