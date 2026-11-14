@@ -8612,7 +8612,13 @@ mod image {
     /// Run GC2DR (`RP_GPUBENCH_GC2_FINE`): GC2DJ's shifted textured frames at
     /// every clock a locked PLL gives between 133.25 (right, GC2DK) and
     /// 139.75 / 1 (wrong) ([`gc2::GAME_FINE`]): where the line falls.
-    const GC2_FINE: bool = option_env!("RP_GPUBENCH_GC2_FINE").is_some();
+    const GC2_FINE: bool =
+        option_env!("RP_GPUBENCH_GC2_FINE").is_some() || GC2_FINE_HIGH;
+    /// Run GC2EB (`RP_GPUBENCH_GC2_FINE_HIGH`, R72): GC2DR's frames at the
+    /// steps above its top, 143.00, 146.25 and 149.50 / 1
+    /// ([`gc2::GAME_FINE_HIGH`]): on a unit that drew GC2DR right to 139.75
+    /// / 1 (the X50v, 2026-11-13), where its line falls.
+    const GC2_FINE_HIGH: bool = option_env!("RP_GPUBENCH_GC2_FINE_HIGH").is_some();
     /// Run GC2DS (`RP_GPUBENCH_GC2_REBASE`): GC2DJ's textured frame shifted
     /// +3 with its texture coordinates as built, rebased per quad (whole
     /// repeats taken off so each quad starts under one), and with one and
@@ -8625,7 +8631,28 @@ mod image {
     /// highest step right on the shifted textured frames) and the two below:
     /// is the line right for every kind of frame, wherever it lands.
     const GC2_MOVED: bool =
-        option_env!("RP_GPUBENCH_GC2_MOVED").is_some() || GC2_SOAK137 || GC2_TEMPGUARD;
+        option_env!("RP_GPUBENCH_GC2_MOVED").is_some()
+            || GC2_SOAK137
+            || GC2_SOAK139
+            || GC2_MOVED_HIGH
+            || GC2_TEMPGUARD;
+    /// Run GC2EC (`RP_GPUBENCH_GC2_SOAK139`, R72): GC2DV's soak at 139.75 /
+    /// 1 ([`gc2::GAME_SOAK139`]), for a unit whose GC2DR was right there.
+    const GC2_SOAK139: bool =
+        option_env!("RP_GPUBENCH_GC2_SOAK139").is_some() || GC2_SOAK149 || GC2_SOAK146 || GC2_SOAK143;
+    /// Run GC2EG (`RP_GPUBENCH_GC2_SOAK143`, R72): the soak at 143.00 / 1
+    /// ([`gc2::GAME_SOAK143`]), one step under GC2EF's 2%.
+    const GC2_SOAK143: bool = option_env!("RP_GPUBENCH_GC2_SOAK143").is_some();
+    /// Run GC2EF (`RP_GPUBENCH_GC2_SOAK146`, R72): the soak at 146.25 / 1
+    /// ([`gc2::GAME_SOAK146`]), the X50v's top step in GC2EE.
+    const GC2_SOAK146: bool = option_env!("RP_GPUBENCH_GC2_SOAK146").is_some();
+    /// Run GC2ED (`RP_GPUBENCH_GC2_SOAK149`, R72): the same soak at 149.50 /
+    /// 1 ([`gc2::GAME_SOAK149`]), for a unit whose GC2EB was right there.
+    const GC2_SOAK149: bool = option_env!("RP_GPUBENCH_GC2_SOAK149").is_some();
+    /// Run GC2EE (`RP_GPUBENCH_GC2_MOVED_HIGH`, R72): GC2DT's moved frames
+    /// at 146.25 down to 137.80 / 1 ([`gc2::GAME_MOVED_HIGH`]): where a unit
+    /// that failed GC2ED at 149.50 / 1 draws them right.
+    const GC2_MOVED_HIGH: bool = option_env!("RP_GPUBENCH_GC2_MOVED_HIGH").is_some();
     /// Run GC2DV (`RP_GPUBENCH_GC2_SOAK137`): GC2DT's moved frames at 137.80
     /// / 1 for 12 parts (4,800 renders, the chip at its hottest), then 149.50
     /// / 2 ([`gc2::GAME_SOAK137`]): the line held with time and heat.
@@ -10172,6 +10199,16 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2DX: no map; GC2BY's four game frames at 149.50 / 1 for 500 rounds, then 149.50 / 2; GC2DW's guard of the textures and the free pool, and the renderer's own region array, on-die parameter memory and memory manager's block summed after every render against each frame's sums at Windows Mobile's clock; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_GUARD2 {
                 "the 16-bit kinds' targets inside the safe region (GC2DW: no map; GC2BY's four game frames at 149.50 / 1 for 500 rounds, then 149.50 / 2, the textures summed and every free block of the 2700G pool filled with its addresses and read back after each setting; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_SOAK143 {
+                "the 16-bit kinds' targets inside the safe region (GC2EG: no map; GC2DT's moved game frames at 143.00 / 1 for 1,200 rounds, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_SOAK146 {
+                "the 16-bit kinds' targets inside the safe region (GC2EF: no map; GC2DT's moved game frames at 146.25 / 1 for 1,200 rounds, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_MOVED_HIGH {
+                "the 16-bit kinds' targets inside the safe region (GC2EE: no map; GC2DT's moved game frames at 146.25, 143.00, 139.75, 138.67 and 137.80 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_SOAK149 {
+                "the 16-bit kinds' targets inside the safe region (GC2ED: no map; GC2DT's moved game frames at 149.50 / 1 for 1,200 rounds, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_SOAK139 {
+                "the 16-bit kinds' targets inside the safe region (GC2EC: no map; GC2DT's moved game frames at 139.75 / 1 for 1,200 rounds, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_SOAK137 {
                 "the 16-bit kinds' targets inside the safe region (GC2DV: no map; GC2DT's moved game frames at 137.80 / 1 for 1,200 rounds, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_GUARD {
@@ -10180,6 +10217,8 @@ mod image {
                 "the 16-bit kinds' targets inside the safe region (GC2DT: no map; GC2BY's four game frames each moved across and down, each its own reference, at 137.80 / 1 three times, 136.50 and 135.20 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_REBASE {
                 "the 16-bit kinds' targets inside the safe region (GC2DS: no map; the textured game frame shifted +3 with its texture coordinates as built, rebased per quad, plus one and plus two whole repeats, each its own reference, at 143.00, 146.25 and 149.50 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
+            } else if GC2_FINE_HIGH {
+                "the 16-bit kinds' targets inside the safe region (GC2EB: no map; GC2DJ's shifted textured frames (0, +8, +3, -8 px), each its own reference, at 143.00, 146.25 and 149.50 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_FINE {
                 "the 16-bit kinds' targets inside the safe region (GC2DR: no map; GC2DJ's shifted textured frames (0, +8, +3, -8 px), each its own reference, at 139.75, 138.67, 137.80, 136.50, 135.20, 134.33 and 133.25 / 1, then 149.50 / 2; the lists on the die in the checker order; each target poisoned first),"
             } else if GC2_FLOOR {
@@ -29573,6 +29612,16 @@ mod image {
             &gc2::GAME_GUARD3
         } else if GC2_GUARD2 {
             &gc2::GAME_GUARD2
+        } else if GC2_SOAK143 {
+            &gc2::GAME_SOAK143
+        } else if GC2_SOAK146 {
+            &gc2::GAME_SOAK146
+        } else if GC2_MOVED_HIGH {
+            &gc2::GAME_MOVED_HIGH
+        } else if GC2_SOAK149 {
+            &gc2::GAME_SOAK149
+        } else if GC2_SOAK139 {
+            &gc2::GAME_SOAK139
         } else if GC2_SOAK137 {
             &gc2::GAME_SOAK137
         } else if GC2_GUARD {
@@ -29581,6 +29630,8 @@ mod image {
             &gc2::GAME_MOVED
         } else if GC2_REBASE {
             &gc2::GAME_REBASE
+        } else if GC2_FINE_HIGH {
+            &gc2::GAME_FINE_HIGH
         } else if GC2_FINE {
             &gc2::GAME_FINE
         } else if GC2_ORDER4 {
@@ -29638,6 +29689,16 @@ mod image {
             "GC2DX"
         } else if GC2_GUARD2 {
             "GC2DW"
+        } else if GC2_SOAK143 {
+            "GC2EG"
+        } else if GC2_SOAK146 {
+            "GC2EF"
+        } else if GC2_MOVED_HIGH {
+            "GC2EE"
+        } else if GC2_SOAK149 {
+            "GC2ED"
+        } else if GC2_SOAK139 {
+            "GC2EC"
         } else if GC2_SOAK137 {
             "GC2DV"
         } else if GC2_GUARD {
@@ -29646,6 +29707,8 @@ mod image {
             "GC2DT"
         } else if GC2_REBASE {
             "GC2DS"
+        } else if GC2_FINE_HIGH {
+            "GC2EB"
         } else if GC2_FINE {
             "GC2DR"
         } else if GC2_FLOOR {
@@ -29709,6 +29772,16 @@ mod image {
                         "GC2DX OWN MEMORY GUARD"
                     } else if GC2_GUARD2 {
                         "GC2DW MEMORY GUARD 2"
+                    } else if GC2_SOAK143 {
+                        "GC2EG 143.00 SOAK"
+                    } else if GC2_SOAK146 {
+                        "GC2EF 146.25 SOAK"
+                    } else if GC2_MOVED_HIGH {
+                        "GC2EE MOVED, HIGH STEPS"
+                    } else if GC2_SOAK149 {
+                        "GC2ED 149.50 SOAK"
+                    } else if GC2_SOAK139 {
+                        "GC2EC 139.75 SOAK"
                     } else if GC2_SOAK137 {
                         "GC2DV 137.80 SOAK"
                     } else if GC2_GUARD {
@@ -29717,6 +29790,8 @@ mod image {
                         "GC2DT FRAMES MOVED"
                     } else if GC2_REBASE {
                         "GC2DS UV REBASED"
+                    } else if GC2_FINE_HIGH {
+                        "GC2EB ABOVE 139.75"
                     } else if GC2_FINE {
                         "GC2DR FINE LADDER"
                     } else if GC2_FLOOR {
