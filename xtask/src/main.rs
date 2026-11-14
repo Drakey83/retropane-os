@@ -385,7 +385,9 @@ fn scope_check() -> Result {
             .status()
         {
             Ok(st) if st.success() => return Ok(()),
-            Ok(_) => return Err("scope: an app's build list falls short of its plan (above)".into()),
+            Ok(_) => {
+                return Err("scope: an app's build list falls short of its plan (above)".into());
+            }
             Err(_) => continue,
         }
     }
