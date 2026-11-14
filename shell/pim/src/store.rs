@@ -55,6 +55,7 @@ pub enum Kind {
 }
 
 impl Kind {
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     const fn of(b: u8) -> Option<Self> {
         Some(match b {
             1 => Self::Appointment,
@@ -122,6 +123,7 @@ pub struct Rec<'a> {
 }
 
 impl<'a> Rec<'a> {
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn field(&self, want: u8) -> Option<&'a [u8]> {
         let mut b = self.body;
         while let [t, l0, l1, rest @ ..] = b {
@@ -137,12 +139,14 @@ impl<'a> Rec<'a> {
 
     /// A text field (empty when absent).
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn text(&self, tag: u8) -> &'a [u8] {
         self.field(tag).unwrap_or(&[])
     }
 
     /// A number field.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn num(&self, tag: u8) -> Option<u32> {
         let d: [u8; 4] = self.field(tag)?.try_into().ok()?;
         Some(u32::from_le_bytes(d))
@@ -213,6 +217,7 @@ pub struct Store<'a> {
 
 /// CRC-32 (IEEE), bit by bit: groups are a few kilobytes at most.
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub fn crc32(data: &[u8]) -> u32 {
     let mut c = !0u32;
     for &b in data {
@@ -224,6 +229,7 @@ pub fn crc32(data: &[u8]) -> u32 {
     !c
 }
 
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 fn le32(b: &[u8], at: usize) -> u32 {
     b.get(at..at + 4)
         .and_then(|s| s.try_into().ok())
@@ -233,6 +239,7 @@ fn le32(b: &[u8], at: usize) -> u32 {
 /// The record at `p` of `b`: (kind, flags, id, its whole length), checked
 /// as hostile input (a known kind, a body inside `b` whose fields end
 /// exactly at its end).
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 fn rec_at(b: &[u8], p: usize) -> Option<(Kind, u8, u32, usize)> {
     let h = b.get(p..p + REC_HEAD)?;
     let kind = Kind::of(h[0])?;
@@ -250,6 +257,7 @@ fn rec_at(b: &[u8], p: usize) -> Option<(Kind, u8, u32, usize)> {
 
 /// The slot whose header is valid with the higher generation, if any.
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub fn pick(headers: [&[u8; SECTOR]; 2]) -> Option<(u8, u32)> {
     let generation = |h: &[u8; SECTOR]| {
         (h[..8] == SLOT_MAGIC[..] && crc32(&h[..12]) == le32(h, 12) && le32(h, 8) != 0)
@@ -267,6 +275,7 @@ impl<'a> Store<'a> {
     /// A store in `memory` ([`MEMORY`] bytes on the device; at least
     /// [`INDEX_BYTES`] and a sector), empty and not yet loaded.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn new(memory: &'a mut [u8]) -> Self {
         Self::sized(memory, SLOT_SECTORS)
     }
@@ -274,6 +283,7 @@ impl<'a> Store<'a> {
     /// As [`Store::new`], with slots of `slot_sectors` (tests fill a small
     /// one).
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn sized(memory: &'a mut [u8], slot_sectors: u32) -> Self {
         let arena = memory.len().saturating_sub(INDEX_BYTES);
         Self {
@@ -298,23 +308,27 @@ impl<'a> Store<'a> {
 
     // ---- The index ----------------------------------------------------
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn entry(&self, i: usize) -> (usize, u32) {
         let at = self.arena + 8 * i;
         (le32(self.buf, at) as usize, le32(self.buf, at + 4))
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn set_entry(&mut self, i: usize, off: usize, id: u32) {
         let at = self.arena + 8 * i;
         self.buf[at..at + 4].copy_from_slice(&(off as u32).to_le_bytes());
         self.buf[at + 4..at + 8].copy_from_slice(&id.to_le_bytes());
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn find(&self, id: u32) -> Option<usize> {
         (0..self.n).find(|&i| self.entry(i).1 == id)
     }
 
     /// Takes the record at `off` into the index: the newest of its id, or
     /// its removal.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn index(&mut self, off: usize, flags: u8, id: u32) -> Result<(), Error> {
         self.next_id = self.next_id.max(id.saturating_add(1));
         match (self.find(id), flags & DELETED != 0) {
@@ -336,6 +350,7 @@ impl<'a> Store<'a> {
         Ok(())
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn rec(&self, off: usize) -> Option<Rec<'_>> {
         let (kind, _, id, len) = rec_at(&self.buf[..self.used], off)?;
         Some(Rec {
@@ -349,25 +364,49 @@ impl<'a> Store<'a> {
 
     /// The record of `id`.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn get(&self, id: u32) -> Option<Rec<'_>> {
         self.rec(self.entry(self.find(id)?).0)
     }
 
     /// Every live record of `kind`, in no particular order.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn all(&self, kind: Kind) -> impl Iterator<Item = Rec<'_>> {
         (0..self.n)
             .filter_map(|i| self.rec(self.entry(i).0))
             .filter(move |r| r.kind == kind)
     }
 
+    /// Every live record of `kind` with its handle: where it lies now, for
+    /// a view's table. A handle is good until the next change
+    /// ([`Store::changes`]); [`Store::at`] reads it back.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+    pub fn handles(&self, kind: Kind) -> impl Iterator<Item = (u32, Rec<'_>)> {
+        (0..self.n)
+            .filter_map(|i| {
+                let off = self.entry(i).0;
+                Some((off as u32, self.rec(off)?))
+            })
+            .filter(move |(_, r)| r.kind == kind)
+    }
+
+    /// The record at a handle from [`Store::handles`].
+    #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+    pub fn at(&self, handle: u32) -> Option<Rec<'_>> {
+        self.rec(handle as usize)
+    }
+
     /// Live records in all.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn len(&self) -> usize {
         self.n
     }
 
     /// No live record.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn is_empty(&self) -> bool {
         self.n == 0
     }
@@ -375,6 +414,7 @@ impl<'a> Store<'a> {
     /// A count that changes with every change to the records: a view made
     /// at one count is stale at another.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn changes(&self) -> u32 {
         self.changes
     }
@@ -383,6 +423,7 @@ impl<'a> Store<'a> {
 
     /// The live records packed to the arena's start, and the card's other
     /// slot made the one to write (everything, then its header).
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn pack(&mut self) {
         let mut to = 0;
         let mut p = 0;
@@ -415,6 +456,7 @@ impl<'a> Store<'a> {
         self.switching = Some((slot, generation));
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn append(
         &mut self,
         kind: Kind,
@@ -464,6 +506,7 @@ impl<'a> Store<'a> {
     /// # Errors
     /// [`Error::TooLong`], [`Error::Full`], [`Error::Loading`], or
     /// [`Error::NotFound`] for an `id` that isn't live.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn put(
         &mut self,
         kind: Kind,
@@ -498,6 +541,7 @@ impl<'a> Store<'a> {
     /// # Errors
     /// [`Error::NotFound`], or [`Error::Full`] with no room for its
     /// tombstone even after packing.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn remove(&mut self, id: u32) -> Result<(), Error> {
         let kind = self.get(id).ok_or(Error::NotFound)?.kind;
         self.append(kind, DELETED, id, &[])
@@ -509,6 +553,7 @@ impl<'a> Store<'a> {
     /// the first, the caller reads both slots' sector 0 and calls
     /// [`Store::load_start`] with [`pick`]'s answer.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn load_want(&self) -> Option<At> {
         let l = self.loading?;
         let within = l
@@ -522,6 +567,7 @@ impl<'a> Store<'a> {
 
     /// Starts the load from the slot [`pick`] chose; with none (a new card,
     /// or both headers damaged) the store starts empty in slot 0.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn load_start(&mut self, picked: Option<(u8, u32)>) {
         self.used = 0;
         self.n = 0;
@@ -549,10 +595,12 @@ impl<'a> Store<'a> {
     /// Whether the load is over: until then records can be read as they
     /// arrive, and nothing can be changed.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn loaded(&self) -> bool {
         self.loaded
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn load_done(&mut self) {
         self.loading = None;
         self.loaded = true;
@@ -565,6 +613,7 @@ impl<'a> Store<'a> {
 
     /// The sector [`Store::load_want`] asked for (`None`: it couldn't be
     /// read, which ends the log there).
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn load_sector(&mut self, sector: Option<&[u8; SECTOR]>) {
         let (Some(l), Some(s)) = (self.loading, sector) else {
             return self.load_done();
@@ -631,6 +680,7 @@ impl<'a> Store<'a> {
 
     /// Whether changes wait to reach the card.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn dirty(&self) -> bool {
         self.loaded && (self.flushed < self.used || self.switching.is_some())
     }
@@ -638,11 +688,13 @@ impl<'a> Store<'a> {
     /// Whether the card stopped taking writes (three failed in a row): the
     /// records stay in RAM, and [`Store::retry`] tries again.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn stalled(&self) -> bool {
         self.failures >= 3
     }
 
     /// Tries the card again after a stall (a card put back).
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn retry(&mut self) {
         self.failures = 0;
     }
@@ -650,6 +702,7 @@ impl<'a> Store<'a> {
     /// The next sector to write, into `out`: `None` with nothing to write
     /// (or before the load is over, or stalled). The caller writes it and
     /// calls [`Store::written`].
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn next_write(&mut self, out: &mut [u8; SECTOR]) -> Option<At> {
         if !self.loaded || self.stalled() {
             return None;
@@ -718,6 +771,7 @@ impl<'a> Store<'a> {
     }
 
     /// How the write [`Store::next_write`] asked for went.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn written(&mut self, ok: bool) {
         if !ok {
             // The group starts again (a torn one ends the log anyway).

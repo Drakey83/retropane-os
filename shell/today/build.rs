@@ -160,6 +160,8 @@ fn main() {
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
         println!("cargo:rustc-link-arg-bins=-T{dir}/../../boot/link.x");
+        // A changed layout relinks (cargo doesn't track a `-T` file).
+        println!("cargo:rerun-if-changed={dir}/../../boot/link.x");
         // The stack. It was 24, then 40, then 12: the image used 23.5 KiB (96% of
         // 24) and an older build froze the Axim (the watchdog error screen,
         // 2026-10-17). Of that, 22 KiB was `main`'s frame holding the
@@ -177,6 +179,10 @@ fn main() {
         // inflater's tables, ~3.5 KiB, on top of the main loop's depth);
         // the radar's base map moved to the card, so the area has the room.
         println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=24576");
+        // The image area (950 KB, up to the vector page) holds what is
+        // loaded; the zeroed RAM and stacks (83 KB) go to the free RAM
+        // above it (boot/link.x), since the organiser apps (2026-11-13).
+        println!("cargo:rustc-link-arg-bins=--defsym=__ram_at=0xA8100000");
     }
 }
 

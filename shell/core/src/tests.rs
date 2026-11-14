@@ -66,12 +66,13 @@ fn every_pic() -> Icons {
     icons
 }
 
-fn shell(dev: bool) -> Shell {
+pub(crate) fn shell(dev: bool) -> Shell {
     let mut s = Shell::new(
         Fonts {
             ui: &FONT,
             label: &FONT,
             big: &FONT,
+            num: &FONT,
         },
         every_pic(),
         dev,
@@ -89,13 +90,13 @@ fn shell(dev: bool) -> Shell {
     s
 }
 
-fn tap(s: &mut Shell, r: Rect) -> Action {
+pub(crate) fn tap(s: &mut Shell, r: Rect) -> Action {
     let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
     s.input(Input::PenDown { x, y });
     s.input(Input::PenUp { x, y })
 }
 
-fn drawn(s: &mut Shell) -> Frame {
+pub(crate) fn drawn(s: &mut Shell) -> Frame {
     let mut f = Frame::new();
     s.frame(&mut f);
     f
@@ -149,8 +150,10 @@ fn a_tap_outside_the_menu_closes_it_and_does_nothing_else() {
 fn placeholders_say_not_yet_and_the_notice_goes() {
     let mut s = shell(false);
     s.tick(1000);
-    tap(&mut s, quick_rect(0));
-    assert_eq!(s.notice(), Some("Not yet: Notes"));
+    // The first quick button starts a note (batch 1 of the core apps);
+    // the second has no program yet.
+    tap(&mut s, quick_rect(1));
+    assert_eq!(s.notice(), Some(not_yet(QUICK[1])));
     drawn(&mut s);
     assert_eq!(s.tick(1000 + NOTICE_MS - 1), Action::Nothing);
     assert_eq!(s.tick(1000 + NOTICE_MS), Action::Redraw);
@@ -190,7 +193,7 @@ fn menu_entries_close_the_menu_and_today_says_nothing() {
     assert!(!s.menu_open());
     assert_eq!(s.notice(), None);
     tap(&mut s, START);
-    tap(&mut s, Shell::menu_entry(9)); // Settings
+    tap(&mut s, Shell::menu_entry(11)); // Settings
     assert_eq!(s.notice(), Some("Not yet: Settings"));
 }
 
@@ -222,7 +225,10 @@ fn the_d_pad_reaches_every_target() {
     assert_eq!(s.focus(), Some(Target::SoftLeft));
     s.input(Input::Key(Key::Up));
     assert!(matches!(s.focus(), Some(Target::Quick(_))));
-    // Enter acts on the focus.
+    // Enter acts on the focus (a quick button with no program yet: the
+    // first one starts a note).
+    s.input(Input::Key(Key::Right));
+    assert!(matches!(s.focus(), Some(Target::Quick(1..))));
     s.input(Input::Key(Key::Enter));
     assert!(s.notice().is_some());
 }

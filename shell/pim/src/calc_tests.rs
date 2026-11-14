@@ -250,3 +250,64 @@ fn an_error_stays_until_clear_or_a_new_number() {
         (String::from("0 + 1 ="), String::from("1"))
     );
 }
+
+#[test]
+fn long_products_and_quotients_keep_twelve_digits_through_the_wide_path() {
+    // A tiny mantissa over a large one: the digits come from the long
+    // division, not from the mantissas' ratio.
+    assert_eq!(show(dec("1").over(dec("0.3")).unwrap()), "3.33333333333");
+    assert_eq!(
+        show(dec("1").over(dec("300000000000")).unwrap()),
+        "0.000000000003"
+    );
+    assert_eq!(show(dec("0.000000000001").over(dec("3")).unwrap()), "0");
+    assert_eq!(
+        show(dec("0.000000000002").over(dec("3")).unwrap()),
+        "0.000000000001"
+    );
+    assert_eq!(
+        dec("999999999999").over(dec("0.000001")),
+        Err(Error::TooLarge)
+    );
+    assert_eq!(
+        show(dec("999999999999").over(dec("999999999999")).unwrap()),
+        "1"
+    );
+    assert_eq!(
+        show(dec("123456789012").over(dec("1000000")).unwrap()),
+        "123,456.789012"
+    );
+    // Twenty-four digits of product, rounded once.
+    assert_eq!(
+        show(dec("0.999999999999").times(dec("0.999999999999")).unwrap()),
+        "0.999999999998"
+    );
+    assert_eq!(
+        dec("999999999999").times(dec("999999999999")),
+        Err(Error::TooLarge)
+    );
+    assert_eq!(
+        show(dec("999999").times(dec("999999")).unwrap()),
+        "999,998,000,001"
+    );
+    assert_eq!(
+        show(dec("123456.789").times(dec("1000.001")).unwrap()),
+        "123,456,912.457"
+    );
+    // Sums across the largest gap in scale, both signs.
+    assert_eq!(
+        show(dec("999999999999").plus(dec("0.000000000001")).unwrap()),
+        "999,999,999,999"
+    );
+    assert_eq!(
+        show(dec("1").minus(dec("0.000000000001")).unwrap()),
+        "0.999999999999"
+    );
+    assert_eq!(
+        show(dec("0.000000000001").minus(dec("1")).unwrap()),
+        "-0.999999999999"
+    );
+    assert_eq!(show(dec("-5").plus(dec("5")).unwrap()), "0");
+    assert_eq!(show(dec("-5").times(dec("-5")).unwrap()), "25");
+    assert_eq!(show(dec("-6").over(dec("4")).unwrap()), "-1.5");
+}

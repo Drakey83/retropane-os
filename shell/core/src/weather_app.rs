@@ -581,6 +581,7 @@ impl Shell {
             && self.chart.is_none()
             && self.align.is_none()
             && !self.bare
+            && !self.reminder_shown()
             && self.reveal().is_none())
         .then_some(self.tab)
     }

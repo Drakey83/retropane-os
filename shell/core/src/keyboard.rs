@@ -136,7 +136,6 @@ impl Keyboard {
 
     /// The key that types `c` (the tests type through it; upper case is
     /// Shift then the letter).
-    #[cfg(test)]
     pub(crate) fn cap_of(&self, c: u8) -> Option<u8> {
         (0..CAPS).find(|&i| matches!(self.cap(i), Some((Cap::Char(b), _)) if b == c))
     }
@@ -160,10 +159,24 @@ impl Keyboard {
     pub(crate) fn draw(
         &self,
         f: &mut Frame,
+        fonts: (&'static Font, &'static Font),
+        pressed: Option<u8>,
+        focus: Option<u8>,
+        accent: Argb,
+    ) {
+        self.draw_named(f, fonts, pressed, focus, accent, b"DONE");
+    }
+
+    /// [`Keyboard::draw`] with the big key's word (`RETURN` while a note
+    /// is typed: its Done is the softkey, notes-rule0.md).
+    pub(crate) fn draw_named(
+        &self,
+        f: &mut Frame,
         (ui, label): (&'static Font, &'static Font),
         pressed: Option<u8>,
         focus: Option<u8>,
         accent: Argb,
+        done: &[u8],
     ) {
         // Dense: keys read over any wallpaper (the sunset's first preview,
         // 2026-10-31, lost them in the colour).
@@ -203,7 +216,7 @@ impl Keyboard {
                 Cap::Delete => (label, b"DEL"),
                 Cap::Symbols if self.symbols => (label, b"ABC"),
                 Cap::Symbols => (label, b"?123"),
-                Cap::Done => (label, b"DONE"),
+                Cap::Done => (label, done),
                 Cap::Paste => (label, b"PASTE"),
                 Cap::FromPc => (label, b"FROM PC"),
             };

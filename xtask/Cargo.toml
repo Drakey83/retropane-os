@@ -15,6 +15,7 @@ rp-drv-mbx3d = { path = "../drivers/mbx3d" }
 rp-draw = { path = "../drivers/draw" }
 rp-gfx = { path = "../drivers/gfx" }
 rp-shell = { path = "../shell/core" }
+rp-pim = { path = "../shell/pim" }
 rp-today = { path = "../shell/today" }
 rp-display-cal = { path = "../boot/display-cal" }
 rp-looks = { path = "../boot/looks" }

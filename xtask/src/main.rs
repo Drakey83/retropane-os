@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod adrs;
+mod apps_preview;
 mod calib;
 mod devlock;
 mod emu;

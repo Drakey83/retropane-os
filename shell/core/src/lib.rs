@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 pub mod align;
+pub mod apps;
 pub mod chart;
 mod keyboard;
 pub mod motion;
@@ -35,6 +36,7 @@ pub mod station;
 pub mod weather_app;
 mod weather_net;
 mod weather_settings;
+pub use apps::View;
 pub use weather_net::{Ask, Question};
 
 pub use weather_app::{LAYER_MARGIN, Motion, PageView, picture_rows};
@@ -57,6 +59,9 @@ pub struct Fonts {
     pub label: &'static Font,
     /// The big light numerals (the clock, the temperature).
     pub big: &'static Font,
+    /// Numerals at 36 px with their signs (`0-9 . , - + x / = %`): the
+    /// calculator's display and keys (docs/design/design-language.md).
+    pub num: &'static Font,
 }
 
 /// A size the shell shows a weather picture at: a class of slots in the
@@ -325,6 +330,9 @@ pub enum Screen {
     Station,
     /// A weather alert in full.
     Alert,
+    /// An organiser app's screen ([`apps`]: Calendar, Contacts, Tasks,
+    /// Notes, the Calculator).
+    App(apps::View),
 }
 
 /// The keys the shell reacts to.
@@ -460,6 +468,9 @@ pub enum Target {
     Reading(u8),
     /// The chart's span chip (0: 12 hours, 1: 2 days).
     Span(u8),
+    /// A control of an organiser app's screen, or of the reminder banner
+    /// (its place in the screen's list of targets).
+    App(u8),
 }
 
 // ---- Layout (480 x 640, portrait) --------------------------------------
@@ -524,11 +535,13 @@ fn quick_rect(i: u8) -> Rect {
 const DEG_BIG: u8 = 0xB0;
 
 /// The Start menu (docs/design/ui.md), "Back to loader" only in test images.
-const MENU: [&str; 10] = [
+const MENU: [&str; 12] = [
     "Today",
     "Calendar",
+    "Contacts",
     "Tasks",
     "Notes",
+    "Calculator",
     "Documents",
     "File Explorer",
     "Inbox",
@@ -560,7 +573,7 @@ const MENU_X: u16 = 0;
 const MENU_Y: u16 = 36;
 const MENU_W: u16 = 280;
 /// 38 px: fourteen rows fit between the title bar and the softkeys.
-const MENU_ROW: u16 = 38;
+const MENU_ROW: u16 = 34;
 
 // ---- Colours (the smoked glass, docs/design/ui.md) -------------
 
@@ -650,6 +663,8 @@ const PULL_REFRESH: i32 = 56;
 
 /// The shell's state.
 pub struct Shell {
+    /// The organiser apps' state ([`apps`]).
+    apps: apps::Apps,
     fonts: Fonts,
     icons: Icons,
     /// Whether the Start menu offers "Back to loader" (test images only).
@@ -870,6 +885,7 @@ impl Shell {
 macro_rules! shell_start {
     ($fonts:expr, $icons:expr, $dev_exit:expr; $($how:tt)*) => {
         rp_hal_mem::in_place!($($how)* Shell {
+            apps: apps::Apps::new(),
             fonts: $fonts,
             icons: $icons,
             dev_exit: $dev_exit,
@@ -1331,6 +1347,7 @@ impl Shell {
             Screen::KeyEntry => "Station key",
             Screen::Station => "Your station",
             Screen::Alert => "Weather alert",
+            Screen::App(v) => Self::app_title(v),
         }
     }
 
@@ -1604,6 +1621,7 @@ impl Shell {
             Target::Timeline => weather_app::TIMELINE,
             Target::Reading(i) => self.reading_rect(i),
             Target::Span(i) => chart::span_chip(i),
+            Target::App(i) => self.app_rect(i),
         }
     }
 
@@ -1624,8 +1642,11 @@ impl Shell {
         } else {
             0
         };
+        // The organiser apps' controls and the reminder banner's buttons
+        // before what they may lie over (the banner over Today's hero).
         let today = [Target::Start]
             .into_iter()
+            .chain((0..self.app_targets()).map(Target::App))
             .chain(self.shows_ok().then_some(Target::Ok))
             .chain((0..back).map(|_| Target::Back))
             .chain((0..hero).map(|_| Target::Hero))
@@ -1726,6 +1747,15 @@ impl Shell {
         let was_light = self.light();
         self.time = t;
         self.dirty(TITLE_CLOCK);
+        // The organiser: reminders by the minute, the lists by the day.
+        if date_changed {
+            if self.view().is_some() {
+                self.app_changed();
+            } else {
+                self.apps.forget_lists();
+            }
+        }
+        self.reminders_tick();
         // Auto's change at sunrise or sunset: every screen in the other look.
         if self.light() != was_light {
             self.dirty(Rect::new(0, 0, W, H));
@@ -1817,11 +1847,15 @@ impl Shell {
         }
         match t {
             Target::Start => self.set_menu(!self.menu_open),
+            // The first quick button starts a note.
+            Target::Quick(0) => self.note_open(None),
             Target::Quick(i) => {
                 self.show_notice(not_yet(QUICK[usize::from(i).min(QUICK.len() - 1)]))
             }
+            Target::App(i) => self.app_tapped(i),
             Target::SoftLeft => match self.screen {
-                Screen::Today => self.show_notice(not_yet(self.softkeys().0)),
+                Screen::Today => self.open_app(View::Agenda),
+                Screen::App(v) => self.app_soft(v, false),
                 // Refresh (T4); the header's control goes back.
                 Screen::Weather => self.refresh(),
                 // Back (Cancel on the keyboard), I7: the left softkey and
@@ -1838,6 +1872,7 @@ impl Shell {
                 }
                 Screen::WeatherSettings | Screen::WeatherFrom | Screen::Alert => {}
                 Screen::Station => self.refresh(),
+                Screen::App(v) => self.app_soft(v, true),
             },
             Target::Hero => self.open_weather(),
             Target::Station => self.open(Screen::Station),
@@ -1860,6 +1895,7 @@ impl Shell {
             Target::Tab(i) => self.set_tab(i),
             Target::Back => self.go_back(),
             Target::Row(i) => self.row_tapped(i),
+            Target::Cap(i) if self.view().is_some() => self.app_cap(i),
             Target::Cap(i) => self.cap_tapped(i),
             Target::Play => {
                 self.radar_play = !self.radar_play;
@@ -1896,8 +1932,20 @@ impl Shell {
                     return Action::Redraw;
                 }
                 self.set_menu(false);
+                let app = match label {
+                    "Calendar" => Some(View::Agenda),
+                    "Contacts" => Some(View::Contacts),
+                    "Tasks" => Some(View::Tasks),
+                    "Notes" => Some(View::Notes),
+                    "Calculator" => Some(View::Calculator),
+                    _ => None,
+                };
                 if label == "Today" {
                     self.go_today();
+                } else if let Some(v) = app {
+                    // A note open is kept on the way.
+                    self.app_leave();
+                    self.open_app(v);
                 } else {
                     self.show_notice(not_yet(label));
                 }
@@ -1908,6 +1956,7 @@ impl Shell {
 
     /// Back to the Today screen (from anywhere).
     fn go_today(&mut self) {
+        self.app_leave();
         if self.screen != Screen::Today {
             // A key half typed is forgotten on the way.
             self.typed = [0; rp_weather::settings::KEY_MAX];
@@ -1920,6 +1969,7 @@ impl Shell {
             if self.focus.is_some() {
                 self.focus = Some(Target::Hero);
             }
+            self.app_refresh();
             self.dirty(Rect::new(0, 0, W, H));
         }
     }
@@ -1964,6 +2014,7 @@ impl Shell {
             Screen::KeyEntry => ("Cancel", "Done"),
             Screen::Station => ("Back", "Refresh"),
             Screen::Alert => ("Back", ""),
+            Screen::App(v) => self.app_softkeys(v),
         }
     }
 
@@ -2159,6 +2210,13 @@ impl Shell {
                 a => a,
             };
         }
+        // An organiser app's list under the pen, its caret under the keys.
+        if let Some(a) = self.app_pen(e) {
+            return match a {
+                Action::Nothing if self.damaged != before => Action::Redraw,
+                a => a,
+            };
+        }
         let act = match e {
             Input::PenDown { x, y } => {
                 self.gesture = Gesture::None;
@@ -2256,6 +2314,7 @@ impl Shell {
                     Some(f) => self.neighbour(f, k).or(Some(f)),
                 };
                 self.set_focus(next);
+                self.app_follow_focus();
                 Action::Nothing
             }
         };
@@ -2706,6 +2765,7 @@ impl Shell {
             Screen::KeyEntry => self.key_scene(f),
             Screen::Station => self.station_scene(f),
             Screen::Alert => self.alert_scene(f),
+            Screen::App(v) => self.app_scene(f, v),
         }
         if self.chart.is_some() {
             f.clip(None);
@@ -2729,6 +2789,10 @@ impl Shell {
             self.centred(f, NOTICE, H - 14, ui, FOCUS, n.as_bytes());
         }
 
+        // A reminder over whatever is up (the notification centre's
+        // banner, docs/design/calendar-rule0.md).
+        self.banner_scene(f);
+
         // The Start menu over everything.
         if self.menu_open {
             let r = self.menu_rect();
@@ -2736,7 +2800,7 @@ impl Shell {
             for i in 0..self.menu_len() {
                 let e = Self::menu_entry(i);
                 self.press_under(f, Target::Menu(i));
-                f.text(e.x + 16, e.y + 27, ui, TEXT, self.menu_label(i).as_bytes());
+                f.text(e.x + 16, e.y + 24, ui, TEXT, self.menu_label(i).as_bytes());
                 self.decorate(f, Target::Menu(i));
             }
         }

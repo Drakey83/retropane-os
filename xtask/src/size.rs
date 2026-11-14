@@ -531,11 +531,16 @@ pub const BUDGETS: &[Budget] = &[
     // the 2D renderer's glyph pairs 16 -> 32 slots (R172's return leg: Today
     // with the sky and Weather in both looks draw 25 pairs; each slot's
     // glyph table cut 160 -> 130 entries and one 256-byte chunk table for
-    // all, ~3.4 KiB more in `.bss`); 78.6 KiB measured.
+    // all, ~3.4 KiB more in `.bss`); 78.6 KiB measured. Then 80 -> 84 KiB
+    // on 2026-11-13 (test image): the organiser apps' state in the shell
+    // (the targets on screen, the calculator, the form's numbers: 1.9
+    // KiB; their store and lists are in the RAM pool); 80.9 KiB measured.
+    // The zeroed RAM and stacks lie above the image area since the same
+    // day (boot/link.x, `__ram_at`), so the area holds the loaded bytes.
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 80 * 1024,
+        max_zero: 84 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D
@@ -1226,6 +1231,9 @@ pub fn check_allotments(
 /// page): `rp_hal_x51v::devices::IMAGE_BASE` and `IMAGE_MAX`, docs/hw/memory-map.md.
 const IMAGE_BASE: u64 = 0xA800_8000;
 const IMAGE_END: u64 = 0xA80F_0000;
+/// The free RAM between the reserved pages above the image area and the
+/// loader's home (boot/link.x): an image's zeroed RAM and stacks may go here.
+const FREE_RAM: (u64, u64) = (0xA810_0000, 0xA840_0000);
 
 /// Loaded and zero-initialised byte counts of an ELF32 image.
 #[derive(Debug, PartialEq, Eq)]
@@ -1236,6 +1244,11 @@ pub struct Sizes {
     pub zero: u64,
     /// The lowest and highest address the allocated sections cover.
     pub span: Option<(u64, u64)>,
+    /// The same for the loaded (PROGBITS) sections alone, and for the
+    /// zeroed (NOBITS) ones.
+    pub load_span: Option<(u64, u64)>,
+    /// See [`Sizes::load_span`].
+    pub zero_span: Option<(u64, u64)>,
 }
 
 const SHF_ALLOC: u32 = 0x2;
@@ -1259,6 +1272,8 @@ pub fn measure(elf: &[u8]) -> Result<Sizes, String> {
         load: 0,
         zero: 0,
         span: None,
+        load_span: None,
+        zero_span: None,
     };
     for i in 0..shnum {
         let sh = shoff + i * shentsize;
@@ -1270,8 +1285,16 @@ pub fn measure(elf: &[u8]) -> Result<Sizes, String> {
             continue;
         }
         if size > 0 {
-            let (lo, hi) = sizes.span.unwrap_or((addr, addr + size));
-            sizes.span = Some((lo.min(addr), hi.max(addr + size)));
+            let grow = |span: &mut Option<(u64, u64)>| {
+                let (lo, hi) = span.unwrap_or((addr, addr + size));
+                *span = Some((lo.min(addr), hi.max(addr + size)));
+            };
+            grow(&mut sizes.span);
+            grow(if kind == SHT_NOBITS {
+                &mut sizes.zero_span
+            } else {
+                &mut sizes.load_span
+            });
         }
         if kind == SHT_NOBITS {
             sizes.zero += size;
@@ -1382,7 +1405,29 @@ pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
         // data and stacks included, before the reserved vector page (2026-10-30:
         // rp-today's code fit its budget but its .bss and stack ran over the
         // vector page, and it never took the screen in the emulator).
-        if let Some((lo, hi)) = s.span
+        // An image may put its zeroed RAM and stacks in the free RAM above
+        // the image area instead (boot/link.x, `__ram_at`): then what is
+        // loaded must end before the vector page, and the zeroed part must
+        // lie wholly inside that free RAM.
+        if let (Some((lo, load_hi)), Some((zlo, zhi))) = (s.load_span, s.zero_span)
+            && lo == IMAGE_BASE
+            && zlo >= IMAGE_END
+        {
+            if load_hi > IMAGE_END {
+                return Err(format!(
+                    "{}: its loaded bytes end at {load_hi:#x}, past the image area's end {IMAGE_END:#x} (the vector page): {} B loaded must fit {} B",
+                    b.image,
+                    s.load,
+                    IMAGE_END - IMAGE_BASE
+                ));
+            }
+            if zlo < FREE_RAM.0 || zhi > FREE_RAM.1 {
+                return Err(format!(
+                    "{}: its zeroed RAM and stacks lie at {zlo:#x}-{zhi:#x}, outside the free RAM {:#x}-{:#x} (boot/link.x)",
+                    b.image, FREE_RAM.0, FREE_RAM.1
+                ));
+            }
+        } else if let Some((lo, hi)) = s.span
             && lo == IMAGE_BASE
             && hi > IMAGE_END
         {
@@ -1473,6 +1518,10 @@ mod tests {
                 load: 1000,
                 zero: 500,
                 span: Some((0, 1000)),
+                // Loaded and zeroed apart (the test's sections all sit
+                // at 0): what the image-area check reads.
+                load_span: Some((0, 1000)),
+                zero_span: Some((0, 500)),
             }
         );
     }

@@ -26,6 +26,9 @@ SIZES = [
     ("UI", 18, 0x20, 0x80, 0, None),
     ("LABEL", 15, 0x20, 0x80, 2, None),
     ("BIG", 76, 0x30, 0xB0, 0, "0123456789:°"),
+    # The calculator's display and keys (docs/design/calculator-rule0.md):
+    # numerals with the signs a sum needs, at half the clock's size.
+    ("NUM", 36, 0x25, 0x78, 0, "0123456789.,-+x/=%"),
 ]
 
 

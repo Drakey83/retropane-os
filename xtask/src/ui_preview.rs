@@ -211,6 +211,7 @@ pub fn run(root: &Path) -> Result<(), String> {
         &steps,
         true,
         Some(crate::emu::NWS_ALERTS),
+        &crate::emu::empty_organiser,
     );
     let out = root.join("target").join("ui-preview");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -228,6 +229,34 @@ pub fn run(root: &Path) -> Result<(), String> {
     for s in &shots {
         at += s.steps.len();
         let rgb = all.get(at).ok_or("ui-preview: a screen missing")?;
+        let file = format!("{}.png", s.name);
+        std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
+            .map_err(|e| format!("{file}: {e}"))?;
+        page.push_str(&format!(
+            "<figure><img src=\"{file}\" alt=\"{w}\"><figcaption>{w}</figcaption></figure>\n",
+            w = s.what
+        ));
+    }
+    // The organiser apps (batch 1 of docs/design/core-apps-list.md), with
+    // the sample records: every screen each app shows.
+    let app_shots = crate::apps_preview::shots();
+    let steps: Vec<Input> = app_shots
+        .iter()
+        .flat_map(|s| s.steps.iter().copied())
+        .collect();
+    let all = crate::emu::today_screens(
+        &wall,
+        map.as_deref(),
+        &steps,
+        true,
+        None,
+        &crate::apps_preview::sample,
+    );
+    let mut at = 0;
+    page.push_str("<h2>The organiser apps</h2>\n");
+    for s in &app_shots {
+        at += s.steps.len();
+        let rgb = all.get(at).ok_or("ui-preview: an app screen missing")?;
         let file = format!("{}.png", s.name);
         std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
             .map_err(|e| format!("{file}: {e}"))?;
@@ -329,6 +358,7 @@ pub fn run(root: &Path) -> Result<(), String> {
                         &steps,
                         true,
                         Some(crate::emu::NWS_ALERTS),
+                        &crate::emu::empty_organiser,
                     );
                     let rgb = all.last().ok_or("ui-preview: no radar screen")?;
                     let name = format!(

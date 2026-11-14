@@ -10,6 +10,10 @@
  * table) are reserved for rt::take_kdata_page (ADR-0010 rule 8).
  * 0xA80F8000-0xA8100000 (32 KiB) is reserved for the whole-D-cache clean
  * (rp-hal-pxa27x::cpu::CLEAN_REGION) and never holds data.
+ * 0xA8100000-0xA8400000 (3 MiB) is free RAM: an image that needs the
+ * whole image area for what is loaded puts its zeroed RAM and stacks
+ * there (--defsym=__ram_at=0xA8100000, rp-today since 2026-11-13: the
+ * organiser apps; xtask/src/size.rs checks both places).
  * 0xA8400000-0xA8500000 (1 MiB) is the resident loader's home
  * (boot/loader/link.x, ADR-0012), 0xA8500000-0xA8510000 its run log and
  * 0xA8510000-0xA8511000 the trace ring (item 54), 0xA8511000-0xA8512000
@@ -43,7 +47,9 @@ SECTIONS
     } > SDRAM
     .data   : ALIGN(4) { *(.data .data.*) } > SDRAM
 
-    .bss (NOLOAD) : ALIGN(4) {
+    /* Zeroed RAM and stacks: after the loaded bytes, or where the image
+     * says (see the top). Never loaded, so the raw image ends at .data. */
+    .bss (DEFINED(__ram_at) ? __ram_at : .) (NOLOAD) : ALIGN(4) {
         __bss_start = .;
         *(.bss .bss.* COMMON)
         . = ALIGN(4);

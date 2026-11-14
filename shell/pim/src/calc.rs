@@ -13,15 +13,18 @@ pub const DIGITS: u32 = 12;
 /// Terms an expression holds before it folds what it has.
 const TERMS: usize = 8;
 
-const fn pow10(n: u32) -> i128 {
-    let mut p = 1i128;
-    let mut k = 0;
-    while k < n {
-        p *= 10;
+/// 10^0 to 10^12.
+const POW10: [u64; 13] = {
+    let mut t = [1u64; 13];
+    let mut k = 1;
+    while k < 13 {
+        t[k] = t[k - 1] * 10;
         k += 1;
     }
-    p
-}
+    t
+};
+/// 10^12: the base of a [`Wide`]'s two parts.
+const BASE: u64 = POW10[12];
 
 /// A decimal number: `m` / 10^`scale`, at most [`DIGITS`] digits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -42,6 +45,7 @@ pub enum Error {
 impl Error {
     /// In words, for the display.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn says(self) -> &'static str {
         match self {
             Self::DivideByZero => "Cannot divide by zero",
@@ -50,7 +54,18 @@ impl Error {
     }
 }
 
-fn digits(mut m: i128) -> u32 {
+/// A magnitude too long for one word while it is worked on: `hi` x 10^12
+/// plus `lo`, `lo` under 10^12. Everything is 64-bit arithmetic in tens: the
+/// PXA270 has no wide divide, and the library's 128-bit one cost the
+/// image more than this whole file.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Wide {
+    hi: u64,
+    lo: u64,
+}
+
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+fn digits(mut m: u64) -> u32 {
     let mut n = 0;
     while m != 0 {
         m /= 10;
@@ -59,40 +74,127 @@ fn digits(mut m: i128) -> u32 {
     n
 }
 
-/// `m` / 10^`scale` as a [`Dec`]: rounded to [`DIGITS`] digits and places,
-/// trailing zeros dropped.
-fn norm(mut m: i128, mut scale: i32) -> Result<Dec, Error> {
+impl Wide {
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+    const fn of(m: u64) -> Self {
+        Self {
+            hi: m / BASE,
+            lo: m % BASE,
+        }
+    }
+
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+    fn digits(self) -> u32 {
+        if self.hi == 0 {
+            digits(self.lo)
+        } else {
+            12 + digits(self.hi)
+        }
+    }
+
+    /// `m` (under 10^12) x 10^`k` (`k` at most 12).
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+    fn shifted(m: u64, k: u32) -> Self {
+        let cut = POW10[(12 - k) as usize];
+        Self {
+            hi: m / cut,
+            lo: m % cut * POW10[k as usize],
+        }
+    }
+
+    /// Divided by 10^`k` (`k` at most 12), rounded half away from zero.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+    fn dropped(self, k: u32) -> Self {
+        if k == 0 {
+            return self;
+        }
+        let p = POW10[k as usize];
+        let rem = self.lo % p;
+        let mut lo = self.hi % p * POW10[(12 - k) as usize] + self.lo / p;
+        let mut hi = self.hi / p;
+        if rem * 2 >= p {
+            lo += 1;
+            if lo == BASE {
+                lo = 0;
+                hi += 1;
+            }
+        }
+        Self { hi, lo }
+    }
+
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+    fn plus(self, o: Self) -> Self {
+        let lo = self.lo + o.lo;
+        Self {
+            hi: self.hi + o.hi + lo / BASE,
+            lo: lo % BASE,
+        }
+    }
+
+    /// `self - o` (`o` no larger).
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+    fn minus(self, o: Self) -> Self {
+        let borrow = u64::from(self.lo < o.lo);
+        Self {
+            hi: self.hi - o.hi - borrow,
+            lo: self.lo + borrow * BASE - o.lo,
+        }
+    }
+}
+
+/// `m` / 10^`scale` (negative when `neg`) as a [`Dec`]: rounded to
+/// [`DIGITS`] digits and places, trailing zeros dropped.
+#[inline(never)]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
+fn norm(neg: bool, mut m: Wide, mut scale: i32) -> Result<Dec, Error> {
     // A negative scale is whole tens: they go into the mantissa.
     if scale < 0 {
-        if digits(m) + scale.unsigned_abs() > DIGITS {
+        let up = scale.unsigned_abs();
+        if m.digits() + up > DIGITS {
             return Err(Error::TooLarge);
         }
-        m *= pow10(scale.unsigned_abs());
+        m = Wide::of(m.lo * POW10[up as usize]);
         scale = 0;
     }
-    // Round away what is past the digits kept, then past the places kept.
-    for pass in 0..2 {
-        let over = if pass == 0 {
-            digits(m).saturating_sub(DIGITS).min(scale as u32)
-        } else {
-            (scale as u32).saturating_sub(DIGITS)
-        };
-        if over > 0 {
-            let p = pow10(over);
-            let half = if m < 0 { -(p / 2) } else { p / 2 };
-            m = (m + half) / p;
-            scale -= over as i32;
+    // Round away what is past the digits kept, then past the places kept
+    // (at most 12 at a step: dropping the first part unrounded can't
+    // change which way the last part rounds).
+    loop {
+        let over = m
+            .digits()
+            .saturating_sub(DIGITS)
+            .min(scale as u32)
+            .max((scale as u32).saturating_sub(DIGITS));
+        if over == 0 {
+            break;
         }
+        let step = over.min(12);
+        m = if step < over {
+            Wide {
+                hi: 0,
+                lo: m.hi % POW10[step as usize] * POW10[(12 - step) as usize]
+                    + m.lo / POW10[step as usize],
+            }
+            .plus(Wide {
+                hi: m.hi / POW10[step as usize],
+                lo: 0,
+            })
+        } else {
+            m.dropped(step)
+        };
+        scale -= step as i32;
     }
-    if digits(m) > DIGITS {
+    if m.digits() > DIGITS {
         return Err(Error::TooLarge);
     }
-    while scale > 0 && m % 10 == 0 {
-        m /= 10;
+    let mut v = m.lo;
+    while scale > 0 && v.is_multiple_of(10) {
+        v /= 10;
         scale -= 1;
     }
+    let v = v as i64;
     Ok(Dec {
-        m: m as i64,
+        m: if neg { -v } else { v },
         scale: scale as u8,
     })
 }
@@ -103,6 +205,7 @@ impl Dec {
 
     /// A whole number.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn whole(n: i64) -> Self {
         Self { m: n, scale: 0 }
     }
@@ -110,29 +213,32 @@ impl Dec {
     /// The number typed as digits with at most one point (`"12.50"`);
     /// `None` for anything else.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn typed(text: &[u8]) -> Option<Self> {
-        let (mut m, mut scale, mut point) = (0i128, 0i32, false);
+        let (mut m, mut scale, mut point) = (0u64, 0i32, false);
         for &b in text {
             match b {
                 b'0'..=b'9' => {
-                    m = m * 10 + i128::from(b - b'0');
+                    m = m.checked_mul(10)?.checked_add(u64::from(b - b'0'))?;
                     scale += i32::from(point);
                 }
                 b'.' if !point => point = true,
                 _ => return None,
             }
         }
-        norm(m, scale).ok()
+        norm(false, Wide::of(m), scale).ok()
     }
 
     /// Whether it is zero.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn is_zero(self) -> bool {
         self.m == 0
     }
 
     /// The same number with the other sign.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn neg(self) -> Self {
         Self {
             m: -self.m,
@@ -140,28 +246,31 @@ impl Dec {
         }
     }
 
-    fn both(self, o: Self) -> (i128, i128, i32) {
-        let s = self.scale.max(o.scale);
-        (
-            i128::from(self.m) * pow10(u32::from(s - self.scale)),
-            i128::from(o.m) * pow10(u32::from(s - o.scale)),
-            i32::from(s),
-        )
-    }
-
     /// `self + o`.
     ///
     /// # Errors
     /// [`Error::TooLarge`].
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn plus(self, o: Self) -> Result<Self, Error> {
-        let (a, b, s) = self.both(o);
-        norm(a + b, s)
+        // Both at the larger scale, then by their signs.
+        let s = self.scale.max(o.scale);
+        let a = Wide::shifted(self.m.unsigned_abs(), u32::from(s - self.scale));
+        let b = Wide::shifted(o.m.unsigned_abs(), u32::from(s - o.scale));
+        let (an, bn) = (self.m < 0, o.m < 0);
+        if an == bn {
+            norm(an, a.plus(b), i32::from(s))
+        } else if a >= b {
+            norm(an, a.minus(b), i32::from(s))
+        } else {
+            norm(bn, b.minus(a), i32::from(s))
+        }
     }
 
     /// `self - o`.
     ///
     /// # Errors
     /// [`Error::TooLarge`].
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn minus(self, o: Self) -> Result<Self, Error> {
         self.plus(o.neg())
     }
@@ -170,9 +279,22 @@ impl Dec {
     ///
     /// # Errors
     /// [`Error::TooLarge`].
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn times(self, o: Self) -> Result<Self, Error> {
+        // Each in two parts of six digits: no partial product passes
+        // 10^12.
+        const HALF: u64 = POW10[6];
+        let (a, b) = (self.m.unsigned_abs(), o.m.unsigned_abs());
+        let (a1, a0, b1, b0) = (a / HALF, a % HALF, b / HALF, b % HALF);
+        let mid = a1 * b0 + a0 * b1;
+        let p = Wide {
+            hi: a1 * b1 + mid / HALF,
+            lo: mid % HALF * HALF,
+        }
+        .plus(Wide::of(a0 * b0));
         norm(
-            i128::from(self.m) * i128::from(o.m),
+            (self.m < 0) != (o.m < 0),
+            p,
             i32::from(self.scale) + i32::from(o.scale),
         )
     }
@@ -181,19 +303,35 @@ impl Dec {
     ///
     /// # Errors
     /// [`Error::DivideByZero`], [`Error::TooLarge`].
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn over(self, o: Self) -> Result<Self, Error> {
         if o.m == 0 {
             return Err(Error::DivideByZero);
         }
-        // Twenty more places than needed, so the one rounding in `norm`
-        // is the only one that shows.
-        const MORE: u32 = 20;
-        let q = i128::from(self.m) * pow10(MORE) / i128::from(o.m);
-        norm(q, i32::from(self.scale) - i32::from(o.scale) + MORE as i32)
+        // Long division in tens: the whole part, then digit after digit
+        // until fourteen that count are had (two more than are kept, so
+        // the one rounding in `norm` is the only one that shows).
+        let (a, b) = (self.m.unsigned_abs(), o.m.unsigned_abs());
+        let (mut q, mut r) = (a / b, a % b);
+        let mut places = 0i32;
+        let mut had = digits(q);
+        while r != 0 && had < DIGITS + 2 && places < 40 {
+            r *= 10;
+            q = q * 10 + r / b;
+            r %= b;
+            places += 1;
+            had += u32::from(q != 0);
+        }
+        norm(
+            (self.m < 0) != (o.m < 0),
+            Wide::of(q),
+            i32::from(self.scale) - i32::from(o.scale) + places,
+        )
     }
 
     /// The number as text into `out` (digits grouped in threes before the
     /// point with `group`, 0 for none): its length.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn show(self, group: u8, out: &mut [u8; 32]) -> usize {
         let mut digits = [0u8; 20];
         let mut n = 0;
@@ -243,6 +381,7 @@ pub enum Op {
 impl Op {
     /// The sign shown.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn sign(self) -> u8 {
         match self {
             Self::Add => b'+',
@@ -252,6 +391,7 @@ impl Op {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn apply(self, a: Dec, b: Dec) -> Result<Dec, Error> {
         match self {
             Self::Add => a.plus(b),
@@ -261,6 +401,7 @@ impl Op {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     const fn binds(self) -> bool {
         matches!(self, Self::Mul | Self::Div)
     }
@@ -314,6 +455,7 @@ pub struct Calc {
 }
 
 impl Default for Calc {
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn default() -> Self {
         Self::new()
     }
@@ -322,6 +464,7 @@ impl Default for Calc {
 impl Calc {
     /// A cleared calculator.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub const fn new() -> Self {
         Self {
             terms: [(Dec::ZERO, Op::Add); TERMS],
@@ -335,6 +478,7 @@ impl Calc {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn entry_value(&self) -> Option<Dec> {
         if self.len == 0 {
             return None;
@@ -343,6 +487,7 @@ impl Calc {
         Some(if self.negative { v.neg() } else { v })
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn set_entry(&mut self, v: Dec) {
         let mut out = [0u8; 32];
         let n = v.show(0, &mut out);
@@ -355,6 +500,7 @@ impl Calc {
     }
 
     /// The terms and `last` as one value: times and divided-by first.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn value(terms: &[(Dec, Op)], last: Dec) -> Result<Dec, Error> {
         let mut sum = Dec::ZERO;
         let mut sign = Op::Add;
@@ -376,6 +522,7 @@ impl Calc {
         Ok(sum)
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn fail(&mut self, e: Error) {
         self.n = 0;
         self.len = 0;
@@ -383,6 +530,7 @@ impl Calc {
         self.shown = Shown::Error(e);
     }
 
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     fn expression(&self, last: Option<Dec>, out: &mut [u8; 96]) -> usize {
         let mut at = 0;
         let mut put = |s: &[u8]| {
@@ -405,6 +553,7 @@ impl Calc {
     }
 
     /// A key pressed.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn press(&mut self, key: Key) {
         if let Shown::Error(_) = self.shown {
             // Only Clear or a new number leaves an error.
@@ -560,6 +709,7 @@ impl Calc {
     ///
     /// # Errors
     /// The error shown.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn number(&self, out: &mut [u8; 32]) -> Result<usize, Error> {
         match self.shown {
             Shown::Error(e) => Err(e),
@@ -593,6 +743,7 @@ impl Calc {
     }
 
     /// The small line above: the expression so far, or the finished one.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
     pub fn line(&self, out: &mut [u8; 96]) -> usize {
         if let Shown::Result(_) = self.shown {
             *out = self.last;

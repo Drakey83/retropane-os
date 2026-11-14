@@ -12,6 +12,7 @@ rp-hal-mem = { path = "../../hal/mem" }
 rp-draw = { path = "../../drivers/draw" }
 rp-touch-cal = { path = "../../drivers/touch-cal" }
 rp-weather = { path = "../weather" }
+rp-pim = { path = "../pim" }
 
 [dev-dependencies]
 # Test-only: incremental redraws checked against full ones with the real

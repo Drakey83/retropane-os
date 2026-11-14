@@ -21,12 +21,14 @@ pub struct Date {
 
 /// Whether `year` has a 29 February.
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub const fn is_leap(year: i32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 /// The days in `month` (1-12) of `year`; 0 for a month that isn't one.
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub const fn days_in_month(year: i32, month: u8) -> u8 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -45,6 +47,7 @@ pub const fn days_in_month(year: i32, month: u8) -> u8 {
 /// The day count of a date (a day past its month's end counts on into the
 /// next: the caller checks with [`valid`]).
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub const fn days_from(d: Date) -> i32 {
     let y = if d.month <= 2 { d.year - 1 } else { d.year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -57,6 +60,7 @@ pub const fn days_from(d: Date) -> i32 {
 
 /// The date of a day count.
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub const fn date_of(days: i32) -> Date {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -72,30 +76,35 @@ pub const fn date_of(days: i32) -> Date {
 
 /// Whether the date exists.
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub const fn valid(d: Date) -> bool {
     d.month >= 1 && d.month <= 12 && d.day >= 1 && d.day <= days_in_month(d.year, d.month)
 }
 
 /// The weekday of a day count: 0 Monday ..= 6 Sunday.
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub const fn weekday(days: i32) -> u8 {
     (days + 3).rem_euclid(7) as u8
 }
 
 /// The day a moment (local minutes) falls on.
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub const fn day_of(minutes: u32) -> i32 {
     (minutes / DAY_MIN) as i32
 }
 
 /// The first minute of a day (0 for a day before 1970).
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub const fn start_of(days: i32) -> u32 {
     if days < 0 { 0 } else { days as u32 * DAY_MIN }
 }
 
 /// The first day of the month `months` after `d`'s (negative: before).
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::t32))]
 pub const fn month_start(d: Date, months: i32) -> Date {
     let m = d.year * 12 + d.month as i32 - 1 + months;
     Date {

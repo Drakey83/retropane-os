@@ -55,12 +55,15 @@ pub(crate) fn today_output(release: &Path, name: &str) -> Result<Vec<u8>, String
 /// picture (the preview's pictures show pages in place; the emulator check
 /// keeps the image's own timing). `alerts` is an alerts answer as the
 /// relay brings it (the previews'; the emulator's image has no relay).
+/// `prepare` sets the shell up further before the first screen (the
+/// organiser apps' memory and records).
 pub(crate) fn today_screens(
     wall: &[u8],
     map: Option<&[u8]>,
     steps: &[rp_shell::Input],
     settle: bool,
     alerts: Option<&[u8]>,
+    prepare: &dyn Fn(&mut rp_shell::Shell),
 ) -> Vec<Vec<u8>> {
     use rp_draw::{Frame, Renderer};
     use rp_mbx_render::model::{self, Bus, Mem};
@@ -92,6 +95,7 @@ pub(crate) fn today_screens(
         shell.set_station_from_tempest(PREVIEW_STATION);
         shell.set_history_from_tempest(preview_history().as_bytes());
     }
+    prepare(&mut shell);
     let mut frame = Frame::new();
     let mut screens = Vec::new();
     let mut shown = None;
@@ -125,6 +129,16 @@ pub(crate) fn today_screens(
         screens.push(out);
     }
     screens
+}
+
+/// The organiser apps' memory with an empty store, as the image has it on
+/// a card with no records yet.
+pub(crate) fn empty_organiser(shell: &mut rp_shell::Shell) {
+    shell.give_apps(vec![0u8; rp_shell::apps::MEMORY].leak());
+    if let Some(s) = shell.pim() {
+        s.load_start(None);
+    }
+    shell.pim_loaded();
 }
 
 /// Hourly as the X51v shows it on the plane path (the preview's device
@@ -1130,6 +1144,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         ],
         false,
         None,
+        &empty_organiser,
     );
     let bare = compare_screens(&wall);
     // The Weather app's pages as the plane path shows them (screen 0's

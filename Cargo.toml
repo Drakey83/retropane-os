@@ -142,6 +142,10 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.rp-weather]
 opt-level = "s"
+# The organiser's store, parser and calculator are cold code (a key, a
+# record changed): built for size, the lean rule.
+[profile.release.package.rp-pim]
+opt-level = "s"
 [profile.release.package.rp-drv-sdcard]
 opt-level = "s"
 [profile.release.package.rp-drv-pxa-mmc]
