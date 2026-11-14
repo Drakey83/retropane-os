@@ -1,0 +1,15 @@
+[package]
+name = "rp-app-contacts"
+description = "Contacts, version 2 (docs/design/contacts-rule0.md): favourites grid, avatars with initials, the card with its action row, phone numbers formatted as typed, address suggestions; an app program (rp-app)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-app = { path = "../api" }
+rp-pim = { path = "../../shell/pim" }
+
+[lints]
+workspace = true

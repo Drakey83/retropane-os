@@ -62,6 +62,8 @@ pub struct Fonts {
     /// Numerals at 36 px with their signs (`0-9 . , - + x / = %`): the
     /// calculator's display and keys (docs/design/design-language.md).
     pub num: &'static Font,
+    /// 30 px: an app's large title (design-language.md version 2).
+    pub title: &'static Font,
 }
 
 /// A size the shell shows a weather picture at: a class of slots in the
@@ -333,6 +335,10 @@ pub enum Screen {
     /// An organiser app's screen ([`apps`]: Calendar, Contacts, Tasks,
     /// Notes, the Calculator).
     App(apps::View),
+    /// An app program ([`rp_app::Program`]): the shell keeps the bars, the
+    /// program draws its area (the owner, 2026-11-14: every app its own
+    /// program).
+    Program,
 }
 
 /// The keys the shell reacts to.
@@ -670,6 +676,17 @@ const PULL_REFRESH: i32 = 56;
 pub struct Shell {
     /// The organiser apps' state ([`apps`]).
     apps: apps::Apps,
+    /// The app program open, if any ([`Screen::Program`]).
+    program: core::cell::RefCell<Option<&'static mut dyn rp_app::Program>>,
+    /// The field the program's keyboard was set for, and the last
+    /// character typed (the automatic capitals).
+    prog_field: Option<rp_app::Field>,
+    prog_last: u8,
+    /// The picture store programs paint their avatars and marks into.
+    app_pics: Option<&'static rp_draw::pics::Pics<'static>>,
+    /// The forecast by day, lent to programs (the calendar's days).
+    forecast: [rp_app::DayWeather; 10],
+    forecast_n: u8,
     fonts: Fonts,
     icons: Icons,
     /// Whether the Start menu offers "Back to loader" (test images only).
@@ -891,6 +908,17 @@ macro_rules! shell_start {
     ($fonts:expr, $icons:expr, $dev_exit:expr; $($how:tt)*) => {
         rp_hal_mem::in_place!($($how)* Shell {
             apps: apps::Apps::new(),
+            program: core::cell::RefCell::new(None),
+            prog_field: None,
+            prog_last: b' ',
+            app_pics: None,
+            forecast: [rp_app::DayWeather {
+                day: 0,
+                high: 0,
+                low: 0,
+                icon: None,
+            }; 10],
+            forecast_n: 0,
             fonts: $fonts,
             icons: $icons,
             dev_exit: $dev_exit,
@@ -1353,6 +1381,7 @@ impl Shell {
             Screen::Station => "Your station",
             Screen::Alert => "Weather alert",
             Screen::App(v) => Self::app_title(v),
+            Screen::Program => self.program.borrow().as_ref().map_or("", |p| p.title()),
         }
     }
 
@@ -1861,6 +1890,9 @@ impl Shell {
             Target::SoftLeft => match self.screen {
                 Screen::Today => self.open_app(View::Agenda),
                 Screen::App(v) => self.app_soft(v, false),
+                Screen::Program => {
+                    self.program_event(rp_app::Event::Key(rp_app::Key::SoftLeft));
+                }
                 // Refresh (T4); the header's control goes back.
                 Screen::Weather => self.refresh(),
                 // Back (Cancel on the keyboard), I7: the left softkey and
@@ -1878,6 +1910,9 @@ impl Shell {
                 Screen::WeatherSettings | Screen::WeatherFrom | Screen::Alert => {}
                 Screen::Station => self.refresh(),
                 Screen::App(v) => self.app_soft(v, true),
+                Screen::Program => {
+                    self.program_event(rp_app::Event::Key(rp_app::Key::SoftRight));
+                }
             },
             Target::Hero => self.open_weather(),
             Target::Station => self.open(Screen::Station),
@@ -1962,6 +1997,9 @@ impl Shell {
     /// Back to the Today screen (from anywhere).
     fn go_today(&mut self) {
         self.app_leave();
+        if self.screen == Screen::Program {
+            *self.program.borrow_mut() = None;
+        }
         if self.screen != Screen::Today {
             // A key half typed is forgotten on the way.
             self.typed = [0; rp_weather::settings::KEY_MAX];
@@ -2020,6 +2058,11 @@ impl Shell {
             Screen::Station => ("Back", "Refresh"),
             Screen::Alert => ("Back", ""),
             Screen::App(v) => self.app_softkeys(v),
+            Screen::Program => self
+                .program
+                .borrow()
+                .as_ref()
+                .map_or(("Back", ""), |p| p.softkeys()),
         }
     }
 
@@ -2190,6 +2233,267 @@ impl Shell {
         }
     }
 
+    /// Opens the app program `p` ([`Screen::Program`]).
+    pub fn open_program(&mut self, p: &'static mut dyn rp_app::Program) {
+        self.app_leave();
+        self.set_menu(false);
+        *self.program.borrow_mut() = Some(p);
+        self.screen = Screen::Program;
+        self.prog_field = None;
+        self.program_keyboard();
+        self.pressed = None;
+        self.focus = None;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// The look's setting (Light, Dark, Auto with the sun): the previews
+    /// draw each.
+    pub fn set_appearance(&mut self, a: rp_weather::settings::Appearance) {
+        self.wset.appearance = a;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// The keyboard follows the program's field (design-language.md
+    /// version 2): the pad for numbers, ".com" for e-mail, capitals ready
+    /// at the start of a name, an address or a sentence.
+    fn program_keyboard(&mut self) {
+        let field = self.program.borrow().as_ref().and_then(|p| p.keyboard());
+        if field != self.prog_field {
+            self.prog_field = field;
+            self.kb = keyboard::Keyboard {
+                pad: matches!(field, Some(rp_app::Field::Phone | rp_app::Field::Number)),
+                email: field == Some(rp_app::Field::Email),
+                shift: matches!(
+                    field,
+                    Some(rp_app::Field::Name | rp_app::Field::Address | rp_app::Field::Sentence)
+                ),
+                symbols: false,
+            };
+            self.dirty(Rect::new(0, 0, W, H));
+        }
+    }
+
+    /// The picture store programs paint into (the renderer's own).
+    pub fn give_pics(&mut self, pics: &'static rp_draw::pics::Pics<'static>) {
+        self.app_pics = Some(pics);
+    }
+
+    /// The Weather app's row-size picture for icon `id` (1-22), lent to
+    /// programs (the calendar's days).
+    #[must_use]
+    pub fn row_icon(&self, id: u8) -> Option<Pic> {
+        self.icons
+            .row
+            .get(usize::from(id.checked_sub(1)?))
+            .copied()
+            .flatten()
+    }
+
+    /// The forecast by day, as programs are lent it.
+    pub fn set_app_forecast(&mut self, days: &[rp_app::DayWeather]) {
+        let n = days.len().min(self.forecast.len());
+        self.forecast[..n].copy_from_slice(&days[..n]);
+        self.forecast_n = n as u8;
+    }
+
+    /// What a program is lent each call.
+    fn program_fonts(&self) -> rp_app::Fonts {
+        rp_app::Fonts {
+            ui: self.fonts.ui,
+            label: self.fonts.label,
+            big: self.fonts.big,
+            num: self.fonts.num,
+            title: self.fonts.title,
+        }
+    }
+
+    fn program_look(&self) -> rp_app::Look {
+        let light = self.light();
+        rp_app::Look {
+            light,
+            panel: panel::art(light),
+            pressed: panel::pressed(light),
+        }
+    }
+
+    fn program_now(&self) -> rp_app::Now {
+        rp_app::Now {
+            day: self.today(),
+            minute: u16::from(self.time.hour) * 60 + u16::from(self.time.minute),
+        }
+    }
+
+    /// A program's area, with the keyboard when it types.
+    fn program_scene(&self, f: &mut Frame) {
+        let (fonts, look) = (self.program_fonts(), self.program_look());
+        let cx = rp_app::Ctx {
+            fonts: &fonts,
+            look: &look,
+            now: self.program_now(),
+            pics: self.app_pics,
+            forecast: &self.forecast[..usize::from(self.forecast_n)],
+            us: true,
+        };
+        let mut words: [[u8; 24]; 3] = [[0; 24]; 3];
+        let mut lens = [0usize; 3];
+        let typing = {
+            let mut p = self.program.borrow_mut();
+            let Some(p) = p.as_mut() else { return };
+            f.clip(Some(rp_app::CONTENT));
+            p.draw(f, &cx);
+            f.clip(None);
+            for (k, w) in p.suggestions().iter().enumerate() {
+                let n = w.len().min(24);
+                words[k][..n].copy_from_slice(&w[..n]);
+                lens[k] = n;
+            }
+            p.keyboard()
+        };
+        if typing.is_some() {
+            let pressed = match self.pressed {
+                Some(Target::Cap(i)) => Some(i),
+                _ => None,
+            };
+            let focus = match self.focus {
+                Some(Target::Cap(i)) => Some(i),
+                _ => None,
+            };
+            self.kb.draw_named(
+                f,
+                (self.fonts.ui, self.fonts.label),
+                pressed,
+                focus,
+                FOCUS,
+                b"DONE",
+            );
+            for (k, w) in words.iter().enumerate() {
+                // The suggestion keys sit at a different index on the pad.
+                let at = (0..keyboard::CAPS).find_map(|i| match self.kb.cap(i) {
+                    Some((keyboard::Cap::Suggest(j), r)) if usize::from(j) == k => Some(r),
+                    _ => None,
+                });
+                if let Some(r) = at
+                    && lens[k] > 0
+                {
+                    keyboard::centre_in(f, r, self.fonts.ui, TEXT, &w[..lens[k]]);
+                }
+            }
+        }
+    }
+
+    /// Sends `e` to the open program and does what it answers.
+    fn program_event(&mut self, e: rp_app::Event) -> Action {
+        let (fonts, look) = (self.program_fonts(), self.program_look());
+        let reply = {
+            let cx = rp_app::Ctx {
+                fonts: &fonts,
+                look: &look,
+                now: self.program_now(),
+                pics: self.app_pics,
+                forecast: &self.forecast[..usize::from(self.forecast_n)],
+                us: true,
+            };
+            let mut p = self.program.borrow_mut();
+            match p.as_mut() {
+                Some(p) => p.event(e, &cx),
+                None => rp_app::Reply::Nothing,
+            }
+        };
+        self.program_keyboard();
+        match reply {
+            rp_app::Reply::Nothing => Action::Nothing,
+            rp_app::Reply::Redraw | rp_app::Reply::Animate => {
+                self.dirty(Rect::new(0, 0, W, H));
+                Action::Redraw
+            }
+            rp_app::Reply::Close => {
+                self.go_today();
+                Action::Redraw
+            }
+        }
+    }
+
+    /// The pen in a program's area and keyboard, and the D-pad, while a
+    /// program is open; `None` leaves the input to the shell (the bars,
+    /// Start, Home, the softkeys).
+    fn program_input(&mut self, e: Input) -> Option<Action> {
+        if self.screen != Screen::Program || self.menu_open {
+            return None;
+        }
+        self.program_keyboard();
+        let field = self.prog_field;
+        let typing = field.is_some();
+        let area = |x: u16, y: u16| {
+            rp_app::CONTENT.contains_point(x, y)
+                && !(typing && keyboard::PANEL.contains_point(x, y))
+        };
+        match e {
+            Input::PenDown { x, y } if typing && keyboard::PANEL.contains_point(x, y) => {
+                let cap = (0..keyboard::CAPS)
+                    .find(|&i| self.kb.cap(i).is_some_and(|(_, r)| r.contains_point(x, y)));
+                let cap = cap.and_then(|i| self.kb.cap(i).map(|c| (i, c.0)))?;
+                let before = self.kb;
+                let ev = match self.kb.press(cap.1) {
+                    keyboard::Cap::Char(c) => {
+                        // Capitals at each word (names, addresses) and each
+                        // sentence; the shift comes back by itself.
+                        let next = match field {
+                            Some(rp_app::Field::Name | rp_app::Field::Address) => c == b' ',
+                            Some(rp_app::Field::Sentence) => {
+                                (c == b' ' && matches!(self.prog_last, b'.' | b'!' | b'?'))
+                                    || c == b'\n'
+                            }
+                            _ => false,
+                        };
+                        self.prog_last = c;
+                        if next {
+                            self.kb.shift = true;
+                        }
+                        Some(rp_app::Event::Char(c))
+                    }
+                    keyboard::Cap::Com => {
+                        for &c in b".co" {
+                            self.program_event(rp_app::Event::Char(c));
+                        }
+                        Some(rp_app::Event::Char(b'm'))
+                    }
+                    keyboard::Cap::Suggest(n) => Some(rp_app::Event::Suggestion(n)),
+                    keyboard::Cap::Delete => Some(rp_app::Event::Delete),
+                    keyboard::Cap::Done => Some(rp_app::Event::Done),
+                    _ => None,
+                };
+                if before.shift != self.kb.shift || before.symbols != self.kb.symbols {
+                    self.dirty(keyboard::PANEL);
+                }
+                Some(ev.map_or(Action::Redraw, |ev| self.program_event(ev)))
+            }
+            Input::PenUp { x, y } if typing && keyboard::PANEL.contains_point(x, y) => {
+                Some(Action::Nothing)
+            }
+            Input::PenDown { x, y } if area(x, y) => {
+                Some(self.program_event(rp_app::Event::PenDown { x, y }))
+            }
+            Input::PenMove { x, y } if area(x, y) => {
+                Some(self.program_event(rp_app::Event::PenMove { x, y }))
+            }
+            Input::PenUp { x, y } if area(x, y) => {
+                Some(self.program_event(rp_app::Event::PenUp { x, y }))
+            }
+            Input::Key(k) => {
+                let k = match k {
+                    Key::Up => rp_app::Key::Up,
+                    Key::Down => rp_app::Key::Down,
+                    Key::Left => rp_app::Key::Left,
+                    Key::Right => rp_app::Key::Right,
+                    Key::Enter => rp_app::Key::Enter,
+                    Key::Home => return None,
+                };
+                Some(self.program_event(rp_app::Event::Key(k)))
+            }
+            _ => None,
+        }
+    }
+
     /// Handles one input event.
     pub fn input(&mut self, e: Input) -> Action {
         if self.align.is_some() {
@@ -2214,6 +2518,10 @@ impl Shell {
                 Action::Nothing if self.damaged != before => Action::Redraw,
                 a => a,
             };
+        }
+        // An app program's area, its keyboard and its keys.
+        if let Some(a) = self.program_input(e) {
+            return a;
         }
         // An organiser app's list under the pen, its caret under the keys.
         if let Some(a) = self.app_pen(e) {
@@ -2771,6 +3079,7 @@ impl Shell {
             Screen::Station => self.station_scene(f),
             Screen::Alert => self.alert_scene(f),
             Screen::App(v) => self.app_scene(f, v),
+            Screen::Program => self.program_scene(f),
         }
         if self.chart.is_some() {
             f.clip(None);

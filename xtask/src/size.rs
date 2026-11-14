@@ -543,10 +543,13 @@ pub const BUDGETS: &[Budget] = &[
     // look-check variant (the replay and the look judge built in) to
     // 923,164 B, 1,564 B over 900 KiB (emu-today's look check refused it).
     // The image area holds 950,272 B and the span check below holds every
-    // build to it.
+    // build to it. 2026-11-14: 920 KiB (938,380 B plain) for the version 2
+    // apps' host, kit and the 30 px title font while the version 1 apps
+    // are still in the image; the apps leave the image as their own
+    // programs (the owner, 2026-11-14), which brings it back down.
     Budget {
         image: "rp-today",
-        max_load: 912 * 1024,
+        max_load: 920 * 1024,
         max_zero: 84 * 1024,
         device: OnDevice::Returns,
     },

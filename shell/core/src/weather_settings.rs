@@ -258,6 +258,7 @@ impl Shell {
             Screen::Weather => self.go_today(),
             Screen::Today => {}
             Screen::App(v) => self.app_back(v),
+            Screen::Program => self.go_today(),
         }
     }
 
@@ -401,7 +402,8 @@ impl Shell {
                 self.want(super::weather_net::Ask::Clip);
                 self.show_notice("Asking your PC");
             }
-            Cap::Shift | Cap::Symbols => {}
+            // The e-mail key and the suggestions are the programs' (rp-app).
+            Cap::Shift | Cap::Symbols | Cap::Com | Cap::Suggest(_) => {}
         }
         self.typed[self.typed_n..].fill(0);
         if before.shift != self.kb.shift || before.symbols != self.kb.symbols {

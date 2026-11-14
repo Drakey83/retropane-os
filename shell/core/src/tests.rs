@@ -73,6 +73,7 @@ pub(crate) fn shell(dev: bool) -> Shell {
             label: &FONT,
             big: &FONT,
             num: &FONT,
+            title: &FONT,
         },
         every_pic(),
         dev,

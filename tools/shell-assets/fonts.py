@@ -29,6 +29,9 @@ SIZES = [
     # The calculator's display and keys (docs/design/calculator-rule0.md):
     # numerals with the signs a sum needs, at half the clock's size.
     ("NUM", 36, 0x25, 0x78, 0, "0123456789.,-+x/=%"),
+    # The large title of an app's home (design-language.md version 2,
+    # 2026-11-14): the app's name and a contact's name at 30 px.
+    ("TITLE", 30, 0x20, 0x7E, 0, None),
 ]
 
 

@@ -237,6 +237,24 @@ pub fn run(root: &Path) -> Result<(), String> {
             w = s.what
         ));
     }
+    // The organiser apps' version 2 (design-language.md version 2): the
+    // app programs hosted by the shell, sample records.
+    page.push_str(
+        "<h2>Organiser apps, version 2</h2>
+",
+    );
+    for m in crate::app_mockups::mocks() {
+        let all = crate::emu::today_screens(&wall, map.as_deref(), &[], true, None, &*m.prepare);
+        let rgb = all.first().ok_or("ui-preview: a mock-up missing")?;
+        let file = format!("{}.png", m.name);
+        std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
+            .map_err(|e| format!("{file}: {e}"))?;
+        page.push_str(&format!(
+            "<figure><img src=\"{file}\" alt=\"{w}\"><figcaption>{w}</figcaption></figure>
+",
+            w = m.what
+        ));
+    }
     // The organiser apps (batch 1 of docs/design/core-apps-list.md), with
     // the sample records: every screen each app shows.
     let app_shots = crate::apps_preview::shots();

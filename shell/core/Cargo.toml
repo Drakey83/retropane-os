@@ -13,6 +13,7 @@ rp-draw = { path = "../../drivers/draw" }
 rp-touch-cal = { path = "../../drivers/touch-cal" }
 rp-weather = { path = "../weather" }
 rp-pim = { path = "../pim" }
+rp-app = { path = "../../apps/api" }
 
 [dev-dependencies]
 # Test-only: incremental redraws checked against full ones with the real

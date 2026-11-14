@@ -1,0 +1,14 @@
+[package]
+name = "rp-app"
+description = "The interface between the shell and an app program (docs/design/app-scope.md, design-language.md version 2): the shell draws the bars and hands the app its content area, fonts, look, clock and picture store; the app draws and answers events. With it, the shared app kit: large titles, tinted cards, colour bars, chips, avatars and the round tick"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-draw = { path = "../../drivers/draw" }
+
+[lints]
+workspace = true

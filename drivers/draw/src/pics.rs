@@ -23,7 +23,7 @@ use crate::Argb;
 /// Slots a store holds at most: every condition at every size the shell
 /// shows (22 x 4, the previews' whole set) and room over (the device's
 /// store has 28; each slot costs 20 bytes here).
-pub const SLOTS: usize = 96;
+pub const SLOTS: usize = 160;
 
 /// A picture in a [`Pics`] store: its slot, the slot's generation when it
 /// was made, and its size. Plain data: copied freely, checked on use.
@@ -79,7 +79,8 @@ impl<'a> Pics<'a> {
     }
 
     /// [`Pics::new`] made straight into `slot` (the image's, in `.bss`): at
-    /// [`SLOTS`] slots the store is 1.9 KB, and made on the stack and moved
+    /// [`SLOTS`] slots the store is about 3.2 KB (160 since 2026-11-14: the
+    /// app programs' avatars and marks), and made on the stack and moved
     /// it took a 4,640-byte frame (`cargo xtask stacks`, P6).
     pub fn new_in<'s>(
         slot: &'s mut core::mem::MaybeUninit<Self>,

@@ -650,6 +650,9 @@ thread_local! {
         classes.push((gw, gh, 1));
         let (cw, ch) = rp_shell::chart::CHART_PIC;
         classes.push((cw, ch, 1));
+        // The app programs' avatars and marks (rp_app::kit).
+        classes.extend_from_slice(&rp_app::kit::PIC_CLASSES);
+        classes.extend_from_slice(&rp_app_notes::PIC_CLASSES);
         Box::leak(Box::new(rp_draw::pics::Pics::new(
             Box::leak(vec![0; rp_draw::pics::Pics::words(&classes)].into_boxed_slice()),
             &classes,

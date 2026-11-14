@@ -469,7 +469,7 @@ mod image {
     /// The big pictures are fitted inside 250 x 176 (the hero's box), so
     /// their slots are that, not square (-148 KB). Hourly's graph is one
     /// picture of its own (its line and band, painted once a forecast).
-    const PIC_CLASSES: [(u16, u16, u8); 6] = [
+    const PIC_CLASSES: [(u16, u16, u8); 9] = [
         (rp_shell::Size::Hero.side(), rp_shell::HERO_PIC_H, 2),
         (rp_shell::Size::Mid.side(), rp_shell::Size::Mid.side(), 6),
         (rp_shell::Size::Card.side(), rp_shell::Size::Card.side(), 8),
@@ -485,6 +485,11 @@ mod image {
             rp_shell::chart::CHART_PIC.1,
             1,
         ),
+        // The app programs' marks, avatars and the card's big avatar
+        // (rp_app::kit::PIC_CLASSES, design-language.md version 2).
+        rp_app::kit::PIC_CLASSES[0],
+        rp_app::kit::PIC_CLASSES[1],
+        rp_app::kit::PIC_CLASSES[2],
     ];
     /// The keeper's tag while no pack is in yet (apart from every pack).
     const NOT_YET: u8 = 0xFE;

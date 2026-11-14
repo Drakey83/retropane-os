@@ -41,10 +41,15 @@ pub(crate) enum Cap {
     Paste,
     /// The dock PC's clipboard into the field.
     FromPc,
+    /// Types ".com" (the e-mail keyboard).
+    Com,
+    /// The strip's suggestion `n` (design-language.md version 2).
+    Suggest(u8),
 }
 
-/// Keys in all (the strip's two chips last).
-pub(crate) const CAPS: u8 = 10 + 10 + 9 + 9 + 5 + 2;
+/// Keys in all (the strip's two chips and three suggestions last; the
+/// bottom row's ".com" is there only on the e-mail keyboard).
+pub(crate) const CAPS: u8 = 10 + 10 + 9 + 9 + 6 + 5;
 
 const LETTERS: [&[u8]; 3] = [b"1234567890", b"qwertyuiop", b"asdfghjkl"];
 const SYMBOLS: [&[u8]; 3] = [b"1234567890", b"-/:;()$&@\"", b".,?!'#%+="];
@@ -58,7 +63,34 @@ pub(crate) struct Keyboard {
     pub shift: bool,
     /// The symbols layer is up.
     pub symbols: bool,
+    /// The number pad instead of letters (phone and number fields).
+    pub pad: bool,
+    /// The e-mail keyboard (".com" on the bottom row).
+    pub email: bool,
 }
+
+/// The phone pad's keys, row by row: digits, then what a number needs.
+const PAD: [[Cap; 4]; 4] = [
+    [
+        Cap::Char(b'1'),
+        Cap::Char(b'2'),
+        Cap::Char(b'3'),
+        Cap::Delete,
+    ],
+    [
+        Cap::Char(b'4'),
+        Cap::Char(b'5'),
+        Cap::Char(b'6'),
+        Cap::Char(b'+'),
+    ],
+    [
+        Cap::Char(b'7'),
+        Cap::Char(b'8'),
+        Cap::Char(b'9'),
+        Cap::Char(b' '),
+    ],
+    [Cap::Char(b'*'), Cap::Char(b'0'), Cap::Char(b'#'), Cap::Done],
+];
 
 /// `n` keys over `x0..x0+w` with gaps: key `j`'s left and width.
 const fn spread(x0: u16, w: u16, n: u16, j: u16) -> (u16, u16) {
@@ -70,6 +102,9 @@ const fn spread(x0: u16, w: u16, n: u16, j: u16) -> (u16, u16) {
 impl Keyboard {
     /// Key `i`: what it does and where it is.
     pub(crate) fn cap(&self, i: u8) -> Option<(Cap, Rect)> {
+        if self.pad {
+            return self.pad_cap(i);
+        }
         let row_y = |r: u16| ROWS_Y + r * (KH + G);
         let rows = if self.symbols { SYMBOLS } else { LETTERS };
         let mut k = u16::from(i);
@@ -109,29 +144,69 @@ impl Keyboard {
             });
         }
         k -= 9;
-        // ?123, @, space, ., Done.
-        if k < 5 {
-            const BOTTOM: [(Cap, u16); 5] = [
-                (Cap::Symbols, 62),
-                (Cap::Char(b'@'), 40),
-                (Cap::Char(b' '), 214),
-                (Cap::Char(b'.'), 40),
-                (Cap::Done, 94),
-            ];
+        // ?123, @, space, (.com), ., Done.
+        if k < 6 {
+            let bottom: [(Cap, u16); 6] = if self.email {
+                [
+                    (Cap::Symbols, 62),
+                    (Cap::Char(b'@'), 40),
+                    (Cap::Char(b' '), 130),
+                    (Cap::Com, 80),
+                    (Cap::Char(b'.'), 40),
+                    (Cap::Done, 94),
+                ]
+            } else {
+                [
+                    (Cap::Symbols, 62),
+                    (Cap::Char(b'@'), 40),
+                    (Cap::Char(b' '), 214),
+                    (Cap::Com, 0),
+                    (Cap::Char(b'.'), 40),
+                    (Cap::Done, 94),
+                ]
+            };
             let mut x = 6;
-            for (j, (c, w)) in BOTTOM.iter().enumerate() {
+            for (j, (c, w)) in bottom.iter().enumerate() {
                 if j == usize::from(k) {
-                    return Some((*c, Rect::new(x, row_y(4), *w, KH)));
+                    return (*w > 0).then(|| (*c, Rect::new(x, row_y(4), *w, KH)));
                 }
-                x += w + G;
+                if *w > 0 {
+                    x += w + G;
+                }
             }
         }
-        k -= 5;
+        k -= 6;
+        Self::strip_cap(k)
+    }
+
+    /// The strip: Paste at the left, From PC at the right, three
+    /// suggestions between.
+    fn strip_cap(k: u16) -> Option<(Cap, Rect)> {
         match k {
-            0 => Some((Cap::Paste, Rect::new(8, STRIP_Y, 92, 24))),
-            1 => Some((Cap::FromPc, Rect::new(106, STRIP_Y, 92, 24))),
+            0 => Some((Cap::Paste, Rect::new(8, STRIP_Y, 70, 24))),
+            1 => Some((Cap::FromPc, Rect::new(W - 86, STRIP_Y, 78, 24))),
+            2..=4 => Some((
+                Cap::Suggest((k - 2) as u8),
+                Rect::new(82 + (k - 2) * 104, STRIP_Y, 100, 24),
+            )),
             _ => None,
         }
+    }
+
+    /// The number pad: four rows of four big keys, then the strip.
+    fn pad_cap(&self, i: u8) -> Option<(Cap, Rect)> {
+        let k = u16::from(i);
+        if k < 16 {
+            let (r, c) = (k / 4, k % 4);
+            // Four rows, the last 10 px clear of the softkey bar.
+            let kh = (PANEL.h - 32 - 10 - 4 * G) / 4;
+            let (x, kw) = spread(6, 468, 4, c);
+            return Some((
+                PAD[usize::from(r)][usize::from(c)],
+                Rect::new(x, ROWS_Y + r * (kh + G), kw, kh),
+            ));
+        }
+        Self::strip_cap(k - 16)
     }
 
     /// The key that types `c` (the tests type through it; upper case is
@@ -219,6 +294,10 @@ impl Keyboard {
                 Cap::Done => (label, done),
                 Cap::Paste => (label, b"PASTE"),
                 Cap::FromPc => (label, b"FROM PC"),
+                Cap::Com => (ui, b".com"),
+                // The suggestions' words are drawn by the caller (the
+                // program gives them); an empty one is a quiet key.
+                Cap::Suggest(_) => (label, b""),
             };
             let color = if cap == Cap::Done { DONE_TEXT } else { TEXT };
             centre_in(f, r, font, color, text);
@@ -283,19 +362,18 @@ mod tests {
 
     #[test]
     fn every_key_is_inside_the_panel_and_none_overlap() {
+        let d = Keyboard::default();
         for kb in [
-            Keyboard::default(),
-            Keyboard {
-                shift: true,
-                symbols: false,
-            },
-            Keyboard {
-                shift: false,
-                symbols: true,
-            },
+            d,
+            Keyboard { shift: true, ..d },
+            Keyboard { symbols: true, ..d },
+            Keyboard { email: true, ..d },
+            Keyboard { pad: true, ..d },
         ] {
-            let caps: Vec<Rect> = (0..CAPS).map(|i| kb.cap(i).expect("every key").1).collect();
+            let caps: Vec<Rect> = (0..CAPS).filter_map(|i| kb.cap(i)).map(|c| c.1).collect();
             assert!(kb.cap(CAPS).is_none());
+            // Every layout has its keys and the strip's five.
+            assert!(caps.len() >= 21, "{kb:?}");
             for (i, a) in caps.iter().enumerate() {
                 assert!(
                     a.x + a.w <= W && a.y >= PANEL.y && a.y + a.h <= PANEL.y + PANEL.h,
@@ -314,11 +392,28 @@ mod tests {
     }
 
     #[test]
+    fn the_pad_types_a_phone_number_and_the_email_keyboard_has_com() {
+        let pad = Keyboard {
+            pad: true,
+            ..Keyboard::default()
+        };
+        for c in b"0123456789+*# " {
+            assert!(pad.cap_of(*c).is_some(), "{}", *c as char);
+        }
+        let mail = Keyboard {
+            email: true,
+            ..Keyboard::default()
+        };
+        assert!((0..CAPS).any(|i| matches!(mail.cap(i), Some((Cap::Com, _)))));
+        assert!(!(0..CAPS).any(|i| matches!(Keyboard::default().cap(i), Some((Cap::Com, _)))));
+    }
+
+    #[test]
     fn every_printable_key_character_can_be_typed() {
         let kb = Keyboard::default();
         let sym = Keyboard {
-            shift: false,
             symbols: true,
+            ..Keyboard::default()
         };
         for c in b"abcdefghijklmnopqrstuvwxyz0123456789@. -_" {
             assert!(

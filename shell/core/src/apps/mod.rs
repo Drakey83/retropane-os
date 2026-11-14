@@ -1162,7 +1162,8 @@ impl Shell {
             },
             Cap::Paste => self.show_notice("Clipboard empty"),
             Cap::FromPc => self.show_notice("Not in this app yet"),
-            Cap::Shift | Cap::Symbols => {}
+            // The e-mail key and the suggestions are the programs' (rp-app).
+            Cap::Shift | Cap::Symbols | Cap::Com | Cap::Suggest(_) => {}
         }
         if before.shift != self.kb.shift || before.symbols != self.kb.symbols {
             self.dirty(keyboard::PANEL);

@@ -1,0 +1,15 @@
+[package]
+name = "rp-app-calendar"
+description = "Calendar, version 2 (docs/design/calendar-rule0.md): agenda with the week strip and the forecast on its days, day blocks sized to their length, week and month views, the highlighted quick add; an app program (rp-app)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-app = { path = "../api" }
+rp-pim = { path = "../../shell/pim" }
+
+[lints]
+workspace = true

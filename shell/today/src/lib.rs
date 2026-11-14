@@ -68,6 +68,7 @@ pub fn shell_fonts() -> rp_shell::Fonts {
         label: &fonts::LABEL,
         big: &fonts::BIG,
         num: &fonts::NUM,
+        title: &fonts::TITLE,
     }
 }
 

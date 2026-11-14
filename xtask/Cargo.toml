@@ -8,6 +8,12 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+rp-app = { path = "../apps/api" }
+rp-app-calendar = { path = "../apps/calendar" }
+rp-app-contacts = { path = "../apps/contacts" }
+rp-app-tasks = { path = "../apps/tasks" }
+rp-app-notes = { path = "../apps/notes" }
+rp-app-calculator = { path = "../apps/calculator" }
 rp-weather = { path = "../shell/weather" }
 serde_json = "1"
 rp-drv-mbx-display = { path = "../drivers/mbx-display" }
