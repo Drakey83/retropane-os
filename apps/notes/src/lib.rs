@@ -675,7 +675,7 @@ impl Notes {
             }
             let r = Rect::new(x, col_y[c], 220, h);
             if self.n_cards < self.cards.len() {
-                self.cards[self.n_cards] = (r, place as u8);
+                self.cards[self.n_cards] = (r, place);
                 self.n_cards += 1;
             }
             kit::tinted(f, cx, r, note.colour, 0x40);

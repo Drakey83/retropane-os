@@ -3884,3 +3884,58 @@ fn data_that_shows_little_or_nowhere_marks_only_that() {
     s.frame(&mut f);
     assert!(f.dirty().is_empty(), "Settings: {:?}", f.dirty());
 }
+
+/// A reminder due comes up as the banner; Snooze takes it away and it
+/// comes back five minutes later; Dismiss then takes it away for good.
+#[test]
+fn a_snoozed_reminder_comes_back_five_minutes_later() {
+    use rp_pim::date::{self, Date};
+    use rp_pim::store::{Kind, tag};
+    let mut s = shell(true);
+    s.give_apps(std::vec![0u8; crate::apps::MEMORY].leak());
+    s.set_year(2024);
+    let at = |h: u8, m: u8| Time {
+        hour: h,
+        minute: m,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    };
+    s.set_time(at(14, 40));
+    {
+        let p = s.pim().unwrap();
+        p.load_start(None);
+        // Dentist at 15:00, reminded 15 minutes before.
+        let day = date::days_from(Date {
+            year: 2024,
+            month: 1,
+            day: 1,
+        });
+        let start = (date::start_of(day) + 15 * 60).to_le_bytes();
+        let remind = 15u32.to_le_bytes();
+        p.put(
+            Kind::Appointment,
+            None,
+            &[
+                (tag::TITLE, b"Dentist"),
+                (tag::START, &start),
+                (tag::REMIND, &remind),
+            ],
+        )
+        .unwrap();
+    }
+    s.pim_loaded();
+    assert!(!s.reminder_shown());
+    s.set_time(at(14, 45));
+    assert!(s.reminder_shown());
+    let snooze = crate::apps::preview::REMINDER_SNOOZE;
+    tap(&mut s, snooze);
+    assert!(!s.reminder_shown());
+    s.set_time(at(14, 49));
+    assert!(!s.reminder_shown());
+    s.set_time(at(14, 50));
+    assert!(s.reminder_shown(), "back after five minutes");
+    tap(&mut s, crate::apps::preview::REMINDER_DISMISS);
+    s.set_time(at(14, 56));
+    assert!(!s.reminder_shown());
+}

@@ -23,7 +23,10 @@ pub const MEMORY: usize = rp_pim::store::MEMORY;
 
 /// The reminder banner (under the title bar, on any screen).
 const BANNER: Rect = Rect::new(8, 40, W - 16, 64);
+const BANNER_SNOOZE: Rect = Rect::new(W - 8 - 300, 68, 96, 32);
 const BANNER_DISMISS: Rect = Rect::new(W - 8 - 200, 68, 96, 32);
+/// A snoozed reminder comes back this many minutes later.
+const SNOOZE_MIN: u32 = 5;
 const BANNER_OPEN: Rect = Rect::new(W - 8 - 100, 68, 92, 32);
 /// Reminders waiting at once.
 const DUE_MAX: usize = 4;
@@ -32,6 +35,8 @@ const DUE_MAX: usize = 4;
 pub mod preview {
     /// The banner's Dismiss.
     pub const REMINDER_DISMISS: rp_draw::Rect = super::BANNER_DISMISS;
+    /// The banner's Snooze.
+    pub const REMINDER_SNOOZE: rp_draw::Rect = super::BANNER_SNOOZE;
     /// The banner's Open.
     pub const REMINDER_OPEN: rp_draw::Rect = super::BANNER_OPEN;
 }
@@ -50,6 +55,9 @@ pub(crate) struct Apps {
     checked: Option<u32>,
     next_due: Option<u32>,
     planned: Option<u32>,
+    /// Snoozed reminders: the appointment and the minute it comes back.
+    snoozed: [(u32, u32); DUE_MAX],
+    n_snoozed: usize,
 }
 
 impl Apps {
@@ -62,6 +70,8 @@ impl Apps {
             checked: None,
             next_due: None,
             planned: None,
+            snoozed: [(0, 0); DUE_MAX],
+            n_snoozed: 0,
         }
     }
 }
@@ -170,6 +180,22 @@ impl Shell {
     /// The clock's minute changed: reminders now due join the banner.
     pub(crate) fn reminders_tick(&mut self) {
         let now = self.minute_now();
+        // Snoozed ones back when their time comes.
+        let mut k = 0;
+        while k < self.apps.n_snoozed {
+            let (id, until) = self.apps.snoozed[k];
+            if until <= now {
+                self.apps.snoozed[k] = self.apps.snoozed[self.apps.n_snoozed - 1];
+                self.apps.n_snoozed -= 1;
+                if self.apps.n_due < DUE_MAX && !self.apps.due[..self.apps.n_due].contains(&id) {
+                    self.apps.due[self.apps.n_due] = id;
+                    self.apps.n_due += 1;
+                    self.dirty(Rect::new(0, 0, W, H));
+                }
+            } else {
+                k += 1;
+            }
+        }
         if self
             .apps
             .store
@@ -230,11 +256,17 @@ impl Shell {
             return None;
         }
         let open = BANNER_OPEN.contains_point(x, y);
-        if !open && !BANNER_DISMISS.contains_point(x, y) {
+        let snooze = BANNER_SNOOZE.contains_point(x, y);
+        if !open && !snooze && !BANNER_DISMISS.contains_point(x, y) {
             return Some(Action::Nothing);
         }
+        let id = self.apps.due[0];
         self.apps.due.copy_within(1.., 0);
         self.apps.n_due -= 1;
+        if snooze && self.apps.n_snoozed < DUE_MAX {
+            self.apps.snoozed[self.apps.n_snoozed] = (id, self.minute_now() + SNOOZE_MIN);
+            self.apps.n_snoozed += 1;
+        }
         self.dirty(Rect::new(0, 0, W, H));
         Some(if open && self.programs {
             Action::OpenProgram(0)
@@ -294,9 +326,11 @@ impl Shell {
             BANNER.y + 50,
             ui,
             TEXT,
-            &title[..title.len().min(24)],
+            // Room left of the three keys.
+            &title[..title.len().min(14)],
         );
         for (rr, word, chosen) in [
+            (BANNER_SNOOZE, &b"SNOOZE"[..], false),
             (BANNER_DISMISS, &b"DISMISS"[..], false),
             (BANNER_OPEN, b"OPEN", true),
         ] {
