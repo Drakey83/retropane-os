@@ -528,6 +528,7 @@ fn mock_ctx() -> rp_app::Ctx<'static> {
         us: true,
         utc_offset: 0,
         shapes: Box::leak(Box::new(rp_app::Shapes::new())),
+        clip: Box::leak(Box::new(core::cell::RefCell::new(rp_app::Text::EMPTY))),
         pim: None,
     }
 }

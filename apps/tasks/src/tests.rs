@@ -67,6 +67,7 @@ fn ctx(pim: &'static core::cell::RefCell<Option<Store<'static>>>) -> Ctx<'static
         us: true,
         utc_offset: 0,
         shapes: Box::leak(Box::new(Shapes::new())),
+        clip: Box::leak(Box::new(core::cell::RefCell::new(rp_app::Text::EMPTY))),
         pim: Some(pim),
     }
 }

@@ -600,6 +600,30 @@ impl Calculator {
         kit::centred(f, r, base, font, col, word);
     }
 
+    /// Where tape line `k` (of those shown) lies, and the display.
+    fn tape_rect(&self, k: usize) -> Rect {
+        Rect::new(MARGIN + 140, TOP + k as u16 * 46, WIDE - 140, 44)
+    }
+
+    fn display_rect(&self) -> Rect {
+        Rect::new(MARGIN, TOP + self.n_tape.min(3) as u16 * 46 + 4, WIDE, 92)
+    }
+
+    /// `b` (Dec::show's: `,` groups, `.` the decimal mark) in the region's
+    /// marks: the US's as they are; elsewhere `.` groups and `,` marks
+    /// (the international rule; a region setting later).
+    fn regional(b: &mut [u8], us: bool) {
+        if !us {
+            for c in b.iter_mut() {
+                *c = match *c {
+                    b',' => b'.',
+                    b'.' => b',',
+                    x => x,
+                };
+            }
+        }
+    }
+
     fn display(&self, f: &mut Frame, cx: &Ctx) {
         let mut y = TOP;
         for (sum, ans) in &self.tape[self.n_tape.saturating_sub(3)..self.n_tape] {
@@ -634,7 +658,11 @@ impl Calculator {
         kit::right(f, d.right() - 12, d.y + 30, cx.fonts.ui, TEXT, &shown[..sn]);
         let mut ans = [0u8; 32];
         let an = match self.value() {
-            Some(v) => v.show(b',', &mut ans),
+            Some(v) => {
+                let n = v.show(b',', &mut ans);
+                Self::regional(&mut ans[..n], cx.us);
+                n
+            }
             None if self.n == 0 => {
                 ans[0] = b'0';
                 1
@@ -1088,9 +1116,21 @@ impl Program for Calculator {
         }
     }
 
-    fn event(&mut self, e: Event, _cx: &Ctx) -> Reply {
+    fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
         match e {
             Event::Key(Key::SoftLeft) => Reply::Close,
+            // Copy: the answer (or the money, tip or dates result typed).
+            Event::Key(Key::SoftRight) => {
+                let mut b = [0u8; 32];
+                let n = match self.value() {
+                    Some(v) => v.show(0, &mut b),
+                    None => 0,
+                };
+                if n > 0 {
+                    *cx.clip.borrow_mut() = Text::of(&b[..n]);
+                }
+                Reply::Redraw
+            }
             Event::Key(Key::Right) | Event::Key(Key::Left) => {
                 let k = MODE_LIST.iter().position(|&m| m == self.mode).unwrap_or(0);
                 let k = if e == Event::Key(Key::Right) {
@@ -1110,6 +1150,35 @@ impl Program for Calculator {
                 }
                 match self.mode {
                     Mode::Basic | Mode::Scientific => {
+                        // A tape line's answer reused; the display pastes.
+                        let shown = self.n_tape.saturating_sub(3);
+                        for k in 0..self.n_tape.min(3) {
+                            if self.tape_rect(k).contains_point(x, y) {
+                                let ans = self.tape[shown + k].1;
+                                if self.last_is_value() {
+                                    self.push(b"x");
+                                }
+                                for &c in ans.get().iter().filter(|c| **c != b',') {
+                                    self.push(&[if c == b'-' { b'~' } else { c }]);
+                                }
+                                return Reply::Redraw;
+                            }
+                        }
+                        if self.display_rect().contains_point(x, y) {
+                            let clip = *cx.clip.borrow();
+                            let t = clip.get();
+                            if !t.is_empty()
+                                && t.iter().all(|c| c.is_ascii_digit() || b".-,".contains(c))
+                            {
+                                if self.last_is_value() {
+                                    self.push(b"x");
+                                }
+                                for &c in t.iter().filter(|c| **c != b',') {
+                                    self.push(&[if c == b'-' { b'~' } else { c }]);
+                                }
+                                return Reply::Redraw;
+                            }
+                        }
                         let top = self.keypad_top();
                         for (r, row) in self.keys().iter().enumerate() {
                             for (c, (_, act, _)) in row.iter().enumerate() {

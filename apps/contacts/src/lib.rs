@@ -910,6 +910,19 @@ impl Program for Contacts {
                 }
                 Reply::Redraw
             }
+            (Event::PenUp { x, y }, View::Card(i)) => {
+                // The action row: Copy puts the first number on the
+                // clipboard as it is shown.
+                let copy = Rect::new(MARGIN + 2 * 112, 246, 104, 64);
+                if copy.contains_point(x, y)
+                    && let Some(p) = self.people.get(usize::from(i)).copied().flatten()
+                {
+                    let ph = shown(p.phones[0].1.get());
+                    *cx.clip.borrow_mut() = Text::of(ph.get());
+                    return Reply::Redraw;
+                }
+                Reply::Nothing
+            }
             (Event::Key(Key::SoftLeft), View::List)
                 if self.searching || self.query_n > 0 || self.jump.is_some() =>
             {

@@ -68,9 +68,9 @@ Get a right answer fast, see how you got it, and do the everyday sums
 | Currency conversion with the ECB's daily rates over any connection, kept with their date | apps-and-packs: currency conversion | built | shell/pim/src/net.rs, apps/calculator/src/lib.rs, xtask/src/usb.rs |
 | Tip and split | apps-and-packs: tip and split | built | apps/calculator/src/lib.rs |
 | Days between dates and a date plus N days | apps-and-packs: days between dates | built | apps/calculator/src/lib.rs |
-| Copy the answer and paste a number | sheet | pending | |
+| Copy the answer and paste a number | sheet | built | shell/core/src/lib.rs, apps/calculator/src/lib.rs |
 | Aero glass keys (the owner, 2026-11-14: not Metro): operators' signs in the tint, = the blue glow, the mode chips | sheet | built | apps/calculator/src/lib.rs, shell/core/src/panel_art.rs |
-| The region's digit grouping and decimal mark | sheet | pending | |
+| The region's digit grouping and decimal mark | sheet | built | apps/calculator/src/lib.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | pending | |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/calculator/src/main.rs, shell/today/src/program.rs |

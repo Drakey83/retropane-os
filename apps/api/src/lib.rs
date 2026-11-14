@@ -102,6 +102,9 @@ pub struct Ctx<'a> {
     /// The rounded shapes' corner pictures, painted once per colour and
     /// kept by the shell ([`Shapes`]).
     pub shapes: &'a Shapes,
+    /// The clipboard every program shares (Copy puts text on it; the
+    /// keyboard's Paste types it into the field being typed).
+    pub clip: &'a core::cell::RefCell<Text<64>>,
     /// The organiser's one store (docs/design/pim-store.md), when it is
     /// given and loaded: read while drawing, changed while answering.
     pub pim: Option<&'a core::cell::RefCell<Option<rp_pim::store::Store<'static>>>>,

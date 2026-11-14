@@ -676,6 +676,8 @@ pub struct Shell {
     apps: apps::Apps,
     /// The device's offset from UTC, minutes (the clock file's).
     utc_offset: i32,
+    /// The clipboard programs share.
+    clip: core::cell::RefCell<rp_app::Text<64>>,
     /// Programs' rounded shapes' corners, painted once per colour.
     shapes: rp_app::Shapes,
     /// The app program open, if any ([`Screen::Program`]).
@@ -918,6 +920,7 @@ macro_rules! shell_start {
         rp_hal_mem::in_place!($($how)* Shell {
             apps: apps::Apps::new(),
             utc_offset: 0,
+            clip: core::cell::RefCell::new(rp_app::Text::EMPTY),
             shapes: rp_app::Shapes::new(),
             program: core::cell::RefCell::new(None),
             programs: false,
@@ -2437,6 +2440,7 @@ impl Shell {
             us: true,
             utc_offset: self.utc_offset,
             shapes: &self.shapes,
+            clip: &self.clip,
             pim: Some(&self.apps.store),
         };
         let mut p = self.program.borrow_mut();
@@ -2470,6 +2474,7 @@ impl Shell {
                 us: true,
                 utc_offset: self.utc_offset,
                 shapes: &self.shapes,
+                clip: &self.clip,
                 pim: Some(&self.apps.store),
             };
             let mut p = self.program.borrow_mut();
@@ -2496,6 +2501,7 @@ impl Shell {
                 us: true,
                 utc_offset: self.utc_offset,
                 shapes: &self.shapes,
+                clip: &self.clip,
                 pim: Some(&self.apps.store),
             };
             let mut p = self.program.borrow_mut();
@@ -2569,6 +2575,20 @@ impl Shell {
                         Some(rp_app::Event::Char(b'm'))
                     }
                     keyboard::Cap::Suggest(n) => Some(rp_app::Event::Suggestion(n)),
+                    // The shared clipboard typed into the field.
+                    keyboard::Cap::Paste => {
+                        let clip = *self.clip.borrow();
+                        let text = clip.get();
+                        if text.is_empty() {
+                            self.show_notice("Clipboard empty");
+                            None
+                        } else {
+                            for &c in &text[..text.len() - 1] {
+                                self.program_event(rp_app::Event::Char(c));
+                            }
+                            Some(rp_app::Event::Char(text[text.len() - 1]))
+                        }
+                    }
                     keyboard::Cap::Delete => Some(rp_app::Event::Delete),
                     keyboard::Cap::Done => Some(rp_app::Event::Done),
                     _ => None,
