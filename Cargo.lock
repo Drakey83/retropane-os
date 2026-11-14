@@ -865,6 +865,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-pim"
+version = "0.0.0"
+
+[[package]]
 name = "rp-probe"
 version = "0.0.0"
 dependencies = [

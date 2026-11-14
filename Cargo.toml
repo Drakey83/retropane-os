@@ -94,6 +94,7 @@ members = [
     "shell/core",
     "shell/today",
     "shell/weather",
+    "shell/pim",
     "shell/scene",
     "personality/ce/cab",
     "personality/ce/setup",

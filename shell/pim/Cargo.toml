@@ -1,0 +1,13 @@
+[package]
+name = "rp-pim"
+description = "The organiser's shared parts (docs/design/pim-store.md): one crash-safe store on the card for appointments, contacts, tasks and notes, calendar arithmetic, the quick-add line's parser, and the calculator's exact decimal arithmetic; no drawing, no I/O"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
