@@ -3500,3 +3500,36 @@ fn gc2dt_moves_are_off_the_tile_grid() {
         assert!(dx.abs() < 8 && dy.abs() < 16);
     }
 }
+
+#[test]
+fn the_x50v_runs_name_their_clocks_and_soak_one_step() {
+    // GC2EB-GC2EG (R72): each lever's name is its own clock, and each soak
+    // is twelve parts at one step, then 149.50 / 2.
+    for lv in GAME_FINE_HIGH
+        .iter()
+        .chain(&GAME_MOVED_HIGH)
+        .chain(&GAME_SOAK139)
+        .chain(&GAME_SOAK143)
+        .chain(&GAME_SOAK146)
+        .chain(&GAME_SOAK149)
+    {
+        let (m, n, p) = lv.pll;
+        assert!(m < 64 && (1..8).contains(&n) && p == 0, "{}", lv.name);
+        let khz = 13_000 * m / n;
+        let want = format!("{}.{:02} / {}", khz / 1000, (khz % 1000 + 5) / 10, lv.div);
+        assert!(lv.name.starts_with(&want), "{} is not {want}", lv.name);
+        assert!(!lv.underlay && !lv.overlay && lv.refresh_div == 1);
+    }
+    for (soak, step) in [
+        (&GAME_SOAK139, "139.75 / 1"),
+        (&GAME_SOAK143, "143.00 / 1"),
+        (&GAME_SOAK146, "146.25 / 1"),
+        (&GAME_SOAK149, "149.50 / 1"),
+    ] {
+        assert!(
+            soak[..12].iter().all(|l| l.name.starts_with(step)),
+            "{step}"
+        );
+        assert!(soak[12].name.starts_with("149.50 / 2"));
+    }
+}

@@ -8612,8 +8612,7 @@ mod image {
     /// Run GC2DR (`RP_GPUBENCH_GC2_FINE`): GC2DJ's shifted textured frames at
     /// every clock a locked PLL gives between 133.25 (right, GC2DK) and
     /// 139.75 / 1 (wrong) ([`gc2::GAME_FINE`]): where the line falls.
-    const GC2_FINE: bool =
-        option_env!("RP_GPUBENCH_GC2_FINE").is_some() || GC2_FINE_HIGH;
+    const GC2_FINE: bool = option_env!("RP_GPUBENCH_GC2_FINE").is_some() || GC2_FINE_HIGH;
     /// Run GC2EB (`RP_GPUBENCH_GC2_FINE_HIGH`, R72): GC2DR's frames at the
     /// steps above its top, 143.00, 146.25 and 149.50 / 1
     /// ([`gc2::GAME_FINE_HIGH`]): on a unit that drew GC2DR right to 139.75
@@ -8630,16 +8629,17 @@ mod image {
     /// moved across and down ([`gc2::MOVED_DXY`]) at 137.80 / 1 (GC2DR's
     /// highest step right on the shifted textured frames) and the two below:
     /// is the line right for every kind of frame, wherever it lands.
-    const GC2_MOVED: bool =
-        option_env!("RP_GPUBENCH_GC2_MOVED").is_some()
-            || GC2_SOAK137
-            || GC2_SOAK139
-            || GC2_MOVED_HIGH
-            || GC2_TEMPGUARD;
+    const GC2_MOVED: bool = option_env!("RP_GPUBENCH_GC2_MOVED").is_some()
+        || GC2_SOAK137
+        || GC2_SOAK139
+        || GC2_MOVED_HIGH
+        || GC2_TEMPGUARD;
     /// Run GC2EC (`RP_GPUBENCH_GC2_SOAK139`, R72): GC2DV's soak at 139.75 /
     /// 1 ([`gc2::GAME_SOAK139`]), for a unit whose GC2DR was right there.
-    const GC2_SOAK139: bool =
-        option_env!("RP_GPUBENCH_GC2_SOAK139").is_some() || GC2_SOAK149 || GC2_SOAK146 || GC2_SOAK143;
+    const GC2_SOAK139: bool = option_env!("RP_GPUBENCH_GC2_SOAK139").is_some()
+        || GC2_SOAK149
+        || GC2_SOAK146
+        || GC2_SOAK143;
     /// Run GC2EG (`RP_GPUBENCH_GC2_SOAK143`, R72): the soak at 143.00 / 1
     /// ([`gc2::GAME_SOAK143`]), one step under GC2EF's 2%.
     const GC2_SOAK143: bool = option_env!("RP_GPUBENCH_GC2_SOAK143").is_some();
