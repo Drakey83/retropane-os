@@ -17,6 +17,14 @@ driver DLLs as ordinary PE files, so they can be studied for
 
 Verified on LennySh WM6.1 A08 and L11 images: all 1,025 / 997 items extract.
 
+**The X50v's StrataFlash images** (`MSFLSH50` at 0x1000; first read
+2026-11-13 on `WM50_K_A12_X50v_WM65_EN.nb0`): the partition table counts
+4 KiB logical sectors behind a flash translation layer (each 256 KiB block:
+63 sectors, then a map of logical sector numbers in its last 4 KiB).
+`src/flash.rs` rebuilds the logical image first; the IMGFS (374 modules)
+and the kernel XIP (type `0x22`, 25 modules) then read as on the X51v. Its
+update-loader XIP isn't placed yet (skipped with a note).
+
 ## Usage
 
 ```bash

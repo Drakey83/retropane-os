@@ -135,6 +135,109 @@ buffering either", and no DMA), so none of this came from it.
 | **Windows moves at most 128 blocks (64 KiB) per READ(10)/WRITE(10)** to this full-speed drive | confirmed | (U) `udc stats` "largest transfer" |
 | Windows sometimes refuses to reopen the serial port for a moment after a program closed it ("access denied"): xtask's scripts retry the open | likely | (U) the first of several back-to-back commands died right after finding the port |
 
+## The X50v (2026-11-13: first run, and Dell's X50v USB driver read)
+
+Facts for the X50v port (R193); every row names the unit. The X51v's
+rows above are unchanged.
+
+| Fact | Status | Source |
+|---|---|---|
+| **X50v, Windows Mobile 2003:** the loader (the CF card's copy, started by HaRET from the CF card; the 4 GB SDHC card is unreadable under Windows Mobile 2003) runs and draws its screen, but USB never enumerates: `cable 0 configured no open no`, `usb resets 30 setups 0`, the layout fallback alternating both layouts; the PC listed no new device. The PC's hub sees a device (it resets the port) but no SETUP reaches the UDC: the X51v's "transceiver not driving for the device" symptom (`HXOE` off, 2026-10-11) | confirmed (X50v) | the owner's photo, 2026-11-13; the PC's device list |
+| The boot left no card log: the loader (before 2026-11-13) wrote the card log only for an image's run; its own start-up stayed in RAM and on screen (the start-up log below fixes it) | confirmed | `rplog/index.txt` on the CF card read on the X51v (newest gpubench-0137) |
+| **Dell's X50v USB driver switches CPLD `0x1C` bit 3 itself:** on when its cable check says attached, off when not and at its power-down (`usbfndrv` `0x257abf0`, `0x257b390`, through `0x257b45c`; Windows Mobile's shared shadow at `0xAC001320`, as on the X51v). AxDroid's X50 board file sets the same bit at boot ("USB power?") | likely (X50v; code) | (D) `usbfndrv.dll` of `WM50_K_A12_X50v` (a WM6.5 ROM built on Dell's X50v A12; romdump reads its StrataFlash layout since 2026-11-13); AxDroid `aximx50.c` |
+| Dell's X50v USB driver turns the USB client clock on itself (`CKEN` bit 11, mapping `0x41300000`) and steps power through `KernelIoControl` `0x010100A0` / `0x010100A4` (`0x257a3b8`, `0x2578fe4`); the X51v A08 driver does neither (89 of its 347 functions identical to the X50v's) | likely (X50v; code) | (D) the same two drivers, `tools/rea/fdiff.py` |
+| Neither driver writes `UP2OCR`, and neither kernel (the X51v's OAL, the X50v A12 `nk.exe`) names the UDC block's address as a literal: the transceiver set-up Windows Mobile leaves is not found in code yet | open | (D) a search of both drivers and both kernels |
+
+**The lead (unproven):** the loader keeps CPLD `0x1C`'s bits as Windows
+Mobile left them (quality audit C39) and never sets bit 3 itself. If
+Windows Mobile 2003 on the X50v had it off when HaRET started, the X50v's
+USB path is unpowered under the loader. Not yet told apart from the
+transceiver (`UP2OCR`) and the X50v's cable-detect pin. The X50v's own
+Windows Mobile 2003 driver is not read (only Dell's later X50v build), and
+its shadow may not be where the WM5 builds keep it.
+
+**The loader's start-up log (built 2026-11-13, emulator-proven, run on
+the X50v the same day):** at its first start after HaRET the loader now keeps
+its own log on the cards (`rplog/`, a run slot named `loader`, read with
+`cargo xtask cardlog loader <n>`; `hal/x51v/src/bootlog.rs`, the sheet
+`docs/research/sheets/r193-loader-startup-log.md`). It reads only:
+
+- before its first register write: `CKEN`, `PSSR`, `GPLR0-3`, `GPDR0-3`,
+  every `GAFR` word, `GRER`/`GFER`/`PWER` (the `diag` whitelist), with
+  `CKEN` bit 11 named (on or OFF) and GPIO14 and GPIO2 decoded;
+- `UDCCR`, `UP2OCR` (decoded: `HXOE`, `HXS`, `SEOS`, the resistors) and
+  `UP3OCR` before its first write to the controller (read with the
+  client clock on, which `take_udc` turns on; a gated unit's read is
+  undefined);
+- the CPLD shadow table at `0xA8001320` raw before adoption and the
+  verdict (Windows Mobile's, RetroPane's, or the defaults with the
+  reason), every CPLD register as read on the bus, and `0x1C` on the
+  bus, in Windows Mobile's slot, as kept and in the board record, bit 3
+  named in each;
+- then a line per USB change (resets, setups, configured, port open, the
+  cable pin, the layout; bursts closer than 50 ms share a line), the
+  fallback and "PC silent" replugs, and every 10 s `UDCCR` and `UP2OCR`
+  again; queued in RAM and written when USB has been quiet 100 ms;
+  closed when the PC configures the device, after 5 minutes, or when a
+  run starts.
+
+In the emulator (`cargo xtask emu-cardlog`, 2026-11-13) the log is the
+same on both cards and closes at the PC's configuration with 14 sector
+writes, none refused. On the X50v the same day it ran 5 minutes, 89 sector writes,
+none refused (below).
+
+**The X50v's start-up log (2026-11-13, `loader-0001` on the CF card,
+`local/cardlog/loader-0001.txt`):**
+
+| Read | X50v | The working X51v | Meaning |
+|---|---|---|---|
+| `UP2OCR` | `0x00020000` (`HXOE`), all 5 minutes | `0x00020000` | the transceiver set-up is the same: ruled out |
+| `UDCCR` | UDE on (beats) | on | the controller runs |
+| `CKEN` bit 11 as found | off | (on under WM5) | Windows Mobile 2003 left the client clock off; the loader turns it on |
+| CPLD `0x1C` | bus 0000, WM slot 0004, kept 0004: bit 3 off | bit 3 not needed (pull-up hard-wired) | the lead stands |
+| CPLD shadow at `0xAC001320` | valid, taken as Windows Mobile's | the same place | Windows Mobile 2003 keeps it where WM5 does |
+| GPIO14 (the X51v's cable pin) | 1 at start, 0 from 1.7 s on, cable attached | 1 with the cable | not the X50v's cable pin |
+| USB | 0 setups; 37 resets, one per loader replug (plus 2 at start) | setups within a second | the resets are the loader's own SE0 unplugs: the PC most likely never saw an attach |
+
+The likely cause is the D+ pull-up: hard-wired on the X51v, switched on
+the X50v by CPLD `0x1C` bit 3 (Dell's X50v driver sets it with the cable,
+AxDroid's X50 board file at boot). The earlier reading in the first row
+("the PC's hub sees a device") is withdrawn: the resets are explained
+without the PC. Not proven until bit 3 is set in a watched run.
+
+**The bit 3 run (built 2026-11-13, emulator-proven; not yet run on the
+X50v; sheet `docs/research/sheets/r193-x50v-cpld1c-bit3.md`):** the CF
+card's `RetroPaneX50v` folder boots the same loader with
+`rp.x50v-usb-bit3` on HaRET's command line (ATAG list, `r2`; the X51v's
+`RetroPane` folder passes an empty one). At its first start the loader
+logs the command line, sets CPLD `0x1C` bit 3 at 30 s through the shadow
+(Windows Mobile's slot and the board record follow, so a return keeps it)
+and replugs; the start-up log adds a line per GPIO level change (a pin
+that changes 8 times is called noisy and dropped) and the `GPLR` words
+every 10 s, to find the X50v's cable pin from a cable pull.
+
+**Proven on the X50v (2026-11-13, `loader-0002`; report
+`docs/reports/runs/2026-11-13-loader-0002-x50v-bit3.md`): CPLD `0x1C`
+bit 3 is the X50v's USB switch** (most likely its D+ pull-up). Bit 3 off
+for 30 s: 0 setups, as before. Bit 3 on at 30.764 s (`0004 -> 000C`),
+replug at 30.920 s, the first SETUP at 32.951 s, configured at 33.137 s;
+the PC listed the loader's serial port. A cable pull and replug at about
+2 minutes: the PC dropped the device and took it back with no software
+step on the X50v, so bit 3 can stay on (Dell clears it on detach; not
+needed for the link). Still open: the X50v's cable pin (the log closed at
+configuration, before the pull; GPIO14 fell at 1.3 s with the cable in,
+so it isn't it), and the drive layout (the PC took the serial-only
+fallback).
+
+**The handover's stale configuration error (2026-11-13, X50v, loader-0002
+and -0003):** Windows Mobile 2003 in its cradle with ActiveSync connected
+hands over `UDCCR` `0x808`: EMCE set by its own session. The loader's
+enable checked EMCE after setting UDE and took the leftover flag for its
+own table's fault, so USB never came up ("USB unavailable"). The driver
+now writes EMCE back (write-one-to-clear) before the table when it is
+found set; with that the PC configured the X50v at 1.4 s (loader-0003).
+Not seen on the X51v (WM5 left `0x800` or 0).
+
 ## Open questions
 
 ### The first enumeration after a hand-over from Windows Mobile (2026-10-16)

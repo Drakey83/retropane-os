@@ -61,6 +61,11 @@ _start:
     @ SVC mode, IRQ and FIQ masked. Whatever Windows Mobile (or QEMU) left
     @ behind, we now own the CPU.
     msr     cpsr_c, #0xD3
+    @ r2 as the starter left it, kept for `rt::handoff` (r6): HaRET (as a
+    @ Linux boot) puts its ATAG list's address there, with the command line
+    @ the owner chose by which script he started (R193). Nothing below uses
+    @ r6 before it is stored.
+    mov     r6, r2
 
     @ ...and the memory: stop what Windows Mobile left running that writes
     @ RAM by itself, before we use any of it. All 32 DMA channels (DCSRn:
@@ -115,6 +120,8 @@ _start:
     blo     1b
     ldr     r0, =rp_handoff_dma
     str     r4, [r0]
+    ldr     r0, =rp_handoff_r2
+    str     r6, [r0]
 
     @ Paint the SVC stack below us, so `stack_used` can find how deep it
     @ went (a silent overflow into .bss lost a glyph atlas, 2026-10-14).
@@ -300,6 +307,11 @@ static mut UPTIME: crate::elapsed::Elapsed = crate::elapsed::Elapsed::starting_a
 #[unsafe(export_name = "rp_handoff_dma")]
 static mut HANDOFF_DMA: u32 = 0;
 
+/// `r2` at the image's first instruction (a Linux-style starter's ATAG list
+/// address; anything at all from other starters), recorded by `_start`.
+#[unsafe(export_name = "rp_handoff_r2")]
+static mut HANDOFF_R2: u32 = 0;
+
 /// What the previous owner of the CPU (Windows Mobile through HaRET, or a
 /// RetroPane image through the loader) left running that writes memory by
 /// itself. `_start` stops all of it before anything else; this says what
@@ -308,6 +320,10 @@ static mut HANDOFF_DMA: u32 = 0;
 pub struct Handoff {
     /// DMA channels that were running (bit n = channel n).
     pub dma_running: u32,
+    /// `r2` as the starter left it: HaRET's (and QEMU's) ATAG list address
+    /// at a start after Windows Mobile; untrusted, checked before any use
+    /// (`rp_hal_x51v::atags`).
+    pub r2: u32,
 }
 
 /// What `_start` found running (see [`Handoff`]).
@@ -317,6 +333,7 @@ pub fn handoff() -> Handoff {
     unsafe {
         Handoff {
             dma_running: core::ptr::addr_of!(HANDOFF_DMA).read(),
+            r2: core::ptr::addr_of!(HANDOFF_R2).read(),
         }
     }
 }

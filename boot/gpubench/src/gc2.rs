@@ -3021,6 +3021,117 @@ pub const GAME_GUARD: [Lever; 4] = [
     lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
 ];
 
+/// GC2EB's settings (R72, the X50v): the steps above GC2DR's top on its
+/// frames: 143.00, 146.25 and 149.50 / 1, 149.50 / 2 the control.
+pub const GAME_FINE_HIGH: [Lever; 4] = [
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2"),
+];
+
+/// GC2EC's soak (R72, the X50v): 139.75 / 1 twelve times over, then
+/// 149.50 / 2: GC2DV's soak one step up, the X50v's top step in GC2DR.
+pub const GAME_SOAK139: [Lever; 13] = [
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 1"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 2"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 3"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 4"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 5"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 6"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 7"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 8"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 9"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 10"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 11"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1 part 12"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// GC2EE's settings (R72, the X50v): GC2DT's moved frames down the steps
+/// from 146.25 / 1 (GC2ED: the moved textured mesh wrong every render at
+/// 149.50 / 1, one column at x = 5), 149.50 / 2 the control.
+pub const GAME_MOVED_HIGH: [Lever; 6] = [
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1"),
+    lever((43, 4, 0), 1, (false, false), "139.75 / 1"),
+    lever((32, 3, 0), 1, (false, false), "138.67 / 1"),
+    lever((53, 5, 0), 1, (false, false), "137.80 / 1"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2"),
+];
+
+/// GC2EH's soak (R72, the X50v): 145.60 / 1 (the only locked clock between
+/// 143.00 and 146.25) twelve times over, then 149.50 / 2.
+pub const GAME_SOAK145: [Lever; 13] = [
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 1"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 2"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 3"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 4"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 5"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 6"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 7"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 8"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 9"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 10"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 11"),
+    lever((56, 5, 0), 1, (false, false), "145.60 / 1 part 12"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// GC2EG's soak (R72, the X50v): 143.00 / 1 twelve times over, then
+/// 149.50 / 2: GC2EF found 2% wrong at 146.25 / 1, one step down.
+pub const GAME_SOAK143: [Lever; 13] = [
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 1"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 2"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 3"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 4"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 5"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 6"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 7"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 8"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 9"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 10"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 11"),
+    lever((44, 4, 0), 1, (false, false), "143.00 / 1 part 12"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// GC2EF's soak (R72, the X50v): 146.25 / 1 twelve times over, then
+/// 149.50 / 2: the X50v's top step with every moved frame right (GC2EE).
+pub const GAME_SOAK146: [Lever; 13] = [
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 1"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 2"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 3"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 4"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 5"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 6"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 7"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 8"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 9"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 10"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 11"),
+    lever((45, 4, 0), 1, (false, false), "146.25 / 1 part 12"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
+/// GC2ED's soak (R72, the X50v): 149.50 / 1 twelve times over, then
+/// 149.50 / 2: the X50v drew GC2EB right at 149.50 / 1.
+pub const GAME_SOAK149: [Lever; 13] = [
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 1"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 2"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 3"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 4"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 5"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 6"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 7"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 8"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 9"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 10"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 11"),
+    lever((23, 2, 0), 1, (false, false), "149.50 / 1 part 12"),
+    lever((23, 2, 0), 2, (false, false), "149.50 / 2 part 1"),
+];
+
 /// GC2DV's soak: 137.80 / 1 twelve times over, then 149.50 / 2.
 pub const GAME_SOAK137: [Lever; 13] = [
     lever((53, 5, 0), 1, (false, false), "137.80 / 1 part 1"),

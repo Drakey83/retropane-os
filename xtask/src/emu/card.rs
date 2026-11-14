@@ -465,6 +465,62 @@ pub(crate) fn cardlog_checks(root: &Path) -> Result<(), String> {
         "    cardlog light OK: the run log on the SD card line for line, numbered 41 (after the 40 old files), 32 slots and an index made on each card"
     );
 
+    // R193: each boot is the loader's first start, so each keeps its own
+    // start-up log (`loader-NNNN`): the clocks boot's is 1, light's 2. The
+    // board as found, then USB, closed (the PC configured the device, or
+    // the run started), the same bytes on both cards.
+    let boot =
+        joined_card_log(&sd, &cf, "loader", 2).map_err(|e| format!("cardlog loader: {e}"))?;
+    for want in [
+        "RetroPane loader start-up log (R193), loader-0002 on the SD and CF cards",
+        "] CKEN ",
+        "] UDCCR ",
+        " UP2OCR ",
+        "] GPIO14 level ",
+        "] CPLD table at 0xA8001320",
+        "] CPLD 0x1C (bit 3: the X50v lead): bus ",
+        "] cards: SD in, CF in",
+        "] usb: resets ",
+        // QEMU's -kernel passes an ATAG list as HaRET does; without -append
+        // its command line is empty, and nothing is switched (R193's opt-in
+        // only on asking: a loader that always set bit 3 fails here).
+        "] command line: \"\"; no opt-in: no CPLD bit changes",
+        // R193's detect: the emulator's CPLD reads the X51v's 0x06, so the
+        // unit is the X51v and nothing is switched.
+        "] unit: X51v (CPLD 0x06 0002; 0x14 0002)
+",
+    ] {
+        if !boot.contains(want) {
+            return Err(format!("cardlog loader: no `{want}` in:\n{boot}"));
+        }
+    }
+    if boot.contains("CPLD 0x1C bit 3 on") {
+        return Err(format!(
+            "cardlog loader: bit 3 set without the opt-in:\n{boot}"
+        ));
+    }
+    let closing = boot.lines().last().unwrap_or("");
+    if !closing.contains("[start-up log closed: ")
+        || !closing.contains(" 0 refused, 0 bytes dropped]")
+    {
+        return Err(format!(
+            "cardlog loader: the closing line is wrong: {closing}"
+        ));
+    }
+    let halves =
+        [&sd, &cf].map(|card| slot_file(card, "loader", 2).and_then(|f| card_file(card, &f)));
+    match halves {
+        [Ok(a), Ok(b)] if a == b => {}
+        _ => return Err("cardlog loader: the SD and CF cards' start-up logs differ".into()),
+    }
+    // Kept for reading: the emulator's board as the loader found it.
+    let kept = scratch(root, "loader-startup-log.txt")?;
+    std::fs::write(&kept, &boot).map_err(|e| format!("{}: {e}", kept.display()))?;
+    eprintln!(
+        "    cardlog loader OK: the start-up log (loader-0002) on both cards alike, the board as found, USB, closed: {closing} (kept in {})",
+        kept.display()
+    );
+
     let out = run("sdtime", &image("rp-sdtime")?, None, "RPL END")?;
     let card = check("sdtime", 1, &out, "returned")?;
     let moved = "[card log: the SD card was taken by the program; continuing on the CF card]";
@@ -556,6 +612,79 @@ pub(crate) fn cardlog_checks(root: &Path) -> Result<(), String> {
     check("hang", 1, &out, "did not return")?;
     eprintln!(
         "    cardlog hang OK: a watchdog reset with RAM kept, closed at the loader's next start"
+    );
+
+    // R193's opt-in (docs/research/sheets/r193-x50v-cpld1c-bit3.md): the
+    // command line through the ATAG list (QEMU's -append, as HaRET's `set
+    // cmdline`), bit 3 at 0 s: set before the controller starts, in the
+    // shadow and the board record, logged, then the PC configures.
+    let n = (1..=64u32)
+        .filter(|&k| slot_file(&sd, "loader", k).is_ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let input = rp_loadproto::control_frame("board");
+    let settle = || {
+        // The PC's configuration (~1 s in) closes the log: waited on by
+        // reading the cards' images until its closing line is there.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if joined_card_log(&sd, &cf, "loader", n)
+                .is_ok_and(|t| t.contains("[start-up log closed: "))
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("cardlog x50v: loader-{n:04} never closed"));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    let out = super::boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &["-drive", &cf_drive, "-append", "rp.x50v-usb-bit3=0"],
+            input: Some((&input, "RPL OK")),
+            during: Some(&settle),
+            then: None,
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    if !out.contains("RPL OK board: ") {
+        return Err(format!(
+            "cardlog x50v: the loader didn't answer:
+{out}"
+        ));
+    }
+    let x50v = joined_card_log(&sd, &cf, "loader", n).map_err(|e| format!("cardlog x50v: {e}"))?;
+    let at = |want: &str| {
+        x50v.find(want)
+            .ok_or_else(|| format!("cardlog x50v: no `{want}` in:\n{x50v}"))
+    };
+    at(
+        "] command line: \"rp.x50v-usb-bit3=0\"; opt-in rp.x50v-usb-bit3: CPLD 0x1C bit 3 set at its time",
+    )?;
+    let bit = at("] CPLD 0x1C bit 3 on (R193): 0000 -> 0008 (WM slot the same), record 0008")?;
+    // Dell's order: the bit before the controller's first event.
+    if at("] usb: resets ")? < bit {
+        return Err(format!("cardlog x50v: USB started before bit 3:\n{x50v}"));
+    }
+    if !x50v.ends_with("]") || !x50v.contains("[start-up log closed: the PC configured the device;")
+    {
+        return Err(format!(
+            "cardlog x50v: not closed at the configuration:\n{x50v}"
+        ));
+    }
+    let kept = scratch(root, "loader-startup-log-x50v.txt")?;
+    std::fs::write(&kept, &x50v).map_err(|e| format!("{}: {e}", kept.display()))?;
+    eprintln!(
+        "    cardlog x50v OK: with rp.x50v-usb-bit3=0 on the command line, bit 3 set before USB (0000 -> 0008, shadow and record), then configured (loader-{n:04}, kept in {})",
+        kept.display()
     );
 
     for (card, what) in [(&sd, "SD"), (&cf, "CF")] {

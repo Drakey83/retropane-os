@@ -629,12 +629,31 @@ fn show_card_log(
         },
         dest.display()
     );
-    if !text.contains("[card log closed: ") {
-        eprintln!(
-            "    no closing line: this run didn't come back and the loader hasn't closed it (a watchdog reset clears what it needs); the log ends at its last line written"
-        );
+    if let Some(missing) = missing_close(&text) {
+        eprintln!("    no closing line: {missing}; the log ends at its last line written");
     }
     Ok(())
+}
+
+/// What a card log without its closing line means, or `None` when it has
+/// one: a run's (`[card log closed: `) or the loader's start-up log's
+/// (`[start-up log closed: `, R193), which closes itself and never with
+/// the run's line.
+fn missing_close(text: &str) -> Option<&'static str> {
+    let startup = text.contains("RetroPane loader start-up log");
+    match (
+        startup,
+        text.contains("[card log closed: "),
+        text.contains("[start-up log closed: "),
+    ) {
+        (false, true, _) | (true, _, true) => None,
+        (true, _, false) => Some(
+            "the loader stopped before its start-up log closed (a reset or a hang inside its first 5 minutes)",
+        ),
+        (false, false, _) => Some(
+            "this run didn't come back and the loader hasn't closed it (a watchdog reset clears what it needs)",
+        ),
+    }
 }
 
 /// The PC's offset from UTC, minutes (0 if it can't be read): Windows by
@@ -1478,6 +1497,19 @@ pub fn install(root: &Path) -> Result<(), String> {
 /// own folder.
 pub const CF_KIT_DIR: &str = "RetroPane";
 
+/// R193's X50v USB test folder on the CF card: the same loader and HaRET,
+/// with the opt-in script (`sdkit::X50V_USB_TXT`) as `startup.txt` and
+/// `default.txt`. Started on the X50v only; the X51v keeps `RetroPane`.
+pub const CF_X50V_DIR: &str = "RetroPaneX50v";
+
+/// The X50v test folder's files: (the kit's file, the name on the card).
+const X50V_FILES: [(&str, &str); 4] = [
+    ("loader/retropane.bin", "retropane.bin"),
+    ("haret.exe", "haret.exe"),
+    ("x50v/startup.txt", "startup.txt"),
+    ("x50v/startup.txt", "default.txt"),
+];
+
 /// The kit's boot files for the CF card: [`KIT_FILES`] less the SD card's
 /// drive icon pair, from the same list, so the CF card can't get another
 /// file under a boot file's name (2026-10-24: a hand copy put rp-probe
@@ -1497,35 +1529,45 @@ pub fn cf_kit_files() -> Vec<(&'static str, &'static str)> {
 /// the kit's.
 pub fn install_cf(root: &Path) -> Result<(), String> {
     let kit = root.join("target/sdkit");
-    let files = cf_kit_files();
-    for (local, _) in &files {
-        if !kit.join(local).exists() {
-            return Err(format!(
-                "{} is missing: run cargo xtask sdkit first",
-                kit.join(local).display()
-            ));
+    let folders = [
+        (CF_KIT_DIR, cf_kit_files()),
+        (CF_X50V_DIR, X50V_FILES.to_vec()),
+    ];
+    for (_, files) in &folders {
+        for (local, _) in files {
+            if !kit.join(local).exists() {
+                return Err(format!(
+                    "{} is missing: run cargo xtask sdkit first",
+                    kit.join(local).display()
+                ));
+            }
         }
     }
-    for (local, name) in &files {
-        let on_card = format!("cf:{CF_KIT_DIR}/{name}");
-        put(root, &kit.join(local).display().to_string(), Some(&on_card))?;
-    }
-    for (local, name) in &files {
-        let want = std::fs::read(kit.join(local)).map_err(|e| e.to_string())?;
-        let (lines, reply) = query(root, &format!("get cf:{CF_KIT_DIR}/{name}"))?;
-        let got = decode_file(&lines, &reply).map_err(|e| format!("{name} on the CF card: {e}"))?;
-        if got != want {
-            return Err(format!(
-                "{name} on the CF card differs from the kit's {local}"
-            ));
+    for (dir, files) in &folders {
+        for (local, name) in files {
+            let on_card = format!("cf:{dir}/{name}");
+            put(root, &kit.join(local).display().to_string(), Some(&on_card))?;
         }
-        eprintln!(
-            "    {name}: {} bytes, read back from the card the same as {local}",
-            got.len()
-        );
+    }
+    for (dir, files) in &folders {
+        for (local, name) in files {
+            let want = std::fs::read(kit.join(local)).map_err(|e| e.to_string())?;
+            let (lines, reply) = query(root, &format!("get cf:{dir}/{name}"))?;
+            let got = decode_file(&lines, &reply)
+                .map_err(|e| format!("{dir}/{name} on the CF card: {e}"))?;
+            if got != want {
+                return Err(format!(
+                    "{dir}/{name} on the CF card differs from the kit's {local}"
+                ));
+            }
+            eprintln!(
+                "    {dir}/{name}: {} bytes, read back from the card the same as {local}",
+                got.len()
+            );
+        }
     }
     eprintln!(
-        "    the CF card is up to date: in Windows Mobile, start haret.exe from the CF card's {CF_KIT_DIR} folder"
+        "    the CF card is up to date: in Windows Mobile, start haret.exe from the CF card's {CF_KIT_DIR} folder ({CF_X50V_DIR}: the X50v's USB test, R193, on the X50v only)"
     );
     Ok(())
 }
@@ -2373,3 +2415,36 @@ $sp.Close()
 /// `cargo xtask net --canned`'s answer: a forecast in Tempest's shape
 /// (metric), so the dock link is checked end to end without a key.
 const CANNED_FORECAST: &str = r#"{"timezone_offset_minutes":-300,"location_name":"Canned Test Station","current_conditions":{"icon":"partly-cloudy-day","air_temperature":11.5,"feels_like":9.8,"relative_humidity":61,"wind_avg":12.0,"wind_direction":270,"uv":3},"forecast":{"daily":[{"day_start_local":1761886800,"icon":"rainy","sunrise":1761911400,"sunset":1761950400,"air_temp_high":14.0,"air_temp_low":4.5,"precip_probability":70}],"hourly":[{"icon":"cloudy","air_temperature":11.0,"precip_probability":20,"local_hour":9,"wind_avg":10.0}]}}"#;
+
+#[cfg(test)]
+mod close_tests {
+    use super::missing_close;
+
+    #[test]
+    fn a_start_up_log_closes_with_its_own_line_and_a_run_with_its() {
+        let run = "line
+[card log closed: the run ended]
+";
+        let boot = "[   0.624] RetroPane loader start-up log (R193), loader-0001
+";
+        assert_eq!(missing_close(run), None);
+        assert!(
+            missing_close(
+                "line
+"
+            )
+            .unwrap()
+            .contains("didn't come back")
+        );
+        assert_eq!(
+            missing_close(&format!(
+                "{boot}[start-up log closed: 5 minutes]
+"
+            )),
+            None
+        );
+        assert!(missing_close(boot).unwrap().contains("start-up log closed"));
+        // A run's closing line doesn't close a start-up log.
+        assert!(missing_close(&format!("{boot}{run}")).is_some());
+    }
+}

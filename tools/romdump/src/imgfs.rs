@@ -91,8 +91,14 @@ pub struct Imgfs<'a> {
 }
 
 impl<'a> Imgfs<'a> {
-    /// Parses the IMGFS partition `part`.
+    /// Parses the IMGFS partition `part` (512-byte sectors, the X51v's).
     pub fn parse(part: &'a [u8]) -> Result<Self, Error> {
+        Self::parse_with(part, SECTOR)
+    }
+
+    /// Parses the IMGFS partition `part` whose header blocks are counted in
+    /// `sector`-byte sectors (the X50v's StrataFlash: 4 KiB).
+    pub fn parse_with(part: &'a [u8], sector: usize) -> Result<Self, Error> {
         if slice(part, 0, 16)? != GUID {
             return Err(Error::Format(
                 "not an IMGFS partition (GUID mismatch)".into(),
@@ -110,13 +116,13 @@ impl<'a> Imgfs<'a> {
             .trim_end_matches('\0')
             .to_string();
 
-        let per_block = (sectors_per_block * SECTOR - 8) / entry_size;
+        let per_block = (sectors_per_block * sector - 8) / entry_size;
         let mut items = Vec::new();
         let mut block = first_block;
         let mut seen = 0usize;
         while block != 0 {
             seen += 1;
-            if seen > part.len() / SECTOR {
+            if seen > part.len() / sector {
                 return Err(Error::Format("header block chain loops".into()));
             }
             if u32_at(part, block)? != BLOCK_SIGNATURE {

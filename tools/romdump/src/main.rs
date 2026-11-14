@@ -14,7 +14,7 @@ use std::process::ExitCode;
 
 use romdump::imgfs::{Imgfs, Kind};
 use romdump::xip::{Xip, XipKind};
-use romdump::{Error, nb0, pe};
+use romdump::{Error, flash, nb0, pe};
 
 const USAGE: &str = "usage:
   romdump info    <image.nb0>
@@ -49,6 +49,8 @@ fn main() -> ExitCode {
 struct Rom {
     image: Vec<u8>,
     parts: Vec<nb0::Partition>,
+    /// The partition table's sector: 512 (X51v), 4 KiB (X50v StrataFlash).
+    sector: usize,
 }
 
 /// One extractable entry, from whichever partition holds it.
@@ -61,9 +63,18 @@ struct Entry {
 
 impl Rom {
     fn load(path: &str) -> Result<Self, Error> {
-        let image = std::fs::read(path)?;
-        let parts = nb0::partitions(&image)?;
-        Ok(Self { image, parts })
+        let mut image = std::fs::read(path)?;
+        let mut sector = nb0::SECTOR;
+        if flash::is_strataflash(&image) {
+            image = flash::logical(&image);
+            sector = flash::SECTOR;
+        }
+        let parts = nb0::partitions_with(&image, sector)?;
+        Ok(Self {
+            image,
+            parts,
+            sector,
+        })
     }
 
     fn part(&self, p: &nb0::Partition) -> &[u8] {
@@ -74,17 +85,30 @@ impl Rom {
         self.parts
             .iter()
             .find(|p| p.kind == nb0::TYPE_IMGFS)
-            .map(|p| Imgfs::parse(self.part(p)))
+            .map(|p| Imgfs::parse_with(self.part(p), self.sector))
             .transpose()
     }
 
-    /// XIP partitions, main kernel image (0x23) first.
+    /// XIP partitions, main kernel image (0x23, the X50v's 0x22) first.
     fn xips(&self) -> Result<Vec<(&'static str, Xip<'_>)>, Error> {
         let mut out = Vec::new();
-        for kind in [nb0::TYPE_XIP, nb0::TYPE_XIP_ULDR] {
+        for kind in [nb0::TYPE_XIP, nb0::TYPE_XIP_X50V, nb0::TYPE_XIP_ULDR] {
             for p in self.parts.iter().filter(|p| p.kind == kind) {
-                let label = if kind == nb0::TYPE_XIP { "xip" } else { "uldr" };
-                out.push((label, Xip::parse(self.part(p))?));
+                let label = if kind == nb0::TYPE_XIP_ULDR {
+                    "uldr"
+                } else {
+                    "xip"
+                };
+                match Xip::parse(self.part(p)) {
+                    Ok(x) => out.push((label, x)),
+                    // The X50v's raw blocks before the managed area aren't
+                    // placed by the table's logical sectors: its XIP
+                    // partitions aren't found yet; the IMGFS is.
+                    Err(e) if self.sector != nb0::SECTOR => {
+                        eprintln!("romdump: {label} skipped on this StrataFlash image: {e}");
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         }
         Ok(out)

@@ -22,6 +22,49 @@
 pub const CPLD14_BITS: u16 = 0x0002;
 /// CPLD `0x1C`'s bits kept (the codec's power, the USB/dock bits).
 pub const CPLD1C_BITS: u16 = 0x000E;
+
+/// Which Axim the loader runs on (R193, `docs/research/sheets/r193-x50v-detect.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unit {
+    /// The X51v (CPLD `0x06` reads `0x0002`).
+    X51v,
+    /// The X50v (CPLD `0x06` reads `0x000B`): its USB needs CPLD `0x1C`
+    /// bit 3 (proven 2026-11-13, loader-0002).
+    X50v,
+    /// Another value: today's behaviour, nothing switched.
+    Unknown,
+}
+
+impl Unit {
+    /// For the log.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::X51v => "X51v",
+            Self::X50v => "X50v",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// CPLD `0x06`'s value on the X51v: a status input with no latch and no
+/// Windows Mobile shadow slot; it read this in 15 logged runs (docked and
+/// not, CF card pulled; docs/hw/cf.md, `rp-storfast` C7-C13).
+pub const CPLD06_X51V: u16 = 0x0002;
+/// CPLD `0x06` on the X50v: its three boots of 2026-11-13 (cradle and
+/// cable), reports `docs/reports/runs/2026-11-13-loader-000*-x50v*.md`.
+pub const CPLD06_X50V: u16 = 0x000B;
+
+/// The unit from CPLD `0x06` as read on the bus: only the exact values
+/// measured count; anything else is [`Unit::Unknown`].
+#[must_use]
+pub const fn unit(cpld06: u16) -> Unit {
+    match cpld06 {
+        CPLD06_X51V => Unit::X51v,
+        CPLD06_X50V => Unit::X50v,
+        _ => Unit::Unknown,
+    }
+}
 /// Gamma table words (`GFXGAM0`-`16`).
 pub const GAMMA_WORDS: usize = 17;
 /// `GSCTRL`'s gamma enable.
@@ -155,6 +198,25 @@ pub fn unpack(w: &[u32; WORDS]) -> Option<Board> {
         mbxclk: w[8 + GAMMA_WORDS],
         m24clk: w[9 + GAMMA_WORDS],
     })
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_measured_values_name_a_unit() {
+        assert_eq!(unit(0x0002), Unit::X51v);
+        assert_eq!(unit(0x000B), Unit::X50v);
+        // One bit off either, all set, none, the X50v's bits in other
+        // places: unknown, so nothing is switched.
+        for v in [
+            0x0000, 0x0003, 0x000A, 0x0009, 0x000F, 0x00B0, 0x800B, 0xFFFF,
+        ] {
+            assert_eq!(unit(v), Unit::Unknown, "{v:#06x}");
+        }
+        assert_eq!(Unit::X50v.name(), "X50v");
+    }
 }
 
 #[cfg(test)]

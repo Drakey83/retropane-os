@@ -43,9 +43,12 @@ mod image {
     use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_fat::{AnyVolume, Guard, Volume, mkfs};
     use rp_hal_api::{BlockDevice, BlockError};
+    use rp_hal_pxa27x::diag;
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, dma_map, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
+    use rp_hal_x51v::atags::{self, Bit3};
+    use rp_hal_x51v::bootlog::{self, BootLog};
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
     use rp_hal_x51v::{cardlog, cardsink};
     use rp_loadproto::{Frame, Kind, LoadError, READY, Receiver, crc32_update, feed_slice};
@@ -512,12 +515,24 @@ mod image {
         [u16; 16],
         Option<(BoardCpld, handover::Source)>,
         Option<&'static str>,
+        Option<[u32; handover::WORDS]>,
     ) {
         let Some((mut cpld, table)) = devices::take_cpld() else {
-            return (None, None, [0; 16], None, None);
+            return (None, None, [0; 16], None, None, None);
         };
+        // The shared table as found, before `adopt` rewrites it in
+        // RetroPane's format (R193's start-up log: does Windows Mobile 2003
+        // keep one here?).
+        let raw = Some(*table);
         let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(dma_map::SD)) else {
-            return (None, None, [0; 16], Some(Cpld::adopt(cpld, table)), None);
+            return (
+                None,
+                None,
+                [0; 16],
+                Some(Cpld::adopt(cpld, table)),
+                None,
+                raw,
+            );
         };
         // Diagnostics (CF power hunt): the CPLD's registers as Windows
         // Mobile left them, read before our first write. Reads only; whether
@@ -532,13 +547,14 @@ mod image {
         cpld.set_sd_power(true);
         rt::delay_us(10_000);
         match SdCard::try_init(PxaMmc::with_dma(mmc, dma)) {
-            Ok(card) => (Some(card), None, found, Some((cpld, source)), None),
+            Ok(card) => (Some(card), None, found, Some((cpld, source)), None, raw),
             Err((e, host)) => (
                 None,
                 Some(host),
                 found,
                 Some((cpld, source)),
                 Some(e.name()),
+                raw,
             ),
         }
     }
@@ -2959,6 +2975,15 @@ mod image {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
         step(2);
+        // R193: the board as found, before the loader's first register
+        // write (`diag`'s whitelist: reads with no side effects), for the
+        // start-up log on the cards.
+        let mut found_regs = [0u32; diag::COUNT];
+        diag::snapshot(&mut found_regs);
+        // R193: the command line HaRET passed (its script's `set cmdline`),
+        // read before anything else runs; acted on at the first start only.
+        let mut cmd_line = [0u8; atags::LINE];
+        let cmd = devices::boot_cmdline(&mut cmd_line);
         // GPIO, the USB detach and the card first: they run during the
         // display's settle time after the hand-off (`devices::take_mbx`)
         // instead of after it (boot time, docs/design-brief.md).
@@ -2977,7 +3002,7 @@ mod image {
         // host gave up on the first descriptor request).
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
-        let (card, spare, cpld_found, cpld, sd_error) = open_card();
+        let (card, spare, cpld_found, cpld, sd_error, cpld_table) = open_card();
         // When each start-up stage ended (`handoff`: boot time on the device).
         let mut stages = [rt::since_start(), 0, 0];
         let (mut cpld, cpld_source) = match cpld {
@@ -2992,6 +3017,9 @@ mod image {
         };
         // The CF drive's command trace at the scratch area's end (R43).
         let (scratch, trace_buf) = scratch.split_at_mut(scratch.len() - CF_TRACE_BYTES);
+        // The start-up log's queue (R193): SDRAM, not the loader's zeroed
+        // RAM (ADR-0005's budget).
+        let (scratch, blog_buf) = scratch.split_at_mut(scratch.len() - bootlog::BUF);
         let (msc_buf, fat_scratch) = scratch.split_at_mut(MSC_BUF);
         // In: the switch says so, or a card answered anyway (so a wrong
         // reading of the switch can't hide a working card).
@@ -3120,12 +3148,111 @@ mod image {
         };
 
         let mut udc = Udc::new(udc_bus);
+        // R193: the port registers before the loader's first write to the
+        // controller (its clock on since `take_udc`; the snapshot above
+        // says whether it was before).
+        let usb_found = {
+            use rp_drv_pxa_udc::reg;
+            [
+                udc.read_reg(reg::UDCCR),
+                udc.read_reg(reg::UP2OCR),
+                udc.read_reg(reg::UP3OCR),
+            ]
+        };
+        // R193: the loader's own start-up log, at its first start after
+        // HaRET only (a return from an image has the run's own log), its
+        // slot reserved with the PC away.
+        let mut blog: Option<BootLog<'static>> = None;
+        if board.first {
+            let found = Found {
+                regs: found_regs,
+                usb: usb_found,
+                cpld_bus: cpld_found,
+                cpld_table,
+                cpld_source,
+                cpld1c_kept: cpld.as_ref().map(|c| c.shadow(0x1C)),
+                record1c: devices::board_record().map(|r| r.cpld1c),
+            };
+            blog = boot_log_begin(
+                &mut *lun,
+                &mut *cf,
+                &mut fat_scratch[..SCRATCH],
+                blog_buf,
+                &found,
+                &mut log,
+            );
+        }
+        let mut blog_track = BootTrack::new(now_ms(), gpio.levels());
+        // A line in the start-up log, with its time (nothing once closed).
+        macro_rules! blog {
+            ($($a:tt)*) => {{
+                if let Some(b) = blog.as_mut() {
+                    let mut l = bootlog::Text::<200>::new();
+                    stamp(&mut l);
+                    let _ = write!(l, $($a)*);
+                    let _ = l.write_str("
+");
+                    b.push(l.bytes());
+                }
+            }};
+        }
         // The PC must see a new device: the pull-up is hard-wired, so after
         // HaRET's hand-over it would keep Windows Mobile's (or the last
         // owner's) and never ask this loader anything. The host controller
         // drives SE0 on the connector instead (~155 ms), the PC takes it as
         // an unplug, and the enable below is a fresh plug-in (docs/hw/udc.md
         // T4). Right before the enable: the PC asks at once.
+        // R193's opt-in (`docs/research/sheets/r193-x50v-cpld1c-bit3.md`):
+        // CPLD `0x1C` bit 3 set at its time, chosen by HaRET's command line
+        // at the first start only; without it no CPLD bit changes here.
+        let mut bit3 = match (&cmd, board.first) {
+            (Ok(n), true) => atags::bit3(&cmd_line[..*n]),
+            _ => Bit3::Off,
+        };
+        // Which Axim (CPLD 0x06, a status input; R193's detect sheet): on
+        // the X50v the loader switches its USB on by itself, before USB,
+        // as the opt-in's `=0` does; the X51v and unknown boards as before.
+        let unit = rp_hal_x51v::board::unit(cpld_found[3]);
+        if board.first {
+            blog!(
+                "unit: {} (CPLD 0x06 {:04X}; 0x14 {:04X}){}",
+                unit.name(),
+                cpld_found[3],
+                cpld_found[10],
+                if unit == rp_hal_x51v::board::Unit::X50v && bit3 == Bit3::Off {
+                    ": CPLD 0x1C bit 3 on at the start, its USB switch"
+                } else {
+                    ""
+                }
+            );
+            if unit == rp_hal_x51v::board::Unit::X50v && bit3 == Bit3::Off {
+                bit3 = Bit3::At(0);
+            }
+        }
+        if board.first {
+            match &cmd {
+                Ok(n) => blog!(
+                    "command line: \"{}\"; {}",
+                    core::str::from_utf8(&cmd_line[..*n]).unwrap_or("(not text)"),
+                    match bit3 {
+                        Bit3::Off => "no opt-in: no CPLD bit changes",
+                        Bit3::At(_) => "opt-in rp.x50v-usb-bit3: CPLD 0x1C bit 3 set at its time",
+                        Bit3::Bad =>
+                            "rp.x50v-usb-bit3 with a value that isn't 0-300 seconds: nothing set",
+                    }
+                ),
+                Err(e) => blog!("command line: none ({}); no CPLD bit changes", e.says()),
+            }
+            if let Bit3::At(at) = bit3 {
+                let _ = writeln!(log, "X50v opt-in: CPLD 0x1C bit 3 at {} s", at / 1000);
+            }
+        }
+        if bit3 == Bit3::At(0) {
+            // Dell's order: the bit, then the controller.
+            let r = x50v_bit3(cpld.as_mut());
+            blog_bit3(blog.as_mut(), r, &mut log);
+            bit3 = Bit3::Off;
+        }
         let mut uhc = rt::take_uhc();
         let usb = replug(&mut udc, uhc.as_mut());
         // The controller's interrupt wakes the waiting loop (item 74).
@@ -3352,6 +3479,39 @@ mod image {
                 // Served: the line may fire again.
                 l.done();
             }
+            // R193: the start-up log's USB events, closed when the PC
+            // configures the device (before the drive serves anything).
+            if let Bit3::At(at) = bit3
+                && now_ms().wrapping_sub(blog_track.start) >= at
+            {
+                bit3 = Bit3::Off;
+                if udc.configured() {
+                    blog!("CPLD 0x1C bit 3 not set: the PC configured the device without it");
+                    let _ = writeln!(log, "X50v opt-in: not needed, the PC configured the device");
+                } else {
+                    let r = x50v_bit3(cpld.as_mut());
+                    blog_bit3(blog.as_mut(), r, &mut log);
+                    // A fresh attach for the PC, as Dell's driver starts
+                    // the controller after the bit.
+                    replug(&mut udc, uhc.as_mut());
+                    blog!("plugged in again after bit 3");
+                }
+            }
+            if let Some(b) = blog.as_mut()
+                && b.open()
+            {
+                let levels = gpio.levels();
+                let cable = gpio.read(USB_DETECT);
+                boot_log_tick(
+                    b,
+                    &mut blog_track,
+                    &mut udc,
+                    cable,
+                    levels,
+                    &mut LogCards(&mut *lun, &mut *cf),
+                    msc.busy(),
+                );
+            }
             if udc.take_msc_reset() {
                 msc.reset();
                 if let Some(t) = mtp_t.as_mut() {
@@ -3361,6 +3521,7 @@ mod image {
             if patience.due(now_ms(), udc.configured(), udc.stats().resets) {
                 replug(&mut udc, uhc.as_mut());
                 let _ = writeln!(log, "PC silent: plugged in again");
+                blog!("PC silent: plugged in again");
             }
             if udc.configured() {
                 layout_since = rt::ticks();
@@ -3375,6 +3536,10 @@ mod image {
                 layout_resets = udc.stats().resets;
                 let _ = writeln!(
                     log,
+                    "PC didn't configure the device: offering the {} layout",
+                    layout_name(next)
+                );
+                blog!(
                     "PC didn't configure the device: offering the {} layout",
                     layout_name(next)
                 );
@@ -3398,6 +3563,7 @@ mod image {
                 layout_since = rt::ticks();
                 layout_resets = udc.stats().resets;
                 let _ = writeln!(log, "No MTP session from the PC: offering the drive");
+                blog!("No MTP session from the PC: offering the drive");
                 let _ = writeln!(uart, "USB layout: composite (no MTP session)");
             }
             if core::mem::take(&mut guard_due) {
@@ -4023,6 +4189,12 @@ mod image {
                     // The card log's files, reserved with the PC away (its
                     // views of the cards are re-read when it comes back).
                     let mut card_note = Line::new();
+                    if let Some(b) = blog.as_mut() {
+                        let mut c = LogCards(&mut *lun, &mut *cf);
+                        b.close("a run starts", &mut |u, lba, s| {
+                            cardsink::LoaderCards::write(&mut c, u, lba, s)
+                        });
+                    }
                     if handover {
                         cardsink::end();
                     } else {
@@ -4273,6 +4445,39 @@ mod image {
         note: &mut Line,
     ) {
         cardsink::end();
+        let (number, files, sd_id, cf_sectors, changed) = card_log_reserve(lun, cf, name, scratch);
+        let mut state = cardlog::State::new(number, files, sd_id, cf_sectors);
+        state.changed = changed;
+        if !state.valid() {
+            let _ = note.write_str("[loader: no card log: no card took the file]\n");
+            return;
+        }
+        cardsink::begin(state);
+        let _ = write!(note, "[loader: card log ");
+        let _ = note.write_str(core::str::from_utf8(name).unwrap_or("run"));
+        let _ = write!(
+            note,
+            "-{number:04} in rplog/ on the {}]\n",
+            match (files[0].sectors > 0, files[1].sectors > 0) {
+                (true, true) => "SD and CF cards",
+                (true, false) => "SD card (no CF card)",
+                _ => "CF card (none on SD)",
+            }
+        );
+    }
+
+    /// A run slot for `name` on each card that's in (the slot zeroed, its
+    /// index line written in place; see [`card_log_begin`]): the run's
+    /// number, each unit's file (no sectors: none), the SD card's identity,
+    /// the CF card's size, the units whose slots or index had to be made.
+    /// Also the loader's own start-up log's (R193, `bootlog::NAME`).
+    #[inline(never)]
+    fn card_log_reserve(
+        lun: &mut Lun,
+        cf: &mut CfLun,
+        name: &[u8],
+        scratch: &mut [u8],
+    ) -> (u32, [cardlog::File; 2], cardlog::SdCard, u32, u32) {
         let (zeros, rest) = scratch.split_at_mut(16 * 1024);
         zeros.fill(0);
         let (indexes, work) = rest.split_at_mut(2 * cardlog::INDEX_BYTES);
@@ -4405,24 +4610,341 @@ mod image {
             CfSlot::Card(c) => c.sectors(),
             _ => 0,
         };
-        let mut state = cardlog::State::new(number, files, sd_id, cf_sectors);
-        state.changed = changed;
-        if !state.valid() {
-            let _ = note.write_str("[loader: no card log: no card took the file]\n");
-            return;
+        (number, files, sd_id, cf_sectors, changed)
+    }
+
+    /// The board as the loader found it, for the start-up log (R193).
+    struct Found {
+        /// `diag`'s whitelist, in its order, read at step 2.
+        regs: [u32; diag::COUNT],
+        /// `UDCCR`, `UP2OCR`, `UP3OCR` before the loader's first write to
+        /// the controller.
+        usb: [u32; 3],
+        /// The CPLD's registers read on the bus before its first write
+        /// (its latches may not read back).
+        cpld_bus: [u16; 16],
+        /// The shared shadow table (`0xA8001320`) before `adopt`.
+        cpld_table: Option<[u32; handover::WORDS]>,
+        /// Where the shadow came from.
+        cpld_source: Option<handover::Source>,
+        /// `0x1C` as the loader keeps it (its shadow, after `board_step`).
+        cpld1c_kept: Option<u16>,
+        /// `0x1C` in the board record (quality audit C39).
+        record1c: Option<u16>,
+    }
+
+    impl Found {
+        /// A whitelisted register's value, by its manual name (0 if none).
+        fn reg(&self, name: &str) -> u32 {
+            diag::GROUPS
+                .iter()
+                .flat_map(|(_, regs)| regs.iter())
+                .position(|r| r.name == name)
+                .map_or(0, |i| self.regs[i])
         }
-        cardsink::begin(state);
-        let _ = write!(note, "[loader: card log ");
-        let _ = note.write_str(core::str::from_utf8(name).unwrap_or("run"));
-        let _ = write!(
-            note,
-            "-{number:04} in rplog/ on the {}]\n",
-            match (files[0].sectors > 0, files[1].sectors > 0) {
-                (true, true) => "SD and CF cards",
-                (true, false) => "SD card (no CF card)",
-                _ => "CF card (none on SD)",
+    }
+
+    /// `[  12.345] `: the loader's uptime, for the start-up log's lines.
+    fn stamp(l: &mut bootlog::Text<200>) {
+        let ms = now_ms();
+        let _ = write!(l, "[{:>4}.{:03}] ", ms / 1000, ms % 1000);
+    }
+
+    /// One start-up log line: the time, then `f`'s text.
+    fn blog_line(b: &mut BootLog<'_>, f: impl FnOnce(&mut bootlog::Text<200>)) {
+        let mut l = bootlog::Text::<200>::new();
+        stamp(&mut l);
+        f(&mut l);
+        let _ = l.write_str("\n");
+        b.push(l.bytes());
+    }
+
+    /// The start-up log (R193): a run slot named `loader` on each card
+    /// that's in (as a run's, before the PC is shown the device), the
+    /// board as found in it, written at once (the PC is away). `None`
+    /// with no card to take it; the screen says which.
+    #[inline(never)]
+    fn boot_log_begin(
+        lun: &mut Lun,
+        cf: &mut CfLun,
+        scratch: &mut [u8],
+        buf: &'static mut [u8],
+        f: &Found,
+        screen: &mut Console<'_>,
+    ) -> Option<BootLog<'static>> {
+        let (number, files, _, _, _) = card_log_reserve(lun, cf, bootlog::NAME, scratch);
+        if files.iter().all(|f| f.sectors == 0) {
+            let _ = writeln!(screen, "start-up log: no card took it");
+            return None;
+        }
+        let mut log = BootLog::new(files, buf)?;
+        let b = &mut log;
+        let on = match (files[0].sectors > 0, files[1].sectors > 0) {
+            (true, true) => "SD and CF cards",
+            (true, false) => "SD card",
+            _ => "CF card",
+        };
+        let _ = writeln!(screen, "start-up log: loader-{number:04} on the {on}");
+        blog_line(b, |l| {
+            let _ = write!(
+                l,
+                "RetroPane loader start-up log (R193), loader-{number:04} on the {on}: the board as found at the first start after HaRET, then each USB event; [seconds since start]"
+            );
+        });
+        // Every whitelisted register, a group a line (seven a line).
+        let mut base = 0;
+        for (group, regs) in diag::GROUPS {
+            for (part, chunk) in regs.chunks(7).enumerate() {
+                blog_line(b, |l| {
+                    let _ = write!(l, "{group}{}:", if part > 0 { " (more)" } else { "" });
+                    for (i, r) in chunk.iter().enumerate() {
+                        let _ = write!(l, " {} {:08X}", r.name, f.regs[base + part * 7 + i]);
+                    }
+                });
             }
+            base += regs.len();
+        }
+        let cken = f.reg("CKEN");
+        blog_line(b, |l| {
+            let _ = write!(
+                l,
+                "CKEN {cken:08X}: USB client clock (bit 11) {}, USB host clock (bit 10) {} (as found, before the loader turned the client's on)",
+                if cken & 1 << 11 != 0 { "on" } else { "OFF" },
+                if cken & 1 << 10 != 0 { "on" } else { "off" }
+            );
+        });
+        blog_line(b, |l| {
+            let _ = write!(l, "PSSR {:08X}", f.reg("PSSR"));
+        });
+        blog_line(b, |l| {
+            let _ = write!(l, "UDCCR {:08X} UP2OCR {:08X} (", f.usb[0], f.usb[1]);
+            let _ = bootlog::up2ocr(l, f.usb[1]);
+            let _ = write!(l, ") UP3OCR {:08X}", f.usb[2]);
+        });
+        let level = ["GPLR0", "GPLR1", "GPLR2", "GPLR3"].map(|n| f.reg(n));
+        let dir = ["GPDR0", "GPDR1", "GPDR2", "GPDR3"].map(|n| f.reg(n));
+        let gafr = [
+            "GAFR0L", "GAFR0U", "GAFR1L", "GAFR1U", "GAFR2L", "GAFR2U", "GAFR3L", "GAFR3U",
+        ]
+        .map(|n| f.reg(n));
+        // GPIO14: the X51v's cable-detect guess; GPIO2: the old pull-up
+        // guess (docs/hw/udc.md); the full words are in the lines above.
+        for (pin, what) in [(USB_DETECT, "cable-detect guess"), (2, "old pull-up guess")] {
+            blog_line(b, |l| {
+                let _ = bootlog::pin_line(l, &level, &dir, &gafr, u32::from(pin));
+                let _ = write!(l, " ({what})");
+            });
+        }
+        blog_line(b, |l| match f.cpld_table {
+            Some(t) => {
+                let _ = l.write_str("CPLD table at 0xA8001320 (0xAC001320 in WM):");
+                for w in t {
+                    let _ = write!(l, " {w:08X}");
+                }
+                let _ = write!(
+                    l,
+                    "; taken as {}",
+                    f.cpld_source.map_or("nothing", handover::Source::name)
+                );
+            }
+            None => {
+                let _ = l.write_str("CPLD: not reachable (no table read)");
+            }
+        });
+        blog_line(b, |l| {
+            let _ = l.write_str("CPLD on the bus (may not read back):");
+            for (k, v) in f.cpld_bus.iter().enumerate() {
+                let _ = write!(l, " {:02X}={v:04X}", k * 2);
+            }
+        });
+        let slot1c = handover::WM_SLOT_REGS
+            .iter()
+            .position(|&r| r == 0x1C)
+            .and_then(|i| f.cpld_table.map(|t| t[i] as u16));
+        let bus1c = f.cpld_bus[0x1C / 2];
+        blog_line(b, |l| {
+            let _ = write!(
+                l,
+                "CPLD 0x1C (bit 3: the X50v lead): bus {bus1c:04X} (bit 3 {})",
+                bootlog::bit3(bus1c)
+            );
+            for (what, v) in [
+                ("WM slot", slot1c),
+                ("kept", f.cpld1c_kept),
+                ("record", f.record1c),
+            ] {
+                let _ = match v {
+                    Some(v) => write!(l, ", {what} {v:04X} (bit 3 {})", bootlog::bit3(v)),
+                    None => write!(l, ", {what} none"),
+                };
+            }
+            let _ = l.write_str("; the loader changes no bit for this log (reads only)");
+        });
+        let (sd_in, cf_in) = (lun.present(), cf.present());
+        blog_line(b, |l| {
+            let _ = write!(
+                l,
+                "cards: SD {}, CF {}",
+                if sd_in { "in" } else { "none" },
+                if cf_in { "in" } else { "none" }
+            );
+        });
+        let mut c = LogCards(lun, cf);
+        b.flush(&mut |u, lba, s| cardsink::LoaderCards::write(&mut c, u, lba, s));
+        Some(log)
+    }
+
+    /// What the start-up log last said about USB, and when.
+    struct BootTrack {
+        start: u32,
+        seen: Option<(u32, u32, bool, bool, bool, &'static str)>,
+        line_at: u32,
+        change_at: u32,
+        beat_at: u32,
+        /// The GPIO levels' changes (the X50v's cable pin, R193).
+        pins: bootlog::Pins,
+    }
+
+    impl BootTrack {
+        fn new(now: u32, levels: [u32; 4]) -> Self {
+            Self {
+                start: now,
+                seen: None,
+                line_at: now,
+                change_at: now,
+                beat_at: now,
+                pins: bootlog::Pins::new(levels),
+            }
+        }
+    }
+
+    /// R193's opt-in: CPLD `0x1C` bit 3 on through the shadow (Windows
+    /// Mobile's table slot follows), and in the board record so a return
+    /// from an image keeps it (C39's put-back would clear it). The register
+    /// before and after (as the shadow holds it); `None` with no CPLD.
+    #[inline(never)]
+    fn x50v_bit3(cpld: Option<&mut BoardCpld>) -> Option<(u16, u16)> {
+        let c = cpld?;
+        let before = c.shadow(0x1C);
+        c.set(0x1C, 0x0008);
+        if let Some(mut r) = devices::board_record() {
+            r.cpld1c |= 0x0008;
+            devices::set_board_record(&r);
+        }
+        Some((before, c.shadow(0x1C)))
+    }
+
+    /// The opt-in's line, in the start-up log and on screen.
+    fn blog_bit3(
+        b: Option<&mut BootLog<'_>>,
+        r: Option<(u16, u16)>,
+        log: &mut impl core::fmt::Write,
+    ) {
+        let rec = devices::board_record().map(|r| r.cpld1c);
+        if let Some(b) = b {
+            blog_line(b, |l| {
+                let _ = match (r, rec) {
+                    (Some((was, now)), Some(rec)) => write!(
+                        l,
+                        "CPLD 0x1C bit 3 on (R193): {was:04X} -> {now:04X} (WM slot the same), record {rec:04X}"
+                    ),
+                    (Some((was, now)), None) => write!(
+                        l,
+                        "CPLD 0x1C bit 3 on (R193): {was:04X} -> {now:04X} (WM slot the same), no record"
+                    ),
+                    (None, _) => write!(l, "CPLD 0x1C bit 3 not set: no CPLD"),
+                };
+            });
+        }
+        let _ = match r {
+            Some((was, now)) => writeln!(log, "X50v opt-in: CPLD 0x1C {was:04X} -> {now:04X}"),
+            None => writeln!(log, "X50v opt-in: no CPLD, bit 3 not set"),
+        };
+    }
+
+    /// The start-up log's turn in the loop: a line when USB's state changed
+    /// (bursts closer than `EVENT_MS` share one), a heartbeat with the port
+    /// registers every `HEARTBEAT_MS`, the queue onto the cards when USB has
+    /// been quiet (`QUIET_MS`) or it's half full; closed when the PC
+    /// configures the device or after `LIFE_MS`.
+    #[inline(never)]
+    fn boot_log_tick(
+        b: &mut BootLog<'_>,
+        t: &mut BootTrack,
+        udc: &mut Udc<Mmio>,
+        cable: bool,
+        levels: [u32; 4],
+        cards: &mut LogCards<'_>,
+        busy: bool,
+    ) {
+        let now = now_ms();
+        let pins = t.pins.look(levels);
+        if !pins.none() {
+            blog_line(b, |l| {
+                let _ = bootlog::pins_line(l, &pins, &levels);
+            });
+            t.change_at = now;
+        }
+        let s = udc.stats();
+        let configured = udc.configured();
+        let cur = (
+            s.resets,
+            s.setups,
+            configured,
+            udc.host_open(),
+            cable,
+            layout_name(udc.layout()),
         );
+        if t.seen != Some(cur)
+            && (configured || t.seen.is_none() || now.wrapping_sub(t.line_at) >= bootlog::EVENT_MS)
+        {
+            blog_line(b, |l| {
+                let _ = write!(
+                    l,
+                    "usb: resets {} setups {} configured {} open {} cable {} layout {}; last request {:04X}, stalls {}, ep0 in {}",
+                    cur.0,
+                    cur.1,
+                    yes(cur.2),
+                    yes(cur.3),
+                    u8::from(cur.4),
+                    cur.5,
+                    s.last_request,
+                    s.stalls,
+                    s.ep0_in
+                );
+            });
+            t.seen = Some(cur);
+            t.line_at = now;
+            t.change_at = now;
+        }
+        if now.wrapping_sub(t.beat_at) >= bootlog::HEARTBEAT_MS {
+            use rp_drv_pxa_udc::reg;
+            let (udccr, up2) = (udc.read_reg(reg::UDCCR), udc.read_reg(reg::UP2OCR));
+            blog_line(b, |l| {
+                let _ = write!(l, "beat: UDCCR {udccr:08X} UP2OCR {up2:08X} (");
+                let _ = bootlog::up2ocr(l, up2);
+                let _ = write!(l, ") cable {}", u8::from(cable));
+            });
+            let noisy = t.pins.noisy();
+            blog_line(b, |l| {
+                let _ = write!(
+                    l,
+                    "beat: GPLR {:08X} {:08X} {:08X} {:08X}, {noisy} noisy pins",
+                    levels[0], levels[1], levels[2], levels[3]
+                );
+            });
+            t.beat_at = now;
+        }
+        let write = &mut |u, lba, s: &[u8; 512]| cardsink::LoaderCards::write(cards, u, lba, s);
+        if configured {
+            b.close("the PC configured the device", write);
+        } else if now.wrapping_sub(t.start) >= bootlog::LIFE_MS {
+            b.close("5 minutes without the PC configuring the device", write);
+        } else if b.wants_flush()
+            || (b.queued() > 0 && !busy && now.wrapping_sub(t.change_at) >= bootlog::QUIET_MS)
+        {
+            b.flush(write);
+        }
     }
 
     /// The loader's cards for the card log's writes.

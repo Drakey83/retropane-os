@@ -196,6 +196,20 @@ pub fn take_cpld() -> Option<(Mmio, &'static mut [u32; CPLD_TABLE_WORDS])> {
     Some((regs, table))
 }
 
+/// The command line the starter passed in its ATAG list (`r2` at the
+/// first instruction, `rt::handoff`), copied into `out`: its length, or
+/// why there is none (R193, `crate::atags`). Meaningful at the loader's
+/// first start after HaRET only (a return from an image leaves `r2` as
+/// anything).
+pub fn boot_cmdline(out: &mut [u8; crate::atags::LINE]) -> Result<usize, crate::atags::Bad> {
+    let (addr, words) = crate::atags::window(rp_hal_pxa27x::rt::handoff().r2)?;
+    // SAFETY: `window` keeps the list inside `atags::WINDOW`: SDRAM below
+    // the CPLD table (HaRET's boot tags, which RetroPane never writes),
+    // identity-mapped like the table, word-aligned; read only, here.
+    let list = unsafe { core::slice::from_raw_parts(addr as usize as *const u32, words) };
+    crate::atags::cmdline(list, out)
+}
+
 /// CompactFlash socket (PXA27x PC Card socket 1, docs/hw/cf.md): offsets of
 /// its attribute and common memory windows in the socket's region.
 const CF_ATTR: usize = 0x0800_0000;

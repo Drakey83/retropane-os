@@ -30,6 +30,19 @@ set cmdline \"\"
 bootlinux
 ";
 
+/// R193's X50v USB test (`docs/research/sheets/r193-x50v-cpld1c-bit3.md`):
+/// the same boot, with the opt-in on HaRET's command line, from its own
+/// folder on the CF card, so the X51v booting the card's `RetroPane` folder
+/// never sees it. The loader sets CPLD `0x1C` bit 3 at its start, before
+/// USB (proven the X50v's USB switch 2026-11-13, loader-0002).
+pub const X50V_USB_TXT: &str = "\
+# RetroPane 26 on the X50v (R193): CPLD 0x1C bit 3, its USB switch, at the start
+set ramaddr 0xa8000000
+set kernel retropane.bin
+set cmdline \"rp.x50v-usb-bit3=0\"
+bootlinux
+";
+
 const README: &str = "\
 RetroPane 26 - SD card probe kit
 ================================
@@ -156,14 +169,19 @@ pub fn build(root: &Path) -> Result<(), String> {
         ("README.txt", README.to_string()),
         // Loader mode: HaRET runs startup.txt by itself when it starts.
         ("loader/startup.txt", DEFAULT_TXT.to_string()),
+        // R193: the X50v USB test's script (the CF card's RetroPaneX50v).
+        ("x50v/startup.txt", X50V_USB_TXT.to_string()),
         (
             "loader/RetroPane loader.lnk",
             shortcut(r"\Storage Card\haret.exe"),
         ),
     ] {
         // Windows Mobile tools expect CRLF.
-        std::fs::write(kit.join(name), text.replace('\n', "\r\n"))
-            .map_err(|e| format!("{name}: {e}"))?;
+        let path = kit.join(name);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(&path, text.replace('\n', "\r\n")).map_err(|e| format!("{name}: {e}"))?;
     }
 
     // The cards' drive icons (assets/cards, used with the author's
@@ -265,5 +283,25 @@ mod tests {
         // The X51v's RAM: HaRET's own guess (0xA0000000) is empty there.
         assert!(DEFAULT_TXT.contains("set ramaddr 0xa8000000"));
         assert!(DEFAULT_TXT.trim_end().ends_with("bootlinux"));
+    }
+
+    #[test]
+    fn the_x50v_script_is_the_boot_with_only_the_opt_in_added() {
+        // The usual script's lines, `set cmdline` the one changed.
+        let usual: Vec<&str> = DEFAULT_TXT.lines().skip(1).collect();
+        let x50v: Vec<&str> = X50V_USB_TXT.lines().skip(1).collect();
+        assert_eq!(usual.len(), x50v.len());
+        for (a, b) in usual.iter().zip(&x50v) {
+            if a.starts_with("set cmdline") {
+                assert_eq!(*b, "set cmdline \"rp.x50v-usb-bit3=0\"");
+            } else {
+                assert_eq!(a, b);
+            }
+        }
+        // The loader's reader takes exactly this word.
+        assert_eq!(
+            rp_hal_x51v::atags::bit3(b"rp.x50v-usb-bit3=0"),
+            rp_hal_x51v::atags::Bit3::At(0)
+        );
     }
 }

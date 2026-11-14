@@ -27,18 +27,20 @@ rp_reloc_entry:
     ldr     r1, =rp_reloc_entry    @ where we're linked
     cmp     r0, r1
     beq     2f                     @ already home (re-entered by launch)
-    ldr     r2, =__load_end        @ end of the loaded bytes (.data end)
+    @ r2 is left as the starter set it (HaRET's ATAG list, kept by
+    @ `_start`, R193): the copy uses r4, which `_start` sets itself.
+    ldr     r4, =__load_end        @ end of the loaded bytes (.data end)
 1:  ldr     r3, [r0], #4
     str     r3, [r1], #4
-    cmp     r1, r2
+    cmp     r1, r4
     blo     1b
     @ Copied: a magenta band across the top of the screen (bring-up: with
     @ no serial port, this is the only sign the relocation ran).
     ldr     r0, =0x0C000000
     ldr     r1, =0xF81FF81F
-    mov     r2, #0x4000
+    mov     r4, #0x4000
 3:  str     r1, [r0], #4
-    subs    r2, r2, #1
+    subs    r4, r4, #1
     bne     3b
     mov     r3, #0
     mcr     p15, 0, r3, c7, c5, 0  @ invalidate the I-cache and BTB

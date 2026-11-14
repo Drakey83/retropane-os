@@ -228,6 +228,10 @@ impl RegisterBus for SimUdc {
         match offset {
             reg::UDCCR => {
                 self.udccr_writes.push(v);
+                // EMCE: write one to clear.
+                if v & reg::EMCE != 0 {
+                    self.udccr &= !reg::EMCE;
+                }
                 if v & reg::SMAC != 0 {
                     self.smac += 1;
                 }
@@ -499,11 +503,36 @@ fn the_transceiver_output_is_turned_on_only_when_off() {
 #[test]
 fn udccr_writes_carry_only_writable_bits() {
     let mut h = Host::new();
-    h.sim().udccr |= reg::EMCE | (3 << 8); // read-only/status bits set
+    h.sim().udccr |= 3 << 8; // read-only/status bits set
     h.enumerate();
     for w in &h.udc.bus.udccr_writes {
         assert_eq!(w & !reg::UDCCR_WRITABLE, 0, "UDCCR write {w:#x}");
     }
+}
+
+#[test]
+fn a_configuration_error_left_by_the_last_owner_is_cleared_once_and_usb_comes_up() {
+    // The X50v's Windows Mobile 2003 handed over UDCCR 0x808 (R193).
+    let mut udc = Udc::new(SimUdc::default());
+    udc.bus.udccr = 0x0000_0808;
+    assert_eq!(udc.enable(), Ok(()));
+    assert_eq!(udc.bus.udccr & reg::EMCE, 0);
+    // One write carried EMCE, with UDE off; every other write only the
+    // writable bits.
+    let with: std::vec::Vec<u32> = udc
+        .bus
+        .udccr_writes
+        .iter()
+        .copied()
+        .filter(|w| w & reg::EMCE != 0)
+        .collect();
+    assert_eq!(with.len(), 1);
+    assert_eq!(with[0] & reg::UDE, 0);
+    assert_eq!(with[0] & !(reg::UDCCR_WRITABLE | reg::EMCE), 0);
+    // A clean start writes no EMCE at all.
+    let mut udc = Udc::new(SimUdc::default());
+    udc.enable().unwrap();
+    assert!(udc.bus.udccr_writes.iter().all(|w| w & reg::EMCE == 0));
 }
 
 #[test]

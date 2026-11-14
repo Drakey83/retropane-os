@@ -78,6 +78,12 @@ impl<B: RegisterBus> Gpio<B> {
         self.regs.write32(off, v);
     }
 
+    /// Every pin's level at once: `GPLR0`-`GPLR3` (bit `n % 32` of word
+    /// `n / 32` is GPIO `n`). A read with no side effect.
+    pub fn levels(&mut self) -> [u32; 4] {
+        [0usize, 4, 8, 0x100].map(|off| self.regs.read32(off))
+    }
+
     /// Drives an output pin.
     pub fn write(&mut self, pin: u8, high: bool) {
         let (off, bit) = reg(if high { Kind::Set } else { Kind::Clear }, pin);

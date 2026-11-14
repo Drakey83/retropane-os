@@ -6,7 +6,9 @@
 
 #![no_std]
 
+pub mod atags;
 pub mod board;
+pub mod bootlog;
 pub mod cardlog;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod cardsink;

@@ -50,3 +50,9 @@ copied from the log.
 | today-0110, -0111 | 2026-11-09 | The look check by day: 0110 lost its verdict to a full log (fixed), 0111 0 wrong, 0 unknown, both looks on every page (R187) | [2026-11-09-today-0110-0111.md](2026-11-09-today-0110-0111.md) |
 | today-0113, -0114 | 2026-11-09 | R187 at 4 PM: the old Hourly points on the graph left 48 unknown; refitted off it: 0 unknown, dark Hourly judged | [2026-11-09-today-0110-0111.md](2026-11-09-today-0110-0111.md) |
 | gpubench-0110 to -0124 (GC2DG-GC2DV) | 2026-11-08 | The divide-1 chase for games: 137.80 / 1 proven, 149.50 / 1 not reached | [2026-11-08-gc2d-chase.md](2026-11-08-gc2d-chase.md) |
+| loader-0001 | 2026-11-13 | R193, the X50v's start-up log | [2026-11-13-loader-0001-x50v.md](2026-11-13-loader-0001-x50v.md) |
+| loader-0002 | 2026-11-13 | R193, X50v: CPLD 0x1C bit 3 on, USB configured | [2026-11-13-loader-0002-x50v-bit3.md](2026-11-13-loader-0002-x50v-bit3.md) |
+| loader-0003 | 2026-11-13 | R193, X50v: found by itself, the stale EMCE cleared | [2026-11-13-loader-0003-x50v-detect.md](2026-11-13-loader-0003-x50v-detect.md) |
+| gpubench-0001 (X50v) | 2026-11-13 | GC2DR on the X50v: every game frame right to 139.75 / 1 | [2026-11-13-gpubench-0001-x50v-gc2dr.md](2026-11-13-gpubench-0001-x50v-gc2dr.md) |
+| gpubench-0002 to -0006 (X50v) | 2026-11-13 | GC2EB-GC2EG: the steps above 139.75 / 1; 143.00 / 1 soak-clean | [2026-11-13-gpubench-0002-0006-x50v-high-steps.md](2026-11-13-gpubench-0002-0006-x50v-high-steps.md) |
+| gpubench-0007 (X50v) | 2026-11-13 | GC2EH: 145.60 / 1 soak-proven on the X50v | [2026-11-13-gpubench-0007-x50v-145.md](2026-11-13-gpubench-0007-x50v-145.md) |
