@@ -34,7 +34,7 @@ list.
 | After equals | The pocket calculator, made visible | A digit starts a new sum (the old line clears); an operation goes on from the answer; `=` again does nothing (no hidden repeat); Delete after an answer clears. Each is stated here and tested |
 | Percent | The phone calculators' rule | After plus or minus it is a share of what came before (`200 + 10 %` is 220); otherwise a hundredth (`50 %` is 0.5). The number it becomes is shown before `=` |
 | Errors | "E" or "Error" | Words: "Cannot divide by zero", "Too large to show". Clear or a new number starts again; no other key does anything, so an error can't be built on |
-| Keys for a stylus *and* a thumb | The four-column pad | 20 keys in 4 x 5, each 106 x 62 px: the largest targets in the shell, since a calculator is used in a hurry and often with a thumb. Digits in the reading font, operations in the accent's panel, `=` filled |
+| Keys for a stylus *and* a thumb | The four-column pad | 20 keys in 4 x 5, each 106 x 70 px with 8 px between: the largest targets in the shell, since a calculator is used in a hurry and often with a thumb. Digits in the reading font, operations in the accent's panel, `=` filled |
 
 ## The design (v1 as built)
 

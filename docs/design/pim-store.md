@@ -84,6 +84,29 @@ four apps' sheets point at this page. Follows
   tags are skipped, so fields can be added without a new version. The
   newest record of an id wins.
 
+## On the device (rp-today, `shell/today/src/organiser.rs`)
+
+- **The files** are found at start-up where they lie (`rp_fat`'s
+  `extent`: nothing on the card changes), or made on a card's first run
+  (`reserve`: 1 MiB of zeros each in one run of sectors, once ever; a slot
+  must never show what its clusters held before, since an older store's
+  groups would read as this one's). A slot file a PC left short or in
+  pieces is made again; the other slot is kept.
+- **The load** reads the picked slot 64 sectors (32 KiB) a pass of the
+  image's loop while nothing moves, so a full slot never holds a frame;
+  the apps show the records once it is over.
+- **A save** is the change's sectors written in place, one a pass while
+  nothing moves; what still waits is written before the image leaves. A
+  card that refuses three writes stalls the store (the records stay in
+  RAM, the run log says so) and is tried again each minute.
+- **No card, or no free megabyte in one run:** the apps work in RAM for
+  the run and the run log says nothing is saved.
+- **Proof:** `organiser`'s host tests (FAT32 and exFAT card images: a
+  restart, a full slot's move, a dead card, a short slot file, the shared
+  card's other files) and `cargo xtask emu-apps` (the image loads sample
+  records from the card, saves what the taps add, and shows them after a
+  restart).
+
 ## Limits in v1, and the later list
 
 - 256 KiB of records and 2,048 entries in all (about 1,500 contacts with

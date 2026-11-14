@@ -572,8 +572,13 @@ const DEV_MENU: [&str; 4] = [WALLPAPER_COMPARE, SKY_TEST, ALIGN_SCREEN, BACK_TO_
 const MENU_X: u16 = 0;
 const MENU_Y: u16 = 36;
 const MENU_W: u16 = 280;
-/// 38 px: fourteen rows fit between the title bar and the softkeys.
-const MENU_ROW: u16 = 34;
+/// 33 px: the test image's sixteen rows fit between the title bar and the
+/// softkeys, and the menu's area open and closed (280 x 536, RGB565) both
+/// fit the renderer's area cache (a screen's bytes): at 34 px they were
+/// 618 KB of its 614 KB, each pushed the other out and every opening was
+/// drawn again (rp-today's test `gpu_today_matches_the_cpu_renderer`
+/// counts the cache's hits).
+const MENU_ROW: u16 = 33;
 
 // ---- Colours (the smoked glass, docs/design/ui.md) -------------
 

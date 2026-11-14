@@ -267,6 +267,10 @@ commands:
             renderer code: PNGs and an index page in target/ui-preview/
   emu-today the shell's Today screen (ADR-0021): pixel-exact, a tap on
             Start opens the menu, Back to loader returns with latencies
+  emu-apps  the organiser apps (Calendar, Contacts, Tasks, Notes, Calculator)
+            on the image with a card of sample records: every screen
+            pixel-exact against the PC's model, the changes read back from
+            the card, and a restart showing them and a reminder
   emu-today-look  R185's look check unattended: the image taps its way
             through Appearance three times round, every page judged light or
             dark from the pixels the display shows (also part of emu-today)
@@ -411,6 +415,7 @@ fn main() -> ExitCode {
         | "emu-today"
         | "emu-today-watch"
         | "emu-today-steps"
+        | "emu-apps"
         | "emu-today-radar-card"
         | "look-replay"
         | "look-judge"
@@ -884,6 +889,7 @@ fn run_step(step: &str) -> Result {
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
         "ui-preview" => cross().and_then(|()| ui_preview::run(&workspace_root())),
         "emu-today-steps" => cross().and_then(|()| emu::today_steps(&workspace_root())),
+        "emu-apps" => cross().and_then(|()| emu::apps(&workspace_root())),
         "emu-today-watch" => cross()
             .and_then(|()| emu::today_watch(&workspace_root(), &args().nth(2).unwrap_or_default())),
         "emu-today" => cross()
@@ -979,6 +985,7 @@ fn run_step(step: &str) -> Result {
                 ("boot_loader_clocks", emu::boot_loader_clocks),
                 ("boot_loader_noise", emu::boot_loader_noise),
                 ("boot_loader_today", emu::boot_loader_today),
+                ("apps", emu::apps),
                 ("boot_loader_crash", emu::boot_loader_crash),
                 ("boot_loader_handover", emu::boot_loader_handover),
                 ("boot_loader_nightlight", emu::boot_loader_nightlight),

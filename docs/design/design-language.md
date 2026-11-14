@@ -56,13 +56,14 @@ the light look is derived from them (`light_twin`, `light_glass`,
 
 ## Type
 
-Didact Gothic, three cuts (`shell/today/src/fonts.rs`), ASCII for now:
+Didact Gothic, four cuts (`shell/today/src/fonts.rs`), ASCII for now:
 
 | Font | Use |
 |---|---|
 | `ui` (18 px, 24 px line) | Everything read as words: rows, fields, softkeys, menus |
 | `label` (spaced capitals) | Section labels, screen names, weekdays, chips, key caps |
-| `big` (light numerals) | One hero number a screen: the clock, a temperature, the calculator's display, a month view's day number |
+| `big` (light numerals) | One hero number a screen: the clock, a temperature |
+| `num` (36 px numerals and signs) | Numbers that are typed and read at arm's length: the calculator's display and keys (digits and `. , - + x / = %` only, 5 KB) |
 
 - Sentence case in `ui`; capitals only through `label`.
 - Text is left-aligned; a row's value is right-aligned. Numbers in columns
@@ -89,8 +90,10 @@ Didact Gothic, three cuts (`shell/today/src/fonts.rs`), ASCII for now:
 - **Changes apply as they are made.** No Save buttons for settings-like
   rows. An editor screen (a new appointment, a contact) has Done on the
   right softkey and Cancel on the left, and nothing is kept until Done.
-- Deleting asks once, in the softkey bar (the right softkey becomes
-  "Delete?" for the next tap), never in a pop-up box.
+- Deleting asks once, in place, never in a pop-up box: the control that
+  deletes changes its own words for the next tap (an editor's Delete row
+  reads "Tap again to delete"; a note's Delete softkey reads "Delete?"),
+  and any other tap takes the question away.
 - An empty list says what it is for and how to add the first one, in
   secondary text, in a panel.
 - Motion: pages slide with the pen and settle in under 200 ms; nothing

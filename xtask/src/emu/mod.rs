@@ -126,6 +126,8 @@ pub(crate) use stacks::*;
 mod radar;
 #[allow(unused_imports)]
 pub(crate) use radar::*;
+mod apps;
+pub use apps::apps;
 mod look;
 #[allow(unused_imports)]
 pub(crate) use look::*;

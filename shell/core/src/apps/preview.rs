@@ -129,3 +129,8 @@ pub fn key_taps(c: u8) -> Option<([Rect; 3], usize)> {
 pub const fn target(i: u8) -> Target {
     Target::App(i)
 }
+
+/// The reminder banner's Dismiss button.
+pub const REMINDER_DISMISS: Rect = super::BANNER_DISMISS;
+/// The reminder banner's Open button.
+pub const REMINDER_OPEN: Rect = super::BANNER_OPEN;

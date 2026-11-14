@@ -1484,6 +1484,11 @@ mod image {
         utc + off
     }
 
+    /// The year of local minutes from 1970 (the organiser's dates).
+    fn year_at(minutes: i64) -> u16 {
+        clock::civil(minutes.div_euclid(24 * 60)).0 as u16
+    }
+
     /// Windows Mobile's virtual keys for the D-pad and Home (docs/hw/keypad.md).
     fn key_of(vk: u8) -> Option<Key> {
         Some(match vk {
@@ -1604,6 +1609,12 @@ mod image {
         let map_file: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(map_file_words);
         let (map_scratch_words, rest) = rest.split_at_mut(MAP_SCRATCH / 4);
         let map_scratch: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(map_scratch_words);
+        // The organiser (Calendar, Contacts, Tasks, Notes): its store's
+        // records and the apps' tables (rp_shell::apps::MEMORY, 284 KB),
+        // and the piece its load reads from the card (32 KB).
+        let (apps_words, rest) = rest.split_at_mut(rp_shell::apps::MEMORY.div_ceil(4));
+        let (org_words, rest) = rest.split_at_mut(rp_today::organiser::BUF / 4);
+        let org_buf: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(org_words);
         let mut kept = KeptMap {
             key: None,
             len: 0,
@@ -1767,6 +1778,7 @@ mod image {
         };
         shell.set_dials(dials);
         shell.keep_lists(shown_words);
+        shell.give_apps(rp_hal_mem::words_as_bytes_mut(apps_words));
         // The Weather settings `cargo xtask load` put on the card (the
         // relay's record): the chosen icon pack and place known before the
         // first picture is made (the relay answers ~15 s in).
@@ -1786,6 +1798,7 @@ mod image {
         match card_min {
             Some(m) => {
                 let t = clock::time_at(m);
+                shell.set_year(year_at(m));
                 shell.set_time(t);
                 // The date and time set, to check against the PC's (R182).
                 const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -1800,12 +1813,68 @@ mod image {
                 );
             }
             None => {
+                shell.set_year(year_at(start_minutes()));
                 let _ = writeln!(
                     RunLog,
                     "clock: the build's time (no time file on the card: R182)"
                 );
             }
         }
+        // The organiser's two files on the card (docs/design/pim-store.md):
+        // found where they lie, or made on a card's first run (2 MiB of
+        // zeros, once ever; the image checks in around it). The store's
+        // load starts here and goes on a piece a pass in the loop. With no
+        // card, or no room on it, the apps keep their records in RAM for
+        // the run, and the log says nothing is saved.
+        rt::check_in();
+        let org_t0 = rt::ticks();
+        let org: Option<rp_today::organiser::Files> = match card.as_mut().map(|(c, start)| {
+            rp_hal_x51v::cardsink::settle();
+            rp_today::organiser::find(&mut *c, *start, map_scratch).map(|(files, made)| {
+                let picked = shell
+                    .pim()
+                    .and_then(|s| rp_today::organiser::begin(&mut *c, &files, s));
+                (files, made, picked)
+            })
+        }) {
+            Some(Ok((files, made, picked))) => {
+                let _ = writeln!(
+                    RunLog,
+                    "organiser: its files on the card at sectors {} and {} ({made} made) in {} us; {}",
+                    files.lba[0],
+                    files.lba[1],
+                    rt::ticks().wrapping_sub(org_t0) / 13 * 4,
+                    match picked {
+                        Some((0, _)) => "loading from slot A",
+                        Some(_) => "loading from slot B",
+                        None => "a new store",
+                    }
+                );
+                Some(files)
+            }
+            got => {
+                if let Some(s) = shell.pim() {
+                    s.load_start(None);
+                }
+                shell.pim_loaded();
+                let _ = writeln!(
+                    RunLog,
+                    "organiser: records kept in RAM only this run ({})",
+                    match got {
+                        Some(Err(e)) => e,
+                        _ => "no SD card",
+                    }
+                );
+                None
+            }
+        };
+        rt::check_in();
+        // The store's card work: sectors read by the load and its time,
+        // sectors saved and the slowest save, and whether a stall was
+        // logged.
+        let mut org_load = (0usize, 0u32);
+        let mut org_saved = (0u32, 0u32);
+        let mut org_stall_logged = false;
         match card
             .as_mut()
             .and_then(|(c, start)| read_pack(c, *start, *b"RPSET", stream_buf))
@@ -1892,6 +1961,7 @@ mod image {
         if let Some(pc) = pc {
             shell.use_planes(true);
             // The clock first: the Now page's Sunset bar follows it.
+            shell.set_year(year_at(card_min.unwrap_or_else(start_minutes)));
             shell.set_time(clock::time_at(card_min.unwrap_or_else(start_minutes)));
             for (tab, p) in pages.iter_mut().enumerate() {
                 *p = build_page(gfx, pc, shell, &mut cpu, frame, tab as u8);
@@ -2318,7 +2388,15 @@ mod image {
             if minute != minute_shown {
                 minute_shown = minute;
                 let time: Time = clock::time_at(minute);
+                shell.set_year(year_at(minute));
                 shell.set_time(time);
+                // A card that refused the organiser's writes: tried again
+                // each minute.
+                if let Some(s) = shell.pim()
+                    && s.stalled()
+                {
+                    s.retry();
+                }
                 pages_check = true;
                 app_check = true;
             }
@@ -2678,6 +2756,29 @@ mod image {
                         let _ = writeln!(RunLog, "PROFILE {name}: {}", z.tally.split());
                     }
                 }
+                // The organiser's changes still waiting reach the card
+                // before the image leaves.
+                if let (Some(files), Some((c, _))) = (org.as_ref(), card.as_mut())
+                    && let Some(s) = shell.pim()
+                {
+                    rp_hal_x51v::cardsink::settle();
+                    let (n, _) = rp_today::organiser::save(&mut *c, files, s, 4096);
+                    org_saved.0 += n as u32;
+                }
+                let _ = writeln!(
+                    RunLog,
+                    "organiser: {} records; the load read {} sectors in {} us; {} sectors saved (slowest {} us){}",
+                    shell.pim().map_or(0, |s| s.len()),
+                    org_load.0,
+                    org_load.1,
+                    org_saved.0,
+                    org_saved.1,
+                    if shell.pim().is_some_and(|s| s.dirty()) {
+                        "; CHANGES NOT SAVED"
+                    } else {
+                        ""
+                    }
+                );
                 if let Some(n) = net.as_mut() {
                     n.udc.disable();
                     gpio.borrow_mut().write(USB_PULLUP, false);
@@ -2693,6 +2794,44 @@ mod image {
             // screens show, each picture decoded at its size from the pack
             // shown, else from the default (a pulled card: no gap, no box).
             let still = !filter.down() && !shell.animating() && !shell.needs_frame() && !gfx.busy();
+            // The organiser's store (docs/design/pim-store.md), while
+            // nothing moves: its load a piece a pass (32 KiB), then each
+            // change's sectors one a pass, written in place. A save isn't
+            // logged (a line mid-run is a card write in the loop, C59): the
+            // totals are in the run's last lines.
+            if still
+                && let (Some(files), Some((c, _))) = (org.as_ref(), card.as_mut())
+                && let Some(s) = shell.pim()
+            {
+                if !s.loaded() {
+                    rp_hal_x51v::cardsink::settle();
+                    let t0 = rt::ticks();
+                    org_load.0 += rp_today::organiser::load(&mut *c, files, s, org_buf);
+                    org_load.1 += rt::ticks().wrapping_sub(t0) / 13 * 4;
+                    if s.loaded() {
+                        let n = s.len();
+                        shell.pim_loaded();
+                        let _ = writeln!(
+                            RunLog,
+                            "organiser: loaded, {n} records ({} sectors read in {} us)",
+                            org_load.0, org_load.1
+                        );
+                    }
+                } else if s.dirty() && !s.stalled() {
+                    rp_hal_x51v::cardsink::settle();
+                    let t0 = rt::ticks();
+                    let (n, failed) = rp_today::organiser::save(&mut *c, files, s, 1);
+                    org_saved.0 += n as u32;
+                    org_saved.1 = org_saved.1.max(rt::ticks().wrapping_sub(t0) / 13 * 4);
+                    if failed && s.stalled() && !org_stall_logged {
+                        org_stall_logged = true;
+                        let _ = writeln!(
+                            RunLog,
+                            "organiser: the card refused three writes; the changes stay in RAM and are tried again each minute"
+                        );
+                    }
+                }
+            }
             if still && def_index.is_none() && !def_failed {
                 if !card_tried {
                     card_tried = true;

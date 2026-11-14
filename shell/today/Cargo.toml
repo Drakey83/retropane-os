@@ -24,6 +24,8 @@ rp-inflate = { path = "../../kernel/inflate" }
 # The radar map kept on the card (R184 step 3, `kept`): also on the host,
 # where its tests write and read a card image.
 rp-fat = { path = "../../kernel/fat" }
+# The organiser store on the card (`organiser`).
+rp-pim = { path = "../pim" }
 
 [build-dependencies]
 rp-draw = { path = "../../drivers/draw" }

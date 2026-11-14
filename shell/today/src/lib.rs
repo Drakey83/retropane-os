@@ -31,6 +31,7 @@ pub mod clock;
 pub mod fonts;
 pub mod kept;
 pub mod look;
+pub mod organiser;
 pub mod rain;
 pub mod replay;
 
