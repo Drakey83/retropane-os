@@ -54,4 +54,5 @@ copied from the log.
 | loader-0002 | 2026-11-13 | R193, X50v: CPLD 0x1C bit 3 on, USB configured | [2026-11-13-loader-0002-x50v-bit3.md](2026-11-13-loader-0002-x50v-bit3.md) |
 | loader-0003 | 2026-11-13 | R193, X50v: found by itself, the stale EMCE cleared | [2026-11-13-loader-0003-x50v-detect.md](2026-11-13-loader-0003-x50v-detect.md) |
 | gpubench-0001 (X50v) | 2026-11-13 | GC2DR on the X50v: every game frame right to 139.75 / 1 | [2026-11-13-gpubench-0001-x50v-gc2dr.md](2026-11-13-gpubench-0001-x50v-gc2dr.md) |
+| gpubench-0002 to -0006 (X50v) | 2026-11-13 | GC2EB-GC2EG: the steps above 139.75 / 1; 143.00 / 1 soak-clean | [2026-11-13-gpubench-0002-0006-x50v-high-steps.md](2026-11-13-gpubench-0002-0006-x50v-high-steps.md) |
 | gpubench-0007 (X50v) | 2026-11-13 | GC2EH: 145.60 / 1 soak-proven on the X50v | [2026-11-13-gpubench-0007-x50v-145.md](2026-11-13-gpubench-0007-x50v-145.md) |
