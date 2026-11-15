@@ -25,8 +25,12 @@ tests on a PC for everything above the hardware.
 > `critical-section` crate is used: IRQ-masked sections are the HAL's own
 > (`irq_save` / `irq_restore` / `with_dispatch`, `hal/pxa27x/src/rt.rs`).
 > A second custom target, `targets/thumbv5te-x51v-none-eabi.json`, builds
-> cold images as Thumb (ADR-0015). No C code is in the tree yet
-> (`third_party/` holds only its README).
+> cold images as Thumb (ADR-0015). C code: none in the OS itself
+> (`third_party/` holds only its README); since 2026-11-15 the build can
+> compile C for ports (`cargo xtask cc`: a pinned Clang of the Rust
+> compiler's LLVM version, picolibc from its pinned source), behind one
+> Rust interface (`hal/cabi`, the only place a C program's pointers are
+> taken), with one C test program (`ports/hello/c`), run in the emulator.
 
 - The OS is written in **Rust** (`no_std`). Assembly is used only for vectors,
   cache/MMU operations and iWMMXt hot paths. Ported third-party code (browser
