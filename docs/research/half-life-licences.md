@@ -130,6 +130,29 @@ What is known, and what is not:
   measure), the DiskOnChip read and written (R21), the flash's free room
   after the OS.
 
+## Hidden until a card brings the game (the owner, 2026-11-15, later)
+
+"if hl game files wont naturally fit into the internal storage, I dont want
+there to be any extra steps besides drag and drop, i want to hide any
+mention of the port on the native os until an expandable memory card is
+inserted onto the device."
+
+- **No extra steps:** the user's `valve` folder is copied onto a card as
+  it is (a card reader, or the Axim as a drive over USB). **No packing
+  tool** (it would be a step): if the files do not fit the flash as they
+  are, a card is where they go. The flash is still looked in first, so a
+  copy that is there plays.
+- **Hidden with no card:** nothing in the Start menu, Settings or anywhere
+  else names the port; the programs are in the base image all the same.
+  The licence notices stay in About (the code is shipped either way).
+- **Put to him, not ruled:** show the entry when a card (or the flash)
+  holds a `valve` folder, not on any card, so a card of photos never
+  brings an entry that can only say "no game files". His wording was
+  "until an expandable memory card is inserted".
+- **Cost:** small. The shell already sees a card arrive and leave and
+  loads programs when they are opened; one look for a folder at that
+  moment decides one Start-menu entry.
+
 ## The choices as they were put
 
 - **A. In the base OS image** (what he asked for: the showcase, there from
