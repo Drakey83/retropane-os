@@ -673,6 +673,7 @@ impl Calendar {
     }
 
     /// The editor's grouped cards.
+    #[inline(never)]
     fn edit_view(&self, f: &mut Frame, cx: &Ctx) {
         let Some(e) = &self.edit else { return };
         let field = |f: &mut Frame, y: u16, label: &[u8], value: &[u8], on: bool| {
@@ -937,6 +938,7 @@ impl Calendar {
     }
 
     /// The calendars and how to get online ones.
+    #[inline(never)]
     fn calendars_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         let mut y = top;
         self.n_cal_rows = 0;
@@ -1257,6 +1259,7 @@ impl Calendar {
     }
 
     /// The day's appointments in time order (all-day first).
+    #[inline(never)]
     fn on(&self, day: i32) -> ([Appt; 16], usize) {
         let mut out = [Appt {
             day: 0,
@@ -1330,6 +1333,7 @@ impl Calendar {
 
     /// The week strip: the chosen day's week, today ringed, the chosen day
     /// filled, a colour tick per appointment (three at most).
+    #[inline(never)]
     fn strip(&mut self, f: &mut Frame, cx: &Ctx, y: u16) {
         let first = self.day - in_week(self.day, cx.us);
         for i in 0..7u16 {
@@ -1366,6 +1370,23 @@ impl Calendar {
     /// a ribbon; what is next with a countdown ring and what can be done
     /// about it; the week's load; what comes later. Everything drawn is
     /// a target.
+    /// The colours of a day's first four appointments (the board's week
+    /// load). Its own frame: a second day's list beside the board's own
+    /// made the board a 5.1 KB frame, over the stack rule.
+    #[inline(never)]
+    fn colours_on(&self, day: i32) -> ([u32; 4], usize) {
+        let (list, n) = self.on(day);
+        let mut out = [0; 4];
+        let n = n.min(4);
+        for (o, a) in out.iter_mut().zip(&list[..n]) {
+            *o = self.colour(a);
+        }
+        (out, n)
+    }
+
+    // Its own frame: drawn into `draw`, the views together were a 5.2 KB
+    // frame, over the stack rule.
+    #[inline(never)]
     fn home(&mut self, f: &mut Frame, cx: &Ctx) {
         let t = tint::CALENDAR;
         let (ui, label) = (cx.fonts.ui, cx.fonts.label);
@@ -1584,13 +1605,13 @@ impl Calendar {
             let mut b = Buf::<4>::new();
             b.num(u32::from(date::date_of(day).day));
             kit::centred(f, r, r.y + 46, ui, TEXT, b.get());
-            let (load, m) = self.on(day);
-            for (k, a) in load[..m.min(4)].iter().enumerate() {
+            let (load, m) = self.colours_on(day);
+            for (k, &c) in load[..m].iter().enumerate() {
                 kit::round_rect(
                     f,
                     cx,
                     Rect::new(r.x + 12, r.y + 54 + k as u16 * 7, 36, 5),
-                    self.colour(a),
+                    c,
                 );
             }
         }
@@ -1656,6 +1677,7 @@ impl Calendar {
         }
     }
 
+    #[inline(never)]
     fn agenda(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         self.n_rows = 0;
         let mut y = top;
@@ -1764,6 +1786,7 @@ impl Calendar {
         }
     }
 
+    #[inline(never)]
     fn day_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         let (list, n) = self.on(self.day);
         let mut y = top;
@@ -1892,6 +1915,7 @@ impl Calendar {
     /// version here) are 58 px each, where a title is three letters
     /// ("Lunc.."). A tap on a slim day moves the lens to it; on the wide
     /// one, opens its day.
+    #[inline(never)]
     fn week_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         const SLIM: u16 = 40;
         let first = self.day - in_week(self.day, cx.us);
@@ -2022,6 +2046,7 @@ impl Calendar {
         }
     }
 
+    #[inline(never)]
     fn month_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         let d = date::date_of(self.day);
         let start = date::days_from(date::Date {
@@ -2123,6 +2148,7 @@ impl Calendar {
 
     /// The quick-add sheet: the line with the understood words in the
     /// tint, and the preview card of what will be added.
+    #[inline(never)]
     fn new_sheet(&self, f: &mut Frame, cx: &Ctx) {
         f.push(rp_app::Cmd::Fill {
             r: Rect::new(0, 36, W, 356),

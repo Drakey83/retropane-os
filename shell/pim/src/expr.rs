@@ -339,45 +339,50 @@ fn apply(op: u8, a: Dec, b: Dec) -> Result<Dec, Fault> {
     }
 }
 
+/// The token `text` holds at `at` (stepped past it; spaces skipped):
+/// `None` at its end. Read as they are used, not kept in a list: the list
+/// was 2.3 KB of a 4.2 KB frame, over the stack rule's 4,096.
+fn token(text: &[u8], at: &mut usize) -> Result<Option<Tok>, Fault> {
+    while text.get(*at) == Some(&b' ') {
+        *at += 1;
+    }
+    let Some(&c) = text.get(*at) else {
+        return Ok(None);
+    };
+    let t = match c {
+        b'0'..=b'9' | b'.' => {
+            let start = *at;
+            while text
+                .get(*at)
+                .is_some_and(|c| c.is_ascii_digit() || *c == b'.')
+            {
+                *at += 1;
+            }
+            let d = Dec::typed(&text[start..*at]).ok_or(Fault::Incomplete)?;
+            return Ok(Some(Tok::Num(d)));
+        }
+        b'p' => Tok::Num(Dec::typed(b"3.14159265359").unwrap_or(Dec::ZERO)),
+        b'e' => Tok::Num(Dec::typed(b"2.71828182846").unwrap_or(Dec::ZERO)),
+        b'+' | b'-' | b'x' | b'/' | b'^' | b'~' => Tok::Op(c),
+        b'(' => Tok::Open,
+        b')' => Tok::Close,
+        b'%' => Tok::Percent,
+        b'!' => Tok::Fact,
+        b's' | b'c' | b't' | b'S' | b'C' | b'T' | b'l' | b'L' | b'q' => Tok::Func(c),
+        _ => return Err(Fault::Incomplete),
+    };
+    *at += 1;
+    Ok(Some(t))
+}
+
 /// The value of `text` (see the module), angles in degrees unless
 /// `radians`. `200 + 10 %` is 220: a percent after `+` or `-` is of the
 /// number before it, otherwise it is hundredths.
 pub fn eval(text: &[u8], radians: bool) -> Result<Dec, Fault> {
-    // Tokens.
-    let mut toks = [Tok::Close; MAX];
-    let mut n = 0;
+    // Every token reads, before any is worked (a sum with a letter it
+    // does not know is incomplete whatever comes before the letter).
     let mut at = 0;
-    while at < text.len() && n < MAX {
-        let c = text[at];
-        let t = match c {
-            b'0'..=b'9' | b'.' => {
-                let start = at;
-                while at < text.len() && (text[at].is_ascii_digit() || text[at] == b'.') {
-                    at += 1;
-                }
-                let d = Dec::typed(&text[start..at]).ok_or(Fault::Incomplete)?;
-                toks[n] = Tok::Num(d);
-                n += 1;
-                continue;
-            }
-            b'p' => Tok::Num(Dec::typed(b"3.14159265359").unwrap_or(Dec::ZERO)),
-            b'e' => Tok::Num(Dec::typed(b"2.71828182846").unwrap_or(Dec::ZERO)),
-            b'+' | b'-' | b'x' | b'/' | b'^' | b'~' => Tok::Op(c),
-            b'(' => Tok::Open,
-            b')' => Tok::Close,
-            b'%' => Tok::Percent,
-            b'!' => Tok::Fact,
-            b's' | b'c' | b't' | b'S' | b'C' | b'T' | b'l' | b'L' | b'q' => Tok::Func(c),
-            b' ' => {
-                at += 1;
-                continue;
-            }
-            _ => return Err(Fault::Incomplete),
-        };
-        toks[n] = t;
-        n += 1;
-        at += 1;
-    }
+    while token(text, &mut at)?.is_some() {}
     // Shunting-yard, values evaluated as operators leave the stack.
     let mut vals = [Dec::ZERO; MAX];
     let mut nv = 0;
@@ -402,9 +407,24 @@ pub fn eval(text: &[u8], radians: bool) -> Result<Dec, Fault> {
         Ok(())
     };
     let mut expect_value = true;
-    for (i, &t) in toks[..n].iter().enumerate() {
+    // A stack with no room left is a sum too deep to work (96 function
+    // letters ran the operators' stack past its end: a panic).
+    let full = |n: usize| {
+        if n < MAX {
+            Ok(())
+        } else {
+            Err(Fault::Incomplete)
+        }
+    };
+    let (mut at, mut read) = (0, 0);
+    while read < MAX {
+        let Some(t) = token(text, &mut at)? else {
+            break;
+        };
+        read += 1;
         match t {
             Tok::Num(d) => {
+                full(nv)?;
                 vals[nv] = d;
                 nv += 1;
                 expect_value = false;
@@ -428,21 +448,25 @@ pub fn eval(text: &[u8], radians: bool) -> Result<Dec, Fault> {
                         break;
                     }
                 }
+                full(no)?;
                 ops[no] = op;
                 no += 1;
                 expect_value = true;
             }
             Tok::Open => {
+                full(no)?;
                 ops[no] = b'(';
                 no += 1;
                 expect_value = true;
             }
             Tok::Func(f) => {
+                full(no + 1)?;
                 ops[no] = b'F';
                 fns[no] = f;
                 no += 1;
                 // Its bracket follows (or it applies to the next value).
-                if !matches!(toks.get(i + 1), Some(Tok::Open)) {
+                let mut next = at;
+                if !matches!(token(text, &mut next), Ok(Some(Tok::Open))) {
                     ops[no] = b'(';
                     no += 1;
                 }
@@ -563,5 +587,33 @@ mod tests {
         assert_eq!(show(b"T(1)"), "45");
         assert_eq!(show(b"2^0.5"), "1.41421356237");
         assert_eq!(show(b"s(30)+2^10"), "1024.5");
+    }
+
+    /// A sum too deep for the stacks is incomplete, never a panic (96
+    /// function letters ran the operators' stack past its end).
+    #[test]
+    fn a_sum_too_deep_is_incomplete_not_a_panic() {
+        for c in *b"s(q~" {
+            for n in [MAX - 1, MAX, 2 * MAX] {
+                let mut text = std::vec![c; n];
+                assert_eq!(
+                    eval(&text, false),
+                    Err(Fault::Incomplete),
+                    "{n} of {}",
+                    c as char
+                );
+                text.push(b'1');
+                let _ = eval(&text, false);
+            }
+        }
+        // As long as it fits it is worked: 48 ones added.
+        let mut text = std::vec::Vec::new();
+        for k in 0..48 {
+            if k > 0 {
+                text.push(b'+');
+            }
+            text.push(b'1');
+        }
+        assert_eq!(eval(&text, false), Ok(Dec::whole(48)));
     }
 }

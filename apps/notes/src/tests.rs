@@ -344,7 +344,7 @@ fn typing_and_ink_keep_the_paper_colour_pin_and_unknown_fields() {
         )
         .unwrap();
     let n = opened(19_723);
-    n.rewrite(&cx, id, |text, tn, _, _| {
+    text_edit(&cx, id, &mut |text, tn| {
         text[*tn] = b'b';
         *tn += 1;
         true

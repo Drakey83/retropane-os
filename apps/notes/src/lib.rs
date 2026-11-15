@@ -55,15 +55,6 @@ pub enum View {
 
 /// The line in a note's text that stands for its ink panel.
 const INK_LINE: u8 = 0x01;
-/// Points a note's ink holds, and strokes.
-/// The bytes a note's ink may take: its two fields (`INK`, then
-/// `INK_MORE`). No count of strokes or points besides: the ink is read,
-/// painted, erased and added to a stroke at a time, straight from its
-/// bytes (the first version unpacked all of it into 900 points and 48
-/// strokes, and a note stopped taking strokes at the 48th: the owner on
-/// the X51v, 2026-11-14).
-const INK_ROOM: usize = 2 * rp_pim::store::TEXT_MAX;
-
 /// The packed stroke `ink` starts with: its length in bytes (`None`
 /// where the ink ends, or breaks).
 fn stroke_len(ink: &[u8]) -> Option<usize> {
@@ -87,8 +78,9 @@ fn unpack(s: &[u8], pts: &mut [(i16, i16); 255]) -> (u8, usize) {
     (s[1], count)
 }
 
-/// Where `ink` parts into its two fields: after the most whole strokes
-/// the first holds.
+/// How much of `ink` is whole strokes that fit a field (the tests': a
+/// field never ends mid-stroke).
+#[cfg(test)]
 fn split(ink: &[u8]) -> usize {
     let mut at = 0;
     while let Some(n) = stroke_len(&ink[at..]) {
@@ -130,19 +122,9 @@ fn pages_of(cx: &Ctx, id: u32) -> ([u32; PAGES], usize) {
         .unwrap_or(([0; PAGES], 0))
 }
 
-/// A record's ink (its two fields) copied into `ink`: its length.
-fn ink_of(r: &rp_pim::store::Rec<'_>, ink: &mut [u8; INK_ROOM]) -> usize {
-    let mut inn = 0;
-    for field in [r.text(tag::INK), r.text(tag::INK_MORE)] {
-        let n = field.len().min(ink.len() - inn);
-        ink[inn..inn + n].copy_from_slice(&field[..n]);
-        inn += n;
-    }
-    inn
-}
-
 /// The first stroke a point of the pen's `path` came within 8 px of
 /// taken out of `ink`: its bytes closed over.
+#[inline(never)]
 fn erase_in(ink: &mut [u8], inn: &mut usize, path: &[(i16, i16)]) -> bool {
     let near = |s: &[(i16, i16)]| {
         s.iter().any(|&(x, y)| {
@@ -176,33 +158,92 @@ fn drop_last(ink: &[u8], inn: &mut usize) -> bool {
     had
 }
 
-/// Ink page `page`'s strokes given to `change` and written back; a page
-/// left empty is removed.
-fn page_edit(cx: &Ctx, page: u32, change: impl FnOnce(&mut [u8], &mut usize) -> bool) -> bool {
+/// A change to a record's ink.
+enum InkOp<'a> {
+    /// A packed stroke added at its end.
+    Add(&'a [u8]),
+    /// The first stroke the pen's path crossed taken out.
+    Erase(&'a [(i16, i16)]),
+    /// Its last stroke taken off.
+    Last,
+}
+
+/// One change to the ink of record `rec` (a note, or with `page` one of
+/// its ink pages, removed once it is empty): false where it did not
+/// apply (no room, no stroke crossed, no ink). The ink is two fields of
+/// whole strokes, the second following the first, and a change copies
+/// only the one it touches: a stroke is added to the second once that
+/// has any, so their order holds. (The first version copied the text and
+/// both fields for every change: a 6 to 7.5 KB frame on a 40 KB stack,
+/// over the stack rule's 4,096.)
+#[inline(never)]
+fn ink_op(cx: &Ctx, rec: u32, op: InkOp<'_>, page: bool) -> bool {
+    use rp_pim::store::TEXT_MAX;
     let Some(mut guard) = cx.pim.and_then(|c| c.try_borrow_mut().ok()) else {
         return false;
     };
     let Some(store) = guard.as_mut() else {
         return false;
     };
-    let Some(r) = store.get(page) else {
+    let mut buf = [0u8; TEXT_MAX];
+    let lens = |store: &rp_pim::store::Store<'_>| {
+        store
+            .get(rec)
+            .map(|r| (r.text(tag::INK).len(), r.text(tag::INK_MORE).len()))
+    };
+    let Some((a, b)) = lens(store) else {
         return false;
     };
-    let mut ink = [0u8; INK_ROOM];
-    let mut inn = ink_of(&r, &mut ink);
-    if !change(&mut ink, &mut inn) {
+    // The fields to try, in the order the change reads them.
+    let fields: [u8; 2] = match op {
+        InkOp::Add(s) if b > 0 || a + s.len() > TEXT_MAX => [tag::INK_MORE, 0],
+        InkOp::Add(_) => [tag::INK, 0],
+        InkOp::Erase(_) => [tag::INK, tag::INK_MORE],
+        InkOp::Last if b > 0 => [tag::INK_MORE, 0],
+        InkOp::Last => [tag::INK, 0],
+    };
+    let mut done = false;
+    for t in fields.into_iter().filter(|&t| t != 0) {
+        let Some(r) = store.get(rec) else {
+            return false;
+        };
+        let mut n = r.text(t).len().min(buf.len());
+        buf[..n].copy_from_slice(&r.text(t)[..n]);
+        let changed = match op {
+            InkOp::Add(s) => buf.get_mut(n..n + s.len()).is_some_and(|to| {
+                to.copy_from_slice(s);
+                n += s.len();
+                true
+            }),
+            InkOp::Erase(path) => erase_in(&mut buf, &mut n, path),
+            InkOp::Last => drop_last(&buf, &mut n),
+        };
+        if changed {
+            done = store.change(rec, &[(t, &buf[..n])]).is_ok();
+            break;
+        }
+    }
+    if done && page && lens(store) == Some((0, 0)) {
+        let _ = store.remove(rec);
+    }
+    done
+}
+
+/// Note `id`'s text given to `change` (with room to grow) and written
+/// back, every other field kept.
+#[inline(never)]
+fn text_edit(cx: &Ctx, id: u32, change: &mut dyn FnMut(&mut [u8], &mut usize) -> bool) -> bool {
+    let Some(mut guard) = cx.pim.and_then(|c| c.try_borrow_mut().ok()) else {
         return false;
-    }
-    if inn == 0 {
-        return store.remove(page).is_ok();
-    }
-    let part = split(&ink[..inn]);
-    store
-        .change(
-            page,
-            &[(tag::INK, &ink[..part]), (tag::INK_MORE, &ink[part..inn])],
-        )
-        .is_ok()
+    };
+    let Some(store) = guard.as_mut() else {
+        return false;
+    };
+    let Some(r) = store.get(id) else { return false };
+    let mut text = [0u8; rp_pim::store::TEXT_MAX];
+    let mut tn = r.text(tag::TEXT).len().min(text.len());
+    text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
+    change(&mut text, &mut tn) && store.change(id, &[(tag::TEXT, &text[..tn])]).is_ok()
 }
 
 /// The pen's six colours (`STYLE` bits 0-2 choose), dark first.
@@ -1469,45 +1510,6 @@ impl Notes {
         });
     }
 
-    /// Note `id`'s record rewritten: its text and ink given to `change`
-    /// (each with room to grow), every other field kept.
-    fn rewrite(
-        &self,
-        cx: &Ctx,
-        id: u32,
-        change: impl FnOnce(&mut [u8], &mut usize, &mut [u8], &mut usize) -> bool,
-    ) -> bool {
-        let Some(cell) = cx.pim else { return false };
-        let Ok(mut guard) = cell.try_borrow_mut() else {
-            return false;
-        };
-        let Some(store) = guard.as_mut() else {
-            return false;
-        };
-        let Some(r) = store.get(id) else { return false };
-        let mut text = [0u8; rp_pim::store::TEXT_MAX];
-        let mut tn = r.text(tag::TEXT).len().min(text.len());
-        text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
-        let mut ink = [0u8; INK_ROOM];
-        let mut inn = ink_of(&r, &mut ink);
-        if !change(&mut text, &mut tn, &mut ink, &mut inn) {
-            return false;
-        }
-        let part = split(&ink[..inn]);
-        // Text and ink only: the title, colour, pin, paper and any field
-        // a later version adds are kept by the store.
-        store
-            .change(
-                id,
-                &[
-                    (tag::TEXT, &text[..tn]),
-                    (tag::INK, &ink[..part]),
-                    (tag::INK_MORE, &ink[part..inn]),
-                ],
-            )
-            .is_ok()
-    }
-
     /// The style of a stroke written now: the pen's colour or the marker,
     /// and the size.
     fn style(&self) -> u8 {
@@ -1542,10 +1544,10 @@ impl Notes {
         let kept = if tool == Tool::Erase {
             // The note's own strokes first, then each page's, as they are
             // painted.
-            self.rewrite(cx, id, |_, _, ink, inn| erase_in(ink, inn, &live[..n]))
+            ink_op(cx, id, InkOp::Erase(&live[..n]), false)
                 || page[..np]
                     .iter()
-                    .any(|&p| page_edit(cx, p, |ink, inn| erase_in(ink, inn, &live[..n])))
+                    .any(|&p| ink_op(cx, p, InkOp::Erase(&live[..n]), true))
         } else {
             // Packed once (a stroke is 514 bytes at most), then added at
             // the ink's end, nothing else read: the last page's, or the
@@ -1555,31 +1557,28 @@ impl Notes {
             let Some(len) = encode_styled(&[&live[..n]], &[style], &mut packed) else {
                 return;
             };
-            let add = |ink: &mut [u8], inn: &mut usize| {
-                let Some(to) = ink.get_mut(*inn..*inn + len) else {
-                    return false;
-                };
-                to.copy_from_slice(&packed[..len]);
-                *inn += len;
-                true
-            };
+            let stroke = &packed[..len];
             let on_last = match page[..np].last() {
-                Some(&p) => page_edit(cx, p, add),
-                None => self.rewrite(cx, id, |text, tn, ink, inn| {
+                Some(&p) => ink_op(cx, p, InkOp::Add(stroke), true),
+                None => {
                     // A note with no ink panel yet gets its place at the
                     // end.
-                    if !text[..*tn].split(|&c| c == b'\n').any(|l| l == [INK_LINE])
-                        && *tn + 2 <= text.len()
-                    {
+                    text_edit(cx, id, &mut |text, tn| {
+                        if text[..*tn].split(|&c| c == 10).any(|l| l == [INK_LINE])
+                            || *tn + 2 > text.len()
+                        {
+                            return false;
+                        }
                         if *tn > 0 {
-                            text[*tn] = b'\n';
+                            text[*tn] = 10;
                             *tn += 1;
                         }
                         text[*tn] = INK_LINE;
                         *tn += 1;
-                    }
-                    add(ink, inn)
-                }),
+                        true
+                    });
+                    ink_op(cx, id, InkOp::Add(stroke), false)
+                }
             };
             on_last
                 || (np < PAGES
@@ -1591,7 +1590,7 @@ impl Notes {
                                 .put(
                                     Kind::Ink,
                                     None,
-                                    &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, &packed[..len])],
+                                    &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, stroke)],
                                 )
                                 .ok()
                         })
@@ -1608,28 +1607,25 @@ impl Notes {
 
     /// The last stroke taken out (UNDO), or the last character typed.
     fn undo(&mut self, cx: &Ctx, id: u32) {
-        // The last stroke is the last page's, or the note's own.
+        // The last stroke is the last page's, or the note's own; with
+        // no ink, the last character typed.
         let (page, np) = pages_of(cx, id);
-        if let Some(&p) = page[..np].last() {
-            page_edit(cx, p, |ink, inn| drop_last(ink, inn));
-            return;
+        let undone = match page[..np].last() {
+            Some(&p) => ink_op(cx, p, InkOp::Last, true),
+            None => ink_op(cx, id, InkOp::Last, false),
+        };
+        if !undone {
+            text_edit(cx, id, &mut |_, tn| {
+                *tn = tn.saturating_sub(1);
+                true
+            });
         }
-        self.rewrite(cx, id, |_text, tn, ink, inn| {
-            if drop_last(ink, inn) {
-                return true;
-            }
-            if *tn > 0 {
-                *tn -= 1;
-                return true;
-            }
-            false
-        });
     }
 
     /// Text typed into the note (a new line, or a checklist item, started
     /// when the tool was chosen).
     fn type_char(&mut self, cx: &Ctx, id: u32, c: u8) {
-        self.rewrite(cx, id, |text, tn, _, _| {
+        text_edit(cx, id, &mut |text, tn| {
             if *tn < text.len() {
                 text[*tn] = c;
                 *tn += 1;
@@ -1642,7 +1638,7 @@ impl Notes {
 
     /// Checklist line `line` ticked or unticked.
     fn toggle(&mut self, cx: &Ctx, id: u32, line: u8) {
-        self.rewrite(cx, id, |text, tn, _, _| {
+        text_edit(cx, id, &mut |text, tn| {
             let mut at = 0;
             for (k, l) in text[..*tn].split(|&c| c == b'\n').enumerate() {
                 if k == usize::from(line) {
