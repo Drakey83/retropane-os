@@ -154,6 +154,14 @@ inserted onto the device."
   Half-Life files into it from a PC. (My reading, his to correct: the
   folder is made when he opens the entry, never by a card merely going in,
   so nothing is written to a card unasked.)
+- **A pop-up, his words (2026-11-15):** "when clicking on the icon that
+  shows up there should be a pop up explaining about where and how to move
+  the game files to where they should be." So the screen above is a
+  pop-up over the Start menu, in the OS's own glass look: where the files
+  go (the `valve` folder on this card, by its name as the PC shows it),
+  how (a card reader, or the Axim as a drive over USB; drag the folder's
+  contents in), and that the game starts from the same icon once they are
+  there. Mock-ups for him before it is built.
 - **Cost:** small. The shell already sees a card arrive and leave and
   loads programs when they are opened; one look for a folder at that
   moment decides one Start-menu entry.
