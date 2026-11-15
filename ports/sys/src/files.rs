@@ -478,12 +478,12 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rp_fat::mkfs::{self, Fs, Options};
     use rp_hal_api::BlockError;
 
-    struct Disk(Vec<u8>);
+    pub(crate) struct Disk(Vec<u8>);
 
     impl BlockDevice for Disk {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
@@ -518,14 +518,14 @@ mod tests {
         AnyVolume::mount(d, l.part_start).unwrap()
     }
 
-    fn pattern(n: usize, seed: u8) -> Vec<u8> {
+    pub(crate) fn pattern(n: usize, seed: u8) -> Vec<u8> {
         (0..n)
             .map(|i| (i as u8).wrapping_mul(37) ^ seed ^ (i >> 8) as u8)
             .collect()
     }
 
     /// Every kind of card the X51v takes.
-    fn each(mut f: impl FnMut(AnyVolume<Disk>, &str)) {
+    pub(crate) fn each(mut f: impl FnMut(AnyVolume<Disk>, &str)) {
         f(volume(Fs::Fat32, 131_072, 512), "FAT32");
         f(volume(Fs::Fat16, 65_536, 2048), "FAT16");
         f(volume(Fs::Fat12, 16_384, 4096), "FAT12");

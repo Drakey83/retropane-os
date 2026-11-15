@@ -939,16 +939,24 @@ version = "0.0.0"
 dependencies = [
  "rp-fat",
  "rp-hal-api",
+ "rp-hal-cabi",
 ]
 
 [[package]]
 name = "rp-port-hello"
 version = "0.0.0"
 dependencies = [
+ "rp-drv-cpld",
+ "rp-drv-pxa-mmc",
  "rp-drv-pxa-uart",
+ "rp-drv-sdcard",
+ "rp-fat",
+ "rp-hal-api",
  "rp-hal-cabi",
  "rp-hal-pxa27x",
+ "rp-hal-x51v",
  "rp-image",
+ "rp-port",
 ]
 
 [[package]]

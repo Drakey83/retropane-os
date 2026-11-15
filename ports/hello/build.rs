@@ -9,6 +9,9 @@ fn main() {
     }
     let dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
     println!("cargo:rustc-link-arg-bins=-T{dir}/../../boot/link.x");
+    // A C program's stack: its buffers are locals (this one's are small;
+    // a game's are not), so more than an image's usual 16 KiB.
+    println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=0x20000");
     if let Ok(libs) = std::env::var("RP_C_LIBS") {
         println!("cargo:rerun-if-changed={libs}/libhello.a");
         println!("cargo:rerun-if-changed={libs}/libc.a");

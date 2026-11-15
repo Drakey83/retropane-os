@@ -800,15 +800,30 @@ const C_HELLO_MARKER: &str = "RETROPANE-C-HELLO-OK";
 /// makes of the C library must pass, and it must come back to Rust.
 pub fn boot_chello(root: &Path) -> Result<(), String> {
     let image = crate::arm_release(root).join("rp-port-hello");
+    // A card with a file made here: the C program reads it through
+    // `fopen`, and writes, reads back and removes one of its own.
+    let sd = scratch(root, "sd-chello.img")?;
+    let img = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: (SD_IMAGE_BYTES / 512) as u32,
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "chello.txt",
+            data: b"written by the PC\n",
+        }],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    std::fs::write(&sd, img).map_err(|e| format!("{}: {e}", sd.display()))?;
     let output = boot(
         root,
         &Boot {
             image: &image,
-            // The image's clean end (`rp_image::finish`), after the C
-            // program came back.
-            marker: "stack: deepest",
+            // The end of the image's last line (`rp_image::finish`'s stack
+            // report, whole), after the C program came back: its stack is
+            // ports/hello/build.rs's 128 KiB.
+            marker: "of 131072 bytes",
             screenshot: None,
-            sd_image: None,
+            sd_image: Some(&sd),
             steps: &[],
             extra: &[],
             input: None,
@@ -823,10 +838,17 @@ pub fn boot_chello(root: &Path) -> Result<(), String> {
             "C hello: `{C_HELLO_MARKER}` missing on serial, or a check failed"
         ));
     }
+    for want in ["card: mounted", "a file from the PC: ok", "files: ok"] {
+        if !output.contains(want) {
+            return Err(format!(
+                "C hello: `{want}` missing on serial (the card's files through fopen)"
+            ));
+        }
+    }
     if !output.contains("the C program returned 0") {
         return Err("C hello: the C program did not return 0 to Rust".into());
     }
-    eprintln!("    C hello OK: Clang, picolibc and the C boundary");
+    eprintln!("    C hello OK: Clang, picolibc, the C boundary and the card's files through fopen");
     Ok(())
 }
 

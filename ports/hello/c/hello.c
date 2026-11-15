@@ -23,6 +23,54 @@ static int by_value(const void *a, const void *b)
     return *(const int *)a - *(const int *)b;
 }
 
+/* The card's files through fopen (the port layer, rp_port::sys): a file
+ * written, read back and removed in this program's own folder (the card is
+ * shared: nothing outside it is touched), and a file the PC put on the
+ * card read. Without a card the first open fails and the checks are
+ * skipped; `cargo xtask emu-chello` gives a card and wants "files: ok". */
+static int files(void)
+{
+    static const char path[] = "rp-chello/out.bin";
+    static unsigned char out[20000], in[20000];
+    int ok = 1;
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        puts("  files: skipped (no card)");
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof out; i++)
+        out[i] = (unsigned char)(i * 37 ^ i >> 8);
+    /* In three pieces of different sizes, the last one odd. */
+    size_t done = fwrite(out, 1, 7000, f);
+    done += fwrite(out + 7000, 1, 12999, f);
+    done += fwrite(out + 19999, 1, 1, f);
+    ok &= check("fwrite", done == sizeof out);
+    ok &= check("fclose puts it on the card", fclose(f) == 0);
+
+    f = fopen("RP-CHELLO\\OUT.BIN", "rb");
+    ok &= check("fopen in any case, either slash", f != NULL);
+    if (f) {
+        ok &= check("fseek to the end and ftell", fseek(f, 0, SEEK_END) == 0 && ftell(f) == (long)sizeof out);
+        rewind(f);
+        ok &= check("fread", fread(in, 1, sizeof in, f) == sizeof in && memcmp(in, out, sizeof in) == 0);
+        ok &= check("the end of the file", fgetc(f) == EOF && feof(f));
+        ok &= check("fseek into it", fseek(f, 12345, SEEK_SET) == 0 && fgetc(f) == out[12345]);
+        fclose(f);
+    }
+    ok &= check("remove", remove(path) == 0 && fopen(path, "rb") == NULL);
+
+    /* A file made on the PC (the emulator's card has it; a card without it
+     * is no failure). */
+    f = fopen("chello.txt", "r");
+    if (f) {
+        char line[40] = "";
+        ok &= check("a file from the PC", fgets(line, sizeof line, f) && strcmp(line, "written by the PC\n") == 0);
+        fclose(f);
+    }
+    puts(ok ? "  files: ok" : "  files: FAILED");
+    return ok;
+}
+
 int main(void)
 {
     int ok = 1;
@@ -75,9 +123,9 @@ int main(void)
     ok &= check("sscanf", sscanf("17 2.25", "%d %f", &n, &f) == 2 && n == 17 && f == 2.25f);
     ok &= check("strtod", strtod("2.5e3", NULL) == 2500.0);
 
-    /* No card in this image: a file that is not there is refused, not a
-     * crash. */
+    /* A file that is not there is refused, not a crash. */
     ok &= check("fopen of nothing is refused", fopen("/nothing", "rb") == NULL);
+    ok &= files();
 
     puts(ok ? "RETROPANE-C-HELLO-OK" : "RETROPANE-C-HELLO-FAILED");
     return ok ? 0 : 1;
