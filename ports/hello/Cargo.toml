@@ -32,6 +32,10 @@ rp-port = { path = "../sys" }
 rp-audio-x51v = { path = "../../services/audio-x51v" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 rp-drv-wm8750 = { path = "../../drivers/wm8750" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
+rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
+rp-touch-cal = { path = "../../drivers/touch-cal" }
 
 [lints]
 workspace = true

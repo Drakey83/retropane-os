@@ -792,6 +792,56 @@ pub fn boot_light(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// What `emu-chello` does once the C program asks for input (it holds the
+/// screen in landscape, the device's top at the player's left): the D-pad's
+/// Up is the player's Left (`RP_KEY_LEFT`, 3) and Right is Up (1), a program
+/// button keeps its code (Home, 9), a tap at upright (120, 160) arrives at
+/// (160, 359) and one at (400, 600) at (600, 79), each lifted where it
+/// was, and the D-pad's centre (5) ends it: the program finishes and the
+/// image reports its stack.
+const CHELLO_STEPS: &[Step] = &[
+    Step {
+        action: Action::Hmp("sendkey up"),
+        expect: &[Expect::Text("KEY 3 1"), Expect::Text("KEY 3 0")],
+    },
+    Step {
+        action: Action::Hmp("sendkey right"),
+        expect: &[Expect::Text("KEY 1 1"), Expect::Text("KEY 1 0")],
+    },
+    Step {
+        action: Action::Hmp("sendkey f4"),
+        expect: &[Expect::Text("KEY 9 1"), Expect::Text("KEY 9 0")],
+    },
+    Step {
+        action: Action::TouchDown(120, 160),
+        expect: &[Expect::TouchNear(160, 359)],
+    },
+    Step {
+        action: Action::TouchUp,
+        expect: &[Expect::Text("PEN up")],
+    },
+    Step {
+        action: Action::TouchDown(400, 600),
+        expect: &[Expect::TouchNear(600, 79)],
+    },
+    Step {
+        action: Action::TouchUp,
+        expect: &[Expect::Text("PEN up")],
+    },
+    Step {
+        action: Action::Hmp("sendkey ret"),
+        expect: &[
+            Expect::Text("KEY 5 1"),
+            Expect::Text("KEY 5 0"),
+            Expect::Text("input: ok"),
+            // The end of the image's last line (`rp_image::finish`'s stack
+            // report, whole), after the C program came back: its stack is
+            // ports/hello/build.rs's 128 KiB.
+            Expect::Text("of 131072 bytes"),
+        ],
+    },
+];
+
 /// Must match `rp_port_hello::MARKER` (ports/hello): printed by the C
 /// program itself, after its last check.
 const C_HELLO_MARKER: &str = "RETROPANE-C-HELLO-OK";
@@ -827,13 +877,12 @@ pub fn boot_chello(root: &Path) -> Result<(), String> {
         root,
         &Boot {
             image: &image,
-            // The end of the image's last line (`rp_image::finish`'s stack
-            // report, whole), after the C program came back: its stack is
-            // ports/hello/build.rs's 128 KiB.
-            marker: "of 131072 bytes",
+            // The C program's own line once everything else is checked and
+            // it waits for buttons and taps: the steps then press them.
+            marker: "input: press and tap",
             screenshot: None,
             sd_image: Some(&sd),
-            steps: &[],
+            steps: CHELLO_STEPS,
             extra: &["-audiodev", &audiodev, "-machine", "audiodev=snd"],
             input: None,
             during: None,
@@ -854,11 +903,12 @@ pub fn boot_chello(root: &Path) -> Result<(), String> {
         "clock: ok",
         "sound: the codec is up, to the speaker",
         "sound: ok",
+        "input: ok",
         "sound: the codec is down (true), the board as found",
     ] {
         if !output.contains(want) {
             return Err(format!(
-                "C hello: `{want}` missing on serial (the port layer: the card's files through fopen, the clock, sound)"
+                "C hello: `{want}` missing on serial (the port layer: the card's files through fopen, the clock, sound, input)"
             ));
         }
     }
@@ -867,7 +917,7 @@ pub fn boot_chello(root: &Path) -> Result<(), String> {
     }
     let (hz, seconds) = audio::c_tone(&wav)?;
     eprintln!(
-        "    C hello OK: Clang, picolibc, the C boundary, the clock, the card's files through fopen, and the C program's tone recorded at {hz:.1} Hz over {seconds:.3} s with no gap"
+        "    C hello OK: Clang, picolibc, the C boundary, the clock, the card's files through fopen, button presses and stylus taps turned for landscape, and the C program's tone recorded at {hz:.1} Hz over {seconds:.3} s with no gap"
     );
     Ok(())
 }

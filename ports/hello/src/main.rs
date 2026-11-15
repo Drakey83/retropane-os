@@ -3,7 +3,8 @@
 //! emu-chello` builds both, boots this in the emulator with a card and
 //! looks for [`MARKER`], which only the C program prints, after every check
 //! passed: the C library itself, and the port layer (the clock, the card's
-//! files through `fopen`, a tone through the audio service's mixer).
+//! files through `fopen`, a tone through the audio service's mixer, the
+//! buttons and the stylus as events).
 //!
 //! Iterate, don't imitate (rule 0). A C program on Windows Mobile or Linux
 //! starts from the C library's own start-up file over a kernel; an embedded
@@ -28,8 +29,11 @@ mod image {
     use core::cell::RefCell;
     use core::fmt::Write;
 
-    use rp_audio_x51v::{BoardCpld, found, name, put_back, service};
-    use rp_drv_pxa_gpio::Gpio;
+    use rp_audio_x51v::{BoardCpld, SharedGpio, found, name, put_back, service};
+    use rp_drv_pxa_gpio::{Gpio, GpioPin};
+    use rp_drv_pxa_keypad::{Keypad, Pressed};
+    use rp_drv_pxa_ssp::Ssp;
+    use rp_drv_tsc2046::Tsc2046;
     use rp_drv_wm8750::Output;
 
     use rp_drv_cpld::Cpld;
@@ -44,14 +48,19 @@ mod image {
     use rp_hal_x51v::devices;
     use rp_port::clock::Micros;
     use rp_port::files::Files;
+    use rp_port::input::{Input, Pad};
     use rp_port::sound::{Sound, memory_for};
     use rp_port::sys::{Console, System};
+    use rp_touch_cal::{Calibration, Sample};
 
     rp_image::entry!(main);
 
     /// The C heap: the free RAM between the image area and the loader
     /// (boot/link.x: 0xA8100000-0xA8400000, 3 MiB, mapped 1:1).
     const HEAP: (usize, usize) = (0xA810_0000, 0xA840_0000);
+    /// The touch chip's select and pen lines (docs/hw/touch.md).
+    const TS_CS: u8 = 24;
+    const TS_PENIRQ: u8 = 94;
     /// The codec's output level, 0-100.
     const LEVEL: u32 = 60;
     /// The sound's memory is sized for the largest stream a game opens
@@ -134,6 +143,58 @@ mod image {
     static BARE: rt::Slot<Bare> = rt::Slot::new();
     static WITH_CARD: rt::Slot<System<'static, Card, 8, Serial>> = rt::Slot::new();
     static SOUND: rt::Slot<Sound<'static, Dma>> = rt::Slot::new();
+    /// The GPIO block: the audio service, the codec's gate and the touch
+    /// chip's two lines share it for the whole run.
+    static GPIO: rt::Slot<SharedGpio> = rt::Slot::new();
+    static INPUT: rt::Slot<Input<X51vPad>> = rt::Slot::new();
+
+    type Touch = Tsc2046<Ssp<Mmio>, GpioPin<'static, Mmio>, GpioPin<'static, Mmio>>;
+
+    /// The X51v's buttons and touch chip, read when the C program asks.
+    struct X51vPad {
+        keypad: Keypad<Mmio>,
+        touch: Touch,
+    }
+
+    impl Pad for X51vPad {
+        fn pressed(&mut self) -> Pressed {
+            self.keypad.scan().held
+        }
+        fn pen(&mut self) -> Option<Sample> {
+            self.touch.sample().map(|t| Sample {
+                x: t.x,
+                y: t.y,
+                z1: t.z1,
+            })
+        }
+    }
+
+    /// The keypad scanning and the touch chip on SSP1, as `rp-hello` sets
+    /// them up; `None` if a part is missing.
+    fn pad(gpio: &'static SharedGpio) -> Option<X51vPad> {
+        let (kp, ssp) = (rt::take_keypad()?, rt::take_ssp1()?);
+        let mut keypad = Keypad::new(kp);
+        keypad.enable();
+        {
+            // Windows Mobile leaves GPIO24 as SSP1's frame signal
+            // (docs/hw/touch.md): a plain GPIO, or the chip is never
+            // selected and every reading is 0.
+            let mut g = gpio.borrow_mut();
+            g.make_output(TS_CS, true);
+            g.set_function(TS_CS, 0);
+            g.make_input(TS_PENIRQ);
+        }
+        let mut ssp = Ssp::new(ssp);
+        ssp.configure_spi(2_600_000);
+        let mut touch = Tsc2046::new(
+            ssp,
+            GpioPin::new(gpio, TS_CS),
+            GpioPin::new(gpio, TS_PENIRQ),
+        );
+        // One reading arms its pen line.
+        let _ = touch.read(rp_drv_tsc2046::channel::X);
+        Some(X51vPad { keypad, touch })
+    }
 
     /// A C `exit()`: a failure of the image unless it is `exit(0)`.
     fn exit(code: i32) -> ! {
@@ -176,13 +237,15 @@ mod image {
         // Sound (the audio service, ADR-0032): the codec brought up as the
         // service does it; its two board bits are put back at the end.
         let board_found = found(cpld.as_ref());
-        let Some(gpio_bus) = rt::take_gpio() else {
+        let Some(gpio) =
+            rt::take_gpio().and_then(|bus| GPIO.put_with(|| RefCell::new(Gpio::new(bus))))
+        else {
             rp_image::fail("no GPIO block")
         };
-        let gpio = RefCell::new(Gpio::new(gpio_bus));
+        let gpio: &'static SharedGpio = gpio;
         let mut audio = match (rt::take_i2c(), rt::take_i2s()) {
             (Some(i2c), Some(i2s)) if board_found.is_some() => {
-                Some(service(&gpio, cpld, i2c, i2s, LEVEL))
+                Some(service(gpio, cpld, i2c, i2s, LEVEL))
             }
             _ => None,
         };
@@ -232,6 +295,17 @@ mod image {
                 }
                 if let Some(v) = voice {
                     s.set_sound(v);
+                }
+                match pad(gpio)
+                    .and_then(|p| INPUT.put_with(|| Input::new(p, Calibration::X51V_DEFAULT)))
+                {
+                    Some(i) => s.set_input(i),
+                    None => {
+                        let _ = writeln!(
+                            PxaUart::new(rt::emergency_uart()),
+                            "input: none (no keypad or SSP1)"
+                        );
+                    }
                 }
                 s
             }

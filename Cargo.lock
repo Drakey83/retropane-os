@@ -938,9 +938,11 @@ name = "rp-port"
 version = "0.0.0"
 dependencies = [
  "rp-audio",
+ "rp-drv-pxa-keypad",
  "rp-fat",
  "rp-hal-api",
  "rp-hal-cabi",
+ "rp-touch-cal",
 ]
 
 [[package]]
@@ -950,9 +952,12 @@ dependencies = [
  "rp-audio-x51v",
  "rp-drv-cpld",
  "rp-drv-pxa-gpio",
+ "rp-drv-pxa-keypad",
  "rp-drv-pxa-mmc",
+ "rp-drv-pxa-ssp",
  "rp-drv-pxa-uart",
  "rp-drv-sdcard",
+ "rp-drv-tsc2046",
  "rp-drv-wm8750",
  "rp-fat",
  "rp-hal-api",
@@ -961,6 +966,7 @@ dependencies = [
  "rp-hal-x51v",
  "rp-image",
  "rp-port",
+ "rp-touch-cal",
 ]
 
 [[package]]

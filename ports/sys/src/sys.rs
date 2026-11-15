@@ -14,10 +14,11 @@
 
 use rp_fat::Error as FatError;
 use rp_hal_api::BlockDevice;
-use rp_hal_cabi::{Break, Errno, Sys, flags};
+use rp_hal_cabi::{Break, Errno, Event, Sys, flags};
 
 use crate::clock::Micros;
 use crate::files::{Error, Fd, Files, Whence};
+use crate::input::{Events, Turn};
 use crate::sound::Voice;
 
 /// Where what a C program prints goes (the serial line, the screen's
@@ -40,6 +41,8 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     clock: Micros,
     /// The game's sound, where the image has it.
     sound: Option<&'a mut dyn Voice>,
+    /// The game's input, where the image has it.
+    input: Option<&'a mut dyn Events>,
 }
 
 /// A [`Files`] error as the C library's `errno`.
@@ -73,7 +76,14 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
             ticks,
             clock: Micros::starting_at(ticks()),
             sound: None,
+            input: None,
         }
+    }
+
+    /// Gives the system its input (the buttons and the touch chip): what
+    /// `rp_input_open` and `rp_input_poll` reach.
+    pub fn set_input(&mut self, input: &'a mut dyn Events) {
+        self.input = Some(input);
     }
 
     /// Gives the system its sound (the codec up, I2S running): what
@@ -178,7 +188,22 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
         if let Some(v) = self.sound.as_mut() {
             v.pump((us / 1_000) as u32);
         }
+        // And the pad's reading, so a press between two polls is kept.
+        if let Some(i) = self.input.as_mut() {
+            i.pump(us);
+        }
         us
+    }
+
+    fn input_open(&mut self, turn: u8) -> Result<(), Errno> {
+        let now = self.clock.at((self.ticks)());
+        let input = self.input.as_mut().ok_or(Errno::NoSys)?;
+        input.open(Turn::from_c(turn).ok_or(Errno::Invalid)?, now)
+    }
+
+    fn input_poll(&mut self) -> Result<Option<Event>, Errno> {
+        let now = self.clock.at((self.ticks)());
+        self.input.as_mut().ok_or(Errno::NoSys)?.poll(now)
     }
 
     fn snd_open(&mut self, rate: u32, channels: u8) -> Result<(), Errno> {
@@ -362,6 +387,71 @@ mod tests {
             COUNTER.store(3_250_000, Ordering::Relaxed);
             assert_eq!(s.now_us(), 1_000_004);
             assert_eq!(s.now_us(), 1_000_004, "a counter that stood still");
+        });
+    }
+
+    #[test]
+    fn input_calls_reach_the_pad_with_the_clock_s_time_and_are_refused_without_one() {
+        use crate::input::{Input, Pad};
+        use rp_drv_pxa_keypad::{Button, Pressed};
+        use rp_hal_cabi::event;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        static UP: AtomicBool = AtomicBool::new(false);
+        /// Wifi held all along; Up as the test says.
+        struct Buttons;
+        impl Pad for Buttons {
+            fn pressed(&mut self) -> Pressed {
+                let p = Pressed::NONE.with(Button::Wifi);
+                if UP.load(Ordering::Relaxed) {
+                    p.with(Button::Up)
+                } else {
+                    p
+                }
+            }
+            fn pen(&mut self) -> Option<rp_touch_cal::Sample> {
+                None
+            }
+        }
+        each(|vol, kind| {
+            COUNTER.store(0, Ordering::Relaxed);
+            UP.store(false, Ordering::Relaxed);
+            let at = |ms: u32| COUNTER.store(ms * 3_250, Ordering::Relaxed);
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0u8; 16][..];
+            let mut said = Said(Vec::new());
+            let mut pad = Input::new(Buttons, rp_touch_cal::Calibration::X51V_DEFAULT);
+            let files: Files<'_, Disk, 2> = Files::new(vol, scratch, room);
+            let mut s = System::new(files, &mut said, Break::new(0, 0), || {
+                COUNTER.load(Ordering::Relaxed)
+            });
+            // Without a pad: not something this system does.
+            assert_eq!(s.input_open(0), Err(Errno::NoSys), "{kind}");
+            assert_eq!(s.input_poll(), Err(Errno::NoSys));
+            s.set_input(&mut pad);
+            assert_eq!(s.input_poll(), Err(Errno::BadHandle), "not open yet");
+            assert_eq!(s.input_open(3), Err(Errno::Invalid), "no such turn");
+            assert_eq!(s.input_open(u8::MAX), Err(Errno::Invalid));
+            at(5);
+            assert_eq!(s.input_open(event::TURN_RIGHT), Ok(()));
+            assert_eq!(s.input_open(event::TURN_RIGHT), Err(Errno::Busy));
+            assert_eq!(s.input_poll(), Ok(None), "held before the open");
+            // Up pressed and let go again between two polls: the clock's
+            // read at 20 ms sees the press, the poll at 30 ms the release.
+            UP.store(true, Ordering::Relaxed);
+            at(20);
+            assert_eq!(s.now_us(), 20_000);
+            UP.store(false, Ordering::Relaxed);
+            at(30);
+            assert_eq!(
+                s.input_poll(),
+                Ok(Some(Event::key(event::KEY_RIGHT, true, 20_000)))
+            );
+            assert_eq!(
+                s.input_poll(),
+                Ok(Some(Event::key(event::KEY_RIGHT, false, 30_000)))
+            );
+            assert_eq!(s.input_poll(), Ok(None));
         });
     }
 

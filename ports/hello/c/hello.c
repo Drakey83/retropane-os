@@ -183,6 +183,68 @@ static int sound_checks(void)
     return ok;
 }
 
+/* Input (<retropane.h>): the screen held in landscape with the device's
+ * top at the left. Every event that arrives is printed and checked for
+ * sense (a known key, the stylus inside 640 x 480, times that never go
+ * back); `cargo xtask emu-chello` presses buttons and taps, and looks for
+ * the lines. The D-pad's centre ends it; so do ten seconds with nothing
+ * pressed (a run with nobody there), which is no failure. */
+static int input_checks(void)
+{
+    int ok = 1, seen = 0, done = 0;
+    struct rp_event ev;
+
+    errno = 0;
+    if (rp_input_open(RP_TURN_LEFT) != 0) {
+        if (errno == ENOSYS) {
+            puts("  input: skipped (none on this system)");
+            return 1;
+        }
+        return check("rp_input_open", 0);
+    }
+    errno = 0;
+    ok &= check("a second open is refused", rp_input_open(RP_TURN_NONE) == -1 && errno == EBUSY);
+    puts("  input: press and tap (the D-pad's centre ends it)");
+    fflush(stdout);
+
+    uint64_t last = rp_time_us(), prev = 0;
+    while (!done && rp_time_us() - last < 10000000) {
+        int got = rp_input_poll(&ev);
+        if (got == 0)
+            continue;
+        if (got != 1) {
+            ok = check("rp_input_poll", 0);
+            break;
+        }
+        seen++;
+        last = rp_time_us();
+        ok &= ev.time_us >= prev && ev.time_us <= last && ev.reserved == 0;
+        prev = ev.time_us;
+        if (ev.type == RP_EV_KEY) {
+            ok &= ev.code >= RP_KEY_UP && ev.code <= RP_KEY_WIFI && ev.down <= 1 && ev.x == 0 && ev.y == 0;
+            printf("  KEY %d %d\n", ev.code, ev.down);
+            done = ev.code == RP_KEY_ENTER && !ev.down;
+        } else if (ev.type == RP_EV_PEN) {
+            ok &= ev.code >= RP_PEN_DOWN && ev.code <= RP_PEN_UP && ev.down == (ev.code != RP_PEN_UP);
+            ok &= ev.x >= 0 && ev.x < 640 && ev.y >= 0 && ev.y < 480;
+            if (ev.code == RP_PEN_UP)
+                printf("  PEN up %d %d\n", ev.x, ev.y);
+            else
+                printf("  TOUCH %d %d\n", ev.x, ev.y);
+        } else {
+            ok = 0;
+        }
+        fflush(stdout);
+    }
+    if (seen == 0) {
+        puts("  input: skipped (nothing pressed in 10 s)");
+        return ok;
+    }
+    ok &= check("every event made sense", ok);
+    puts(ok ? "  input: ok" : "  input: FAILED");
+    return ok;
+}
+
 int main(void)
 {
     int ok = 1;
@@ -241,6 +303,7 @@ int main(void)
     ok &= clock_checks();
     ok &= sound_checks();
     ok &= files();
+    ok &= input_checks();
 
     puts(ok ? "RETROPANE-C-HELLO-OK" : "RETROPANE-C-HELLO-FAILED");
     return ok ? 0 : 1;

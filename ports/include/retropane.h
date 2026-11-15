@@ -68,6 +68,65 @@ int64_t rp_snd_played(void);
 /* Closes the sound; what was queued and not yet played is dropped. */
 int rp_snd_close(void);
 
+/*
+ * Input: the X51v's buttons and its stylus, as events the game polls.
+ *
+ * The stylus is what the player meant, in the game's own screen pixels:
+ * readings pass the OS's touch filter (no stray position as it lands or
+ * lifts) and the screen's calibration, and are turned with the picture. A
+ * game that plays in landscape says which way the device is held; the
+ * D-pad's four directions are turned to match (RP_KEY_UP is "up" as the
+ * player sees it) and the stylus arrives in 640 x 480. The other buttons
+ * keep their names: what they do is the game's to bind.
+ *
+ * The buttons and the stylus are read when the game polls and when it
+ * reads the clock; a game polls until 0 once a frame.
+ */
+
+/* How the game holds the screen (rp_input_open). */
+#define RP_TURN_NONE 0  /* upright, 480 x 640 */
+#define RP_TURN_LEFT 1  /* landscape, the device's top at the player's left */
+#define RP_TURN_RIGHT 2 /* landscape, the device's top at the player's right */
+
+/* rp_event.type */
+#define RP_EV_KEY 1
+#define RP_EV_PEN 2
+
+/* rp_event.code of a key */
+#define RP_KEY_UP 1
+#define RP_KEY_DOWN 2
+#define RP_KEY_LEFT 3
+#define RP_KEY_RIGHT 4
+#define RP_KEY_ENTER 5    /* the D-pad's centre */
+#define RP_KEY_CALENDAR 6 /* the four program buttons, as printed */
+#define RP_KEY_CONTACTS 7
+#define RP_KEY_MAIL 8
+#define RP_KEY_HOME 9
+#define RP_KEY_RECORD 10 /* the side button */
+#define RP_KEY_WIFI 11   /* the wireless button */
+
+/* rp_event.code of the stylus */
+#define RP_PEN_DOWN 1 /* it landed */
+#define RP_PEN_MOVE 2 /* it moved while down */
+#define RP_PEN_UP 3   /* it lifted; x, y where it last was */
+
+struct rp_event {
+    uint8_t type;     /* RP_EV_KEY or RP_EV_PEN */
+    uint8_t code;     /* RP_KEY_* or RP_PEN_* */
+    uint8_t down;     /* a key: 1 pressed, 0 released; the stylus: 1 touching */
+    uint8_t reserved; /* 0 */
+    int16_t x, y;     /* the stylus, in the game's pixels; 0 for a key */
+    uint64_t time_us; /* when it was read, on rp_time_us()'s clock */
+};
+
+/* Starts the input, the screen held as `turn` (RP_TURN_*). What is held
+ * down already is not reported. 0, or -1 with errno (ENOSYS: no input on
+ * this system; EBUSY: open already; EINVAL: no such turn). */
+int rp_input_open(int turn);
+/* The oldest event not yet read: 1 with it in *ev, 0 when there is none,
+ * -1 with errno (EBADF: not open). The last 32 events are kept. */
+int rp_input_poll(struct rp_event *ev);
+
 #ifdef __cplusplus
 }
 #endif

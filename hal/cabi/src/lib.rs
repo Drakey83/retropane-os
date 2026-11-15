@@ -57,6 +57,115 @@ pub mod flags {
     pub const TRUNCATE: i32 = 0x0200;
 }
 
+/// One input event as a C program reads it (`struct rp_event` in
+/// `ports/include/retropane.h`: the same 16 bytes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct Event {
+    /// [`event::KEY`] or [`event::PEN`].
+    pub kind: u8,
+    /// A key's code (`event::KEY_*`), or what the stylus did
+    /// (`event::PEN_*`).
+    pub code: u8,
+    /// A key: 1 pressed, 0 released. The stylus: 1 while it touches.
+    pub down: u8,
+    /// Zero.
+    pub pad: u8,
+    /// The stylus: where, in the game's screen pixels (0 for a key).
+    pub x: i16,
+    /// See [`Self::x`].
+    pub y: i16,
+    /// When it was read, on the program's clock ([`Sys::now_us`]).
+    pub time_us: u64,
+}
+
+impl Event {
+    /// No event (all zero).
+    pub const NONE: Self = Self {
+        kind: 0,
+        code: 0,
+        down: 0,
+        pad: 0,
+        x: 0,
+        y: 0,
+        time_us: 0,
+    };
+
+    /// A key pressed or released.
+    #[must_use]
+    pub const fn key(code: u8, down: bool, time_us: u64) -> Self {
+        Self {
+            kind: event::KEY,
+            code,
+            down: down as u8,
+            pad: 0,
+            x: 0,
+            y: 0,
+            time_us,
+        }
+    }
+
+    /// The stylus landing, moving or lifting at `(x, y)`.
+    #[must_use]
+    pub const fn pen(code: u8, x: i16, y: i16, time_us: u64) -> Self {
+        Self {
+            kind: event::PEN,
+            code,
+            down: (code != event::PEN_UP) as u8,
+            pad: 0,
+            x,
+            y,
+            time_us,
+        }
+    }
+}
+
+/// The numbers in an [`Event`] and for `rp_input_open` (`RP_EV_*`,
+/// `RP_KEY_*`, `RP_PEN_*`, `RP_TURN_*` in `retropane.h`).
+pub mod event {
+    /// A button.
+    pub const KEY: u8 = 1;
+    /// The stylus.
+    pub const PEN: u8 = 2;
+
+    /// The D-pad, as the player holds the device.
+    pub const KEY_UP: u8 = 1;
+    /// See [`KEY_UP`].
+    pub const KEY_DOWN: u8 = 2;
+    /// See [`KEY_UP`].
+    pub const KEY_LEFT: u8 = 3;
+    /// See [`KEY_UP`].
+    pub const KEY_RIGHT: u8 = 4;
+    /// The D-pad's centre.
+    pub const KEY_ENTER: u8 = 5;
+    /// The four program buttons, by what is printed on them.
+    pub const KEY_CALENDAR: u8 = 6;
+    /// See [`KEY_CALENDAR`].
+    pub const KEY_CONTACTS: u8 = 7;
+    /// See [`KEY_CALENDAR`].
+    pub const KEY_MAIL: u8 = 8;
+    /// See [`KEY_CALENDAR`].
+    pub const KEY_HOME: u8 = 9;
+    /// The side button.
+    pub const KEY_RECORD: u8 = 10;
+    /// The wireless button.
+    pub const KEY_WIFI: u8 = 11;
+
+    /// The stylus landed.
+    pub const PEN_DOWN: u8 = 1;
+    /// It moved while down.
+    pub const PEN_MOVE: u8 = 2;
+    /// It lifted (where it last was).
+    pub const PEN_UP: u8 = 3;
+
+    /// The screen upright (480 x 640).
+    pub const TURN_NONE: u8 = 0;
+    /// Landscape, the device's top at the player's left.
+    pub const TURN_LEFT: u8 = 1;
+    /// Landscape, the device's top at the player's right.
+    pub const TURN_RIGHT: u8 = 2;
+}
+
 /// What the system under a C program does for it. One object answers every
 /// call; the image registers it with `start` before any C code runs.
 pub trait Sys {
@@ -137,6 +246,22 @@ pub trait Sys {
     fn snd_close(&mut self) -> Result<(), Errno> {
         Err(Errno::NoSys)
     }
+    /// Starts the program's input (`rp_input_open`), the screen held as
+    /// `turn` (`event::TURN_*`).
+    ///
+    /// # Errors
+    /// No input here (`ENOSYS`, the default), open already, or no such
+    /// turn.
+    fn input_open(&mut self, _turn: u8) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
+    /// The oldest input event not yet given (`rp_input_poll`).
+    ///
+    /// # Errors
+    /// The input is not open.
+    fn input_poll(&mut self) -> Result<Option<Event>, Errno> {
+        Err(Errno::NoSys)
+    }
     /// The program is over (it returned, or called `exit`): stop what it
     /// left running (its sound). Nothing by default.
     fn end(&mut self) {}
@@ -190,7 +315,7 @@ pub const fn split_us(us: u64) -> (i64, i32) {
 
 #[cfg(target_os = "none")]
 mod face {
-    use super::{Errno, Sys};
+    use super::{Errno, Event, Sys};
     use core::ffi::{CStr, c_char, c_int, c_void};
     use rp_hal_pxa27x::rt::Global;
 
@@ -435,6 +560,42 @@ mod face {
         }
     }
 
+    /// `rp_input_open` (`ports/include/retropane.h`): 0, or -1 with
+    /// `errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_input_open(turn: c_int) -> c_int {
+        let Ok(turn) = u8::try_from(turn) else {
+            return fail(Errno::Invalid) as c_int;
+        };
+        match with(|s| s.input_open(turn)) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_input_poll`: 1 with the oldest event in `*ev`, 0 when there is
+    /// none (`*ev` untouched), or -1 with `errno`.
+    ///
+    /// # Safety
+    /// `ev` points at a writable `struct rp_event`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rp_input_poll(ev: *mut Event) -> c_int {
+        if ev.is_null() || !ev.is_aligned() {
+            return fail(Errno::Invalid) as c_int;
+        }
+        match with(|s| s.input_poll()) {
+            Ok(Some(e)) => {
+                // SAFETY: the caller's contract: a writable `struct
+                // rp_event` at `ev`, not null and aligned (both checked),
+                // written whole.
+                unsafe { ev.write(e) };
+                1
+            }
+            Ok(None) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
     /// picolibc's `struct timeval` (`sys/_timeval.h`: a 64-bit `time_t`,
     /// a 32-bit `suseconds_t`).
     #[repr(C)]
@@ -528,6 +689,31 @@ mod tests {
         let (s, u) = split_us(u64::MAX);
         assert_eq!(s as u64 * 1_000_000 + u as u64, u64::MAX);
         assert!((0..1_000_000).contains(&u));
+    }
+
+    #[test]
+    fn an_event_is_the_c_struct_s_sixteen_bytes() {
+        // `struct rp_event` (retropane.h): four bytes, two 16-bit
+        // coordinates, the 64-bit time on its own 8-byte boundary.
+        assert_eq!(core::mem::size_of::<Event>(), 16);
+        assert_eq!(core::mem::align_of::<Event>(), 8);
+        assert_eq!(core::mem::offset_of!(Event, kind), 0);
+        assert_eq!(core::mem::offset_of!(Event, code), 1);
+        assert_eq!(core::mem::offset_of!(Event, down), 2);
+        assert_eq!(core::mem::offset_of!(Event, x), 4);
+        assert_eq!(core::mem::offset_of!(Event, y), 6);
+        assert_eq!(core::mem::offset_of!(Event, time_us), 8);
+        let k = Event::key(event::KEY_HOME, true, 7);
+        assert_eq!(
+            (k.kind, k.code, k.down, k.x, k.y, k.time_us),
+            (1, 9, 1, 0, 0, 7)
+        );
+        // The stylus is down while it lands and moves, up when it lifts.
+        assert_eq!(Event::pen(event::PEN_DOWN, -1, 479, 0).down, 1);
+        assert_eq!(Event::pen(event::PEN_MOVE, 639, 0, 0).down, 1);
+        let up = Event::pen(event::PEN_UP, 3, 4, 9);
+        assert_eq!((up.kind, up.down, up.x, up.y, up.pad), (2, 0, 3, 4, 0));
+        assert_eq!(Event::NONE.kind, 0);
     }
 
     #[test]
