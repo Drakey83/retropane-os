@@ -88,7 +88,7 @@ not.
 | Repeating appointments (daily, weekly on days, monthly by date or weekday, yearly; every N; until or N times; one occurrence changed or skipped) | apps-and-packs: repeating appointments | built | shell/pim/src/repeat.rs, apps/calendar/src/lib.rs |
 | Reminders as a banner over any screen, several per appointment | apps-and-packs: reminders through the notification centre | pending | |
 | Reminder sound and snooze | apps-and-packs: reminder sound and snooze | pending | |
-| Online calendars: iCal link (read), CalDAV (read and write), Google sign-in (device code, read and write), over any connection, offline queue | apps-and-packs: Google Calendar and other online calendars (iCal link, CalDAV, Google sign-in: §7) | pending | |
+| Online calendars: iCal link (read), CalDAV (read and write), Google sign-in (device code, read and write), over any connection, offline queue | apps-and-packs: Google Calendar and other online calendars (iCal link, CalDAV, Google sign-in: §7) | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against (the iCal link, read only, is built) | |
 | Birthdays from Contacts as a calendar | apps-and-packs: birthdays from Contacts | pending | |
 | Tasks on their due days in the agenda | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Today screen's calendar panel fed from the store | sheet | pending | |
@@ -100,7 +100,7 @@ not.
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/calendar/src/main.rs, shell/today/src/program.rs |
-| Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | pending | |
+| Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | blocked: owner 2026-11-15 sign off without it: internal storage waits on the flash driver; the card stands in, same code and format | |
 
 ## What would overturn it
 
