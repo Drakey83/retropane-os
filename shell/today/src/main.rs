@@ -2473,6 +2473,9 @@ mod image {
             // What a button asked for (an app to open), acted on with the
             // pen's below.
             let mut key_act = Action::Nothing;
+            // A button that changed the screen: its answer is timed like a
+            // touch's (the trail counted every button "no answer").
+            let mut key_redraw = false;
             key_events.update(rt::ticks() / TICKS_MS, scan, &mut |e| {
                 let screen = shell.screen().name();
                 match key_of(e.vk) {
@@ -2481,6 +2484,7 @@ mod image {
                         match shell.input(Input::Key(k)) {
                             Action::BackToLoader => back = true,
                             a @ Action::OpenProgram(_) => key_act = a,
+                            Action::Redraw => key_redraw = true,
                             _ => {}
                         }
                     }
@@ -2492,6 +2496,9 @@ mod image {
             });
             if key_event {
                 keys_irq.done();
+            }
+            if key_redraw {
+                pending.get_or_insert(rt::ticks());
             }
 
             // The pen: down and up are what the shell acts on.
