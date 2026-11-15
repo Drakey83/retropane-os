@@ -96,6 +96,7 @@ members = [
     "shell/weather",
     "shell/pim",
     "apps/api",
+    "ports/sys",
     "apps/calendar",
     "apps/contacts",
     "apps/tasks",

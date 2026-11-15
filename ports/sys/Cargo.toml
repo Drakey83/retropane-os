@@ -1,0 +1,18 @@
+[package]
+name = "rp-port"
+description = "The port layer (docs/design/half-life-readiness.md lines 4 and 5): what a C game calls for files, sound, input and the screen; the files first, as handles over the card's FAT or exFAT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-fat = { path = "../../kernel/fat" }
+
+[dev-dependencies]
+rp-fat = { path = "../../kernel/fat", features = ["std"] }
+
+[lints]
+workspace = true

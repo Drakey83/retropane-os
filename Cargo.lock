@@ -927,6 +927,14 @@ name = "rp-pim"
 version = "0.0.0"
 
 [[package]]
+name = "rp-port"
+version = "0.0.0"
+dependencies = [
+ "rp-fat",
+ "rp-hal-api",
+]
+
+[[package]]
 name = "rp-probe"
 version = "0.0.0"
 dependencies = [
