@@ -100,6 +100,111 @@ fn split(ink: &[u8]) -> usize {
     at
 }
 
+/// The pages a note's ink may go on to past its own record (`Kind::Ink`
+/// records naming it, about 4,000 bytes each): a record held it all at
+/// first, and a note written full took no more (R206). With these a note
+/// holds some 64 KB of strokes, a quarter of the organiser's whole store.
+const PAGES: usize = 15;
+
+/// Note `id`'s ink pages, in the order they were added.
+fn pages(store: &rp_pim::store::Store<'_>, id: u32) -> ([u32; PAGES], usize) {
+    let mut ids = [0u32; PAGES];
+    let mut n = 0;
+    for r in store.all(Kind::Ink) {
+        if r.num(tag::PARENT) == Some(id) && n < PAGES {
+            // Kept in order as they come (the store gives none).
+            let at = ids[..n].iter().position(|&i| i > r.id).unwrap_or(n);
+            ids.copy_within(at..n, at + 1);
+            ids[at] = r.id;
+            n += 1;
+        }
+    }
+    (ids, n)
+}
+
+/// [`pages`] through the app's store (none where it is busy or away).
+fn pages_of(cx: &Ctx, id: u32) -> ([u32; PAGES], usize) {
+    cx.pim
+        .and_then(|c| c.try_borrow().ok())
+        .and_then(|g| g.as_ref().map(|s| pages(s, id)))
+        .unwrap_or(([0; PAGES], 0))
+}
+
+/// A record's ink (its two fields) copied into `ink`: its length.
+fn ink_of(r: &rp_pim::store::Rec<'_>, ink: &mut [u8; INK_ROOM]) -> usize {
+    let mut inn = 0;
+    for field in [r.text(tag::INK), r.text(tag::INK_MORE)] {
+        let n = field.len().min(ink.len() - inn);
+        ink[inn..inn + n].copy_from_slice(&field[..n]);
+        inn += n;
+    }
+    inn
+}
+
+/// The first stroke a point of the pen's `path` came within 8 px of
+/// taken out of `ink`: its bytes closed over.
+fn erase_in(ink: &mut [u8], inn: &mut usize, path: &[(i16, i16)]) -> bool {
+    let near = |s: &[(i16, i16)]| {
+        s.iter().any(|&(x, y)| {
+            path.iter()
+                .any(|&(a, b)| (x - a).abs() < 8 && (y - b).abs() < 8)
+        })
+    };
+    let mut pts = [(0i16, 0i16); 255];
+    let mut at = 0;
+    while let Some(len) = stroke_len(&ink[at..*inn]) {
+        let (_, k) = unpack(&ink[at..at + len], &mut pts);
+        if near(&pts[..k]) {
+            ink.copy_within(at + len..*inn, at);
+            *inn -= len;
+            return true;
+        }
+        at += len;
+    }
+    false
+}
+
+/// The last stroke taken off `ink` (its start is the ink's new end).
+fn drop_last(ink: &[u8], inn: &mut usize) -> bool {
+    let (mut at, mut last) = (0, 0);
+    while let Some(len) = stroke_len(&ink[at..*inn]) {
+        last = at;
+        at += len;
+    }
+    let had = *inn > 0;
+    *inn = last;
+    had
+}
+
+/// Ink page `page`'s strokes given to `change` and written back; a page
+/// left empty is removed.
+fn page_edit(cx: &Ctx, page: u32, change: impl FnOnce(&mut [u8], &mut usize) -> bool) -> bool {
+    let Some(mut guard) = cx.pim.and_then(|c| c.try_borrow_mut().ok()) else {
+        return false;
+    };
+    let Some(store) = guard.as_mut() else {
+        return false;
+    };
+    let Some(r) = store.get(page) else {
+        return false;
+    };
+    let mut ink = [0u8; INK_ROOM];
+    let mut inn = ink_of(&r, &mut ink);
+    if !change(&mut ink, &mut inn) {
+        return false;
+    }
+    if inn == 0 {
+        return store.remove(page).is_ok();
+    }
+    let part = split(&ink[..inn]);
+    store
+        .change(
+            page,
+            &[(tag::INK, &ink[..part]), (tag::INK_MORE, &ink[part..inn])],
+        )
+        .is_ok()
+}
+
 /// The pen's six colours (`STYLE` bits 0-2 choose), dark first.
 pub const PEN: [Argb; 6] = [
     kit::keep(0xFF20_2A38),
@@ -436,6 +541,9 @@ pub struct Notes {
     n_pages: usize,
     next: u8,
     sel: u8,
+    /// The D-pad's target in an open note (R203): its tools, colours,
+    /// sizes and tick boxes, or the menu's keys.
+    focus: kit::Focus,
     keys: bool,
     down_y: Option<u16>,
     menu: bool,
@@ -571,13 +679,15 @@ fn ink_pic(cx: &Ctx, id: u32, w: u16, h: u16, c: Argb) -> Option<Pic> {
     let guard = cx.pim?.try_borrow().ok()?;
     let store = guard.as_ref()?;
     let rec = store.get(id)?;
+    let (page, np) = pages(store, id);
     let p = pics.alloc(w, h)?;
     // The open note's ink in its strokes' own colours; a card's in one.
     let only = (w < 448).then_some(c);
     pics.write(p, |px| {
         px.iter_mut().for_each(|q| *q = 0);
         let mut pts = [(0i16, 0i16); 255];
-        for field in [rec.text(tag::INK), rec.text(tag::INK_MORE)] {
+        let recs = core::iter::once(rec).chain(page[..np].iter().filter_map(|&i| store.get(i)));
+        for field in recs.flat_map(|r| [r.text(tag::INK), r.text(tag::INK_MORE)]) {
             let mut at = 0;
             while let Some(n) = stroke_len(&field[at..]) {
                 let (style, k) = unpack(&field[at..at + n], &mut pts);
@@ -616,6 +726,7 @@ impl Notes {
             n_pages: 0,
             next: 0,
             sel: 0,
+            focus: kit::Focus::default(),
             keys: false,
             down_y: None,
             menu: false,
@@ -1378,12 +1489,7 @@ impl Notes {
         let mut tn = r.text(tag::TEXT).len().min(text.len());
         text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
         let mut ink = [0u8; INK_ROOM];
-        let mut inn = 0;
-        for field in [r.text(tag::INK), r.text(tag::INK_MORE)] {
-            let n = field.len().min(ink.len() - inn);
-            ink[inn..inn + n].copy_from_slice(&field[..n]);
-            inn += n;
-        }
+        let mut inn = ink_of(&r, &mut ink);
         if !change(&mut text, &mut tn, &mut ink, &mut inn) {
             return false;
         }
@@ -1432,50 +1538,65 @@ impl Notes {
         if n == 0 {
             return;
         }
-        let kept = self.rewrite(cx, id, |text, tn, ink, inn| {
-            if tool == Tool::Erase {
-                // The first stroke a point of the pen's path came within
-                // 8 px of goes: its bytes closed over.
-                let near = |s: &[(i16, i16)]| {
-                    s.iter().any(|&(x, y)| {
-                        live[..n]
-                            .iter()
-                            .any(|&(a, b)| (x - a).abs() < 8 && (y - b).abs() < 8)
-                    })
+        let (page, np) = pages_of(cx, id);
+        let kept = if tool == Tool::Erase {
+            // The note's own strokes first, then each page's, as they are
+            // painted.
+            self.rewrite(cx, id, |_, _, ink, inn| erase_in(ink, inn, &live[..n]))
+                || page[..np]
+                    .iter()
+                    .any(|&p| page_edit(cx, p, |ink, inn| erase_in(ink, inn, &live[..n])))
+        } else {
+            // Packed once (a stroke is 514 bytes at most), then added at
+            // the ink's end, nothing else read: the last page's, or the
+            // note's own while it has none; where that is full, a new
+            // page.
+            let mut packed = [0u8; 6 + 2 * 254];
+            let Some(len) = encode_styled(&[&live[..n]], &[style], &mut packed) else {
+                return;
+            };
+            let add = |ink: &mut [u8], inn: &mut usize| {
+                let Some(to) = ink.get_mut(*inn..*inn + len) else {
+                    return false;
                 };
-                let mut pts = [(0i16, 0i16); 255];
-                let mut at = 0;
-                let hit = loop {
-                    let Some(len) = stroke_len(&ink[at..*inn]) else {
-                        return false;
-                    };
-                    let (_, k) = unpack(&ink[at..at + len], &mut pts);
-                    if near(&pts[..k]) {
-                        break len;
+                to.copy_from_slice(&packed[..len]);
+                *inn += len;
+                true
+            };
+            let on_last = match page[..np].last() {
+                Some(&p) => page_edit(cx, p, add),
+                None => self.rewrite(cx, id, |text, tn, ink, inn| {
+                    // A note with no ink panel yet gets its place at the
+                    // end.
+                    if !text[..*tn].split(|&c| c == b'\n').any(|l| l == [INK_LINE])
+                        && *tn + 2 <= text.len()
+                    {
+                        if *tn > 0 {
+                            text[*tn] = b'\n';
+                            *tn += 1;
+                        }
+                        text[*tn] = INK_LINE;
+                        *tn += 1;
                     }
-                    at += len;
-                };
-                ink.copy_within(at + hit..*inn, at);
-                *inn -= hit;
-            } else {
-                // Added at the end, nothing else read.
-                match encode_styled(&[&live[..n]], &[style], &mut ink[*inn..]) {
-                    Some(len) => *inn += len,
-                    None => return false,
-                }
-            }
-            // A note with no ink panel yet gets its place at the end.
-            if !text[..*tn].split(|&c| c == b'\n').any(|l| l == [INK_LINE]) && *tn + 2 <= text.len()
-            {
-                if *tn > 0 {
-                    text[*tn] = b'\n';
-                    *tn += 1;
-                }
-                text[*tn] = INK_LINE;
-                *tn += 1;
-            }
-            true
-        });
+                    add(ink, inn)
+                }),
+            };
+            on_last
+                || (np < PAGES
+                    && cx
+                        .pim
+                        .and_then(|c| c.try_borrow_mut().ok())
+                        .and_then(|mut g| {
+                            g.as_mut()?
+                                .put(
+                                    Kind::Ink,
+                                    None,
+                                    &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, &packed[..len])],
+                                )
+                                .ok()
+                        })
+                        .is_some())
+        };
         // A stroke that didn't fit is said, not dropped in silence (the
         // owner, 2026-11-14: strokes stopped showing with no word why).
         if tool != Tool::Erase {
@@ -1487,15 +1608,14 @@ impl Notes {
 
     /// The last stroke taken out (UNDO), or the last character typed.
     fn undo(&mut self, cx: &Ctx, id: u32) {
+        // The last stroke is the last page's, or the note's own.
+        let (page, np) = pages_of(cx, id);
+        if let Some(&p) = page[..np].last() {
+            page_edit(cx, p, |ink, inn| drop_last(ink, inn));
+            return;
+        }
         self.rewrite(cx, id, |_text, tn, ink, inn| {
-            if *inn > 0 {
-                // The last stroke's start is the ink's new end.
-                let (mut at, mut last) = (0, 0);
-                while let Some(len) = stroke_len(&ink[at..*inn]) {
-                    last = at;
-                    at += len;
-                }
-                *inn = last;
+            if drop_last(ink, inn) {
                 return true;
             }
             if *tn > 0 {
@@ -1626,12 +1746,39 @@ impl Program for Notes {
         self.paint(cx);
         match self.view {
             View::Home => self.home(f, cx),
-            View::Note(i) => self.note(f, cx, i),
+            View::Note(i) => {
+                self.note(f, cx, i);
+                let (t, n) = self.note_targets();
+                self.focus.ring(f, t[..n].iter().copied());
+            }
         }
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
         let id = self.open_id();
+        // The stylus takes over from the D-pad (the centre key's tap is
+        // a lift only).
+        if matches!(e, Event::PenDown { .. }) {
+            self.focus.clear();
+        }
+        // The D-pad in an open note (R203): the arrows walk what a stylus
+        // can tap that is not writing (the tools, the colour wells, the
+        // sizes, a list's tick boxes; the menu's keys while it is up), the
+        // centre taps it. Windows Mobile's Notes has no keys in a note
+        // but the softkeys.
+        if let (Event::Key(k), View::Note(_)) = (e, self.view) {
+            let (t, n) = self.note_targets();
+            if self.focus.step(k, t[..n].iter().copied()) {
+                return Reply::Redraw;
+            }
+            if k == Key::Enter
+                && let Some(r) = self.focus.rect()
+                && t[..n].contains(&r)
+                && let Some((x, y)) = self.focus.point()
+            {
+                return self.event(Event::PenUp { x, y }, cx);
+            }
+        }
         match (e, self.view) {
             (Event::Key(Key::SoftLeft), View::Home) => Reply::Close,
             (Event::Key(Key::SoftLeft), _) => {
@@ -1647,6 +1794,7 @@ impl Program for Notes {
             (Event::Key(Key::SoftRight), View::Note(_)) => {
                 self.menu = !self.menu;
                 self.confirm_delete = false;
+                self.focus.clear();
                 Reply::Redraw
             }
             (Event::PenUp { x, y }, View::Note(i)) if self.menu && STRIP.contains_point(x, y) => {
@@ -1669,6 +1817,11 @@ impl Program for Notes {
                             && let Ok(mut g) = cell.try_borrow_mut()
                             && let Some(store) = g.as_mut()
                         {
+                            // Its ink pages go with it.
+                            let (page, np) = pages(store, row.id);
+                            for &p in &page[..np] {
+                                let _ = store.remove(p);
+                            }
                             let _ = store.remove(row.id);
                         }
                         self.menu = false;
@@ -1899,6 +2052,41 @@ impl Program for Notes {
             View::Note(_) if self.typing => Some(Field::Sentence),
             _ => None,
         }
+    }
+}
+
+impl Notes {
+    /// What a stylus can tap in an open note besides writing, for the
+    /// D-pad: the menu's four keys while it is up; else the tick boxes,
+    /// the colour wells, the sizes and the tools.
+    fn note_targets(&self) -> ([Rect; 28], usize) {
+        let mut t = [Rect::new(0, 0, 0, 0); 28];
+        let mut n = 0;
+        let mut add = |r: Rect| {
+            if n < t.len() {
+                t[n] = r;
+                n += 1;
+            }
+        };
+        if self.menu {
+            for k in 0..4 {
+                add(Rect::new(STRIP.x + 6 + k * 114, STRIP.y + 6, 108, 36));
+            }
+        } else {
+            for (r, _) in &self.checks[..self.n_checks] {
+                add(*r);
+            }
+            for i in 0..6 {
+                add(well(i));
+            }
+            for i in 0..3 {
+                add(size_key(i));
+            }
+            for k in 0..6 {
+                add(Rect::new(STRIP.x + 6 + k * 76, STRIP.y + 6, 72, 36));
+            }
+        }
+        (t, n)
     }
 }
 

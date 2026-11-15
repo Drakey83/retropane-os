@@ -106,6 +106,20 @@ pub struct Tasks {
     hits: kit::Hits<Hit, 24>,
     /// The D-pad's place among what is drawn.
     focus: kit::Focus,
+    /// A list's page: the list it is of, the first task of it, the pages
+    /// before it, the task after its last, how many the list shows;
+    /// whether the done ones are shown under the open ones, the row that
+    /// says how many are done, and where the stylus went down (a drag up
+    /// or down turns the page).
+    listed: Option<Option<u8>>,
+    first: u8,
+    pages: [u8; 12],
+    n_pages: usize,
+    next: u8,
+    total: u8,
+    show_done: bool,
+    done_row: Option<Rect>,
+    down_y: Option<u16>,
 }
 
 /// What a stylus tap on the home hits (design-language.md version 3:
@@ -173,6 +187,15 @@ impl Tasks {
             gauge: None,
             hits: kit::Hits::new(),
             focus: kit::Focus::default(),
+            listed: None,
+            first: 0,
+            pages: [0; 12],
+            n_pages: 0,
+            next: 0,
+            total: 0,
+            show_done: false,
+            done_row: None,
+            down_y: None,
         }
     }
 
@@ -651,6 +674,14 @@ impl Tasks {
         let today = cx.now.day;
         self.n_boxes = 0;
         self.n_rows = 0;
+        self.done_row = None;
+        // Another list: from its first page, the done ones folded away.
+        if self.listed != Some(which) {
+            self.listed = Some(which);
+            self.first = 0;
+            self.n_pages = 0;
+            self.show_done = false;
+        }
         let (name, colour): (&[u8], u32) = match which {
             Some(i) => self
                 .lists
@@ -731,19 +762,47 @@ impl Tasks {
             })
         };
         open[..n].sort_unstable_by_key(key);
+        // The done ones after them, once asked for (a task ticked by
+        // mistake could not be seen again, so never unticked).
+        if self.show_done {
+            for (k, t) in self.tasks.iter().enumerate() {
+                if t.as_ref().is_some_and(|t| mine(&t) && t.done) {
+                    open[n] = k as u8;
+                    n += 1;
+                }
+            }
+        }
+        // A page of them (a list with more than fit was cut off at the
+        // screen's foot: the rest out of the stylus's reach and the
+        // D-pad's): a drag or the D-pad turns the page.
+        if usize::from(self.first) >= n {
+            self.first = 0;
+            self.n_pages = 0;
+        }
+        self.total = n as u8;
+        let mut next = n;
         let mut late_said = false;
-        for &k in &open[..n] {
+        let mut done_said = false;
+        for (j, &k) in open[..n].iter().enumerate().skip(usize::from(self.first)) {
             let Some(t) = self.tasks[usize::from(k)] else {
                 continue;
             };
             let t = &t;
-            if y + 50 > 560 {
+            let head = (!late_said && !t.done && t.due.is_some_and(|d| d < today))
+                || (!done_said && t.done);
+            if y + 50 + if head { 22 } else { 0 } > 556 {
+                next = j;
                 break;
             }
-            if !late_said && t.due.is_some_and(|d| d < today) {
+            if !late_said && !t.done && t.due.is_some_and(|d| d < today) {
                 kit::section(f, cx, y, b"LATE", LATE);
                 y += 22;
                 late_said = true;
+            }
+            if !done_said && t.done {
+                kit::section(f, cx, y, b"DONE", DIM);
+                y += 22;
+                done_said = true;
             }
             let r = Rect::new(MARGIN, y, WIDE, 46);
             kit::panel(f, cx, r);
@@ -758,7 +817,7 @@ impl Tasks {
                 r.y + 11,
                 self.ring[ci],
                 self.full[ci],
-                frame.is_some_and(|k| k >= 3),
+                t.done || frame.is_some_and(|k| k >= 3),
             );
             if let Some(k) = frame.filter(|&k| k < 3) {
                 let d = 4 + u16::from(k) * 5;
@@ -776,7 +835,8 @@ impl Tasks {
                 self.boxes[self.n_boxes] = (Rect::new(r.x, r.y, 44, r.h), t.id);
                 self.n_boxes += 1;
             }
-            kit::fitted(f, r.x + 48, r.y + 21, cx.fonts.ui, TEXT, t.title.get(), 250);
+            let ink = if t.done { DIM } else { TEXT };
+            kit::fitted(f, r.x + 48, r.y + 21, cx.fonts.ui, ink, t.title.get(), 250);
             if self.revealed == Some(t.id) {
                 let words: [&[u8]; 3] = [b"TOMORROW", b"NEXT WEEK", b"DELETE"];
                 for (k, w) in words.iter().enumerate() {
@@ -851,6 +911,9 @@ impl Tasks {
             }
             y += 50;
         }
+        self.next = next as u8;
+        // The foot: how many are done (a tap shows or folds them away),
+        // and where this page sits.
         let done = self
             .tasks
             .iter()
@@ -858,18 +921,50 @@ impl Tasks {
             .filter(mine)
             .filter(|t| t.done)
             .count();
-        if done > 0 && y + 40 <= 596 {
-            let r = Rect::new(MARGIN, y, WIDE, 36);
-            kit::panel(f, cx, r);
+        let foot = Rect::new(MARGIN, 560, WIDE, 36);
+        let mut b = [0u8; 40];
+        if done > 0 {
+            kit::panel(f, cx, foot);
             let ci = self.colour_index(which.unwrap_or(0));
-            kit::round_check(f, cx, r.x + 12, r.y + 6, self.ring[ci], self.full[ci], true);
-            let mut b = [0u8; 16];
+            kit::round_check(
+                f,
+                cx,
+                foot.x + 12,
+                foot.y + 6,
+                self.ring[ci],
+                self.full[ci],
+                true,
+            );
             let mut bn = num(&mut b, done as u32);
-            for &c in b" done" {
+            for &c in b" done".iter().chain(if self.show_done {
+                &b" \x80 hide"[..]
+            } else {
+                b" \x80 show"
+            }) {
                 b[bn] = c;
                 bn += 1;
             }
-            kit::text(f, r.x + 48, r.y + 25, cx.fonts.ui, DIM, &b[..bn]);
+            kit::text(f, foot.x + 48, foot.y + 25, cx.fonts.ui, DIM, &b[..bn]);
+            self.done_row = Some(foot);
+        }
+        if next < n || self.first > 0 {
+            let mut bn = num(&mut b, u32::from(self.first) + 1);
+            b[bn] = b'-';
+            bn += 1;
+            bn += num(&mut b[bn..], next as u32);
+            for &c in b" of " {
+                b[bn] = c;
+                bn += 1;
+            }
+            bn += num(&mut b[bn..], n as u32);
+            kit::right(
+                f,
+                foot.right() - 14,
+                foot.y + 24,
+                cx.fonts.label,
+                DIM,
+                &b[..bn],
+            );
         }
     }
 }
@@ -912,8 +1007,8 @@ impl Program for Tasks {
             }
             View::List(w) => {
                 self.list(f, cx, w);
-                self.focus
-                    .ring(f, self.rows_at[..self.n_rows].iter().map(|(r, _)| *r));
+                let (t, n) = self.list_targets();
+                self.focus.ring(f, t[..n].iter().copied());
             }
         }
     }
@@ -924,13 +1019,33 @@ impl Program for Tasks {
         if let Event::Key(k) = e
             && !(self.typing && matches!(self.view, View::List(_)))
         {
+            let list = matches!(self.view, View::List(_));
+            let (t, n) = self.list_targets();
             let moved = match self.view {
                 View::Home => self.focus.step(k, self.hits.rects()),
-                View::List(_) => self
-                    .focus
-                    .step(k, self.rows_at[..self.n_rows].iter().map(|(r, _)| *r)),
+                View::List(_) => self.focus.step(k, t[..n].iter().copied()),
             };
             if moved {
+                return Reply::Redraw;
+            }
+            // Past a list's last row or its first: the next page, or the
+            // one before.
+            if list && ((k == Key::Down && self.page_on()) || (k == Key::Up && self.page_back())) {
+                self.focus.clear();
+                return Reply::Redraw;
+            }
+            // The centre on a task's row shows its actions (as a swipe
+            // left does), which then take the arrows; on anything else it
+            // taps.
+            if k == Key::Enter
+                && list
+                && self.revealed.is_none()
+                && let Some(&(_, id)) = self.rows_at[..self.n_rows]
+                    .iter()
+                    .find(|(r, _)| Some(*r) == self.focus.rect())
+            {
+                self.revealed = Some(id);
+                self.focus.clear();
                 return Reply::Redraw;
             }
             if k == Key::Enter
@@ -942,6 +1057,8 @@ impl Program for Tasks {
         }
         match (e, self.view) {
             (Event::PenDown { x, y }, View::List(_)) => {
+                self.focus.clear();
+                self.down_y = Some(y);
                 self.press = self.rows_at[..self.n_rows]
                     .iter()
                     .find(|(r, _)| r.contains_point(x, y))
@@ -968,6 +1085,29 @@ impl Program for Tasks {
                     if let Some(a) = self.actions.iter().position(|r| r.contains_point(x, y)) {
                         self.act(cx, id, a as u8);
                     }
+                    return Reply::Redraw;
+                }
+                // A drag up or down turns the page (a swipe is sideways).
+                if let Some(y0) = self.down_y.take()
+                    && y0.abs_diff(y) > 48
+                    && press.is_none_or(|(x0, _)| x.abs_diff(x0) < 70)
+                {
+                    let turned = if y < y0 {
+                        self.page_on()
+                    } else {
+                        self.page_back()
+                    };
+                    return if turned {
+                        Reply::Redraw
+                    } else {
+                        Reply::Nothing
+                    };
+                }
+                // The done ones shown, or folded away.
+                if self.done_row.is_some_and(|r| r.contains_point(x, y)) {
+                    self.show_done = !self.show_done;
+                    self.first = 0;
+                    self.n_pages = 0;
                     return Reply::Redraw;
                 }
                 // A swipe: right ticks, left shows the row's actions.
@@ -1055,6 +1195,60 @@ impl Program for Tasks {
     fn keyboard(&self) -> Option<Field> {
         (matches!(self.view, View::List(_)) && (self.typing || self.line_n > 0))
             .then_some(Field::Line)
+    }
+}
+
+impl Tasks {
+    /// What a stylus can tap in a list, for the D-pad: a row's actions
+    /// while they show; else the add line, the rows, their tick boxes and
+    /// the done row.
+    fn list_targets(&self) -> ([Rect; 28], usize) {
+        let mut t = [Rect::new(0, 0, 0, 0); 28];
+        let mut n = 0;
+        let mut add = |r: Rect| {
+            if n < t.len() {
+                t[n] = r;
+                n += 1;
+            }
+        };
+        if self.revealed.is_some() {
+            self.actions.iter().for_each(|&r| add(r));
+        } else {
+            add(ADD_LINE);
+            self.rows_at[..self.n_rows].iter().for_each(|r| add(r.0));
+            self.boxes[..self.n_boxes].iter().for_each(|r| add(r.0));
+            if let Some(r) = self.done_row {
+                add(r);
+            }
+        }
+        (t, n)
+    }
+
+    /// The list's next page, if there is one.
+    fn page_on(&mut self) -> bool {
+        if self.next >= self.total || self.next <= self.first {
+            return false;
+        }
+        if self.n_pages < self.pages.len() {
+            self.pages[self.n_pages] = self.first;
+            self.n_pages += 1;
+        }
+        self.first = self.next;
+        true
+    }
+
+    /// The page before, if there is one.
+    fn page_back(&mut self) -> bool {
+        if self.n_pages == 0 {
+            if self.first == 0 {
+                return false;
+            }
+            self.first = 0;
+        } else {
+            self.n_pages -= 1;
+            self.first = self.pages[self.n_pages];
+        }
+        true
     }
 }
 

@@ -1319,16 +1319,15 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         self.last.rows_written += 1;
         let at = self.l.rows + k * ROW_BYTES;
         let w = usize::from(key.w).min(ROW_BYTES / 4);
-        let mut buf = [0u32; CHUNK];
+        // One colour: no arithmetic. A gradient: stepped, no division a
+        // column (R209: a row took 140 us, a dark glass screen 120 of
+        // them a frame).
+        let mut buf = [key.a; CHUNK];
+        let mut g = rp_gfx::render::Gradient::new(key.a, key.b, key.first, key.span);
         for k0 in (0..w).step_by(CHUNK) {
             let n = CHUNK.min(w - k0);
-            for (i, p) in buf[..n].iter_mut().enumerate() {
-                *p = rp_gfx::render::gradient_at(
-                    key.a,
-                    key.b,
-                    key.first + (k0 + i) as u32,
-                    key.span,
-                );
+            if key.a != key.b {
+                g.fill(&mut buf[..n]);
             }
             self.mem.store(at + 4 * k0, &buf[..n]);
         }

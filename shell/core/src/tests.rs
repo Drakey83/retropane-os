@@ -2787,6 +2787,16 @@ fn the_sky_test_cycles_through_the_weathers_and_back() {
     };
     assert_eq!(pick(&mut s), Some("Sky test: rain"));
     assert!(s.sky_live() && weather_of_test(&s) == 63);
+    // The hero's big picture is asked for whatever sky it draws (R207:
+    // the test's was not, and the hero fell back to a card's), within
+    // the store's two big slots.
+    let big_wanted = |s: &Shell| {
+        let w = s.wanted();
+        let id = usize::from(rp_weather::Icon::of(s.sky_now()).id() - 1);
+        assert!(w.has(Size::Hero, id), "the hero's picture not asked for");
+        assert!(w.0[Size::Hero.at()].count_ones() <= 2);
+    };
+    big_wanted(&s);
     for want in [
         "Sky test: heavy rain",
         "Sky test: snow",
@@ -2795,6 +2805,7 @@ fn the_sky_test_cycles_through_the_weathers_and_back() {
     ] {
         assert_eq!(pick(&mut s), Some(want));
         assert!(!drawn(&mut s).overflowed());
+        big_wanted(&s);
     }
     assert_eq!(pick(&mut s), Some("Sky: the forecast's"));
     assert!(!s.sky_live());

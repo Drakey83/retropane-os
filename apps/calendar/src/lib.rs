@@ -145,6 +145,9 @@ struct Edit {
     read_only: bool,
     typing: Option<EditText>,
     confirm_delete: bool,
+    /// The D-pad's row ([`EDIT_ROWS`]): up and down move it, left and
+    /// right change its value, the centre types in it or presses it.
+    row: Option<u8>,
 }
 
 const ALERTS: [Option<u32>; 5] = [None, Some(0), Some(15), Some(60), Some(1440)];
@@ -161,6 +164,18 @@ const E_REPEAT: u16 = 360;
 const E_ALERT: u16 = 412;
 const E_CAL: u16 = 464;
 const E_DELETE: u16 = 520;
+/// The editor's rows for the D-pad: each one's top and height.
+const EDIT_ROWS: [(u16, u16); 9] = [
+    (E_TITLE, 40),
+    (E_PLACE, 40),
+    (E_DAY, 40),
+    (E_START, 40),
+    (E_LEN, 40),
+    (E_REPEAT + 14, 30),
+    (E_ALERT + 14, 30),
+    (E_CAL + 14, 30),
+    (E_DELETE, 40),
+];
 
 /// The key on the title band that opens the calendars.
 const CALENDARS_KEY: Rect = Rect::new(W - MARGIN - 128, 46, 128, 30);
@@ -212,6 +227,8 @@ pub struct Calendar {
     n_rows: usize,
     /// What a tap hits, as last drawn.
     hits: kit::Hits<Hit, 96>,
+    /// The D-pad's target among them (R203).
+    focus: kit::Focus,
     /// The calendars' rows as drawn (a tap shows or hides one).
     cal_rows: [(Rect, u32); 8],
     n_cal_rows: usize,
@@ -382,6 +399,7 @@ impl Calendar {
             rows_at: [(Rect::new(0, 0, 0, 0), 0, false); 12],
             n_rows: 0,
             hits: kit::Hits::new(),
+            focus: kit::Focus::default(),
             n_cal_rows: 0,
             want_list: false,
             asked: Asked::Nothing,
@@ -528,6 +546,7 @@ impl Calendar {
             read_only: false,
             typing: None,
             confirm_delete: false,
+            row: None,
         };
         match id {
             Some(id) => {
@@ -784,6 +803,73 @@ impl Calendar {
                 },
             );
         }
+        if let Some(&(top, h)) = e.row.and_then(|r| EDIT_ROWS.get(usize::from(r))) {
+            for grow in [1u16, 2] {
+                f.push(rp_app::Cmd::Outline {
+                    r: Rect::new(MARGIN - grow, top - grow, WIDE + 2 * grow, h + 2 * grow),
+                    color: kit::FOCUS,
+                });
+            }
+        }
+    }
+
+    /// The D-pad in the editor (R203): up and down move from row to row;
+    /// left and right change the row's value (the day, the start, the
+    /// length a step; a row of chips to the one beside the chosen); the
+    /// centre types in the title or the place and presses Delete. Each is
+    /// the tap the stylus would make, so the two never differ. Windows
+    /// Mobile's editor walks its fields in tab order and opens a picker
+    /// for each.
+    fn edit_key(&mut self, cx: &Ctx, k: Key) -> Reply {
+        let n_cals = self.n_cals.min(4);
+        let Some(e) = self.edit.as_mut() else {
+            return Reply::Nothing;
+        };
+        let last = if e.id.is_some() && !e.read_only { 8 } else { 7 };
+        let to = match (k, e.row) {
+            (Key::Down, None) => 0,
+            (Key::Up, None) => last,
+            (Key::Down, Some(r)) => (r + 1).min(last),
+            (Key::Up, Some(r)) => r.saturating_sub(1),
+            (_, None) => return Reply::Nothing,
+            (_, Some(r)) => {
+                let (top, h) = EDIT_ROWS[usize::from(r)];
+                let right = k != Key::Left;
+                let x = match r {
+                    0 | 1 | 8 if k == Key::Enter => W / 2,
+                    2..=4 if k != Key::Enter => {
+                        if right {
+                            3 * W / 4
+                        } else {
+                            W / 4
+                        }
+                    }
+                    5..=7 if k != Key::Enter => {
+                        let (n, at) = match r {
+                            5 => (5, usize::from(e.repeat)),
+                            6 => (5, usize::from(e.alert)),
+                            _ => (n_cals, e.cal),
+                        };
+                        if n == 0 {
+                            return Reply::Nothing;
+                        }
+                        let chip = if right {
+                            (at + 1).min(n - 1)
+                        } else {
+                            at.saturating_sub(1)
+                        } as u16;
+                        let n = n as u16;
+                        MARGIN + chip * WIDE / n + WIDE / (2 * n)
+                    }
+                    _ => return Reply::Nothing,
+                };
+                return self.edit_tap(cx, x, top + h / 2);
+            }
+        };
+        e.row = Some(to);
+        e.typing = None;
+        e.confirm_delete = false;
+        Reply::Redraw
     }
 
     /// A tap in the editor.
@@ -2216,12 +2302,24 @@ impl Program for Calendar {
         if self.view == View::New {
             self.new_sheet(f, cx);
         }
+        self.focus.ring(f, self.targets());
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        // The stylus takes over from the D-pad (the centre key's tap is
+        // a lift only).
+        if matches!(e, Event::PenDown { .. }) {
+            self.focus.clear();
+            if let Some(ed) = self.edit.as_mut() {
+                ed.row = None;
+            }
+        }
         if self.view == View::Edit {
             match e {
                 Event::PenUp { x, y } => return self.edit_tap(cx, x, y),
+                Event::Key(k @ (Key::Up | Key::Down | Key::Left | Key::Right | Key::Enter)) => {
+                    return self.edit_key(cx, k);
+                }
                 Event::Key(Key::SoftLeft) => {
                     self.edit = None;
                     self.view = View::Agenda;
@@ -2300,19 +2398,56 @@ impl Program for Calendar {
             }
             return Reply::Redraw;
         }
-        // The D-pad (Windows Mobile's Calendar moves with it; R203): up
-        // and down step through the views, the centre opens what is next
-        // on the board; left and right change the day (below).
-        if let Event::Key(k @ (Key::Up | Key::Down)) = e
-            && let Some(i) = TABS.iter().position(|v| *v == self.view)
+        // The D-pad (R203) reaches everything a stylus can tap in a view.
+        // Windows Mobile's Calendar: left and right change the day, up
+        // and down move among the day's appointments, the centre opens
+        // one; its views are in a menu. Ours keeps those and adds the
+        // rest: up and down walk the screen's targets (appointments, the
+        // days of a week or a month, New), the nearest one the arrow
+        // points at; up from nothing goes to the views' tabs, where left
+        // and right choose the view; a tab or a day is chosen as the
+        // focus lands on it; the centre taps the target (with none on the
+        // board, it opens what is next).
+        let tabs = TABS.contains(&self.view);
+        let walked = tabs || matches!(self.view, View::Calendars | View::New);
+        if let Event::Key(k @ (Key::Up | Key::Down | Key::Left | Key::Right)) = e
+            && walked
         {
-            let n = TABS.len();
-            self.view = TABS[if k == Key::Down {
-                (i + 1) % n
-            } else {
-                (i + n - 1) % n
-            }];
-            return Reply::Redraw;
+            let fresh = self.focus.point().is_none();
+            // (The calendars' list and the quick-add sheet have no days
+            // to step: every arrow walks their targets.)
+            let sideways = tabs && matches!(k, Key::Left | Key::Right);
+            if tabs && fresh && k == Key::Up {
+                let i = TABS.iter().position(|v| *v == self.view).unwrap_or(0);
+                self.focus.set(kit::foot_tab(TABS.len(), i));
+                return Reply::Redraw;
+            }
+            if !(fresh && sideways) {
+                let mut focus = self.focus;
+                let moved = focus.step(k, self.targets());
+                self.focus = focus;
+                if moved {
+                    match self.focus.point().and_then(|(x, y)| self.hits.at(x, y)) {
+                        Some(Hit::View(v)) => self.view = v,
+                        Some(Hit::Day(d)) => self.day = d,
+                        _ => {}
+                    }
+                    return Reply::Redraw;
+                }
+                if !sideways {
+                    return Reply::Nothing;
+                }
+                // Nothing that way: the day before or after (below).
+                self.focus.clear();
+            }
+        }
+        if e == Event::Key(Key::Enter)
+            && walked
+            && let Some(r) = self.focus.rect()
+            && self.targets().any(|t| t == r)
+            && let Some((x, y)) = self.focus.point()
+        {
+            return self.event(Event::PenUp { x, y }, cx);
         }
         if e == Event::Key(Key::Enter) && self.view == View::Home {
             let (list, n) = self.on(self.day);
@@ -2399,11 +2534,11 @@ impl Program for Calendar {
                 self.line_n -= 1;
                 Reply::Redraw
             }
-            Event::Key(Key::Left) => {
+            Event::Key(Key::Left) if tabs => {
                 self.day -= 1;
                 Reply::Redraw
             }
-            Event::Key(Key::Right) => {
+            Event::Key(Key::Right) if tabs => {
                 self.day += 1;
                 Reply::Redraw
             }
@@ -2500,6 +2635,36 @@ impl Program for Calendar {
             Asked::Nothing | Asked::Place => {}
         }
         Reply::Redraw
+    }
+}
+
+impl Calendar {
+    /// Everything on the view a stylus can tap, for the D-pad: what was
+    /// drawn (`hits`), Agenda's task rows (ticked by a tap) and the
+    /// Calendars key; in the calendars' list its rows and the key that
+    /// asks the PC; on the quick-add sheet its way to the full editor.
+    fn targets(&self) -> impl Iterator<Item = Rect> + '_ {
+        use core::iter::once;
+        let view = self.view;
+        let tabs = TABS.contains(&view);
+        let tasks = self.rows_at[..self.n_rows]
+            .iter()
+            .filter(move |r| r.2 && view == View::Agenda)
+            .map(|r| r.0);
+        let key = once(CALENDARS_KEY).filter(move |_| tabs && view != View::Home);
+        let cals = self.cal_rows[..self.n_cal_rows]
+            .iter()
+            .map(|r| r.0)
+            .chain(once(GET_KEY))
+            .filter(move |_| view == View::Calendars);
+        let new = once(Rect::new(MARGIN, 322, WIDE, 44)).filter(move |_| view == View::New);
+        self.hits
+            .rects()
+            .filter(move |_| tabs)
+            .chain(tasks)
+            .chain(key)
+            .chain(cals)
+            .chain(new)
     }
 }
 

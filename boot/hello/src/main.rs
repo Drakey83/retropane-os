@@ -227,7 +227,7 @@ mod image {
                     let scan = keypad.scan();
                     let keys = scan.held;
                     let missed = key_events.missed();
-                    key_events.update(rt::ticks() / 3250, scan, &mut |e| {
+                    key_events.update(rt::uptime_ms(), scan, &mut |e| {
                         let what = match e.kind {
                             Kind::Down => "down",
                             Kind::Repeat => "repeat",
@@ -257,7 +257,7 @@ mod image {
                         None
                     };
                     let map = |x, y| Calibration::X51V_DEFAULT.to_screen(x, y, (480, 640));
-                    match filter.sample(raw, rt::ticks() / 3250) {
+                    match filter.sample(raw, rt::uptime_ms()) {
                         Pen::Down(rx, ry) | Pen::Move(rx, ry) => {
                             let (x, y) = map(rx, ry);
                             // As u32: one integer formatter for the whole image.

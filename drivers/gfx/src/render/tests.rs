@@ -59,6 +59,35 @@ fn renderer<'a>(px: &'a mut [Argb], plane: &'a mut [u8]) -> CpuRenderer<'a> {
     CpuRenderer::new(layer, plane, W as usize * 4, PlaneFormat::Argb8888)
 }
 
+/// The stepped gradient is `gradient_at`, column for column: every span
+/// to 12 and the screen's widths, from every first column and past the
+/// end, colours rising, falling and equal in a channel.
+#[test]
+fn steps_are_gradient_at() {
+    let pairs = [
+        (0x0000_0000, 0xFFFF_FFFF),
+        (0xFFFF_FFFF, 0x0000_0000),
+        (0x4000_0000, 0xC0A0_A0A0),
+        (0xFF12_80FE, 0x01FE_8012),
+        (0x1234_5678, 0x1234_5678),
+        (0x80FF_0001, 0x7F00_FF02),
+    ];
+    for (l, r) in pairs {
+        for w in (0..13u32).chain([40, 239, 240, 456, 479, 480, 640]) {
+            for first in [0, 1, 2, w / 3, w / 2, w.saturating_sub(2), w, w + 5] {
+                let mut g = Gradient::new(l, r, first, w);
+                for k in first..first + w + 3 {
+                    assert_eq!(
+                        g.step(),
+                        gradient_at(l, r, k, w),
+                        "{l:08X}..{r:08X} column {k} of {w} from {first}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn gradient_ends_exactly_and_rounds_between() {
     assert_eq!(gradient_at(0x0000_0000, 0xFFFF_FFFF, 0, 5), 0);

@@ -114,7 +114,9 @@ mod image {
     }
 
     fn ms() -> u32 {
-        rt::ticks() / TICK_MS
+        // (Not the tick counter divided: that falls back to 0 every 22
+        // minutes, R200.)
+        rt::uptime_ms()
     }
 
     /// A tune: notes back to back, each with a 5 ms rise and a 20 ms fall

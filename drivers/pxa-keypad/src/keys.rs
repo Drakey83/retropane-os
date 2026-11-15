@@ -149,6 +149,9 @@ impl Keys {
 
     /// Feeds a keypad scan taken at `now_ms` (any rate; call at least every
     /// repeat interval while a key is held), calling `out` for each event.
+    /// `now_ms` must wrap at 2^32 only (`rt::uptime_ms`, never the tick
+    /// counter divided, which falls back to 0 every 22 minutes: a button
+    /// held across that got no repeat, R200).
     pub fn update(&mut self, now_ms: u32, scan: Scan, out: &mut dyn FnMut(Event)) {
         let pressed = scan.held;
         if scan.activity && pressed == self.last {

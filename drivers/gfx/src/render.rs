@@ -42,6 +42,78 @@ pub fn gradient_at(left: Argb, right: Argb, k: u32, w: u32) -> Argb {
     out
 }
 
+/// [`gradient_at`]'s columns in order from column `first`, with no
+/// division a column: each channel's quotient and remainder stepped
+/// (four divisions a row, where `gradient_at` a column took four each:
+/// 140 us a 480-column row on the X51v's CPU as the emulator counts it,
+/// and a glass window's rows are written by the dozen, R209). The same
+/// values exactly (`steps_are_gradient_at`).
+pub struct Gradient {
+    /// A channel: its value, the remainder, and a step's two parts.
+    ch: [(i32, i32, i32, i32); 4],
+    span: i32,
+    left: u32,
+}
+
+impl Gradient {
+    /// From column `first` of `w` going from `left` to `right`.
+    #[must_use]
+    #[inline(never)]
+    pub fn new(left: Argb, right: Argb, first: u32, w: u32) -> Self {
+        let span = w.saturating_sub(1).max(1) as i32;
+        let k = first.min(span as u32) as i32;
+        let mut ch = [(0, 0, 0, 0); 4];
+        for (c, shift) in ch.iter_mut().zip([0, 8, 16, 24]) {
+            let (a, b) = (
+                ((left >> shift) & 0xFF) as i32,
+                ((right >> shift) & 0xFF) as i32,
+            );
+            let n = a * (span - k) + b * k + span / 2;
+            *c = (
+                n / span,
+                n % span,
+                (b - a).div_euclid(span),
+                (b - a).rem_euclid(span),
+            );
+        }
+        Self {
+            ch,
+            span,
+            left: (span - k) as u32,
+        }
+    }
+
+    /// The next columns' colours into `out` (the last one's held past the
+    /// gradient's end). One copy of the loop, not one a caller (rp-today's
+    /// size budget).
+    #[inline(never)]
+    pub fn fill(&mut self, out: &mut [Argb]) {
+        for c in out {
+            *c = self.step();
+        }
+    }
+
+    /// This column's colour; then on to the next (the last one's held).
+    #[inline(never)]
+    pub fn step(&mut self) -> Argb {
+        let mut out = 0;
+        let go = self.left > 0;
+        self.left = self.left.saturating_sub(1);
+        for (c, shift) in self.ch.iter_mut().zip([0, 8, 16, 24]) {
+            out |= (c.0 as u32) << shift;
+            if go {
+                c.0 += c.2;
+                c.1 += c.3;
+                if c.1 >= self.span {
+                    c.1 -= self.span;
+                    c.0 += 1;
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Draws frames on the CPU into a layer, out to a plane.
 pub struct CpuRenderer<'a> {
     layer: Layer<'a>,
@@ -106,12 +178,11 @@ impl<'a> CpuRenderer<'a> {
         }
         let mut cols = [0; MAX_W];
         let w = (to.w as usize).min(MAX_W);
-        for (k, c) in cols.iter_mut().take(w).enumerate() {
-            *c = if left == right {
-                left
-            } else {
-                gradient_at(left, right, to.x + k as u32 - x0, span)
-            };
+        if left == right {
+            cols[..w].fill(left);
+        } else {
+            let mut g = Gradient::new(left, right, to.x - x0, span);
+            g.fill(&mut cols[..w]);
         }
         let Some((fr, d, a, b)) = self.floor else {
             self.layer.fill_columns(to, &cols[..w]);
@@ -163,10 +234,11 @@ impl<'a> CpuRenderer<'a> {
             }
             return;
         }
+        let mut g = Gradient::new(a, b, to.x.saturating_sub(fr.x), u32::from(d.w));
         for (k, c) in cols.iter_mut().take(w).enumerate() {
             let x = to.x + k as u32;
             if x >= fr.x && x < fr.right() {
-                *c = layer::over(*c, gradient_at(a, b, x - fr.x, u32::from(d.w)));
+                *c = layer::over(*c, g.step());
             }
         }
         self.layer
@@ -226,10 +298,8 @@ impl<'a> CpuRenderer<'a> {
                     return;
                 }
                 let mut cols = [0; MAX_W];
-                let first = to.x - full.x;
-                for (k, c) in cols.iter_mut().take(to.w as usize).enumerate() {
-                    *c = gradient_at(left, right, first + k as u32, full.w);
-                }
+                let mut g = Gradient::new(left, right, to.x - full.x, full.w);
+                g.fill(&mut cols[..(to.w as usize).min(MAX_W)]);
                 self.layer
                     .fill_columns(to, &cols[..(to.w as usize).min(MAX_W)]);
             }

@@ -148,7 +148,9 @@ mod x51v {
             self.gpio.borrow_mut().take_edge(JACK)
         }
         fn now_ms(&mut self) -> u32 {
-            rt::ticks() / TICK_MS
+            // (Not the tick counter divided: that falls back to 0 every
+            // 22 minutes, R200.)
+            rt::uptime_ms()
         }
         fn delay_us(&mut self, us: u32) {
             // In slices, the watchdog fed between.

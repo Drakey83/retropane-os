@@ -182,3 +182,285 @@ fn the_dpad_walks_the_people_and_its_centre_opens_one() {
     assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Redraw);
     assert!(matches!(c.view, View::Card(_)), "{:?}", c.view);
 }
+
+fn type_in(c: &mut Contacts, cx: &Ctx, s: &[u8]) {
+    for &ch in s {
+        c.event(Event::Char(ch), cx);
+    }
+}
+
+/// A record's fields by tag.
+type Fields = std::vec::Vec<(u8, std::vec::Vec<u8>)>;
+
+/// The fields of the person whose first name is `first`, and its id.
+fn kept(pim: &core::cell::RefCell<Option<Store<'static>>>, first: &[u8]) -> Option<(u32, Fields)> {
+    let g = pim.borrow();
+    let s = g.as_ref().unwrap();
+    let r = s.all(Kind::Contact).find(|r| r.text(tag::FIRST) == first)?;
+    let tags = [
+        tag::FIRST,
+        tag::LAST,
+        tag::COMPANY,
+        tag::MOBILE,
+        tag::HOME,
+        tag::WORK,
+        tag::EMAIL,
+        tag::ADDRESS,
+        tag::FAVOURITE,
+        tag::BIRTHDAY,
+    ];
+    Some((
+        r.id,
+        tags.iter().map(|&t| (t, r.text(t).to_vec())).collect(),
+    ))
+}
+
+#[test]
+fn every_field_is_typed_and_a_kept_person_is_changed_and_deleted() {
+    // The first editor typed a first name, a mobile and a street; its Last
+    // and City rows took no typing, and a kept person could not be changed
+    // or deleted (the card's Edit softkey did nothing).
+    let pim = store();
+    let cx = ctx(pim);
+    let mut c = Contacts::new();
+    draw(&mut c, &cx);
+    // New: every field in turn (the keyboard's Done moves on), then the
+    // favourite switch by the D-pad, then the softkey keeps it. Done with
+    // no name says so and keeps nothing.
+    c.event(Event::Key(Key::SoftRight), &cx);
+    c.event(Event::Key(Key::Down), &cx);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    assert!(c.need_name && c.view == View::Edit(EditField::First));
+    assert_eq!(pim.borrow().as_ref().unwrap().all(Kind::Contact).count(), 0);
+    for (k, text) in [
+        &b"Ada"[..],
+        b"Lovelace",
+        b"Analytical Engines",
+        b"2065550142",
+        b"2065550143",
+        b"2065550144",
+        b"ada@example.com",
+        b"12 St James Sq",
+        b"Seattle, WA 98101",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(c.view, View::Edit(c.fields().0[k]));
+        draw(&mut c, &cx);
+        assert!(c.keyboard().is_some());
+        type_in(&mut c, &cx, text);
+        c.event(Event::Done, &cx);
+    }
+    c.event(Event::Key(Key::Down), &cx);
+    assert_eq!(c.view, View::Edit(EditField::Favourite));
+    assert!(c.keyboard().is_none());
+    c.event(Event::Key(Key::Enter), &cx);
+    // No Delete row for a person not kept yet.
+    assert_eq!(c.event(Event::Key(Key::Down), &cx), Reply::Nothing);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    assert_eq!(c.view, View::List);
+    let (id, f) = kept(pim, b"Ada").expect("kept");
+    let get = |f: &Fields, t: u8| f.iter().find(|x| x.0 == t).unwrap().1.clone();
+    assert_eq!(get(&f, tag::LAST), b"Lovelace");
+    assert_eq!(get(&f, tag::COMPANY), b"Analytical Engines");
+    assert_eq!(get(&f, tag::MOBILE), b"+12065550142");
+    assert_eq!(get(&f, tag::HOME), b"+12065550143");
+    assert_eq!(get(&f, tag::WORK), b"+12065550144");
+    assert_eq!(get(&f, tag::EMAIL), b"ada@example.com");
+    assert_eq!(get(&f, tag::ADDRESS), b"12 St James Sq\nSeattle, WA 98101");
+    assert_eq!(get(&f, tag::FAVOURITE), 1u32.to_le_bytes());
+    // A field the form does not show is kept through a change.
+    pim.borrow_mut()
+        .as_mut()
+        .unwrap()
+        .change(id, &[(tag::BIRTHDAY, &7u32.to_le_bytes())])
+        .unwrap();
+    // Changed from the card: every field comes back as kept; the last
+    // name retyped, the work number emptied, the rest left alone.
+    let card_of = |c: &Contacts| {
+        View::Card(
+            c.people
+                .iter()
+                .position(|p| p.is_some_and(|p| p.id == id))
+                .unwrap() as u8,
+        )
+    };
+    draw(&mut c, &cx);
+    c.view = card_of(&c);
+    draw(&mut c, &cx);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    assert_eq!(c.view, View::Edit(EditField::First));
+    assert_eq!(c.val(EditField::Mobile), b"+12065550142");
+    assert_eq!(c.val(EditField::City), b"Seattle, WA 98101");
+    assert!(c.fav);
+    c.event(Event::Key(Key::Down), &cx);
+    for _ in 0..8 {
+        c.event(Event::Delete, &cx);
+    }
+    type_in(&mut c, &cx, b"King");
+    for _ in 0..4 {
+        c.event(Event::Key(Key::Down), &cx);
+    }
+    assert_eq!(c.view, View::Edit(EditField::Work));
+    for _ in 0..12 {
+        c.event(Event::Delete, &cx);
+    }
+    // A tap on another row types that one from then on.
+    draw(&mut c, &cx);
+    let (r, fld) = c.form_at[c.n_form - 1];
+    assert_ne!(fld, EditField::Work);
+    c.event(
+        Event::PenDown {
+            x: r.x + 9,
+            y: r.y + 9,
+        },
+        &cx,
+    );
+    c.event(
+        Event::PenUp {
+            x: r.x + 9,
+            y: r.y + 9,
+        },
+        &cx,
+    );
+    assert_eq!(c.view, View::Edit(fld));
+    c.event(Event::Key(Key::SoftRight), &cx);
+    let (id2, f) = kept(pim, b"Ada").expect("still kept");
+    assert_eq!(id2, id);
+    assert_eq!(get(&f, tag::LAST), b"King");
+    assert_eq!(get(&f, tag::WORK), b"");
+    assert_eq!(get(&f, tag::MOBILE), b"+12065550142");
+    assert_eq!(get(&f, tag::HOME), b"+12065550143");
+    assert_eq!(get(&f, tag::ADDRESS), b"12 St James Sq\nSeattle, WA 98101");
+    assert_eq!(get(&f, tag::FAVOURITE), 1u32.to_le_bytes());
+    assert_eq!(get(&f, tag::BIRTHDAY), 7u32.to_le_bytes());
+    // Deleted: asked once, then gone; a move away takes the question back.
+    draw(&mut c, &cx);
+    c.view = card_of(&c);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    for _ in 0..10 {
+        c.event(Event::Key(Key::Down), &cx);
+    }
+    assert_eq!(c.view, View::Edit(EditField::Delete));
+    c.event(Event::Key(Key::Enter), &cx);
+    assert!(c.confirm_delete && kept(pim, b"Ada").is_some());
+    c.event(Event::Key(Key::Up), &cx);
+    c.event(Event::Key(Key::Down), &cx);
+    assert!(!c.confirm_delete);
+    c.event(Event::Key(Key::Enter), &cx);
+    c.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(c.view, View::List);
+    assert!(kept(pim, b"Ada").is_none());
+}
+
+#[test]
+fn a_card_shows_every_line_and_each_copies_by_tap_or_dpad() {
+    let pim = store();
+    pim.borrow_mut()
+        .as_mut()
+        .unwrap()
+        .put(
+            Kind::Contact,
+            None,
+            &[
+                (tag::FIRST, b"Grace"),
+                (tag::LAST, b"Hopper"),
+                (tag::MOBILE, b"+17035550107"),
+                (tag::HOME, b"+17035550108"),
+                (tag::WORK, b"+17035550109"),
+                (tag::EMAIL, b"grace@example.com"),
+                (tag::ADDRESS, b"2100 Clarendon Blvd\nArlington, VA 22201"),
+            ],
+        )
+        .unwrap();
+    let cx = ctx(pim);
+    let mut c = Contacts::new();
+    draw(&mut c, &cx);
+    c.view = View::Card(0);
+    draw(&mut c, &cx);
+    // Three numbers, the e-mail, the address and the Copy key, all on the
+    // card (the address was dropped when the rest filled it).
+    let kinds: std::vec::Vec<u8> = c.card_at[..c.n_card].iter().map(|t| t.1).collect();
+    assert_eq!(kinds, [5, 0, 1, 2, 3, 4]);
+    assert!(c.card_at[..c.n_card].iter().all(|(r, _)| r.bottom() <= 596));
+    // The D-pad reaches each, the centre copies it; the mark shows, then
+    // goes.
+    let mut seen = std::vec::Vec::new();
+    for _ in 0..8 {
+        c.event(Event::Key(Key::Down), &cx);
+        assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Animate);
+        seen.push(std::string::String::from_utf8_lossy(cx.clip.borrow().get()).into_owned());
+    }
+    for want in [
+        "(703) 555-0107",
+        "(703) 555-0108",
+        "(703) 555-0109",
+        "grace@example.com",
+        "2100 Clarendon Blvd, Arlington, VA 22201",
+    ] {
+        assert!(
+            seen.iter().any(|s| s == want),
+            "{want} not copied: {seen:?}"
+        );
+    }
+    assert!(c.copied.is_some());
+    for _ in 0..40 {
+        c.event(Event::Tick, &cx);
+    }
+    assert!(c.copied.is_none());
+}
+
+#[test]
+fn a_letter_with_more_people_than_fit_goes_on_over_the_page() {
+    // Thirty people under S: the list cut the letter off at the screen's
+    // foot, and the rest were out of the stylus's reach and the D-pad's.
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        for k in 0..30u8 {
+            let first = [b'A' + k % 26, b'a' + k / 26];
+            s.put(
+                Kind::Contact,
+                None,
+                &[(tag::FIRST, &first), (tag::LAST, b"Smith")],
+            )
+            .unwrap();
+        }
+    }
+    let cx = ctx(pim);
+    let mut c = Contacts::new();
+    draw(&mut c, &cx);
+    assert!(c.n_rows < 30);
+    // The D-pad alone: down through every page, each person focused once.
+    let mut met = std::vec::Vec::new();
+    for _ in 0..200 {
+        if c.event(Event::Key(Key::Down), &cx) == Reply::Nothing {
+            break;
+        }
+        draw(&mut c, &cx);
+        if let Some(&(_, i)) = c.rows_at[..c.n_rows]
+            .iter()
+            .find(|(r, _)| Some(*r) == c.focus.rect())
+            && !met.contains(&i)
+        {
+            met.push(i);
+        }
+    }
+    assert_eq!(met.len(), 30, "people reached by the D-pad");
+    // And back up to the first page; a drag turns the page too.
+    for _ in 0..200 {
+        if c.event(Event::Key(Key::Up), &cx) == Reply::Nothing {
+            break;
+        }
+        draw(&mut c, &cx);
+    }
+    assert_eq!(c.first_row, 0);
+    c.event(Event::PenDown { x: 200, y: 400 }, &cx);
+    c.event(Event::PenUp { x: 200, y: 300 }, &cx);
+    assert!(c.first_row > 0);
+    c.event(Event::PenDown { x: 200, y: 300 }, &cx);
+    c.event(Event::PenUp { x: 200, y: 400 }, &cx);
+    assert_eq!(c.first_row, 0);
+}

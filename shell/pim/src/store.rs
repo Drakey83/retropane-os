@@ -59,6 +59,10 @@ pub enum Kind {
     /// An app's kept data (version 2), by name: the money rates and their
     /// day.
     Data = 7,
+    /// A page of a note's handwriting past the note's own record: the
+    /// note is its `PARENT`, its strokes follow those of the pages added
+    /// before it (ids rise). No screen lists it: only its note reads it.
+    Ink = 8,
 }
 
 impl Kind {
@@ -72,6 +76,7 @@ impl Kind {
             5 => Self::Calendar,
             6 => Self::List,
             7 => Self::Data,
+            8 => Self::Ink,
             _ => return None,
         })
     }

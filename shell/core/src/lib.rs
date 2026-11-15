@@ -1360,6 +1360,14 @@ impl Shell {
         let mut w = Wanted::default();
         let id = |sky| usize::from(Icon::of(sky).id() - 1);
         w.add(Size::Hero, id(self.wx.now.sky));
+        // The sky the hero draws ([`Self::sky_now`]: the sky test's while
+        // it is on). Its big picture was never asked for, so the hero
+        // showed the forecast card's 66 px one in its place (the owner on
+        // the X51v, 2026-11-14: "turned on the sky test and the today
+        // screen icon turned tiny", R207). The forecast's stays wanted
+        // beside it (the store has two big slots): back from the test
+        // without a decode.
+        w.add(Size::Hero, id(self.sky_now()));
         for d in &self.wx.days[1..6] {
             w.add(Size::Card, id(d.sky));
         }

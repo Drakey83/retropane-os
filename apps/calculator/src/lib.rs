@@ -223,6 +223,9 @@ pub struct Calculator {
     n_tape: usize,
     /// Lines scrolled back from the newest (a drag on the tape).
     back: usize,
+    /// The D-pad's target (R203): every key, chip and tape line a
+    /// stylus can tap.
+    focus: kit::Focus,
     /// The stylus on the tape: where it went down, the scroll then, the
     /// line under it, whether it moved and the ticks it has been held.
     pen: Option<TapePen>,
@@ -272,6 +275,7 @@ impl Calculator {
             tape: [(Text::EMPTY, Text::EMPTY); TAPE_MAX],
             n_tape: 0,
             back: 0,
+            focus: kit::Focus::default(),
             pen: None,
             copied: None,
             memory: None,
@@ -609,6 +613,85 @@ impl Calculator {
     fn key_rect(top: u16, r: usize, c: usize) -> Rect {
         let kh = (BOTTOM - top) / 6 - 4;
         Rect::new(MARGIN + c as u16 * 113, top + r as u16 * (kh + 4), 108, kh)
+    }
+
+    /// Everything on the screen a stylus can tap, for the D-pad: the mode
+    /// chips first, then the mode's keys and chips, the tape's lines last
+    /// (so a key keeps its place in the list as the tape grows).
+    fn targets(&self) -> ([Rect; 40], usize) {
+        let mut t = [Rect::new(0, 0, 0, 0); 40];
+        let mut n = 0;
+        let mut add = |r: Rect| {
+            if n < t.len() {
+                t[n] = r;
+                n += 1;
+            }
+        };
+        for k in 0..6 {
+            add(Rect::new(
+                CHIPS.x + k * (CHIPS.w / 6),
+                CHIPS.y,
+                CHIPS.w / 6,
+                CHIPS.h,
+            ));
+        }
+        let pad = |add: &mut dyn FnMut(Rect)| {
+            for r in 0..3 {
+                for c in 0..4 {
+                    add(Self::pad_rect(r, c));
+                }
+            }
+        };
+        match self.mode {
+            Mode::Basic | Mode::Scientific => {
+                let top = self.keypad_top();
+                for r in 0..6 {
+                    for c in 0..4 {
+                        add(Self::key_rect(top, r, c));
+                    }
+                }
+                add(self.display_rect());
+                for k in 0..self.tape_window().1 {
+                    add(self.tape_rect(k));
+                }
+            }
+            Mode::Units => {
+                for k in 0..6 {
+                    add(Rect::new(8 + k * ((W - 16) / 6), TOP, (W - 16) / 6, 28));
+                }
+                add(Rect::new(MARGIN + 12, TOP + 50, 96, 32));
+                add(Rect::new(MARGIN + 12, TOP + 142, 96, 32));
+                pad(&mut add);
+            }
+            Mode::Money => {
+                if self.n_rates > 0 {
+                    add(Rect::new(MARGIN + 12, TOP + 20, 96, 32));
+                    add(Rect::new(MARGIN + 12, TOP + 112, 96, 32));
+                }
+                pad(&mut add);
+            }
+            Mode::Tip => {
+                for k in 0..4 {
+                    add(Rect::new(MARGIN + k * (WIDE / 4), TOP + 70, WIDE / 4, 34));
+                }
+                // Fewer people, more people: the row's two halves.
+                add(Rect::new(MARGIN, TOP + 110, W / 2 - MARGIN, 44));
+                add(Rect::new(
+                    W / 2 + 1,
+                    TOP + 110,
+                    MARGIN + WIDE - W / 2 - 1,
+                    44,
+                ));
+                pad(&mut add);
+            }
+            Mode::Dates => {
+                for y0 in [TOP, TOP + 62] {
+                    add(Rect::new(W - 119, y0, 59, 56));
+                    add(Rect::new(W - 59, y0, MARGIN + WIDE - (W - 59), 56));
+                }
+            }
+        }
+        (t, n)
     }
 
     fn keypad_top(&self) -> u16 {
@@ -1225,9 +1308,16 @@ impl Program for Calculator {
             Mode::Tip => self.tip(f, cx),
             Mode::Dates => self.dates(f, cx),
         }
+        let (t, n) = self.targets();
+        self.focus.ring(f, t[..n].iter().copied());
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        // The stylus takes over from the D-pad (the centre key's tap is
+        // a lift only).
+        if matches!(e, Event::PenDown { .. }) {
+            self.focus.clear();
+        }
         match e {
             Event::Key(Key::SoftLeft) => Reply::Close,
             // Copy: the answer (or the money, tip or dates result typed).
@@ -1242,36 +1332,74 @@ impl Program for Calculator {
                 }
                 Reply::Redraw
             }
-            Event::Key(Key::Right) | Event::Key(Key::Left) => {
-                let k = MODE_LIST.iter().position(|&m| m == self.mode).unwrap_or(0);
-                let k = if e == Event::Key(Key::Right) {
-                    (k + 1) % 6
-                } else {
-                    (k + 5) % 6
-                };
-                self.mode = MODE_LIST[k];
-                Reply::Redraw
-            }
-            // The rest of the D-pad (R203): up and down walk the tape
-            // back and forward, the centre is =.
-            Event::Key(k @ (Key::Up | Key::Down))
-                if matches!(self.mode, Mode::Basic | Mode::Scientific) =>
-            {
-                let most = self.n_tape.saturating_sub(TAPE_SHOWN);
-                let back = if k == Key::Up {
-                    (self.back + 1).min(most)
-                } else {
-                    self.back.saturating_sub(1)
-                };
-                if back == self.back {
-                    return Reply::Nothing;
+            // The D-pad (R203) walks everything a stylus can tap: the
+            // arrows go to the nearest key, chip or tape line that way,
+            // the centre taps it. It starts on the mode's chip, and a
+            // chip is chosen as the focus lands on it, so left and right
+            // step the modes as they always did; with nothing focused the
+            // centre is =. Windows Mobile's calculator has no keys but
+            // the stylus's; a phone's walks every button in tab order.
+            Event::Key(k @ (Key::Left | Key::Right | Key::Up | Key::Down)) => {
+                let sums = matches!(self.mode, Mode::Basic | Mode::Scientific);
+                let (t, n) = self.targets();
+                let chosen = MODE_LIST.iter().position(|&m| m == self.mode).unwrap_or(0);
+                let fresh = self.focus.point().is_none();
+                if fresh {
+                    self.focus.set(t[chosen]);
                 }
-                self.back = back;
-                Reply::Redraw
+                // On the tape's first or last line shown, up and down
+                // bring its older or newer lines in before the focus
+                // leaves it.
+                let (_, shown) = self.tape_window();
+                let on_line = |k: usize| {
+                    sums && shown > k && self.focus.point() == kit::Focus::at(self.tape_rect(k))
+                };
+                let most = self.n_tape.saturating_sub(TAPE_SHOWN);
+                if k == Key::Up && on_line(0) && self.back < most {
+                    self.back += 1;
+                    return Reply::Redraw;
+                }
+                if k == Key::Down && shown > 0 && on_line(shown - 1) && self.back > 0 {
+                    self.back -= 1;
+                    return Reply::Redraw;
+                }
+                let moved = self.focus.step(k, t[..n].iter().copied());
+                if let Some((x, _)) = self
+                    .focus
+                    .point()
+                    .filter(|p| CHIPS.contains_point(p.0, p.1))
+                {
+                    self.mode = MODE_LIST[usize::from((x - CHIPS.x) * 6 / CHIPS.w).min(5)];
+                }
+                if moved || fresh {
+                    Reply::Redraw
+                } else {
+                    Reply::Nothing
+                }
             }
-            Event::Key(Key::Enter) if matches!(self.mode, Mode::Basic | Mode::Scientific) => {
-                self.press(b"=");
-                Reply::Redraw
+            Event::Key(Key::Enter) => {
+                let (t, n) = self.targets();
+                let at = self
+                    .focus
+                    .point()
+                    .filter(|p| !CHIPS.contains_point(p.0, p.1))
+                    .and_then(|p| t[..n].iter().position(|&r| kit::Focus::at(r) == Some(p)));
+                let Some(i) = at else {
+                    if matches!(self.mode, Mode::Basic | Mode::Scientific) {
+                        self.press(b"=");
+                        return Reply::Redraw;
+                    }
+                    return Reply::Nothing;
+                };
+                let (x, y) = (t[i].x + t[i].w / 2, t[i].y + t[i].h / 2);
+                let reply = self.event(Event::PenUp { x, y }, cx);
+                // The same key, wherever a new tape line moved it.
+                let (t, n) = self.targets();
+                match t[..n].get(i) {
+                    Some(&r) => self.focus.set(r),
+                    None => self.focus.clear(),
+                }
+                reply
             }
             Event::PenDown { x, y }
                 if matches!(self.mode, Mode::Basic | Mode::Scientific)

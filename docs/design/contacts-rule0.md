@@ -73,7 +73,10 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Photos: chosen from a picture file, cropped to a circle, kept small in internal storage, from vCard PHOTO too | apps-and-packs: photos | pending | |
 | Search over every field with the match highlighted | apps-and-packs: Fast search | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
 | Letter strip with the large letter bubble | sheet | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
-| The card with the action row (E-mail, Map, Copy, Send to PC) | sheet | pending | |
+| The card: the poster, the action row's Copy, and every line (three numbers, the e-mail, the address) copied by a tap or the D-pad with a COPIED mark | sheet | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
+| The card's E-mail and Send to PC keys (drawn dim until then, R210; Map is its own row below) | sheet | pending | |
+| The editor: every field typed (first, last, company, three numbers, e-mail, street, city), a favourite switch, a kept person changed or deleted (asked twice) | sheet | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
+| The list in pages: a drag or the D-pad turns the page (a letter with more people than fit was cut off) | sheet | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
 | Phone pad for phone fields; numbers formatted as typed for their country, stored as E.164 | apps-and-packs: phone numbers formatted as typed | built | shell/pim/src/phone.rs, shell/core/src/keyboard.rs |
 | Address suggestions while typing (Photon over any connection; ZIP table and past addresses offline) | apps-and-packs: address suggestions while typing | built | shell/pim/src/net.rs, apps/contacts/src/lib.rs, xtask/src/usb.rs |
 | Capitals at each word in names, companies and addresses; e-mail keyboard | apps-and-packs: capitals at each word in names and addresses | built | shell/core/src/lib.rs |
@@ -83,7 +86,7 @@ without fighting the keyboard; the same people as the phone and the PC.
 | vCard 3 and 4 import and export | apps-and-packs: vCard import/export | pending | |
 | CardDAV and Google contacts sync, read and write, over any connection | apps-and-packs: online contacts (CardDAV, Google) | pending | |
 | Birthdays feed Calendar's Birthdays calendar | sheet | pending | |
-| The Contacts button opens Contacts | sheet | pending | |
+| The Contacts button opens Contacts | sheet | built | shell/core/src/lib.rs, shell/core/src/tests.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/contacts/src/main.rs, shell/today/src/program.rs |

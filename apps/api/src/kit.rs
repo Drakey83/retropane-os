@@ -684,6 +684,25 @@ impl Focus {
         self.0 = None;
     }
 
+    /// The focused target.
+    #[must_use]
+    pub const fn rect(&self) -> Option<Rect> {
+        self.0
+    }
+
+    /// The point a focus on `r` taps ([`Self::point`]'s, to ask whether
+    /// the focus is on `r`).
+    #[must_use]
+    pub fn at(r: Rect) -> Option<(u16, u16)> {
+        Self(Some(r)).point()
+    }
+
+    /// The focus put on target `r` (where a screen says the arrows start,
+    /// or the same target after the screen moved it).
+    pub fn set(&mut self, r: Rect) {
+        self.0 = Some(r);
+    }
+
     /// The point the centre key taps: the focused target's middle.
     #[must_use]
     pub fn point(&self) -> Option<(u16, u16)> {
@@ -698,10 +717,15 @@ impl Focus {
         if !matches!(k, Key::Up | Key::Down | Key::Left | Key::Right) {
             return false;
         }
-        // How far apart two spans lie (0 where they overlap).
+        // How far apart two spans lie: 0 only where they overlap, 1 where
+        // they touch (the cells of a grid touch: counted as overlapping,
+        // right of a month's cell was the cell a row up, and some days
+        // were out of reach; found by Calendar's reach test).
         let gap = |a: u16, al: u16, b: u16, bl: u16| {
             let (a, b) = (i32::from(a), i32::from(b));
-            (b - a - i32::from(al)).max(a - b - i32::from(bl)).max(0)
+            (b - a - i32::from(al) + 1)
+                .max(a - b - i32::from(bl) + 1)
+                .max(0)
         };
         let mid = |r: Rect| {
             (

@@ -344,3 +344,146 @@ fn the_dpad_walks_the_home_and_its_centre_taps() {
     draw(&mut t, &cx);
     assert!(t.tasks.iter().flatten().any(|k| k.done_day == Some(19_723)));
 }
+
+#[test]
+fn a_long_list_goes_on_over_the_page_and_a_done_task_can_be_unticked() {
+    // Thirty tasks due today: the list cut them off at the screen's foot
+    // (the rest out of the stylus's reach and the D-pad's), and a task
+    // ticked by mistake was folded into "N done" for good.
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        for k in 0..30u8 {
+            let title = [b'T', b'0' + k / 10, b'0' + k % 10];
+            s.put(
+                Kind::Task,
+                None,
+                &[(tag::TITLE, &title), (tag::DUE, &19_723u32.to_le_bytes())],
+            )
+            .unwrap();
+        }
+    }
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    t.show(View::List(None));
+    draw(&mut t, &cx);
+    assert!(t.n_rows < 30);
+    // The D-pad alone: down through every page, each task's row focused.
+    let mut met = std::vec::Vec::new();
+    for _ in 0..300 {
+        if t.event(Event::Key(Key::Down), &cx) == Reply::Nothing {
+            break;
+        }
+        draw(&mut t, &cx);
+        if let Some(&(_, id)) = t.rows_at[..t.n_rows]
+            .iter()
+            .find(|(r, _)| Some(*r) == t.focus.rect())
+            && !met.contains(&id)
+        {
+            met.push(id);
+        }
+    }
+    assert_eq!(met.len(), 30, "tasks reached by the D-pad");
+    // Back to the first page by the D-pad; a drag turns the page too.
+    for _ in 0..300 {
+        if t.event(Event::Key(Key::Up), &cx) == Reply::Nothing {
+            break;
+        }
+        draw(&mut t, &cx);
+    }
+    assert_eq!(t.first, 0);
+    t.event(Event::PenDown { x: 300, y: 500 }, &cx);
+    t.event(Event::PenUp { x: 300, y: 380 }, &cx);
+    assert!(t.first > 0);
+    t.event(Event::PenDown { x: 300, y: 380 }, &cx);
+    t.event(Event::PenUp { x: 300, y: 500 }, &cx);
+    assert_eq!(t.first, 0);
+    draw(&mut t, &cx);
+    // A row's box by the D-pad (left of its row), the centre ticks it.
+    let on_box = |t: &Tasks| {
+        t.boxes[..t.n_boxes]
+            .iter()
+            .find(|(r, _)| Some(*r) == t.focus.rect())
+            .map(|b| b.1)
+    };
+    t.event(Event::Key(Key::Down), &cx);
+    t.event(Event::Key(Key::Down), &cx);
+    t.event(Event::Key(Key::Left), &cx);
+    let id = on_box(&t).expect("on a tick box");
+    assert_eq!(t.event(Event::Key(Key::Enter), &cx), Reply::Animate);
+    while t.event(Event::Tick, &cx) == Reply::Animate {}
+    draw(&mut t, &cx);
+    assert!(t.tasks.iter().flatten().any(|k| k.id == id && k.done));
+    assert_eq!(t.total, 29);
+    // The done row shows them under the open ones; its box unticks.
+    let foot = t.done_row.expect("a done row");
+    t.event(
+        Event::PenDown {
+            x: foot.x + 60,
+            y: foot.y + 10,
+        },
+        &cx,
+    );
+    t.event(
+        Event::PenUp {
+            x: foot.x + 60,
+            y: foot.y + 10,
+        },
+        &cx,
+    );
+    draw(&mut t, &cx);
+    assert!(t.show_done);
+    assert_eq!(t.total, 30);
+    for _ in 0..300 {
+        if t.rows_at[..t.n_rows].iter().any(|r| r.1 == id) {
+            break;
+        }
+        assert!(t.page_on());
+        draw(&mut t, &cx);
+    }
+    let (b, _) = *t.boxes[..t.n_boxes]
+        .iter()
+        .find(|b| b.1 == id)
+        .expect("shown");
+    t.event(
+        Event::PenDown {
+            x: b.x + 9,
+            y: b.y + 9,
+        },
+        &cx,
+    );
+    t.event(
+        Event::PenUp {
+            x: b.x + 9,
+            y: b.y + 9,
+        },
+        &cx,
+    );
+    draw(&mut t, &cx);
+    assert!(t.tasks.iter().flatten().any(|k| k.id == id && !k.done));
+    // The centre on a row shows its actions, which take the arrows:
+    // DELETE by the centre.
+    t.first = 0;
+    t.n_pages = 0;
+    draw(&mut t, &cx);
+    t.focus.clear();
+    t.event(Event::Key(Key::Down), &cx);
+    t.event(Event::Key(Key::Down), &cx);
+    let (_, gone) = *t.rows_at[..t.n_rows]
+        .iter()
+        .find(|(r, _)| Some(*r) == t.focus.rect())
+        .expect("on a row");
+    t.event(Event::Key(Key::Enter), &cx);
+    draw(&mut t, &cx);
+    assert_eq!(t.revealed, Some(gone));
+    assert_eq!(t.list_targets().1, 3);
+    for _ in 0..4 {
+        t.event(Event::Key(Key::Right), &cx);
+        t.event(Event::Key(Key::Down), &cx);
+    }
+    assert_eq!(t.focus.rect(), Some(t.actions[2]));
+    t.event(Event::Key(Key::Enter), &cx);
+    draw(&mut t, &cx);
+    assert!(!t.tasks.iter().flatten().any(|k| k.id == gone));
+}

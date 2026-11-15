@@ -454,11 +454,31 @@ fn a_curve_keeps_its_shape_when_thinned() {
     }
 }
 
+/// How many strokes the note and its ink pages hold, and how many pages;
+/// every field whole strokes.
+fn strokes_kept(pim: &core::cell::RefCell<Option<Store<'static>>>) -> (usize, usize) {
+    let g = pim.borrow();
+    let s = g.as_ref().unwrap();
+    let mut count = 0;
+    let note = s.all(Kind::Note).next().unwrap();
+    for r in core::iter::once(note).chain(s.all(Kind::Ink)) {
+        for field in [r.text(tag::INK), r.text(tag::INK_MORE)] {
+            assert_eq!(split(field), field.len(), "a field ends mid-stroke");
+            let mut at = 0;
+            while let Some(n) = stroke_len(&field[at..]) {
+                at += n;
+                count += 1;
+            }
+        }
+    }
+    (count, s.all(Kind::Ink).count())
+}
+
 #[test]
-fn a_full_note_says_so_instead_of_dropping_strokes_in_silence() {
+fn ink_goes_on_past_one_record_and_a_full_note_says_so() {
     // The owner, 2026-11-14: "gets to the point where they dont show up at
-    // all" (the first version held 48 strokes; now a note's ink is its
-    // record's room, a few hundred strokes).
+    // all" (the first version held 48 strokes, the second a record's room;
+    // now the ink goes on to pages of its own, R206).
     let pim = store();
     let cx = ctx(pim);
     let mut n = opened(19_723);
@@ -466,33 +486,65 @@ fn a_full_note_says_so_instead_of_dropping_strokes_in_silence() {
     n.event(Event::Key(Key::SoftRight), &cx);
     draw(&mut n, &cx);
     let (ix, iy) = n.ink_at.expect("an ink panel on screen");
-    let mut kept = 0u16;
-    while !n.ink_full {
+    // Zigzags: nothing for the thinning to drop, some 60 bytes a stroke.
+    let zig = |n: &mut Notes, k: u16| {
         stroke(
-            &mut n,
+            n,
             &cx,
-            ix + 10 + (kept % 7) * 40,
-            iy + 4 + (kept % 40) * 4,
-            4,
-            |_| 0,
+            ix + 10 + (k % 5) * 30,
+            iy + 40 + (k % 30) * 4,
+            28,
+            |s| {
+                if s % 2 == 0 { 0 } else { 30 }
+            },
         );
+    };
+    // Past one record: no notice, a page begun, every stroke kept.
+    let mut kept = 0u16;
+    while strokes_kept(pim).1 < 2 {
+        zig(&mut n, kept);
         kept += 1;
-        assert!(kept < 2000);
+        assert!(!n.ink_full && kept < 400, "stroke {kept}");
     }
-    assert!(kept > 150, "full at {kept} strokes");
-    // Both fields hold whole strokes, the first as much as it can.
-    {
-        let g = pim.borrow();
-        let rec = g.as_ref().unwrap().all(Kind::Note).next().unwrap();
-        let (a, b) = (rec.text(tag::INK), rec.text(tag::INK_MORE));
-        assert_eq!(split(a), a.len());
-        assert_eq!(split(b), b.len());
-        assert!(a.len() > rp_pim::store::TEXT_MAX - 8 && !b.is_empty());
+    assert!(kept > 60, "a second page at {kept} strokes");
+    assert_eq!(strokes_kept(pim).0, usize::from(kept));
+    // Undo takes the last stroke (the last page's; the page with it once
+    // it is empty), the eraser one of the note's own.
+    n.undo(&cx, n.open_id().unwrap());
+    assert_eq!(strokes_kept(pim), (usize::from(kept) - 1, 1));
+    n.tool = Tool::Erase;
+    stroke(&mut n, &cx, ix + 10, iy + 40, 4, |_| 0);
+    assert_eq!(strokes_kept(pim).0, usize::from(kept) - 2);
+    n.tool = Tool::Pen;
+    // To the last page's end: then it says so, and drops nothing kept.
+    let mut more = 0u16;
+    while !n.ink_full {
+        zig(&mut n, more);
+        more += 1;
+        assert!(more < 4000);
     }
+    let (count, pages) = strokes_kept(pim);
+    assert_eq!(pages, PAGES);
+    assert_eq!(count, usize::from(kept) - 2 + usize::from(more) - 1);
     // The eraser makes room: the notice goes.
     n.tool = Tool::Erase;
-    stroke(&mut n, &cx, ix + 10, iy + 4, 4, |_| 0);
+    stroke(&mut n, &cx, ix + 10, iy + 40, 4, |_| 0);
     assert!(!n.ink_full);
+    assert_eq!(strokes_kept(pim).0, count - 1);
+    // Deleted, its pages go with it.
+    n.event(Event::Key(Key::SoftRight), &cx);
+    for _ in 0..2 {
+        n.event(
+            Event::PenUp {
+                x: STRIP.x + 6 + 3 * 114 + 20,
+                y: STRIP.y + 20,
+            },
+            &cx,
+        );
+    }
+    let g = pim.borrow();
+    let s = g.as_ref().unwrap();
+    assert_eq!(s.all(Kind::Note).count() + s.all(Kind::Ink).count(), 0);
 }
 
 /// `n` notes "Note 00".., the third pinned, the second a checklist.
@@ -600,4 +652,62 @@ fn every_note_is_within_reach_a_page_at_a_time() {
         draw(&mut n, &cx);
     }
     assert_eq!((n.first, n.sel), (page, page));
+}
+
+#[test]
+fn the_dpad_reaches_an_open_note_s_tools_colours_sizes_and_menu() {
+    // R203: the D-pad in every screen of every app.
+    let pim = store();
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    n.event(Event::Key(Key::SoftRight), &cx);
+    draw(&mut n, &cx);
+    assert!(matches!(n.view, View::Note(_)));
+    // Every target is within the arrows' reach of the first.
+    let reach = |n: &Notes| {
+        let (t, k) = n.note_targets();
+        let mut seen = std::vec![t[0]];
+        let mut at = 0;
+        while at < seen.len() {
+            for key in [Key::Up, Key::Down, Key::Left, Key::Right] {
+                let mut f = kit::Focus::default();
+                f.set(seen[at]);
+                if f.step(key, t[..k].iter().copied())
+                    && let Some(r) = f.rect()
+                    && !seen.contains(&r)
+                {
+                    seen.push(r);
+                }
+            }
+            at += 1;
+        }
+        (seen.len(), k)
+    };
+    let (seen, all) = reach(&n);
+    assert_eq!((seen, all), (15, 15));
+    // The first arrow lands on the first colour well; right, and the
+    // centre: the pen takes the second colour.
+    n.event(Event::Key(Key::Down), &cx);
+    assert_eq!(n.focus.rect(), Some(well(0)));
+    n.event(Event::Key(Key::Right), &cx);
+    n.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(n.pen, 1);
+    // Down to the tools; the eraser by the centre.
+    n.event(Event::Key(Key::Down), &cx);
+    n.event(Event::Key(Key::Right), &cx);
+    n.event(Event::Key(Key::Enter), &cx);
+    assert!(
+        n.tool == Tool::Erase || n.tool == Tool::Marker,
+        "{:?}",
+        n.tool
+    );
+    // The menu's keys take the arrows while it is up: PIN by the centre.
+    n.event(Event::Key(Key::SoftRight), &cx);
+    assert_eq!(reach(&n), (4, 4));
+    n.event(Event::Key(Key::Down), &cx);
+    n.event(Event::Key(Key::Enter), &cx);
+    let g = pim.borrow();
+    let r = g.as_ref().unwrap().all(Kind::Note).next().unwrap();
+    assert_eq!(r.num(tag::PINNED), Some(1));
 }

@@ -335,17 +335,89 @@ fn the_board_shows_what_is_next_and_everything_on_it_opens() {
         &cx,
     );
     assert_eq!(c.view, View::Edit);
-    // The D-pad: the centre opens what is next; up and down step the views.
+    // The D-pad: with nothing focused the centre opens what is next, and
+    // left and right change the day.
     let mut c = opened(19_723);
     draw(&mut c, &cx);
     assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Redraw);
     assert_eq!(c.view, View::Edit);
     let mut c = opened(19_723);
-    c.event(Event::Key(Key::Down), &cx);
+    draw(&mut c, &cx);
+    c.event(Event::Key(Key::Right), &cx);
+    assert_eq!(c.day, 19_724);
+    c.event(Event::Key(Key::Left), &cx);
+    // Up goes to the views' tabs; there left and right choose the view.
+    c.event(Event::Key(Key::Up), &cx);
+    assert_eq!(
+        c.focus.point(),
+        kit::Focus::at(kit::foot_tab(TABS.len(), 0))
+    );
+    for want in [View::Agenda, View::Day, View::Week, View::Month] {
+        c.event(Event::Key(Key::Right), &cx);
+        draw(&mut c, &cx);
+        assert_eq!(c.view, want);
+    }
+    assert_eq!(c.day, 19_723);
+    // In Month the arrows walk the days: up from the tabs (past the
+    // chosen day's list) to a day of the last week, up again a week
+    // earlier, left the day before, each chosen as it is reached.
+    for _ in 0..6 {
+        c.event(Event::Key(Key::Up), &cx);
+        draw(&mut c, &cx);
+        if c.day != 19_723 {
+            break;
+        }
+    }
+    let last = c.day;
+    assert_ne!(last, 19_723, "no day reached");
+    c.event(Event::Key(Key::Up), &cx);
+    draw(&mut c, &cx);
+    assert_eq!(c.day, last - 7);
+    c.event(Event::Key(Key::Left), &cx);
+    draw(&mut c, &cx);
+    assert_eq!(c.day, last - 8);
+    // Every target of every view is within the arrows' reach of its tab
+    // (the class: nothing a stylus can tap is out of the D-pad's).
+    for (i, v) in TABS.into_iter().enumerate() {
+        let mut c = opened(19_723);
+        c.view = v;
+        draw(&mut c, &cx);
+        let all: std::vec::Vec<Rect> = c.targets().collect();
+        let mut seen = std::vec![kit::foot_tab(TABS.len(), i)];
+        let mut k0 = 0;
+        while k0 < seen.len() {
+            for k in [Key::Up, Key::Down, Key::Left, Key::Right] {
+                let mut f = kit::Focus::default();
+                f.set(seen[k0]);
+                if f.step(k, all.iter().copied())
+                    && let Some(r) = f.rect()
+                    && !seen.contains(&r)
+                {
+                    seen.push(r);
+                }
+            }
+            k0 += 1;
+        }
+        for r in &all {
+            assert!(seen.contains(r), "{v:?}: no way to {r:?}");
+        }
+    }
+    // The centre taps the focused appointment (Agenda's first, down from
+    // whatever leads the screen).
+    let mut c = opened(19_723);
+    c.view = View::Agenda;
+    draw(&mut c, &cx);
+    for _ in 0..12 {
+        c.event(Event::Key(Key::Down), &cx);
+        draw(&mut c, &cx);
+        let on = c.focus.point().and_then(|(x, y)| c.hits.at(x, y));
+        if matches!(on, Some(Hit::Appt(_))) {
+            break;
+        }
+    }
     assert_eq!(c.view, View::Agenda);
-    c.event(Event::Key(Key::Up), &cx);
-    c.event(Event::Key(Key::Up), &cx);
-    assert_eq!(c.view, View::Month);
+    c.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(c.view, View::Edit);
     // A day of the week strip shows that day's board; New rises over it.
     let mut c = opened(19_723);
     draw(&mut c, &cx);
@@ -363,4 +435,102 @@ fn the_board_shows_what_is_next_and_everything_on_it_opens() {
     assert_eq!((c.view, c.day), (View::Home, 19_725));
     draw(&mut c, &cx);
     assert!(c.hits.len() < 96);
+}
+
+#[test]
+fn the_dpad_works_the_editor_the_calendars_and_the_quick_add_sheet() {
+    // R203, the screens the views' walk left out.
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let st = g.as_mut().unwrap();
+        // 3:00 PM on the day the context calls today, an hour long.
+        let at = (date::start_of(19_723) + 15 * 60).to_le_bytes();
+        st.put(
+            Kind::Appointment,
+            None,
+            &[
+                (tag::TITLE, b"Dentist"),
+                (tag::START, &at),
+                (tag::MINUTES, &60u32.to_le_bytes()),
+            ],
+        )
+        .unwrap();
+        st.put(Kind::Calendar, None, &[(tag::NAME, b"Home")])
+            .unwrap();
+    }
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    draw(&mut c, &cx);
+    // The editor on what is next: down to the day, right a day later;
+    // the start a step later; the repeat to the chip beside; up to the
+    // title, the centre types in it.
+    assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Redraw);
+    assert_eq!(c.view, View::Edit);
+    let was = c.edit.unwrap();
+    for _ in 0..3 {
+        c.event(Event::Key(Key::Down), &cx);
+    }
+    c.event(Event::Key(Key::Right), &cx);
+    c.event(Event::Key(Key::Down), &cx);
+    c.event(Event::Key(Key::Right), &cx);
+    c.event(Event::Key(Key::Down), &cx);
+    c.event(Event::Key(Key::Left), &cx);
+    c.event(Event::Key(Key::Down), &cx);
+    c.event(Event::Key(Key::Right), &cx);
+    c.event(Event::Key(Key::Right), &cx);
+    c.event(Event::Key(Key::Left), &cx);
+    let now = c.edit.unwrap();
+    assert_eq!(now.day, was.day + 1);
+    assert_eq!(now.start, was.start + 15);
+    assert!(now.len < was.len);
+    assert_eq!(now.repeat, was.repeat + 1);
+    for _ in 0..9 {
+        c.event(Event::Key(Key::Up), &cx);
+    }
+    assert_eq!(c.edit.unwrap().row, Some(0));
+    c.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(c.edit.unwrap().typing, Some(EditText::Title));
+    draw(&mut c, &cx);
+    // Down to Delete: asked once (a move away takes it back), then gone.
+    let id = now.id.expect("a kept appointment");
+    for _ in 0..9 {
+        c.event(Event::Key(Key::Down), &cx);
+    }
+    assert_eq!(c.edit.unwrap().row, Some(8));
+    c.event(Event::Key(Key::Enter), &cx);
+    assert!(c.edit.unwrap().confirm_delete);
+    c.event(Event::Key(Key::Up), &cx);
+    c.event(Event::Key(Key::Down), &cx);
+    assert!(!c.edit.unwrap().confirm_delete);
+    c.event(Event::Key(Key::Enter), &cx);
+    c.event(Event::Key(Key::Enter), &cx);
+    assert!(pim.borrow().as_ref().unwrap().get(id).is_none());
+    // The calendars' list: its rows and the key that asks the PC are in
+    // reach; the centre hides a calendar as a tap does.
+    let mut c = opened(19_723);
+    c.view = View::Calendars;
+    draw(&mut c, &cx);
+    assert!(c.n_cal_rows > 0);
+    let hidden = |c: &Calendar| c.cals[..c.n_cals].iter().filter(|k| k.hidden).count();
+    c.event(Event::Key(Key::Down), &cx);
+    assert_eq!(c.focus.rect(), Some(c.cal_rows[0].0));
+    let before = hidden(&c);
+    c.event(Event::Key(Key::Enter), &cx);
+    draw(&mut c, &cx);
+    assert_eq!(hidden(&c), before + 1);
+    for _ in 0..8 {
+        c.event(Event::Key(Key::Down), &cx);
+    }
+    assert_eq!(c.focus.rect(), Some(GET_KEY));
+    let day = c.day;
+    c.event(Event::Key(Key::Left), &cx);
+    assert_eq!(c.day, day, "no days to step in the calendars' list");
+    // The quick-add sheet: down to its way into the full editor.
+    let mut c = opened(19_723);
+    c.view = View::New;
+    draw(&mut c, &cx);
+    c.event(Event::Key(Key::Down), &cx);
+    c.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(c.view, View::Edit);
 }

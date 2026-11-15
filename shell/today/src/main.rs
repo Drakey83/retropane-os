@@ -2475,7 +2475,11 @@ mod image {
             // A button that changed the screen: its answer is timed like a
             // touch's (the trail counted every button "no answer").
             let mut key_redraw = false;
-            key_events.update(rt::ticks() / TICKS_MS, scan, &mut |e| {
+            // The loop's own milliseconds (they wrap at 2^32, as the keys'
+            // arithmetic does; the tick counter's divided fall back to 0
+            // every 22 minutes, and a button held across that got no
+            // repeat and no press-and-hold until let go: R200).
+            key_events.update(now_ms as u32, scan, &mut |e| {
                 let screen = shell.screen().name();
                 match key_of(e.vk) {
                     Some(k) if matches!(e.kind, Kind::Down | Kind::Repeat) => {

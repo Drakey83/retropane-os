@@ -147,22 +147,29 @@ Built and tested in the emulator (2026-11-15), waiting for the X51v:
   the chosen day (a wide column that reads, six slim ones as bars of
   colour: seven equal columns are 58 px, three letters of a title).
 - Tasks: the home of numbers; every tile and row a target.
-- Contacts: search first, glossy favourites, a card a letter. No call
+- Contacts: search first, glossy favourites, a card a letter, the list
+  in pages. The card: every line copies by a tap; the editor types every
+  field, changes and deletes a kept person, sets a favourite. No call
   list: the X51v is no phone (the owner, 2026-11-15).
 - Notes: the home as paper (the pinned note a whole sheet with its
   writing, the rest sheets of their own pastel, the filters as foot tabs,
   a drag or the D-pad turns the page so no note is out of reach); the
   palette tray; ink a stroke at a time from its bytes (no count of
-  strokes).
+  strokes), going on past the note's record into pages of its own.
 - Calculator: one glass display (the tape over a hairline over the sum
-  and its answer, as large as it fits), gel keys.
+  and its answer, as large as it fits), gel keys; the D-pad on every
+  key, chip and tape line.
 - The D-pad in every app (`kit::Focus`): the arrows go to the nearest
   thing a tap can hit the way they point, the centre taps it; built on
   the targets a screen records for the stylus, so nothing tappable is out
   of its reach and no screen keeps a second layout for the keys.
 
-Next: what the owner finds on the X51v; ink past one record (R206); the
-image's room (R208).
+Every screen of the five answers the D-pad, each held by a test that
+walks to every target it draws.
+
+Next: what the owner finds on the X51v; the card's E-mail, Map and To PC
+keys (R210); what Contacts' editor does not hold yet (R211); the image's
+room (R208).
 
 ## Version 2 (2026-11-14): why the first version produced plain apps
 
