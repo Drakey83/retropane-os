@@ -115,6 +115,9 @@ pub enum View {
     Calendars,
     /// An appointment's details as grouped cards.
     Edit,
+    /// The search: every appointment kept whose title or place holds
+    /// what is typed, whenever it is.
+    Find,
 }
 
 /// The editor's text field being typed.
@@ -179,6 +182,8 @@ const EDIT_ROWS: [(u16, u16); 9] = [
 
 /// The key on the title band that opens the calendars.
 const CALENDARS_KEY: Rect = Rect::new(W - MARGIN - 128, 46, 128, 30);
+/// The search's field.
+const FIND_FIELD: Rect = Rect::new(MARGIN, 36 + kit::TITLE_BAND + 4, WIDE, 38);
 /// The calendars screen's "Get calendars" key.
 const GET_KEY: Rect = Rect::new(MARGIN, 540, WIDE, 44);
 /// Events read from one calendar link at a time.
@@ -208,6 +213,8 @@ enum Hit {
     Appt(u32),
     /// The quick-add sheet opened.
     New,
+    /// The search opened (Agenda's search field).
+    Find,
 }
 
 /// The Calendar program.
@@ -229,6 +236,16 @@ pub struct Calendar {
     hits: kit::Hits<Hit, 96>,
     /// The D-pad's target among them (R203).
     focus: kit::Focus,
+    /// The search: what is typed, whether the keyboard is up, the rows
+    /// on screen with their appointments, the first match shown and how
+    /// many there are.
+    find: [u8; 32],
+    find_n: usize,
+    find_typing: bool,
+    find_rows: [(Rect, u32); 9],
+    n_find: usize,
+    find_first: u16,
+    find_total: u16,
     /// The calendars' rows as drawn (a tap shows or hides one).
     cal_rows: [(Rect, u32); 8],
     n_cal_rows: usize,
@@ -400,6 +417,13 @@ impl Calendar {
             n_rows: 0,
             hits: kit::Hits::new(),
             focus: kit::Focus::default(),
+            find: [0; 32],
+            find_n: 0,
+            find_typing: false,
+            find_rows: [(Rect::new(0, 0, 0, 0), 0); 9],
+            n_find: 0,
+            find_first: 0,
+            find_total: 0,
             n_cal_rows: 0,
             want_list: false,
             asked: Asked::Nothing,
@@ -2266,6 +2290,7 @@ impl Program for Calendar {
         match self.view {
             View::New => ("Cancel", "Add"),
             View::Calendars => ("Back", ""),
+            View::Find => ("Back", "Find"),
             View::Edit if self.edit.is_some_and(|e| e.read_only) => ("Back", ""),
             View::Edit => ("Cancel", "Done"),
             _ => ("Today", "New"),
@@ -2284,6 +2309,11 @@ impl Program for Calendar {
         if self.view == View::Calendars {
             let under = self.title(f, cx);
             self.calendars_view(f, cx, under + 4);
+            return;
+        }
+        if self.view == View::Find {
+            self.find_view(f, cx);
+            self.focus.ring(f, self.targets());
             return;
         }
         // The quick-add sheet rises over the view it came from.
@@ -2315,7 +2345,19 @@ impl Program for Calendar {
                 View::Month => self.month_view(f, cx, y),
                 _ => {
                     self.strip(f, cx, y);
-                    self.agenda(f, cx, y + 70);
+                    // The way into the search: a field over the agenda.
+                    let field = Rect::new(MARGIN, y + 68, WIDE, 34);
+                    kit::panel(f, cx, field);
+                    kit::text(
+                        f,
+                        field.x + 14,
+                        field.y + 23,
+                        cx.fonts.ui,
+                        DIM,
+                        b"Search every appointment",
+                    );
+                    self.hits.add(field, Hit::Find);
+                    self.agenda(f, cx, y + 108);
                 }
             }
         }
@@ -2421,6 +2463,12 @@ impl Program for Calendar {
                     self.under = self.view;
                     self.view = View::New;
                 }
+                Hit::Find => {
+                    self.view = View::Find;
+                    self.find_typing = true;
+                    self.find_first = 0;
+                    self.focus.clear();
+                }
             }
             return Reply::Redraw;
         }
@@ -2434,6 +2482,85 @@ impl Program for Calendar {
         // and right choose the view; a tab or a day is chosen as the
         // focus lands on it; the centre taps the target (with none on the
         // board, it opens what is next).
+        // The Calendar button, pressed in Calendar, steps through the
+        // views (Windows Mobile's does; ours from any of its screens).
+        if e == Event::Key(Key::App) {
+            let i = TABS.iter().position(|v| *v == self.view);
+            self.view = TABS[i.map_or(0, |i| (i + 1) % TABS.len())];
+            self.focus.clear();
+            return Reply::Redraw;
+        }
+        if self.view == View::Find {
+            let page = self.find_rows.len() as u16;
+            match e {
+                Event::Char(c) if self.find_n < self.find.len() => {
+                    self.find[self.find_n] = c;
+                    self.find_n += 1;
+                    self.find_first = 0;
+                    return Reply::Redraw;
+                }
+                Event::Delete => {
+                    self.find_n = self.find_n.saturating_sub(1);
+                    self.find_first = 0;
+                    return Reply::Redraw;
+                }
+                Event::Done => {
+                    self.find_typing = false;
+                    return Reply::Redraw;
+                }
+                Event::Key(Key::SoftRight) => {
+                    self.find_typing = !self.find_typing;
+                    return Reply::Redraw;
+                }
+                Event::Key(Key::SoftLeft) => {
+                    self.view = View::Agenda;
+                    self.find_typing = false;
+                    self.focus.clear();
+                    return Reply::Redraw;
+                }
+                Event::PenUp { x, y } => {
+                    if FIND_FIELD.contains_point(x, y) {
+                        self.find_typing = true;
+                        return Reply::Redraw;
+                    }
+                    let hit = self.find_rows[..self.n_find]
+                        .iter()
+                        .find(|(r, _)| r.contains_point(x, y))
+                        .map(|t| t.1);
+                    if let Some(id) = hit {
+                        self.find_typing = false;
+                        self.open_edit(cx, Some(id));
+                        return Reply::Redraw;
+                    }
+                    return Reply::Nothing;
+                }
+                // The arrows walk the field and the rows; past the last
+                // row or the first, the next page or the one before.
+                Event::Key(k @ (Key::Up | Key::Down)) => {
+                    let mut focus = self.focus;
+                    let moved = focus.step(k, self.targets());
+                    self.focus = focus;
+                    if !moved {
+                        if k == Key::Down && self.find_first + page < self.find_total {
+                            self.find_first += page;
+                        } else if k == Key::Up && self.find_first > 0 {
+                            self.find_first = self.find_first.saturating_sub(page);
+                        } else {
+                            return Reply::Nothing;
+                        }
+                        self.focus.clear();
+                    }
+                    return Reply::Redraw;
+                }
+                Event::Key(Key::Enter) => {
+                    return match self.focus.point() {
+                        Some((x, y)) => self.event(Event::PenUp { x, y }, cx),
+                        None => Reply::Nothing,
+                    };
+                }
+                _ => return Reply::Nothing,
+            }
+        }
         let tabs = TABS.contains(&self.view);
         let walked = tabs || matches!(self.view, View::Calendars | View::New);
         if let Event::Key(k @ (Key::Up | Key::Down | Key::Left | Key::Right)) = e
@@ -2575,6 +2702,7 @@ impl Program for Calendar {
     fn keyboard(&self) -> Option<Field> {
         match (self.view, self.edit.and_then(|e| e.typing)) {
             (View::New, _) => Some(Field::Line),
+            (View::Find, _) if self.find_typing => Some(Field::Line),
             (View::Edit, Some(EditText::Title)) => Some(Field::Name),
             (View::Edit, Some(EditText::Place)) => Some(Field::Address),
             _ => None,
@@ -2684,6 +2812,9 @@ impl Calendar {
             .chain(once(GET_KEY))
             .filter(move |_| view == View::Calendars);
         let new = once(Rect::new(MARGIN, 322, WIDE, 44)).filter(move |_| view == View::New);
+        let found = once(FIND_FIELD)
+            .chain(self.find_rows[..self.n_find].iter().map(|r| r.0))
+            .filter(move |_| view == View::Find);
         self.hits
             .rects()
             .filter(move |_| tabs)
@@ -2691,6 +2822,136 @@ impl Calendar {
             .chain(key)
             .chain(cals)
             .chain(new)
+            .chain(found)
+    }
+
+    /// The search (Windows Mobile's Calendar has none; a phone's lists
+    /// matches by day): every appointment kept whose title or place holds
+    /// what is typed, soonest first, read from the store's records (not
+    /// from the window of days the views hold), the match in the system
+    /// accent; a row opens its appointment.
+    #[inline(never)]
+    fn find_view(&mut self, f: &mut Frame, cx: &Ctx) {
+        self.n_find = 0;
+        kit::large_title(
+            f,
+            cx,
+            36,
+            b"Search",
+            b"Every appointment kept",
+            tint::CALENDAR,
+        );
+        kit::panel(f, cx, FIND_FIELD);
+        if self.find_typing {
+            f.push(rp_app::Cmd::Outline {
+                r: FIND_FIELD,
+                color: kit::FOCUS,
+            });
+        }
+        let q = &self.find[..self.find_n];
+        let (ui, label) = (cx.fonts.ui, cx.fonts.label);
+        if q.is_empty() {
+            kit::text(
+                f,
+                FIND_FIELD.x + 14,
+                FIND_FIELD.y + 25,
+                ui,
+                DIM,
+                b"A word of its title or place",
+            );
+        } else {
+            kit::text(f, FIND_FIELD.x + 14, FIND_FIELD.y + 25, ui, TEXT, q);
+        }
+        let at = |hay: &[u8]| {
+            (!q.is_empty() && hay.len() >= q.len())
+                .then(|| hay.windows(q.len()).position(|w| w.eq_ignore_ascii_case(q)))
+                .flatten()
+        };
+        let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
+            return;
+        };
+        let Some(store) = guard.as_ref() else { return };
+        // The matches' starts and ids, soonest first (kept in order as
+        // they come: the store gives none).
+        let mut found = [(0u32, 0u32); MAX];
+        let mut n = 0;
+        if !q.is_empty() {
+            for r in store.all(Kind::Appointment) {
+                if at(r.text(tag::TITLE)).is_none() && at(r.text(tag::PLACE)).is_none() {
+                    continue;
+                }
+                let key = (r.num(tag::START).unwrap_or(0), r.id);
+                let to = found[..n].iter().position(|k| *k > key).unwrap_or(n);
+                if n < MAX {
+                    found.copy_within(to..n, to + 1);
+                    found[to] = key;
+                    n += 1;
+                }
+            }
+        }
+        self.find_total = n as u16;
+        if usize::from(self.find_first) >= n {
+            self.find_first = 0;
+        }
+        let first = usize::from(self.find_first);
+        let mut y = FIND_FIELD.y + FIND_FIELD.h + 8;
+        for &(start, id) in found[first..n].iter().take(self.find_rows.len()) {
+            let Some(r) = store.get(id) else { continue };
+            let row = Rect::new(MARGIN, y, WIDE, 46);
+            kit::panel(f, cx, row);
+            let d = date::date_of(date::day_of(start));
+            let mut when = Buf::<24>::new();
+            when.s(&MONTHS[usize::from(d.month - 1)][..3])
+                .s(b" ")
+                .num(u32::from(d.day))
+                .s(b", ")
+                .num(d.year.unsigned_abs());
+            kit::text(f, row.x + 14, row.y + 20, label, DIM, when.get());
+            if r.num(tag::ALL_DAY) != Some(1) {
+                kit::text(
+                    f,
+                    row.x + 14,
+                    row.y + 40,
+                    label,
+                    DIM,
+                    clock((start % date::DAY_MIN) as u16).get(),
+                );
+            }
+            let (title, place) = (r.text(tag::TITLE), r.text(tag::PLACE));
+            let x = row.x + 130;
+            for (text, ty, col) in [(title, row.y + 20, TEXT), (place, row.y + 40, DIM)] {
+                kit::fitted(f, x, ty, ui, col, text, row.w - 144);
+                if let Some(m) = at(text) {
+                    let mx = x + ui.width(&text[..m]);
+                    if mx < x + row.w - 144 {
+                        kit::text(f, mx, ty, ui, kit::FOCUS, &text[m..m + q.len()]);
+                    }
+                }
+            }
+            self.find_rows[self.n_find] = (row, id);
+            self.n_find += 1;
+            y += 50;
+        }
+        let mut b = Buf::<24>::new();
+        if q.is_empty() {
+            b.s(b"Type to search");
+        } else if n == 0 {
+            b.s(b"Nothing holds that");
+        } else {
+            b.num(first as u32 + 1)
+                .s(b"-")
+                .num((first + self.n_find) as u32)
+                .s(b" of ")
+                .num(n as u32);
+        }
+        kit::right(
+            f,
+            FIND_FIELD.right() - 14,
+            FIND_FIELD.y + 24,
+            label,
+            DIM,
+            b.get(),
+        );
     }
 }
 

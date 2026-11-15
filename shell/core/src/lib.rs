@@ -2915,6 +2915,24 @@ impl Shell {
             if !self.programs {
                 return Action::Nothing;
             }
+            // Its own button, pressed while the app is open, is the app's
+            // to answer (Calendar steps through its views, as Windows
+            // Mobile's does; Contacts goes back to its list): it is not
+            // closed and opened again.
+            let own = match k {
+                Key::Calendar => "Calendar",
+                Key::Contacts => "Contacts",
+                _ => "",
+            };
+            if self.screen == Screen::Program
+                && self
+                    .program
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|p| p.title() == own)
+            {
+                return self.program_event(rp_app::Event::Key(rp_app::Key::App));
+            }
             self.set_menu(false);
             self.go_today();
             let n = match k {

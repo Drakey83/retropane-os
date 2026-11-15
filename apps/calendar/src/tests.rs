@@ -534,3 +534,107 @@ fn the_dpad_works_the_editor_the_calendars_and_the_quick_add_sheet() {
     c.event(Event::Key(Key::Enter), &cx);
     assert_eq!(c.view, View::Edit);
 }
+
+#[test]
+fn the_calendar_button_steps_through_the_views() {
+    let cx = ctx(store());
+    let mut c = opened(19_723);
+    for want in [View::Agenda, View::Day, View::Week, View::Month, View::Home] {
+        assert_eq!(c.event(Event::Key(Key::App), &cx), Reply::Redraw);
+        assert_eq!(c.view, want);
+    }
+    // From a screen that is no view: the first.
+    c.view = View::Calendars;
+    c.event(Event::Key(Key::App), &cx);
+    assert_eq!(c.view, View::Home);
+}
+
+#[test]
+fn search_finds_appointments_of_any_day_by_title_or_place() {
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let st = g.as_mut().unwrap();
+        // Far from the days the views hold: a year back, a year on.
+        for (title, place, day) in [
+            (&b"Dentist"[..], &b"Dr. Lee, 410 Pine St"[..], 19_723 - 365),
+            (b"Lunch with Sam", b"Cafe Vita", 19_723),
+            (b"Book club", b"Pine Street Library", 19_723 + 365),
+            (b"Stand-up", b"Zoom", 19_724),
+        ] {
+            let at = (date::start_of(day) + 9 * 60).to_le_bytes();
+            st.put(
+                Kind::Appointment,
+                None,
+                &[(tag::TITLE, title), (tag::PLACE, place), (tag::START, &at)],
+            )
+            .unwrap();
+        }
+    }
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    c.view = View::Agenda;
+    draw(&mut c, &cx);
+    // Agenda's search field opens the search, the keyboard up; the D-pad
+    // reaches it as it does every target.
+    let field = c
+        .hits
+        .rects()
+        .find(|r| c.hits.at(r.x + 5, r.y + 5) == Some(Hit::Find))
+        .expect("a search field");
+    c.event(
+        Event::PenDown {
+            x: field.x + 5,
+            y: field.y + 5,
+        },
+        &cx,
+    );
+    c.event(
+        Event::PenUp {
+            x: field.x + 5,
+            y: field.y + 5,
+        },
+        &cx,
+    );
+    assert_eq!(c.view, View::Find);
+    assert_eq!(c.keyboard(), Some(Field::Line));
+    for &ch in b"pine" {
+        c.event(Event::Char(ch), &cx);
+    }
+    draw(&mut c, &cx);
+    // A year back and a year on, the sooner first; by the place.
+    assert_eq!(c.n_find, 2);
+    let title = |id: u32| {
+        let g = pim.borrow();
+        g.as_ref()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .text(tag::TITLE)
+            .to_vec()
+    };
+    assert_eq!(title(c.find_rows[0].1), b"Dentist");
+    assert_eq!(title(c.find_rows[1].1), b"Book club");
+    // The D-pad: down to the field, then the rows; the centre opens one.
+    c.event(Event::Done, &cx);
+    assert_eq!(c.keyboard(), None);
+    c.event(Event::Key(Key::Down), &cx);
+    c.event(Event::Key(Key::Down), &cx);
+    c.event(Event::Key(Key::Down), &cx);
+    assert_eq!(c.focus.rect(), Some(c.find_rows[1].0));
+    c.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(c.view, View::Edit);
+    assert_eq!(c.edit.unwrap().id, Some(c.find_rows[1].1));
+    // Nothing typed, or nothing found: no rows.
+    let mut c = opened(19_723);
+    c.view = View::Find;
+    draw(&mut c, &cx);
+    assert_eq!(c.n_find, 0);
+    for &ch in b"zzz" {
+        c.event(Event::Char(ch), &cx);
+    }
+    draw(&mut c, &cx);
+    assert_eq!((c.n_find, c.find_total), (0, 0));
+    c.event(Event::Key(Key::SoftLeft), &cx);
+    assert_eq!(c.view, View::Agenda);
+}

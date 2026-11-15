@@ -60,10 +60,10 @@ Catch a thought in a second, by stylus or keyboard, and find it again.
 | Ruled, plain and grid paper | sheet | built | apps/notes/src/lib.rs, shell/pim/src/store.rs |
 | A note as blocks: text, ink and checklists in any order | sheet | pending | |
 | Checklists with the round tick | apps-and-packs: checklists | built | apps/notes/src/lib.rs, apps/notes/src/tests.rs |
-| Search over typed text and titles with the match highlighted | apps-and-packs: search typed notes | pending | |
+| Search over typed text and titles with the match highlighted | apps-and-packs: search typed notes | built | apps/notes/src/lib.rs, apps/notes/src/tests.rs |
 | Export as text or Markdown, ink as SVG or PNG; import text files | apps-and-packs: export | pending | |
 | Notes of any length | sheet | pending | |
-| Undo and redo for typing and strokes | sheet | pending | |
+| Undo and redo for typing and strokes | sheet | built | apps/notes/src/lib.rs, apps/notes/src/tests.rs |
 | Sentence capitals and word suggestions in text blocks | sheet | pending | |
 | The Today screen's Note button opens a new ink note | sheet | built | shell/core/src/lib.rs, apps/notes/src/lib.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |

@@ -1304,6 +1304,12 @@ impl Program for Contacts {
             self.confirm_delete = false;
             return Reply::Redraw;
         }
+        // The Contacts button, pressed in Contacts: back to the list.
+        if e == Event::Key(Key::App) {
+            self.searching = false;
+            self.go(View::List);
+            return Reply::Redraw;
+        }
         match (e, self.view) {
             // The softkey Done keeps the person (the keyboard's Done
             // moves to the next field).

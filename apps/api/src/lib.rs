@@ -141,6 +141,9 @@ pub enum Key {
     SoftLeft,
     /// The right softkey.
     SoftRight,
+    /// The app's own program button, pressed while the app is open (the
+    /// Calendar button in Calendar: Windows Mobile's cycles its views).
+    App,
 }
 
 /// One event for the app.

@@ -4062,6 +4062,28 @@ fn the_program_buttons_open_their_apps_from_anywhere() {
     s.open_program(Box::leak(Box::new(Plain)));
     assert_eq!(s.input(Input::Key(Key::Contacts)), Action::OpenProgram(1));
     assert_eq!(s.screen(), Screen::Today);
+    // Its own button with the app open is the app's: not opened again.
+    struct Cal(std::rc::Rc<core::cell::Cell<u32>>);
+    impl rp_app::Program for Cal {
+        fn title(&self) -> &'static str {
+            "Calendar"
+        }
+        fn softkeys(&self) -> (&'static str, &'static str) {
+            ("Back", "")
+        }
+        fn draw(&mut self, _: &mut rp_app::Frame, _: &rp_app::Ctx) {}
+        fn event(&mut self, e: rp_app::Event, _: &rp_app::Ctx) -> rp_app::Reply {
+            if e == rp_app::Event::Key(rp_app::Key::App) {
+                self.0.set(self.0.get() + 1);
+            }
+            rp_app::Reply::Redraw
+        }
+    }
+    let presses = std::rc::Rc::new(core::cell::Cell::new(0));
+    s.open_program(Box::leak(Box::new(Cal(presses.clone()))));
+    assert_ne!(s.input(Input::Key(Key::Calendar)), Action::OpenProgram(0));
+    assert_eq!((presses.get(), s.screen()), (1, Screen::Program));
+    assert_eq!(s.input(Input::Key(Key::Contacts)), Action::OpenProgram(1));
     // Record: Notes on a new note.
     assert_eq!(s.input(Input::Key(Key::Record)), Action::OpenProgram(3));
     assert_eq!(s.take_intent(), rp_app::INTENT_NEW);

@@ -129,7 +129,7 @@ fn new_then_write_a_stroke_then_undo_it() {
     draw(&mut n, &cx);
     n.event(
         Event::PenUp {
-            x: STRIP.x + 6 + 5 * 76 + 10,
+            x: tool_key(5).x + 10,
             y: STRIP.y + 20,
         },
         &cx,
@@ -189,7 +189,7 @@ fn typing_a_list_adds_items_and_return_starts_the_next() {
     // LIST, then "Eggs", Return, "Tea".
     n.event(
         Event::PenUp {
-            x: STRIP.x + 6 + 4 * 76 + 10,
+            x: tool_key(4).x + 10,
             y: STRIP.y + 20,
         },
         &cx,
@@ -685,7 +685,7 @@ fn the_dpad_reaches_an_open_note_s_tools_colours_sizes_and_menu() {
         (seen.len(), k)
     };
     let (seen, all) = reach(&n);
-    assert_eq!((seen, all), (15, 15));
+    assert_eq!((seen, all), (16, 16));
     // The first arrow lands on the first colour well; right, and the
     // centre: the pen takes the second colour.
     n.event(Event::Key(Key::Down), &cx);
@@ -710,4 +710,98 @@ fn the_dpad_reaches_an_open_note_s_tools_colours_sizes_and_menu() {
     let g = pim.borrow();
     let r = g.as_ref().unwrap().all(Kind::Note).next().unwrap();
     assert_eq!(r.num(tag::PINNED), Some(1));
+}
+
+#[test]
+fn a_search_s_match_is_found_for_the_highlighter() {
+    assert_eq!(match_at(b"Plant tomatoes", b"TOMA"), Some(6));
+    assert_eq!(match_at(b"Plant tomatoes", b"plant"), Some(0));
+    assert_eq!(match_at(b"Plant", b"plants"), None);
+    assert_eq!(match_at(b"Plant", b""), None);
+}
+
+#[test]
+fn redo_puts_back_what_undo_took_strokes_and_typing() {
+    let pim = store();
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    n.event(Event::Key(Key::SoftRight), &cx);
+    draw(&mut n, &cx);
+    let id = n.open_id().unwrap();
+    let (ix, iy) = n.ink_at.expect("an ink panel on screen");
+    let tap = |n: &mut Notes, k: usize| {
+        let r = tool_key(k);
+        n.event(
+            Event::PenDown {
+                x: r.x + 9,
+                y: r.y + 9,
+            },
+            &cx,
+        );
+        n.event(
+            Event::PenUp {
+                x: r.x + 9,
+                y: r.y + 9,
+            },
+            &cx,
+        );
+    };
+    // The seven keys lie inside the strip, apart.
+    for k in 0..7 {
+        let r = tool_key(k);
+        assert!(r.x >= STRIP.x && r.right() <= STRIP.right(), "{k}");
+        assert!(k == 0 || tool_key(k - 1).right() < r.x);
+    }
+    // Three strokes; two undone, one put back, in order.
+    for k in 0..3 {
+        stroke(&mut n, &cx, ix + 10, iy + 20 + k * 30, 12, |s| {
+            if s % 2 == 0 { 0 } else { 9 }
+        });
+    }
+    let ink = |pim: &core::cell::RefCell<Option<Store<'static>>>| {
+        let g = pim.borrow();
+        g.as_ref().unwrap().get(id).unwrap().text(tag::INK).to_vec()
+    };
+    let three = ink(pim);
+    tap(&mut n, 5);
+    let two = ink(pim);
+    tap(&mut n, 5);
+    assert!(ink(pim).len() < two.len() && two.len() < three.len());
+    tap(&mut n, 6);
+    assert_eq!(ink(pim), two);
+    tap(&mut n, 6);
+    assert_eq!(ink(pim), three);
+    // Nothing more to put back: REDO does nothing.
+    tap(&mut n, 6);
+    assert_eq!(ink(pim), three);
+    // A new stroke forgets what was undone.
+    tap(&mut n, 5);
+    stroke(&mut n, &cx, ix + 200, iy + 20, 12, |_| 0);
+    let now = ink(pim);
+    tap(&mut n, 6);
+    assert_eq!(ink(pim), now);
+    // Typing: letters undone and put back.
+    tap(&mut n, 3);
+    for &c in b"Milk" {
+        n.event(Event::Char(c), &cx);
+    }
+    let text = |pim: &core::cell::RefCell<Option<Store<'static>>>| {
+        let g = pim.borrow();
+        g.as_ref()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .text(tag::TEXT)
+            .to_vec()
+    };
+    let typed = text(pim);
+    assert!(typed.ends_with(b"Milk"));
+    n.event(Event::Delete, &cx);
+    n.event(Event::Delete, &cx);
+    assert!(text(pim).ends_with(b"Mi"));
+    assert_eq!(ink(pim), now, "backspace takes letters, not strokes");
+    tap(&mut n, 6);
+    tap(&mut n, 6);
+    assert_eq!(text(pim), typed);
 }

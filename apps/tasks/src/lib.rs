@@ -118,6 +118,9 @@ pub struct Tasks {
     next: u8,
     total: u8,
     show_done: bool,
+    /// The list shown is the search: every list's tasks, the done ones
+    /// too, whose title holds what is typed in the line.
+    find: bool,
     done_row: Option<Rect>,
     down_y: Option<u16>,
 }
@@ -126,10 +129,29 @@ pub struct Tasks {
 /// everything drawn answers the stylus; the version 2 home answered none).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Hit {
+    /// The search across every list opened.
+    Find,
     /// A list opened (`None`: Today).
     List(Option<u8>),
     /// A task ticked.
     Tick(u32),
+}
+
+/// The home's SEARCH key (on the LISTS line's right).
+const FIND_KEY: Rect = Rect::new(MARGIN + WIDE - 96, 238, 96, 26);
+
+/// Where `hay` holds `needle`, whatever its capitals (an empty one: at
+/// the start).
+fn holds(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    (hay.len() >= needle.len())
+        .then(|| {
+            hay.windows(needle.len())
+                .position(|w| w.eq_ignore_ascii_case(needle))
+        })
+        .flatten()
 }
 
 const FLAGS: [u32; 4] = [0, kit::IDENTITY[4], kit::AMBER, LATE];
@@ -194,6 +216,7 @@ impl Tasks {
             next: 0,
             total: 0,
             show_done: false,
+            find: false,
             done_row: None,
             down_y: None,
         }
@@ -560,6 +583,11 @@ impl Tasks {
         }
         // The lists, each its own colour and progress.
         kit::section(f, cx, 252, b"LISTS", t);
+        // Search across every list (Windows Mobile's Tasks has none; a
+        // phone's searches a list at a time).
+        kit::key(f, cx, FIND_KEY, kit::KeyState::Rest);
+        kit::centred(f, FIND_KEY, FIND_KEY.y + 18, label, TEXT, b"SEARCH");
+        self.hits.add(FIND_KEY, Hit::Find);
         let rows = self.n_lists.min(4).div_ceil(2) as u16;
         for (i, list) in self.lists[..self.n_lists.min(4)].iter().enumerate() {
             let of_list = |done: bool| {
@@ -689,7 +717,16 @@ impl Tasks {
                 .map_or((b"List", tint::TASKS), |l| (l.name.get(), l.colour)),
             None => (b"Today", tint::TASKS),
         };
-        let mut y = kit::large_title(f, cx, 36, name, b"Tap the circle when it's done", colour);
+        let find = self.find;
+        let (name, sub): (&[u8], &[u8]) = if find {
+            (b"Search", b"Every list, the done ones too")
+        } else {
+            (name, b"Tap the circle when it's done")
+        };
+        // (A copy: the line is read while the rows are recorded.)
+        let (typed, typed_n) = (self.line, self.line_n);
+        let q = &typed[..typed_n];
+        let mut y = kit::large_title(f, cx, 36, name, sub, colour);
         // The add line, the understood words in the tint.
         let field = Rect::new(MARGIN, y + 4, WIDE, 40);
         kit::panel(f, cx, field);
@@ -700,7 +737,11 @@ impl Tasks {
                 field.y + 27,
                 cx.fonts.ui,
                 DIM,
-                b"+ Add a task: Pay rent fri !",
+                if find {
+                    b"A word of the task"
+                } else {
+                    b"+ Add a task: Pay rent fri !"
+                },
             );
         } else {
             let mut x = field.x + 14;
@@ -708,23 +749,24 @@ impl Tasks {
                 .split(|&b| b == b' ')
                 .filter(|w| !w.is_empty())
             {
-                let understood = w.starts_with(b"!")
-                    || w.starts_with(b"#")
-                    || [
-                        &b"today"[..],
-                        b"tomorrow",
-                        b"mon",
-                        b"tue",
-                        b"wed",
-                        b"thu",
-                        b"fri",
-                        b"sat",
-                        b"sun",
-                        b"every",
-                        b"week",
-                        b"month",
-                    ]
-                    .contains(&w);
+                let understood = !find
+                    && (w.starts_with(b"!")
+                        || w.starts_with(b"#")
+                        || [
+                            &b"today"[..],
+                            b"tomorrow",
+                            b"mon",
+                            b"tue",
+                            b"wed",
+                            b"thu",
+                            b"fri",
+                            b"sat",
+                            b"sun",
+                            b"every",
+                            b"week",
+                            b"month",
+                        ]
+                        .contains(&w));
                 kit::text(
                     f,
                     x,
@@ -742,6 +784,7 @@ impl Tasks {
         }
         y += 52;
         let mine = |t: &&Task| match which {
+            _ if find => holds(t.title.get(), q).is_some(),
             Some(i) => t.list == i,
             None => t.due.is_some_and(|d| d <= today),
         };
@@ -764,7 +807,7 @@ impl Tasks {
         open[..n].sort_unstable_by_key(key);
         // The done ones after them, once asked for (a task ticked by
         // mistake could not be seen again, so never unticked).
-        if self.show_done {
+        if self.show_done || find {
             for (k, t) in self.tasks.iter().enumerate() {
                 if t.as_ref().is_some_and(|t| mine(&t) && t.done) {
                     open[n] = k as u8;
@@ -837,6 +880,24 @@ impl Tasks {
             }
             let ink = if t.done { DIM } else { TEXT };
             kit::fitted(f, r.x + 48, r.y + 21, cx.fonts.ui, ink, t.title.get(), 250);
+            // The match in the title, in the system accent.
+            if find
+                && !q.is_empty()
+                && let Some(m) = holds(t.title.get(), q)
+            {
+                let title = t.title.get();
+                let x = r.x + 48 + cx.fonts.ui.width(&title[..m]);
+                if x < r.x + 48 + 250 {
+                    kit::text(
+                        f,
+                        x,
+                        r.y + 21,
+                        cx.fonts.ui,
+                        kit::FOCUS,
+                        &title[m..m + q.len()],
+                    );
+                }
+            }
             if self.revealed == Some(t.id) {
                 let words: [&[u8]; 3] = [b"TOMORROW", b"NEXT WEEK", b"DELETE"];
                 for (k, w) in words.iter().enumerate() {
@@ -923,7 +984,7 @@ impl Tasks {
             .count();
         let foot = Rect::new(MARGIN, 560, WIDE, 36);
         let mut b = [0u8; 40];
-        if done > 0 {
+        if done > 0 && !find {
             kit::panel(f, cx, foot);
             let ci = self.colour_index(which.unwrap_or(0));
             kit::round_check(
@@ -993,6 +1054,7 @@ impl Program for Tasks {
     fn softkeys(&self) -> (&'static str, &'static str) {
         match self.view {
             View::Home => ("Back", "New"),
+            View::List(_) if self.find => ("Back", "Find"),
             View::List(_) => ("Back", "Add"),
         }
     }
@@ -1141,7 +1203,11 @@ impl Program for Tasks {
                 Reply::Nothing
             }
             (Event::Key(Key::SoftRight) | Event::Done, View::List(_)) if self.typing => {
-                self.add_typed(cx);
+                if self.find {
+                    self.typing = false;
+                } else {
+                    self.add_typed(cx);
+                }
                 Reply::Redraw
             }
             (Event::Key(Key::SoftRight), View::List(_)) => {
@@ -1149,6 +1215,14 @@ impl Program for Tasks {
                 Reply::Redraw
             }
             (Event::PenUp { x, y }, View::Home) => match self.hits.at(x, y) {
+                Some(Hit::Find) => {
+                    self.find = true;
+                    self.typing = true;
+                    self.line_n = 0;
+                    self.listed = None;
+                    self.view = View::List(None);
+                    Reply::Redraw
+                }
                 Some(Hit::List(which)) => {
                     self.view = View::List(which);
                     Reply::Redraw
@@ -1168,9 +1242,16 @@ impl Program for Tasks {
             (Event::Key(Key::SoftLeft), View::Home) => Reply::Close,
             (Event::Key(Key::SoftLeft), _) => {
                 if self.typing {
+                    // (The search keeps its word: only the keyboard goes.)
                     self.typing = false;
-                    self.line_n = 0;
+                    if !self.find {
+                        self.line_n = 0;
+                    }
                 } else {
+                    if self.find {
+                        self.find = false;
+                        self.line_n = 0;
+                    }
                     self.view = View::Home;
                 }
                 Reply::Redraw
@@ -1182,10 +1263,12 @@ impl Program for Tasks {
             (Event::Char(c), View::List(_)) if self.line_n < self.line.len() => {
                 self.line[self.line_n] = c;
                 self.line_n += 1;
+                (self.first, self.n_pages) = (0, 0);
                 Reply::Redraw
             }
             (Event::Delete, View::List(_)) if self.line_n > 0 => {
                 self.line_n -= 1;
+                (self.first, self.n_pages) = (0, 0);
                 Reply::Redraw
             }
             _ => Reply::Nothing,
@@ -1193,7 +1276,7 @@ impl Program for Tasks {
     }
 
     fn keyboard(&self) -> Option<Field> {
-        (matches!(self.view, View::List(_)) && (self.typing || self.line_n > 0))
+        (matches!(self.view, View::List(_)) && (self.typing || (self.line_n > 0 && !self.find)))
             .then_some(Field::Line)
     }
 }

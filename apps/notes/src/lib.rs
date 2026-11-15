@@ -229,6 +229,77 @@ fn ink_op(cx: &Ctx, rec: u32, op: InkOp<'_>, page: bool) -> bool {
     done
 }
 
+/// The packed stroke `stroke` added at the end of note `id`'s ink: the
+/// last page's, or the note's own while it has none (a note with no ink
+/// panel yet gets its place at the text's end); where that is full, a
+/// new page.
+fn add_stroke(cx: &Ctx, id: u32, stroke: &[u8]) -> bool {
+    let (page, np) = pages_of(cx, id);
+    let on_last = match page[..np].last() {
+        Some(&p) => ink_op(cx, p, InkOp::Add(stroke), true),
+        None => {
+            text_edit(cx, id, &mut |text, tn| {
+                if text[..*tn].split(|&c| c == 10).any(|l| l == [INK_LINE]) || *tn + 2 > text.len()
+                {
+                    return false;
+                }
+                if *tn > 0 {
+                    text[*tn] = 10;
+                    *tn += 1;
+                }
+                text[*tn] = INK_LINE;
+                *tn += 1;
+                true
+            });
+            ink_op(cx, id, InkOp::Add(stroke), false)
+        }
+    };
+    on_last
+        || (np < PAGES
+            && cx
+                .pim
+                .and_then(|c| c.try_borrow_mut().ok())
+                .and_then(|mut g| {
+                    g.as_mut()?
+                        .put(
+                            Kind::Ink,
+                            None,
+                            &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, stroke)],
+                        )
+                        .ok()
+                })
+                .is_some())
+}
+
+/// The last stroke of record `rec`'s ink copied into `out`: its length (0
+/// with no ink).
+#[inline(never)]
+fn last_stroke(cx: &Ctx, rec: u32, out: &mut [u8; 6 + 2 * 254]) -> usize {
+    let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
+        return 0;
+    };
+    let Some(r) = guard.as_ref().and_then(|s| s.get(rec)) else {
+        return 0;
+    };
+    let field = if r.text(tag::INK_MORE).is_empty() {
+        r.text(tag::INK)
+    } else {
+        r.text(tag::INK_MORE)
+    };
+    let (mut at, mut last) = (0, None);
+    while let Some(len) = stroke_len(&field[at..]) {
+        last = Some((at, len));
+        at += len;
+    }
+    match last {
+        Some((at, len)) if len <= out.len() => {
+            out[..len].copy_from_slice(&field[at..at + len]);
+            len
+        }
+        _ => 0,
+    }
+}
+
 /// Note `id`'s text given to `change` (with room to grow) and written
 /// back, every other field kept.
 #[inline(never)]
@@ -244,6 +315,49 @@ fn text_edit(cx: &Ctx, id: u32, change: &mut dyn FnMut(&mut [u8], &mut usize) ->
     let mut tn = r.text(tag::TEXT).len().min(text.len());
     text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
     change(&mut text, &mut tn) && store.change(id, &[(tag::TEXT, &text[..tn])]).is_ok()
+}
+
+/// Where `text` holds the search `q`, whatever its capitals.
+fn match_at(text: &[u8], q: &[u8]) -> Option<usize> {
+    (!q.is_empty() && text.len() >= q.len())
+        .then(|| {
+            text.windows(q.len())
+                .position(|w| w.eq_ignore_ascii_case(q))
+        })
+        .flatten()
+}
+
+/// `text` on a note's paper as [`kit::fitted`] draws it, the part that
+/// holds the search `q` marked first as a highlighter marks paper (a
+/// yellow band under the letters: a search's matches were found but not
+/// shown).
+fn marked(
+    f: &mut Frame,
+    (x, y): (u16, u16),
+    font: &'static rp_app::Font,
+    colour: Argb,
+    text: &[u8],
+    max: u16,
+    q: &[u8],
+) {
+    if let Some(m) = match_at(text, q) {
+        let x0 = font.width(&text[..m]);
+        let w = font
+            .width(&text[m..m + q.len()])
+            .min(max.saturating_sub(x0));
+        if w > 0 {
+            f.push(rp_app::Cmd::Fill {
+                r: Rect::new(
+                    x + x0,
+                    y.saturating_sub(u16::from(font.ascent)),
+                    w,
+                    u16::from(font.line),
+                ),
+                color: kit::keep(0xFFFF_E066),
+            });
+        }
+    }
+    kit::fitted(f, x, y, font, colour, text, max);
 }
 
 /// The pen's six colours (`STYLE` bits 0-2 choose), dark first.
@@ -538,7 +652,24 @@ const fn well(i: u16) -> Rect {
 const fn size_key(i: u16) -> Rect {
     Rect::new(322 + i * 48, 480, 44, 44)
 }
-const TOOLS: [&[u8]; 6] = [b"PEN", b"MARKER", b"ERASE", b"TEXT", b"LIST", b"UNDO"];
+const TOOLS: [&[u8]; 7] = [
+    b"PEN", b"MARKER", b"ERASE", b"TEXT", b"LIST", b"UNDO", b"REDO",
+];
+/// Tool key `k`: each as wide as its word needs, so seven fit the strip
+/// (six of one width left no room for REDO).
+const fn tool_key(k: usize) -> Rect {
+    const W: [u16; 7] = [50, 78, 64, 56, 54, 60, 60];
+    let mut x = STRIP.x + 5;
+    let mut i = 0;
+    while i < k && i < 6 {
+        x += W[i] + 4;
+        i += 1;
+    }
+    Rect::new(x, STRIP.y + 6, W[if k < 7 { k } else { 6 }], 36)
+}
+/// What UNDO took out, for REDO: each entry its bytes (a packed stroke,
+/// or a typed character), then its length (two bytes) and kind.
+const REDO_ROOM: usize = 1200;
 const PAPER: Rect = Rect::new(8, 40, W - 16, 404);
 /// The ink panel's size (the store's coordinates).
 const INK_W: u16 = 448;
@@ -582,6 +713,11 @@ pub struct Notes {
     n_pages: usize,
     next: u8,
     sel: u8,
+    /// What UNDO took out of the note `redo_of`, newest last
+    /// ([`REDO_ROOM`]); writing anything new forgets it.
+    redo: [u8; REDO_ROOM],
+    redo_n: usize,
+    redo_of: Option<u32>,
     /// The D-pad's target in an open note (R203): its tools, colours,
     /// sizes and tick boxes, or the menu's keys.
     focus: kit::Focus,
@@ -767,6 +903,9 @@ impl Notes {
             n_pages: 0,
             next: 0,
             sel: 0,
+            redo: [0; REDO_ROOM],
+            redo_n: 0,
+            redo_of: None,
             focus: kit::Focus::default(),
             keys: false,
             down_y: None,
@@ -961,10 +1100,10 @@ impl Notes {
         f: &mut Frame,
         cx: &Ctx,
         note: &Row,
-        x: u16,
-        mut y: u16,
+        (x, mut y): (u16, u16),
         max: u16,
         most: usize,
+        q: &[u8],
     ) -> u16 {
         let lines = note.lines[..note.n]
             .iter()
@@ -972,7 +1111,7 @@ impl Notes {
             .take(most);
         for l in lines {
             match l {
-                Line::Text(t) => kit::fitted(f, x, y, cx.fonts.ui, INK_DIM, t.get(), max),
+                Line::Text(t) => marked(f, (x, y), cx.fonts.ui, INK_DIM, t.get(), max, q),
                 Line::Check(t, done) => {
                     f.push(rp_app::Cmd::Outline {
                         r: Rect::new(x, y - 13, 13, 13),
@@ -985,7 +1124,7 @@ impl Notes {
                         });
                     }
                     let col = if *done { INK_DONE } else { INK_DIM };
-                    kit::fitted(f, x + 20, y, cx.fonts.ui, col, t.get(), max - 20);
+                    marked(f, (x + 20, y), cx.fonts.ui, col, t.get(), max - 20, q);
                 }
                 Line::Ink => {}
             }
@@ -1008,6 +1147,8 @@ impl Notes {
     /// turns the page (no note is out of reach, as the grid's overflow
     /// was).
     fn home(&mut self, f: &mut Frame, cx: &Ctx) {
+        // (A copy: the search typed is read while the miniatures are made.)
+        let (query, qn) = (self.query, self.query_n);
         self.n_cards = 0;
         self.mini_used = 0;
         let (order, no) = self.order();
@@ -1092,16 +1233,24 @@ impl Notes {
             } else {
                 note.title.get()
             };
-            kit::fitted(f, r.x + 24, r.y + 52, cx.fonts.title, INK, title, r.w - 48);
+            marked(
+                f,
+                (r.x + 24, r.y + 52),
+                cx.fonts.title,
+                INK,
+                title,
+                r.w - 48,
+                &query[..qn],
+            );
             let ink = note.has_ink();
             Self::paper_lines(
                 f,
                 cx,
                 &note,
-                r.x + 24,
-                r.y + 82,
+                (r.x + 24, r.y + 82),
                 if ink { 196 } else { r.w - 48 },
                 3,
+                &query[..qn],
             );
             if ink && let Some(p) = self.mini(cx, note.id) {
                 f.push(rp_app::Cmd::Pic {
@@ -1158,14 +1307,14 @@ impl Notes {
                 note.title.get()
             };
             let pin = if note.pinned { 40 } else { 0 };
-            kit::fitted(
+            marked(
                 f,
-                r.x + 12,
-                r.y + 26,
+                (r.x + 12, r.y + 26),
                 cx.fonts.ui,
                 INK,
                 title,
                 r.w - 24 - pin,
+                &query[..qn],
             );
             if note.pinned {
                 kit::right(
@@ -1181,10 +1330,10 @@ impl Notes {
                 f,
                 cx,
                 &note,
-                r.x + 12,
-                r.y + 50,
+                (r.x + 12, r.y + 50),
                 r.w - 24,
                 usize::from(lines),
+                &query[..qn],
             );
             if ink && let Some(p) = self.mini(cx, note.id) {
                 f.push(rp_app::Cmd::Pic {
@@ -1464,7 +1613,8 @@ impl Notes {
             Tool::List => 4,
         };
         for (k, t) in TOOLS.iter().enumerate() {
-            let r = Rect::new(strip.x + 6 + k as u16 * 76, strip.y + 6, 70, 36);
+            let _ = strip;
+            let r = tool_key(k);
             kit::key(
                 f,
                 cx,
@@ -1475,7 +1625,13 @@ impl Notes {
                     kit::KeyState::Rest
                 },
             );
-            kit::centred(f, r, r.y + 23, cx.fonts.label, TEXT, t);
+            // REDO is dim while there is nothing to put back.
+            let col = if k == 6 && (self.redo_n == 0 || self.redo_of != Some(note.id)) {
+                kit::alpha(DIM, 0x80)
+            } else {
+                TEXT
+            };
+            kit::centred(f, r, r.y + 23, cx.fonts.label, col, t);
         }
     }
 }
@@ -1557,44 +1713,9 @@ impl Notes {
             let Some(len) = encode_styled(&[&live[..n]], &[style], &mut packed) else {
                 return;
             };
-            let stroke = &packed[..len];
-            let on_last = match page[..np].last() {
-                Some(&p) => ink_op(cx, p, InkOp::Add(stroke), true),
-                None => {
-                    // A note with no ink panel yet gets its place at the
-                    // end.
-                    text_edit(cx, id, &mut |text, tn| {
-                        if text[..*tn].split(|&c| c == 10).any(|l| l == [INK_LINE])
-                            || *tn + 2 > text.len()
-                        {
-                            return false;
-                        }
-                        if *tn > 0 {
-                            text[*tn] = 10;
-                            *tn += 1;
-                        }
-                        text[*tn] = INK_LINE;
-                        *tn += 1;
-                        true
-                    });
-                    ink_op(cx, id, InkOp::Add(stroke), false)
-                }
-            };
-            on_last
-                || (np < PAGES
-                    && cx
-                        .pim
-                        .and_then(|c| c.try_borrow_mut().ok())
-                        .and_then(|mut g| {
-                            g.as_mut()?
-                                .put(
-                                    Kind::Ink,
-                                    None,
-                                    &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, stroke)],
-                                )
-                                .ok()
-                        })
-                        .is_some())
+            // Something new written: nothing to put back any more.
+            self.redo_n = 0;
+            add_stroke(cx, id, &packed[..len])
         };
         // A stroke that didn't fit is said, not dropped in silence (the
         // owner, 2026-11-14: strokes stopped showing with no word why).
@@ -1605,20 +1726,101 @@ impl Notes {
         }
     }
 
-    /// The last stroke taken out (UNDO), or the last character typed.
+    /// `bytes` of `kind` (0 a stroke, 1 a character) kept for REDO.
+    fn remember(&mut self, id: u32, bytes: &[u8], kind: u8) {
+        if self.redo_of != Some(id) {
+            self.redo_of = Some(id);
+            self.redo_n = 0;
+        }
+        // No room: the oldest are forgotten (all of them: an undo that
+        // deep is rare, and half a history would put strokes back out of
+        // order).
+        if self.redo_n + bytes.len() + 3 > self.redo.len() {
+            self.redo_n = 0;
+        }
+        let n = self.redo_n;
+        let Some(to) = self.redo.get_mut(n..n + bytes.len() + 3) else {
+            return;
+        };
+        to[..bytes.len()].copy_from_slice(bytes);
+        to[bytes.len()..bytes.len() + 2].copy_from_slice(&(bytes.len() as u16).to_le_bytes());
+        to[bytes.len() + 2] = kind;
+        self.redo_n += bytes.len() + 3;
+    }
+
+    /// The last stroke taken out (UNDO), or the last character typed;
+    /// kept for REDO.
     fn undo(&mut self, cx: &Ctx, id: u32) {
         // The last stroke is the last page's, or the note's own; with
         // no ink, the last character typed.
         let (page, np) = pages_of(cx, id);
-        let undone = match page[..np].last() {
-            Some(&p) => ink_op(cx, p, InkOp::Last, true),
-            None => ink_op(cx, id, InkOp::Last, false),
+        let (rec, is_page) = match page[..np].last() {
+            Some(&p) => (p, true),
+            None => (id, false),
         };
-        if !undone {
-            text_edit(cx, id, &mut |_, tn| {
-                *tn = tn.saturating_sub(1);
-                true
-            });
+        let mut last = [0u8; 6 + 2 * 254];
+        let len = last_stroke(cx, rec, &mut last);
+        if len > 0 && ink_op(cx, rec, InkOp::Last, is_page) {
+            self.remember(id, &last[..len], 0);
+            return;
+        }
+        self.untype(cx, id);
+    }
+
+    /// The last character typed taken off (the keyboard's backspace, and
+    /// UNDO with no ink left); kept for REDO. Backspace took a stroke
+    /// while the note had any: it is the typing's key.
+    fn untype(&mut self, cx: &Ctx, id: u32) {
+        let mut gone = None;
+        text_edit(cx, id, &mut |text, tn| {
+            // (The ink panel's own line is not a character to take.)
+            if *tn == 0 || text[*tn - 1] == INK_LINE {
+                return false;
+            }
+            *tn -= 1;
+            gone = Some(text[*tn]);
+            true
+        });
+        if let Some(c) = gone {
+            self.remember(id, &[c], 1);
+        }
+    }
+
+    /// What UNDO last took out put back (REDO): the stroke where strokes
+    /// are added, the character at the text's end.
+    fn redo(&mut self, cx: &Ctx, id: u32) {
+        if self.redo_of != Some(id) || self.redo_n < 3 {
+            return;
+        }
+        let n = self.redo_n;
+        let kind = self.redo[n - 1];
+        let len = usize::from(u16::from_le_bytes([self.redo[n - 3], self.redo[n - 2]]));
+        let Some(from) = n.checked_sub(3 + len) else {
+            self.redo_n = 0;
+            return;
+        };
+        let mut bytes = [0u8; 6 + 2 * 254];
+        let Some(to) = bytes.get_mut(..len) else {
+            self.redo_n = 0;
+            return;
+        };
+        to.copy_from_slice(&self.redo[from..from + len]);
+        let back = if kind == 0 {
+            add_stroke(cx, id, &bytes[..len])
+        } else {
+            let c = bytes[0];
+            text_edit(cx, id, &mut |text, tn| {
+                if *tn < text.len() {
+                    text[*tn] = c;
+                    *tn += 1;
+                    true
+                } else {
+                    false
+                }
+            })
+        };
+        if back {
+            self.redo_n = from;
         }
     }
 
@@ -1949,7 +2151,9 @@ impl Program for Notes {
             }
             // The tool strip.
             (Event::PenUp { x, y }, View::Note(_)) if STRIP.contains_point(x, y) => {
-                let k = usize::from((x - STRIP.x - 6) / 76).min(5);
+                let Some(k) = (0..TOOLS.len()).find(|&k| tool_key(k).contains_point(x, y)) else {
+                    return Reply::Nothing;
+                };
                 match k {
                     0 => self.tool = Tool::Pen,
                     1 => self.tool = Tool::Marker,
@@ -1964,9 +2168,14 @@ impl Program for Notes {
                             }
                         }
                     }
-                    _ => {
+                    5 => {
                         if let Some(id) = id {
                             self.undo(cx, id);
+                        }
+                    }
+                    _ => {
+                        if let Some(id) = id {
+                            self.redo(cx, id);
                         }
                     }
                 }
@@ -2020,7 +2229,7 @@ impl Program for Notes {
             }
             (Event::Delete, View::Note(_)) if self.typing => {
                 if let Some(id) = id {
-                    self.undo(cx, id);
+                    self.untype(cx, id);
                 }
                 Reply::Redraw
             }
@@ -2078,8 +2287,8 @@ impl Notes {
             for i in 0..3 {
                 add(size_key(i));
             }
-            for k in 0..6 {
-                add(Rect::new(STRIP.x + 6 + k * 76, STRIP.y + 6, 72, 36));
+            for k in 0..TOOLS.len() {
+                add(tool_key(k));
             }
         }
         (t, n)

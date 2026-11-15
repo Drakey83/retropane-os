@@ -487,3 +487,90 @@ fn a_long_list_goes_on_over_the_page_and_a_done_task_can_be_unticked() {
     draw(&mut t, &cx);
     assert!(!t.tasks.iter().flatten().any(|k| k.id == gone));
 }
+
+#[test]
+fn search_finds_tasks_of_every_list_and_the_done_ones() {
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let one = 1u32.to_le_bytes();
+        s.put(Kind::Task, None, &[(tag::TITLE, b"Pay the rent")])
+            .unwrap();
+        s.put(
+            Kind::Task,
+            None,
+            &[(tag::TITLE, b"Rent a van"), (tag::LIST, &one)],
+        )
+        .unwrap();
+        s.put(
+            Kind::Task,
+            None,
+            &[(tag::TITLE, b"Parent evening"), (tag::DONE, &one)],
+        )
+        .unwrap();
+        s.put(Kind::Task, None, &[(tag::TITLE, b"Call the bank")])
+            .unwrap();
+    }
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    draw(&mut t, &cx);
+    // The home's SEARCH key (in the D-pad's reach, as every target).
+    assert!(t.hits.rects().any(|r| r == FIND_KEY));
+    t.event(
+        Event::PenDown {
+            x: FIND_KEY.x + 9,
+            y: FIND_KEY.y + 9,
+        },
+        &cx,
+    );
+    t.event(
+        Event::PenUp {
+            x: FIND_KEY.x + 9,
+            y: FIND_KEY.y + 9,
+        },
+        &cx,
+    );
+    assert!(t.find && t.keyboard().is_some());
+    draw(&mut t, &cx);
+    assert_eq!(t.n_rows, 4, "nothing typed: every task");
+    for &c in b"RENT" {
+        t.event(Event::Char(c), &cx);
+    }
+    draw(&mut t, &cx);
+    assert_eq!(t.n_rows, 3, "two lists and a done one");
+    // Done leaves the word and the rows; nothing was added.
+    t.event(Event::Done, &cx);
+    draw(&mut t, &cx);
+    assert!(t.keyboard().is_none());
+    assert_eq!((t.n_rows, tasks(pim).len()), (3, 4));
+    // A found task ticks by its box as in its list.
+    let id = t
+        .tasks
+        .iter()
+        .flatten()
+        .find(|k| k.title.get() == b"Pay the rent")
+        .unwrap()
+        .id;
+    let (b, _) = *t.boxes[..t.n_boxes].iter().find(|b| b.1 == id).unwrap();
+    t.event(
+        Event::PenDown {
+            x: b.x + 9,
+            y: b.y + 9,
+        },
+        &cx,
+    );
+    t.event(
+        Event::PenUp {
+            x: b.x + 9,
+            y: b.y + 9,
+        },
+        &cx,
+    );
+    while t.event(Event::Tick, &cx) == Reply::Animate {}
+    draw(&mut t, &cx);
+    assert!(t.tasks.iter().flatten().any(|k| k.id == id && k.done));
+    // Back: the home, the search and its word gone.
+    t.event(Event::Key(Key::SoftLeft), &cx);
+    assert!(t.view == View::Home && !t.find && t.line_n == 0);
+}
