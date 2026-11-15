@@ -166,6 +166,33 @@ inserted onto the device."
   loads programs when they are opened; one look for a folder at that
   moment decides one Start-menu entry.
 
+## Where the files go: `Ports\valve` (the owner, 2026-11-15)
+
+"lets have all of the port files be housed under the SD/CF root file in a
+'Port' folder then 'valve' folder for this example so I:\Ports\valve is
+where i put this valve folder just now ... doom will be I:\Ports\doom
+... so on and so forth."
+
+So every port's files sit in one folder, `Ports`, at the card's root, one
+folder a game inside it (docs/design/porting-guide.md). For Half-Life the
+`valve` folder the pop-up makes and names is `Ports\valve`; the search
+order (flash, SD, CF) is unchanged. He wrote "Port" once and made the
+folder as `Ports`: the folder he made is the name used.
+
+## His copy, measured (2026-11-15, read from `I:\Ports\valve`, nothing written)
+
+**509.2 MiB in 4,262 files: it does not fit the internal flash** (about
+256 MB in all), so Half-Life plays from a card, as his ruling above
+already allows. By kind: maps 213.8 MiB, pictures 59.5 (`.tga`), sounds
+59.0 (`.wav`), music 50.7 (`.mp3`), texture files 44.1 (`.wad`), models
+18.8, sprites 15.6. By place: `maps` 216.5, `media` 60.9, `sound` 59.1,
+`halflife.wad` 36.2, `gfx` 28.8, `resource` 24.4. It is a Steam copy (the
+music is MP3, there is no `pak0.pak`, and it carries Linux game libraries
+our port does not use, 16.5 MiB). Two things follow: **its music needs the
+MP3 decoder**, which is left out of the build today and is a download
+(R256); and the maps alone are most of it, so the read speed of the card
+is what decides loading times. The card has 27 GB free.
+
 ## The choices as they were put
 
 - **A. In the base OS image** (what he asked for: the showcase, there from

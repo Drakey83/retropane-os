@@ -8,7 +8,7 @@ still in design.
 
 | Image | What it shows |
 |---|---|
-| `hl-files-steps.png`, `hl-files-short.png`, `hl-controls-doomgles.png`, `hl-controls-strafe.png` (each also `-dark`) | Half-Life (2026-11-15), drawn by the device's own shell and 2D renderer code (`RP_PREVIEW_ONLY=hl- cargo xtask ui-preview`, `xtask/src/hl_mockups.rs`): the pop-up when its icon is opened with no game files on the card (as three steps, or short), and the default controls in landscape (as DoomGLES, or the D-pad stepping sideways); for the owner's pick ([../half-life-readiness.md](../half-life-readiness.md)) |
+| `hl-files-steps.png`, `hl-files-short.png`, `hl-controls-doomgles.png`, `hl-controls-strafe.png` (each also `-dark`) | Half-Life (2026-11-15), drawn by the device's own shell and 2D renderer code (`RP_PREVIEW_ONLY=hl- cargo xtask ui-preview`, `xtask/src/hl_mockups.rs`): the pop-up when its icon is opened with no game files on the card (as three steps, or short), and the default controls in landscape (as DoomGLES, or the D-pad stepping sideways); the owner picked the steps and the DoomGLES layout, 2026-11-15; the pop-up names `Ports > valve` since his ruling the same day ([../half-life-readiness.md](../half-life-readiness.md)) |
 | `themes-montage.jpg` | Six screens over six wallpapers (the picture on the front page) |
 | `today-clear.jpg` | Clear sky |
 | `today-heavy-rain.jpg` | Heavy rain, a black-and-white wallpaper |

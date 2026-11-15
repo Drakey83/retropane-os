@@ -15,7 +15,9 @@ frame rate is unmeasured until the evaluation (line 1) runs.
 - **The engine:** Xash3D FWGS, a reimplementation of Half-Life's engine in
   C (GPLv3). **The game's logic:** Valve's Half-Life SDK (hlsdk-portable),
   C++, under Valve's SDK licence. **The game's files:** the user's own
-  `valve` folder on the card; only the port ships.
+  `valve` folder, in `Ports\valve` on the card (the owner, 2026-11-15:
+  every port's files under `Ports`; his copy is there, 509 MiB); only the
+  port ships.
 - **A precedent on the same family of 3D core (found 2026-11-15, to read
   before the evaluation):** a port to the Nokia N95 (2007: a PowerVR MBX
   core, as the 2700G's) reported at about 30 frames a second, with crashes
@@ -159,6 +161,39 @@ registers what answers the C library (`rp_hal_cabi::Sys`: the console, the
 heap, and for a game the port layer's files) and calls the C `main`. The C
 images are built only by their own commands (the `c` feature), so `cross`
 and `ci` need no C compiler and a fresh checkout does not fetch 467 MB.
+
+## Showing the frame rate (the owner, 2026-11-15)
+
+"I want the ability to show FPS." The engine has it built in (`cl_showfps`:
+1 shows frames a second, 2 adds the lowest and highest), and it is in our
+build. What the port adds: it is a setting the player can reach without a
+keyboard (in the game's menu and as a bindable action), and it is saved
+with the game's settings. It also serves the standing rule that every
+port's frame rate is measured (30 at least, 60 the target). To build with
+the default bindings (R258); nothing shows until the engine runs.
+
+## Sixty frames a second: every lever (the owner, 2026-11-15)
+
+"Remember Rule 0, we need to pull out every trick to make this port run
+as smoothly as possible, we are shooting for 60fps." **Nothing here is
+measured: the engine has not run. Each line is a lever and how it will be
+judged; none is a promise.**
+
+| Lever | What others do | Ours | Judged by |
+|---|---|---|---|
+| The renderer | Xash3D's GL renderers through a general GL driver; its software renderer on the CPU | `ref_rp` straight on our own 3D driver: surfaces batched by texture and lightmap as the 2700G's tile accelerator wants them, fixed-point vertices, nothing drawn twice (line 8) | frame time against the software renderer's, same map |
+| Resolution by load | fixed | the three game routes of ADR-0038 (down to 240 x 320 smooth 2x) chosen as the frame time moves | frames a second held, by eye and by count |
+| Float arithmetic (no FPU: every operation is a call) | the compiler's generic routines | the tuned runtime for the XScale (line 9), iWMMXt where it helps | cycles an operation, on the X51v |
+| The hot maths | float throughout | fixed point where the counters show it hot: matrices, the renderer's set-up, the player's movement (line 10) | the frame's split before and after |
+| The whole program optimised as one | each file alone | link-time optimisation across the engine's C and our Rust (the same LLVM), profile-guided from a recorded run in the emulator | code size and frame time |
+| Sound | a second mixer under the game's | the game's mix is one stream of the OS's mixer, no copy, no thread | CPU in the mixer per frame |
+| Memory and caches | default tables (12.6 MiB of static RAM) | the engine's low-memory build (3.7 MiB), the game alone in RAM, textures only in video memory, hot data kept together | cache misses and frame time |
+| The CPU's clock | Windows Mobile's 624 MHz steps | the measured operating points and the 2700G's faster clock (ADR-0031, ADR-0035) while the game runs | frame time, battery, heat |
+| Loading | files through a cache | maps and textures read once into place, in the card's fastest run length (his copy: 214 MiB of maps) | seconds to load a map |
+| Input and the frame's pace | events through a desktop queue | the pad read at the frame's start, the frame presented on the display's own tick | milliseconds from press to picture |
+
+The frame rate is shown by the setting above, so every one of these is
+checked on the device, not argued.
 
 ## Order
 

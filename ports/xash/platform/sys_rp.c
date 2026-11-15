@@ -60,7 +60,9 @@ qboolean Platform_CheckLibraryDirectDependency( const byte *data, size_t size, c
 /*
 whereami.c (the path of the running program) is left out of the build: a
 RetroPane program has no path of its own, the game's folder is found by
-the port layer (the internal flash, then the SD card, then the CF card).
+the port layer: Ports/valve (the owner, 2026-11-15: every port's files
+under Ports at the root), on the internal flash, then the SD card, then
+the CF card. The engine takes its base folder from XASH3D_BASEDIR.
 */
 int wai_getExecutablePath( char *out, int capacity, int *dirname_length )
 {

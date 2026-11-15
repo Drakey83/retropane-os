@@ -46,8 +46,8 @@ impl Program for HlFiles {
                 ),
                 (
                     b"2",
-                    b"Open the folder named valve",
-                    b"It was just made on this card",
+                    b"Open Ports, then valve",
+                    b"Both were just made on this card",
                 ),
                 (
                     b"3",
@@ -63,11 +63,11 @@ impl Program for HlFiles {
                 line(f, cx, 88, y + 40, DIM, sub);
             }
             kit::card(f, cx, Rect::new(16, 398, 448, 84), b"WHERE", t);
-            line(f, cx, 32, 458, TEXT, b"SD card  >  valve");
+            line(f, cx, 32, 458, TEXT, b"SD card  >  Ports  >  valve");
             kit::right(f, 448, 458, cx.fonts.ui, FOCUS, b"empty");
         } else {
             kit::card(f, cx, Rect::new(16, 136, 448, 120), b"WHERE", t);
-            kit::text(f, 32, 206, cx.fonts.title, TEXT, b"SD card  >  valve");
+            kit::text(f, 32, 206, cx.fonts.title, TEXT, b"SD card > Ports > valve");
             line(f, cx, 32, 236, DIM, b"This folder was just made for you.");
             kit::card(f, cx, Rect::new(16, 268, 448, 150), b"HOW", t);
             line(f, cx, 32, 326, TEXT, b"From a PC, drag everything inside");
