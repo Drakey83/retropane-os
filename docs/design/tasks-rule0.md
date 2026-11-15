@@ -58,12 +58,12 @@ tick it off with a satisfying tap.
 | Item | From | Status | Code |
 |---|---|---|---|
 | Home with smart tiles and counts (Today, Upcoming, Late, Flagged) and the large title | sheet | built | apps/tasks/src/lib.rs |
-| Lists with colours, a progress ring each, made and renamed by the user | apps-and-packs: lists with colours | pending | |
+| Lists with colours, a progress ring each, made and renamed by the user | apps-and-packs: lists with colours | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | Quick add with date, priority, list and repeat highlighted as typed | sheet | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | Round checkbox that fills with an animated tick; the row moves to done | sheet | built | apps/tasks/src/lib.rs, shell/core/src/lib.rs |
 | Swipe right to complete, swipe left for Tomorrow, Next week, Delete | apps-and-packs: Swipe to complete | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | Coloured priority flags (word in the editor) | sheet | built | apps/tasks/src/lib.rs |
-| Subtasks with "2 of 5" | apps-and-packs: subtasks | pending | |
+| Subtasks with "2 of 5" | apps-and-packs: subtasks | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | Repeating tasks (daily, weekdays, weekly on days, monthly, yearly, every N, after done) | apps-and-packs: repeating tasks | pending | |
 | Reminders through the notification banner and sound | apps-and-packs: reminders | pending | |
 | Tasks on their due days in Calendar; make a task from an appointment | apps-and-packs: tie-ins with Calendar | pending | |

@@ -70,6 +70,8 @@ pub enum View {
     Home,
     /// One list (index), or Today when none.
     List(Option<u8>),
+    /// The lists themselves: made, renamed, recoloured, deleted.
+    Lists,
 }
 
 /// The Tasks program.
@@ -123,12 +125,26 @@ pub struct Tasks {
     find: bool,
     done_row: Option<Rect>,
     down_y: Option<u16>,
+    /// The lists' screen: the list being renamed (the line holds its
+    /// name), the one Delete was pressed on once, and its keys on screen
+    /// (the list and what the key does: 0 open, 1 colour, 2 name, 3
+    /// delete).
+    renaming: Option<u8>,
+    ask_delete: Option<u8>,
+    list_keys: [(Rect, u8, u8); 32],
+    n_keys: usize,
+    /// The steps of the task whose actions show, on screen: each one's
+    /// record and whether it is done.
+    steps_at: [(Rect, u32, bool); 6],
+    n_steps: usize,
 }
 
 /// What a stylus tap on the home hits (design-language.md version 3:
 /// everything drawn answers the stylus; the version 2 home answered none).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Hit {
+    /// The lists' own screen opened.
+    Lists,
     /// The search across every list opened.
     Find,
     /// A list opened (`None`: Today).
@@ -138,7 +154,10 @@ enum Hit {
 }
 
 /// The home's SEARCH key (on the LISTS line's right).
-const FIND_KEY: Rect = Rect::new(MARGIN + WIDE - 96, 238, 96, 26);
+const FIND_KEY: Rect = Rect::new(MARGIN + WIDE - 96, 249, 96, 22);
+
+/// The home's EDIT key (the lists' own screen), beside SEARCH.
+const LISTS_KEY: Rect = Rect::new(FIND_KEY.x - 76, 249, 70, 22);
 
 /// Where `hay` holds `needle`, whatever its capitals (an empty one: at
 /// the start).
@@ -219,6 +238,12 @@ impl Tasks {
             find: false,
             done_row: None,
             down_y: None,
+            renaming: None,
+            ask_delete: None,
+            list_keys: [(Rect::new(0, 0, 0, 0), 0, 0); 32],
+            n_keys: 0,
+            steps_at: [(Rect::new(0, 0, 0, 0), 0, false); 6],
+            n_steps: 0,
         }
     }
 
@@ -293,7 +318,13 @@ impl Tasks {
         let mut clean = [0u8; rp_pim::quick::TITLE_MAX];
         let mut cn = 0;
         let mut flag = q.priority.map_or(0u32, |p| if p >= 2 { 3 } else { 1 });
-        let mut list_id = self.lists[0].id;
+        // The list it is typed in (it went to the first list whatever
+        // list was open, unless "#name" said otherwise).
+        let open = match self.view {
+            View::List(Some(i)) => usize::from(i),
+            _ => 0,
+        };
+        let mut list_id = self.lists[open.min(self.n_lists.saturating_sub(1))].id;
         let mut repeat: Option<rp_pim::repeat::Rule> = None;
         let mut every_next = false;
         for w in title[..tn].split(|&b| b == b' ').filter(|w| !w.is_empty()) {
@@ -375,12 +406,312 @@ impl Tasks {
         let Some(store) = guard.as_mut() else {
             return false;
         };
-        let ok = store.put(Kind::Task, None, &fields).is_ok();
+        // A step of the task whose actions show: its title and its task.
+        let parent = self.revealed.map(u32::to_le_bytes);
+        let ok = match &parent {
+            Some(p) => store
+                .put(
+                    Kind::Task,
+                    None,
+                    &[(tag::TITLE, &clean[..cn]), (tag::PARENT, p)],
+                )
+                .is_ok(),
+            None => store.put(Kind::Task, None, &fields).is_ok(),
+        };
         if ok {
             self.seen = None;
             self.line_n = 0;
         }
         ok
+    }
+
+    /// The lists kept in the store, if they were only the ones a new
+    /// device shows (no records yet): a list needs its record before it
+    /// can be renamed or a task can name it.
+    fn ensure_lists(&mut self, cx: &Ctx) {
+        if self.lists[..self.n_lists].iter().any(|l| l.id != 0) {
+            return;
+        }
+        if let Some(mut guard) = cx.pim.and_then(|c| c.try_borrow_mut().ok())
+            && let Some(store) = guard.as_mut()
+        {
+            for l in &self.lists[..self.n_lists] {
+                let c = kit::IDENTITY
+                    .iter()
+                    .position(|&x| x == l.colour)
+                    .unwrap_or(4) as u32;
+                let _ = store.put(
+                    Kind::List,
+                    None,
+                    &[(tag::NAME, l.name.get()), (tag::COLOUR, &c.to_le_bytes())],
+                );
+            }
+        }
+        self.seen = None;
+        self.refresh(cx);
+    }
+
+    /// The line kept on the lists' screen: the new name of the list
+    /// being renamed, or a new list (eight at most).
+    fn keep_list(&mut self, cx: &Ctx) {
+        let renaming = self.renaming.take();
+        self.typing = false;
+        if self.line_n == 0 {
+            return;
+        }
+        self.ensure_lists(cx);
+        let (name, n) = (self.line, self.line_n.min(24));
+        if let Some(mut guard) = cx.pim.and_then(|c| c.try_borrow_mut().ok())
+            && let Some(store) = guard.as_mut()
+        {
+            match renaming.and_then(|i| self.lists.get(usize::from(i))) {
+                Some(l) => {
+                    let _ = store.change(l.id, &[(tag::NAME, &name[..n])]);
+                }
+                None if self.n_lists < self.lists.len() => {
+                    let c = (self.n_lists as u32 % 8).to_le_bytes();
+                    let _ = store.put(
+                        Kind::List,
+                        None,
+                        &[(tag::NAME, &name[..n]), (tag::COLOUR, &c)],
+                    );
+                }
+                None => {}
+            }
+        }
+        self.line_n = 0;
+        self.seen = None;
+    }
+
+    /// A key of the lists' screen pressed on list `i`: 0 opens it, 1
+    /// gives it the next colour, 2 renames it, 3 deletes it (asked twice;
+    /// its tasks go to another list, and the last list stays).
+    fn list_key(&mut self, cx: &Ctx, i: u8, what: u8) {
+        if what != 3 {
+            self.ask_delete = None;
+        }
+        match what {
+            0 => {
+                self.view = View::List(Some(i));
+                self.focus.clear();
+            }
+            2 => {
+                let name = self.lists[usize::from(i)].name;
+                self.set_line(name.get());
+                self.renaming = Some(i);
+                self.typing = true;
+            }
+            3 if self.ask_delete != Some(i) => {
+                if self.n_lists > 1 {
+                    self.ask_delete = Some(i);
+                }
+            }
+            _ => {
+                self.ensure_lists(cx);
+                let Some(l) = self.lists.get(usize::from(i)).copied() else {
+                    return;
+                };
+                if let Some(mut guard) = cx.pim.and_then(|c| c.try_borrow_mut().ok())
+                    && let Some(store) = guard.as_mut()
+                {
+                    if what == 1 {
+                        let c = kit::IDENTITY
+                            .iter()
+                            .position(|&x| x == l.colour)
+                            .unwrap_or(4);
+                        let c = ((c + 1) % 8) as u32;
+                        let _ = store.change(l.id, &[(tag::COLOUR, &c.to_le_bytes())]);
+                    } else if let Some(to) =
+                        self.lists[..self.n_lists].iter().find(|o| o.id != l.id)
+                    {
+                        // Its tasks first (one at a time: an id list of
+                        // them all would be a second copy of the store's).
+                        let to = to.id.to_le_bytes();
+                        loop {
+                            let next = store
+                                .all(Kind::Task)
+                                .find(|r| r.num(tag::LIST) == Some(l.id))
+                                .map(|r| r.id);
+                            match next {
+                                Some(id) if store.change(id, &[(tag::LIST, &to)]).is_ok() => {}
+                                _ => break,
+                            }
+                        }
+                        let _ = store.remove(l.id);
+                    }
+                }
+                self.ask_delete = None;
+                self.seen = None;
+            }
+        }
+    }
+
+    /// The lists' own screen (the first version showed four lists a
+    /// build gave it and let none be made or named): every list a row,
+    /// its name opening it, its keys changing it; the line makes a new
+    /// one or renames. Windows Mobile's Tasks has categories in a menu
+    /// of a menu; a phone's keeps list editing behind a long press.
+    #[inline(never)]
+    fn lists_view(&mut self, f: &mut Frame, cx: &Ctx) {
+        self.n_keys = 0;
+        let (ui, label) = (cx.fonts.ui, cx.fonts.label);
+        kit::large_title(
+            f,
+            cx,
+            36,
+            b"Lists",
+            b"A name opens its list; the keys change it",
+            tint::TASKS,
+        );
+        kit::panel(f, cx, ADD_LINE);
+        if self.typing {
+            f.push(rp_app::Cmd::Outline {
+                r: ADD_LINE,
+                color: kit::FOCUS,
+            });
+        }
+        let line = &self.line[..self.line_n];
+        if line.is_empty() {
+            let hint: &[u8] = if self.renaming.is_some() {
+                b"Its new name"
+            } else if self.n_lists == self.lists.len() {
+                b"Eight lists at most"
+            } else {
+                b"+ New list: its name"
+            };
+            kit::text(f, ADD_LINE.x + 14, ADD_LINE.y + 27, ui, DIM, hint);
+        } else {
+            kit::text(f, ADD_LINE.x + 14, ADD_LINE.y + 27, ui, TEXT, line);
+        }
+        let mut y = ADD_LINE.y + ADD_LINE.h + 10;
+        for i in 0..self.n_lists {
+            let l = self.lists[i];
+            let r = Rect::new(MARGIN, y, WIDE, 44);
+            kit::panel(f, cx, r);
+            kit::colour_bar(f, r, l.colour);
+            let left = self
+                .tasks
+                .iter()
+                .flatten()
+                .filter(|t| usize::from(t.list) == i && !t.done)
+                .count() as u32;
+            kit::fitted(f, r.x + 20, r.y + 21, ui, TEXT, l.name.get(), 196);
+            let mut b = [0u8; 16];
+            let mut bn = num(&mut b, left);
+            for &c in b" left" {
+                b[bn] = c;
+                bn += 1;
+            }
+            kit::text(f, r.x + 20, r.y + 39, label, DIM, &b[..bn]);
+            let keys = r.w - 3 * 76 - 4;
+            let mut hit = |r: Rect, what: u8| {
+                if self.n_keys < self.list_keys.len() {
+                    self.list_keys[self.n_keys] = (r, i as u8, what);
+                    self.n_keys += 1;
+                }
+            };
+            hit(Rect::new(r.x, r.y, keys, r.h), 0);
+            let asked = self.ask_delete == Some(i as u8);
+            let words: [&[u8]; 3] = [b"COLOUR", b"NAME", if asked { b"SURE?" } else { b"DELETE" }];
+            for (k, w) in words.iter().enumerate() {
+                let a = Rect::new(r.x + keys + k as u16 * 76, r.y + 5, 72, r.h - 10);
+                kit::key(
+                    f,
+                    cx,
+                    a,
+                    if k == 2 {
+                        kit::KeyState::Down
+                    } else {
+                        kit::KeyState::Rest
+                    },
+                );
+                kit::centred(
+                    f,
+                    a,
+                    a.y + 22,
+                    label,
+                    if k == 2 { kit::LATE } else { TEXT },
+                    w,
+                );
+                hit(a, k as u8 + 1);
+            }
+            y += 48;
+        }
+    }
+
+    /// An event on the lists' screen.
+    fn lists_event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        match e {
+            Event::PenDown { .. } => {
+                self.focus.clear();
+                Reply::Nothing
+            }
+            Event::PenUp { x, y } => {
+                if ADD_LINE.contains_point(x, y) {
+                    self.typing = true;
+                    return Reply::Redraw;
+                }
+                let hit = self.list_keys[..self.n_keys]
+                    .iter()
+                    .find(|k| k.0.contains_point(x, y))
+                    .map(|k| (k.1, k.2));
+                match hit {
+                    Some((i, what)) => self.list_key(cx, i, what),
+                    None => self.ask_delete = None,
+                }
+                Reply::Redraw
+            }
+            Event::Char(c) if self.typing && self.line_n < 24 => {
+                self.line[self.line_n] = c;
+                self.line_n += 1;
+                Reply::Redraw
+            }
+            Event::Delete if self.typing => {
+                self.line_n = self.line_n.saturating_sub(1);
+                Reply::Redraw
+            }
+            Event::Done => {
+                self.keep_list(cx);
+                Reply::Redraw
+            }
+            Event::Key(Key::SoftRight) => {
+                if self.typing {
+                    self.keep_list(cx);
+                } else {
+                    self.typing = true;
+                    self.renaming = None;
+                    self.line_n = 0;
+                }
+                Reply::Redraw
+            }
+            Event::Key(Key::SoftLeft) => {
+                if self.typing {
+                    self.typing = false;
+                    self.renaming = None;
+                    self.line_n = 0;
+                } else {
+                    self.ask_delete = None;
+                    self.view = View::Home;
+                    self.focus.clear();
+                }
+                Reply::Redraw
+            }
+            Event::Key(Key::Enter) => match self.focus.point() {
+                Some((x, y)) => self.lists_event(Event::PenUp { x, y }, cx),
+                None => Reply::Nothing,
+            },
+            Event::Key(k) if !self.typing => {
+                let mut focus = self.focus;
+                let moved = focus.step(
+                    k,
+                    core::iter::once(ADD_LINE)
+                        .chain(self.list_keys[..self.n_keys].iter().map(|k| k.0)),
+                );
+                self.focus = focus;
+                if moved { Reply::Redraw } else { Reply::Nothing }
+            }
+            _ => Reply::Nothing,
+        }
     }
 
     /// Task `id` ticked done (its record kept with the minute it was
@@ -417,9 +748,21 @@ impl Tasks {
             if let Some(cell) = cx.pim
                 && let Ok(mut g) = cell.try_borrow_mut()
                 && let Some(store) = g.as_mut()
-                && store.remove(id).is_ok()
             {
-                self.seen = None;
+                // Its steps go with it.
+                loop {
+                    let step = store
+                        .all(Kind::Task)
+                        .find(|r| r.num(tag::PARENT) == Some(id))
+                        .map(|r| r.id);
+                    match step {
+                        Some(s) if store.remove(s).is_ok() => {}
+                        _ => break,
+                    }
+                }
+                if store.remove(id).is_ok() {
+                    self.seen = None;
+                }
             }
             return;
         }
@@ -586,8 +929,11 @@ impl Tasks {
         // Search across every list (Windows Mobile's Tasks has none; a
         // phone's searches a list at a time).
         kit::key(f, cx, FIND_KEY, kit::KeyState::Rest);
-        kit::centred(f, FIND_KEY, FIND_KEY.y + 18, label, TEXT, b"SEARCH");
+        kit::centred(f, FIND_KEY, FIND_KEY.y + 16, label, TEXT, b"SEARCH");
         self.hits.add(FIND_KEY, Hit::Find);
+        kit::key(f, cx, LISTS_KEY, kit::KeyState::Rest);
+        kit::centred(f, LISTS_KEY, LISTS_KEY.y + 16, label, TEXT, b"EDIT");
+        self.hits.add(LISTS_KEY, Hit::Lists);
         let rows = self.n_lists.min(4).div_ceil(2) as u16;
         for (i, list) in self.lists[..self.n_lists.min(4)].iter().enumerate() {
             let of_list = |done: bool| {
@@ -702,6 +1048,7 @@ impl Tasks {
         let today = cx.now.day;
         self.n_boxes = 0;
         self.n_rows = 0;
+        self.n_steps = 0;
         self.done_row = None;
         // Another list: from its first page, the done ones folded away.
         if self.listed != Some(which) {
@@ -739,6 +1086,8 @@ impl Tasks {
                 DIM,
                 if find {
                     b"A word of the task"
+                } else if self.revealed.is_some() {
+                    b"+ Add a step to this task"
                 } else {
                     b"+ Add a task: Pay rent fri !"
                 },
@@ -923,6 +1272,45 @@ impl Tasks {
                     self.actions[k] = a;
                 }
                 y += 50;
+                // Its steps, each with its own circle (the row said "2 of
+                // 5" and there was no way to make or tick one); the line
+                // above adds one.
+                if let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok())
+                    && let Some(store) = guard.as_ref()
+                {
+                    for c in store
+                        .all(Kind::Task)
+                        .filter(|c| c.num(tag::PARENT) == Some(t.id))
+                    {
+                        if self.n_steps == self.steps_at.len() || y + 38 > 556 {
+                            break;
+                        }
+                        let sr = Rect::new(MARGIN + 30, y, WIDE - 30, 34);
+                        let done = c.num(tag::DONE).is_some();
+                        kit::panel(f, cx, sr);
+                        kit::round_check(
+                            f,
+                            cx,
+                            sr.x + 8,
+                            sr.y + 5,
+                            self.ring[ci],
+                            self.full[ci],
+                            done,
+                        );
+                        kit::fitted(
+                            f,
+                            sr.x + 42,
+                            sr.y + 23,
+                            cx.fonts.ui,
+                            if done { DIM } else { TEXT },
+                            c.text(tag::TITLE),
+                            sr.w - 56,
+                        );
+                        self.steps_at[self.n_steps] = (sr, c.id, done);
+                        self.n_steps += 1;
+                        y += 38;
+                    }
+                }
                 continue;
             }
             let mut w = [0u8; 16];
@@ -1056,6 +1444,7 @@ impl Program for Tasks {
             View::Home => ("Back", "New"),
             View::List(_) if self.find => ("Back", "Find"),
             View::List(_) => ("Back", "Add"),
+            View::Lists => ("Back", "New"),
         }
     }
 
@@ -1072,10 +1461,21 @@ impl Program for Tasks {
                 let (t, n) = self.list_targets();
                 self.focus.ring(f, t[..n].iter().copied());
             }
+            View::Lists => {
+                self.lists_view(f, cx);
+                self.focus.ring(
+                    f,
+                    core::iter::once(ADD_LINE)
+                        .chain(self.list_keys[..self.n_keys].iter().map(|k| k.0)),
+                );
+            }
         }
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        if self.view == View::Lists {
+            return self.lists_event(e, cx);
+        }
         // The D-pad (R203): the arrows walk what is drawn, the centre taps
         // it (kit::Focus); typing keeps the keys.
         if let Event::Key(k) = e
@@ -1085,7 +1485,7 @@ impl Program for Tasks {
             let (t, n) = self.list_targets();
             let moved = match self.view {
                 View::Home => self.focus.step(k, self.hits.rects()),
-                View::List(_) => self.focus.step(k, t[..n].iter().copied()),
+                _ => self.focus.step(k, t[..n].iter().copied()),
             };
             if moved {
                 return Reply::Redraw;
@@ -1143,7 +1543,25 @@ impl Program for Tasks {
                 let press = self.press.take();
                 // A revealed row's actions.
                 if let Some(id) = self.revealed {
+                    // A step ticked, or the line to add one: the task
+                    // stays open. An action, or a tap elsewhere, closes it.
+                    let step = self.steps_at[..self.n_steps]
+                        .iter()
+                        .find(|s| s.0.contains_point(x, y))
+                        .map(|s| (s.1, s.2));
+                    if let Some((step, done)) = step {
+                        let minute =
+                            (date::start_of(cx.now.day) + u32::from(cx.now.minute)).to_le_bytes();
+                        self.set_field(cx, step, tag::DONE, (!done).then_some(&minute[..]));
+                        return Reply::Redraw;
+                    }
+                    if ADD_LINE.contains_point(x, y) {
+                        self.typing = true;
+                        return Reply::Redraw;
+                    }
                     self.revealed = None;
+                    self.typing = false;
+                    self.line_n = 0;
                     if let Some(a) = self.actions.iter().position(|r| r.contains_point(x, y)) {
                         self.act(cx, id, a as u8);
                     }
@@ -1215,6 +1633,15 @@ impl Program for Tasks {
                 Reply::Redraw
             }
             (Event::PenUp { x, y }, View::Home) => match self.hits.at(x, y) {
+                Some(Hit::Lists) => {
+                    self.view = View::Lists;
+                    self.line_n = 0;
+                    self.typing = false;
+                    self.renaming = None;
+                    self.ask_delete = None;
+                    self.focus.clear();
+                    Reply::Redraw
+                }
                 Some(Hit::Find) => {
                     self.find = true;
                     self.typing = true;
@@ -1276,8 +1703,12 @@ impl Program for Tasks {
     }
 
     fn keyboard(&self) -> Option<Field> {
-        (matches!(self.view, View::List(_)) && (self.typing || (self.line_n > 0 && !self.find)))
-            .then_some(Field::Line)
+        match self.view {
+            View::Lists => self.typing,
+            View::List(_) => self.typing || (self.line_n > 0 && !self.find),
+            View::Home => false,
+        }
+        .then_some(Field::Line)
     }
 }
 
@@ -1295,7 +1726,9 @@ impl Tasks {
             }
         };
         if self.revealed.is_some() {
+            add(ADD_LINE);
             self.actions.iter().for_each(|&r| add(r));
+            self.steps_at[..self.n_steps].iter().for_each(|r| add(r.0));
         } else {
             add(ADD_LINE);
             self.rows_at[..self.n_rows].iter().for_each(|r| add(r.0));

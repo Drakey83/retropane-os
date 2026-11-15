@@ -477,10 +477,12 @@ fn a_long_list_goes_on_over_the_page_and_a_done_task_can_be_unticked() {
     t.event(Event::Key(Key::Enter), &cx);
     draw(&mut t, &cx);
     assert_eq!(t.revealed, Some(gone));
-    assert_eq!(t.list_targets().1, 3);
-    for _ in 0..4 {
+    assert_eq!(t.list_targets().1, 4);
+    // (The line that adds a step first, then down to the actions.)
+    t.event(Event::Key(Key::Down), &cx);
+    t.event(Event::Key(Key::Down), &cx);
+    for _ in 0..3 {
         t.event(Event::Key(Key::Right), &cx);
-        t.event(Event::Key(Key::Down), &cx);
     }
     assert_eq!(t.focus.rect(), Some(t.actions[2]));
     t.event(Event::Key(Key::Enter), &cx);
@@ -573,4 +575,204 @@ fn search_finds_tasks_of_every_list_and_the_done_ones() {
     // Back: the home, the search and its word gone.
     t.event(Event::Key(Key::SoftLeft), &cx);
     assert!(t.view == View::Home && !t.find && t.line_n == 0);
+}
+
+fn tap(t: &mut Tasks, cx: &Ctx, r: Rect) {
+    t.event(
+        Event::PenDown {
+            x: r.x + 6,
+            y: r.y + 6,
+        },
+        cx,
+    );
+    t.event(
+        Event::PenUp {
+            x: r.x + 6,
+            y: r.y + 6,
+        },
+        cx,
+    );
+}
+
+/// The store's lists: (name, colour number), in the app's order.
+fn lists_kept(
+    pim: &core::cell::RefCell<Option<Store<'static>>>,
+) -> std::vec::Vec<(std::vec::Vec<u8>, u32)> {
+    let g = pim.borrow();
+    g.as_ref()
+        .unwrap()
+        .all(Kind::List)
+        .map(|r| (r.text(tag::NAME).to_vec(), r.num(tag::COLOUR).unwrap_or(99)))
+        .collect()
+}
+
+#[test]
+fn lists_are_made_renamed_recoloured_and_deleted_by_the_user() {
+    // The first version showed the lists a build gave it; none could be
+    // made or named, and a task typed in a list went to the first one.
+    let pim = store();
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    draw(&mut t, &cx);
+    let before = t.n_lists;
+    assert!(lists_kept(pim).is_empty());
+    // The home's EDIT key: the lists' screen (in the D-pad's reach).
+    assert!(t.hits.rects().any(|r| r == LISTS_KEY));
+    tap(&mut t, &cx, LISTS_KEY);
+    assert_eq!(t.view, View::Lists);
+    draw(&mut t, &cx);
+    assert_eq!(t.n_keys, before * 4);
+    // A new list by the line: kept (the ones shown get their records
+    // with it), and shown.
+    tap(&mut t, &cx, ADD_LINE);
+    assert!(t.keyboard().is_some());
+    for &c in b"Garden" {
+        t.event(Event::Char(c), &cx);
+    }
+    t.event(Event::Done, &cx);
+    draw(&mut t, &cx);
+    assert_eq!(t.n_lists, before + 1);
+    assert_eq!(lists_kept(pim).len(), before + 1);
+    let garden = t.lists[..t.n_lists]
+        .iter()
+        .position(|l| l.name.get() == b"Garden")
+        .expect("the new list") as u8;
+    let key = |t: &Tasks, i: u8, what: u8| {
+        t.list_keys[..t.n_keys]
+            .iter()
+            .find(|k| k.1 == i && k.2 == what)
+            .unwrap()
+            .0
+    };
+    // Renamed: the line holds its name; retyped and kept.
+    let r = key(&t, garden, 2);
+    tap(&mut t, &cx, r);
+    assert_eq!(&t.line[..t.line_n], b"Garden");
+    for _ in 0..6 {
+        t.event(Event::Delete, &cx);
+    }
+    for &c in b"Yard" {
+        t.event(Event::Char(c), &cx);
+    }
+    t.event(Event::Key(Key::SoftRight), &cx);
+    draw(&mut t, &cx);
+    assert_eq!(t.lists[usize::from(garden)].name.get(), b"Yard");
+    assert_eq!(t.n_lists, before + 1);
+    // Recoloured: the next colour.
+    let was = t.lists[usize::from(garden)].colour;
+    let r = key(&t, garden, 1);
+    tap(&mut t, &cx, r);
+    draw(&mut t, &cx);
+    assert_ne!(t.lists[usize::from(garden)].colour, was);
+    // Its name opens it; a task typed there is its task.
+    let r = key(&t, garden, 0);
+    tap(&mut t, &cx, r);
+    assert_eq!(t.view, View::List(Some(garden)));
+    draw(&mut t, &cx);
+    typed(&mut t, &cx, b"Mow the lawn");
+    draw(&mut t, &cx);
+    let mow = *t
+        .tasks
+        .iter()
+        .flatten()
+        .find(|k| k.title.get() == b"Mow the lawn")
+        .unwrap();
+    assert_eq!(mow.list, garden);
+    // Deleted: asked once (another key takes the question back), then
+    // gone, its task in another list, not lost. (Back twice: the
+    // keyboard, then the list.)
+    t.event(Event::Key(Key::SoftLeft), &cx);
+    t.event(Event::Key(Key::SoftLeft), &cx);
+    draw(&mut t, &cx);
+    tap(&mut t, &cx, LISTS_KEY);
+    draw(&mut t, &cx);
+    let r = key(&t, garden, 3);
+    tap(&mut t, &cx, r);
+    assert_eq!(t.ask_delete, Some(garden));
+    let r = key(&t, 0, 1);
+    tap(&mut t, &cx, r);
+    assert_eq!(t.ask_delete, None);
+    draw(&mut t, &cx);
+    let r = key(&t, garden, 3);
+    tap(&mut t, &cx, r);
+    let r = key(&t, garden, 3);
+    tap(&mut t, &cx, r);
+    draw(&mut t, &cx);
+    assert_eq!(t.n_lists, before);
+    assert!(!t.lists[..t.n_lists].iter().any(|l| l.name.get() == b"Yard"));
+    assert!(t.tasks.iter().flatten().any(|k| k.id == mow.id));
+    // The D-pad: every key of the screen in reach of the line.
+    let all: std::vec::Vec<Rect> = core::iter::once(ADD_LINE)
+        .chain(t.list_keys[..t.n_keys].iter().map(|k| k.0))
+        .collect();
+    let mut seen = std::vec![ADD_LINE];
+    let mut at = 0;
+    while at < seen.len() {
+        for k in [Key::Up, Key::Down, Key::Left, Key::Right] {
+            let mut f = kit::Focus::default();
+            f.set(seen[at]);
+            if f.step(k, all.iter().copied())
+                && let Some(r) = f.rect()
+                && !seen.contains(&r)
+            {
+                seen.push(r);
+            }
+        }
+        at += 1;
+    }
+    assert_eq!(seen.len(), all.len());
+    t.event(Event::Key(Key::Down), &cx);
+    t.event(Event::Key(Key::Down), &cx);
+    t.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(t.view, View::List(Some(0)));
+}
+
+#[test]
+fn a_task_s_steps_are_added_ticked_and_go_with_it() {
+    // The row said "2 of 5"; there was no way to make a step or tick one.
+    let pim = store();
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    t.show(View::List(None));
+    draw(&mut t, &cx);
+    typed(&mut t, &cx, b"Pack for the trip today");
+    draw(&mut t, &cx);
+    let id = t.rows_at[0].1;
+    // Its actions shown (the centre on its row, the keyboard put away
+    // first): the line adds steps.
+    t.event(Event::Key(Key::SoftLeft), &cx);
+    t.event(Event::Key(Key::Down), &cx);
+    t.event(Event::Key(Key::Down), &cx);
+    t.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(t.revealed, Some(id));
+    for step in [&b"Passport"[..], b"Charger"] {
+        tap(&mut t, &cx, ADD_LINE);
+        for &c in step {
+            t.event(Event::Char(c), &cx);
+        }
+        t.event(Event::Done, &cx);
+        draw(&mut t, &cx);
+        assert_eq!(t.revealed, Some(id), "the task stays open");
+    }
+    assert_eq!(t.n_steps, 2);
+    let me = |t: &Tasks| *t.tasks.iter().flatten().find(|k| k.id == id).unwrap();
+    assert_eq!(me(&t).steps, (0, 2));
+    // A step ticked, and unticked; the task's count follows.
+    let (sr, _, _) = t.steps_at[0];
+    tap(&mut t, &cx, sr);
+    draw(&mut t, &cx);
+    assert_eq!(me(&t).steps, (1, 2));
+    assert_eq!(t.revealed, Some(id));
+    // The D-pad reaches the steps too.
+    let (ts, n) = t.list_targets();
+    assert!(ts[..n].contains(&t.steps_at[1].0));
+    let r = t.steps_at[0].0;
+    tap(&mut t, &cx, r);
+    draw(&mut t, &cx);
+    assert_eq!(me(&t).steps, (0, 2));
+    // Deleted: its steps go with it.
+    let r = t.actions[2];
+    tap(&mut t, &cx, r);
+    draw(&mut t, &cx);
+    assert_eq!(pim.borrow().as_ref().unwrap().all(Kind::Task).count(), 0);
 }

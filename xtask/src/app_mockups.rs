@@ -727,6 +727,14 @@ fn base() -> Vec<Mock> {
             }),
         },
         Mock {
+            name: "v2-tasks-lists",
+            what: "Tasks: the lists' own screen, each made, renamed, recoloured or deleted",
+            prepare: Box::new(|s| {
+                sample_tasks(s);
+                open(s, tasks(rp_app_tasks::View::Lists, b""));
+            }),
+        },
+        Mock {
             name: "v2-tasks-today",
             what: "Tasks: Today, late first, round ticks in the list's colour, flags, subtasks",
             prepare: Box::new(|s| {
