@@ -4,7 +4,7 @@ A finding for the owner's ruling (docs/design/half-life-readiness.md line
 13), read 2026-11-15 from the sources fetched that day (Xash3D FWGS commit
 707596f4, hlsdk-portable commit 89e83b92) and from this repository. **Not a
 legal opinion:** what the texts say, what follows for how the port is
-built and shipped, and the choices. Nothing here is decided.
+built and shipped, and the choices. The owner ruled on 2026-11-15 (below).
 
 ## The four things and their terms
 
@@ -50,7 +50,23 @@ built and shipped, and the choices. Nothing here is decided.
    GPL's offer of source in the OS itself, and point 3 then binds the
    whole OS image, not one download.
 
-## The choices (the owner's)
+## The owner's ruling (2026-11-15): choice A
+
+**In the base OS image** (the owner, 2026-11-15: "the port should be a part of the OS, the additional game files should live on the sd/cf card or internal flash storage if itll fit").
+What it binds, from the points above:
+
+- The engine and the game's logic are two programs in the image, the
+  logic loaded by our loader at run time (point 2).
+- Valve's SDK licence file, its copyright notice and disclaimers, and the
+  GPL version 3 notice with where the source is, are in the OS itself
+  (the About screen and the image's licence texts) (point 5).
+- RetroPane OS stays free of charge while the port is in it (point 3).
+- **The game's files are the user's own**, looked for on the SD card, the
+  CF card, then the internal flash's storage. Whether a `valve` folder fits
+  the internal flash is not known yet: to measure against the owner's own
+  copy and the flash left after the OS (readiness line 7).
+
+## The choices as they were put
 
 - **A. In the base OS image** (what he asked for: the showcase, there from
   the first start). The engine and the game's logic as two separate
