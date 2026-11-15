@@ -43,6 +43,10 @@ impl<T> AppSlot<T> {
     }
 
     /// The value made by `make`, the first time; `None` after.
+    // The one `&'static mut` ever made of the value (the flag): the lint
+    // sees only a shared `self` lending a unique borrow (as
+    // rp_hal_x51v::cardsink's).
+    #[allow(clippy::mut_from_ref)]
     pub fn put_with(&'static self, make: impl FnOnce() -> T) -> Option<&'static mut T> {
         if self.taken.replace(true) {
             return None;
