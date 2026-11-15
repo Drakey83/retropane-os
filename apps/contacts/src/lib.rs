@@ -791,7 +791,7 @@ impl Contacts {
         // The favourites grid: large discs with initials, three across
         // (not while searching: the matches come first).
         if !searching {
-            kit::section(f, cx, y, b"FAVOURITES", tint::CONTACTS);
+            kit::section(f, cx, y, b"FAVORITES", tint::CONTACTS);
             y += 22;
             let mut col = 0u16;
             for &i in &idx[..n] {
@@ -985,7 +985,7 @@ impl Contacts {
         kit::centred(f, line, 180, cx.fonts.title, TEXT, &nm[..nn]);
         kit::centred(f, line, 204, cx.fonts.ui, DIM, p.company.get());
         if p.favourite {
-            kit::centred(f, line, 224, cx.fonts.label, tint::CONTACTS, b"FAVOURITE");
+            kit::centred(f, line, 224, cx.fonts.label, tint::CONTACTS, b"FAVORITE");
         }
         let mut hit = |r: Rect, kind: u8| {
             if self.n_card < self.card_at.len() {
@@ -1138,7 +1138,7 @@ impl Contacts {
             let x = r.x + 110;
             match fld {
                 EditField::Favourite => {
-                    kit::text(f, r.x + 12, r.y + 28, cx.fonts.label, DIM, b"FAVOURITE");
+                    kit::text(f, r.x + 12, r.y + 28, cx.fonts.label, DIM, b"FAVORITE");
                     let (word, col): (&[u8], _) = if self.fav {
                         (b"Yes", tint::CONTACTS)
                     } else {

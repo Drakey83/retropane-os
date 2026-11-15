@@ -477,7 +477,7 @@ fn a_long_list_goes_on_over_the_page_and_a_done_task_can_be_unticked() {
     t.event(Event::Key(Key::Enter), &cx);
     draw(&mut t, &cx);
     assert_eq!(t.revealed, Some(gone));
-    assert_eq!(t.list_targets().1, 4);
+    assert_eq!(t.list_targets().1, 7);
     // (The line that adds a step first, then down to the actions.)
     t.event(Event::Key(Key::Down), &cx);
     t.event(Event::Key(Key::Down), &cx);
@@ -823,4 +823,60 @@ fn a_task_takes_a_time_and_keeps_it_when_moved() {
             .flatten()
             .any(|k| k.title.get() == b"Water the plants" && k.time.is_none())
     );
+}
+
+#[test]
+fn a_task_s_time_is_set_by_keys_and_a_list_s_color_shows() {
+    // The owner on the X51v, 2026-11-15: "no way to assign a time still in
+    // lists"; "colour doesnt do anything in list".
+    let pim = store();
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    t.show(View::List(None));
+    draw(&mut t, &cx);
+    typed(&mut t, &cx, b"Call the bank today");
+    t.event(Event::Key(Key::SoftLeft), &cx);
+    draw(&mut t, &cx);
+    let me = |t: &Tasks| *t.tasks.iter().flatten().next().unwrap();
+    assert_eq!(me(&t).time, None);
+    // Its actions shown: the time keys under them, in the D-pad's reach.
+    let id = me(&t).id;
+    t.revealed = Some(id);
+    draw(&mut t, &cx);
+    let (ts, n) = t.list_targets();
+    assert!(t.time_keys.iter().all(|k| ts[..n].contains(k)));
+    let press = |t: &mut Tasks, k: usize| {
+        let r = t.time_keys[k];
+        tap(t, &cx, r);
+        draw(t, &cx);
+    };
+    press(&mut t, 1);
+    assert_eq!(me(&t).time, Some(9 * 60), "later, from none: 9:00 AM");
+    assert_eq!(t.revealed, Some(id), "the task stays open");
+    press(&mut t, 1);
+    press(&mut t, 1);
+    assert_eq!(me(&t).time, Some(9 * 60 + 30));
+    press(&mut t, 0);
+    assert_eq!(me(&t).time, Some(9 * 60 + 15));
+    let g = pim.borrow();
+    let at = g.as_ref().unwrap().get(id).unwrap().num(tag::REMIND_AT);
+    drop(g);
+    assert_eq!(at, Some(date::start_of(19_723) + 9 * 60 + 15));
+    press(&mut t, 2);
+    assert_eq!(me(&t).time, None);
+    // The lists' COLOR key is drawn in the list's colour.
+    t.event(Event::PenDown { x: 5, y: 630 }, &cx);
+    t.event(Event::PenUp { x: 5, y: 630 }, &cx);
+    t.view = View::Lists;
+    let mut f = Box::new(Frame::new());
+    t.draw(&mut f, &cx);
+    let key = t.list_keys[..t.n_keys]
+        .iter()
+        .find(|k| k.1 == 0 && k.2 == 1)
+        .unwrap()
+        .0;
+    let colour = t.lists[0].colour;
+    tap(&mut t, &cx, key);
+    draw(&mut t, &cx);
+    assert_ne!(t.lists[0].colour, colour);
 }

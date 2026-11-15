@@ -682,7 +682,11 @@ const INK_DONE: Argb = kit::keep(0xFF8A_8F98);
 /// A note's paper: a pastel of its colour, the same in both looks (paper
 /// is paper; version 2's cards were grey glass with a colour bar).
 fn paper_of(c: Argb) -> Argb {
-    kit::keep(kit::mix(0xFFFF_FAF0, c, 0x50))
+    // Soft paper, not white: half of white's light (it was 84%, the
+    // brightest thing in either look; the owner on the X51v, 2026-11-15,
+    // "light mode still seems too blinding"). Ink still stands on it:
+    // the black pen at 9:1.
+    kit::keep(kit::mix(0xFFCA_C4B6, c, 0x50))
 }
 
 /// The note's tool strip, its tools in order, and the pen colours' row.
@@ -1369,7 +1373,7 @@ impl Notes {
             && let Some(note) = self.rows[usize::from(order[0])].filter(|n| n.pinned)
         {
             let r = Rect::new(MARGIN, y, WIDE, 154);
-            let sheet = kit::keep(0xFFF8_F0D8);
+            let sheet = kit::keep(0xFFC8_C0AA);
             // Its binding in the note's colour, the sheet's rounded edge.
             kit::round_rect(
                 f,
@@ -1596,7 +1600,7 @@ impl Notes {
         let paper = PAPER;
         f.push(rp_app::Cmd::Fill {
             r: paper,
-            color: kit::keep(0xF0F6_F0DC),
+            color: kit::keep(0xF0CE_C8B6),
         });
         f.push(rp_app::Cmd::Fill {
             r: Rect::new(paper.x, paper.y, 6, paper.h),
@@ -1693,7 +1697,7 @@ impl Notes {
             kit::panel(f, cx, STRIP);
             let words: [&[u8]; 4] = [
                 if note.pinned { b"UNPIN" } else { b"PIN" },
-                b"COLOUR",
+                b"COLOR",
                 [&b"RULED"[..], b"PLAIN", b"GRID"][usize::from(note.paper)],
                 if self.confirm_delete {
                     b"DELETE?"
@@ -1728,7 +1732,7 @@ impl Notes {
         // the three sizes drawn at their size, then the tool strip.
         let strip = STRIP;
         kit::panel(f, cx, TRAY);
-        kit::text(f, 24, 472, cx.fonts.label, DIM, b"COLOUR");
+        kit::text(f, 24, 472, cx.fonts.label, DIM, b"COLOR");
         for (i, p) in self.wells.iter().enumerate() {
             let r = well(i as u16);
             let chosen = if self.tool == Tool::Marker {

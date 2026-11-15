@@ -54,12 +54,14 @@ LOOKS["WINDOW_LIGHT"] = dict(
     # Soft, not white (the owner on the X51v, 2026-11-15: light mode "WAY
     # too bright ... doesnt have to mean blinding mode"; was 255 / 240-250
     # at 0.72).
-    top=(226, 230, 237), bottom=(204, 211, 222), alpha=0.68, rim=0.55, sheen=0.0, edge=(108, 124, 148)
+    # Then 226-204, "still seems too blinding": set by measurement, the
+    # glass near 40% of white's light over its backdrop (aurora.rs).
+    top=(190, 194, 201), bottom=(170, 176, 186), alpha=0.68, rim=0.55, sheen=0.0, edge=(78, 90, 110)
 )
 LOOKS["WINDOW_LIGHT_PRESSED"] = dict(LOOKS["WINDOW_LIGHT"], dim=0.88)
 # The light look's gel key: white gloss over a cool foot, the same edge.
 LOOKS["KEY_LIGHT"] = dict(
-    top=(226, 231, 238), bottom=(178, 188, 204), alpha=0.94, rim=0.6, sheen=0.0, gloss=0.5, k=8, edge=(100, 116, 140)
+    top=(186, 191, 199), bottom=(146, 154, 168), alpha=0.94, rim=0.6, sheen=0.0, gloss=0.3, k=8, edge=(72, 84, 104)
 )
 LOOKS["KEY_LIGHT_DOWN"] = dict(LOOKS["KEY_LIGHT"], dim=0.86, gloss=0.2)
 

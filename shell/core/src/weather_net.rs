@@ -185,6 +185,16 @@ impl Shell {
                     q.push(&[c]);
                 }
             }
+            // The line's end, as every question has: without it the relay
+            // read no line until Weather's next question ended it, and
+            // refused the two run together (the load of 2026-11-15:
+            // "ASKED ADDR", "REFUSED 400 not an address"; no address,
+            // money rate or calendar was ever answered on the X51v).
+            q.push(
+                b"
+",
+            );
+            q.line[q.n] = 0;
             self.asking = Some(Ask::Program);
             return Some(q);
         }

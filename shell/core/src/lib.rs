@@ -284,8 +284,11 @@ pub const fn light_glass(c: Argb, style: LightStyle) -> Argb {
     // (edges, dividers) to soft dark ones.
     if (r + g + b) / 3 < 0x80 {
         let (tr, tg, tb) = match style {
-            LightStyle::Tonal => (250, 236, 244),
-            _ => (244, 246, 250),
+            // (Soft, not white: 250 and 244-250 before the owner's
+            // "still seems too blinding" of 2026-11-15; the keyboard was
+            // the brightest thing left, 68% of white's light.)
+            LightStyle::Tonal => (204, 192, 198),
+            _ => (198, 202, 209),
         };
         // As see-through as every word's 4.5:1 allows over the darkest
         // wallpaper (the owner, 2026-11-01: readable, "but there is no
@@ -740,14 +743,14 @@ const PROGRAM_PICS: u8 = 1;
 /// screen app). Aero's frosted blue-white, cooling to the right, the
 /// softkeys a shade under the title; kept by the look's pass.
 const APP_TITLE_LIGHT: (Argb, Argb) = (
-    rp_app::kit::keep(rp_draw::look::theme(0xFFD0_D8E2)),
-    rp_app::kit::keep(rp_draw::look::theme(0xFFBA_C5D2)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFFA8_B0BA)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFF98_A2AE)),
 );
 const APP_SOFT_LIGHT: (Argb, Argb) = (
-    rp_app::kit::keep(rp_draw::look::theme(0xFFC4_CDD8)),
-    rp_app::kit::keep(rp_draw::look::theme(0xFFB0_BBC8)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFF9E_A7B2)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFF8E_98A4)),
 );
-const APP_SOFT_DIVIDER_LIGHT: Argb = rp_app::kit::keep(rp_draw::look::theme(0xFF98_A4B0));
+const APP_SOFT_DIVIDER_LIGHT: Argb = rp_app::kit::keep(rp_draw::look::theme(0xFF70_7C88));
 const MENU_LEFT: Argb = rp_draw::look::theme(0xEE08_0A0C);
 const MENU_RIGHT: Argb = rp_draw::look::theme(0xE02C_3238);
 const TEXT: Argb = rp_draw::look::theme(0xFFF0_F2F4);
@@ -765,8 +768,8 @@ const BODY_DARK: (Argb, Argb) = (
     rp_draw::look::theme(0xFF1A_2027),
 );
 const BODY_LIGHT: (Argb, Argb) = (
-    rp_draw::look::theme(0xFFD4_D9E0),
-    rp_draw::look::theme(0xFFC2_CAD4),
+    rp_draw::look::theme(0xFF9C_A2AA),
+    rp_draw::look::theme(0xFF8E_96A0),
 );
 
 /// `a` toward `b`, `k` of `n`, opaque.
@@ -855,6 +858,14 @@ pub struct Shell {
     intent: u8,
     /// When the open program's motion wants its next step (ms).
     prog_anim: Option<u32>,
+    /// An app opening out of Today: when it began (ms) and the rectangle
+    /// its window grows from ([`Self::prog_window`]).
+    prog_open: Option<(u32, Rect)>,
+    /// Where the stylus last left the screen (`None` after a key): what
+    /// an app's window opens out of.
+    tap: Option<(u16, u16)>,
+    /// The opening has not had its first step yet.
+    prog_fresh: bool,
     /// The field the program's keyboard was set for, and the last
     /// character typed (the automatic capitals).
     prog_field: Option<rp_app::Field>,
@@ -1098,6 +1109,9 @@ macro_rules! shell_start {
             programs: false,
             intent: 0,
             prog_anim: None,
+            prog_open: None,
+            tap: None,
+            prog_fresh: false,
             prog_field: None,
             prog_last: b' ',
             app_pics: None,
@@ -1251,13 +1265,13 @@ impl Shell {
     /// rebound): the caller keeps drawing frames.
     #[must_use]
     pub fn animating(&self) -> bool {
-        self.anim.is_some() || self.scroll.moving()
+        self.anim.is_some() || self.scroll.moving() || self.prog_open.is_some()
     }
 
     /// Ends any movement at once, everything in place (pictures for the
     /// preview; the device lets it run).
     pub fn settle(&mut self) {
-        if self.anim.take().is_some() {
+        if self.anim.take().is_some() | self.prog_open.take().is_some() {
             self.dirty(Rect::new(0, 0, W, H));
         }
         if self.scroll.moving() {
@@ -1930,6 +1944,26 @@ impl Shell {
     pub fn tick(&mut self, now_ms: u32) -> Action {
         self.now = now_ms;
         self.net_tick();
+        // An app's window opening: its next step, then the whole screen
+        // once it is open.
+        if let Some((start, from)) = self.prog_open {
+            // It begins at the first step after the program was read from
+            // the card (0.14 s on the X51v), not at the touch.
+            let start = if core::mem::take(&mut self.prog_fresh) {
+                self.prog_open = Some((now_ms, from));
+                now_ms
+            } else {
+                start
+            };
+            if now_ms.wrapping_sub(start) >= weather_app::ANIM_MS || self.screen != Screen::Program
+            {
+                self.prog_open = None;
+                self.dirty(Rect::new(0, 0, W, H));
+            } else if let Some(w) = self.prog_window() {
+                self.dirty(w);
+            }
+            return Action::Redraw;
+        }
         // A program's motion: its next step when due.
         if let Some(due) = self.prog_anim
             && now_ms.wrapping_sub(due) < 1 << 31
@@ -2452,6 +2486,27 @@ impl Shell {
 
     /// Opens the app program `p` ([`Screen::Program`]).
     pub fn open_program(&mut self, p: &'static mut dyn rp_app::Program) {
+        // Out of Today its window opens as Weather's does (the owner on
+        // the X51v, 2026-11-15: "entering full screen app with animation
+        // doesnt happen with these apps like how it does for the weather
+        // app"): it grows from what was touched (the Start menu's sheet,
+        // the tile under the stylus, the screen's middle for a button) to
+        // the whole window. Weather's page is a picture on the video
+        // plane, which an app's live screen is not; an app's window is
+        // the renderer's floor and a clip, and only the window is drawn
+        // each step: Today stays on the screen round it, not drawn again.
+        let from = if self.menu_open {
+            self.menu_rect()
+        } else {
+            let (x, y) = self.tap.unwrap_or((W / 2, H / 2));
+            Rect::new(
+                x.saturating_sub(48).min(W - 96),
+                y.saturating_sub(48).clamp(TITLE.h, H - 96),
+                96,
+                96,
+            )
+        };
+        let opening = self.screen == Screen::Today && self.planes;
         self.set_menu(false);
         // Its pictures are its own from here, given back when it closes.
         if let Some(pics) = self.app_pics {
@@ -2464,7 +2519,34 @@ impl Shell {
         self.program_keyboard();
         self.pressed = None;
         self.focus = None;
-        self.dirty(Rect::new(0, 0, W, H));
+        if opening {
+            // The title and the window's first step; the rest as it grows.
+            self.prog_open = Some((self.now, from));
+            self.prog_fresh = true;
+            self.dirty(TITLE);
+            self.dirty(from);
+        } else {
+            self.prog_open = None;
+            self.dirty(Rect::new(0, 0, W, H));
+        }
+    }
+
+    /// While an app opens out of Today: the window it shows through so
+    /// far (smoothstep, as Weather's Reveal: from rest, fastest half-way).
+    #[must_use]
+    pub fn prog_window(&self) -> Option<Rect> {
+        let (start, from) = self.prog_open.filter(|_| self.screen == Screen::Program)?;
+        let t = i64::from(self.now.wrapping_sub(start).min(weather_app::ANIM_MS)) * 1024
+            / i64::from(weather_app::ANIM_MS);
+        let left = (1024 - t * t * (3 * 1024 - 2 * t) / (1024 * 1024)) as i32;
+        let lerp =
+            |a: u16, b: u16| (i32::from(b) + (i32::from(a) - i32::from(b)) * left / 1024) as u16;
+        Some(Rect::new(
+            lerp(from.x, 0),
+            lerp(from.y, TITLE.h),
+            lerp(from.w, W),
+            lerp(from.h, H - TITLE.h),
+        ))
     }
 
     /// The look's setting (Light, Dark, Auto with the sun): the previews
@@ -2718,7 +2800,9 @@ impl Shell {
         // Its own window, no wallpaper behind: the renderer's floor
         // ([`Self::floor`]).
         let start = f.len();
-        f.clip(Some(area));
+        f.clip(Some(
+            self.prog_window().map_or(area, |w| w.intersect(&area)),
+        ));
         self.owning(|| p.draw(f, &cx));
         f.clip(None);
         if light {
@@ -2925,6 +3009,11 @@ impl Shell {
 
     /// Handles one input event.
     pub fn input(&mut self, e: Input) -> Action {
+        match e {
+            Input::PenUp { x, y } => self.tap = Some((x, y)),
+            Input::Key(_) => self.tap = None,
+            _ => {}
+        }
         if self.align.is_some() {
             return self.align_input(e);
         }
@@ -3184,15 +3273,26 @@ impl Shell {
         // it came, went or changed, everything under it is new (not on the
         // way back to Today's kept picture, already right).
         let floor = self.floor();
-        if floor != self.floor_was && !from_kept {
+        // (An app opening: its window's steps are marked as it grows.)
+        if floor != self.floor_was && !from_kept && self.prog_open.is_none() {
             f.damage(Rect::new(0, 0, W, H));
         }
         self.floor_was = floor;
         f.set_floor(floor);
         f.set_floor_picture(self.backdrops && floor.is_some());
+        let keys = self.softkeys();
         self.scene(f);
         self.look(f);
         self.program_content(f);
+        // A program that changed its screen as it drew (Notes opened for
+        // a new note: its softkey read "New" on the note until something
+        // else redrew the bar, found by the apps check, 2026-11-15): the
+        // frame made again, once, with the bar it has now.
+        if self.softkeys() != keys {
+            self.dirty(Rect::new(0, 0, W, H));
+            self.drawn_screen = was;
+            return self.frame(f);
+        }
         if self.screen == Screen::Program {
             // Over the app: its overlays, in the look's colours.
             let start = f.len();
@@ -3373,8 +3473,13 @@ impl Shell {
                 (mix(left, tint, k, 100), mix(right, tint, k, 100))
             }
         };
-        // The whole screen: the light look's glass bars too.
-        Some((Rect::new(0, 0, W, H), left, right))
+        // The whole screen (the light look's glass bars too), or the
+        // window an app opens through.
+        Some((
+            self.prog_window().unwrap_or(Rect::new(0, 0, W, H)),
+            left,
+            right,
+        ))
     }
 
     fn glass(&self, f: &mut Frame, r: Rect, left: Argb, right: Argb) {
@@ -3461,7 +3566,7 @@ impl Shell {
         self.centred(f, all, 150, label, TEXT, b"ALIGN SCREEN");
         let (line1, line2): (&[u8], &[u8]) = match a.stage() {
             align::Stage::Target(_) => (
-                b"Touch the centre of the target",
+                b"Touch the center of the target",
                 b"and hold until it turns green.",
             ),
             align::Stage::Check(_) => (b"Now touch the dot to check.", b""),
@@ -3648,7 +3753,10 @@ impl Shell {
             Screen::KeyEntry => self.key_scene(f),
             Screen::Station => self.station_scene(f),
             Screen::Alert => self.alert_scene(f),
-            Screen::Program => self.program_scene(f),
+            Screen::Program => {
+                f.clip(self.prog_window());
+                self.program_scene(f);
+            }
         }
         if self.chart.is_some() {
             f.clip(None);
@@ -3665,7 +3773,7 @@ impl Shell {
 
         // Softkeys and the notice between them.
         self.softkey_bar(f, self.softkeys());
-        if reveal.is_some() {
+        if reveal.is_some() || self.prog_window().is_some() {
             f.clip(None);
         }
         if let Some(n) = self.notice() {

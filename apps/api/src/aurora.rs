@@ -87,18 +87,26 @@ fn node(gx: usize, gy: usize, tint: Argb, light: bool) -> [i32; 3] {
         // A soft light, not a white one (the owner on the X51v,
         // 2026-11-15: "light mode is WAY too bright with these full
         // screen backgrounds ... light mode doesnt have to mean blinding
-        // mode"; the first values were 252 at the top, 206 at the foot).
+        // mode"; the first values were 252 at the top, 206 at the foot;
+        // then 208 and 158, "still seems too blinding ... see what is
+        // considered normal for people with eye problems"). Measured, not
+        // guessed: a light screen was 60-74% of white's light on average
+        // (relative luminance, the previews). The W3C's low-vision needs
+        // name low overall luminance with contrast kept; ours is set from
+        // that: the backdrop at 30% falling to 17%, the glass over it near
+        // 40%, so black words still stand at 7:1 and a screen averages
+        // about a third of white.
         (
-            [208, 211, 216],
+            [150, 153, 158],
             [
-                lerp(190, t[0], 34),
-                lerp(196, t[1], 34),
-                lerp(205, t[2], 34),
+                lerp(136, t[0], 30),
+                lerp(141, t[1], 30),
+                lerp(149, t[2], 30),
             ],
             [
-                lerp(158, t[0], 80),
-                lerp(168, t[1], 80),
-                lerp(184, t[2], 80),
+                lerp(114, t[0], 64),
+                lerp(121, t[1], 64),
+                lerp(133, t[2], 64),
             ],
         )
     } else {
@@ -155,7 +163,7 @@ fn node(gx: usize, gy: usize, tint: Argb, light: bool) -> [i32; 3] {
     let (dx, dy) = (x + 40, y + 60);
     let glow = bell(dx * 3 / 4, 260) * bell(dy, 250) / 256;
     for ch in &mut c {
-        *ch = lerp(*ch, 255 * 16, glow * if light { 64 } else { 34 } / 256);
+        *ch = lerp(*ch, 255 * 16, glow * if light { 36 } else { 34 } / 256);
     }
     if !light {
         // The foot's corners fall away into the dark (a vignette).

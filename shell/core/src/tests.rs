@@ -4219,3 +4219,99 @@ fn a_task_with_a_time_brings_the_banner_at_its_time() {
     s.set_time(at(15, 5));
     assert!(!s.reminder_shown(), "the done one never reminded");
 }
+
+/// A program with a question for the network (the address typed, as
+/// Contacts asks).
+struct Asker(bool);
+
+impl rp_app::Program for Asker {
+    fn title(&self) -> &'static str {
+        "Asker"
+    }
+    fn softkeys(&self) -> (&'static str, &'static str) {
+        ("", "")
+    }
+    fn draw(&mut self, _f: &mut Frame, _cx: &rp_app::Ctx) {}
+    fn event(&mut self, _e: rp_app::Event, _cx: &rp_app::Ctx) -> rp_app::Reply {
+        rp_app::Reply::Nothing
+    }
+    fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        (!core::mem::replace(&mut self.0, true)).then(|| rp_app::NetAsk {
+            what: b"ADDR",
+            arg: rp_app::Text::of(b"410 Pi"),
+        })
+    }
+}
+
+#[test]
+fn every_question_is_one_whole_line() {
+    // The X51v, 2026-11-15: a program's question had no line end, so the
+    // relay read it run together with Weather's next one and refused both
+    // ("REFUSED 400 not an address"): no address, money rate or calendar
+    // was ever answered on the device. Every question sent, a program's
+    // and each of Weather's, is one line: a newline at its end and nowhere
+    // else.
+    let whole = |l: &[u8]| l.iter().position(|&c| c == 10) == Some(l.len() - 1);
+    let mut s = shell(true);
+    while let Some(q) = s.next_ask() {
+        assert!(whole(q.line()), "{:?}", core::str::from_utf8(q.line()));
+        s.net_answer(false, b"");
+    }
+    s.open_program(Box::leak(Box::new(Asker(false))));
+    let mut asked = false;
+    while let Some(q) = s.next_ask() {
+        assert!(whole(q.line()), "{:?}", core::str::from_utf8(q.line()));
+        asked |= q.line() == b"RPNET ADDR 410 Pi\n";
+        s.net_answer(false, b"");
+    }
+    assert!(asked, "the program's question was sent");
+}
+
+#[test]
+fn an_app_opens_out_of_today_as_weather_does() {
+    // The owner on the X51v, 2026-11-15: "entering full screen app with
+    // animation doesnt happen with these apps like how it does for the
+    // weather app". On the device's path the window grows from the touch
+    // to the whole window, only ever larger, drawing only itself; then
+    // the app is whole. Off it (the previews) an app is whole at once.
+    let mut s = shell(true);
+    s.open_program(Box::leak(Box::new(Plain)));
+    assert_eq!(s.prog_window(), None, "whole at once off the device's path");
+    let mut s = shell(true);
+    s.use_planes(true);
+    s.tick(1_000);
+    let _ = drawn(&mut s);
+    s.input(Input::PenUp { x: 100, y: 300 });
+    s.open_program(Box::leak(Box::new(Plain)));
+    let first = s.prog_window().expect("opening");
+    assert_eq!(first, Rect::new(52, 252, 96, 96));
+    assert_eq!(s.floor().map(|f| f.0), Some(first));
+    let mut last = first;
+    let mut steps = 0;
+    for ms in (1_000..1_000 + weather_app::ANIM_MS).step_by(16) {
+        assert_eq!(s.tick(ms), Action::Redraw);
+        let w = s.prog_window().expect("still opening");
+        assert_eq!(w.union(&last), w, "the window only grows");
+        let mut f = Box::new(Frame::new());
+        s.frame(&mut f);
+        // Nothing drawn outside the title bar and the window.
+        for d in f.dirty() {
+            assert!(
+                d.union(&w) == w || d.union(&TITLE) == TITLE,
+                "{d:?} outside {w:?}"
+            );
+        }
+        last = w;
+        steps += 1;
+    }
+    assert!(steps > 20);
+    s.tick(1_000 + weather_app::ANIM_MS);
+    assert_eq!(s.prog_window(), None);
+    assert_eq!(s.floor().map(|f| f.0), Some(Rect::new(0, 0, W, H)));
+    let mut f = Box::new(Frame::new());
+    s.frame(&mut f);
+    assert!(
+        f.dirty().iter().any(|d| *d == Rect::new(0, 0, W, H)),
+        "then whole"
+    );
+}

@@ -97,6 +97,8 @@ pub struct Tasks {
     press: Option<(u16, u32)>,
     revealed: Option<u32>,
     actions: [Rect; 3],
+    /// The time keys of the task whose actions show: earlier, later, none.
+    time_keys: [Rect; 3],
     ticking: Option<(u32, u8)>,
     view: View,
     line: [u8; 64],
@@ -240,6 +242,7 @@ impl Tasks {
             press: None,
             revealed: None,
             actions: [Rect::new(0, 0, 0, 0); 3],
+            time_keys: [Rect::new(0, 0, 0, 0); 3],
             ticking: None,
             view: View::Home,
             line: [0; 64],
@@ -644,9 +647,18 @@ impl Tasks {
             };
             hit(Rect::new(r.x, r.y, keys, r.h), 0);
             let asked = self.ask_delete == Some(i as u8);
-            let words: [&[u8]; 3] = [b"COLOUR", b"NAME", if asked { b"SURE?" } else { b"DELETE" }];
+            let words: [&[u8]; 3] = [b"COLOR", b"NAME", if asked { b"SURE?" } else { b"DELETE" }];
             for (k, w) in words.iter().enumerate() {
                 let a = Rect::new(r.x + keys + k as u16 * 76, r.y + 5, 72, r.h - 10);
+                // The COLOR key is the list's colour itself, so a press
+                // shows (a 4 px bar changing between two soft colours read
+                // as nothing happening: the owner on the X51v, 2026-11-15).
+                if k == 0 {
+                    kit::round_rect(f, cx, a, l.colour);
+                    kit::centred(f, a, a.y + 22, label, kit::keep(0xFF10_1418), w);
+                    hit(a, 1);
+                    continue;
+                }
                 kit::key(
                     f,
                     cx,
@@ -1315,6 +1327,30 @@ impl Tasks {
                     self.actions[k] = a;
                 }
                 y += 50;
+                // Its time, set by keys (typed "3pm" in the line was the
+                // only way, and a task already made had none: the owner on
+                // the X51v, 2026-11-15, "no way to assign a time still"):
+                // earlier and later a quarter of an hour, or none. The
+                // shell reminds of it then.
+                let tr = Rect::new(MARGIN + 30, y, WIDE - 30, 40);
+                kit::panel(f, cx, tr);
+                kit::text(f, tr.x + 12, tr.y + 26, cx.fonts.label, DIM, b"TIME");
+                let mut tb = [0u8; 8];
+                let (shown, col): (&[u8], _) = match t.time {
+                    Some(m) => {
+                        let n = clock(m, cx.us, &mut tb);
+                        (&tb[..n], TEXT)
+                    }
+                    None => (b"None", DIM),
+                };
+                kit::text(f, tr.x + 70, tr.y + 27, cx.fonts.ui, col, shown);
+                for (k, w) in [&b"EARLIER"[..], b"LATER", b"NONE"].iter().enumerate() {
+                    let a = Rect::new(tr.right() - 3 * 78 + k as u16 * 78, tr.y + 4, 74, 32);
+                    kit::key(f, cx, a, kit::KeyState::Rest);
+                    kit::centred(f, a, a.y + 21, cx.fonts.label, TEXT, w);
+                    self.time_keys[k] = a;
+                }
+                y += 44;
                 // Its steps, each with its own circle (the row said "2 of
                 // 5" and there was no way to make or tick one); the line
                 // above adds one.
@@ -1612,6 +1648,10 @@ impl Program for Tasks {
                         self.typing = true;
                         return Reply::Redraw;
                     }
+                    if let Some(k) = self.time_keys.iter().position(|r| r.contains_point(x, y)) {
+                        self.set_time(cx, id, k as u8);
+                        return Reply::Redraw;
+                    }
                     self.revealed = None;
                     self.typing = false;
                     self.line_n = 0;
@@ -1781,6 +1821,7 @@ impl Tasks {
         if self.revealed.is_some() {
             add(ADD_LINE);
             self.actions.iter().for_each(|&r| add(r));
+            self.time_keys.iter().for_each(|&r| add(r));
             self.steps_at[..self.n_steps].iter().for_each(|r| add(r.0));
         } else {
             add(ADD_LINE);
@@ -1791,6 +1832,31 @@ impl Tasks {
             }
         }
         (t, n)
+    }
+
+    /// A time key pressed on task `id`: 0 a quarter of an hour earlier, 1
+    /// later, 2 no time. A task with none starts at 9:00 AM (later) or
+    /// 8:45 (earlier); a task with no day is today's from then.
+    fn set_time(&mut self, cx: &Ctx, id: u32, key: u8) {
+        let Some(t) = self.tasks.iter().flatten().find(|t| t.id == id).copied() else {
+            return;
+        };
+        if key == 2 {
+            self.set_field(cx, id, tag::REMIND_AT, None);
+            return;
+        }
+        let m = match (t.time, key) {
+            (Some(m), 0) => m.saturating_sub(15),
+            (Some(m), _) => (m + 15).min(23 * 60 + 45),
+            (None, 0) => 8 * 60 + 45,
+            (None, _) => 9 * 60,
+        };
+        let day = t.due.unwrap_or(cx.now.day);
+        if t.due.is_none() {
+            self.set_field(cx, id, tag::DUE, Some(&(day as u32).to_le_bytes()));
+        }
+        let at = (date::start_of(day) + u32::from(m)).to_le_bytes();
+        self.set_field(cx, id, tag::REMIND_AT, Some(&at));
     }
 
     /// The list's next page, if there is one.
