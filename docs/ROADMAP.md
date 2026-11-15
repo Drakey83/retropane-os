@@ -341,6 +341,21 @@ gathered in [design/README.md](design/README.md).
 ## After everything else: the Field Kit pack
 **Idea recorded, specifics later** (ADR-0020, owner's initial ideas, 2026-10-13). The last thing built, after the browser and the rest of the roadmap: a pack of client-only network and utility tools (terminal, hex editor, password manager, encryption and hashes, serial console, crash log viewer; then SSH, IRC, network diagnostics, Wi-Fi scanner), each a separate program run one at a time from the card.
 
+## The showcase: Half-Life in the OS (owner, 2026-11-15)
+
+The owner: Half-Life (Xash3D) built into the OS as its showcase, "a 30-60fps
+fully playable HL port"; "work until RetroPane is ready to start on that
+port" (R212). What ready means, line by line, with what the OS already has:
+[design/half-life-readiness.md](design/half-life-readiness.md). Nothing here
+is measured yet; no frame rate is promised before the evaluation.
+
+- [ ] 1. A C and C++ compiler for the X51v in the build, and a C library (picolibc over our own system layer); a C "hello" image in the emulator *(waits for the owner's go for the downloads)*
+- [ ] 2. The evaluation: Xash3D built for ARMv5 with no FPU, a real map in the emulator, its frame's CPU split and its memory measured; the result and the options to the owner
+- [ ] 3. The port layer (one C header): files over `kernel/fat`, the audio service's stream, input, the 3D renderer's C face; each with its test
+- [ ] 4. An ADR: how a program this big is run and left (its own image from the card, or a process)
+- [ ] 5. The licences read in full (Xash3D's GPLv3, Valve's SDK licence): a finding for the owner's ruling
+- [ ] 6. The port itself: `ref_rp` on our 3D driver, the tuned software-float runtime, the fixed-point library where the counters show it hot
+
 ## At the end: a faster Quake 3 port
 **Owner's request, 2026-10-14.** The Quake 3 port on the owner's card (Q3CE,
 2008) "takes forever to start". A fresh port of the GPL engine (id's 2005
