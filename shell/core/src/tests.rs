@@ -4376,3 +4376,68 @@ fn one_app_comes_over_another_from_the_right_edge() {
     s.open_program(Box::leak(Box::new(Plain)));
     assert_eq!(s.prog_window(), Some(sheet));
 }
+
+#[test]
+fn a_reminder_made_after_its_time_shows_at_once_and_once() {
+    // The owner on the X51v, 2026-11-15: an alarm set in Calendar "never
+    // went off when it was supposed to, no alarm sounded". An appointment
+    // ten minutes off with its alert a quarter of an hour before: the
+    // alert's time is past as it is made, and only times still to come
+    // were looked for.
+    use rp_pim::date::{self, Date};
+    use rp_pim::store::{Kind, tag};
+    let mut s = shell(true);
+    s.give_apps(std::vec![0u8; crate::apps::MEMORY].leak());
+    s.set_year(2024);
+    let at = |h: u8, m: u8| Time {
+        hour: h,
+        minute: m,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    };
+    s.set_time(at(14, 49));
+    s.pim().unwrap().load_start(None);
+    s.pim_loaded();
+    assert!(!s.reminder_shown());
+    let day = date::days_from(Date {
+        year: 2024,
+        month: 1,
+        day: 1,
+    });
+    let put = |s: &mut Shell, title: &[u8], h: u32, m: u32, lead: u32| {
+        let start = (date::start_of(day) + h * 60 + m).to_le_bytes();
+        s.pim()
+            .unwrap()
+            .put(
+                Kind::Appointment,
+                None,
+                &[
+                    (tag::TITLE, title),
+                    (tag::START, &start),
+                    (tag::REMIND, &lead.to_le_bytes()),
+                ],
+            )
+            .unwrap();
+    };
+    put(&mut s, b"Dentist", 15, 0, 15);
+    s.set_time(at(14, 50));
+    assert!(s.reminder_shown(), "reminded at the next minute");
+    assert!(s.take_chime(), "with its sound");
+    tap(&mut s, crate::apps::preview::REMINDER_DISMISS);
+    assert!(!s.reminder_shown());
+    // Another record made: the one answered stays away; one whose alert
+    // was hours ago, or that is over, is not brought up.
+    put(&mut s, b"Long ago", 16, 0, 600);
+    put(&mut s, b"Over", 13, 0, 0);
+    s.set_time(at(14, 51));
+    assert!(!s.reminder_shown());
+    assert!(!s.take_chime());
+    // One at its start, to the minute.
+    put(&mut s, b"Alarm", 14, 53, 0);
+    s.set_time(at(14, 52));
+    assert!(!s.reminder_shown());
+    s.set_time(at(14, 53));
+    assert!(s.reminder_shown());
+    assert!(s.take_chime());
+}

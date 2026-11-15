@@ -97,8 +97,10 @@ pub struct Tasks {
     press: Option<(u16, u32)>,
     revealed: Option<u32>,
     actions: [Rect; 3],
-    /// The time keys of the task whose actions show: earlier, later, none.
-    time_keys: [Rect; 3],
+    /// The time row of the task whose actions show (a touch sets its
+    /// time), and the pad setting a task's time, if it is up.
+    time_keys: [Rect; 1],
+    pad: Option<(u32, rp_app::timepad::TimePad)>,
     ticking: Option<(u32, u8)>,
     view: View,
     line: [u8; 64],
@@ -156,6 +158,8 @@ enum Hit {
     List(Option<u8>),
     /// A task ticked.
     Tick(u32),
+    /// A task opened in Today's list: its actions, time and steps.
+    Open(u32),
 }
 
 /// The home's SEARCH key (on the LISTS line's right).
@@ -242,7 +246,8 @@ impl Tasks {
             press: None,
             revealed: None,
             actions: [Rect::new(0, 0, 0, 0); 3],
-            time_keys: [Rect::new(0, 0, 0, 0); 3],
+            time_keys: [Rect::new(0, 0, 0, 0); 1],
+            pad: None,
             ticking: None,
             view: View::Home,
             line: [0; 64],
@@ -1061,7 +1066,7 @@ impl Tasks {
                 if is_late { LATE } else { DIM },
                 &w[..wn],
             );
-            self.hits.add(r, Hit::List(None));
+            self.hits.add(r, Hit::Open(task.id));
             self.hits
                 .add(Rect::new(r.x, r.y, 44, r.h), Hit::Tick(task.id));
             y += 42;
@@ -1327,11 +1332,11 @@ impl Tasks {
                     self.actions[k] = a;
                 }
                 y += 50;
-                // Its time, set by keys (typed "3pm" in the line was the
-                // only way, and a task already made had none: the owner on
-                // the X51v, 2026-11-15, "no way to assign a time still"):
-                // earlier and later a quarter of an hour, or none. The
-                // shell reminds of it then.
+                // Its time (typed "3pm" in the line was the only way, and
+                // a task already made had none: the owner on the X51v,
+                // 2026-11-15, "no way to assign a time still"; then keys a
+                // quarter of an hour apart: "should be able to be selected
+                // by the min"). The shell reminds of it then.
                 let tr = Rect::new(MARGIN + 30, y, WIDE - 30, 40);
                 kit::panel(f, cx, tr);
                 kit::text(f, tr.x + 12, tr.y + 26, cx.fonts.label, DIM, b"TIME");
@@ -1344,12 +1349,12 @@ impl Tasks {
                     None => (b"None", DIM),
                 };
                 kit::text(f, tr.x + 70, tr.y + 27, cx.fonts.ui, col, shown);
-                for (k, w) in [&b"EARLIER"[..], b"LATER", b"NONE"].iter().enumerate() {
-                    let a = Rect::new(tr.right() - 3 * 78 + k as u16 * 78, tr.y + 4, 74, 32);
-                    kit::key(f, cx, a, kit::KeyState::Rest);
-                    kit::centred(f, a, a.y + 21, cx.fonts.label, TEXT, w);
-                    self.time_keys[k] = a;
-                }
+                // The whole row is the key: a touch brings the time pad
+                // (to the minute, typed: timepad.rs says whose design).
+                let a = Rect::new(tr.right() - 112, tr.y + 4, 108, 32);
+                kit::key(f, cx, a, kit::KeyState::Rest);
+                kit::centred(f, a, a.y + 21, cx.fonts.label, TEXT, b"SET TIME");
+                self.time_keys[0] = tr;
                 y += 44;
                 // Its steps, each with its own circle (the row said "2 of
                 // 5" and there was no way to make or tick one); the line
@@ -1530,6 +1535,7 @@ impl Program for Tasks {
 
     fn softkeys(&self) -> (&'static str, &'static str) {
         match self.view {
+            _ if self.pad.is_some() => ("Cancel", "Set"),
             View::Home => ("Back", "New"),
             View::List(_) if self.find => ("Back", "Find"),
             View::List(_) => ("Back", "Add"),
@@ -1540,6 +1546,10 @@ impl Program for Tasks {
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
         self.refresh(cx);
+        if let Some((_, pad)) = &self.pad {
+            pad.draw(f, cx, b"TIME");
+            return;
+        }
         match self.view {
             View::Home => {
                 self.home(f, cx);
@@ -1562,6 +1572,26 @@ impl Program for Tasks {
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        // The time pad takes everything while it is up.
+        if let Some((id, mut pad)) = self.pad {
+            use rp_app::timepad::Answer;
+            return match pad.event(e) {
+                Answer::Set(v) => {
+                    self.pad = None;
+                    self.set_time(cx, id, v.map(|m| m as u16));
+                    Reply::Redraw
+                }
+                Answer::Cancel => {
+                    self.pad = None;
+                    Reply::Redraw
+                }
+                Answer::Redraw => {
+                    self.pad = Some((id, pad));
+                    Reply::Redraw
+                }
+                Answer::Nothing => Reply::Nothing,
+            };
+        }
         if self.view == View::Lists {
             return self.lists_event(e, cx);
         }
@@ -1648,8 +1678,14 @@ impl Program for Tasks {
                         self.typing = true;
                         return Reply::Redraw;
                     }
-                    if let Some(k) = self.time_keys.iter().position(|r| r.contains_point(x, y)) {
-                        self.set_time(cx, id, k as u8);
+                    if self.time_keys[0].contains_point(x, y) {
+                        let time = self
+                            .tasks
+                            .iter()
+                            .flatten()
+                            .find(|t| t.id == id)
+                            .and_then(|t| t.time);
+                        self.pad = Some((id, rp_app::timepad::TimePad::clock(time)));
                         return Reply::Redraw;
                     }
                     self.revealed = None;
@@ -1711,6 +1747,16 @@ impl Program for Tasks {
                     self.ticking = Some((id, 0));
                     return Reply::Animate;
                 }
+                // A touch on a task itself opens it: its actions, its time
+                // and its steps (they opened only by a swipe to the left
+                // or the D-pad's centre, which nothing on the screen said:
+                // the owner on the X51v, 2026-11-15, after the TIME row
+                // was built, "Still no way to assign a time inside
+                // tasks!").
+                if let Some((_, id)) = press {
+                    self.revealed = Some(id);
+                    return Reply::Redraw;
+                }
                 Reply::Nothing
             }
             (Event::Key(Key::SoftRight) | Event::Done, View::List(_)) if self.typing => {
@@ -1749,6 +1795,11 @@ impl Program for Tasks {
                 }
                 Some(Hit::Tick(id)) => {
                     self.tick(cx, id);
+                    Reply::Redraw
+                }
+                Some(Hit::Open(id)) => {
+                    self.view = View::List(None);
+                    self.revealed = Some(id);
                     Reply::Redraw
                 }
                 None => Reply::Nothing,
@@ -1834,22 +1885,21 @@ impl Tasks {
         (t, n)
     }
 
-    /// A time key pressed on task `id`: 0 a quarter of an hour earlier, 1
-    /// later, 2 no time. A task with none starts at 9:00 AM (later) or
-    /// 8:45 (earlier); a task with no day is today's from then.
-    fn set_time(&mut self, cx: &Ctx, id: u32, key: u8) {
+    /// The time pad up on `minutes` (the previews: on the device a touch
+    /// on a task's TIME row brings it).
+    pub fn show_time_pad(&mut self, minutes: Option<u16>) {
+        self.pad = Some((0, rp_app::timepad::TimePad::clock(minutes)));
+    }
+
+    /// Task `id`'s time set to `minutes` from midnight (`None`: no time).
+    /// A task with no day is today's from then.
+    fn set_time(&mut self, cx: &Ctx, id: u32, minutes: Option<u16>) {
         let Some(t) = self.tasks.iter().flatten().find(|t| t.id == id).copied() else {
             return;
         };
-        if key == 2 {
+        let Some(m) = minutes else {
             self.set_field(cx, id, tag::REMIND_AT, None);
             return;
-        }
-        let m = match (t.time, key) {
-            (Some(m), 0) => m.saturating_sub(15),
-            (Some(m), _) => (m + 15).min(23 * 60 + 45),
-            (None, 0) => 8 * 60 + 45,
-            (None, _) => 9 * 60,
         };
         let day = t.due.unwrap_or(cx.now.day);
         if t.due.is_none() {

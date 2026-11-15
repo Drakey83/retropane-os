@@ -2154,11 +2154,22 @@ function Send-Bytes($b) {{ $sp.Write($b, 0, $b.Length) }}
 # for 15 s; the image asks again on the next open. $false once the image's
 # port is gone for good (the image ended).
 function Reopen {{
+    # The old handle let go first: left to .NET it kept the port, and
+    # every try to open it again was refused for the 15 s this waited
+    # (the run of 2026-11-15 at 42668b0e: "PORT LOST", "PORT GONE" a
+    # minute in, the image still running). It keeps trying while Windows
+    # still shows the image's port, and gives up only when the port has
+    # been away 15 s (the image ended) or after two minutes of refusals.
     try {{ $sp.Close() }} catch {{ }}
-    for ($i = 0; $i -lt 30; $i++) {{
+    try {{ $sp.Dispose() }} catch {{ }}
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
+    $away = 0
+    for ($i = 0; $i -lt 240 -and $away -lt 30; $i++) {{
         Start-Sleep -Milliseconds 500
         $d = Get-CimInstance Win32_PnPEntity | Where-Object {{ $_.Status -eq 'OK' -and $_.PNPDeviceID -notlike '*MI_*' -and $_.PNPDeviceID -like 'USB\{VID_PID}*' -and $_.Name -match '\(COM\d+\)' }} | Select-Object -First 1
-        if (-not $d) {{ continue }}
+        if (-not $d) {{ $away++; continue }}
+        $away = 0
         $p = [regex]::Match($d.Name, 'COM\d+').Value
         try {{
             $n = New-Object System.IO.Ports.SerialPort $p, 115200
@@ -2170,7 +2181,9 @@ function Reopen {{
             $script:sp = $n
             "PORT BACK on $p"
             return $true
-        }} catch {{ }}
+        }} catch {{
+            if ($i % 20 -eq 0) {{ "PORT REFUSED: $($_.Exception.Message)" }}
+        }}
     }}
     return $false
 }}
@@ -2188,9 +2201,14 @@ function Fetch($url) {{
 }}
 # The pictures in local\photos, by name.
 function Photo-Files {{
-    $dir = Join-Path $root 'local\photos'
-    if (-not (Test-Path $dir)) {{ return @() }}
-    Get-ChildItem $dir -File | Where-Object {{ $_.Extension -match '^\.(jpe?g|png|bmp|gif)$' }} | Sort-Object Name
+    # local\photos first, then the user's own Pictures folder and the
+    # folders in it, the newest first (the owner, 2026-11-15: "i cant
+    # assign a picture": the first relay looked only in a folder of the
+    # repository he was to fill by hand). 250 at most.
+    $dirs = @((Join-Path $root 'local\photos'), [Environment]::GetFolderPath('MyPictures')) | Where-Object {{ $_ -and (Test-Path $_) }}
+    $dirs | ForEach-Object {{ Get-ChildItem $_ -File -Recurse -Depth 2 -ErrorAction SilentlyContinue }} |
+        Where-Object {{ $_.Extension -match '^\.(jpe?g|png|bmp|gif)$' }} |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 250
 }}
 # A position the device sent: a number in range, three decimals at most.
 function Degrees($v, $max) {{
@@ -2203,7 +2221,7 @@ while ($true) {{
     try {{ $line = $sp.ReadLine().Trim() }}
     catch [System.TimeoutException] {{ continue }}
     catch {{
-        'PORT LOST'
+        "PORT LOST: $($_.Exception.Message)"
         if (-not (Reopen)) {{ 'PORT GONE'; break }}
         continue
     }}
@@ -2261,7 +2279,7 @@ while ($true) {{
                     if ($n.Length -gt 28) {{ $n = $n.Substring(0, 28) }}
                     $out += "$i|$n`n"
                 }}
-                "PHOTOS: $($all.Count) in local\photos, listed from $from"
+                "PHOTOS: $($all.Count) pictures found, listed from $from"
                 Answer ([Text.Encoding]::ASCII.GetBytes($out))
             }}
             'PHOTO' {{
@@ -2317,6 +2335,29 @@ while ($true) {{
                 # "Name|https://...ics" a line, never committed): their numbers
                 # and names only. The links never cross the cable.
                 $f = Join-Path $root 'local\calendars.txt'
+                # A calendar's secret iCal address copied on the PC (the
+                # device's screen asks for that: the owner, 2026-11-15,
+                # "still no google calendar option"; editing a file on the
+                # PC was no option at all) is added to the list, named by
+                # the calendar itself, once. Only an https address ending
+                # .ics is taken; it stays on the PC.
+                $c = ''
+                try {{ $c = ((Get-Clipboard -Raw) -replace '\s', '') }} catch {{ }}
+                if ($c -match '^webcal://') {{ $c = 'https://' + $c.Substring(9) }}
+                if ($c -match '^https://[^|]{{8,400}}\.ics(\?[^|]*)?$') {{
+                    $have = @()
+                    if (Test-Path $f) {{ $have = @(Get-Content $f) }}
+                    if (-not ($have | Where-Object {{ $_.Split('|').Length -ge 2 -and $_.Split('|')[1].Trim() -eq $c }})) {{
+                        $name = "Calendar $(@($have | Where-Object {{ $_ -match '\|https://' }}).Count + 1)"
+                        try {{
+                            $head = [Text.Encoding]::UTF8.GetString((Fetch $c))
+                            $m = [regex]::Match($head, 'X-WR-CALNAME:([^\x0D\x0A]{{1,40}})')
+                            if ($m.Success) {{ $name = ($m.Groups[1].Value -replace '[^A-Za-z0-9 _.@-]', '').Trim() }}
+                            Add-Content -Path $f -Value "$name|$c"
+                            "ICALS: added '$name' from the clipboard"
+                        }} catch {{ "ICALS: the address on the clipboard did not answer" }}
+                    }}
+                }}
                 $out = ''
                 if (Test-Path $f) {{
                     $i = 0

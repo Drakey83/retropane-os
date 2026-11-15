@@ -24,6 +24,7 @@
 
 pub mod aurora;
 pub mod kit;
+pub mod timepad;
 
 pub use rp_draw::pics::{Pic, Pics};
 pub use rp_draw::{Argb, Cmd, Font, Frame, PanelArt, Rect};

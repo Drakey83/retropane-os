@@ -143,6 +143,9 @@ struct Edit {
     repeat: u8,
     /// 0 none, 1 at the start, 2 15 min, 3 1 h, 4 1 day before.
     alert: u8,
+    /// The alert's lead in minutes when it is none of the quick ones
+    /// (`alert` 5).
+    alert_other: u32,
     cal: usize,
     /// From a calendar link: shown, not changed.
     read_only: bool,
@@ -155,6 +158,28 @@ struct Edit {
 
 const ALERTS: [Option<u32>; 5] = [None, Some(0), Some(15), Some(60), Some(1440)];
 const ALERT_NAMES: [&[u8]; 5] = [b"NONE", b"AT START", b"15 MIN", b"1 HOUR", b"1 DAY"];
+
+impl Edit {
+    /// The alert's lead in minutes (`None`: no alert).
+    fn alert_minutes(&self) -> Option<u32> {
+        match ALERTS.get(usize::from(self.alert)) {
+            Some(a) => *a,
+            None => Some(self.alert_other),
+        }
+    }
+
+    /// The alert set to `lead` minutes before: one of the quick ones, or
+    /// its own (the sixth chip).
+    fn set_alert(&mut self, lead: Option<u32>) {
+        match ALERTS.iter().position(|a| *a == lead) {
+            Some(k) => self.alert = k as u8,
+            None => {
+                self.alert = 5;
+                self.alert_other = lead.unwrap_or(0);
+            }
+        }
+    }
+}
 const REPEAT_NAMES: [&[u8]; 5] = [b"NONE", b"DAILY", b"WEEKLY", b"MONTHLY", b"YEARLY"];
 
 /// The editor's rows (y), from under the title band.
@@ -223,6 +248,9 @@ pub struct Calendar {
     /// whether to ask for the list, what was asked, and what to say.
     queue: [u8; 8],
     n_queue: usize,
+    /// The pad setting the appointment's start (0) or its alert's lead
+    /// (1), if it is up.
+    pad: Option<(u8, rp_app::timepad::TimePad)>,
     /// The appointment being edited, and the agenda's rows as drawn.
     edit: Option<Edit>,
     /// Where's suggestions (street and city lines), and the text last
@@ -409,6 +437,7 @@ impl Calendar {
             queue: [0; 8],
             n_queue: 0,
             cal_rows: [(Rect::new(0, 0, 0, 0), 0); 8],
+            pad: None,
             edit: None,
             places: [(Text::EMPTY, Text::EMPTY); 3],
             n_places: 0,
@@ -566,6 +595,7 @@ impl Calendar {
             all_day: false,
             repeat: 0,
             alert: 2,
+            alert_other: 0,
             cal: 0,
             read_only: false,
             typing: None,
@@ -598,10 +628,7 @@ impl Calendar {
                         rp_pim::repeat::Every::MonthDate | rp_pim::repeat::Every::MonthWeekday => 3,
                         rp_pim::repeat::Every::Year => 4,
                     });
-                e.alert = ALERTS
-                    .iter()
-                    .position(|a| *a == r.num(tag::REMIND))
-                    .unwrap_or(0) as u8;
+                e.set_alert(r.num(tag::REMIND));
                 let cal = r.num(tag::CAL);
                 e.cal = cal
                     .and_then(|c| self.cals[..self.n_cals].iter().position(|x| x.id == c))
@@ -652,7 +679,7 @@ impl Calendar {
             }
             .pack(e.day))
         });
-        let alert = ALERTS[usize::from(e.alert)].map(le);
+        let alert = e.alert_minutes().map(le);
         let mut fields: [(u8, &[u8]); 8] = [
             (tag::TITLE, &e.title[..e.title_n]),
             (tag::PLACE, &e.place[..e.place_n]),
@@ -784,13 +811,31 @@ impl Calendar {
             &REPEAT_NAMES,
             usize::from(e.repeat),
         );
-        chips_row(
-            f,
-            E_ALERT + 14,
-            b"ALERT",
-            &ALERT_NAMES,
-            usize::from(e.alert),
-        );
+        // The quick leads, and any other to the minute (the sixth chip
+        // brings the pad: a number and its unit, as Google Calendar's
+        // custom alert; the owner, 2026-11-15, "by the min").
+        let mut other = Buf::<10>::new();
+        if e.alert == 5 {
+            let m = e.alert_other;
+            if m.is_multiple_of(1440) {
+                other.num(m / 1440).s(b" DAY");
+            } else if m.is_multiple_of(60) {
+                other.num(m / 60).s(b" HR");
+            } else {
+                other.num(m).s(b" MIN");
+            }
+        } else {
+            other.s(b"OTHER");
+        }
+        let alerts: [&[u8]; 6] = [
+            ALERT_NAMES[0],
+            b"START",
+            ALERT_NAMES[2],
+            ALERT_NAMES[3],
+            ALERT_NAMES[4],
+            other.get(),
+        ];
+        chips_row(f, E_ALERT + 14, b"ALERT", &alerts, usize::from(e.alert));
         let mut names: [&[u8]; 4] = [b""; 4];
         let n = self.n_cals.min(4);
         for (k, c) in self.cals[..n].iter().enumerate() {
@@ -861,10 +906,11 @@ impl Calendar {
                 let (top, h) = EDIT_ROWS[usize::from(r)];
                 let right = k != Key::Left;
                 let x = match r {
-                    0 | 1 | 8 if k == Key::Enter => W / 2,
+                    // (The centre on the start: its time pad.)
+                    0 | 1 | 3 | 8 if k == Key::Enter => W / 2,
                     2..=4 if k != Key::Enter => {
                         if right {
-                            3 * W / 4
+                            W - MARGIN - 30
                         } else {
                             W / 4
                         }
@@ -872,7 +918,7 @@ impl Calendar {
                     5..=7 if k != Key::Enter => {
                         let (n, at) = match r {
                             5 => (5, usize::from(e.repeat)),
-                            6 => (5, usize::from(e.alert)),
+                            6 => (6, usize::from(e.alert)),
                             _ => (n_cals, e.cal),
                         };
                         if n == 0 {
@@ -901,6 +947,12 @@ impl Calendar {
         Reply::Redraw
     }
 
+    /// The alert's pad up on `lead` minutes (the previews: on the device
+    /// the editor's sixth alert chip brings it).
+    pub fn show_alert_pad(&mut self, lead: u32) {
+        self.pad = Some((1, rp_app::timepad::TimePad::before(Some(lead))));
+    }
+
     /// A tap in the editor.
     fn edit_tap(&mut self, cx: &Ctx, x: u16, y: u16) -> Reply {
         let n_cals = self.n_cals.min(4);
@@ -909,7 +961,6 @@ impl Calendar {
         };
         let hit = |top: u16, h: u16| y >= top && y < top + h;
         let chip = |n: usize| usize::from((x.saturating_sub(MARGIN)) * n as u16 / WIDE).min(n - 1);
-        let left = x < W / 2;
         if e.read_only {
             return Reply::Nothing;
         }
@@ -921,18 +972,22 @@ impl Calendar {
         } else if hit(E_PLACE, 40) {
             e.typing = Some(EditText::Place);
         } else if hit(E_DAY, 40) {
-            e.day += if left { -1 } else { 1 };
+            e.day += if x < W / 2 { -1 } else { 1 };
         } else if hit(E_START, 40) {
+            // The arrows step five minutes (iOS's wheel); a touch on the
+            // time itself brings the pad, to the minute.
             if e.all_day {
                 e.all_day = false;
-            } else if left {
-                e.start = e.start.saturating_sub(15);
+            } else if x < MARGIN + 164 {
+                e.start = e.start.saturating_sub(5);
+            } else if x >= W - MARGIN - 56 {
+                e.start = (e.start + 5).min(23 * 60 + 59);
             } else {
-                e.start = (e.start + 15).min(23 * 60 + 45);
+                self.pad = Some((0, rp_app::timepad::TimePad::clock(Some(e.start))));
             }
         } else if hit(E_LEN, 40) {
             let step = if e.len >= 60 { 30 } else { 15 };
-            e.len = if left {
+            e.len = if x < W / 2 {
                 e.len.saturating_sub(step).max(15)
             } else {
                 (e.len + step).min(24 * 60)
@@ -940,7 +995,13 @@ impl Calendar {
         } else if hit(E_REPEAT + 14, 30) {
             e.repeat = chip(5) as u8;
         } else if hit(E_ALERT + 14, 30) {
-            e.alert = chip(5) as u8;
+            match chip(6) {
+                5 => {
+                    let lead = e.alert_minutes().filter(|_| e.alert == 5);
+                    self.pad = Some((1, rp_app::timepad::TimePad::before(lead)));
+                }
+                k => e.alert = k as u8,
+            }
         } else if hit(E_CAL + 14, 30) && n_cals > 0 {
             e.cal = chip(n_cals);
         } else if hit(E_DELETE, 40) && e.id.is_some() {
@@ -1019,7 +1080,7 @@ impl Calendar {
             note.y + 24,
             cx.fonts.ui,
             TEXT,
-            b"Google, Outlook, iCloud: paste each",
+            b"Google, Outlook, iCloud: on your PC,",
         );
         kit::text(
             f,
@@ -1027,7 +1088,7 @@ impl Calendar {
             note.y + 48,
             cx.fonts.ui,
             TEXT,
-            b"calendar's private iCal link into",
+            b"copy the calendar's secret iCal",
         );
         kit::text(
             f,
@@ -1035,7 +1096,7 @@ impl Calendar {
             note.y + 72,
             cx.fonts.ui,
             DIM,
-            b"calendars.txt on your PC (Name|link)",
+            b"address, then touch the key below",
         );
         if !self.status.is_empty() {
             kit::text(
@@ -1136,7 +1197,7 @@ impl Calendar {
             }
         }
         self.status = if self.n_queue == 0 {
-            b"No links in calendars.txt on the PC yet"
+            b"No iCal address copied on your PC yet"
         } else {
             b"Reading your calendars..."
         };
@@ -2074,6 +2135,20 @@ impl Calendar {
         }
     }
 
+    /// A month cell's bars: its day's first three, in their colours (its
+    /// own function: with the day's list in the month view's frame beside
+    /// the chosen day's, the frame was 5,016 bytes, past the stack rule).
+    #[inline(never)]
+    fn day_bars(&self, f: &mut Frame, day: i32, x: u16, cy: u16) {
+        let (list, n) = self.on(day);
+        for (k, a) in list[..n.min(3)].iter().enumerate() {
+            f.push(rp_app::Cmd::Fill {
+                r: Rect::new(x + 8, cy + 25 + k as u16 * 6, 46, 4),
+                color: self.colour(a),
+            });
+        }
+    }
+
     #[inline(never)]
     fn month_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         let d = date::date_of(self.day);
@@ -2127,13 +2202,7 @@ impl Calendar {
                 b.num(u32::from(date::date_of(day).day));
                 let col = if inside { TEXT } else { kit::alpha(DIM, 0x70) };
                 kit::text(f, x + 8, cy + 19, cx.fonts.ui, col, b.get());
-                let (list, n) = self.on(day);
-                for (k, a) in list[..n.min(3)].iter().enumerate() {
-                    f.push(rp_app::Cmd::Fill {
-                        r: Rect::new(x + 8, cy + 25 + k as u16 * 6, 46, 4),
-                        color: self.colour(a),
-                    });
-                }
+                self.day_bars(f, day, x, cy);
             }
         }
         y += rows * ch + 6;
@@ -2292,6 +2361,7 @@ impl Program for Calendar {
 
     fn softkeys(&self) -> (&'static str, &'static str) {
         match self.view {
+            _ if self.pad.is_some() => ("Cancel", "Set"),
             View::New => ("Cancel", "Add"),
             View::Calendars => ("Back", ""),
             View::Find => ("Back", "Find"),
@@ -2305,6 +2375,10 @@ impl Program for Calendar {
         self.paint(cx);
         self.refresh(cx);
         self.hits.clear();
+        if let Some((which, pad)) = &self.pad {
+            pad.draw(f, cx, if *which == 0 { b"STARTS" } else { b"ALERT" });
+            return;
+        }
         if self.view == View::Edit {
             self.title(f, cx);
             self.edit_view(f, cx);
@@ -2378,6 +2452,35 @@ impl Program for Calendar {
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        // The time pad takes everything while it is up.
+        if let Some((which, mut pad)) = self.pad {
+            use rp_app::timepad::Answer;
+            return match pad.event(e) {
+                Answer::Set(v) => {
+                    self.pad = None;
+                    if let Some(ed) = self.edit.as_mut() {
+                        match (which, v) {
+                            (0, Some(m)) => {
+                                ed.start = m as u16;
+                                ed.all_day = false;
+                            }
+                            (0, None) => ed.all_day = true,
+                            (_, lead) => ed.set_alert(lead),
+                        }
+                    }
+                    Reply::Redraw
+                }
+                Answer::Cancel => {
+                    self.pad = None;
+                    Reply::Redraw
+                }
+                Answer::Redraw => {
+                    self.pad = Some((which, pad));
+                    Reply::Redraw
+                }
+                Answer::Nothing => Reply::Nothing,
+            };
+        }
         // The stylus takes over from the D-pad (the centre key's tap is
         // a lift only).
         if matches!(e, Event::PenDown { .. }) {

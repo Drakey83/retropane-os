@@ -33,7 +33,7 @@ pub const PROGRAMS: [(&str, [u8; 5]); 5] = [
 /// measured 16-49 KB of file on 2026-11-14; the view is a little more).
 pub const SLOT: usize = 256 * 1024;
 /// The largest program file read.
-pub const FILE: usize = 128 * 1024;
+pub const FILE: usize = 192 * 1024;
 /// The largest relocation table read.
 pub const RELOCS: usize = 16 * 1024;
 /// The scratch [`load`] needs: the relocation table and a page.

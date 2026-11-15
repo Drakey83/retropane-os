@@ -55,6 +55,9 @@ pub(crate) struct Apps {
     checked: Option<u32>,
     next_due: Option<u32>,
     planned: Option<u32>,
+    /// The last reminders answered (taken away, snoozed, opened): a
+    /// change of the records does not bring them back.
+    gone: [u32; 4],
     /// Snoozed reminders: the appointment and the minute it comes back.
     snoozed: [(u32, u32); DUE_MAX],
     n_snoozed: usize,
@@ -73,6 +76,7 @@ impl Apps {
             checked: None,
             next_due: None,
             planned: None,
+            gone: [0; 4],
             snoozed: [(0, 0); DUE_MAX],
             n_snoozed: 0,
             chime: false,
@@ -223,22 +227,35 @@ impl Shell {
         // The next one due is worked out again only when the records
         // changed (P1): a minute's tick is one comparison.
         let changes = self.apps.store.borrow().as_ref().map(Store::changes);
-        if self.apps.planned != changes {
+        // The records changed: one made or moved so that its reminder's
+        // time is already past (an appointment ten minutes off with its
+        // alert a quarter of an hour before; the owner on the X51v,
+        // 2026-11-15, "it never went off when it was supposed to, no
+        // alarm sounded") reminds now, if that time was within the hour,
+        // as a phone shows an alert it was late for. Before, only a time
+        // still to come was ever looked for.
+        let changed = self.apps.planned != changes;
+        if changed {
             self.apps.planned = changes;
             self.reminders_plan();
         }
         let after = self.apps.checked.unwrap_or(now.saturating_sub(DAY_MIN));
-        if self.apps.next_due.is_none_or(|n| n > now) {
+        if !changed && self.apps.next_due.is_none_or(|n| n > now) {
             self.apps.checked = Some(now.max(after));
             return;
         }
         let mut fresh = [0u32; DUE_MAX];
         let mut n = 0;
+        let had = self.apps.n_due;
         if let Some(s) = self.apps.store.borrow().as_ref() {
             for r in s.all(Kind::Appointment).chain(s.all(Kind::Task)) {
                 let Some(at) = remind_at(&r) else { continue };
                 // Due since the last look, and not already over.
-                if at > after && at <= now && end_of(&r) > now && n < DUE_MAX {
+                if (at > after || changed && at + 60 > now && !self.apps.gone.contains(&r.id))
+                    && at <= now
+                    && end_of(&r) > now
+                    && n < DUE_MAX
+                {
                     fresh[n] = r.id;
                     n += 1;
                 }
@@ -252,7 +269,7 @@ impl Shell {
         }
         self.apps.checked = Some(now);
         self.reminders_plan();
-        if n > 0 {
+        if self.apps.n_due > had {
             self.apps.chime = true;
             self.dirty(Rect::new(0, 0, W, H));
         }
@@ -295,6 +312,8 @@ impl Shell {
             .is_some_and(|r| r.kind == Kind::Task);
         self.apps.due.copy_within(1.., 0);
         self.apps.n_due -= 1;
+        self.apps.gone.copy_within(..3, 1);
+        self.apps.gone[0] = id;
         if snooze && self.apps.n_snoozed < DUE_MAX {
             self.apps.snoozed[self.apps.n_snoozed] = (id, self.minute_now() + SNOOZE_MIN);
             self.apps.n_snoozed += 1;

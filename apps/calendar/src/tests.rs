@@ -204,7 +204,7 @@ fn the_editor_changes_start_repeat_and_alert_then_deletes_on_the_second_tap() {
         let r = s.all(Kind::Appointment).next().unwrap();
         assert_eq!(
             r.num(tag::START),
-            Some(date::start_of(19_723) + 15 * 60 + 15)
+            Some(date::start_of(19_723) + 15 * 60 + 5)
         );
         let rule = rp_pim::repeat::Rule::unpack(r.num(tag::REPEAT).unwrap(), 19_723).unwrap();
         assert_eq!(rule.every, rp_pim::repeat::Every::Week);
@@ -482,7 +482,7 @@ fn the_dpad_works_the_editor_the_calendars_and_the_quick_add_sheet() {
     c.event(Event::Key(Key::Left), &cx);
     let now = c.edit.unwrap();
     assert_eq!(now.day, was.day + 1);
-    assert_eq!(now.start, was.start + 15);
+    assert_eq!(now.start, was.start + 5);
     assert!(now.len < was.len);
     assert_eq!(now.repeat, was.repeat + 1);
     for _ in 0..9 {
@@ -637,4 +637,111 @@ fn search_finds_appointments_of_any_day_by_title_or_place() {
     assert_eq!((c.n_find, c.find_total), (0, 0));
     c.event(Event::Key(Key::SoftLeft), &cx);
     assert_eq!(c.view, View::Agenda);
+}
+
+#[test]
+fn a_start_and_an_alert_are_set_to_the_minute() {
+    // The owner on the X51v, 2026-11-15: "setting tasks and calendar
+    // alerts by time should be able to be selected by the min not by
+    // every 15 mins". A touch on the start's time brings the pad; the
+    // sixth alert chip brings it for a lead of any length.
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let at = (date::start_of(19_723) + 15 * 60).to_le_bytes();
+        s.put(
+            Kind::Appointment,
+            None,
+            &[(tag::TITLE, b"Dentist"), (tag::START, &at)],
+        )
+        .unwrap();
+    }
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    c.show(View::Agenda);
+    draw(&mut c, &cx);
+    let (r, _, _) = c.rows_at[0];
+    c.event(
+        Event::PenUp {
+            x: r.x + 100,
+            y: r.y + 20,
+        },
+        &cx,
+    );
+    assert!(matches!(c.view, View::Edit));
+    draw(&mut c, &cx);
+    c.event(
+        Event::PenUp {
+            x: W / 2 + 40,
+            y: E_START + 20,
+        },
+        &cx,
+    );
+    assert!(c.pad.is_some(), "the start's pad");
+    assert_eq!(c.softkeys(), ("Cancel", "Set"));
+    for ch in *b"307" {
+        c.event(Event::Char(ch), &cx);
+    }
+    c.event(Event::Key(Key::SoftRight), &cx);
+    assert!(c.pad.is_none());
+    let e = c.edit.unwrap();
+    assert_eq!(e.start % 60, 7, "to the minute");
+    assert_eq!(e.start % 720, 3 * 60 + 7);
+    // The alert: 7 minutes before, by the sixth chip.
+    draw(&mut c, &cx);
+    c.event(
+        Event::PenUp {
+            x: W - MARGIN - 20,
+            y: E_ALERT + 24,
+        },
+        &cx,
+    );
+    assert!(c.pad.is_some(), "the alert's pad");
+    c.event(Event::Char(b'7'), &cx);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    let e = c.edit.unwrap();
+    assert_eq!((e.alert, e.alert_minutes()), (5, Some(7)));
+    draw(&mut c, &cx);
+    // A lead that is a quick one lights its own chip.
+    c.event(
+        Event::PenUp {
+            x: W - MARGIN - 20,
+            y: E_ALERT + 24,
+        },
+        &cx,
+    );
+    c.event(Event::Char(b'1'), &cx);
+    c.event(Event::Char(b'5'), &cx);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    assert_eq!(c.edit.unwrap().alert, 2);
+    c.event(
+        Event::PenUp {
+            x: W - MARGIN - 20,
+            y: E_ALERT + 24,
+        },
+        &cx,
+    );
+    c.event(Event::Char(b'7'), &cx);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    // Kept, and read back as it was set.
+    c.event(Event::Key(Key::SoftRight), &cx);
+    {
+        let g = pim.borrow();
+        let s = g.as_ref().unwrap();
+        let r = s.all(Kind::Appointment).next().unwrap();
+        assert_eq!(r.num(tag::REMIND), Some(7));
+        assert_eq!(r.num(tag::START).unwrap() % 60, 7);
+    }
+    draw(&mut c, &cx);
+    let (r, _, _) = c.rows_at[0];
+    c.event(
+        Event::PenUp {
+            x: r.x + 100,
+            y: r.y + 20,
+        },
+        &cx,
+    );
+    let e = c.edit.unwrap();
+    assert_eq!((e.alert, e.alert_minutes()), (5, Some(7)));
 }

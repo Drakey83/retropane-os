@@ -477,7 +477,7 @@ fn a_long_list_goes_on_over_the_page_and_a_done_task_can_be_unticked() {
     t.event(Event::Key(Key::Enter), &cx);
     draw(&mut t, &cx);
     assert_eq!(t.revealed, Some(gone));
-    assert_eq!(t.list_targets().1, 7);
+    assert_eq!(t.list_targets().1, 5);
     // (The line that adds a step first, then down to the actions.)
     t.event(Event::Key(Key::Down), &cx);
     t.event(Event::Key(Key::Down), &cx);
@@ -845,25 +845,41 @@ fn a_task_s_time_is_set_by_keys_and_a_list_s_color_shows() {
     draw(&mut t, &cx);
     let (ts, n) = t.list_targets();
     assert!(t.time_keys.iter().all(|k| ts[..n].contains(k)));
-    let press = |t: &mut Tasks, k: usize| {
-        let r = t.time_keys[k];
-        tap(t, &cx, r);
-        draw(t, &cx);
-    };
-    press(&mut t, 1);
-    assert_eq!(me(&t).time, Some(9 * 60), "later, from none: 9:00 AM");
+    // A touch on the time row brings the pad; 3, 0, 7 and PM by the
+    // keyboard's digits and the pad's keys; the softkey sets it.
+    let row = t.time_keys[0];
+    tap(&mut t, &cx, row);
+    assert!(t.pad.is_some());
+    assert_eq!(t.softkeys(), ("Cancel", "Set"));
+    for c in *b"307" {
+        t.event(Event::Char(c), &cx);
+    }
+    t.event(Event::Key(Key::SoftRight), &cx);
+    assert!(t.pad.is_none());
+    draw(&mut t, &cx);
+    assert_eq!(me(&t).time, Some(3 * 60 + 7), "3:07, to the minute");
     assert_eq!(t.revealed, Some(id), "the task stays open");
-    press(&mut t, 1);
-    press(&mut t, 1);
-    assert_eq!(me(&t).time, Some(9 * 60 + 30));
-    press(&mut t, 0);
-    assert_eq!(me(&t).time, Some(9 * 60 + 15));
     let g = pim.borrow();
     let at = g.as_ref().unwrap().get(id).unwrap().num(tag::REMIND_AT);
     drop(g);
-    assert_eq!(at, Some(date::start_of(19_723) + 9 * 60 + 15));
-    press(&mut t, 2);
-    assert_eq!(me(&t).time, None);
+    assert_eq!(at, Some(date::start_of(19_723) + 3 * 60 + 7));
+    // The D-pad steps it a minute; Cancel leaves it as it was.
+    tap(&mut t, &cx, row);
+    t.event(Event::Key(Key::Right), &cx);
+    t.event(Event::Key(Key::Up), &cx);
+    t.event(Event::Key(Key::Enter), &cx);
+    draw(&mut t, &cx);
+    assert_eq!(me(&t).time, Some(3 * 60 + 8));
+    tap(&mut t, &cx, row);
+    t.event(Event::Key(Key::Up), &cx);
+    t.event(Event::Key(Key::SoftLeft), &cx);
+    draw(&mut t, &cx);
+    assert_eq!(me(&t).time, Some(3 * 60 + 8));
+    assert_eq!(
+        t.view,
+        View::List(None),
+        "Cancel leaves the pad, not the list"
+    );
     // The lists' COLOR key is drawn in the list's colour.
     t.event(Event::PenDown { x: 5, y: 630 }, &cx);
     t.event(Event::PenUp { x: 5, y: 630 }, &cx);
@@ -879,4 +895,38 @@ fn a_task_s_time_is_set_by_keys_and_a_list_s_color_shows() {
     tap(&mut t, &cx, key);
     draw(&mut t, &cx);
     assert_ne!(t.lists[0].colour, colour);
+}
+
+#[test]
+fn a_touch_on_a_task_opens_its_time_keys() {
+    // The owner on the X51v, 2026-11-15: "Still no way to assign a time
+    // inside tasks!" (the keys were there, behind a swipe).
+    let pim = store();
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    t.show(View::List(None));
+    draw(&mut t, &cx);
+    typed(&mut t, &cx, b"Call the bank");
+    t.event(Event::Key(Key::SoftLeft), &cx);
+    draw(&mut t, &cx);
+    let id = t.tasks.iter().flatten().next().unwrap().id;
+    assert_eq!(t.revealed, None);
+    // The row, right of its circle.
+    let row = t.rows_at[0].0;
+    tap(&mut t, &cx, Rect::new(row.x + 120, row.y + 4, 10, 10));
+    assert_eq!(t.revealed, Some(id));
+    draw(&mut t, &cx);
+    let row = t.time_keys[0];
+    tap(&mut t, &cx, row);
+    assert!(t.pad.is_some(), "the time pad");
+    t.event(Event::Key(Key::SoftRight), &cx);
+    draw(&mut t, &cx);
+    assert_eq!(t.tasks.iter().flatten().next().unwrap().time, Some(9 * 60));
+    // Its circle still ticks it.
+    let mut t = opened(19_723);
+    t.show(View::List(None));
+    draw(&mut t, &cx);
+    let circle = t.boxes[0].0;
+    tap(&mut t, &cx, circle);
+    assert_eq!(t.revealed, None);
 }

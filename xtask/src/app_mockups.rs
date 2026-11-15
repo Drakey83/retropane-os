@@ -761,6 +761,26 @@ fn base() -> Vec<Mock> {
             }),
         },
         Mock {
+            name: "v2-tasks-time",
+            what: "Tasks: a task's time typed to the minute (hour and minute fields, AM/PM, quick minutes)",
+            prepare: Box::new(|s| {
+                sample_tasks(s);
+                let mut t = tasks(rp_app_tasks::View::List(None), b"");
+                t.show_time_pad(Some(15 * 60 + 7));
+                open(s, t);
+            }),
+        },
+        Mock {
+            name: "v2-calendar-alert",
+            what: "Calendar: an alert's lead as a number and its unit",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Agenda, b"");
+                c.show_alert_pad(45);
+                open(s, c);
+            }),
+        },
+        Mock {
             name: "v2-tasks-add",
             what: "Tasks: the add line, the understood words in the tint",
             prepare: Box::new(|s| {

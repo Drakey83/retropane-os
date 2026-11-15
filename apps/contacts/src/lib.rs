@@ -829,7 +829,7 @@ impl Contacts {
         }
         self.n_picks = n;
         self.photo_note = match (n, from) {
-            (0, 0) => b"No pictures in local\\photos on your PC",
+            (0, 0) => b"No pictures in Pictures on your PC",
             (0, _) => b"No more pictures",
             _ => b"Choose one",
         };
@@ -1250,7 +1250,7 @@ impl Contacts {
             154,
             cx.fonts.label,
             DIM,
-            b"FROM THE PHOTOS FOLDER ON YOUR PC",
+            b"FROM THE PICTURES FOLDER ON YOUR PC",
         );
         let mut y = 178;
         for k in 0..self.n_picks {
