@@ -63,7 +63,7 @@ const fn asset() -> Asset {
 /// CPU and float model (`targets/armv5te-x51v-none-eabi.json`), ARM code,
 /// each function and object in a section of its own so the linker drops
 /// what an image does not call.
-const TARGET_FLAGS: &[&str] = &[
+pub(crate) const TARGET_FLAGS: &[&str] = &[
     "--target=armv5te-none-eabi",
     "-mcpu=xscale",
     "-mfloat-abi=soft",
@@ -80,7 +80,7 @@ const TARGET_FLAGS: &[&str] = &[
 /// What C++ is compiled with: the language the Half-Life SDK is written
 /// in (no exceptions, no run-time type information, no standard C++
 /// library: `ports/libc/cxxrt.cpp` is the whole runtime), one thread.
-const CXX_FLAGS: &[&str] = &[
+pub(crate) const CXX_FLAGS: &[&str] = &[
     "-std=c++17",
     "-fno-exceptions",
     "-fno-rtti",
@@ -111,7 +111,7 @@ pub struct Toolchain {
 }
 
 impl Toolchain {
-    fn tool(&self, name: &str) -> PathBuf {
+    pub(crate) fn tool(&self, name: &str) -> PathBuf {
         self.bin.join(if cfg!(windows) {
             format!("{name}.exe")
         } else {
@@ -398,15 +398,15 @@ fn sources(src: &Path) -> Result<Vec<Source>, String> {
 }
 
 /// One compile: the source, its object, the flags after the common ones.
-struct Job {
-    source: PathBuf,
-    object: PathBuf,
-    flags: Vec<String>,
+pub(crate) struct Job {
+    pub(crate) source: PathBuf,
+    pub(crate) object: PathBuf,
+    pub(crate) flags: Vec<String>,
 }
 
 /// Compiles every job, as many at once as the PC has cores; the first
 /// failures' own words if any failed.
-fn compile(tc: &Toolchain, common: &[String], jobs: &[Job]) -> Result<(), String> {
+pub(crate) fn compile(tc: &Toolchain, common: &[String], jobs: &[Job]) -> Result<(), String> {
     let next = AtomicUsize::new(0);
     let failed = Mutex::new(Vec::new());
     let clang = tc.tool("clang");
@@ -474,7 +474,7 @@ pub struct Libc {
     pub include_flags: Vec<String>,
 }
 
-fn flag_strings(flags: &[&str]) -> Vec<String> {
+pub(crate) fn flag_strings(flags: &[&str]) -> Vec<String> {
     flags.iter().map(|f| (*f).to_string()).collect()
 }
 

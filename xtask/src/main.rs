@@ -33,6 +33,7 @@ mod ui_preview;
 mod usb;
 mod usbbench;
 mod userimg;
+mod xash;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -237,6 +238,10 @@ commands:
   cc        the C compiler and C library for the X51v, ready (the pinned
             Clang and picolibc: downloaded by their hashes on first use,
             467 MB; xtask/src/cc.rs)
+  xash-eval  the Half-Life port's evaluation build: Xash3D FWGS and the
+            Half-Life SDK (target/ports-src, fetched by hand) compiled
+            for the X51v, each part's size and what the port layer
+            still lacks (xtask/src/xash.rs)
   emu-chello  the first C program (rp-port-hello: printf, the heap, software
             floats, the maths library, checked by itself) in the emulator
   emu-mbx   only the GPU check (rp-mbx: fills by the emulated MBX 2D
@@ -436,6 +441,7 @@ fn main() -> ExitCode {
         | "emu-apps"
         | "cc"
         | "emu-chello"
+        | "xash-eval"
         | "emu-picture"
         | "emu-blend"
         | "emu-blend-scale"
@@ -910,6 +916,7 @@ fn run_step(step: &str) -> Result {
         "scope" => scope_check(),
         "emu-apps" => cross().and_then(|()| emu::apps(&workspace_root())),
         "cc" => cc::ready(&workspace_root()).map(|_| ()),
+        "xash-eval" => xash::eval(&workspace_root()),
         "emu-chello" => c_hello().and_then(|()| emu::boot_chello(&workspace_root())),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),

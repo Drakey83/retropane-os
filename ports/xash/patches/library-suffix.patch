@@ -1,0 +1,68 @@
+diff --git a/include/build.h b/include/build.h
+index b92c51e..04257e8 100644
+--- a/include/build.h
++++ b/include/build.h
+@@ -79,6 +79,7 @@ Then you can use another oneliner to query all variables:
+ #undef XASH_PPC
+ #undef XASH_PS4
+ #undef XASH_PSP
++#undef XASH_RETROPANE
+ #undef XASH_PSVITA
+ #undef XASH_RISCV
+ #undef XASH_RISCV_DOUBLEFP
+@@ -104,6 +105,8 @@ Then you can use another oneliner to query all variables:
+ 	#define XASH_DOS4GW 1
+ #elif defined __psp__
+ 	#define XASH_PSP 1
++#elif defined __retropane__ // RetroPane OS (the Dell Axim X51v): not POSIX, its own port layer
++	#define XASH_RETROPANE 1
+ #else // POSIX compatible
+ 	#define XASH_POSIX 1
+ 	// OpenOrbis toolchain targets FreeBSD, but libc++ headers undefine __FreeBSD__
+diff --git a/include/buildenums.h b/include/buildenums.h
+index c91f5e6..91f2b94 100644
+--- a/include/buildenums.h
++++ b/include/buildenums.h
+@@ -61,6 +61,7 @@ For more information, please refer to <http://unlicense.org/>
+ #define PLATFORM_PSP        18
+ #define PLATFORM_IOS    	19
+ #define PLATFORM_PS4        20
++#define PLATFORM_RETROPANE  21
+ 
+ #if XASH_WIN32
+ 	#define XASH_PLATFORM PLATFORM_WIN32
+@@ -100,6 +101,8 @@ For more information, please refer to <http://unlicense.org/>
+ 	#define XASH_PLATFORM PLATFORM_PSP
+ #elif XASH_PS4
+ 	#define XASH_PLATFORM PLATFORM_PS4
++#elif XASH_RETROPANE
++	#define XASH_PLATFORM PLATFORM_RETROPANE
+ #else
+ 	#error
+ #endif
+diff --git a/include/library_suffix.h b/include/library_suffix.h
+index 68ec127..17360d5 100644
+--- a/include/library_suffix.h
++++ b/include/library_suffix.h
+@@ -41,6 +41,8 @@ For more information, please refer to <http://unlicense.org/>
+ 	#define OS_LIB_EXT "prx"
+ #elif XASH_POSIX
+ 	#define OS_LIB_EXT "so"
++#elif XASH_RETROPANE // the OS loads portable executables
++	#define OS_LIB_EXT "dll"
+ #else
+ 	#error
+ #endif
+diff --git a/src/library_suffix.c b/src/library_suffix.c
+index 8f2b21a..e2291d0 100644
+--- a/src/library_suffix.c
++++ b/src/library_suffix.c
+@@ -81,6 +81,8 @@ const char *Q_PlatformStringByID( const int platform )
+ 		return "psp";
+ 	case PLATFORM_PS4:
+ 		return "ps4";
++	case PLATFORM_RETROPANE:
++		return "retropane";
+ 	}
+ 
+ 	return "unknown";

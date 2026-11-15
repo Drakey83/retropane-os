@@ -1,0 +1,51 @@
+diff --git a/common/port.h b/common/port.h
+index 9581a61..ed3529c 100644
+--- a/common/port.h
++++ b/common/port.h
+@@ -59,6 +59,11 @@ GNU General Public License for more details.
+ 	#define OPEN_COMMAND  "open"
+ #elif XASH_PSP
+ 	#define OS_LIB_EXT    "prx"
++#elif XASH_RETROPANE // not POSIX: picolibc over RetroPane's port layer
++	#include <unistd.h>
++	#include <signal.h>
++	#define OS_LIB_PREFIX ""
++	#define OPEN_COMMAND  ""
+ #endif
+ 
+ #if !XASH_WIN32
+diff --git a/engine/platform/platform.h b/engine/platform/platform.h
+index 4b1e40c..41d0718 100644
+--- a/engine/platform/platform.h
++++ b/engine/platform/platform.h
+@@ -397,7 +397,7 @@ qboolean Platform_MouseConnected( void );
+ static inline qboolean Platform_MouseConnected( void ) { return true; }
+ #endif
+ 
+-#if XASH_SDL || XASH_DOS
++#if XASH_SDL || XASH_DOS || XASH_RETROPANE
+ void Platform_RunEvents( void );
+ void Platform_MouseMove( float *x, float *y );
+ #elif XASH_PS4 // the gamepad, keyboard and mouse are polled in Platform_RunEvents
+@@ -414,7 +414,7 @@ static inline void Platform_MouseMove( float *x, float *y )
+ 
+ // rect is the area where the text is edited, in render coordinates, so the platform
+ // might keep it visible when it shows the on-screen keyboard over the game
+-#if XASH_SDL >= 2 || XASH_PSVITA || XASH_DOS || XASH_USE_EVDEV || XASH_PS4
++#if XASH_SDL >= 2 || XASH_PSVITA || XASH_DOS || XASH_USE_EVDEV || XASH_PS4 || XASH_RETROPANE
+ void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h );
+ #else
+ static inline void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h ) { }
+diff --git a/filesystem/io.c b/filesystem/io.c
+index d30047f..6128130 100644
+--- a/filesystem/io.c
++++ b/filesystem/io.c
+@@ -160,7 +160,7 @@ int FS_Flush( file_t *file )
+ 	FS_Purge( file );
+ 
+ 	// sync
+-#if XASH_POSIX
++#if XASH_POSIX || XASH_RETROPANE
+ 	if( fsync( file->handle ) < 0 )
+ 		return EOF;
+ #else
