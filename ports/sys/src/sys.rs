@@ -18,6 +18,7 @@ use rp_hal_cabi::{Break, Errno, Sys, flags};
 
 use crate::clock::Micros;
 use crate::files::{Error, Fd, Files, Whence};
+use crate::sound::Voice;
 
 /// Where what a C program prints goes (the serial line, the screen's
 /// console, a log on the card).
@@ -37,6 +38,8 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     /// Reads the OS timer's counter (3.25 MHz).
     ticks: fn() -> u32,
     clock: Micros,
+    /// The game's sound, where the image has it.
+    sound: Option<&'a mut dyn Voice>,
 }
 
 /// A [`Files`] error as the C library's `errno`.
@@ -69,6 +72,24 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
             heap,
             ticks,
             clock: Micros::starting_at(ticks()),
+            sound: None,
+        }
+    }
+
+    /// Gives the system its sound (the codec up, I2S running): what
+    /// `rp_snd_open` and the calls after it reach. (Set in place: the
+    /// system is too big to pass through a function by value, R250.)
+    pub fn set_sound(&mut self, sound: &'a mut dyn Voice) {
+        self.sound = Some(sound);
+    }
+
+    /// The sound and the time in milliseconds (as the mixer counts it),
+    /// for a sound call.
+    fn voice(&mut self) -> Result<(&mut dyn Voice, u32), Errno> {
+        let now = (self.clock.at((self.ticks)()) / 1_000) as u32;
+        match self.sound.as_mut() {
+            Some(v) => Ok((&mut **v, now)),
+            None => Err(Errno::NoSys),
         }
     }
 
@@ -152,7 +173,43 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     }
 
     fn now_us(&mut self) -> u64 {
-        self.clock.at((self.ticks)())
+        let us = self.clock.at((self.ticks)());
+        // A game reads the clock every frame: the mixer's wake, if due.
+        if let Some(v) = self.sound.as_mut() {
+            v.pump((us / 1_000) as u32);
+        }
+        us
+    }
+
+    fn snd_open(&mut self, rate: u32, channels: u8) -> Result<(), Errno> {
+        let (v, now) = self.voice()?;
+        v.open(rate, channels, now)
+    }
+
+    fn snd_room(&mut self) -> Result<u32, Errno> {
+        let (v, now) = self.voice()?;
+        v.room(now)
+    }
+
+    fn snd_write(&mut self, samples: &[i16]) -> Result<u32, Errno> {
+        let (v, now) = self.voice()?;
+        v.write(samples, now)
+    }
+
+    fn snd_played(&mut self) -> Result<u64, Errno> {
+        let (v, now) = self.voice()?;
+        v.played(now)
+    }
+
+    fn snd_close(&mut self) -> Result<(), Errno> {
+        let (v, now) = self.voice()?;
+        v.close(now)
+    }
+
+    fn end(&mut self) {
+        if let Some(v) = self.sound.as_mut() {
+            v.shut();
+        }
     }
 }
 
@@ -305,6 +362,100 @@ mod tests {
             COUNTER.store(3_250_000, Ordering::Relaxed);
             assert_eq!(s.now_us(), 1_000_004);
             assert_eq!(s.now_us(), 1_000_004, "a counter that stood still");
+        });
+    }
+
+    /// A voice that writes down what it was asked, and when.
+    #[derive(Default)]
+    struct Heard(Vec<(&'static str, u32)>);
+
+    impl Voice for Heard {
+        fn open(&mut self, rate: u32, channels: u8, now_ms: u32) -> Result<(), Errno> {
+            self.0.push(("open", now_ms));
+            if (rate, channels) == (22_050, 2) {
+                Ok(())
+            } else {
+                Err(Errno::Invalid)
+            }
+        }
+        fn room(&mut self, now_ms: u32) -> Result<u32, Errno> {
+            self.0.push(("room", now_ms));
+            Ok(77)
+        }
+        fn write(&mut self, samples: &[i16], now_ms: u32) -> Result<u32, Errno> {
+            self.0.push(("write", now_ms));
+            Ok(samples.len() as u32 / 2)
+        }
+        fn played(&mut self, now_ms: u32) -> Result<u64, Errno> {
+            self.0.push(("played", now_ms));
+            Ok(1 << 40)
+        }
+        fn close(&mut self, now_ms: u32) -> Result<(), Errno> {
+            self.0.push(("close", now_ms));
+            Err(Errno::BadHandle)
+        }
+        fn pump(&mut self, now_ms: u32) {
+            self.0.push(("pump", now_ms));
+        }
+        fn shut(&mut self) {
+            self.0.push(("shut", 0));
+        }
+    }
+
+    #[test]
+    fn sound_calls_reach_the_voice_with_the_clock_s_time_and_are_refused_without_one() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        each(|vol, kind| {
+            COUNTER.store(0, Ordering::Relaxed);
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0u8; 16][..];
+            let mut said = Said(Vec::new());
+            // Without sound: not something this system does.
+            let files: Files<'_, Disk, 2> = Files::new(vol, scratch, room);
+            let mut s = System::new(files, &mut said, Break::new(0, 0), || 0);
+            assert_eq!(s.snd_open(44_100, 2), Err(Errno::NoSys), "{kind}");
+            assert_eq!(s.snd_room(), Err(Errno::NoSys));
+            assert_eq!(s.snd_write(&[0; 2]), Err(Errno::NoSys));
+            assert_eq!(s.snd_played(), Err(Errno::NoSys));
+            assert_eq!(s.snd_close(), Err(Errno::NoSys));
+            assert_eq!(s.now_us(), 0);
+            let (files, _) = s.into_parts();
+            // With it: each call arrives with the clock's milliseconds, its
+            // answer or its refusal comes back unchanged, and a read of the
+            // clock is a chance for the mixer to wake.
+            let mut heard = Heard::default();
+            let mut s = System::new(files, &mut said, Break::new(0, 0), || {
+                COUNTER.load(Ordering::Relaxed)
+            });
+            s.set_sound(&mut heard);
+            let at = |ms: u32| COUNTER.store(ms * 3_250, Ordering::Relaxed);
+            assert_eq!(s.snd_open(8_000, 1), Err(Errno::Invalid));
+            at(5);
+            assert_eq!(s.snd_open(22_050, 2), Ok(()));
+            at(12);
+            assert_eq!(s.snd_room(), Ok(77));
+            assert_eq!(s.snd_write(&[1, 2, 3, 4]), Ok(2));
+            at(40);
+            assert_eq!(s.now_us(), 40_000);
+            assert_eq!(s.snd_played(), Ok(1 << 40));
+            at(1_000_000);
+            assert_eq!(s.snd_close(), Err(Errno::BadHandle));
+            s.end();
+            let (_, _) = s.into_parts();
+            assert_eq!(
+                heard.0,
+                [
+                    ("open", 0),
+                    ("open", 5),
+                    ("room", 12),
+                    ("write", 12),
+                    ("pump", 40),
+                    ("played", 40),
+                    ("close", 1_000_000),
+                    ("shut", 0),
+                ]
+            );
         });
     }
 

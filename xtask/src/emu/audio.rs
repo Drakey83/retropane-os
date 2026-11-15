@@ -1059,6 +1059,50 @@ pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The tone `rp-port-hello`'s C program plays through the port layer
+/// (ports/hello/c/hello.c: 880 Hz for a second, from a 22.05 kHz stream):
+/// the recording must hold exactly one stretch of sound, a second long,
+/// at that pitch all the way through (20 ms windows: a wrong conversion
+/// ratio shifts it, a late wake or a dry queue leaves a hole or a click).
+/// Its pitch and length.
+pub(crate) fn c_tone(wav: &Path) -> Result<(f64, f64), String> {
+    let (x, rate) = wav_left(wav, "C hello")?;
+    c_tone_in(&x, rate)
+}
+
+/// [`c_tone`] on the samples.
+pub(crate) fn c_tone_in(x: &[i16], rate: u32) -> Result<(f64, f64), String> {
+    const HZ: f64 = 880.0;
+    // A hole of 5 ms ends a stretch.
+    let found = stretches(x, rate as usize / 200);
+    let [sound] = found.as_slice() else {
+        return Err(format!(
+            "C hello: the recording holds {} stretches of sound, wanted the one tone (a hole of 5 ms or more splits it)",
+            found.len()
+        ));
+    };
+    let seconds = sound.len() as f64 / f64::from(rate);
+    // The link's clock is within half a percent of 44.1 kHz (SADIV's
+    // measured rate), and the last few dozen frames wait in the converter.
+    if !(0.97..=1.02).contains(&seconds) {
+        return Err(format!(
+            "C hello: the tone lasted {seconds:.3} s, wanted 1 s"
+        ));
+    }
+    let tone = &x[sound.clone()];
+    let w = rate as usize / 50;
+    for (k, c) in tone.chunks_exact(w).enumerate() {
+        let hz = fine_pitch(c, rate);
+        if (hz - HZ).abs() > HZ * 0.015 {
+            return Err(format!(
+                "C hello: {hz:.1} Hz at {:.2} s into the tone, wanted {HZ} Hz",
+                k as f64 / 50.0
+            ));
+        }
+    }
+    Ok((fine_pitch(tone, rate), seconds))
+}
+
 /// A wav's left channel and its rate.
 pub(crate) fn wav_left(wav: &Path, what: &str) -> Result<(Vec<i16>, u32), String> {
     let data = std::fs::read(wav).map_err(|e| format!("{}: {e}", wav.display()))?;
@@ -1329,4 +1373,39 @@ pub(crate) fn first_notes(wav: &Path, want: &[f64], what: &str) -> Result<(Vec<f
         found.push(hz);
     }
     Ok((found, seconds))
+}
+
+#[cfg(test)]
+mod c_tone_tests {
+    use super::c_tone_in;
+
+    /// Silence, `secs` of a sine at `hz`, silence, at 44.1 kHz.
+    fn recording(hz: f64, secs: f64) -> Vec<i16> {
+        let n = (44_100.0 * secs) as usize;
+        let tone = (0..n)
+            .map(|i| (12_000.0 * (std::f64::consts::TAU * hz * i as f64 / 44_100.0).sin()) as i16);
+        let quiet = std::iter::repeat_n(0i16, 22_050);
+        quiet.clone().chain(tone).chain(quiet).collect()
+    }
+
+    #[test]
+    fn the_c_program_s_tone_is_one_second_at_its_pitch_with_no_hole() {
+        let (hz, seconds) = c_tone_in(&recording(880.0, 1.0), 44_100).expect("the tone");
+        assert!((hz - 880.0).abs() < 1.0 && (seconds - 1.0).abs() < 0.01);
+        // The link half a percent fast (SADIV's measured rate) still passes.
+        assert!(c_tone_in(&recording(884.3, 0.995), 44_100).is_ok());
+        // A wrong conversion ratio (22.05 kHz played as 24 kHz): refused.
+        let err = c_tone_in(&recording(957.8, 1.0), 44_100).expect_err("sharp");
+        assert!(err.contains("wanted 880 Hz"), "{err}");
+        // Short (a queue that ran dry and was dropped), and long.
+        assert!(c_tone_in(&recording(880.0, 0.9), 44_100).is_err());
+        assert!(c_tone_in(&recording(880.0, 1.1), 44_100).is_err());
+        // A hole of 10 ms (a late wake): two stretches, refused.
+        let mut holed = recording(880.0, 1.0);
+        holed[40_000..40_441].fill(0);
+        let err = c_tone_in(&holed, 44_100).expect_err("a hole");
+        assert!(err.contains("2 stretches"), "{err}");
+        // Nothing recorded.
+        assert!(c_tone_in(&[0; 44_100], 44_100).is_err());
+    }
 }

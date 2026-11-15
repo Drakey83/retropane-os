@@ -29,6 +29,9 @@ rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
 rp-fat = { path = "../../kernel/fat" }
 rp-port = { path = "../sys" }
+rp-audio-x51v = { path = "../../services/audio-x51v" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-wm8750 = { path = "../../drivers/wm8750" }
 
 [lints]
 workspace = true

@@ -33,6 +33,8 @@ pub enum Errno {
     BadHandle = 9,
     /// No memory, or no room (`ENOMEM`).
     NoMemory = 12,
+    /// In use already (`EBUSY`).
+    Busy = 16,
     /// A bad argument (`EINVAL`).
     Invalid = 22,
     /// Every handle is in use (`EMFILE`).
@@ -96,6 +98,48 @@ pub trait Sys {
     /// back. (The date is not known to the port layer yet: `time()` counts
     /// from 1970 as if the program had started then.)
     fn now_us(&mut self) -> u64;
+    /// Opens the program's sound (`rp_snd_open`): `rate` in Hz, 1 or 2
+    /// channels of 16-bit samples.
+    ///
+    /// # Errors
+    /// No sound here (`ENOSYS`, the default), open already, or a rate or
+    /// channel count that is not taken.
+    fn snd_open(&mut self, _rate: u32, _channels: u8) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Frames that may be written now (`rp_snd_room`).
+    ///
+    /// # Errors
+    /// The sound is not open.
+    fn snd_room(&mut self) -> Result<u32, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Takes interleaved samples (`rp_snd_write`): as many whole frames as
+    /// there is room for; how many frames.
+    ///
+    /// # Errors
+    /// The sound is not open.
+    fn snd_write(&mut self, _samples: &[i16]) -> Result<u32, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// The program's frames that have really been played
+    /// (`rp_snd_played`).
+    ///
+    /// # Errors
+    /// The sound is not open.
+    fn snd_played(&mut self) -> Result<u64, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Closes the sound (`rp_snd_close`).
+    ///
+    /// # Errors
+    /// The sound is not open.
+    fn snd_close(&mut self) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
+    /// The program is over (it returned, or called `exit`): stop what it
+    /// left running (its sound). Nothing by default.
+    fn end(&mut self) {}
 }
 
 /// The C heap's room: one run of RAM whose used part grows from its start
@@ -200,7 +244,16 @@ mod face {
         unsafe {
             let _ = fflush(core::ptr::addr_of!(stdout).read());
         }
+        end();
         code
+    }
+
+    /// Tells the system the program is over ([`Sys::end`]).
+    fn end() {
+        let _ = with(|s| {
+            s.end();
+            Ok(())
+        });
     }
 
     fn fail(e: Errno) -> isize {
@@ -322,6 +375,66 @@ mod face {
         with(|s| Ok(s.now_us())).unwrap_or(0)
     }
 
+    /// `rp_snd_open` (`ports/include/retropane.h`): 0, or -1 with `errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_snd_open(rate: u32, channels: c_int) -> c_int {
+        let Ok(channels) = u8::try_from(channels) else {
+            return fail(Errno::Invalid) as c_int;
+        };
+        match with(|s| s.snd_open(rate, channels)) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_snd_room`: frames that may be written now, or -1 with `errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_snd_room() -> c_int {
+        match with(|s| s.snd_room()) {
+            Ok(frames) => c_int::try_from(frames).unwrap_or(c_int::MAX),
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_snd_write`: the frames taken of `count` 16-bit samples
+    /// (interleaved), or -1 with `errno`.
+    ///
+    /// # Safety
+    /// `samples` points at `count` readable 16-bit samples.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rp_snd_write(samples: *const i16, count: usize) -> c_int {
+        if samples.is_null() || !samples.is_aligned() || count > isize::MAX as usize / 2 {
+            return fail(Errno::Invalid) as c_int;
+        }
+        // SAFETY: the caller's contract: `count` readable samples at
+        // `samples`, not null and aligned for 16 bits (both checked), not
+        // changed while this call runs (one core, one C thread).
+        let samples = unsafe { core::slice::from_raw_parts(samples, count) };
+        match with(|s| s.snd_write(samples)) {
+            Ok(frames) => c_int::try_from(frames).unwrap_or(c_int::MAX),
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_snd_played`: the program's frames really played, or -1 with
+    /// `errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_snd_played() -> i64 {
+        match with(|s| s.snd_played()) {
+            Ok(frames) => i64::try_from(frames).unwrap_or(i64::MAX),
+            Err(e) => fail(e) as i64,
+        }
+    }
+
+    /// `rp_snd_close`: 0, or -1 with `errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_snd_close() -> c_int {
+        match with(|s| s.snd_close()) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
     /// picolibc's `struct timeval` (`sys/_timeval.h`: a 64-bit `time_t`,
     /// a 32-bit `suseconds_t`).
     #[repr(C)]
@@ -364,6 +477,7 @@ mod face {
     /// `_exit(2)`: the image's own end.
     #[unsafe(no_mangle)]
     pub extern "C" fn _exit(code: c_int) -> ! {
+        end();
         match EXIT.with(|e| *e) {
             Some(exit) => exit(code),
             None => panic!("a C program ended before the system was registered"),
@@ -423,6 +537,7 @@ mod tests {
         assert_eq!(Errno::Io as i32, 5);
         assert_eq!(Errno::BadHandle as i32, 9);
         assert_eq!(Errno::NoMemory as i32, 12);
+        assert_eq!(Errno::Busy as i32, 16);
         assert_eq!(Errno::Invalid as i32, 22);
         assert_eq!(Errno::NoHandle as i32, 24);
         assert_eq!(Errno::NoSpace as i32, 28);

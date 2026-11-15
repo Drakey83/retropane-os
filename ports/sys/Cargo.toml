@@ -11,6 +11,7 @@ publish.workspace = true
 rp-hal-api = { path = "../../hal/api" }
 rp-hal-cabi = { path = "../../hal/cabi" }
 rp-fat = { path = "../../kernel/fat" }
+rp-audio = { path = "../../services/audio" }
 
 [dev-dependencies]
 rp-fat = { path = "../../kernel/fat", features = ["std"] }

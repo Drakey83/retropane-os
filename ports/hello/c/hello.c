@@ -7,6 +7,7 @@
  * answer. `cargo xtask emu-chello` runs it and looks
  * for the last line.
  */
+#include <errno.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -114,6 +115,74 @@ static int clock_checks(void)
     return ok;
 }
 
+/* Sound (<retropane.h>): a second of an 880 Hz tone at 22.05 kHz mono,
+ * written as a game writes its sound: every 20 ms what has played is
+ * topped up to a tenth of a second queued. The checks here are the calls'
+ * own answers; `cargo xtask emu-chello` checks the emulator's recording
+ * for the tone itself. On a system without sound the open says so and the
+ * checks are skipped. */
+static int sound_checks(void)
+{
+    enum { RATE = 22050, TOTAL = RATE, LEAD = RATE / 10 };
+    static int16_t tone[TOTAL];
+    int ok = 1;
+
+    errno = 0;
+    if (rp_snd_open(RATE, 1) != 0) {
+        if (errno == ENOSYS) {
+            puts("  sound: skipped (none on this system)");
+            return 1;
+        }
+        return check("rp_snd_open", 0);
+    }
+    errno = 0;
+    ok &= check("a second open is refused", rp_snd_open(RATE, 1) == -1 && errno == EBUSY);
+    ok &= check("room for a tenth of a second", rp_snd_room() >= LEAD);
+    ok &= check("nothing played yet", rp_snd_played() == 0);
+
+    for (int i = 0; i < TOTAL; i++)
+        tone[i] = (int16_t)(12000.0f * sinf(6.2831853f * 880.0f * (float)i / RATE));
+
+    int written = 0, short_write = 0, back = 0, dry = 0;
+    int64_t played = 0;
+    uint64_t start = rp_time_us(), next = start;
+    /* Bounded by the clock: three seconds for one second of sound. */
+    while (played < TOTAL - 64 && rp_time_us() - start < 3000000) {
+        if (rp_time_us() < next)
+            continue;
+        next += 20000;
+        int64_t now = rp_snd_played();
+        back |= now < played;
+        played = now;
+        int want = (int)(played + LEAD) - written;
+        if (want > TOTAL - written)
+            want = TOTAL - written;
+        if (want > 0) {
+            /* Nothing queued while more is still to come: it ran dry. */
+            dry += written > 0 && played >= written - 64;
+            int took = rp_snd_write(tone + written, (size_t)want);
+            short_write |= took != want;
+            if (took > 0)
+                written += took;
+        }
+    }
+    ok &= check("every sample was taken", written == TOTAL && !short_write);
+    ok &= check("it all played", played >= TOTAL - 64 && played <= TOTAL);
+    ok &= check("the played count never goes back", !back);
+    ok &= check("the queue never ran dry", dry == 0);
+    uint64_t took_us = rp_time_us() - start;
+    /* A second of sound takes a second (the link's clock is within 1%). */
+    ok &= check("a second of sound took a second", took_us > 950000 && took_us < 1250000);
+    ok &= check("rp_snd_close", rp_snd_close() == 0);
+    errno = 0;
+    ok &= check("closed: the calls say so",
+                rp_snd_close() == -1 && errno == EBADF && rp_snd_room() == -1 && rp_snd_played() == -1);
+    errno = 0;
+    ok &= check("a rate that is not taken is refused", rp_snd_open(1000, 1) == -1 && errno == EINVAL);
+    puts(ok ? "  sound: ok" : "  sound: FAILED");
+    return ok;
+}
+
 int main(void)
 {
     int ok = 1;
@@ -170,6 +239,7 @@ int main(void)
     ok &= check("fopen of nothing is refused", fopen("/nothing", "rb") == NULL);
     ok &= cxx_checks();
     ok &= clock_checks();
+    ok &= sound_checks();
     ok &= files();
 
     puts(ok ? "RETROPANE-C-HELLO-OK" : "RETROPANE-C-HELLO-FAILED");

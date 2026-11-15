@@ -678,6 +678,45 @@ fn small_writes_close_together_mark_an_old_program_interactive() {
     assert!(!sim.m.status(id, sim.ms).unwrap().interactive);
 }
 
+/// A single-threaded game wakes the mixer only from its own frame: with
+/// the short interval's 35 ms of mix, a frame that takes longer is heard as
+/// a gap. Marked as keeping its own pace, the same small writes stay
+/// background: the mix runs to the end of its data and no wake is late.
+#[test]
+fn a_program_at_its_own_pace_is_never_interactive_by_its_writes() {
+    for own_pace in [false, true] {
+        let mut sim = Sim::new(false);
+        let mut cfg = StreamConfig::new(Role::Media, 22_050, 1, 882);
+        cfg.own_pace = own_pace;
+        let id = sim.open(cfg);
+        // 25 fps: 40 ms of sound every 40 ms, 80 ms kept queued, and the
+        // mixer woken only then.
+        let buf: Vec<i16> = (0..882).map(|n| noise(5, n, 0, 3_000)).collect();
+        sim.m.write(id, &buf, sim.ms).unwrap();
+        sim.m.write(id, &buf, sim.ms).unwrap();
+        sim.tick();
+        let mut interactive = 0;
+        for _ in 0..40 {
+            sim.pass_to(sim.dma.time + frames(40));
+            sim.ms += 40;
+            sim.m.write(id, &buf, sim.ms).unwrap();
+            interactive += u32::from(sim.tick().interactive);
+        }
+        let s = sim.m.stats();
+        if own_pace {
+            assert_eq!(interactive, 0);
+            assert_eq!((s.late, s.starved, s.stops), (0, 0, 0), "{s:?}");
+        } else {
+            // The control: the pattern takes it for a game with a waker,
+            // and the engine reaches the end of the short mix.
+            assert!(
+                interactive > 0 && s.late + s.stops > 0,
+                "{interactive} {s:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn large_writes_are_not_interactive() {
     let mut sim = Sim::new(false);

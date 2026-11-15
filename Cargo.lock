@@ -937,6 +937,7 @@ version = "0.0.0"
 name = "rp-port"
 version = "0.0.0"
 dependencies = [
+ "rp-audio",
  "rp-fat",
  "rp-hal-api",
  "rp-hal-cabi",
@@ -946,10 +947,13 @@ dependencies = [
 name = "rp-port-hello"
 version = "0.0.0"
 dependencies = [
+ "rp-audio-x51v",
  "rp-drv-cpld",
+ "rp-drv-pxa-gpio",
  "rp-drv-pxa-mmc",
  "rp-drv-pxa-uart",
  "rp-drv-sdcard",
+ "rp-drv-wm8750",
  "rp-fat",
  "rp-hal-api",
  "rp-hal-cabi",

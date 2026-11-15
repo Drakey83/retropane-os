@@ -147,6 +147,12 @@ pub struct StreamConfig {
     pub refill: u32,
     /// The program asks for low latency (games, the shell's sounds, calls).
     pub low_latency: bool,
+    /// The program wakes the mixer itself, from its own loop, and nothing
+    /// else does (a single-threaded game before the audio host has a
+    /// thread of its own): never counted interactive by its write pattern,
+    /// so the mix runs as far ahead as its data goes and a frame that
+    /// takes longer than the short interval is not heard.
+    pub own_pace: bool,
     /// An old Windows Mobile program (its media is muted on unplug, not
     /// paused: it can't be paused from outside).
     pub legacy: bool,
@@ -167,6 +173,7 @@ impl StreamConfig {
             channels,
             refill,
             low_latency: role.interactive_by_default(),
+            own_pace: false,
             legacy: false,
             start: Start::Asap,
             volume: UNITY,
@@ -295,6 +302,8 @@ struct Slot<'a> {
     role: Role,
     legacy: bool,
     hint: bool,
+    /// May be counted interactive by its write pattern.
+    pattern: bool,
     write: u64,
     ended: bool,
     start: Start,
@@ -657,7 +666,7 @@ impl Slot<'_> {
 
     /// Ran out and was given more since, or never placed but written.
     fn interactive(&self, now_ms: u32) -> bool {
-        if !(self.hint || self.small_run >= SMALL_RUN) || self.paused_at.is_some() {
+        if !(self.hint || self.pattern && self.small_run >= SMALL_RUN) || self.paused_at.is_some() {
             return false;
         }
         self.write > self.played || now_ms.wrapping_sub(self.last_write_ms) < HOLD_MS
@@ -772,6 +781,7 @@ impl<'a> Mixer<'a> {
             role: cfg.role,
             legacy: cfg.legacy,
             hint: cfg.low_latency,
+            pattern: !cfg.own_pace,
             write: 0,
             ended: false,
             start: cfg.start,
@@ -875,7 +885,7 @@ impl<'a> Mixer<'a> {
         }
         s.last_commit_ms = Some(now_ms);
         s.last_write_ms = now_ms;
-        let interactive = s.hint || s.small_run >= SMALL_RUN;
+        let interactive = s.hint || s.pattern && s.small_run >= SMALL_RUN;
         // Not placed yet: the next wake places it. Ran out: re-mix from
         // where it stopped.
         match (s.anchor, s.starved_at) {

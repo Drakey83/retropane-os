@@ -2,7 +2,8 @@
 //! the pinned Clang against picolibc, started from Rust. `cargo xtask
 //! emu-chello` builds both, boots this in the emulator with a card and
 //! looks for [`MARKER`], which only the C program prints, after every check
-//! passed: the C library itself, and the card's files through `fopen`.
+//! passed: the C library itself, and the port layer (the clock, the card's
+//! files through `fopen`, a tone through the audio service's mixer).
 //!
 //! Iterate, don't imitate (rule 0). A C program on Windows Mobile or Linux
 //! starts from the C library's own start-up file over a kernel; an embedded
@@ -24,7 +25,12 @@ pub const MARKER: &str = "RETROPANE-C-HELLO-OK";
 
 #[cfg(target_os = "none")]
 mod image {
+    use core::cell::RefCell;
     use core::fmt::Write;
+
+    use rp_audio_x51v::{BoardCpld, found, name, put_back, service};
+    use rp_drv_pxa_gpio::Gpio;
+    use rp_drv_wm8750::Output;
 
     use rp_drv_cpld::Cpld;
     use rp_drv_pxa_mmc::PxaMmc;
@@ -38,6 +44,7 @@ mod image {
     use rp_hal_x51v::devices;
     use rp_port::clock::Micros;
     use rp_port::files::Files;
+    use rp_port::sound::{Sound, memory_for};
     use rp_port::sys::{Console, System};
 
     rp_image::entry!(main);
@@ -45,6 +52,11 @@ mod image {
     /// The C heap: the free RAM between the image area and the loader
     /// (boot/link.x: 0xA8100000-0xA8400000, 3 MiB, mapped 1:1).
     const HEAP: (usize, usize) = (0xA810_0000, 0xA840_0000);
+    /// The codec's output level, 0-100.
+    const LEVEL: u32 = 60;
+    /// The sound's memory is sized for the largest stream a game opens
+    /// here: 44.1 kHz stereo.
+    const SOUND_FOR: (u32, u8) = (44_100, 2);
     /// Of the scratch RAM: the file system's sector work.
     const FAT_WORK: usize = 64 * 1024;
     /// The program's own folder on the card (the card is shared: its test
@@ -121,6 +133,7 @@ mod image {
 
     static BARE: rt::Slot<Bare> = rt::Slot::new();
     static WITH_CARD: rt::Slot<System<'static, Card, 8, Serial>> = rt::Slot::new();
+    static SOUND: rt::Slot<Sound<'static, Dma>> = rt::Slot::new();
 
     /// A C `exit()`: a failure of the image unless it is `exit(0)`.
     fn exit(code: i32) -> ! {
@@ -132,9 +145,7 @@ mod image {
 
     /// The SD card, as the loader starts it (power through the CPLD, then
     /// the card); `None` if there is none.
-    fn open_card() -> Option<Sd> {
-        let (bus, table) = devices::take_cpld()?;
-        let (mut cpld, _) = Cpld::adopt(bus, table);
+    fn open_card(cpld: &mut BoardCpld) -> Option<Sd> {
         let (mmc, dma) = (rt::take_mmc()?, rt::take_dma(rp_hal_pxa27x::dma_map::SD)?);
         cpld.set_sd_power(true);
         rt::delay_us(10_000);
@@ -160,8 +171,52 @@ mod image {
         rt::init_mmu();
         let _ = writeln!(uart, "\nRetroPane: starting a C program");
         let heap = Break::new(HEAP.0, HEAP.1);
-        let volume = open_card().and_then(mount);
-        let sys: &'static mut dyn Sys = match (volume, devices::take_scratch()) {
+        let mut cpld = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
+        let volume = cpld.as_mut().and_then(open_card).and_then(mount);
+        // Sound (the audio service, ADR-0032): the codec brought up as the
+        // service does it; its two board bits are put back at the end.
+        let board_found = found(cpld.as_ref());
+        let Some(gpio_bus) = rt::take_gpio() else {
+            rp_image::fail("no GPIO block")
+        };
+        let gpio = RefCell::new(Gpio::new(gpio_bus));
+        let mut audio = match (rt::take_i2c(), rt::take_i2s()) {
+            (Some(i2c), Some(i2s)) if board_found.is_some() => {
+                Some(service(&gpio, cpld, i2c, i2s, LEVEL))
+            }
+            _ => None,
+        };
+        let speaker = audio.as_mut().and_then(|a| match a.up() {
+            Ok(p) => {
+                let _ = writeln!(uart, "sound: the codec is up, to the {}", name(p.output));
+                Some(p.output == Output::Speaker)
+            }
+            Err(e) => {
+                let _ = writeln!(uart, "sound: none ({e:?})");
+                None
+            }
+        });
+        let mut scratch = devices::take_scratch();
+        // The sound's memory first: the scratch RAM starts on a cache line,
+        // as the DMA ring must.
+        let voice = match (
+            speaker,
+            scratch.take(),
+            memory_for(SOUND_FOR.0, SOUND_FOR.1),
+        ) {
+            (Some(speaker), Some(ram), Some(bytes)) => {
+                let (mem, rest) = ram.split_at_mut(bytes.next_multiple_of(32));
+                scratch = Some(rest);
+                rt::take_dma(rp_hal_pxa27x::dma_map::AUDIO)
+                    .and_then(|dma| Sound::new(mem, dma, speaker))
+                    .and_then(|s| SOUND.put_with(move || s))
+            }
+            (_, ram, _) => {
+                scratch = ram;
+                None
+            }
+        };
+        let sys: &'static mut dyn Sys = match (volume, scratch) {
             (Some(vol), Some(ram)) => {
                 let _ = writeln!(uart, "card: mounted");
                 let (work, room) = ram.split_at_mut(FAT_WORK);
@@ -174,6 +229,9 @@ mod image {
                 };
                 if s.files().mkdir(FOLDER).is_err() {
                     rp_image::fail("the program's folder could not be made on the card");
+                }
+                if let Some(v) = voice {
+                    s.set_sound(v);
                 }
                 s
             }
@@ -191,7 +249,17 @@ mod image {
         };
         rp_hal_cabi::start(sys, exit);
         let code = rp_hal_cabi::run();
+        // The program's end stopped the DMA engine (`Sys::end`): the codec
+        // down, the board as it was found.
         let mut uart = PxaUart::new(rt::emergency_uart());
+        if let Some(mut a) = audio {
+            let down = a.down().is_ok();
+            put_back(a.board_mut().cpld.take(), board_found);
+            let _ = writeln!(
+                uart,
+                "sound: the codec is down ({down}), the board as found"
+            );
+        }
         let _ = writeln!(uart, "the C program returned {code}");
         if code != 0 {
             rp_image::fail("the C program's checks failed");

@@ -814,6 +814,15 @@ pub fn boot_chello(root: &Path) -> Result<(), String> {
         ballast: 0,
     });
     std::fs::write(&sd, img).map_err(|e| format!("{}: {e}", sd.display()))?;
+    // What the codec plays is recorded: the C program's tone is checked in
+    // it (the headphones are out, so it goes to the speaker).
+    let wav = scratch(root, "chello.wav")?;
+    let _ = std::fs::remove_file(&wav);
+    let wav_path = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&wav),
+        Emulator::Native(_) => wav.display().to_string(),
+    };
+    let audiodev = format!("wav,id=snd,path={wav_path}{WAV_VOICE}");
     let output = boot(
         root,
         &Boot {
@@ -825,7 +834,7 @@ pub fn boot_chello(root: &Path) -> Result<(), String> {
             screenshot: None,
             sd_image: Some(&sd),
             steps: &[],
-            extra: &[],
+            extra: &["-audiodev", &audiodev, "-machine", "audiodev=snd"],
             input: None,
             during: None,
             then: None,
@@ -843,18 +852,22 @@ pub fn boot_chello(root: &Path) -> Result<(), String> {
         "a file from the PC: ok",
         "files: ok",
         "clock: ok",
+        "sound: the codec is up, to the speaker",
+        "sound: ok",
+        "sound: the codec is down (true), the board as found",
     ] {
         if !output.contains(want) {
             return Err(format!(
-                "C hello: `{want}` missing on serial (the port layer: the card's files through fopen, the clock)"
+                "C hello: `{want}` missing on serial (the port layer: the card's files through fopen, the clock, sound)"
             ));
         }
     }
     if !output.contains("the C program returned 0") {
         return Err("C hello: the C program did not return 0 to Rust".into());
     }
+    let (hz, seconds) = audio::c_tone(&wav)?;
     eprintln!(
-        "    C hello OK: Clang, picolibc, the C boundary, the clock and the card's files through fopen"
+        "    C hello OK: Clang, picolibc, the C boundary, the clock, the card's files through fopen, and the C program's tone recorded at {hz:.1} Hz over {seconds:.3} s with no gap"
     );
     Ok(())
 }
