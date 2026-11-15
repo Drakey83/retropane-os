@@ -37,7 +37,8 @@ pub fn placement(rel_dir: &str) -> Option<Placement> {
         "kernel" | "drivers" | "boot" => Placement::Os(Layer::Core),
         "services" | "gwes" => Placement::Os(Layer::System),
         "personality" => Placement::Os(Layer::Personality),
-        "shell" | "apps" => Placement::Os(Layer::Apps),
+        // `ports`: the port layer and the C programs over it (games).
+        "shell" | "apps" | "ports" => Placement::Os(Layer::Apps),
         // `pc`: the PC companions users run (LegacySync, ADR-0028).
         "xtask" | "tools" | "pc" => Placement::Host,
         _ => return None,
@@ -470,6 +471,7 @@ const B: u32 = 2;
             placement("personality/ce/coredll"),
             Some(Placement::Os(Layer::Personality))
         );
+        assert_eq!(placement("ports/sys"), Some(APPS));
         assert_eq!(placement("tools/romdump"), Some(Placement::Host));
         assert_eq!(placement("pc/legacysync"), Some(Placement::Host));
         assert_eq!(placement("random"), None);

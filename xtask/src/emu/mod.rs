@@ -792,6 +792,44 @@ pub fn boot_light(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Must match `rp_port_hello::MARKER` (ports/hello): printed by the C
+/// program itself, after its last check.
+const C_HELLO_MARKER: &str = "RETROPANE-C-HELLO-OK";
+
+/// Boots the first C program (`cargo xtask emu-chello`): every check it
+/// makes of the C library must pass, and it must come back to Rust.
+pub fn boot_chello(root: &Path) -> Result<(), String> {
+    let image = crate::arm_release(root).join("rp-port-hello");
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            // The image's clean end (`rp_image::finish`), after the C
+            // program came back.
+            marker: "stack: deepest",
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: None,
+            during: None,
+            then: None,
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    eprint!("{output}");
+    if output.contains("FAILED") || !output.contains(C_HELLO_MARKER) {
+        return Err(format!(
+            "C hello: `{C_HELLO_MARKER}` missing on serial, or a check failed"
+        ));
+    }
+    if !output.contains("the C program returned 0") {
+        return Err("C hello: the C program did not return 0 to Rust".into());
+    }
+    eprintln!("    C hello OK: Clang, picolibc and the C boundary");
+    Ok(())
+}
+
 /// Must match `rp_loader::MARKER`.
 const LOADER_MARKER: &str = "RPLOAD1 READY";
 

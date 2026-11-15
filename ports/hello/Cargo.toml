@@ -1,0 +1,27 @@
+[package]
+name = "rp-port-hello"
+description = "The first C program on RetroPane (docs/design/half-life-readiness.md lines 2 and 3): a C self-check built by the pinned Clang against picolibc, run in the emulator by `cargo xtask emu-chello`"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Built only by `cargo xtask` with the C toolchain (xtask/src/cc.rs): the
+# everyday builds (`cross`, `ci`) need no C compiler.
+c = []
+
+[[bin]]
+name = "rp-port-hello"
+path = "src/main.rs"
+required-features = ["c"]
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-image = { path = "../../boot/image" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-cabi = { path = "../../hal/cabi" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+
+[lints]
+workspace = true

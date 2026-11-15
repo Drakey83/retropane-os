@@ -349,7 +349,7 @@ port" (R212). What ready means, line by line, with what the OS already has:
 [design/half-life-readiness.md](design/half-life-readiness.md). Nothing here
 is measured yet; no frame rate is promised before the evaluation.
 
-- [ ] 1. A C and C++ compiler for the X51v in the build, and a C library (picolibc over our own system layer); a C "hello" image in the emulator *(waits for the owner's go for the downloads)*
+- [ ] 1. A C and C++ compiler for the X51v in the build, and a C library (picolibc over our own system layer); a C "hello" image in the emulator *(2026-11-15, the owner's go given: `cargo xtask cc` and `cargo xtask emu-chello` built, the C program passes in the emulator; left: C++ and its runtime, the port layer's files behind `fopen`, the same program on the X51v)*
 - [ ] 2. The evaluation: Xash3D built for ARMv5 with no FPU, a real map in the emulator, its frame's CPU split and its memory measured; the result and the options to the owner
 - [ ] 3. The port layer (one C header): files over `kernel/fat`, the audio service's stream, input, the 3D renderer's C face; each with its test
 - [ ] 4. An ADR: how a program this big is run and left (its own image from the card, or a process)

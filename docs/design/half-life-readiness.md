@@ -22,12 +22,37 @@ frame rate is unmeasured until the evaluation (line 1) runs.
   on some maps for want of RAM. Xash3D also runs on the PSP, the 3DS and
   the Dreamcast (16 MB). The N95 has a floating-point unit; the X51v's
   PXA270 has none, which is the open question the evaluation answers.
-- **What Xash3D asks of a platform** (its porting guide, read by search
-  only so far; to be read in full): a C library, files, a clock, memory,
+- **What Xash3D asks of a platform** (its porting guide, read in full in
+  the source fetched 2026-11-15, commit 707596f4; summarised by search
+  before): a C library, files, a clock, memory,
   a sound device taking mixed samples, input, a renderer (it has an OpenGL
   one, a GLES1 one and a software one, each a separate library), and
   **loading its parts as dynamic libraries** (the engine's maintainers do
   not support a platform that cannot).
+
+## What the fetched source shows (2026-11-15, read, nothing built yet)
+
+- **A port without an operating system exists already:** `engine/platform/dos`
+  (input, video and system for DOS), beside `platform/stub` (no sound, no
+  network) and a renderer that draws nothing (`ref/null`). They are the
+  nearest models for line 4's backend and for the evaluation's first build.
+- **Its software renderer is in the tree** (`ref/soft`): the evaluation can
+  run a real map before `ref_rp` exists, and its time is the baseline ours
+  must beat.
+- **A low-memory build is an option of the engine** (`--low-memory-mode` 1
+  or 2; 2 gives up network compatibility): a lever for line 7, to measure.
+- **Static linking is in the engine** (`platform/misc/lib_static.c`, a table
+  of the libraries' functions), **and the guide says of it** that the
+  maintainers do not support a platform that cannot load dynamic libraries,
+  "as supporting full-static ports are violating the GPL license in various
+  ways" (the engine is GPLv3, the game logic under Valve's SDK licence).
+  This is a finding for line 13 and weighs on line 6: our own loader loading
+  the game's logic as a library of its own keeps the two apart; one
+  statically linked program is the road the guide warns about. Not a legal
+  opinion; the owner's ruling comes after line 13's reading.
+- **The Half-Life SDK is built separately** (hlsdk-portable, commit
+  89e83b92) and names its libraries per platform (`library-naming.md`):
+  the X51v gets a name of its own in both.
 
 ## The lines
 
@@ -37,8 +62,8 @@ said), **part**, **none**.
 | # | What | In the OS today | How others do it | Ours, and why |
 |---|---|---|---|---|
 | 1 | **The evaluation** (R212): the engine built for ARMv5 with no FPU, run in the emulator on a real map, its frame's CPU split (physics, the renderer's set-up, software float) and its memory measured | none | Ports to phones measure on the phone after the port | Measured **before** the port, in our emulator with the performance counters' zones (`rp-today`'s profile): the float share decides how much of layers 9 and 10 the port needs, and the memory decides line 7. The result and the options go to the owner (a result is not a decision) |
-| 2 | **A C and C++ compiler for the X51v** in the build (`cargo xtask`), soft-float ARMv5TE, the same on every PC | none (the repo builds Rust only; this PC has no ARM C compiler) | Windows Mobile: eVC/Visual Studio; Linux handhelds: a GCC cross toolchain; today: Clang, one compiler for every target | Clang/LLD (the back end Rust already uses here, so one code generator, link-time optimisation across C and Rust, and the same tuning flags for the XScale); pinned by version and hash in the repo as the emulator is |
-| 3 | **A C library** (and the little of C++'s runtime the SDK uses: new/delete, static guards, no exceptions) | none | Windows Mobile: coredll; Linux: glibc or musl (both need a Linux kernel under them); embedded: newlib, picolibc | **picolibc** (BSD, built for small machines, a small stdio, float printing that can be left out) over **our own system layer in Rust** (line 4), so files, memory and time are RetroPane's and checked, not a POSIX kernel imitated. Its maths (`libm`) replaced where the evaluation shows it hot (line 9) |
+| 2 | **A C and C++ compiler for the X51v** in the build (`cargo xtask`), soft-float ARMv5TE, the same on every PC | **part, built 2026-11-15** (`cargo xtask cc`, xtask/src/cc.rs): Clang 23.1.1 (the Rust compiler's own LLVM version), fetched once by its SHA-256, C compiled for the XScale and linked into a Rust image. Not yet: C++ (its runtime and constructors), link-time optimisation across C and Rust, the Linux PC's archive (R249) | Windows Mobile: eVC/Visual Studio; Linux handhelds: a GCC cross toolchain; today: Clang, one compiler for every target | Clang/LLD (the back end Rust already uses here, so one code generator, link-time optimisation across C and Rust, and the same tuning flags for the XScale); pinned by version and hash in the repo as the emulator is |
+| 3 | **A C library** (and the little of C++'s runtime the SDK uses: new/delete, static guards, no exceptions) | **part, built 2026-11-15:** picolibc 1.8.12 built by our own build from its pinned source (818 files, about 5 s, no Meson or CMake), our settings in `ports/libc/picolibc.h`, over `hal/cabi` (eight calls into one safe Rust trait; the memory routines are `rp-hal-mem`'s). **The first C program runs in the emulator** (`cargo xtask emu-chello`: printf with floats, the heap, software floats, the maths library, 64-bit divide, sort, parsing, each checked by the program; a 68 KB image). Not on the X51v yet. Not yet: the C++ runtime, a heap made for a game's tens of MB (picolibc's simple one over `sbrk` for now) | Windows Mobile: coredll; Linux: glibc or musl (both need a Linux kernel under them); embedded: newlib, picolibc | **picolibc** (BSD, built for small machines, a small stdio, float printing that can be left out) over **our own system layer in Rust** (line 4), so files, memory and time are RetroPane's and checked, not a POSIX kernel imitated. Its maths (`libm`) replaced where the evaluation shows it hot (line 9) |
 | 4 | **The port layer:** what a C program calls for files, memory, time, sound, input, the screen (a small C ABI, one header) | part: the pieces exist in Rust (below), no C face | SDL on Linux and every console port; GAPI on Windows Mobile | One thin layer shaped to what the 2700G and the X51v do well (fixed-point drawing, the three game routes of ADR-0038, the audio service's mixer), not SDL's desktop model; every port (Doom, Quake, Half-Life) draws through it, so a gain lands in all |
 | 5 | **Files** as a C program reads them: open, read, seek, write, list a folder, on the card's FAT or exFAT, long names | has in Rust: `kernel/fat` (FAT12/16/32 and exFAT, proven on the X51v's cards) and, **built 2026-11-15, `ports/sys` (`rp_port::files`)**: handles over its node layer (open by path in any case and either slash, read, seek, a folder listed, a file written whole on close, mkdir, remove), host-tested on all four formats with the card's own check clean after. Its C face waits for line 2 | POSIX files over a kernel's cache | Handles over `read_range` with read-ahead sized to a card's fast run (storage-speed.md), and the game's big files (`.wad`, `.bsp`) read once into place; no general cache to pay for |
 | 6 | **A program this big, run and left:** megabytes of code, tens of megabytes of data, started from the shell and back to it | part: the shell loads 192 KiB programs into a 256 KiB slot (`rp-today`'s PE loader); the loader starts whole images over USB and they return to it; the kernel has a PE loader, processes and demand paging in the emulator | Windows Mobile: a process per program in a 32 MB slot; Linux: `exec` | To decide after line 1's numbers (an ADR): the game as **its own image** started from the card by the loader (the shell hands over and is started again after: every byte of RAM the game's, nothing shared to protect), against the game as a process under the kernel. Xash3D's dynamic libraries: our own PE loader loads them (the engine already has a custom loader for Windows DLLs), or one statically linked program |
@@ -57,6 +82,15 @@ a C test program (files read from the card, a tone through the mixer, a
 key read, a triangle drawn); line 1 run with its numbers and options put
 to the owner; line 6's ADR accepted; line 13's finding written. Lines 8-10
 are the port's own first work, sized by line 1.
+
+## The C program's start, as built
+
+A C image is a Rust image (`ports/hello`): the entry, the crash path and the
+return to the loader are `rp-image`'s, as in every RetroPane image; Rust
+registers what answers the C library (`rp_hal_cabi::Sys`: the console, the
+heap, and for a game the port layer's files) and calls the C `main`. The C
+images are built only by their own commands (the `c` feature), so `cross`
+and `ci` need no C compiler and a fresh checkout does not fetch 467 MB.
 
 ## Order
 

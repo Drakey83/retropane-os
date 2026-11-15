@@ -1,0 +1,14 @@
+[package]
+name = "rp-hal-cabi"
+description = "The C boundary (docs/design/half-life-readiness.md lines 3 and 4): the few low-level calls a C library makes (write, read, open, lseek, sbrk, _exit), turned into one safe Rust trait, so every pointer a C program hands the OS is checked in one place"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-pxa27x = { path = "../pxa27x" }
+
+[lints]
+workspace = true

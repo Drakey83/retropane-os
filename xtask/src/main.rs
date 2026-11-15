@@ -6,6 +6,7 @@
 mod adrs;
 mod app_mockups;
 mod calib;
+mod cc;
 mod design_v3;
 mod devlock;
 mod emu;
@@ -233,6 +234,11 @@ commands:
             and its computed filters read back as written, put back
   emu-blend only the rp-blend check (plane blending, three stages
             pixel-exact): run it before `load rp-blend`
+  cc        the C compiler and C library for the X51v, ready (the pinned
+            Clang and picolibc: downloaded by their hashes on first use,
+            467 MB; xtask/src/cc.rs)
+  emu-chello  the first C program (rp-port-hello: printf, the heap, software
+            floats, the maths library, checked by itself) in the emulator
   emu-mbx   only the GPU check (rp-mbx: fills by the emulated MBX 2D
             engine, edges exact): run it before `load rp-mbx`
   emu-mbx-blend  only the blend and display-event probe (rp-mbx-blend:
@@ -428,6 +434,8 @@ fn main() -> ExitCode {
         | "coverage"
         | "emu"
         | "emu-apps"
+        | "cc"
+        | "emu-chello"
         | "emu-picture"
         | "emu-blend"
         | "emu-blend-scale"
@@ -901,6 +909,8 @@ fn run_step(step: &str) -> Result {
         "stacks" => stack_check(),
         "scope" => scope_check(),
         "emu-apps" => cross().and_then(|()| emu::apps(&workspace_root())),
+        "cc" => cc::ready(&workspace_root()).map(|_| ()),
+        "emu-chello" => c_hello().and_then(|()| emu::boot_chello(&workspace_root())),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
         "emu-blend-scale" => cross().and_then(|()| emu::boot_loader_blend_scale(&workspace_root())),
@@ -1476,6 +1486,36 @@ fn measure_options() -> Result<profile::Options> {
     Ok(o)
 }
 
+/// Images holding a C program: built only by their own commands, with the
+/// C toolchain ([`cc`]), never by `cross` (a checkout without the toolchain
+/// builds everything else).
+const C_IMAGES: &[&str] = &["rp-port-hello"];
+
+/// Builds the first C program's image: the C library, `ports/hello/c` and
+/// the Rust image that starts it.
+fn c_hello() -> Result {
+    let root = workspace_root();
+    let (tc, libc) = cc::ready(&root)?;
+    cc::program(&tc, &libc, "hello", &root.join("ports/hello/c"))?;
+    let mut env = Command::new("");
+    env.env("RP_C_LIBS", &libc.lib_dir);
+    cargo_with(
+        &mut env,
+        &[
+            "build",
+            "--release",
+            "--target",
+            TARGET_SPEC,
+            "-Zbuild-std=core,compiler_builtins",
+            "-Zjson-target-spec",
+            "-p",
+            "rp-port-hello",
+            "--features",
+            "c",
+        ],
+    )
+}
+
 fn cross() -> Result {
     let crates = workspace_crates()?;
     build_images(&crates, None)?;
@@ -1484,6 +1524,7 @@ fn cross() -> Result {
         .iter()
         .filter(|c| matches!(c.place, Placement::Os(_)) && c.lib_root.is_none())
         .map(|c| c.name.as_str())
+        .filter(|n| !C_IMAGES.contains(n))
         .collect();
     let release = crate::arm_release(&workspace_root());
     size::check(&release, &images)?;
@@ -1574,6 +1615,7 @@ fn build_images(crates: &[Crate], stack_dir: Option<&str>) -> Result {
         // Built on their own above: a build's features are unified, and a
         // program's runtime (its panic handler) mustn't reach the kernel.
         .filter(|c| !userimg::IMAGES.contains(&c.name.as_str()))
+        .filter(|c| !C_IMAGES.contains(&c.name.as_str()))
     {
         args.push("-p".into());
         args.push(c.name.clone());

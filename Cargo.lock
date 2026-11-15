@@ -561,6 +561,13 @@ name = "rp-hal-api"
 version = "0.0.0"
 
 [[package]]
+name = "rp-hal-cabi"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-pxa27x",
+]
+
+[[package]]
 name = "rp-hal-mem"
 version = "0.0.0"
 
@@ -932,6 +939,16 @@ version = "0.0.0"
 dependencies = [
  "rp-fat",
  "rp-hal-api",
+]
+
+[[package]]
+name = "rp-port-hello"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-pxa-uart",
+ "rp-hal-cabi",
+ "rp-hal-pxa27x",
+ "rp-image",
 ]
 
 [[package]]
