@@ -3,7 +3,8 @@
  * lines 2 and 3): proves the C compiler, picolibc and the C boundary by
  * using what a game port leans on (printf with floats, the heap, software
  * floating point, the maths library, 64-bit division, sorting, parsing)
- * and checking every answer. `cargo xtask emu-chello` runs it and looks
+ * and the port layer (the clock, the card's files) and checking every
+ * answer. `cargo xtask emu-chello` runs it and looks
  * for the last line.
  */
 #include <math.h>
@@ -11,6 +12,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
+
+#include <retropane.h>
 
 /* The C++ checks (cxx.cpp). */
 int cxx_checks(void);
@@ -77,6 +82,38 @@ static int files(void)
     return ok;
 }
 
+/* The clock (<retropane.h>): it moves forward and never back, a wait of
+ * five milliseconds is five milliseconds by it, and the C library's own
+ * time calls read the same clock. */
+static int clock_checks(void)
+{
+    int ok = 1;
+    uint64_t start = rp_time_us(), prev = start, now = start;
+    int back = 0;
+    /* Bounded: a clock that stood still ends the loop, as a failure. */
+    for (volatile uint32_t spins = 0; spins < 200000000u && now - start < 5000; spins++) {
+        now = rp_time_us();
+        back |= now < prev;
+        prev = now;
+    }
+    ok &= check("the clock moves forward", now - start >= 5000);
+    ok &= check("the clock never goes back", !back);
+    /* The step that crossed 5 ms was one read's worth, not a jump. */
+    ok &= check("the clock counts in microseconds", now - start < 6000);
+
+    struct timeval tv = {-1, -1};
+    uint64_t before = rp_time_us();
+    int got = gettimeofday(&tv, NULL);
+    uint64_t after = rp_time_us();
+    uint64_t at = (uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec;
+    ok &= check("gettimeofday is the same clock",
+                got == 0 && tv.tv_usec >= 0 && tv.tv_usec < 1000000 && at >= before && at <= after);
+    time_t t = time(NULL);
+    ok &= check("time", t >= tv.tv_sec && t <= tv.tv_sec + 1);
+    puts(ok ? "  clock: ok" : "  clock: FAILED");
+    return ok;
+}
+
 int main(void)
 {
     int ok = 1;
@@ -132,6 +169,7 @@ int main(void)
     /* A file that is not there is refused, not a crash. */
     ok &= check("fopen of nothing is refused", fopen("/nothing", "rb") == NULL);
     ok &= cxx_checks();
+    ok &= clock_checks();
     ok &= files();
 
     puts(ok ? "RETROPANE-C-HELLO-OK" : "RETROPANE-C-HELLO-FAILED");

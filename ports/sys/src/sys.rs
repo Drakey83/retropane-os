@@ -1,6 +1,6 @@
 //! What answers a C program's library calls ([`rp_hal_cabi::Sys`]): the
-//! console on handles 0 to 2, the card's files ([`Files`]) from 3 up, and
-//! the C heap.
+//! console on handles 0 to 2, the card's files ([`Files`]) from 3 up, the
+//! C heap and the clock ([`Micros`]).
 //!
 //! Iterate, don't imitate (rule 0). A C library's files on Windows Mobile
 //! and Linux are the kernel's, with its cache and its permissions; a
@@ -16,6 +16,7 @@ use rp_fat::Error as FatError;
 use rp_hal_api::BlockDevice;
 use rp_hal_cabi::{Break, Errno, Sys, flags};
 
+use crate::clock::Micros;
 use crate::files::{Error, Fd, Files, Whence};
 
 /// Where what a C program prints goes (the serial line, the screen's
@@ -33,6 +34,9 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     files: Files<'a, D, N>,
     console: C,
     heap: Break,
+    /// Reads the OS timer's counter (3.25 MHz).
+    ticks: fn() -> u32,
+    clock: Micros,
 }
 
 /// A [`Files`] error as the C library's `errno`.
@@ -56,12 +60,15 @@ fn file(fd: i32) -> Result<Fd, Errno> {
 }
 
 impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
-    /// The system over `files`, printing to `console`, its C heap in `heap`.
-    pub fn new(files: Files<'a, D, N>, console: C, heap: Break) -> Self {
+    /// The system over `files`, printing to `console`, its C heap in
+    /// `heap`, its clock started now from `ticks` (the OS timer's counter).
+    pub fn new(files: Files<'a, D, N>, console: C, heap: Break, ticks: fn() -> u32) -> Self {
         Self {
             files,
             console,
             heap,
+            ticks,
+            clock: Micros::starting_at(ticks()),
         }
     }
 
@@ -143,6 +150,10 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     fn grow(&mut self, by: isize) -> Option<usize> {
         self.heap.grow(by)
     }
+
+    fn now_us(&mut self) -> u64 {
+        self.clock.at((self.ticks)())
+    }
 }
 
 #[cfg(test)]
@@ -173,7 +184,7 @@ mod tests {
             let room = &mut vec![0u8; 100_000][..];
             let mut said = Said(Vec::new());
             let files: Files<'_, Disk, 4> = Files::new(vol, scratch, room);
-            let mut s = System::new(files, &mut said, Break::new(0x1000, 0x3000));
+            let mut s = System::new(files, &mut said, Break::new(0x1000, 0x3000), || 0);
             s.files().mkdir(b"valve").unwrap();
             // Nothing there yet.
             assert_eq!(s.open(b"valve/save.sav", R), Err(Errno::NoEntry), "{kind}");
@@ -219,7 +230,7 @@ mod tests {
             let room = &mut vec![0u8; 1024][..];
             let mut said = Said(Vec::new());
             let files: Files<'_, Disk, 2> = Files::new(vol, scratch, room);
-            let mut s = System::new(files, &mut said, Break::new(0x1000, 0x1010));
+            let mut s = System::new(files, &mut said, Break::new(0x1000, 0x1010), || 0);
             assert_eq!(s.write(1, b"out\n"), Ok(4));
             assert_eq!(s.write(2, b"err\n"), Ok(4));
             assert_eq!(s.read(0, &mut [0u8; 16]), Ok(0));
@@ -251,7 +262,7 @@ mod tests {
             let room = &mut vec![0u8; 16][..];
             let mut said = Said(Vec::new());
             let files: Files<'_, Disk, 2> = Files::new(vol, scratch, room);
-            let mut s = System::new(files, &mut said, Break::new(0, 0));
+            let mut s = System::new(files, &mut said, Break::new(0, 0), || 0);
             let w = s.open(b"a.txt", W).unwrap();
             assert_eq!(s.write(w, b"0123456789"), Ok(10));
             // More than the room for a written file: nothing taken.
@@ -270,6 +281,30 @@ mod tests {
             assert_eq!(s.close(b), Ok(()));
             // A name that is no path.
             assert_eq!(s.open(b"", R), Err(Errno::Invalid), "{kind}");
+        });
+    }
+
+    #[test]
+    fn the_clock_starts_at_the_system_s_making_and_follows_the_counter() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        // This test's alone (`each` runs its formats one after another).
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        each(|vol, kind| {
+            COUNTER.store(u32::MAX - 12, Ordering::Relaxed);
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0u8; 16][..];
+            let mut said = Said(Vec::new());
+            let files: Files<'_, Disk, 2> = Files::new(vol, scratch, room);
+            let mut s = System::new(files, &mut said, Break::new(0, 0), || {
+                COUNTER.load(Ordering::Relaxed)
+            });
+            assert_eq!(s.now_us(), 0, "{kind}: from its making, not zero");
+            // 13 ticks on, through the counter's wrap: 4 microseconds.
+            COUNTER.store(0, Ordering::Relaxed);
+            assert_eq!(s.now_us(), 4);
+            COUNTER.store(3_250_000, Ordering::Relaxed);
+            assert_eq!(s.now_us(), 1_000_004);
+            assert_eq!(s.now_us(), 1_000_004, "a counter that stood still");
         });
     }
 

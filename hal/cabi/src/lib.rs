@@ -7,7 +7,9 @@
 //! every pointer. Ours: picolibc needs nine calls, and each is a
 //! `no_mangle` function here that turns the C program's pointers into
 //! slices once and hands them to a [`Sys`] written in safe Rust above (the
-//! port layer, over the card's files and the audio service). All the
+//! port layer, over the card's files and the audio service). The port
+//! layer's own C functions (`ports/include/retropane.h`: the clock first)
+//! cross here too. All the
 //! `unsafe` a C program brings into the OS is in this file (the layering
 //! rule: only `hal/*` may hold any), and what answers the calls is checked
 //! code with tests.
@@ -90,6 +92,10 @@ pub trait Sys {
     /// Moves the end of the C heap by `by` bytes (`sbrk`): the old end, or
     /// `None` when the room is used up. [`Break`] does this.
     fn grow(&mut self, by: isize) -> Option<usize>;
+    /// Microseconds since the program's system was started; never goes
+    /// back. (The date is not known to the port layer yet: `time()` counts
+    /// from 1970 as if the program had started then.)
+    fn now_us(&mut self) -> u64;
 }
 
 /// The C heap's room: one run of RAM whose used part grows from its start
@@ -129,6 +135,13 @@ impl Break {
     pub const fn used(&self) -> usize {
         self.at - self.start
     }
+}
+
+/// Microseconds as `gettimeofday`'s whole seconds and the microseconds
+/// over (under a million).
+#[must_use]
+pub const fn split_us(us: u64) -> (i64, i32) {
+    ((us / 1_000_000) as i64, (us % 1_000_000) as i32)
 }
 
 #[cfg(target_os = "none")]
@@ -302,6 +315,43 @@ mod face {
         }
     }
 
+    /// The port layer's clock (`ports/include/retropane.h`): microseconds
+    /// since the program's system was started, 0 before one is registered.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_time_us() -> u64 {
+        with(|s| Ok(s.now_us())).unwrap_or(0)
+    }
+
+    /// picolibc's `struct timeval` (`sys/_timeval.h`: a 64-bit `time_t`,
+    /// a 32-bit `suseconds_t`).
+    #[repr(C)]
+    pub struct Timeval {
+        sec: i64,
+        usec: i32,
+    }
+
+    /// `gettimeofday(2)`: [`rp_time_us`] as seconds and microseconds (the
+    /// C library's `time()` reads it). The time zone is not filled in.
+    ///
+    /// # Safety
+    /// `tv` is null or points at a writable `struct timeval`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn gettimeofday(tv: *mut Timeval, _tz: *mut c_void) -> c_int {
+        if tv.is_null() {
+            return 0;
+        }
+        match with(|s| Ok(s.now_us())) {
+            Ok(us) => {
+                let (sec, usec) = super::split_us(us);
+                // SAFETY: the caller's contract: a writable `struct
+                // timeval` at `tv`, not null (checked), written whole.
+                unsafe { tv.write(Timeval { sec, usec }) };
+                0
+            }
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
     /// `raise(3)`: there are no signals here. The C library calls it from
     /// `abort()` (a failed `assert`, C++'s pure-virtual trap, `new` out of
     /// memory): the image's end, as a failure (128 plus the signal, the
@@ -352,6 +402,18 @@ mod tests {
         let mut b = Break::new(0x2000, 0x1000);
         assert_eq!(b.grow(1), None);
         assert_eq!(b.grow(0), Some(0x2000));
+    }
+
+    #[test]
+    fn microseconds_split_into_seconds_and_the_rest() {
+        assert_eq!(split_us(0), (0, 0));
+        assert_eq!(split_us(999_999), (0, 999_999));
+        assert_eq!(split_us(1_000_000), (1, 0));
+        assert_eq!(split_us(86_400_000_001), (86_400, 1));
+        // The largest count: seconds that fit, the rest under a million.
+        let (s, u) = split_us(u64::MAX);
+        assert_eq!(s as u64 * 1_000_000 + u as u64, u64::MAX);
+        assert!((0..1_000_000).contains(&u));
     }
 
     #[test]

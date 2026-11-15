@@ -36,6 +36,7 @@ mod image {
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, rt};
     use rp_hal_x51v::devices;
+    use rp_port::clock::Micros;
     use rp_port::files::Files;
     use rp_port::sys::{Console, System};
 
@@ -84,6 +85,7 @@ mod image {
     struct Bare {
         console: Serial,
         heap: Break,
+        clock: Micros,
     }
 
     impl Sys for Bare {
@@ -111,6 +113,9 @@ mod image {
         }
         fn grow(&mut self, by: isize) -> Option<usize> {
             self.heap.grow(by)
+        }
+        fn now_us(&mut self) -> u64 {
+            self.clock.at(rt::ticks())
         }
     }
 
@@ -162,9 +167,9 @@ mod image {
                 let (work, room) = ram.split_at_mut(FAT_WORK);
                 // Made straight into its slot: the file table is 5 KiB, and
                 // a copy or two of it on the way would be most of a stack.
-                let Some(s) = WITH_CARD
-                    .put_with(|| System::new(Files::new(vol, work, room), Serial(uart), heap))
-                else {
+                let Some(s) = WITH_CARD.put_with(|| {
+                    System::new(Files::new(vol, work, room), Serial(uart), heap, rt::ticks)
+                }) else {
                     rp_image::fail("the C system was set up twice")
                 };
                 if s.files().mkdir(FOLDER).is_err() {
@@ -177,6 +182,7 @@ mod image {
                 match BARE.put_with(|| Bare {
                     console: Serial(uart),
                     heap,
+                    clock: Micros::starting_at(rt::ticks()),
                 }) {
                     Some(s) => s,
                     None => rp_image::fail("the C system was set up twice"),

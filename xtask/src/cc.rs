@@ -589,7 +589,13 @@ pub fn libc(root: &Path, tc: &Toolchain) -> Result<Libc, String> {
 ///
 /// # Errors
 /// A source did not compile, warnings included.
-pub fn program(tc: &Toolchain, libc: &Libc, name: &str, dir: &Path) -> Result<(), String> {
+pub fn program(
+    root: &Path,
+    tc: &Toolchain,
+    libc: &Libc,
+    name: &str,
+    dir: &Path,
+) -> Result<(), String> {
     let obj = libc.lib_dir.join(format!("{name}-obj"));
     let _ = std::fs::remove_dir_all(&obj);
     std::fs::create_dir_all(&obj).map_err(|e| format!("{}: {e}", obj.display()))?;
@@ -605,6 +611,14 @@ pub fn program(tc: &Toolchain, libc: &Libc, name: &str, dir: &Path) -> Result<()
     let mut common = flag_strings(TARGET_FLAGS);
     common.extend(flag_strings(&["-Wall", "-Wextra", "-Werror"]));
     common.extend(libc.include_flags.iter().cloned());
+    // The port layer's own header, <retropane.h>.
+    common.push("-I".into());
+    common.push(
+        root.join("ports")
+            .join("include")
+            .to_string_lossy()
+            .into_owned(),
+    );
     let jobs: Vec<Job> = files
         .iter()
         .map(|f| Job {

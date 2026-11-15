@@ -838,17 +838,24 @@ pub fn boot_chello(root: &Path) -> Result<(), String> {
             "C hello: `{C_HELLO_MARKER}` missing on serial, or a check failed"
         ));
     }
-    for want in ["card: mounted", "a file from the PC: ok", "files: ok"] {
+    for want in [
+        "card: mounted",
+        "a file from the PC: ok",
+        "files: ok",
+        "clock: ok",
+    ] {
         if !output.contains(want) {
             return Err(format!(
-                "C hello: `{want}` missing on serial (the card's files through fopen)"
+                "C hello: `{want}` missing on serial (the port layer: the card's files through fopen, the clock)"
             ));
         }
     }
     if !output.contains("the C program returned 0") {
         return Err("C hello: the C program did not return 0 to Rust".into());
     }
-    eprintln!("    C hello OK: Clang, picolibc, the C boundary and the card's files through fopen");
+    eprintln!(
+        "    C hello OK: Clang, picolibc, the C boundary, the clock and the card's files through fopen"
+    );
     Ok(())
 }
 
