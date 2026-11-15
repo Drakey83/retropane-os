@@ -434,6 +434,16 @@ const BOUNDARY: &[&str] = &[
     "raise",
     "_exit",
     "gettimeofday",
+    "stat",
+    "opendir",
+    "readdir",
+    "closedir",
+    "mkdir",
+    "rename",
+    "dup",
+    "fsync",
+    "getcwd",
+    "execve",
 ];
 
 fn answer(name: &str) -> Answer {
@@ -664,11 +674,15 @@ mod tests {
             assert_eq!(answer(n), Answer::Image, "{n}");
         }
         // Calls nothing answers yet: the list the evaluation is after.
+        for n in ["fstat", "chdir", "writev", "memchr2", "statvfs", "rmdir"] {
+            assert_eq!(answer(n), Answer::Missing, "{n}");
+        }
+        // The file calls the first run found missing, now the boundary's.
         for n in [
             "stat", "opendir", "readdir", "closedir", "mkdir", "rename", "fsync", "dup", "getcwd",
-            "execve", "writev", "memchr2",
+            "execve",
         ] {
-            assert_eq!(answer(n), Answer::Missing, "{n}");
+            assert_eq!(answer(n), Answer::Image, "{n}");
         }
         // The client's missing library, counted apart.
         for n in ["vgui::Panel::setSize(int, int)", "vtable for vgui::Label"] {

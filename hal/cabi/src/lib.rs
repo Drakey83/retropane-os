@@ -57,6 +57,77 @@ pub mod flags {
     pub const TRUNCATE: i32 = 0x0200;
 }
 
+/// What a path names, as `stat` fills it in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStat {
+    /// A folder.
+    pub folder: bool,
+    /// Its size in bytes.
+    pub size: u64,
+    /// When it was last changed, in seconds since 1970 (0: not known).
+    pub modified: i64,
+}
+
+/// picolibc's `struct stat` (`sys/stat.h`), the fields a file system
+/// without owners or links can fill: the kind, the size, the time.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct CStat {
+    dev: u64,
+    ino: u64,
+    /// `S_IFDIR` or `S_IFREG`, with read and write for everyone.
+    pub mode: u32,
+    nlink: u64,
+    uid: u32,
+    gid: u32,
+    rdev: u64,
+    /// Bytes.
+    pub size: i64,
+    blksize: i32,
+    blocks: i64,
+    atime: (i64, i32),
+    /// Seconds since 1970.
+    pub mtime: (i64, i32),
+    ctime: (i64, i32),
+}
+
+impl CStat {
+    /// `S_IFDIR | 0777`.
+    pub const FOLDER: u32 = 0o040_777;
+    /// `S_IFREG | 0666`.
+    pub const FILE: u32 = 0o100_666;
+
+    /// The C structure for `s`.
+    #[must_use]
+    pub fn of(s: &FileStat) -> Self {
+        let size = i64::try_from(s.size).unwrap_or(i64::MAX);
+        Self {
+            mode: if s.folder { Self::FOLDER } else { Self::FILE },
+            nlink: 1,
+            size,
+            blksize: 512,
+            blocks: size / 512 + i64::from(size % 512 != 0),
+            atime: (s.modified, 0),
+            mtime: (s.modified, 0),
+            ctime: (s.modified, 0),
+            ..Self::default()
+        }
+    }
+}
+
+/// The longest name in a `struct dirent` (picolibc's `NAME_MAX`).
+pub const NAME_MAX: usize = 255;
+
+/// picolibc's `struct dirent` (`sys/dirent.h`).
+#[repr(C)]
+pub struct Dirent {
+    ino: u64,
+    /// `DT_DIR` (3) or `DT_REG` (6).
+    pub kind: u8,
+    /// The name, NUL-terminated.
+    pub name: [u8; NAME_MAX + 1],
+}
+
 /// One input event as a C program reads it (`struct rp_event` in
 /// `ports/include/retropane.h`: the same 16 bytes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +317,59 @@ pub trait Sys {
     fn snd_close(&mut self) -> Result<(), Errno> {
         Err(Errno::NoSys)
     }
+    /// What `path` names (`stat`).
+    ///
+    /// # Errors
+    /// Nothing of that name; no files here (`ENOSYS`, the default).
+    fn stat(&mut self, _path: &[u8]) -> Result<FileStat, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Opens the folder at `path` for listing (`opendir`): a handle that
+    /// [`Self::close`] closes.
+    ///
+    /// # Errors
+    /// No such folder, or no handle left.
+    fn dir_open(&mut self, _path: &[u8]) -> Result<i32, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// The folder's next entry (`readdir`): its name into `name`, the
+    /// bytes used and whether it is a folder; `None` at the end.
+    ///
+    /// # Errors
+    /// Not a folder's handle.
+    fn dir_next(&mut self, _fd: i32, _name: &mut [u8]) -> Result<Option<(usize, bool)>, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Makes the folder at `path` (`mkdir`).
+    ///
+    /// # Errors
+    /// No such parent, or a file of that name (`EEXIST` is not said for a
+    /// folder already there: making it twice is no error).
+    fn mkdir(&mut self, _path: &[u8]) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Gives `from` the path `to` (`rename`); a file at `to` makes way.
+    ///
+    /// # Errors
+    /// Nothing at `from`, or no folder for `to`.
+    fn rename(&mut self, _from: &[u8], _to: &[u8]) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
+    /// A second handle on what `fd` has open (`dup`).
+    ///
+    /// # Errors
+    /// Not an open file, or no handle left.
+    fn dup(&mut self, _fd: i32) -> Result<i32, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Asks that what was written to `fd` be on the card now (`fsync`).
+    ///
+    /// # Errors
+    /// Not an open handle; or it cannot be promised (a written file goes
+    /// onto the card whole when it is closed: `EINVAL`).
+    fn sync(&mut self, _fd: i32) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
     /// Starts the program's input (`rp_input_open`), the screen held as
     /// `turn` (`event::TURN_*`).
     ///
@@ -315,7 +439,7 @@ pub const fn split_us(us: u64) -> (i64, i32) {
 
 #[cfg(target_os = "none")]
 mod face {
-    use super::{Errno, Event, Sys};
+    use super::{CStat, Dirent, Errno, Event, NAME_MAX, Sys};
     use core::ffi::{CStr, c_char, c_int, c_void};
     use rp_hal_pxa27x::rt::Global;
 
@@ -560,6 +684,215 @@ mod face {
         }
     }
 
+    /// `stat(2)`: the kind, size and time of what `path` names.
+    ///
+    /// # Safety
+    /// `path` is a NUL-terminated string, `out` a writable `struct stat`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn stat(path: *const c_char, out: *mut CStat) -> c_int {
+        if path.is_null() || out.is_null() || !out.is_aligned() {
+            return fail(Errno::Invalid) as c_int;
+        }
+        // SAFETY: the caller's contract: a NUL-terminated string at `path`.
+        let name = unsafe { CStr::from_ptr(path) }.to_bytes();
+        match with(|s| s.stat(name)) {
+            Ok(st) => {
+                // SAFETY: the caller's contract: a writable `struct stat`
+                // at `out`, not null and aligned (checked), written whole.
+                unsafe { out.write(CStat::of(&st)) };
+                0
+            }
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// An open folder: picolibc's `DIR` is whatever its system makes it; a
+    /// C program only holds the pointer.
+    struct Dir {
+        /// The handle, or -1 when this one is free.
+        fd: c_int,
+        entry: Dirent,
+    }
+
+    /// Folders a C program may have open at once (a game lists one at a
+    /// time; the file table's handles are the real limit).
+    const DIRS: usize = 4;
+    static DIR_POOL: Global<[Dir; DIRS]> = Global::new(
+        [const {
+            Dir {
+                fd: -1,
+                entry: Dirent {
+                    ino: 0,
+                    kind: 0,
+                    name: [0; NAME_MAX + 1],
+                },
+            }
+        }; DIRS],
+    );
+
+    /// The pool's slot a `DIR *` points at, if it is one of ours and open.
+    fn dir_slot(dir: *mut c_void) -> Option<usize> {
+        DIR_POOL.with(|pool| {
+            pool.iter().position(|d| {
+                core::ptr::eq(core::ptr::from_ref(d).cast::<c_void>(), dir) && d.fd >= 0
+            })
+        })
+    }
+
+    /// `opendir(3)`: null with `errno` if the folder cannot be opened or
+    /// four are open already.
+    ///
+    /// # Safety
+    /// `path` is a NUL-terminated string.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn opendir(path: *const c_char) -> *mut c_void {
+        if path.is_null() {
+            fail(Errno::Invalid);
+            return core::ptr::null_mut();
+        }
+        let Some(k) = DIR_POOL.with(|pool| pool.iter().position(|d| d.fd < 0)) else {
+            fail(Errno::NoHandle);
+            return core::ptr::null_mut();
+        };
+        // SAFETY: the caller's contract: a NUL-terminated string at `path`.
+        let name = unsafe { CStr::from_ptr(path) }.to_bytes();
+        match with(|s| s.dir_open(name)) {
+            Ok(fd) => DIR_POOL.with(|pool| {
+                pool[k].fd = fd;
+                core::ptr::from_mut(&mut pool[k]).cast::<c_void>()
+            }),
+            Err(e) => {
+                fail(e);
+                core::ptr::null_mut()
+            }
+        }
+    }
+
+    /// `readdir(3)`: the next entry (good until the next call on this
+    /// folder), or null at its end (`errno` untouched) or on an error.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn readdir(dir: *mut c_void) -> *mut Dirent {
+        let Some(k) = dir_slot(dir) else {
+            fail(Errno::BadHandle);
+            return core::ptr::null_mut();
+        };
+        DIR_POOL.with(|pool| {
+            let d = &mut pool[k];
+            match with(|s| s.dir_next(d.fd, &mut d.entry.name[..NAME_MAX])) {
+                Ok(Some((n, folder))) => {
+                    d.entry.name[n.min(NAME_MAX)] = 0;
+                    d.entry.kind = if folder { 3 } else { 6 };
+                    core::ptr::from_mut(&mut d.entry)
+                }
+                Ok(None) => core::ptr::null_mut(),
+                Err(e) => {
+                    fail(e);
+                    core::ptr::null_mut()
+                }
+            }
+        })
+    }
+
+    /// `closedir(3)`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn closedir(dir: *mut c_void) -> c_int {
+        let Some(k) = dir_slot(dir) else {
+            return fail(Errno::BadHandle) as c_int;
+        };
+        let fd = DIR_POOL.with(|pool| core::mem::replace(&mut pool[k].fd, -1));
+        match with(|s| s.close(fd)) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `mkdir(2)`; the mode is not used (no permissions on the card).
+    ///
+    /// # Safety
+    /// `path` is a NUL-terminated string.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn mkdir(path: *const c_char, _mode: u32) -> c_int {
+        if path.is_null() {
+            return fail(Errno::Invalid) as c_int;
+        }
+        // SAFETY: the caller's contract: a NUL-terminated string at `path`.
+        let name = unsafe { CStr::from_ptr(path) }.to_bytes();
+        match with(|s| s.mkdir(name)) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rename(2)`.
+    ///
+    /// # Safety
+    /// `from` and `to` are NUL-terminated strings.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rename(from: *const c_char, to: *const c_char) -> c_int {
+        if from.is_null() || to.is_null() {
+            return fail(Errno::Invalid) as c_int;
+        }
+        // SAFETY: the caller's contract: NUL-terminated strings at both.
+        let (from, to) = unsafe {
+            (
+                CStr::from_ptr(from).to_bytes(),
+                CStr::from_ptr(to).to_bytes(),
+            )
+        };
+        match with(|s| s.rename(from, to)) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `dup(2)`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn dup(fd: c_int) -> c_int {
+        match with(|s| s.dup(fd)) {
+            Ok(new) => new,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `fsync(2)`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fsync(fd: c_int) -> c_int {
+        match with(|s| s.sync(fd)) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `getcwd(3)`: a C program's paths start at the card's root, "/".
+    ///
+    /// # Safety
+    /// `buf` points at `size` writable bytes.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn getcwd(buf: *mut c_char, size: usize) -> *mut c_char {
+        if buf.is_null() || size < 2 {
+            fail(Errno::Invalid);
+            return core::ptr::null_mut();
+        }
+        // SAFETY: the caller's contract: `size` writable bytes at `buf`,
+        // not null and at least two (checked).
+        unsafe {
+            buf.write(b'/' as c_char);
+            buf.add(1).write(0);
+        }
+        buf
+    }
+
+    /// `execve(2)`: a program cannot become another here (one image runs
+    /// at a time and the loader starts it): always refused.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn execve(
+        _path: *const c_char,
+        _argv: *const c_void,
+        _envp: *const c_void,
+    ) -> c_int {
+        fail(Errno::NoSys) as c_int
+    }
+
     /// `rp_input_open` (`ports/include/retropane.h`): 0, or -1 with
     /// `errno`.
     #[unsafe(no_mangle)]
@@ -689,6 +1022,41 @@ mod tests {
         let (s, u) = split_us(u64::MAX);
         assert_eq!(s as u64 * 1_000_000 + u as u64, u64::MAX);
         assert!((0..1_000_000).contains(&u));
+    }
+
+    #[test]
+    fn stat_and_dirent_are_the_c_library_s_structures() {
+        // picolibc 1.8.12's sys/stat.h on a 32-bit ARM (64-bit dev_t,
+        // ino_t, nlink_t, off_t, blkcnt_t and time_t; 32-bit long).
+        assert_eq!(core::mem::size_of::<CStat>(), 120);
+        assert_eq!(core::mem::offset_of!(CStat, mode), 16);
+        assert_eq!(core::mem::offset_of!(CStat, size), 48);
+        assert_eq!(core::mem::offset_of!(CStat, mtime), 88);
+        // sys/dirent.h: a 64-bit ino_t, d_type, then the name.
+        assert_eq!(core::mem::offset_of!(Dirent, kind), 8);
+        assert_eq!(core::mem::offset_of!(Dirent, name), 9);
+        assert_eq!(NAME_MAX, 255);
+        let f = CStat::of(&FileStat {
+            folder: false,
+            size: 1_025,
+            modified: 315_532_800,
+        });
+        // S_ISREG and S_ISDIR test these bits (S_IFMT 0170000).
+        assert_eq!(f.mode & 0o170_000, 0o100_000);
+        assert_eq!((f.size, f.blocks, f.mtime), (1_025, 3, (315_532_800, 0)));
+        let d = CStat::of(&FileStat {
+            folder: true,
+            size: 0,
+            modified: 0,
+        });
+        assert_eq!(d.mode & 0o170_000, 0o040_000);
+        // A size past what off_t holds is its largest, not a negative.
+        let huge = CStat::of(&FileStat {
+            folder: false,
+            size: u64::MAX,
+            modified: 0,
+        });
+        assert_eq!(huge.size, i64::MAX);
     }
 
     #[test]

@@ -9,15 +9,17 @@
 //! with no kernel between and no second buffer: the C library's own stream
 //! buffer is the only copy. A file opened for writing is the whole-file
 //! write of [`Files`] (a save is on the card complete or not at all), which
-//! is what `fopen(.., "wb")` asks for; append and read-write opens, which
-//! that cannot honour, are refused with `ENOSYS` instead of half-working.
+//! is what `fopen(.., "wb")` asks for; a file appended to or changed in
+//! place is taken into the same room first and goes back whole (one
+//! written file at a time, no bigger than the room: a game's log and its
+//! settings, not its maps).
 
 use rp_fat::Error as FatError;
 use rp_hal_api::BlockDevice;
-use rp_hal_cabi::{Break, Errno, Event, Sys, flags};
+use rp_hal_cabi::{Break, Errno, Event, FileStat, Sys, flags};
 
 use crate::clock::Micros;
-use crate::files::{Error, Fd, Files, Whence};
+use crate::files::{Error, Fd, Files, Whence, unix_seconds};
 use crate::input::{Events, Turn};
 use crate::sound::Voice;
 
@@ -144,9 +146,15 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
             0 if how & (flags::CREATE | flags::TRUNCATE | flags::APPEND) == 0 => {
                 self.files.open(path)
             }
-            // "w": write only, made new, whatever was there replaced.
-            1 if how & flags::APPEND == 0 && how & flags::TRUNCATE != 0 => self.files.create(path),
-            _ => return Err(Errno::NoSys),
+            // Reading only, with a flag that would change the file: no.
+            0 => return Err(Errno::Invalid),
+            // "w", "w+": made new, whatever was there replaced.
+            _ if how & flags::TRUNCATE != 0 && how & flags::APPEND == 0 => self.files.create(path),
+            // "a", "a+": every write after what is there. "r+": changed
+            // from its start. Made if it may be.
+            _ => self
+                .files
+                .reopen(path, how & flags::APPEND != 0, how & flags::CREATE != 0),
         }
         .map_err(errno)?;
         Ok(i32::from(fd) + FIRST)
@@ -180,6 +188,49 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
 
     fn grow(&mut self, by: isize) -> Option<usize> {
         self.heap.grow(by)
+    }
+
+    fn stat(&mut self, path: &[u8]) -> Result<FileStat, Errno> {
+        let s = self.files.stat(path).map_err(errno)?;
+        Ok(FileStat {
+            folder: s.folder,
+            size: s.size,
+            modified: s.modified.as_ref().map_or(0, unix_seconds),
+        })
+    }
+
+    fn dir_open(&mut self, path: &[u8]) -> Result<i32, Errno> {
+        let fd = self.files.open_dir(path).map_err(errno)?;
+        Ok(i32::from(fd) + FIRST)
+    }
+
+    fn dir_next(&mut self, fd: i32, name: &mut [u8]) -> Result<Option<(usize, bool)>, Errno> {
+        let e = self.files.next(file(fd)?, name).map_err(errno)?;
+        Ok(e.map(|e| (e.name_len, e.folder)))
+    }
+
+    fn mkdir(&mut self, path: &[u8]) -> Result<(), Errno> {
+        self.files.mkdir(path).map_err(errno)
+    }
+
+    fn rename(&mut self, from: &[u8], to: &[u8]) -> Result<(), Errno> {
+        self.files.rename(from, to).map_err(errno)
+    }
+
+    fn dup(&mut self, fd: i32) -> Result<i32, Errno> {
+        let new = self.files.dup(file(fd)?).map_err(errno)?;
+        Ok(i32::from(new) + FIRST)
+    }
+
+    fn sync(&mut self, fd: i32) -> Result<(), Errno> {
+        // A file read has nothing to put on the card; a file written goes
+        // there whole when it is closed, so "it is there now" would be a
+        // lie: said, not pretended.
+        match self.files.size(file(fd)?) {
+            Ok(_) if self.files.writing(file(fd)?) => Err(Errno::Invalid),
+            Ok(_) => Ok(()),
+            Err(e) => Err(errno(e)),
+        }
     }
 
     fn now_us(&mut self) -> u64 {
@@ -350,10 +401,33 @@ mod tests {
             // More than the room for a written file: nothing taken.
             assert_eq!(s.write(w, b"0123456789"), Err(Errno::NoSpace), "{kind}");
             assert_eq!(s.close(w), Ok(()));
-            // Append and read-write: not half-working, refused.
-            for how in [A, R_PLUS, W_PLUS, R | flags::TRUNCATE] {
-                assert_eq!(s.open(b"a.txt", how), Err(Errno::NoSys), "{how:#x}");
-            }
+            // Reading only with a flag that would change the file: refused.
+            assert_eq!(s.open(b"a.txt", R | flags::TRUNCATE), Err(Errno::Invalid));
+            // "a": after what is there. "r+": from its start, the rest
+            // kept. "w+": new, and what is written reads back.
+            let a = s.open(b"a.txt", A).unwrap();
+            assert_eq!(s.write(a, b"AB"), Ok(2));
+            assert_eq!(s.close(a), Ok(()));
+            let rw = s.open(b"a.txt", R_PLUS).unwrap();
+            assert_eq!(s.write(rw, b"xy"), Ok(2));
+            // Not on the card until it is closed: fsync says so.
+            assert_eq!(s.sync(rw), Err(Errno::Invalid));
+            assert_eq!(s.close(rw), Ok(()));
+            let r = s.open(b"a.txt", R).unwrap();
+            let mut got = [0u8; 16];
+            assert_eq!(s.read(r, &mut got), Ok(12));
+            assert_eq!(&got[..12], b"xy23456789AB", "{kind}");
+            assert_eq!(s.sync(r), Ok(()), "nothing to put on the card");
+            assert_eq!(s.sync(99), Err(Errno::BadHandle));
+            assert_eq!(s.close(r), Ok(()));
+            assert_eq!(s.open(b"none.txt", R_PLUS), Err(Errno::NoEntry));
+            // The room is 16 bytes: a file that does not fit is not taken
+            // in to be appended to.
+            let w = s.open(b"b.txt", W_PLUS).unwrap();
+            assert_eq!(s.write(w, b"0123456789abcdef"), Ok(16));
+            assert_eq!(s.seek(w, 0, 0), Ok(0));
+            assert_eq!(s.read(w, &mut got), Ok(16));
+            assert_eq!(s.close(w), Ok(()));
             // Two handles, then none; one closed, one again.
             let a = s.open(b"a.txt", R).unwrap();
             let b = s.open(b"a.txt", R).unwrap();
@@ -452,6 +526,64 @@ mod tests {
                 Ok(Some(Event::key(event::KEY_RIGHT, false, 30_000)))
             );
             assert_eq!(s.input_poll(), Ok(None));
+        });
+    }
+
+    #[test]
+    fn folders_are_listed_made_and_named_and_a_path_says_what_it_is() {
+        each(|vol, kind| {
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0u8; 64][..];
+            let mut said = Said(Vec::new());
+            let files: Files<'_, Disk, 3> = Files::new(vol, scratch, room);
+            let mut s = System::new(files, &mut said, Break::new(0, 0), || 0);
+            assert_eq!(s.mkdir(b"valve"), Ok(()));
+            assert_eq!(s.mkdir(b"valve"), Ok(()), "twice is no error");
+            assert_eq!(s.mkdir(b"valve/save"), Ok(()));
+            assert_eq!(s.mkdir(b"none/save"), Err(Errno::NoEntry), "{kind}");
+            let w = s.open(b"valve/config.cfg", W).unwrap();
+            assert_eq!(s.write(w, b"cl_showfps 1\n"), Ok(13));
+            assert_eq!(s.close(w), Ok(()));
+            // What a path is.
+            let st = s.stat(b"valve/config.cfg").unwrap();
+            assert_eq!((st.folder, st.size), (false, 13));
+            assert!(s.stat(b"valve/save").unwrap().folder);
+            assert!(s.stat(b"/").unwrap().folder);
+            assert_eq!(s.stat(b"valve/none"), Err(Errno::NoEntry));
+            // The folder listed: its two entries, then its end.
+            let d = s.dir_open(b"valve").unwrap();
+            let mut names = Vec::new();
+            let mut name = [0u8; 255];
+            while let Some((n, folder)) = s.dir_next(d, &mut name).unwrap() {
+                names.push((String::from_utf8_lossy(&name[..n]).to_lowercase(), folder));
+            }
+            names.sort();
+            assert_eq!(
+                names,
+                [
+                    ("config.cfg".to_string(), false),
+                    ("save".to_string(), true)
+                ],
+                "{kind}"
+            );
+            // A second handle on a file; a folder's handle is not a file's.
+            let r = s.open(b"valve/config.cfg", R).unwrap();
+            let r2 = s.dup(r).unwrap();
+            assert_ne!(r, r2);
+            assert_eq!(s.dup(r), Err(Errno::NoHandle), "three handles");
+            assert_eq!(s.read(d, &mut name), Err(Errno::BadHandle));
+            assert_eq!(s.dir_next(r, &mut name), Err(Errno::BadHandle));
+            for fd in [d, r, r2] {
+                assert_eq!(s.close(fd), Ok(()));
+            }
+            assert_eq!(s.dir_open(b"valve/config.cfg"), Err(Errno::Invalid));
+            assert_eq!(s.dir_open(b"none"), Err(Errno::NoEntry));
+            assert_eq!(s.dup(1), Err(Errno::BadHandle), "the console");
+            // Renamed; the old name is gone.
+            assert_eq!(s.rename(b"valve/config.cfg", b"valve/save/old.cfg"), Ok(()));
+            assert_eq!(s.stat(b"valve/config.cfg"), Err(Errno::NoEntry));
+            assert_eq!(s.stat(b"valve/save/old.cfg").map(|st| st.size), Ok(13));
+            assert_eq!(s.rename(b"valve/none", b"valve/x"), Err(Errno::NoEntry));
         });
     }
 

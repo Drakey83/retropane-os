@@ -7,14 +7,19 @@
  * answer. `cargo xtask emu-chello` runs it and looks
  * for the last line.
  */
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <retropane.h>
 
@@ -70,6 +75,47 @@ static int files(void)
         fclose(f);
     }
     ok &= check("remove", remove(path) == 0 && fopen(path, "rb") == NULL);
+
+    /* What a game engine's own file layer asks beyond stdio: folders made
+     * and listed, a log appended to, a file renamed into a folder, what a
+     * path is, two handles on one file. */
+    static const char dir[] = "rp-chello/dir", log[] = "rp-chello/log.txt", moved[] = "rp-chello/dir/moved.txt";
+    struct stat st;
+    ok &= check("mkdir, and again", mkdir(dir, 0777) == 0 && mkdir(dir, 0777) == 0);
+    f = fopen(log, "w");
+    if (f) {
+        fputs("one\n", f);
+        fclose(f);
+    }
+    f = fopen(log, "a");
+    ok &= check("fopen to append", f != NULL);
+    if (f) {
+        fputs("two\n", f);
+        ok &= check("fclose after appending", fclose(f) == 0);
+    }
+    errno = 0;
+    ok &= check("stat of a file, a folder and nothing",
+                stat(log, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 8 && stat(dir, &st) == 0 &&
+                    S_ISDIR(st.st_mode) && stat("rp-chello/none", &st) == -1 && errno == ENOENT);
+    ok &= check("rename into a folder", rename(log, moved) == 0 && stat(log, &st) == -1 && stat(moved, &st) == 0);
+    DIR *d = opendir("rp-chello");
+    int entries = 0, found = 0;
+    if (d) {
+        for (struct dirent *e; (e = readdir(d)) != NULL; entries++)
+            found |= strcasecmp(e->d_name, "dir") == 0 && e->d_type == DT_DIR;
+    }
+    ok &= check("opendir, readdir, closedir", d != NULL && entries == 1 && found && closedir(d) == 0);
+    int a = open(moved, O_RDONLY), b = dup(a);
+    char one[4] = "", two[4] = "";
+    ok &= check("dup: two places in one file",
+                a >= 0 && b >= 0 && a != b && lseek(b, 4, SEEK_SET) == 4 && read(a, one, 3) == 3 &&
+                    read(b, two, 3) == 3 && strcmp(one, "one") == 0 && strcmp(two, "two") == 0);
+    ok &= check("fsync of a file read", fsync(a) == 0);
+    close(a);
+    close(b);
+    char cwd[8] = "";
+    ok &= check("getcwd", getcwd(cwd, sizeof cwd) == cwd && strcmp(cwd, "/") == 0);
+    ok &= check("tidied", remove(moved) == 0 && remove(dir) == 0);
 
     /* A file made on the PC (the emulator's card has it; a card without it
      * is no failure). */

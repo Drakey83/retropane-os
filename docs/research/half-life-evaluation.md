@@ -86,14 +86,13 @@ In the order they block:
    refuses every load, plainly. The choice the ADR has to make is how the
    OS's loader gives the engine these five libraries; nothing else below
    can be tried on a device before it.
-2. **Ten calls the port layer's C boundary does not answer yet**
-   (`hal/cabi`): `stat`, `opendir`, `readdir`, `closedir`, `mkdir`,
-   `rename`, `fsync`, `dup`, `getcwd`, `execve`. The engine's file system
-   also opens files for reading and writing at once and for appending,
-   which the boundary refuses today (R250's neighbour: the port layer
-   writes a file whole on close). All are over files the port layer
-   already reads; `execve` (the engine restarting itself to change game)
-   has no meaning here and gets a refusal.
+2. ~~Ten calls the port layer's C boundary does not answer~~ **Built
+   the same day:** `stat`, `opendir`, `readdir`, `closedir`, `mkdir`,
+   `rename`, `fsync`, `dup`, `getcwd` in `hal/cabi` over `rp_port::files`,
+   with files opened to append and to change in place; `execve` (the
+   engine restarting itself to change game) is refused. `cargo xtask
+   xash-eval` now reports 0 calls unanswered. (The table above is the
+   first run's, kept as measured.)
 3. **FreeVGUI** (the SDK's submodule, FWGS's, not fetched): the client
    library's in-game panels (the scoreboard, the team menu) are written
    against it. 264 names.

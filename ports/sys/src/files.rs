@@ -1,7 +1,7 @@
 //! Files as a C program uses them: open by path, read, seek, write, list a
 //! folder, over the card's volume.
 
-use rp_fat::node::{self, Node, ROOT};
+use rp_fat::node::{self, Node, ROOT, Stamp};
 use rp_fat::{AnyVolume, Error as FatError};
 use rp_hal_api::BlockDevice;
 
@@ -56,6 +56,40 @@ pub struct Entry {
     pub folder: bool,
     /// Its size in bytes.
     pub size: u64,
+}
+
+/// What a path names, as C's `stat` asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stat {
+    /// A folder.
+    pub folder: bool,
+    /// Its size in bytes (0 for a folder).
+    pub size: u64,
+    /// When it was last changed, if the card says.
+    pub modified: Option<Stamp>,
+}
+
+/// A card's date and time as seconds since 1970 (as written: the card's
+/// own clock, no time zone applied), for C's `st_mtime`. Days by the
+/// civil-calendar count; a date before 1970 or a month or day that is none
+/// gives 0.
+#[must_use]
+pub fn unix_seconds(s: &Stamp) -> i64 {
+    if s.year < 1970 || !(1..=12).contains(&s.month) || !(1..=31).contains(&s.day) {
+        return 0;
+    }
+    // Years begin in March, so the leap day is the year's last.
+    let (y, m) = if s.month <= 2 {
+        (i64::from(s.year) - 1, i64::from(s.month) + 9)
+    } else {
+        (i64::from(s.year), i64::from(s.month) - 3)
+    };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * m + 2) / 5 + i64::from(s.day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    days * 86_400 + i64::from(s.hour) * 3_600 + i64::from(s.minute) * 60 + i64::from(s.second)
 }
 
 /// A name's most UTF-16 units kept for the file being written.
@@ -236,6 +270,145 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
         Ok(k as Fd)
     }
 
+    /// Opens the file at `path` to be changed (C's `"r+"` and `"a"`): what
+    /// is on the card is read into the table's room, the changes are made
+    /// there, and the whole file goes back onto the card when it is closed
+    /// (so a power cut leaves the old file or the new one, as with
+    /// [`Self::create`]). `at_end`: every write goes after what is there.
+    /// `make`: a file that is not there starts empty.
+    ///
+    /// # Errors
+    /// No such file (and not `make`), a folder, a file already being
+    /// written, a file bigger than the room, no handle left, or the card.
+    pub fn reopen(&mut self, path: &[u8], at_end: bool, make: bool) -> Result<Fd, Error> {
+        let fd = self.create(path)?;
+        let (dir, last) = match self.parent(path) {
+            Ok(p) => p,
+            Err(e) => {
+                self.slots[usize::from(fd)] = Slot::Free;
+                return Err(e);
+            }
+        };
+        let mut node = Node::default();
+        let had = match self.child(dir, last, &mut node) {
+            Ok(()) if node.folder => Err(Error::BadPath),
+            Ok(()) => usize::try_from(node.size)
+                .ok()
+                .filter(|n| *n <= self.room.len())
+                .ok_or(Error::NoRoom),
+            Err(Error::NotFound) if make => Ok(0),
+            Err(e) => Err(e),
+        };
+        let size = match had {
+            Ok(n) => n,
+            Err(e) => {
+                self.slots[usize::from(fd)] = Slot::Free;
+                return Err(e);
+            }
+        };
+        let mut got = 0;
+        while got < size {
+            match self
+                .vol
+                .node_read(&node, got as u64, &mut self.room[got..size], self.scratch)
+            {
+                Ok(n) if n > 0 => got += n,
+                Ok(_) => break,
+                Err(e) => {
+                    self.slots[usize::from(fd)] = Slot::Free;
+                    return Err(e.into());
+                }
+            }
+        }
+        if let Slot::Out { at, len, .. } = &mut self.slots[usize::from(fd)] {
+            *len = got;
+            *at = if at_end { got } else { 0 };
+        }
+        Ok(fd)
+    }
+
+    /// A second handle on what `fd` has open, with a place of its own
+    /// starting where `fd` is (C's `dup`, but for the shared place: the
+    /// engine that needs this seeks each handle before it reads).
+    ///
+    /// # Errors
+    /// Not a handle, the file being written (it has one), or no handle
+    /// left.
+    pub fn dup(&mut self, fd: Fd) -> Result<Fd, Error> {
+        let k = self.free_slot()?;
+        let copy = match self.slots.get(usize::from(fd)) {
+            Some(Slot::File { node, at }) => Slot::File {
+                node: *node,
+                at: *at,
+            },
+            Some(Slot::Dir { dir, cursor }) => Slot::Dir {
+                dir: *dir,
+                cursor: *cursor,
+            },
+            _ => return Err(Error::BadHandle),
+        };
+        self.slots[k] = copy;
+        Ok(k as Fd)
+    }
+
+    /// What `path` names (`""` or `"/"`: the root, a folder).
+    ///
+    /// # Errors
+    /// Nothing of that name, or the card.
+    pub fn stat(&mut self, path: &[u8]) -> Result<Stat, Error> {
+        if split(path).0.is_empty() {
+            return Ok(Stat {
+                folder: true,
+                size: 0,
+                modified: None,
+            });
+        }
+        let mut node = Node::default();
+        self.find(path, &mut node)?;
+        Ok(Stat {
+            folder: node.folder,
+            size: if node.folder { 0 } else { node.size },
+            modified: node.modified,
+        })
+    }
+
+    /// Gives the file or folder at `from` the path `to` (its folder must
+    /// be there). A file already at `to` makes way, as C's `rename` says.
+    ///
+    /// # Errors
+    /// Nothing at `from`, no such folder for `to`, a bad name, a folder
+    /// already at `to`, or the card.
+    pub fn rename(&mut self, from: &[u8], to: &[u8]) -> Result<(), Error> {
+        let (fdir, fname) = self.parent(from)?;
+        let mut node = Node::default();
+        self.child(fdir, fname, &mut node)?;
+        let (tdir, tname) = self.parent(to)?;
+        let mut name = [0u16; NAME];
+        let n = units(tname, &mut name).ok_or(Error::BadPath)?;
+        if !node::valid_name(&name[..n]) {
+            return Err(Error::BadPath);
+        }
+        let mut there = Node::default();
+        match self.child(tdir, tname, &mut there) {
+            // Itself under another case: nothing to make way.
+            Ok(()) if there.loc == node.loc => {}
+            Ok(()) if there.folder => return Err(Error::BadPath),
+            Ok(()) => self.vol.node_delete(there.loc)?,
+            Err(Error::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        let mut loc = node.loc;
+        let mut dir = fdir;
+        if tdir != fdir {
+            loc = self.vol.node_move(fdir, loc, tdir, self.scratch)?;
+            dir = tdir;
+        }
+        if !(tdir != fdir && node.name() == &name[..n]) {
+            self.vol.node_rename(dir, loc, &name[..n], self.scratch)?;
+        }
+        Ok(())
+    }
+
     /// Opens the folder at `path` for listing (`""` or `"/"`: the root).
     ///
     /// # Errors
@@ -361,6 +534,12 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
             _ => {}
         }
         Ok(to)
+    }
+
+    /// Whether `fd` is the file being written.
+    #[must_use]
+    pub fn writing(&self, fd: Fd) -> bool {
+        matches!(self.slots.get(usize::from(fd)), Some(Slot::Out { .. }))
     }
 
     /// The file's size (a written file's: what was written so far).
@@ -636,6 +815,208 @@ pub(crate) mod tests {
                 "a folder is not opened as a file"
             );
         });
+    }
+
+    #[test]
+    fn a_log_is_appended_to_and_a_file_changed_in_place() {
+        each(|vol, kind| {
+            let scratch = &mut vec![0u8; 4096][..];
+            let room = &mut vec![0u8; 1_000][..];
+            let mut f: Files<'_, Disk, 4> = Files::new(vol, scratch, room);
+            // Appending to nothing: refused unless it may be made.
+            assert_eq!(
+                f.reopen(b"log.txt", true, false),
+                Err(Error::NotFound),
+                "{kind}"
+            );
+            let w = f.reopen(b"log.txt", true, true).unwrap();
+            f.write(w, b"first\n").unwrap();
+            f.close(w).unwrap();
+            // Appended: what was there stays, the new goes after it.
+            let w = f.reopen(b"LOG.TXT", true, false).unwrap();
+            assert_eq!(f.size(w), Ok(6));
+            f.write(w, b"second\n").unwrap();
+            // One written file at a time, whichever way it was opened.
+            assert_eq!(f.reopen(b"other.txt", true, true), Err(Error::NoRoom));
+            f.close(w).unwrap();
+            // Changed in place from its start ("r+"): the rest stays.
+            let w = f.reopen(b"log.txt", false, false).unwrap();
+            f.write(w, b"FIRST").unwrap();
+            f.close(w).unwrap();
+            let r = f.open(b"log.txt").unwrap();
+            let mut got = [0u8; 32];
+            let n = f.read(r, &mut got).unwrap();
+            assert_eq!(&got[..n], b"FIRST\nsecond\n", "{kind}");
+            f.close(r).unwrap();
+            // A file bigger than the room cannot be taken in: said, and
+            // the handle is free again; a folder is no file.
+            let w = f.create(b"big.bin").unwrap();
+            f.write(w, &[7u8; 1_000]).unwrap();
+            f.close(w).unwrap();
+            let small = &mut vec![0u8; 999][..];
+            let scratch2 = &mut vec![0u8; 4096][..];
+            let mut g: Files<'_, Disk, 1> = Files::new(f.into_volume(), scratch2, small);
+            assert_eq!(
+                g.reopen(b"big.bin", true, false),
+                Err(Error::NoRoom),
+                "{kind}"
+            );
+            g.mkdir(b"dir").unwrap();
+            assert_eq!(g.reopen(b"dir", false, false), Err(Error::BadPath));
+            assert_eq!(g.reopen(b"nowhere/x", true, true), Err(Error::NotFound));
+            let r = g.open(b"big.bin").unwrap();
+            g.close(r).unwrap();
+            let mut vol = g.into_volume();
+            let health = vol
+                .check(&mut vec![0u8; 16_384], &mut vec![0u8; 8192])
+                .unwrap();
+            assert!(health.clean(), "{kind}: {health:?}");
+        });
+    }
+
+    #[test]
+    fn a_second_handle_has_its_own_place_and_a_path_says_what_it_names() {
+        each(|vol, kind| {
+            let scratch = &mut vec![0u8; 4096][..];
+            let room = &mut vec![0u8; 5_000][..];
+            let mut f: Files<'_, Disk, 3> = Files::new(vol, scratch, room);
+            f.mkdir(b"valve").unwrap();
+            let data = pattern(3_000, 5);
+            let w = f.create(b"valve/pak0.pak").unwrap();
+            f.write(w, &data).unwrap();
+            // The file being written has one handle only.
+            assert_eq!(f.dup(w), Err(Error::BadHandle));
+            f.close(w).unwrap();
+            // A pack file read through two handles at two places.
+            let a = f.open(b"valve/pak0.pak").unwrap();
+            f.seek(a, 1_000, Whence::Start).unwrap();
+            let b = f.dup(a).unwrap();
+            assert_ne!(a, b);
+            f.seek(b, 2_000, Whence::Start).unwrap();
+            let (mut x, mut y) = ([0u8; 100], [0u8; 100]);
+            assert_eq!(f.read(a, &mut x), Ok(100));
+            assert_eq!(f.read(b, &mut y), Ok(100));
+            assert_eq!(
+                (&x[..], &y[..]),
+                (&data[1_000..1_100], &data[2_000..2_100]),
+                "{kind}"
+            );
+            // No handle left for a third; not a handle at all.
+            let c = f.open_dir(b"valve").unwrap();
+            assert_eq!(f.dup(a), Err(Error::NoHandle));
+            f.close(c).unwrap();
+            assert_eq!(f.dup(c), Err(Error::BadHandle));
+            assert_eq!(f.dup(99), Err(Error::BadHandle));
+            f.close(a).unwrap();
+            // Closing one leaves the other reading.
+            assert_eq!(f.read(b, &mut y), Ok(100));
+            assert_eq!(&y[..], &data[2_100..2_200]);
+            f.close(b).unwrap();
+            // What a path names.
+            let s = f.stat(b"VALVE/PAK0.PAK").unwrap();
+            assert_eq!((s.folder, s.size), (false, 3_000), "{kind}");
+            let s = f.stat(b"valve").unwrap();
+            assert_eq!((s.folder, s.size), (true, 0));
+            for root in [&b""[..], b"/", b"\\"] {
+                assert!(f.stat(root).unwrap().folder);
+            }
+            assert_eq!(f.stat(b"valve/none.bsp"), Err(Error::NotFound));
+            assert_eq!(f.stat(b"valve/pak0.pak/x"), Err(Error::BadPath));
+        });
+    }
+
+    #[test]
+    fn a_file_is_renamed_moved_and_takes_another_s_place() {
+        each(|vol, kind| {
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0u8; 100][..];
+            let mut f: Files<'_, Disk, 2> = Files::new(vol, scratch, room);
+            let put = |f: &mut Files<'_, Disk, 2>, path: &[u8], text: &[u8]| {
+                let w = f.create(path).unwrap();
+                f.write(w, text).unwrap();
+                f.close(w).unwrap();
+            };
+            let get = |f: &mut Files<'_, Disk, 2>, path: &[u8]| -> Vec<u8> {
+                let r = f.open(path).unwrap();
+                let mut b = [0u8; 100];
+                let n = f.read(r, &mut b).unwrap();
+                f.close(r).unwrap();
+                b[..n].to_vec()
+            };
+            f.mkdir(b"save").unwrap();
+            f.mkdir(b"old").unwrap();
+            put(&mut f, b"save/quick.tmp", b"new save");
+            put(&mut f, b"save/quick.sav", b"old save");
+            // A new name in the same folder; the old name is gone.
+            f.rename(b"save/quick.tmp", b"save/second.sav").unwrap();
+            assert_eq!(get(&mut f, b"save/second.sav"), b"new save", "{kind}");
+            assert_eq!(f.stat(b"save/quick.tmp"), Err(Error::NotFound));
+            // Onto a file that is there: it makes way (a save written
+            // beside the old one, then given its name).
+            f.rename(b"save/second.sav", b"save/quick.sav").unwrap();
+            assert_eq!(get(&mut f, b"save/quick.sav"), b"new save", "{kind}");
+            assert_eq!(f.stat(b"save/second.sav"), Err(Error::NotFound));
+            // Into another folder, under another name and under its own.
+            f.rename(b"save/quick.sav", b"old/kept.sav").unwrap();
+            assert_eq!(get(&mut f, b"old/kept.sav"), b"new save", "{kind}");
+            f.rename(b"old/kept.sav", b"save/kept.sav").unwrap();
+            assert_eq!(get(&mut f, b"save/kept.sav"), b"new save", "{kind}");
+            // Its own name in another case is no clash with itself.
+            f.rename(b"save/kept.sav", b"save/KEPT.SAV").unwrap();
+            assert_eq!(get(&mut f, b"save/kept.sav"), b"new save");
+            // A folder is renamed too; a file does not take a folder's
+            // place; nothing, nowhere and no name are refused.
+            f.rename(b"old", b"older").unwrap();
+            assert!(f.stat(b"older").unwrap().folder);
+            assert_eq!(
+                f.rename(b"save/kept.sav", b"older"),
+                Err(Error::BadPath),
+                "{kind}"
+            );
+            assert_eq!(f.rename(b"save/none", b"save/x"), Err(Error::NotFound));
+            assert_eq!(
+                f.rename(b"save/kept.sav", b"nowhere/x"),
+                Err(Error::NotFound)
+            );
+            assert_eq!(f.rename(b"save/kept.sav", b"save/"), Err(Error::BadPath));
+            assert_eq!(get(&mut f, b"save/kept.sav"), b"new save");
+            let mut vol = f.into_volume();
+            let health = vol
+                .check(&mut vec![0u8; 16_384], &mut vec![0u8; 8192])
+                .unwrap();
+            assert!(health.clean(), "{kind}: {health:?}");
+        });
+    }
+
+    #[test]
+    fn a_card_s_date_is_seconds_since_1970() {
+        let at = |year, month, day, hour, minute, second| {
+            unix_seconds(&Stamp {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                centis: None,
+                zone: None,
+            })
+        };
+        assert_eq!(at(1970, 1, 1, 0, 0, 0), 0);
+        assert_eq!(at(1980, 1, 1, 0, 0, 0), 315_532_800, "FAT's first day");
+        assert_eq!(at(2000, 2, 29, 12, 0, 0), 951_825_600, "a leap day");
+        assert_eq!(at(2000, 3, 1, 0, 0, 0), 951_868_800);
+        assert_eq!(at(2026, 11, 15, 23, 59, 59), 1_794_787_199);
+        assert_eq!(
+            at(2100, 3, 1, 0, 0, 0),
+            4_107_542_400,
+            "2100 is no leap year"
+        );
+        assert_eq!(at(2107, 12, 31, 23, 59, 58), 4_354_819_198, "FAT's last");
+        // No date at all (an entry never stamped), or one before 1970.
+        assert_eq!(at(0, 0, 0, 0, 0, 0), 0);
+        assert_eq!(at(1969, 12, 31, 23, 59, 59), 0);
+        assert_eq!(at(2020, 13, 1, 0, 0, 0), 0);
     }
 
     #[test]
