@@ -161,6 +161,11 @@ rp_fiq_entry:
     mrs     r9, spsr
     ldr     r8, =rp_fault_spsr
     str     r9, [r8]
+    @ Where it was stuck: the interrupted instruction (lr_fiq - 4), the
+    @ report's address (2026-11-14: a frozen run's report said 0).
+    sub     r9, lr, #4
+    ldr     r8, =rp_fault_pc
+    str     r9, [r8]
 "#,
     fp_asm!(fiq),
     r#"
@@ -1010,13 +1015,15 @@ fn route_run_limit() {
 extern "C" fn rp_fiq() -> ! {
     let expired = ost_block().read32(crate::soc::ost_reg::OSSR) & 1 << 4 != 0;
     disarm_run_limit();
+    // SAFETY: a plain word the FIQ entry wrote just before this call.
+    let pc = unsafe { core::ptr::addr_of!(FAULT_PC).read_volatile() };
     report_fault(
         if expired {
             Fault::RunLimit
         } else {
             Fault::Undefined
         },
-        0,
+        pc,
     )
 }
 
@@ -1397,6 +1404,12 @@ impl<T> Slot<T> {
 #[unsafe(export_name = "rp_fault_spsr")]
 static mut FAULT_SPSR: u32 = 0;
 
+/// The interrupted instruction when the run limit stopped a program, kept
+/// by the FIQ entry or the IRQ path: where it was stuck, the report's
+/// address (until 2026-11-14 a run-limit report said `at 0x00000000`).
+#[unsafe(export_name = "rp_fault_pc")]
+static mut FAULT_PC: u32 = 0;
+
 /// The CPSR of the code that hit the last fault (mode bits, and bit 5 for
 /// Thumb state): kept by every fault's entry (the aborts since C44, the run
 /// limit's since C61).
@@ -1571,7 +1584,9 @@ fn rp_irq(frame: *const u32) {
             #[cfg(rp_frame_pointers)]
             core::ptr::addr_of_mut!(FAULT_FP).write_volatile(frame.add(11).read());
         }
-        report_fault(Fault::RunLimit, 0);
+        // Where it was stuck: the frame's pc (word 16).
+        // SAFETY: as above.
+        report_fault(Fault::RunLimit, unsafe { frame.add(16).read() });
     }
     if pending & (1 << crate::soc::irq::OST1) != 0 {
         // SAFETY: the IRQ handler is the only writer of TICKS (main code only

@@ -410,6 +410,25 @@ pub enum Screen {
     Program,
 }
 
+impl Screen {
+    /// Its name, for the run log (the input trail).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Today => "Today",
+            Self::Weather => "Weather",
+            Self::WeatherSettings => "WeatherSettings",
+            Self::WeatherPlaces => "WeatherPlaces",
+            Self::AddPlace => "AddPlace",
+            Self::WeatherFrom => "WeatherFrom",
+            Self::KeyEntry => "KeyEntry",
+            Self::Station => "Station",
+            Self::Alert => "Alert",
+            Self::Program => "Program",
+        }
+    }
+}
+
 /// The keys the shell reacts to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
@@ -425,6 +444,21 @@ pub enum Key {
     Enter,
     /// The Home button: back to the Today screen.
     Home,
+}
+
+impl Key {
+    /// Its name, for the run log (the input trail).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Up => "Up",
+            Self::Down => "Down",
+            Self::Left => "Left",
+            Self::Right => "Right",
+            Self::Enter => "Enter",
+            Self::Home => "Home",
+        }
+    }
 }
 
 /// One input event.

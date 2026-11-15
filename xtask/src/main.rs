@@ -1056,6 +1056,15 @@ fn run_step(step: &str) -> Result {
                     .ok_or_else(|| format!("RETROPANE_EMU_FROM: no check named {name}"))?,
                 None => 0,
             };
+            // `RETROPANE_EMU_ONLY=<check>` runs that one check alone (a
+            // targeted check for what changed, not the hour-long suite).
+            if let Ok(name) = std::env::var("RETROPANE_EMU_ONLY") {
+                let (_, check) = checks
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .ok_or_else(|| format!("RETROPANE_EMU_ONLY: no check named {name}"))?;
+                return check(&workspace_root());
+            }
             for (_, check) in &checks[start..] {
                 check(&workspace_root())?;
             }

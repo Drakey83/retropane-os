@@ -1677,6 +1677,16 @@ pub fn boot_loader_run_limit(root: &Path) -> Result<(), String> {
             "run limit: the fault line's SPSR 0x{spsr:08x} isn't SVC mode, where rp-hang spins"
         ));
     }
+    // Where it was stuck (2026-11-14: every run-limit report said
+    // `at 0x00000000`): the interrupted instruction, in the image.
+    let at = log
+        .split("FAULT RunLimit at 0x")
+        .nth(1)
+        .and_then(|v| u32::from_str_radix(v.get(..8)?, 16).ok())
+        .ok_or_else(|| format!("run limit: no address in the fault line:{log}"))?;
+    if at == 0 {
+        return Err(format!("run limit: the fault line names no address:{log}"));
+    }
     // rp-hang is built may-omit (ADR-0001): no walker, and its report says so.
     if !log.contains(rp_hal_pxa27x::backtrace::NO_CHAIN) || log.contains("CHAIN ") {
         return Err(format!(

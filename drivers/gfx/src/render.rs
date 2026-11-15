@@ -84,14 +84,21 @@ impl<'a> CpuRenderer<'a> {
     /// as it is, then it is blended over the floor in place for the rows
     /// inside (the device's stack, emu-apps' measurement).
     #[inline(never)]
-    fn set_columns(&mut self, to: Rect, col: impl Fn(u32) -> Argb) {
+    /// `(left, right, x0, span)`: column `x` takes the gradient's
+    /// `x - x0` of `span` (`left == right`: one colour). One copy of it,
+    /// not one per caller (rp-today's size budget).
+    fn set_columns(&mut self, to: Rect, (left, right, x0, span): (Argb, Argb, u32, u32)) {
         if to.is_empty() {
             return;
         }
         let mut cols = [0; MAX_W];
         let w = (to.w as usize).min(MAX_W);
         for (k, c) in cols.iter_mut().take(w).enumerate() {
-            *c = col(to.x + k as u32);
+            *c = if left == right {
+                left
+            } else {
+                gradient_at(left, right, to.x + k as u32 - x0, span)
+            };
         }
         let Some((fr, d, a, b)) = self.floor else {
             self.layer.fill_columns(to, &cols[..w]);
@@ -156,7 +163,7 @@ impl<'a> CpuRenderer<'a> {
                 rp_draw::panel_cmds(r, art, |p| self.command(frame, &p, clip));
             }
             Cmd::Fill { r, color } if self.floor.is_some() => {
-                self.set_columns(rect(r).intersect(&clip), |_| color);
+                self.set_columns(rect(r).intersect(&clip), (color, color, 0, 1));
             }
             Cmd::Fill { r, color } => self.layer.fill(rect(r).intersect(&clip), color),
             Cmd::Clip { .. } => {}
@@ -167,7 +174,7 @@ impl<'a> CpuRenderer<'a> {
                     return;
                 }
                 if self.floor.is_some() {
-                    self.set_columns(to, |x| gradient_at(left, right, x - full.x, full.w));
+                    self.set_columns(to, (left, right, full.x, full.w));
                     return;
                 }
                 let mut cols = [0; MAX_W];
@@ -262,7 +269,7 @@ impl Renderer for CpuRenderer<'_> {
                 continue;
             }
             if self.floor.is_some() {
-                self.set_columns(clip, |_| CLEAR);
+                self.set_columns(clip, (CLEAR, CLEAR, 0, 1));
             } else {
                 self.layer.fill(clip, CLEAR);
             }

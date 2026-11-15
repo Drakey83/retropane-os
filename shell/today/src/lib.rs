@@ -35,6 +35,7 @@ pub mod organiser;
 pub mod program;
 pub mod rain;
 pub mod replay;
+pub mod trail;
 
 use rp_draw::Image;
 use rp_draw::pics::{Pic, Pics};

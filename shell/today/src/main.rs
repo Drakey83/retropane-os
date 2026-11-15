@@ -2212,6 +2212,9 @@ mod image {
         let mut pending: Option<u32> = None; // when the input being answered was read
         // An answered input whose frame is with the engine, not yet shown.
         let mut showing: Option<u32> = None;
+        // What was pressed and whether it was answered (the owner,
+        // 2026-11-14: a press with no answer left no line).
+        let mut trail = rp_today::trail::Trail::new();
         // R115's chase (the owner, 2026-10-30: "2 more test to chase the
         // 7"): each 2D frame flipped for want of a copy window, kept for
         // the summary (no card write mid-run, C59): the scan line, its
@@ -2384,6 +2387,7 @@ mod image {
             if flip_due.is_none()
                 && let Some(at) = showing.take()
             {
+                trail.answered(now_ms as u32);
                 let total = rt::ticks().wrapping_sub(at) / 13 * 4;
                 latency.add(total);
                 let s = gfx.two_d().last;
@@ -2402,6 +2406,29 @@ mod image {
                 if burst.is_some() {
                     burst_engine.add(s.engine_us);
                 }
+            }
+
+            // A press nothing answered within half a second, the loop still
+            // running: one line naming it and the inputs before it (the
+            // owner, 2026-11-14: "nothing was responding" left no line).
+            // Not in the replay: a line mid-run is a card write (C59).
+            if !REPLAY
+                && let Some(e) = trail.ignored(
+                    now_ms as u32,
+                    shell.needs_frame()
+                        || showing.is_some()
+                        || pending.is_some()
+                        || flip_due.is_some()
+                        || gfx.busy(),
+                )
+            {
+                let mut w = RunLog;
+                let _ = w.write_str("input ignored: ");
+                let _ = rp_today::trail::write_entry(&mut w, &e);
+                let _ = w.write_str(" (no frame followed it); the last inputs: ");
+                let _ = trail.write_last(&mut w);
+                let _ = w.write_str("
+");
             }
 
             // The clock: once a minute.
@@ -2434,11 +2461,18 @@ mod image {
             let pressed = scan.held;
             let mut back = false;
             key_events.update(rt::ticks() / TICKS_MS, scan, &mut |e| {
-                if matches!(e.kind, Kind::Down | Kind::Repeat)
-                    && let Some(k) = key_of(e.vk)
-                    && shell.input(Input::Key(k)) == Action::BackToLoader
-                {
-                    back = true;
+                let screen = shell.screen().name();
+                match key_of(e.vk) {
+                    Some(k) if matches!(e.kind, Kind::Down | Kind::Repeat) => {
+                        trail.push(now_ms as u32, rp_today::trail::What::Key(k.name()), screen);
+                        if shell.input(Input::Key(k)) == Action::BackToLoader {
+                            back = true;
+                        }
+                    }
+                    None if e.kind == Kind::Down => {
+                        trail.push(now_ms as u32, rp_today::trail::What::Unused(e.vk), screen);
+                    }
+                    _ => {}
                 }
             });
             if key_event {
@@ -2578,6 +2612,18 @@ mod image {
             }
             // The align screen takes stable raw samples; everything else,
             // points.
+            let screen = shell.screen().name();
+            match ev {
+                Pen::Down(rx, ry) if !shell.wants_raw() => {
+                    let (x, y) = map(rx, ry);
+                    trail.push(now_ms as u32, rp_today::trail::What::Down(x, y), screen);
+                }
+                Pen::Up(rx, ry) if !shell.wants_raw() => {
+                    let (x, y) = map(rx, ry);
+                    trail.push(now_ms as u32, rp_today::trail::What::Up(x, y), screen);
+                }
+                _ => {}
+            }
             let act = if shell.wants_raw() {
                 match ev {
                     Pen::Down(rx, ry) | Pen::Move(rx, ry) | Pen::Hold(rx, ry) => {
