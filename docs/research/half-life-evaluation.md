@@ -104,6 +104,12 @@ In the order they block:
 6. **The owner's `valve` folder** in `local/` (R251): there is no map to
    load without it. **This is where this work stops.**
 
+**Fetched since (2026-11-15, the owner: "yes, do whatever you need to get
+it going"), not built yet (R264):** FreeVGUI (73bfb465), the menu `mainui`
+(8981066a, with `miniutl` 048a416f) and the MP3 decoder mpg123 (20c59b07),
+each at the commit its repository pins. Points 3 and 4 above and the "no
+music" line are now work to do, not downloads to ask for.
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
