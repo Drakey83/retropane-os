@@ -136,6 +136,13 @@ def mute(hex_rgb, strength):
 LIGHT_GLASS = (144, 148, 144)
 
 
+# The light look's window glass at its darkest (design-language.md
+# version 3): white frost, 72% over the light backdrop's tinted foot
+# (panel_art.py's WINDOW_LIGHT over rp_app::aurora's light foot). Far
+# lighter than the wallpaper's grey glass, so an accent keeps its colour.
+WINDOW_GLASS = (228, 232, 240)
+
+
 def in_gamut(L, C, h):
     """The colour at L and h with the most chroma up to C that sRGB holds
     (a dark colour keeps its colour instead of clipping to another hue)."""
@@ -153,7 +160,7 @@ def in_gamut(L, C, h):
     return from_oklch(L, max(C, 0), h)
 
 
-def light_twin(rgb, floor):
+def light_twin(rgb, floor, glass=None):
     """The accent for the light look: its hue and chroma kept in OKLCH
     (uniform RGB scaling, the first way, turned coral brown and blue
     black), its lightness lowered until it reads at `floor` against the
@@ -161,7 +168,7 @@ def light_twin(rgb, floor):
     L, C, h = to_oklch(rgb)
     while L > 0.05:
         cand = in_gamut(L, C, h)
-        if contrast(cand, LIGHT_GLASS) >= floor:
+        if contrast(cand, glass or LIGHT_GLASS) >= floor:
             return cand
         L -= 0.005
     return in_gamut(0.05, C, h)
@@ -205,6 +212,14 @@ def write(p):
     i = s.index("pub const LIGHT_TWINS: [(Argb, Argb, Argb); ")
     j = s.index("];", i)
     s = s[:i] + f"pub const LIGHT_TWINS: [(Argb, Argb, Argb); {len(seen)}] = [\n" + rows + s[j:]
+    # The same on the window's white glass.
+    rows = "".join(
+        f"    (theme({rust(v)}), theme({rust(light_twin(v, 3.0, WINDOW_GLASS))}), theme({rust(light_twin(v, 4.5, WINDOW_GLASS))})),\n"
+        for v in seen
+    )
+    i = s.index("pub const WINDOW_TWINS: [(Argb, Argb, Argb); ")
+    j = s.index("];", i)
+    s = s[:i] + f"pub const WINDOW_TWINS: [(Argb, Argb, Argb); {len(seen)}] = [\n" + rows + s[j:]
     io.open(KIT, "w", encoding="utf-8", newline="\n").write(s)
     w = io.open(WEATHER, encoding="utf-8", newline="").read()
     for name in ("COLD", "WARM", "RAIN", "RAIN_BAR", "CURVE", "ALERT"):

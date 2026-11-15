@@ -101,6 +101,9 @@ pub(crate) fn today_screens(
     let mut shown = None;
     let mut painted = None;
     let mut chart_painted = None;
+    // The window backdrop painted last, and its place in the model's pool.
+    let mut window: Option<(u32, bool)> = None;
+    const WINDOW_AT: usize = 0xF0_0000;
     for step in std::iter::once(None).chain(steps.iter().map(Some)) {
         if let Some(&e) = step
             && let rp_shell::Action::OpenProgram(n) = shell.input(e)
@@ -118,6 +121,24 @@ pub(crate) fn today_screens(
         rp_today::keep_chart(&mut shell, preview_pics(), &mut chart_painted);
         backdrop(&mut gpu, &shell, wall, map, &mut shown);
         shell.frame(&mut frame);
+        // The window's backdrop, painted when the screen up wants another
+        // (as the image does before it draws).
+        if frame.floor_picture() && shell.backdrop_key() != window {
+            window = shell.backdrop_key();
+            if let Some((tint, light)) = window {
+                let mut px = vec![0u16; rp_app::aurora::W * rp_app::aurora::H];
+                rp_app::aurora::paint(&mut px, tint, light);
+                let mut m = mem.borrow_mut();
+                for (y, row) in px.chunks(rp_app::aurora::W).enumerate() {
+                    for (x, p) in row.iter().enumerate() {
+                        let i = WINDOW_AT + y * rp_mbx_render::STRIDE16 + x * 2;
+                        m[i..i + 2].copy_from_slice(&p.to_le_bytes());
+                    }
+                }
+                drop(m);
+                gpu.set_floor_picture(Some(WINDOW_AT));
+            }
+        }
         gpu.draw(&frame);
         while !gpu.poll() {}
         let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);

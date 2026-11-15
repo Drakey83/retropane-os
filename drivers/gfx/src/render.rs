@@ -53,6 +53,10 @@ pub struct CpuRenderer<'a> {
     pub missed: rp_draw::pics::Misses,
     /// An app's window body ([`Self::set_floor`]).
     floor: Option<(Rect, rp_draw::Rect, Argb, Argb)>,
+    /// The window's backdrop picture (a screen of RGB565) and whether this
+    /// frame's floor is it ([`Self::set_floor_picture`]).
+    floor_px: Option<&'a [u16]>,
+    floor_is_pic: bool,
 }
 
 impl<'a> CpuRenderer<'a> {
@@ -67,6 +71,8 @@ impl<'a> CpuRenderer<'a> {
             pics: None,
             missed: rp_draw::pics::Misses::default(),
             floor: None,
+            floor_px: None,
+            floor_is_pic: false,
         }
     }
 
@@ -76,6 +82,13 @@ impl<'a> CpuRenderer<'a> {
     /// under it, not the wallpaper. Taken from each frame drawn.
     fn set_floor(&mut self, floor: Option<(rp_draw::Rect, Argb, Argb)>) {
         self.floor = floor.map(|(r, a, b)| (rect(r), r, a | 0xFF00_0000, b | 0xFF00_0000));
+    }
+
+    /// The window's backdrop picture, as the 2D engine's renderer has it
+    /// (`set_floor_picture` there): a screen of RGB565, read where a frame
+    /// whose floor is the picture would read the wallpaper.
+    pub fn set_floor_picture(&mut self, px: Option<&'a [u16]>) {
+        self.floor_px = px;
     }
 
     /// Sets `to` to `col(x)` per column, over the floor where there is one
@@ -116,13 +129,48 @@ impl<'a> CpuRenderer<'a> {
                     .fill_columns(Rect::new(to.x, y.start, to.w, y.end - y.start), &cols[..w]);
             }
         }
+        if let Some(px) = self.floor_px.filter(|_| self.floor_is_pic) {
+            // The backdrop picture: each row its own pixels under the
+            // columns (widened as the engine widens RGB565: the top bits).
+            let stride = self.layer.bounds().w as usize;
+            // In runs of 64 columns: a small row on the stack (the device
+            // runs this renderer too).
+            let mut run = [0; 64];
+            for y in top..bottom {
+                for k0 in (0..w).step_by(64) {
+                    let n = (w - k0).min(64);
+                    for (i, c) in run.iter_mut().take(n).enumerate() {
+                        let x = to.x + (k0 + i) as u32;
+                        *c = cols[k0 + i];
+                        if x >= fr.x
+                            && x < fr.right()
+                            && let Some(&p) = px.get(y as usize * stride + x as usize)
+                        {
+                            // Widened as the engine widens RGB565: each
+                            // channel's top bits repeated below it.
+                            let p = u32::from(p);
+                            let (r, g, b) = (p >> 11, (p >> 5) & 0x3F, p & 0x1F);
+                            let under = 0xFF00_0000
+                                | ((r << 3) | (r >> 2)) << 16
+                                | ((g << 2) | (g >> 4)) << 8
+                                | ((b << 3) | (b >> 2));
+                            *c = layer::over(cols[k0 + i], under);
+                        }
+                    }
+                    self.layer
+                        .fill_columns(Rect::new(to.x + k0 as u32, y, n as u32, 1), &run[..n]);
+                }
+            }
+            return;
+        }
         for (k, c) in cols.iter_mut().take(w).enumerate() {
             let x = to.x + k as u32;
             if x >= fr.x && x < fr.right() {
                 *c = layer::over(*c, gradient_at(a, b, x - fr.x, u32::from(d.w)));
             }
         }
-        self.layer.fill_columns(Rect::new(to.x, top, to.w, bottom - top), &cols[..w]);
+        self.layer
+            .fill_columns(Rect::new(to.x, top, to.w, bottom - top), &cols[..w]);
     }
 
     /// The picture store `Cmd::Pic` reads from (none: they draw nothing).
@@ -263,6 +311,7 @@ impl Renderer for CpuRenderer<'_> {
         let mut out = [Rect::default(); MAX_DIRTY];
         let mut n = 0;
         self.set_floor(frame.floor());
+        self.floor_is_pic = frame.floor_picture() && self.floor_px.is_some();
         for d in frame.dirty() {
             let clip = rect(*d).intersect(&self.layer.bounds());
             if clip.is_empty() {

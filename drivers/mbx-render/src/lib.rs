@@ -599,6 +599,10 @@ pub struct Mbx2dRenderer<R, M> {
     /// An app's window body ([`Self::set_floor`]): where, and its row's
     /// left and right colours (opaque).
     floor: Option<(Rect, Argb, Argb)>,
+    /// The window's backdrop picture (RGB565, laid out as the screen), and
+    /// whether this frame's floor is it ([`Self::set_floor_picture`]).
+    floor_pic: Option<usize>,
+    floor_is_pic: bool,
     /// Where the floor came or went since the last frame: the background
     /// made again there, the screen only where the frame says (a screen
     /// kept from before, Today's, is still right).
@@ -711,6 +715,8 @@ macro_rules! renderer_start {
             bands: (0, 1, [None; BANDS]),
             wall_box: ([Rect::new(0, 0, 0, 0); WALL_BOXES], 0),
             floor: None,
+            floor_pic: None,
+            floor_is_pic: false,
             floor_box: None,
             kept: None,
             wall_id: None,
@@ -791,17 +797,39 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// cache, not a 541 KB band). `None`: the wallpaper again. Taken from
     /// each frame drawn (`Frame::floor`), so a picture composed ahead for
     /// another screen never inherits it.
-    fn set_floor(&mut self, floor: Option<(Rect, Argb, Argb)>) {
+    fn set_floor(&mut self, floor: Option<(Rect, Argb, Argb)>, picture: bool) {
         let floor = floor.map(|(r, a, b)| (r, a | 0xFF00_0000, b | 0xFF00_0000));
-        if floor == self.floor {
+        let picture = picture && self.floor_pic.is_some() && floor.is_some();
+        if floor == self.floor && picture == self.floor_is_pic {
             return;
         }
+        self.floor_is_pic = picture;
         for (r, _, _) in [self.floor, floor].into_iter().flatten() {
             let r = r.intersect(&SCREEN);
             self.floor_box = Some(self.floor_box.map_or(r, |b| b.union(&r)));
             self.drop_cached(r);
         }
         self.floor = floor;
+    }
+
+    /// The window's backdrop picture (design-language.md version 3: light
+    /// behind the glass): `at` holds a screen of RGB565, laid out as the
+    /// wallpaper is, from the allocator (the graphics service checks it,
+    /// ADR-0023 rule 7); a frame whose floor is the picture
+    /// (`Frame::floor_picture`) reads it where it would read the wallpaper,
+    /// one copy, as the wallpaper costs. Call again when its pixels change
+    /// (another app's backdrop painted into it); `None` gives it back.
+    pub fn set_floor_picture(&mut self, at: Option<usize>) {
+        self.floor_pic = at;
+        // What was drawn over the old picture is stale.
+        if let Some((r, _, _)) = self.floor {
+            let r = r.intersect(&SCREEN);
+            self.floor_box = Some(self.floor_box.map_or(r, |b| b.union(&r)));
+            self.drop_cached(r);
+        }
+        if at.is_none() {
+            self.floor_is_pic = false;
+        }
     }
 
     /// The wallpaper changed under `c`: its background made again there,
@@ -1145,20 +1173,31 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             if !inside.is_empty() {
                 // The window's row inside it, the wallpaper around it
                 // (above, below, left, right: disjoint).
-                let key = RowKey {
-                    a,
-                    b,
-                    first: u32::from(inside.x - fr.x),
-                    span: u32::from(fr.w),
-                    w: inside.w,
-                };
-                self.row(dst, inside, key, false);
+                match self.floor_pic.filter(|_| self.floor_is_pic) {
+                    // The backdrop picture: a copy, as the wallpaper's.
+                    Some(at) => self.copy_as(wide(dst), narrow(at), inside),
+                    None => {
+                        let key = RowKey {
+                            a,
+                            b,
+                            first: u32::from(inside.x - fr.x),
+                            span: u32::from(fr.w),
+                            w: inside.w,
+                        };
+                        self.row(dst, inside, key, false);
+                    }
+                }
                 let (top, bottom) = (inside.y, inside.y + inside.h);
                 for part in [
                     Rect::new(r.x, r.y, r.w, top - r.y),
                     Rect::new(r.x, bottom, r.w, r.y + r.h - bottom),
                     Rect::new(r.x, top, inside.x - r.x, inside.h),
-                    Rect::new(inside.x + inside.w, top, r.x + r.w - (inside.x + inside.w), inside.h),
+                    Rect::new(
+                        inside.x + inside.w,
+                        top,
+                        r.x + r.w - (inside.x + inside.w),
+                        inside.h,
+                    ),
                 ] {
                     if !part.is_empty() {
                         self.wallpaper_only(dst, part);
@@ -2015,7 +2054,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let stalls0 = self.stalls;
         // The frame's floor (an app's own window, R201), before anything
         // reads the wallpaper.
-        self.set_floor(frame.floor());
+        self.set_floor(frame.floor(), frame.floor_picture());
         // Which commands go in the background, and has it changed?
         // The previous frame has landed: no row of the ring is read now.
         self.epoch = self.epoch.wrapping_add(1);

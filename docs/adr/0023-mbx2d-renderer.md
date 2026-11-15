@@ -553,3 +553,30 @@ body drawn first was undone by the first glass over it.
   Today's kept picture (R191) still seeds the way back. The graphics
   service takes colours and a screen rectangle only (rule 7: nothing
   addressed). Guarded by `a_window_floor_matches_the_reference_and_goes`.
+
+## The floor as a picture: light behind the glass (2026-11-14)
+
+Design language version 3 (docs/design/design-language.md) puts a backdrop
+of light under an app's glass. The floor above is one row; a backdrop
+varies down the screen.
+
+- **Vista** kept Aurora as a full painted picture under its glass; the
+  textbook draws the picture first and blends over the destination.
+- **Ours:** the frame's floor may be the renderer's **floor picture**
+  (`Frame::set_floor_picture`, `Mbx2dRenderer::set_floor_picture`): a
+  screen of RGB565 from the allocator, read exactly where and how the
+  wallpaper is read (one copy, widened by the engine), so glass over it
+  costs what glass over the wallpaper costs and nothing new is asked of
+  the engine. The picture is painted by `rp_app::aurora` when an app
+  opens (4,941 nodes of integer work). A frame without the flag, or a
+  renderer without a picture, falls back to the floor's row. Carried by
+  the frame like the floor, so a picture composed ahead for another
+  screen never inherits it. Guarded by
+  `a_backdrop_picture_under_the_glass_matches_the_reference`.
+
+**Panel corners (the same day).** `rp_draw::panel_cmds` draws a panel's
+top and bottom corner-high bands with the art's first and last rows as
+they are and stretches only the rows between; the corner pictures are
+painted with those rows (`panel_art.py`). Before, corners were one flat
+colour beside a stretched gradient: 2 to 5 levels off on a glass with a
+real gradient (measured on the version 3 concepts), a visible square.

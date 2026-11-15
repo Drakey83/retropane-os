@@ -22,6 +22,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod aurora;
 pub mod kit;
 
 pub use rp_draw::pics::{Pic, Pics};
@@ -252,7 +253,7 @@ impl Shapes {
             return *p;
         }
         let free = d.iter().position(|(_, p)| p.is_none())?;
-        let p = kit::disc(pics, kit::CORNER * 2, c, None);
+        let p = kit::flat_disc(pics, kit::CORNER * 2, c);
         d[free] = (c, p);
         p
     }

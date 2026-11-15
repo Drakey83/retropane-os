@@ -66,6 +66,39 @@ pub const LIGHT_TWINS: [(Argb, Argb, Argb); 17] = [
     (theme(0xFFCC_AA7E), theme(0xFF5E_4115), theme(0xFF40_2700)),
 ];
 
+/// [`LIGHT_TWINS`] for the window's white glass (design-language.md
+/// version 3): the same rule against a far lighter glass, so an accent
+/// keeps its colour there. Written by `tools/shell-assets/accents.py`.
+pub const WINDOW_TWINS: [(Argb, Argb, Argb); 17] = [
+    (theme(0xFF81_C08B), theme(0xFF55_9260), theme(0xFF37_7444)),
+    (theme(0xFFD9_9086), theme(0xFFB8_7268), theme(0xFF99_564E)),
+    (theme(0xFFD2_B37B), theme(0xFF9E_8049), theme(0xFF81_642D)),
+    (theme(0xFFD9_907E), theme(0xFFB9_7362), theme(0xFF99_5646)),
+    (theme(0xFF74_B1A7), theme(0xFF53_8F85), theme(0xFF34_7168)),
+    (theme(0xFF74_9DD3), theme(0xFF5F_87BC), theme(0xFF43_6A9C)),
+    (theme(0xFFD6_A270), theme(0xFFAC_7A49), theme(0xFF8E_5E2D)),
+    (theme(0xFFA0_C07E), theme(0xFF70_8E4E), theme(0xFF54_7031)),
+    (theme(0xFF7A_ADD3), theme(0xFF58_89AE), theme(0xFF3C_6D90)),
+    (theme(0xFF78_86CD), theme(0xFF72_80C6), theme(0xFF56_62A6)),
+    (theme(0xFFA7_8ED4), theme(0xFF92_79BD), theme(0xFF74_5B9D)),
+    (theme(0xFFD9_8BA6), theme(0xFFB9_6E89), theme(0xFF99_516C)),
+    (theme(0xFF79_A6D5), theme(0xFF5B_87B5), theme(0xFF40_6B97)),
+    (theme(0xFFD5_A275), theme(0xFFAB_7A4E), theme(0xFF8D_5E33)),
+    (theme(0xFF8F_B4D2), theme(0xFF65_89A5), theme(0xFF49_6B87)),
+    (theme(0xFF76_94BB), theme(0xFF69_86AD), theme(0xFF4E_6A8F)),
+    (theme(0xFFCC_AA7E), theme(0xFFA0_7F54), theme(0xFF82_6339)),
+];
+
+/// An accent's twin on the light look's window glass ([`WINDOW_TWINS`]).
+#[must_use]
+pub fn window_twin(c: Argb, text: bool) -> Option<Argb> {
+    let rgb = c & 0x00FF_FFFF;
+    WINDOW_TWINS
+        .iter()
+        .find(|t| t.0 & 0x00FF_FFFF == rgb)
+        .map(|t| (c & 0xFF00_0000) | (if text { t.2 } else { t.1 } & 0x00FF_FFFF))
+}
+
 /// An accent's light-look twin (`text` for lettering), its alpha kept;
 /// `None` for a colour that isn't one of the accents.
 #[must_use]
@@ -128,9 +161,11 @@ pub const fn alpha(c: Argb, alpha: u8) -> Argb {
 /// the PC model's alike (2026-11-14: Notes' ink sizes were the model's
 /// only, so the X51v drew no ink once the pen lifted and every check
 /// passed). An app that needs a new size adds it here.
-pub const PIC_CLASSES: [(u16, u16, u8); 5] = [
+pub const PIC_CLASSES: [(u16, u16, u8); 6] = [
     (24, 24, 24),
     (40, 40, 24),
+    // The big avatars of a favourites row and small dials.
+    (64, 64, 8),
     (96, 96, 2),
     (INK_PIC.0, INK_PIC.1, 1),
     (INK_MINI.0, INK_MINI.1, 4),
@@ -186,7 +221,9 @@ pub const GLASS: Argb = 0xFF2A_3038;
 /// the wallpaper itself (`rp_mbx_render`'s `Fill`), so a translucent body
 /// and its corner pictures would blend twice where they meet.
 pub fn round_rect(f: &mut Frame, cx: &Ctx, r: Rect, c: Argb) {
-    let c = c | 0xFF00_0000;
+    // Opaque; a kept colour keeps its mark (paper is paper in both looks:
+    // without it the light look's pass turned a sheet into grey glass).
+    let c = if kept(c) { c } else { c | 0xFF00_0000 };
     let k = CORNER;
     let disc = cx.pics.and_then(|p| cx.shapes.disc(p, c));
     if r.w < 2 * k || r.h < 2 * k || disc.is_none() {
@@ -372,6 +409,133 @@ pub fn chip(r: Rect, n: usize, i: usize) -> Rect {
     Rect::new(r.x + i as u16 * (cw + gap), r.y, cw, r.h)
 }
 
+/// An accent as a picture painted for this look should use it (pictures
+/// aren't recoloured by the look's pass): the accent in the dark, its
+/// window twin in the light.
+#[must_use]
+pub fn painted(cx: &Ctx, c: Argb) -> Argb {
+    if cx.look.light {
+        window_twin(c, false).unwrap_or(c)
+    } else {
+        c
+    }
+}
+
+/// A gauge's track for this look: faint light on the dark glass, faint
+/// slate on the white.
+#[must_use]
+pub fn track(cx: &Ctx) -> Argb {
+    if cx.look.light {
+        0x3040_5068
+    } else {
+        alpha(TEXT, 0x38)
+    }
+}
+
+/// A ring gauge painted into `px` (`size` x `size`): a `track` all the way
+/// round and `fill` over `part` of 256 of it, clockwise from the top, both
+/// `thick` px wide, edges blended by coverage; a soft gloss on its upper
+/// left (the Aero light). Design-language.md version 3: an app's numbers
+/// are drawn, as Weather draws its dials, not only written.
+pub fn paint_ring(px: &mut [Argb], size: u16, thick: u16, part: u16, fill: Argb, track: Argb) {
+    let s = i32::from(size);
+    let (outer, inner) = (s * 8 - 8, s * 8 - 8 - i32::from(thick) * 16);
+    for y in 0..s {
+        for x in 0..s {
+            // The pixel's centre from the ring's, in 1/16 px.
+            let (dx, dy) = (x * 16 + 8 - s * 8, y * 16 + 8 - s * 8);
+            let d2 = dx * dx + dy * dy;
+            // An integer square root (Newton, three steps from a good guess).
+            let mut d = (dx.abs().max(dy.abs()) + dx.abs().min(dy.abs()) / 2).max(1);
+            for _ in 0..3 {
+                d = (d + d2 / d) / 2;
+            }
+            // Coverage: a pixel's width of blend at each edge.
+            let cover = ((outer - d).clamp(0, 16) * (d - inner).clamp(0, 16)) as u32;
+            if cover == 0 {
+                px[(y * s + x) as usize] = 0;
+                continue;
+            }
+            // The angle clockwise from the top, 0-1023 a turn: an octant's
+            // angle is near enough its tangent (within 4 degrees: a gauge,
+            // not a protractor).
+            let (ax, ay) = (dx.abs(), dy.abs());
+            let t = if ax.max(ay) == 0 {
+                0
+            } else {
+                ax.min(ay) * 128 / ax.max(ay)
+            };
+            let in_quadrant = if ax < ay { t } else { 256 - t };
+            let turn = match (dx >= 0, dy < 0) {
+                (true, true) => in_quadrant,
+                (true, false) => 512 - in_quadrant,
+                (false, false) => 512 + in_quadrant,
+                (false, true) => 1024 - in_quadrant,
+            };
+            let on = turn * 256 < i32::from(part) * 1024;
+            let c = if on { fill } else { track };
+            // Gloss: lighter toward the upper left.
+            let gloss = ((-(dx + dy)).clamp(0, s * 8) * 60 / (s * 8)) as u8;
+            let c = if on { mix(c, 0xFFFF_FFFF, gloss) } else { c };
+            let a = (c >> 24) * cover / 256;
+            px[(y * s + x) as usize] = (c & 0x00FF_FFFF) | (a << 24);
+        }
+    }
+}
+
+/// [`paint_ring`] into a new picture of the store.
+pub fn ring(pics: &Pics, size: u16, thick: u16, part: u16, fill: Argb, track: Argb) -> Option<Pic> {
+    let p = pics.alloc(size, size)?;
+    pics.write(p, |px| paint_ring(px, size, thick, part, fill, track));
+    Some(p)
+}
+
+/// A glossy disc (an avatar's, a colour well's): `fill` with the Aero
+/// light on its upper half and a darker foot, edges blended by coverage.
+pub fn paint_gloss_disc(px: &mut [Argb], size: u16, fill: Argb) {
+    let s = i32::from(size);
+    let r = s * 8 - 4;
+    for y in 0..s {
+        for x in 0..s {
+            let (dx, dy) = (x * 16 + 8 - s * 8, y * 16 + 8 - s * 8);
+            let d2 = dx * dx + dy * dy;
+            let mut d = (dx.abs().max(dy.abs()) + dx.abs().min(dy.abs()) / 2).max(1);
+            for _ in 0..3 {
+                d = (d + d2 / d) / 2;
+            }
+            let cover = (r - d).clamp(0, 16) as u32;
+            if cover == 0 {
+                px[(y * s + x) as usize] = 0;
+                continue;
+            }
+            // Top to foot: lit, the colour, shaded; a bright cap above the
+            // middle (the gel highlight).
+            let v = y * 256 / s;
+            let mut c = if v < 128 {
+                mix(fill, 0xFFFF_FFFF, ((128 - v) * 90 / 128) as u8)
+            } else {
+                mix(fill, 0xFF00_0000, ((v - 128) * 70 / 128) as u8)
+            };
+            let cap = (dx * dx / 2 + (dy + s * 4) * (dy + s * 4)) < (s * 5) * (s * 5) && dy < -s;
+            if cap {
+                c = mix(c, 0xFFFF_FFFF, 46);
+            }
+            // A thin dark rim.
+            if r - d < 20 {
+                c = mix(c, 0xFF00_0000, 60);
+            }
+            px[(y * s + x) as usize] = (c & 0x00FF_FFFF) | ((0xFF * cover / 16) << 24);
+        }
+    }
+}
+
+/// [`paint_gloss_disc`] into a new picture of the store.
+pub fn gloss_disc(pics: &Pics, size: u16, fill: Argb) -> Option<Pic> {
+    let p = pics.alloc(size, size)?;
+    pics.write(p, |px| paint_gloss_disc(px, size, fill));
+    Some(p)
+}
+
 /// What a tap can hit, recorded as a screen is drawn (the owner,
 /// 2026-11-14: "everything needs to be clickable via the stylus"): each
 /// thing drawn that looks tappable adds its rectangle, so nothing drawn is
@@ -452,6 +616,19 @@ impl<T: Copy, const N: usize> Hits<T, N> {
 /// with `fill` inside the circle (and a `ring` of 2 px if given),
 /// transparent outside, edges blended by coverage.
 pub fn paint_disc(px: &mut [Argb], size: u16, fill: Argb, ring: Option<Argb>) {
+    paint_disc_as(px, size, fill, ring, true);
+}
+
+/// A flat disc, no highlight: the rounded corners of a flat shape (a
+/// sheet of paper, a bar) are quarters of one (the orb's gloss showed as
+/// an arc in every corner, 2026-11-14).
+pub fn flat_disc(pics: &Pics, size: u16, fill: Argb) -> Option<Pic> {
+    let p = pics.alloc(size, size)?;
+    pics.write(p, |px| paint_disc_as(px, size, fill, None, false));
+    Some(p)
+}
+
+fn paint_disc_as(px: &mut [Argb], size: u16, fill: Argb, ring: Option<Argb>, orb: bool) {
     let s = i32::from(size);
     // Radius and the ring's inner radius, in 1/16 px.
     let r = s * 8;
@@ -485,7 +662,7 @@ pub fn paint_disc(px: &mut [Argb], size: u16, fill: Argb, ring: Option<Argb>) {
                 };
                 // The Aero orb: a soft highlight over the upper part, an
                 // ellipse lit from above, and the lower edge a shade deeper.
-                let lit = if ring.is_none() {
+                let lit = if orb && ring.is_none() {
                     let (hx, hy) = (x * 2 - s, y * 4 - s);
                     let d = (hx * hx + hy * hy) as u32;
                     let r2 = (s * s) as u32;
@@ -497,7 +674,7 @@ pub fn paint_disc(px: &mut [Argb], size: u16, fill: Argb, ring: Option<Argb>) {
                 } else {
                     0
                 };
-                let shade = if ring.is_none() && y * 4 > s * 3 {
+                let shade = if orb && ring.is_none() && y * 4 > s * 3 {
                     24
                 } else {
                     0

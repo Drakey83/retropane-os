@@ -203,6 +203,30 @@ pub fn run(root: &Path) -> Result<(), String> {
     let release = crate::arm_release(root);
     let wall = crate::emu::today_wallpaper(&release)?;
     let map = crate::emu::today_map(&release);
+    // `RP_PREVIEW_ONLY=<text>`: only the app mock-ups whose name holds it
+    // (seconds, not minutes: a design pass looks at a few screens at a time).
+    if let Ok(only) = std::env::var("RP_PREVIEW_ONLY") {
+        let out = root.join("target").join("ui-preview");
+        std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        let mut n = 0;
+        for m in crate::app_mockups::mocks()
+            .into_iter()
+            .filter(|m| m.name.contains(&only))
+        {
+            let all =
+                crate::emu::today_screens(&wall, map.as_deref(), &[], true, None, &*m.prepare);
+            let rgb = all.first().ok_or("ui-preview: a mock-up missing")?;
+            let file = format!("{}.png", m.name);
+            std::fs::write(out.join(&file), png_rgb(480, 640, rgb))
+                .map_err(|e| format!("{file}: {e}"))?;
+            n += 1;
+        }
+        eprintln!(
+            "    ui-preview: {n} mock-ups holding `{only}` in {}",
+            out.display()
+        );
+        return Ok(());
+    }
     let shots = shots();
     let steps: Vec<Input> = shots.iter().flat_map(|s| s.steps.iter().copied()).collect();
     let all = crate::emu::today_screens(

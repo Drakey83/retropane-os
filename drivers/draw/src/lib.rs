@@ -320,9 +320,22 @@ pub fn panel_cmds(r: Rect, art: &PanelArt, mut emit: impl FnMut(Cmd)) {
     ] {
         emit(Cmd::Fill { r: c, color: CLEAR });
     }
+    // The corners' bands take the art's first and last `radius` rows as
+    // they are (the corner pictures are painted with those very rows, so
+    // a corner never differs from the body beside it: 2026-11-14, a
+    // corner in one flat colour stood out as a square on glass with a
+    // real gradient); the rows between stretch over the middle.
     let row = |y: u16| {
-        let i = u32::from(y) * 63 * 2 / u32::from(r.h - 1);
-        art.rows[(i.div_ceil(2) as usize).min(63)]
+        let i = if y < k {
+            u32::from(y)
+        } else if y >= r.h - k {
+            63 - u32::from(r.h - 1 - y)
+        } else {
+            let span = u32::from(r.h - 2 * k).saturating_sub(1).max(1);
+            let rows = 63 - 2 * u32::from(k);
+            u32::from(k) + (u32::from(y - k) * rows * 2 / span).div_ceil(2)
+        };
+        art.rows[(i as usize).min(63)]
     };
     // The body: between the corners across the top and bottom bands, the
     // whole width (less the side rims) between them; a fill for each run
@@ -466,6 +479,8 @@ pub struct Frame {
     overflowed: bool,
     /// What is under everything instead of the wallpaper ([`Self::set_floor`]).
     floor: Option<(Rect, Argb, Argb)>,
+    /// The floor is the renderer's backdrop picture ([`Self::set_floor_picture`]).
+    floor_picture: bool,
 }
 
 impl Default for Frame {
@@ -487,6 +502,7 @@ impl Frame {
             dn: 0,
             overflowed: false,
             floor: None,
+            floor_picture: false,
         }
     }
 
@@ -504,6 +520,7 @@ impl Frame {
             dn: 0,
             overflowed: false,
             floor: None,
+            floor_picture: false,
         })
     }
 
@@ -553,6 +570,20 @@ impl Frame {
         self.dn = 0;
         self.overflowed = false;
         self.floor = None;
+        self.floor_picture = false;
+    }
+
+    /// The floor is the window's backdrop picture (the one the renderer
+    /// was last given: light behind the glass, `rp_app::aurora`), where the
+    /// renderer has one; the floor's row otherwise.
+    pub fn set_floor_picture(&mut self, yes: bool) {
+        self.floor_picture = yes;
+    }
+
+    /// Whether the floor is the backdrop picture.
+    #[must_use]
+    pub const fn floor_picture(&self) -> bool {
+        self.floor_picture
     }
 
     /// An app's own window (R201): inside `r` what is under everything is

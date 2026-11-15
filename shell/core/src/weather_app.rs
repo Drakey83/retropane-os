@@ -527,6 +527,8 @@ impl Shell {
         self.focus = None;
         f.clear();
         f.damage(Rect::new(0, 0, W, H));
+        // Weather's own window, as its screen will have it (R201).
+        f.set_floor(self.floor());
         self.scene(f);
         self.look(f);
         (

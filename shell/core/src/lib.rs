@@ -238,6 +238,11 @@ pub enum LightStyle {
     /// C: frosted glass, and the wallpaper itself veiled light between the
     /// panels.
     Washed,
+    /// Inside an app's own window, over its light backdrop
+    /// (design-language.md version 3): the white window glass, the accents'
+    /// window twins. Chosen by the shell where a window is up, not a
+    /// setting.
+    Window,
 }
 
 /// An app's own window: what fills it behind the program, so no
@@ -321,8 +326,13 @@ pub fn look_color(c: Argb, text: bool, style: LightStyle) -> Argb {
         // grey on light blue, 1.4:1, the light look's contrast test), and
         // a program's kept colours (paper and its ink).
         c
-    } else if let Some(t) = rp_app::kit::light_twin(c, text) {
-        // An accent: its computed twin (hue and chroma kept).
+    } else if let Some(t) = if matches!(style, LightStyle::Window) {
+        rp_app::kit::window_twin(c, text)
+    } else {
+        rp_app::kit::light_twin(c, text)
+    } {
+        // An accent: its computed twin (hue and chroma kept) for the
+        // glass it sits on.
         t
     } else if text {
         light_text(c)
@@ -333,11 +343,12 @@ pub fn look_color(c: Argb, text: bool, style: LightStyle) -> Argb {
 
 /// The fill colour a program's corner pictures are painted in, per light
 /// style (a function, not a closure: `rp_app::Shapes` keeps a plain `fn`).
-const LIGHT_FILLS: [fn(Argb) -> Argb; 4] = [
+const LIGHT_FILLS: [fn(Argb) -> Argb; 5] = [
     |c| look_color(c, false, LightStyle::Grey),
     |c| look_color(c, false, LightStyle::Frosted),
     |c| look_color(c, false, LightStyle::Tonal),
     |c| look_color(c, false, LightStyle::Washed),
+    |c| look_color(c, false, LightStyle::Window),
 ];
 
 /// An accent fill (a card's bar, a meter, the rain bars, the temperature
@@ -745,8 +756,14 @@ const PRESSED_UNDER: Argb = rp_draw::look::theme(0xFF3C_4656);
 /// An app's window body (left, right), each look's own: the dark one
 /// a shade under the title bar's slate, the light one Aero's frosted white
 /// cooling to the right.
-const BODY_DARK: (Argb, Argb) = (rp_draw::look::theme(0xFF0E_1216), rp_draw::look::theme(0xFF1A_2027));
-const BODY_LIGHT: (Argb, Argb) = (rp_draw::look::theme(0xFFF2_F4F7), rp_draw::look::theme(0xFFDC_E2E9));
+const BODY_DARK: (Argb, Argb) = (
+    rp_draw::look::theme(0xFF0E_1216),
+    rp_draw::look::theme(0xFF1A_2027),
+);
+const BODY_LIGHT: (Argb, Argb) = (
+    rp_draw::look::theme(0xFFF2_F4F7),
+    rp_draw::look::theme(0xFFDC_E2E9),
+);
 
 /// `a` toward `b`, `k` of `n`, opaque.
 fn mix(a: Argb, b: Argb, k: u32, n: u32) -> Argb {
@@ -1003,6 +1020,10 @@ pub struct Shell {
     light_style: LightStyle,
     /// What fills an app's window behind it ([`WindowBody`]).
     window_body: WindowBody,
+    /// The floor of the last frame made ([`Self::floor`]).
+    floor_was: Option<(Rect, Argb, Argb)>,
+    /// The host paints window backdrops ([`Self::use_backdrops`]).
+    backdrops: bool,
     /// The previews' panels left out (mock-ups composite their own).
     panels_off: bool,
     /// The test image's sky test: 0 the forecast's sky, else the weather
@@ -1169,6 +1190,8 @@ macro_rules! shell_start {
             sky_forced: false,
             light_style: LightStyle::Frosted,
             window_body: WindowBody::Tinted,
+            floor_was: None,
+            backdrops: false,
             panels_off: false,
             sky_test: 0,
             fetched_at: None,
@@ -2503,22 +2526,33 @@ impl Shell {
 
     fn program_look(&self) -> rp_app::Look {
         let light = self.light();
+        // In its own window over the backdrop: the window's glass and, in
+        // the light look, the white gel keys (design-language.md version 3).
+        let window = self.backdrops;
         rp_app::Look {
             light,
-            panel: panel::art(light),
-            pressed: panel::pressed(light),
+            panel: if window {
+                panel::window(light)
+            } else {
+                panel::art(light)
+            },
+            pressed: if window {
+                panel::window_pressed(light)
+            } else {
+                panel::pressed(light)
+            },
             // The graphite keys read as holes in the frosted white: the
             // light look's keys are its glass, a shade down under the pen;
             // the chosen one is the blue glow in both.
-            key: if light {
-                panel::art(true)
-            } else {
-                &panel_art::KEY
+            key: match (light, window) {
+                (true, true) => &panel_art::KEY_LIGHT,
+                (true, false) => panel::art(true),
+                (false, _) => &panel_art::KEY,
             },
-            key_down: if light {
-                panel::pressed(true)
-            } else {
-                &panel_art::KEY_DOWN
+            key_down: match (light, window) {
+                (true, true) => &panel_art::KEY_LIGHT_DOWN,
+                (true, false) => panel::pressed(true),
+                (false, _) => &panel_art::KEY_DOWN,
             },
             on: &panel_art::ON,
         }
@@ -2601,6 +2635,8 @@ impl Shell {
         if self.screen != Screen::Program {
             return;
         }
+        // (Before the program is borrowed: the style asks it its accent.)
+        let style = self.style_now();
         let (fonts, look) = (self.program_fonts(), self.program_look());
         let cx = rp_app::Ctx {
             fonts: &fonts,
@@ -2631,13 +2667,13 @@ impl Shell {
         // the shell's (its own pass ran before the program drew), its
         // corner pictures painted to match.
         let light = self.light();
-        let style = self.light_style;
         self.shapes.set_paint(if light {
             LIGHT_FILLS[match style {
                 LightStyle::Grey => 0,
                 LightStyle::Frosted => 1,
                 LightStyle::Tonal => 2,
                 LightStyle::Washed => 3,
+                LightStyle::Window => 4,
             }]
         } else {
             |c| c
@@ -3056,8 +3092,16 @@ impl Shell {
             }
         }
         self.damaged = 0;
-        // An app's own window under it (R201), carried by the frame.
-        f.set_floor(self.floor());
+        // An app's own window under it (R201), carried by the frame; where
+        // it came, went or changed, everything under it is new (not on the
+        // way back to Today's kept picture, already right).
+        let floor = self.floor();
+        if floor != self.floor_was && !from_kept {
+            f.damage(Rect::new(0, 0, W, H));
+        }
+        self.floor_was = floor;
+        f.set_floor(floor);
+        f.set_floor_picture(self.backdrops && floor.is_some());
         self.scene(f);
         self.look(f);
         self.program_content(f);
@@ -3066,7 +3110,7 @@ impl Shell {
             let start = f.len();
             self.overlays(f);
             if self.light() {
-                let style = self.light_style;
+                let style = self.style_now();
                 f.map_colors_from(start, |c, text| look_color(c, text, style));
             }
         }
@@ -3144,9 +3188,19 @@ impl Shell {
     /// theirs. One switch for every screen, so none is forgotten in one
     /// look (the owner's run, 2026-10-31: Light and Dark changed nothing,
     /// R160).
+    /// The light style of the screen up: the window's where an app's own
+    /// window is under it with its backdrop, the setting elsewhere.
+    fn style_now(&self) -> LightStyle {
+        if self.backdrops && self.floor().is_some() {
+            LightStyle::Window
+        } else {
+            self.light_style
+        }
+    }
+
     fn look(&self, f: &mut Frame) {
         if self.light() {
-            let style = self.light_style;
+            let style = self.style_now();
             f.map_colors(|c, text| look_color(c, text, style));
         }
     }
@@ -3171,10 +3225,36 @@ impl Shell {
         self.dirty(Rect::new(0, 0, W, H));
     }
 
+    /// The host paints each window's backdrop (design-language.md version
+    /// 3, light behind the glass: `rp_app::aurora`) into the renderer's
+    /// floor picture: before drawing a frame whose `floor_picture` is set,
+    /// it paints [`Self::backdrop_key`]'s if that isn't the one painted.
+    pub fn use_backdrops(&mut self, yes: bool) {
+        self.backdrops = yes;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// The backdrop the screen up wants: its tint and whether the look is
+    /// light; `None` where there is no window (Today, the radar).
+    #[must_use]
+    pub fn backdrop_key(&self) -> Option<(Argb, bool)> {
+        self.floor()?;
+        Some((self.window_tint()?, self.light()))
+    }
+
+    /// The tint of the window up: the app's accent, Weather's sky.
+    fn window_tint(&self) -> Option<Argb> {
+        match self.screen {
+            Screen::Today => None,
+            Screen::Program => self.program.borrow().as_ref().and_then(|p| p.accent()),
+            _ => Some(rp_app::kit::tint::WEATHER),
+        }
+    }
+
     /// An app's bars drawn solid in the light look (the dark look's are
     /// opaque already; the light look's pass would make them glass).
     fn solid_bars(&self) -> bool {
-        self.screen == Screen::Program && self.light()
+        self.floor().is_some() && self.light()
     }
 
     /// The open app's window body for the renderer (`set_floor` on
@@ -3184,7 +3264,14 @@ impl Shell {
     /// blends over the window, not the photo, at no cost per frame.
     #[must_use]
     pub fn floor(&self) -> Option<(Rect, Argb, Argb)> {
-        if self.screen != Screen::Program {
+        // Weather full screen too (the owner, 2026-11-14: "weather app,
+        // when its full screen, still shows the wallpaper"), but not over
+        // the radar (its map is the backdrop) or while it opens out of
+        // Today (Reveal's window over the Today screen).
+        let weather = self.screen != Screen::Today && self.screen != Screen::Program;
+        if self.screen == Screen::Today
+            || weather && (self.backdrop().is_some() || self.reveal_window().is_some())
+        {
             return None;
         }
         let light = self.light();
@@ -3193,12 +3280,7 @@ impl Shell {
             WindowBody::Solid => (left, left),
             WindowBody::Aero => (left, right),
             WindowBody::Tinted => {
-                let tint = self
-                    .program
-                    .borrow()
-                    .as_ref()
-                    .and_then(|p| p.accent())
-                    .unwrap_or(left);
+                let tint = self.window_tint().unwrap_or(left);
                 let k = if light { 6 } else { 10 };
                 (mix(left, tint, k, 100), mix(right, tint, k, 100))
             }

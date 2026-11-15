@@ -548,10 +548,14 @@ pub const BUDGETS: &[Budget] = &[
     // are still in the image; the apps leave the image as their own
     // programs (the owner, 2026-11-14), which brings it back down: with
     // them out, 880,920 B plain (the program host and the title font in),
-    // so 880 KiB.
+    // so 880 KiB. 2026-11-14 evening: 912 KiB (the owner's yes), for the
+    // design language's version 3 materials: the window glass and the
+    // light gel keys (six panel arts, ~13 KB), the window backdrop's
+    // painter and the renderers' floor; 913,936 B measured with them. The
+    // image area holds 950,272 B.
     Budget {
         image: "rp-today",
-        max_load: 880 * 1024,
+        max_load: 912 * 1024,
         // 100 KiB since 2026-11-14: the stack 24 -> 40 KiB (the app
         // programs run on it; shell/today/build.rs).
         max_zero: 100 * 1024,

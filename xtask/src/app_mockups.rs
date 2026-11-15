@@ -549,6 +549,8 @@ pub fn mocks() -> Vec<Mock> {
                 prepare: Box::new(move |s| {
                     prepare(s);
                     s.set_appearance(look);
+                    // Light behind the glass (design-language.md version 3).
+                    s.use_backdrops(true);
                 }),
             });
         }
@@ -562,10 +564,12 @@ pub fn mocks() -> Vec<Mock> {
         ("aero", WindowBody::Aero),
         ("tinted", WindowBody::Tinted),
     ] {
-        for m in base()
-            .into_iter()
-            .filter(|m| matches!(m.name, "v2-calendar-agenda" | "v2-contacts-list" | "v2-notes-home"))
-        {
+        for m in base().into_iter().filter(|m| {
+            matches!(
+                m.name,
+                "v2-calendar-agenda" | "v2-contacts-list" | "v2-notes-home"
+            )
+        }) {
             let prepare: std::rc::Rc<dyn Fn(&mut rp_shell::Shell)> = std::rc::Rc::from(m.prepare);
             for (suffix, look) in [("", Appearance::Light), ("-dark", Appearance::Dark)] {
                 let prepare = prepare.clone();
@@ -586,6 +590,37 @@ pub fn mocks() -> Vec<Mock> {
 
 fn base() -> Vec<Mock> {
     vec![
+        // Design language version 3: the concept homes (design_v3.rs).
+        Mock {
+            name: "v3-calendar",
+            what: "Version 3 concept, Calendar: today as a hero, the day's ribbon, next up with its countdown, the week's load",
+            prepare: Box::new(|s| open(s, crate::design_v3::CalendarHome::default())),
+        },
+        Mock {
+            name: "v3-tasks",
+            what: "Version 3 concept, Tasks: the day's progress ring, three numbers, the lists as tiles",
+            prepare: Box::new(|s| open(s, crate::design_v3::TasksHome::default())),
+        },
+        Mock {
+            name: "v3-notes",
+            what: "Version 3 concept, Notes: the pinned sheet with its handwriting, the rest as coloured paper",
+            prepare: Box::new(|s| open(s, crate::design_v3::NotesHome::default())),
+        },
+        Mock {
+            name: "v3-notes-pen",
+            what: "Version 3 concept, Notes writing: the sheet and the pen palette (colour wells, stroke sizes, tools)",
+            prepare: Box::new(|s| open(s, crate::design_v3::NotesPen::default())),
+        },
+        Mock {
+            name: "v3-calculator",
+            what: "Version 3 concept, Calculator: the glass display with its tape, gel keys",
+            prepare: Box::new(|s| open(s, crate::design_v3::CalcHome)),
+        },
+        Mock {
+            name: "v3-contacts",
+            what: "Version 3 concept, Contacts: favourites as big glossy avatars, the last person spoken to, grouped cards",
+            prepare: Box::new(|s| open(s, crate::design_v3::ContactsHome::default())),
+        },
         Mock {
             name: "v2-calendar-agenda",
             what: "Calendar: the agenda under the large title and the week strip, the forecast on each day",
@@ -788,4 +823,3 @@ fn base() -> Vec<Mock> {
         },
     ]
 }
-

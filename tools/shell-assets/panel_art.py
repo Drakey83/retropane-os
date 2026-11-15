@@ -40,6 +40,25 @@ LOOKS["DARK_PRESSED"] = dict(LOOKS["DARK"], dim=0.70)
 LOOKS["KEY"] = dict(top=(92, 98, 112), bottom=(30, 34, 42), alpha=0.92, rim=0.75, sheen=0.0, gloss=0.30, k=8)
 LOOKS["KEY_DOWN"] = dict(LOOKS["KEY"], dim=0.65, gloss=0.12)
 LOOKS["ON"] = dict(top=(120, 196, 246), bottom=(22, 92, 176), alpha=0.95, rim=0.85, sheen=0.0, gloss=0.38, k=8)
+# Window glass (design-language.md version 3, 2026-11-14): the glass of a
+# card inside an app's own window, over its backdrop of light, not over a
+# photo. Vista's Aero glass was thin (the desktop showed through, a bright
+# rim and a soft sheen gave it its edge); the wallpaper's glass above is
+# near opaque because words had to read over any photo. Over the calm
+# backdrop the glass can be Aero's: two thirds opaque in the dark so the
+# light glows through it, a brighter rim; in the light look white frost
+# with a cool darker edge (a white rim on white glass has no edge).
+LOOKS["WINDOW_DARK"] = dict(top=(86, 92, 108), bottom=(20, 24, 32), alpha=0.64, rim=0.95, sheen=0.24)
+LOOKS["WINDOW_DARK_PRESSED"] = dict(LOOKS["WINDOW_DARK"], dim=0.70)
+LOOKS["WINDOW_LIGHT"] = dict(
+    top=(255, 255, 255), bottom=(240, 244, 250), alpha=0.72, rim=0.55, sheen=0.0, edge=(120, 136, 160)
+)
+LOOKS["WINDOW_LIGHT_PRESSED"] = dict(LOOKS["WINDOW_LIGHT"], dim=0.88)
+# The light look's gel key: white gloss over a cool foot, the same edge.
+LOOKS["KEY_LIGHT"] = dict(
+    top=(250, 252, 255), bottom=(196, 206, 220), alpha=0.94, rim=0.6, sheen=0.0, gloss=0.5, k=8, edge=(110, 126, 150)
+)
+LOOKS["KEY_LIGHT_DOWN"] = dict(LOOKS["KEY_LIGHT"], dim=0.86, gloss=0.2)
 
 
 def smooth(e0, e1, v):
@@ -73,8 +92,9 @@ def argb(rgb, a):
     return (a << 24) | (r << 16) | (g << 8) | b
 
 
-def mix(rgb, w):
-    return [rgb[i] * (1 - w) + 255 * w for i in range(3)]
+def mix(rgb, w, to=(255, 255, 255)):
+    """`rgb` toward `to` (white: a lit rim; a look's `edge`: a drawn one)."""
+    return [rgb[i] * (1 - w) + to[i] * w for i in range(3)]
 
 
 def corner(look, k):
@@ -100,10 +120,13 @@ def corner(look, k):
                     cover = max(0.0, min(1.0, 0.5 - d))
                     if cover <= 0:
                         continue
-                    f = 0.0 if top else 1.0
-                    rgb = body(look, f)
+                    # The body's own row at this height (rp_draw::panel_cmds
+                    # draws the corners' bands with the art's first and last
+                    # K rows as they are), rounded as the rows are.
+                    f = (y if top else 63 - (K - 1 - y)) / 63
+                    rgb = shown(body(look, f))
                     lit = 0.55 + 0.45 * max(0.0, min(1.0, 1 - (0 if left else 0.5) - (0 if top else 0.7)))
-                    rgb = mix(rgb, rim_at(look, -d, lit))
+                    rgb = mix(rgb, rim_at(look, -d, lit), look.get("edge", (255, 255, 255)))
                     a = cover * look["alpha"]
                     for i in range(3):
                         acc_rgb[i] += rgb[i] * a
@@ -128,9 +151,10 @@ def art(name, look):
     K = look.get("k", globals()["K"])
     rows = [argb(shown(body(look, i / 63)), look["alpha"]) for i in range(64)]
     top_lit, bottom_lit, side_lit = 0.8, 0.57, 0.73
-    top = [argb(mix(body(look, 0.0), rim_at(look, y + 0.5, top_lit)), look["alpha"]) for y in range(2)]
-    bottom = [argb(mix(body(look, 1.0), rim_at(look, 1.5 - y, bottom_lit)), look["alpha"]) for y in range(2)]
-    side = argb(mix(body(look, 0.5), rim_at(look, 0.5, side_lit)), look["alpha"])
+    edge = look.get("edge", (255, 255, 255))
+    top = [argb(mix(body(look, 0.0), rim_at(look, y + 0.5, top_lit), edge), look["alpha"]) for y in range(2)]
+    bottom = [argb(mix(body(look, 1.0), rim_at(look, 1.5 - y, bottom_lit), edge), look["alpha"]) for y in range(2)]
+    side = argb(mix(body(look, 0.5), rim_at(look, 0.5, side_lit), edge), look["alpha"])
     corners = [corner(look, k) for k in range(4)]
     out = []
     for k, c in enumerate(corners):

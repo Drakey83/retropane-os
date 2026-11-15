@@ -499,6 +499,8 @@ fn incremental_frames_match_full_redraws() {
         );
         full.set_pics(store());
         let mut g = Frame::new();
+        // The screen's own window under it, as `frame` gives it (R201).
+        g.set_floor(s.floor());
         s.scene(&mut g);
         s.look(&mut g);
         g.damage(Rect::new(0, 0, W, H));
@@ -3356,6 +3358,8 @@ fn the_sky_drawn_where_it_changes_matches_it_drawn_whole() {
         );
         full.set_pics(store());
         let mut g = Frame::new();
+        // The screen's own window under it, as `frame` gives it (R201).
+        g.set_floor(s.floor());
         s.scene(&mut g);
         s.look(&mut g);
         g.damage(Rect::new(0, 0, W, H));
@@ -4015,14 +4019,25 @@ fn the_start_menu_and_banner_go_over_an_app() {
     let cmds: std::vec::Vec<&Cmd> = f.cmds().collect();
     let app = cmds
         .iter()
-        .position(|c| matches!(c, Cmd::Fill { color: 0x8040_4040, .. }))
+        .position(|c| {
+            matches!(
+                c,
+                Cmd::Fill {
+                    color: 0x8040_4040,
+                    ..
+                }
+            )
+        })
         .expect("the app's card");
     let menu = s.menu_rect();
     let last_menu = cmds
         .iter()
         .rposition(|c| c.bounds(&f).intersect(&menu) == menu)
         .expect("the menu's glass");
-    assert!(last_menu > app, "the menu ({last_menu}) under the app ({app})");
+    assert!(
+        last_menu > app,
+        "the menu ({last_menu}) under the app ({app})"
+    );
 }
 
 #[test]

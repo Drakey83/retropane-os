@@ -89,6 +89,8 @@ fn work(mem: &model::Shared) -> Vec<u32> {
 struct Reference {
     work: Vec<u8>,
     plane: Vec<u8>,
+    /// The window's backdrop picture, if the test gave one.
+    backdrop: Option<Vec<u16>>,
 }
 
 impl Reference {
@@ -96,6 +98,7 @@ impl Reference {
         Self {
             work: std::vec![0; PICTURE_BYTES],
             plane: std::vec![0; PICTURE_BYTES],
+            backdrop: None,
         }
     }
 
@@ -103,6 +106,7 @@ impl Reference {
     fn draw(&mut self, f: &Frame) -> Vec<u32> {
         let layer = Layer::in_bytes(&mut self.work, u32::from(W), u32::from(H)).expect("layer");
         let mut cpu = CpuRenderer::new(layer, &mut self.plane, STRIDE, PlaneFormat::Argb8888);
+        cpu.set_floor_picture(self.backdrop.as_deref());
         cpu.draw(f);
         self.plane
             .as_chunks::<4>()
@@ -1554,6 +1558,51 @@ fn a_window_floor_matches_the_reference_and_goes() {
     // Off: the same scene a little moved, over the wallpaper again.
     let mut g = Frame::new();
     scene(&mut g, 3);
+    g.damage(Rect::new(0, 0, W, H));
+    r.draw(&g);
+    assert!(r.poll());
+    same(&shown(&mut r, &mem), &cpu.draw(&g), 2).unwrap();
+}
+
+/// The window's backdrop picture under the glass (design-language.md
+/// version 3): a frame whose floor is the picture matches the CPU
+/// renderer with the same picture, and a frame without the flag falls back
+/// to the floor's row.
+#[test]
+fn a_backdrop_picture_under_the_glass_matches_the_reference() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    // A picture with a slope in every channel, in the pool.
+    let at = 0xF0_0000usize;
+    let pic: Vec<u16> = (0..usize::from(H))
+        .flat_map(|y| {
+            (0..usize::from(W))
+                .map(move |x| ((x * 31 / 479) << 11 | (y * 63 / 639) << 5 | 9) as u16)
+        })
+        .collect();
+    {
+        let mut m = mem.borrow_mut();
+        for (y, row) in pic.chunks(usize::from(W)).enumerate() {
+            for (x, p) in row.iter().enumerate() {
+                let i = at + y * STRIDE16 + x * 2;
+                m[i..i + 2].copy_from_slice(&p.to_le_bytes());
+            }
+        }
+    }
+    r.set_floor_picture(Some(at));
+    cpu.backdrop = Some(pic);
+    let mut f = Frame::new();
+    scene(&mut f, 0);
+    f.set_floor(Some((Rect::new(0, 0, W, H), 0xFF10_1418, 0xFF2A_3440)));
+    f.set_floor_picture(true);
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
+    // Without the flag: the row, in both.
+    let mut g = Frame::new();
+    scene(&mut g, 2);
+    g.set_floor(Some((Rect::new(0, 0, W, H), 0xFF10_1418, 0xFF2A_3440)));
     g.damage(Rect::new(0, 0, W, H));
     r.draw(&g);
     assert!(r.poll());

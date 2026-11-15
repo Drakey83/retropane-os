@@ -47,6 +47,28 @@ pub fn draw(f: &mut Frame, r: Rect, light: bool) {
     draw_art(f, r, art(light), body(light));
 }
 
+/// The glass of a card inside an app's own window, over its backdrop
+/// (design-language.md version 3): Aero's thin glass, not the wallpaper's
+/// near-opaque one.
+#[must_use]
+pub fn window(light: bool) -> &'static PanelArt {
+    if light {
+        &panel_art::WINDOW_LIGHT
+    } else {
+        &panel_art::WINDOW_DARK
+    }
+}
+
+/// [`window`]'s glass under the pen.
+#[must_use]
+pub fn window_pressed(light: bool) -> &'static PanelArt {
+    if light {
+        &panel_art::WINDOW_LIGHT_PRESSED
+    } else {
+        &panel_art::WINDOW_DARK_PRESSED
+    }
+}
+
 /// The pressed glass for the look: the same panel a shade darker (the
 /// weather card under the pen).
 #[must_use]

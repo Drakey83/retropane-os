@@ -130,9 +130,7 @@ fn ink_differ(got: &[u8], want: &[u8]) -> usize {
         .enumerate()
         .filter(|(i, (a, b))| {
             let (x, y) = ((i % rp_today::W) as u16, (i / rp_today::W) as u16);
-            a != b
-                && !rp_shell::TITLE_CLOCK.contains_point(x, y)
-                && !INK_PANEL.contains_point(x, y)
+            a != b && !rp_shell::TITLE_CLOCK.contains_point(x, y) && !INK_PANEL.contains_point(x, y)
         })
         .count();
     // No ink at all on either side proves nothing.
@@ -319,8 +317,11 @@ pub fn apps(root: &Path) -> Result<(), String> {
         let mut from = 0;
         for (name, k) in &at {
             hands.play(&mut qmp, &steps[from..*k])?;
-            let differ: &dyn Fn(&[u8], &[u8]) -> usize =
-                if name == "notes-ink" { &ink_differ } else { &app_differ };
+            let differ: &dyn Fn(&[u8], &[u8]) -> usize = if name == "notes-ink" {
+                &ink_differ
+            } else {
+                &app_differ
+            };
             if let Err(e) = hands.until(name, &all[*k], differ) {
                 *failed.borrow_mut() = Some(e);
                 break;

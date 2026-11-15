@@ -6,6 +6,7 @@
 mod adrs;
 mod app_mockups;
 mod calib;
+mod design_v3;
 mod devlock;
 mod emu;
 mod eol;
