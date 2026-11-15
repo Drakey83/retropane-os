@@ -1,17 +1,12 @@
 # ADR-0039: A big program (a game port): Game Mode's one program, its libraries placed at build time
 
-- **Status:** Accepted (2026-11-15, by the project owner: "Accept all four")
-  for votes 2, 3 and 4. **Vote 1 (how it runs) is reopened the same day
-  and waits for his ruling:** minutes after accepting he reminded Claude
-  "I want to run the OS in a game mode that we talked about, when starting
-  a port such as this". Rule 1 as first drafted (the shell leaves RAM, the
-  game runs with no kernel under it, the shell is started again after) is
-  the separate game image his Game Mode brief rejects, "not as a stepping
-  stone, a temporary version, or a fallback" (docs/design/game-mode.md,
-  2026-11-01). Claude drafted it without reading that brief; the mistake is
-  Claude's, not a change of the owner's mind. Rules 1, 9 and 10 and
-  alternative F below are rewritten to follow the brief; the first draft's
-  wording is kept under "Amendments" 
+- **Status:** Accepted (2026-11-15, by the project owner). Votes 2, 3 and 4:
+  "Accept all four". Vote 1 (how it runs), as rewritten for Game Mode the
+  same day: "Yes, Game Mode". The first draft's rule 1 (the game alone
+  with no kernel, the shell ended and started again) was withdrawn before
+  that ruling: it was the separate game image his Game Mode brief rejects
+  (docs/design/game-mode.md), drafted by Claude without reading the brief;
+  its wording is kept under "Amendments"
 - **Date:** 2026-11-15
 
 ## Context
@@ -77,7 +72,7 @@ The constraints, each read from the source or measured, not assumed:
    sound and nearly all the memory; leaving it returns to the session that
    was left. The game's own program is a small **runner** in Rust: the
    port layer (`rp_port`), the C library and the loader below, and nothing
-   of the game. **To be ruled (vote 1):** this rule as rewritten.
+   of the game. Ruled by the owner, 2026-11-15: "Yes, Game Mode".
    - *What this does to speed, said plainly:* a kernel under the game costs
      nothing in the frame if the game's memory is mapped in 1 MiB sections
      (the PXA270's 32-entry translation caches then cover the whole game
@@ -234,15 +229,15 @@ one gains in size and time.
   to it and is started again when the game is left ... No process, no
   kernel under it", and the owner accepted it with the other three. His
   reminder of Game Mode followed at once. Rules 1, 9, 10 and alternative F
-  were rewritten as above; vote 1 waits for his ruling on the rewritten
-  rule. Votes 2, 3 and 4 do not depend on it: where the modules are
-  placed is the game's own address space either way.
+  were rewritten as above, and he ruled on the rewritten rule the same
+  day: "Yes, Game Mode". Votes 2, 3 and 4 did not depend on it: where the
+  modules are placed is the game's own address space either way.
 
-## Votes (the owner's, given 2026-11-15: "Accept all four"; vote 1 reopened, see the status)
+## Votes (the owner's, 2026-11-15: "Accept all four"; vote 1 as rewritten: "Yes, Game Mode")
 
-1. **How it runs: reopened.** As Game Mode's one program under the
-   resident kernel (rule 1 as rewritten; proposed now). The first draft
-   (alone, the shell ended and started again) is withdrawn.
+1. **How it runs:** as Game Mode's one program under the resident kernel
+   (rule 1 as rewritten; accepted). The first draft (alone, the shell
+   ended and started again) is withdrawn.
 2. **How libraries load:** placed at build time (A, proposed), relocated at
    load as PE (B), or linked on the device (C).
 3. **What is one module:** the engine with its file system, renderer and
