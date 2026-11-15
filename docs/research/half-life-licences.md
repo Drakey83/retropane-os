@@ -145,10 +145,15 @@ inserted onto the device."
 - **Hidden with no card:** nothing in the Start menu, Settings or anywhere
   else names the port; the programs are in the base image all the same.
   The licence notices stay in About (the code is shipped either way).
-- **Put to him, not ruled:** show the entry when a card (or the flash)
-  holds a `valve` folder, not on any card, so a card of photos never
-  brings an entry that can only say "no game files". His wording was
-  "until an expandable memory card is inserted".
+- **Shown on any card (ruled, 2026-11-15).** I proposed showing the entry
+  only when a `valve` folder is found; he overruled it: "No I want them to
+  be able to make a valve folder on the card." So the entry appears
+  whenever a card is in. Opened with no game files, it is a finished
+  screen, not a dead one: it says the game's files are the user's own,
+  makes the `valve` folder on the card for him, and says to drop his
+  Half-Life files into it from a PC. (My reading, his to correct: the
+  folder is made when he opens the entry, never by a card merely going in,
+  so nothing is written to a card unasked.)
 - **Cost:** small. The shell already sees a card arrive and leave and
   loads programs when they are opened; one look for a folder at that
   moment decides one Start-menu entry.
