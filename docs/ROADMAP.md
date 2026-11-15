@@ -353,7 +353,7 @@ is measured yet; no frame rate is promised before the evaluation.
 - [ ] 2. The evaluation: Xash3D built for ARMv5 with no FPU, a real map in the emulator, its frame's CPU split and its memory measured; the result and the options to the owner
 - [ ] 3. The port layer (one C header): files over `kernel/fat`, the audio service's stream, input, the 3D renderer's C face; each with its test *(2026-11-15: the files are done behind C's `fopen` and pass in the emulator on a card; left: time, the audio stream, input, the renderer's face)*
 - [ ] 4. An ADR: how a program this big is run and left (its own image from the card, or a process)
-- [ ] 5. The licences read in full (Xash3D's GPLv3, Valve's SDK licence): a finding for the owner's ruling
+- [ ] 5. The licences read in full (Xash3D's GPLv3, Valve's SDK licence): a finding for the owner's ruling *(2026-11-15: written, [research/half-life-licences.md](research/half-life-licences.md); his ruling is open)*
 - [ ] 6. The port itself: `ref_rp` on our 3D driver, the tuned software-float runtime, the fixed-point library where the counters show it hot
 
 ## At the end: a faster Quake 3 port
