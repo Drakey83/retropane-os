@@ -77,6 +77,17 @@ const TARGET_FLAGS: &[&str] = &[
     "-nostdinc",
 ];
 
+/// What C++ is compiled with: the language the Half-Life SDK is written
+/// in (no exceptions, no run-time type information, no standard C++
+/// library: `ports/libc/cxxrt.cpp` is the whole runtime), one thread.
+const CXX_FLAGS: &[&str] = &[
+    "-std=c++17",
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-fno-threadsafe-statics",
+    "-nostdinc++",
+];
+
 /// picolibc's folders that are not built: character-set conversion, Sun
 /// RPC, the sanitiser's runtime, long double and complex maths, stack
 /// protection (none asked for by a port; each is a line to remove when one
@@ -572,7 +583,8 @@ pub fn libc(root: &Path, tc: &Toolchain) -> Result<Libc, String> {
     })
 }
 
-/// The C sources in `dir` (not below it) compiled, warnings as errors, into
+/// The C and C++ sources in `dir` (not below it) compiled, warnings as
+/// errors, into
 /// `lib<name>.a` beside `libc.a`.
 ///
 /// # Errors
@@ -584,14 +596,14 @@ pub fn program(tc: &Toolchain, libc: &Libc, name: &str, dir: &Path) -> Result<()
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "c"))
+        .filter(|p| p.extension().is_some_and(|x| x == "c" || x == "cpp"))
         .collect();
     files.sort();
     if files.is_empty() {
-        return Err(format!("{}: no C sources", dir.display()));
+        return Err(format!("{}: no C or C++ sources", dir.display()));
     }
     let mut common = flag_strings(TARGET_FLAGS);
-    common.extend(flag_strings(&["-std=c11", "-Wall", "-Wextra", "-Werror"]));
+    common.extend(flag_strings(&["-Wall", "-Wextra", "-Werror"]));
     common.extend(libc.include_flags.iter().cloned());
     let jobs: Vec<Job> = files
         .iter()
@@ -599,9 +611,13 @@ pub fn program(tc: &Toolchain, libc: &Libc, name: &str, dir: &Path) -> Result<()
             source: f.clone(),
             object: obj.join(format!(
                 "{}.o",
-                f.file_stem().unwrap_or_default().to_string_lossy()
+                f.file_name().unwrap_or_default().to_string_lossy()
             )),
-            flags: vec![],
+            flags: flag_strings(if f.extension().is_some_and(|x| x == "cpp") {
+                CXX_FLAGS
+            } else {
+                &["-std=c11"]
+            }),
         })
         .collect();
     compile(tc, &common, &jobs)?;

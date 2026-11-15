@@ -61,10 +61,74 @@ What it binds, from the points above:
   GPL version 3 notice with where the source is, are in the OS itself
   (the About screen and the image's licence texts) (point 5).
 - RetroPane OS stays free of charge while the port is in it (point 3).
-- **The game's files are the user's own**, looked for on the SD card, the
-  CF card, then the internal flash's storage. Whether a `valve` folder fits
-  the internal flash is not known yet: to measure against the owner's own
-  copy and the flash left after the OS (readiness line 7).
+- **The game's files are the user's own**, looked for **on the internal
+  flash first, then the SD card, then the CF card** (the owner, 2026-11-15:
+  "look for them on internal flash first, if you give me the answer on
+  weather itll fit or not").
+- **Will they fit the internal flash? As far as is known, no; not
+  measured.** The X51v's flash is a DiskOnChip G3 of about 256 MB in all
+  (design-brief.md; its exact size is still to be confirmed on the device),
+  shared with the OS, and RetroPane cannot read or write it yet (R21). A
+  Half-Life `valve` folder is several hundred MB (from memory: the main
+  `pak0.pak` alone is around 400 MB or more; **to be measured on the
+  owner's own copy**, which is not on this PC yet). So the whole game on
+  the flash would need its files made smaller (sounds and textures packed
+  again, a project of its own, unproven) or only part of it there. What
+  does fit on the flash whatever the answer: saves, settings and key
+  bindings, which is why it is searched first.
+
+## Can it be part of the base OS with no card at all? (the owner, 2026-11-15)
+
+"ths os is to be treated as if there is not any expandable storage, so we
+need to make sure all base stuff fits into the internal storage, i want
+this port to be part of the base os experience but i need you to tell me
+if that possible first."
+
+And why (the same day): "I want to treat it like this because not everyone
+will have an SD/cf card, if they do i want it to unlock more capabilities
+but I still want all of the base stuff to work if not."
+
+And, so it is not read literally: "dont treat it as if there is no
+expandable storage, treat it so that we will count for no expandable
+storage to make sure all base stuff works, and that we will offer more
+functionality if there is expandable storage."
+
+**What that means for this port** (my reading, his to correct): the port
+is base, so it is in the image and starts with no card; a card is what
+may unlock the full game if the user's copy cannot be made to fit the
+flash. With no card and no game files on the flash, the port must still
+behave as a finished part of the OS: say plainly that it needs the user's
+Half-Life files, how big they are, where they can go (the flash over USB
+if they fit, a card otherwise) and never show a crash or an empty screen.
+
+What is known, and what is not:
+
+- **The port itself: yes.** The engine and the game's logic are programs
+  of a few MB (an estimate; not built yet), inside the OS's own budget on
+  the flash.
+- **The game's files can never be in the OS image**, whatever their size:
+  they are Valve's, and each user must bring a copy he owns. So "part of
+  the base OS" can only mean: the port is there from the first start, and
+  it plays once the user has put his copy on the device.
+- **Unchanged, that copy does not fit the internal flash.** The flash is
+  about 256 MB in all (Dell's figure, the reviews of 2005 agree; its exact
+  size and what the OS leaves free are not measured, and RetroPane cannot
+  read or write the DiskOnChip yet, R21). A Half-Life `valve` folder is
+  several hundred MB (about 500 MB by one guide of low quality; not
+  measured: the owner's copy is not on this PC).
+- **Made smaller, it may fit; unproven.** A PC tool that takes the user's
+  own copy and packs it for the X51v (sounds at the rate and in the
+  compression the device plays, textures at the size a 640 x 480 screen and
+  16 MB of video memory can show, what single-player never loads left
+  out) is the road nobody else needed. How small it gets is a
+  measurement: the owner's `valve` folder broken down by kind (maps,
+  sounds, models, textures), each packed, against the flash left after
+  the OS. Until then neither "it fits" nor "it cannot" is honest.
+- **So, today:** a base OS with the port in it is possible; the whole game
+  on the internal flash with no card is **not known to be possible and not
+  shown impossible**. It needs three things first: his `valve` folder (to
+  measure), the DiskOnChip read and written (R21), the flash's free room
+  after the OS.
 
 ## The choices as they were put
 

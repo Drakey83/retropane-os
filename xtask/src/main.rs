@@ -1496,6 +1496,7 @@ const C_IMAGES: &[&str] = &["rp-port-hello"];
 fn c_hello() -> Result {
     let root = workspace_root();
     let (tc, libc) = cc::ready(&root)?;
+    cc::program(&tc, &libc, "rpcxx", &root.join("ports/libc"))?;
     cc::program(&tc, &libc, "hello", &root.join("ports/hello/c"))?;
     let mut env = Command::new("");
     env.env("RP_C_LIBS", &libc.lib_dir);

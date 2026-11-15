@@ -45,11 +45,29 @@ SECTIONS
         KEEP(*(.rp_fixup))
         __rp_fixup_end = .;
     } > SDRAM
+    /* The constructors of a C or C++ program's global objects, run before
+     * its main (rp-hal-cabi), and what it would run at its end. Empty in a
+     * Rust image. */
+    .init_array : ALIGN(4) {
+        __preinit_array_start = .;
+        KEEP(*(.preinit_array))
+        __preinit_array_end = .;
+        __init_array_start = .;
+        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+        KEEP(*(.init_array))
+        __init_array_end = .;
+        __fini_array_start = .;
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+        KEEP(*(.fini_array))
+        __fini_array_end = .;
+    } > SDRAM
     .data   : ALIGN(4) { *(.data .data.*) } > SDRAM
 
     /* Zeroed RAM and stacks: after the loaded bytes, or where the image
      * says (see the top). Never loaded, so the raw image ends at .data. */
-    .bss (DEFINED(__ram_at) ? __ram_at : .) (NOLOAD) : ALIGN(4) {
+    /* On a 16-byte boundary: the most a C object in it asks for (a C
+     * program's big static arrays); a Rust image's ask for less. */
+    .bss ALIGN(DEFINED(__ram_at) ? __ram_at : ., 16) (NOLOAD) : ALIGN(4) {
         __bss_start = .;
         *(.bss .bss.* COMMON)
         . = ALIGN(4);

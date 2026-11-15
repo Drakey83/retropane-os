@@ -12,7 +12,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int check(const char *what, int ok)
+/* The C++ checks (cxx.cpp). */
+int cxx_checks(void);
+
+/* One check's line; also called from cxx.cpp. */
+int check(const char *what, int ok);
+
+int check(const char *what, int ok)
 {
     printf("  %s: %s\n", what, ok ? "ok" : "FAILED");
     return ok;
@@ -125,6 +131,7 @@ int main(void)
 
     /* A file that is not there is refused, not a crash. */
     ok &= check("fopen of nothing is refused", fopen("/nothing", "rb") == NULL);
+    ok &= cxx_checks();
     ok &= files();
 
     puts(ok ? "RETROPANE-C-HELLO-OK" : "RETROPANE-C-HELLO-FAILED");

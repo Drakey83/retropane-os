@@ -4,7 +4,7 @@
 //! Iterate, don't imitate (rule 0). Windows Mobile puts coredll over kernel
 //! traps; Linux puts glibc or musl over a few hundred system calls; an
 //! embedded newlib port is a file of C stubs (`_write`, `_sbrk`) that trust
-//! every pointer. Ours: picolibc needs eight calls, and each is a
+//! every pointer. Ours: picolibc needs nine calls, and each is a
 //! `no_mangle` function here that turns the C program's pointers into
 //! slices once and hands them to a [`Sys`] written in safe Rust above (the
 //! port layer, over the card's files and the audio service). All the
@@ -153,6 +153,9 @@ mod face {
     unsafe extern "C" {
         /// picolibc's `errno` (one global: the build has `__GLOBAL_ERRNO`).
         static mut errno: c_int;
+        /// picolibc's: runs the constructors of the program's global
+        /// objects (boot/link.x's `.init_array`).
+        fn __libc_init_array();
         /// The C program.
         fn main() -> c_int;
         /// picolibc's `fflush`.
@@ -172,6 +175,10 @@ mod face {
     /// printed pushed out.
     #[must_use]
     pub fn run() -> i32 {
+        // SAFETY: picolibc's own walk of the link script's constructor
+        // table, once, before the program; `start` has registered the
+        // system a constructor may call into.
+        unsafe { __libc_init_array() };
         // SAFETY: `main` is the linked C program's entry, taking nothing;
         // `start` has registered the system it calls into.
         let code = unsafe { main() };
@@ -293,6 +300,15 @@ mod face {
             Ok(old) => old as *mut c_void,
             Err(e) => fail(e) as usize as *mut c_void,
         }
+    }
+
+    /// `raise(3)`: there are no signals here. The C library calls it from
+    /// `abort()` (a failed `assert`, C++'s pure-virtual trap, `new` out of
+    /// memory): the image's end, as a failure (128 plus the signal, the
+    /// number a shell would show).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn raise(signal: c_int) -> c_int {
+        _exit(128 + (signal & 0x7F))
     }
 
     /// `_exit(2)`: the image's own end.

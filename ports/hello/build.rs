@@ -14,10 +14,12 @@ fn main() {
     println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=0x20000");
     if let Ok(libs) = std::env::var("RP_C_LIBS") {
         println!("cargo:rerun-if-changed={libs}/libhello.a");
+        println!("cargo:rerun-if-changed={libs}/librpcxx.a");
         println!("cargo:rerun-if-changed={libs}/libc.a");
         println!("cargo:rustc-link-search=native={libs}");
         // The program first, then the library it calls into.
         println!("cargo:rustc-link-lib=static=hello");
+        println!("cargo:rustc-link-lib=static=rpcxx");
         println!("cargo:rustc-link-lib=static=c");
     }
 }
