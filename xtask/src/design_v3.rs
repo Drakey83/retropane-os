@@ -17,46 +17,7 @@ type Person = (&'static [u8], &'static [u8], &'static [u8], usize);
 /// A sample note: where, its paper, its title, its lines.
 type Sheet = (Rect, Argb, &'static [u8], &'static [&'static [u8]]);
 
-/// A glass card with a spaced-capital label in the app's tint.
-fn card(f: &mut Frame, cx: &Ctx, r: Rect, label: &[u8], c: Argb) {
-    kit::panel(f, cx, r);
-    if !label.is_empty() {
-        kit::text(f, r.x + 16, r.y + 22, cx.fonts.label, c, label);
-    }
-}
-
-/// A gel key with its word.
-fn key(f: &mut Frame, cx: &Ctx, r: Rect, word: &[u8], on: bool) {
-    kit::key(f, cx, r, if on { KeyState::On } else { KeyState::Rest });
-    kit::centred(f, r, r.y + r.h / 2 + 6, cx.fonts.label, TEXT, word);
-}
-
-/// The tabs along the foot, as Weather's: words, the chosen one underlined
-/// in the tint.
-fn tabs(f: &mut Frame, cx: &Ctx, words: &[&[u8]], chosen: usize, c: Argb) {
-    let w = 448 / words.len() as u16;
-    f.push(Cmd::Fill {
-        r: Rect::new(0, 558, 480, 1),
-        color: kit::alpha(TEXT, 0x30),
-    });
-    for (i, word) in words.iter().enumerate() {
-        let r = Rect::new(16 + i as u16 * w, 560, w, 36);
-        kit::centred(
-            f,
-            r,
-            584,
-            cx.fonts.ui,
-            if i == chosen { TEXT } else { DIM },
-            word,
-        );
-        if i == chosen {
-            f.push(Cmd::Fill {
-                r: Rect::new(r.x + 16, 593, w - 32, 3),
-                color: c,
-            });
-        }
-    }
-}
+use kit::{card, foot_tabs as tabs, gel as key};
 
 /// Calendar's home: today as a hero, the day drawn as a ribbon, what is
 /// next with its countdown, the week's load at a glance.

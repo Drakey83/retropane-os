@@ -355,3 +355,120 @@ fn typing_and_ink_keep_the_paper_colour_pin_and_unknown_fields() {
     assert_eq!(r.num(tag::PINNED), Some(1));
     assert_eq!(r.text(99), b"later");
 }
+
+/// A stroke from (`x0`, `y0`) going right `n` samples, `dy(k)` its rise.
+fn stroke(n: &mut Notes, cx: &Ctx, x0: u16, y0: u16, samples: u16, dy: impl Fn(u16) -> u16) {
+    n.event(Event::PenDown { x: x0, y: y0 }, cx);
+    for k in 1..samples {
+        n.event(
+            Event::PenMove {
+                x: x0 + k * 6,
+                y: y0 + dy(k),
+            },
+            cx,
+        );
+    }
+    n.event(
+        Event::PenUp {
+            x: x0 + samples * 6,
+            y: y0,
+        },
+        cx,
+    );
+}
+
+#[test]
+fn the_palette_picks_colour_and_size_and_a_stroke_keeps_both() {
+    // The owner, 2026-11-14: "the pen and marker colors are hard to
+    // select", "there also is no stroke size control".
+    let pim = store();
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    n.event(Event::Key(Key::SoftRight), &cx);
+    draw(&mut n, &cx);
+    // The third well (red), the bold size: one tap each.
+    let (w, k) = (well(2), size_key(2));
+    n.event(
+        Event::PenUp {
+            x: w.x + 20,
+            y: w.y + 20,
+        },
+        &cx,
+    );
+    n.event(
+        Event::PenUp {
+            x: k.x + 20,
+            y: k.y + 20,
+        },
+        &cx,
+    );
+    assert_eq!((n.pen, n.size, n.tool), (2, 2, Tool::Pen));
+    let (ix, iy) = n.ink_at.expect("an ink panel on screen");
+    // A straight stroke of 30 samples: kept as its ends (thinned), in the
+    // colour and size chosen.
+    stroke(&mut n, &cx, ix + 20, iy + 40, 30, |_| 0);
+    let g = pim.borrow();
+    let rec = g
+        .as_ref()
+        .unwrap()
+        .all(Kind::Note)
+        .next()
+        .expect("the note");
+    let mut pts = [(0i16, 0i16); POINTS];
+    let mut ends = [0u16; STROKES];
+    let mut styles = [0u8; STROKES];
+    let ns = decode_ink(rec.text(tag::INK), &mut pts, &mut ends, &mut styles);
+    assert_eq!(ns, 1);
+    assert_eq!(styles[0], 2 | SIZE_BOLD);
+    assert!(ends[0] <= 4, "a line is its ends, not {} points", ends[0]);
+    assert_eq!(pts[0], (20, 40));
+}
+
+#[test]
+fn a_curve_keeps_its_shape_when_thinned() {
+    let mut pts = [(0i16, 0i16); LIVE];
+    // A wave: 60 samples, 6 px apart, 12 px high.
+    for (k, p) in pts.iter_mut().enumerate().take(60) {
+        let up = [0, 6, 10, 12, 10, 6, 0, -6, -10, -12, -10, -6];
+        *p = (k as i16 * 6, up[k % 12]);
+    }
+    let before = pts;
+    let n = simplify(&mut pts, 60);
+    assert!(n < 45, "{n}");
+    // Every point left out lies within a pixel and a half of the kept line.
+    for q in &before[..60] {
+        let near = pts[..n].windows(2).any(|w| {
+            let (ax, ay) = (i32::from(w[0].0), i32::from(w[0].1));
+            let (dx, dy) = (i32::from(w[1].0) - ax, i32::from(w[1].1) - ay);
+            let (px, py) = (i32::from(q.0) - ax, i32::from(q.1) - ay);
+            let t = ((px * dx + py * dy) * 256 / (dx * dx + dy * dy).max(1)).clamp(0, 256);
+            let (ex, ey) = (px - dx * t / 256, py - dy * t / 256);
+            ex * ex + ey * ey <= 3
+        });
+        assert!(near, "{q:?} is off the thinned stroke");
+    }
+}
+
+#[test]
+fn a_full_note_says_so_instead_of_dropping_strokes_in_silence() {
+    // The owner, 2026-11-14: "gets to the point where they dont show up at
+    // all" (a note's ink holds 48 strokes; R206 lifts the cap).
+    let pim = store();
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    n.event(Event::Key(Key::SoftRight), &cx);
+    draw(&mut n, &cx);
+    let (ix, iy) = n.ink_at.expect("an ink panel on screen");
+    for k in 0..STROKES as u16 {
+        stroke(&mut n, &cx, ix + 10, iy + 4 + k * 4, 4, |_| 0);
+        assert!(!n.ink_full, "stroke {k}");
+    }
+    stroke(&mut n, &cx, ix + 10, iy + 4, 4, |_| 0);
+    assert!(n.ink_full);
+    // The eraser makes room: the notice goes.
+    n.tool = Tool::Erase;
+    stroke(&mut n, &cx, ix + 10, iy + 4, 4, |_| 0);
+    assert!(!n.ink_full);
+}

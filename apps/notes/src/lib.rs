@@ -19,7 +19,6 @@ use rp_app::{
 };
 use rp_pim::store::{Kind, tag};
 
-
 /// One block of a note, as a note is written (the previews' samples, and
 /// the store's text and ink once parsed).
 #[derive(Clone, Copy, Debug)]
@@ -60,16 +59,79 @@ const INK_LINE: u8 = 0x01;
 const POINTS: usize = 900;
 const STROKES: usize = 48;
 
-/// The pen's five colours (`STYLE` bits 0-2 choose), dark first.
-pub const PEN: [Argb; 5] = [
+/// The pen's six colours (`STYLE` bits 0-2 choose), dark first.
+pub const PEN: [Argb; 6] = [
     kit::keep(0xFF20_2A38),
     kit::keep(0xFF1C_3A6E),
     kit::keep(0xFFC0_3030),
     kit::keep(0xFF2E_8B57),
     kit::keep(0xFFFF_9F2E),
+    kit::keep(0xFF7A_3FC0),
 ];
 /// A stroke's style bit: the marker (wide, see-through yellow).
 pub const MARKER: u8 = 0x08;
+/// A stroke's size, style bits 4-5: 0 medium (every stroke written before
+/// sizes), 1 fine, 2 bold (the owner, 2026-11-14: "there also is no
+/// stroke size control").
+pub const SIZE_FINE: u8 = 0x10;
+/// See [`SIZE_FINE`].
+pub const SIZE_BOLD: u8 = 0x20;
+
+/// A stroke's points thinned as it is kept (Ramer-Douglas-Peucker, a
+/// pixel's tolerance): the pen gives a point every few pixels, a line
+/// needs its two ends and a curve a few more, so a note holds several
+/// times the writing in the same room and the spline brush draws the same
+/// stroke. Returns how many of `pts[..n]` are left, in place.
+fn simplify(pts: &mut [(i16, i16); LIVE], n: usize) -> usize {
+    if n < 3 {
+        return n;
+    }
+    let mut keep = [false; LIVE];
+    keep[0] = true;
+    keep[n - 1] = true;
+    let mut stack = [(0usize, 0usize); 24];
+    stack[0] = (0, n - 1);
+    let mut sp = 1;
+    while sp > 0 {
+        sp -= 1;
+        let (a, b) = stack[sp];
+        if b <= a + 1 {
+            continue;
+        }
+        let (ax, ay) = (i64::from(pts[a].0), i64::from(pts[a].1));
+        let (dx, dy) = (i64::from(pts[b].0) - ax, i64::from(pts[b].1) - ay);
+        let len2 = (dx * dx + dy * dy).max(1);
+        // The point farthest from the chord (its distance squared times
+        // the chord's length squared: no divide, no root).
+        let (mut far, mut at) = (0i64, a);
+        for (k, q) in pts.iter().enumerate().take(b).skip(a + 1) {
+            let cross = dx * (i64::from(q.1) - ay) - dy * (i64::from(q.0) - ax);
+            if cross * cross > far {
+                far = cross * cross;
+                at = k;
+            }
+        }
+        if far > len2 {
+            keep[at] = true;
+            if sp + 2 <= stack.len() {
+                stack[sp] = (a, at);
+                stack[sp + 1] = (at, b);
+                sp += 2;
+            } else {
+                // No room to split further: keep the span as it is.
+                keep[a..=b].iter_mut().for_each(|k| *k = true);
+            }
+        }
+    }
+    let mut m = 0;
+    for k in 0..n {
+        if keep[k] {
+            pts[m] = pts[k];
+            m += 1;
+        }
+    }
+    m
+}
 
 /// Packs `strokes` into `out` (the store's `INK` field): per stroke its
 /// point count, its style (the pen colour 0-4, [`MARKER`]), the first
@@ -266,8 +328,21 @@ const LAYOUT: Rect = Rect::new(W - MARGIN - 132, 36 + kit::TITLE_BAND + 7, 132, 
 
 /// The note's tool strip, its tools in order, and the pen colours' row.
 const STRIP: Rect = Rect::new(8, 548, W - 16, 48);
+/// The palette tray (design-language.md version 3): the glass under the
+/// sheet holding the colour wells, the stroke sizes and, at its foot, the
+/// tool strip.
+const TRAY: Rect = Rect::new(8, 450, W - 16, 146);
+/// Colour well `i` (40 px, a thumb wide: the owner, 2026-11-14, "the pen
+/// and marker colors are hard to select").
+const fn well(i: u16) -> Rect {
+    Rect::new(22 + i * 48, 482, 40, 40)
+}
+/// Size key `i` (fine, medium, bold).
+const fn size_key(i: u16) -> Rect {
+    Rect::new(322 + i * 48, 480, 44, 44)
+}
 const TOOLS: [&[u8]; 6] = [b"PEN", b"MARKER", b"ERASE", b"TEXT", b"LIST", b"UNDO"];
-const PAPER: Rect = Rect::new(8, 40, W - 16, 504);
+const PAPER: Rect = Rect::new(8, 40, W - 16, 404);
 /// The ink panel's size (the store's coordinates).
 const INK_W: u16 = 448;
 const INK_H: u16 = 196;
@@ -281,6 +356,13 @@ pub struct Notes {
     /// ink panel lies on screen; the checklist rows on screen; typing.
     tool: Tool,
     pen: u8,
+    /// The stroke size: 0 fine, 1 medium, 2 bold.
+    size: u8,
+    /// The colour wells' discs.
+    wells: [Option<Pic>; 6],
+    /// The last stroke didn't fit the note's ink (said on the tray until
+    /// one fits again: never dropped silently).
+    ink_full: bool,
     live: [(i16, i16); LIVE],
     live_n: usize,
     ink_at: Option<(u16, u16)>,
@@ -380,9 +462,14 @@ pub fn paint_over(
         let c = only.unwrap_or(if marker {
             kit::keep(0x70FF_E040)
         } else {
-            PEN[usize::from(style & 7).min(4)]
+            PEN[usize::from(style & 7).min(5)]
         });
-        let rad = if marker { base_rad * 3 } else { base_rad };
+        let rad = match style & (SIZE_FINE | SIZE_BOLD) {
+            SIZE_FINE => base_rad * 5 / 8,
+            SIZE_BOLD => base_rad * 2,
+            _ => base_rad,
+        };
+        let rad = if marker { rad * 3 } else { rad };
         let p = |i: isize| {
             let k = i.clamp(0, st.len() as isize - 1) as usize;
             (i32::from(st[k].0) * s / 16, i32::from(st[k].1) * s / 16)
@@ -448,6 +535,9 @@ impl Notes {
         Self {
             tool: Tool::Pen,
             pen: 0,
+            size: 1,
+            wells: [None; 6],
+            ink_full: false,
             live: [(0, 0); LIVE],
             live_n: 0,
             ink_at: None,
@@ -530,6 +620,9 @@ impl Notes {
         if self.ring.is_none() {
             self.ring = kit::disc(pics, 24, 0, Some(tint::NOTES));
             self.full = kit::disc(pics, 24, tint::NOTES, None);
+            for (w, c) in self.wells.iter_mut().zip(PEN) {
+                *w = kit::gloss_disc(pics, 40, c | 0xFF00_0000);
+            }
         }
         match self.view {
             View::Home => {
@@ -544,7 +637,13 @@ impl Notes {
                     {
                         if k < self.minis.len() {
                             if self.minis[k].is_none() {
-                                self.minis[k] = ink_pic(cx, row.id, kit::INK_MINI.0, kit::INK_MINI.1, 0xFF20_2A38);
+                                self.minis[k] = ink_pic(
+                                    cx,
+                                    row.id,
+                                    kit::INK_MINI.0,
+                                    kit::INK_MINI.1,
+                                    0xFF20_2A38,
+                                );
                             }
                             k += 1;
                         }
@@ -825,7 +924,7 @@ impl Notes {
                 }
             }
         }
-        if self.ink_at.is_none() && y + 40 < STRIP.y {
+        if self.ink_at.is_none() && y + 40 < TRAY.y {
             // Writing below the lines starts the note's ink panel there.
             self.ink_at = Some((paper.x + 8, y - 18));
         }
@@ -846,7 +945,11 @@ impl Notes {
             // Pen and marker strokes are painted into the picture as they
             // go ([`Self::live_paint`]); the eraser's path shows as dots.
             let c = kit::keep(0x80FF_FFFF);
-            let shown = if self.tool == Tool::Erase { self.live_n } else { 0 };
+            let shown = if self.tool == Tool::Erase {
+                self.live_n
+            } else {
+                0
+            };
             for &(x, yy) in &self.live[..shown] {
                 f.push(rp_app::Cmd::Fill {
                     r: Rect::new(ix + x as u16, iy + yy as u16, 3, 3),
@@ -890,9 +993,64 @@ impl Notes {
             }
             return;
         }
-        // The tool strip.
+        // The palette tray: the colour wells (the chosen one in the glow),
+        // the three sizes drawn at their size, then the tool strip.
         let strip = STRIP;
-        kit::panel(f, cx, strip);
+        kit::panel(f, cx, TRAY);
+        kit::text(f, 24, 472, cx.fonts.label, DIM, b"COLOUR");
+        for (i, p) in self.wells.iter().enumerate() {
+            let r = well(i as u16);
+            if i == usize::from(self.pen) && self.tool != Tool::Marker {
+                kit::key(
+                    f,
+                    cx,
+                    Rect::new(r.x - 5, r.y - 5, 50, 50),
+                    kit::KeyState::On,
+                );
+            }
+            if let Some(p) = *p {
+                f.push(rp_app::Cmd::Pic {
+                    x: r.x,
+                    y: r.y as i16,
+                    pic: p,
+                });
+            }
+        }
+        if self.ink_full {
+            kit::right(
+                f,
+                456,
+                472,
+                cx.fonts.label,
+                kit::LATE,
+                b"THIS NOTE'S INK IS FULL",
+            );
+        } else {
+            kit::text(f, 326, 472, cx.fonts.label, DIM, b"SIZE");
+        }
+        for (i, d) in [6u16, 12, 20].iter().enumerate() {
+            let r = size_key(i as u16);
+            kit::key(
+                f,
+                cx,
+                r,
+                if i == usize::from(self.size) {
+                    kit::KeyState::On
+                } else {
+                    kit::KeyState::Rest
+                },
+            );
+            kit::round_rect(
+                f,
+                cx,
+                Rect::new(r.x + (44 - d) / 2, r.y + (44 - d) / 2, *d, *d),
+                if cx.look.light {
+                    kit::keep(0xFF28_3038)
+                } else {
+                    TEXT
+                },
+            );
+        }
         let chosen = match self.tool {
             Tool::Pen => 0,
             Tool::Marker => 1,
@@ -913,14 +1071,6 @@ impl Notes {
                 },
             );
             kit::centred(f, r, r.y + 23, cx.fonts.label, TEXT, t);
-        }
-        // The pen's five colours over the strip's left.
-        for (k, c) in PEN.iter().enumerate() {
-            let h = if k == usize::from(self.pen) { 10 } else { 6 };
-            f.push(rp_app::Cmd::Fill {
-                r: Rect::new(strip.x + 14 + k as u16 * 16, strip.y - 4 - h, 12, h),
-                color: *c,
-            });
         }
     }
 }
@@ -944,14 +1094,12 @@ impl Notes {
                 pics.write(p, |px| px.iter_mut().for_each(|q| *q = 0));
             }
         }
+        // Renewed before each change: a picture once drawn is final.
+        self.ink = self.ink.and_then(|p| pics.renew(p));
         let Some(p) = self.ink else { return };
         let n = self.live_n;
         let pts = &self.live[n.saturating_sub(3)..n];
-        let style = if self.tool == Tool::Marker {
-            MARKER
-        } else {
-            self.pen
-        };
+        let style = self.style();
         pics.write(p, |px| {
             paint_over(px, kit::INK_PIC.0, kit::INK_PIC.1, &[pts], &[style], None);
         });
@@ -989,15 +1137,37 @@ impl Notes {
             .is_ok()
     }
 
+    /// The style of a stroke written now: the pen's colour or the marker,
+    /// and the size.
+    fn style(&self) -> u8 {
+        let size = match self.size {
+            0 => SIZE_FINE,
+            2 => SIZE_BOLD,
+            _ => 0,
+        };
+        size | if self.tool == Tool::Marker {
+            MARKER
+        } else {
+            self.pen
+        }
+    }
+
     /// The stroke just written added to the note's ink (or, with the
     /// eraser, the stroke it crossed taken out).
     fn end_stroke(&mut self, cx: &Ctx, id: u32) {
-        let (live, n, tool, pen) = (self.live, self.live_n, self.tool, self.pen);
+        let (mut live, tool, style) = (self.live, self.tool, self.style());
+        // Thinned as it is kept (the eraser's path as it was: it is only
+        // compared).
+        let n = if tool == Tool::Erase {
+            self.live_n
+        } else {
+            simplify(&mut live, self.live_n)
+        };
         self.live_n = 0;
         if n == 0 {
             return;
         }
-        self.rewrite(cx, id, |text, tn, ink, inn| {
+        let kept = self.rewrite(cx, id, |text, tn, ink, inn| {
             let mut pts = [(0i16, 0i16); POINTS];
             let mut ends = [0u16; STROKES];
             let mut styles = [0u8; STROKES];
@@ -1030,7 +1200,7 @@ impl Notes {
                     return false;
                 }
                 strokes[ns] = &live[..n];
-                styles[ns] = if tool == Tool::Marker { MARKER } else { pen };
+                styles[ns] = style;
                 count += 1;
             }
             match encode_styled(&strokes[..count], &styles[..count], ink) {
@@ -1049,6 +1219,13 @@ impl Notes {
             }
             true
         });
+        // A stroke that didn't fit is said, not dropped in silence (the
+        // owner, 2026-11-14: strokes stopped showing with no word why).
+        if tool != Tool::Erase {
+            self.ink_full = !kept;
+        } else if kept {
+            self.ink_full = false;
+        }
     }
 
     /// The last stroke taken out (UNDO), or the last character typed.
@@ -1195,7 +1372,6 @@ impl Program for Notes {
         self.refresh(cx);
         self.find(cx);
         self.paint(cx);
-        kit::backdrop(f);
         match self.view {
             View::Home => self.home(f, cx),
             View::Note(i) => self.note(f, cx, i),
@@ -1293,11 +1469,28 @@ impl Program for Notes {
                     None => Reply::Nothing,
                 }
             }
+            // The palette: a colour well (the pen takes it), a size.
+            (Event::PenUp { x, y }, View::Note(_))
+                if TRAY.contains_point(x, y) && y < STRIP.y && !self.menu =>
+            {
+                if let Some(i) = (0..6u16).find(|&i| {
+                    let r = well(i);
+                    Rect::new(r.x - 4, r.y - 6, 48, 52).contains_point(x, y)
+                }) {
+                    self.pen = i as u8;
+                    if self.tool != Tool::Pen {
+                        self.tool = Tool::Pen;
+                        self.typing = false;
+                    }
+                } else if let Some(i) = (0..3u16).find(|&i| size_key(i).contains_point(x, y)) {
+                    self.size = i as u8;
+                }
+                Reply::Redraw
+            }
             // The tool strip.
             (Event::PenUp { x, y }, View::Note(_)) if STRIP.contains_point(x, y) => {
                 let k = usize::from((x - STRIP.x - 6) / 76).min(5);
                 match k {
-                    0 if self.tool == Tool::Pen => self.pen = (self.pen + 1) % 5,
                     0 => self.tool = Tool::Pen,
                     1 => self.tool = Tool::Marker,
                     2 => self.tool = Tool::Erase,
@@ -1343,7 +1536,7 @@ impl Program for Notes {
                 let Some((ix, iy)) = self.ink_at else {
                     return Reply::Nothing;
                 };
-                if x < ix || y < iy || x >= ix + INK_W || y >= iy + INK_H || y >= STRIP.y {
+                if x < ix || y < iy || x >= ix + INK_W || y >= iy + INK_H || y >= TRAY.y {
                     return Reply::Nothing;
                 }
                 if self.live_n < LIVE {

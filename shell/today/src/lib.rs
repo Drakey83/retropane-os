@@ -27,6 +27,53 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+/// The picture store's slots (side, count): the shell's sizes
+/// (`rp_shell::Size`), as many of each as the screens show at once
+/// plus a spare, so a pick replaces a picture with no gap (the sheet's
+/// 250 x2, 66 x8, 40 x16; Hourly's 160 x6, not x2: every hour's card
+/// picture is kept, so a pick never waits on a decode, P1).
+/// The big pictures are fitted inside 250 x 176 (the hero's box), so
+/// their slots are that, not square (-148 KB). Hourly's graph is one
+/// picture of its own (its line and band, painted once a forecast).
+/// One list for the image and for the PC's model of it (2026-11-14: the
+/// model's store had 22 big slots where the X51v has 2, so an app that ran
+/// the device out of slots passed every check).
+/// How many of [`PIC_CLASSES`] are the shell's own (the rest are the app
+/// programs', behind the store's wall: `rp_draw::pics::Pics::wall`).
+pub const SHELL_PIC_CLASSES: usize = 6;
+// (The app programs' are the kit's whole list.)
+const _: () = assert!(PIC_CLASSES.len() == SHELL_PIC_CLASSES + rp_app::kit::PIC_CLASSES.len());
+
+/// The picture store's classes (see above).
+pub const PIC_CLASSES: [(u16, u16, u8); 12] = [
+    (rp_shell::Size::Hero.side(), rp_shell::HERO_PIC_H, 2),
+    (rp_shell::Size::Mid.side(), rp_shell::Size::Mid.side(), 6),
+    (rp_shell::Size::Card.side(), rp_shell::Size::Card.side(), 8),
+    (rp_shell::Size::Row.side(), rp_shell::Size::Row.side(), 16),
+    (
+        rp_shell::weather_app::GRAPH_PIC.0,
+        rp_shell::weather_app::GRAPH_PIC.1,
+        1,
+    ),
+    // The open chart's line, its own picture (Hourly's left be).
+    (
+        rp_shell::chart::CHART_PIC.0,
+        rp_shell::chart::CHART_PIC.1,
+        1,
+    ),
+    // The app programs' marks, avatars and the card's big avatar
+    // (rp_app::kit::PIC_CLASSES, design-language.md version 2).
+    rp_app::kit::PIC_CLASSES[0],
+    rp_app::kit::PIC_CLASSES[1],
+    rp_app::kit::PIC_CLASSES[2],
+    rp_app::kit::PIC_CLASSES[3],
+    rp_app::kit::PIC_CLASSES[4],
+    rp_app::kit::PIC_CLASSES[5],
+];
+// Every size the app programs may ask for (a size added to the kit's
+// list and not here fails the build).
+const _: () = assert!(rp_app::kit::PIC_CLASSES.len() == 6);
+
 pub mod clock;
 pub mod fonts;
 pub mod kept;

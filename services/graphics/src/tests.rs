@@ -921,8 +921,10 @@ fn the_service_stays_small() {
     // 24 KiB stack when the service held the renderer: 11 KiB here then;
     // 5.4 KiB with the 3D state inside, 2026-10-17). The 3D state is lent
     // only by programs that use 3D. Host sizes (64-bit) bound the device's.
+    // 1,032 since 2026-11-14: the renderer's floor (an app's own window,
+    // its backdrop picture) and the floor picture's slot, 40 bytes.
     let size = core::mem::size_of::<Graphics<'static, Both, m2::Mem>>();
-    assert!(size <= 1024, "{size} bytes");
+    assert!(size <= 1040, "{size} bytes");
 }
 
 #[test]

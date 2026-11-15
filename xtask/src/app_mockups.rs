@@ -622,6 +622,14 @@ fn base() -> Vec<Mock> {
             prepare: Box::new(|s| open(s, crate::design_v3::ContactsHome::default())),
         },
         Mock {
+            name: "app-calendar-home",
+            what: "Calendar (the app itself): the day's board, from the store's records",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                open(s, calendar(View::Home, b""));
+            }),
+        },
+        Mock {
             name: "v2-calendar-agenda",
             what: "Calendar: the agenda under the large title and the week strip, the forecast on each day",
             prepare: Box::new(|s| {

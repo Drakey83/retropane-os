@@ -265,3 +265,49 @@ fn a_tick_keeps_a_long_note_whole_and_fields_it_doesnt_know() {
     assert_eq!(r.text(tag::NOTE), &note[..]);
     assert_eq!(r.text(99), b"later");
 }
+
+#[test]
+fn the_home_counts_the_day_and_everything_on_it_answers_the_stylus() {
+    // Design language version 3: the home's ring, numbers, tiles and rows
+    // are from the store, and every one is a target (the version 2 home
+    // answered no tap at all).
+    let pim = store();
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    t.show(View::List(None));
+    draw(&mut t, &cx);
+    typed(&mut t, &cx, b"call the dentist today");
+    typed(&mut t, &cx, b"pick up the parts today");
+    t.show(View::Home);
+    draw(&mut t, &cx);
+    // Two due, none done.
+    assert_eq!(t.counts(19_723).0, 2);
+    // A row's box ticks its task.
+    let id = t.tasks.iter().flatten().next().expect("a task").id;
+    let r = t.hits.find(Hit::Tick(id)).expect("its box is a target");
+    assert_eq!(
+        t.event(
+            Event::PenUp {
+                x: r.x + 10,
+                y: r.y + 10
+            },
+            &cx
+        ),
+        Reply::Redraw
+    );
+    draw(&mut t, &cx);
+    assert!(
+        t.tasks
+            .iter()
+            .flatten()
+            .any(|k| k.id == id && k.done_day == Some(19_723))
+    );
+    assert_eq!(t.counts(19_723).0, 1);
+    // The hero opens Today; so does the D-pad's centre.
+    assert!(t.hits.find(Hit::List(None)).is_some());
+    t.event(Event::PenUp { x: 300, y: 100 }, &cx);
+    assert_eq!(t.view, View::List(None));
+    t.show(View::Home);
+    assert_eq!(t.event(Event::Key(Key::Enter), &cx), Reply::Redraw);
+    assert_eq!(t.view, View::List(None));
+}

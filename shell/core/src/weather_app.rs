@@ -765,7 +765,7 @@ impl Shell {
             return;
         }
         let r = Rect::new(x, top as u16, w, (bottom - top) as u16);
-        super::panel::draw(f, r, self.light());
+        self.card(f, r);
     }
 
     /// A card's accent bar at its left edge (the apps' tinted card,

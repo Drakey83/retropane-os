@@ -133,7 +133,10 @@ impl Trail {
                 e.reported = true;
             }
         }
-        if self.last_line.is_some_and(|t| ms.saturating_sub(t) < QUIET_MS) {
+        if self
+            .last_line
+            .is_some_and(|t| ms.saturating_sub(t) < QUIET_MS)
+        {
             return None;
         }
         self.last_line = Some(ms);
@@ -235,7 +238,10 @@ mod tests {
         let mut s = String::new();
         t.write_last(&mut s).unwrap();
         assert_eq!(s.matches("; ").count(), SHOWN - 1);
-        assert!(s.starts_with(&std::format!("{} key Up on Today", LEN as u32 + 5 - SHOWN as u32)));
+        assert!(s.starts_with(&std::format!(
+            "{} key Up on Today",
+            LEN as u32 + 5 - SHOWN as u32
+        )));
         assert!(s.ends_with(", answered in 6 ms"));
     }
 

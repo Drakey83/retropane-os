@@ -163,6 +163,7 @@ fn the_editor_changes_start_repeat_and_alert_then_deletes_on_the_second_tap() {
     }
     let cx = ctx(pim);
     let mut c = opened(19_723);
+    c.show(View::Agenda);
     draw(&mut c, &cx);
     let (r, _, _) = c.rows_at[0];
     c.event(
@@ -288,5 +289,72 @@ fn every_tab_day_and_column_answers_the_stylus() {
     tap(&mut c, Hit::Day(19_740));
     assert_eq!((c.view, c.day), (View::Month, 19_740));
     // Room for the busiest screen.
+    assert!(c.hits.len() < 96);
+}
+
+#[test]
+fn the_board_shows_what_is_next_and_everything_on_it_opens() {
+    // Design language version 3: Calendar opens on the day's board.
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let st = g.as_mut().unwrap();
+        // 3:00 PM on the day the context calls today.
+        let at = (date::start_of(19_723) + 15 * 60).to_le_bytes();
+        st.put(
+            Kind::Appointment,
+            None,
+            &[(tag::TITLE, b"Dentist"), (tag::START, &at)],
+        )
+        .unwrap();
+    }
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    assert_eq!(c.view, View::Home);
+    draw(&mut c, &cx);
+    // The ribbon's block, the card and its key all open the appointment.
+    let id = match c.hits.find(Hit::View(View::Day)) {
+        Some(_) => c.on(19_723).0[0].id,
+        None => panic!("the board's DAY VIEW key isn't drawn"),
+    };
+    let r = c
+        .hits
+        .find(Hit::Appt(id))
+        .expect("the next appointment is a target");
+    c.event(
+        Event::PenUp {
+            x: r.x + r.w / 2,
+            y: r.y + r.h / 2,
+        },
+        &cx,
+    );
+    assert_eq!(c.view, View::Edit);
+    // The D-pad: the centre opens what is next; up and down step the views.
+    let mut c = opened(19_723);
+    draw(&mut c, &cx);
+    assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Redraw);
+    assert_eq!(c.view, View::Edit);
+    let mut c = opened(19_723);
+    c.event(Event::Key(Key::Down), &cx);
+    assert_eq!(c.view, View::Agenda);
+    c.event(Event::Key(Key::Up), &cx);
+    c.event(Event::Key(Key::Up), &cx);
+    assert_eq!(c.view, View::Month);
+    // A day of the week strip shows that day's board; New rises over it.
+    let mut c = opened(19_723);
+    draw(&mut c, &cx);
+    let r = c
+        .hits
+        .find(Hit::Day(19_725))
+        .expect("the week's days are targets");
+    c.event(
+        Event::PenUp {
+            x: r.x + 4,
+            y: r.y + 4,
+        },
+        &cx,
+    );
+    assert_eq!((c.view, c.day), (View::Home, 19_725));
+    draw(&mut c, &cx);
     assert!(c.hits.len() < 96);
 }

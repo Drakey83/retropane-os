@@ -4058,3 +4058,50 @@ fn the_program_buttons_open_their_apps_from_anywhere() {
     let mut s = shell(true);
     assert_eq!(s.input(Input::Key(Key::Calendar)), Action::Nothing);
 }
+
+/// A program that asks the picture store for a ring each time it draws
+/// for the first time (as Calendar's and Tasks' homes do).
+#[derive(Default)]
+struct Ringed {
+    ring: Option<rp_app::Pic>,
+    got: std::rc::Rc<core::cell::Cell<bool>>,
+}
+
+impl rp_app::Program for Ringed {
+    fn title(&self) -> &'static str {
+        "Ringed"
+    }
+    fn softkeys(&self) -> (&'static str, &'static str) {
+        ("", "")
+    }
+    fn draw(&mut self, _f: &mut Frame, cx: &rp_app::Ctx) {
+        if self.ring.is_none() {
+            self.ring = cx.pics.and_then(|p| p.alloc(4, 4));
+            self.got.set(self.ring.is_some());
+        }
+    }
+    fn event(&mut self, _e: rp_app::Event, _cx: &rp_app::Ctx) -> rp_app::Reply {
+        rp_app::Reply::Nothing
+    }
+}
+
+#[test]
+fn a_closed_app_gives_its_pictures_back() {
+    // emu-apps, 2026-11-14: the second Calendar found no slot for its
+    // ring: programs kept their pictures after closing. Open and close an
+    // app more times than the store has slots: each still gets its picture,
+    // and the shell's own pictures are untouched.
+    let mut s = shell(true);
+    let pics = store();
+    s.give_pics(pics);
+    let before = pics.used();
+    for round in 0..(pics.slots() + 4) {
+        let p: &'static mut Ringed = Box::leak(Box::default());
+        let got = p.got.clone();
+        s.open_program(p);
+        let _ = drawn(&mut s);
+        assert!(got.get(), "round {round}: no slot left");
+        s.input(Input::Key(Key::Home));
+        assert_eq!(pics.used(), before, "round {round}");
+    }
+}

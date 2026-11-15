@@ -52,9 +52,14 @@ const fn rgb(c: Argb) -> [i32; 3] {
 /// table and no square root (a Lorentzian squared: Gaussian enough for
 /// light, and exact in integers).
 fn bell(d: i32, w: i32) -> i32 {
-    let (d2, w2) = (i64::from(d) * i64::from(d), i64::from(w) * i64::from(w));
+    // 32 bits hold it (no 64-bit divide on the X51v's CPU: slow, and its
+    // routine was most of the painter's size): distances are clamped to
+    // 2,047, widths are under 512, so w^2 * 256 is under 2^26 and the sum
+    // under 2^23.
+    let d = d.clamp(-2047, 2047);
+    let (d2, w2) = (d * d, w * w);
     let q = w2 * 256 / (w2 + d2);
-    (q * q / 256) as i32
+    q * q / 256
 }
 
 /// The light at node (`gx`, `gy`) for `tint` in the dark or `light` look,
@@ -162,7 +167,19 @@ fn node(gx: usize, gy: usize, tint: Argb, light: bool) -> [i32; 3] {
 /// Paints the backdrop for `tint` into `out` (`W` x `H` RGB565, row by
 /// row), for the dark or the `light` look.
 pub fn paint(out: &mut [u16], tint: Argb, light: bool) {
+    rows(tint, light, |y, row| {
+        if let Some(to) = out.get_mut(y * W..(y + 1) * W) {
+            to.copy_from_slice(row);
+        }
+    });
+}
+
+/// [`paint`] a row at a time, top to bottom, each given to `emit` with its
+/// number: the X51v writes them straight into the renderer's picture and
+/// never holds the picture in RAM (600 KB).
+pub fn rows(tint: Argb, light: bool, mut emit: impl FnMut(usize, &[u16; W])) {
     // Two rows of nodes at a time: nothing kept but them.
+    let mut row = [0u16; W];
     let mut above = [[0i32; 3]; GW];
     let mut below = [[0i32; 3]; GW];
     for (gx, n) in above.iter_mut().enumerate() {
@@ -174,29 +191,37 @@ pub fn paint(out: &mut [u16], tint: Argb, light: bool) {
         }
         for cy in 0..CELL {
             let y = gy * CELL + cy;
-            let Some(row) = out.get_mut(y * W..(y + 1) * W) else {
-                return;
-            };
-            let fy = (cy * 256 / CELL) as i32;
-            for (x, px) in row.iter_mut().enumerate() {
-                let (gx, cx) = (x / CELL, x % CELL);
-                let fx = (cx * 256 / CELL) as i32;
-                let d = i32::from(DITHER[y & 3][x & 3]);
-                let mut ch = [0i32; 3];
-                for (k, v) in ch.iter_mut().enumerate() {
-                    let a = lerp(above[gx][k], above[gx + 1][k], fx);
-                    let b = lerp(below[gx][k], below[gx + 1][k], fx);
-                    *v = lerp(a, b, fy);
+            // Down the cell first: this row's own nodes (x CELL, exact),
+            // GW blends a row instead of one a pixel.
+            let mut here = [[0i32; 3]; GW];
+            for (h, (a, b)) in here.iter_mut().zip(above.iter().zip(&below)) {
+                for k in 0..3 {
+                    h[k] = a[k] * (CELL - cy) as i32 + b[k] * cy as i32;
                 }
-                // 8.4 fixed to 5, 6, 5 bits, the dither's threshold added
-                // below the bits kept (8 levels lost for red and blue, 4
-                // for green).
-                let q = |v: i32, lost: i32| {
-                    let t = d * (1 << lost) * 16 / 16;
-                    ((v + t) / 16).clamp(0, 255) >> lost
-                };
-                *px = ((q(ch[0], 3) << 11) | (q(ch[1], 2) << 5) | q(ch[2], 3)) as u16;
             }
+            // Across each cell the colour moves by a constant step: one
+            // add a channel a pixel, no multiply and no divide (the X51v
+            // paints this when a window opens: 307,200 pixels, and the
+            // first version's nine blends a pixel took a frame's budget).
+            // Values are x16 (the nodes) x CELL (down) x CELL (across):
+            // shifted by 10, the dither's threshold added below the bits
+            // kept (8 levels lost for red and blue, 4 for green).
+            let dither = &DITHER[y & 3];
+            for gx in 0..GW - 1 {
+                let (a, b) = (here[gx], here[gx + 1]);
+                let step = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let mut v = [a[0] * CELL as i32, a[1] * CELL as i32, a[2] * CELL as i32];
+                for (cx, px) in row[gx * CELL..(gx + 1) * CELL].iter_mut().enumerate() {
+                    let d = i32::from(dither[cx & 3]);
+                    let q =
+                        |v: i32, lost: i32| ((v + (d << (lost + 6))) >> 10).clamp(0, 255) >> lost;
+                    *px = ((q(v[0], 3) << 11) | (q(v[1], 2) << 5) | q(v[2], 3)) as u16;
+                    v[0] += step[0];
+                    v[1] += step[1];
+                    v[2] += step[2];
+                }
+            }
+            emit(y, &row);
         }
         above = below;
     }
@@ -266,7 +291,10 @@ mod tests {
     /// PPM files there (for the eye).
     #[test]
     fn dump_for_the_eye() {
-        let Ok(dir) = std::env::var("RP_AURORA_DUMP") else {
+        let Some(dir) = std::env::var("RP_AURORA_DUMP")
+            .ok()
+            .filter(|d| !d.is_empty())
+        else {
             return;
         };
         for (name, tint) in [

@@ -96,6 +96,10 @@ pub struct Appt {
 /// The views.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
+    /// The day's board (design-language.md version 3): the date as a
+    /// hero, the day as a ribbon, what is next with its countdown, the
+    /// week's load.
+    Home,
     /// What is coming, day by day.
     Agenda,
     /// One day as blocks.
@@ -187,6 +191,8 @@ enum Hit {
     OpenDay(i32),
     /// An appointment opened.
     Appt(u32),
+    /// The quick-add sheet opened.
+    New,
 }
 
 /// The Calendar program.
@@ -229,9 +235,18 @@ pub struct Calendar {
     ring: Option<Pic>,
     chosen: Option<Pic>,
     painted: bool,
+    /// The board's countdown ring: its picture, the part filled and the
+    /// look it was painted for (painted again when either changes).
+    gauge: Option<(Pic, u16, bool)>,
+    /// The view the quick-add sheet rose over (and goes back to).
+    under: View,
 }
 
-const LABELS: [&[u8]; 4] = [b"AGENDA", b"DAY", b"WEEK", b"MONTH"];
+/// The views along the foot, and their words.
+const TABS: [View; 5] = [View::Home, View::Agenda, View::Day, View::Week, View::Month];
+const LABELS: [&[u8]; 5] = [b"Today", b"Agenda", b"Day", b"Week", b"Month"];
+/// Where a view's content ends: the foot tabs' top.
+const BOTTOM: u16 = kit::FOOT.y - 2;
 const WEEKDAYS: [&[u8]; 7] = [b"MON", b"TUE", b"WED", b"THU", b"FRI", b"SAT", b"SUN"];
 const WEEKDAY_NAMES: [&[u8]; 7] = [
     b"Monday",
@@ -376,13 +391,15 @@ impl Calendar {
             n_cals: cals.len().clamp(1, 8),
             appts: [None; MAX],
             seen: None,
-            view: View::Agenda,
+            view: View::Home,
             day: today,
             line: [0; 64],
             line_n: 0,
             ring: None,
             chosen: None,
             painted: false,
+            gauge: None,
+            under: View::Home,
         }
     }
 
@@ -1258,10 +1275,305 @@ impl Calendar {
         cx.forecast.iter().copied().find(|w| w.day == day)
     }
 
+    /// The day's board (design-language.md version 3, "Every app's home
+    /// has"): the chosen day as a hero with its weather and its hours as
+    /// a ribbon; what is next with a countdown ring and what can be done
+    /// about it; the week's load; what comes later. Everything drawn is
+    /// a target.
+    fn home(&mut self, f: &mut Frame, cx: &Ctx) {
+        let t = tint::CALENDAR;
+        let (ui, label) = (cx.fonts.ui, cx.fonts.label);
+        let today = cx.now.day;
+        let (list, n) = self.on(self.day);
+        let d = date::date_of(self.day);
+        // The hero.
+        let hero = Rect::new(MARGIN, 44, WIDE, 154);
+        kit::card(
+            f,
+            cx,
+            hero,
+            if self.day == today {
+                b"TODAY"
+            } else if self.day == today + 1 {
+                b"TOMORROW"
+            } else {
+                WEEKDAYS[usize::from(date::weekday(self.day))]
+            },
+            t,
+        );
+        let mut num = Buf::<4>::new();
+        num.num(u32::from(d.day));
+        kit::text(f, 30, 138, cx.fonts.big, TEXT, num.get());
+        let x = 38 + cx.fonts.big.width(num.get());
+        let mut name = Buf::<24>::new();
+        name.s(WEEKDAY_NAMES[usize::from(date::weekday(self.day))]);
+        kit::text(f, x, 100, cx.fonts.title, TEXT, name.get());
+        let mut sub = Buf::<40>::new();
+        sub.s(MONTHS[usize::from(d.month - 1)])
+            .s(b" ")
+            .num(d.year as u32)
+            .s(b" \x80 ");
+        match n {
+            0 => sub.s(b"nothing planned"),
+            n => sub.num(n as u32).s(b" planned"),
+        };
+        kit::text(f, x, 128, ui, DIM, sub.get());
+        if let Some(w) = Self::weather(cx, self.day) {
+            if let Some(p) = w.icon {
+                f.push(rp_app::Cmd::Pic {
+                    x: 384,
+                    y: 56,
+                    pic: p,
+                });
+            }
+            let mut wx = Buf::<16>::new();
+            wx.num(w.high.unsigned_abs().into())
+                .s(b"\x7F / ")
+                .num(w.low.unsigned_abs().into())
+                .s(b"\x7F");
+            kit::right(f, 448, 128, ui, DIM, wx.get());
+        }
+        // The day's ribbon, 6 AM to 10 PM: each appointment where it
+        // falls (a tap opens it), now marked.
+        let at = |minute: u16| 32 + (u32::from(minute.clamp(360, 1320) - 360) * 416 / 960) as u16;
+        f.push(rp_app::Cmd::Fill {
+            r: Rect::new(32, 152, 416, 14),
+            color: kit::alpha(TEXT, 0x26),
+        });
+        for a in list[..n].iter().filter(|a| a.len != 0) {
+            let (x0, x1) = (at(a.start), at(a.start.saturating_add(a.len)));
+            let r = Rect::new(x0, 152, (x1 - x0).max(8), 14);
+            kit::round_rect(f, cx, r, self.colour(a));
+            if !a.task {
+                self.hits.add(Rect::new(r.x, 144, r.w, 30), Hit::Appt(a.id));
+            }
+        }
+        kit::text(f, 32, 188, label, DIM, b"6 AM");
+        kit::right(f, 448, 188, label, DIM, b"10 PM");
+        if self.day == today && (360..1320).contains(&cx.now.minute) {
+            let x = at(cx.now.minute);
+            f.push(rp_app::Cmd::Fill {
+                r: Rect::new(x, 146, 2, 26),
+                color: TEXT,
+            });
+            let lx = x.clamp(92, 388);
+            kit::centred(f, Rect::new(lx - 30, 172, 60, 18), 188, label, TEXT, b"NOW");
+        }
+
+        // What is next (today: from now; another day: its first).
+        let card = Rect::new(MARGIN, 206, WIDE, 124);
+        kit::card(f, cx, card, b"", t);
+        let next = list[..n].iter().find(|a| {
+            !a.task && a.len != 0 && (self.day != today || a.start + a.len > cx.now.minute)
+        });
+        let (part, big, small): (u16, Buf<4>, &[u8]) = match next {
+            Some(a) if self.day == today => {
+                let mut b = Buf::<4>::new();
+                if a.start <= cx.now.minute {
+                    b.s(b"0");
+                    (256, b, b"NOW")
+                } else {
+                    let m = a.start - cx.now.minute;
+                    if m < 100 {
+                        b.num(u32::from(m));
+                        (((60u16.saturating_sub(m)) * 256 / 60).max(12), b, b"MIN")
+                    } else {
+                        b.num(u32::from((m + 30) / 60));
+                        (12, b, b"HR")
+                    }
+                }
+            }
+            Some(a) => {
+                // Another day: the hour it starts, the ring the day so far.
+                let mut b = Buf::<4>::new();
+                let h = a.start / 60;
+                b.num(u32::from(if h % 12 == 0 { 12 } else { h % 12 }));
+                (
+                    (u32::from(a.start) * 256 / 1440) as u16,
+                    b,
+                    if h < 12 { b"AM" } else { b"PM" },
+                )
+            }
+            None => (0, Buf::<4>::new(), b""),
+        };
+        if self
+            .gauge
+            .is_none_or(|(_, p, l)| p != part || l != cx.look.light)
+            && let Some(pics) = cx.pics
+        {
+            if let Some((old, _, _)) = self.gauge.take() {
+                pics.free(old);
+            }
+            self.gauge = kit::ring(pics, 96, 9, part, kit::painted(cx, t), kit::track(cx))
+                .map(|p| (p, part, cx.look.light));
+        }
+        if let Some((p, _, _)) = self.gauge {
+            f.push(rp_app::Cmd::Pic {
+                x: 28,
+                y: 220,
+                pic: p,
+            });
+        }
+        let dial = Rect::new(28, 220, 96, 96);
+        match next {
+            Some(a) => {
+                kit::centred(f, dial, 278, cx.fonts.num, TEXT, big.get());
+                kit::centred(f, dial, 296, label, DIM, small);
+                kit::text(
+                    f,
+                    140,
+                    234,
+                    label,
+                    t,
+                    if self.day == today {
+                        b"NEXT UP"
+                    } else {
+                        b"FIRST UP"
+                    },
+                );
+                kit::fitted(f, 140, 264, cx.fonts.title, TEXT, a.title.get(), 310);
+                let mut when = Buf::<48>::new();
+                when.s(clock(a.start).get());
+                if !a.place.get().is_empty() {
+                    when.s(b" \x80 ").s(a.place.get());
+                }
+                kit::fitted(f, 140, 286, ui, DIM, when.get(), 310);
+                let open = Rect::new(140, 294, 84, 28);
+                kit::gel(f, cx, open, b"OPEN", true);
+                self.hits
+                    .add(Rect::new(card.x, card.y, card.w, 84), Hit::Appt(a.id));
+                self.hits.add(open, Hit::Appt(a.id));
+                let day = Rect::new(232, 294, 108, 28);
+                kit::gel(f, cx, day, b"DAY VIEW", false);
+                self.hits.add(day, Hit::View(View::Day));
+            }
+            None => {
+                kit::centred(f, dial, 274, label, DIM, b"FREE");
+                kit::text(f, 140, 234, label, t, b"NEXT UP");
+                kit::text(
+                    f,
+                    140,
+                    264,
+                    cx.fonts.title,
+                    TEXT,
+                    if n == 0 {
+                        b"A free day"
+                    } else {
+                        b"Nothing more"
+                    },
+                );
+                kit::text(f, 140, 286, ui, DIM, b"Add something to it");
+                let new = Rect::new(140, 294, 84, 28);
+                kit::gel(f, cx, new, b"NEW", true);
+                self.hits.add(new, Hit::New);
+            }
+        }
+
+        // The week: how full each day is; a tap shows that day's board.
+        kit::section(f, cx, 336, b"THIS WEEK", t);
+        let first = self.day - in_week(self.day, cx.us);
+        for i in 0..7u16 {
+            let day = first + i32::from(i);
+            let r = Rect::new(MARGIN + i * 64, 358, 60, 86);
+            self.hits.add(r, Hit::Day(day));
+            if day == self.day {
+                kit::key(f, cx, r, kit::KeyState::On);
+            } else {
+                kit::panel(f, cx, r);
+            }
+            kit::centred(
+                f,
+                r,
+                r.y + 20,
+                label,
+                if day == self.day {
+                    TEXT
+                } else if day == today {
+                    t
+                } else {
+                    DIM
+                },
+                column_name(i, cx.us),
+            );
+            let mut b = Buf::<4>::new();
+            b.num(u32::from(date::date_of(day).day));
+            kit::centred(f, r, r.y + 46, ui, TEXT, b.get());
+            let (load, m) = self.on(day);
+            for (k, a) in load[..m.min(4)].iter().enumerate() {
+                kit::round_rect(
+                    f,
+                    cx,
+                    Rect::new(r.x + 12, r.y + 54 + k as u16 * 7, 36, 5),
+                    self.colour(a),
+                );
+            }
+        }
+
+        // What else the day holds: two rows, then the way to the rest.
+        kit::section(
+            f,
+            cx,
+            450,
+            if self.day == today {
+                b"LATER TODAY"
+            } else {
+                b"THAT DAY"
+            },
+            t,
+        );
+        let next_id = next.map(|a| a.id);
+        let rest = list[..n]
+            .iter()
+            .filter(|a| Some(a.id) != next_id)
+            .filter(|a| self.day != today || a.len == 0 || a.start + a.len > cx.now.minute);
+        let more = rest.clone().count();
+        for (k, a) in rest.take(2).enumerate() {
+            let r = Rect::new(MARGIN, 472 + k as u16 * 42, WIDE, 38);
+            kit::panel(f, cx, r);
+            kit::colour_bar(f, r, self.colour(a));
+            let time = if a.len == 0 {
+                Buf::<10>::new()
+            } else {
+                clock(a.start)
+            };
+            kit::text(
+                f,
+                36,
+                r.y + 26,
+                ui,
+                DIM,
+                if a.len == 0 { b"All day" } else { time.get() },
+            );
+            let room = if k == 1 && more > 2 {
+                WIDE - 220
+            } else {
+                WIDE - 136
+            };
+            kit::fitted(f, 136, r.y + 26, ui, TEXT, a.title.get(), room);
+            if !a.task {
+                self.hits.add(r, Hit::Appt(a.id));
+            }
+            if k == 1 && more > 2 {
+                let mut b = Buf::<12>::new();
+                b.s(b"+").num((more - 2) as u32).s(b" MORE");
+                kit::right(f, r.x + r.w - 14, r.y + 25, label, t, b.get());
+                self.hits.add(
+                    Rect::new(r.x + r.w - 90, r.y, 90, r.h),
+                    Hit::View(View::Agenda),
+                );
+            }
+        }
+        if more == 0 {
+            let r = Rect::new(MARGIN, 472, WIDE, 38);
+            kit::panel(f, cx, r);
+            kit::text(f, 36, r.y + 26, ui, DIM, b"Nothing else");
+        }
+    }
+
     fn agenda(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         self.n_rows = 0;
         let mut y = top;
-        let bottom = 596;
+        let bottom = BOTTOM;
         let mut day = self.day;
         while y + 82 < bottom && day < self.day + 30 {
             let (list, n) = self.on(day);
@@ -1397,8 +1709,8 @@ impl Calendar {
         // The day's span fits the screen down to 30 px an hour; past that
         // the rest folds into "Free until later" (a long day scrolls).
         let span = last_h - first_h;
-        let per = ((596 - y) / span).clamp(30, 60);
-        let hours = ((596 - y) / per).min(span);
+        let per = ((BOTTOM - y) / span).clamp(30, 60);
+        let hours = ((BOTTOM - y) / per).min(span);
         for h in 0..hours {
             let hy = y + h * per;
             kit::right(
@@ -1446,7 +1758,7 @@ impl Calendar {
             let x0 = MARGIN + 56;
             let wide = (WIDE - 60) / lanes.max(1);
             let by = y + (a.start - first_h * 60) * per / 60;
-            let bh = (a.len * per / 60).max(28).min(596 - by);
+            let bh = (a.len * per / 60).max(28).min(BOTTOM - by);
             let r = Rect::new(x0 + lane * wide, by + 1, wide - 4, bh - 2);
             if !a.task {
                 self.hits.add(r, Hit::Appt(a.id));
@@ -1497,7 +1809,8 @@ impl Calendar {
             let c = Rect::new(x0 + i * cw, top, cw, 40);
             // The whole column opens its day (its blocks, added later,
             // open themselves).
-            self.hits.add(Rect::new(c.x, top, cw, 596 - top), Hit::OpenDay(d));
+            self.hits
+                .add(Rect::new(c.x, top, cw, BOTTOM - top), Hit::OpenDay(d));
             let col = if d == cx.now.day { tint::CALENDAR } else { DIM };
             kit::centred(f, c, top + 14, cx.fonts.label, col, column_name(i, cx.us));
             let mut b = Buf::<4>::new();
@@ -1516,7 +1829,7 @@ impl Calendar {
             );
         }
         let y0 = top + 46;
-        let per = (596 - y0) / (h1 - h0);
+        let per = (BOTTOM - y0) / (h1 - h0);
         for h in 0..(h1 - h0) {
             let hy = y0 + h * per;
             let mut b = Buf::<4>::new();
@@ -1632,7 +1945,7 @@ impl Calendar {
         y += rows * ch + 6;
         let (list, n) = self.on(self.day);
         for a in &list[..n] {
-            if y + 40 > 596 {
+            if y + 40 > BOTTOM {
                 break;
             }
             let r = Rect::new(MARGIN, y, WIDE, 38);
@@ -1796,56 +2109,54 @@ impl Program for Calendar {
         self.paint(cx);
         self.refresh(cx);
         self.hits.clear();
-        kit::backdrop(f);
-        let under = self.title(f, cx);
         if self.view == View::Edit {
+            self.title(f, cx);
             self.edit_view(f, cx);
             return;
         }
         if self.view == View::Calendars {
+            let under = self.title(f, cx);
             self.calendars_view(f, cx, under + 4);
             return;
         }
-        kit::key(f, cx, CALENDARS_KEY, kit::KeyState::Rest);
-        kit::centred(
-            f,
-            CALENDARS_KEY,
-            CALENDARS_KEY.y + 21,
-            cx.fonts.label,
-            TEXT,
-            b"CALENDARS",
-        );
+        // The quick-add sheet rises over the view it came from.
         let shown = if self.view == View::New {
-            View::Agenda
+            self.under
         } else {
             self.view
         };
-        let chosen = match shown {
-            View::Agenda | View::New | View::Calendars | View::Edit => 0,
-            View::Day => 1,
-            View::Week => 2,
-            View::Month => 3,
-        };
-        let tabs = Rect::new(MARGIN, under + 4, WIDE, 30);
-        kit::chips(f, cx, tabs, &LABELS, chosen, tint::CALENDAR);
-        for (k, v) in [View::Agenda, View::Day, View::Week, View::Month]
-            .into_iter()
-            .enumerate()
-        {
-            self.hits.add(kit::chip(tabs, LABELS.len(), k), Hit::View(v));
+        if shown == View::Home {
+            self.home(f, cx);
+        } else {
+            let under = self.title(f, cx);
+            kit::key(f, cx, CALENDARS_KEY, kit::KeyState::Rest);
+            kit::centred(
+                f,
+                CALENDARS_KEY,
+                CALENDARS_KEY.y + 21,
+                cx.fonts.label,
+                TEXT,
+                b"CALENDARS",
+            );
+            let y = under + 6;
+            match shown {
+                View::Day => {
+                    self.strip(f, cx, y);
+                    self.day_view(f, cx, y + 70);
+                }
+                View::Week => self.week_view(f, cx, y),
+                View::Month => self.month_view(f, cx, y),
+                _ => {
+                    self.strip(f, cx, y);
+                    self.agenda(f, cx, y + 70);
+                }
+            }
         }
-        let y = under + 40;
-        match shown {
-            View::Agenda | View::New | View::Calendars | View::Edit => {
-                self.strip(f, cx, y);
-                self.agenda(f, cx, y + 70);
-            }
-            View::Day => {
-                self.strip(f, cx, y);
-                self.day_view(f, cx, y + 70);
-            }
-            View::Week => self.week_view(f, cx, y),
-            View::Month => self.month_view(f, cx, y),
+        // The views along the foot (as Weather's tabs), each a target.
+        let chosen = TABS.iter().position(|v| *v == shown).unwrap_or(0);
+        kit::foot_tabs(f, cx, &LABELS, chosen, tint::CALENDAR);
+        for (k, v) in TABS.into_iter().enumerate() {
+            self.hits.add(kit::foot_tab(TABS.len(), k), Hit::View(v));
         }
         if self.view == View::New {
             self.new_sheet(f, cx);
@@ -1916,7 +2227,7 @@ impl Program for Calendar {
         // Whatever was drawn where the pen lifted (the tabs, the days, the
         // appointments in every view).
         if let Event::PenUp { x, y } = e
-            && matches!(self.view, View::Agenda | View::Day | View::Week | View::Month)
+            && TABS.contains(&self.view)
             && let Some(h) = self.hits.at(x, y)
         {
             match h {
@@ -1927,8 +2238,36 @@ impl Program for Calendar {
                     self.view = View::Day;
                 }
                 Hit::Appt(id) => self.open_edit(cx, Some(id)),
+                Hit::New => {
+                    self.under = self.view;
+                    self.view = View::New;
+                }
             }
             return Reply::Redraw;
+        }
+        // The D-pad (Windows Mobile's Calendar moves with it; R203): up
+        // and down step through the views, the centre opens what is next
+        // on the board; left and right change the day (below).
+        if let Event::Key(k @ (Key::Up | Key::Down)) = e
+            && let Some(i) = TABS.iter().position(|v| *v == self.view)
+        {
+            let n = TABS.len();
+            self.view = TABS[if k == Key::Down {
+                (i + 1) % n
+            } else {
+                (i + n - 1) % n
+            }];
+            return Reply::Redraw;
+        }
+        if e == Event::Key(Key::Enter) && self.view == View::Home {
+            let (list, n) = self.on(self.day);
+            let next = list[..n].iter().find(|a| {
+                !a.task && a.len != 0 && (self.day != cx.now.day || a.start + a.len > cx.now.minute)
+            });
+            if let Some(a) = next {
+                self.open_edit(cx, Some(a.id));
+                return Reply::Redraw;
+            }
         }
         if let Event::PenUp { x, y } = e
             && matches!(self.view, View::Agenda)
@@ -1967,7 +2306,9 @@ impl Program for Calendar {
                 return Reply::Redraw;
             }
             Event::PenUp { x, y }
-                if self.view != View::New && CALENDARS_KEY.contains_point(x, y) =>
+                if self.view != View::New
+                    && self.view != View::Home
+                    && CALENDARS_KEY.contains_point(x, y) =>
             {
                 self.view = View::Calendars;
                 return Reply::Redraw;
@@ -1977,7 +2318,7 @@ impl Program for Calendar {
         match e {
             Event::Key(Key::SoftLeft) => {
                 if self.view == View::New {
-                    self.view = View::Agenda;
+                    self.view = self.under;
                 } else {
                     self.day = cx.now.day;
                 }
@@ -1985,11 +2326,12 @@ impl Program for Calendar {
             }
             Event::Key(Key::SoftRight) | Event::Done if self.view == View::New => {
                 if self.add_typed(cx) {
-                    self.view = View::Agenda;
+                    self.view = self.under;
                 }
                 Reply::Redraw
             }
             Event::Key(Key::SoftRight) => {
+                self.under = self.view;
                 self.view = View::New;
                 Reply::Redraw
             }

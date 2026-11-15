@@ -331,17 +331,6 @@ pub fn fitted(f: &mut Frame, x: u16, y: u16, font: &'static Font, c: Argb, s: &[
     f.text(x, y, font, c, &buf[..n + 2]);
 }
 
-/// The app's backdrop: the wallpaper dimmed under the app's area, darker
-/// at the top, so the content reads as an app over the picture
-/// (design-language.md version 2: a busy photo behind 90%-glass rows made
-/// the text hard to read on the owner's sunset).
-pub fn backdrop(f: &mut Frame) {
-    f.push(Cmd::Fill {
-        r: crate::CONTENT,
-        color: alpha(0xFF0A_0D12, 0x98),
-    });
-}
-
 /// The large title band's height (design-language.md "The large title").
 pub const TITLE_BAND: u16 = 76;
 
@@ -407,6 +396,68 @@ pub fn chip(r: Rect, n: usize, i: usize) -> Rect {
     let gap = 6;
     let cw = (r.w - gap * (n - 1)) / n;
     Rect::new(r.x + i as u16 * (cw + gap), r.y, cw, r.h)
+}
+
+// ---- Design language version 3: what every app's home is built from ----
+
+/// Where the foot tabs sit: above the softkeys, under the thumb (as
+/// Weather's Now / Hourly / 10 Day). Content ends at its top.
+pub const FOOT: Rect = Rect::new(0, 558, crate::W, 38);
+
+/// A glass card with a spaced-capital label in `c` (none if empty).
+pub fn card(f: &mut Frame, cx: &Ctx, r: Rect, label: &[u8], c: Argb) {
+    panel(f, cx, r);
+    if !label.is_empty() {
+        text(f, r.x + 16, r.y + 22, cx.fonts.label, c, label);
+    }
+}
+
+/// A gel key with its word (the chosen or main one glows).
+pub fn gel(f: &mut Frame, cx: &Ctx, r: Rect, word: &[u8], on: bool) {
+    key(f, cx, r, if on { KeyState::On } else { KeyState::Rest });
+    centred(f, r, r.y + r.h / 2 + 6, cx.fonts.label, TEXT, word);
+}
+
+/// Foot tab `i` of `n` ([`foot_tabs`]' layout: what a tap on one hits).
+#[must_use]
+pub fn foot_tab(n: usize, i: usize) -> Rect {
+    let w = WIDE / n.max(1) as u16;
+    Rect::new(MARGIN + i as u16 * w, FOOT.y + 2, w, FOOT.h - 2)
+}
+
+/// An app's views as tabs along the foot: words, the chosen one brighter
+/// and underlined in the app's tint.
+pub fn foot_tabs(f: &mut Frame, cx: &Ctx, words: &[&[u8]], chosen: usize, c: Argb) {
+    f.push(Cmd::Fill {
+        r: Rect::new(0, FOOT.y, crate::W, 1),
+        color: alpha(TEXT, 0x30),
+    });
+    for (i, word) in words.iter().enumerate() {
+        let r = foot_tab(words.len(), i);
+        centred(
+            f,
+            r,
+            r.y + 24,
+            cx.fonts.ui,
+            if i == chosen { TEXT } else { DIM },
+            word,
+        );
+        if i == chosen {
+            f.push(Cmd::Fill {
+                r: Rect::new(r.x + 12, r.y + r.h - 3, r.w - 24, 3),
+                color: c,
+            });
+        }
+    }
+}
+
+/// A stat tile: a small card with an accent bar, a label and one number
+/// in the numerals' font.
+pub fn stat(f: &mut Frame, cx: &Ctx, r: Rect, label: &[u8], value: &[u8], c: Argb) {
+    panel(f, cx, r);
+    colour_bar(f, r, c);
+    text(f, r.x + 16, r.y + 22, cx.fonts.label, DIM, label);
+    text(f, r.x + 16, r.y + r.h - 10, cx.fonts.num, TEXT, value);
 }
 
 /// An accent as a picture painted for this look should use it (pictures

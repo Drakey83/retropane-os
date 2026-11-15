@@ -1186,7 +1186,6 @@ impl Program for Calculator {
     }
 
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
-        kit::backdrop(f);
         let chosen = MODE_LIST.iter().position(|&m| m == self.mode).unwrap_or(0);
         kit::chips(f, cx, CHIPS, &MODES, chosen, tint::CALCULATOR);
         match self.mode {

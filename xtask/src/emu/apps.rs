@@ -286,14 +286,8 @@ pub fn apps(root: &Path) -> Result<(), String> {
     at.push(("notes-ink".into(), steps.len()));
     steps.push(Input::Key(Key::Calendar));
     at.push(("calendar-button".into(), steps.len()));
-    // Calendar's tabs under its large title (36 + the band's 76, then 4).
-    let tabs = rp_draw::Rect::new(
-        rp_app::MARGIN,
-        36 + rp_app::kit::TITLE_BAND + 4,
-        rp_app::WIDE,
-        30,
-    );
-    steps.extend(tap(rp_app::kit::chip(tabs, 4, 2)));
+    // Calendar's views along the foot: Week is the fourth of five.
+    steps.extend(tap(rp_app::kit::foot_tab(5, 3)));
     at.push(("calendar-week".into(), steps.len()));
     steps.extend(tap(rp_shell::START));
     at.push(("menu-over-app".into(), steps.len()));

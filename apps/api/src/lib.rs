@@ -238,6 +238,14 @@ impl Shapes {
         }
     }
 
+    /// Forgets every disc (their pictures were given back: an app program
+    /// closed).
+    pub fn forget(&self) {
+        if let Ok(mut d) = self.discs.try_borrow_mut() {
+            *d = [(0, None); 32];
+        }
+    }
+
     /// The look's fill colour, set by the shell before a program draws
     /// (the identity in the dark look).
     pub fn set_paint(&self, paint: fn(Argb) -> Argb) {

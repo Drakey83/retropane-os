@@ -53,6 +53,8 @@ struct Slot<'a> {
     w: u16,
     h: u16,
     era: Cell<u16>,
+    /// Who asked for the picture in it ([`Pics::set_owner`]).
+    owner: Cell<u8>,
     used: Cell<bool>,
     /// Read since it was made: its pixels are final (a renderer may hold a
     /// copy keyed by its handle).
@@ -62,6 +64,11 @@ struct Slot<'a> {
 /// The store: slots of the sizes asked for, from one block.
 pub struct Pics<'a> {
     slots: [Option<Slot<'a>>; SLOTS],
+    /// Whose the pictures asked for from now on are ([`Self::set_owner`]).
+    owner: Cell<u8>,
+    /// The first slot that is the app programs' ([`Self::wall`]);
+    /// `u8::MAX`: no wall.
+    programs_from: Cell<u8>,
 }
 
 impl<'a> Pics<'a> {
@@ -73,6 +80,8 @@ impl<'a> Pics<'a> {
     pub fn new(block: &'a mut [Argb], classes: &[(u16, u16, u8)]) -> Self {
         let mut p = Self {
             slots: [const { None }; SLOTS],
+            owner: Cell::new(0),
+            programs_from: Cell::new(u8::MAX),
         };
         p.carve(block, classes);
         p
@@ -87,7 +96,7 @@ impl<'a> Pics<'a> {
         block: &'a mut [Argb],
         classes: &[(u16, u16, u8)],
     ) -> &'s mut Self {
-        let p = rp_hal_mem::in_place!(slot, Pics { slots: @each None });
+        let p = rp_hal_mem::in_place!(slot, Pics { slots: @each None, owner: Cell::new(0), programs_from: Cell::new(u8::MAX) });
         p.carve(block, classes);
         p
     }
@@ -108,6 +117,7 @@ impl<'a> Pics<'a> {
                     w,
                     h,
                     era: Cell::new(0),
+                    owner: Cell::new(0),
                     used: Cell::new(false),
                     sealed: Cell::new(false),
                 });
@@ -150,10 +160,16 @@ impl<'a> Pics<'a> {
             .iter()
             .enumerate()
             .filter_map(|(k, s)| Some((k, s.as_ref()?)))
+            // Each side of the wall takes only its own slots.
+            .filter(|(k, _)| {
+                let wall = usize::from(self.programs_from.get());
+                wall == usize::from(u8::MAX) || (self.owner.get() == 0) == (*k < wall)
+            })
             .filter(|(_, s)| !s.used.get() && s.w >= w && s.h >= h)
             .min_by_key(|(_, s)| u32::from(s.w) * u32::from(s.h))?;
         s.used.set(true);
         s.sealed.set(false);
+        s.owner.set(self.owner.get());
         let era = s.era.get().wrapping_add(1);
         s.era.set(era);
         s.px.try_borrow_mut().ok()?.fill(0);
@@ -212,6 +228,53 @@ impl<'a> Pics<'a> {
             s.used.set(false);
             s.era.set(s.era.get().wrapping_add(1));
         }
+    }
+
+    /// Walls the store in two: the slots of the first `shell_classes`
+    /// classes (as given to [`Self::new`]) are the shell's own, the rest
+    /// the app programs' ([`Self::set_owner`]), and neither takes the
+    /// other's. Without it a request takes the least free slot that fits
+    /// whoever's it is: the shell's icons overflowed into an app's slots
+    /// and an app's ring took a weather picture's (2026-11-14), and a
+    /// model with more icon slots than the X51v never ran out where it
+    /// does.
+    pub fn wall(&self, shell_classes: &[(u16, u16, u8)]) {
+        let n: usize = shell_classes.iter().map(|c| usize::from(c.2)).sum();
+        self.programs_from
+            .set(n.min(self.slots()).min(usize::from(u8::MAX) - 1) as u8);
+    }
+
+    /// Pictures asked for from now on belong to `owner` (0: the shell's
+    /// own): the shell names an app program while it is open, so what the
+    /// program asked for can be given back when it closes
+    /// ([`Self::free_owned`]).
+    pub fn set_owner(&self, owner: u8) {
+        self.owner.set(owner);
+    }
+
+    /// Gives back every picture `owner` asked for (an app program closed:
+    /// 2026-11-14, programs kept their pictures' slots after closing, and
+    /// the second Calendar found no slot for its ring).
+    pub fn free_owned(&self, owner: u8) {
+        for s in self.slots.iter().flatten() {
+            if s.used.get() && s.owner.get() == owner {
+                s.used.set(false);
+                s.era.set(s.era.get().wrapping_add(1));
+            }
+        }
+    }
+
+    /// `pic` as a new picture with the same pixels, to be changed again:
+    /// a picture once read is final (a renderer may keep a copy by its
+    /// handle), so a picture that grows (ink as it is written) is renewed
+    /// before each change, in place, nothing copied. The old handle is
+    /// stale; `None` for a stale handle.
+    pub fn renew(&self, pic: Pic) -> Option<Pic> {
+        let s = self.live(pic)?;
+        let era = s.era.get().wrapping_add(1);
+        s.era.set(era);
+        s.sealed.set(false);
+        Some(Pic { era, ..pic })
     }
 
     /// Gives every slot back: every handle so far is stale.

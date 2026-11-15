@@ -461,42 +461,7 @@ mod image {
     /// A big picture's stream read from a card pack (the largest ~170 KB),
     /// and a pack's table.
     const STREAM_BUF: usize = 256 * 1024;
-    /// The picture store's slots (side, count): the shell's sizes
-    /// (`rp_shell::Size`), as many of each as the screens show at once
-    /// plus a spare, so a pick replaces a picture with no gap (the sheet's
-    /// 250 x2, 66 x8, 40 x16; Hourly's 160 x6, not x2: every hour's card
-    /// picture is kept, so a pick never waits on a decode, P1).
-    /// The big pictures are fitted inside 250 x 176 (the hero's box), so
-    /// their slots are that, not square (-148 KB). Hourly's graph is one
-    /// picture of its own (its line and band, painted once a forecast).
-    const PIC_CLASSES: [(u16, u16, u8); 12] = [
-        (rp_shell::Size::Hero.side(), rp_shell::HERO_PIC_H, 2),
-        (rp_shell::Size::Mid.side(), rp_shell::Size::Mid.side(), 6),
-        (rp_shell::Size::Card.side(), rp_shell::Size::Card.side(), 8),
-        (rp_shell::Size::Row.side(), rp_shell::Size::Row.side(), 16),
-        (
-            rp_shell::weather_app::GRAPH_PIC.0,
-            rp_shell::weather_app::GRAPH_PIC.1,
-            1,
-        ),
-        // The open chart's line, its own picture (Hourly's left be).
-        (
-            rp_shell::chart::CHART_PIC.0,
-            rp_shell::chart::CHART_PIC.1,
-            1,
-        ),
-        // The app programs' marks, avatars and the card's big avatar
-        // (rp_app::kit::PIC_CLASSES, design-language.md version 2).
-        rp_app::kit::PIC_CLASSES[0],
-        rp_app::kit::PIC_CLASSES[1],
-        rp_app::kit::PIC_CLASSES[2],
-        rp_app::kit::PIC_CLASSES[3],
-        rp_app::kit::PIC_CLASSES[4],
-        rp_app::kit::PIC_CLASSES[5],
-    ];
-    // Every size the app programs may ask for (a size added to the kit's
-    // list and not here fails the build).
-    const _: () = assert!(rp_app::kit::PIC_CLASSES.len() == 6);
+    use rp_today::PIC_CLASSES;
     /// The keeper's tag while no pack is in yet (apart from every pack).
     const NOT_YET: u8 = 0xFE;
 
@@ -1755,6 +1720,9 @@ mod image {
             crash(format_args!("started twice"))
         };
         let pics: &'static rp_draw::pics::Pics<'static> = pics;
+        // The shell's slots and the app programs' apart (neither takes the
+        // other's).
+        pics.wall(&PIC_CLASSES[..rp_today::SHELL_PIC_CLASSES]);
         gfx.two_d().set_pics(pics);
         let mut keeper = rp_today::Keeper::new();
         let mut maker = rp_today::Maker::new(big_px, shrink_px).timed(|| rt::ticks() / 13 * 4);
@@ -2226,6 +2194,18 @@ mod image {
         // What was pressed and whether it was answered (the owner,
         // 2026-11-14: a press with no answer left no line).
         let mut trail = rp_today::trail::Trail::new();
+        // The window's backdrop (design-language.md version 3): a screen of
+        // RGB565 in the 2700G's pool, painted when the screen up wants
+        // another (an app opened, the look changed), and the one painted.
+        let window_pic = pc.and_then(|pc| gfx.picture_rgb565(pc).ok());
+        let mut window_key: Option<(u32, bool)> = None;
+        shell.use_backdrops(window_pic.is_some());
+        if window_pic.is_none() {
+            let _ = writeln!(
+                RunLog,
+                "backdrop: no picture for it (the windows keep their row)"
+            );
+        }
         // R115's chase (the owner, 2026-10-30: "2 more test to chase the
         // 7"): each 2D frame flipped for want of a copy window, kept for
         // the summary (no card write mid-run, C59): the scan line, its
@@ -2438,8 +2418,10 @@ mod image {
                 let _ = rp_today::trail::write_entry(&mut w, &e);
                 let _ = w.write_str(" (no frame followed it); the last inputs: ");
                 let _ = trail.write_last(&mut w);
-                let _ = w.write_str("
-");
+                let _ = w.write_str(
+                    "
+",
+                );
             }
 
             // The clock: once a minute.
@@ -4597,6 +4579,38 @@ mod image {
                     }
                     rp_today::keep_chart(shell, pics, &mut chart_key);
                     z_shell.run(|| shell.frame(frame));
+                    // The window's backdrop, painted before the frame that
+                    // reads it: straight into the renderer's picture, two
+                    // rows a write (no 600 KB in RAM), with the engine idle.
+                    if frame.floor_picture()
+                        && shell.backdrop_key() != window_key
+                        && let (Some(pc), Some(h), Some((tint, light))) =
+                            (pc, window_pic, shell.backdrop_key())
+                    {
+                        while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
+                        let t0 = rt::ticks();
+                        let mut pair = [0u32; rp_app::aurora::W];
+                        let mut ok = true;
+                        rp_app::aurora::rows(tint, light, |y, row| {
+                            let at = (y & 1) * (rp_app::aurora::W / 2);
+                            for (w, p) in pair[at..].iter_mut().zip(row.chunks_exact(2)) {
+                                *w = u32::from(p[0]) | u32::from(p[1]) << 16;
+                            }
+                            if y & 1 == 1 {
+                                let off = ((y - 1) * rp_app::aurora::W * 2) as u32;
+                                ok &= gfx.write_picture(pc, h, off, &pair).is_ok();
+                            }
+                        });
+                        ok &= gfx.floor_picture(pc, Some(h)).is_ok();
+                        window_key = shell.backdrop_key();
+                        let _ = writeln!(
+                            RunLog,
+                            "backdrop: tint {tint:08X}, {} look, painted in {} us{}",
+                            if light { "light" } else { "dark" },
+                            rt::ticks().wrapping_sub(t0) / 13 * 4,
+                            if ok { "" } else { " (a write was refused)" }
+                        );
+                    }
                     // Today left: its picture kept by the next draw (one
                     // engine copy). Back to it: the frame starts from that
                     // picture, drawing only where Today's list differs from

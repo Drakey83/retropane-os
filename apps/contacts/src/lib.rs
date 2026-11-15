@@ -88,7 +88,9 @@ pub enum EditField {
 }
 
 /// The list's search field and letter strip.
-const SEARCH: Rect = Rect::new(MARGIN, 36 + kit::TITLE_BAND + 4, WIDE - 24, 36);
+/// The search field, the home's first line (design-language.md version
+/// 3: people first; the count is its hint, no title band above it).
+const SEARCH: Rect = Rect::new(MARGIN, 44, WIDE, 40);
 const STRIP: Rect = Rect::new(W - MARGIN - 22, 120, 26, 470);
 
 /// Whether `hay` holds `needle`, ignoring case.
@@ -203,10 +205,12 @@ pub struct Contacts {
     searching: bool,
     jump: Option<u8>,
     bubble: Option<u8>,
-    rows_at: [(Rect, u8); 12],
+    rows_at: [(Rect, u8); 16],
     n_rows: usize,
     /// The avatars: one disc per identity colour at 40 px, the card's 96 px.
     discs: [Option<Pic>; 8],
+    /// The favourites' big glossy discs, one an identity colour.
+    bigs: [Option<Pic>; 8],
     big: Option<Pic>,
     painted: bool,
 }
@@ -268,9 +272,10 @@ impl Contacts {
             searching: false,
             jump: None,
             bubble: None,
-            rows_at: [(Rect::new(0, 0, 0, 0), 0); 12],
+            rows_at: [(Rect::new(0, 0, 0, 0), 0); 16],
             n_rows: 0,
             discs: [None; 8],
+            bigs: [None; 8],
             big: None,
             painted: false,
         }
@@ -461,11 +466,21 @@ impl Contacts {
         }
         if let Some(p) = cx.pics {
             for (k, d) in self.discs.iter_mut().enumerate() {
-                *d = kit::disc(p, 40, kit::IDENTITY[k], None);
+                *d = kit::gloss_disc(p, 40, kit::IDENTITY[k]);
+            }
+            for (k, d) in self.bigs.iter_mut().enumerate() {
+                *d = kit::gloss_disc(p, 64, kit::IDENTITY[k]);
             }
             self.big = kit::disc(p, 96, tint::CONTACTS, None);
         }
         self.painted = true;
+    }
+
+    /// A favourite's big disc, by the name's colour.
+    fn big_for(&self, name: &[u8]) -> Option<Pic> {
+        let c = kit::colour_of(name);
+        let k = kit::IDENTITY.iter().position(|&x| x == c).unwrap_or(0);
+        self.bigs[k]
     }
 
     fn disc_for(&self, name: &[u8]) -> Option<Pic> {
@@ -514,8 +529,7 @@ impl Contacts {
             s[k] = c;
             k += 1;
         }
-        let mut y = kit::large_title(f, cx, 36, b"Contacts", &s[..k], tint::CONTACTS);
-        // Search.
+        // Search, its hint the count.
         let field = SEARCH;
         kit::panel(f, cx, field);
         if self.searching {
@@ -525,18 +539,17 @@ impl Contacts {
             });
         }
         if q.is_empty() {
-            kit::text(
-                f,
-                field.x + 12,
-                field.y + 25,
-                cx.fonts.ui,
-                DIM,
-                b"Search name, number, city",
-            );
+            let mut hint = [0u8; 32];
+            let mut hn = 0;
+            for &c in b"Search ".iter().chain(&s[..k]) {
+                hint[hn] = c;
+                hn += 1;
+            }
+            kit::text(f, field.x + 16, field.y + 27, cx.fonts.ui, DIM, &hint[..hn]);
         } else {
-            kit::text(f, field.x + 12, field.y + 25, cx.fonts.ui, TEXT, q);
+            kit::text(f, field.x + 16, field.y + 27, cx.fonts.ui, TEXT, q);
         }
-        y += 46;
+        let mut y = SEARCH.y + SEARCH.h + 6;
         let searching = !q.is_empty() || self.jump.is_some();
         // The favourites grid: large discs with initials, three across
         // (not while searching: the matches come first).
@@ -551,95 +564,108 @@ impl Contacts {
                 if !p.favourite || col == 4 {
                     continue;
                 }
-                let x = MARGIN + 6 + col * 108;
+                let cell = Rect::new(MARGIN + col * 104, y, 104, 100);
+                let mut nm = [0u8; 64];
+                let nn = name(&p, &mut nm);
+                kit::avatar(
+                    f,
+                    self.big_for(&nm[..nn]),
+                    cell.x + 20,
+                    cell.y + 2,
+                    64,
+                    cx.fonts.title,
+                    &nm[..nn],
+                );
+                kit::centred(f, cell, cell.y + 90, cx.fonts.ui, TEXT, p.first.get());
+                // A favourite opens its card (drawn, so a target: the
+                // version 2 favourites answered no tap).
+                if self.n_rows < self.rows_at.len() {
+                    self.rows_at[self.n_rows] = (cell, i);
+                    self.n_rows += 1;
+                }
+                col += 1;
+            }
+            y += 104;
+        }
+        // Everyone, by letter.
+        let initial_of = |p: &Person| {
+            p.last
+                .get()
+                .first()
+                .copied()
+                .unwrap_or(b'#')
+                .to_ascii_uppercase()
+        };
+        let mut at = 0;
+        while at < n {
+            let Some(first) = self.people[usize::from(idx[at])] else {
+                at += 1;
+                continue;
+            };
+            let l = initial_of(&first);
+            // The letter's people, as many as fit under it.
+            let mut group = 1;
+            while at + group < n
+                && self.people[usize::from(idx[at + group])].is_some_and(|p| initial_of(&p) == l)
+            {
+                group += 1;
+            }
+            if y + 22 + 54 > 596 {
+                break;
+            }
+            kit::section(f, cx, y, &[l], DIM);
+            y += 22;
+            let fit = usize::from((596 - y) / 54).min(group);
+            let card = Rect::new(MARGIN, y, WIDE - 24, fit as u16 * 54);
+            kit::panel(f, cx, card);
+            for (k, &i) in idx[at..at + fit].iter().enumerate() {
+                let Some(p) = self.people[usize::from(i)] else {
+                    continue;
+                };
+                let r = Rect::new(card.x, y + k as u16 * 54, card.w, 54);
+                if k > 0 {
+                    f.push(rp_app::Cmd::Fill {
+                        r: Rect::new(r.x + 62, r.y, r.w - 76, 1),
+                        color: kit::alpha(TEXT, 0x28),
+                    });
+                }
+                if self.n_rows < self.rows_at.len() {
+                    self.rows_at[self.n_rows] = (r, i);
+                    self.n_rows += 1;
+                }
                 let mut nm = [0u8; 64];
                 let nn = name(&p, &mut nm);
                 kit::avatar(
                     f,
                     self.disc_for(&nm[..nn]),
-                    x + 24,
-                    y,
+                    r.x + 12,
+                    r.y + 7,
                     40,
                     cx.fonts.ui,
                     &nm[..nn],
                 );
-                kit::centred(
-                    f,
-                    Rect::new(x - 4, y, 96, 10),
-                    y + 60,
-                    cx.fonts.ui,
-                    TEXT,
-                    p.first.get(),
-                );
-                col += 1;
-            }
-            y += 72;
-        }
-        // Everyone, by letter.
-        let mut letter = 0u8;
-        for &i in &idx[..n] {
-            let Some(p) = self.people[usize::from(i)] else {
-                continue;
-            };
-            let l = p
-                .last
-                .get()
-                .first()
-                .copied()
-                .unwrap_or(b'#')
-                .to_ascii_uppercase();
-            if l != letter {
-                if y + 24 + 48 > 596 {
-                    break;
+                kit::fitted(f, r.x + 66, r.y + 24, cx.fonts.ui, TEXT, &nm[..nn], 220);
+                // The match in the name, in the system accent.
+                if let Some(m) = holds(&nm[..nn], q) {
+                    let x = r.x + 66 + cx.fonts.ui.width(&nm[..m]);
+                    kit::text(f, x, r.y + 24, cx.fonts.ui, kit::FOCUS, &nm[m..m + q.len()]);
                 }
-                letter = l;
-                kit::section(f, cx, y, &[l], DIM);
-                y += 22;
+                let sub = if p.company.is_empty() {
+                    p.email.get()
+                } else {
+                    p.company.get()
+                };
+                kit::fitted(f, r.x + 66, r.y + 44, cx.fonts.label, DIM, sub, 220);
+                if !p.phones[0].1.is_empty() {
+                    let ph = shown(p.phones[0].1.get());
+                    kit::right(f, r.right() - 14, r.y + 24, cx.fonts.ui, DIM, ph.get());
+                }
             }
-            if y + 48 > 596 {
+            y += card.h + 4;
+            at += group;
+            if fit < group {
                 break;
             }
-            let r = Rect::new(MARGIN, y, WIDE - 24, 46);
-            kit::panel(f, cx, r);
-            if self.n_rows < self.rows_at.len() {
-                self.rows_at[self.n_rows] = (r, i);
-                self.n_rows += 1;
-            }
-            let mut nm = [0u8; 64];
-            let nn = name(&p, &mut nm);
-            kit::avatar(
-                f,
-                self.disc_for(&nm[..nn]),
-                r.x + 6,
-                r.y + 3,
-                40,
-                cx.fonts.ui,
-                &nm[..nn],
-            );
-            kit::fitted(f, r.x + 56, r.y + 21, cx.fonts.ui, TEXT, &nm[..nn], 240);
-            // The match in the name, in the system accent.
-            if let Some(at) = holds(&nm[..nn], q) {
-                let x = r.x + 56 + cx.fonts.ui.width(&nm[..at]);
-                kit::text(
-                    f,
-                    x,
-                    r.y + 21,
-                    cx.fonts.ui,
-                    kit::FOCUS,
-                    &nm[at..at + q.len()],
-                );
-            }
-            let sub = if p.company.is_empty() {
-                p.email.get()
-            } else {
-                p.company.get()
-            };
-            kit::fitted(f, r.x + 56, r.y + 41, cx.fonts.ui, DIM, sub, 240);
-            if !p.phones[0].1.is_empty() {
-                let ph = shown(p.phones[0].1.get());
-                kit::right(f, r.right() - 10, r.y + 21, cx.fonts.ui, DIM, ph.get());
-            }
-            y += 50;
         }
         if n == 0 {
             kit::text(f, MARGIN + 8, y + 24, cx.fonts.ui, DIM, b"No one matches");
@@ -896,7 +922,6 @@ impl Program for Contacts {
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
         self.refresh(cx);
-        kit::backdrop(f);
         match self.view {
             View::List => self.list(f, cx),
             View::Card(i) => self.card(f, cx, i),

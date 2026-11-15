@@ -54,6 +54,9 @@ pub struct Task {
     pub list: u8,
     /// Done.
     pub done: bool,
+    /// The day it was done (days from 1970), for the day's progress, the
+    /// week's count and the streak.
+    pub done_day: Option<i32>,
     /// Subtasks (done, of).
     pub steps: (u8, u8),
     /// It repeats.
@@ -96,6 +99,21 @@ pub struct Tasks {
     ring: [Option<Pic>; 8],
     full: [Option<Pic>; 8],
     painted: bool,
+    /// The home's progress ring: its picture, the part filled and the look
+    /// it was painted for.
+    gauge: Option<(Pic, u16, bool)>,
+    /// What a tap on the home hits, as last drawn.
+    hits: kit::Hits<Hit, 24>,
+}
+
+/// What a stylus tap on the home hits (design-language.md version 3:
+/// everything drawn answers the stylus; the version 2 home answered none).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Hit {
+    /// A list opened (`None`: Today).
+    List(Option<u8>),
+    /// A task ticked.
+    Tick(u32),
 }
 
 const FLAGS: [u32; 4] = [0, kit::IDENTITY[4], kit::AMBER, LATE];
@@ -150,6 +168,8 @@ impl Tasks {
             ring: [None; 8],
             full: [None; 8],
             painted: false,
+            gauge: None,
+            hits: kit::Hits::new(),
         }
     }
 
@@ -206,6 +226,7 @@ impl Tasks {
                 flag: r.num(tag::PRIORITY).unwrap_or(0).min(3) as u8,
                 list,
                 done: r.num(tag::DONE).is_some(),
+                done_day: r.num(tag::DONE).map(|m| (m / 1440) as i32),
                 steps: (done, of),
                 repeats: r.num(tag::REPEAT).is_some(),
             });
@@ -404,79 +425,196 @@ impl Tasks {
         (today_n, up, late, flagged)
     }
 
-    fn home(&self, f: &mut Frame, cx: &Ctx) {
+    /// The home (design-language.md version 3, "Every app's home has"):
+    /// today's progress as a ring, three numbers, the lists as tiles with
+    /// their own progress, today's tasks with their boxes. Everything
+    /// drawn is a target.
+    fn home(&mut self, f: &mut Frame, cx: &Ctx) {
+        self.hits.clear();
+        let t = tint::TASKS;
+        let (ui, label) = (cx.fonts.ui, cx.fonts.label);
         let today = cx.now.day;
-        let (t, u, l, fl) = self.counts(today);
+        let (due, _, late, _) = self.counts(today);
+        let done_on = |day: i32| {
+            self.tasks
+                .iter()
+                .flatten()
+                .filter(|t| t.done_day == Some(day))
+                .count() as u32
+        };
+        let done_today = done_on(today);
+        let of = due + done_today;
+        let week: u32 = (0..7).map(|k| done_on(today - k)).sum();
+        // The streak: days in a row with something done, up to today (or
+        // yesterday, while today is still open).
+        let mut streak = 0u32;
+        let mut day = if done_today > 0 { today } else { today - 1 };
+        while streak < 999 && done_on(day) > 0 {
+            streak += 1;
+            day -= 1;
+        }
+        // The hero.
+        let hero = Rect::new(MARGIN, 44, WIDE, 124);
+        kit::card(f, cx, hero, b"", t);
+        self.hits.add(hero, Hit::List(None));
+        let part = (done_today * 256).checked_div(of).unwrap_or(0) as u16;
+        if self
+            .gauge
+            .is_none_or(|(_, p, l)| p != part || l != cx.look.light)
+            && let Some(pics) = cx.pics
+        {
+            if let Some((old, _, _)) = self.gauge.take() {
+                pics.free(old);
+            }
+            self.gauge = kit::ring(pics, 96, 10, part, kit::painted(cx, t), kit::track(cx))
+                .map(|p| (p, part, cx.look.light));
+        }
+        if let Some((p, _, _)) = self.gauge {
+            f.push(rp_app::Cmd::Pic {
+                x: 28,
+                y: 58,
+                pic: p,
+            });
+        }
+        let dial = Rect::new(28, 58, 96, 96);
+        let mut b = [0u8; 24];
+        let n = num(&mut b, done_today);
+        kit::centred(f, dial, 116, cx.fonts.num, TEXT, &b[..n]);
+        let mut k = 0;
+        for &c in b"OF " {
+            b[k] = c;
+            k += 1;
+        }
+        k += num(&mut b[k..], of);
+        kit::centred(f, dial, 134, label, DIM, &b[..k]);
+        kit::text(f, 142, 78, label, t, b"TODAY");
+        let words: &[u8] = match (done_today, of) {
+            (_, 0) => b"Nothing due today",
+            (d, o) if d == o => b"All done",
+            (0, _) => b"A fresh start",
+            (d, o) if d * 2 >= o => b"More than halfway",
+            _ => b"Under way",
+        };
+        kit::text(f, 142, 110, cx.fonts.title, TEXT, words);
         let mut s = [0u8; 40];
-        let mut k = num(&mut s, t);
-        for &c in b" due today \x80 " {
+        let mut k = num(&mut s, due);
+        for &c in b" to do \x80 " {
             s[k] = c;
             k += 1;
         }
-        k += num(&mut s[k..], l);
+        k += num(&mut s[k..], late);
         for &c in b" late" {
             s[k] = c;
             k += 1;
         }
-        let mut y = kit::large_title(f, cx, 36, b"Tasks", &s[..k], tint::TASKS);
-        y += 6;
-        let tiles: [(&[u8], u32, u32); 4] = [
-            (b"TODAY", t, tint::TASKS),
-            (b"UPCOMING", u, kit::IDENTITY[6]),
-            (b"LATE", l, LATE),
-            (b"FLAGGED", fl, kit::AMBER),
-        ];
-        for (i, (name, n, c)) in tiles.iter().enumerate() {
-            let r = Rect::new(
-                MARGIN + (i as u16 % 2) * 228,
-                y + (i as u16 / 2) * 86,
-                220,
-                80,
-            );
-            kit::tinted(f, cx, r, *c, 0x48);
-            kit::text(f, r.x + 14, r.y + 26, cx.fonts.label, TEXT, name);
+        kit::text(f, 142, 134, ui, DIM, &s[..k]);
+        if streak > 0 {
+            kit::round_rect(f, cx, Rect::new(142, 146, 8, 8), kit::AMBER);
+            let mut k = num(&mut s, streak);
+            for &c in b"-DAY STREAK" {
+                s[k] = c;
+                k += 1;
+            }
+            kit::text(f, 158, 156, label, kit::AMBER, &s[..k]);
+        }
+        // Three numbers.
+        for (i, (name, n, c)) in [
+            (&b"DUE TODAY"[..], due, t),
+            (b"LATE", late, LATE),
+            (b"DONE, 7 DAYS", week, kit::DONE),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let r = Rect::new(MARGIN + i as u16 * 152, 176, 144, 70);
             let mut b = [0u8; 10];
             let bn = num(&mut b, *n);
-            kit::right(f, r.right() - 14, r.y + 66, cx.fonts.num, *c, &b[..bn]);
+            kit::stat(f, cx, r, name, &b[..bn], *c);
+            self.hits.add(r, Hit::List(None));
         }
-        y += 178;
-        kit::section(f, cx, y, b"MY LISTS", tint::TASKS);
-        y += 24;
-        for (i, list) in self.lists[..self.n_lists].iter().enumerate() {
-            if y + 52 > 596 {
-                break;
-            }
-            let all = self
-                .tasks
-                .iter()
-                .flatten()
-                .filter(|t| usize::from(t.list) == i)
-                .count() as u16;
-            let done = self
-                .tasks
-                .iter()
-                .flatten()
-                .filter(|t| usize::from(t.list) == i && t.done)
-                .count() as u16;
-            let r = Rect::new(MARGIN, y, WIDE, 48);
-            kit::panel(f, cx, r);
-            kit::colour_bar(f, r, list.colour);
-            kit::text(f, r.x + 22, r.y + 30, cx.fonts.ui, TEXT, list.name.get());
+        // The lists, each its own colour and progress.
+        kit::section(f, cx, 252, b"LISTS", t);
+        let rows = self.n_lists.min(4).div_ceil(2) as u16;
+        for (i, list) in self.lists[..self.n_lists.min(4)].iter().enumerate() {
+            let of_list = |done: bool| {
+                self.tasks
+                    .iter()
+                    .flatten()
+                    .filter(|t| usize::from(t.list) == i && (!done || t.done))
+                    .count() as u16
+            };
+            let (all, done) = (of_list(false), of_list(true));
+            let r = Rect::new(
+                MARGIN + (i as u16 % 2) * 228,
+                274 + (i as u16 / 2) * 72,
+                220,
+                66,
+            );
+            kit::tinted(f, cx, r, list.colour, 0x58);
+            kit::fitted(f, r.x + 16, r.y + 28, ui, TEXT, list.name.get(), 120);
             let mut b = [0u8; 16];
             let mut bn = num(&mut b, u32::from(all - done));
-            for &c in b" open" {
+            for &c in b" left" {
                 b[bn] = c;
                 bn += 1;
             }
-            kit::right(f, r.right() - 14, r.y + 24, cx.fonts.ui, DIM, &b[..bn]);
+            kit::right(f, r.x + r.w - 14, r.y + 28, label, DIM, &b[..bn]);
             kit::progress_bar(
                 f,
-                Rect::new(r.right() - 110, r.y + 34, 96, 4),
+                Rect::new(r.x + 16, r.y + 44, r.w - 32, 6),
                 done,
                 all,
                 list.colour,
             );
-            y += 52;
+            self.hits.add(r, Hit::List(Some(i as u8)));
+        }
+        // Today's: the late ones first; a box ticks, the row opens Today.
+        let top = 274 + rows * 72 + 4;
+        kit::section(f, cx, top, b"TODAY", t);
+        let mut open = [None; 3];
+        let mut n_open = 0;
+        for want_late in [true, false] {
+            for task in self.tasks.iter().flatten() {
+                let is_late = task.due.is_some_and(|d| d < today);
+                if !task.done
+                    && task.due.is_some_and(|d| d <= today)
+                    && is_late == want_late
+                    && n_open < open.len()
+                {
+                    open[n_open] = Some(*task);
+                    n_open += 1;
+                }
+            }
+        }
+        let mut y = top + 22;
+        for task in open.iter().flatten() {
+            if y + 38 > 596 {
+                break;
+            }
+            let r = Rect::new(MARGIN, y, WIDE, 38);
+            kit::panel(f, cx, r);
+            let c = self.colour_index(task.list);
+            kit::round_check(f, cx, r.x + 10, r.y + 7, self.ring[c], self.full[c], false);
+            kit::fitted(f, r.x + 46, r.y + 26, ui, TEXT, task.title.get(), 300);
+            let mut w = [0u8; 16];
+            let (wn, is_late) = Self::due_words(task.due, today, &mut w);
+            kit::right(
+                f,
+                r.x + r.w - 14,
+                r.y + 25,
+                label,
+                if is_late { LATE } else { DIM },
+                &w[..wn],
+            );
+            self.hits.add(r, Hit::List(None));
+            self.hits
+                .add(Rect::new(r.x, r.y, 44, r.h), Hit::Tick(task.id));
+            y += 42;
+        }
+        if n_open == 0 && y + 38 <= 596 {
+            let r = Rect::new(MARGIN, y, WIDE, 38);
+            kit::panel(f, cx, r);
+            kit::text(f, 36, r.y + 26, ui, DIM, b"Nothing due. Enjoy it.");
         }
     }
 
@@ -764,7 +902,6 @@ impl Program for Tasks {
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
         self.refresh(cx);
-        kit::backdrop(f);
         match self.view {
             View::Home => self.home(f, cx),
             View::List(w) => self.list(f, cx, w),
@@ -838,6 +975,23 @@ impl Program for Tasks {
             }
             (Event::Key(Key::SoftRight), View::List(_)) => {
                 self.typing = true;
+                Reply::Redraw
+            }
+            (Event::PenUp { x, y }, View::Home) => match self.hits.at(x, y) {
+                Some(Hit::List(which)) => {
+                    self.view = View::List(which);
+                    Reply::Redraw
+                }
+                Some(Hit::Tick(id)) => {
+                    self.tick(cx, id);
+                    Reply::Redraw
+                }
+                None => Reply::Nothing,
+            },
+            // The D-pad's centre opens Today (R203: the D-pad works in
+            // every app).
+            (Event::Key(Key::Enter), View::Home) => {
+                self.view = View::List(None);
                 Reply::Redraw
             }
             (Event::Key(Key::SoftLeft), View::Home) => Reply::Close,

@@ -731,6 +731,10 @@ const APP_TITLE_RIGHT: Argb = rp_draw::look::theme(0xFF1D_262F);
 const APP_SOFT_LEFT: Argb = rp_draw::look::theme(0xFF02_0305);
 const APP_SOFT_RIGHT: Argb = rp_draw::look::theme(0xFF1A_1D22);
 const APP_SOFT_DIVIDER: Argb = rp_draw::look::theme(0xFF59_5D60);
+/// The picture store's owner tag for the app program open
+/// (`rp_draw::pics::Pics::set_owner`).
+const PROGRAM_PICS: u8 = 1;
+
 /// An app's bars in the light look: solid, not glass (the owner,
 /// 2026-11-14: the title bar "being transparent on light mode" in a full
 /// screen app). Aero's frosted blue-white, cooling to the right, the
@@ -2189,6 +2193,11 @@ impl Shell {
     fn go_today(&mut self) {
         if self.screen == Screen::Program {
             *self.program.borrow_mut() = None;
+            // What it asked the picture store for goes with it.
+            if let Some(pics) = self.app_pics {
+                pics.free_owned(PROGRAM_PICS);
+            }
+            self.shapes.forget();
         }
         if self.screen != Screen::Today {
             // A key half typed is forgotten on the way.
@@ -2436,6 +2445,11 @@ impl Shell {
     /// Opens the app program `p` ([`Screen::Program`]).
     pub fn open_program(&mut self, p: &'static mut dyn rp_app::Program) {
         self.set_menu(false);
+        // Its pictures are its own from here, given back when it closes.
+        if let Some(pics) = self.app_pics {
+            pics.free_owned(PROGRAM_PICS);
+        }
+        self.shapes.forget();
         *self.program.borrow_mut() = Some(p);
         self.screen = Screen::Program;
         self.prog_field = None;
@@ -2628,6 +2642,21 @@ impl Shell {
         }
     }
 
+    /// Runs `f` (a call into the app program) with the picture store
+    /// naming the program as the owner of what it asks for: only what the
+    /// program itself asks for is its own (the shell's pictures made while
+    /// an app is up stay the shell's).
+    fn owning<R>(&self, f: impl FnOnce() -> R) -> R {
+        if let Some(pics) = self.app_pics {
+            pics.set_owner(PROGRAM_PICS);
+        }
+        let r = f();
+        if let Some(pics) = self.app_pics {
+            pics.set_owner(0);
+        }
+        r
+    }
+
     /// The open program's area, drawn after the look's pass: a program
     /// chooses its own colours (its rounded shapes' corners are pictures
     /// the pass can't recolour, so the pass would split body from corner).
@@ -2682,7 +2711,7 @@ impl Shell {
         // ([`Self::floor`]).
         let start = f.len();
         f.clip(Some(area));
-        p.draw(f, &cx);
+        self.owning(|| p.draw(f, &cx));
         f.clip(None);
         if light {
             f.map_colors_from(start, |c, text| look_color(c, text, style));
@@ -2707,7 +2736,7 @@ impl Shell {
             };
             let mut p = self.program.borrow_mut();
             match p.as_mut() {
-                Some(p) => p.net_answer(ok, body, &cx),
+                Some(p) => self.owning(|| p.net_answer(ok, body, &cx)),
                 None => rp_app::Reply::Nothing,
             }
         };
@@ -2734,7 +2763,7 @@ impl Shell {
             };
             let mut p = self.program.borrow_mut();
             match p.as_mut() {
-                Some(p) => p.event(e, &cx),
+                Some(p) => self.owning(|| p.event(e, &cx)),
                 None => rp_app::Reply::Nothing,
             }
         };
@@ -3191,7 +3220,7 @@ impl Shell {
     /// The light style of the screen up: the window's where an app's own
     /// window is under it with its backdrop, the setting elsewhere.
     fn style_now(&self) -> LightStyle {
-        if self.backdrops && self.floor().is_some() {
+        if self.windowed() {
             LightStyle::Window
         } else {
             self.light_style
@@ -3296,7 +3325,23 @@ impl Shell {
         // Every box the same glass (the owner, 2026-11-01): the tints
         // once passed here belonged to the flat look before it.
         let _ = (left, right);
-        panel::draw(f, r, self.light());
+        self.card(f, r);
+    }
+
+    /// Whether the screen up is in its own window over a backdrop the
+    /// host paints (design-language.md version 3).
+    pub(crate) fn windowed(&self) -> bool {
+        self.backdrops && self.floor().is_some()
+    }
+
+    /// A glass card in the look: the window's thin glass in a window, the
+    /// wallpaper's elsewhere (one place decides, for every shell screen).
+    pub(crate) fn card(&self, f: &mut Frame, r: Rect) {
+        if self.windowed() {
+            panel::draw_window(f, r, self.light());
+        } else {
+            panel::draw(f, r, self.light());
+        }
     }
 
     fn centred(

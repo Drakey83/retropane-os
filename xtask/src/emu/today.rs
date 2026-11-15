@@ -95,15 +95,16 @@ pub(crate) fn today_screens(
         shell.set_station_from_tempest(PREVIEW_STATION);
         shell.set_history_from_tempest(preview_history().as_bytes());
     }
+    // As the image: the windows' backdrops painted (it has the picture).
+    shell.use_backdrops(true);
     prepare(&mut shell);
     let mut frame = Frame::new();
     let mut screens = Vec::new();
     let mut shown = None;
     let mut painted = None;
     let mut chart_painted = None;
-    // The window backdrop painted last, and its place in the model's pool.
+    // The window backdrop painted last.
     let mut window: Option<(u32, bool)> = None;
-    const WINDOW_AT: usize = 0xF0_0000;
     for step in std::iter::once(None).chain(steps.iter().map(Some)) {
         if let Some(&e) = step
             && let rp_shell::Action::OpenProgram(n) = shell.input(e)
@@ -121,24 +122,7 @@ pub(crate) fn today_screens(
         rp_today::keep_chart(&mut shell, preview_pics(), &mut chart_painted);
         backdrop(&mut gpu, &shell, wall, map, &mut shown);
         shell.frame(&mut frame);
-        // The window's backdrop, painted when the screen up wants another
-        // (as the image does before it draws).
-        if frame.floor_picture() && shell.backdrop_key() != window {
-            window = shell.backdrop_key();
-            if let Some((tint, light)) = window {
-                let mut px = vec![0u16; rp_app::aurora::W * rp_app::aurora::H];
-                rp_app::aurora::paint(&mut px, tint, light);
-                let mut m = mem.borrow_mut();
-                for (y, row) in px.chunks(rp_app::aurora::W).enumerate() {
-                    for (x, p) in row.iter().enumerate() {
-                        let i = WINDOW_AT + y * rp_mbx_render::STRIDE16 + x * 2;
-                        m[i..i + 2].copy_from_slice(&p.to_le_bytes());
-                    }
-                }
-                drop(m);
-                gpu.set_floor_picture(Some(WINDOW_AT));
-            }
-        }
+        window_backdrop(&mut gpu, &mem, &shell, &frame, &mut window);
         gpu.draw(&frame);
         while !gpu.poll() {}
         let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
@@ -153,6 +137,37 @@ pub(crate) fn today_screens(
         screens.push(out);
     }
     screens
+}
+
+/// The window's backdrop in the model, as the image has it (every model
+/// path that draws a frame calls this before the draw, so no path is left
+/// on the old look: 2026-11-14, the plane path's model compared the X51v's
+/// backdrop against none): painted into the model's pool when the screen
+/// up wants another than `painted`, and given to the renderer.
+pub(crate) fn window_backdrop(
+    gpu: &mut rp_mbx_render::Mbx2dRenderer<rp_mbx_render::model::Bus, rp_mbx_render::model::Mem>,
+    mem: &rp_mbx_render::model::Shared,
+    shell: &rp_shell::Shell,
+    frame: &rp_draw::Frame,
+    painted: &mut Option<(u32, bool)>,
+) {
+    /// Its place in the model's 16 MB (the pool's far end).
+    const AT: usize = 0xF0_0000;
+    if !frame.floor_picture() || shell.backdrop_key() == *painted {
+        return;
+    }
+    *painted = shell.backdrop_key();
+    if let Some((tint, light)) = *painted {
+        let mut m = mem.borrow_mut();
+        rp_app::aurora::rows(tint, light, |y, row| {
+            for (x, p) in row.iter().enumerate() {
+                let i = AT + y * rp_mbx_render::STRIDE16 + x * 2;
+                m[i..i + 2].copy_from_slice(&p.to_le_bytes());
+            }
+        });
+        drop(m);
+        gpu.set_floor_picture(Some(AT));
+    }
 }
 
 /// App program `n` as the image's entry opens it (`rp_today::program`'s
@@ -233,6 +248,7 @@ pub(crate) fn today_page_on_planes(
         month: 1,
     }));
     shell.use_planes(true);
+    shell.use_backdrops(true);
     if let Some(a) = alerts {
         shell.set_alerts_from_nws(a);
     }
@@ -249,6 +265,7 @@ pub(crate) fn today_page_on_planes(
     }
     let mut frame = Frame::new();
     shell.frame(&mut frame);
+    window_backdrop(&mut gpu, &mem, &shell, &frame, &mut None);
     gpu.draw(&frame);
     while !gpu.poll() {}
     let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
@@ -676,10 +693,10 @@ thread_local! {
     /// hold it for good, as the image's do). It holds one set at a time:
     /// [`preview_set`] gives the last one back.
     pub(crate) static PREVIEW_PICS: &'static rp_draw::pics::Pics<'static> = {
-        // The big pictures' slots are the device's shape (250 x 176): square,
-        // they were roomier than the graph's, and a short big picture took
-        // the graph's slot (the store gives the least room that fits), so
-        // the previews drew Hourly and the charts without their line.
+        // The shell's pictures: the previews make every icon at every
+        // size (the image makes those on screen), so their classes are
+        // roomier here; the big pictures' slots are the device's shape
+        // (250 x 176: square, a short big picture took the graph's slot).
         let mut classes: Vec<(u16, u16, u8)> = rp_shell::Size::ALL
             .iter()
             .map(|&z| {
@@ -691,13 +708,17 @@ thread_local! {
         classes.push((gw, gh, 1));
         let (cw, ch) = rp_shell::chart::CHART_PIC;
         classes.push((cw, ch, 1));
-        // The app programs' avatars and marks (rp_app::kit).
-        // Exactly the device's list (shell/today's PIC_CLASSES takes all of it).
+        let shell = classes.len();
+        // The app programs': exactly the image's (rp_app::kit), behind
+        // the same wall, so an app runs out here where it does there.
         classes.extend_from_slice(&rp_app::kit::PIC_CLASSES);
-        Box::leak(Box::new(rp_draw::pics::Pics::new(
-            Box::leak(vec![0; rp_draw::pics::Pics::words(&classes)].into_boxed_slice()),
-            &classes,
-        )))
+        let pics: &'static rp_draw::pics::Pics<'static> =
+            Box::leak(Box::new(rp_draw::pics::Pics::new(
+                Box::leak(vec![0; rp_draw::pics::Pics::words(&classes)].into_boxed_slice()),
+                &classes,
+            )));
+        pics.wall(&classes[..shell]);
+        pics
     };
 }
 

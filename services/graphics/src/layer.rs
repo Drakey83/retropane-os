@@ -157,6 +157,9 @@ pub(crate) struct LayerRec {
     /// The pictures the 2D renderer's wallpaper bands read (by slot):
     /// never given back while it does.
     bands: u32,
+    /// The picture that is the 2D renderer's floor (by slot): never given
+    /// back while it is ([`Graphics::floor_picture`]).
+    floor: Option<u16>,
     /// A 2D frame held aside (shown only through the layer).
     aside: bool,
 }
@@ -290,6 +293,31 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         Ok(())
     }
 
+    /// The 2D renderer's floor picture (design-language.md version 3: the
+    /// window's backdrop, light behind the glass): client `c`'s own
+    /// 480 x 640 RGB565 picture `h`, read where a frame whose floor is the
+    /// picture would read the wallpaper (`Mbx2dRenderer::set_floor_picture`).
+    /// Checked here, so the renderer is only ever given the allocator's
+    /// address (ADR-0023 rule 7). Call again after its pixels change;
+    /// `None` gives it back. The picture can't be freed while it is the
+    /// floor.
+    pub fn floor_picture(&mut self, c: ClientId, h: Option<Handle>) -> Result<(), Error> {
+        self.rec(c)?;
+        let at = match h {
+            Some(h) => {
+                let p = self.pic(c.0, h)?;
+                if !p.rgb565 || p.w != 480 || p.h != 640 {
+                    return Err(Error::BadWindow);
+                }
+                Some((p.at as usize, h.slot))
+            }
+            None => None,
+        };
+        self.layer.floor = at.map(|(_, slot)| slot);
+        self.two_d.set_floor_picture(at.map(|(a, _)| a));
+        Ok(())
+    }
+
     /// Composes the 2D `frame` (drawn whole: its damage the screen) into
     /// client `c`'s RGB565 picture `h`, not shown: the 2D renderer draws it
     /// into the picture not on screen, the 2D engine copies it out, and the
@@ -416,6 +444,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<'_, R, M> {
         if uses(self.layer.shown)
             || self.layer.staged.is_some_and(|s| uses(s.layer))
             || self.layer.bands & 1 << h.slot != 0
+            || self.layer.floor == Some(h.slot)
         {
             return Err(Error::Busy);
         }

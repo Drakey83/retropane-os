@@ -39,7 +39,22 @@ pub fn body(light: bool) -> Argb {
 /// Whether `c` is the panels' own (the light look keeps it).
 #[must_use]
 pub fn is_panel(c: Argb) -> bool {
-    c == body(true) || c == pressed(true).rows[32]
+    c == body(true)
+        || c == pressed(true).rows[32]
+        || c == window(true).rows[32]
+        || c == window_pressed(true).rows[32]
+}
+
+/// Draws box `r` as the window's glass in the look ([`window`]).
+pub fn draw_window(f: &mut Frame, r: Rect, light: bool) {
+    let art = window(light);
+    draw_art(f, r, art, art.rows[32]);
+}
+
+/// Draws box `r` as the window's glass under the pen.
+pub fn draw_window_pressed(f: &mut Frame, r: Rect, light: bool) {
+    let art = window_pressed(light);
+    draw_art(f, r, art, art.rows[32]);
 }
 
 /// Draws box `r` as glass in the look.
