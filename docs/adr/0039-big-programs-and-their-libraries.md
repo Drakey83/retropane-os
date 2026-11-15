@@ -1,7 +1,17 @@
-# ADR-0039: A big program (a game port): run alone from a small runner, its libraries placed at build time
+# ADR-0039: A big program (a game port): Game Mode's one program, its libraries placed at build time
 
-- **Status:** Proposed (2026-11-15, drafted by Claude for the owner's vote;
-  nothing here is ruled. Four votes wait, listed under "Votes")
+- **Status:** Accepted (2026-11-15, by the project owner: "Accept all four")
+  for votes 2, 3 and 4. **Vote 1 (how it runs) is reopened the same day
+  and waits for his ruling:** minutes after accepting he reminded Claude
+  "I want to run the OS in a game mode that we talked about, when starting
+  a port such as this". Rule 1 as first drafted (the shell leaves RAM, the
+  game runs with no kernel under it, the shell is started again after) is
+  the separate game image his Game Mode brief rejects, "not as a stepping
+  stone, a temporary version, or a fallback" (docs/design/game-mode.md,
+  2026-11-01). Claude drafted it without reading that brief; the mistake is
+  Claude's, not a change of the owner's mind. Rules 1, 9 and 10 and
+  alternative F below are rewritten to follow the brief; the first draft's
+  wording is kept under "Amendments" 
 - **Date:** 2026-11-15
 
 ## Context
@@ -58,15 +68,28 @@ The constraints, each read from the source or measured, not assumed:
 | Static ports (`platform/misc/lib_static.c`) | Everything in one program, a generated table of names | Fastest, but the engine's maintainers do not support it: the SDK linked into the GPL engine is the licence problem above |
 | Windows Mobile (not an Xash3D port; how its games ran) | A process in a 32 MB slot, DLLs relocated at load | A game of this size does not fit its slot |
 
-## Decision (proposed)
+## Decision
 
-1. **A big program runs alone, started by a small runner.** The runner is an
-   ordinary RetroPane image in Rust (as `ports/hello`: `rp-image`'s entry,
-   crash path and return): it brings the port layer (`rp_port`), the C
-   library and the loader below, and nothing of the game. The shell hands
-   over to it and is started again when the game is left, so every byte of
-   RAM but the runner's is the game's. No process, no kernel under it, no
-   memory shared with anything to protect.
+1. **A big program is Game Mode's one program** (the owner's brief,
+   docs/design/game-mode.md; design B, docs/design/game-mode-b.md, a draft
+   waiting for his go). The kernel and the drivers stay; the rest of the
+   OS is frozen, not ended; the game gets the screen, the buttons, the
+   sound and nearly all the memory; leaving it returns to the session that
+   was left. The game's own program is a small **runner** in Rust: the
+   port layer (`rp_port`), the C library and the loader below, and nothing
+   of the game. **To be ruled (vote 1):** this rule as rewritten.
+   - *What this does to speed, said plainly:* a kernel under the game costs
+     nothing in the frame if the game's memory is mapped in 1 MiB sections
+     (the PXA270's 32-entry translation caches then cover the whole game
+     with no page walks, as the 1:1 map of a bare image does) and the
+     port layer's calls stay calls (the graphics, input and sound hosts
+     grant the game exclusive use, design B). Both are to measure when the
+     kernel runs on the X51v; neither is measured.
+   - *Until the kernel is what the device runs* (it runs in the emulator
+     only today), the engine is tried the way every part of RetroPane is
+     tried on the device today: as a **test image** (`ports/hello` is one).
+     That is a test harness, not a way the OS starts a game, and is never
+     shipped as one.
 2. **The game is module files, placed at build time.** Each module is
    linked by our own build (`cargo xtask`) **at the address it will run at**
    in the RAM pool, against the runner's own addresses for what it imports.
@@ -110,15 +133,19 @@ The constraints, each read from the source or measured, not assumed:
    RetroPane is installed, the same files). The game's data stays the
    user's own, in `Ports\<game>` (the owner's ruling, 2026-11-15).
 9. **Leaving.** The game ends by returning to the runner, which closes the
-   sound stream, puts the keypad and the codec back, and returns as every
-   image does. C's `exit()` takes the same road (R253's "leaves the codec
-   powered" is closed by it).
+   sound stream and gives the screen, the buttons and the sound back; Game
+   Mode's own way back (quitting, a crash, a hang, the forced-way-back
+   keys: design B) returns to the session that was left. C's `exit()` takes
+   the same road.
 10. **Untrusted input stays untrusted.** The game's data (maps, models,
     saved games, a mod's files) is parsed by C code with the whole machine
     in its hands; a fixed layout gives an attacker known addresses. The
-    build this ADR covers has no network. Before any port with a network
-    (or the browser's kind of exposure) runs this way, it is revisited:
-    the kernel's process is where such a program belongs (docs/security.md).
+    build this ADR covers has no network. Under Game Mode the game is a
+    process: the kernel keeps a bad map from the rest of the OS, and the
+    crash path returns to the session (design B). A fixed layout inside
+    the game's own address space gives up address randomising for that one
+    process; before a port with a network runs this way, that is revisited
+    (docs/security.md).
 
 ## Why it beats the originals (rule 0)
 
@@ -169,7 +196,8 @@ the address space.
 | **C** | Relocatable ELF objects (what `xash-eval` already links with `ld -r`) **linked on the device** at load by a small linker of our own | Direct calls like A, no fixed addresses | A linker on the device: tens of thousands of relocations and a symbol table of megabytes read at every start; the most new code to trust; link-time optimisation and dead-code removal are awkward with `-r` |
 | **D** | Six separate libraries, as Linux has them | Nearest to upstream | Splits the file system, renderer and menu from the engine for no licence reason; the optimiser cannot see across; four more files, each with its copy of shared sources (the build shows the engine's `public` folder and miniz compiled into several parts) |
 | **E** | One program with everything linked in (`lib_static.c`) | Simplest and fastest of all | The SDK linked into the GPL engine: the road the engine's own guide warns against. Not proposed |
-| **F** | The game as a **process under the kernel** | Protection from a bad map; the long-term home for anything with a network | The kernel is not what the device runs yet (emulator only); ADR-0003's slot is 32 MB; page tables and faults between the game and its RAM cost frame time the owner asked us not to spend |
+| **F, now rule 1** | The game as Game Mode's process under the resident kernel | The owner's brief; nothing of the session lost; protection from a bad map | The kernel is not what the device runs yet (emulator only), so a playable game on the X51v waits for it and for Game Mode; ADR-0003's 32 MB slot is design B's open point; the map must be sections for speed (rule 1) |
+| **G (the first draft's rule 1, withdrawn)** | The game alone with no kernel, the shell ended and started again | Every byte the game's, nothing to build first | It is the separate game image the Game Mode brief rejects; the session is lost |
 
 Not measured yet (each is a number A must show, in the emulator first, then
 on the X51v): start-up time against B; the share of a frame spent in calls
@@ -190,17 +218,31 @@ one gains in size and time.
   the runner (Rust, host-tested with damaged and mismatched modules); the
   engine's load calls over it (`lib_rp.c`); the runner image; the shell's
   hand-over to it and back (not built: R258's Start-menu entry).
-- **Revisit when:** a port needs a network (rule 10); the kernel becomes
-  what the device runs (F's "for" grows); a library built elsewhere must
-  load (B).
-- `docs/adr-areas.md` gets rows for `ports/xash/` and the runner when this
-  record is accepted, not before.
+- **A playable game on the X51v now waits for the kernel on the device and
+  for Game Mode** (design B's go and build). What does not wait: the
+  module format, the loader, the engine's start in the emulator and its
+  measurements, as a test image.
+- **Revisit when:** a port needs a network (rule 10); a library built
+  elsewhere must load (B).
+- `docs/adr-areas.md` has rows for `ports/xash/`, the runner and the
+  module loader since this record was accepted.
 
-## Votes (the owner's; none is given)
+## Amendments
 
-1. **How it runs:** alone from a runner, the shell leaving RAM and started
-   again after (proposed), or the shell staying in RAM beside the game, or
-   a process under the kernel (F).
+- **2026-11-15, the same day as acceptance:** rule 1 first read "A big
+  program runs alone, started by a small runner ... The shell hands over
+  to it and is started again when the game is left ... No process, no
+  kernel under it", and the owner accepted it with the other three. His
+  reminder of Game Mode followed at once. Rules 1, 9, 10 and alternative F
+  were rewritten as above; vote 1 waits for his ruling on the rewritten
+  rule. Votes 2, 3 and 4 do not depend on it: where the modules are
+  placed is the game's own address space either way.
+
+## Votes (the owner's, given 2026-11-15: "Accept all four"; vote 1 reopened, see the status)
+
+1. **How it runs: reopened.** As Game Mode's one program under the
+   resident kernel (rule 1 as rewritten; proposed now). The first draft
+   (alone, the shell ended and started again) is withdrawn.
 2. **How libraries load:** placed at build time (A, proposed), relocated at
    load as PE (B), or linked on the device (C).
 3. **What is one module:** the engine with its file system, renderer and

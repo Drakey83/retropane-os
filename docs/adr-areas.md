@@ -32,6 +32,10 @@ row with every new ADR that decides an area of code.
 | kernel/sched/ | 0010 |
 | kernel/ipc/ | 0016 |
 | kernel/pe/ | 0009 |
+| ports/xash/ | 0039 |
+| ports/runner/ | 0039 |
+| ports/sys/src/module.rs | 0039 |
+| xtask/src/module.rs | 0039 |
 | kernel/power/ | 0031 |
 | kernel/crypto/ | 0029 |
 | hal/pxa27x/src/clocks.rs | 0031 |
