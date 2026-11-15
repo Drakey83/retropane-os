@@ -1004,6 +1004,7 @@ pub(crate) fn backdrop(
             gpu,
             wall,
             coloured.as_deref(),
+            want.and(shell.radar_window()),
             &mut rp_today::WallScratch::new(),
         );
         if let (Some(look), Some(view)) = (want, coloured.as_deref()) {

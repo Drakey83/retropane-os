@@ -1608,3 +1608,76 @@ fn a_backdrop_picture_under_the_glass_matches_the_reference() {
     assert!(r.poll());
     same(&shown(&mut r, &mem), &cpu.draw(&g), 2).unwrap();
 }
+
+/// Ink's coverage picture (`Cmd::Cover`) draws exactly as the same pixels
+/// would as a 32-bit picture in its colour (each pixel's four bits widened
+/// by repeating them), the first pixel in a byte's high half, from an
+/// eighth of the bytes.
+#[test]
+fn a_coverage_picture_draws_as_its_colour_through_four_bits_a_pixel() {
+    use rp_draw::pics::Pics;
+    let pics: &'static Pics<'static> = std::boxed::Box::leak(std::boxed::Box::new(Pics::new(
+        std::boxed::Box::leak(std::vec![0; 4 + 32].into_boxed_slice()),
+        &[(2, 2, 1), (16, 2, 1)],
+    )));
+    // Sixteen pixels a row, two rows: coverage 0, 1, .. 15, then back.
+    let nib = |x: usize, y: usize| if y == 0 { x as u32 } else { 15 - x as u32 };
+    let cover = pics.alloc(2, 2).unwrap();
+    assert!(pics.write(cover, |w| {
+        for (i, word) in w.iter_mut().enumerate() {
+            let (y, x0) = (i / 2, (i % 2) * 8);
+            *word = (0..8usize).fold(0, |acc, k| {
+                let shift = 8 * (k / 2) as u32 + if k.is_multiple_of(2) { 4 } else { 0 };
+                acc | nib(x0 + k, y) << shift
+            });
+        }
+    }));
+    let colour = 0xFFC0_3030;
+    let argb = pics.alloc(16, 2).unwrap();
+    assert!(pics.write(argb, |px| {
+        for (i, p) in px.iter_mut().enumerate() {
+            *p = (nib(i % 16, i / 16) * 17) << 24 | (colour & 0x00FF_FFFF);
+        }
+    }));
+    let draw = |c: Cmd| {
+        let (mut r, mem) = gpu();
+        r.set_pics(pics);
+        let mut f = Frame::new();
+        f.push(Cmd::Fill {
+            r: Rect::new(20, 70, 40, 20),
+            color: 0xFF20_6080,
+        });
+        f.push(c);
+        f.damage(Rect::new(0, 0, W, H));
+        r.draw(&f);
+        assert!(r.poll());
+        assert_eq!(r.last.pics_missed.n, 0);
+        (shown(&mut r, &mem), r.last.image_bytes)
+    };
+    let (want, big) = draw(Cmd::Pic {
+        x: 30,
+        y: 80,
+        pic: argb,
+    });
+    let (got, small) = draw(Cmd::Cover {
+        x: 30,
+        y: 80,
+        pic: cover,
+        color: colour,
+    });
+    assert_eq!(got, want);
+    assert_eq!((small, big), (16, 128), "an eighth of the bytes uploaded");
+    // Placed off the left edge and above the top, it is cut, not skewed.
+    let (cut_want, _) = draw(Cmd::Pic {
+        x: 0,
+        y: -1,
+        pic: argb,
+    });
+    let (cut_got, _) = draw(Cmd::Cover {
+        x: 0,
+        y: -1,
+        pic: cover,
+        color: colour,
+    });
+    assert_eq!(cut_got, cut_want);
+}

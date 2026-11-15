@@ -707,8 +707,23 @@ fn log_wait_secs() -> u32 {
     std::env::var("RETROPANE_LOG_WAIT_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(LOG_WAIT_SECS)
+        .unwrap_or_else(|| LONG_RUN_WAIT.load(std::sync::atomic::Ordering::Relaxed))
 }
+
+/// The wait when `RETROPANE_LOG_WAIT_SECS` isn't given: [`LOG_WAIT_SECS`],
+/// or [`SHELL_WAIT_SECS`] once a load says its image is the shell.
+static LONG_RUN_WAIT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(LOG_WAIT_SECS);
+
+/// rp-today is used by hand for as long as its user likes, and the dock's
+/// relay (its internet: forecasts, addresses, rates) lives in the load that
+/// started it: the load waits this long for it to come back, eight hours.
+/// At the default 120 s the load gave up and took the relay with it, and
+/// every question the X51v asked after that got no answer (runs today-0143,
+/// 0146 and 0147: "RPNET ADDR 304 Perryville Loop ... no answer in 20000
+/// ms", so Contacts offered the device's kept addresses, which have no
+/// city; R202, R228).
+const SHELL_WAIT_SECS: u32 = 8 * 3600;
 
 /// Base64 of `text` as UTF-16LE, for PowerShell's `-EncodedCommand`.
 fn encode_command(text: &str) -> String {
@@ -987,6 +1002,9 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
     // internet: the owner, 2026-10-31). It ends when the image's port goes.
     // While it runs, a file says so, and the wait for the run's log
     // leaves the port to it (`load_script_opts`).
+    if what == "rp-today" {
+        LONG_RUN_WAIT.store(SHELL_WAIT_SECS, std::sync::atomic::Ordering::Relaxed);
+    }
     let relay_flag = root.join("target").join("load").join("relay-up");
     let _ = std::fs::remove_file(&relay_flag);
     let relay = (what == "rp-today").then(|| {

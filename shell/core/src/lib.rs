@@ -740,12 +740,12 @@ const PROGRAM_PICS: u8 = 1;
 /// screen app). Aero's frosted blue-white, cooling to the right, the
 /// softkeys a shade under the title; kept by the look's pass.
 const APP_TITLE_LIGHT: (Argb, Argb) = (
-    rp_app::kit::keep(rp_draw::look::theme(0xFFEA_F0F6)),
-    rp_app::kit::keep(rp_draw::look::theme(0xFFD2_DCE7)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFFD0_D8E2)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFFBA_C5D2)),
 );
 const APP_SOFT_LIGHT: (Argb, Argb) = (
-    rp_app::kit::keep(rp_draw::look::theme(0xFFDC_E3EB)),
-    rp_app::kit::keep(rp_draw::look::theme(0xFFC8_D2DD)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFFC4_CDD8)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFFB0_BBC8)),
 );
 const APP_SOFT_DIVIDER_LIGHT: Argb = rp_app::kit::keep(rp_draw::look::theme(0xFF98_A4B0));
 const MENU_LEFT: Argb = rp_draw::look::theme(0xEE08_0A0C);
@@ -765,8 +765,8 @@ const BODY_DARK: (Argb, Argb) = (
     rp_draw::look::theme(0xFF1A_2027),
 );
 const BODY_LIGHT: (Argb, Argb) = (
-    rp_draw::look::theme(0xFFF2_F4F7),
-    rp_draw::look::theme(0xFFDC_E2E9),
+    rp_draw::look::theme(0xFFD4_D9E0),
+    rp_draw::look::theme(0xFFC2_CAD4),
 );
 
 /// `a` toward `b`, `k` of `n`, opaque.
@@ -2803,6 +2803,10 @@ impl Shell {
             return None;
         }
         self.program_keyboard();
+        // The key shown large goes with the stylus, wherever it lifts.
+        if matches!(e, Input::PenUp { .. }) && matches!(self.pressed, Some(Target::Cap(_))) {
+            self.set_pressed(None);
+        }
         let field = self.prog_field;
         let typing = field.is_some();
         let area = |x: u16, y: u16| {
@@ -2814,6 +2818,13 @@ impl Shell {
                 let cap = (0..keyboard::CAPS)
                     .find(|&i| self.kb.cap(i).is_some_and(|(_, r)| r.contains_point(x, y)));
                 let cap = cap.and_then(|i| self.kb.cap(i).map(|c| (i, c.0)))?;
+                // The key under the stylus shown large above it while it
+                // is down, as in Weather's settings (an app's keyboard
+                // types on the touch and never said which key was pressed:
+                // the owner on the X51v, 2026-11-15, "it used to show up
+                // in a box above the key ... i liked that and now its
+                // gone").
+                self.set_pressed(Some(Target::Cap(cap.0)));
                 let before = self.kb;
                 let ev = match self.kb.press(cap.1) {
                     keyboard::Cap::Char(c) => {
@@ -3331,7 +3342,7 @@ impl Shell {
     /// An app's bars drawn solid in the light look (the dark look's are
     /// opaque already; the light look's pass would make them glass).
     fn solid_bars(&self) -> bool {
-        self.floor().is_some() && self.light()
+        (self.floor().is_some() || self.radar_window().is_some()) && self.light()
     }
 
     /// The open app's window body for the renderer (`set_floor` on
@@ -3379,7 +3390,8 @@ impl Shell {
     /// Whether the screen up is in its own window over a backdrop the
     /// host paints (design-language.md version 3).
     pub(crate) fn windowed(&self) -> bool {
-        self.backdrops && self.floor().is_some()
+        // (The radar's window is painted round its map: no floor.)
+        self.backdrops && (self.floor().is_some() || self.backdrop().is_some())
     }
 
     /// A glass card in the look: the window's thin glass in a window, the

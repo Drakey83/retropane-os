@@ -4150,3 +4150,72 @@ fn a_closed_app_gives_its_pictures_back() {
         assert_eq!(pics.used(), before, "round {round}");
     }
 }
+
+/// A task with a time is reminded of at its time, while it is not done,
+/// and its banner opens Tasks (the owner on the X51v, 2026-11-15: "you
+/// cant set a time for tasks?").
+#[test]
+fn a_task_with_a_time_brings_the_banner_at_its_time() {
+    use rp_pim::date::{self, Date};
+    use rp_pim::store::{Kind, tag};
+    let mut s = shell(true);
+    s.use_programs(true);
+    s.give_apps(std::vec![0u8; crate::apps::MEMORY].leak());
+    s.set_year(2024);
+    let at = |h: u8, m: u8| Time {
+        hour: h,
+        minute: m,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    };
+    s.set_time(at(14, 40));
+    let day = date::days_from(Date {
+        year: 2024,
+        month: 1,
+        day: 1,
+    });
+    let (bank, done) = {
+        let p = s.pim().unwrap();
+        p.load_start(None);
+        let when = (date::start_of(day) + 15 * 60).to_le_bytes();
+        let bank = p
+            .put(
+                Kind::Task,
+                None,
+                &[(tag::TITLE, b"Call the bank"), (tag::REMIND_AT, &when)],
+            )
+            .unwrap();
+        // One done already, and one with no time: neither reminds.
+        let done = p
+            .put(
+                Kind::Task,
+                None,
+                &[
+                    (tag::TITLE, b"Done one"),
+                    (tag::REMIND_AT, &when),
+                    (tag::DONE, &when),
+                ],
+            )
+            .unwrap();
+        p.put(Kind::Task, None, &[(tag::TITLE, b"No time")])
+            .unwrap();
+        (bank, done)
+    };
+    s.pim_loaded();
+    s.set_time(at(14, 59));
+    assert!(!s.reminder_shown());
+    s.set_time(at(15, 0));
+    assert!(s.reminder_shown(), "at its time");
+    let _ = (bank, done);
+    // Open goes to Tasks (program 2), not Calendar.
+    assert_eq!(
+        s.input(Input::PenUp {
+            x: crate::apps::preview::REMINDER_OPEN.x + 5,
+            y: crate::apps::preview::REMINDER_OPEN.y + 5,
+        }),
+        Action::OpenProgram(2)
+    );
+    s.set_time(at(15, 5));
+    assert!(!s.reminder_shown(), "the done one never reminded");
+}

@@ -853,8 +853,12 @@ impl Calculator {
         // shown once, large (it was drawn twice, the small one running
         // into the large: the owner's photo, 2026-11-15).
         let sum = self.is_sum();
+        // (As a phone's calculator: the sum small on its own line at
+        // the top, its answer large under it. The large digits stand 53 px
+        // above their line, so with the sum's line at 22 and theirs at 86
+        // the two never meet, whatever is typed.)
         if sum {
-            kit::right(f, d.right() - 12, d.y + 24, cx.fonts.ui, DIM, &shown[..sn]);
+            kit::right(f, d.right() - 12, d.y + 22, cx.fonts.ui, DIM, &shown[..sn]);
         }
         let mut ans = [0u8; 32];
         let an = match self.value() {
@@ -869,17 +873,16 @@ impl Calculator {
             }
             None => 0,
         };
-        // The answer as large as it fits: across, and under the sum's
-        // line where there is one.
-        let room = if sum { 80 - 30 } else { 80 - 6 };
-        let font = if cx.fonts.big.width(&ans[..an]) <= WIDE - 24
-            && u16::from(cx.fonts.big.ascent) <= room
-        {
+        // The answer large, always (the room check before this took the
+        // large number away altogether: the owner on the X51v,
+        // 2026-11-15); a long one in the smaller numerals so it never
+        // runs off the glass.
+        let font = if cx.fonts.big.width(&ans[..an]) <= WIDE - 24 {
             cx.fonts.big
         } else {
             cx.fonts.num
         };
-        kit::right(f, d.right() - 12, d.y + 80, font, TEXT, &ans[..an]);
+        kit::right(f, d.right() - 12, d.y + 86, font, TEXT, &ans[..an]);
     }
 
     /// Whether what is typed is a sum to work (it holds an operator, a

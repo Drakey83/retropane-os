@@ -609,9 +609,16 @@ pub const BUDGETS: &[Budget] = &[
     // Then load 184 -> 186 KiB (2026-11-14, test image): the renderer's
     // floor, an app's own window under its glass (R201, ADR-0023), 189,140 B
     // (184.7 KiB) measured.
+    // Then load 186 -> 187 KiB (2026-11-15, test image): the renderer's
+    // rows stepped without a division a column and one-colour rows shared
+    // by every width (R209, R221), 190,480 B (186.0 KiB) measured, 16 B
+    // over.
+    // Then load 187 -> 188 KiB (2026-11-15, test image): the renderers'
+    // coverage picture (`Cmd::Cover`, ink a sheet at an eighth of the
+    // bytes: R215, R221), 191,552 B (187.1 KiB) measured.
     Budget {
         image: "rp-scene",
-        max_load: 186 * 1024,
+        max_load: 188 * 1024,
         max_zero: 53 * 1024,
         device: OnDevice::Returns,
     },

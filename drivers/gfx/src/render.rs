@@ -345,6 +345,26 @@ impl<'a> CpuRenderer<'a> {
                     self.missed.note(pic, pics.why_not(pic));
                 }
             }
+            Cmd::Cover { x, y, pic, color } => {
+                let Some(pics) = self.pics else {
+                    self.missed.note(pic, rp_draw::pics::Miss::NoStore);
+                    return;
+                };
+                let layer = &mut self.layer;
+                let drawn = pics.read(pic, |words| {
+                    layer.draw_cover4_in(
+                        words,
+                        (u32::from(pic.w) * 8, u32::from(pic.h)),
+                        color,
+                        i32::from(x),
+                        i32::from(y),
+                        clip,
+                    );
+                });
+                if drawn.is_none() {
+                    self.missed.note(pic, pics.why_not(pic));
+                }
+            }
             Cmd::Text {
                 x,
                 baseline,

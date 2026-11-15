@@ -546,12 +546,26 @@ pub fn show_backdrop<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
     r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
     wallpaper: &[u8],
     map: Option<&[u32]>,
+    window: Option<(u32, bool)>,
     s: &mut WallScratch,
 ) {
     match map {
         Some(m) => {
             for (y, row) in m.as_chunks::<W>().0.iter().enumerate().take(MAP_H) {
                 r.wallpaper_row(MAP_TOP + y as u16, row);
+            }
+            // Radar in its window (the owner on the X51v, 2026-11-15:
+            // "radar still shows the wallpaper, it isnt in a full screen
+            // window"): the map is the wallpaper under the page, so the
+            // rows above and below it take the window's backdrop (its tint
+            // and look) while it is up; leaving puts the wallpaper back
+            // whole, as it already did for the map's rows.
+            if let Some((tint, light)) = window {
+                rp_app::aurora::rows(tint, light, |y, row| {
+                    if y < usize::from(MAP_TOP) || y >= usize::from(MAP_TOP) + MAP_H {
+                        r.wallpaper_row565(y as u16, row);
+                    }
+                });
             }
         }
         None => load_wallpaper(r, wallpaper, Depth::Rgb565, s),
@@ -1059,6 +1073,13 @@ pub fn frame_key(f: &rp_draw::Frame, mut h: u32) -> u32 {
                 // (slot and era) names them.
                 mix(pic.key());
                 mix(u32::from(pic.w) | u32::from(pic.h) << 16);
+            }
+            Cmd::Cover { x, y, pic, color } => {
+                mix(9);
+                mix(u32::from(x) | u32::from(y.cast_unsigned()) << 16);
+                mix(pic.key());
+                mix(u32::from(pic.w) | u32::from(pic.h) << 16);
+                mix(color);
             }
             Cmd::Text {
                 x,

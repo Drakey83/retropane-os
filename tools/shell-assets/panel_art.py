@@ -51,12 +51,15 @@ LOOKS["ON"] = dict(top=(120, 196, 246), bottom=(22, 92, 176), alpha=0.95, rim=0.
 LOOKS["WINDOW_DARK"] = dict(top=(86, 92, 108), bottom=(20, 24, 32), alpha=0.64, rim=0.95, sheen=0.24)
 LOOKS["WINDOW_DARK_PRESSED"] = dict(LOOKS["WINDOW_DARK"], dim=0.70)
 LOOKS["WINDOW_LIGHT"] = dict(
-    top=(255, 255, 255), bottom=(240, 244, 250), alpha=0.72, rim=0.55, sheen=0.0, edge=(120, 136, 160)
+    # Soft, not white (the owner on the X51v, 2026-11-15: light mode "WAY
+    # too bright ... doesnt have to mean blinding mode"; was 255 / 240-250
+    # at 0.72).
+    top=(226, 230, 237), bottom=(204, 211, 222), alpha=0.68, rim=0.55, sheen=0.0, edge=(108, 124, 148)
 )
 LOOKS["WINDOW_LIGHT_PRESSED"] = dict(LOOKS["WINDOW_LIGHT"], dim=0.88)
 # The light look's gel key: white gloss over a cool foot, the same edge.
 LOOKS["KEY_LIGHT"] = dict(
-    top=(250, 252, 255), bottom=(196, 206, 220), alpha=0.94, rim=0.6, sheen=0.0, gloss=0.5, k=8, edge=(110, 126, 150)
+    top=(226, 231, 238), bottom=(178, 188, 204), alpha=0.94, rim=0.6, sheen=0.0, gloss=0.5, k=8, edge=(100, 116, 140)
 )
 LOOKS["KEY_LIGHT_DOWN"] = dict(LOOKS["KEY_LIGHT"], dim=0.86, gloss=0.2)
 

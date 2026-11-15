@@ -55,6 +55,10 @@ rp-drv-pxa-udc = { path = "../../drivers/pxa-udc" }
 rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
 rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-drv-cf = { path = "../../drivers/cf" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-drv-pxa-i2s = { path = "../../drivers/pxa-i2s" }
+rp-audio = { path = "../../services/audio" }
+rp-audio-x51v = { path = "../../services/audio-x51v" }
 
 [lints]
 workspace = true

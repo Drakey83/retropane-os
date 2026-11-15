@@ -84,17 +84,21 @@ fn node(gx: usize, gy: usize, tint: Argb, light: bool) -> [i32; 3] {
     // Falling light: the top lit, the bottom deep (dark look) or the top
     // clear and the bottom tinted (light look).
     let (top, mid, bottom): ([i32; 3], [i32; 3], [i32; 3]) = if light {
+        // A soft light, not a white one (the owner on the X51v,
+        // 2026-11-15: "light mode is WAY too bright with these full
+        // screen backgrounds ... light mode doesnt have to mean blinding
+        // mode"; the first values were 252 at the top, 206 at the foot).
         (
-            [252, 253, 255],
+            [208, 211, 216],
             [
-                lerp(238, t[0], 26),
-                lerp(243, t[1], 26),
-                lerp(250, t[2], 26),
+                lerp(190, t[0], 34),
+                lerp(196, t[1], 34),
+                lerp(205, t[2], 34),
             ],
             [
-                lerp(206, t[0], 70),
-                lerp(216, t[1], 70),
-                lerp(230, t[2], 70),
+                lerp(158, t[0], 80),
+                lerp(168, t[1], 80),
+                lerp(184, t[2], 80),
             ],
         )
     } else {
@@ -151,7 +155,7 @@ fn node(gx: usize, gy: usize, tint: Argb, light: bool) -> [i32; 3] {
     let (dx, dy) = (x + 40, y + 60);
     let glow = bell(dx * 3 / 4, 260) * bell(dy, 250) / 256;
     for ch in &mut c {
-        *ch = lerp(*ch, 255 * 16, glow * if light { 150 } else { 34 } / 256);
+        *ch = lerp(*ch, 255 * 16, glow * if light { 64 } else { 34 } / 256);
     }
     if !light {
         // The foot's corners fall away into the dark (a vignette).
@@ -262,7 +266,8 @@ mod tests {
     fn the_light_backdrop_stays_light_everywhere() {
         let mut px = vec![0u16; W * H];
         paint(&mut px, 0xFF74_B1A7, true);
-        assert!(px.iter().all(|&p| lum(p) > 150));
+        // Light, and never glaring: no pixel near white.
+        assert!(px.iter().all(|&p| lum(p) > 120 && lum(p) < 232));
     }
 
     #[test]

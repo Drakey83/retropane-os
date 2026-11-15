@@ -331,30 +331,33 @@ fn text_edit(cx: &Ctx, id: u32, change: &mut dyn FnMut(&mut [u8], &mut usize) ->
         return true;
     }
     // No room in the record: a note written before `OWN_INK` holds ink in
-    // its second field. That goes to a page of its own, and the text is
-    // kept.
-    let more = store.get(id).map_or(0, |r| r.text(tag::INK_MORE).len());
-    if more == 0 {
-        return false;
-    }
-    let moved = {
-        let Some(r) = store.get(id) else { return false };
-        let mut ink = [0u8; rp_pim::store::TEXT_MAX];
-        let n = more.min(ink.len());
-        ink[..n].copy_from_slice(&r.text(tag::INK_MORE)[..n]);
-        // (`text` and `ink`: 4 KB in this frame, the rare path only.)
-        store
-            .put(
-                Kind::Ink,
-                None,
-                &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, &ink[..n])],
-            )
-            .is_ok()
-    };
-    moved
+    // its second field. That goes to a page of its own (in its own frame:
+    // with it here this one was 4,136 bytes, over the stack rule), and the
+    // text is kept.
+    ink_more_to_a_page(store, id)
         && store
             .change(id, &[(tag::TEXT, &text[..tn]), (tag::INK_MORE, &[])])
             .is_ok()
+}
+
+/// Note `id`'s second ink field copied to a new page of its ink (the
+/// note's record is then changed without it by the caller).
+#[inline(never)]
+fn ink_more_to_a_page(store: &mut rp_pim::store::Store<'_>, id: u32) -> bool {
+    let mut ink = [0u8; rp_pim::store::TEXT_MAX];
+    let Some(r) = store.get(id) else { return false };
+    let n = r.text(tag::INK_MORE).len().min(ink.len());
+    if n == 0 {
+        return false;
+    }
+    ink[..n].copy_from_slice(&r.text(tag::INK_MORE)[..n]);
+    store
+        .put(
+            Kind::Ink,
+            None,
+            &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, &ink[..n])],
+        )
+        .is_ok()
 }
 
 /// Where `text` holds the search `q`, whatever its capitals.
@@ -720,8 +723,10 @@ const REDO_ROOM: usize = 1200;
 const HOLD_TICKS: u8 = 16;
 const PAPER: Rect = Rect::new(8, 40, W - 16, 404);
 /// The ink panel's size (the store's coordinates).
-const INK_W: u16 = 448;
-const INK_H: u16 = 196;
+const INK_W: u16 = kit::INK_SHEET.0;
+const INK_H: u16 = kit::INK_SHEET.1;
+/// Where the sheet's ink lies: under the title, down to the tray.
+const INK_AT: (u16, u16) = (PAPER.x + 8, PAPER.y + 56);
 /// Points a stroke being written keeps.
 const LIVE: usize = 200;
 
@@ -792,7 +797,11 @@ pub struct Notes {
     seen: Option<u32>,
     view: View,
     /// The open note's ink and the cards' miniatures, painted once.
-    ink: Option<Pic>,
+    /// The open note's ink: a coverage layer a colour in use (the colour,
+    /// its picture), over the whole sheet.
+    ink: [Option<(Argb, Pic)>; kit::INK_LAYERS as usize],
+    /// The stylus went down on the sheet to write (not on a tick box).
+    inking: bool,
     minis: [Option<(u32, Pic)>; 4],
     /// The miniatures this frame drew (a bit each).
     mini_used: u8,
@@ -801,7 +810,7 @@ pub struct Notes {
     painted: Option<(View, u32)>,
 }
 
-/// Paints `strokes` (in a 448 x 196 box) into `px` (`w` x `h`, scaled to
+/// Paints `strokes` (in the sheet's 448 x 352) into `px` (`w` x `h`, scaled to
 /// fit) in `c`: each stroke a Catmull-Rom curve through its points, laid
 /// as round anti-aliased stamps 2.5 px across at full size.
 pub fn paint_ink(px: &mut [Argb], w: u16, h: u16, strokes: &[&[(i16, i16)]], c: Argb) {
@@ -823,23 +832,39 @@ pub fn paint_styled(
     paint_over(px, w, h, strokes, styles, only);
 }
 
-/// [`paint_styled`] over what is there (the stroke being written, a
-/// segment at a time: the same brush as the saved ink, so what is written
-/// is what is kept).
-pub fn paint_over(
-    px: &mut [Argb],
+/// The colour a stroke of `style` is drawn in, its alpha the stroke's
+/// opacity: a pen's, the marker's own yellow, or the marker in a pen's
+/// colour (both see-through).
+fn stroke_colour(style: u8) -> Argb {
+    let pen = PEN[usize::from(style & 7).min(5)];
+    if style & MARKER == 0 {
+        pen
+    } else if style & MARKER_HUE != 0 {
+        kit::keep((pen & 0x00FF_FFFF) | 0x7000_0000)
+    } else {
+        kit::keep(0x70FF_E040)
+    }
+}
+
+/// The brush: `strokes` (in the sheet's 448 x 352) laid as stamps into a
+/// `w` x `h` picture scaled to fit, each stamp's pixels given to `put`
+/// (the pixel's index, its coverage 0-255 with the colour's opacity in
+/// it, the colour): one copy of the curve and the stamp for the
+/// miniatures' 32-bit pictures and the sheet's coverage layers.
+fn brush(
     w: u16,
     h: u16,
     strokes: &[&[(i16, i16)]],
     styles: &[u8],
     only: Option<Argb>,
+    put: &mut dyn FnMut(usize, u32, Argb),
 ) {
-    let sx = i32::from(w) * 256 / 448;
-    let sy = i32::from(h) * 256 / 196;
+    let sx = i32::from(w) * 256 / i32::from(INK_W);
+    let sy = i32::from(h) * 256 / i32::from(INK_H);
     let s = sx.min(sy);
     // Stamp radius in 1/16 px (at least a pixel's worth).
     let base_rad = (20 * s / 256).max(10);
-    let stamp = |px: &mut [Argb], cx16: i32, cy16: i32, rad: i32, c: Argb| {
+    let mut stamp = |cx16: i32, cy16: i32, rad: i32, c: Argb| {
         let (x0, x1) = ((cx16 - rad) >> 4, (cx16 + rad) >> 4);
         let (y0, y1) = ((cy16 - rad) >> 4, (cy16 + rad) >> 4);
         for y in y0.max(0)..=y1.min(i32::from(h) - 1) {
@@ -852,11 +877,7 @@ pub fn paint_over(
                     // Coverage falls off over the last pixel of the radius.
                     let edge = (r2 - d) * 255 / (r2 - (rad - 16).max(0).pow(2)).max(1);
                     let a = edge.clamp(0, 255) as u32 * (c >> 24) / 255;
-                    let i = (y * i32::from(w) + x) as usize;
-                    let old = px[i] >> 24;
-                    if a > old {
-                        px[i] = (c & 0x00FF_FFFF) | (a << 24);
-                    }
+                    put((y * i32::from(w) + x) as usize, a, c);
                 }
             }
         }
@@ -867,14 +888,7 @@ pub fn paint_over(
         }
         let style = styles.get(si).copied().unwrap_or(0);
         let marker = style & MARKER != 0;
-        let c = only.unwrap_or(if marker && style & MARKER_HUE != 0 {
-            // The pen's colour, see-through as a marker is.
-            kit::keep((PEN[usize::from(style & 7).min(5)] & 0x00FF_FFFF) | 0x7000_0000)
-        } else if marker {
-            kit::keep(0x70FF_E040)
-        } else {
-            PEN[usize::from(style & 7).min(5)]
-        });
+        let c = only.unwrap_or(stroke_colour(style));
         let rad = match style & (SIZE_FINE | SIZE_BOLD) {
             SIZE_FINE => base_rad * 5 / 8,
             SIZE_BOLD => base_rad * 2,
@@ -885,7 +899,8 @@ pub fn paint_over(
             let k = i.clamp(0, st.len() as isize - 1) as usize;
             (i32::from(st[k].0) * s / 16, i32::from(st[k].1) * s / 16)
         };
-        for i in 0..st.len() as isize - 1 {
+        // (A stroke of one point is a dot.)
+        for i in 0..(st.len() as isize - 1).max(1) {
             let (p0, p1, p2, p3) = (p(i - 1), p(i), p(i + 1), p(i + 2));
             // Steps by the segment's length, a stamp every half pixel.
             let len = ((p2.0 - p1.0).abs() + (p2.1 - p1.1).abs()) / 8 + 2;
@@ -901,7 +916,6 @@ pub fn paint_over(
                         / 512
                 };
                 stamp(
-                    px,
                     cr(p0.0, p1.0, p2.0, p3.0),
                     cr(p0.1, p1.1, p2.1, p3.1),
                     rad,
@@ -910,6 +924,45 @@ pub fn paint_over(
             }
         }
     }
+}
+
+/// [`paint_styled`] over what is there, into a 32-bit picture (a card's
+/// miniature), the brush keeping the most coverage.
+pub fn paint_over(
+    px: &mut [Argb],
+    w: u16,
+    h: u16,
+    strokes: &[&[(i16, i16)]],
+    styles: &[u8],
+    only: Option<Argb>,
+) {
+    brush(w, h, strokes, styles, only, &mut |i, a, c| {
+        if let Some(p) = px.get_mut(i)
+            && a > *p >> 24
+        {
+            *p = (c & 0x00FF_FFFF) | (a << 24);
+        }
+    });
+}
+
+/// The strokes of colour `want` among `strokes` painted over what is
+/// there in a sheet's coverage layer (`Cmd::Cover`'s words: four bits a
+/// pixel, the first pixel in the high half of the first byte), the brush
+/// keeping the most coverage: the stroke being written a segment at a
+/// time and the kept ink alike, so what is written is what is kept.
+pub fn paint_cover(words: &mut [u32], strokes: &[&[(i16, i16)]], styles: &[u8], want: Argb) {
+    brush(INK_W, INK_H, strokes, styles, None, &mut |i, a, c| {
+        if c != want {
+            return;
+        }
+        let n = ((a + 8) / 17).min(15);
+        let shift = 8 * ((i / 2) % 4) as u32 + if i.is_multiple_of(2) { 4 } else { 0 };
+        if let Some(word) = words.get_mut(i / 8)
+            && n > (*word >> shift) & 15
+        {
+            *word = (*word & !(15 << shift)) | (n << shift);
+        }
+    });
 }
 
 /// Paints the ink of note `id` from the store into a new picture of
@@ -921,8 +974,7 @@ fn ink_pic(cx: &Ctx, id: u32, w: u16, h: u16, c: Argb) -> Option<Pic> {
     let rec = store.get(id)?;
     let (page, np) = pages(store, id);
     let p = pics.alloc(w, h)?;
-    // The open note's ink in its strokes' own colours; a card's in one.
-    let only = (w < 448).then_some(c);
+    let only = Some(c);
     pics.write(p, |px| {
         px.iter_mut().for_each(|q| *q = 0);
         let mut pts = [(0i16, 0i16); 255];
@@ -985,7 +1037,8 @@ impl Notes {
             rows: [None; 24],
             seen: None,
             view: View::Home,
-            ink: None,
+            ink: [None; kit::INK_LAYERS as usize],
+            inking: false,
             minis: [None; 4],
             mini_used: 0,
             ring: None,
@@ -1021,8 +1074,54 @@ impl Notes {
                     pics.free(pic);
                 }
             }
-            if let Some(pic) = self.ink.take() {
-                pics.free(pic);
+            for l in &mut self.ink {
+                if let Some((_, pic)) = l.take() {
+                    pics.free(pic);
+                }
+            }
+        }
+    }
+
+    /// The layer for ink of `colour`: the one there is, or a new empty one
+    /// (a layer for every colour ink can be: never short).
+    fn layer_for(&mut self, pics: &rp_app::Pics, colour: Argb) -> Option<usize> {
+        if let Some(k) = self
+            .ink
+            .iter()
+            .position(|l| l.is_some_and(|l| l.0 == colour))
+        {
+            return Some(k);
+        }
+        let k = self.ink.iter().position(Option::is_none)?;
+        let p = pics.alloc(kit::INK_LAYER.0, kit::INK_LAYER.1)?;
+        pics.write(p, |w| w.iter_mut().for_each(|q| *q = 0));
+        self.ink[k] = Some((colour, p));
+        Some(k)
+    }
+
+    /// Note `id`'s ink painted from the store into its layers, a stroke
+    /// at a time from its bytes (the note's own, then its pages').
+    fn ink_layers(&mut self, cx: &Ctx, id: u32) {
+        let Some(pics) = cx.pics else { return };
+        let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
+            return;
+        };
+        let Some(store) = guard.as_ref() else { return };
+        let Some(rec) = store.get(id) else { return };
+        let (page, np) = pages(store, id);
+        let mut pts = [(0i16, 0i16); 255];
+        let recs = core::iter::once(rec).chain(page[..np].iter().filter_map(|&i| store.get(i)));
+        for field in recs.flat_map(|r| [r.text(tag::INK), r.text(tag::INK_MORE)]) {
+            let mut at = 0;
+            while let Some(n) = stroke_len(&field[at..]) {
+                let (style, k) = unpack(&field[at..at + n], &mut pts);
+                let colour = stroke_colour(style);
+                if let Some(l) = self.layer_for(pics, colour)
+                    && let Some((_, p)) = self.ink[l]
+                {
+                    pics.write(p, |w| paint_cover(w, &[&pts[..k]], &[style], colour));
+                }
+                at += n;
             }
         }
     }
@@ -1064,9 +1163,9 @@ impl Notes {
             View::Note(i) => {
                 if let Some(row) = self.rows.get(usize::from(i)).copied().flatten()
                     && row.has_ink()
-                    && self.ink.is_none()
+                    && self.ink.iter().all(Option::is_none)
                 {
-                    self.ink = ink_pic(cx, row.id, kit::INK_PIC.0, kit::INK_PIC.1, 0xFF1C_3A6E);
+                    self.ink_layers(cx, row.id);
                 }
             }
         }
@@ -1486,7 +1585,10 @@ impl Notes {
 
     fn note(&mut self, f: &mut Frame, cx: &Ctx, i: u8) {
         self.n_checks = 0;
-        self.ink_at = None;
+        // The whole sheet under the title takes ink (the first ink panel
+        // was 196 rows in among the lines, and what was typed after it
+        // lay under it: the owner on the X51v, 2026-11-15).
+        self.ink_at = Some(INK_AT);
         let Some(note) = self.rows.get(usize::from(i)).copied().flatten() else {
             return;
         };
@@ -1553,51 +1655,38 @@ impl Notes {
                     }
                     y += 28;
                 }
-                Line::Ink => {
-                    self.ink_at = Some((paper.x + 8, y - 18));
-                    if let Some(p) = self.ink {
-                        f.push(rp_app::Cmd::Pic {
-                            x: paper.x + 8,
-                            y: (y - 18) as i16,
-                            pic: p,
-                        });
-                    }
-                    y += 196;
+                // (The ink is the sheet's own layer now, not a line.)
+                Line::Ink => {}
+            }
+        }
+        // The ink over the lines: the markers' layers first, the pens'
+        // over them (a highlighter lies under the writing).
+        let (ix, iy) = INK_AT;
+        for see_through in [true, false] {
+            for &(colour, pic) in self.ink.iter().flatten() {
+                if (colour >> 24 < 0xF0) == see_through {
+                    f.push(rp_app::Cmd::Cover {
+                        x: ix,
+                        y: iy as i16,
+                        pic,
+                        color: colour,
+                    });
                 }
             }
         }
-        if self.ink_at.is_none() && y + 40 < TRAY.y {
-            // Writing below the lines starts the note's ink panel there.
-            self.ink_at = Some((paper.x + 8, y - 18));
-        }
-        // The stroke being written, as the pen goes (painted into the
-        // panel's picture when the pen lifts).
-        if let Some((ix, iy)) = self.ink_at {
-            // A note with no ink yet: the panel's picture holds the
-            // stroke being written.
-            if !note.lines[..note.n].iter().any(|l| matches!(l, Line::Ink))
-                && let Some(p) = self.ink
-            {
-                f.push(rp_app::Cmd::Pic {
-                    x: ix,
-                    y: iy as i16,
-                    pic: p,
-                });
-            }
-            // Pen and marker strokes are painted into the picture as they
-            // go ([`Self::live_paint`]); the eraser's path shows as dots.
-            let c = kit::keep(0x80FF_FFFF);
-            let shown = if self.tool == Tool::Erase {
-                self.live_n
-            } else {
-                0
-            };
-            for &(x, yy) in &self.live[..shown] {
-                f.push(rp_app::Cmd::Fill {
-                    r: Rect::new(ix + x as u16, iy + yy as u16, 3, 3),
-                    color: c,
-                });
-            }
+        // Pen and marker strokes are painted into their layer as they go
+        // ([`Self::live_paint`]); the eraser's path shows as dots.
+        let c = kit::keep(0x80FF_FFFF);
+        let shown = if self.tool == Tool::Erase {
+            self.live_n
+        } else {
+            0
+        };
+        for &(x, yy) in &self.live[..shown] {
+            f.push(rp_app::Cmd::Fill {
+                r: Rect::new(ix + x as u16, iy + yy as u16, 3, 3),
+                color: c,
+            });
         }
         // The menu, when open, over the tool strip.
         if self.menu {
@@ -1750,22 +1839,17 @@ impl Notes {
             return;
         }
         let Some(pics) = cx.pics else { return };
-        if self.ink.is_none() {
-            let (w, h) = kit::INK_PIC;
-            self.ink = pics.alloc(w, h);
-            if let Some(p) = self.ink {
-                pics.write(p, |px| px.iter_mut().for_each(|q| *q = 0));
-            }
-        }
+        let style = self.style();
+        let colour = stroke_colour(style);
+        let Some(l) = self.layer_for(pics, colour) else {
+            return;
+        };
         // Renewed before each change: a picture once drawn is final.
-        self.ink = self.ink.and_then(|p| pics.renew(p));
-        let Some(p) = self.ink else { return };
+        self.ink[l] = self.ink[l].and_then(|(c, p)| pics.renew(p).map(|p| (c, p)));
+        let Some((_, p)) = self.ink[l] else { return };
         let n = self.live_n;
         let pts = &self.live[n.saturating_sub(3)..n];
-        let style = self.style();
-        pics.write(p, |px| {
-            paint_over(px, kit::INK_PIC.0, kit::INK_PIC.1, &[pts], &[style], None);
-        });
+        pics.write(p, |w| paint_cover(w, &[pts], &[style], colour));
     }
 
     /// The style of a stroke written now: the pen's colour or the marker,
@@ -2360,6 +2444,16 @@ impl Program for Notes {
                     return Reply::Nothing;
                 };
                 if x < ix || y < iy || x >= ix + INK_W || y >= iy + INK_H || y >= TRAY.y {
+                    return Reply::Nothing;
+                }
+                // The sheet takes ink everywhere, so a touch that starts
+                // on a list's tick box is the box's, not a stroke.
+                if matches!(e, Event::PenDown { .. }) {
+                    self.inking = !self.checks[..self.n_checks]
+                        .iter()
+                        .any(|(r, _)| r.contains_point(x, y));
+                }
+                if !self.inking {
                     return Reply::Nothing;
                 }
                 if self.live_n < LIVE {

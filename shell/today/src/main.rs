@@ -243,6 +243,12 @@ mod image {
         }
     }
 
+    /// The reminder's chime: its notes (Hz, ms), its level (0-100) and
+    /// the bytes of its DMA ring.
+    const CHIME: [(u32, u32); 2] = [(880, 150), (1175, 230)];
+    const CHIME_LEVEL: u32 = 70;
+    const CHIME_RING: usize = 8192;
+
     /// The wallpaper, packed by the build (sheet today-image-room.md: 460
     /// KB of planes in ~140 KB); unpacked at start into the RAM pool.
     static WALLPAPER_PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.zz"));
@@ -1573,6 +1579,8 @@ mod image {
         let (trace_words, rest) = rest.split_at_mut(TRACE * 10);
         // The relay's answer (the dock's dev relay).
         let (net_words, rest) = rest.split_at_mut(NET_BUF / 4);
+        // The reminder's sound: the ring its samples go out through (DMA).
+        let (ring_words, rest) = rest.split_at_mut(CHIME_RING / 4);
         // The shell's last two draw lists' keys (R191: a picture or an
         // answer draws only where the list changed), 8 KB.
         let (shown_words, rest) = rest.split_at_mut(rp_shell::SHOWN_WORDS);
@@ -2077,6 +2085,36 @@ mod image {
         let mut keypad = Keypad::new(kp);
         keypad.enable();
         let gpio = RefCell::new(Gpio::new(gpio));
+        // The reminder's sound (R224): the audio service the audio images
+        // proved on the X51v (ADR-0032: the codec's supply and the
+        // speaker's amplifier through the CPLD, the codec over I2C, the
+        // samples by I2S and DMA), brought up when a reminder first
+        // sounds and put to sleep by its own idle rule; the two board bits
+        // go back as found when the image leaves. With any part missing
+        // the banner stays silent, as it was.
+        let cpld = rp_hal_x51v::devices::take_cpld().map(|(b, t)| rp_drv_cpld::Cpld::adopt(b, t).0);
+        let audio_found = rp_audio_x51v::found(cpld.as_ref());
+        let mut audio = match (
+            rt::take_i2c(),
+            rt::take_i2s(),
+            rt::take_dma(rp_hal_pxa27x::dma_map::AUDIO),
+        ) {
+            (Some(i2c), Some(i2s), Some(dma)) if audio_found.is_some() => Some((
+                rp_audio_x51v::service(&gpio, cpld, i2c, i2s, CHIME_LEVEL),
+                dma,
+            )),
+            _ => None,
+        };
+        let _ = writeln!(
+            RunLog,
+            "sound: {}",
+            if audio.is_some() {
+                "the reminder's chime is ready (nothing powered until it sounds)"
+            } else {
+                "no CPLD, I2C, I2S or DMA: reminders stay silent"
+            }
+        );
+        let ring = rp_hal_mem::words_as_bytes_mut(ring_words);
         // Windows Mobile leaves GPIO24 as SSP1's frame signal (function 2,
         // docs/hw/touch.md): then our chip-select writes do nothing and the
         // frame pulses per byte, so every reading is 0 (all taps at the top
@@ -2823,7 +2861,49 @@ mod image {
                     look_seen[0], look_seen[1]
                 );
             }
+            // A reminder has come up: its chime, once (two rising notes,
+            // under half a second; the loop waits for it, the watchdog
+            // fed). Windows Mobile plays a wave file through its mixer;
+            // ours makes the two notes as they go out, no file and no
+            // mixer.
+            if shell.take_chime()
+                && let Some((a, dma)) = audio.as_mut()
+            {
+                let rate = rp_audio::LINK_RATE.hz();
+                let t0 = rt::ticks();
+                let mut played = true;
+                for (hz, ms) in CHIME {
+                    let mut tone = rp_drv_pxa_i2s::Tone::new(hz, rate, 12_000);
+                    played &= a
+                        .play(
+                            dma,
+                            ring,
+                            &mut tone,
+                            rate * ms / 1000,
+                            &mut rt::ticks,
+                            3_250_000 / 5,
+                            &mut rt::check_in,
+                        )
+                        .is_ok();
+                }
+                let _ = writeln!(
+                    RunLog,
+                    "sound: a reminder's chime {} at {now_ms} ms, {} us in all",
+                    if played { "played" } else { "FAILED" },
+                    rt::ticks().wrapping_sub(t0) / 13 * 4
+                );
+            }
+            // (The codec sleeps once it has been quiet its idle time.)
+            if let Some((a, _)) = audio.as_mut() {
+                a.idle();
+            }
             if back {
+                // Sound down, the board's two bits as they were found.
+                if let Some((mut a, _)) = audio.take() {
+                    let _ = a.down();
+                    let c = a.board_mut().cpld.take();
+                    rp_audio_x51v::put_back(c, audio_found);
+                }
                 let (n, median, worst) = latency.summary();
                 let (stalls, fifo_full) = (gfx.two_d().stalls, gfx.two_d().fifo_full);
                 let _ = writeln!(
@@ -3254,7 +3334,10 @@ mod image {
                     n.asked_ms = now_ms;
                     let _ = writeln!(
                         RunLog,
-                        "net: asked {:?} at {now_ms} ms",
+                        // (Quoted by hand: `{:?}` of a string brings the
+                        // library's Unicode escape tables, 5 KB, into the
+                        // image for a line of ASCII.)
+                        "net: asked \"{}\" at {now_ms} ms",
                         core::str::from_utf8(q.logged()).unwrap_or("?").trim_end()
                     );
                 }
@@ -3287,7 +3370,7 @@ mod image {
                                         _ => {
                                             relay_failed |= n.pack;
                                             let _ =
-                                                writeln!(RunLog, "net: the relay answered {h:?}");
+                                                writeln!(RunLog, "net: the relay answered \"{h}\"");
                                             shell.net_answer(false, &[]);
                                             n.reset();
                                         }
@@ -3851,6 +3934,7 @@ mod image {
                         gfx.two_d(),
                         wallpaper,
                         want.map(|_| &*radar_view_map),
+                        want.and(shell.radar_window()),
                         wall,
                     );
                     let _ = writeln!(

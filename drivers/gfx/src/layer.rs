@@ -375,6 +375,45 @@ impl<'a> Layer<'a> {
         }
     }
 
+    /// A 4 bpp coverage picture (`Cmd::Cover`: `w` x `h` pixels, eight a
+    /// word, the first in the high half of the first byte) drawn in
+    /// `color` at `(dx, dy)`, only inside `clip`: a pixel's four bits
+    /// widened to eight by repeating them, as the 2D engine widens them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_cover4_in(
+        &mut self,
+        words: &[u32],
+        (w, h): (u32, u32),
+        color: Argb,
+        dx: i32,
+        dy: i32,
+        clip: Rect,
+    ) {
+        let row_words = w as usize / 8;
+        if words.len() < row_words * h as usize {
+            return;
+        }
+        let Some((to, sx, sy)) = self.place(w, h, dx, dy, clip) else {
+            return;
+        };
+        let rgb = color & 0x00FF_FFFF;
+        for row in 0..to.h {
+            let base = (sy + row) as usize * row_words;
+            for (k, p) in self.span(to.x, to.y + row, to.w).iter_mut().enumerate() {
+                let i = sx as usize + k;
+                let byte = (words[base + i / 8] >> (8 * ((i / 2) % 4))) & 0xFF;
+                let n = if i.is_multiple_of(2) {
+                    byte >> 4
+                } else {
+                    byte & 15
+                };
+                if n != 0 {
+                    *p = over((n * 17) << 24 | rgb, *p);
+                }
+            }
+        }
+    }
+
     /// Where a `w` x `h` source placed at `(dx, dy)` lands inside `clip`
     /// and the layer, and the source pixel its top left corner shows;
     /// `None` if nothing of it does.

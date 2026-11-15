@@ -338,3 +338,47 @@ fn a_number_alone_is_shown_once_and_equals_adds_no_line() {
     c.push(b"~7");
     assert!(!c.is_sum());
 }
+
+#[test]
+fn the_answer_is_large_and_the_sum_s_line_stays_clear_of_it() {
+    // The owner on the X51v, 2026-11-15: first the small and the large
+    // number ran into each other, then the large one was gone.
+    use rp_app::Cmd;
+    static WIDE_FONT: Font = Font {
+        line: 101,
+        ascent: 80,
+        first: 32,
+        glyphs: &[],
+    };
+    let mut cx = ctx();
+    let fonts = Fonts {
+        big: &WIDE_FONT,
+        ..FONTS
+    };
+    cx.fonts = Box::leak(Box::new(fonts));
+    let mut c = Calculator::new(Mode::Basic, 19_723);
+    c.push(b"5x5");
+    let mut f = Box::new(Frame::new());
+    c.draw(&mut f, &cx);
+    let lines: std::vec::Vec<(u16, bool)> = f
+        .cmds()
+        .filter_map(|c| match *c {
+            Cmd::Text { baseline, font, .. } => Some((baseline, core::ptr::eq(font, &WIDE_FONT))),
+            _ => None,
+        })
+        .collect();
+    let big = lines
+        .iter()
+        .find(|l| l.1)
+        .expect("the answer in the large numerals")
+        .0;
+    // The sum's line: the last text above the answer's digits (53 px
+    // tall), with its own descent to spare.
+    let above = lines
+        .iter()
+        .filter(|l| !l.1 && l.0 < big)
+        .map(|l| l.0)
+        .max()
+        .unwrap();
+    assert!(above + 6 <= big - 53, "sum at {above}, answer at {big}");
+}

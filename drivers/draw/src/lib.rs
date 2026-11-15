@@ -241,6 +241,25 @@ pub enum Cmd {
         /// The picture.
         pic: pics::Pic,
     },
+    /// A coverage picture from the RAM store drawn in one colour (ink on
+    /// a sheet): each of its words holds eight pixels' coverage, four bits
+    /// a pixel, the first pixel in the high half of the first byte (the 2D
+    /// engine's 4 bpp coverage source, measured on the X51v, 2700g.md B1).
+    /// `pic.w` words a row: `8 * pic.w` pixels wide, `pic.h` tall. An
+    /// eighth of a 32-bit picture's bytes for the same pixels: a sheet of
+    /// ink is 79 KB a colour, where the 32-bit one was 351 KB for half a
+    /// sheet and filled the engine's image cache.
+    Cover {
+        /// Left edge.
+        x: u16,
+        /// Top edge (negative: its rows above the top are cut).
+        y: i16,
+        /// The picture: its words the coverage.
+        pic: pics::Pic,
+        /// The colour drawn through it (its alpha unused: the coverage
+        /// is the alpha).
+        color: Argb,
+    },
     /// A run of text.
     Text {
         /// The pen's starting position.
@@ -417,6 +436,15 @@ impl Cmd {
                     pic.h.saturating_sub(cut),
                 )
             }
+            Cmd::Cover { x, y, pic, .. } => {
+                let cut = y.min(0).unsigned_abs();
+                Rect::new(
+                    x,
+                    y.max(0).cast_unsigned(),
+                    pic.w.saturating_mul(8),
+                    pic.h.saturating_sub(cut),
+                )
+            }
             // The line box and where the glyphs' masks fall (a cloud of the
             // living sky lies wholly left of its pen: bounded by its line
             // box alone, it was skipped once its pen passed the sky's right
@@ -558,7 +586,12 @@ impl Frame {
                     *left = f(*left, false);
                     *right = f(*right, false);
                 }
-                Cmd::Image { .. } | Cmd::Pic { .. } | Cmd::Clip { .. } | Cmd::Panel { .. } => {}
+                // (Ink keeps its colour in every look, as paper does.)
+                Cmd::Image { .. }
+                | Cmd::Pic { .. }
+                | Cmd::Cover { .. }
+                | Cmd::Clip { .. }
+                | Cmd::Panel { .. } => {}
             }
         }
     }

@@ -167,12 +167,23 @@ pub const PIC_CLASSES: [(u16, u16, u8); 6] = [
     // The big avatars of a favourites row and small dials.
     (64, 64, 8),
     (96, 96, 2),
-    (INK_PIC.0, INK_PIC.1, 1),
+    (INK_LAYER.0, INK_LAYER.1, INK_LAYERS),
     (INK_MINI.0, INK_MINI.1, 4),
 ];
 
-/// A note's ink panel's picture (Notes).
+/// The first ink panel's picture (the design concepts name it still; the
+/// store has no such class any more).
 pub const INK_PIC: (u16, u16) = (448, 196);
+/// A note's sheet of ink, in pixels (Notes): the whole sheet under the
+/// title (the first ink panel was its top 196 rows: the owner on the
+/// X51v, 2026-11-15, "you are only able to draw on the top half").
+pub const INK_SHEET: (u16, u16) = (448, 352);
+/// An ink layer's picture: the sheet's coverage in one colour, eight
+/// pixels a word (`Cmd::Cover`), 79 KB.
+pub const INK_LAYER: (u16, u16) = (INK_SHEET.0 / 8, INK_SHEET.1);
+/// A layer for every colour ink can be (six pens, the marker's yellow and
+/// its six hues): a note is never short of one.
+pub const INK_LAYERS: u8 = 13;
 /// A note card's ink miniature (Notes).
 pub const INK_MINI: (u16, u16) = (212, 84);
 

@@ -839,11 +839,11 @@ fn the_marker_takes_a_colour_and_stays_the_marker() {
     assert_eq!(n.style(), MARKER | MARKER_HUE | 2);
     assert_eq!(n.pen, 0, "the pen keeps its own colour");
     // The stroke is painted in that colour, see-through.
-    let mut px = std::vec![0u32; 448 * 196];
+    let mut px = std::vec![0u32; 448 * 352];
     paint_over(
         &mut px,
         448,
-        196,
+        352,
         &[&[(40, 40), (120, 40)]],
         &[n.style()],
         None,
@@ -1062,4 +1062,126 @@ fn a_long_press_on_a_sheet_offers_delete() {
         n.event(Event::Tick, &cx);
     }
     assert_eq!(n.ask, None);
+}
+
+/// The coverage at pixel (x, y) of a sheet's layer (0-15).
+fn cover_at(words: &[u32], x: usize, y: usize) -> u32 {
+    let i = y * 448 + x;
+    let shift = 8 * ((i / 2) % 4) as u32 + if i.is_multiple_of(2) { 4 } else { 0 };
+    (words[i / 8] >> shift) & 15
+}
+
+#[test]
+fn the_whole_sheet_takes_ink_a_layer_a_colour() {
+    // The owner on the X51v, 2026-11-15 (twice): "you are only able to
+    // draw on the top half of the page, the bottom half isnt drawable".
+    // The brush into a layer: full coverage along the stroke, none away
+    // from it, only for the layer's own colour, down to the last rows.
+    let mut words = std::vec![0u32; 56 * 352];
+    let black = stroke_colour(0);
+    let blue = stroke_colour(1);
+    paint_cover(&mut words, &[&[(40, 340), (400, 340)]], &[0], black);
+    assert!(cover_at(&words, 200, 340) >= 12, "the stroke: nearly full");
+    assert_eq!(cover_at(&words, 200, 300), 0);
+    paint_cover(&mut words, &[&[(40, 20), (400, 20)]], &[1], black);
+    assert_eq!(cover_at(&words, 200, 20), 0, "another colour's stroke");
+    // The marker's is see-through: its opacity is in the coverage.
+    let mut m = std::vec![0u32; 56 * 352];
+    paint_cover(
+        &mut m,
+        &[&[(40, 100), (400, 100)]],
+        &[MARKER],
+        stroke_colour(MARKER),
+    );
+    let c = cover_at(&m, 200, 100);
+    assert!((5..=8).contains(&c), "{c}");
+    assert_ne!(black, blue);
+    // In the app: strokes at the sheet's foot are kept where they were
+    // written, and a touch on a list's tick box ticks it, no stroke.
+    let pim = store();
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    n.event(Event::Key(Key::SoftRight), &cx);
+    draw(&mut n, &cx);
+    let id = n.open_id().unwrap();
+    let (ix, iy) = n.ink_at.expect("the sheet");
+    assert_eq!(n.ink_at, Some(INK_AT));
+    // The sheet runs from under the title to the tray.
+    assert!(iy + INK_H <= TRAY.y && iy + INK_H >= TRAY.y - 8);
+    stroke(&mut n, &cx, ix + 20, iy + 330, 20, |_| 0);
+    let g = pim.borrow();
+    let ink = g.as_ref().unwrap().get(id).unwrap().text(tag::INK).to_vec();
+    drop(g);
+    let mut pts = [(0i16, 0i16); 255];
+    let len = stroke_len(&ink).expect("a stroke kept");
+    let (_, k) = unpack(&ink[..len], &mut pts);
+    assert!(pts[..k].iter().all(|p| p.1 == 330), "{:?}", &pts[..k]);
+    // A list item; its box takes the touch.
+    let r = tool_key(4);
+    n.event(
+        Event::PenDown {
+            x: r.x + 9,
+            y: r.y + 9,
+        },
+        &cx,
+    );
+    n.event(
+        Event::PenUp {
+            x: r.x + 9,
+            y: r.y + 9,
+        },
+        &cx,
+    );
+    for &c in b"Milk" {
+        n.event(Event::Char(c), &cx);
+    }
+    n.event(Event::Done, &cx);
+    let r = tool_key(0);
+    n.event(
+        Event::PenDown {
+            x: r.x + 9,
+            y: r.y + 9,
+        },
+        &cx,
+    );
+    n.event(
+        Event::PenUp {
+            x: r.x + 9,
+            y: r.y + 9,
+        },
+        &cx,
+    );
+    draw(&mut n, &cx);
+    assert!(n.n_checks > 0);
+    let (b, _) = n.checks[0];
+    let before = strokes_kept(pim).0;
+    n.event(
+        Event::PenDown {
+            x: b.x + 6,
+            y: b.y + 6,
+        },
+        &cx,
+    );
+    n.event(
+        Event::PenUp {
+            x: b.x + 6,
+            y: b.y + 6,
+        },
+        &cx,
+    );
+    assert_eq!(strokes_kept(pim).0, before, "no stroke from a tick");
+    let g = pim.borrow();
+    let text = g
+        .as_ref()
+        .unwrap()
+        .get(id)
+        .unwrap()
+        .text(tag::TEXT)
+        .to_vec();
+    assert!(
+        text.windows(4).any(|w| w == b"[x] "),
+        "{:?}",
+        std::string::String::from_utf8_lossy(&text)
+    );
 }

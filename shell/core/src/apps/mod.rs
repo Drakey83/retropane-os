@@ -58,6 +58,9 @@ pub(crate) struct Apps {
     /// Snoozed reminders: the appointment and the minute it comes back.
     snoozed: [(u32, u32); DUE_MAX],
     n_snoozed: usize,
+    /// A reminder has just come up (or come back from a snooze): the
+    /// image sounds it once ([`Shell::take_chime`]).
+    chime: bool,
 }
 
 impl Apps {
@@ -72,13 +75,14 @@ impl Apps {
             planned: None,
             snoozed: [(0, 0); DUE_MAX],
             n_snoozed: 0,
+            chime: false,
         }
     }
 }
 
-/// An appointment's start (local minutes).
+/// An appointment's start (local minutes); a task's time.
 fn start_of(r: &Rec<'_>) -> u32 {
-    r.num(tag::START).unwrap_or(0)
+    r.num(tag::START).or(r.num(tag::REMIND_AT)).unwrap_or(0)
 }
 
 fn all_day(r: &Rec<'_>) -> bool {
@@ -92,11 +96,21 @@ fn end_of(r: &Rec<'_>) -> u32 {
     } else {
         r.num(tag::MINUTES).unwrap_or(60)
     };
+    // A task with a time is due the rest of its day.
+    if r.kind == Kind::Task {
+        return start_of(r).saturating_add(DAY_MIN);
+    }
     start_of(r).saturating_add(len)
 }
 
 /// When its reminder is due, if it has one.
 fn remind_at(r: &Rec<'_>) -> Option<u32> {
+    // A task: at its time, while it is not done (the owner on the X51v,
+    // 2026-11-15: "you cant set a time for tasks?"; a task had a day and
+    // nothing reminded of it).
+    if r.kind == Kind::Task {
+        return r.num(tag::REMIND_AT).filter(|_| r.num(tag::DONE).is_none());
+    }
     Some(start_of(r).saturating_sub(r.num(tag::REMIND)?))
 }
 
@@ -165,7 +179,7 @@ impl Shell {
         let after = self.apps.checked.unwrap_or(now.saturating_sub(DAY_MIN));
         let mut next: Option<u32> = None;
         if let Some(s) = self.apps.store.borrow().as_ref() {
-            for r in s.all(Kind::Appointment) {
+            for r in s.all(Kind::Appointment).chain(s.all(Kind::Task)) {
                 if let Some(at) = remind_at(&r)
                     && at > after
                     && next.is_none_or(|n| at < n)
@@ -190,6 +204,7 @@ impl Shell {
                 if self.apps.n_due < DUE_MAX && !self.apps.due[..self.apps.n_due].contains(&id) {
                     self.apps.due[self.apps.n_due] = id;
                     self.apps.n_due += 1;
+                    self.apps.chime = true;
                     self.dirty(Rect::new(0, 0, W, H));
                 }
             } else {
@@ -220,7 +235,7 @@ impl Shell {
         let mut fresh = [0u32; DUE_MAX];
         let mut n = 0;
         if let Some(s) = self.apps.store.borrow().as_ref() {
-            for r in s.all(Kind::Appointment) {
+            for r in s.all(Kind::Appointment).chain(s.all(Kind::Task)) {
                 let Some(at) = remind_at(&r) else { continue };
                 // Due since the last look, and not already over.
                 if at > after && at <= now && end_of(&r) > now && n < DUE_MAX {
@@ -238,8 +253,17 @@ impl Shell {
         self.apps.checked = Some(now);
         self.reminders_plan();
         if n > 0 {
+            self.apps.chime = true;
             self.dirty(Rect::new(0, 0, W, H));
         }
+    }
+
+    /// Whether a reminder has come up since this was last asked: the
+    /// image plays its sound once for it (the owner, 2026-11-15: "we need
+    /// an audible alarm for when the task is set to be done, a
+    /// notification system"; the banner was silent).
+    pub fn take_chime(&mut self) -> bool {
+        core::mem::take(&mut self.apps.chime)
     }
 
     /// Whether a reminder is showing.
@@ -261,6 +285,14 @@ impl Shell {
             return Some(Action::Nothing);
         }
         let id = self.apps.due[0];
+        // Open goes to its app: Calendar, or Tasks for a task.
+        let task = self
+            .apps
+            .store
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.get(id))
+            .is_some_and(|r| r.kind == Kind::Task);
         self.apps.due.copy_within(1.., 0);
         self.apps.n_due -= 1;
         if snooze && self.apps.n_snoozed < DUE_MAX {
@@ -269,7 +301,7 @@ impl Shell {
         }
         self.dirty(Rect::new(0, 0, W, H));
         Some(if open && self.programs {
-            Action::OpenProgram(0)
+            Action::OpenProgram(if task { 2 } else { 0 })
         } else {
             Action::Redraw
         })
@@ -316,7 +348,9 @@ impl Shell {
             when.as_bytes(),
         );
         let title = r.text(tag::TITLE);
-        let title = if title.is_empty() {
+        let title = if title.is_empty() && r.kind == Kind::Task {
+            &b"Task"[..]
+        } else if title.is_empty() {
             &b"Appointment"[..]
         } else {
             title

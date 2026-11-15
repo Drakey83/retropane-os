@@ -1311,8 +1311,7 @@ impl Program for Contacts {
             return Reply::Redraw;
         }
         match (e, self.view) {
-            // The softkey Done keeps the person (the keyboard's Done
-            // moves to the next field).
+            // The softkey Done keeps the person (as the keyboard's does).
             (Event::Key(Key::SoftRight), View::Edit(_)) => {
                 if self.keep(cx) {
                     self.go(View::List);
@@ -1495,11 +1494,15 @@ impl Program for Contacts {
                 }
                 Reply::Redraw
             }
-            // The keyboard's Done: on to the next typed field.
-            (Event::Done, View::Edit(at)) => {
-                let (order, _) = self.fields();
-                let i = (at as usize + 1).min(FORM.len() - 1);
-                self.view = View::Edit(order[i]);
+            // The keyboard's Done is done: the person is kept, as the
+            // softkey's Done keeps them (it moved to the next field, and
+            // on the last one did nothing: the owner on the X51v,
+            // 2026-11-15, "Keyboard done doesnt do anything"). The rows are
+            // chosen by a tap or the D-pad.
+            (Event::Done, View::Edit(_)) => {
+                if self.keep(cx) {
+                    self.go(View::List);
+                }
                 Reply::Redraw
             }
             _ => Reply::Nothing,

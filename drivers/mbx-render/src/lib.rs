@@ -729,6 +729,23 @@ macro_rules! renderer_start {
 use renderer_start;
 
 impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
+    /// Row `y` of the wallpaper set from RGB565 pixels (a window's
+    /// backdrop round the radar's map: `rp_app::aurora::rows`).
+    pub fn wallpaper_row565(&mut self, y: u16, px: &[u16]) {
+        let n = px.len().min(usize::from(W)) & !1;
+        let mut buf = [0u32; CHUNK];
+        for (k, pair) in px[..n].chunks(2 * CHUNK).enumerate() {
+            let words = pair.len() / 2;
+            for (i, w) in buf[..words].iter_mut().enumerate() {
+                *w = u32::from(pair[2 * i]) | u32::from(pair[2 * i + 1]) << 16;
+            }
+            self.mem.store(
+                self.l.wallpaper + usize::from(y) * STRIDE16 + 4 * CHUNK * k,
+                &buf[..words],
+            );
+        }
+    }
+
     /// Stores line `y` of the wallpaper (`W` XRGB8888 pixels) as RGB565,
     /// each channel's top bits: pass a row already quantised to 16 bits
     /// (`rp-today`'s Floyd-Steinberg, the look the owner approved on
@@ -1304,23 +1321,33 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// longer read it (stamped before the last frame start or full wait),
     /// else everything queued finishes first.
     fn row_at(&mut self, key: RowKey) -> usize {
-        // A row of one colour serves every width up to its own, so it is
-        // written once at the ring's full width and found whatever width
-        // asks (keyed by its width, each panel width of each glass colour
-        // was a row of its own: an app's screen wrote 336 rows a frame
-        // into a ring of 64 and waited on the engine six times, 33 ms of
-        // CPU a frame on the X51v, run today-0146).
-        let key = if key.a == key.b {
+        // A row of one colour serves every width up to its own: found
+        // by its colour and a width at least the one asked (keyed by its
+        // exact width, each panel width of each glass colour was a row of
+        // its own: an app's screen wrote 336 rows a frame, run
+        // today-0146). Written at the width asked, not the ring's whole
+        // 640: written whole it was fewer rows and more CPU (179 rows,
+        // 40 ms a frame against 33: run today-0147).
+        let one = key.a == key.b;
+        let key = if one {
             RowKey {
                 first: 0,
                 span: 1,
-                w: (ROW_BYTES / 4) as u16,
                 ..key
             }
         } else {
             key
         };
-        if let Some(k) = self.row_keys.iter().position(|r| *r == Some(key)) {
+        let found = self.row_keys.iter().position(|r| {
+            r.is_some_and(|r| {
+                if one {
+                    r.a == key.a && r.b == key.b && r.span == 1 && r.w >= key.w
+                } else {
+                    r == key
+                }
+            })
+        });
+        if let Some(k) = found {
             self.row_used[k] = self.epoch;
             self.last.rows_reused += 1;
             return self.l.rows + k * ROW_BYTES;
@@ -1736,7 +1763,9 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 // The frame's pictures too: an upload early in the frame
                 // never evicts one it draws later.
                 Cmd::Image { img, .. } => self.mark_image(img.px.as_ptr() as usize),
-                Cmd::Pic { pic, .. } => self.mark_image((pic.key() as usize) << 2 | 1),
+                Cmd::Pic { pic, .. } | Cmd::Cover { pic, .. } => {
+                    self.mark_image((pic.key() as usize) << 2 | 1);
+                }
                 _ => {}
             }
         }
@@ -1799,6 +1828,13 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                     pic.key(),
                     u32::from(pic.w) << 16 | u32::from(pic.h),
                     0,
+                ],
+                Cmd::Cover { x, y, pic, color } => [
+                    9,
+                    u32::from(x) << 16 | u32::from(y.cast_unsigned()),
+                    pic.key(),
+                    u32::from(pic.w) << 16 | u32::from(pic.h),
+                    color,
                 ],
                 Cmd::Panel { r, art } => {
                     let [a, b] = rect(r);
@@ -1991,6 +2027,35 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 };
                 match self.pic(pic) {
                     Ok(at) => self.blend_from(dst, to, (at, usize::from(pic.w) * 4), sx, sy),
+                    Err(why) => self.last.pics_missed.note(pic, why),
+                }
+            }
+            // Ink: the picture's words are 4 bpp coverage, uploaded as
+            // they are and blended through the colour (the engine's own
+            // coverage source: an eighth of a 32-bit picture's bytes).
+            Cmd::Cover { x, y, pic, color } => {
+                let Some((to, sx, sy)) = place(pic.w * 8, pic.h, i32::from(x), i32::from(y), clip)
+                else {
+                    return;
+                };
+                match self.pic(pic) {
+                    Ok(at) => {
+                        self.last.px_blend += u32::from(to.w) * u32::from(to.h);
+                        self.last.blits += 1;
+                        if let Some((w, n)) = cmd::blit(
+                            (Format::BPP32, dst, STRIDE as i32),
+                            (Format::COVERAGE4, at, i32::from(pic.w) * 4),
+                            (sx, sy),
+                            Self::coords(to),
+                            ROP_SRCCOPY,
+                            OP_BLEND,
+                            color & 0x00FF_FFFF,
+                        ) {
+                            self.submit(&w[..n]);
+                        } else {
+                            self.refused += 1;
+                        }
+                    }
                     Err(why) => self.last.pics_missed.note(pic, why),
                 }
             }

@@ -250,9 +250,8 @@ fn every_field_is_typed_and_a_kept_person_is_changed_and_deleted() {
         draw(&mut c, &cx);
         assert!(c.keyboard().is_some());
         type_in(&mut c, &cx, text);
-        c.event(Event::Done, &cx);
+        c.event(Event::Key(Key::Down), &cx);
     }
-    c.event(Event::Key(Key::Down), &cx);
     assert_eq!(c.view, View::Edit(EditField::Favourite));
     assert!(c.keyboard().is_none());
     c.event(Event::Key(Key::Enter), &cx);
@@ -463,4 +462,87 @@ fn a_letter_with_more_people_than_fit_goes_on_over_the_page() {
     c.event(Event::PenDown { x: 200, y: 300 }, &cx);
     c.event(Event::PenUp { x: 200, y: 400 }, &cx);
     assert_eq!(c.first_row, 0);
+}
+
+#[test]
+fn the_keyboard_s_done_keeps_the_person() {
+    // The owner on the X51v, 2026-11-15: "Keyboard done doesnt do
+    // anything when trying to say done when editing contact".
+    let pim = store();
+    let cx = ctx(pim);
+    let mut c = Contacts::new();
+    draw(&mut c, &cx);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    // With no name it says so and keeps nothing.
+    c.event(Event::Done, &cx);
+    assert!(c.need_name && matches!(c.view, View::Edit(_)));
+    type_in(&mut c, &cx, b"Ada");
+    c.event(Event::Key(Key::Down), &cx);
+    type_in(&mut c, &cx, b"Lovelace");
+    assert_eq!(c.event(Event::Done, &cx), Reply::Redraw);
+    assert_eq!(c.view, View::List);
+    assert!(kept(pim, b"Ada").is_some());
+}
+
+#[test]
+fn a_suggested_address_fills_the_street_and_the_city_line() {
+    // The owner on the X51v, 2026-11-15: "the address doent auto fill in
+    // the city, state, zipcode when selecting a pre populated address".
+    let pim = store();
+    let cx = ctx(pim);
+    let answer = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"osm_type":"W","osm_id":242245378,"osm_key":"building","osm_value":"house","type":"house","housenumber":"410","street":"Pine Street","city":"Boulder","county":"Boulder","state":"Colorado","country":"United States","postcode":"80302","countrycode":"US","extent":[-105.29,40.01,-105.29,40.01]},"geometry":{"type":"Point","coordinates":[-105.29,40.01]}}]}"#;
+    for by_strip in [false, true] {
+        let mut c = Contacts::new();
+        draw(&mut c, &cx);
+        c.event(Event::Key(Key::SoftRight), &cx);
+        type_in(&mut c, &cx, b"Ada");
+        for _ in 0..7 {
+            c.event(Event::Key(Key::Down), &cx);
+        }
+        assert_eq!(c.view, View::Edit(EditField::Street));
+        type_in(&mut c, &cx, b"410 Pi");
+        assert!(c.net_ask().is_some(), "the street asked about");
+        c.net_answer(true, answer, &cx);
+        draw(&mut c, &cx);
+        if by_strip {
+            // The keyboard's suggestion strip.
+            assert_eq!(c.suggestions()[0], b"410 Pine Street");
+            c.event(Event::Suggestion(0), &cx);
+        } else {
+            // A tap on the sheet under the field.
+            let r = suggestion_row(0);
+            c.event(
+                Event::PenDown {
+                    x: r.x + 20,
+                    y: r.y + 20,
+                },
+                &cx,
+            );
+            c.event(
+                Event::PenUp {
+                    x: r.x + 20,
+                    y: r.y + 20,
+                },
+                &cx,
+            );
+        }
+        assert_eq!(
+            c.val(EditField::Street),
+            b"410 Pine Street",
+            "strip {by_strip}"
+        );
+        assert_eq!(
+            c.val(EditField::City),
+            b"Boulder, Colorado 80302",
+            "strip {by_strip}"
+        );
+        // And kept so.
+        draw(&mut c, &cx);
+        c.event(Event::Done, &cx);
+        let (_, f) = kept(pim, b"Ada").expect("kept");
+        let addr = &f.iter().find(|x| x.0 == tag::ADDRESS).unwrap().1;
+        assert_eq!(addr, b"410 Pine Street\nBoulder, Colorado 80302");
+        let id = kept(pim, b"Ada").unwrap().0;
+        pim.borrow_mut().as_mut().unwrap().remove(id).unwrap();
+    }
 }

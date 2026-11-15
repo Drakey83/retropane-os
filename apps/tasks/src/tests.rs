@@ -776,3 +776,51 @@ fn a_task_s_steps_are_added_ticked_and_go_with_it() {
     draw(&mut t, &cx);
     assert_eq!(pim.borrow().as_ref().unwrap().all(Kind::Task).count(), 0);
 }
+
+#[test]
+fn a_task_takes_a_time_and_keeps_it_when_moved() {
+    // The owner on the X51v, 2026-11-15: "you cant set a time for tasks?".
+    let pim = store();
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    t.show(View::List(None));
+    draw(&mut t, &cx);
+    typed(&mut t, &cx, b"Call the bank today 3pm");
+    draw(&mut t, &cx);
+    let me = |t: &Tasks| *t.tasks.iter().flatten().next().unwrap();
+    assert_eq!(me(&t).title.get(), b"Call the bank");
+    assert_eq!((me(&t).due, me(&t).time), (Some(19_723), Some(15 * 60)));
+    let kept = |pim: &core::cell::RefCell<Option<Store<'static>>>| {
+        let g = pim.borrow();
+        g.as_ref()
+            .unwrap()
+            .all(Kind::Task)
+            .next()
+            .unwrap()
+            .num(tag::REMIND_AT)
+    };
+    assert_eq!(kept(pim), Some(date::start_of(19_723) + 15 * 60));
+    // The time as the region writes it.
+    let mut b = [0u8; 8];
+    let n = clock(15 * 60 + 5, true, &mut b);
+    assert_eq!(&b[..n], b"3:05 PM");
+    let n = clock(5, true, &mut b);
+    assert_eq!(&b[..n], b"12:05 AM");
+    let n = clock(15 * 60 + 5, false, &mut b);
+    assert_eq!(&b[..n], b"15:05");
+    // Tomorrow: the same time, the day after.
+    let id = me(&t).id;
+    t.act(&cx, id, 0);
+    draw(&mut t, &cx);
+    assert_eq!((me(&t).due, me(&t).time), (Some(19_724), Some(15 * 60)));
+    assert_eq!(kept(pim), Some(date::start_of(19_724) + 15 * 60));
+    // A task with no time has none.
+    typed(&mut t, &cx, b"Water the plants");
+    draw(&mut t, &cx);
+    assert!(
+        t.tasks
+            .iter()
+            .flatten()
+            .any(|k| k.title.get() == b"Water the plants" && k.time.is_none())
+    );
+}

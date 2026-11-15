@@ -222,6 +222,19 @@ impl Bus {
                         assert_eq!(dfmt, BPP32, "model: 32 bpp fills only");
                         self.colour
                     }
+                    // 4 bpp coverage (code 5): the colour word through a
+                    // pixel's four bits, widened to eight by repeating
+                    // them, the first pixel in a byte's high half
+                    // (rp-mbx-blend B1 on the X51v; the emulator's model).
+                    (0xCCCC, true) if sfmt == COVERAGE4 => {
+                        let i = sx + x - x0;
+                        let at = i64::from(self.src.1) + (sy + y - y0) * stride(self.src.0) + i / 2;
+                        let byte =
+                            u32::from(m[usize::try_from(at).expect("model: address below 0")]);
+                        let n = if i & 1 == 0 { byte >> 4 } else { byte & 15 };
+                        let s = (n * 17) << 24 | (self.colour & 0x00FF_FFFF);
+                        blend(self.blend, s, rd(&m, d_at, dfmt))
+                    }
                     (0xCCCC, b) => {
                         assert!(
                             sfmt == BPP32 || sfmt == RGB565,
@@ -254,6 +267,7 @@ impl Bus {
 /// The surface format fields (bits 19-15 of a surface word).
 const BPP32: u32 = 0xC;
 const RGB565: u32 = 0xA;
+const COVERAGE4: u32 = 0x5;
 
 /// An RGB565 pixel as the engine reads it: each channel widened to 8 bits
 /// by repeating its top bits (measured 2026-10-17, 64 of 64 pixels).

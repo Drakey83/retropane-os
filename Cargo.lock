@@ -1099,11 +1099,15 @@ name = "rp-today"
 version = "0.0.0"
 dependencies = [
  "rp-app",
+ "rp-audio",
+ "rp-audio-x51v",
  "rp-draw",
  "rp-drv-blit2d",
  "rp-drv-cf",
+ "rp-drv-cpld",
  "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
+ "rp-drv-pxa-i2s",
  "rp-drv-pxa-keypad",
  "rp-drv-pxa-mmc",
  "rp-drv-pxa-ssp",

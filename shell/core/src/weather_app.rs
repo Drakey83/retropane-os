@@ -1866,6 +1866,15 @@ impl Shell {
         })
     }
 
+    /// The window's backdrop round the radar's map (its tint and look),
+    /// where the screens are in windows: the host paints it into the
+    /// wallpaper's rows above and below the map.
+    #[must_use]
+    pub fn radar_window(&self) -> Option<(Argb, bool)> {
+        (self.backdrops && self.backdrop().is_some())
+            .then(|| (rp_app::kit::tint::WEATHER, self.light()))
+    }
+
     /// The radar: the rain cells over the map (the backdrop), a chip naming
     /// the layer, and the timeline with play and pause.
     fn radar_page(&self, f: &mut Frame) {

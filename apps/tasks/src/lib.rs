@@ -48,6 +48,9 @@ pub struct Task {
     pub title: Text<48>,
     /// Due day (days from 1970), if any.
     pub due: Option<i32>,
+    /// Its time that day (minutes from midnight), if it has one: the
+    /// shell reminds of it then.
+    pub time: Option<u16>,
     /// Priority: 0 none, 1 low, 2 medium, 3 high.
     pub flag: u8,
     /// Which list.
@@ -175,6 +178,25 @@ fn holds(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 const FLAGS: [u32; 4] = [0, kit::IDENTITY[4], kit::AMBER, LATE];
 
+/// `m` minutes from midnight as a clock time: "3:05 PM" where the region
+/// counts twelve hours (`us`), "15:05" elsewhere.
+fn clock(m: u16, us: bool, out: &mut [u8; 8]) -> usize {
+    let (h, min) = (m / 60 % 24, m % 60);
+    let shown = if us { (h + 11) % 12 + 1 } else { h };
+    let mut n = num(out, u32::from(shown));
+    out[n] = b':';
+    out[n + 1] = b'0' + (min / 10) as u8;
+    out[n + 2] = b'0' + (min % 10) as u8;
+    n += 3;
+    if us {
+        for &c in if h < 12 { b" AM" } else { b" PM" } {
+            out[n] = c;
+            n += 1;
+        }
+    }
+    n
+}
+
 fn num(out: &mut [u8], v: u32) -> usize {
     let mut d = [0u8; 10];
     let mut i = d.len();
@@ -297,6 +319,7 @@ impl Tasks {
                 id: r.id,
                 title: Text::of(r.text(tag::TITLE)),
                 due: r.num(tag::DUE).map(|d| d as i32),
+                time: r.num(tag::REMIND_AT).map(|m| (m % date::DAY_MIN) as u16),
                 flag: r.num(tag::PRIORITY).unwrap_or(0).min(3) as u8,
                 list,
                 done: r.num(tag::DONE).is_some(),
@@ -383,13 +406,22 @@ impl Tasks {
         let (due, fl, li) = (n(q.day.unwrap_or(cx.now.day) as u32), n(flag), n(list_id));
         let due_day = q.day.unwrap_or(cx.now.day);
         let rep = repeat.map(|r| r.pack(due_day).to_le_bytes());
-        let mut fields: [(u8, &[u8]); 5] = [
+        // A time typed ("3pm", "15:30"): the task's time that day, and
+        // when the shell's banner reminds of it.
+        let at = q
+            .time
+            .map(|t| (date::start_of(due_day) + u32::from(t)).to_le_bytes());
+        let mut fields: [(u8, &[u8]); 6] = [
             (tag::TITLE, &clean[..cn]),
             (tag::DUE, &due),
             (tag::PRIORITY, &[]),
             (tag::LIST, &[]),
             (tag::REPEAT, &[]),
+            (tag::REMIND_AT, &[]),
         ];
+        if let Some(a) = &at {
+            fields[5].1 = a;
+        }
         if let Some(r) = &rep {
             fields[4].1 = r;
         }
@@ -773,6 +805,17 @@ impl Tasks {
                 7 - i32::from(date::weekday(cx.now.day))
             };
         self.set_field(cx, id, tag::DUE, Some(&(day as u32).to_le_bytes()));
+        // Its time goes with it to the new day.
+        if let Some(t) = self
+            .tasks
+            .iter()
+            .flatten()
+            .find(|t| t.id == id)
+            .and_then(|t| t.time)
+        {
+            let at = (date::start_of(day) + u32::from(t)).to_le_bytes();
+            self.set_field(cx, id, tag::REMIND_AT, Some(&at));
+        }
     }
 
     /// Shows `view`.
@@ -1089,7 +1132,7 @@ impl Tasks {
                 } else if self.revealed.is_some() {
                     b"+ Add a step to this task"
                 } else {
-                    b"+ Add a task: Pay rent fri !"
+                    b"+ Add a task: Pay rent fri 3pm !"
                 },
             );
         } else {
@@ -1315,11 +1358,21 @@ impl Tasks {
             }
             let mut w = [0u8; 16];
             let (wn, late) = Self::due_words(t.due, today, &mut w);
-            let mut sub = [0u8; 40];
+            let mut sub = [0u8; 48];
             let mut sn = 0;
             for &c in &w[..wn] {
                 sub[sn] = c;
                 sn += 1;
+            }
+            // Its time after its day: "Today 3:00 PM".
+            if let Some(m) = t.time {
+                let mut tb = [0u8; 8];
+                let tn = clock(m, cx.us, &mut tb);
+                let gap = usize::from(sn > 0);
+                for &c in b" "[..gap].iter().chain(&tb[..tn]) {
+                    sub[sn] = c;
+                    sn += 1;
+                }
             }
             if t.steps.1 > 0 {
                 for &c in if sn > 0 { &b" \x80 "[..] } else { &b""[..] } {
