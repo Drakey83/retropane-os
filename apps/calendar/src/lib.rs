@@ -594,7 +594,11 @@ impl Calendar {
             len: 60,
             all_day: false,
             repeat: 0,
-            alert: 2,
+            // At its time (it was a quarter of an hour before: the owner on
+            // the X51v, 2026-11-15, set one a few minutes off, the alert's
+            // time was past as it was made, and "it never went off when it
+            // was supposed to"; run today-0150 has no reminder in 814 s).
+            alert: 1,
             alert_other: 0,
             cal: 0,
             read_only: false,
@@ -1299,7 +1303,7 @@ impl Calendar {
         let minutes = u32::from(q.minutes.unwrap_or(60));
         let cal = self.cals[0].id;
         let n = |v: u32| v.to_le_bytes();
-        let (s, m, a, rmd, c) = (n(start), n(minutes), n(all_day), n(15), n(cal));
+        let (s, m, a, rmd, c) = (n(start), n(minutes), n(all_day), n(0), n(cal));
         let mut fields: [(u8, &[u8]); 6] = [
             (tag::TITLE, &title[..tn]),
             (tag::START, &s),
@@ -2319,8 +2323,7 @@ impl Calendar {
         }
         kit::text(f, card.x + 20, card.y + 58, cx.fonts.ui, TEXT, when.get());
         let mut cal = Buf::<48>::new();
-        cal.s(self.cals[0].name.get())
-            .s(b" \x80 alert 15 min before");
+        cal.s(self.cals[0].name.get()).s(b" \x80 alert at its time");
         kit::text(f, card.x + 20, card.y + 82, cx.fonts.ui, DIM, cal.get());
         let more = Rect::new(24, 322, W - 48, 44);
         kit::panel(f, cx, more);
