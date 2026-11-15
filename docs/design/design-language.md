@@ -96,8 +96,9 @@ picked by hand, so a new accent is muted the same way.
 screen in its own window, no wallpaper behind it, title bar and softkeys
 included, the way a full-screen Windows Mobile program does. Its body is
 opaque in both looks: Aero's slate gradient in the dark, frosted white
-cooling to the right in the light (three bodies drawn for the owner's
-pick: solid, Aero gradient, Aero tinted by the app's accent). The glass
+cooling to the right in the light, each tinted a little by the app's
+accent (the owner's pick, C of three drawn, 2026-11-14: solid, Aero
+gradient, Aero tinted by the app). The glass
 cards blend over the window, not the photo (the renderers' floor,
 ADR-0023). Today and Weather keep the wallpaper.
 

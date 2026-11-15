@@ -1124,7 +1124,7 @@ macro_rules! shell_start {
             sky_moved: 0,
             sky_forced: false,
             light_style: LightStyle::Frosted,
-            window_body: WindowBody::Aero,
+            window_body: WindowBody::Tinted,
             panels_off: false,
             sky_test: 0,
             fetched_at: None,
