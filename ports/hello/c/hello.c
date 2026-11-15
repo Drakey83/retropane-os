@@ -25,6 +25,7 @@
 
 /* The C++ checks (cxx.cpp). */
 int cxx_checks(void);
+int cast_checks(void);
 
 /* One check's line; also called from cxx.cpp. */
 int check(const char *what, int ok);
@@ -346,6 +347,7 @@ int main(void)
     /* A file that is not there is refused, not a crash. */
     ok &= check("fopen of nothing is refused", fopen("/nothing", "rb") == NULL);
     ok &= cxx_checks();
+    ok &= cast_checks();
     ok &= clock_checks();
     ok &= sound_checks();
     ok &= files();

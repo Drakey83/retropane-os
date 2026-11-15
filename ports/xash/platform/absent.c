@@ -31,9 +31,9 @@ Half-Life from the user's own valve folder never needs it and every
 kilobyte of the base image counts (docs/research/half-life-evaluation.md
 has the list and what adding each back takes):
 
-- MP3, Ogg Vorbis and Opus decoders (snd_mp3.c, snd_ogg_*.c): the game's
-  sounds are WAV. The Steam copy's music is MP3: it stays silent until
-  the decoder is added.
+- Ogg Vorbis and Opus decoders (snd_ogg_*.c): the game's sounds are WAV
+  and the Steam copy's music is MP3, which is in the build (mpg123's
+  fixed-point decoder: xtask/src/xash.rs).
 - Voice chat (voice.c) and its Opus codec: multiplayer.
 - bzip2: packs file fragments between a server and its clients.
 - MultiEmulator: Steam ID tickets for joining servers.
@@ -43,11 +43,6 @@ Every name the engine still calls is answered here with "not there".
 */
 
 // ---- compressed sound formats ----------------------------------------
-
-qboolean Sound_LoadMPG( const char *name, const byte *buffer, fs_offset_t filesize )
-{
-	return false;
-}
 
 qboolean Sound_LoadOggVorbis( const char *name, const byte *buffer, fs_offset_t filesize )
 {
@@ -66,7 +61,6 @@ qboolean Sound_LoadOggOpus( const char *name, const byte *buffer, fs_offset_t fi
 	int Stream_GetPos##format( stream_t *stream ) { return -1; } \
 	void Stream_Free##format( stream_t *stream ) { }
 
-ABSENT_STREAM( MPG )
 ABSENT_STREAM( OggVorbis )
 ABSENT_STREAM( OggOpus )
 

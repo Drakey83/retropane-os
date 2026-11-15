@@ -627,11 +627,18 @@ pub fn program(
                 "{}.o",
                 f.file_name().unwrap_or_default().to_string_lossy()
             )),
-            flags: flag_strings(if f.extension().is_some_and(|x| x == "cpp") {
-                CXX_FLAGS
+            flags: if f.extension().is_some_and(|x| x == "cpp") {
+                let mut cxx = flag_strings(CXX_FLAGS);
+                // A file named `..._rtti.cpp` is built with run-time type
+                // information (`dynamic_cast`: ports/libc/cxxrt.cpp), as
+                // the few libraries that need it are; the rest without.
+                if f.to_string_lossy().ends_with("_rtti.cpp") {
+                    cxx.push("-frtti".into());
+                }
+                cxx
             } else {
-                &["-std=c11"]
-            }),
+                flag_strings(&["-std=c11"])
+            },
         })
         .collect();
     compile(tc, &common, &jobs)?;

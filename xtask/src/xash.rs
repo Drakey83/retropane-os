@@ -8,7 +8,7 @@
 //! Iterate, don't imitate (rule 0). The engine is built by Waf, which
 //! probes the PC it runs on and wants Python; a port to a new system
 //! usually starts as a fork with the build bent to fit. Ours leaves the
-//! engine's source as fetched but for three small patches kept here
+//! engine's source as fetched but for four small patches kept here
 //! (`ports/xash/patches`: the new platform's name, and three places that
 //! assumed POSIX), lists the sources in this file, and builds them with the
 //! same compiler, flags and C library as every C program of RetroPane, in
@@ -18,15 +18,25 @@
 //!
 //! The sources are not fetched here (they are the owner's go, given
 //! 2026-11-15): `target/ports-src/xash3d-fwgs` and `hlsdk-portable` at the
-//! pinned commits, with the engine's `library_suffix` submodule.
+//! pinned commits, with the engine's `library_suffix`, `mainui` (the menu,
+//! with its `miniutl`) and `mpg123` submodules and the SDK's `freevgui`.
+//!
+//! The MP3 decoder (the Steam copy's music) is mpg123 as its own
+//! `arm_nofpu` build has it, not as the engine's build has it: the engine
+//! builds the generic float decoder (`REAL_IS_FLOAT`), which on a CPU with
+//! no FPU is a helper call for every multiply of every sample; ours is the
+//! fixed-point decoder (`REAL_IS_FIXED`) with mpg123's ARM multiply and
+//! synthesis (`OPT_ARM`, `synth_arm.S`: one `smull` a multiply) and its
+//! tables computed beforehand, so decoding touches no float at all.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::cc::{self, Job, Libc, Toolchain};
 
-/// The pinned sources: (folder under `target/ports-src`, commit, patch).
-const SOURCES: [(&str, &str, &str); 3] = [
+/// The pinned sources: (folder under `target/ports-src`, commit, patch; no
+/// patch where the source builds as fetched).
+const SOURCES: [(&str, &str, &str); 7] = [
     (
         "xash3d-fwgs",
         "707596f4905689ec224e993fcaa4d4ad66aa67d6",
@@ -41,6 +51,26 @@ const SOURCES: [(&str, &str, &str); 3] = [
         "hlsdk-portable",
         "89e83b92d561f5ceb11594c2f15e2e1519bc6c36",
         "hlsdk-portable.patch",
+    ),
+    (
+        "hlsdk-portable/freevgui",
+        "73bfb4659f3d9eb28b79e5b26baea8c6b888d5eb",
+        "",
+    ),
+    (
+        "xash3d-fwgs/3rdparty/mainui",
+        "8981066ab977758653751e54e9083f289c0c3503",
+        "mainui.patch",
+    ),
+    (
+        "xash3d-fwgs/3rdparty/mainui/miniutl",
+        "048a416f4c54c501dfd728fd792bfdc9f2883f51",
+        "",
+    ),
+    (
+        "xash3d-fwgs/3rdparty/mpg123/mpg123",
+        "20c59b07437ea6908a5b7bcb9dc43cb2833c0dcd",
+        "",
     ),
 ];
 
@@ -83,7 +113,6 @@ const ENGINE_DEFINES: &[&str] = &[
 /// docs/research/half-life-evaluation.md).
 const LEFT_OUT: &[&str] = &[
     "whereami.c",
-    "snd_mp3.c",
     "snd_ogg_opus.c",
     "snd_ogg_vorbis.c",
     "ogg_filestream.c",
@@ -134,7 +163,34 @@ const CLIENT_WEAPONS: &[&str] = &[
     "tripmine",
 ];
 
-/// One part: a library the engine loads, or the engine itself.
+/// mpg123's sources for Layer III at the file's own rate, 16-bit out (the
+/// engine's own choice of what to build, `3rdparty/mpg123/wscript`), with
+/// the ARM synthesis its `arm_nofpu` build adds.
+const MPG123_SOURCES: &[&str] = &[
+    "mpg123/src/compat/compat_str.c",
+    "mpg123/src/libmpg123/dct64.c",
+    "mpg123/src/libmpg123/equalizer.c",
+    "mpg123/src/libmpg123/feature.c",
+    "mpg123/src/libmpg123/format.c",
+    "mpg123/src/libmpg123/frame.c",
+    "mpg123/src/libmpg123/id3.c",
+    "mpg123/src/libmpg123/index.c",
+    "mpg123/src/libmpg123/layer3.c",
+    "mpg123/src/libmpg123/libmpg123.c",
+    "mpg123/src/libmpg123/optimize.c",
+    "mpg123/src/libmpg123/parse.c",
+    "mpg123/src/libmpg123/readers.c",
+    "mpg123/src/libmpg123/synth.c",
+    "mpg123/src/libmpg123/tabinit.c",
+    "mpg123/src/libmpg123/synth_arm.S",
+    "stub.c",
+];
+
+/// The menu's and FreeVGUI's sources that are another system's.
+const MENU_LEFT_OUT: &[&str] = &["FreeTypeFont.cpp", "WinAPIFont.cpp"];
+
+/// One part: a library the engine loads, the engine itself, or a library
+/// built to be linked inside one of those (`inside`).
 struct Part {
     name: &'static str,
     sources: Vec<PathBuf>,
@@ -142,6 +198,14 @@ struct Part {
     flags: Vec<String>,
     /// Libraries beside the C library to link it against for the check.
     cxx: bool,
+    /// Built with run-time type information: FreeVGUI asks what kind of
+    /// panel it holds (`dynamic_cast`), so it and the client library whose
+    /// panels it holds are, as the SDK's own Waf build has them; the rest
+    /// are not (ports/libc/cxxrt.cpp).
+    rtti: bool,
+    /// Earlier parts linked into this one (mpg123 into the engine,
+    /// FreeVGUI into the client library: BSD, its own static option).
+    with: &'static [&'static str],
 }
 
 /// The C and C++ sources in `dir` (and below it if `deep`), sorted, without
@@ -207,6 +271,9 @@ fn prepare(root: &Path, dir: &str, commit: &str, patch: &str) -> Result<(), Stri
             at.display()
         ));
     }
+    if patch.is_empty() {
+        return Ok(());
+    }
     let patch = root.join("ports").join("xash").join("patches").join(patch);
     let patch = patch.to_string_lossy().into_owned();
     if git(&["apply", "--reverse", "--check", &patch])?.0 {
@@ -268,7 +335,12 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
             ],
         ),
         cxx: false,
+        rtti: false,
+        with: &["mpg123"],
     };
+    engine
+        .flags
+        .extend(includes(&x, &["3rdparty/mpg123/mpg123/src/include"]));
     engine.flags.extend(common.iter().cloned());
     for d in [
         "engine/common",
@@ -294,6 +366,8 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         flags: common.clone(),
         // Its one C++ file is the interface other engines' games ask for.
         cxx: true,
+        rtti: false,
+        with: &[],
     };
     filesystem.sources.extend(public());
     filesystem.sources.push(x.join("3rdparty/miniz/miniz.c"));
@@ -305,6 +379,8 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         sources: sources(&x.join("ref/soft"), false, &[]),
         flags: includes(&x, &["ref/soft", "ref/common"]),
         cxx: false,
+        rtti: false,
+        with: &[],
     };
     ref_soft.flags.push("-DREF_DLL=1".into());
     ref_soft.flags.extend(common.iter().cloned());
@@ -334,6 +410,8 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
             &[],
         ),
         cxx: true,
+        rtti: false,
+        with: &[],
     };
     server
         .sources
@@ -358,9 +436,12 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
                 "public",
                 "utils/vgui/include",
             ],
-            &["-DCLIENT_DLL=1"],
+            // FreeVGUI inside the library, as the SDK's own static option.
+            &["-DCLIENT_DLL=1", "-DINTERNAL_VGUI_SUPPORT=1"],
         ),
         cxx: true,
+        rtti: true,
+        with: &["freevgui"],
     };
     client
         .sources
@@ -375,7 +456,91 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
             .map(|w| sdk.join("dlls").join(format!("{w}.cpp"))),
     );
 
-    vec![engine, filesystem, ref_soft, server, client]
+    // The MP3 decoder, fixed point (the module's notes): its settings are
+    // ours (`ports/xash/mpg123/config.h`), its sources as fetched.
+    let m = x.join("3rdparty/mpg123");
+    let mut mpg123 = Part {
+        name: "mpg123",
+        sources: MPG123_SOURCES.iter().map(|f| m.join(f)).collect(),
+        flags: includes(&ours, &["mpg123"]),
+        cxx: false,
+        rtti: false,
+        with: &[],
+    };
+    mpg123.flags.extend(includes(
+        &m,
+        &["mpg123/src", "mpg123/src/include", "mpg123/src/libmpg123"],
+    ));
+    mpg123
+        .flags
+        .extend(defines(&["-DOPT_ARM=1", "-DREAL_IS_FIXED=1"]));
+
+    // FreeVGUI: the panels the client library is written against, with its
+    // glue to this engine.
+    let v = sdk.join("freevgui");
+    let mut freevgui = Part {
+        name: "freevgui",
+        sources: sources(&v, false, &[]),
+        flags: includes(&v, &["."]),
+        cxx: true,
+        rtti: true,
+        with: &[],
+    };
+    for d in ["controls", "platform/common", "platform/xash3d-fwgs"] {
+        freevgui.sources.extend(sources(&v.join(d), false, &[]));
+    }
+    // The engine's side of the glue is the SDK's copy of its headers.
+    freevgui.flags.extend(includes(&sdk, &["engine", "common"]));
+    freevgui.flags.extend(defines(SDK_DEFINES));
+    freevgui.flags.push("-DINTERNAL_VGUI_SUPPORT=1".into());
+
+    // The menu, with its own text drawing from the game's bitmap fonts
+    // and stb_truetype (no FreeType: another library, another download).
+    let u = x.join("3rdparty/mainui");
+    let mut menu = Part {
+        name: "menu",
+        sources: sources(&u, false, &[]),
+        flags: includes(
+            &u,
+            &[
+                ".",
+                "miniutl",
+                "font",
+                "controls",
+                "menus",
+                "model",
+                "sdk_includes/common",
+                "sdk_includes/engine",
+                "sdk_includes/public",
+                "sdk_includes/pm_shared",
+            ],
+        ),
+        cxx: true,
+        rtti: false,
+        with: &[],
+    };
+    for d in [
+        "miniutl",
+        "font",
+        "menus",
+        "menus/dynamic",
+        "model",
+        "controls",
+    ] {
+        menu.sources
+            .extend(sources(&u.join(d), false, MENU_LEFT_OUT));
+    }
+    menu.flags.extend(defines(&[
+        "-D__retropane__=1",
+        "-DSTDINT_H=<cstdint>",
+        "-DMAINUI_USE_CUSTOM_FONT_RENDER=1",
+        "-DMAINUI_USE_STB=1",
+        "-D_GNU_SOURCE=1",
+    ]));
+
+    vec![
+        mpg123, engine, filesystem, ref_soft, menu, server, freevgui, client,
+    ]
 }
 
 /// A part's sizes in bytes: code and constants, initialised data, zeroed
@@ -469,7 +634,14 @@ struct Built {
     library: usize,
 }
 
-fn build(tc: &Toolchain, libc: &Libc, out: &Path, part: &Part) -> Result<Built, String> {
+fn build(
+    root: &Path,
+    tc: &Toolchain,
+    libc: &Libc,
+    out: &Path,
+    part: &Part,
+) -> Result<Built, String> {
+    let cxx_headers = root.join("ports").join("libc").join("cxx");
     let dir = out.join(part.name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -491,7 +663,15 @@ fn build(tc: &Toolchain, libc: &Libc, out: &Path, part: &Part) -> Result<Built, 
             flags: if f.extension().is_some_and(|x| x == "cpp") {
                 let mut cxx = cc::flag_strings(cc::CXX_FLAGS);
                 cxx[0] = "-std=gnu++17".into();
+                // The few C++ headers a port may ask for (ports/libc/cxx).
+                cxx.push("-I".into());
+                cxx.push(cxx_headers.to_string_lossy().into_owned());
+                if part.rtti {
+                    cxx.push("-frtti".into());
+                }
                 cxx
+            } else if f.extension().is_some_and(|x| x == "S") {
+                Vec::new()
             } else {
                 vec!["-std=gnu11".into()]
             },
@@ -501,10 +681,15 @@ fn build(tc: &Toolchain, libc: &Libc, out: &Path, part: &Part) -> Result<Built, 
     // The part as one object: what a library of its own would hold.
     let whole = out.join(format!("{}.o", part.name));
     let list = out.join(format!("{}.rsp", part.name));
-    let text: String = jobs
+    let mut text: String = jobs
         .iter()
         .map(|j| format!("\"{}\"\n", j.object.to_string_lossy().replace('\\', "/")))
         .collect();
+    // The parts linked inside this one, as built before it.
+    for inner in part.with {
+        let o = out.join(format!("{inner}.o"));
+        text.push_str(&format!("\"{}\"\n", o.to_string_lossy().replace('\\', "/")));
+    }
     std::fs::write(&list, text).map_err(|e| format!("{}: {e}", list.display()))?;
     crate::emu::run(
         Command::new(tc.tool("ld.lld"))
@@ -575,9 +760,14 @@ pub fn eval(root: &Path) -> Result<(), String> {
     let kib = |b: u64| b.div_ceil(1024);
     let mut all_missing: Vec<String> = Vec::new();
     for part in parts(root, 0) {
-        let b = build(&tc, &libc, &out, &part)?;
+        let b = build(root, &tc, &libc, &out, &part)?;
+        let inside = if part.with.is_empty() {
+            String::new()
+        } else {
+            format!(" (with {} inside)", part.with.join(", "))
+        };
         say(format!(
-            "{}: {} files compiled; {} KiB of code and constants, {} KiB of data, {} KiB of zeroed RAM",
+            "{}{inside}: {} files compiled; {} KiB of code and constants, {} KiB of data, {} KiB of zeroed RAM",
             b.name,
             b.files,
             kib(b.sizes.text),
@@ -586,7 +776,7 @@ pub fn eval(root: &Path) -> Result<(), String> {
         ));
         if b.library > 0 {
             say(format!(
-                "{}: {} names of FreeVGUI's (the SDK's submodule, not fetched) are not answered",
+                "{}: {} names of FreeVGUI's are not answered (it is linked into the client library)",
                 b.name, b.library
             ));
         }
@@ -602,10 +792,10 @@ pub fn eval(root: &Path) -> Result<(), String> {
     // The engine's own low-memory builds: how much static RAM each gives
     // back (mode 2 gives up network compatibility, which the port has not).
     for mode in [1, 2] {
-        let Some(engine) = parts(root, mode).into_iter().next() else {
+        let Some(engine) = parts(root, mode).into_iter().find(|p| p.name == "engine") else {
             continue;
         };
-        let b = build(&tc, &libc, &out, &engine)?;
+        let b = build(root, &tc, &libc, &out, &engine)?;
         say(format!(
             "engine with XASH_LOW_MEMORY={mode}: {} KiB of code and constants, {} KiB of zeroed RAM",
             kib(b.sizes.text),
@@ -690,6 +880,47 @@ mod tests {
         }
         // A game class's own table is not FreeVGUI's.
         assert_eq!(answer("vtable for CCrowbar"), Answer::Missing);
+    }
+
+    #[test]
+    fn a_part_linked_inside_another_is_built_before_it() {
+        // The lists alone (no sources fetched): the order and the flags.
+        let all = parts(Path::new("nowhere"), 0);
+        let names: Vec<&str> = all.iter().map(|p| p.name).collect();
+        let mut once = names.clone();
+        once.sort_unstable();
+        once.dedup();
+        assert_eq!(once.len(), names.len(), "a name twice: {names:?}");
+        for (i, p) in all.iter().enumerate() {
+            for inner in p.with {
+                assert!(
+                    names[..i].contains(inner),
+                    "{} holds {inner}, which is not built before it",
+                    p.name
+                );
+            }
+        }
+        // The game's logic never holds the engine's parts, nor the engine
+        // the game's (docs/research/half-life-licences.md).
+        let with = |n: &str| all.iter().find(|p| p.name == n).map(|p| p.with);
+        assert_eq!(with("engine"), Some(&["mpg123"][..]));
+        assert_eq!(with("client"), Some(&["freevgui"][..]));
+        assert_eq!(with("server"), Some(&[][..]));
+        // Run-time type information: FreeVGUI and the library whose panels
+        // it holds, nothing else.
+        let rtti: Vec<&str> = all.iter().filter(|p| p.rtti).map(|p| p.name).collect();
+        assert_eq!(rtti, ["freevgui", "client"]);
+        // The MP3 decoder is the fixed-point one with the ARM synthesis.
+        let mpg = all.iter().find(|p| p.name == "mpg123").expect("mpg123");
+        assert!(mpg.flags.iter().any(|f| f == "-DREAL_IS_FIXED=1"));
+        assert!(mpg.flags.iter().any(|f| f == "-DOPT_ARM=1"));
+        assert!(!mpg.flags.iter().any(|f| f.contains("REAL_IS_FLOAT")));
+        assert!(mpg.sources.iter().any(|f| f.ends_with("synth_arm.S")));
+        // Every pinned source is a whole commit; no patch is a plain "".
+        for (dir, commit, patch) in SOURCES {
+            assert_eq!(commit.len(), 40, "{dir}");
+            assert!(patch.is_empty() || patch.ends_with(".patch"), "{dir}");
+        }
     }
 
     #[test]

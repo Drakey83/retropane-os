@@ -11,7 +11,7 @@ improves it.
 
 | Piece | Where | What it gives |
 |---|---|---|
-| The compiler and the C and C++ library | `cargo xtask cc` (`xtask/src/cc.rs`, `ports/libc`) | Clang and picolibc pinned by hash, built for the X51v, the same on every PC |
+| The compiler and the C and C++ library | `cargo xtask cc` (`xtask/src/cc.rs`, `ports/libc`) | Clang and picolibc pinned by hash, built for the X51v, the same on every PC; C++ without exceptions, with `new`/`delete`, and run-time casts (`dynamic_cast`) for the library that needs them |
 | The C boundary | `hal/cabi` | Every pointer a C program hands the OS checked in one place; all the `unsafe` a port brings |
 | The port layer, one header | `ports/include/retropane.h`, `ports/sys` (`rp_port`) | The clock in whole microseconds; sound as one stream of the OS's mixer; buttons and the filtered stylus, turned for landscape; the card's files through `fopen`, `open`, `stat`, `opendir` and the rest |
 | The self-check | `ports/hello`, `cargo xtask emu-chello` | A C and C++ program that proves each of those in the emulator (a recorded tone, scripted presses and taps, a card) |
@@ -54,7 +54,10 @@ doom will be I:\Ports\doom ... so on and so forth."
    nothing answers**. That list is the port's to-do, not a guess.
 5. **Leave out what the game never uses on this device** (codecs,
    network, voice), each answered with "not there" in one file and each
-   listed with what bringing it back costs.
+   listed with what bringing it back costs. **A codec that stays is built
+   in its fixed-point form** (the PXA270 has no FPU): Half-Life's MP3
+   decoder is mpg123's own no-FPU ARM build, not the float one the engine
+   picks.
 6. **Keep libraries apart where a licence asks it** (the Half-Life SDK is
    never linked into its engine).
 7. **Measure before tuning:** sizes and static RAM from the build; the

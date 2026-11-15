@@ -1,0 +1,3 @@
+// <cmath>: C's header under its C++ name (no std:: overloads: a port
+// that wants them calls C's functions by their C names).
+#include <math.h>

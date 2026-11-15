@@ -1,0 +1,10 @@
+// <new>: placement new, the one thing of this header a port's own
+// containers use (ports/libc/cxxrt.cpp has new and delete themselves).
+#ifndef RP_CXX_NEW
+#define RP_CXX_NEW
+#include <stddef.h>
+inline void *operator new(size_t, void *at) noexcept { return at; }
+inline void *operator new[](size_t, void *at) noexcept { return at; }
+inline void operator delete(void *, void *) noexcept {}
+inline void operator delete[](void *, void *) noexcept {}
+#endif

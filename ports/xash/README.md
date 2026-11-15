@@ -7,9 +7,12 @@ themselves are not in this repository: they are fetched into
 (`xtask/src/xash.rs`). What that build found:
 [docs/research/half-life-evaluation.md](../../docs/research/half-life-evaluation.md).
 
-- `patches/`: the three small changes to the fetched sources (a platform
-  name of our own, and three places that assumed POSIX), applied by the
-  build and checked against the pinned commits.
+- `patches/`: the four small changes to the fetched sources (a platform
+  name of our own in the engine, the SDK and the menu, and three places
+  that assumed POSIX), applied by the build and checked against the pinned
+  commits.
+- `mpg123/config.h`: the MP3 decoder's settings (mpg123's fixed-point
+  build for an ARM with no FPU; its sources are fetched, not here).
 - `platform/`: RetroPane's platform backend for the engine, over the port
   layer (`ports/include/retropane.h`): the clock, sound, input, the
   software renderer's buffer, library loading, and the answers for the
@@ -27,7 +30,9 @@ Public License version 3 or later; they carry that notice and are
 (the two combine, as version 3: docs/research/half-life-licences.md,
 point 1). The patches are changes to the engine's files (GPL-3.0-or-later),
 to its public-domain `library_suffix`, and to the SDK's `build.h` (the
-Unlicense). The headers in `include/` are RetroPane's own, written from
+Unlicense, as is the menu's copy of it). `mpg123/config.h` is RetroPane's
+own (settings only; mpg123 itself is LGPL-2.1 and is linked into the
+engine, which the LGPL allows). The headers in `include/` are RetroPane's own, written from
 the POSIX specification's names and from the names the engine calls.
 
 The game's logic (the Half-Life SDK, Valve's licence) is built as

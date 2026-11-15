@@ -1,0 +1,21 @@
+diff --git a/sdk_includes/public/build.h b/sdk_includes/public/build.h
+index b92c51e..8142856 100644
+--- a/sdk_includes/public/build.h
++++ b/sdk_includes/public/build.h
+@@ -61,6 +61,7 @@ Then you can use another oneliner to query all variables:
+ #undef XASH_ARMv8
+ #undef XASH_BIG_ENDIAN
+ #undef XASH_DOS4GW
++#undef XASH_RETROPANE
+ #undef XASH_E2K
+ #undef XASH_FREEBSD
+ #undef XASH_HAIKU
+@@ -102,6 +103,8 @@ Then you can use another oneliner to query all variables:
+ 	#define XASH_WIN32 1
+ #elif defined __WATCOMC__ && defined __DOS__
+ 	#define XASH_DOS4GW 1
++#elif defined __retropane__ // RetroPane OS (the Dell Axim X51v): not POSIX, its own port layer
++	#define XASH_RETROPANE 1
+ #elif defined __psp__
+ 	#define XASH_PSP 1
+ #else // POSIX compatible
