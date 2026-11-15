@@ -860,12 +860,18 @@ pub struct Shell {
     prog_anim: Option<u32>,
     /// An app opening out of Today: when it began (ms) and the rectangle
     /// its window grows from ([`Self::prog_window`]).
-    prog_open: Option<(u32, Rect)>,
+    prog_open: Option<(u32, Rect, u32)>,
     /// Where the stylus last left the screen (`None` after a key): what
     /// an app's window opens out of.
     tap: Option<(u16, u16)>,
     /// The opening has not had its first step yet.
     prog_fresh: bool,
+    /// The Start menu's sheet an app was picked from (what its window
+    /// opens out of), and whether an app was left with no frame drawn
+    /// since (it is still on the screen): another opened now comes over
+    /// it.
+    open_from: Option<Rect>,
+    left_app: bool,
     /// The field the program's keyboard was set for, and the last
     /// character typed (the automatic capitals).
     prog_field: Option<rp_app::Field>,
@@ -1112,6 +1118,8 @@ macro_rules! shell_start {
             prog_open: None,
             tap: None,
             prog_fresh: false,
+            open_from: None,
+            left_app: false,
             prog_field: None,
             prog_last: b' ',
             app_pics: None,
@@ -1946,17 +1954,16 @@ impl Shell {
         self.net_tick();
         // An app's window opening: its next step, then the whole screen
         // once it is open.
-        if let Some((start, from)) = self.prog_open {
+        if let Some((start, from, ms)) = self.prog_open {
             // It begins at the first step after the program was read from
             // the card (0.14 s on the X51v), not at the touch.
             let start = if core::mem::take(&mut self.prog_fresh) {
-                self.prog_open = Some((now_ms, from));
+                self.prog_open = Some((now_ms, from, ms));
                 now_ms
             } else {
                 start
             };
-            if now_ms.wrapping_sub(start) >= weather_app::ANIM_MS || self.screen != Screen::Program
-            {
+            if now_ms.wrapping_sub(start) >= ms || self.screen != Screen::Program {
                 self.prog_open = None;
                 self.dirty(Rect::new(0, 0, W, H));
             } else if let Some(w) = self.prog_window() {
@@ -2213,12 +2220,15 @@ impl Shell {
                     self.dirty(Rect::new(0, 0, W, H));
                     return Action::Redraw;
                 }
+                let sheet = self.menu_rect();
                 self.set_menu(false);
                 if self.programs
                     && let Some(n) = ["Calendar", "Contacts", "Tasks", "Notes", "Calculator"]
                         .iter()
                         .position(|&p| p == label)
                 {
+                    // (It opens out of the menu's sheet.)
+                    self.open_from = Some(sheet);
                     return Action::OpenProgram(n as u8);
                 }
                 if label == "Today" {
@@ -2234,6 +2244,7 @@ impl Shell {
     /// Back to the Today screen (from anywhere).
     fn go_today(&mut self) {
         if self.screen == Screen::Program {
+            self.left_app = true;
             *self.program.borrow_mut() = None;
             // What it asked the picture store for goes with it.
             if let Some(pics) = self.app_pics {
@@ -2495,8 +2506,18 @@ impl Shell {
         // plane, which an app's live screen is not; an app's window is
         // the renderer's floor and a clip, and only the window is drawn
         // each step: Today stays on the screen round it, not drawn again.
-        let from = if self.menu_open {
-            self.menu_rect()
+        // From one app to another (its button, pressed in another app:
+        // the owner, 2026-11-15, "the switching animation from one full
+        // screen app to another needs to make more sense"; it grew from a
+        // square in the middle of the old app): the new app comes over
+        // the old one from the right edge, the old one left on the screen
+        // until it is covered, as a page is turned.
+        let from_app = self.screen == Screen::Program || self.left_app;
+        self.left_app = false;
+        let from = if let Some(menu) = self.open_from.take() {
+            menu
+        } else if from_app {
+            Rect::new(W - 8, TITLE.h, 8, H - TITLE.h)
         } else {
             let (x, y) = self.tap.unwrap_or((W / 2, H / 2));
             Rect::new(
@@ -2506,7 +2527,7 @@ impl Shell {
                 96,
             )
         };
-        let opening = self.screen == Screen::Today && self.planes;
+        let opening = (self.screen == Screen::Today || from_app) && self.planes;
         self.set_menu(false);
         // Its pictures are its own from here, given back when it closes.
         if let Some(pics) = self.app_pics {
@@ -2521,8 +2542,18 @@ impl Shell {
         self.focus = None;
         if opening {
             // The title and the window's first step; the rest as it grows.
-            self.prog_open = Some((self.now, from));
+            // (Over another app in half the time: a switch, not an
+            // entrance.)
+            let ms = if from_app {
+                weather_app::ANIM_MS / 2
+            } else {
+                weather_app::ANIM_MS
+            };
+            self.prog_open = Some((self.now, from, ms));
             self.prog_fresh = true;
+            // (What is on the screen stays round the window: nothing
+            // else is drawn again until it is open.)
+            self.damaged = 0;
             self.dirty(TITLE);
             self.dirty(from);
         } else {
@@ -2535,9 +2566,8 @@ impl Shell {
     /// far (smoothstep, as Weather's Reveal: from rest, fastest half-way).
     #[must_use]
     pub fn prog_window(&self) -> Option<Rect> {
-        let (start, from) = self.prog_open.filter(|_| self.screen == Screen::Program)?;
-        let t = i64::from(self.now.wrapping_sub(start).min(weather_app::ANIM_MS)) * 1024
-            / i64::from(weather_app::ANIM_MS);
+        let (start, from, ms) = self.prog_open.filter(|_| self.screen == Screen::Program)?;
+        let t = i64::from(self.now.wrapping_sub(start).min(ms)) * 1024 / i64::from(ms);
         let left = (1024 - t * t * (3 * 1024 - 2 * t) / (1024 * 1024)) as i32;
         let lerp =
             |a: u16, b: u16| (i32::from(b) + (i32::from(a) - i32::from(b)) * left / 1024) as u16;
@@ -3014,6 +3044,7 @@ impl Shell {
             Input::Key(_) => self.tap = None,
             _ => {}
         }
+        self.open_from = None;
         if self.align.is_some() {
             return self.align_input(e);
         }
@@ -3281,6 +3312,7 @@ impl Shell {
         f.set_floor(floor);
         f.set_floor_picture(self.backdrops && floor.is_some());
         let keys = self.softkeys();
+        self.left_app = false;
         self.scene(f);
         self.look(f);
         self.program_content(f);

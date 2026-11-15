@@ -3661,6 +3661,9 @@ mod image {
                         coloured = None;
                     }
                     rp_today::show_radar(gfx.two_d(), radar_view_map, None);
+                    // Its window round the map (R214: this path never
+                    // painted it).
+                    rp_today::show_window(gfx.two_d(), shell.radar_window());
                     backdrop_shown = look;
                     let _ = writeln!(
                         RunLog,

@@ -2148,6 +2148,32 @@ Add-Type -Path '{rain_cs}' -ReferencedAssemblies System.Drawing, System.Net.Http
 $ua = 'RetroPaneOS-dev/0.1 (github.com/Drakey83/retropane-os)'
 "RELAY on $port"
 function Send-Bytes($b) {{ $sp.Write($b, 0, $b.Length) }}
+# The port lost mid-run (Windows closed it under an answer, 2026-11-15:
+# "The port is closed", and the relay died with it: no question was
+# answered for the rest of the owner's session): found and opened again,
+# for 15 s; the image asks again on the next open. $false once the image's
+# port is gone for good (the image ended).
+function Reopen {{
+    try {{ $sp.Close() }} catch {{ }}
+    for ($i = 0; $i -lt 30; $i++) {{
+        Start-Sleep -Milliseconds 500
+        $d = Get-CimInstance Win32_PnPEntity | Where-Object {{ $_.Status -eq 'OK' -and $_.PNPDeviceID -notlike '*MI_*' -and $_.PNPDeviceID -like 'USB\{VID_PID}*' -and $_.Name -match '\(COM\d+\)' }} | Select-Object -First 1
+        if (-not $d) {{ continue }}
+        $p = [regex]::Match($d.Name, 'COM\d+').Value
+        try {{
+            $n = New-Object System.IO.Ports.SerialPort $p, 115200
+            $n.DtrEnable = $true
+            $n.RtsEnable = $true
+            $n.ReadTimeout = 500
+            $n.NewLine = "`n"
+            $n.Open()
+            $script:sp = $n
+            "PORT BACK on $p"
+            return $true
+        }} catch {{ }}
+    }}
+    return $false
+}}
 function Answer($b) {{
     Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 200 $($b.Length)`n"))
     if ($b.Length -gt 0) {{ Send-Bytes $b }}
@@ -2160,6 +2186,12 @@ function Fetch($url) {{
     $r = Invoke-WebRequest -UseBasicParsing -UserAgent $ua $url
     [Text.Encoding]::UTF8.GetBytes($r.Content)
 }}
+# The pictures in local\photos, by name.
+function Photo-Files {{
+    $dir = Join-Path $root 'local\photos'
+    if (-not (Test-Path $dir)) {{ return @() }}
+    Get-ChildItem $dir -File | Where-Object {{ $_.Extension -match '^\.(jpe?g|png|bmp|gif)$' }} | Sort-Object Name
+}}
 # A position the device sent: a number in range, three decimals at most.
 function Degrees($v, $max) {{
     if ($v -notmatch '^-?\d{{1,3}}(\.\d{{1,3}})?$') {{ return $null }}
@@ -2170,7 +2202,11 @@ function Degrees($v, $max) {{
 while ($true) {{
     try {{ $line = $sp.ReadLine().Trim() }}
     catch [System.TimeoutException] {{ continue }}
-    catch {{ 'PORT GONE'; break }}
+    catch {{
+        'PORT LOST'
+        if (-not (Reopen)) {{ 'PORT GONE'; break }}
+        continue
+    }}
     $w = $line.Split(' ')
     if ($w[0] -ne 'RPNET') {{ continue }}
     "ASKED $($w[1])"
@@ -2210,6 +2246,62 @@ while ($true) {{
                 if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\photon-410-pi.json")); continue }}
                 $b = Fetch "https://photon.komoot.io/api/?q=$([uri]::EscapeDataString($q))&limit=5&lang=en"
                 "ADDR for '$q': $($b.Length) bytes"
+                Answer $b
+            }}
+            'PHOTOS' {{
+                # The pictures the owner put in local\photos (never
+                # committed), by name, nine from the number asked: a
+                # person's picture is chosen from them (Contacts).
+                $from = 0
+                if ($w.Length -ge 3 -and $w[2] -match '^[0-9]{{1,3}}$') {{ $from = [int]$w[2] }}
+                $out = ''
+                $all = @(Photo-Files)
+                for ($i = $from; $i -lt $all.Count -and $i -lt $from + 9 -and $i -lt 250; $i++) {{
+                    $n = ($all[$i].BaseName -replace '[^A-Za-z0-9 _.()-]', '')
+                    if ($n.Length -gt 28) {{ $n = $n.Substring(0, 28) }}
+                    $out += "$i|$n`n"
+                }}
+                "PHOTOS: $($all.Count) in local\photos, listed from $from"
+                Answer ([Text.Encoding]::ASCII.GetBytes($out))
+            }}
+            'PHOTO' {{
+                # Picture n as the device keeps it from: its middle square
+                # at 96 x 96, turned as the camera held it, RGB565 row by
+                # row (18,432 bytes). The file's name and place never cross
+                # the cable.
+                if ($w.Length -lt 3 -or $w[2] -notmatch '^[0-9]{{1,3}}$') {{ Refuse 400 'not a picture number'; continue }}
+                $all = @(Photo-Files)
+                if ([int]$w[2] -ge $all.Count) {{ Refuse 404 'no such picture'; continue }}
+                $src = [Drawing.Image]::FromFile($all[[int]$w[2]].FullName)
+                try {{
+                    if ($src.PropertyIdList -contains 0x112) {{
+                        switch ($src.GetPropertyItem(0x112).Value[0]) {{
+                            3 {{ $src.RotateFlip([Drawing.RotateFlipType]::Rotate180FlipNone) }}
+                            6 {{ $src.RotateFlip([Drawing.RotateFlipType]::Rotate90FlipNone) }}
+                            8 {{ $src.RotateFlip([Drawing.RotateFlipType]::Rotate270FlipNone) }}
+                        }}
+                    }}
+                    $side = [math]::Min($src.Width, $src.Height)
+                    $bmp = New-Object Drawing.Bitmap 96, 96
+                    $g = [Drawing.Graphics]::FromImage($bmp)
+                    $g.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                    $g.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+                    $at = New-Object Drawing.Rectangle 0, 0, 96, 96
+                    $g.DrawImage($src, $at, [int](($src.Width - $side) / 2), [int](($src.Height - $side) / 2), $side, $side, [Drawing.GraphicsUnit]::Pixel)
+                    $g.Dispose()
+                    $b = New-Object byte[] (96 * 96 * 2)
+                    for ($y = 0; $y -lt 96; $y++) {{
+                        for ($x = 0; $x -lt 96; $x++) {{
+                            $c = $bmp.GetPixel($x, $y)
+                            # (As integers: a byte shifted left stays a byte, and red was lost.)
+                            $v = (([int]$c.R -shr 3) -shl 11) -bor (([int]$c.G -shr 2) -shl 5) -bor ([int]$c.B -shr 3)
+                            $b[($y * 96 + $x) * 2] = $v -band 255
+                            $b[($y * 96 + $x) * 2 + 1] = $v -shr 8
+                        }}
+                    }}
+                    $bmp.Dispose()
+                }} finally {{ $src.Dispose() }}
+                "PHOTO $($w[2]): $($b.Length) bytes"
                 Answer $b
             }}
             'RATES' {{
@@ -2460,7 +2552,11 @@ while ($true) {{
     }} catch {{
         # The message only: a URL with the key in it is never printed.
         "ERROR $($_.Exception.GetType().Name)"
-        Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 502 0`n"))
+        try {{ Send-Bytes ([Text.Encoding]::ASCII.GetBytes("RPNET 502 0`n")) }}
+        catch {{
+            'PORT LOST'
+            if (-not (Reopen)) {{ 'PORT GONE'; break }}
+        }}
     }}
 }}
 $sp.Close()

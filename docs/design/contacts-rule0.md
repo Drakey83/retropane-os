@@ -70,7 +70,8 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Large title with the count; list with letter headers, avatars and secondary lines | sheet | built | apps/contacts/src/lib.rs |
 | Favourites grid of large photos or initials | apps-and-packs: favourites | built | apps/contacts/src/lib.rs |
 | Coloured initials for everyone without a photo | apps-and-packs: initials when there's no photo | built | apps/api/src/kit.rs, apps/contacts/src/lib.rs |
-| Photos: chosen from a picture file, cropped to a circle, kept small in internal storage, from vCard PHOTO too | apps-and-packs: photos | pending | |
+| Photos: chosen from the avatar (the card's or the editor's) out of the pictures in the photos folder on the PC, over the dock; cropped to a circle and kept small (about 6.9 KB a person: the disc only, brightness at five bits, colour at a quarter of the resolution); shown on the card, the list and the favourites; removed by a key, and with the person | apps-and-packs: photos | built | apps/contacts/src/photo.rs, apps/contacts/src/lib.rs, xtask/src/usb.rs |
+| Photos from a picture file on the card, and from vCard PHOTO | apps-and-packs: photos | pending | |
 | Search over every field with the match highlighted | apps-and-packs: Fast search | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
 | Letter strip with the large letter bubble | sheet | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
 | The card: the poster, the action row's Copy, and every line (three numbers, the e-mail, the address) copied by a tap or the D-pad with a COPIED mark | sheet | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |

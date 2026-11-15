@@ -4315,3 +4315,64 @@ fn an_app_opens_out_of_today_as_weather_does() {
         "then whole"
     );
 }
+
+#[test]
+fn one_app_comes_over_another_from_the_right_edge() {
+    // The owner on the X51v, 2026-11-15: "the switching animation from
+    // one full screen app to another needs to make more sense". An app's
+    // button pressed in another app: the new one's window is the screen's
+    // right edge growing left, its right side never leaving the edge, and
+    // nothing but the title bar and the window is drawn until it is open
+    // (the old app stays on the screen round it).
+    let mut s = shell(true);
+    s.use_planes(true);
+    s.use_programs(true);
+    s.tick(1_000);
+    s.open_program(Box::leak(Box::new(Plain)));
+    s.tick(1_000);
+    s.tick(1_000 + weather_app::ANIM_MS);
+    let _ = drawn(&mut s);
+    assert_eq!(s.prog_window(), None);
+    s.tick(5_000);
+    assert!(matches!(
+        s.input(Input::Key(Key::Calendar)),
+        Action::OpenProgram(_)
+    ));
+    s.open_program(Box::leak(Box::new(Plain)));
+    let first = s.prog_window().expect("opening");
+    assert_eq!(first, Rect::new(W - 8, TITLE.h, 8, H - TITLE.h));
+    for ms in (5_000..5_000 + weather_app::ANIM_MS / 2).step_by(16) {
+        s.tick(ms);
+        let w = s.prog_window().expect("still opening");
+        assert_eq!((w.right(), w.y, w.h), (W, TITLE.h, H - TITLE.h));
+        let mut f = Box::new(Frame::new());
+        s.frame(&mut f);
+        for d in f.dirty() {
+            assert!(
+                d.union(&w) == w || d.union(&TITLE) == TITLE,
+                "{d:?} outside {w:?}"
+            );
+        }
+    }
+    s.tick(5_000 + weather_app::ANIM_MS / 2);
+    assert_eq!(s.prog_window(), None, "open in half the time");
+    // From the Start menu an app opens out of the menu's sheet.
+    let mut s = shell(true);
+    s.use_planes(true);
+    s.use_programs(true);
+    s.tick(1_000);
+    let _ = drawn(&mut s);
+    tap(&mut s, START);
+    let sheet = s.menu_rect();
+    s.input(Input::PenDown {
+        x: 60,
+        y: Shell::menu_entry(1).y + 4,
+    });
+    let a = s.input(Input::PenUp {
+        x: 60,
+        y: Shell::menu_entry(1).y + 4,
+    });
+    assert!(matches!(a, Action::OpenProgram(_)), "{a:?}");
+    s.open_program(Box::leak(Box::new(Plain)));
+    assert_eq!(s.prog_window(), Some(sheet));
+}

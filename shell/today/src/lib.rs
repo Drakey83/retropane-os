@@ -560,19 +560,34 @@ pub fn show_backdrop<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
             // rows above and below it take the window's backdrop (its tint
             // and look) while it is up; leaving puts the wallpaper back
             // whole, as it already did for the map's rows.
-            if let Some((tint, light)) = window {
-                rp_app::aurora::rows(tint, light, |y, row| {
-                    if y < usize::from(MAP_TOP) || y >= usize::from(MAP_TOP) + MAP_H {
-                        r.wallpaper_row565(y as u16, row);
-                    }
-                });
-            }
+            show_window(r, window);
         }
         None => load_wallpaper(r, wallpaper, Depth::Rgb565, s),
     }
     r.wallpaper_changed();
     if map.is_none() {
         r.wallpaper_is(WALL_BASE);
+    }
+}
+
+/// The radar's window round its map: the rows above and below the map
+/// take the window's backdrop (`window`: its tint and look). Called
+/// wherever the map goes into the wallpaper: the device's own path
+/// ([`show_radar`]) never did, so on the X51v the photo stayed above and
+/// below the map through two fixes that only the PC's previews ran (the
+/// owner, 2026-11-15, three times: "radar is still not a full window
+/// app"; the emulator's radar screen showed the sunset in those rows).
+pub fn show_window<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
+    r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
+    window: Option<(u32, bool)>,
+) {
+    if let Some((tint, light)) = window {
+        rp_app::aurora::rows(tint, light, |y, row| {
+            if y < usize::from(MAP_TOP) || y >= usize::from(MAP_TOP) + MAP_H {
+                r.wallpaper_row565(y as u16, row);
+            }
+        });
+        r.wallpaper_changed();
     }
 }
 

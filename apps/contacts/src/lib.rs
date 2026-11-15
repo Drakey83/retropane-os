@@ -19,8 +19,35 @@ use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, W
 use rp_pim::phone;
 use rp_pim::store::{Kind, tag};
 
+pub mod photo;
+
 /// People a view holds.
 pub const MAX: usize = 48;
+/// Pictures drawn and kept at once (a page of the list, its favourites
+/// and a card).
+const FACES: usize = 20;
+/// The PC's pictures a page of the chooser offers.
+const PICKS: usize = 8;
+/// A picture's pages in the store (as a note's ink: `Kind::Ink` records
+/// naming the person), and the bytes one holds.
+const PHOTO_PAGES: usize = 6;
+/// The card's targets past what it copies: the avatar (the chooser).
+const PICTURE: u8 = 9;
+/// The chooser's keys past its rows.
+const MORE: u8 = 100;
+const REMOVE: u8 = 101;
+
+/// What the network is asked for, or was.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Want {
+    Nothing,
+    /// The street's suggestions.
+    Addr,
+    /// The PC's pictures from this one on.
+    List(u8),
+    /// The PC's picture of this number.
+    Photo(u8),
+}
 
 /// One person as the views show them (copied from the store's record).
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +95,9 @@ impl Person {
     }
 }
 
+/// The editor's avatar (a touch on a kept person's chooses a picture).
+const EDIT_FACE: Rect = Rect::new(W - MARGIN - 52, 44, 40, 40);
+
 /// The views.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
@@ -77,6 +107,8 @@ pub enum View {
     Card(u8),
     /// A new person being typed: the field typed.
     Edit(EditField),
+    /// One person's picture being chosen.
+    Photo(u8),
 }
 
 /// The editor's rows, in the form's order: nine typed fields, then the
@@ -266,6 +298,24 @@ pub struct Contacts {
     bigs: [Option<Pic>; 8],
     big: Option<Pic>,
     painted: bool,
+    /// The people with a picture kept (by their place in `people`).
+    has_photo: [bool; MAX],
+    /// Pictures drawn (the person, the size, the picture), the next to
+    /// give up its place.
+    faces: [(u32, u8, Option<Pic>); FACES],
+    face_next: usize,
+    /// The chooser: the PC's pictures offered (their numbers and names),
+    /// whether more follow, the first one's number, the rows and keys on
+    /// screen, what to ask next, what was asked, and its line of status.
+    picks: [(u8, Text<28>); PICKS],
+    n_picks: usize,
+    more: bool,
+    pick_from: u8,
+    pick_at: [(Rect, u8); PICKS + 2],
+    n_pick_at: usize,
+    want: Want,
+    asked_for: Want,
+    photo_note: &'static [u8],
 }
 
 /// "(206) 555-0142" for a kept "+12065550142" (the home plan: the US).
@@ -341,6 +391,18 @@ impl Contacts {
             bigs: [None; 8],
             big: None,
             painted: false,
+            has_photo: [false; MAX],
+            faces: [(0, 0, None); FACES],
+            face_next: 0,
+            picks: [(0, Text::of(b"")); PICKS],
+            n_picks: 0,
+            more: false,
+            pick_from: 0,
+            pick_at: [(Rect::new(0, 0, 0, 0), 0); PICKS + 2],
+            n_pick_at: 0,
+            want: Want::Nothing,
+            asked_for: Want::Nothing,
+            photo_note: b"",
         }
     }
 
@@ -357,6 +419,157 @@ impl Contacts {
         for (slot, r) in self.people.iter_mut().zip(store.all(Kind::Contact)) {
             *slot = Some(Person::of(&r));
         }
+        // Who has a picture, and the pictures drawn before made again
+        // (one may have changed).
+        self.has_photo = [false; MAX];
+        for r in store.all(Kind::Ink) {
+            if let Some(parent) = r.num(tag::PARENT)
+                && let Some(k) = self
+                    .people
+                    .iter()
+                    .position(|p| p.is_some_and(|p| p.id == parent))
+            {
+                self.has_photo[k] = true;
+            }
+        }
+        for face in &mut self.faces {
+            if let (Some(pic), Some(pics)) = (face.2.take(), cx.pics) {
+                pics.free(pic);
+            }
+            face.0 = 0;
+        }
+    }
+
+    /// Person `id`'s picture pages in the store, in the order written.
+    fn photo_pages(store: &rp_pim::store::Store<'_>, id: u32) -> ([u32; PHOTO_PAGES], usize) {
+        let mut ids = [0u32; PHOTO_PAGES];
+        let mut n = 0;
+        for r in store.all(Kind::Ink) {
+            if r.num(tag::PARENT) == Some(id) && n < PHOTO_PAGES {
+                let at = ids[..n].iter().position(|&i| i > r.id).unwrap_or(n);
+                ids.copy_within(at..n, at + 1);
+                ids[at] = r.id;
+                n += 1;
+            }
+        }
+        (ids, n)
+    }
+
+    /// Person `id`'s picture taken out of the store.
+    fn photo_drop(cx: &Ctx, id: u32) {
+        let Some(mut guard) = cx.pim.and_then(|c| c.try_borrow_mut().ok()) else {
+            return;
+        };
+        let Some(store) = guard.as_mut() else { return };
+        let (ids, n) = Self::photo_pages(store, id);
+        for &page in &ids[..n] {
+            let _ = store.remove(page);
+        }
+    }
+
+    /// The PC's answer `raw` kept as person `id`'s picture (in place of
+    /// any before): `None` if it is not a picture, else whether the store
+    /// took it all.
+    fn photo_keep(&mut self, cx: &Ctx, id: u32, raw: &[u8]) -> Option<bool> {
+        if raw.len() != photo::RAW {
+            return None;
+        }
+        Self::photo_drop(cx, id);
+        let kept = {
+            let mut guard = cx.pim.and_then(|c| c.try_borrow_mut().ok())?;
+            let store = guard.as_mut()?;
+            photo::encode(raw, |page| {
+                store
+                    .put(
+                        Kind::Ink,
+                        None,
+                        &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, page)],
+                    )
+                    .is_ok()
+            })?
+        };
+        if !kept {
+            // Never half a picture.
+            Self::photo_drop(cx, id);
+        }
+        self.seen = None;
+        Some(kept)
+    }
+
+    /// Person `id`'s picture as a disc `size` pixels across, drawn once
+    /// and kept while there is room (`None`: no picture, or no room).
+    fn face(&mut self, cx: &Ctx, id: u32, size: u8) -> Option<Pic> {
+        let k = self
+            .people
+            .iter()
+            .position(|p| p.is_some_and(|p| p.id == id))?;
+        if !self.has_photo[k] {
+            return None;
+        }
+        if let Some(face) = self.faces.iter().find(|f| f.0 == id && f.1 == size) {
+            return face.2;
+        }
+        let pics = cx.pics?;
+        let guard = cx.pim?.try_borrow().ok()?;
+        let store = guard.as_ref()?;
+        // Its pages where they lie in the store.
+        let (ids, n) = Self::photo_pages(store, id);
+        let mut pages: [&[u8]; PHOTO_PAGES] = [&[]; PHOTO_PAGES];
+        for (page, &id) in pages.iter_mut().zip(&ids[..n]) {
+            *page = store.get(id)?.text(tag::INK);
+        }
+        let slot = self.face_next % FACES;
+        if let Some(old) = self.faces[slot].2.take() {
+            pics.free(old);
+        }
+        self.faces[slot] = (0, 0, None);
+        let pic = pics.alloc(u16::from(size), u16::from(size))?;
+        let mut drawn = false;
+        pics.write(pic, |px| {
+            drawn = photo::decode(&pages[..n], usize::from(size), px);
+        });
+        if !drawn {
+            pics.free(pic);
+            return None;
+        }
+        self.faces[slot] = (id, size, Some(pic));
+        self.face_next += 1;
+        Some(pic)
+    }
+
+    /// A person's avatar at `at`: their picture, or the disc with their
+    /// initials.
+    #[allow(clippy::too_many_arguments)]
+    fn avatar(
+        &mut self,
+        f: &mut Frame,
+        cx: &Ctx,
+        id: Option<u32>,
+        disc: Option<Pic>,
+        at: (u16, u16),
+        size: u8,
+        font: &'static rp_app::Font,
+        name: &[u8],
+    ) {
+        if let Some(pic) = id.and_then(|id| self.face(cx, id, size)) {
+            f.push(rp_app::Cmd::Pic {
+                x: at.0,
+                y: at.1 as i16,
+                pic,
+            });
+        } else {
+            kit::avatar(f, disc, at.0, at.1, u16::from(size), font, name);
+        }
+    }
+
+    /// The chooser of person `i`'s picture, asking the PC for its list.
+    fn open_photo(&mut self, i: u8) {
+        self.go(View::Photo(i));
+        self.n_picks = 0;
+        self.more = false;
+        self.pick_from = 0;
+        self.want = Want::List(0);
+        self.photo_note = b"Asking your PC for its pictures...";
     }
 
     /// What is typed in field `at` (nothing for a switch).
@@ -507,6 +720,7 @@ impl Contacts {
             .and_then(|c| c.try_borrow_mut().ok())
             .is_some_and(|mut g| g.as_mut().is_some_and(|s| s.remove(id).is_ok()));
         if done {
+            Self::photo_drop(cx, id);
             self.seen = None;
             self.editing = None;
         }
@@ -588,6 +802,37 @@ impl Contacts {
         self.put(EditField::First, first);
         self.put(EditField::Mobile, mobile);
         self.put(EditField::Street, street);
+    }
+
+    /// The chooser's page from the PC's answer (`from`: the number its
+    /// list starts at; the previews call it too).
+    pub fn set_pictures_from(&mut self, body: &[u8], from: u8) {
+        // "number|name" a line; one more than a page: more follow.
+        let mut n = 0;
+        self.more = false;
+        for line in body.split(|&c| c == b'\n') {
+            let Some(bar) = line.iter().position(|&c| c == b'|') else {
+                continue;
+            };
+            let number = line[..bar].iter().try_fold(0u8, |v, &c| {
+                c.is_ascii_digit()
+                    .then(|| v.checked_mul(10)?.checked_add(c - b'0'))
+                    .flatten()
+            });
+            let Some(number) = number else { continue };
+            if n == PICKS {
+                self.more = true;
+                break;
+            }
+            self.picks[n] = (number, Text::of(&line[bar + 1..]));
+            n += 1;
+        }
+        self.n_picks = n;
+        self.photo_note = match (n, from) {
+            (0, 0) => b"No pictures in local\\photos on your PC",
+            (0, _) => b"No more pictures",
+            _ => b"Choose one",
+        };
     }
 
     /// Suggestions read from an address service's answer (Photon's
@@ -724,7 +969,8 @@ impl Contacts {
         self.n_rows = 0;
         let (all, total) = self.sorted();
         // The search keeps who matches; the strip's letter starts the list.
-        let q = &self.query[..self.query_n];
+        let query = self.query;
+        let q = &query[..self.query_n];
         let mut idx = [0u8; MAX];
         let mut n = 0;
         for &i in &all[..total] {
@@ -804,11 +1050,13 @@ impl Contacts {
                 let cell = Rect::new(MARGIN + col * 104, y, 104, 100);
                 let mut nm = [0u8; 64];
                 let nn = name(&p, &mut nm);
-                kit::avatar(
+                let disc = self.big_for(&nm[..nn]);
+                self.avatar(
                     f,
-                    self.big_for(&nm[..nn]),
-                    cell.x + 20,
-                    cell.y + 2,
+                    cx,
+                    Some(p.id),
+                    disc,
+                    (cell.x + 20, cell.y + 2),
                     64,
                     cx.fonts.title,
                     &nm[..nn],
@@ -872,11 +1120,13 @@ impl Contacts {
                 }
                 let mut nm = [0u8; 64];
                 let nn = name(&p, &mut nm);
-                kit::avatar(
+                let disc = self.disc_for(&nm[..nn]);
+                self.avatar(
                     f,
-                    self.disc_for(&nm[..nn]),
-                    r.x + 12,
-                    r.y + 7,
+                    cx,
+                    Some(p.id),
+                    disc,
+                    (r.x + 12, r.y + 7),
                     40,
                     cx.fonts.ui,
                     &nm[..nn],
@@ -970,6 +1220,74 @@ impl Contacts {
         }
     }
 
+    /// Person `i`'s picture chosen: the pictures in the photos folder on
+    /// the PC, by name, a page at a time.
+    fn chooser(&mut self, f: &mut Frame, cx: &Ctx, i: u8) {
+        self.n_pick_at = 0;
+        let Some(p) = self.people.get(usize::from(i)).copied().flatten() else {
+            return;
+        };
+        let mut nm = [0u8; 64];
+        let nn = name(&p, &mut nm);
+        kit::panel(f, cx, Rect::new(8, 40, W - 16, 128));
+        let big = self.big;
+        self.avatar(
+            f,
+            cx,
+            Some(p.id),
+            big,
+            (24, 56),
+            96,
+            cx.fonts.title,
+            &nm[..nn],
+        );
+        kit::text(f, 136, 76, cx.fonts.label, tint::CONTACTS, b"PICTURE");
+        kit::fitted(f, 136, 108, cx.fonts.title, TEXT, &nm[..nn], 320);
+        kit::text(f, 136, 134, cx.fonts.ui, DIM, self.photo_note);
+        kit::text(
+            f,
+            136,
+            154,
+            cx.fonts.label,
+            DIM,
+            b"FROM THE PHOTOS FOLDER ON YOUR PC",
+        );
+        let mut y = 178;
+        for k in 0..self.n_picks {
+            let r = Rect::new(MARGIN, y, WIDE, 40);
+            kit::panel(f, cx, r);
+            kit::fitted(
+                f,
+                r.x + 14,
+                r.y + 26,
+                cx.fonts.ui,
+                TEXT,
+                self.picks[k].1.get(),
+                WIDE - 28,
+            );
+            self.pick_at[self.n_pick_at] = (r, k as u8);
+            self.n_pick_at += 1;
+            y += 44;
+        }
+        let mut key = |r: Rect, word: &[u8], kind: u8, this: &mut Self| {
+            kit::key(f, cx, r, kit::KeyState::Rest);
+            kit::centred(f, r, r.y + 23, cx.fonts.label, TEXT, word);
+            this.pick_at[this.n_pick_at] = (r, kind);
+            this.n_pick_at += 1;
+        };
+        if self.more {
+            key(Rect::new(MARGIN, y + 2, 120, 36), b"MORE", MORE, self);
+        }
+        if self.has_photo[usize::from(i)] {
+            key(
+                Rect::new(W - MARGIN - 180, y + 2, 180, 36),
+                b"REMOVE PICTURE",
+                REMOVE,
+                self,
+            );
+        }
+    }
+
     fn card(&mut self, f: &mut Frame, cx: &Ctx, i: u8) {
         self.n_card = 0;
         let Some(p) = self.people.get(usize::from(i)).copied().flatten() else {
@@ -980,7 +1298,20 @@ impl Contacts {
         // The band: the big avatar on the person's colour.
         let band = Rect::new(0, 36, W, 200);
         kit::panel(f, cx, Rect::new(8, band.y + 4, W - 16, band.h - 8));
-        kit::avatar(f, self.big, (W - 96) / 2, 48, 96, cx.fonts.title, &nm[..nn]);
+        // (A touch on it chooses the person's picture.)
+        let big = self.big;
+        self.avatar(
+            f,
+            cx,
+            Some(p.id),
+            big,
+            ((W - 96) / 2, 48),
+            96,
+            cx.fonts.title,
+            &nm[..nn],
+        );
+        self.card_at[0] = (Rect::new((W - 96) / 2, 48, 96, 96), PICTURE);
+        self.n_card = 1;
         let line = Rect::new(0, 0, W, 1);
         kit::centred(f, line, 180, cx.fonts.title, TEXT, &nm[..nn]);
         kit::centred(f, line, 204, cx.fonts.ui, DIM, p.company.get());
@@ -1115,7 +1446,17 @@ impl Contacts {
         );
         let ini = Text::<48>::of(self.val(EditField::First));
         let disc = self.disc_for(ini.get());
-        kit::avatar(f, disc, W - MARGIN - 52, 44, 40, cx.fonts.ui, ini.get());
+        let id = self.editing;
+        self.avatar(
+            f,
+            cx,
+            id,
+            disc,
+            (EDIT_FACE.x, EDIT_FACE.y),
+            40,
+            cx.fonts.ui,
+            ini.get(),
+        );
         y += 6;
         let home = phone::plan(*b"US").unwrap_or(&phone::PLANS[0]);
         // The row typed is the form's second (the one before it leads, for
@@ -1237,6 +1578,7 @@ impl Program for Contacts {
             View::List => ("Back", "New"),
             View::Card(_) => ("Back", "Edit"),
             View::Edit(_) => ("Cancel", "Done"),
+            View::Photo(_) => ("Back", ""),
         }
     }
 
@@ -1253,6 +1595,10 @@ impl Program for Contacts {
                 self.focus.ring(f, self.targets());
             }
             View::Edit(at) => self.edit(f, cx, at),
+            View::Photo(i) => {
+                self.chooser(f, cx, i);
+                self.focus.ring(f, self.targets());
+            }
         }
     }
 
@@ -1270,7 +1616,7 @@ impl Program for Contacts {
         // the favourite switch and presses Delete. Windows Mobile's
         // Contacts moves a row at a time through one long list.
         if let Event::Key(k) = e
-            && matches!(self.view, View::List | View::Card(_))
+            && matches!(self.view, View::List | View::Card(_) | View::Photo(_))
             && !self.searching
         {
             let mut focus = self.focus;
@@ -1329,6 +1675,10 @@ impl Program for Contacts {
                     .iter()
                     .find(|(r, _)| r.contains_point(x, y))
                     .map(|t| t.1);
+                if hit == Some(PICTURE) {
+                    self.open_photo(i);
+                    return Reply::Redraw;
+                }
                 if let Some(kind) = hit
                     && let Some(p) = self.people.get(usize::from(i)).copied().flatten()
                 {
@@ -1423,6 +1773,38 @@ impl Program for Contacts {
                 self.searching = false;
                 Reply::Redraw
             }
+            // The chooser: a picture's row asks the PC for it, MORE for
+            // the next page of names, REMOVE takes the picture kept.
+            (Event::PenUp { x, y }, View::Photo(i)) => {
+                let hit = self.pick_at[..self.n_pick_at]
+                    .iter()
+                    .find(|(r, _)| r.contains_point(x, y))
+                    .map(|t| t.1);
+                match hit {
+                    Some(MORE) => {
+                        self.pick_from = self.pick_from.saturating_add(PICKS as u8);
+                        self.want = Want::List(self.pick_from);
+                        self.photo_note = b"Asking your PC for its pictures...";
+                    }
+                    Some(REMOVE) => {
+                        if let Some(p) = self.people.get(usize::from(i)).copied().flatten() {
+                            Self::photo_drop(cx, p.id);
+                            self.seen = None;
+                        }
+                        self.go(View::Card(i));
+                    }
+                    Some(k) if usize::from(k) < self.n_picks => {
+                        self.want = Want::Photo(self.picks[usize::from(k)].0);
+                        self.photo_note = b"Getting the picture...";
+                    }
+                    _ => return Reply::Nothing,
+                }
+                Reply::Redraw
+            }
+            (Event::Key(Key::SoftLeft), View::Photo(i)) => {
+                self.go(View::Card(i));
+                Reply::Redraw
+            }
             (Event::Key(Key::SoftLeft), _) => {
                 self.go(View::List);
                 Reply::Redraw
@@ -1450,6 +1832,25 @@ impl Program for Contacts {
                 }
                 if at == EditField::Street && self.form_n[k] < 3 {
                     self.places = [None; 5];
+                }
+                Reply::Redraw
+            }
+            // A kept person's avatar in the editor: what is typed is
+            // kept, then the chooser.
+            (Event::PenUp { x, y }, View::Edit(_))
+                if EDIT_FACE.contains_point(x, y) && self.editing.is_some() =>
+            {
+                let id = self.editing;
+                if self.keep(cx) {
+                    self.refresh(cx);
+                    let i = self
+                        .people
+                        .iter()
+                        .position(|p| p.map(|p| p.id) == id && id.is_some());
+                    match i {
+                        Some(i) => self.open_photo(i as u8),
+                        None => self.go(View::List),
+                    }
                 }
                 Reply::Redraw
             }
@@ -1542,6 +1943,22 @@ impl Program for Contacts {
     /// the last one asked: Photon is asked over whatever connection there
     /// is; the answer's round trip paces the asking.
     fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        // The chooser's questions: the PC's pictures, or one of them.
+        if let View::Photo(_) = self.view {
+            let want = core::mem::replace(&mut self.want, Want::Nothing);
+            let (what, n): (&'static [u8], u8) = match want {
+                Want::List(from) => (b"PHOTOS", from),
+                Want::Photo(n) => (b"PHOTO", n),
+                _ => return None,
+            };
+            self.asked_for = want;
+            let d = [b'0' + n / 100, b'0' + n / 10 % 10, b'0' + n % 10];
+            let from = d.iter().position(|&c| c != b'0').unwrap_or(2);
+            return Some(rp_app::NetAsk {
+                what,
+                arg: Text::of(&d[from..]),
+            });
+        }
         if self.view != View::Edit(EditField::Street) || self.val(EditField::Street).len() < 3 {
             return None;
         }
@@ -1551,6 +1968,7 @@ impl Program for Contacts {
             return None;
         }
         self.asked = Text::of(typed);
+        self.asked_for = Want::Addr;
         Some(rp_app::NetAsk {
             what: b"ADDR",
             arg: Text::of(typed),
@@ -1558,6 +1976,37 @@ impl Program for Contacts {
     }
 
     fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        match core::mem::replace(&mut self.asked_for, Want::Nothing) {
+            Want::List(from) => {
+                if !ok {
+                    self.photo_note = b"No connection (Wi-Fi or the dock)";
+                    return Reply::Redraw;
+                }
+                self.set_pictures_from(body, from);
+                return Reply::Redraw;
+            }
+            Want::Photo(_) => {
+                let View::Photo(i) = self.view else {
+                    return Reply::Nothing;
+                };
+                let id = self
+                    .people
+                    .get(usize::from(i))
+                    .copied()
+                    .flatten()
+                    .map(|p| p.id);
+                let kept = id
+                    .filter(|_| ok)
+                    .and_then(|id| self.photo_keep(cx, id, body));
+                match kept {
+                    Some(true) => self.go(View::Card(i)),
+                    Some(false) => self.photo_note = b"No room left to keep it",
+                    None => self.photo_note = b"The PC sent no picture",
+                }
+                return Reply::Redraw;
+            }
+            Want::Addr | Want::Nothing => {}
+        }
         if ok {
             self.set_places_from(body);
             if self.places[0].is_none() {
@@ -1575,6 +2024,8 @@ impl Contacts {
     /// list's search and people, a card's lines and its Copy key.
     fn targets(&self) -> impl Iterator<Item = Rect> + '_ {
         let list = self.view == View::List;
+        let card = matches!(self.view, View::Card(_));
+        let choosing = matches!(self.view, View::Photo(_));
         core::iter::once(SEARCH)
             .filter(move |_| list)
             .chain(
@@ -1586,7 +2037,13 @@ impl Contacts {
             .chain(
                 self.card_at[..self.n_card]
                     .iter()
-                    .filter(move |_| !list)
+                    .filter(move |_| card)
+                    .map(|t| t.0),
+            )
+            .chain(
+                self.pick_at[..self.n_pick_at]
+                    .iter()
+                    .filter(move |_| choosing)
                     .map(|t| t.0),
             )
     }

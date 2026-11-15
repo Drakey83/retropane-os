@@ -381,7 +381,9 @@ fn a_card_shows_every_line_and_each_copies_by_tap_or_dpad() {
     // Three numbers, the e-mail, the address and the Copy key, all on the
     // card (the address was dropped when the rest filled it).
     let kinds: std::vec::Vec<u8> = c.card_at[..c.n_card].iter().map(|t| t.1).collect();
-    assert_eq!(kinds, [5, 0, 1, 2, 3, 4]);
+    assert_eq!(kinds, [PICTURE, 5, 0, 1, 2, 3, 4]);
+    // (Past the avatar, which opens the picture chooser.)
+    c.event(Event::Key(Key::Down), &cx);
     assert!(c.card_at[..c.n_card].iter().all(|(r, _)| r.bottom() <= 596));
     // The D-pad reaches each, the centre copies it; the mark shows, then
     // goes.
@@ -545,4 +547,247 @@ fn a_suggested_address_fills_the_street_and_the_city_line() {
         let id = kept(pim, b"Ada").unwrap().0;
         pim.borrow_mut().as_mut().unwrap().remove(id).unwrap();
     }
+}
+
+#[test]
+fn a_person_s_picture_is_chosen_from_the_avatar_kept_shown_and_removed() {
+    // The owner on the X51v, 2026-11-15: "tapping on the name icon in
+    // contacts doenst give you the option to assign a picture".
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        g.as_mut()
+            .unwrap()
+            .put(
+                Kind::Contact,
+                None,
+                &[(tag::FIRST, b"Grace"), (tag::LAST, b"Hopper")],
+            )
+            .unwrap();
+    }
+    let mut cx = ctx(pim);
+    let classes = rp_app::kit::PIC_CLASSES;
+    let pics: &'static rp_draw::pics::Pics<'static> =
+        Box::leak(Box::new(rp_draw::pics::Pics::new(
+            vec![0u32; rp_draw::pics::Pics::words(&classes)].leak(),
+            &classes,
+        )));
+    cx.pics = Some(pics);
+    let mut c = Contacts::new();
+    draw(&mut c, &cx);
+    c.view = View::Card(0);
+    draw(&mut c, &cx);
+    let id = c.people[0].unwrap().id;
+    // The avatar is the card's first target; a touch opens the chooser,
+    // which asks the PC for its pictures.
+    let (face, kind) = c.card_at[0];
+    assert_eq!(kind, PICTURE);
+    c.event(
+        Event::PenDown {
+            x: face.x + 40,
+            y: face.y + 40,
+        },
+        &cx,
+    );
+    c.event(
+        Event::PenUp {
+            x: face.x + 40,
+            y: face.y + 40,
+        },
+        &cx,
+    );
+    assert_eq!(c.view, View::Photo(0));
+    let ask = c.net_ask().expect("the list asked for");
+    assert_eq!((ask.what, ask.arg.get()), (&b"PHOTOS"[..], &b"0"[..]));
+    assert!(c.net_ask().is_none(), "asked once");
+    // Nine names: eight shown and MORE.
+    let mut list = std::string::String::new();
+    for k in 0..9 {
+        list += &std::format!(
+            "{k}|Picture {k}
+"
+        );
+    }
+    c.net_answer(true, list.as_bytes(), &cx);
+    draw(&mut c, &cx);
+    assert_eq!((c.n_picks, c.more), (PICKS, true));
+    assert_eq!(c.picks[3].1.get(), b"Picture 3");
+    let kinds: std::vec::Vec<u8> = c.pick_at[..c.n_pick_at].iter().map(|t| t.1).collect();
+    assert_eq!(
+        kinds,
+        [0, 1, 2, 3, 4, 5, 6, 7, MORE],
+        "no REMOVE with none kept"
+    );
+    // In the D-pad's reach.
+    assert_eq!(c.targets().count(), 9);
+    // MORE asks from the ninth on.
+    let more = c.pick_at[8].0;
+    c.event(
+        Event::PenUp {
+            x: more.x + 5,
+            y: more.y + 5,
+        },
+        &cx,
+    );
+    let ask = c.net_ask().unwrap();
+    assert_eq!((ask.what, ask.arg.get()), (&b"PHOTOS"[..], &b"8"[..]));
+    c.net_answer(
+        true,
+        b"8|Picture 8
+",
+        &cx,
+    );
+    draw(&mut c, &cx);
+    assert_eq!((c.n_picks, c.more, c.picks[0].0), (1, false, 8));
+    // Its row asks for the picture; the answer is kept and shown.
+    let row = c.pick_at[0].0;
+    c.event(
+        Event::PenUp {
+            x: row.x + 5,
+            y: row.y + 5,
+        },
+        &cx,
+    );
+    let ask = c.net_ask().unwrap();
+    assert_eq!((ask.what, ask.arg.get()), (&b"PHOTO"[..], &b"8"[..]));
+    // No picture sent: said, nothing kept.
+    c.net_answer(true, b"short", &cx);
+    assert_eq!(c.view, View::Photo(0));
+    assert_eq!(c.photo_note, b"The PC sent no picture");
+    c.event(
+        Event::PenUp {
+            x: row.x + 5,
+            y: row.y + 5,
+        },
+        &cx,
+    );
+    c.net_ask().unwrap();
+    let mut raw = vec![0u8; photo::RAW];
+    for (i, p) in raw.chunks_mut(2).enumerate() {
+        let v: u16 = if (i % photo::SIDE) < 48 {
+            0xF800
+        } else {
+            0x001F
+        };
+        p.copy_from_slice(&v.to_le_bytes());
+    }
+    c.net_answer(true, &raw, &cx);
+    assert_eq!(c.view, View::Card(0), "back on the card");
+    let pages = |pim: &core::cell::RefCell<Option<Store<'static>>>| {
+        let g = pim.borrow();
+        let s = g.as_ref().unwrap();
+        s.all(Kind::Ink)
+            .filter(|r| r.num(tag::PARENT) == Some(id))
+            .count()
+    };
+    assert!(
+        (3..=PHOTO_PAGES).contains(&pages(pim)),
+        "{} pages",
+        pages(pim)
+    );
+    let mut f = Box::new(Frame::new());
+    c.draw(&mut f, &cx);
+    assert!(c.has_photo[0]);
+    let shown = c
+        .faces
+        .iter()
+        .find(|x| x.0 == id && x.1 == 96)
+        .and_then(|x| x.2)
+        .expect("drawn");
+    // Red on its left, blue on its right, clear at the corner.
+    pics.read(shown, |px| {
+        let at = |x: usize, y: usize| px[y * 96 + x];
+        assert_eq!(at(0, 0), 0);
+        let (l, r) = (at(24, 48), at(72, 48));
+        assert!((l >> 16) & 255 > 200 && l & 255 < 60, "{l:08X}");
+        assert!(r & 255 > 200 && (r >> 16) & 255 < 60, "{r:08X}");
+    })
+    .unwrap();
+    // The list shows it too, at its own size.
+    c.view = View::List;
+    c.draw(&mut f, &cx);
+    assert!(
+        c.faces
+            .iter()
+            .any(|x| x.0 == id && x.1 == 40 && x.2.is_some())
+    );
+    // A second picture replaces the first (no pages left behind).
+    let before = pages(pim);
+    c.view = View::Card(0);
+    c.draw(&mut f, &cx);
+    c.open_photo(0);
+    c.net_ask().unwrap();
+    c.net_answer(
+        true, b"0|One
+", &cx,
+    );
+    draw(&mut c, &cx);
+    let row = c.pick_at[0].0;
+    c.event(
+        Event::PenUp {
+            x: row.x + 5,
+            y: row.y + 5,
+        },
+        &cx,
+    );
+    c.net_ask().unwrap();
+    c.net_answer(true, &raw, &cx);
+    assert_eq!(pages(pim), before);
+    // REMOVE takes it; the initials are back.
+    c.draw(&mut f, &cx);
+    c.open_photo(0);
+    draw(&mut c, &cx);
+    let remove = c.pick_at[..c.n_pick_at]
+        .iter()
+        .find(|t| t.1 == REMOVE)
+        .expect("REMOVE")
+        .0;
+    c.event(
+        Event::PenUp {
+            x: remove.x + 5,
+            y: remove.y + 5,
+        },
+        &cx,
+    );
+    assert_eq!(c.view, View::Card(0));
+    assert_eq!(pages(pim), 0);
+    c.draw(&mut f, &cx);
+    assert!(!c.has_photo[0]);
+    // A person deleted takes their picture along.
+    c.open_photo(0);
+    c.net_ask().unwrap();
+    c.net_answer(
+        true, b"0|One
+", &cx,
+    );
+    draw(&mut c, &cx);
+    let row = c.pick_at[0].0;
+    c.event(
+        Event::PenUp {
+            x: row.x + 5,
+            y: row.y + 5,
+        },
+        &cx,
+    );
+    c.net_ask().unwrap();
+    c.net_answer(true, &raw, &cx);
+    assert!(pages(pim) > 0);
+    c.draw(&mut f, &cx);
+    c.open_edit(0);
+    assert!(c.delete(&cx));
+    assert_eq!(pages(pim), 0);
+    // No connection: said.
+    let mut c = Contacts::new();
+    {
+        let mut g = pim.borrow_mut();
+        g.as_mut()
+            .unwrap()
+            .put(Kind::Contact, None, &[(tag::FIRST, b"Ada")])
+            .unwrap();
+    }
+    draw(&mut c, &cx);
+    c.open_photo(0);
+    c.net_ask().unwrap();
+    c.net_answer(false, b"", &cx);
+    assert_eq!(c.photo_note, b"No connection (Wi-Fi or the dock)");
 }

@@ -165,7 +165,7 @@ pub const PIC_CLASSES: [(u16, u16, u8); 6] = [
     (24, 24, 24),
     (40, 40, 24),
     // The big avatars of a favourites row and small dials.
-    (64, 64, 8),
+    (64, 64, 12),
     (96, 96, 2),
     (INK_LAYER.0, INK_LAYER.1, INK_LAYERS),
     (INK_MINI.0, INK_MINI.1, 4),

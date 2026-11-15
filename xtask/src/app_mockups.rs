@@ -696,6 +696,24 @@ fn base() -> Vec<Mock> {
             }),
         },
         Mock {
+            name: "v2-contacts-picture",
+            what: "Contacts: a person's picture chosen from the photos folder on the PC",
+            prepare: Box::new(|s| {
+                sample_people(s);
+                let mut c = contacts(rp_app_contacts::View::Photo(0));
+                c.set_pictures_from(
+                    b"0|Grace at the lab
+1|Grace 1984
+2|Navy portrait
+3|Conference
+4|Family 2
+",
+                    0,
+                );
+                open(s, c);
+            }),
+        },
+        Mock {
             name: "v2-contacts-phone",
             what: "Contacts: the phone pad, the number formatted as typed",
             prepare: Box::new(|s| {
