@@ -207,6 +207,8 @@ pub struct Contacts {
     bubble: Option<u8>,
     rows_at: [(Rect, u8); 16],
     n_rows: usize,
+    /// The D-pad's place among the people drawn.
+    focus: kit::Focus,
     /// The avatars: one disc per identity colour at 40 px, the card's 96 px.
     discs: [Option<Pic>; 8],
     /// The favourites' big glossy discs, one an identity colour.
@@ -274,6 +276,7 @@ impl Contacts {
             bubble: None,
             rows_at: [(Rect::new(0, 0, 0, 0), 0); 16],
             n_rows: 0,
+            focus: kit::Focus::default(),
             discs: [None; 8],
             bigs: [None; 8],
             big: None,
@@ -923,13 +926,35 @@ impl Program for Contacts {
         self.paint(cx);
         self.refresh(cx);
         match self.view {
-            View::List => self.list(f, cx),
+            View::List => {
+                self.list(f, cx);
+                self.focus
+                    .ring(f, self.rows_at[..self.n_rows].iter().map(|(r, _)| *r));
+            }
             View::Card(i) => self.card(f, cx, i),
             View::Edit(at) => self.edit(f, cx, at),
         }
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        // The D-pad (R203): the arrows walk the people drawn, the centre
+        // opens the one chosen (kit::Focus).
+        if let Event::Key(k) = e
+            && self.view == View::List
+            && !self.searching
+        {
+            if self
+                .focus
+                .step(k, self.rows_at[..self.n_rows].iter().map(|(r, _)| *r))
+            {
+                return Reply::Redraw;
+            }
+            if k == Key::Enter
+                && let Some((x, y)) = self.focus.point()
+            {
+                return self.event(Event::PenUp { x, y }, cx);
+            }
+        }
         match (e, self.view) {
             // The softkey Done keeps the new person (the keyboard's Done
             // moves to the next field).

@@ -9,6 +9,10 @@ use rp_pim::store::Store;
 use std::boxed::Box;
 use std::vec;
 
+/// Room for the tests' own unpacking ([`decode_ink`]).
+const POINTS: usize = 900;
+const STROKES: usize = 48;
+
 static FONT: Font = Font {
     line: 20,
     ascent: 16,
@@ -453,7 +457,8 @@ fn a_curve_keeps_its_shape_when_thinned() {
 #[test]
 fn a_full_note_says_so_instead_of_dropping_strokes_in_silence() {
     // The owner, 2026-11-14: "gets to the point where they dont show up at
-    // all" (a note's ink holds 48 strokes; R206 lifts the cap).
+    // all" (the first version held 48 strokes; now a note's ink is its
+    // record's room, a few hundred strokes).
     let pim = store();
     let cx = ctx(pim);
     let mut n = opened(19_723);
@@ -461,14 +466,138 @@ fn a_full_note_says_so_instead_of_dropping_strokes_in_silence() {
     n.event(Event::Key(Key::SoftRight), &cx);
     draw(&mut n, &cx);
     let (ix, iy) = n.ink_at.expect("an ink panel on screen");
-    for k in 0..STROKES as u16 {
-        stroke(&mut n, &cx, ix + 10, iy + 4 + k * 4, 4, |_| 0);
-        assert!(!n.ink_full, "stroke {k}");
+    let mut kept = 0u16;
+    while !n.ink_full {
+        stroke(
+            &mut n,
+            &cx,
+            ix + 10 + (kept % 7) * 40,
+            iy + 4 + (kept % 40) * 4,
+            4,
+            |_| 0,
+        );
+        kept += 1;
+        assert!(kept < 2000);
     }
-    stroke(&mut n, &cx, ix + 10, iy + 4, 4, |_| 0);
-    assert!(n.ink_full);
+    assert!(kept > 150, "full at {kept} strokes");
+    // Both fields hold whole strokes, the first as much as it can.
+    {
+        let g = pim.borrow();
+        let rec = g.as_ref().unwrap().all(Kind::Note).next().unwrap();
+        let (a, b) = (rec.text(tag::INK), rec.text(tag::INK_MORE));
+        assert_eq!(split(a), a.len());
+        assert_eq!(split(b), b.len());
+        assert!(a.len() > rp_pim::store::TEXT_MAX - 8 && !b.is_empty());
+    }
     // The eraser makes room: the notice goes.
     n.tool = Tool::Erase;
     stroke(&mut n, &cx, ix + 10, iy + 4, 4, |_| 0);
     assert!(!n.ink_full);
+}
+
+/// `n` notes "Note 00".., the third pinned, the second a checklist.
+fn many(pim: &core::cell::RefCell<Option<Store<'static>>>, n: u8) {
+    let mut g = pim.borrow_mut();
+    let s = g.as_mut().unwrap();
+    let one = 1u32.to_le_bytes();
+    for k in 0..n {
+        let title = [b'N', b'o', b't', b'e', b' ', b'0' + k / 10, b'0' + k % 10];
+        let text: &[u8] = if k == 1 {
+            b"[ ] Milk\n[x] Stamps"
+        } else {
+            b"A line\nAnother"
+        };
+        let mut fields = vec![(tag::TITLE, &title[..]), (tag::TEXT, text)];
+        if k == 2 {
+            fields.push((tag::PINNED, &one));
+        }
+        s.put(Kind::Note, None, &fields).unwrap();
+    }
+}
+
+#[test]
+fn the_home_leads_with_the_pinned_sheet_and_its_tabs_filter() {
+    let pim = store();
+    many(pim, 4);
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    // The pinned note first, the whole width; the rest two columns.
+    assert_eq!(n.n_cards, 4);
+    let (sheet, place) = n.cards[0];
+    assert_eq!((sheet.w, place), (WIDE, 2));
+    assert!(
+        n.cards[1..4]
+            .iter()
+            .all(|(r, _)| r.w < WIDE / 2 && r.y > sheet.y + sheet.h)
+    );
+    // The foot's tabs: Pinned shows it alone, Lists the checklist, Ink none.
+    for (tab, cards) in [(1, 1), (2, 1), (3, 0), (0, 4)] {
+        let r = kit::foot_tab(FILTERS.len(), tab);
+        n.event(
+            Event::PenDown {
+                x: r.x + 20,
+                y: r.y + 10,
+            },
+            &cx,
+        );
+        n.event(
+            Event::PenUp {
+                x: r.x + 20,
+                y: r.y + 10,
+            },
+            &cx,
+        );
+        draw(&mut n, &cx);
+        assert_eq!(n.n_cards, cards, "tab {tab}");
+    }
+    // The D-pad: down shows the first note chosen, down again the next,
+    // the centre opens it; left and right step the tabs.
+    n.event(Event::Key(Key::Down), &cx);
+    n.event(Event::Key(Key::Down), &cx);
+    n.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(n.view, View::Note(0));
+    n.event(Event::Key(Key::SoftLeft), &cx);
+    n.event(Event::Key(Key::Right), &cx);
+    assert_eq!(n.filter, 1);
+}
+
+#[test]
+fn every_note_is_within_reach_a_page_at_a_time() {
+    // The grid left out what did not fit, with no way to it but search.
+    let pim = store();
+    many(pim, 23);
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    let mut seen = [false; 23];
+    let mut pages = 0;
+    loop {
+        draw(&mut n, &cx);
+        assert!(n.n_cards > 0);
+        for &(_, place) in &n.cards[..n.n_cards] {
+            assert!(!seen[usize::from(place)], "note {place} on two pages");
+            seen[usize::from(place)] = true;
+        }
+        pages += 1;
+        // A drag up turns the page; the last page stays.
+        n.event(Event::PenDown { x: 240, y: 400 }, &cx);
+        if n.event(Event::PenUp { x: 240, y: 300 }, &cx) == Reply::Nothing {
+            break;
+        }
+    }
+    assert!(seen.iter().all(|&s| s), "{seen:?}");
+    assert!(pages > 2);
+    // And back to the first, a drag down a page; the keys turn pages too.
+    for _ in 1..pages {
+        n.event(Event::PenDown { x: 240, y: 300 }, &cx);
+        assert_eq!(n.event(Event::PenUp { x: 240, y: 400 }, &cx), Reply::Redraw);
+    }
+    assert_eq!(n.first, 0);
+    draw(&mut n, &cx);
+    let page = n.next;
+    for _ in 0..=page {
+        n.event(Event::Key(Key::Down), &cx);
+        draw(&mut n, &cx);
+    }
+    assert_eq!((n.first, n.sel), (page, page));
 }

@@ -166,3 +166,19 @@ fn the_letter_strip_starts_the_list_at_its_letter_and_a_row_opens_its_card() {
     );
     assert!(matches!(c.view, View::Card(_)));
 }
+
+#[test]
+fn the_dpad_walks_the_people_and_its_centre_opens_one() {
+    // R203: the D-pad works in every app.
+    let pim = store();
+    people(pim);
+    let cx = ctx(pim);
+    let mut c = Contacts::new();
+    draw(&mut c, &cx);
+    assert!(c.n_rows > 1);
+    assert_eq!(c.event(Event::Key(Key::Down), &cx), Reply::Redraw);
+    assert_eq!(c.event(Event::Key(Key::Down), &cx), Reply::Redraw);
+    draw(&mut c, &cx);
+    assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Redraw);
+    assert!(matches!(c.view, View::Card(_)), "{:?}", c.view);
+}

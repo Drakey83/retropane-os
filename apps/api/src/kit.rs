@@ -650,6 +650,11 @@ impl<T: Copy, const N: usize> Hits<T, N> {
             .map(|(r, _)| *r)
     }
 
+    /// Every target's rectangle, as drawn (what [`Focus`] walks).
+    pub fn rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.at[..self.n].iter().map(|(r, _)| *r)
+    }
+
     /// How many were added (tests: under `N`).
     #[must_use]
     pub const fn len(&self) -> usize {
@@ -660,6 +665,115 @@ impl<T: Copy, const N: usize> Hits<T, N> {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.n == 0
+    }
+}
+
+/// The D-pad's place on a screen (R203: the D-pad works in every app):
+/// one of the screen's stylus targets, walked by the arrows, tapped by the
+/// centre. Built on the targets a screen already records, so a screen
+/// never keeps a second layout for the keys and nothing tappable is out
+/// of the D-pad's reach. Windows Mobile walks its controls in tab order
+/// whatever the arrow; this goes to the nearest target the arrow points
+/// at, as a TV's remote does.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Focus(Option<Rect>);
+
+impl Focus {
+    /// Nothing focused (a tap, or another screen).
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    /// The point the centre key taps: the focused target's middle.
+    #[must_use]
+    pub fn point(&self) -> Option<(u16, u16)> {
+        self.0.map(|r| (r.x + r.w / 2, r.y + r.h / 2))
+    }
+
+    /// An arrow `k` among `rects`: the nearest target that way (the first
+    /// press: the topmost, leftmost). False when `k` is no arrow or
+    /// nothing lies that way (the focus stays).
+    pub fn step(&mut self, k: crate::Key, rects: impl Iterator<Item = Rect>) -> bool {
+        use crate::Key;
+        if !matches!(k, Key::Up | Key::Down | Key::Left | Key::Right) {
+            return false;
+        }
+        // How far apart two spans lie (0 where they overlap).
+        let gap = |a: u16, al: u16, b: u16, bl: u16| {
+            let (a, b) = (i32::from(a), i32::from(b));
+            (b - a - i32::from(al)).max(a - b - i32::from(bl)).max(0)
+        };
+        let mid = |r: Rect| {
+            (
+                i32::from(r.x) + i32::from(r.w) / 2,
+                i32::from(r.y) + i32::from(r.h) / 2,
+            )
+        };
+        let mut best: Option<(i32, Rect)> = None;
+        for r in rects.filter(|r| r.w > 0 && r.h > 0 && Some(*r) != self.0) {
+            let (x, y) = mid(r);
+            let score = match self.0 {
+                None => y * 4 + x,
+                Some(from) => {
+                    let (fx, fy) = mid(from);
+                    let (gx, gy) = (gap(from.x, from.w, r.x, r.w), gap(from.y, from.h, r.y, r.h));
+                    // That way at all (its middle past the focus's); then
+                    // the gap along the arrow, the gap off its line three
+                    // times as dear, and anything in the focused target's
+                    // own beam before anything beside it (a tile under a
+                    // wide card is straight below it wherever it sits; a
+                    // box inside its row is straight left of the row).
+                    let (ahead, along, off) = match k {
+                        Key::Down => (y - fy, gy, gx),
+                        Key::Up => (fy - y, gy, gx),
+                        Key::Right => (x - fx, gx, gy),
+                        _ => (fx - x, gx, gy),
+                    };
+                    // Past the focused target's edge that way, or in
+                    // its beam (a box inside its row): a tile up and to
+                    // the left is not "left".
+                    let beyond = match k {
+                        Key::Down => r.y >= from.y + from.h,
+                        Key::Up => r.y + r.h <= from.y,
+                        Key::Right => r.x >= from.x + from.w,
+                        _ => r.x + r.w <= from.x,
+                    };
+                    if ahead < 4 || !(beyond || off == 0) {
+                        continue;
+                    }
+                    along + 3 * off + if off > 0 { 4096 } else { 0 }
+                }
+            };
+            if best.is_none_or(|(b, _)| score < b) {
+                best = Some((score, r));
+            }
+        }
+        match best {
+            Some((_, r)) => {
+                self.0 = Some(r);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The focus ring round the focused target, while it is one of
+    /// `rects` (none once the screen changed under it).
+    pub fn ring(&self, f: &mut Frame, mut rects: impl Iterator<Item = Rect>) {
+        let Some(r) = self.0 else { return };
+        if rects.any(|q| q == r) {
+            for grow in [1u16, 2] {
+                f.push(Cmd::Outline {
+                    r: Rect::new(
+                        r.x.saturating_sub(grow),
+                        r.y.saturating_sub(grow),
+                        r.w + 2 * grow,
+                        r.h + 2 * grow,
+                    ),
+                    color: FOCUS,
+                });
+            }
+        }
     }
 }
 
@@ -852,5 +966,58 @@ pub fn progress_bar(f: &mut Frame, r: Rect, done: u16, of: u16, c: Argb) {
             r: Rect::new(r.x, r.y, w, r.h),
             color: c,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use crate::Key;
+
+    #[test]
+    fn the_dpad_goes_to_the_nearest_target_the_arrow_points_at() {
+        // A wide card over two columns of three tiles, a row under them.
+        let mut hits: Hits<u8, 16> = Hits::new();
+        hits.add(Rect::new(16, 40, 448, 100), 0);
+        for k in 0..6u8 {
+            let (c, r) = (u16::from(k % 2), u16::from(k / 2));
+            hits.add(Rect::new(16 + c * 228, 150 + r * 70, 220, 60), 1 + k);
+        }
+        hits.add(Rect::new(16, 370, 448, 40), 7);
+        let mut fo = Focus::default();
+        let go = |fo: &mut Focus, k| {
+            assert!(fo.step(k, hits.rects()), "{k:?}");
+            let (x, y) = fo.point().unwrap();
+            hits.at(x, y).unwrap()
+        };
+        // The first press: the top; down the left column; across; down to
+        // the row; up comes back to a tile; nothing lies left of the left.
+        assert_eq!(go(&mut fo, Key::Down), 0);
+        assert_eq!(go(&mut fo, Key::Down), 1);
+        assert_eq!(go(&mut fo, Key::Right), 2);
+        assert_eq!(go(&mut fo, Key::Down), 4);
+        assert_eq!(go(&mut fo, Key::Down), 6);
+        assert_eq!(go(&mut fo, Key::Down), 7);
+        assert_eq!(go(&mut fo, Key::Up), 5);
+        assert!(!fo.step(Key::Left, hits.rects()));
+        assert!(!fo.step(Key::Enter, hits.rects()));
+        // Every target is within the arrows' reach from the first press.
+        let mut seen = [false; 8];
+        let mut todo = std::vec![Focus::default()];
+        while let Some(from) = todo.pop() {
+            for k in [Key::Up, Key::Down, Key::Left, Key::Right] {
+                let mut fo = from;
+                if fo.step(k, hits.rects()) {
+                    let (x, y) = fo.point().unwrap();
+                    let t = usize::from(hits.at(x, y).unwrap());
+                    if !seen[t] {
+                        seen[t] = true;
+                        todo.push(fo);
+                    }
+                }
+            }
+        }
+        assert!(seen.iter().all(|&s| s), "{seen:?}");
     }
 }

@@ -632,7 +632,7 @@ impl Shell {
                     .rem_euclid(aw);
             }
             let xs = &mut xs[..per as usize];
-            xs.sort_unstable();
+            rp_draw::sort_small(xs, |&v| v);
             let n = run(&mut buf, xs, what);
             f.text(
                 FALL.x,

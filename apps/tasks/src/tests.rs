@@ -311,3 +311,36 @@ fn the_home_counts_the_day_and_everything_on_it_answers_the_stylus() {
     assert_eq!(t.event(Event::Key(Key::Enter), &cx), Reply::Redraw);
     assert_eq!(t.view, View::List(None));
 }
+
+#[test]
+fn the_dpad_walks_the_home_and_its_centre_taps() {
+    // R203: the D-pad works in every app (kit::Focus over the targets the
+    // home records).
+    let pim = store();
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    t.show(View::List(None));
+    draw(&mut t, &cx);
+    typed(&mut t, &cx, b"call the dentist today");
+    t.show(View::Home);
+    draw(&mut t, &cx);
+    // Down the home to the task's row, left to its box; the centre ticks
+    // it.
+    let on_box = |t: &Tasks| {
+        t.focus
+            .point()
+            .is_some_and(|(x, y)| matches!(t.hits.at(x, y), Some(Hit::Tick(_))))
+    };
+    for _ in 0..12 {
+        if on_box(&t) {
+            break;
+        }
+        t.event(Event::Key(Key::Down), &cx);
+        t.event(Event::Key(Key::Left), &cx);
+        draw(&mut t, &cx);
+    }
+    assert!(on_box(&t), "{:?}", t.focus);
+    assert_eq!(t.event(Event::Key(Key::Enter), &cx), Reply::Redraw);
+    draw(&mut t, &cx);
+    assert!(t.tasks.iter().flatten().any(|k| k.done_day == Some(19_723)));
+}

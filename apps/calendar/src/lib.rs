@@ -1799,20 +1799,55 @@ impl Calendar {
         }
     }
 
+    /// The week with a lens on the chosen day: its column is wide enough
+    /// to read (titles and times), the other six are slim, their
+    /// appointments bars of colour: the week's shape at a glance. Seven
+    /// equal columns on 480 pixels (Windows Mobile's, and the first
+    /// version here) are 58 px each, where a title is three letters
+    /// ("Lunc.."). A tap on a slim day moves the lens to it; on the wide
+    /// one, opens its day.
     fn week_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
+        const SLIM: u16 = 40;
         let first = self.day - in_week(self.day, cx.us);
         let x0 = MARGIN + 36;
-        let cw = (WIDE - 36) / 7;
+        let lens = (self.day - first) as u16;
+        let wide = WIDE - 36 - 6 * SLIM;
+        // Column `i`: its left edge and width.
+        let col = |i: u16| {
+            let x = x0 + i * SLIM + if i > lens { wide - SLIM } else { 0 };
+            (x, if i == lens { wide } else { SLIM })
+        };
         let (h0, h1) = (8u16, 21u16);
+        let y0 = top + 46;
+        let per = (BOTTOM - y0) / (h1 - h0);
+        // The lens's column is a pane of the window's glass.
+        let (lx, lw) = col(lens);
+        kit::panel(f, cx, Rect::new(lx, top, lw, y0 + per * (h1 - h0) - top));
         for i in 0..7u16 {
             let d = first + i32::from(i);
-            let c = Rect::new(x0 + i * cw, top, cw, 40);
-            // The whole column opens its day (its blocks, added later,
-            // open themselves).
-            self.hits
-                .add(Rect::new(c.x, top, cw, BOTTOM - top), Hit::OpenDay(d));
-            let col = if d == cx.now.day { tint::CALENDAR } else { DIM };
-            kit::centred(f, c, top + 14, cx.fonts.label, col, column_name(i, cx.us));
+            let (x, w) = col(i);
+            let c = Rect::new(x, top, w, 40);
+            // A slim column moves the lens to its day; the wide one opens
+            // its day (its blocks, added later, open themselves).
+            self.hits.add(
+                Rect::new(x, top, w, BOTTOM - top),
+                if i == lens {
+                    Hit::OpenDay(d)
+                } else {
+                    Hit::Day(d)
+                },
+            );
+            let ink = if d == cx.now.day { tint::CALENDAR } else { DIM };
+            let name = column_name(i, cx.us);
+            // The slim columns: the day's first letter.
+            kit::centred(
+                f,
+                c,
+                top + 14,
+                cx.fonts.label,
+                ink,
+                if i == lens { name } else { &name[..1] },
+            );
             let mut b = Buf::<4>::new();
             b.num(u32::from(date::date_of(d).day));
             kit::centred(
@@ -1828,8 +1863,6 @@ impl Calendar {
                 b.get(),
             );
         }
-        let y0 = top + 46;
-        let per = (BOTTOM - y0) / (h1 - h0);
         for h in 0..(h1 - h0) {
             let hy = y0 + h * per;
             let mut b = Buf::<4>::new();
@@ -1843,8 +1876,8 @@ impl Calendar {
         }
         for i in 0..7u16 {
             let d = first + i32::from(i);
-            let cx0 = x0 + i * cw;
-            if d == cx.now.day {
+            let (cx0, cw) = col(i);
+            if d == cx.now.day && i != lens {
                 f.push(rp_app::Cmd::Outline {
                     r: Rect::new(cx0, y0, cw, per * (h1 - h0)),
                     color: kit::alpha(tint::CALENDAR, 0xA0),
@@ -1860,23 +1893,45 @@ impl Calendar {
                     |b: &Appt| b.len != 0 && b.start < a.start + a.len && a.start < b.start + b.len;
                 let lanes = timed.iter().filter(|b| over(b)).count().max(1) as u16;
                 let lane = timed[..k].iter().filter(|b| over(b)).count() as u16;
-                let lw = cw / lanes;
+                let lw = (cw - 4) / lanes;
                 let by = y0 + (a.start - h0 * 60) * per / 60;
-                let bh = (a.len * per / 60).max(16);
-                let r = Rect::new(cx0 + 1 + lane * lw, by + 1, lw - 2, bh - 2);
+                // (The glass needs its two corners' height: 24.)
+                let bh = (a.len * per / 60).max(if i == lens { 30 } else { 8 });
+                let r = Rect::new(cx0 + 2 + lane * lw, by + 1, lw - 2, bh - 2);
+                if i != lens {
+                    // A bar of its calendar's colour.
+                    f.push(rp_app::Cmd::Fill {
+                        r,
+                        color: self.colour(a) | 0xFF00_0000,
+                    });
+                    continue;
+                }
                 if !a.task {
                     self.hits.add(r, Hit::Appt(a.id));
                 }
                 kit::tinted(f, cx, r, self.colour(a), 0x40);
+                // Its title, and its time where the block has the room
+                // (and no neighbour beside it).
                 kit::fitted(
                     f,
-                    r.x + 12,
-                    r.y + 15,
-                    cx.fonts.label,
+                    r.x + 14,
+                    r.y + 17,
+                    cx.fonts.ui,
                     TEXT,
                     a.title.get(),
-                    r.w - 4,
+                    r.w.saturating_sub(18),
                 );
+                if r.h >= 40 {
+                    kit::fitted(
+                        f,
+                        r.x + 14,
+                        r.y + 35,
+                        cx.fonts.label,
+                        DIM,
+                        clock(a.start).get(),
+                        r.w.saturating_sub(18),
+                    );
+                }
             }
         }
     }

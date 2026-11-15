@@ -687,6 +687,22 @@ impl Calculator {
     fn display(&self, f: &mut Frame, cx: &Ctx) {
         let mut y = TOP;
         let (first, shown) = self.tape_window();
+        // One glass display (design language version 3): the tape above
+        // a hairline, the sum being typed and its answer below. The tape
+        // floated on the backdrop before, and read as a different thing.
+        let glass = Rect::new(MARGIN, TOP, WIDE, shown as u16 * TAPE_LINE + 96);
+        kit::panel(f, cx, glass);
+        if shown > 0 {
+            f.push(rp_app::Cmd::Fill {
+                r: Rect::new(
+                    glass.x + 12,
+                    glass.y + shown as u16 * TAPE_LINE + 2,
+                    glass.w - 24,
+                    1,
+                ),
+                color: kit::alpha(TEXT, 0x30),
+            });
+        }
         for (k, (sum, ans)) in self.tape[first..first + shown].iter().enumerate() {
             kit::right(f, W - MARGIN - 12, y + 18, cx.fonts.ui, DIM, sum.get());
             kit::right(f, W - MARGIN - 12, y + 40, cx.fonts.ui, TEXT, ans.get());
@@ -719,7 +735,6 @@ impl Calculator {
             });
         }
         let d = Rect::new(MARGIN, y + 4, WIDE, 92);
-        kit::panel(f, cx, d);
         let mut marks = [0u8; 16];
         let mut mn = 0;
         for (on, word) in [
@@ -756,7 +771,13 @@ impl Calculator {
             }
             None => 0,
         };
-        kit::right(f, d.right() - 12, d.y + 80, cx.fonts.num, TEXT, &ans[..an]);
+        // The answer as large as it fits.
+        let font = if cx.fonts.big.width(&ans[..an]) <= WIDE - 24 {
+            cx.fonts.big
+        } else {
+            cx.fonts.num
+        };
+        kit::right(f, d.right() - 12, d.y + 80, font, TEXT, &ans[..an]);
     }
 
     fn keypad(&self, f: &mut Frame, cx: &Ctx) {
@@ -1229,6 +1250,27 @@ impl Program for Calculator {
                     (k + 5) % 6
                 };
                 self.mode = MODE_LIST[k];
+                Reply::Redraw
+            }
+            // The rest of the D-pad (R203): up and down walk the tape
+            // back and forward, the centre is =.
+            Event::Key(k @ (Key::Up | Key::Down))
+                if matches!(self.mode, Mode::Basic | Mode::Scientific) =>
+            {
+                let most = self.n_tape.saturating_sub(TAPE_SHOWN);
+                let back = if k == Key::Up {
+                    (self.back + 1).min(most)
+                } else {
+                    self.back.saturating_sub(1)
+                };
+                if back == self.back {
+                    return Reply::Nothing;
+                }
+                self.back = back;
+                Reply::Redraw
+            }
+            Event::Key(Key::Enter) if matches!(self.mode, Mode::Basic | Mode::Scientific) => {
+                self.press(b"=");
                 Reply::Redraw
             }
             Event::PenDown { x, y }

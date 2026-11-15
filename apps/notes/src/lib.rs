@@ -56,8 +56,49 @@ pub enum View {
 /// The line in a note's text that stands for its ink panel.
 const INK_LINE: u8 = 0x01;
 /// Points a note's ink holds, and strokes.
-const POINTS: usize = 900;
-const STROKES: usize = 48;
+/// The bytes a note's ink may take: its two fields (`INK`, then
+/// `INK_MORE`). No count of strokes or points besides: the ink is read,
+/// painted, erased and added to a stroke at a time, straight from its
+/// bytes (the first version unpacked all of it into 900 points and 48
+/// strokes, and a note stopped taking strokes at the 48th: the owner on
+/// the X51v, 2026-11-14).
+const INK_ROOM: usize = 2 * rp_pim::store::TEXT_MAX;
+
+/// The packed stroke `ink` starts with: its length in bytes (`None`
+/// where the ink ends, or breaks).
+fn stroke_len(ink: &[u8]) -> Option<usize> {
+    let count = usize::from(*ink.first()?);
+    let len = 6 + 2 * count.checked_sub(1)?;
+    (len <= ink.len()).then_some(len)
+}
+
+/// A packed stroke ([`stroke_len`]'s bytes) as its points: its style and
+/// how many.
+fn unpack(s: &[u8], pts: &mut [(i16, i16); 255]) -> (u8, usize) {
+    let count = usize::from(s[0]);
+    let mut x = i16::from_le_bytes([s[2], s[3]]);
+    let mut y = i16::from_le_bytes([s[4], s[5]]);
+    pts[0] = (x, y);
+    for k in 1..count {
+        x = x.saturating_add(i16::from(s[4 + 2 * k] as i8));
+        y = y.saturating_add(i16::from(s[5 + 2 * k] as i8));
+        pts[k] = (x, y);
+    }
+    (s[1], count)
+}
+
+/// Where `ink` parts into its two fields: after the most whole strokes
+/// the first holds.
+fn split(ink: &[u8]) -> usize {
+    let mut at = 0;
+    while let Some(n) = stroke_len(&ink[at..]) {
+        if at + n > rp_pim::store::TEXT_MAX {
+            break;
+        }
+        at += n;
+    }
+    at
+}
 
 /// The pen's six colours (`STYLE` bits 0-2 choose), dark first.
 pub const PEN: [Argb; 6] = [
@@ -322,9 +363,19 @@ enum Tool {
     List,
 }
 
-/// The home's search field and its grid/list chips.
-const SEARCH: Rect = Rect::new(MARGIN, 36 + kit::TITLE_BAND + 4, WIDE - 140, 36);
-const LAYOUT: Rect = Rect::new(W - MARGIN - 132, 36 + kit::TITLE_BAND + 7, 132, 30);
+/// The home's search field, and its filters (the foot's tabs).
+const SEARCH: Rect = Rect::new(MARGIN, 44, WIDE, 36);
+const FILTERS: [&[u8]; 4] = [b"All", b"Pinned", b"Lists", b"Ink"];
+/// Ink on paper: the same in both looks.
+const INK: Argb = kit::keep(0xFF20_2A38);
+const INK_DIM: Argb = kit::keep(0xFF4E_5664);
+const INK_DONE: Argb = kit::keep(0xFF8A_8F98);
+
+/// A note's paper: a pastel of its colour, the same in both looks (paper
+/// is paper; version 2's cards were grey glass with a colour bar).
+fn paper_of(c: Argb) -> Argb {
+    kit::keep(kit::mix(0xFFFF_FAF0, c, 0x50))
+}
 
 /// The note's tool strip, its tools in order, and the pen colours' row.
 const STRIP: Rect = Rect::new(8, 548, W - 16, 48);
@@ -376,7 +427,17 @@ pub struct Notes {
     query: [u8; 32],
     query_n: usize,
     searching: bool,
-    as_list: bool,
+    /// The home's filter tab; the first note of its page, the pages
+    /// before it, the note after its last; the D-pad's note (shown once a
+    /// key was used); where the stylus went down.
+    filter: u8,
+    first: u8,
+    pages: [u8; 12],
+    n_pages: usize,
+    next: u8,
+    sel: u8,
+    keys: bool,
+    down_y: Option<u16>,
     menu: bool,
     confirm_delete: bool,
     /// The home grid's cards on screen and the notes they open.
@@ -387,7 +448,9 @@ pub struct Notes {
     view: View,
     /// The open note's ink and the cards' miniatures, painted once.
     ink: Option<Pic>,
-    minis: [Option<Pic>; 4],
+    minis: [Option<(u32, Pic)>; 4],
+    /// The miniatures this frame drew (a bit each).
+    mini_used: u8,
     ring: Option<Pic>,
     full: Option<Pic>,
     painted: Option<(View, u32)>,
@@ -508,21 +571,20 @@ fn ink_pic(cx: &Ctx, id: u32, w: u16, h: u16, c: Argb) -> Option<Pic> {
     let guard = cx.pim?.try_borrow().ok()?;
     let store = guard.as_ref()?;
     let rec = store.get(id)?;
-    let mut pts = [(0i16, 0i16); POINTS];
-    let mut ends = [0u16; STROKES];
-    let mut styles = [0u8; STROKES];
-    let ns = decode_ink(rec.text(tag::INK), &mut pts, &mut ends, &mut styles);
-    let mut strokes: [&[(i16, i16)]; STROKES] = [&[]; STROKES];
-    let mut from = 0usize;
-    for (k, &e) in ends[..ns].iter().enumerate() {
-        strokes[k] = &pts[from..usize::from(e)];
-        from = usize::from(e);
-    }
     let p = pics.alloc(w, h)?;
     // The open note's ink in its strokes' own colours; a card's in one.
     let only = (w < 448).then_some(c);
     pics.write(p, |px| {
-        paint_styled(px, w, h, &strokes[..ns], &styles[..ns], only)
+        px.iter_mut().for_each(|q| *q = 0);
+        let mut pts = [(0i16, 0i16); 255];
+        for field in [rec.text(tag::INK), rec.text(tag::INK_MORE)] {
+            let mut at = 0;
+            while let Some(n) = stroke_len(&field[at..]) {
+                let (style, k) = unpack(&field[at..at + n], &mut pts);
+                paint_over(px, w, h, &[&pts[..k]], &[style], only);
+                at += n;
+            }
+        }
     });
     Some(p)
 }
@@ -548,7 +610,14 @@ impl Notes {
             query: [0; 32],
             query_n: 0,
             searching: false,
-            as_list: false,
+            filter: 0,
+            first: 0,
+            pages: [0; 12],
+            n_pages: 0,
+            next: 0,
+            sel: 0,
+            keys: false,
+            down_y: None,
             menu: false,
             confirm_delete: false,
             cards: [(Rect::new(0, 0, 0, 0), 0); 12],
@@ -558,6 +627,7 @@ impl Notes {
             view: View::Home,
             ink: None,
             minis: [None; 4],
+            mini_used: 0,
             ring: None,
             full: None,
             painted: None,
@@ -586,10 +656,13 @@ impl Notes {
         // The pictures painted from the old copy go; the new ones are
         // painted from this one.
         if let Some(pics) = cx.pics {
-            for p in self.minis.iter_mut().chain(core::iter::once(&mut self.ink)) {
-                if let Some(pic) = p.take() {
+            for m in &mut self.minis {
+                if let Some((_, pic)) = m.take() {
                     pics.free(pic);
                 }
+            }
+            if let Some(pic) = self.ink.take() {
+                pics.free(pic);
             }
         }
     }
@@ -625,31 +698,9 @@ impl Notes {
             }
         }
         match self.view {
-            View::Home => {
-                // Pinned first, as the grid shows them.
-                let mut k = 0;
-                for want in [true, false] {
-                    for row in self
-                        .rows
-                        .iter()
-                        .flatten()
-                        .filter(|r| r.pinned == want && r.has_ink())
-                    {
-                        if k < self.minis.len() {
-                            if self.minis[k].is_none() {
-                                self.minis[k] = ink_pic(
-                                    cx,
-                                    row.id,
-                                    kit::INK_MINI.0,
-                                    kit::INK_MINI.1,
-                                    0xFF20_2A38,
-                                );
-                            }
-                            k += 1;
-                        }
-                    }
-                }
-            }
+            // The home's miniatures are painted as its pages show them
+            // (`mini`).
+            View::Home => {}
             View::Note(i) => {
                 if let Some(row) = self.rows.get(usize::from(i)).copied().flatten()
                     && row.has_ink()
@@ -662,141 +713,307 @@ impl Notes {
         self.painted = Some(key);
     }
 
+    /// Whether the home shows `r`: the search typed and the filter tab.
+    fn shows(&self, r: &Row) -> bool {
+        r.found
+            && match self.filter {
+                1 => r.pinned,
+                2 => r.lines[..r.n].iter().any(|l| matches!(l, Line::Check(..))),
+                3 => r.has_ink(),
+                _ => true,
+            }
+    }
+
+    /// The notes the home shows, in its order (pinned first), as their
+    /// places in the store's order (what `View::Note` names). Indices: a
+    /// copy of all the rows was 17 KB on the stack.
+    fn order(&self) -> ([u8; 24], usize) {
+        let mut order = [0u8; 24];
+        let mut no = 0;
+        for want in [true, false] {
+            for (k, r) in self.rows.iter().enumerate() {
+                if r.as_ref()
+                    .is_some_and(|r| r.pinned == want && self.shows(r))
+                {
+                    order[no] = k as u8;
+                    no += 1;
+                }
+            }
+        }
+        (order, no)
+    }
+
+    /// The home from its first page (the search or the filter changed).
+    fn first_page(&mut self) {
+        self.first = 0;
+        self.n_pages = 0;
+        self.sel = 0;
+    }
+
+    /// The next page of the home, if there is one.
+    fn page_on(&mut self) -> bool {
+        let (_, no) = self.order();
+        if usize::from(self.next) >= no || self.next <= self.first {
+            return false;
+        }
+        if self.n_pages < self.pages.len() {
+            self.pages[self.n_pages] = self.first;
+            self.n_pages += 1;
+        }
+        self.first = self.next;
+        self.sel = self.first;
+        true
+    }
+
+    /// The page before, if there is one.
+    fn page_back(&mut self) -> bool {
+        if self.n_pages == 0 {
+            if self.first == 0 {
+                return false;
+            }
+            self.first = 0;
+        } else {
+            self.n_pages -= 1;
+            self.first = self.pages[self.n_pages];
+        }
+        self.sel = self.first;
+        true
+    }
+
+    /// The miniature of note `id`'s ink: painted the first time a page
+    /// shows it, kept by the note's id (by position, a note the search
+    /// left out gave its neighbour the wrong drawing), its slot given back
+    /// when a later page needs one.
+    fn mini(&mut self, cx: &Ctx, id: u32) -> Option<Pic> {
+        if let Some(k) = self
+            .minis
+            .iter()
+            .position(|m| m.is_some_and(|(i, _)| i == id))
+        {
+            self.mini_used |= 1 << k;
+            return self.minis[k].map(|(_, p)| p);
+        }
+        let k = (0..self.minis.len()).find(|&k| self.mini_used & (1 << k) == 0)?;
+        if let (Some((_, old)), Some(pics)) = (self.minis[k].take(), cx.pics) {
+            pics.free(old);
+        }
+        let p = ink_pic(cx, id, kit::INK_MINI.0, kit::INK_MINI.1, 0xFF20_2A38)?;
+        self.minis[k] = Some((id, p));
+        self.mini_used |= 1 << k;
+        Some(p)
+    }
+
+    /// A note's lines on its paper from `y` down, at most `most`, `max`
+    /// wide: text, tick boxes drawn as boxes. Returns the next line's y.
+    fn paper_lines(
+        f: &mut Frame,
+        cx: &Ctx,
+        note: &Row,
+        x: u16,
+        mut y: u16,
+        max: u16,
+        most: usize,
+    ) -> u16 {
+        let lines = note.lines[..note.n]
+            .iter()
+            .filter(|l| !matches!(l, Line::Ink))
+            .take(most);
+        for l in lines {
+            match l {
+                Line::Text(t) => kit::fitted(f, x, y, cx.fonts.ui, INK_DIM, t.get(), max),
+                Line::Check(t, done) => {
+                    f.push(rp_app::Cmd::Outline {
+                        r: Rect::new(x, y - 13, 13, 13),
+                        color: INK_DIM,
+                    });
+                    if *done {
+                        f.push(rp_app::Cmd::Fill {
+                            r: Rect::new(x + 3, y - 10, 7, 7),
+                            color: INK_DIM,
+                        });
+                    }
+                    let col = if *done { INK_DONE } else { INK_DIM };
+                    kit::fitted(f, x + 20, y, cx.fonts.ui, col, t.get(), max - 20);
+                }
+                Line::Ink => {}
+            }
+            y += 22;
+        }
+        y
+    }
+
+    fn card_hit(&mut self, r: Rect, place: u8) {
+        if self.n_cards < self.cards.len() {
+            self.cards[self.n_cards] = (r, place);
+            self.n_cards += 1;
+        }
+    }
+
+    /// The home (design language version 3): search first; the pinned
+    /// note leading as a whole sheet with its writing; the rest as sheets
+    /// of their own paper, two columns, heights by content; the filters as
+    /// tabs along the foot. More notes than a page: a drag or the D-pad
+    /// turns the page (no note is out of reach, as the grid's overflow
+    /// was).
     fn home(&mut self, f: &mut Frame, cx: &Ctx) {
         self.n_cards = 0;
-        let mut s = [0u8; 16];
-        let n = self.rows.iter().flatten().count();
-        let mut k = 0;
-        if n >= 10 {
-            s[k] = b'0' + (n / 10) as u8;
-            k += 1;
+        self.mini_used = 0;
+        let (order, no) = self.order();
+        if usize::from(self.first) >= no {
+            self.first_page();
         }
-        s[k] = b'0' + (n % 10) as u8;
-        k += 1;
-        for &c in b" notes" {
-            s[k] = c;
-            k += 1;
-        }
-        let mut y = kit::large_title(f, cx, 36, b"Notes", &s[..k], tint::NOTES);
         let field = SEARCH;
         kit::panel(f, cx, field);
-        let q = &self.query[..self.query_n];
         if self.searching {
             f.push(rp_app::Cmd::Outline {
                 r: field,
                 color: kit::FOCUS,
             });
         }
+        let q = &self.query[..self.query_n];
         if q.is_empty() {
+            let mut s = [0u8; 24];
+            let mut k = 0;
+            for &c in b"Search " {
+                s[k] = c;
+                k += 1;
+            }
+            let all = self.rows.iter().flatten().count();
+            if all >= 10 {
+                s[k] = b'0' + (all / 10) as u8;
+                k += 1;
+            }
+            s[k] = b'0' + (all % 10) as u8;
+            k += 1;
+            for &c in if all == 1 { &b" note"[..] } else { b" notes" } {
+                s[k] = c;
+                k += 1;
+            }
+            kit::text(f, field.x + 14, field.y + 25, cx.fonts.ui, DIM, &s[..k]);
+        } else {
+            kit::text(f, field.x + 14, field.y + 25, cx.fonts.ui, TEXT, q);
+        }
+        let bottom = kit::FOOT.y - 6;
+        let mut y = SEARCH.y + SEARCH.h + 8;
+        let mut at = usize::from(self.first);
+        let focus = |f: &mut Frame, r: Rect| {
+            f.push(rp_app::Cmd::Outline {
+                r: Rect::new(r.x - 2, r.y - 2, r.w + 4, r.h + 4),
+                color: kit::FOCUS,
+            });
+        };
+        // The pinned note leads the first page as a whole sheet.
+        if at == 0
+            && no > 0
+            && let Some(note) = self.rows[usize::from(order[0])].filter(|n| n.pinned)
+        {
+            let r = Rect::new(MARGIN, y, WIDE, 154);
+            let sheet = kit::keep(0xFFF8_F0D8);
+            // Its binding in the note's colour, the sheet's rounded edge.
+            kit::round_rect(
+                f,
+                cx,
+                r,
+                kit::keep(kit::mix(note.colour, 0xFF00_0000, 0x30)),
+            );
+            kit::round_rect(f, cx, Rect::new(r.x + 10, r.y, r.w - 10, r.h), sheet);
+            f.push(rp_app::Cmd::Fill {
+                r: Rect::new(r.x + 10, r.y, 14, r.h),
+                color: sheet,
+            });
+            for k in 0..4u16 {
+                f.push(rp_app::Cmd::Fill {
+                    r: Rect::new(r.x + 24, r.y + 64 + k * 22, r.w - 40, 1),
+                    color: kit::keep(0xFFC4_D4E4),
+                });
+            }
             kit::text(
                 f,
-                field.x + 12,
-                field.y + 25,
-                cx.fonts.ui,
-                DIM,
-                b"Search notes",
+                r.x + 24,
+                r.y + 22,
+                cx.fonts.label,
+                kit::keep(kit::mix(note.colour, 0xFF00_0000, 0x60)),
+                b"PINNED",
             );
-        } else {
-            kit::text(f, field.x + 12, field.y + 25, cx.fonts.ui, TEXT, q);
-        }
-        kit::chips(
-            f,
-            cx,
-            LAYOUT,
-            &[b"GRID", b"LIST"],
-            usize::from(self.as_list),
-            tint::NOTES,
-        );
-        y += 48;
-        if self.as_list {
-            // One row a note: its colour, title and first line.
-            for place in 0..self.rows.len() {
-                // One row at a time off the stack (a copy of all 24 was
-                // 17 KB: the image's stack overflowed, emu-apps 2026-11-14).
-                let Some(note) = self.rows[place].filter(|n| n.found) else {
-                    continue;
-                };
-                if y + 50 > 596 {
-                    break;
-                }
-                let r = Rect::new(MARGIN, y, WIDE, 46);
-                kit::tinted(f, cx, r, note.colour, 0x40);
-                kit::fitted(
-                    f,
-                    r.x + 22,
-                    r.y + 21,
-                    cx.fonts.ui,
-                    TEXT,
-                    if note.title.is_empty() {
-                        b"New note"
-                    } else {
-                        note.title.get()
-                    },
-                    300,
-                );
-                let first = note.lines[..note.n].iter().find_map(|l| match l {
-                    Line::Text(t) | Line::Check(t, _) if !t.is_empty() => Some(*t),
-                    _ => None,
+            let title: &[u8] = if note.title.is_empty() {
+                b"New note"
+            } else {
+                note.title.get()
+            };
+            kit::fitted(f, r.x + 24, r.y + 52, cx.fonts.title, INK, title, r.w - 48);
+            let ink = note.has_ink();
+            Self::paper_lines(
+                f,
+                cx,
+                &note,
+                r.x + 24,
+                r.y + 82,
+                if ink { 196 } else { r.w - 48 },
+                3,
+            );
+            if ink && let Some(p) = self.mini(cx, note.id) {
+                f.push(rp_app::Cmd::Pic {
+                    x: r.x + r.w - kit::INK_MINI.0 - 8,
+                    y: (r.y + 62) as i16,
+                    pic: p,
                 });
-                if let Some(t) = first {
-                    kit::fitted(f, r.x + 22, r.y + 41, cx.fonts.ui, DIM, t.get(), 380);
-                }
-                if self.n_cards < self.cards.len() {
-                    self.cards[self.n_cards] = (r, place as u8);
-                    self.n_cards += 1;
-                }
-                y += 50;
             }
-            return;
+            if self.keys && self.sel == 0 {
+                focus(f, r);
+            }
+            self.card_hit(r, order[0]);
+            y += r.h + 8;
+            at = 1;
         }
-        // Pinned first, then the rest, two columns, heights by content.
+        // The rest, each on its own paper.
         let mut col_y = [y, y];
-        let mut mini = 0;
-        // Pinned first, then the rest, each with its place in the store's
-        // order (what View::Note names).
-        // The order as indices (pinned first), each row read in turn: a
-        // copy of all the rows was 17 KB on the stack.
-        let mut order = [0u8; 24];
-        let mut no = 0;
-        for want in [true, false] {
-            for (k, r) in self.rows.iter().enumerate() {
-                if r.is_some_and(|r| r.pinned == want && r.found) {
-                    order[no] = k as u8;
-                    no += 1;
-                }
-            }
-        }
-        for &place in &order[..no] {
+        let mut next = at;
+        for (k, &place) in order[..no].iter().enumerate().skip(at) {
             let Some(note) = self.rows[usize::from(place)] else {
                 continue;
             };
-            let note = &note;
-            let c = if col_y[0] <= col_y[1] { 0 } else { 1 };
-            let x = MARGIN + c as u16 * 228;
-            let ink = note.has_ink();
-            let lines = note.lines[..note.n]
+            let c = usize::from(col_y[1] < col_y[0]);
+            let mut ink = note.has_ink();
+            let mut lines = note.lines[..note.n]
                 .iter()
-                .filter(|b| !matches!(b, Line::Ink))
+                .filter(|l| !matches!(l, Line::Ink))
                 .count()
                 .min(3) as u16;
-            let h = 40 + lines * 22 + if ink { 88 } else { 0 };
-            if col_y[c] + h > 596 {
-                continue;
+            let mut h = 42 + lines * 22 + if ink { kit::INK_MINI.1 + 4 } else { 0 };
+            if col_y[c] + h > bottom {
+                // The page's last sheet is cut to the room left (its
+                // title and the lines that fit, its drawing on the note
+                // itself) rather than leave the room empty.
+                let room = bottom.saturating_sub(col_y[c]);
+                if room < 64 {
+                    break;
+                }
+                ink = false;
+                lines = lines.min((room - 42) / 22);
+                h = 42 + lines * 22;
             }
-            let r = Rect::new(x, col_y[c], 220, h);
-            if self.n_cards < self.cards.len() {
-                self.cards[self.n_cards] = (r, place);
-                self.n_cards += 1;
-            }
-            kit::tinted(f, cx, r, note.colour, 0x40);
+            let r = Rect::new(MARGIN + c as u16 * 228, col_y[c], 220, h);
+            let paper = paper_of(note.colour);
+            kit::round_rect(f, cx, r, paper);
+            // A fold of shade along the foot: a sheet, not a tile.
+            f.push(rp_app::Cmd::Fill {
+                r: Rect::new(r.x + 10, r.y + r.h - 3, r.w - 20, 2),
+                color: kit::keep(kit::mix(paper, 0xFF00_0000, 0x28)),
+            });
+            let title: &[u8] = if note.title.is_empty() {
+                b"New note"
+            } else {
+                note.title.get()
+            };
+            let pin = if note.pinned { 40 } else { 0 };
             kit::fitted(
                 f,
                 r.x + 12,
                 r.y + 26,
                 cx.fonts.ui,
-                TEXT,
-                note.title.get(),
-                170,
+                INK,
+                title,
+                r.w - 24 - pin,
             );
             if note.pinned {
                 kit::right(
@@ -804,42 +1021,78 @@ impl Notes {
                     r.right() - 10,
                     r.y + 22,
                     cx.fonts.label,
-                    note.colour,
+                    kit::keep(kit::mix(note.colour, 0xFF00_0000, 0x60)),
                     b"PIN",
                 );
             }
-            let mut ly = r.y + 48;
-            for b in note.lines[..note.n].iter().take(4) {
-                match b {
-                    Line::Text(t) => {
-                        kit::fitted(f, r.x + 12, ly, cx.fonts.ui, DIM, t.get(), 196);
-                        ly += 22;
-                    }
-                    Line::Check(t, done) => {
-                        let mark: &[u8] = if *done { b"[x] " } else { b"[ ] " };
-                        kit::text(f, r.x + 12, ly, cx.fonts.ui, DIM, mark);
-                        kit::fitted(f, r.x + 44, ly, cx.fonts.ui, DIM, t.get(), 164);
-                        ly += 22;
-                    }
-                    Line::Ink => {
-                        if let Some(p) = self.minis.get(mini).copied().flatten() {
-                            f.push(rp_app::Cmd::Fill {
-                                r: Rect::new(r.x + 4, ly - 14, 212, 84),
-                                color: kit::keep(0xC0F4_EFE0),
-                            });
-                            f.push(rp_app::Cmd::Pic {
-                                x: r.x + 4,
-                                y: (ly - 14) as i16,
-                                pic: p,
-                            });
-                        }
-                        mini += 1;
-                        ly += 88;
-                    }
+            let ly = Self::paper_lines(
+                f,
+                cx,
+                &note,
+                r.x + 12,
+                r.y + 50,
+                r.w - 24,
+                usize::from(lines),
+            );
+            if ink && let Some(p) = self.mini(cx, note.id) {
+                f.push(rp_app::Cmd::Pic {
+                    x: r.x + 4,
+                    y: (ly - 14) as i16,
+                    pic: p,
+                });
+            }
+            if self.keys && usize::from(self.sel) == k {
+                focus(f, r);
+            }
+            self.card_hit(r, place);
+            col_y[c] += h + 8;
+            next = k + 1;
+        }
+        self.next = next as u8;
+        if no == 0 {
+            kit::centred(
+                f,
+                Rect::new(0, 250, W, 30),
+                270,
+                cx.fonts.ui,
+                DIM,
+                if self.query_n == 0 {
+                    b"No notes here yet: New starts one"
+                } else {
+                    b"No note holds that"
+                },
+            );
+        } else if next < no || self.first > 0 {
+            // Where this page sits: said in the search field's right.
+            let mut s = [0u8; 16];
+            let mut k = 0;
+            let parts: [(usize, &[u8]); 3] = [
+                (usize::from(self.first) + 1, b"-"),
+                (next, b" of "),
+                (no, b""),
+            ];
+            for (v, sep) in parts {
+                if v >= 10 {
+                    s[k] = b'0' + (v / 10) as u8;
+                    k += 1;
+                }
+                s[k] = b'0' + (v % 10) as u8;
+                k += 1;
+                for &c in sep {
+                    s[k] = c;
+                    k += 1;
                 }
             }
-            col_y[c] += h + 8;
+            kit::right(
+                f,
+                field.right() - 14,
+                field.y + 24,
+                cx.fonts.label,
+                DIM,
+                &s[..k],
+            );
         }
+        kit::foot_tabs(f, cx, &FILTERS, usize::from(self.filter), tint::NOTES);
     }
 
     fn note(&mut self, f: &mut Frame, cx: &Ctx, i: u8) {
@@ -1124,16 +1377,28 @@ impl Notes {
         let mut text = [0u8; rp_pim::store::TEXT_MAX];
         let mut tn = r.text(tag::TEXT).len().min(text.len());
         text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
-        let mut ink = [0u8; rp_pim::store::TEXT_MAX];
-        let mut inn = r.text(tag::INK).len().min(ink.len());
-        ink[..inn].copy_from_slice(&r.text(tag::INK)[..inn]);
+        let mut ink = [0u8; INK_ROOM];
+        let mut inn = 0;
+        for field in [r.text(tag::INK), r.text(tag::INK_MORE)] {
+            let n = field.len().min(ink.len() - inn);
+            ink[inn..inn + n].copy_from_slice(&field[..n]);
+            inn += n;
+        }
         if !change(&mut text, &mut tn, &mut ink, &mut inn) {
             return false;
         }
+        let part = split(&ink[..inn]);
         // Text and ink only: the title, colour, pin, paper and any field
         // a later version adds are kept by the store.
         store
-            .change(id, &[(tag::TEXT, &text[..tn]), (tag::INK, &ink[..inn])])
+            .change(
+                id,
+                &[
+                    (tag::TEXT, &text[..tn]),
+                    (tag::INK, &ink[..part]),
+                    (tag::INK_MORE, &ink[part..inn]),
+                ],
+            )
             .is_ok()
     }
 
@@ -1168,20 +1433,9 @@ impl Notes {
             return;
         }
         let kept = self.rewrite(cx, id, |text, tn, ink, inn| {
-            let mut pts = [(0i16, 0i16); POINTS];
-            let mut ends = [0u16; STROKES];
-            let mut styles = [0u8; STROKES];
-            let ns = decode_ink(&ink[..*inn], &mut pts, &mut ends, &mut styles);
-            let mut strokes: [&[(i16, i16)]; STROKES] = [&[]; STROKES];
-            let mut from = 0usize;
-            for (k, &e) in ends[..ns].iter().enumerate() {
-                strokes[k] = &pts[from..usize::from(e)];
-                from = usize::from(e);
-            }
-            let mut count = ns;
             if tool == Tool::Erase {
                 // The first stroke a point of the pen's path came within
-                // 8 px of goes.
+                // 8 px of goes: its bytes closed over.
                 let near = |s: &[(i16, i16)]| {
                     s.iter().any(|&(x, y)| {
                         live[..n]
@@ -1189,23 +1443,26 @@ impl Notes {
                             .any(|&(a, b)| (x - a).abs() < 8 && (y - b).abs() < 8)
                     })
                 };
-                let Some(k) = strokes[..ns].iter().position(|s| near(s)) else {
-                    return false;
+                let mut pts = [(0i16, 0i16); 255];
+                let mut at = 0;
+                let hit = loop {
+                    let Some(len) = stroke_len(&ink[at..*inn]) else {
+                        return false;
+                    };
+                    let (_, k) = unpack(&ink[at..at + len], &mut pts);
+                    if near(&pts[..k]) {
+                        break len;
+                    }
+                    at += len;
                 };
-                strokes.copy_within(k + 1..ns, k);
-                styles.copy_within(k + 1..ns, k);
-                count -= 1;
+                ink.copy_within(at + hit..*inn, at);
+                *inn -= hit;
             } else {
-                if ns == STROKES {
-                    return false;
+                // Added at the end, nothing else read.
+                match encode_styled(&[&live[..n]], &[style], &mut ink[*inn..]) {
+                    Some(len) => *inn += len,
+                    None => return false,
                 }
-                strokes[ns] = &live[..n];
-                styles[ns] = style;
-                count += 1;
-            }
-            match encode_styled(&strokes[..count], &styles[..count], ink) {
-                Some(len) => *inn = len,
-                None => return false,
             }
             // A note with no ink panel yet gets its place at the end.
             if !text[..*tn].split(|&c| c == b'\n').any(|l| l == [INK_LINE]) && *tn + 2 <= text.len()
@@ -1232,18 +1489,13 @@ impl Notes {
     fn undo(&mut self, cx: &Ctx, id: u32) {
         self.rewrite(cx, id, |_text, tn, ink, inn| {
             if *inn > 0 {
-                let mut pts = [(0i16, 0i16); POINTS];
-                let mut ends = [0u16; STROKES];
-                let mut styles = [0u8; STROKES];
-                let ns = decode_ink(&ink[..*inn], &mut pts, &mut ends, &mut styles);
-                let mut strokes: [&[(i16, i16)]; STROKES] = [&[]; STROKES];
-                let mut from = 0usize;
-                for (k, &e) in ends[..ns].iter().enumerate() {
-                    strokes[k] = &pts[from..usize::from(e)];
-                    from = usize::from(e);
+                // The last stroke's start is the ink's new end.
+                let (mut at, mut last) = (0, 0);
+                while let Some(len) = stroke_len(&ink[at..*inn]) {
+                    last = at;
+                    at += len;
                 }
-                let keep = ns.saturating_sub(1);
-                *inn = encode_styled(&strokes[..keep], &styles[..keep], ink).unwrap_or(0);
+                *inn = last;
                 return true;
             }
             if *tn > 0 {
@@ -1431,17 +1683,76 @@ impl Program for Notes {
                 self.searching = true;
                 Reply::Redraw
             }
-            (Event::PenUp { x, y }, View::Home) if LAYOUT.contains_point(x, y) => {
-                self.as_list = x >= LAYOUT.x + LAYOUT.w / 2;
+            (Event::PenDown { y, .. }, View::Home) => {
+                self.down_y = Some(y);
+                Reply::Nothing
+            }
+            // A drag up or down turns the page.
+            (Event::PenUp { y, .. }, View::Home)
+                if self.down_y.is_some_and(|y0| y0.abs_diff(y) > 48) =>
+            {
+                let up = self.down_y.take().is_some_and(|y0| y < y0);
+                let turned = if up { self.page_on() } else { self.page_back() };
+                if turned {
+                    Reply::Redraw
+                } else {
+                    Reply::Nothing
+                }
+            }
+            (Event::PenUp { x, y }, View::Home) if kit::FOOT.contains_point(x, y) => {
+                self.down_y = None;
+                if let Some(i) = (0..FILTERS.len())
+                    .find(|&i| kit::foot_tab(FILTERS.len(), i).contains_point(x, y))
+                {
+                    self.filter = i as u8;
+                    self.first_page();
+                }
+                Reply::Redraw
+            }
+            // The D-pad: left and right step the filters, up and down the
+            // notes (turning the page at its ends), the centre opens.
+            (Event::Key(k @ (Key::Left | Key::Right)), View::Home) => {
+                let n = FILTERS.len() as u8;
+                self.filter = (self.filter + if k == Key::Right { 1 } else { n - 1 }) % n;
+                self.first_page();
+                Reply::Redraw
+            }
+            (Event::Key(k @ (Key::Up | Key::Down)), View::Home) => {
+                if !self.keys {
+                    self.keys = true;
+                    self.sel = self.first;
+                } else if k == Key::Down {
+                    if self.sel + 1 < self.next {
+                        self.sel += 1;
+                    } else {
+                        self.page_on();
+                    }
+                } else if self.sel > self.first {
+                    self.sel -= 1;
+                } else {
+                    self.page_back();
+                }
+                Reply::Redraw
+            }
+            (Event::Key(Key::Enter), View::Home) => {
+                let (order, no) = self.order();
+                if !self.keys || usize::from(self.sel) >= no {
+                    self.keys = true;
+                    return Reply::Redraw;
+                }
+                self.view = View::Note(order[usize::from(self.sel)]);
+                self.tool = Tool::Pen;
                 Reply::Redraw
             }
             (Event::Char(c), View::Home) if self.searching && self.query_n < self.query.len() => {
                 self.query[self.query_n] = c;
                 self.query_n += 1;
+                self.first_page();
                 Reply::Redraw
             }
             (Event::Delete, View::Home) if self.searching => {
                 self.query_n = self.query_n.saturating_sub(1);
+                self.first_page();
                 Reply::Redraw
             }
             (Event::Done, View::Home) if self.searching => {

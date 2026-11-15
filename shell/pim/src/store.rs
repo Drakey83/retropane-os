@@ -144,6 +144,9 @@ pub mod tag {
     pub const INK: u8 = 34;
     /// Calendar, list: its name.
     pub const NAME: u8 = 35;
+    /// Note: the handwriting that follows [`INK`]'s (whole strokes; a
+    /// field holds [`super::TEXT_MAX`] bytes).
+    pub const INK_MORE: u8 = 39;
     /// Calendar: where it syncs from (an iCal link, a CalDAV address, or
     /// "google"; absent: on this device only).
     pub const SOURCE: u8 = 36;

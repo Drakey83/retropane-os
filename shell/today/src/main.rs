@@ -9,6 +9,21 @@ mod image {
     use core::cell::RefCell;
     use core::fmt::Write;
 
+    /// Numbers as six-digit hex words in a log line (`{:06X?}` of the
+    /// array brought 3 KB of the formatter's list builder for it).
+    struct Hex<'a>(&'a [u32]);
+    impl core::fmt::Display for Hex<'_> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            for (k, v) in self.0.iter().enumerate() {
+                if k > 0 {
+                    f.write_str(" ")?;
+                }
+                write!(f, "{v:06X}")?;
+            }
+            Ok(())
+        }
+    }
+
     use rp_draw::Frame;
     use rp_draw::Renderer as _;
     use rp_drv_mbx_display::Display;
@@ -1510,7 +1525,7 @@ mod image {
             let pwm = rt::take_pwm0().map(|mut p| (p.read32(0), p.read32(4), p.read32(8)));
             let _ = writeln!(
                 RunLog,
-                "look: {} (curve 1.75, saturation {}/{}); GSCTRL {gsctrl:08X}, gamma table {}; GFXGAM {gam:06X?}; backlight PWM0 (CR, DCR, PCR) {pwm:X?}",
+                "look: {} (curve 1.75, saturation {}/{}); GSCTRL {gsctrl:08X}, gamma table {}; GFXGAM {}; backlight PWM0 (CR, DCR, PCR) {pwm:X?}",
                 if rp_draw::look::ON {
                     "the default picture"
                 } else {
@@ -1519,6 +1534,7 @@ mod image {
                 rp_draw::look::SAT_NUM,
                 rp_draw::look::SAT_DEN,
                 if gsctrl & 1 << 26 != 0 { "on" } else { "off" },
+                Hex(&gam),
             );
         }
 

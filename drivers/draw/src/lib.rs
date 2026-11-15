@@ -765,3 +765,41 @@ pub fn add_damage(list: &mut [Rect], n: &mut usize, r: Rect) {
 
 #[cfg(test)]
 mod tests;
+
+/// Sorts a short list by `key`, in place: an insertion sort, a few dozen
+/// bytes of code each use. `sort_unstable` brings the library's pattern-
+/// defeating quicksort and its sorting networks, built for millions of
+/// elements: 5 KB in the image for lists of 4, 8 and 256 (the shell's
+/// lanes, the damage rectangles, the latency samples at a run's end).
+/// Stable; quadratic, so for lists of a few hundred at most.
+pub fn sort_small<T: Copy, K: PartialOrd>(list: &mut [T], key: impl Fn(&T) -> K) {
+    for i in 1..list.len() {
+        let x = list[i];
+        let mut j = i;
+        while j > 0 && key(&list[j - 1]) > key(&x) {
+            list[j] = list[j - 1];
+            j -= 1;
+        }
+        list[j] = x;
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::sort_small;
+
+    #[test]
+    fn a_short_list_sorts_by_its_key_and_keeps_equal_ones_in_order() {
+        let mut v = [(3u8, 'a'), (1, 'b'), (3, 'c'), (2, 'd'), (1, 'e')];
+        sort_small(&mut v, |x| x.0);
+        assert_eq!(v, [(1, 'b'), (1, 'e'), (2, 'd'), (3, 'a'), (3, 'c')]);
+        let mut none: [u32; 0] = [];
+        sort_small(&mut none, |&x| x);
+        let mut big = [0u32; 256];
+        for (k, x) in big.iter_mut().enumerate() {
+            *x = (k as u32).wrapping_mul(2_654_435_761) >> 20;
+        }
+        sort_small(&mut big, |&x| x);
+        assert!(big.windows(2).all(|w| w[0] <= w[1]));
+    }
+}

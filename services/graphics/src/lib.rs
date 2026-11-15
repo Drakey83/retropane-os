@@ -1780,7 +1780,7 @@ fn two_d_rects(out: &mut [Rect; MAX_DIRTY], drawn: &[Rect]) -> usize {
             n += 1;
         }
     }
-    out[..n].sort_unstable_by_key(|r| (r.y, r.x));
+    rp_draw::sort_small(&mut out[..n], |r| (r.y, r.x));
     n
 }
 
@@ -1810,7 +1810,7 @@ fn copy_rects(out: &mut [Rect; MAX_DIRTY + 1], area: Rect, held: &[Rect]) -> usi
             n += 1;
         }
     }
-    out[..n].sort_unstable_by_key(|r| (r.y, r.x));
+    rp_draw::sort_small(&mut out[..n], |r| (r.y, r.x));
     n
 }
 

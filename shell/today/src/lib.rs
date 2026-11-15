@@ -1002,7 +1002,7 @@ impl Latency {
     #[must_use]
     pub fn summary(&mut self) -> (u32, u32, u32) {
         let kept = &mut self.kept[..self.n];
-        kept.sort_unstable();
+        rp_draw::sort_small(kept, |&v| v);
         let median = kept.get(kept.len() / 2).copied().unwrap_or(0);
         (self.count, median, self.worst)
     }

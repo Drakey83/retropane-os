@@ -104,6 +104,8 @@ pub struct Tasks {
     gauge: Option<(Pic, u16, bool)>,
     /// What a tap on the home hits, as last drawn.
     hits: kit::Hits<Hit, 24>,
+    /// The D-pad's place among what is drawn.
+    focus: kit::Focus,
 }
 
 /// What a stylus tap on the home hits (design-language.md version 3:
@@ -170,6 +172,7 @@ impl Tasks {
             painted: false,
             gauge: None,
             hits: kit::Hits::new(),
+            focus: kit::Focus::default(),
         }
     }
 
@@ -903,12 +906,40 @@ impl Program for Tasks {
         self.paint(cx);
         self.refresh(cx);
         match self.view {
-            View::Home => self.home(f, cx),
-            View::List(w) => self.list(f, cx, w),
+            View::Home => {
+                self.home(f, cx);
+                self.focus.ring(f, self.hits.rects());
+            }
+            View::List(w) => {
+                self.list(f, cx, w);
+                self.focus
+                    .ring(f, self.rows_at[..self.n_rows].iter().map(|(r, _)| *r));
+            }
         }
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        // The D-pad (R203): the arrows walk what is drawn, the centre taps
+        // it (kit::Focus); typing keeps the keys.
+        if let Event::Key(k) = e
+            && !(self.typing && matches!(self.view, View::List(_)))
+        {
+            let moved = match self.view {
+                View::Home => self.focus.step(k, self.hits.rects()),
+                View::List(_) => self
+                    .focus
+                    .step(k, self.rows_at[..self.n_rows].iter().map(|(r, _)| *r)),
+            };
+            if moved {
+                return Reply::Redraw;
+            }
+            if k == Key::Enter
+                && let Some((x, y)) = self.focus.point()
+            {
+                self.event(Event::PenDown { x, y }, cx);
+                return self.event(Event::PenUp { x, y }, cx);
+            }
+        }
         match (e, self.view) {
             (Event::PenDown { x, y }, View::List(_)) => {
                 self.press = self.rows_at[..self.n_rows]

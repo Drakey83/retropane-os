@@ -137,14 +137,32 @@ lighter glass, so coral stays coral where it had to become maroon.
 
 ### What is built, what is next
 
-Built and tested (2026-11-14): the backdrop's painter, the renderers'
-picture floor (both renderers, the reference test), the window glass and
-light gel keys, the window twins, the kit's ring and discs, the corner
-fix, the concepts. **Not yet on the X51v:** the image doesn't paint the
-backdrop into the renderer's picture yet (`Shell::use_backdrops` is the
-model's so far), so the device still shows version 2's window. Next: the
-device's side (a picture in the 2700G's pool, painted when an app opens),
-then each app rebuilt on its concept with its sheet's full build list.
+Built and tested in the emulator (2026-11-15), waiting for the X51v:
+
+- The materials: the backdrop's painter, on the device a picture in the
+  2700G's pool painted when an app opens; the renderers' picture floor;
+  the window glass and light gel keys; the kit's ring, discs, cards, foot
+  tabs and stat tiles.
+- Calendar: the day's board; the views as foot tabs; Week with a lens on
+  the chosen day (a wide column that reads, six slim ones as bars of
+  colour: seven equal columns are 58 px, three letters of a title).
+- Tasks: the home of numbers; every tile and row a target.
+- Contacts: search first, glossy favourites, a card a letter. No call
+  list: the X51v is no phone (the owner, 2026-11-15).
+- Notes: the home as paper (the pinned note a whole sheet with its
+  writing, the rest sheets of their own pastel, the filters as foot tabs,
+  a drag or the D-pad turns the page so no note is out of reach); the
+  palette tray; ink a stroke at a time from its bytes (no count of
+  strokes).
+- Calculator: one glass display (the tape over a hairline over the sum
+  and its answer, as large as it fits), gel keys.
+- The D-pad in every app (`kit::Focus`): the arrows go to the nearest
+  thing a tap can hit the way they point, the centre taps it; built on
+  the targets a screen records for the stylus, so nothing tappable is out
+  of its reach and no screen keeps a second layout for the keys.
+
+Next: what the owner finds on the X51v; ink past one record (R206); the
+image's room (R208).
 
 ## Version 2 (2026-11-14): why the first version produced plain apps
 

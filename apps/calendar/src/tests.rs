@@ -278,9 +278,15 @@ fn every_tab_day_and_column_answers_the_stylus() {
     // A day in the week strip.
     tap(&mut c, Hit::Day(19_725));
     assert_eq!(c.day, 19_725);
-    // A column in Week opens its day.
+    // A slim column in Week moves the lens to its day; the wide one
+    // opens its day.
     c.view = View::Week;
     draw(&mut c, &cx);
+    tap(&mut c, Hit::Day(19_724));
+    assert_eq!((c.view, c.day), (View::Week, 19_724));
+    draw(&mut c, &cx);
+    let lens = c.hits.find(Hit::OpenDay(19_724)).expect("the lens");
+    assert!(lens.w > 150, "{lens:?}");
     tap(&mut c, Hit::OpenDay(19_724));
     assert_eq!((c.view, c.day), (View::Day, 19_724));
     // A day in Month.
