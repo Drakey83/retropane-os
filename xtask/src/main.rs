@@ -14,6 +14,7 @@ mod eol;
 mod frames;
 mod g7;
 mod gate;
+mod hl_mockups;
 mod lookcheck;
 mod measure;
 mod mutants;

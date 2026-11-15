@@ -73,13 +73,44 @@ game to run full screen in landscape."
   195, `key_tab` 196, `key_prevweapon` 197, `key_nextweapon` 198), the
   stylus is the mouse in its mode 2 (`use_mouse 2`, `mouse_sensitivity 16`,
   a touch fires: `mouseb_fire 1`), every key can be bound again in its
-  menu, and it runs turned (`Orientation 1`). **Not known yet:** what the
-  stylus does in mode 2 exactly (look by dragging, or a stick under the
-  thumb), and which button each number is on the X51v: to read from
-  `DoomGLES.exe` (REA) before line 12's default layout is drawn, with a
-  mock-up for him. Half-Life has more actions than Doom (jump, crouch,
-  reload, the flashlight, second fire): where those go is part of that
-  mock-up.
+  menu, and it runs turned (`Orientation 1`). Half-Life has more actions
+  than Doom (jump, crouch, reload, the flashlight, second fire): where
+  those go is part of the mock-ups below.
+- **What `DoomGLES.exe` itself does (read 2026-11-15 with REA and Ghidra,
+  read-only, the output kept under `local/`; findings, not the answer):**
+  - **The stylus in mode 2 is mouse look, by dragging.** `use_mouse 2`
+    switches on the same flag as the program's `-mlook` option. Building
+    each move, with that flag on, the stylus's sideways movement turns the
+    view (eight units of angle for each unit moved) and its up-and-down
+    movement tilts the view up and down (a tenth of a degree a unit, kept
+    between 110 down and 90 up; `invert_mouse` swaps it); with the flag
+    off (mode 1) up-and-down walks forward and back instead, as Doom's
+    mouse always did. Movement is the stylus's own (how far it moved
+    since the last frame, scaled by `mouse_sensitivity`), not a stick
+    under the thumb.
+  - **`Orientation 1` turns the picture a quarter turn** (the drawing is
+    rotated by +90 degrees; 2 is -90). Read from the rotation's sign, that
+    is the device held with its top edge at the player's right, so the
+    D-pad and buttons are under the left hand: our `RP_TURN_RIGHT`. **Not
+    confirmed by eye:** which way he holds it is one look for the owner.
+  - **The button numbers are Windows Mobile's own key codes:** 193 to 198
+    are the six program buttons in order (Calendar, Contacts, Mail, Home,
+    Record, wireless: docs/hw/keypad.md), 134 the D-pad's centre. So his
+    settings are: the D-pad walks and turns, its centre fires, Calendar
+    is always-run, Contacts is use, Mail the menu, Home the map, Record
+    and wireless the previous and next weapon.
+  - **Not read:** whether a touch of the stylus also fires (it depends on
+    which mouse button the program reports for the stylus).
+- **Mock-ups for his pick** (`cargo xtask ui-preview`, drawn by the shell's
+  own code and the app kit's glass, so the X51v draws exactly this; in
+  `docs/design/mockups`, light and dark): the controls as DoomGLES has
+  them with Half-Life's extras on the buttons (`hl-controls-doomgles`),
+  or the D-pad stepping sideways with the stylus alone turning
+  (`hl-controls-strafe`); and the pop-up that says where the game's files
+  go, as three steps (`hl-files-steps`) or short (`hl-files-short`). The
+  pop-up is drawn as a window of its own here: over the Start menu, as he
+  asked, it needs a small piece of the shell that is not built. Nothing is
+  chosen until he picks (R257).
 
 ## The lines
 

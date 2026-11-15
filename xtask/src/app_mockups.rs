@@ -590,6 +590,27 @@ pub fn mocks() -> Vec<Mock> {
 
 fn base() -> Vec<Mock> {
     vec![
+        // Half-Life's two screens for the owner's pick (hl_mockups.rs).
+        Mock {
+            name: "hl-files-steps",
+            what: "Half-Life opened with no game files on the card, A: where they go and how, as three steps",
+            prepare: Box::new(|s| open(s, crate::hl_mockups::HlFiles { steps: true })),
+        },
+        Mock {
+            name: "hl-files-short",
+            what: "Half-Life opened with no game files on the card, B: the folder first, the how in two lines",
+            prepare: Box::new(|s| open(s, crate::hl_mockups::HlFiles { steps: false })),
+        },
+        Mock {
+            name: "hl-controls-doomgles",
+            what: "Half-Life's default controls in landscape, A: as DoomGLES (the pad moves and turns, the stylus looks)",
+            prepare: Box::new(|s| open(s, crate::hl_mockups::HlControls { strafe: false })),
+        },
+        Mock {
+            name: "hl-controls-strafe",
+            what: "Half-Life's default controls in landscape, B: the pad moves and steps sideways, the stylus turns and looks",
+            prepare: Box::new(|s| open(s, crate::hl_mockups::HlControls { strafe: true })),
+        },
         // Design language version 3: the concept homes (design_v3.rs).
         Mock {
             name: "v3-calendar",
