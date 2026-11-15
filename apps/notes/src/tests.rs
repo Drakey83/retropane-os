@@ -805,3 +805,261 @@ fn redo_puts_back_what_undo_took_strokes_and_typing() {
     tap(&mut n, 6);
     assert_eq!(text(pim), typed);
 }
+
+#[test]
+fn the_marker_takes_a_colour_and_stays_the_marker() {
+    // The owner on the X51v, 2026-11-15: "when i select a new color under
+    // marker, it switches to pen".
+    let pim = store();
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    n.event(Event::Key(Key::SoftRight), &cx);
+    draw(&mut n, &cx);
+    let tap = |n: &mut Notes, r: Rect| {
+        n.event(
+            Event::PenDown {
+                x: r.x + 9,
+                y: r.y + 9,
+            },
+            &cx,
+        );
+        n.event(
+            Event::PenUp {
+                x: r.x + 9,
+                y: r.y + 9,
+            },
+            &cx,
+        );
+    };
+    tap(&mut n, tool_key(1));
+    assert_eq!(n.style(), MARKER, "its own yellow until a colour is chosen");
+    tap(&mut n, well(2));
+    assert_eq!(n.tool, Tool::Marker);
+    assert_eq!(n.style(), MARKER | MARKER_HUE | 2);
+    assert_eq!(n.pen, 0, "the pen keeps its own colour");
+    // The stroke is painted in that colour, see-through.
+    let mut px = std::vec![0u32; 448 * 196];
+    paint_over(
+        &mut px,
+        448,
+        196,
+        &[&[(40, 40), (120, 40)]],
+        &[n.style()],
+        None,
+    );
+    let c = px[40 * 448 + 80];
+    assert_eq!(c & 0x00FF_FFFF, PEN[2] & 0x00FF_FFFF);
+    assert!((c >> 24) < 0x80 && (c >> 24) > 0x40);
+    // The pen's key, then a well: the pen in that colour, as before.
+    tap(&mut n, tool_key(0));
+    tap(&mut n, well(4));
+    assert_eq!((n.tool, n.pen), (Tool::Pen, 4));
+}
+
+#[test]
+fn a_note_full_of_ink_still_takes_typing() {
+    // The owner on the X51v, 2026-11-15: "list doesnt seem to do anything
+    // in notes" (the note's record was full of its ink, and the typing
+    // was refused without a word).
+    let pim = store();
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    n.event(Event::Key(Key::SoftRight), &cx);
+    draw(&mut n, &cx);
+    let id = n.open_id().unwrap();
+    let (ix, iy) = n.ink_at.expect("an ink panel on screen");
+    // Ink well past the note's own record, onto a page.
+    let mut k = 0u16;
+    while strokes_kept(pim).1 < 1 {
+        stroke(
+            &mut n,
+            &cx,
+            ix + 10 + (k % 5) * 30,
+            iy + 40 + (k % 30) * 4,
+            28,
+            |s| {
+                if s % 2 == 0 { 0 } else { 30 }
+            },
+        );
+        k += 1;
+        assert!(k < 400);
+    }
+    {
+        let g = pim.borrow();
+        let r = g.as_ref().unwrap().get(id).unwrap();
+        assert!(r.text(tag::INK).len() <= OWN_INK && r.text(tag::INK_MORE).is_empty());
+    }
+    // LIST: an item typed and kept, a long one too.
+    let r = tool_key(4);
+    n.event(
+        Event::PenDown {
+            x: r.x + 9,
+            y: r.y + 9,
+        },
+        &cx,
+    );
+    n.event(
+        Event::PenUp {
+            x: r.x + 9,
+            y: r.y + 9,
+        },
+        &cx,
+    );
+    for _ in 0..40 {
+        for &c in b"Bread and butter, milk, eggs. " {
+            n.event(Event::Char(c), &cx);
+        }
+    }
+    assert!(!n.text_full);
+    let g = pim.borrow();
+    let text = g
+        .as_ref()
+        .unwrap()
+        .get(id)
+        .unwrap()
+        .text(tag::TEXT)
+        .to_vec();
+    assert!(text.len() > 1200 && text.windows(4).any(|w| w == b"[ ] "));
+    drop(g);
+    // A note of the first pages' kind (ink in both its fields, the record
+    // full): the typing moves the second field to a page and is kept.
+    let old = {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let mut field = std::vec::Vec::new();
+        let mut one = [0u8; 600];
+        let len = encode_styled(&[&[(5, 5), (60, 9), (90, 40)]], &[0], &mut one).unwrap();
+        while field.len() + len <= rp_pim::store::TEXT_MAX {
+            field.extend_from_slice(&one[..len]);
+        }
+        s.put(
+            Kind::Note,
+            None,
+            &[
+                (tag::TEXT, &[INK_LINE]),
+                (tag::INK, &field),
+                (tag::INK_MORE, &field),
+            ],
+        )
+        .unwrap()
+    };
+    let before = strokes_kept_of(pim, old);
+    // (Enough text that the record cannot hold it beside both fields.)
+    assert!(text_edit(&cx, old, &mut |text, tn| {
+        for _ in 0..60 {
+            for &c in b"hello" {
+                text[*tn] = c;
+                *tn += 1;
+            }
+        }
+        true
+    }));
+    assert_eq!(strokes_kept_of(pim, old), before, "no stroke lost");
+    let g = pim.borrow();
+    let r = g.as_ref().unwrap().get(old).unwrap();
+    assert!(r.text(tag::TEXT).ends_with(b"hello") && r.text(tag::INK_MORE).is_empty());
+}
+
+/// The strokes of note `id` and of its pages.
+fn strokes_kept_of(pim: &core::cell::RefCell<Option<Store<'static>>>, id: u32) -> usize {
+    let g = pim.borrow();
+    let s = g.as_ref().unwrap();
+    let mut count = 0;
+    let own = s.get(id).unwrap();
+    let pages = s.all(Kind::Ink).filter(|r| r.num(tag::PARENT) == Some(id));
+    for r in core::iter::once(own).chain(pages) {
+        for field in [r.text(tag::INK), r.text(tag::INK_MORE)] {
+            let mut at = 0;
+            while let Some(n) = stroke_len(&field[at..]) {
+                at += n;
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn a_long_press_on_a_sheet_offers_delete() {
+    // The owner, 2026-11-15: "you should be able to long press on the all
+    // notes screen, on any of the notes, and delete them".
+    let pim = store();
+    many(pim, 4);
+    let cx = ctx(pim);
+    let mut n = opened(19_723);
+    draw(&mut n, &cx);
+    let (r, place) = n.cards[1];
+    let id = n.rows[usize::from(place)].unwrap().id;
+    let (x, y) = (r.x + 30, r.y + 12);
+    // A short tap opens the note, as before.
+    n.event(Event::PenDown { x, y }, &cx);
+    n.event(Event::Tick, &cx);
+    n.event(Event::PenUp { x, y }, &cx);
+    assert!(matches!(n.view, View::Note(_)));
+    n.event(Event::Key(Key::SoftLeft), &cx);
+    draw(&mut n, &cx);
+    // Held: Delete offered on the sheet; the lift leaves it; a tap
+    // elsewhere keeps the note.
+    assert_eq!(n.event(Event::PenDown { x, y }, &cx), Reply::Animate);
+    let mut ticks = 0;
+    while n.event(Event::Tick, &cx) == Reply::Animate {
+        ticks += 1;
+        assert!(ticks < 40);
+    }
+    assert_eq!(n.ask, Some(place));
+    n.event(Event::PenUp { x, y }, &cx);
+    assert_eq!((n.view, n.ask), (View::Home, Some(place)));
+    draw(&mut n, &cx);
+    n.event(Event::PenDown { x: 5, y: 300 }, &cx);
+    n.event(Event::PenUp { x: 5, y: 300 }, &cx);
+    assert_eq!(n.ask, None);
+    assert_eq!(pim.borrow().as_ref().unwrap().all(Kind::Note).count(), 4);
+    // Held again, and its key: the note goes.
+    draw(&mut n, &cx);
+    n.event(Event::PenDown { x, y }, &cx);
+    while n.event(Event::Tick, &cx) == Reply::Animate {}
+    n.event(Event::PenUp { x, y }, &cx);
+    draw(&mut n, &cx);
+    let key = n.ask_key;
+    n.event(
+        Event::PenDown {
+            x: key.x + 9,
+            y: key.y + 9,
+        },
+        &cx,
+    );
+    n.event(
+        Event::PenUp {
+            x: key.x + 9,
+            y: key.y + 9,
+        },
+        &cx,
+    );
+    let g = pim.borrow();
+    assert!(g.as_ref().unwrap().get(id).is_none());
+    assert_eq!(g.as_ref().unwrap().all(Kind::Note).count(), 3);
+    // A drag is no hold.
+    drop(g);
+    draw(&mut n, &cx);
+    let (r, _) = n.cards[0];
+    n.event(
+        Event::PenDown {
+            x: r.x + 30,
+            y: r.y + 12,
+        },
+        &cx,
+    );
+    n.event(
+        Event::PenMove {
+            x: r.x + 30,
+            y: r.y + 40,
+        },
+        &cx,
+    );
+    for _ in 0..40 {
+        n.event(Event::Tick, &cx);
+    }
+    assert_eq!(n.ask, None);
+}

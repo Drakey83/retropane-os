@@ -4084,6 +4084,18 @@ fn the_program_buttons_open_their_apps_from_anywhere() {
     assert_ne!(s.input(Input::Key(Key::Calendar)), Action::OpenProgram(0));
     assert_eq!((presses.get(), s.screen()), (1, Screen::Program));
     assert_eq!(s.input(Input::Key(Key::Contacts)), Action::OpenProgram(1));
+    // The D-pad reaches Start from inside an app: up, where the app has
+    // nothing higher, lands on it; down gives the arrows back; the centre
+    // opens the menu.
+    s.open_program(Box::leak(Box::new(Plain)));
+    s.input(Input::Key(Key::Up));
+    assert_eq!(s.focus, Some(Target::Start));
+    s.input(Input::Key(Key::Down));
+    assert_eq!(s.focus, None);
+    s.input(Input::Key(Key::Up));
+    s.input(Input::Key(Key::Enter));
+    assert!(s.menu_open, "the Start menu from the D-pad, in an app");
+    s.input(Input::Key(Key::Home));
     // Record: Notes on a new note.
     assert_eq!(s.input(Input::Key(Key::Record)), Action::OpenProgram(3));
     assert_eq!(s.take_intent(), rp_app::INTENT_NEW);

@@ -314,3 +314,27 @@ fn the_dpad_steps_the_modes_types_on_the_keys_and_walks_the_tape() {
     c.event(Event::PenDown { x: 5, y: 5 }, &cx);
     assert_eq!(c.focus.point(), None);
 }
+
+#[test]
+fn a_number_alone_is_shown_once_and_equals_adds_no_line() {
+    // The owner's photo, 2026-11-15: "25" small over "25" large, and the
+    // tape filling with 25s.
+    let mut c = Calculator::new(Mode::Basic, 19_723);
+    c.push(b"5x5");
+    assert!(c.is_sum());
+    c.press(b"=");
+    assert_eq!(shown(&c), ["25"]);
+    assert!(!c.is_sum(), "the answer alone");
+    for _ in 0..3 {
+        c.press(b"=");
+    }
+    assert_eq!(shown(&c), ["25"], "no line for a number alone");
+    // A sum on the answer is a sum again.
+    c.push(b"+1");
+    c.press(b"=");
+    assert_eq!(shown(&c), ["25", "26"]);
+    // A negative number alone is still a number.
+    let mut c = Calculator::new(Mode::Basic, 19_723);
+    c.push(b"~7");
+    assert!(!c.is_sum());
+}

@@ -2153,6 +2153,8 @@ mod image {
         let mut last_ticks = rt::ticks();
         let mut sub_ms = 0u32;
         let mut now_ms = 0u64;
+        // When a picture was last kept under a moving sky (below).
+        let mut kept_moving_ms = 0u64;
         let start_min = card_min.unwrap_or_else(start_minutes);
         let mut minute_shown = -1i64;
 
@@ -3080,7 +3082,22 @@ mod image {
                 pages_check = true;
                 app_check = true;
             }
-            if still {
+            // The pictures are kept while the screen is still, and also
+            // while only the living sky moves (rain, snow, the sky test):
+            // then nothing is ever still on Today, and a picture the
+            // screen wants was never made (the owner on the X51v,
+            // 2026-11-15, run today-0146: the sky test's big picture made
+            // only once he left Today, 40 s later). A decode is ~80 ms, so
+            // under a moving sky one at most every 400 ms.
+            let sky_gap = !still
+                && shell.sky_live()
+                && !filter.down()
+                && !gfx.busy()
+                && now_ms.wrapping_sub(kept_moving_ms) >= 400;
+            if sky_gap {
+                kept_moving_ms = now_ms;
+            }
+            if still || sky_gap {
                 // A new forecast's hours: Hourly's graph painted again.
                 let t0 = rt::ticks();
                 if rp_today::keep_graph(shell, pics, &mut graph_key) {

@@ -891,6 +891,10 @@ impl Calendar {
                 return self.edit_tap(cx, x, top + h / 2);
             }
         };
+        // (Up on the first row: nothing higher, the shell takes it.)
+        if e.row == Some(to) {
+            return Reply::Nothing;
+        }
         e.row = Some(to);
         e.typing = None;
         e.confirm_delete = false;

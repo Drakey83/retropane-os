@@ -1304,6 +1304,22 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// longer read it (stamped before the last frame start or full wait),
     /// else everything queued finishes first.
     fn row_at(&mut self, key: RowKey) -> usize {
+        // A row of one colour serves every width up to its own, so it is
+        // written once at the ring's full width and found whatever width
+        // asks (keyed by its width, each panel width of each glass colour
+        // was a row of its own: an app's screen wrote 336 rows a frame
+        // into a ring of 64 and waited on the engine six times, 33 ms of
+        // CPU a frame on the X51v, run today-0146).
+        let key = if key.a == key.b {
+            RowKey {
+                first: 0,
+                span: 1,
+                w: (ROW_BYTES / 4) as u16,
+                ..key
+            }
+        } else {
+            key
+        };
         if let Some(k) = self.row_keys.iter().position(|r| *r == Some(key)) {
             self.row_used[k] = self.epoch;
             self.last.rows_reused += 1;

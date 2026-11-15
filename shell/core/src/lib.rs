@@ -2875,6 +2875,28 @@ impl Shell {
             Input::PenUp { x, y } if area(x, y) => {
                 Some(self.program_event(rp_app::Event::PenUp { x, y }))
             }
+            // The Start key from inside an app (the owner on the X51v,
+            // 2026-11-15: "you cannot select the start menu with the
+            // dpad"): the app has the arrows, so Start was out of their
+            // reach. Up, where the app has nothing higher to go to, lands
+            // on Start; there the centre opens the menu and down gives the
+            // arrows back to the app.
+            Input::Key(k) if self.focus == Some(Target::Start) => Some(match k {
+                Key::Enter => self.activate(Target::Start),
+                Key::Down => {
+                    self.set_focus(None);
+                    Action::Redraw
+                }
+                _ => Action::Nothing,
+            }),
+            Input::Key(Key::Up) => {
+                let a = self.program_event(rp_app::Event::Key(rp_app::Key::Up));
+                if a == Action::Nothing && self.prog_field.is_none() {
+                    self.set_focus(Some(Target::Start));
+                    return Some(Action::Redraw);
+                }
+                Some(a)
+            }
             Input::Key(k) => {
                 let k = match k {
                     Key::Up => rp_app::Key::Up,

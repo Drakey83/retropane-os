@@ -158,6 +158,14 @@ fn drop_last(ink: &[u8], inn: &mut usize) -> bool {
     had
 }
 
+/// The ink a note's own record takes: its text may always be 2,000 bytes
+/// beside it (the record holds about 4,080 with its title and marks).
+/// The first pages filled the note's record with 4,000 bytes of ink, and
+/// then nothing could be typed in it (the owner on the X51v, 2026-11-15:
+/// "list doesnt seem to do anything in notes"). The ink past this is its
+/// pages'.
+const OWN_INK: usize = 1900;
+
 /// A change to a record's ink.
 enum InkOp<'a> {
     /// A packed stroke added at its end.
@@ -196,6 +204,8 @@ fn ink_op(cx: &Ctx, rec: u32, op: InkOp<'_>, page: bool) -> bool {
     };
     // The fields to try, in the order the change reads them.
     let fields: [u8; 2] = match op {
+        // The note's own record: its first field only, to `OWN_INK`.
+        InkOp::Add(s) if !page && (b > 0 || a + s.len() > OWN_INK) => return false,
         InkOp::Add(s) if b > 0 || a + s.len() > TEXT_MAX => [tag::INK_MORE, 0],
         InkOp::Add(_) => [tag::INK, 0],
         InkOp::Erase(_) => [tag::INK, tag::INK_MORE],
@@ -314,7 +324,37 @@ fn text_edit(cx: &Ctx, id: u32, change: &mut dyn FnMut(&mut [u8], &mut usize) ->
     let mut text = [0u8; rp_pim::store::TEXT_MAX];
     let mut tn = r.text(tag::TEXT).len().min(text.len());
     text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
-    change(&mut text, &mut tn) && store.change(id, &[(tag::TEXT, &text[..tn])]).is_ok()
+    if !change(&mut text, &mut tn) {
+        return false;
+    }
+    if store.change(id, &[(tag::TEXT, &text[..tn])]).is_ok() {
+        return true;
+    }
+    // No room in the record: a note written before `OWN_INK` holds ink in
+    // its second field. That goes to a page of its own, and the text is
+    // kept.
+    let more = store.get(id).map_or(0, |r| r.text(tag::INK_MORE).len());
+    if more == 0 {
+        return false;
+    }
+    let moved = {
+        let Some(r) = store.get(id) else { return false };
+        let mut ink = [0u8; rp_pim::store::TEXT_MAX];
+        let n = more.min(ink.len());
+        ink[..n].copy_from_slice(&r.text(tag::INK_MORE)[..n]);
+        // (`text` and `ink`: 4 KB in this frame, the rare path only.)
+        store
+            .put(
+                Kind::Ink,
+                None,
+                &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, &ink[..n])],
+            )
+            .is_ok()
+    };
+    moved
+        && store
+            .change(id, &[(tag::TEXT, &text[..tn]), (tag::INK_MORE, &[])])
+            .is_ok()
 }
 
 /// Where `text` holds the search `q`, whatever its capitals.
@@ -371,6 +411,11 @@ pub const PEN: [Argb; 6] = [
 ];
 /// A stroke's style bit: the marker (wide, see-through yellow).
 pub const MARKER: u8 = 0x08;
+/// A marker stroke's style bit: it takes the colour in bits 0-2 (the
+/// owner on the X51v, 2026-11-15: a colour chosen with the marker
+/// switched to the pen). Without it, the marker's own yellow (every
+/// marker stroke written before).
+pub const MARKER_HUE: u8 = 0x40;
 /// A stroke's size, style bits 4-5: 0 medium (every stroke written before
 /// sizes), 1 fine, 2 bold (the owner, 2026-11-14: "there also is no
 /// stroke size control").
@@ -670,6 +715,9 @@ const fn tool_key(k: usize) -> Rect {
 /// What UNDO took out, for REDO: each entry its bytes (a packed stroke,
 /// or a typed character), then its length (two bytes) and kind.
 const REDO_ROOM: usize = 1200;
+/// A hold this many ticks (about 30 ms each: half a second) on a sheet of
+/// the home offers Delete.
+const HOLD_TICKS: u8 = 16;
 const PAPER: Rect = Rect::new(8, 40, W - 16, 404);
 /// The ink panel's size (the store's coordinates).
 const INK_W: u16 = 448;
@@ -684,6 +732,9 @@ pub struct Notes {
     /// ink panel lies on screen; the checklist rows on screen; typing.
     tool: Tool,
     pen: u8,
+    /// The marker's colour (a well chosen while the marker is the tool):
+    /// none, its own yellow.
+    marker_hue: Option<u8>,
     /// The stroke size: 0 fine, 1 medium, 2 bold.
     size: u8,
     /// The colour wells' discs.
@@ -713,6 +764,15 @@ pub struct Notes {
     n_pages: usize,
     next: u8,
     sel: u8,
+    /// The home's long press: the sheet under the stylus and the ticks it
+    /// has been held; the note (its place) Delete is offered for, its key,
+    /// and whether the stylus that asked is still down.
+    hold: Option<(u8, u8)>,
+    ask: Option<u8>,
+    ask_key: Rect,
+    ask_held: bool,
+    /// Typing was refused (the note's text is full): said in the tray.
+    text_full: bool,
     /// What UNDO took out of the note `redo_of`, newest last
     /// ([`REDO_ROOM`]); writing anything new forgets it.
     redo: [u8; REDO_ROOM],
@@ -807,7 +867,10 @@ pub fn paint_over(
         }
         let style = styles.get(si).copied().unwrap_or(0);
         let marker = style & MARKER != 0;
-        let c = only.unwrap_or(if marker {
+        let c = only.unwrap_or(if marker && style & MARKER_HUE != 0 {
+            // The pen's colour, see-through as a marker is.
+            kit::keep((PEN[usize::from(style & 7).min(5)] & 0x00FF_FFFF) | 0x7000_0000)
+        } else if marker {
             kit::keep(0x70FF_E040)
         } else {
             PEN[usize::from(style & 7).min(5)]
@@ -884,6 +947,7 @@ impl Notes {
         Self {
             tool: Tool::Pen,
             pen: 0,
+            marker_hue: None,
             size: 1,
             wells: [None; 6],
             ink_full: false,
@@ -903,6 +967,11 @@ impl Notes {
             n_pages: 0,
             next: 0,
             sel: 0,
+            hold: None,
+            ask: None,
+            ask_key: Rect::new(0, 0, 0, 0),
+            ask_held: false,
+            text_full: false,
             redo: [0; REDO_ROOM],
             redo_n: 0,
             redo_of: None,
@@ -1393,6 +1462,25 @@ impl Notes {
                 &s[..k],
             );
         }
+        // Delete, offered by a long press, on the sheet itself.
+        if let Some(place) = self.ask {
+            match self.cards[..self.n_cards].iter().find(|c| c.1 == place) {
+                Some(&(r, _)) => {
+                    let key = Rect::new(r.x + 10, r.y + r.h / 2 - 20, r.w.min(220) - 20, 40);
+                    kit::key(f, cx, key, kit::KeyState::Down);
+                    kit::centred(
+                        f,
+                        key,
+                        key.y + 26,
+                        cx.fonts.ui,
+                        kit::LATE,
+                        b"Delete this note",
+                    );
+                    self.ask_key = key;
+                }
+                None => self.ask = None,
+            }
+        }
         kit::foot_tabs(f, cx, &FILTERS, usize::from(self.filter), tint::NOTES);
     }
 
@@ -1554,7 +1642,12 @@ impl Notes {
         kit::text(f, 24, 472, cx.fonts.label, DIM, b"COLOUR");
         for (i, p) in self.wells.iter().enumerate() {
             let r = well(i as u16);
-            if i == usize::from(self.pen) && self.tool != Tool::Marker {
+            let chosen = if self.tool == Tool::Marker {
+                self.marker_hue.map(usize::from)
+            } else {
+                Some(usize::from(self.pen))
+            };
+            if chosen == Some(i) {
                 kit::key(
                     f,
                     cx,
@@ -1570,7 +1663,16 @@ impl Notes {
                 });
             }
         }
-        if self.ink_full {
+        if self.text_full {
+            kit::right(
+                f,
+                456,
+                472,
+                cx.fonts.label,
+                kit::LATE,
+                b"THIS NOTE'S TEXT IS FULL",
+            );
+        } else if self.ink_full {
             kit::right(
                 f,
                 456,
@@ -1675,7 +1777,7 @@ impl Notes {
             _ => 0,
         };
         size | if self.tool == Tool::Marker {
-            MARKER
+            MARKER | self.marker_hue.map_or(0, |h| MARKER_HUE | h)
         } else {
             self.pen
         }
@@ -1827,7 +1929,7 @@ impl Notes {
     /// Text typed into the note (a new line, or a checklist item, started
     /// when the tool was chosen).
     fn type_char(&mut self, cx: &Ctx, id: u32, c: u8) {
-        text_edit(cx, id, &mut |text, tn| {
+        self.text_full = !text_edit(cx, id, &mut |text, tn| {
             if *tn < text.len() {
                 text[*tn] = c;
                 *tn += 1;
@@ -2011,17 +2113,7 @@ impl Program for Notes {
                     }
                     2 => self.set_num(cx, row.id, tag::PAPER, Some(u32::from((row.paper + 1) % 3))),
                     _ if self.confirm_delete => {
-                        if let Some(cell) = cx.pim
-                            && let Ok(mut g) = cell.try_borrow_mut()
-                            && let Some(store) = g.as_mut()
-                        {
-                            // Its ink pages go with it.
-                            let (page, np) = pages(store, row.id);
-                            for &p in &page[..np] {
-                                let _ = store.remove(p);
-                            }
-                            let _ = store.remove(row.id);
-                        }
+                        self.delete_note(cx, row.id);
                         self.menu = false;
                         self.confirm_delete = false;
                         self.view = View::Home;
@@ -2034,9 +2126,62 @@ impl Program for Notes {
                 self.searching = true;
                 Reply::Redraw
             }
-            (Event::PenDown { y, .. }, View::Home) => {
+            // The stylus down on a sheet: held half a second, Delete is
+            // offered for that note (the owner, 2026-11-15: "you should
+            // be able to long press ... on any of the notes, and delete
+            // them"; Windows Mobile's tap-and-hold menu, ours one key on
+            // the sheet itself).
+            (Event::PenDown { x, y }, View::Home) => {
                 self.down_y = Some(y);
+                self.hold = self.cards[..self.n_cards]
+                    .iter()
+                    .find(|(r, _)| r.contains_point(x, y))
+                    .map(|c| (c.1, 0));
+                if self.hold.is_some() && self.ask.is_none() {
+                    Reply::Animate
+                } else {
+                    Reply::Nothing
+                }
+            }
+            (Event::PenMove { y, .. }, View::Home) => {
+                // A drag is no hold.
+                if self.down_y.is_some_and(|y0| y0.abs_diff(y) > 8) {
+                    self.hold = None;
+                }
                 Reply::Nothing
+            }
+            (Event::Tick, View::Home) => match self.hold {
+                Some((place, t)) if t + 1 >= HOLD_TICKS => {
+                    self.hold = None;
+                    self.ask = Some(place);
+                    self.ask_held = true;
+                    Reply::Redraw
+                }
+                Some((place, t)) => {
+                    self.hold = Some((place, t + 1));
+                    Reply::Animate
+                }
+                None => Reply::Nothing,
+            },
+            // The lift that ends the hold leaves the question up; the next
+            // tap answers it: on its key the note goes, anywhere else it
+            // stays.
+            (Event::PenUp { .. }, View::Home) if self.ask_held => {
+                self.ask_held = false;
+                self.down_y = None;
+                Reply::Redraw
+            }
+            (Event::PenUp { x, y }, View::Home) if self.ask.is_some() => {
+                self.down_y = None;
+                self.hold = None;
+                let place = self.ask.take();
+                if self.ask_key.contains_point(x, y)
+                    && let Some(row) =
+                        place.and_then(|p| self.rows.get(usize::from(p)).copied().flatten())
+                {
+                    self.delete_note(cx, row.id);
+                }
+                Reply::Redraw
             }
             // A drag up or down turns the page.
             (Event::PenUp { y, .. }, View::Home)
@@ -2075,13 +2220,15 @@ impl Program for Notes {
                 } else if k == Key::Down {
                     if self.sel + 1 < self.next {
                         self.sel += 1;
-                    } else {
-                        self.page_on();
+                    } else if !self.page_on() {
+                        return Reply::Nothing;
                     }
                 } else if self.sel > self.first {
                     self.sel -= 1;
-                } else {
-                    self.page_back();
+                } else if !self.page_back() {
+                    // Nothing higher: the shell takes the arrow (Start).
+                    self.keys = false;
+                    return Reply::Nothing;
                 }
                 Reply::Redraw
             }
@@ -2118,6 +2265,7 @@ impl Program for Notes {
                 Reply::Redraw
             }
             (Event::PenUp { x, y }, View::Home) => {
+                self.hold = None;
                 // A card opens its note.
                 match self.cards[..self.n_cards]
                     .iter()
@@ -2139,10 +2287,16 @@ impl Program for Notes {
                     let r = well(i);
                     Rect::new(r.x - 4, r.y - 6, 48, 52).contains_point(x, y)
                 }) {
-                    self.pen = i as u8;
-                    if self.tool != Tool::Pen {
-                        self.tool = Tool::Pen;
-                        self.typing = false;
+                    // The marker takes the colour and stays the marker;
+                    // any other tool gives way to the pen in it.
+                    if self.tool == Tool::Marker {
+                        self.marker_hue = Some(i as u8);
+                    } else {
+                        self.pen = i as u8;
+                        if self.tool != Tool::Pen {
+                            self.tool = Tool::Pen;
+                            self.typing = false;
+                        }
                     }
                 } else if let Some(i) = (0..3u16).find(|&i| size_key(i).contains_point(x, y)) {
                     self.size = i as u8;
@@ -2261,6 +2415,20 @@ impl Program for Notes {
 }
 
 impl Notes {
+    /// Note `id` taken out of the store, its ink pages with it.
+    fn delete_note(&mut self, cx: &Ctx, id: u32) {
+        if let Some(cell) = cx.pim
+            && let Ok(mut g) = cell.try_borrow_mut()
+            && let Some(store) = g.as_mut()
+        {
+            let (page, np) = pages(store, id);
+            for &p in &page[..np] {
+                let _ = store.remove(p);
+            }
+            let _ = store.remove(id);
+        }
+    }
+
     /// What a stylus can tap in an open note besides writing, for the
     /// D-pad: the menu's four keys while it is up; else the tick boxes,
     /// the colour wells, the sizes and the tools.

@@ -498,6 +498,15 @@ impl Calculator {
                     let sn = self.shown(&mut shown);
                     let mut ans = [0u8; 32];
                     let an = v.show(b',', &mut ans);
+                    // The answer just given, "=" pressed again: nothing
+                    // new worked, no line (it added "25" over and over:
+                    // the owner's photo, 2026-11-15).
+                    if !self.is_sum()
+                        && self.n_tape > 0
+                        && self.tape[self.n_tape - 1].1.get() == &ans[..an]
+                    {
+                        return;
+                    }
                     if self.n_tape == self.tape.len() {
                         self.tape.copy_within(1.., 0);
                         self.n_tape -= 1;
@@ -840,7 +849,13 @@ impl Calculator {
         );
         let mut shown = [0u8; 64];
         let sn = self.shown(&mut shown);
-        kit::right(f, d.right() - 12, d.y + 30, cx.fonts.ui, TEXT, &shown[..sn]);
+        // The sum as typed, small, over its answer; a number alone is
+        // shown once, large (it was drawn twice, the small one running
+        // into the large: the owner's photo, 2026-11-15).
+        let sum = self.is_sum();
+        if sum {
+            kit::right(f, d.right() - 12, d.y + 24, cx.fonts.ui, DIM, &shown[..sn]);
+        }
         let mut ans = [0u8; 32];
         let an = match self.value() {
             Some(v) => {
@@ -854,13 +869,25 @@ impl Calculator {
             }
             None => 0,
         };
-        // The answer as large as it fits.
-        let font = if cx.fonts.big.width(&ans[..an]) <= WIDE - 24 {
+        // The answer as large as it fits: across, and under the sum's
+        // line where there is one.
+        let room = if sum { 80 - 30 } else { 80 - 6 };
+        let font = if cx.fonts.big.width(&ans[..an]) <= WIDE - 24
+            && u16::from(cx.fonts.big.ascent) <= room
+        {
             cx.fonts.big
         } else {
             cx.fonts.num
         };
         kit::right(f, d.right() - 12, d.y + 80, font, TEXT, &ans[..an]);
+    }
+
+    /// Whether what is typed is a sum to work (it holds an operator, a
+    /// bracket or a function), not a number alone.
+    fn is_sum(&self) -> bool {
+        self.expr[..self.n]
+            .iter()
+            .any(|c| !(c.is_ascii_digit() || matches!(c, b'.' | b'~')))
     }
 
     fn keypad(&self, f: &mut Frame, cx: &Ctx) {
