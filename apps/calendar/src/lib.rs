@@ -1736,6 +1736,10 @@ pub fn opened(today: i32) -> Calendar {
 }
 
 impl Program for Calendar {
+    fn accent(&self) -> Option<rp_app::Argb> {
+        Some(rp_app::kit::tint::CALENDAR)
+    }
+
     fn title(&self) -> &'static str {
         "Calendar"
     }

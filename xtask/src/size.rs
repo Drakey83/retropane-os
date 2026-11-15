@@ -602,9 +602,12 @@ pub const BUDGETS: &[Budget] = &[
     // renderer draws nothing under a panel's body (the owner's ruling (b)
     // on R191's Start menu: the panel search 1.9 KB, the pieces 0.7 KB),
     // 186,976 B (182.6 KiB) measured.
+    // Then load 184 -> 186 KiB (2026-11-14, test image): the renderer's
+    // floor, an app's own window under its glass (R201, ADR-0023), 189,140 B
+    // (184.7 KiB) measured.
     Budget {
         image: "rp-scene",
-        max_load: 184 * 1024,
+        max_load: 186 * 1024,
         max_zero: 53 * 1024,
         device: OnDevice::Returns,
     },

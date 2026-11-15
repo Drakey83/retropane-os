@@ -1119,6 +1119,10 @@ pub fn opened_for(today: i32, intent: u8) -> Notes {
 }
 
 impl Program for Notes {
+    fn accent(&self) -> Option<rp_app::Argb> {
+        Some(rp_app::kit::tint::NOTES)
+    }
+
     fn title(&self) -> &'static str {
         "Notes"
     }

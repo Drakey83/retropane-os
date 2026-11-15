@@ -382,11 +382,15 @@ pub trait Program {
     fn title(&self) -> &'static str;
     /// The softkeys' words (left, right); empty for none.
     fn softkeys(&self) -> (&'static str, &'static str);
-    /// Draw the content area into `f` (the shell has drawn the bars and
-    /// the wallpaper shows behind).
+    /// Draw the content area into `f` (the shell has drawn the bars, and
+    /// the app's own window is under it: no wallpaper, R201).
     fn draw(&mut self, f: &mut Frame, cx: &Ctx);
     /// Answer an event.
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply;
+    /// The app's accent (its window may be tinted by it); none by default.
+    fn accent(&self) -> Option<Argb> {
+        None
+    }
     /// The keyboard to show (docked above the softkeys, 208 px), if a
     /// field is being typed, and up to three suggestions for its strip.
     fn keyboard(&self) -> Option<Field> {

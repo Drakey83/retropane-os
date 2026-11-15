@@ -464,6 +464,8 @@ pub struct Frame {
     dirty: [Rect; MAX_DIRTY],
     dn: usize,
     overflowed: bool,
+    /// What is under everything instead of the wallpaper ([`Self::set_floor`]).
+    floor: Option<(Rect, Argb, Argb)>,
 }
 
 impl Default for Frame {
@@ -484,6 +486,7 @@ impl Frame {
             dirty: [Rect::new(0, 0, 0, 0); MAX_DIRTY],
             dn: 0,
             overflowed: false,
+            floor: None,
         }
     }
 
@@ -500,6 +503,7 @@ impl Frame {
             dirty: @each Rect::new(0, 0, 0, 0),
             dn: 0,
             overflowed: false,
+            floor: None,
         })
     }
 
@@ -548,6 +552,21 @@ impl Frame {
         self.tn = 0;
         self.dn = 0;
         self.overflowed = false;
+        self.floor = None;
+    }
+
+    /// An app's own window (R201): inside `r` what is under everything is
+    /// the row `left` to `right` (opaque), not the wallpaper. Part of the
+    /// frame, so every picture drawn from it (on screen, composed ahead,
+    /// kept) has the floor its own screen wants; [`Self::clear`] drops it.
+    pub fn set_floor(&mut self, floor: Option<(Rect, Argb, Argb)>) {
+        self.floor = floor;
+    }
+
+    /// The frame's floor ([`Self::set_floor`]).
+    #[must_use]
+    pub const fn floor(&self) -> Option<(Rect, Argb, Argb)> {
+        self.floor
     }
 
     /// Adds a command (ignored once the frame is full: [`Self::overflowed`]).

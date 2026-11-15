@@ -51,6 +51,8 @@ pub struct CpuRenderer<'a> {
     pics: Option<&'a rp_draw::pics::Pics<'static>>,
     /// Pictures not drawn so far, and the last (R181: never silent).
     pub missed: rp_draw::pics::Misses,
+    /// An app's window body ([`Self::set_floor`]).
+    floor: Option<(Rect, rp_draw::Rect, Argb, Argb)>,
 }
 
 impl<'a> CpuRenderer<'a> {
@@ -64,7 +66,56 @@ impl<'a> CpuRenderer<'a> {
             fmt,
             pics: None,
             missed: rp_draw::pics::Misses::default(),
+            floor: None,
         }
+    }
+
+    /// An app's own window, as the 2D engine's renderer has it
+    /// (`set_floor` there): inside `r` what is under everything is the
+    /// row `left` to `right` (opaque), so glass sets the window's colour
+    /// under it, not the wallpaper. Taken from each frame drawn.
+    fn set_floor(&mut self, floor: Option<(rp_draw::Rect, Argb, Argb)>) {
+        self.floor = floor.map(|(r, a, b)| (rect(r), r, a | 0xFF00_0000, b | 0xFF00_0000));
+    }
+
+    /// Sets `to` to `col(x)` per column, over the floor where there is one
+    /// (the rule every fill and gradient takes; outside it, as before).
+    /// One row of columns on the stack: the rows outside the floor take it
+    /// as it is, then it is blended over the floor in place for the rows
+    /// inside (the device's stack, emu-apps' measurement).
+    #[inline(never)]
+    fn set_columns(&mut self, to: Rect, col: impl Fn(u32) -> Argb) {
+        if to.is_empty() {
+            return;
+        }
+        let mut cols = [0; MAX_W];
+        let w = (to.w as usize).min(MAX_W);
+        for (k, c) in cols.iter_mut().take(w).enumerate() {
+            *c = col(to.x + k as u32);
+        }
+        let Some((fr, d, a, b)) = self.floor else {
+            self.layer.fill_columns(to, &cols[..w]);
+            return;
+        };
+        let inside = fr.intersect(&to);
+        if inside.is_empty() {
+            self.layer.fill_columns(to, &cols[..w]);
+            return;
+        }
+        let (top, bottom) = (inside.y, inside.bottom());
+        for y in [to.y..top, bottom..to.bottom()] {
+            if !y.is_empty() {
+                self.layer
+                    .fill_columns(Rect::new(to.x, y.start, to.w, y.end - y.start), &cols[..w]);
+            }
+        }
+        for (k, c) in cols.iter_mut().take(w).enumerate() {
+            let x = to.x + k as u32;
+            if x >= fr.x && x < fr.right() {
+                *c = layer::over(*c, gradient_at(a, b, x - fr.x, u32::from(d.w)));
+            }
+        }
+        self.layer.fill_columns(Rect::new(to.x, top, to.w, bottom - top), &cols[..w]);
     }
 
     /// The picture store `Cmd::Pic` reads from (none: they draw nothing).
@@ -104,12 +155,19 @@ impl<'a> CpuRenderer<'a> {
             Cmd::Panel { r, art } => {
                 rp_draw::panel_cmds(r, art, |p| self.command(frame, &p, clip));
             }
+            Cmd::Fill { r, color } if self.floor.is_some() => {
+                self.set_columns(rect(r).intersect(&clip), |_| color);
+            }
             Cmd::Fill { r, color } => self.layer.fill(rect(r).intersect(&clip), color),
             Cmd::Clip { .. } => {}
             Cmd::HGradient { r, left, right } => {
                 let full = rect(r);
                 let to = full.intersect(&clip);
                 if to.is_empty() {
+                    return;
+                }
+                if self.floor.is_some() {
+                    self.set_columns(to, |x| gradient_at(left, right, x - full.x, full.w));
                     return;
                 }
                 let mut cols = [0; MAX_W];
@@ -197,12 +255,17 @@ impl Renderer for CpuRenderer<'_> {
         let mut drawn = Drawn::default();
         let mut out = [Rect::default(); MAX_DIRTY];
         let mut n = 0;
+        self.set_floor(frame.floor());
         for d in frame.dirty() {
             let clip = rect(*d).intersect(&self.layer.bounds());
             if clip.is_empty() {
                 continue;
             }
-            self.layer.fill(clip, CLEAR);
+            if self.floor.is_some() {
+                self.set_columns(clip, |_| CLEAR);
+            } else {
+                self.layer.fill(clip, CLEAR);
+            }
             for (cmd, own) in frame.cmds_clipped() {
                 let clip = rect(own).intersect(&clip);
                 if rect(cmd.bounds(frame)).intersect(&clip).is_empty() {

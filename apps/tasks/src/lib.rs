@@ -746,6 +746,10 @@ pub fn opened(_today: i32) -> Tasks {
 }
 
 impl Program for Tasks {
+    fn accent(&self) -> Option<rp_app::Argb> {
+        Some(rp_app::kit::tint::TASKS)
+    }
+
     fn title(&self) -> &'static str {
         "Tasks"
     }

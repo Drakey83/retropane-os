@@ -1531,3 +1531,31 @@ fn a_full_picture_cache_evicts_the_oldest_picture_not_the_whole_cache() {
         same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
     }
 }
+
+/// An app's own window (R201): with a floor every command still matches
+/// the CPU renderer (glass over the window, not the wallpaper), and with
+/// it gone a change drawn later is over the wallpaper again.
+#[test]
+fn a_window_floor_matches_the_reference_and_goes() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    let floor = Some((Rect::new(0, 36, W, 564), 0xFF10_1418, 0xFF2A_3440));
+    let mut f = Frame::new();
+    scene(&mut f, 0);
+    f.set_floor(floor);
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    let with = cpu.draw(&f);
+    same(&shown(&mut r, &mem), &with, 2).unwrap();
+    // The window is opaque: no wallpaper pixel inside it.
+    let at = |v: &[u32], x: u16, y: u16| v[usize::from(y) * 480 + usize::from(x)];
+    assert_ne!(at(&with, 470, 590) & 0xFF_FFFF, wall(470, 590) & 0xFF_FFFF);
+    // Off: the same scene a little moved, over the wallpaper again.
+    let mut g = Frame::new();
+    scene(&mut g, 3);
+    g.damage(Rect::new(0, 0, W, H));
+    r.draw(&g);
+    assert!(r.poll());
+    same(&shown(&mut r, &mem), &cpu.draw(&g), 2).unwrap();
+}

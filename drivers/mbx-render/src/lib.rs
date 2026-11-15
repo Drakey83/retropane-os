@@ -596,6 +596,13 @@ pub struct Mbx2dRenderer<R, M> {
     /// Where the wallpaper changed since the last frame (a band switch):
     /// its background made again and its screen area drawn there only.
     wall_box: ([Rect; WALL_BOXES], usize),
+    /// An app's window body ([`Self::set_floor`]): where, and its row's
+    /// left and right colours (opaque).
+    floor: Option<(Rect, Argb, Argb)>,
+    /// Where the floor came or went since the last frame: the background
+    /// made again there, the screen only where the frame says (a screen
+    /// kept from before, Today's, is still right).
+    floor_box: Option<Rect>,
     /// The kept picture ([`Layout::kept`]): the wallpaper generation the
     /// screen copied into it was drawn over, and whether the frame that
     /// copied it landed whole (`None`: nothing kept, or not usable).
@@ -703,6 +710,8 @@ macro_rules! renderer_start {
             bounds: [Rect::new(0, 0, 0, 0); MAX_CMDS],
             bands: (0, 1, [None; BANDS]),
             wall_box: ([Rect::new(0, 0, 0, 0); WALL_BOXES], 0),
+            floor: None,
+            floor_box: None,
             kept: None,
             wall_id: None,
             keep_next: false,
@@ -769,26 +778,58 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         }
         self.bands = (top, h.max(1), b);
         for c in changed {
-            let c = c.intersect(&SCREEN);
-            if c.is_empty() {
-                continue;
-            }
-            let (boxes, n) = &mut self.wall_box;
-            if *n < WALL_BOXES {
-                boxes[*n] = c;
-                *n += 1;
+            self.wall_moved(*c);
+        }
+    }
+
+    /// An app's own window (R201, the owner, 2026-11-14: "full screen into
+    /// their own full sized window, so no wallpaper behind them"): inside
+    /// `r` the floor under everything is one row, `left` to `right`
+    /// (opaque), drawn down it with source stride 0, where the wallpaper
+    /// would be read. Glass over it blends over the window, not the
+    /// wallpaper; no picture is kept for it (a 960-word row from the row
+    /// cache, not a 541 KB band). `None`: the wallpaper again. Taken from
+    /// each frame drawn (`Frame::floor`), so a picture composed ahead for
+    /// another screen never inherits it.
+    fn set_floor(&mut self, floor: Option<(Rect, Argb, Argb)>) {
+        let floor = floor.map(|(r, a, b)| (r, a | 0xFF00_0000, b | 0xFF00_0000));
+        if floor == self.floor {
+            return;
+        }
+        for (r, _, _) in [self.floor, floor].into_iter().flatten() {
+            let r = r.intersect(&SCREEN);
+            self.floor_box = Some(self.floor_box.map_or(r, |b| b.union(&r)));
+            self.drop_cached(r);
+        }
+        self.floor = floor;
+    }
+
+    /// The wallpaper changed under `c`: its background made again there,
+    /// and cached areas over it (holding the old) dropped.
+    fn wall_moved(&mut self, c: Rect) {
+        let c = c.intersect(&SCREEN);
+        if c.is_empty() {
+            return;
+        }
+        let (boxes, n) = &mut self.wall_box;
+        if *n < WALL_BOXES {
+            boxes[*n] = c;
+            *n += 1;
+        } else {
+            boxes[WALL_BOXES - 1] = boxes[WALL_BOXES - 1].union(&c);
+        }
+        self.drop_cached(c);
+    }
+
+    /// Cached areas over `c` dropped (they hold what was under them).
+    fn drop_cached(&mut self, c: Rect) {
+        let mut k = 0;
+        while k < self.cached_n {
+            if self.cached[k].1.intersect(&c).is_empty() {
+                k += 1;
             } else {
-                boxes[WALL_BOXES - 1] = boxes[WALL_BOXES - 1].union(&c);
-            }
-            // A cached area over the change holds the old wallpaper.
-            let mut k = 0;
-            while k < self.cached_n {
-                if self.cached[k].1.intersect(&c).is_empty() {
-                    k += 1;
-                } else {
-                    self.cached_n -= 1;
-                    self.cached[k] = self.cached[self.cached_n];
-                }
+                self.cached_n -= 1;
+                self.cached[k] = self.cached[self.cached_n];
             }
         }
     }
@@ -1099,6 +1140,38 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     /// Copies the wallpaper (RGB565) under `r` into the 32 bpp picture
     /// `dst` (the engine widens it).
     fn wallpaper(&mut self, dst: usize, r: Rect) {
+        if let Some((fr, a, b)) = self.floor {
+            let inside = r.intersect(&fr);
+            if !inside.is_empty() {
+                // The window's row inside it, the wallpaper around it
+                // (above, below, left, right: disjoint).
+                let key = RowKey {
+                    a,
+                    b,
+                    first: u32::from(inside.x - fr.x),
+                    span: u32::from(fr.w),
+                    w: inside.w,
+                };
+                self.row(dst, inside, key, false);
+                let (top, bottom) = (inside.y, inside.y + inside.h);
+                for part in [
+                    Rect::new(r.x, r.y, r.w, top - r.y),
+                    Rect::new(r.x, bottom, r.w, r.y + r.h - bottom),
+                    Rect::new(r.x, top, inside.x - r.x, inside.h),
+                    Rect::new(inside.x + inside.w, top, r.x + r.w - (inside.x + inside.w), inside.h),
+                ] {
+                    if !part.is_empty() {
+                        self.wallpaper_only(dst, part);
+                    }
+                }
+                return;
+            }
+        }
+        self.wallpaper_only(dst, r);
+    }
+
+    /// The wallpaper (its bands) copied into `r` of `dst`.
+    fn wallpaper_only(&mut self, dst: usize, r: Rect) {
         let end = r.y + r.h;
         let mut y = r.y;
         while y < end {
@@ -1940,6 +2013,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         self.last.wait_us = self.us_since(t0);
         let t0 = (self.now)();
         let stalls0 = self.stalls;
+        // The frame's floor (an app's own window, R201), before anything
+        // reads the wallpaper.
+        self.set_floor(frame.floor());
         // Which commands go in the background, and has it changed?
         // The previous frame has landed: no row of the ring is read now.
         self.epoch = self.epoch.wrapping_add(1);
@@ -1999,6 +2075,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let (boxes, nb) =
             core::mem::replace(&mut self.wall_box, ([Rect::new(0, 0, 0, 0); WALL_BOXES], 0));
         let wall_box = &boxes[..if whole { 0 } else { nb }];
+        let floor_box = self.floor_box.take().filter(|_| !whole);
         if whole {
             redo[0] = SCREEN;
             nr = 1;
@@ -2029,7 +2106,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                     redo[best] = redo[best].union(&r);
                 }
             };
-            for &b in wall_box {
+            for &b in wall_box.iter().chain(floor_box.iter()) {
                 add(b);
             }
             for &(k, r) in &self.bg_keys[..self.bg_n] {

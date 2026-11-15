@@ -553,6 +553,34 @@ pub fn mocks() -> Vec<Mock> {
             });
         }
     }
+    // The window body's three (R201, the owner, 2026-11-14: the apps in
+    // their own window, no wallpaper behind): one screen of each look per
+    // body, beside the current one.
+    use rp_shell::WindowBody;
+    for (bname, body) in [
+        ("solid", WindowBody::Solid),
+        ("aero", WindowBody::Aero),
+        ("tinted", WindowBody::Tinted),
+    ] {
+        for m in base()
+            .into_iter()
+            .filter(|m| matches!(m.name, "v2-calendar-agenda" | "v2-contacts-list" | "v2-notes-home"))
+        {
+            let prepare: std::rc::Rc<dyn Fn(&mut rp_shell::Shell)> = std::rc::Rc::from(m.prepare);
+            for (suffix, look) in [("", Appearance::Light), ("-dark", Appearance::Dark)] {
+                let prepare = prepare.clone();
+                all.push(Mock {
+                    name: Box::leak(format!("body-{bname}-{}{suffix}", m.name).into_boxed_str()),
+                    what: m.what,
+                    prepare: Box::new(move |s| {
+                        prepare(s);
+                        s.set_appearance(look);
+                        s.set_window_body(body);
+                    }),
+                });
+            }
+        }
+    }
     all
 }
 
@@ -760,3 +788,4 @@ fn base() -> Vec<Mock> {
         },
     ]
 }
+

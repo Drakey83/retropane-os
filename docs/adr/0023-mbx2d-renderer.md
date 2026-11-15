@@ -530,3 +530,26 @@ glyph only for the line being typed. Measured (`rp-gpubench` F7, X51v
 CPU's part 0.07 ms against 12; about 600 KB of 2700G memory for a screen
 of cached lines (affordable). Copies down over themselves (a scrolled
 list) set header bit 24 by themselves (quality audit C72).
+
+## An app's own window: the floor (R201, 2026-11-14)
+
+The owner: an app runs "full screen into their own full sized window, so
+no wallpaper behind them", as a full-screen Windows Mobile program does.
+Rule 3's glass reads the wallpaper under every see-through fill (one copy
+and a blend, never a blend over whatever was drawn before), so an opaque
+body drawn first was undone by the first glass over it.
+
+- **Windows Mobile:** a full-screen program paints its own window in the
+  system's window colour; nothing under it.
+- **The textbook:** draw an opaque rectangle first, blend everything over
+  the destination (two passes over the area per frame), or keep a second
+  wallpaper-sized picture (541 KB of 2700G memory for 480 x 564 RGB565).
+- **Ours:** the renderer's **floor** (`set_floor`, both renderers alike):
+  inside the app's window, wherever the wallpaper would be read, one row
+  of the body's colours from the row cache is drawn down with source
+  stride 0. Glass blends over the window exactly as it did over the
+  photo, no extra pass, no picture kept, 1,920 bytes. A floor that comes
+  or goes rebuilds the background there but forces no screen redraw, so
+  Today's kept picture (R191) still seeds the way back. The graphics
+  service takes colours and a screen rectangle only (rule 7: nothing
+  addressed). Guarded by `a_window_floor_matches_the_reference_and_goes`.

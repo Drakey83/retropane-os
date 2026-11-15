@@ -92,6 +92,15 @@ and its lightness is lowered toward the lowest that still reads at 4.5:1
 on the glass cards: computed by `tools/shell-assets/accents.py`, never
 picked by hand, so a new accent is muted the same way.
 
+**An app's own window** (the owner, 2026-11-14, R201): an app runs full
+screen in its own window, no wallpaper behind it, title bar and softkeys
+included, the way a full-screen Windows Mobile program does. Its body is
+opaque in both looks: Aero's slate gradient in the dark, frosted white
+cooling to the right in the light (three bodies drawn for the owner's
+pick: solid, Aero gradient, Aero tinted by the app's accent). The glass
+cards blend over the window, not the photo (the renderers' floor,
+ADR-0023). Today and Weather keep the wallpaper.
+
 **Both looks, one system** (the owner, 2026-11-14: "make sure we are
 designing for both light and dark mode", Weather and the apps "cohesive").
 The shell's light-look rule (`look_color`) maps the hosted programs'

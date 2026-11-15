@@ -240,6 +240,22 @@ pub enum LightStyle {
     Washed,
 }
 
+/// An app's own window: what fills it behind the program, so no
+/// wallpaper shows through (the owner, 2026-11-14: "full screen into
+/// their own full sized window, so no wallpaper behind them", run the way
+/// a full-screen Windows Mobile program does). Three drawn for his pick.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowBody {
+    /// Windows Mobile's way: one flat window colour.
+    Solid,
+    /// Aero's frame: the title bar's slate gradient carried down the
+    /// window, left to right.
+    Aero,
+    /// Aero's frame tinted by the app: its accent mixed a little into the
+    /// slate (Calendar's coral, Contacts' teal), so each window is its own.
+    Tinted,
+}
+
 /// The washed wallpaper's veil (C), drawn first, kept by the look.
 pub(crate) const WASH: Argb = 0x9CF4_F2F6;
 
@@ -660,6 +676,19 @@ const APP_TITLE_RIGHT: Argb = rp_draw::look::theme(0xFF1D_262F);
 const APP_SOFT_LEFT: Argb = rp_draw::look::theme(0xFF02_0305);
 const APP_SOFT_RIGHT: Argb = rp_draw::look::theme(0xFF1A_1D22);
 const APP_SOFT_DIVIDER: Argb = rp_draw::look::theme(0xFF59_5D60);
+/// An app's bars in the light look: solid, not glass (the owner,
+/// 2026-11-14: the title bar "being transparent on light mode" in a full
+/// screen app). Aero's frosted blue-white, cooling to the right, the
+/// softkeys a shade under the title; kept by the look's pass.
+const APP_TITLE_LIGHT: (Argb, Argb) = (
+    rp_app::kit::keep(rp_draw::look::theme(0xFFEA_F0F6)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFFD2_DCE7)),
+);
+const APP_SOFT_LIGHT: (Argb, Argb) = (
+    rp_app::kit::keep(rp_draw::look::theme(0xFFDC_E3EB)),
+    rp_app::kit::keep(rp_draw::look::theme(0xFFC8_D2DD)),
+);
+const APP_SOFT_DIVIDER_LIGHT: Argb = rp_app::kit::keep(rp_draw::look::theme(0xFF98_A4B0));
 const MENU_LEFT: Argb = rp_draw::look::theme(0xEE08_0A0C);
 const MENU_RIGHT: Argb = rp_draw::look::theme(0xE02C_3238);
 const TEXT: Argb = rp_draw::look::theme(0xFFF0_F2F4);
@@ -669,6 +698,21 @@ const FOCUS: Argb = rp_draw::look::theme(0xFF7F_D0FF);
 /// three drawn, 2026-10-31: a see-through press, "I do NOT like that";
 /// docs/design/mockups/pressed-look-choices.png).
 const PRESSED_UNDER: Argb = rp_draw::look::theme(0xFF3C_4656);
+/// An app's window body (left, right), each look's own: the dark one
+/// a shade under the title bar's slate, the light one Aero's frosted white
+/// cooling to the right.
+const BODY_DARK: (Argb, Argb) = (rp_draw::look::theme(0xFF0E_1216), rp_draw::look::theme(0xFF1A_2027));
+const BODY_LIGHT: (Argb, Argb) = (rp_draw::look::theme(0xFFF2_F4F7), rp_draw::look::theme(0xFFDC_E2E9));
+
+/// `a` toward `b`, `k` of `n`, opaque.
+fn mix(a: Argb, b: Argb, k: u32, n: u32) -> Argb {
+    let ch = |s: u32| {
+        let (x, y) = ((a >> s) & 0xFF, (b >> s) & 0xFF);
+        ((x * (n - k) + y * k) / n) << s
+    };
+    0xFF00_0000 | ch(16) | ch(8) | ch(0)
+}
+
 /// The align screen's background (opaque: the wallpaper would distract).
 const ALIGN_BACK: Argb = rp_draw::look::theme(0xFF0C_1014);
 /// A target held long enough.
@@ -913,6 +957,8 @@ pub struct Shell {
     sky_was: Option<(u8, bool, bool, u8)>,
     /// The light look's style, and its panels' ([`soft`]).
     light_style: LightStyle,
+    /// What fills an app's window behind it ([`WindowBody`]).
+    window_body: WindowBody,
     /// The previews' panels left out (mock-ups composite their own).
     panels_off: bool,
     /// The test image's sky test: 0 the forecast's sky, else the weather
@@ -1078,6 +1124,7 @@ macro_rules! shell_start {
             sky_moved: 0,
             sky_forced: false,
             light_style: LightStyle::Frosted,
+            window_body: WindowBody::Aero,
             panels_off: false,
             sky_test: 0,
             fetched_at: None,
@@ -2096,15 +2143,27 @@ impl Shell {
     fn softkey_bar(&self, f: &mut Frame, (l, r): (&'static str, &'static str)) {
         let ui = self.fonts.ui;
         let app = self.screen != Screen::Today;
+        let solid = self.solid_bars();
+        let (left, right) = if solid {
+            APP_SOFT_LIGHT
+        } else if app {
+            (APP_SOFT_LEFT, APP_SOFT_RIGHT)
+        } else {
+            (BAR_LEFT, BAR_RIGHT)
+        };
         f.push(Cmd::HGradient {
             r: SOFTKEYS,
-            left: if app { APP_SOFT_LEFT } else { BAR_LEFT },
-            right: if app { APP_SOFT_RIGHT } else { BAR_RIGHT },
+            left,
+            right,
         });
         if app && !r.is_empty() {
             f.push(Cmd::Fill {
                 r: Rect::new(W / 2, SOFTKEYS.y + 6, 1, SOFTKEYS.h - 12),
-                color: APP_SOFT_DIVIDER,
+                color: if solid {
+                    APP_SOFT_DIVIDER_LIGHT
+                } else {
+                    APP_SOFT_DIVIDER
+                },
             });
         }
         self.press_under(f, Target::SoftLeft);
@@ -2539,6 +2598,8 @@ impl Shell {
         } else {
             |c| c
         });
+        // Its own window, no wallpaper behind: the renderer's floor
+        // ([`Self::floor`]).
         let start = f.len();
         f.clip(Some(area));
         p.draw(f, &cx);
@@ -2932,6 +2993,8 @@ impl Shell {
             }
         }
         self.damaged = 0;
+        // An app's own window under it (R201), carried by the frame.
+        f.set_floor(self.floor());
         self.scene(f);
         self.look(f);
         self.program_content(f);
@@ -3028,6 +3091,48 @@ impl Shell {
     pub fn set_light_style(&mut self, style: LightStyle) {
         self.light_style = style;
         self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// What fills an app's window behind it (the previews draw each).
+    pub fn set_window_body(&mut self, b: WindowBody) {
+        self.window_body = b;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// An app's bars drawn solid in the light look (the dark look's are
+    /// opaque already; the light look's pass would make them glass).
+    fn solid_bars(&self) -> bool {
+        self.screen == Screen::Program && self.light()
+    }
+
+    /// The open app's window body for the renderer (`set_floor` on
+    /// both): its area and its row's left and right colours, opaque, in
+    /// the look chosen; `None` off an app (the wallpaper). The renderer
+    /// puts it wherever it would read the wallpaper, so the program's glass
+    /// blends over the window, not the photo, at no cost per frame.
+    #[must_use]
+    pub fn floor(&self) -> Option<(Rect, Argb, Argb)> {
+        if self.screen != Screen::Program {
+            return None;
+        }
+        let light = self.light();
+        let (left, right) = if light { BODY_LIGHT } else { BODY_DARK };
+        let (left, right) = match self.window_body {
+            WindowBody::Solid => (left, left),
+            WindowBody::Aero => (left, right),
+            WindowBody::Tinted => {
+                let tint = self
+                    .program
+                    .borrow()
+                    .as_ref()
+                    .and_then(|p| p.accent())
+                    .unwrap_or(left);
+                let k = if light { 6 } else { 10 };
+                (mix(left, tint, k, 100), mix(right, tint, k, 100))
+            }
+        };
+        // The whole screen: the light look's glass bars too.
+        Some((Rect::new(0, 0, W, H), left, right))
     }
 
     fn glass(&self, f: &mut Frame, r: Rect, left: Argb, right: Argb) {
@@ -3172,10 +3277,17 @@ impl Shell {
         // boxed Start, the app's name, the status and time, and ok (back)
         // in an app.
         let app = self.screen != Screen::Today;
+        let (left, right) = if self.solid_bars() {
+            APP_TITLE_LIGHT
+        } else if app {
+            (APP_TITLE_LEFT, APP_TITLE_RIGHT)
+        } else {
+            (BAR_LEFT, BAR_RIGHT)
+        };
         f.push(Cmd::HGradient {
             r: TITLE,
-            left: if app { APP_TITLE_LEFT } else { BAR_LEFT },
-            right: if app { APP_TITLE_RIGHT } else { BAR_RIGHT },
+            left,
+            right,
         });
         let label = self.fonts.label;
         self.press_under(f, Target::Start);

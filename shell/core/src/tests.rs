@@ -3939,3 +3939,66 @@ fn a_snoozed_reminder_comes_back_five_minutes_later() {
     s.set_time(at(14, 56));
     assert!(!s.reminder_shown());
 }
+
+/// A program that draws one card and answers nothing (the window tests).
+struct Plain;
+
+impl rp_app::Program for Plain {
+    fn title(&self) -> &'static str {
+        "Plain"
+    }
+    fn softkeys(&self) -> (&'static str, &'static str) {
+        ("", "")
+    }
+    fn draw(&mut self, f: &mut Frame, _cx: &rp_app::Ctx) {
+        f.push(Cmd::Fill {
+            r: Rect::new(20, 100, 200, 40),
+            color: 0x8040_4040,
+        });
+    }
+    fn event(&mut self, _e: rp_app::Event, _cx: &rp_app::Ctx) -> rp_app::Reply {
+        rp_app::Reply::Nothing
+    }
+}
+
+#[test]
+fn an_app_runs_in_its_own_opaque_window() {
+    use rp_weather::settings::Appearance;
+    // R201 (the owner, 2026-11-14): no wallpaper behind an app. The
+    // renderers' floor covers its whole area, opaque, in both looks; off
+    // an app the wallpaper is back.
+    for body in [WindowBody::Solid, WindowBody::Aero, WindowBody::Tinted] {
+        for look in [Appearance::Light, Appearance::Dark] {
+            let mut s = shell(true);
+            s.set_appearance(look);
+            s.set_window_body(body);
+            assert_eq!(s.floor(), None);
+            s.open_program(Box::leak(Box::new(Plain)));
+            let (r, left, right) = s.floor().expect("an app's window");
+            assert_eq!(r, Rect::new(0, 0, W, H));
+            assert_eq!((left >> 24, right >> 24), (0xFF, 0xFF), "{body:?} {look:?}");
+            if body == WindowBody::Solid {
+                assert_eq!(left, right);
+            }
+        }
+    }
+}
+
+#[test]
+fn only_an_apps_frames_carry_its_window() {
+    // The device run of emu-apps, 2026-11-14: Today composed ahead while
+    // an app was up came back on the app's window, not the wallpaper. The
+    // floor is the frame's: an app's frames carry it, Today's drawn ahead
+    // (and every other screen's) don't.
+    let mut s = shell(true);
+    s.keep_today_list(std::vec![0; LIST_WORDS].leak());
+    let today = drawn(&mut s);
+    assert_eq!(today.floor(), None);
+    s.open_program(Box::leak(Box::new(Plain)));
+    let app = drawn(&mut s);
+    assert!(app.floor().is_some());
+    let mut ahead = Frame::new();
+    ahead.set_floor(app.floor());
+    let _ = s.today_ahead(&mut ahead);
+    assert_eq!(ahead.floor(), None);
+}

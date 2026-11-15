@@ -877,6 +877,10 @@ impl Default for Contacts {
 }
 
 impl Program for Contacts {
+    fn accent(&self) -> Option<rp_app::Argb> {
+        Some(rp_app::kit::tint::CONTACTS)
+    }
+
     fn title(&self) -> &'static str {
         "Contacts"
     }

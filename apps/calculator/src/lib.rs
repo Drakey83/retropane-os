@@ -1173,6 +1173,10 @@ pub fn opened(today: i32) -> Calculator {
 }
 
 impl Program for Calculator {
+    fn accent(&self) -> Option<rp_app::Argb> {
+        Some(rp_app::kit::tint::CALCULATOR)
+    }
+
     fn title(&self) -> &'static str {
         "Calculator"
     }
