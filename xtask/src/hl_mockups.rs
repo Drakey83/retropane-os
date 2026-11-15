@@ -131,7 +131,7 @@ impl Program for HlControls {
         let screen = Rect::new(176, 144, 272, 164);
         kit::round_rect(f, cx, screen, 0xFF10_1820);
         kit::centred(f, screen, 214, cx.fonts.ui, TEXT, b"Drag: look around");
-        kit::centred(f, screen, 240, cx.fonts.ui, DIM, b"Tap: use");
+        kit::centred(f, screen, 240, cx.fonts.ui, DIM, b"Touch: fire");
         // Two glass keys in the picture's corners: what has no button.
         kit::gel(f, cx, Rect::new(184, 268, 92, 32), b"LIGHT", false);
         kit::gel(f, cx, Rect::new(348, 268, 92, 32), b"FIRE 2", false);

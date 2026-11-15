@@ -27,10 +27,12 @@ does (every key can be bound again in the game's menu), and the stylus
 becomes the engine's mouse: a drag turns the view, as the owner's DoomGLES
 does it.
 
-The engine keys the buttons arrive as are a first table, not the layout:
-which button does what by default (fire, use, jump, crouch, reload, the
-flashlight) is the owner's to choose from the mock-ups, and is then a
-set of bindings, not code.
+The owner's pick (2026-11-15, the mock-up hl-controls-doomgles): the
+D-pad walks and turns, its centre fires and so does a touch of the
+stylus, Calendar jumps, Contacts is use, Mail crouches, Home reloads,
+Record is the next weapon, the wireless button the menu. That layout is
+a set of default bindings over these engine keys (not written yet: the
+engine reads them from its config), not code here.
 */
 
 static const byte rp_keys[] =
@@ -62,7 +64,9 @@ void Platform_RunEvents( void )
 
 	if( !in_rp.open )
 	{
-		if( rp_input_open( RP_TURN_LEFT ) != 0 )
+		// the owner's hold (2026-11-15): the D-pad under the left thumb, so
+		// the device's top edge is at the player's right
+		if( rp_input_open( RP_TURN_RIGHT ) != 0 )
 			return;
 		in_rp.open = true;
 	}

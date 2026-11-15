@@ -91,15 +91,16 @@ game to run full screen in landscape."
   - **`Orientation 1` turns the picture a quarter turn** (the drawing is
     rotated by +90 degrees; 2 is -90). Read from the rotation's sign, that
     is the device held with its top edge at the player's right, so the
-    D-pad and buttons are under the left hand: our `RP_TURN_RIGHT`. **Not
-    confirmed by eye:** which way he holds it is one look for the owner.
+    D-pad and buttons are under the left hand: our `RP_TURN_RIGHT`. **Confirmed
+    by the owner, 2026-11-15:** "D-pad under your left thumb".
   - **The button numbers are Windows Mobile's own key codes:** 193 to 198
     are the six program buttons in order (Calendar, Contacts, Mail, Home,
     Record, wireless: docs/hw/keypad.md), 134 the D-pad's centre. So his
     settings are: the D-pad walks and turns, its centre fires, Calendar
     is always-run, Contacts is use, Mail the menu, Home the map, Record
     and wireless the previous and next weapon.
-  - **Not read:** whether a touch of the stylus also fires (it depends on
+  - **A touch of the stylus fires** (the owner, 2026-11-15: "yes"). Not
+    read from the program: it depends on
     which mouse button the program reports for the stylus).
 - **Mock-ups for his pick** (`cargo xtask ui-preview`, drawn by the shell's
   own code and the app kit's glass, so the X51v draws exactly this; in
@@ -109,8 +110,17 @@ game to run full screen in landscape."
   (`hl-controls-strafe`); and the pop-up that says where the game's files
   go, as three steps (`hl-files-steps`) or short (`hl-files-short`). The
   pop-up is drawn as a window of its own here: over the Start menu, as he
-  asked, it needs a small piece of the shell that is not built. Nothing is
-  chosen until he picks (R257).
+  asked, it needs a small piece of the shell that is not built. **The owner
+  picked, 2026-11-15 ("A, A, D-pad under your left thumb, yes"):** the
+  pop-up as three steps (`hl-files-steps`); the controls as DoomGLES
+  (`hl-controls-doomgles`: the D-pad walks and turns, its centre fires,
+  Calendar jumps, Contacts is use, Mail crouches, Home reloads, Record is
+  the next weapon, the wireless button the menu, the flashlight and second
+  fire as two glass keys in the picture's corners); the device held with
+  the D-pad under the left thumb; a touch of the stylus fires as well as
+  the drag looking. The backend opens its input that way
+  (`ports/xash/platform/in_rp.c`); the default bindings, the pop-up over
+  the Start menu and the Start-menu entry are still to build (R258).
 
 ## The lines
 
