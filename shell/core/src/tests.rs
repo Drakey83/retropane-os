@@ -4002,3 +4002,44 @@ fn only_an_apps_frames_carry_its_window() {
     let _ = s.today_ahead(&mut ahead);
     assert_eq!(ahead.floor(), None);
 }
+
+#[test]
+fn the_start_menu_and_banner_go_over_an_app() {
+    // The owner, 2026-11-14: "the full screen app is covering the start
+    // menu". Over an app the menu is drawn after the app's content.
+    let mut s = shell(true);
+    s.open_program(Box::leak(Box::new(Plain)));
+    tap(&mut s, START_BOX);
+    assert!(s.menu_open);
+    let f = drawn(&mut s);
+    let cmds: std::vec::Vec<&Cmd> = f.cmds().collect();
+    let app = cmds
+        .iter()
+        .position(|c| matches!(c, Cmd::Fill { color: 0x8040_4040, .. }))
+        .expect("the app's card");
+    let menu = s.menu_rect();
+    let last_menu = cmds
+        .iter()
+        .rposition(|c| c.bounds(&f).intersect(&menu) == menu)
+        .expect("the menu's glass");
+    assert!(last_menu > app, "the menu ({last_menu}) under the app ({app})");
+}
+
+#[test]
+fn the_program_buttons_open_their_apps_from_anywhere() {
+    // The owner, 2026-11-14: "physical buttons that are supposed to bring
+    // up apps, home button works but the others dont".
+    let mut s = shell(true);
+    s.use_programs(true);
+    assert_eq!(s.input(Input::Key(Key::Calendar)), Action::OpenProgram(0));
+    // From inside another app: it is closed first.
+    s.open_program(Box::leak(Box::new(Plain)));
+    assert_eq!(s.input(Input::Key(Key::Contacts)), Action::OpenProgram(1));
+    assert_eq!(s.screen(), Screen::Today);
+    // Record: Notes on a new note.
+    assert_eq!(s.input(Input::Key(Key::Record)), Action::OpenProgram(3));
+    assert_eq!(s.take_intent(), rp_app::INTENT_NEW);
+    // Without programs they do nothing.
+    let mut s = shell(true);
+    assert_eq!(s.input(Input::Key(Key::Calendar)), Action::Nothing);
+}

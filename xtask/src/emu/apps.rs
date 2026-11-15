@@ -98,6 +98,47 @@ fn app_differ(got: &[u8], want: &[u8]) -> usize {
         .count()
 }
 
+/// A new note's ink panel (Notes: the paper's x + 8, its first line's
+/// y - 18; `rp_app::kit::INK_PIC` in size).
+const INK_PANEL: rp_draw::Rect =
+    rp_draw::Rect::new(16, 106, rp_app::kit::INK_PIC.0, rp_app::kit::INK_PIC.1);
+
+/// Ink drawn through the emulator's touch screen lands a pixel or two from
+/// the model's exact points (the real filter and calibration), so the ink
+/// panel is compared by how much ink it holds (within a tenth), the rest
+/// of the screen pixel for pixel ([`app_differ`]).
+fn ink_differ(got: &[u8], want: &[u8]) -> usize {
+    let ink = |px: &[u8]| {
+        px.chunks(3)
+            .enumerate()
+            .filter(|(i, c)| {
+                let (x, y) = ((i % rp_today::W) as u16, (i / rp_today::W) as u16);
+                INK_PANEL.contains_point(x, y)
+                    && u32::from(c[0]) + u32::from(c[1]) + u32::from(c[2]) < 300
+            })
+            .count()
+    };
+    let (g, w) = (ink(got), ink(want));
+    let off = if g.abs_diff(w) * 10 > w.max(1) {
+        g.abs_diff(w).max(1)
+    } else {
+        0
+    };
+    let outside = got
+        .chunks(3)
+        .zip(want.chunks(3))
+        .enumerate()
+        .filter(|(i, (a, b))| {
+            let (x, y) = ((i % rp_today::W) as u16, (i / rp_today::W) as u16);
+            a != b
+                && !rp_shell::TITLE_CLOCK.contains_point(x, y)
+                && !INK_PANEL.contains_point(x, y)
+        })
+        .count();
+    // No ink at all on either side proves nothing.
+    outside + off + usize::from(w == 0)
+}
+
 /// What a run needs to tap the image and look at its screen.
 struct Hands<'a> {
     root: &'a Path,
@@ -158,6 +199,10 @@ impl Hands<'_> {
                     self.hold(GAP_MS)?;
                 }
                 Input::Key(Key::Home) => self.press_key(qmp, "f4")?,
+                // The program buttons (docs/hw/keypad.md's emulator keys).
+                Input::Key(Key::Calendar) => self.press_key(qmp, "f1")?,
+                Input::Key(Key::Contacts) => self.press_key(qmp, "f2")?,
+                Input::Key(Key::Record) => self.press_key(qmp, "f5")?,
                 _ => return Err(format!("apps: an input the check can't play: {step:?}")),
             }
         }
@@ -216,13 +261,48 @@ pub fn apps(root: &Path) -> Result<(), String> {
     };
     // Each app: Start, its entry (the menu's rows 1-5), then Home.
     let mut steps: Vec<Input> = Vec::new();
-    let mut at = Vec::new();
+    let mut at: Vec<(String, usize)> = Vec::new();
     for n in 0..5u8 {
         steps.extend(tap(rp_shell::START));
         steps.extend(tap(Shell::menu_entry(1 + n)));
-        at.push(steps.len());
+        let (name, _) = rp_today::program::PROGRAMS[usize::from(n)];
+        at.push((name.to_ascii_lowercase(), steps.len()));
         steps.push(Input::Key(Key::Home));
     }
+    // What the owner found on the X51v, 2026-11-14, each checked against
+    // the model: the Record button opens a new note, and a stroke stays
+    // after the pen lifts ("the lines dissapear as soon as you lift");
+    // the Calendar button from inside Notes; Calendar's Week tab answers
+    // the stylus; the Start menu over an app ("the full screen app is
+    // covering the start menu"); the Contacts button.
+    steps.push(Input::Key(Key::Record));
+    at.push(("notes-new".into(), steps.len()));
+    steps.push(Input::PenDown { x: 100, y: 200 });
+    for k in 1..=5u16 {
+        steps.push(Input::PenMove {
+            x: 100 + k * 40,
+            y: 200 + (k % 2) * 20,
+        });
+    }
+    steps.push(Input::PenUp { x: 300, y: 220 });
+    at.push(("notes-ink".into(), steps.len()));
+    steps.push(Input::Key(Key::Calendar));
+    at.push(("calendar-button".into(), steps.len()));
+    // Calendar's tabs under its large title (36 + the band's 76, then 4).
+    let tabs = rp_draw::Rect::new(
+        rp_app::MARGIN,
+        36 + rp_app::kit::TITLE_BAND + 4,
+        rp_app::WIDE,
+        30,
+    );
+    steps.extend(tap(rp_app::kit::chip(tabs, 4, 2)));
+    at.push(("calendar-week".into(), steps.len()));
+    steps.extend(tap(rp_shell::START));
+    at.push(("menu-over-app".into(), steps.len()));
+    steps.extend(tap(rp_shell::START));
+    steps.push(Input::Key(Key::Contacts));
+    at.push(("contacts-button".into(), steps.len()));
+    steps.push(Input::Key(Key::Home));
     let prepare = |s: &mut Shell| {
         s.give_pics(preview_pics());
         s.use_programs(true);
@@ -237,15 +317,18 @@ pub fn apps(root: &Path) -> Result<(), String> {
         hands.until("today", &all[0], &today_differ)?;
         let mut qmp = crate::screen::Qmp::connect(monitor_port() + 1)?;
         let mut from = 0;
-        for (n, &k) in at.iter().enumerate() {
-            hands.play(&mut qmp, &steps[from..k])?;
-            let (name, _) = rp_today::program::PROGRAMS[n];
-            if let Err(e) = hands.until(&name.to_ascii_lowercase(), &all[k], &app_differ) {
+        for (name, k) in &at {
+            hands.play(&mut qmp, &steps[from..*k])?;
+            let differ: &dyn Fn(&[u8], &[u8]) -> usize =
+                if name == "notes-ink" { &ink_differ } else { &app_differ };
+            if let Err(e) = hands.until(name, &all[*k], differ) {
                 *failed.borrow_mut() = Some(e);
                 break;
             }
-            hands.play(&mut qmp, &steps[k..=k])?;
-            from = k + 1;
+            from = *k;
+        }
+        if failed.borrow().is_none() {
+            hands.play(&mut qmp, &steps[from..])?;
         }
         if failed.borrow().is_none()
             && let Err(e) = hands.until("today-again", &all[steps.len()], &today_differ)

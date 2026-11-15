@@ -122,9 +122,24 @@ pub const fn alpha(c: Argb, alpha: u8) -> Argb {
     (c & 0x00FF_FFFF) | ((alpha as u32) << 24)
 }
 
-/// The sizes of picture the kit paints (the picture store's classes
-/// for apps): small marks, row avatars and the card's big avatar.
-pub const PIC_CLASSES: [(u16, u16, u8); 3] = [(24, 24, 24), (40, 40, 24), (96, 96, 2)];
+/// Every size of picture an app program may ask the picture store for:
+/// small marks, row avatars, the card's big avatar, a note's ink panel and
+/// a note card's miniature. One list, built into the device's store and
+/// the PC model's alike (2026-11-14: Notes' ink sizes were the model's
+/// only, so the X51v drew no ink once the pen lifted and every check
+/// passed). An app that needs a new size adds it here.
+pub const PIC_CLASSES: [(u16, u16, u8); 5] = [
+    (24, 24, 24),
+    (40, 40, 24),
+    (96, 96, 2),
+    (INK_PIC.0, INK_PIC.1, 1),
+    (INK_MINI.0, INK_MINI.1, 4),
+];
+
+/// A note's ink panel's picture (Notes).
+pub const INK_PIC: (u16, u16) = (448, 196);
+/// A note card's ink miniature (Notes).
+pub const INK_MINI: (u16, u16) = (212, 84);
 
 /// A glass panel.
 pub fn panel(f: &mut Frame, cx: &Ctx, r: Rect) {
@@ -329,11 +344,8 @@ pub fn section(f: &mut Frame, cx: &Ctx, y: u16, s: &[u8], c: Argb) {
 
 /// A row of chips across `r`: the chosen one filled in `tint`.
 pub fn chips(f: &mut Frame, cx: &Ctx, r: Rect, labels: &[&[u8]], chosen: usize, tint: Argb) {
-    let n = labels.len().max(1) as u16;
-    let gap = 6;
-    let cw = (r.w - gap * (n - 1)) / n;
     for (i, l) in labels.iter().enumerate() {
-        let c = Rect::new(r.x + i as u16 * (cw + gap), r.y, cw, r.h);
+        let c = chip(r, labels.len(), i);
         // Aero glass keys; the chosen one glows blue (XP and Vista's
         // selection), whatever the app's tint.
         let _ = tint;
@@ -348,6 +360,91 @@ pub fn chips(f: &mut Frame, cx: &Ctx, r: Rect, labels: &[&[u8]], chosen: usize, 
             },
         );
         centred(f, c, c.y + c.h / 2 + 6, cx.fonts.label, TEXT, l);
+    }
+}
+
+/// Chip `i` of `n` across `r` ([`chips`]' layout: what a tap on one hits).
+#[must_use]
+pub fn chip(r: Rect, n: usize, i: usize) -> Rect {
+    let n = n.max(1) as u16;
+    let gap = 6;
+    let cw = (r.w - gap * (n - 1)) / n;
+    Rect::new(r.x + i as u16 * (cw + gap), r.y, cw, r.h)
+}
+
+/// What a tap can hit, recorded as a screen is drawn (the owner,
+/// 2026-11-14: "everything needs to be clickable via the stylus"): each
+/// thing drawn that looks tappable adds its rectangle, so nothing drawn is
+/// left without a target and the tap code never repeats the layout. The
+/// last added wins (drawn on top).
+pub struct Hits<T: Copy, const N: usize> {
+    at: [(Rect, Option<T>); N],
+    n: usize,
+}
+
+impl<T: Copy, const N: usize> Default for Hits<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Copy, const N: usize> Hits<T, N> {
+    /// None yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            at: [(Rect::new(0, 0, 0, 0), None); N],
+            n: 0,
+        }
+    }
+
+    /// Forgets the last drawing's (at the start of a draw).
+    pub fn clear(&mut self) {
+        self.n = 0;
+    }
+
+    /// `r` taps as `t` (past `N` the rest are dropped; size `N` for the
+    /// busiest screen, a test checks it).
+    pub fn add(&mut self, r: Rect, t: T) {
+        if self.n < N {
+            self.at[self.n] = (r, Some(t));
+            self.n += 1;
+        }
+    }
+
+    /// What a tap at (`x`, `y`) hits: the last added there.
+    #[must_use]
+    pub fn at(&self, x: u16, y: u16) -> Option<T> {
+        self.at[..self.n]
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains_point(x, y))
+            .and_then(|(_, t)| *t)
+    }
+
+    /// Where `t` was drawn (the last added), if it was.
+    #[must_use]
+    pub fn find(&self, t: T) -> Option<Rect>
+    where
+        T: PartialEq,
+    {
+        self.at[..self.n]
+            .iter()
+            .rev()
+            .find(|(_, h)| *h == Some(t))
+            .map(|(r, _)| *r)
+    }
+
+    /// How many were added (tests: under `N`).
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.n
+    }
+
+    /// Whether none were.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.n == 0
     }
 }
 

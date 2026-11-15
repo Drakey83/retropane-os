@@ -19,9 +19,6 @@ use rp_app::{
 };
 use rp_pim::store::{Kind, tag};
 
-/// The ink panel's picture and a card's miniature (the picture store's
-/// classes for Notes).
-pub const PIC_CLASSES: [(u16, u16, u8); 2] = [(448, 196, 1), (212, 84, 4)];
 
 /// One block of a note, as a note is written (the previews' samples, and
 /// the store's text and ink once parsed).
@@ -333,6 +330,20 @@ pub fn paint_styled(
     only: Option<Argb>,
 ) {
     px.iter_mut().for_each(|p| *p = 0);
+    paint_over(px, w, h, strokes, styles, only);
+}
+
+/// [`paint_styled`] over what is there (the stroke being written, a
+/// segment at a time: the same brush as the saved ink, so what is written
+/// is what is kept).
+pub fn paint_over(
+    px: &mut [Argb],
+    w: u16,
+    h: u16,
+    strokes: &[&[(i16, i16)]],
+    styles: &[u8],
+    only: Option<Argb>,
+) {
     let sx = i32::from(w) * 256 / 448;
     let sy = i32::from(h) * 256 / 196;
     let s = sx.min(sy);
@@ -533,7 +544,7 @@ impl Notes {
                     {
                         if k < self.minis.len() {
                             if self.minis[k].is_none() {
-                                self.minis[k] = ink_pic(cx, row.id, 212, 84, 0xFF20_2A38);
+                                self.minis[k] = ink_pic(cx, row.id, kit::INK_MINI.0, kit::INK_MINI.1, 0xFF20_2A38);
                             }
                             k += 1;
                         }
@@ -545,7 +556,7 @@ impl Notes {
                     && row.has_ink()
                     && self.ink.is_none()
                 {
-                    self.ink = ink_pic(cx, row.id, 448, 196, 0xFF1C_3A6E);
+                    self.ink = ink_pic(cx, row.id, kit::INK_PIC.0, kit::INK_PIC.1, 0xFF1C_3A6E);
                 }
             }
         }
@@ -821,12 +832,22 @@ impl Notes {
         // The stroke being written, as the pen goes (painted into the
         // panel's picture when the pen lifts).
         if let Some((ix, iy)) = self.ink_at {
-            let c = if self.tool == Tool::Marker {
-                kit::keep(0x70FF_E040)
-            } else {
-                PEN[usize::from(self.pen).min(4)]
-            };
-            for &(x, yy) in &self.live[..self.live_n] {
+            // A note with no ink yet: the panel's picture holds the
+            // stroke being written.
+            if !note.lines[..note.n].iter().any(|l| matches!(l, Line::Ink))
+                && let Some(p) = self.ink
+            {
+                f.push(rp_app::Cmd::Pic {
+                    x: ix,
+                    y: iy as i16,
+                    pic: p,
+                });
+            }
+            // Pen and marker strokes are painted into the picture as they
+            // go ([`Self::live_paint`]); the eraser's path shows as dots.
+            let c = kit::keep(0x80FF_FFFF);
+            let shown = if self.tool == Tool::Erase { self.live_n } else { 0 };
+            for &(x, yy) in &self.live[..shown] {
                 f.push(rp_app::Cmd::Fill {
                     r: Rect::new(ix + x as u16, iy + yy as u16, 3, 3),
                     color: c,
@@ -905,6 +926,37 @@ impl Notes {
 }
 
 impl Notes {
+    /// The stroke being written, its newest segment painted into the
+    /// note's ink picture with the saved ink's brush (the owner,
+    /// 2026-11-14: "the strokes only showed up as dots, not as fluid
+    /// strokes"). The last three points: the spline's segment before the
+    /// newest is painted again with its neighbour known, the brush keeps
+    /// the most coverage, so nothing doubles.
+    fn live_paint(&mut self, cx: &Ctx) {
+        if self.tool == Tool::Erase {
+            return;
+        }
+        let Some(pics) = cx.pics else { return };
+        if self.ink.is_none() {
+            let (w, h) = kit::INK_PIC;
+            self.ink = pics.alloc(w, h);
+            if let Some(p) = self.ink {
+                pics.write(p, |px| px.iter_mut().for_each(|q| *q = 0));
+            }
+        }
+        let Some(p) = self.ink else { return };
+        let n = self.live_n;
+        let pts = &self.live[n.saturating_sub(3)..n];
+        let style = if self.tool == Tool::Marker {
+            MARKER
+        } else {
+            self.pen
+        };
+        pics.write(p, |px| {
+            paint_over(px, kit::INK_PIC.0, kit::INK_PIC.1, &[pts], &[style], None);
+        });
+    }
+
     /// Note `id`'s record rewritten: its text and ink given to `change`
     /// (each with room to grow), every other field kept.
     fn rewrite(
@@ -1297,6 +1349,7 @@ impl Program for Notes {
                 if self.live_n < LIVE {
                     self.live[self.live_n] = ((x - ix) as i16, (y - iy) as i16);
                     self.live_n += 1;
+                    self.live_paint(cx);
                 }
                 Reply::Redraw
             }

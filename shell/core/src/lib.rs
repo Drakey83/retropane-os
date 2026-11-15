@@ -444,6 +444,13 @@ pub enum Key {
     Enter,
     /// The Home button: back to the Today screen.
     Home,
+    /// The Calendar button: opens Calendar (Windows Mobile's job for it).
+    Calendar,
+    /// The Contacts button: opens Contacts.
+    Contacts,
+    /// The Record button: opens Notes on a new note (Windows Mobile's
+    /// opens Notes recording one; ours has no voice notes yet).
+    Record,
 }
 
 impl Key {
@@ -457,6 +464,9 @@ impl Key {
             Self::Right => "Right",
             Self::Enter => "Enter",
             Self::Home => "Home",
+            Self::Calendar => "Calendar",
+            Self::Contacts => "Contacts",
+            Self::Record => "Record",
         }
     }
 }
@@ -2799,7 +2809,7 @@ impl Shell {
                     Key::Left => rp_app::Key::Left,
                     Key::Right => rp_app::Key::Right,
                     Key::Enter => rp_app::Key::Enter,
-                    Key::Home => return None,
+                    Key::Home | Key::Calendar | Key::Contacts | Key::Record => return None,
                 };
                 Some(self.program_event(rp_app::Event::Key(k)))
             }
@@ -2824,6 +2834,25 @@ impl Shell {
                 }
                 _ => Action::Nothing,
             };
+        }
+        // The program buttons (the owner, 2026-11-14: "physical buttons
+        // that are supposed to bring up apps, home button works but the
+        // others dont"): from any screen, the app open closed first.
+        if let Input::Key(k @ (Key::Calendar | Key::Contacts | Key::Record)) = e {
+            if !self.programs {
+                return Action::Nothing;
+            }
+            self.set_menu(false);
+            self.go_today();
+            let n = match k {
+                Key::Calendar => 0,
+                Key::Contacts => 1,
+                _ => {
+                    self.intent = rp_app::INTENT_NEW;
+                    3
+                }
+            };
+            return Action::OpenProgram(n);
         }
         let before = self.damaged;
         if let Some(a) = self.chart_input(e) {
@@ -3032,6 +3061,15 @@ impl Shell {
         self.scene(f);
         self.look(f);
         self.program_content(f);
+        if self.screen == Screen::Program {
+            // Over the app: its overlays, in the look's colours.
+            let start = f.len();
+            self.overlays(f);
+            if self.light() {
+                let style = self.light_style;
+                f.map_colors_from(start, |c, text| look_color(c, text, style));
+            }
+        }
         // The list kept for the next frame, and a restatement's areas:
         // where this list differs from the last one drawn.
         let restated = core::mem::take(&mut self.restated);
@@ -3447,11 +3485,21 @@ impl Shell {
             self.centred(f, NOTICE, H - 14, ui, FOCUS, n.as_bytes());
         }
 
-        // A reminder over whatever is up (the notification centre's
-        // banner, docs/design/calendar-rule0.md).
-        self.banner_scene(f);
+        // Over an app the overlays are drawn after its content
+        // ([`Self::frame`]): the app's own window would cover them (the
+        // owner, 2026-11-14: "the full screen app is covering the start
+        // menu").
+        if self.screen != Screen::Program {
+            self.overlays(f);
+        }
+    }
 
-        // The Start menu over everything.
+    /// What goes over whatever is up: a reminder's banner (the
+    /// notification centre's, docs/design/calendar-rule0.md) and the Start
+    /// menu over everything.
+    fn overlays(&self, f: &mut Frame) {
+        let ui = self.fonts.ui;
+        self.banner_scene(f);
         if self.menu_open {
             let r = self.menu_rect();
             self.glass(f, r, MENU_LEFT, MENU_RIGHT);

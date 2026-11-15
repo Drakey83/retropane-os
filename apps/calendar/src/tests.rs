@@ -250,3 +250,43 @@ fn the_editor_changes_start_repeat_and_alert_then_deletes_on_the_second_tap() {
         0
     );
 }
+
+#[test]
+fn every_tab_day_and_column_answers_the_stylus() {
+    // The owner, 2026-11-14: "i should be able to click on everything
+    // (agenda, day, week, month) including individual days".
+    let pim = store();
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    draw(&mut c, &cx);
+    let tap = |c: &mut Calendar, h: Hit| {
+        let r = c.hits.find(h).expect("drawn");
+        c.event(
+            Event::PenUp {
+                x: r.x + r.w / 2,
+                y: r.y + r.h / 2,
+            },
+            &cx,
+        )
+    };
+    for v in [View::Day, View::Week, View::Month, View::Agenda] {
+        assert_eq!(tap(&mut c, Hit::View(v)), Reply::Redraw);
+        assert_eq!(c.view, v);
+        draw(&mut c, &cx);
+    }
+    // A day in the week strip.
+    tap(&mut c, Hit::Day(19_725));
+    assert_eq!(c.day, 19_725);
+    // A column in Week opens its day.
+    c.view = View::Week;
+    draw(&mut c, &cx);
+    tap(&mut c, Hit::OpenDay(19_724));
+    assert_eq!((c.view, c.day), (View::Day, 19_724));
+    // A day in Month.
+    c.view = View::Month;
+    draw(&mut c, &cx);
+    tap(&mut c, Hit::Day(19_740));
+    assert_eq!((c.view, c.day), (View::Month, 19_740));
+    // Room for the busiest screen.
+    assert!(c.hits.len() < 96);
+}

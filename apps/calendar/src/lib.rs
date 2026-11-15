@@ -174,6 +174,21 @@ enum Asked {
     Place,
 }
 
+/// What a stylus tap on a Calendar screen hits (the owner, 2026-11-14:
+/// "i should be able to click on everything (agenda, day, week, month)
+/// including individual days"; recorded as each screen is drawn).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Hit {
+    /// A view's tab.
+    View(View),
+    /// A day chosen (the week strip, the month's grid).
+    Day(i32),
+    /// A day opened in Day (the week's columns).
+    OpenDay(i32),
+    /// An appointment opened.
+    Appt(u32),
+}
+
 /// The Calendar program.
 pub struct Calendar {
     /// Online calendars: the links to read next (their numbers on the PC),
@@ -189,6 +204,8 @@ pub struct Calendar {
     place_asked: Text,
     rows_at: [(Rect, u32, bool); 12],
     n_rows: usize,
+    /// What a tap hits, as last drawn.
+    hits: kit::Hits<Hit, 96>,
     /// The calendars' rows as drawn (a tap shows or hides one).
     cal_rows: [(Rect, u32); 8],
     n_cal_rows: usize,
@@ -349,6 +366,7 @@ impl Calendar {
             place_asked: Text::EMPTY,
             rows_at: [(Rect::new(0, 0, 0, 0), 0, false); 12],
             n_rows: 0,
+            hits: kit::Hits::new(),
             n_cal_rows: 0,
             want_list: false,
             asked: Asked::Nothing,
@@ -1209,12 +1227,13 @@ impl Calendar {
 
     /// The week strip: the chosen day's week, today ringed, the chosen day
     /// filled, a colour tick per appointment (three at most).
-    fn strip(&self, f: &mut Frame, cx: &Ctx, y: u16) {
+    fn strip(&mut self, f: &mut Frame, cx: &Ctx, y: u16) {
         let first = self.day - in_week(self.day, cx.us);
         for i in 0..7u16 {
             let d = first + i32::from(i);
             let x = MARGIN + i * 64;
             let cell = Rect::new(x, y, 64, 62);
+            self.hits.add(cell, Hit::Day(d));
             kit::centred(f, cell, y + 14, cx.fonts.label, DIM, column_name(i, cx.us));
             if d == self.day {
                 kit::key(f, cx, Rect::new(x + 10, y + 18, 44, 40), kit::KeyState::On);
@@ -1292,6 +1311,9 @@ impl Calendar {
                         self.rows_at[self.n_rows] = (r, a.id, a.task);
                         self.n_rows += 1;
                     }
+                    if !a.task {
+                        self.hits.add(r, Hit::Appt(a.id));
+                    }
                     kit::panel(f, cx, r);
                     kit::colour_bar(f, r, self.colour(a));
                     if a.task {
@@ -1344,12 +1366,15 @@ impl Calendar {
         }
     }
 
-    fn day_view(&self, f: &mut Frame, cx: &Ctx, top: u16) {
+    fn day_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         let (list, n) = self.on(self.day);
         let mut y = top;
         // All-day items in a strip.
         for a in list[..n].iter().filter(|a| a.len == 0) {
             let r = Rect::new(MARGIN + 52, y, WIDE - 52, 30);
+            if !a.task {
+                self.hits.add(r, Hit::Appt(a.id));
+            }
             kit::tinted(f, cx, r, self.colour(a), 0x70);
             kit::fitted(
                 f,
@@ -1423,6 +1448,9 @@ impl Calendar {
             let by = y + (a.start - first_h * 60) * per / 60;
             let bh = (a.len * per / 60).max(28).min(596 - by);
             let r = Rect::new(x0 + lane * wide, by + 1, wide - 4, bh - 2);
+            if !a.task {
+                self.hits.add(r, Hit::Appt(a.id));
+            }
             kit::tinted(f, cx, r, self.colour(a), 0x80);
             kit::colour_bar(f, r, self.colour(a));
             kit::fitted(
@@ -1459,7 +1487,7 @@ impl Calendar {
         }
     }
 
-    fn week_view(&self, f: &mut Frame, cx: &Ctx, top: u16) {
+    fn week_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         let first = self.day - in_week(self.day, cx.us);
         let x0 = MARGIN + 36;
         let cw = (WIDE - 36) / 7;
@@ -1467,6 +1495,9 @@ impl Calendar {
         for i in 0..7u16 {
             let d = first + i32::from(i);
             let c = Rect::new(x0 + i * cw, top, cw, 40);
+            // The whole column opens its day (its blocks, added later,
+            // open themselves).
+            self.hits.add(Rect::new(c.x, top, cw, 596 - top), Hit::OpenDay(d));
             let col = if d == cx.now.day { tint::CALENDAR } else { DIM };
             kit::centred(f, c, top + 14, cx.fonts.label, col, column_name(i, cx.us));
             let mut b = Buf::<4>::new();
@@ -1520,6 +1551,9 @@ impl Calendar {
                 let by = y0 + (a.start - h0 * 60) * per / 60;
                 let bh = (a.len * per / 60).max(16);
                 let r = Rect::new(cx0 + 1 + lane * lw, by + 1, lw - 2, bh - 2);
+                if !a.task {
+                    self.hits.add(r, Hit::Appt(a.id));
+                }
                 kit::tinted(f, cx, r, self.colour(a), 0x40);
                 kit::fitted(
                     f,
@@ -1534,7 +1568,7 @@ impl Calendar {
         }
     }
 
-    fn month_view(&self, f: &mut Frame, cx: &Ctx, top: u16) {
+    fn month_view(&mut self, f: &mut Frame, cx: &Ctx, top: u16) {
         let d = date::date_of(self.day);
         let start = date::days_from(date::Date {
             year: d.year,
@@ -1568,6 +1602,7 @@ impl Calendar {
                 let x = MARGIN + c * 64;
                 let cy = y + r * ch;
                 let inside = date::date_of(day).month == d.month;
+                self.hits.add(Rect::new(x, cy, 64, ch), Hit::Day(day));
                 if day == self.day {
                     kit::key(
                         f,
@@ -1601,6 +1636,9 @@ impl Calendar {
                 break;
             }
             let r = Rect::new(MARGIN, y, WIDE, 38);
+            if !a.task {
+                self.hits.add(r, Hit::Appt(a.id));
+            }
             kit::panel(f, cx, r);
             kit::colour_bar(f, r, self.colour(a));
             let t = if a.len == 0 {
@@ -1757,6 +1795,7 @@ impl Program for Calendar {
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
         self.refresh(cx);
+        self.hits.clear();
         kit::backdrop(f);
         let under = self.title(f, cx);
         if self.view == View::Edit {
@@ -1787,14 +1826,14 @@ impl Program for Calendar {
             View::Week => 2,
             View::Month => 3,
         };
-        kit::chips(
-            f,
-            cx,
-            Rect::new(MARGIN, under + 4, WIDE, 30),
-            &LABELS,
-            chosen,
-            tint::CALENDAR,
-        );
+        let tabs = Rect::new(MARGIN, under + 4, WIDE, 30);
+        kit::chips(f, cx, tabs, &LABELS, chosen, tint::CALENDAR);
+        for (k, v) in [View::Agenda, View::Day, View::Week, View::Month]
+            .into_iter()
+            .enumerate()
+        {
+            self.hits.add(kit::chip(tabs, LABELS.len(), k), Hit::View(v));
+        }
         let y = under + 40;
         match shown {
             View::Agenda | View::New | View::Calendars | View::Edit => {
@@ -1872,6 +1911,23 @@ impl Program for Calendar {
             && (322..366).contains(&y)
         {
             self.open_edit(cx, None);
+            return Reply::Redraw;
+        }
+        // Whatever was drawn where the pen lifted (the tabs, the days, the
+        // appointments in every view).
+        if let Event::PenUp { x, y } = e
+            && matches!(self.view, View::Agenda | View::Day | View::Week | View::Month)
+            && let Some(h) = self.hits.at(x, y)
+        {
+            match h {
+                Hit::View(v) => self.view = v,
+                Hit::Day(d) => self.day = d,
+                Hit::OpenDay(d) => {
+                    self.day = d;
+                    self.view = View::Day;
+                }
+                Hit::Appt(id) => self.open_edit(cx, Some(id)),
+            }
             return Reply::Redraw;
         }
         if let Event::PenUp { x, y } = e

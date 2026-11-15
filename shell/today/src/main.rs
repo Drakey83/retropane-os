@@ -469,7 +469,7 @@ mod image {
     /// The big pictures are fitted inside 250 x 176 (the hero's box), so
     /// their slots are that, not square (-148 KB). Hourly's graph is one
     /// picture of its own (its line and band, painted once a forecast).
-    const PIC_CLASSES: [(u16, u16, u8); 9] = [
+    const PIC_CLASSES: [(u16, u16, u8); 11] = [
         (rp_shell::Size::Hero.side(), rp_shell::HERO_PIC_H, 2),
         (rp_shell::Size::Mid.side(), rp_shell::Size::Mid.side(), 6),
         (rp_shell::Size::Card.side(), rp_shell::Size::Card.side(), 8),
@@ -490,7 +490,12 @@ mod image {
         rp_app::kit::PIC_CLASSES[0],
         rp_app::kit::PIC_CLASSES[1],
         rp_app::kit::PIC_CLASSES[2],
+        rp_app::kit::PIC_CLASSES[3],
+        rp_app::kit::PIC_CLASSES[4],
     ];
+    // Every size the app programs may ask for (a size added to the kit's
+    // list and not here fails the build).
+    const _: () = assert!(rp_app::kit::PIC_CLASSES.len() == 5);
     /// The keeper's tag while no pack is in yet (apart from every pack).
     const NOT_YET: u8 = 0xFE;
 
@@ -1503,6 +1508,11 @@ mod image {
             0x27 => Key::Right,
             0x0D => Key::Enter,
             0xC4 => Key::Home,
+            // The program buttons (docs/hw/keypad.md: VK_APP1 Calendar,
+            // VK_APP2 Contacts, VK_APP5 Record; Mail has no app yet).
+            0xC1 => Key::Calendar,
+            0xC2 => Key::Contacts,
+            0xC5 => Key::Record,
             _ => return None,
         })
     }
@@ -2460,13 +2470,18 @@ mod image {
             let scan = keypad.scan();
             let pressed = scan.held;
             let mut back = false;
+            // What a button asked for (an app to open), acted on with the
+            // pen's below.
+            let mut key_act = Action::Nothing;
             key_events.update(rt::ticks() / TICKS_MS, scan, &mut |e| {
                 let screen = shell.screen().name();
                 match key_of(e.vk) {
                     Some(k) if matches!(e.kind, Kind::Down | Kind::Repeat) => {
                         trail.push(now_ms as u32, rp_today::trail::What::Key(k.name()), screen);
-                        if shell.input(Input::Key(k)) == Action::BackToLoader {
-                            back = true;
+                        match shell.input(Input::Key(k)) {
+                            Action::BackToLoader => back = true,
+                            a @ Action::OpenProgram(_) => key_act = a,
+                            _ => {}
                         }
                     }
                     None if e.kind == Kind::Down => {
@@ -2664,6 +2679,8 @@ mod image {
             if matches!(ev, Pen::Up(..)) || raw.is_none() {
                 landed_ticks = None;
             }
+            // A program button's app, when the pen asked for nothing.
+            let act = if act == Action::Nothing { key_act } else { act };
             match act {
                 Action::BackToLoader => back = true,
                 Action::Calibrated(c) => {
