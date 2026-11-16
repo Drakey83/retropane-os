@@ -125,6 +125,154 @@ void RP_LastShot( void );
    renderer's of the same view, both written by the renderer (`rp_both`:
    1 asked, 2 written). */
 
+/*
+-rpwalk: Gordon walks the map on his own while a run plays (the owner,
+2026-11-16: a varied test through the corridors, the view sweeping the
+map's brushes and its people). Forward all the time, steered: five times
+a second three probe lines (ahead, 40 degrees left and right, 128 units,
+at waist height) through the engine's own client trace, and a turn
+toward the more open side when ahead is blocked; standing still for a
+second (a wall, a corner, a person) a turn of about 180 degrees, a jump
+and the use key; the use key also when something is close ahead, so
+doors open (the owner: "the doors wont open"). God mode so nothing ends the walk; the cheats are the
+single-player engine's own (sv_cheats). The first walk, on a timer,
+ran into walls (the owner).
+*/
+static float RP_Probe( float yaw_deg )
+{
+	vec3_t     start, end;
+	pmtrace_t  tr;
+	float      a = DEG2RAD( yaw_deg );
+
+	VectorCopy( cl.simorg, start );
+	start[2] += 8.0f;
+	end[0] = start[0] + 128.0f * cosf( a );
+	end[1] = start[1] + 128.0f * sinf( a );
+	end[2] = start[2];
+	tr = CL_TraceLine( start, end, PM_NORMAL );
+	return tr.fraction;
+}
+
+/*
+The people to walk among (the owner: "i want him walking around npcs"):
+the nearest monster the client sees this frame (a stepping studio model,
+not a player), 80 to 2000 units away and not one of the last four
+reached; its index, or 0.
+*/
+static int rp_reached[4], rp_reached_at;
+
+static int RP_Person( vec3_t to )
+{
+	int   best = 0;
+	float best_d = 2000.0f * 2000.0f;
+
+	for( int i = cl.maxclients + 1; i < clgame.maxEntities; i++ )
+	{
+		cl_entity_t *e = CL_GetEntityByIndex( i );
+		vec3_t       d;
+		float        dd;
+		int          seen = 0;
+
+		if( !e || !e->model || e->model->type != mod_studio || e->curstate.messagenum != cl.parsecount
+			|| e->curstate.movetype != MOVETYPE_STEP )
+			continue;
+		for( int k = 0; k < 4; k++ )
+			seen |= rp_reached[k] == i;
+		if( seen )
+			continue;
+		VectorSubtract( e->origin, cl.simorg, d );
+		d[2] = 0.0f;
+		dd = DotProduct( d, d );
+		if( dd < best_d && dd > 80.0f * 80.0f )
+		{
+			best_d = dd;
+			best = i;
+			VectorCopy( d, to );
+		}
+	}
+	return best;
+}
+
+static void RP_Walk( uint64_t played_us )
+{
+	static int      started, turn; // turn: 0 none, 1 left, -1 right
+	static uint64_t next, stuck_check, turn_until, used;
+	static vec3_t   last;
+	uint64_t        ms = played_us / 1000;
+	int             want = turn;
+
+	if( !started )
+	{
+		started = 1;
+		Cbuf_AddText( "sv_cheats 1\ngod\n+forward\n" );
+		VectorCopy( cl.simorg, last );
+		stuck_check = ms + 1000;
+	}
+	if( ms >= stuck_check )
+	{
+		vec3_t d;
+
+		VectorSubtract( cl.simorg, last, d );
+		VectorCopy( cl.simorg, last );
+		stuck_check = ms + 1000;
+		if( DotProduct( d, d ) < 16.0f * 16.0f )
+		{
+			// a wall or a corner: about face, and a jump for a step
+			want = 1;
+			turn_until = ms + 850;
+			Cbuf_AddText( "+jump\nwait\n-jump\n+use\nwait\n-use\n" );
+		}
+	}
+	if( ms >= turn_until && ms >= next )
+	{
+		float yaw = cl.viewangles[YAW];
+		float ahead = RP_Probe( yaw );
+
+		next = ms + 200;
+		// something close ahead: a door opens to the use key (once a second)
+		if( ahead < 0.5f && ms >= used )
+		{
+			used = ms + 1000;
+			Cbuf_AddText( "+use\nwait\n-use\n" );
+		}
+		vec3_t to;
+		int    who = RP_Person( to );
+
+		if( ahead > 0.5f && who )
+		{
+			// toward the person, while the way ahead is open
+			float diff = RAD2DEG( atan2f( to[1], to[0] )) - yaw;
+
+			while( diff > 180.0f )
+				diff -= 360.0f;
+			while( diff < -180.0f )
+				diff += 360.0f;
+			want = diff > 15.0f ? 1 : diff < -15.0f ? -1 : 0;
+			if( DotProduct( to, to ) < 120.0f * 120.0f )
+			{
+				// reached: the next person next time
+				rp_reached[rp_reached_at++ & 3] = who;
+			}
+		}
+		else if( ahead > 0.9f )
+			want = 0;
+		else
+			want = RP_Probe( yaw + 40.0f ) >= RP_Probe( yaw - 40.0f ) ? 1 : -1;
+	}
+	if( want != turn )
+	{
+		if( turn == 1 )
+			Cbuf_AddText( "-left\n" );
+		else if( turn == -1 )
+			Cbuf_AddText( "-right\n" );
+		if( want == 1 )
+			Cbuf_AddText( "+left\n" );
+		else if( want == -1 )
+			Cbuf_AddText( "+right\n" );
+		turn = want;
+	}
+}
+
 static void RP_End( void )
 {
 	static int      state = -1; // 0: before the map plays, 1: it plays, 2: ending, 3: waiting for the frame drawn both ways
@@ -165,6 +313,8 @@ static void RP_End( void )
 			fprintf( stderr, "rp-step: 4/5 The map plays.|Its frame rate is|below, new every|5 seconds. It does|not end by itself:|soft reset to stop.\n" );
 	}
 
+	if( state == 1 && Sys_CheckParm( "-rpwalk" ))
+		RP_Walk( now - played_from );
 	if( state == 1 && end && now - played_from >= (uint64_t)end * 1000000u )
 		why = "its time of play|is over";
 	else if( limit && now >= (uint64_t)limit * 1000000u )

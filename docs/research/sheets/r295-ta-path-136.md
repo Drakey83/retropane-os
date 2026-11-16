@@ -335,3 +335,28 @@ never tried; tighter than the SDRAM's rating is a question for the
 owner first, memory "any Axim"). 125.67 / 1 is not one of ADR-0035's
 ruled rungs: making it the TA path's game step is the owner's ruling,
 after a 10-minute run like run 29.
+
+## Run 33: 10 minutes at 125.67 / 1 (the owner's pick): clean
+
+`-rpclock 29 3 0 1`, `RETROPANE_XASH_PLAY=600`, the player standing (the
+kit's usual run): **0 hangs in 12,475 frames**, every 5 s window clean,
+a render 11.7 ms throughout, the clock put back with the underrun flag
+clear. 125.67 / 1 is the TA path's clean top so far on this X51v
+(16% over 108.33's render). Next (the owner): the same 10 minutes with
+Gordon walking the map (`-rpwalk`) and the frame-rate bar on screen
+(`-rpfpsbar`), for a varied scene.
+
+## Run 34: 10 minutes walking at 125.67 / 1 with the frame-rate bar: clean
+
+`-rpwalk` (the first, timed walk: forward, a turn every 6 s; the owner
+also steered with the D-pad) and `-rpfpsbar` (the bottom 16 rows the
+runner's: frames a second, the clock, the stalls). **0 hangs in 17,519
+frames**, every window clean; **29.0 frames a second on average while
+walking** (18.1-35.2 a 5 s window; the standing view of c1a0 is the
+heaviest, ~21). With run 33, 125.67 / 1 has drawn ~30,000 frames over 20
+minutes on this X51v without a hang.
+
+What it does not settle: making 125.67 / 1 the TA path's step is the
+owner's ruling (ADR-0035's ladder has no such rung); the walk now
+steers by probe traces, opens doors and seeks the NPCs (the owner's asks
+after this run), for the next long run.

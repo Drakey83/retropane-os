@@ -164,6 +164,10 @@ mod image {
     /// waited for and counted.
     const LADDER_WORD: &[u8] = b"-rpladder";
 
+    /// A test run's word for the frame-rate bar along the screen's bottom
+    /// (`gfx::BAR_ROWS`): frames a second, the 2700G's clock, the hangs.
+    const BAR_WORD: &[u8] = b"-rpfpsbar";
+
     /// The rung after the last [`CLOCK_WORD`] in `args` (an experiment's
     /// words come after the kit's default), if all four numbers are there
     /// and in the PLL's fields.
@@ -1125,10 +1129,12 @@ mod image {
         }
         let rung = clock_rung(&args[..arg_count]);
         let ladder = args[..arg_count].iter().any(|a| a.to_bytes() == LADDER_WORD);
+        let bar = args[..arg_count].iter().any(|a| a.to_bytes() == BAR_WORD);
         match CHIP.put_with(|| {
             super::gfx::Chip::new(gfx_log, mbx)
                 .with_rung(rung)
                 .with_ladder(ladder)
+                .with_bar(bar)
         }) {
             Some(c) => s.set_screen(c),
             None => {

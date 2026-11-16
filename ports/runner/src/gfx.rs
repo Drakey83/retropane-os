@@ -26,10 +26,11 @@
 //! | `0x200000` | the TA's parameter memory (5 MiB, below the manager's 8 MiB reach) |
 //! | `0x800000` | the program's texture memory (7 MiB) |
 
-use core::fmt::Arguments;
+use core::fmt::{Arguments, Write};
 
 use rp_drv_blit2d::{MBX, reg};
 use rp_drv_mbx_display::clock::{self, MBXCLK, with_3d};
+use rp_drv_mbx_display::console::Console;
 use rp_drv_mbx_display::layers::Layer;
 use rp_drv_mbx_display::{PixelFormat as PlaneFormat, Plane, ack_events, graphics_set};
 use rp_drv_mbx3d::{self as m3, ta};
@@ -111,6 +112,30 @@ const LAY_SDRAM: Lay = Lay {
     pm: TA_PM,
     from: FROM_TA,
     keep: KEEP,
+};
+
+/// The frame-rate bar (`-rpfpsbar`, the owner 2026-11-16: "add an fps
+/// counter"): the 3D frame stops this many rows short of the bottom and
+/// the runner writes the rate, the clock and the hangs there. ref_rp
+/// draws no 2D yet (the engine's own counter would not show), and the 3D
+/// core paints every row it owns each frame, so the bar's rows are the
+/// CPU's alone.
+const BAR_ROWS: u32 = 16;
+const DRAW_H: u32 = H - BAR_ROWS;
+const LAY_BAR: Lay = Lay {
+    name: "all in SDRAM, the bottom 16 rows the frame-rate bar's",
+    ta: ta::Layout { height: DRAW_H, ..TA },
+    pm: TA_PM,
+    from: binner::Layout {
+        h: DRAW_H as u16,
+        ..FROM_TA
+    },
+    keep: KEEP,
+};
+const SCREEN_BAR: Target = Target {
+    picture: Picture::packed(0, W as u16, DRAW_H as u16, PixelFormat::Rgb565),
+    x: 0,
+    y: 0,
 };
 
 /// The screen's bytes: the rest of the safe region (the die) is free
@@ -754,6 +779,12 @@ struct Open {
     /// The cell draws the alpha-0 overlay (run 31), and this frame does.
     overlay: bool,
     overlay_on: bool,
+    /// The frame-rate bar: frames and hangs since it was last drawn, and
+    /// when; the hangs since the screen opened.
+    bar: bool,
+    bar_t0: u32,
+    bar_frames: u32,
+    bar_hangs: u32,
 }
 
 /// The 2700G as `rp_port`'s [`Screen`].
@@ -770,6 +801,8 @@ pub struct Chip {
     rung: Option<clock::Rung>,
     /// R295's diagnostic ladder asked for (`-rpladder`), and where it is.
     ladder_on: bool,
+    /// The frame-rate bar asked for (`-rpfpsbar`).
+    bar: bool,
     ladder: Option<Ladder>,
 }
 
@@ -799,7 +832,15 @@ impl Chip {
             rung: None,
             ladder_on: false,
             ladder: None,
+            bar: false,
         }
+    }
+
+    /// The frame-rate bar along the bottom (`-rpfpsbar`).
+    #[must_use]
+    pub const fn with_bar(mut self, on: bool) -> Self {
+        self.bar = on;
+        self
     }
 
     /// R295's diagnostic ladder (`-rpladder`): from frame [`LADDER_FROM`]
@@ -1126,6 +1167,33 @@ impl Open {
         cpu::drain_write_buffer();
     }
 
+    /// The bar, once a second: frames a second, the 2700G's clock, the
+    /// hangs since the screen opened.
+    fn draw_bar(&mut self) {
+        let us = us_since(self.bar_t0);
+        if us < 1_000_000 {
+            return;
+        }
+        let tenths = u64::from(self.bar_frames) * 10_000_000 / u64::from(us.max(1));
+        let khz = self.cur.map_or(0, |r| r.speed.khz());
+        let at = (DRAW_H * W * 2) as usize;
+        let Some(rows) = self.vram.get_mut(at..at + (BAR_ROWS * W * 2) as usize) else {
+            return;
+        };
+        let mut c = Console::new(rows, STRIDE, (6, 0), (W as usize - 12, BAR_ROWS as usize), 2, (0xFFE0, 0x0000));
+        let _ = write!(
+            c,
+            "{}.{} fps  2700G {}.{:02} MHz  stalls {}",
+            tenths / 10,
+            tenths % 10,
+            khz / 1000,
+            khz % 1000 / 10,
+            self.bar_hangs
+        );
+        self.bar_t0 = rt::ticks();
+        self.bar_frames = 0;
+    }
+
     /// Bit k set: `MARKS[k]` no longer reads as the mark.
     fn marks_drawn(&self) -> u32 {
         let mut m = 0;
@@ -1179,7 +1247,8 @@ impl Open {
             from.regions = CHK_REGIONS;
         }
         self.rendering = Some(rt::ticks());
-        for (off, v) in binner::start_table(&from, SCREEN) {
+        let target = if self.lay.ta.height < H { SCREEN_BAR } else { SCREEN };
+        for (off, v) in binner::start_table(&from, target) {
             let words = if self.words_on { self.words } else { NONE };
             let v = words.iter().find(|w| w.0 == off).map_or(v, |w| w.1);
             regs.write32(MBX + off, v);
@@ -1331,7 +1400,16 @@ impl Screen for Chip {
             checker_n: 0,
             overlay: false,
             overlay_on: false,
+            bar: self.bar,
+            bar_t0: rt::ticks(),
+            bar_frames: 0,
+            bar_hangs: 0,
         });
+        if self.bar
+            && let Some(o) = self.open.as_mut()
+        {
+            o.lay = &LAY_BAR;
+        }
         self.since = rt::ticks();
         Ok(gfx)
     }
@@ -1365,6 +1443,11 @@ impl Screen for Chip {
         let t0 = rt::ticks();
         let waited = o.wait_render(regs);
         c.waited_us += us_since(t0);
+        if o.bar {
+            o.bar_frames += 1;
+            o.bar_hangs += u32::from(waited.is_err());
+            o.draw_bar();
+        }
         if waited.is_err() {
             c.render_hangs += 1;
             // The core's recovery leaves it likely to hang again at
