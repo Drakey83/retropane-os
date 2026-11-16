@@ -641,6 +641,37 @@ or card transfer for up to 16.1 s, more than half the run limit. What it
 computes there is R285, found with the same tool as the frame's split
 (R282). The card is now 5 s of the 29.
 
+## Where the time goes: sampling the program on the X51v (2026-11-16)
+
+Run 3 left 16.5 s of computing before the map plays (R285), and the
+frame's 313 ms is the next question (R282). Neither can be read from
+the emulator, whose CPU is not the X51v's. The kit's run now samples
+where the program is (`-rpsample`): the OS timer interrupts it 1,000
+times a second and the runtime keeps the interrupted instruction and the
+return address of the function it was in (`rt::start_sampling`), 64 Ki
+samples in 512 KiB of the runner's scratch RAM (the run's first 65 s:
+the whole start and half a minute of play), written to
+`rp-xash/samples.bin` at its end. On the PC, `cargo xtask xash-profile`
+names every sample against the very ELFs the kit sent (kept in
+`target/xash-kit/elf`), counts them by the run's steps (the engine's
+start, the map's start, the play), and charges each software-float or
+copy helper to the code that called it.
+
+Rule 0: the textbook profiler instruments the program (`gprof`'s call at
+every function's start, which here would swamp the small float helpers
+it should measure); Windows CE's Monte Carlo profiler and Linux's
+`perf` sample from an interrupt inside the OS. Ours samples the
+unchanged program on the device itself, keeps the samples in the
+runner's own RAM, names them on the PC against the files that ran, and
+adds each sample's caller, which a flat count cannot say. Its cost: one
+short interrupt a millisecond; what runs with interrupts masked is
+counted where it unmasks them (the card driver's waits: `read`).
+
+The emulator's reading (a pointer, not the X51v's answer): its map start
+was 61% one engine function, `CL_ParseClientData`, and the double-width
+compare `__aeabi_dcmpge` it calls 802 times in 2,669 samples. Run 4 says
+whether the X51v spends its 16.5 s there too.
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
