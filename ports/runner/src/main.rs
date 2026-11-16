@@ -92,13 +92,12 @@ mod image {
     const FAT_WORK: usize = 64 * 1024;
     /// Files a program may have open at once.
     const HANDLES: usize = 16;
-    /// The program's command line: its name, and the engine's own word for
-    /// "say what you are doing" (a test image's log is its result).
-    /// `-rpmemlist` (ports/xash/platform/in_rp.c) lists the engine's
-    /// memory pools every five seconds; `-rpshot` (vid_rp.c) writes its
-    /// 30th frame to the card, and one every ten seconds after, for the
-    /// PC to look at.
-    const ARGS: [&core::ffi::CStr; 5] = [c"xash3d", c"-dev", c"2", c"-rpmemlist", c"-rpshot"];
+    /// The program's command line as built in: its name alone. What a
+    /// run asks of the program is in [`ARGS_FILE`], so a run on the X51v
+    /// can be quiet (its run log holds 64 KiB) and the emulator's check
+    /// can ask for everything (`cargo xtask emu-xash` writes the engine's
+    /// `-dev 2` and the platform layer's `-rpmemlist -rpshot` there).
+    const ARGS: [&core::ffi::CStr; 1] = [c"xash3d"];
     /// More of the command line, if this file is in the runner's folder:
     /// words with spaces between (`+map c1a0`). How a test run says what
     /// the program should do without the image being built again.
@@ -147,21 +146,50 @@ mod image {
         }
     }
 
-    /// The serial line as a C program's console.
-    struct Serial(PxaUart<Mmio>);
-
-    impl Console for Serial {
-        fn put(&mut self, bytes: &[u8]) {
-            for &b in bytes {
-                if b == b'\n' {
-                    self.0.write_byte(b'\r');
-                }
-                self.0.write_byte(b);
+    /// Where the runner's own lines and all the program prints go: the
+    /// run log when the loader started this image (the X51v: the loader
+    /// sends it to the PC, and every line goes onto a card as it ends,
+    /// `rp_hal_x51v::cardsink`), the serial line when nothing did (the
+    /// emulator booting this image directly, where there is no run log).
+    /// Never both: the X51v has no connector on that serial line, and a
+    /// byte sent down it is 87 us of waiting once its buffer is full, in
+    /// the middle of the frame being timed.
+    fn say(bytes: &[u8]) {
+        if devices::loader_present() {
+            devices::log_write(bytes);
+            return;
+        }
+        let mut uart = PxaUart::new(rt::emergency_uart());
+        for &b in bytes {
+            if b == b'\n' {
+                uart.write_byte(b'\r');
             }
+            uart.write_byte(b);
         }
     }
 
-    static SYSTEM: rt::Slot<System<'static, Card, HANDLES, Serial>> = rt::Slot::new();
+    /// [`say`] as a writer, for a line with numbers in it.
+    #[derive(Clone, Copy)]
+    struct Out;
+
+    impl Write for Out {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            say(s.as_bytes());
+            Ok(())
+        }
+    }
+
+    /// A C program's console: what it prints goes where the runner's own
+    /// lines go.
+    struct Text;
+
+    impl Console for Text {
+        fn put(&mut self, bytes: &[u8]) {
+            say(bytes);
+        }
+    }
+
+    static SYSTEM: rt::Slot<System<'static, Card, HANDLES, Text>> = rt::Slot::new();
     static SOUND: rt::Slot<Sound<'static, Dma>> = rt::Slot::new();
     /// The GPIO block: the audio service, the codec's gate and the touch
     /// chip's two lines share it for the whole run.
@@ -220,8 +248,7 @@ mod image {
     /// program that ends with an error has not made the runner fail: the
     /// loader gets the image back either way, and the log says which.
     fn exit(code: i32) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\nrunner: the program called exit({code})");
+        let _ = writeln!(Out, "\nrunner: the program called exit({code})");
         rp_image::finish()
     }
 
@@ -250,7 +277,8 @@ mod image {
     /// the same loader, every name it exports is looked up and every
     /// function named, and it is let go again. Its constructors are not
     /// run. Not something a runner under Game Mode does.
-    fn check_libraries(s: &mut System<'static, Card, HANDLES, Serial>, uart: &mut PxaUart<Mmio>) {
+    fn check_libraries(s: &mut System<'static, Card, HANDLES, Text>) {
+        let uart = &mut Out;
         // The names first: the listing holds a handle of its own.
         let mut found = [([0u8; 32], 0usize); 8];
         let mut count = 0;
@@ -335,11 +363,14 @@ mod image {
     }
 
     fn main() -> ! {
-        let Some(bus) = rt::take_ffuart() else {
-            rp_image::fail("no serial port")
-        };
-        let mut uart = PxaUart::new(bus);
-        uart.init(115_200);
+        // The serial line is set up only where it is listened to ([`say`]).
+        if !devices::loader_present() {
+            let Some(bus) = rt::take_ffuart() else {
+                rp_image::fail("no serial port")
+            };
+            PxaUart::new(bus).init(115_200);
+        }
+        let mut uart = Out;
         rt::init_mmu();
         let _ = writeln!(uart, "\n{BANNER}");
         let mut cpld = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
@@ -475,7 +506,7 @@ mod image {
 
         // Made straight into its slot: the file table is several KiB, and
         // a copy or two of it on the way would be most of a small stack.
-        let Some(s) = SYSTEM.put_with(|| System::new(files, Serial(uart), heap, ticks)) else {
+        let Some(s) = SYSTEM.put_with(|| System::new(files, Text, heap, ticks)) else {
             rp_image::fail("the C system was set up twice")
         };
         s.set_modules(Library {
@@ -486,14 +517,13 @@ mod image {
         if let Some(v) = voice {
             s.set_sound(v);
         }
-        let mut uart = PxaUart::new(rt::emergency_uart());
         match pad(gpio).and_then(|p| INPUT.put_with(|| Input::new(p, Calibration::X51V_DEFAULT))) {
             Some(i) => s.set_input(i),
             None => {
                 let _ = writeln!(uart, "input: none (no keypad or SSP1)");
             }
         }
-        check_libraries(s, &mut uart);
+        check_libraries(s);
         let sys: &'static mut dyn Sys = s;
         rp_hal_cabi::start(sys, exit);
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);

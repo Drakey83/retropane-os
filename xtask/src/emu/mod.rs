@@ -1166,6 +1166,21 @@ const XASH_SKIP_ENV: &str = "RETROPANE_XASH_SKIP";
 /// c1a0`), which the runner reads from `args.txt` in its folder.
 const XASH_ARGS_ENV: &str = "RETROPANE_XASH_ARGS";
 
+/// What the emulator's runs ask of the engine beyond its name, ahead of
+/// a run's own words: the engine's "say what you are doing" (`-dev 2`),
+/// its memory pools listed every five seconds (`-rpmemlist`,
+/// ports/xash/platform/in_rp.c) and a frame written to the card for the
+/// PC to look at (`-rpshot`, vid_rp.c). The runner's built-in command
+/// line is the program's name alone: a run on the X51v says less (its
+/// run log holds 64 KiB) with an `args.txt` of its own.
+const XASH_SAY_ALL: &str = "-dev 2 -rpmemlist -rpshot";
+
+/// The text of `rp-xash/args.txt` for an emulator run: [`XASH_SAY_ALL`],
+/// then the run's own words (`more`).
+fn xash_args(more: &str) -> String {
+    format!("{XASH_SAY_ALL} {}", more.trim()).trim().to_string()
+}
+
 /// `cargo xtask emu-xash` with the game's files (`RETROPANE_HL_FILES`):
 /// the modules and the owner's `valve` folder (under `Ports`, as on his
 /// card) on an emulated card, the runner booted, and what it said over
@@ -1228,16 +1243,13 @@ pub fn boot_xash_game(
         vol.put(&format!("{XASH_FOLDER}/{name}"), bytes, &mut work)
             .map_err(|e| format!("{name} onto the card: {}", e.name()))?;
     }
-    if let Ok(args) = std::env::var(XASH_ARGS_ENV)
-        && !args.trim().is_empty()
-    {
-        vol.put(
-            &format!("{XASH_FOLDER}/args.txt"),
-            args.trim().as_bytes(),
-            &mut work,
-        )
-        .map_err(|e| format!("args.txt onto the card: {}", e.name()))?;
-    }
+    let args = xash_args(&std::env::var(XASH_ARGS_ENV).unwrap_or_default());
+    vol.put(
+        &format!("{XASH_FOLDER}/args.txt"),
+        args.as_bytes(),
+        &mut work,
+    )
+    .map_err(|e| format!("args.txt onto the card: {}", e.name()))?;
     // The PC's preparation of the game's files (xtask/src/hlprep.rs): the
     // menu's background made for the screen, beside the owner's files.
     match crate::hlprep::background(&game.join("valve"))? {
@@ -1330,6 +1342,12 @@ pub fn boot_xash(root: &Path, modules: &[(String, Vec<u8>)]) -> Result<Vec<Strin
         vol.put(&format!("{XASH_FOLDER}/{name}"), bytes, &mut work)
             .map_err(|e| format!("{name} onto the card: {}", e.name()))?;
     }
+    vol.put(
+        &format!("{XASH_FOLDER}/args.txt"),
+        xash_args("").as_bytes(),
+        &mut work,
+    )
+    .map_err(|e| format!("args.txt onto the card: {}", e.name()))?;
     let sd = scratch(root, "sd-xash.img")?;
     std::fs::write(&sd, &vol.device().0).map_err(|e| format!("{}: {e}", sd.display()))?;
     let output = boot(
@@ -3789,6 +3807,11 @@ mod tests",
         ];
         let good = format!(
             "{XASH_BANNER}\ncard: mounted\nmodule server.rpm: 983 KiB at 0xA9000000 and 99 KiB zeroed, read and checked in 285 ms\ncheck: server.rpm: 499 names, each found by name and named by address: ok\nmodule engine.rpm: 1943 KiB at 0xA91D1000 and 20868 KiB zeroed, read and checked in 572 ms\n[00:00:00] Console initialized.\n[00:00:00] FS_LoadProgs: filesystem_stdio successfully loaded\nXash Error: Changing directory to /Ports failed: No such file or directory\nrunner: the program returned 1\nstack: deepest 68632 of 2097152 bytes\n"
+        );
+        assert_eq!(xash_args(""), "-dev 2 -rpmemlist -rpshot");
+        assert_eq!(
+            xash_args(" +map c1a0 -rpfps\n"),
+            "-dev 2 -rpmemlist -rpshot +map c1a0 -rpfps"
         );
         assert_eq!(xash_load_ms(&good, "engine.rpm"), Some(572));
         assert_eq!(xash_load_ms(&good, "server.rpm"), Some(285));
