@@ -232,6 +232,14 @@ were written for FPUs.
    routines replaced by ones hand-tuned for the XScale; every remaining
    float operation in every port gets faster with no change to the port
    (its gain measured on the X51v first: a backlog item, not a gate line).
+   **Started 2026-11-16 (R282):** add, subtract and multiply in ARM
+   assembly (`hal/mem/src/float_arm.rs`), linked into the game modules
+   in place of the compiler's, with the same routines in Rust as the
+   exact reference checked on the PC against its own IEEE hardware
+   (every float against seven partners); in the emulator none of 136,320
+   results each differs from the compiler's. Half-Life's play spent 41%
+   of a frame in these three on the X51v (run 4); their device timing is
+   run 6.
 3. **A shared fixed-point maths library on iWMMXt** (the PXA270's SIMD
    unit: several 16-bit multiply-adds an instruction) for the hot paths
    ports call: matrices, vectors, interpolation, physics.
