@@ -210,24 +210,43 @@ A test run's steps, for the runner's screen (rp_port::progress: a line
 `rp-step: n/5 text`, a | is a new line there). The runner says steps 1
 and 2 itself (its start, the program's start); the engine's are 3 (its
 first frame is finished: it is up, and a map asked for on the command
-line loads next), 4 (the map plays) and 5 (it ends: in_rp.c). Said once
-each, in plain lines of their own: the engine's console may be quiet.
+line loads next), said here, and 4 (the map plays) and 5 (it ends), said
+in in_rp.c. Once each, in plain lines of their own: the engine's console
+may be quiet.
 */
 static void RP_Step( void )
 {
 	static int said;
 
-	if( said < 3 )
+	if( !said )
 	{
-		said = 3;
+		said = 1;
 		fprintf( stderr, "rp-step: 3/5 Half-Life is up: the|software renderer%s.|Loading the map can|take minutes. The|game's picture is|not shown in this|test: its frames are|counted, not drawn.\n",
 			XASH_LOW_MEMORY ? ", an|experiment build" : "" );
 	}
-	if( said < 4 && CL_Active( ))
+}
+
+/*
+The last frame of a test run that ends by itself (in_rp.c), written to
+the card with -rpendshot on the command line: what the engine drew, for
+the PC to look at, from a run whose frames are not shown on the screen.
+*/
+void RP_LastShot( void )
+{
+	FILE *f;
+
+	if( !Sys_CheckParm( "-rpendshot" ) || !vid_rp.buffer )
+		return;
+
+	f = fopen( RP_SHOT_FILE, "wb" );
+	if( !f )
 	{
-		said = 4;
-		fprintf( stderr, "rp-step: 4/5 The map plays.|Its frame rate is|below, new every|5 seconds.\n" );
+		fprintf( stderr, "the last frame was not written: %s could not be made\n", RP_SHOT_FILE );
+		return;
 	}
+	fwrite( vid_rp.buffer, sizeof( word ), RP_WIDTH * RP_HEIGHT, f );
+	fclose( f );
+	fprintf( stderr, "frame %u, the last, written to %s\n", vid_rp.frames, RP_SHOT_FILE );
 }
 
 void SW_UnlockBuffer( void )

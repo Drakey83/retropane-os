@@ -18,6 +18,7 @@ GNU General Public License for more details.
 #include "input.h"
 #include "platform/platform.h"
 #include <retropane.h>
+#include <stdio.h>
 
 /*
 The OS hands over what the X51v has, already turned for landscape and the
@@ -82,11 +83,92 @@ static void RP_MemoryLog( void )
 	Cbuf_AddText( "memlist 64\n" );
 }
 
+/*
+A number of seconds after a word of the command line; 0 without it.
+*/
+static uint RP_Seconds( const char *parm )
+{
+	char value[16];
+	int  n;
+
+	if( !Sys_GetParmFromCmdLine( parm, value ))
+		return 0;
+	n = Q_atoi( value );
+	return n > 0 ? (uint)n : 0;
+}
+
+/*
+A test run that ends by itself, and its last two steps for the runner's
+screen (rp_port::progress; steps 1 to 3 are the runner's and vid_rp.c's).
+
+The engine never stops once a map plays, and a run on the X51v has to
+come back to the loader with its log. Two words of the command line:
+
+-rpend <seconds>    the run ends that long after the map began to play
+                    (the client is active): the time that is measured
+-rplimit <seconds>  the run ends when the port layer's clock (which
+                    starts with the runner, as the clock on its screen)
+                    passes this, whatever the engine is doing: a map
+                    that never loads, a run left in the menu
+
+Ending is the engine's own `quit`, queued as if typed: it disconnects,
+shuts its parts down in its own order and returns from its main, so the
+runner brings the sound down and hands the log back. A hang (no frame
+at all) is not this code's to end: the loader's run limit does that.
+With -rpendshot the last frame is written to the card first (vid_rp.c),
+once, where it cannot disturb a frame being timed.
+*/
+void RP_LastShot( void );
+
+static void RP_End( void )
+{
+	static int      state = -1; // 0: before the map plays, 1: it plays, 2: ending
+	static uint     end, limit;
+	static uint64_t played_from;
+	uint64_t        now;
+	const char      *why = NULL;
+
+	if( state < 0 )
+	{
+		end = RP_Seconds( "-rpend" );
+		limit = RP_Seconds( "-rplimit" );
+		state = 0;
+	}
+	if( state == 2 )
+		return;
+
+	now = rp_time_us();
+	if( state == 0 && CL_Active( ))
+	{
+		state = 1;
+		played_from = now;
+		if( end )
+			fprintf( stderr, "rp-step: 4/5 The map plays.|Its frame rate is|below, new every|5 seconds. The run|ends by itself|after %u s of play.\n", end );
+		else if( limit )
+			fprintf( stderr, "rp-step: 4/5 The map plays.|Its frame rate is|below, new every|5 seconds. The run|ends by itself with|the clock at %u:%02u.\n", limit / 60, limit % 60 );
+		else
+			fprintf( stderr, "rp-step: 4/5 The map plays.|Its frame rate is|below, new every|5 seconds. It does|not end by itself:|soft reset to stop.\n" );
+	}
+
+	if( state == 1 && end && now - played_from >= (uint64_t)end * 1000000u )
+		why = "its time of play|is over";
+	else if( limit && now >= (uint64_t)limit * 1000000u )
+		why = "the run's time|limit is reached";
+	if( !why )
+		return;
+
+	state = 2;
+	fprintf( stderr, "rp-step: 5/5 Ending by itself:|%s.|The engine shuts|down, then back to|the loader.\n", why );
+	RP_LastShot();
+	Cbuf_AddText( "quit\n" );
+}
+
 void Platform_RunEvents( void )
 {
 	struct rp_event ev;
 
 	RP_MemoryLog();
+	RP_End();
 
 	if( !in_rp.open )
 	{

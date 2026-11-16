@@ -75,7 +75,7 @@ mod image {
     use rp_port::files::Files;
     use rp_port::input::{Input, Pad};
     use rp_port::module::{self, Modules};
-    use rp_port::progress::{Lines, Said, said};
+    use rp_port::progress::{Lines, Said, clock, number, said};
     use rp_port::sound::{Sound, memory_for};
     use rp_port::sys::{Console, Library, System};
     use rp_touch_cal::{Calibration, Sample};
@@ -108,23 +108,40 @@ mod image {
     /// the program should do without the image being built again.
     const ARGS_FILE: &str = "args.txt";
     /// The most of that file that is read.
-    const ARGS_ROOM: usize = 256;
+    const ARGS_ROOM: usize = 512;
     static ARGS_TEXT: rt::Slot<[u8; ARGS_ROOM]> = rt::Slot::new();
+
+    /// A test run's two words for ending by itself, which the program's
+    /// platform layer acts on (ports/xash/platform/in_rp.c): seconds of
+    /// its step 4 (what the run measures), and seconds on the clock at
+    /// the latest. The runner only says them on the screen.
+    const END_WORD: &[u8] = b"-rpend";
+    const LIMIT_WORD: &[u8] = b"-rplimit";
+
+    /// The whole number of seconds that follows `word` in `args`.
+    fn seconds_after(args: &[&core::ffi::CStr], word: &[u8]) -> Option<u32> {
+        let at = args.iter().position(|a| a.to_bytes() == word)?;
+        match number(args.get(at + 1)?.to_bytes())? {
+            (seconds, []) => Some(seconds),
+            _ => None,
+        }
+    }
 
     /// The words of `text` (NUL where its spaces and line ends were, by
     /// [`words`]) added to `args` after its first `have`; how many `args`
-    /// holds then. Words past its room are left off.
+    /// holds then. `None` if there are more words than it has room for:
+    /// a run with part of its command line is not the run asked for.
     fn add_words(
         text: &'static [u8],
         args: &mut [&'static core::ffi::CStr; rp_hal_cabi::ARGS],
         mut have: usize,
-    ) -> usize {
+    ) -> Option<usize> {
         let mut at = 0;
-        while at < text.len() && have < args.len() {
+        while at < text.len() {
             match core::ffi::CStr::from_bytes_until_nul(&text[at..]) {
                 Ok(word) => {
                     if !word.is_empty() {
-                        args[have] = word;
+                        *args.get_mut(have)? = word;
                         have += 1;
                     }
                     at += word.count_bytes() + 1;
@@ -132,7 +149,7 @@ mod image {
                 Err(_) => break,
             }
         }
-        have
+        Some(have)
     }
 
     type Sd = SdCard<PxaMmc<Mmio, Dma>>;
@@ -193,6 +210,9 @@ mod image {
     impl Console for Text {
         fn put(&mut self, bytes: &[u8]) {
             say(bytes);
+            // A program that prints is not hung: the run limit hears of
+            // it as it does of a clock read (at most ten times a second).
+            let _ = ticks();
             // What the program says of its own progress goes on the
             // screen (`rp_port::progress`), and a step's time into the log.
             SAID.with(|lines| {
@@ -514,14 +534,30 @@ mod image {
         {
             // The last byte stays NUL: the last word ends.
             let n = files.read(afd, &mut text[..ARGS_ROOM - 1]).unwrap_or(0);
-            let _ = files.close(afd);
             for b in &mut text[..n] {
                 if b.is_ascii_whitespace() {
                     *b = 0;
                 }
             }
             let text: &'static [u8] = text;
-            arg_count = add_words(&text[..=n], &mut args, arg_count);
+            // More than is read, or more words than the command line
+            // holds: said and stopped, never a run with half its words.
+            let mut one = [0u8; 1];
+            let longer = n == ARGS_ROOM - 1 && files.read(afd, &mut one).unwrap_or(0) != 0;
+            let _ = files.close(afd);
+            let Some(count) = (!longer)
+                .then(|| add_words(&text[..=n], &mut args, arg_count))
+                .flatten()
+            else {
+                let _ = writeln!(
+                    uart,
+                    "runner: {ARGS_FILE} is too long: at most {} bytes and {} words",
+                    ARGS_ROOM - 1,
+                    rp_hal_cabi::ARGS - ARGS.len()
+                );
+                rp_image::fail("args.txt is longer than the command line holds")
+            };
+            arg_count = count;
             let _ = write!(uart, "runner: the command line has");
             for a in &args[ARGS.len()..arg_count] {
                 let _ = write!(uart, " {}", a.to_str().unwrap_or("?"));
@@ -533,6 +569,28 @@ mod image {
             for a in &args[1..arg_count] {
                 let _ = write!(c, " {}", a.to_str().unwrap_or("?"));
             }
+            // Whether the run ends by itself, and when: said from the
+            // first moment, in the words a program's platform layer acts
+            // on ([`END_WORD`], [`LIMIT_WORD`]).
+            let words = &args[..arg_count];
+            let _ = match (
+                seconds_after(words, END_WORD),
+                seconds_after(words, LIMIT_WORD),
+            ) {
+                (None, None) => write!(c, "\n\nDoes not end by itself: soft reset to stop it."),
+                (end, limit) => {
+                    let _ = write!(c, "\n\nEnds by itself:");
+                    if let Some(s) = end {
+                        let _ = write!(c, " {s} s into step 4");
+                    }
+                    if let Some(s) = limit {
+                        let (m, s) = clock(s);
+                        let or = if end.is_some() { "," } else { "" };
+                        let _ = write!(c, "{or} with the clock at {m}:{s:02} at the latest");
+                    }
+                    write!(c, ".")
+                }
+            };
         });
         let peeked = Modules::new(&mut *pool, module::POOL, identity)
             .peek(&mut |into| files.read(fd, into).ok());

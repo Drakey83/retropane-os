@@ -579,7 +579,7 @@ mod face {
     }
 
     /// The most arguments [`run_module`] passes on.
-    pub const ARGS: usize = 16;
+    pub const ARGS: usize = 32;
 
     /// Loads the program module `name` and runs it with `args` as its
     /// command line (the first is the program's own name): its result,
