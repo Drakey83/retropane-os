@@ -721,6 +721,14 @@ What is left of the start (R286): the engine's own start clears tables
 reads files (9%) and allocates (9%). The frame's 313 ms is R282: six
 tenths software-float routines.
 
+## Runs 6 to 10 on the X51v (2026-11-16)
+
+Runs 6 and 7 (the float routines in ARM assembly: 266 ms, then 240 ms a
+frame) are recorded in docs/reminders.md R282. Runs 8 to 10 are ref_rp's:
+the frame with no 3D view at all (run 8: 32.4 ms, 30.8 a second, half of
+it still the software renderer's blit), and ref_rp's step 1 (runs 9 and
+10: 154 ms, 6.4 a second, with the CPU drawing nothing): docs/design/ref-rp.md.
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
