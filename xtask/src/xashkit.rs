@@ -49,11 +49,29 @@ pub const LOW_MEMORY: u8 = 1;
 /// second for its first minute (`-rpsample`: `samples.bin`, named on the
 /// PC by `cargo xtask xash-profile`, R285), and its writes kept in its
 /// own folder.
+///
+/// An experiment's words go after them from `RETROPANE_XASH_EXTRA` (one
+/// measured change a run, such as `+r_norefresh 1` for the frame with no
+/// 3D view: R282); `kit.txt` and the emulator's check carry the same line.
 #[must_use]
 pub fn args() -> String {
-    format!(
-        "+map {MAP} -rpfps -rpend {PLAY_SECS} -rplimit {LIMIT_SECS} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports"
+    with_extra(
+        format!(
+            "+map {MAP} -rpfps -rpend {PLAY_SECS} -rplimit {LIMIT_SECS} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports"
+        ),
+        std::env::var(EXTRA).ok().as_deref(),
     )
+}
+
+/// The variable naming an experiment's extra words for the command line.
+pub const EXTRA: &str = "RETROPANE_XASH_EXTRA";
+
+/// `base`, then `extra`'s words if it has any.
+fn with_extra(base: String, extra: Option<&str>) -> String {
+    match extra.map(str::trim) {
+        Some(words) if !words.is_empty() => format!("{base} {words}"),
+        _ => base,
+    }
 }
 
 /// The kit, laid out.
@@ -206,6 +224,16 @@ pub fn lay_out(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn extra_words_go_last_or_not_at_all() {
+        assert_eq!(super::with_extra("a b".into(), None), "a b");
+        assert_eq!(super::with_extra("a b".into(), Some("  ")), "a b");
+        assert_eq!(
+            super::with_extra("a b".into(), Some(" +r_norefresh 1 ")),
+            "a b +r_norefresh 1"
+        );
+    }
+
     use super::*;
 
     #[test]
