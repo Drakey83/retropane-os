@@ -933,13 +933,12 @@ const XASH_CARD_BYTES: usize = 32 * 1024 * 1024;
 
 /// The engine's own lines the check looks for, in the order it says them:
 /// its console up, its file system loaded (a part inside its module,
-/// answered by `lib_rp.c` from the build's table), its file system
-/// started, and its own plain stop for a card without the game's files.
-const XASH_LINES: [&str; 4] = [
+/// answered by `lib_rp.c` from the build's table), and its own plain stop
+/// for a card without the game's folder (`Ports`, where its files are).
+const XASH_LINES: [&str; 3] = [
     "Console initialized.",
     "FS_LoadProgs: filesystem_stdio successfully loaded",
-    "FS_InitStdio: done",
-    "Xash Error: Couldn't find game directory 'valve'",
+    "Xash Error: Changing directory to /Ports failed",
 ];
 
 /// How long a module took to be read and checked, from the runner's own
@@ -1003,9 +1002,116 @@ fn check_xash(output: &str, modules: &[(String, Vec<u8>)]) -> Result<Vec<String>
         return Err("emu-xash: the engine did not come back to the runner with its error".into());
     }
     lines.push(
-        "the engine said its own start-up lines, loaded its file system from the table in its module, and stopped with its own message: no game files on this card".into(),
+        "the engine said its own start-up lines, loaded its file system from the table in its module, and stopped with its own message: no game folder on this card".into(),
     );
     Ok(lines)
+}
+
+/// Every file under `dir`, with its path from `dir` (forward slashes).
+fn files_under(dir: &Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    entries.sort();
+    for p in entries {
+        let name = p.file_name().unwrap_or_default().to_string_lossy();
+        let rel = format!("{prefix}{name}");
+        if p.is_dir() {
+            files_under(&p, &format!("{rel}/"), out);
+        } else {
+            out.push((rel, p));
+        }
+    }
+}
+
+/// The owner's own copy of the game for the emulator (never in the
+/// repository, never changed): the folder that holds `valve`.
+pub const XASH_GAME_ENV: &str = "RETROPANE_HL_FILES";
+/// With [`XASH_GAME_ENV`]: the serial text to run until (the engine does
+/// not stop by itself once it has a game), and for how many seconds.
+const XASH_UNTIL_ENV: &str = "RETROPANE_XASH_UNTIL";
+const XASH_SECS_ENV: &str = "RETROPANE_XASH_SECS";
+
+/// `cargo xtask emu-xash` with the game's files (`RETROPANE_HL_FILES`):
+/// the modules and the owner's `valve` folder (under `Ports`, as on his
+/// card) on an emulated card, the runner booted, and what it said over
+/// serial shown. An exploration, not a check: it passes when the text
+/// asked for (`RETROPANE_XASH_UNTIL`) appears, and shows the serial text
+/// either way.
+///
+/// # Errors
+/// The folder holds no `valve`, a file did not fit the card, or the text
+/// never appeared.
+pub fn boot_xash_game(
+    root: &Path,
+    modules: &[(String, Vec<u8>)],
+    game: &Path,
+) -> Result<String, String> {
+    let mut files = Vec::new();
+    files_under(&game.join("valve"), "Ports/valve/", &mut files);
+    if files.is_empty() {
+        return Err(format!(
+            "{}: no `valve` folder with files in it",
+            game.display()
+        ));
+    }
+    let bytes: u64 = files
+        .iter()
+        .map(|f| std::fs::metadata(&f.1).map_or(0, |m| m.len()))
+        .sum();
+    // Room for the files, a cluster's slack each, the modules and what
+    // the engine writes.
+    // The emulator's card is a power of two in size.
+    let card_bytes = (bytes + files.len() as u64 * 4096 + (64 << 20)).next_power_of_two();
+    eprintln!(
+        "    a {} MiB card with {} game files ({} MiB) ...",
+        card_bytes >> 20,
+        files.len(),
+        bytes >> 20
+    );
+    let card = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: (card_bytes / 512) as u32,
+        sectors_per_cluster: 8,
+        files: &[],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let mut vol = rp_fat::AnyVolume::mount(card::Disk(card), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let mut work = vec![0u8; 64 * 1024];
+    for (name, bytes) in modules {
+        vol.put(&format!("{XASH_FOLDER}/{name}"), bytes, &mut work)
+            .map_err(|e| format!("{name} onto the card: {}", e.name()))?;
+    }
+    for (rel, path) in &files {
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        vol.put(rel, &data, &mut work)
+            .map_err(|e| format!("{rel} onto the card: {}", e.name()))?;
+    }
+    let sd = scratch(root, "sd-xash-game.img")?;
+    std::fs::write(&sd, &vol.device().0).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let until = std::env::var(XASH_UNTIL_ENV).unwrap_or_else(|_| "of 2097152 bytes".into());
+    let secs = std::env::var(XASH_SECS_ENV)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    let image = crate::arm_release(root).join("rp-port-runner");
+    boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: &until,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &[],
+            input: None,
+            during: None,
+            then: None,
+            timeout: Duration::from_secs(secs),
+        },
+    )
 }
 
 /// Boots the module runner with the Half-Life port's modules on its card
@@ -3456,7 +3562,7 @@ mod tests",
             ("engine.rpm".to_string(), Vec::new()),
         ];
         let good = format!(
-            "{XASH_BANNER}\ncard: mounted\nmodule server.rpm: 983 KiB at 0xA9000000 and 99 KiB zeroed, read and checked in 285 ms\ncheck: server.rpm: 499 names, each found by name and named by address: ok\nmodule engine.rpm: 1943 KiB at 0xA91D1000 and 20868 KiB zeroed, read and checked in 572 ms\n[00:00:00] Console initialized.\n[00:00:00] FS_LoadProgs: filesystem_stdio successfully loaded\n[00:00:00] FS_InitStdio: done\nXash Error: Couldn't find game directory 'valve'\nrunner: the program returned 1\nstack: deepest 68632 of 2097152 bytes\n"
+            "{XASH_BANNER}\ncard: mounted\nmodule server.rpm: 983 KiB at 0xA9000000 and 99 KiB zeroed, read and checked in 285 ms\ncheck: server.rpm: 499 names, each found by name and named by address: ok\nmodule engine.rpm: 1943 KiB at 0xA91D1000 and 20868 KiB zeroed, read and checked in 572 ms\n[00:00:00] Console initialized.\n[00:00:00] FS_LoadProgs: filesystem_stdio successfully loaded\nXash Error: Changing directory to /Ports failed: No such file or directory\nrunner: the program returned 1\nstack: deepest 68632 of 2097152 bytes\n"
         );
         assert_eq!(xash_load_ms(&good, "engine.rpm"), Some(572));
         assert_eq!(xash_load_ms(&good, "server.rpm"), Some(285));
@@ -3474,9 +3580,12 @@ mod tests",
                 "`check: server.rpm",
             ),
             (without("Console initialized."), "Console initialized"),
-            (without("FS_InitStdio: done"), "FS_InitStdio"),
             (
-                without("Xash Error: Couldn't find game directory 'valve'"),
+                without("FS_LoadProgs: filesystem_stdio successfully loaded"),
+                "FS_LoadProgs",
+            ),
+            (
+                without("Xash Error: Changing directory to /Ports failed"),
                 "Xash Error",
             ),
             (
@@ -3497,9 +3606,12 @@ mod tests",
         }
         // The engine's lines in another order are not its start-up.
         let swapped = good
-            .replace("FS_InitStdio: done", "X")
-            .replace("Console initialized.", "FS_InitStdio: done")
-            .replace("X", "Console initialized.");
+            .replace("FS_LoadProgs: filesystem_stdio successfully loaded", "@")
+            .replace(
+                "Console initialized.",
+                "FS_LoadProgs: filesystem_stdio successfully loaded",
+            )
+            .replace('@', "Console initialized.");
         assert!(check_xash(&swapped, &modules).is_err());
         // A time that is not a number is not a time.
         assert_eq!(

@@ -228,7 +228,44 @@ What the work found:
   (`XASH_INTERNAL_GAMELIBS`: "server", "client", "menu", "ref_soft",
   "filesystem_stdio"); a module's file is that name with `.rpm`.
 
-Not done, not verified: nothing on the X51v; no map (R273); the server
+## With the game's files (2026-11-15, the same day, later)
+
+The owner's own copy, read from his Steam folder on the PC (never copied
+into the repository, never changed): `RETROPANE_HL_FILES=<the folder that
+holds valve>` makes `cargo xtask emu-xash` build a 1 GiB emulated card
+with his 4,262 files (509 MiB) under `Ports/valve` beside the modules and
+shows what the engine says. An exploration, not a check: the plain
+`emu-xash` (no game on the card) is the check, and its expected stop is
+now the engine's `Changing directory to /Ports failed`.
+
+How far it gets, each read from the serial line:
+
+1. The engine makes `/Ports` its folder (the port layer has a current
+   folder since this run: `chdir`, `getcwd`), finds the game, and mounts
+   its nine texture files (`halflife.wad`: 3,116 pictures).
+2. **The server module runs:** loaded through the loader (283 ms), `Dll
+   loaded for game "Half-Life"`, the SDK's entity interface found by name.
+3. The software renderer starts and the menu loads (both from the table
+   inside the engine's module).
+4. **The client module runs:** loaded (231 ms), FreeVGUI inside it starts,
+   160 text messages parsed, the game's own configuration files read.
+5. `Time to first frame: 104 seconds`. 100 of them are 494 look-ups of
+   menu pictures the Steam copy does not have, about 200 ms each in the
+   emulator (R276).
+6. 27 seconds of frames later it stops: `_Mem_Alloc: out of memory` while
+   loading a menu picture (R275). The heap is the 23.9 MiB the modules
+   leave; the deepest stack was 160,784 bytes of 2 MiB.
+
+Also fixed on the way: a module's file is found from the card's root
+wherever the program's current folder is; the modules no longer carry the
+building PC's folder names (the engine prints its source files' names:
+`-ffile-prefix-map`).
+
+Not known from this: any frame time (nothing was timed, and the picture
+goes nowhere: no screen call yet), what the menu looks like, whether a map
+loads. No option for the memory is taken: R275 lists them.
+
+Not done, not verified: nothing on the X51v; no map (R275 first); the server
 and client modules' own code has not run (their names were checked, not
 their constructors or a single call); the caches after a load cannot be
 seen in the emulator (R271); the comparison with modules relocated at

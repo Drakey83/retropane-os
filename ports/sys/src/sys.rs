@@ -52,7 +52,13 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     library: Option<Library<'a>>,
     /// Why the last module was refused.
     refused: Option<Refusal>,
+    /// The current folder as text, for `getcwd`: its bytes and how many
+    /// (none: the root).
+    cwd: ([u8; CWD], usize),
 }
+
+/// The longest current folder's path.
+const CWD: usize = 96;
 
 /// What loads a big program's modules (ADR-0039).
 pub struct Library<'a> {
@@ -114,6 +120,7 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
             input: None,
             library: None,
             refused: None,
+            cwd: ([0; CWD], 0),
         }
     }
 
@@ -264,6 +271,39 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
         self.files.rename(from, to).map_err(errno)
     }
 
+    fn chdir(&mut self, path: &[u8]) -> Result<(), Errno> {
+        // The text first (it must fit), then the folder itself.
+        let (mut text, mut len) = self.cwd;
+        if matches!(path.first(), Some(b'/' | b'\\')) {
+            len = 0;
+        }
+        for name in path.split(|c| *c == b'/' || *c == b'\\') {
+            if name.is_empty() || name == b"." {
+                continue;
+            }
+            let end = len + 1 + name.len();
+            if end > CWD {
+                return Err(Errno::Invalid);
+            }
+            text[len] = b'/';
+            text[len + 1..end].copy_from_slice(name);
+            len = end;
+        }
+        self.files.set_current(path).map_err(errno)?;
+        self.cwd = (text, len);
+        Ok(())
+    }
+
+    fn cwd(&mut self, into: &mut [u8]) -> Option<usize> {
+        let path: &[u8] = if self.cwd.1 == 0 {
+            b"/"
+        } else {
+            &self.cwd.0[..self.cwd.1]
+        };
+        into.get_mut(..path.len())?.copy_from_slice(path);
+        Some(path.len())
+    }
+
     fn dup(&mut self, fd: i32) -> Result<i32, Errno> {
         let new = self.files.dup(file(fd)?).map_err(errno)?;
         Ok(i32::from(new) + FIRST)
@@ -344,15 +384,17 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
         };
         let started = clock.at(ticks());
         let mut path = [0u8; MODULE_PATH];
-        let len = lib.folder.len() + 1 + name.len();
+        // From the card's root, wherever the program's current folder is.
+        let len = lib.folder.len() + 2 + name.len();
         let loaded =
             if name.is_empty() || name.iter().any(|b| b"/\\:".contains(b)) || len > path.len() {
                 // A module is a file of the runner's own folder, by its name.
                 Err(Refusal::Unread)
             } else {
-                path[..lib.folder.len()].copy_from_slice(lib.folder);
-                path[lib.folder.len()] = b'/';
-                path[lib.folder.len() + 1..len].copy_from_slice(name);
+                path[0] = b'/';
+                path[1..=lib.folder.len()].copy_from_slice(lib.folder);
+                path[lib.folder.len() + 1] = b'/';
+                path[lib.folder.len() + 2..len].copy_from_slice(name);
                 match files.open(&path[..len]) {
                     Err(_) => Err(Refusal::Unread),
                     Ok(fd) => {
@@ -938,6 +980,11 @@ mod tests {
             for _ in 0..6 {
                 assert!(s.module_load(b"server.rpm").is_ok());
             }
+            // The program's current folder does not move the runner's.
+            s.files().mkdir(b"Ports").unwrap();
+            assert_eq!(s.chdir(b"/Ports"), Ok(()));
+            assert!(s.module_load(b"server.rpm").is_ok(), "{kind}");
+            assert_eq!(s.chdir(b"/"), Ok(()));
             assert!(
                 s.module_reason()
                     .to_bytes()
@@ -964,6 +1011,71 @@ mod tests {
                 text.contains("module server.rpm: 6 KiB at 0xA9001000 and 1 KiB zeroed, read and checked in 0 ms"),
                 "{text}"
             );
+        });
+    }
+
+    #[test]
+    fn a_program_s_current_folder_is_where_its_relative_paths_start() {
+        each(|vol, kind| {
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0u8; 100_000][..];
+            let mut said = Said(Vec::new());
+            let files: Files<'_, Disk, 4> = Files::new(vol, scratch, room);
+            let mut s = System::new(files, &mut said, Break::new(0x1000, 0x3000), || 0);
+            let put = |s: &mut System<'_, Disk, 4, &mut Said>, path: &[u8], text: &[u8]| {
+                let w = s.open(path, W).unwrap();
+                s.write(w, text).unwrap();
+                s.close(w).unwrap();
+            };
+            let cwd = |s: &mut System<'_, Disk, 4, &mut Said>| {
+                let mut buf = [0u8; 64];
+                let n = s.cwd(&mut buf).unwrap();
+                buf[..n].to_vec()
+            };
+            s.mkdir(b"Ports").unwrap();
+            s.mkdir(b"Ports/valve").unwrap();
+            put(&mut s, b"Ports/valve/liblist.gam", b"game");
+            put(&mut s, b"top.txt", b"top");
+            assert_eq!(cwd(&mut s), b"/", "{kind}");
+            // From the root, the game's file needs its whole path.
+            assert_eq!(s.open(b"valve/liblist.gam", R), Err(Errno::NoEntry));
+            assert_eq!(s.chdir(b"/Ports"), Ok(()));
+            assert_eq!(cwd(&mut s), b"/Ports");
+            // Now relative names start in Ports; a slash still means the root.
+            let r = s.open(b"valve/liblist.gam", R).unwrap();
+            s.close(r).unwrap();
+            let r = s.open(b"./valve\\liblist.gam", R).unwrap();
+            s.close(r).unwrap();
+            assert!(s.stat(b"valve").unwrap().folder);
+            assert_eq!(s.open(b"top.txt", R), Err(Errno::NoEntry));
+            let r = s.open(b"/top.txt", R).unwrap();
+            s.close(r).unwrap();
+            // The folder itself lists, by "." and by nothing.
+            for here in [&b"."[..], b""] {
+                let d = s.dir_open(here).unwrap();
+                let mut name = [0u8; 32];
+                let (n, folder) = s.dir_next(d, &mut name).unwrap().unwrap();
+                assert_eq!((&name[..n], folder), (&b"valve"[..], true), "{kind}");
+                s.close(d).unwrap();
+            }
+            // A step further down, relative; a file made there lands there.
+            assert_eq!(s.chdir(b"valve"), Ok(()));
+            assert_eq!(cwd(&mut s), b"/Ports/valve");
+            put(&mut s, b"config.cfg", b"cfg");
+            assert_eq!(s.stat(b"/Ports/valve/config.cfg").unwrap().size, 3);
+            // Not a folder, not there, up: refused, and nothing moved.
+            assert_eq!(s.chdir(b"liblist.gam"), Err(Errno::Invalid));
+            assert_eq!(s.chdir(b"nowhere"), Err(Errno::NoEntry));
+            assert_eq!(s.chdir(b".."), Err(Errno::Invalid));
+            assert_eq!(s.chdir(&[b'a'; 200]), Err(Errno::Invalid));
+            assert_eq!(cwd(&mut s), b"/Ports/valve");
+            // A buffer too small for the path gets none of it.
+            assert_eq!(s.cwd(&mut [0u8; 5]), None);
+            // Back to the root.
+            assert_eq!(s.chdir(b"/"), Ok(()));
+            assert_eq!(cwd(&mut s), b"/");
+            let r = s.open(b"top.txt", R).unwrap();
+            s.close(r).unwrap();
         });
     }
 

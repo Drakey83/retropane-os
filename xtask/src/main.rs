@@ -250,7 +250,10 @@ commands:
             they import; sizes and counts (xtask/src/module.rs)
   emu-xash  those modules on a card in the emulator under the runner (a
             test image): the engine must say its own start-up lines and
-            stop with its own message (the card has no game files)
+            stop with its own message (the card has no game files);
+            with RETROPANE_HL_FILES=<the folder holding valve> the card
+            gets the game's files too and the run is shown, not checked
+            (RETROPANE_XASH_UNTIL, RETROPANE_XASH_SECS)
   emu-chello  the first C program (rp-port-hello: printf, the heap, software
             floats, the maths library, checked by itself) in the emulator
   emu-mbx   only the GPU check (rp-mbx: fills by the emulated MBX 2D
@@ -1639,6 +1642,11 @@ fn xash_modules() -> Result<xash::Set> {
 fn emu_xash() -> Result {
     let root = workspace_root();
     let set = xash_modules()?;
+    if let Some(game) = std::env::var_os(emu::XASH_GAME_ENV).filter(|g| !g.is_empty()) {
+        let output = emu::boot_xash_game(&root, &set.files, Path::new(&game))?;
+        eprint!("{output}");
+        return Ok(());
+    }
     let found = emu::boot_xash(&root, &set.files)?;
     let mut report = String::new();
     for line in set.lines.iter().chain(&found) {

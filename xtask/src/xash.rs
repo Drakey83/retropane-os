@@ -622,6 +622,7 @@ const BOUNDARY: &[&str] = &[
     "getcwd",
     "execve",
     "clock_gettime",
+    "chdir",
 ];
 
 fn answer(name: &str) -> Answer {
@@ -664,6 +665,19 @@ fn compile(
     let mut common = cc::flag_strings(cc::TARGET_FLAGS);
     // The engine's own code is not ours to make warning-free.
     common.push("-w".into());
+    // The engine names its source files in its messages (`__FILE__`):
+    // from the source's folder, not this PC's (a module carried the
+    // builder's user folder until 2026-11-15), and the same on every PC.
+    for (dir, to) in [
+        (root.join("target").join("ports-src"), ""),
+        (root.to_path_buf(), ""),
+    ] {
+        common.push(format!(
+            "-ffile-prefix-map={}{}={to}",
+            dir.to_string_lossy(),
+            std::path::MAIN_SEPARATOR
+        ));
+    }
     common.extend(libc.include_flags.iter().cloned());
     common.extend(part.flags.iter().cloned());
     let jobs: Vec<Job> = part
@@ -1111,7 +1125,7 @@ mod tests {
             assert_eq!(answer(n), Answer::Image, "{n}");
         }
         // Calls nothing answers yet: the list the evaluation is after.
-        for n in ["fstat", "chdir", "writev", "memchr2", "statvfs", "rmdir"] {
+        for n in ["fstat", "fchdir", "writev", "memchr2", "statvfs", "rmdir"] {
             assert_eq!(answer(n), Answer::Missing, "{n}");
         }
         // The file calls the first run found missing, now the boundary's.

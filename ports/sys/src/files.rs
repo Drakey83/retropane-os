@@ -129,6 +129,14 @@ pub struct Files<'a, D: BlockDevice, const N: usize> {
     slots: [Slot; N],
     scratch: &'a mut [u8],
     room: &'a mut [u8],
+    /// The folder a path that does not start with a slash is walked from
+    /// (C's current directory): the root until [`Files::set_current`].
+    current: u64,
+}
+
+/// Whether `path` starts at the card's root whatever the current folder.
+fn rooted(path: &[u8]) -> bool {
+    matches!(path.first(), Some(b'/' | b'\\'))
 }
 
 /// A path's next name: the units up to a slash, either way (C code says
@@ -164,7 +172,34 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
             slots: [const { Slot::Free }; N],
             scratch,
             room,
+            current: ROOT,
         }
+    }
+
+    /// The folder `path` names: the current one for an empty path or `.`,
+    /// the root for a slash alone.
+    fn folder(&mut self, path: &[u8]) -> Result<u64, Error> {
+        let (dir, name) = self.parent(path)?;
+        if name.is_empty() || name == b"." {
+            return Ok(dir);
+        }
+        let mut node = Node::default();
+        self.child(dir, name, &mut node)?;
+        if node.folder {
+            Ok(node.loc)
+        } else {
+            Err(Error::BadPath)
+        }
+    }
+
+    /// Makes the folder at `path` the one relative paths start from (C's
+    /// `chdir`): a game's file system names its files from its own folder.
+    ///
+    /// # Errors
+    /// No such folder, or the card.
+    pub fn set_current(&mut self, path: &[u8]) -> Result<(), Error> {
+        self.current = self.folder(path)?;
+        Ok(())
     }
 
     /// The volume back (the card handed on).
@@ -186,10 +221,11 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     }
 
     /// The folder a path's last name lies in, and that name: every name
-    /// before it walked from the root (`.` skipped; `..` is not a name a
-    /// game's files use, and is refused).
+    /// before it walked from the root, or from the current folder if the
+    /// path does not start with a slash (`.` skipped; `..` is not a name
+    /// a game's files use, and is refused).
     fn parent<'p>(&mut self, path: &'p [u8]) -> Result<(u64, &'p [u8]), Error> {
-        let mut dir = ROOT;
+        let mut dir = if rooted(path) { ROOT } else { self.current };
         let (mut name, mut rest) = split(path);
         let mut node = Node::default();
         loop {
@@ -415,16 +451,7 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     /// No such folder, no handle left, or the card.
     pub fn open_dir(&mut self, path: &[u8]) -> Result<Fd, Error> {
         let k = self.free_slot()?;
-        let dir = if split(path).0.is_empty() {
-            ROOT
-        } else {
-            let mut node = Node::default();
-            self.find(path, &mut node)?;
-            if !node.folder {
-                return Err(Error::BadPath);
-            }
-            node.loc
-        };
+        let dir = self.folder(path)?;
         self.slots[k] = Slot::Dir { dir, cursor: 0 };
         Ok(k as Fd)
     }

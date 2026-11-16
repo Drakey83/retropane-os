@@ -49,3 +49,16 @@ index d30047f..6128130 100644
  	if( fsync( file->handle ) < 0 )
  		return EOF;
  #else
+diff --git a/filesystem/sys.c b/filesystem/sys.c
+index b490cfa..890f096 100644
+--- a/filesystem/sys.c
++++ b/filesystem/sys.c
+@@ -502,7 +502,7 @@ int FS_SetCurrentDirectory( const char *path )
+ 		Sys_Error( "Changing directory to %s failed: %s\n", path, buf );
+ 		return false;
+ 	}
+-#elif XASH_POSIX
++#elif XASH_POSIX || XASH_RETROPANE
+ 	if( chdir( path ) < 0 )
+ 	{
+ 		Sys_Error( "Changing directory to %s failed: %s\n", path, strerror( errno ));

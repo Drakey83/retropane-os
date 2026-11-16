@@ -376,6 +376,20 @@ pub trait Sys {
     fn dup(&mut self, _fd: i32) -> Result<i32, Errno> {
         Err(Errno::NoSys)
     }
+    /// Makes the folder at `path` the one relative paths start from
+    /// (`chdir`).
+    ///
+    /// # Errors
+    /// No such folder; no files here (`ENOSYS`, the default).
+    fn chdir(&mut self, _path: &[u8]) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
+    /// The current folder's path into `into` (`getcwd`): the bytes used,
+    /// or `None` if it does not fit. The card's root, "/", by default.
+    fn cwd(&mut self, into: &mut [u8]) -> Option<usize> {
+        *into.first_mut()? = b'/';
+        Some(1)
+    }
     /// Asks that what was written to `fd` be on the card now (`fsync`).
     ///
     /// # Errors
@@ -1067,23 +1081,53 @@ mod face {
         }
     }
 
-    /// `getcwd(3)`: a C program's paths start at the card's root, "/".
+    /// `getcwd(3)`: the folder relative paths start from; "/", the card's
+    /// root, until the program changes it (`ERANGE` is not among this
+    /// boundary's numbers: a buffer too small is `EINVAL`).
     ///
     /// # Safety
     /// `buf` points at `size` writable bytes.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn getcwd(buf: *mut c_char, size: usize) -> *mut c_char {
-        if buf.is_null() || size < 2 {
+        if buf.is_null() || size < 2 || size > isize::MAX as usize {
             fail(Errno::Invalid);
             return core::ptr::null_mut();
         }
         // SAFETY: the caller's contract: `size` writable bytes at `buf`,
-        // not null and at least two (checked).
-        unsafe {
-            buf.write(b'/' as c_char);
-            buf.add(1).write(0);
+        // not null (checked), the C program's alone while this call runs.
+        let into = unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), size) };
+        let (path, end) = into.split_at_mut(size - 1);
+        match with(|s| s.cwd(path).ok_or(Errno::Invalid)) {
+            Ok(n) => {
+                // The NUL: right after the path, or in the byte kept back.
+                match path.get_mut(n) {
+                    Some(b) => *b = 0,
+                    None => end[0] = 0,
+                }
+                buf
+            }
+            Err(e) => {
+                fail(e);
+                core::ptr::null_mut()
+            }
         }
-        buf
+    }
+
+    /// `chdir(2)`.
+    ///
+    /// # Safety
+    /// `path` is a NUL-terminated string.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn chdir(path: *const c_char) -> c_int {
+        if path.is_null() {
+            return fail(Errno::Invalid) as c_int;
+        }
+        // SAFETY: the caller's contract: a NUL-terminated string at `path`.
+        let name = unsafe { CStr::from_ptr(path) }.to_bytes();
+        match with(|s| s.chdir(name)) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
     }
 
     /// `execve(2)`: a program cannot become another here (one image runs
