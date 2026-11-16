@@ -440,6 +440,17 @@ render hang; the end frame's picture **identical pixel for pixel** to run
 at divide 1 is answered for this rung on this frame only). The render is
 now well inside the 22.2 ms budget: the frame is the CPU's.
 
+**Run 17 (port-runner-0017, `-rpclock 21 2 0 1`, the owner's game step
+136.50 / 1): glitched to the owner's eye.** A render that finishes takes
+10.7 ms, but about one in four never finishes (26 render hangs in ~90
+frames, the core reset after 200 ms each; no TA hang, no frame refused),
+so the frames ran 84-190 ms; the end frame that drew is 99.8% run 16's.
+The game step was proven on the CPU binner's path with the divide-1 cures
+(ADR-0035 D); the TA path has none, and its divide-1 behaviour past 108.33
+was never measured (R41). The kit's default is 108.33 / 1 (clean, run 16)
+until the TA path runs 136.50 cleanly (R295, the owner: "we need to make
+it so 136, can be ran cleanly").
+
 **Step 4f, the feed by DMA: designed, not built.** The CPU spends 9.4 ms
 a frame writing 42,900 words into the TA window. `rp-tabench` (P4) moved
 one unbroken list by DMA in pieces the FIFO had room for, the CPU polling
