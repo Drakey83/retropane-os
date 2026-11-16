@@ -446,6 +446,54 @@ itself, so no second card is needed) is R279.
   a rotated word on the X51v and work in the emulator. Not seen, not ruled
   out.
 
+## Run 1 on the X51v (2026-11-15, 22:35 to 22:56): no frame rate
+
+The first run of the kit on the real X51v (card log `port-runner-0001`;
+the owner's "ready"). The loader's `put` refused the three files over
+about 900 KiB as too big (not checked before the run: a miss), so they
+went on through the loader's drive mode with the owner's yes; the X51v's
+own SHA-256 of all five files matched the kit that was checked.
+
+**What happened:** the run ended by itself, cleanly, without ever reaching
+the map. The engine's start, which took 63 s in the emulator, took more
+than twenty minutes on the X51v: the heap stood at 5 MiB from 13.6 s to
+1,243.8 s on the run's clock, the first frame had not come when the
+1,200 s limit passed, and the limit ended the run at its first chance
+(1,272 s). Step 3 never showed; the screen stood on step 2 with its clock
+running the whole time.
+
+**What it means:** there is no frame rate from this run, and it says
+nothing about how fast the game draws. What took the time is the engine
+looking for files at its start (R276: in the emulator, 494 menu pictures
+the Steam copy does not have, each looked for under several names and
+folders, every look-up walking folders on the card). The runner saw a
+sign of life at least every 154 ms for the whole twenty minutes, so the
+CPU was not computing: it was waiting on card transfers. Which reads, and
+how many, is not yet counted.
+
+**What the run did measure:**
+
+| What | X51v | Emulator |
+|---|---|---|
+| engine.rpm (1,939 KiB read, checked, 9,372 KiB zeroed) | 456 ms | 860 ms |
+| server.rpm (983 KiB) | 295 ms | 434 ms |
+| client.rpm (553 KiB) | 212 ms | 241 ms |
+| The engine's first MiB of heap | at 10.5 s | at 3.0 s |
+| The stretch of look-ups (heap 5 to 6 MiB) | 1,230 s | 63 s |
+| Longest stretch without a sign of life | 154 ms | 2,736 ms (with the map) |
+
+It also showed the pieces built for the run working on the device: the
+text came back through the run log, the run ended itself and returned 0,
+the codec went down and the board's bits were put back as found
+(`14=0008 1C=000C`), and the card log moved to the CF card (31 sector
+writes, none refused, the slowest 98 ms).
+
+**Next (nothing decided by this result):** R276 first. The rule 0 option
+is to stop asking the card at all for what was already read: a folder's
+names kept in RAM once listed, so a file that is not there costs no card
+read; proven by counting card reads in the emulator (a count is the same
+on any clock), then run 2 with the owner's go.
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
