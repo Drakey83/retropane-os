@@ -345,10 +345,40 @@ ways), then a run on the X51v:**
 
 | Step | What | Measured by |
 |---|---|---|
-| 4a | Skins in the atlas at load; each stored command as one TA strip or fan from the existing per-vertex numbers (the picture first) | the models in the 2700G's picture; frame ms |
+| 4a | Skins in the atlas at load; each stored command as one TA strip or fan from the existing per-vertex numbers (the picture first) | **done:** run 12, 92 ms (10.8 a second); the models in the X51v's picture; the TA's fan proven |
 | 4b | Each vertex projected once, each normal lit once (tables a model a frame) | frame ms, the models' share of the samples |
 | 4c | Sprites, beams, particles, the sky, water and conveyors; 2D (the HUD, the console) as rectangles | the whole frame against the software renderer's picture |
 | 4d | Fixed point for the bones and the projection (one 3 x 4 integer transform a vertex), the emitter's world corners transformed once and their texture coordinates made at map load | frame ms against the 45 a second budget |
+
+**4a built and run (2026-11-16).** `r_studio.c` hands each mesh to the
+emitter under `rp_emit 2` (`RP_StudioMesh`, the lighting
+`R_StudioSetColorBegin` would do, in a command's array, then
+`RP_StudioCmd` once a command); `r_emit.c` writes each skin at its first
+use into the atlas (`RP_StudioSkin`: RGB565, or ARGB1555 with the alpha
+test where a skin has the software renderer's see-through texel; kept
+against the page's generation, written again if its page was dropped) and
+each command as one strip or one TA fan (`RP_GFX_FAN`, new in the port
+layer's check: `ports/sys/src/gfx.rs` `FAN`, 3-255 corners as a strip's),
+pieces of 255 corners at most, corners turned as `RP_ChipFace`'s, the
+light's own colour Gouraud shaded and multiplied into the texel (the
+software renderer kept a grey in 32 steps; `ref_gl`'s look). `rp_fan 0`
+sends fans as strips, unused. A command with a corner behind the near
+plane is not drawn (counted: 0 in c1a0's play); blended render modes and
+chrome are 4c's.
+
+In the emulator (`emu-xash-kit`, rp-v0.33.0): the 2700G's end shot has
+the scientists behind the desk as the software renderer's does, 95% of
+the pixels within a few levels. **Run 12 on the X51v (port-runner-0012,
+c1a0, 120 s, `+rp_emit 2`): 92 ms a frame, 10.8 a second** (run 11: 95
+ms, 10.5, the models not drawn). 63 meshes a frame as 489 strips and 70
+TA fans: **the TA's fan draws on the X51v** (the first ever sent: no
+frame refused, no TA or render hang); the picture of the end frame has
+the models (`local/half-life/run12-frame-gpu.png`). The frame's words
+42,900 (18,300), the CPU feeding 10.0 ms (4.8), a render 26.1 ms (24.4),
+the CPU never waiting for it. Samples of the play (58,173): the
+software-float helpers 59%, `RP_EmitFace` 4.4%, `RP_StudioCmd` 3.2%,
+`TransformVector` 1.7%; the models' lighting and projection are still
+done again for every use of a vertex, 4b's to remove.
 
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
@@ -404,7 +434,7 @@ skin gets a power-of-two texture of its own with wrap).
 | 1 | ref_rp's CPU side: `ref_soft` with its rasterisers replaced by the emitter writing TA words into RAM (no chip yet) | **done:** run 9, 154 ms; the surface cache's thrash 37% (proven) |
 | 1b | The view's lit surfaces in bytes at their mip levels; choice 2 A (cache in video memory) against 2 B (texture and lightmap) | counts in the emulator, then the frame on the X51v |
 | 2 | The TA in the QEMU fork; the facts above on the X51v | `emu-tabench` drawing; a test image |
-| 3 | The runner's `rp_gfx_*`, the world on the 2700G with the surface cache | **done:** run 11, 95 ms (10.5 a second); the picture right on the X51v (models to come) |
+| 3 | The runner's `rp_gfx_*`, the world on the 2700G with the surface cache | **done:** run 11, 95 ms (10.5 a second); the picture right on the X51v (models: 4a, run 12) |
 | 4 | Models, sprites, beams, particles, 2D (sub-steps 4a-4d above) | the whole frame on the 2700G against run 7's picture |
 | 5 | Fixed-point transforms, choice 2's B and C measured, the routes | frame ms per change |
 
