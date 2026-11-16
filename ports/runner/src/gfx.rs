@@ -177,6 +177,10 @@ struct Cell {
     /// Run 28: the TA's region array copied in the checker order (the
     /// binner's tile-race cure, GC2BF) on every other frame.
     checker: bool,
+    /// Run 31: ADR-0035 E's alpha-0 overlay (a full-screen quad of alpha
+    /// 0 blended over the scene, pacing each tile's write-out: R121, 0 of
+    /// 32,592 renders wrong in an hour) on every other frame.
+    overlay: bool,
 }
 
 /// Where the checker-ordered copy of the region array goes (SDRAM, clear
@@ -397,9 +401,15 @@ const fn cell(
         part: Part::All,
         warm: false,
         checker: false,
+        overlay: false,
     }
 }
 
+const fn overlaid(c: Cell) -> Cell {
+    Cell { overlay: true, ..c }
+}
+
+#[allow(dead_code, reason = "run 28's cells")]
 const fn checkered(c: Cell) -> Cell {
     Cell { checker: true, ..c }
 }
@@ -508,9 +518,9 @@ const WAIT_8: &[(usize, u32)] = &[(0x664, 8)];
 const WAIT_4: &[(usize, u32)] = &[(0x664, 4)];
 const CELLS: [Cell; 5] = [
     cell(P108, &LAY_SDRAM, NONE, "control", 40),
-    warmed(checkered(cell(P136, &LAY_SDRAM, NONE, "the region array in the checker order every other frame, a warm-up after each hang", 160))),
-    warmed(checkered(cell(P136, &LAY_SDRAM, NONE, "the checker order again, a warm-up after each hang", 160))),
-    checkered(cell(P108, &LAY_SDRAM, NONE, "the checker order at 108.33 (does it draw the same?)", 40)),
+    warmed(overlaid(cell(P136, &LAY_SDRAM, NONE, "the alpha-0 overlay every other frame, a warm-up after each hang", 160))),
+    warmed(overlaid(cell(P136, &LAY_SDRAM, NONE, "the alpha-0 overlay again, a warm-up after each hang", 160))),
+    overlaid(cell(P108, &LAY_SDRAM, NONE, "the alpha-0 overlay at 108.33 (does it draw the same?)", 40)),
     cell(P108, &LAY_SDRAM, NONE, "control again", 40),
 ];
 /// The ladder starts after this many frames (the map drawn and steady).
@@ -583,8 +593,11 @@ impl Ladder {
 /// The TA's time from its start to done, the feeding included (a frame
 /// of c1a0 is ~70,000 words: ~8 ms of bus).
 const TA_LIMIT_US: u32 = 500_000;
-/// A render past this has hung: the core is reset.
-const RENDER_LIMIT_US: u32 = 200_000;
+/// A render past this has hung: the core is reset. A render takes 13.2
+/// ms at 108.33 / 1 and 26 at Windows Mobile's clock; R295's runs saw
+/// none finish late (most 16.4 ms at 136.50), so a hang costs 50 ms, not
+/// 200.
+const RENDER_LIMIT_US: u32 = 50_000;
 /// Every this many frames the render is waited for at once and timed.
 const TIMED_EVERY: u32 = 16;
 /// The background: opaque black.
@@ -631,6 +644,22 @@ fn us_since(t0: u32) -> u32 {
 /// GLES clear's colourless object draws nothing: audit C80), depth
 /// written at 0 so every face (z = 1/w, compared "greater or equal")
 /// passes over it.
+/// ADR-0035 E's alpha-0 overlay as a TA strip: the background's form,
+/// blended (source alpha, one less source alpha), depth always and not
+/// written, every corner's colour 0 (alpha 0): it changes no pixel.
+fn overlay() -> [u32; 26] {
+    let mut s = background();
+    s[1] = m3::blend(
+        m3::depth_test(0x2260_0E80, m3::depth::ALWAYS, false),
+        m3::factor::SRC_ALPHA,
+        m3::factor::INV_SRC_ALPHA,
+    );
+    for k in 0..4 {
+        s[6 + 5 * k + 4] = 0;
+    }
+    s
+}
+
 fn background() -> [u32; 26] {
     let mut s = [0u32; 26];
     s[..6].copy_from_slice(&[
@@ -713,6 +742,9 @@ struct Open {
     /// The copy's time, summed (CPU us), and copies.
     checker_us: u32,
     checker_n: u32,
+    /// The cell draws the alpha-0 overlay (run 31), and this frame does.
+    overlay: bool,
+    overlay_on: bool,
 }
 
 /// The 2700G as `rp_port`'s [`Screen`].
@@ -901,6 +933,7 @@ impl Chip {
                 };
                 o.warm = ok && CELLS.get(k).is_some_and(|c| c.warm);
                 o.checker = ok && CELLS.get(k).is_some_and(|c| c.checker);
+                o.overlay = ok && CELLS.get(k).is_some_and(|c| c.overlay);
                 o.warm_owed = false;
             }
             Err(e) => {
@@ -963,7 +996,7 @@ impl Chip {
                 ));
             }
         }
-        if c.part != Part::All || !c.words.is_empty() || c.checker {
+        if c.part != Part::All || !c.words.is_empty() || c.checker || c.overlay {
             (self.log)(format_args!(
                 "rp-gfx ladder {}: with the change {} hangs of {} frames, without it {} of {} (`h`/`,` the frames with it); {} strips left out by it in all",
                 l.cell + 1,
@@ -1287,6 +1320,8 @@ impl Screen for Chip {
             checker_on: false,
             checker_us: 0,
             checker_n: 0,
+            overlay: false,
+            overlay_on: false,
         });
         self.since = rt::ticks();
         Ok(gfx)
@@ -1323,6 +1358,11 @@ impl Screen for Chip {
         c.waited_us += us_since(t0);
         if waited.is_err() {
             c.render_hangs += 1;
+            // The core's recovery leaves it likely to hang again at
+            // divide 1 above 133 MHz (R295 run 25: about half the next
+            // renders); one background-only render after it ends that
+            // (run 26: 16%).
+            o.warm_owed = true;
         }
         let bg = background();
         if o.warm_owed {
@@ -1349,24 +1389,38 @@ impl Screen for Chip {
         let variant = self.ladder.as_ref().is_some_and(|l| l.n % 2 == 1);
         o.words_on = variant || self.ladder.is_none();
         o.checker_on = o.checker && variant;
-        let mut split = Split {
-            part: if variant { o.part } else { Part::All },
-            put: |p| {
-                feed.put(match p {
-                    Piece::Word(w) => ta::Item::Word(w),
-                    Piece::End => ta::Item::End,
-                })
-            },
-            state_left: 0,
-            in_prim: None,
-            dropping: false,
-            model: false,
-            held: None,
-            buf: [0; STRIP_MOST],
-            left_out: 0,
+        o.overlay_on = o.overlay && variant;
+        let part = if variant { o.part } else { Part::All };
+        let mut put = |p| {
+            feed.put(match p {
+                Piece::Word(w) => ta::Item::Word(w),
+                Piece::End => ta::Item::End,
+            })
         };
-        send(words, |p| split.put(p));
-        let left_out = split.left_out;
+        // The frame as made goes straight to the TA: the split (its 7 KiB
+        // strip buffer, a branch a word) cost 3.8 ms a frame in run 29.
+        let left_out = if part == Part::All {
+            send(words, &mut put);
+            0
+        } else {
+            let mut split = Split {
+                part,
+                put,
+                state_left: 0,
+                in_prim: None,
+                dropping: false,
+                model: false,
+                held: None,
+                buf: [0; STRIP_MOST],
+                left_out: 0,
+            };
+            send(words, |p| split.put(p));
+            split.left_out
+        };
+        if o.overlay_on {
+            let ov = overlay();
+            let _ = ta::draws(&[&ov]).all(|i| feed.put(i));
+        }
         let fed = feed.finish();
         c.frames += 1;
         c.words += fed.words;
@@ -1423,7 +1477,10 @@ impl Screen for Chip {
                     c.timed += 1;
                     c.render_us += us;
                 }
-                Err(_) => c.render_hangs += 1,
+                Err(_) => {
+                    c.render_hangs += 1;
+                    o.warm_owed = true;
+                }
             }
         }
         self.report();

@@ -37,6 +37,25 @@ pub const PLAY_SECS: u32 = 120;
 pub const LIMIT_SECS: u32 = 1200;
 // The limit leaves the play its time after a slow start.
 const _: () = assert!(LIMIT_SECS >= PLAY_SECS * 5);
+/// The variable for a longer run's seconds of play (a soak: R295's
+/// confirmation at 133.25 / 1); the game reads the first `-rpend` on its
+/// line, so the kit's own number is what changes.
+pub const PLAY: &str = "RETROPANE_XASH_PLAY";
+
+/// Seconds of play: [`PLAY`]'s if it is a number from 1 to an hour, else
+/// [`PLAY_SECS`].
+fn play_secs() -> u32 {
+    std::env::var(PLAY)
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|s| (1..=3600).contains(s))
+        .unwrap_or(PLAY_SECS)
+}
+
+/// The run's limit: [`LIMIT_SECS`], or five times a longer play.
+fn limit_secs() -> u32 {
+    LIMIT_SECS.max(play_secs() * 5)
+}
 /// The engine's low-memory build the kit is made with: an experiment's
 /// build, not the port's (docs/reminders.md R277), and said as such on
 /// the run's screen.
@@ -57,7 +76,9 @@ pub const LOW_MEMORY: u8 = 1;
 pub fn args() -> String {
     with_extra(
         format!(
-            "+map {MAP} -rpfps -rpend {PLAY_SECS} -rplimit {LIMIT_SECS} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK}"
+            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK}",
+            play_secs(),
+            limit_secs()
         ),
         std::env::var(EXTRA).ok().as_deref(),
     )
@@ -167,7 +188,7 @@ fn list(image: &[u8], card: &[(String, Vec<u8>)]) -> String {
          \x20 cargo xtask get rp-xash/samples.bin target/xash-kit/samples.bin\n\
          \x20 cargo xtask xash-profile target/xash-kit/samples.bin\n\n\
          The run's command line (rp-xash/args.txt):\n  ",
-        LIMIT_SECS + 300
+        limit_secs() + 300
     ));
     text.push_str(&args());
     text.push_str("\n\nbytes, SHA-256, file:\n");

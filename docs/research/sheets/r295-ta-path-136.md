@@ -281,3 +281,18 @@ linked blocks in SDRAM against the binner's lists on the die, which a
 TA frame's lists are too large for. 133.25 / 1 stays the TA path's
 near-clean top (option A); 136.50 / 1 stands proven for the CPU
 binner's path (GC2DT).
+
+## Run 29: 10 minutes at 133.25 / 1 with the warm-up (option A's check): not clean
+
+`RETROPANE_XASH_PLAY=600`, `-rpclock 41 4 0 1`, the warm-up render
+after every hang now in normal play, the hang limit 50 ms (was 200):
+**209 hangs in 11,071 frames (1 in 53, about one every 2.6 s)**, steady
+over the whole 10 minutes (0-6 a 5 s window, no rise with heat). The
+short cells' 1 in 240 understated it. Option A is not clean either.
+The run also showed the ladder's split costing 3.8 ms a frame in normal
+play (the feed 13.2 ms); fixed: the frame goes straight to the TA unless
+a cell changes it. **Run 30 (108.33 / 1, the default): 47.7 ms a frame,
+21.0 a second**, the feed 9.4 ms again, 0 hangs.
+
+The owner (2026-11-16): not giving up on the faster clock. Run 31: ADR-0035
+amendment E's alpha-0 overlay (the SDRAM cure never tried on the TA path).
