@@ -1,8 +1,8 @@
 //! The port layer: what a game written in C calls for files, sound, input
 //! and the screen ([half-life-readiness.md](../../../docs/design/half-life-readiness.md),
 //! lines 4 and 5): the files ([`files`]), the clock ([`clock`]), sound
-//! ([`sound`]), input ([`input`]) and what
-//! answers a C program's library calls over them ([`sys`]).
+//! ([`sound`]), input ([`input`]), a big program's libraries ([`module`],
+//! ADR-0039) and what answers a C program's library calls over them ([`sys`]).
 //!
 //! Iterate, don't imitate (rule 0). Windows Mobile gives a C program
 //! `CreateFile` over a kernel file cache; Linux and every console port give
@@ -22,5 +22,6 @@
 pub mod clock;
 pub mod files;
 pub mod input;
+pub mod module;
 pub mod sound;
 pub mod sys;
