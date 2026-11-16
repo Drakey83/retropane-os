@@ -494,6 +494,68 @@ names kept in RAM once listed, so a file that is not there costs no card
 read; proven by counting card reads in the emulator (a count is the same
 on any clock), then run 2 with the owner's go.
 
+## Why the start took twenty minutes, and the answer (2026-11-16)
+
+**Proven first, in the emulator** (a count of the card's read commands
+is the same on any clock). The runner now counts every read command it
+sends the card and what each path the engine looks up costs of them,
+and says the count at each step and at the end; with `-rplooks` in a
+run's command line it writes one line per look-up (thousands of lines:
+the emulator's serial line, never the X51v's run log). The engine's
+start to its first frame, with the game's files and the low-memory
+build, as run 1 had it:
+
+| | Before | With the folders' names kept |
+|---|---|---|
+| Read commands to the first frame | 321,517 (346,363 sectors) | 30,251 (55,097 sectors) |
+| Spent answering look-ups | 291,728 (12,552 found, 4,217 not there) | 544 |
+| Emulated start to the first frame | 70 s | 13 s |
+
+What took them: the engine asks what `/Ports/valve/gfx/shell` is 4,002
+times and `/Ports/valve/gfx` 2,016 times (about 43 read commands each),
+and each answer walked every folder on the way, one read command for each
+of the folder's sectors; `valve/custom` and `valve_downloads` (folders the
+Steam copy does not have) another 4,211 times. The missing menu pictures
+named in R276 were a smaller share than the folder walks of files that
+are there.
+
+**The answer (rule 0).** An operating system answers this with a general
+cache of the card's sectors or directory entries, megabytes of RAM and
+still a search through each folder's sectors per look-up; a console port
+most often reads the game's whole file list into a hash table at its
+start, including the folders nobody asks about. Ours keeps exactly what a
+look-up needs: for each folder a program has looked into, its names
+sorted for a binary search, each with where it is, what it is, its size
+and its date (32 bytes and the name's own bytes; `ports/sys/src/names.rs`).
+A name that is there and one that is not are both answered without the
+card. The room is the runner's to size (320 KiB of the scratch RAM; the
+whole `valve` folder, 4,262 files in 83 folders, is 192 KiB); a folder
+that does not fit is walked from the card as before, so nothing is ever
+wrong for want of room. A folder the table changes (a file written,
+renamed or removed, a folder made) is forgotten and listed again; every
+file test of the port layer runs three ways (no names kept, names kept,
+too little room for most of them) and gives the same answers.
+
+**The kit again, under the loader in the emulator** (`emu-xash-kit --cf`,
+passed): the engine up at 7 s on the emulated clock (53 s before), the map
+playing at 16 s (176 s), the end at 136 s; 24 frame-rate lines; the names
+of 34 folders kept (2,561 names, 114 KiB of the 320), none refused; the
+whole run 50,454 read commands, 3,709 of them for look-ups; all 4,262 files
+of the owner's game the same byte for byte. The modules' bytes changed with
+the runner (they are linked against its table of symbols), so run 2 needs
+all three put on again; `args.txt` and the background are unchanged.
+
+**The loader's `put` limit, now said before anything is sent:** one put
+takes at most about 863 KiB (the image area less the loader's 64 KiB of
+work room); `cargo xtask put` refuses a larger file on the PC with the
+drive-mode steps, and the kit's `kit.txt` lists drive mode for those files.
+
+**What the X51v should show** (a guess until run 2 says): run 1 spent
+about 1,230 s on roughly 320,000 read commands, about 4 ms each. The
+30,000 left would be about two minutes of start, not twenty, if each
+costs the same. What the 30,000 are (file data read about two sectors a
+command) is for after run 2 measures them (R281).
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
