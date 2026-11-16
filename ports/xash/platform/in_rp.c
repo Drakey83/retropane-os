@@ -119,10 +119,16 @@ With -rpendshot the last frame is written to the card first (vid_rp.c),
 once, where it cannot disturb a frame being timed.
 */
 void RP_LastShot( void );
+/* ref_rp (the renderer's module, ref/soft r_emit.c), through two of its
+   settings: `rp_gpu` is 1 while the 2700G draws the frames; the end shot
+   is then one frame drawn both ways, the 2700G's picture and the software
+   renderer's of the same view, both written by the renderer (`rp_both`:
+   1 asked, 2 written). */
 
 static void RP_End( void )
 {
-	static int      state = -1; // 0: before the map plays, 1: it plays, 2: ending
+	static int      state = -1; // 0: before the map plays, 1: it plays, 2: ending, 3: waiting for the frame drawn both ways
+	static uint64_t asked;
 	static uint     end, limit;
 	static uint64_t played_from;
 	uint64_t        now;
@@ -138,6 +144,15 @@ static void RP_End( void )
 		return;
 
 	now = rp_time_us();
+	if( state == 3 )
+	{
+		// the frame drawn both ways is written (or none came in 5 s)
+		if( Cvar_VariableValue( "rp_both" ) != 2.0f && now - asked < 5000000u )
+			return;
+		state = 2;
+		Cbuf_AddText( "quit\n" );
+		return;
+	}
 	if( state == 0 && CL_Active( ))
 	{
 		state = 1;
@@ -159,6 +174,13 @@ static void RP_End( void )
 
 	state = 2;
 	fprintf( stderr, "rp-step: 5/5 Ending by itself:|%s.|The engine shuts|down, then back to|the loader.\n", why );
+	if( Sys_CheckParm( "-rpendshot" ) && Cvar_VariableValue( "rp_gpu" ) == 1.0f )
+	{
+		Cvar_SetValue( "rp_both", 1.0f );
+		asked = now;
+		state = 3;
+		return;
+	}
 	RP_LastShot();
 	Cbuf_AddText( "quit\n" );
 }

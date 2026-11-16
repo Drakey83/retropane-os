@@ -16,7 +16,7 @@ use core::fmt::Write;
 
 use rp_drv_mbx_display::Display;
 use rp_drv_mbx_display::console::Console;
-use rp_hal_pxa27x::rt;
+use rp_hal_pxa27x::{Mmio, rt};
 use rp_hal_x51v::MBX_VRAM_SIZE;
 use rp_port::progress::{BREAK, clock};
 
@@ -42,9 +42,14 @@ const FOOT: (usize, usize, usize) = (488, 144, 2);
 const TICKS_1S: u64 = 3_250_000;
 
 struct Panel {
-    /// The plane on screen.
-    fb: &'static mut [u8],
+    /// The 2700G's whole memory, while the panel has the screen ([`take`]
+    /// hands it to the program's 3D frames).
+    chip: Option<&'static mut [u8]>,
+    /// The plane on screen: where it starts and its bytes a line.
+    offset: usize,
     stride: usize,
+    /// The two title lines, for a screen given back.
+    title: (&'static str, &'static str),
     /// The timer's counter when the clock was last brought up to date,
     /// and the ticks since the panel started (the counter wraps every 22
     /// minutes).
@@ -55,17 +60,40 @@ struct Panel {
 }
 
 impl Panel {
-    /// One part of the panel, cleared, as a console.
-    fn part(&mut self, (y, h, scale): (usize, usize, usize), fg: u16) -> Console<'_> {
-        let rows = &mut self.fb[y * self.stride..(y + h) * self.stride];
-        Console::new(
+    /// One part of the panel, cleared, as a console; `None` while the
+    /// program has the screen.
+    fn part(&mut self, (y, h, scale): (usize, usize, usize), fg: u16) -> Option<Console<'_>> {
+        let vram = self.chip.as_mut()?;
+        let at = self.offset + y * self.stride;
+        let rows = vram.get_mut(at..at + h * self.stride)?;
+        Some(Console::new(
             rows,
             self.stride,
             (MARGIN, 0),
             (SIZE.0 - 2 * MARGIN, h),
             scale,
             (fg, BG),
-        )
+        ))
+    }
+
+    /// The whole screen cleared, the title and the clock drawn.
+    fn draw_all(&mut self) {
+        let (offset, stride) = (self.offset, self.stride);
+        if let Some(vram) = self.chip.as_mut()
+            && let Some(fb) = vram.get_mut(offset..offset + stride * SIZE.1)
+        {
+            let _ = Console::new(fb, stride, (0, 0), SIZE, 1, (FG, BG));
+        }
+        let (first, second) = self.title;
+        if let Some(mut c) = self.part(TITLE, FG) {
+            let _ = write!(
+                c,
+                "{first}
+{second}"
+            );
+        }
+        let shown = self.shown;
+        self.draw_clock(shown);
     }
 
     /// Seconds since the panel started, brought up to `now`.
@@ -78,8 +106,9 @@ impl Panel {
     fn draw_clock(&mut self, seconds: u32) {
         self.shown = seconds;
         let (m, s) = clock(seconds);
-        let mut c = self.part(CLOCK, FG);
-        let _ = write!(c, "clock {m}:{s:02}");
+        if let Some(mut c) = self.part(CLOCK, FG) {
+            let _ = write!(c, "clock {m}:{s:02}");
+        }
     }
 }
 
@@ -92,35 +121,50 @@ fn put(c: &mut Console<'_>, text: &[u8]) {
     }
 }
 
-/// Takes the screen and draws the panel with its two title lines; false
-/// if there is no display (the run goes on without a screen).
-pub fn start(first: &str, second: &str) -> bool {
-    let Some((regs, vram)) = rp_image::take_mbx() else {
-        return false;
-    };
-    let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
+/// Takes the screen and draws the panel with its two title lines; the
+/// 2700G's registers (for the program's 3D frames), or `None` if there is
+/// no display (the run goes on without a screen).
+pub fn start(first: &'static str, second: &'static str) -> Option<Mmio> {
+    let (regs, vram) = rp_image::take_mbx()?;
+    let mut display = Display::new(regs);
+    let (plane, _) = display.adopt(MBX_VRAM_SIZE as usize);
     let (stride, len) = (plane.stride, plane.stride * usize::from(plane.height));
     if usize::from(plane.height) < SIZE.1 || vram.len() < plane.offset + len {
-        return false;
+        return None;
     }
-    let (_, rest) = vram.split_at_mut(plane.offset);
-    let (fb, _) = rest.split_at_mut(len);
     let mut panel = Panel {
-        fb,
+        chip: Some(vram),
+        offset: plane.offset,
         stride,
+        title: (first, second),
         last: rt::ticks(),
         ticks: 0,
         shown: 0,
     };
-    // The whole screen once, then the parts.
-    let _ = Console::new(&mut *panel.fb, stride, (0, 0), SIZE, 1, (FG, BG));
-    {
-        let mut c = panel.part(TITLE, FG);
-        let _ = write!(c, "{first}\n{second}");
-    }
-    panel.draw_clock(0);
+    panel.draw_all();
     PANEL.with(|p| *p = Some(panel));
-    true
+    Some(display.into_inner())
+}
+
+/// The 2700G's memory for the program's 3D frames, and the plane on
+/// screen (where it starts, its bytes a line); the panel draws nothing
+/// until [`give_back`]. `None` without a display or if taken.
+pub fn take() -> Option<(&'static mut [u8], usize, usize)> {
+    PANEL.with(|p| {
+        let p = p.as_mut()?;
+        let vram = p.chip.take()?;
+        Some((vram, p.offset, p.stride))
+    })
+}
+
+/// The 2700G's memory back from the program: the panel drawn again whole.
+pub fn give_back(vram: &'static mut [u8]) {
+    PANEL.with(|p| {
+        if let Some(p) = p.as_mut() {
+            p.chip = Some(vram);
+            p.draw_all();
+        }
+    });
 }
 
 /// The step the run is on: `n` of `of`, and what it is (`text`, a `|`
@@ -128,11 +172,12 @@ pub fn start(first: &str, second: &str) -> bool {
 pub fn step(n: u32, of: u32, text: &[u8]) {
     PANEL.with(|p| {
         let Some(p) = p else { return };
-        {
-            let mut c = p.part(STEP, LOUD);
+        if let Some(mut c) = p.part(STEP, LOUD) {
             let _ = write!(c, "STEP {n} of {of}");
         }
-        put(&mut p.part(WHAT, FG), text);
+        if let Some(mut c) = p.part(WHAT, FG) {
+            put(&mut c, text);
+        }
     });
 }
 
@@ -140,19 +185,20 @@ pub fn step(n: u32, of: u32, text: &[u8]) {
 pub fn done(text: &[u8]) {
     PANEL.with(|p| {
         let Some(p) = p else { return };
-        {
-            let mut c = p.part(STEP, LOUD);
+        if let Some(mut c) = p.part(STEP, LOUD) {
             let _ = write!(c, "FINISHED");
         }
-        put(&mut p.part(WHAT, FG), text);
+        if let Some(mut c) = p.part(WHAT, FG) {
+            put(&mut c, text);
+        }
     });
 }
 
 /// The newest measurement (`text`, a `|` for a new line).
 pub fn note(text: &[u8]) {
     PANEL.with(|p| {
-        if let Some(p) = p {
-            put(&mut p.part(NOTE, COOL), text);
+        if let Some(mut c) = p.as_mut().and_then(|p| p.part(NOTE, COOL)) {
+            put(&mut c, text);
         }
     });
 }
@@ -160,8 +206,8 @@ pub fn note(text: &[u8]) {
 /// The small print at the bottom, written by `lines`.
 pub fn foot(lines: impl FnOnce(&mut dyn Write)) {
     PANEL.with(|p| {
-        if let Some(p) = p {
-            lines(&mut p.part(FOOT, FG));
+        if let Some(mut c) = p.as_mut().and_then(|p| p.part(FOOT, FG)) {
+            lines(&mut c);
         }
     });
 }

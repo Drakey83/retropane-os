@@ -1048,17 +1048,17 @@ fn rgb565_to_rgb(words: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// The frame the engine wrote to the emulated card `sd`, as a PNG at
-/// `png`; whether there was one.
-fn xash_frame(sd: &Path, png: &Path) -> Result<bool, String> {
+/// A whole frame's RGB 5-6-5 bytes from the file `path` on the emulated
+/// card `sd` ([`XASH_FRAME`]'s size), or `None` if there is no such file.
+fn xash_frame_words(sd: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
     let data = std::fs::read(sd).map_err(|e| format!("{}: {e}", sd.display()))?;
     let vol = rp_fat::AnyVolume::mount(card::Disk(data), rp_fat::format::PARTITION_START)
         .map_err(|e| format!("card image: {}", e.name()))?;
     let (mut work, mut room) = (vec![0u8; 64 * 1024], vec![0u8; 16]);
     let mut files: rp_port::files::Files<'_, card::Disk, 2> =
         rp_port::files::Files::new(vol, &mut work, &mut room);
-    let Ok(fd) = files.open(XASH_FRAME.0.as_bytes()) else {
-        return Ok(false);
+    let Ok(fd) = files.open(path.as_bytes()) else {
+        return Ok(None);
     };
     let mut words = vec![0u8; (XASH_FRAME.1 * XASH_FRAME.2 * 2) as usize];
     let mut got = 0;
@@ -1070,14 +1070,52 @@ fn xash_frame(sd: &Path, png: &Path) -> Result<bool, String> {
     }
     if got != words.len() {
         return Err(format!(
-            "{}: {got} bytes on the card, not a whole frame's {}",
-            XASH_FRAME.0,
+            "{path}: {got} bytes on the card, not a whole frame's {}",
             words.len()
         ));
     }
+    Ok(Some(words))
+}
+
+/// The frame the engine wrote to the emulated card `sd`, as a PNG at
+/// `png`; whether there was one.
+fn xash_frame(sd: &Path, png: &Path) -> Result<bool, String> {
+    let Some(words) = xash_frame_words(sd, XASH_FRAME.0)? else {
+        return Ok(false);
+    };
     let picture = crate::ui_preview::png_rgb(XASH_FRAME.1, XASH_FRAME.2, &rgb565_to_rgb(&words));
     std::fs::write(png, picture).map_err(|e| format!("{}: {e}", png.display()))?;
     Ok(true)
+}
+
+/// The 2700G's picture of the frame ref_rp drew both ways (`+rp_emit 2`,
+/// docs/design/ref-rp.md step 3), beside the software renderer's.
+const XASH_GPU_FRAME: &str = "rp-xash/frame-gpu.565";
+
+/// How alike two RGB 5-6-5 frames are, counted where `gpu` drew something
+/// (not the background's black): `(drawn, close)`, close meaning each
+/// colour within 2 of 31 (green 4 of 63) of `soft`'s, about 6%: the two
+/// renderers' texel choices differ at a face's edges (the software
+/// renderer's spans are affine over 16 pixels, the 2700G's exact) and the
+/// 2700G does not draw the models, sky, water and HUD yet (step 4).
+fn frames_alike(soft: &[u8], gpu: &[u8]) -> (usize, usize) {
+    let px = |w: &[u8]| {
+        let v = u16::from_le_bytes([w[0], w[1]]);
+        ((v >> 11) as i32, ((v >> 5) & 63) as i32, (v & 31) as i32)
+    };
+    let mut drawn = 0;
+    let mut close = 0;
+    for (a, b) in soft.as_chunks::<2>().0.iter().zip(gpu.as_chunks::<2>().0) {
+        if b == &[0, 0] {
+            continue;
+        }
+        drawn += 1;
+        let ((r1, g1, b1), (r2, g2, b2)) = (px(a), px(b));
+        if (r1 - r2).abs() <= 2 && (g1 - g2).abs() <= 4 && (b1 - b2).abs() <= 2 {
+            close += 1;
+        }
+    }
+    (drawn, close)
 }
 
 /// Checks that the run left the game's own folder on the card `sd` as the
@@ -1705,6 +1743,21 @@ pub fn boot_xash_kit(
             png.display()
         )),
         false => return Err("emu-xash-kit: no frame on the card".into()),
+    }
+    // ref_rp step 3: the 2700G's picture of the same frame, and how alike.
+    if let Some(gpu) = xash_frame_words(&sd, XASH_GPU_FRAME)? {
+        let soft = xash_frame_words(&sd, XASH_FRAME.0)?.unwrap_or_default();
+        let gpu_png = png.with_file_name("emu-gpu-frame.png");
+        let picture = crate::ui_preview::png_rgb(XASH_FRAME.1, XASH_FRAME.2, &rgb565_to_rgb(&gpu));
+        std::fs::write(&gpu_png, picture).map_err(|e| format!("{}: {e}", gpu_png.display()))?;
+        let (drawn, close) = frames_alike(&soft, &gpu);
+        let total = (XASH_FRAME.1 * XASH_FRAME.2) as usize;
+        found.push(format!(
+            "the 2700G's picture of the same frame: {}; it drew {drawn} of {total} pixels ({}%), {close} of them ({}%) within a few levels of the software renderer's",
+            gpu_png.display(),
+            drawn * 100 / total.max(1),
+            close * 100 / drawn.max(1)
+        ));
     }
     // Where the program spent its time (`-rpsample`), named against the
     // kit's own ELFs: the tool a device run's samples go through.
@@ -3885,6 +3938,18 @@ fn touch_near(output: &str, x: u16, y: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn two_frames_are_compared_only_where_the_2700g_drew() {
+        use super::frames_alike;
+        let bytes = |v: &[u16]| v.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>();
+        // Black (not drawn), green and blue one level off (close), red 16
+        // off (not), the same (close).
+        let soft = bytes(&[0xFFFF, 0x0841, 0x1234, 0xF800]);
+        let gpu = bytes(&[0x0000, 0x0841 + 0x0021, 0x1234 ^ 0x8000, 0xF800]);
+        assert_eq!(frames_alike(&soft, &gpu), (3, 2));
+        assert_eq!(frames_alike(&soft, &bytes(&[0; 4])), (0, 0));
+    }
+
     /// Every file of the emulator harness (emu/), for the tests that read
     /// its source.
     fn sources() -> &'static str {

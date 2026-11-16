@@ -1,7 +1,7 @@
 //! The port layer: what a game written in C calls for files, sound, input
 //! and the screen ([half-life-readiness.md](../../../docs/design/half-life-readiness.md),
 //! lines 4 and 5): the files ([`files`]), the clock ([`clock`]), sound
-//! ([`sound`]), input ([`input`]), a big program's libraries ([`module`],
+//! ([`sound`]), input ([`input`]), the screen through the 2700G ([`gfx`]), a big program's libraries ([`module`],
 //! ADR-0039), the names of the folders it has looked into ([`names`]), a program's progress for a test runner's screen
 //! ([`progress`]) and what answers a C program's library calls over them ([`sys`]).
 //!
@@ -22,6 +22,7 @@
 
 pub mod clock;
 pub mod files;
+pub mod gfx;
 pub mod input;
 pub mod module;
 pub mod names;

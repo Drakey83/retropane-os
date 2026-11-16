@@ -18,10 +18,11 @@ use core::fmt::Write as _;
 
 use rp_fat::Error as FatError;
 use rp_hal_api::BlockDevice;
-use rp_hal_cabi::{Break, Errno, Event, FileStat, Module, Sys, flags};
+use rp_hal_cabi::{Break, Errno, Event, FileStat, Gfx, Module, Sys, flags};
 
 use crate::clock::Micros;
 use crate::files::{Error, Fd, Files, Whence, unix_seconds};
+use crate::gfx::Screen;
 use crate::input::{Events, Turn};
 use crate::module::{Modules, Refusal};
 use crate::sound::Voice;
@@ -48,6 +49,8 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     sound: Option<&'a mut dyn Voice>,
     /// The game's input, where the image has it.
     input: Option<&'a mut dyn Events>,
+    /// The 2700G, where the image gives it to the program.
+    screen: Option<&'a mut dyn Screen>,
     /// The program's modules, where the image is a runner (ADR-0039).
     library: Option<Library<'a>>,
     /// Why the last module was refused.
@@ -142,6 +145,7 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
             ticks,
             clock: Micros::starting_at(ticks()),
             sound: None,
+            screen: None,
             input: None,
             library: None,
             refused: None,
@@ -190,6 +194,12 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
     /// `rp_input_open` and `rp_input_poll` reach.
     pub fn set_input(&mut self, input: &'a mut dyn Events) {
         self.input = Some(input);
+    }
+
+    /// Gives the system the 2700G: what `rp_gfx_open` and the calls after
+    /// it reach.
+    pub fn set_screen(&mut self, screen: &'a mut dyn Screen) {
+        self.screen = Some(screen);
     }
 
     /// Gives the system its sound (the codec up, I2S running): what
@@ -438,6 +448,22 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
         self.input.as_mut().ok_or(Errno::NoSys)?.poll(now)
     }
 
+    fn gfx_open(&mut self) -> Result<Gfx, Errno> {
+        self.screen.as_mut().ok_or(Errno::NoSys)?.open()
+    }
+
+    fn gfx_frame(&mut self, words: &[u32]) -> Result<(), Errno> {
+        self.screen.as_mut().ok_or(Errno::NoSys)?.frame(words)
+    }
+
+    fn gfx_wait(&mut self) -> Result<(), Errno> {
+        self.screen.as_mut().ok_or(Errno::NoSys)?.wait()
+    }
+
+    fn gfx_close(&mut self) -> Result<(), Errno> {
+        self.screen.as_mut().ok_or(Errno::NoSys)?.close()
+    }
+
     fn snd_open(&mut self, rate: u32, channels: u8) -> Result<(), Errno> {
         let (v, now) = self.voice()?;
         v.open(rate, channels, now)
@@ -579,6 +605,10 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     fn end(&mut self) {
         if let Some(v) = self.sound.as_mut() {
             v.shut();
+        }
+        // The screen back to the image, if the program left it open.
+        if let Some(g) = self.screen.as_mut() {
+            let _ = g.close();
         }
         // What the folders' names took, for the run's log: whether the
         // room given was enough is read here, not guessed.

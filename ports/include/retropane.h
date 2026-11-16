@@ -148,6 +148,48 @@ const char *rp_module_name(void *module, const void *function);
 /* Why the last rp_module_load() was refused. */
 const char *rp_module_error(void);
 
+/*
+ * The screen through the 2700G (docs/design/ref-rp.md step 3): a frame is
+ * the tile accelerator's own words, handed over in one call, checked by
+ * the port layer before any reaches the chip, drawn into the screen behind
+ * an opaque black background while the program makes its next frame.
+ *
+ * The picture is upright (480 x 640): a game in landscape turns its
+ * vertices itself (RP_TURN_RIGHT: x = its y, y = 640 - its x).
+ *
+ * A frame's words, in any number and order:
+ *  - a state block: RP_GFX_STATE, then TSP, ISP, TEX0, TEX1, TEX2, the
+ *    clip word and 0 (the 2700G's words: drivers/mbx3d). Its texture
+ *    (16-bit texels, twiddled) lies wholly inside the texture memory;
+ *  - a strip: RP_GFX_STRIP(n), then n corners of RP_GFX_CORNER_WORDS
+ *    words each (x, y, z, 1/w, colour 0xAARRGGBB, u, v; floats but the
+ *    colour), after a state block.
+ * Anything else refuses the whole frame (EINVAL), nothing of it drawn.
+ */
+struct rp_gfx {
+    uint16_t width, height; /* the picture, upright */
+    uint32_t tex_at;        /* the texture memory as TEX1 names it */
+    uint32_t tex_bytes;     /* its size */
+    void *tex;              /* the same memory as the program writes it */
+    const void *screen;     /* the picture as drawn (width x height RGB565,
+                               rows of width x 2 bytes): read only, after
+                               rp_gfx_wait(), for a test's eye */
+};
+
+#define RP_GFX_STATE 0x10000057u
+#define RP_GFX_STRIP(n) (0x40000000u | (uint32_t)(n)) /* 3 to 255 corners */
+#define RP_GFX_CORNER_WORDS 7
+
+/* Takes the screen: 0 with *g filled in, or -1 with errno. */
+int rp_gfx_open(struct rp_gfx *g);
+/* One frame's `count` words: 0, or -1 with errno. */
+int rp_gfx_frame(const uint32_t *words, size_t count);
+/* Waits until the last frame is drawn (before texture memory it may read
+ * is written over): 0, or -1 with errno. */
+int rp_gfx_wait(void);
+/* Gives the screen back: 0, or -1 with errno. */
+int rp_gfx_close(void);
+
 #ifdef __cplusplus
 }
 #endif

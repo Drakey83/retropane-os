@@ -85,34 +85,38 @@ index b490cfa..890f096 100644
  	{
  		Sys_Error( "Changing directory to %s failed: %s\n", path, strerror( errno ));
 diff --git a/ref/soft/r_bsp.c b/ref/soft/r_bsp.c
-index 8b213a2..7946123 100644
+index 8b213a2..4e0b05b 100644
 --- a/ref/soft/r_bsp.c
 +++ b/ref/soft/r_bsp.c
-@@ -369,6 +369,12 @@ void R_DrawSolidClippedSubmodelPolygons( model_t *pmodel, mnode_t *topnode )
+@@ -369,6 +369,13 @@ void R_DrawSolidClippedSubmodelPolygons( model_t *pmodel, mnode_t *topnode )
  		   || (( psurf->flags & SURF_PLANEBACK ) && ( dot > BACKFACE_EPSILON )))
  			continue;
  
 +		if( rp_emit_on )
 +		{
 +			RP_EmitFace( psurf );
-+			continue;
++			if( !rp_both )
++				continue;
 +		}
 +
  		// FIXME: use bounding-box-based frustum clipping info?
  
  		// copy the edges to bedges, flipping if necessary so always
 diff --git a/ref/soft/r_glblit.c b/ref/soft/r_glblit.c
-index 863d5b4..6dfb363 100644
+index 863d5b4..322f249 100644
 --- a/ref/soft/r_glblit.c
 +++ b/ref/soft/r_glblit.c
-@@ -584,6 +584,13 @@ static qboolean R_AllocScreen( void )
+@@ -584,6 +584,16 @@ static qboolean R_AllocScreen( void )
  void R_BlitScreen( void )
  {
  	void *buffer = swblit.pLockBuffer();
 +
 +	if( rp_emit_on )
 +	{
-+		// ref_rp step 1: no pixels copied, the frame still ends here
++		// ref_rp: the frame's words to the 2700G (step 3) or nowhere
++		// (step 1); no pixels copied (a frame drawn both ways is written
++		// by the emitter)
++		RP_EmitSubmit();
 +		swblit.pUnlockBuffer();
 +		return;
 +	}
@@ -120,26 +124,29 @@ index 863d5b4..6dfb363 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..e895ddf 100644
+index 1a7efd6..00d48be 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,14 @@ typedef struct
+@@ -992,6 +992,17 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
-+// ref_rp step 1 (RetroPane, ports/xash/ref_rp/r_emit.c)
-+extern int rp_emit_on;
++// ref_rp (RetroPane, ports/xash/ref_rp/r_emit.c)
++extern int rp_emit_on, rp_both, rp_scratch;
 +void RP_EmitInit( void );
 +void RP_EmitFrame( void );
 +void RP_EmitFace( msurface_t *fa );
 +void RP_EmitTriangle( void );
 +void RP_EmitSurfBuilt( qboolean relit );
++void RP_EmitSubmit( void );
++surfcache_t *RP_SurfScratch( int width, int size );
++texture_t *R_TextureAnimation( msurface_t *s );
 +
  
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..1c69129 100644
+index 2c644f6..8860558 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
 @@ -959,7 +959,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
@@ -147,7 +154,7 @@ index 2c644f6..1c69129 100644
  
  	insubmodel = false;
 -	R_ScanEdges();
-+	if( !rp_emit_on )
++	if( !rp_emit_on || rp_both )
 +		R_ScanEdges();
  	alphaspans = false;
  }
@@ -157,7 +164,7 @@ index 2c644f6..1c69129 100644
  
  	// display all edges
 -	R_ScanEdges();
-+	if( !rp_emit_on )
++	if( !rp_emit_on || rp_both )
 +		R_ScanEdges();
  }
  
@@ -181,48 +188,66 @@ index 2c644f6..1c69129 100644
  	{
  		gEngfuncs.R_Free_Video();
 diff --git a/ref/soft/r_polyse.c b/ref/soft/r_polyse.c
-index 52e713a..fda5c45 100644
+index 52e713a..1c01fff 100644
 --- a/ref/soft/r_polyse.c
 +++ b/ref/soft/r_polyse.c
-@@ -637,6 +637,12 @@ void R_DrawTriangle( void )
+@@ -637,6 +637,13 @@ void R_DrawTriangle( void )
  {
  	spanpackage_t spans[DPS_MAXSPANS];
  
 +	if( rp_emit_on )
 +	{
 +		RP_EmitTriangle();
-+		return;
++		if( !rp_both )
++			return;
 +	}
 +
  	/*
  	d_xdenom = ( aliastriangleparms.a->v[1] - aliastriangleparms.b->v[1] ) * ( aliastriangleparms.a->v[0] - aliastriangleparms.c->v[0] ) -
  			   ( aliastriangleparms.a->v[0] - aliastriangleparms.b->v[0] ) * ( aliastriangleparms.a->v[1] - aliastriangleparms.c->v[1] );
 diff --git a/ref/soft/r_rast.c b/ref/soft/r_rast.c
-index 621d74f..083c869 100644
+index 621d74f..93f4f53 100644
 --- a/ref/soft/r_rast.c
 +++ b/ref/soft/r_rast.c
-@@ -387,6 +387,12 @@ void R_RenderFace( msurface_t *fa, int clipflags )
+@@ -387,6 +387,13 @@ void R_RenderFace( msurface_t *fa, int clipflags )
  	vec3_t    p_normal;
  	medge16_t *pedges, tedge;
  
 +	if( rp_emit_on )
 +	{
 +		RP_EmitFace( fa );
-+		return;
++		if( !rp_both )
++			return;
 +	}
 +
  	// translucent surfaces are not drawn by the edge renderer
  	if( fa->flags & ( SURF_DRAWTURB | SURF_TRANSPARENT ))
  	{
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
-index e47e115..f0e359c 100644
+index e47e115..86c7a3a 100644
 --- a/ref/soft/r_surf.c
 +++ b/ref/soft/r_surf.c
-@@ -1137,6 +1137,7 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
+@@ -236,7 +236,7 @@ R_TextureAnimation
+ Returns the proper texture for a given time and surface
+ ===============
+ */
+-static texture_t *R_TextureAnimation( msurface_t *s )
++texture_t *R_TextureAnimation( msurface_t *s )
+ {
+ 	texture_t *base = s->texinfo->texture;
+ 	int       reletive;
+@@ -1137,9 +1137,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
  //
  // allocate memory if needed
  //
 +	RP_EmitSurfBuilt( cache != NULL );
  	if( !cache ) // if a texture just animated, don't reallocate it
  	{
- 		cache = D_SCAlloc( r_drawsurf.surfwidth,
+-		cache = D_SCAlloc( r_drawsurf.surfwidth,
++		// ref_rp step 3: lit into a scratch, then into video memory
++		cache = rp_scratch ? RP_SurfScratch( r_drawsurf.surfwidth,
++				   r_drawsurf.surfwidth * r_drawsurf.surfheight * 2 )
++			: D_SCAlloc( r_drawsurf.surfwidth,
+ 				   r_drawsurf.surfwidth * r_drawsurf.surfheight * 2 );
+ 		CACHESPOT( surface )[miplevel] = cache;
+ 		cache->owner = &CACHESPOT( surface )[miplevel];

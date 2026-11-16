@@ -191,6 +191,27 @@ impl Event {
     }
 }
 
+/// The screen a C program draws on through the 2700G (`struct rp_gfx` in
+/// `ports/include/retropane.h`): what `rp_gfx_open` fills in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct Gfx {
+    /// The picture drawn into, upright (480 x 640 on the X51v).
+    pub width: u16,
+    /// See [`Self::width`].
+    pub height: u16,
+    /// The program's texture memory as the 2700G addresses it (what a
+    /// state block's texture words name).
+    pub tex_at: u32,
+    /// Its size in bytes.
+    pub tex_bytes: u32,
+    /// The same memory as the CPU writes it.
+    pub tex: *mut core::ffi::c_void,
+    /// The picture as drawn (`width` x `height` RGB565, rows of `width`
+    /// x 2 bytes), for a test's eye: read only, after `rp_gfx_wait`.
+    pub screen: *const core::ffi::c_void,
+}
+
 /// The numbers in an [`Event`] and for `rp_input_open` (`RP_EV_*`,
 /// `RP_KEY_*`, `RP_PEN_*`, `RP_TURN_*` in `retropane.h`).
 pub mod event {
@@ -414,6 +435,39 @@ pub trait Sys {
     fn input_poll(&mut self) -> Result<Option<Event>, Errno> {
         Err(Errno::NoSys)
     }
+    /// Takes the screen for the program's 3D frames (`rp_gfx_open`): the
+    /// 2700G's tile accelerator set up, the program's texture memory.
+    ///
+    /// # Errors
+    /// No 2700G here (`ENOSYS`, the default), open already (`EBUSY`), or
+    /// the chip would not set up (`EIO`).
+    fn gfx_open(&mut self) -> Result<Gfx, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// One frame's words (`rp_gfx_frame`): checked, fed to the tile
+    /// accelerator behind a background, drawn into the screen.
+    ///
+    /// # Errors
+    /// Not open (`EBADF`), a word the check refuses (`EINVAL`: nothing of
+    /// the frame drawn), or the chip did not finish (`EIO`).
+    fn gfx_frame(&mut self, _words: &[u32]) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Waits until the last frame is drawn (`rp_gfx_wait`): before the
+    /// program writes over texture memory that frame may read.
+    ///
+    /// # Errors
+    /// Not open (`EBADF`), or the render did not finish (`EIO`).
+    fn gfx_wait(&mut self) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Gives the screen back (`rp_gfx_close`).
+    ///
+    /// # Errors
+    /// Not open (`EBADF`).
+    fn gfx_close(&mut self) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
     /// Loads the module file `name` from the program's own folder
     /// (`rp_module_load`): read to its address, checked, its zeroed RAM
     /// zeroed, fit to run. Its constructors are the caller's to run.
@@ -506,7 +560,7 @@ pub const fn split_us(us: u64) -> (i64, i32) {
 
 #[cfg(target_os = "none")]
 mod face {
-    use super::{CStat, Dirent, Errno, Event, Module, NAME_MAX, Sys};
+    use super::{CStat, Dirent, Errno, Event, Gfx, Module, NAME_MAX, Sys};
     use core::ffi::{CStr, c_char, c_int, c_void};
     use rp_hal_pxa27x::rt::Global;
 
@@ -1180,6 +1234,65 @@ mod face {
                 1
             }
             Ok(None) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_gfx_open` (`ports/include/retropane.h`): 0 with the screen in
+    /// `*g`, or -1 with `errno`.
+    ///
+    /// # Safety
+    /// `g` points at a writable `struct rp_gfx`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rp_gfx_open(g: *mut Gfx) -> c_int {
+        if g.is_null() || !g.is_aligned() {
+            return fail(Errno::Invalid) as c_int;
+        }
+        match with(|s| s.gfx_open()) {
+            Ok(info) => {
+                // SAFETY: the caller's contract: a writable `struct
+                // rp_gfx` at `g`, not null and aligned (both checked),
+                // written whole.
+                unsafe { g.write(info) };
+                0
+            }
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_gfx_frame`: 0, or -1 with `errno`.
+    ///
+    /// # Safety
+    /// `words` points at `count` readable 32-bit words.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rp_gfx_frame(words: *const u32, count: usize) -> c_int {
+        if words.is_null() || !words.is_aligned() || count > isize::MAX as usize / 4 {
+            return fail(Errno::Invalid) as c_int;
+        }
+        // SAFETY: the caller's contract: `count` readable words at `words`,
+        // not null and aligned (both checked), not changed while this call
+        // runs (one core, one C thread).
+        let words = unsafe { core::slice::from_raw_parts(words, count) };
+        match with(|s| s.gfx_frame(words)) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_gfx_wait`: 0, or -1 with `errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_gfx_wait() -> c_int {
+        match with(|s| s.gfx_wait()) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_gfx_close`: 0, or -1 with `errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_gfx_close() -> c_int {
+        match with(|s| s.gfx_close()) {
+            Ok(()) => 0,
             Err(e) => fail(e) as c_int,
         }
     }

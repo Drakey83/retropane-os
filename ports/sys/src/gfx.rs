@@ -1,0 +1,341 @@
+//! The screen through the 2700G (`rp_gfx_open`, `rp_gfx_frame`,
+//! `rp_gfx_wait`, `rp_gfx_close` in `ports/include/retropane.h`;
+//! docs/design/ref-rp.md step 3): the program hands a frame's words over
+//! in one buffer and the port layer checks every one before any reaches
+//! the tile accelerator.
+//!
+//! Iterate, don't imitate (rule 0). GL hands a driver hundreds of calls a
+//! frame, a call a vertex, and trusts what it is given; a Windows Mobile
+//! game on Dell's GLES writes the TA's window itself. Ours is one call a
+//! frame whose words are the TA's own (no state machine in between), in a
+//! form with one difference: a strip's word carries its corner count, so
+//! the check knows where every primitive ends without a marker that a
+//! vertex word could equal. Only the state block and the strip the port
+//! layer knows pass, and only textures inside the program's own texture
+//! memory: a wrong word stops the frame at the check instead of hanging
+//! the chip (the TA hangs on words it does not take: audit C80, R288).
+
+use rp_hal_cabi::{Errno, Gfx};
+
+/// A state block's first word: the mask of the words after it (TSP, ISP,
+/// texture unit 0's three words, the clip word, the bit 6 word), as P4's
+/// textured draw and Dell's GLES send it (`ta_quads::TEXTURED_MASK`).
+pub const STATE: u32 = 0x1000_0057;
+/// Words after [`STATE`].
+pub const STATE_WORDS: usize = 7;
+/// A strip of `n` corners: this, `| n`. The TA is sent the strip word
+/// without the count.
+pub const STRIP: u32 = 0x4000_0000;
+/// The fewest and the most corners a strip may have (a face of the world
+/// clipped by the near plane has at most its corners plus one: the emitter's
+/// `RP_MAX_CORNERS` + 1).
+pub const STRIP_CORNERS: (u32, u32) = (3, 255);
+/// Words in a corner: x, y, z, 1/w, colour, u, v (the GLES driver's
+/// textured vertex).
+pub const CORNER_WORDS: usize = 7;
+
+/// TEX0's texel formats a texture may have here, all 16 bits a texel
+/// (`rp_drv_mbx3d::tex`: ARGB1555, RGB565, ARGB4444, RGB332).
+const FORMATS_16: [u32; 4] = [0, 2, 4, 6];
+
+/// The 2700G as the runner gives it to a program.
+pub trait Screen {
+    /// Takes the screen; what [`Gfx`] the program gets.
+    ///
+    /// # Errors
+    /// Open already (`EBUSY`), or the chip would not set up (`EIO`).
+    fn open(&mut self) -> Result<Gfx, Errno>;
+    /// One checked frame's TA words ([`Piece`]s) drawn into the screen.
+    ///
+    /// # Errors
+    /// Not open (`EBADF`), the check refused a word (`EINVAL`), or the chip
+    /// did not finish (`EIO`).
+    fn frame(&mut self, words: &[u32]) -> Result<(), Errno>;
+    /// Waits until the last frame is drawn.
+    ///
+    /// # Errors
+    /// Not open (`EBADF`), or the render did not finish (`EIO`).
+    fn wait(&mut self) -> Result<(), Errno>;
+    /// Gives the screen back.
+    ///
+    /// # Errors
+    /// Not open (`EBADF`).
+    fn close(&mut self) -> Result<(), Errno>;
+}
+
+/// One thing for the tile accelerator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Piece {
+    /// A word into the TA's window.
+    Word(u32),
+    /// The primitive ends (a `1` into the end window).
+    End,
+}
+
+/// What the check counted in a frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    /// State blocks.
+    pub states: u32,
+    /// Strips.
+    pub strips: u32,
+    /// Corners.
+    pub corners: u32,
+}
+
+/// Why a frame was refused: the word's place and what was wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refused {
+    /// The word's index in the frame.
+    pub at: usize,
+    /// What was wrong.
+    pub why: Why,
+}
+
+/// See [`Refused`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// Neither a state block nor a strip.
+    Unknown,
+    /// A strip before any state block.
+    NoState,
+    /// A strip's corner count outside [`STRIP_CORNERS`].
+    Corners,
+    /// The frame ends inside a state block or a strip.
+    Short,
+    /// A texture not wholly inside the program's texture memory, or of a
+    /// format not taken.
+    Texture,
+}
+
+/// The bytes of the texture a state block names, and where it starts, from
+/// its TEX0 and TEX1 words: `None` for a format not taken.
+#[must_use]
+pub fn texture(tex0: u32, tex1: u32) -> Option<(u32, u32)> {
+    let format = (tex0 >> 13) & 0x1F;
+    if !FORMATS_16.contains(&format) {
+        return None;
+    }
+    let (cu, cv) = ((tex0 >> 24) & 15, (tex0 >> 20) & 15);
+    if cu > 8 || cv > 8 {
+        return None;
+    }
+    let bytes = (8u32 << cu) * (8u32 << cv) * 2;
+    Some(((tex1 & 0x01FF_FFFF) << 7, bytes))
+}
+
+/// Checks a frame's `words` against `g`'s texture memory: what is in it,
+/// or the first word refused and why. Before [`send`]: a refused frame
+/// gives the chip nothing.
+///
+/// # Errors
+/// The first word refused, and why.
+pub fn check(words: &[u32], g: &Gfx) -> Result<Counts, Refused> {
+    walk(words, Some(g), |_| true)
+}
+
+/// A frame [`check`] took, as pieces to `put` in order; `put` returning
+/// false stops it (the chip stuck). What was sent.
+pub fn send(words: &[u32], put: impl FnMut(Piece) -> bool) -> Counts {
+    walk(words, None, put).unwrap_or_default()
+}
+
+/// The frame's pieces to `put`; with `g`, every texture checked too.
+fn walk(
+    words: &[u32],
+    g: Option<&Gfx>,
+    mut put: impl FnMut(Piece) -> bool,
+) -> Result<Counts, Refused> {
+    let mut c = Counts::default();
+    let mut at = 0;
+    let mut stated = false;
+    let refuse = |at, why| Err(Refused { at, why });
+    let inside = |start: u32, bytes: u32| {
+        g.is_none_or(|g| {
+            start >= g.tex_at
+                && u64::from(start) + u64::from(bytes)
+                    <= u64::from(g.tex_at) + u64::from(g.tex_bytes)
+        })
+    };
+    while at < words.len() {
+        let w = words[at];
+        if w == STATE {
+            let Some(block) = words.get(at + 1..=at + STATE_WORDS) else {
+                return refuse(at, Why::Short);
+            };
+            match texture(block[2], block[3]) {
+                Some((start, bytes)) if inside(start, bytes) => {}
+                _ => return refuse(at, Why::Texture),
+            }
+            stated = true;
+            c.states += 1;
+            if !(put(Piece::Word(w)) && block.iter().all(|&b| put(Piece::Word(b)))) {
+                return Ok(c);
+            }
+            at += 1 + STATE_WORDS;
+        } else if w & 0xFFFF_FF00 == STRIP {
+            if !stated {
+                return refuse(at, Why::NoState);
+            }
+            let n = w & 0xFF;
+            if n < STRIP_CORNERS.0 || n > STRIP_CORNERS.1 {
+                return refuse(at, Why::Corners);
+            }
+            let len = n as usize * CORNER_WORDS;
+            let Some(corners) = words.get(at + 1..=at + len) else {
+                return refuse(at, Why::Short);
+            };
+            c.strips += 1;
+            c.corners += n;
+            if !(put(Piece::Word(STRIP))
+                && corners.iter().all(|&v| put(Piece::Word(v)))
+                && put(Piece::End))
+            {
+                return Ok(c);
+            }
+            at += 1 + len;
+        } else {
+            return refuse(at, Why::Unknown);
+        }
+    }
+    Ok(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const G: Gfx = Gfx {
+        width: 480,
+        height: 640,
+        tex_at: 0x80_0000,
+        tex_bytes: 0x70_0000,
+        tex: core::ptr::null_mut(),
+        screen: core::ptr::null(),
+    };
+
+    /// A state block naming a 512 x 512 RGB565 page at `addr`.
+    fn state(addr: u32) -> [u32; 8] {
+        let tex0 = 0xA000_0000 | 6 << 24 | 6 << 20 | 2 << 13;
+        [
+            STATE,
+            0x2222_0C00,
+            0,
+            tex0,
+            0x0E00_0000 | addr >> 7,
+            0x8608_6610,
+            0,
+            0,
+        ]
+    }
+
+    fn strip(n: u32, first: u32) -> Vec<u32> {
+        let mut v = vec![STRIP | n];
+        v.extend((0..n * CORNER_WORDS as u32).map(|k| first + k));
+        v
+    }
+
+    fn run(words: &[u32]) -> (Result<Counts, Refused>, Vec<Piece>) {
+        let mut out = Vec::new();
+        let r = check(words, &G);
+        if r.is_ok() {
+            let sent = send(words, |p| {
+                out.push(p);
+                true
+            });
+            assert_eq!(Ok(sent), r);
+        }
+        (r, out)
+    }
+
+    #[test]
+    fn a_frame_goes_through_word_for_word_each_strip_ended() {
+        let mut f = state(0x80_0000).to_vec();
+        f.extend(strip(4, 100));
+        f.extend(strip(3, 0xF000_0000));
+        let (r, out) = run(&f);
+        assert_eq!(
+            r,
+            Ok(Counts {
+                states: 1,
+                strips: 2,
+                corners: 7
+            })
+        );
+        let mut want: Vec<Piece> = state(0x80_0000).iter().map(|&w| Piece::Word(w)).collect();
+        want.push(Piece::Word(STRIP));
+        want.extend((0..28).map(|k| Piece::Word(100 + k)));
+        want.push(Piece::End);
+        want.push(Piece::Word(STRIP));
+        // A corner word equal to the TA's own end word is a word like any
+        // other: the count, not a marker, ends the strip.
+        want.extend((0..21).map(|k| Piece::Word(0xF000_0000 + k)));
+        want.push(Piece::End);
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn an_empty_frame_is_taken() {
+        assert_eq!(run(&[]), (Ok(Counts::default()), vec![]));
+    }
+
+    #[test]
+    fn a_refused_frame_is_named_by_its_first_wrong_word() {
+        let cases: [(Vec<u32>, usize, Why); 7] = [
+            (strip(3, 0), 0, Why::NoState),
+            (
+                [state(0x80_0000).to_vec(), vec![0x7000_0003]].concat(),
+                8,
+                Why::Unknown,
+            ),
+            (
+                [state(0x80_0000).to_vec(), strip(2, 0)].concat(),
+                8,
+                Why::Corners,
+            ),
+            (
+                [state(0x80_0000).to_vec(), strip(4, 0)[..20].to_vec()].concat(),
+                8,
+                Why::Short,
+            ),
+            (state(0x80_0000)[..5].to_vec(), 0, Why::Short),
+            // Below the texture memory, and running past its end.
+            (state(0x7F_FF80).to_vec(), 0, Why::Texture),
+            (state(0xE8_0000 + 0x80).to_vec(), 0, Why::Texture),
+        ];
+        for (f, at, why) in cases {
+            let (r, out) = run(&f);
+            assert_eq!(r, Err(Refused { at, why }), "{f:x?}");
+            assert!(out.is_empty(), "{f:x?}");
+        }
+        // The last page that fits is taken.
+        assert!(run(&state(0xE8_0000)).0.is_ok());
+    }
+
+    #[test]
+    fn a_texture_s_bytes_follow_its_size_codes_and_format() {
+        let t0 = |cu: u32, cv: u32, f: u32| 0xA000_0000 | cu << 24 | cv << 20 | f << 13;
+        assert_eq!(texture(t0(0, 0, 2), 0x0E00_0001), Some((0x80, 128)));
+        assert_eq!(texture(t0(6, 6, 2), 0), Some((0, 512 * 512 * 2)));
+        assert_eq!(texture(t0(7, 3, 4), 0), Some((0, 1024 * 64 * 2)));
+        // 32-bit and compressed texels are not taken yet, nor a side past
+        // 2,048.
+        assert_eq!(texture(t0(3, 3, 12), 0), None);
+        assert_eq!(texture(t0(3, 3, 28), 0), None);
+        assert_eq!(texture(t0(9, 3, 2), 0), None);
+    }
+
+    #[test]
+    fn a_stuck_chip_stops_the_feed() {
+        let mut f = state(0x80_0000).to_vec();
+        f.extend(strip(3, 0));
+        let mut n = 0;
+        assert!(check(&f, &G).is_ok());
+        let sent = send(&f, |_| {
+            n += 1;
+            n < 5
+        });
+        assert_eq!(n, 5);
+        assert_eq!(sent.states, 1);
+    }
+}

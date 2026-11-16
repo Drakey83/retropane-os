@@ -48,6 +48,8 @@ pub const PROGRAM: &str = "engine.rpm";
 pub const BANNER: &str = "RetroPane: the module runner (a test image: ADR-0039)";
 
 #[cfg(target_os = "none")]
+mod gfx;
+#[cfg(target_os = "none")]
 mod panel;
 
 #[cfg(target_os = "none")]
@@ -651,6 +653,13 @@ mod image {
     /// chip's two lines share it for the whole run.
     static GPIO: rt::Slot<SharedGpio> = rt::Slot::new();
     static INPUT: rt::Slot<Input<X51vPad>> = rt::Slot::new();
+    /// The 2700G for the program's 3D frames (`rp_gfx_*`).
+    static CHIP: rt::Slot<super::gfx::Chip> = rt::Slot::new();
+
+    /// A line of the 2700G's into the run's log.
+    fn gfx_log(line: core::fmt::Arguments<'_>) {
+        let _ = writeln!(Out, "{line}");
+    }
 
     type Touch = Tsc2046<Ssp<Mmio>, GpioPin<'static, Mmio>, GpioPin<'static, Mmio>>;
 
@@ -860,7 +869,8 @@ mod image {
         CHECKED_IN.with(|(last, _)| *last = rt::ticks());
         let _ = writeln!(uart, "\n{BANNER}");
         // The screen from the first moment: what this is and its step.
-        if !panel::start("RetroPane test run", "module runner: rp-xash") {
+        let mbx = panel::start("RetroPane test run", "module runner: rp-xash");
+        if mbx.is_none() {
             let _ = writeln!(uart, "screen: none (the run goes on without it)");
         }
         step(
@@ -1074,6 +1084,12 @@ mod image {
             Some(i) => s.set_input(i),
             None => {
                 let _ = writeln!(uart, "input: none (no keypad or SSP1)");
+            }
+        }
+        match CHIP.put_with(|| super::gfx::Chip::new(gfx_log, mbx)) {
+            Some(c) => s.set_screen(c),
+            None => {
+                let _ = writeln!(uart, "rp-gfx: none (set up twice)");
             }
         }
         check_libraries(s);
