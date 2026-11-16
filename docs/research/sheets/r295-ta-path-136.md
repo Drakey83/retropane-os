@@ -296,3 +296,19 @@ a cell changes it. **Run 30 (108.33 / 1, the default): 47.7 ms a frame,
 
 The owner (2026-11-16): not giving up on the faster clock. Run 31: ADR-0035
 amendment E's alpha-0 overlay (the SDRAM cure never tried on the TA path).
+
+## Run 31: ADR-0035 E's alpha-0 overlay on the TA path: worse
+
+The overlay as a TA strip (blended, alpha 0) on every other frame at
+136.50 / 1: after a good frame **28 of 44 and 24 of 56 hung with it,
+13 of 32 and 7 of 45 without**. At 108.33 / 1 it draws every render
+(15.6 ms against 13.2). The overlay is a full-screen layer more for the
+core to fetch and blend: the hang rate rises with the core's work, as
+the content cells showed (models, slivers). The TA path's fault at
+136.50 is a chance per unit of the core's work, not a race a cure
+paces. Lead closed.
+
+Next for the faster clock: the rungs between 117.00 (clean in 40) and
+133.25 (1 in 53 over 10 minutes) were never tried; the fastest clean one
+for the TA path is found by a fine ladder (121.33, 125.67, 130.00 / 1),
+each several minutes.
