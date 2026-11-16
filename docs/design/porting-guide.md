@@ -68,6 +68,16 @@ doom will be I:\Ports\doom ... so on and so forth."
 9. **30 frames a second at least, 60 the target, measured** (the owner's
    standing rule), and a way to show the frame rate in every port.
 
+10. **The upstream port is a starting point, not the design** (the
+   owner, 2026-11-16: "use rule 0 to get the most performance out of it
+   for our device"). For every hot part the upstream code keeps (its
+   renderer, its float maths, its file system, its memory and loading
+   habits), write down the upstream way, the best way on the X51v, and the
+   device measurement that proves ours wins. The order comes from sampling
+   the program on the X51v (`-rpsample`, `cargo xtask xash-profile`), not
+   from guessing: Half-Life's run 4 put six tenths of a frame in the
+   software-float routines and one tenth in drawing.
+
 ## The shared speed work (every port gains from each)
 
 - A renderer on our own 3D driver (the 2700G's display lists), not a GL

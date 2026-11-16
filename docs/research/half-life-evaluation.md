@@ -672,6 +672,37 @@ was 61% one engine function, `CL_ParseClientData`, and the double-width
 compare `__aeabi_dcmpge` it calls 802 times in 2,669 samples. Run 4 says
 whether the X51v spends its 16.5 s there too.
 
+## Run 4 on the X51v (2026-11-16): where the time goes
+
+The kit with the sampler (`port-runner-0004`; log in
+`local/half-life/device-run-4-port-runner-0004.txt`, samples in
+`target/xash-kit/samples.bin`, not in the repository). The engine up at
+4 s and the map at 29 s, as run 3; 65,536 samples, the run's first 65 s.
+
+| Stretch, on the X51v | Time | Where it went |
+|---|---|---|
+| The engine's start (step 2 to 3) | 2.3 s | `memset` 32% (the engine's and the C library's: tables cleared), folder listing and file reads 23% |
+| The map's start (step 3 to 4) | 21.4 s | **`CL_ParseClientData` and the double compare it calls: 75.7%, 16.2 s**; texture upload 4%, card reads 2% |
+| The play (step 4 on, 41.8 s sampled) | 313 ms a frame | **software-float helpers 59.9%** (add 21.1%, multiply 19.5%, divide 4.6%); span drawing 9.0%, the blit 5.2%, sound 4.3%, game logic 4.8% |
+
+**The map's start, proven and answered.** The server starts its packet
+numbering at a random number up to 2^27 so it cannot be guessed. On the
+client's first update the engine marks every number in the gap from 0 as
+a dropped frame: tens of millions of turns of a loop that writes only a
+ring of a few frames, each turn a software double compare. On a PC that
+is a fraction of a second; on the X51v it was 16 s. The loop now starts
+at the last ring's worth of numbers: the same frames, marked the same
+way, in at most a ring's turns (`ports/xash/patches/xash3d-fwgs.patch`).
+Run 5 measures it.
+
+**The frame, for 60 frames a second (R282).** Six of every ten
+milliseconds go to the software-float routines the compiler calls for
+each `float` add, multiply and divide (the PXA270 has no FPU); drawing
+pixels is a tenth. The tuned float runtime and fixed point where it is
+hot come before the 2700G renderer. Which functions call the float
+routines most is the next count: those routines reuse the return-address
+register, so a sample does not name their caller (R282).
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
