@@ -57,11 +57,20 @@ pub const LOW_MEMORY: u8 = 1;
 pub fn args() -> String {
     with_extra(
         format!(
-            "+map {MAP} -rpfps -rpend {PLAY_SECS} -rplimit {LIMIT_SECS} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports"
+            "+map {MAP} -rpfps -rpend {PLAY_SECS} -rplimit {LIMIT_SECS} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK}"
         ),
         std::env::var(EXTRA).ok().as_deref(),
     )
 }
+
+/// The 2700G's clock while the game draws (the runner's `-rpclock`: PLL
+/// M, N, P, the cores' divider): 108.33 / 1, the fastest rung clean on
+/// Half-Life's TA path (run 16, the owner's eye 2026-11-16; 136.50 / 1,
+/// the game step proven on the binner's path with the divide-1 cures,
+/// glitched in run 17: the cures are not in the TA path yet, R295). An
+/// experiment's own `-rpclock` in `RETROPANE_XASH_EXTRA` comes later on
+/// the line and wins.
+pub const CLOCK: &str = "25 3 0 1";
 
 /// The variable naming an experiment's extra words for the command line.
 pub const EXTRA: &str = "RETROPANE_XASH_EXTRA";
@@ -251,6 +260,7 @@ mod tests {
         assert_eq!(after("-rplimit"), Some("1200"));
         assert_eq!(after("-rpbase"), Some("/rp-xash/game"));
         assert_eq!(after("-rodir"), Some("/Ports"));
+        assert_eq!(after("-rpclock"), Some("25"));
         assert!(words.contains(&"-rpfps") && words.contains(&"-rpendshot"));
         assert!(words.contains(&"-rpsample") && words.contains(&"-rpfloat"));
         // Nothing that fills the 64 KiB run log, nothing written while

@@ -158,10 +158,11 @@ mod image {
     /// (`gfx::rung_allowed`).
     const CLOCK_WORD: &[u8] = b"-rpclock";
 
-    /// The rung after [`CLOCK_WORD`] in `args`, if all four numbers are
-    /// there and in the PLL's fields.
+    /// The rung after the last [`CLOCK_WORD`] in `args` (an experiment's
+    /// words come after the kit's default), if all four numbers are there
+    /// and in the PLL's fields.
     fn clock_rung(args: &[&core::ffi::CStr]) -> Option<rp_drv_mbx_display::clock::Rung> {
-        let at = args.iter().position(|a| a.to_bytes() == CLOCK_WORD)?;
+        let at = args.iter().rposition(|a| a.to_bytes() == CLOCK_WORD)?;
         let mut n = [0u32; 4];
         for (k, v) in n.iter_mut().enumerate() {
             *v = match number(args.get(at + 1 + k)?.to_bytes())? {
