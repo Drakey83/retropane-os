@@ -55,6 +55,22 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     /// The current folder as text, for `getcwd`: its bytes and how many
     /// (none: the root).
     cwd: ([u8; CWD], usize),
+    /// Who hears what each path looked up cost, where the image counts.
+    looks: Option<Looks>,
+}
+
+/// How an image hears what looking a path up cost (a game asks for
+/// hundreds of files that are not there, and on a card each answer is
+/// folder reads: Half-Life's start, R276): `reads` says the card's read
+/// commands so far, and `looked` is told each path opened for reading,
+/// asked about or listed, whether it was there, and the read commands
+/// its answer took.
+#[derive(Clone, Copy)]
+pub struct Looks {
+    /// The card's read commands so far.
+    pub reads: fn() -> u32,
+    /// A path was looked up: found or not, and the read commands it took.
+    pub looked: fn(path: &[u8], found: bool, reads: u32),
 }
 
 /// The longest current folder's path.
@@ -121,7 +137,32 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
             library: None,
             refused: None,
             cwd: ([0; CWD], 0),
+            looks: None,
         }
+    }
+
+    /// Has `looks` told of every path looked up from here on.
+    pub fn set_looks(&mut self, looks: Looks) {
+        self.looks = Some(looks);
+    }
+
+    /// `look` run, and its cost told to who counts ([`Looks`]): only a
+    /// path that was found or was not there counts (a bad handle or a
+    /// card error is not an answer about the path).
+    fn looked<T>(
+        &mut self,
+        path: &[u8],
+        look: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let Some(l) = self.looks else {
+            return look(self);
+        };
+        let before = (l.reads)();
+        let got = look(self);
+        if matches!(got, Ok(_) | Err(Error::NotFound)) {
+            (l.looked)(path, got.is_ok(), (l.reads)().wrapping_sub(before));
+        }
+        got
     }
 
     /// Makes the system a runner's: `rp_module_load` and its kin reach
@@ -198,7 +239,7 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     fn open(&mut self, path: &[u8], how: i32) -> Result<i32, Errno> {
         let fd = match how & flags::ACCESS {
             0 if how & (flags::CREATE | flags::TRUNCATE | flags::APPEND) == 0 => {
-                self.files.open(path)
+                self.looked(path, |s| s.files.open(path))
             }
             // Reading only, with a flag that would change the file: no.
             0 => return Err(Errno::Invalid),
@@ -268,7 +309,7 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     }
 
     fn stat(&mut self, path: &[u8]) -> Result<FileStat, Errno> {
-        let s = self.files.stat(path).map_err(errno)?;
+        let s = self.looked(path, |s| s.files.stat(path)).map_err(errno)?;
         Ok(FileStat {
             folder: s.folder,
             size: s.size,
@@ -277,7 +318,9 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     }
 
     fn dir_open(&mut self, path: &[u8]) -> Result<i32, Errno> {
-        let fd = self.files.open_dir(path).map_err(errno)?;
+        let fd = self
+            .looked(path, |s| s.files.open_dir(path))
+            .map_err(errno)?;
         Ok(i32::from(fd) + FIRST)
     }
 
@@ -508,6 +551,18 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     fn end(&mut self) {
         if let Some(v) = self.sound.as_mut() {
             v.shut();
+        }
+        // What the folders' names took, for the run's log: whether the
+        // room given was enough is read here, not guessed.
+        if let Some(u) = self.files.remembered() {
+            let _ = writeln!(
+                Line(&mut self.console),
+                "files: the names of {} folders kept ({} names, {} KiB); {} did not fit and were read from the card",
+                u.folders,
+                u.names,
+                u.bytes.div_ceil(1024),
+                u.refused
+            );
         }
     }
 }

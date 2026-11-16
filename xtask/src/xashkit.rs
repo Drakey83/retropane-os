@@ -104,10 +104,30 @@ fn list(image: &[u8], card: &[(String, Vec<u8>)]) -> String {
          on the card is written, by these commands or by the run. With the\n\
          loader up (each file is checked on the X51v by its SHA-256):\n\n",
     );
-    for (name, _) in card {
+    let (small, large): (Vec<_>, Vec<_>) = card
+        .iter()
+        .partition(|(name, bytes)| crate::usb::put_fits(name, bytes.len()));
+    for (name, _) in &small {
         text.push_str(&format!(
             "  cargo xtask put target/xash-kit/card/{name} {name}\n"
         ));
+    }
+    if !large.is_empty() {
+        text.push_str(&format!(
+            "\nThese are larger than one put takes (at most about {} KiB):\n\
+             through the loader's drive mode, then each checked on the X51v:\n\n\
+             \x20 cargo xtask drive rw\n",
+            crate::usb::put_max("rp-xash/x") / 1024
+        ));
+        for (name, _) in &large {
+            text.push_str(&format!(
+                "  copy target/xash-kit/card/{name} to the X51V SD drive as {name}\n"
+            ));
+        }
+        for (name, _) in &large {
+            text.push_str(&format!("  cargo xtask hash {name}\n"));
+        }
+        text.push_str("  cargo xtask drive ro\n");
     }
     text.push_str(&format!(
         "\nThen the run (it ends by itself; the wait is for a slow start):\n\n\
@@ -236,5 +256,52 @@ mod tests {
         let longest = card_files(&[], Some(Vec::new()));
         assert!(longest.iter().all(|f| f.0.len() <= 64));
         assert!(text.contains(&args()));
+    }
+
+    #[test]
+    fn a_file_larger_than_one_put_goes_through_drive_mode_and_is_checked() {
+        // The loader's limit as found on the X51v (2026-11-15): 983 KiB
+        // and larger were refused, 553 KiB taken.
+        let name = "rp-xash/server.rpm";
+        let max = crate::usb::put_max(name);
+        assert!((553 * 1024..983 * 1024).contains(&max), "{max}");
+        assert!(crate::usb::put_fits(name, max) && !crate::usb::put_fits(name, max + 1));
+        let card = card_files(
+            &[
+                ("server.rpm".to_string(), vec![1u8; max + 1]),
+                ("client.rpm".to_string(), vec![2u8; max]),
+            ],
+            None,
+        );
+        let text = list(b"image", &card);
+        assert!(text.contains(
+            "  cargo xtask put target/xash-kit/card/rp-xash/client.rpm rp-xash/client.rpm
+"
+        ));
+        assert!(!text.contains("cargo xtask put target/xash-kit/card/rp-xash/server.rpm"));
+        let drive = text
+            .find(
+                "  cargo xtask drive rw
+",
+            )
+            .expect("drive mode");
+        let copy = text
+            .find("  copy target/xash-kit/card/rp-xash/server.rpm to the X51V SD drive as rp-xash/server.rpm
+")
+            .expect("the copy");
+        let hash = text
+            .find(
+                "  cargo xtask hash rp-xash/server.rpm
+",
+            )
+            .expect("the check");
+        let ro = text
+            .find(
+                "  cargo xtask drive ro
+",
+            )
+            .expect("read-only again");
+        assert!(drive < copy && copy < hash && hash < ro);
+        assert!(!text.contains("hash rp-xash/client.rpm"));
     }
 }

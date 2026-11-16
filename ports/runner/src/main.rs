@@ -75,9 +75,10 @@ mod image {
     use rp_port::files::Files;
     use rp_port::input::{Input, Pad};
     use rp_port::module::{self, Modules};
+    use rp_port::names::Names;
     use rp_port::progress::{Lines, Said, clock, number, said};
     use rp_port::sound::{Sound, memory_for};
-    use rp_port::sys::{Console, Library, System};
+    use rp_port::sys::{Console, Library, Looks, System};
     use rp_touch_cal::{Calibration, Sample};
 
     use super::panel;
@@ -95,6 +96,12 @@ mod image {
     const SOUND_FOR: (u32, u8) = (44_100, 2);
     /// Of the scratch RAM: the file system's sector work.
     const FAT_WORK: usize = 64 * 1024;
+    /// Of the scratch RAM: the names of the folders the program looks
+    /// into (`rp_port::names`), so a look-up costs no card read (R276).
+    /// Half-Life's whole `valve` folder, 4,262 files in 83 folders, is
+    /// 192 KiB of names (32 bytes each and 56 KiB of their text); what a
+    /// run used is in its log.
+    const NAMES_ROOM: usize = 320 * 1024;
     /// Files a program may have open at once.
     const HANDLES: usize = 16;
     /// The program's command line as built in: its name alone. What a
@@ -161,12 +168,87 @@ mod image {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
             // The screen's clock keeps going while files are read.
             alive(rt::ticks(), true);
+            CARD.with(|c| {
+                c.reads = c.reads.wrapping_add(1);
+                c.sectors = c.sectors.wrapping_add((buf.len() / 512) as u32);
+            });
             self.0.read_blocks(lba, buf)
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
             alive(rt::ticks(), true);
             self.0.write_blocks(lba, buf)
         }
+    }
+
+    /// What the card was asked for, and what the program's look-ups of
+    /// paths cost of it: a run's log says where a slow start's card
+    /// reads went (R276: run 1 on the X51v read the card for twenty
+    /// minutes before its first frame).
+    #[derive(Clone, Copy)]
+    struct CardCount {
+        /// Read commands, and the sectors they asked for.
+        reads: u32,
+        sectors: u32,
+        /// Paths looked up and found, and the read commands that took.
+        found: u32,
+        found_reads: u32,
+        /// Paths looked up that were not there, and their read commands.
+        missing: u32,
+        missing_reads: u32,
+        /// Whether each look-up is a line of the log ([`LOOKS_WORD`]).
+        each: bool,
+    }
+
+    static CARD: rt::Global<CardCount> = rt::Global::new(CardCount {
+        reads: 0,
+        sectors: 0,
+        found: 0,
+        found_reads: 0,
+        missing: 0,
+        missing_reads: 0,
+        each: false,
+    });
+
+    /// A test run's word for a line in the log for every path looked up
+    /// (`look: 12 - gfx/shell/x.bmp`: its read commands, `+` found or `-`
+    /// not there). Thousands of lines: for the emulator's serial line,
+    /// not the X51v's 64 KiB run log.
+    const LOOKS_WORD: &[u8] = b"-rplooks";
+
+    fn card_reads() -> u32 {
+        CARD.with(|c| c.reads)
+    }
+
+    fn looked(path: &[u8], found: bool, reads: u32) {
+        let each = CARD.with(|c| {
+            if found {
+                c.found += 1;
+                c.found_reads = c.found_reads.wrapping_add(reads);
+            } else {
+                c.missing += 1;
+                c.missing_reads = c.missing_reads.wrapping_add(reads);
+            }
+            c.each
+        });
+        if each {
+            let mark = if found { '+' } else { '-' };
+            let _ = writeln!(
+                Out,
+                "look: {reads} {mark} {}",
+                core::str::from_utf8(path).unwrap_or("?")
+            );
+        }
+    }
+
+    /// The card's count so far, as a line of the log (`when`: which
+    /// moment of the run).
+    fn card_count(when: core::fmt::Arguments<'_>) {
+        let c = CARD.with(|c| *c);
+        let _ = writeln!(
+            Out,
+            "runner: card reads {when}: {} commands for {} sectors; {} paths found took {} of them, {} paths not there took {}",
+            c.reads, c.sectors, c.found, c.found_reads, c.missing, c.missing_reads
+        );
     }
 
     /// Where the runner's own lines and all the program prints go: the
@@ -242,6 +324,7 @@ mod image {
             Out,
             "runner: step {n} of {of} at {at} s on the screen's clock"
         );
+        card_count(format_args!("at step {n}"));
     }
 
     static SYSTEM: rt::Slot<System<'static, Card, HANDLES, Text>> = rt::Slot::new();
@@ -519,7 +602,9 @@ mod image {
         };
         let _ = writeln!(uart, "card: mounted");
         let (work, room) = ram.split_at_mut(FAT_WORK);
+        let (names, room) = room.split_at_mut(NAMES_ROOM);
         let mut files: Files<'static, Card, HANDLES> = Files::new(vol, work, room);
+        files.remember(Names::new(names));
 
         // The modules' memory and this runner's identity.
         let Some(pool) = devices::take_ram_pool_bytes() else {
@@ -647,6 +732,11 @@ mod image {
         let Some(s) = SYSTEM.put_with(|| System::new(files, Text, heap, ticks)) else {
             rp_image::fail("the C system was set up twice")
         };
+        CARD.with(|c| c.each = args[..arg_count].iter().any(|a| a.to_bytes() == LOOKS_WORD));
+        s.set_looks(Looks {
+            reads: card_reads,
+            looked,
+        });
         s.set_modules(Library {
             modules: Modules::new(modules, module::POOL, identity),
             folder: FOLDER.as_bytes(),
@@ -681,6 +771,7 @@ mod image {
             );
         }
         longest_quiet();
+        card_count(format_args!("at the end"));
         match ran {
             Ok(code) => {
                 let _ = writeln!(uart, "runner: the program returned {code}");

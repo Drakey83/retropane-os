@@ -1209,6 +1209,28 @@ fn after_restart(answer: Result<Vec<String>, String>) -> Result<Vec<String>, Str
 /// Writes `file` to the card's root directory as `name` (its own name by
 /// default) through the resident loader, which replaces the file there and
 /// reads it back before saying OK.
+/// The loader's image area, into which a put's frame is taken
+/// (`rp_hal_x51v::devices::IMAGE_MAX`, docs/hw/memory-map.md).
+const IMAGE_MAX: usize = (crate::size::IMAGE_END - crate::size::IMAGE_BASE) as usize;
+/// The loader's own work room at the end of the image area, which a put's
+/// frame may not use (`SCRATCH` in boot/loader/src/main.rs, `put_file`).
+const LOADER_PUT_SCRATCH: usize = 64 * 1024;
+
+/// Whether a file of `len` bytes named `name` on the card fits one `put`:
+/// the loader takes a put's frame into its image area less its own work
+/// room, and refuses a larger one as "too big" (found on the X51v
+/// 2026-11-15: three of the Half-Life kit's files; R278).
+#[must_use]
+pub fn put_fits(name: &str, len: usize) -> bool {
+    1 + name.len() + len <= IMAGE_MAX - LOADER_PUT_SCRATCH
+}
+
+/// The most bytes a file named `name` may have for one `put`.
+#[must_use]
+pub fn put_max(name: &str) -> usize {
+    IMAGE_MAX - LOADER_PUT_SCRATCH - 1 - name.len()
+}
+
 pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
     let path = Path::new(file);
     let name = match name {
@@ -1220,6 +1242,15 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
             .to_string(),
     };
     let contents = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Said here, before anything is sent: the loader would refuse it.
+    if !put_fits(&name, contents.len()) {
+        return Err(format!(
+            "{} is {} bytes; one put takes at most {} for that name (the loader's image area).              Put it on through drive mode: `cargo xtask drive rw`, copy it onto the X51V SD drive              as {name}, `cargo xtask hash {name}` to check it on the X51v, `cargo xtask drive ro`",
+            path.display(),
+            contents.len(),
+            put_max(&name)
+        ));
+    }
     let out = root.join("target/load");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let frame = out.join("put.frame");

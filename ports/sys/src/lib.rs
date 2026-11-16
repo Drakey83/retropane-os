@@ -2,7 +2,7 @@
 //! and the screen ([half-life-readiness.md](../../../docs/design/half-life-readiness.md),
 //! lines 4 and 5): the files ([`files`]), the clock ([`clock`]), sound
 //! ([`sound`]), input ([`input`]), a big program's libraries ([`module`],
-//! ADR-0039), a program's progress for a test runner's screen
+//! ADR-0039), the names of the folders it has looked into ([`names`]), a program's progress for a test runner's screen
 //! ([`progress`]) and what answers a C program's library calls over them ([`sys`]).
 //!
 //! Iterate, don't imitate (rule 0). Windows Mobile gives a C program
@@ -24,6 +24,7 @@ pub mod clock;
 pub mod files;
 pub mod input;
 pub mod module;
+pub mod names;
 pub mod progress;
 pub mod sound;
 pub mod sys;

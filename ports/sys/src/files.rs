@@ -5,6 +5,8 @@ use rp_fat::node::{self, Node, ROOT, Stamp};
 use rp_fat::{AnyVolume, Error as FatError};
 use rp_hal_api::BlockDevice;
 
+use crate::names::{Brief, Names};
+
 /// A handle: an index into the table, as C's `int fd`.
 pub type Fd = u16;
 
@@ -138,6 +140,9 @@ pub struct Files<'a, D: BlockDevice, const N: usize> {
     /// The folder a path that does not start with a slash is walked from
     /// (C's current directory): the root until [`Files::set_current`].
     current: u64,
+    /// The names of the folders looked into, where the image gave room
+    /// for them ([`Files::remember`]): a look-up then costs no card read.
+    names: Option<Names<'a>>,
 }
 
 /// Whether `path` starts at the card's root whatever the current folder.
@@ -179,7 +184,95 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
             scratch,
             room,
             current: ROOT,
+            // Under test, every table is also run with the names
+            // remembered, in the room the test's loop says
+            // (`tests::each`): all of this crate's file tests then hold
+            // with them, without them, and with too little room for them.
+            #[cfg(test)]
+            names: match tests::NAMES_ROOM.get() {
+                0 => None,
+                n => Some(Names::new(Vec::leak(vec![0u8; n]))),
+            },
+            #[cfg(not(test))]
+            names: None,
         }
+    }
+
+    /// Keeps the names of every folder looked into in `names`, so that
+    /// what a path names is answered without the card from the second
+    /// time on (a folder that does not fit there is walked as before).
+    /// Only this table may change the card while it does: a folder it
+    /// changes is forgotten and listed again.
+    pub fn remember(&mut self, names: Names<'a>) {
+        self.names = Some(names);
+    }
+
+    /// How much of the names' room is in use, if there is one.
+    #[must_use]
+    pub fn remembered(&self) -> Option<crate::names::Used> {
+        self.names.as_ref().map(Names::used)
+    }
+
+    /// `dir`'s names are about to change: forgotten.
+    fn forget(&mut self, dir: u64) {
+        if let Some(n) = self.names.as_mut() {
+            n.forget(dir);
+        }
+    }
+
+    /// A folder is about to move or go: every name is forgotten (those
+    /// kept under its place would answer for whatever takes it).
+    fn forget_all(&mut self) {
+        if let Some(n) = self.names.as_mut() {
+            n.clear();
+        }
+    }
+
+    /// Lists `dir` into the names' room: whether it is remembered now.
+    fn list(&mut self, dir: u64) -> Result<bool, Error> {
+        let Some(names) = self.names.as_mut() else {
+            return Ok(false);
+        };
+        if names.listed(dir) {
+            return Ok(true);
+        }
+        if !names.begin(dir) {
+            return Ok(false);
+        }
+        let mut node = Node::default();
+        let mut cursor = 0;
+        loop {
+            match self.vol.node_child(dir, &mut cursor, &mut node) {
+                Ok(true) => {
+                    if !names.add(&node) {
+                        return Ok(false);
+                    }
+                }
+                Ok(false) => {
+                    names.keep();
+                    return Ok(true);
+                }
+                Err(e) => {
+                    names.abandon();
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+
+    /// What the child of folder `dir` named `name` is, any case: from
+    /// the names remembered, or by walking the folder on the card.
+    fn brief(&mut self, dir: u64, name: &[u8]) -> Result<Brief, Error> {
+        let mut want = [0u16; node::NAME_UNITS];
+        let n = units(name, &mut want).ok_or(Error::BadPath)?;
+        if self.list(dir)?
+            && let Some(known) = self.names.as_ref().and_then(|c| c.get(dir, &want[..n]))
+        {
+            return known.ok_or(Error::NotFound);
+        }
+        let mut node = Node::default();
+        self.walk(dir, &want[..n], &mut node)?;
+        Ok(Brief::of(&node))
     }
 
     /// Where the written files' bytes end in the room.
@@ -225,10 +318,9 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
         if name.is_empty() || name == b"." {
             return Ok(dir);
         }
-        let mut node = Node::default();
-        self.child(dir, name, &mut node)?;
-        if node.folder {
-            Ok(node.loc)
+        let b = self.brief(dir, name)?;
+        if b.folder {
+            Ok(b.loc)
         } else {
             Err(Error::BadPath)
         }
@@ -249,17 +341,31 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
         self.vol
     }
 
-    /// The child of folder `dir` named `name`, any case.
-    fn child(&mut self, dir: u64, name: &[u8], out: &mut Node) -> Result<(), Error> {
-        let mut want = [0u16; node::NAME_UNITS];
-        let n = units(name, &mut want).ok_or(Error::BadPath)?;
+    /// The child of folder `dir` named `want`, any case, found by
+    /// reading the folder's entries from the card.
+    fn walk(&mut self, dir: u64, want: &[u16], out: &mut Node) -> Result<(), Error> {
         let mut cursor = 0;
         while self.vol.node_child(dir, &mut cursor, out)? {
-            if node::same_name(out.name(), &want[..n]) {
+            if node::same_name(out.name(), want) {
                 return Ok(());
             }
         }
         Err(Error::NotFound)
+    }
+
+    /// The child of folder `dir` named `name`, any case, whole (what
+    /// reading or changing it needs): its entry read from where the
+    /// names remembered say it is, or the folder walked.
+    fn child(&mut self, dir: u64, name: &[u8], out: &mut Node) -> Result<(), Error> {
+        let mut want = [0u16; node::NAME_UNITS];
+        let n = units(name, &mut want).ok_or(Error::BadPath)?;
+        if self.list(dir)?
+            && let Some(known) = self.names.as_ref().and_then(|c| c.get(dir, &want[..n]))
+        {
+            let b = known.ok_or(Error::NotFound)?;
+            return Ok(self.vol.node_stat(b.loc, out)?);
+        }
+        self.walk(dir, &want[..n], out)
     }
 
     /// The folder a path's last name lies in, and that name: every name
@@ -269,7 +375,6 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     fn parent<'p>(&mut self, path: &'p [u8]) -> Result<(u64, &'p [u8]), Error> {
         let mut dir = if rooted(path) { ROOT } else { self.current };
         let (mut name, mut rest) = split(path);
-        let mut node = Node::default();
         loop {
             if name == b".." {
                 return Err(Error::BadPath);
@@ -279,11 +384,11 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
                 return Ok((dir, name));
             }
             if name != b"." {
-                self.child(dir, name, &mut node)?;
-                if !node.folder {
+                let b = self.brief(dir, name)?;
+                if !b.folder {
                     return Err(Error::BadPath);
                 }
-                dir = node.loc;
+                dir = b.loc;
             }
             (name, rest) = (next, after);
         }
@@ -448,12 +553,15 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
                 modified: None,
             });
         }
-        let mut node = Node::default();
-        self.find(path, &mut node)?;
+        let (dir, name) = self.parent(path)?;
+        if name.is_empty() || name == b"." {
+            return Err(Error::BadPath);
+        }
+        let b = self.brief(dir, name)?;
         Ok(Stat {
-            folder: node.folder,
-            size: if node.folder { 0 } else { node.size },
-            modified: node.modified,
+            folder: b.folder,
+            size: if b.folder { 0 } else { b.size },
+            modified: b.modified,
         })
     }
 
@@ -478,9 +586,18 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
             // Itself under another case: nothing to make way.
             Ok(()) if there.loc == node.loc => {}
             Ok(()) if there.folder => return Err(Error::BadPath),
-            Ok(()) => self.vol.node_delete(there.loc)?,
+            Ok(()) => {
+                self.forget(tdir);
+                self.vol.node_delete(there.loc)?;
+            }
             Err(Error::NotFound) => {}
             Err(e) => return Err(e),
+        }
+        if node.folder {
+            self.forget_all();
+        } else {
+            self.forget(fdir);
+            self.forget(tdir);
         }
         let mut loc = node.loc;
         let mut dir = fdir;
@@ -676,6 +793,10 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     /// Puts a written file's bytes (`len` of the room from `start`) onto
     /// the card under `name` in `dir`, whole or not at all.
     fn put_out(&mut self, dir: u64, name: &[u16], start: usize, len: usize) -> Result<(), Error> {
+        // The file's folder changes, and the root for a moment (the
+        // reservation's own entry).
+        self.forget(dir);
+        self.forget(ROOT);
         {
             {
                 let mut r = self.vol.node_reserve(dir, len as u64, self.scratch)?;
@@ -739,6 +860,7 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
         if !node::valid_name(&name[..n]) {
             return Err(Error::BadPath);
         }
+        self.forget(dir);
         self.vol
             .node_create(dir, &name[..n], true, false, (None, None), self.scratch)?;
         Ok(())
@@ -750,7 +872,16 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     /// No such file, or the card.
     pub fn remove(&mut self, path: &[u8]) -> Result<(), Error> {
         let mut node = Node::default();
-        self.find(path, &mut node)?;
+        let (dir, name) = self.parent(path)?;
+        if name.is_empty() || name == b"." {
+            return Err(Error::BadPath);
+        }
+        self.child(dir, name, &mut node)?;
+        if node.folder {
+            self.forget_all();
+        } else {
+            self.forget(dir);
+        }
         self.vol.node_delete(node.loc)?;
         Ok(())
     }
@@ -764,8 +895,17 @@ pub(crate) mod tests {
 
     pub(crate) struct Disk(Vec<u8>);
 
+    thread_local! {
+        /// The room every table made in this thread gets for its
+        /// folders' names (0: none), set by [`each`].
+        pub(crate) static NAMES_ROOM: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// Read commands the test's cards have been sent.
+        static READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
     impl BlockDevice for Disk {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+            READS.set(READS.get() + 1);
             let o = lba as usize * 512;
             if o + buf.len() > self.0.len() {
                 return Err(BlockError::OutOfRange);
@@ -803,12 +943,127 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// Every kind of card the X51v takes.
+    /// Every kind of card the X51v takes, each three times: as the
+    /// card alone answers, with the folders' names remembered, and with
+    /// room for only a few of them (some folders remembered, the rest
+    /// walked).
     pub(crate) fn each(mut f: impl FnMut(AnyVolume<Disk>, &str)) {
-        f(volume(Fs::Fat32, 131_072, 512), "FAT32");
-        f(volume(Fs::Fat16, 65_536, 2048), "FAT16");
-        f(volume(Fs::Fat12, 16_384, 4096), "FAT12");
-        f(volume(Fs::ExFat, 65_536, 4096), "exFAT");
+        for (room, how) in [
+            (0, ""),
+            (64 * 1024, ", names kept"),
+            (150, ", names short of room"),
+        ] {
+            NAMES_ROOM.set(room);
+            f(volume(Fs::Fat32, 131_072, 512), &format!("FAT32{how}"));
+            f(volume(Fs::Fat16, 65_536, 2048), &format!("FAT16{how}"));
+            f(volume(Fs::Fat12, 16_384, 4096), &format!("FAT12{how}"));
+            f(volume(Fs::ExFat, 65_536, 4096), &format!("exFAT{how}"));
+        }
+        NAMES_ROOM.set(0);
+    }
+
+    #[test]
+    fn a_path_asked_about_again_costs_no_card_read() {
+        for (fs, cluster) in [(Fs::Fat32, 512), (Fs::ExFat, 4096)] {
+            NAMES_ROOM.set(0);
+            let vol = volume(fs, 131_072, cluster);
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0u8; 100_000][..];
+            let names = &mut vec![0u8; 32 * 1024][..];
+            let mut f: Files<'_, Disk, 8> = Files::new(vol, scratch, room);
+            f.mkdir(b"Ports").unwrap();
+            f.mkdir(b"Ports/valve").unwrap();
+            for i in 0..40 {
+                let w = f
+                    .create(format!("Ports/valve/file-number-{i}.txt").as_bytes())
+                    .unwrap();
+                f.write(w, &pattern(100 + i, 1)).unwrap();
+                f.close(w).unwrap();
+            }
+            // After the files, as a card holds a folder made later.
+            f.mkdir(b"Ports/valve/gfx").unwrap();
+            f.mkdir(b"Ports/valve/gfx/shell").unwrap();
+            let cost = |f: &mut Files<'_, Disk, 8>, path: &[u8]| {
+                let before = READS.get();
+                let got = f.stat(path);
+                (got, READS.get() - before)
+            };
+            // As it was: every ask walks every folder on the way.
+            let (plain, walked) = cost(&mut f, b"/Ports/valve/gfx/shell");
+            assert!(walked > 40, "{walked} reads without the names");
+            let (gone, _) = cost(&mut f, b"/Ports/valve/gfx/shell/btns_main.bmp");
+            assert_eq!(gone, Err(Error::NotFound));
+            // With the names: the first ask lists the folders, the ones
+            // after read nothing, there or not, and say the same.
+            f.remember(Names::new(names));
+            assert_eq!(cost(&mut f, b"/Ports/valve/gfx/shell").0, plain);
+            for path in [
+                &b"/Ports/valve/gfx/shell"[..],
+                b"/ports/VALVE/gfx",
+                b"/Ports/valve/file-number-39.txt",
+            ] {
+                let (got, reads) = cost(&mut f, path);
+                assert!(got.is_ok());
+                assert_eq!(reads, 0, "{}", String::from_utf8_lossy(path));
+            }
+            assert_eq!(
+                cost(&mut f, b"/Ports/valve/file-number-39.txt")
+                    .0
+                    .unwrap()
+                    .size,
+                139
+            );
+            // The folder's first ask lists it (empty); then nothing.
+            assert_eq!(
+                cost(&mut f, b"/Ports/valve/gfx/shell/btns_main.bmp").0,
+                gone
+            );
+            for path in [
+                &b"/Ports/valve/gfx/shell/btns_main.bmp"[..],
+                b"/Ports/valve/gfx/shell/x/y.bmp",
+                b"/Ports/valve/nothing.wad",
+                b"/Ports/nowhere/gfx.wad",
+            ] {
+                let (got, reads) = cost(&mut f, path);
+                assert_eq!(got, Err(Error::NotFound));
+                assert_eq!(reads, 0, "{}", String::from_utf8_lossy(path));
+            }
+            // A file that is there opens with its entry read once.
+            let before = READS.get();
+            let r = f.open(b"/Ports/valve/file-number-7.txt").unwrap();
+            assert!(READS.get() - before <= 2, "{} reads", READS.get() - before);
+            let mut got = [0u8; 200];
+            assert_eq!(f.read(r, &mut got), Ok(107));
+            assert_eq!(&got[..107], &pattern(107, 1)[..]);
+            f.close(r).unwrap();
+            // What changes is seen at once: a new file, a file gone, a
+            // folder renamed with all under it.
+            let w = f.create(b"/Ports/valve/gfx/shell/btns_main.bmp").unwrap();
+            f.write(w, b"bmp").unwrap();
+            f.close(w).unwrap();
+            assert_eq!(
+                f.stat(b"/Ports/valve/gfx/shell/btns_main.bmp")
+                    .unwrap()
+                    .size,
+                3
+            );
+            f.remove(b"/Ports/valve/file-number-7.txt").unwrap();
+            assert_eq!(
+                f.stat(b"/Ports/valve/file-number-7.txt"),
+                Err(Error::NotFound)
+            );
+            f.rename(b"/Ports/valve/gfx", b"/Ports/valve/gfx2").unwrap();
+            assert_eq!(f.stat(b"/Ports/valve/gfx/shell"), Err(Error::NotFound));
+            assert_eq!(
+                f.stat(b"/Ports/valve/gfx2/shell/btns_main.bmp")
+                    .unwrap()
+                    .size,
+                3
+            );
+            assert_eq!(cost(&mut f, b"/Ports/valve/gfx2/shell/btns_main.bmp").1, 0);
+            let used = f.remembered().unwrap();
+            assert!(used.folders >= 4 && used.refused == 0, "{used:?}");
+        }
     }
 
     #[test]

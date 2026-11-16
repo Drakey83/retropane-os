@@ -1257,8 +1257,8 @@ pub fn check_allotments(
 
 /// Where the loader puts every image, and where its area ends (the vector
 /// page): `rp_hal_x51v::devices::IMAGE_BASE` and `IMAGE_MAX`, docs/hw/memory-map.md.
-const IMAGE_BASE: u64 = 0xA800_8000;
-const IMAGE_END: u64 = 0xA80F_0000;
+pub const IMAGE_BASE: u64 = 0xA800_8000;
+pub const IMAGE_END: u64 = 0xA80F_0000;
 /// The free RAM between the reserved pages above the image area and the
 /// loader's home (boot/link.x): an image's zeroed RAM and stacks may go here.
 const FREE_RAM: (u64, u64) = (0xA810_0000, 0xA840_0000);
