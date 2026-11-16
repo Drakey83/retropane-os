@@ -76,7 +76,7 @@ pub const LOW_MEMORY: u8 = 1;
 pub fn args() -> String {
     with_extra(
         format!(
-            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK}",
+            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} +exec {BINDS_FILE}",
             play_secs(),
             limit_secs()
         ),
@@ -84,14 +84,39 @@ pub fn args() -> String {
     )
 }
 
+/// The owner's button layout (2026-11-15, the mock-up hl-controls-doomgles;
+/// ports/xash/platform/in_rp.c turns each X51v button into an engine key):
+/// the D-pad walks and turns, its centre fires, Calendar jumps, Contacts
+/// is use, Mail crouches, Home reloads, Record the next weapon; the
+/// wireless button is the menu (Escape) already. Run 35 (the owner): "the
+/// hardware buttons ... didnt appear to do anything other then walk": the
+/// layout had never been written. A file of the game's own `bind`s,
+/// exec'd after the engine's saved config, so it wins; the command line
+/// cannot carry `+jump` as a bind's argument (a `+` starts a command).
+pub const BINDS: &str = "bind UPARROW +forward
+bind DOWNARROW +back
+bind LEFTARROW +left
+bind RIGHTARROW +right
+bind ENTER +attack
+bind AUX1 +jump
+bind AUX2 +use
+bind AUX3 +duck
+bind AUX4 +reload
+bind AUX5 invnext
+bind MOUSE1 +attack
+";
+/// [`BINDS`]' file in the game's folder on the card.
+pub const BINDS_FILE: &str = "rp_binds.cfg";
+
 /// The 2700G's clock while the game draws (the runner's `-rpclock`: PLL
-/// M, N, P, the cores' divider): 108.33 / 1, the fastest rung clean on
-/// Half-Life's TA path (run 16, the owner's eye 2026-11-16; 136.50 / 1,
-/// the game step proven on the binner's path with the divide-1 cures,
-/// glitched in run 17: the cures are not in the TA path yet, R295). An
-/// experiment's own `-rpclock` in `RETROPANE_XASH_EXTRA` comes later on
-/// the line and wins.
-pub const CLOCK: &str = "25 3 0 1";
+/// M, N, P, the cores' divider): 125.67 / 1, the owner's ruling of
+/// 2026-11-16 ("make 125 the default clock for halflife"; ADR-0035, "The
+/// TA path's step"): the fastest rung drawn clean on Half-Life's TA path
+/// on this X51v, ~34,000 frames without a hang in runs 32-35 (standing,
+/// walking, the owner playing); 130.00 / 1 hung 1 in 1,200, 133.25 1 in
+/// 53, 136.50 about 1 in 5 (R295). An experiment's own `-rpclock` in
+/// `RETROPANE_XASH_EXTRA` comes later on the line and wins.
+pub const CLOCK: &str = "29 3 0 1";
 
 /// The variable naming an experiment's extra words for the command line.
 pub const EXTRA: &str = "RETROPANE_XASH_EXTRA";
@@ -127,6 +152,7 @@ pub fn card_files(
         .map(|(name, bytes)| (format!("{FOLDER}/{name}"), bytes.clone()))
         .collect();
     card.push((format!("{FOLDER}/args.txt"), args().into_bytes()));
+    card.push((format!("{FOLDER}/game/valve/{BINDS_FILE}"), BINDS.as_bytes().to_vec()));
     if let Some(file) = background {
         card.push((
             format!("{FOLDER}/game/valve/{}", crate::hlprep::BACKGROUND),
@@ -281,7 +307,8 @@ mod tests {
         assert_eq!(after("-rplimit"), Some("1200"));
         assert_eq!(after("-rpbase"), Some("/rp-xash/game"));
         assert_eq!(after("-rodir"), Some("/Ports"));
-        assert_eq!(after("-rpclock"), Some("25"));
+        assert_eq!(after("-rpclock"), Some("29"));
+        assert_eq!(after("+exec"), Some(BINDS_FILE));
         assert!(words.contains(&"-rpfps") && words.contains(&"-rpendshot"));
         assert!(words.contains(&"-rpsample") && words.contains(&"-rpfloat"));
         // Nothing that fills the 64 KiB run log, nothing written while
@@ -308,13 +335,18 @@ mod tests {
                 "rp-xash/server.rpm",
                 "rp-xash/engine.rpm",
                 "rp-xash/args.txt",
+                "rp-xash/game/valve/rp_binds.cfg",
                 "rp-xash/game/valve/retropane/background.tga"
             ]
         );
         assert!(names.iter().all(|n| n.starts_with("rp-xash/")));
         assert_eq!(card[2].1, args().into_bytes());
         // A game with no background in pieces: the kit has none.
-        assert_eq!(card_files(&modules, None).len(), 3);
+        assert_eq!(card_files(&modules, None).len(), 4);
+        // Every button of the owner's layout is bound (in_rp.c's keys).
+        for key in ["ENTER", "AUX1", "AUX2", "AUX3", "AUX4", "AUX5"] {
+            assert!(BINDS.lines().any(|l| l.starts_with(&format!("bind {key} "))), "{key}");
+        }
     }
 
     #[test]
