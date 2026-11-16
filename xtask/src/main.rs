@@ -285,8 +285,8 @@ commands:
             refused safely, the 3D core isn't modelled; back on a button):
             run it before `load rp-mbx3d-api`
   emu-tabench the performance gate's P4 (rp-tabench: the CPU binner drawn
-            repeatably on the modelled 3D core, every TA way timing out
-            safely, the fork having no TA; back on a button): run it before
+            repeatably on the modelled 3D core, every TA way through the
+            fork's TA drawing exactly the binner's picture; back on a button): run it before
             `load rp-tabench`
   emu-cs3bus the 2700G bus-timing experiment (rp-cs3bus: every step and
             the soak run, MSC1 put back): run it before `load rp-cs3bus`

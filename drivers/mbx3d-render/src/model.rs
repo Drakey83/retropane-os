@@ -258,9 +258,17 @@ impl Gpu {
         };
         let mut quads = 0u32;
         let mut n = 0;
-        for k in 0..4096 {
+        for k in 0..128 * 128 {
             let w0 = Self::word(&m, regions + 8 * k);
-            let list = Self::word(&m, regions + 8 * k + 4) & m3::ADDR_MASK;
+            let mut list = Self::word(&m, regions + 8 * k + 4) & m3::ADDR_MASK;
+            if w0 & REGION_EMPTY != 0 {
+                // The tile accelerator's empty tile (`rp-tabench` run 4:
+                // "tiles without a quad left untouched"): not rendered.
+                if w0 & m3::LAST_REGION != 0 {
+                    return (n, quads / 2);
+                }
+                continue;
+            }
             let (tx, ty) = (w0 & 127, (w0 >> 8) & 127);
             let mut tile = Tile {
                 x: tx * m3::TILE_W,
@@ -268,18 +276,40 @@ impl Gpu {
                 c: [0xFFFF_FFFF; 128],
                 z: [clear_z; 128],
             };
-            for j in 0..512 {
-                let p = Self::word(&m, list + 4 * j);
+            let mut objects = 0u32;
+            for _ in 0..LIST_MAX {
+                let p = Self::word(&m, list);
+                list += 4;
                 if p >> 28 == 0xF {
                     break;
                 }
+                if p >> 28 == 0xE {
+                    // The TA's 16-word blocks link on in word 15 (Dell's
+                    // captured frame, `local/g7-dell-frame.bin`).
+                    list = p & m3::ADDR_MASK;
+                    continue;
+                }
                 let at = params + (p & 0x001F_FFFF) * 4;
-                let o = match p & 0xFFE0_0000 {
-                    m3::STRIP_ONE_TRIANGLE => Obj::flat(&m, at, 3),
-                    tex::STRIP_GAME => Obj::textured(&m, at, 3),
-                    m3::STRIP_QUAD => Obj::flat(&m, at, 4),
-                    tex::STRIP_QUAD => Obj::textured(&m, at, 4),
-                    f => panic!("strip pointer flags {f:#010x} never measured"),
+                let mask = (p >> 25) & 0x3F;
+                let corners = ((p >> 21) & 3) as usize + 3;
+                assert!(
+                    p & m3::LAST_REGION == 0 && mask != 0 && mask & ((1 << (8 - corners)) - 1) == 0,
+                    "strip pointer {p:#010x} never measured"
+                );
+                let o = match (p >> 23) & 3 {
+                    1 => Obj::flat(&m, at, corners, mask),
+                    2 => Obj::textured(&m, at, corners, mask),
+                    // A two-unit object (the TA's, `rp-glesfeat` M): the
+                    // hang a reset alone keeps (C53, M2).
+                    3 => {
+                        self.hung = true;
+                        self.hang_needs_clock = true;
+                        self.clock_cycled = false;
+                        return (n, 0);
+                    }
+                    _ => panic!(
+                        "strip pointer {p:#010x}: the GLES clear's colourless object (class 0) drew nothing on the X51v (audit C80)"
+                    ),
                 };
                 // TEX1 bit 30 without bit 29 (mipmap "linear", no levels)
                 // hung the core too (version 24).
@@ -294,11 +324,12 @@ impl Gpu {
                 // background), each half a quad (run 2's fit); a
                 // four-corner object as its two triangles (assumed: its
                 // time on the core is to measure).
-                if j > 0 {
+                if objects > 0 {
                     // 1:1 assumed: the model doesn't keep the quad's scale.
                     let c = quad_cost(o.tex.is_some().then_some(16), o.tsp & m3::TSP_BLEND != 0);
-                    quads += c * (o.n as u32 - 2);
+                    quads += c * o.mask.count_ones();
                 }
+                objects += 1;
             }
             // The target's format (`0x650`, version 26 and `rp-gpubench`
             // runs P and P2): bits 2-0 the layout, 0 RGB555 with the top
@@ -364,6 +395,11 @@ impl Gpu {
         panic!("region array without a last entry");
     }
 }
+
+/// Region header bit 25: the tile accelerator's empty tile.
+const REGION_EMPTY: u32 = 1 << 25;
+/// Words a tile's list may run to, its links followed.
+const LIST_MAX: u32 = 16_384;
 
 /// The 3D core's dither (`0x650` bit 3, `rp-gpubench` run P2 on the
 /// X51v): a 4 x 4 ordered matrix from the target's first pixel, in
@@ -461,9 +497,11 @@ struct Obj {
     isp: u32,
     tsp: u32,
     tex: Option<[u32; 3]>,
-    /// The corners, in strip order; `n` of them (3 or 4).
-    v: [V; 4],
+    /// The corners, in strip order; `n` of them (3 to 6).
+    v: [V; 6],
     n: usize,
+    /// The strip pointer's triangle mask (bit 5 the first triangle).
+    mask: u32,
 }
 
 fn f(w: u32) -> f64 {
@@ -473,10 +511,10 @@ fn f(w: u32) -> f64 {
 impl Obj {
     /// A flat object of `n` corners: ISP, TSP, the x/y pairs, then z, 1/w
     /// and the colours, `n` words each (17 words for 3, 22 for 4).
-    fn flat(m: &[u8], at: u32, n: usize) -> Self {
+    fn flat(m: &[u8], at: u32, n: usize, mask: u32) -> Self {
         let w = |k: u32| Gpu::word(m, at + 4 * k);
         let c = n as u32;
-        let v = [0, 1, 2, 3].map(|k: u32| {
+        let v = [0, 1, 2, 3, 4, 5].map(|k: u32| {
             let k = k.min(c - 1);
             V {
                 x: f(w(2 + 2 * k)),
@@ -493,16 +531,17 @@ impl Obj {
             tex: None,
             v,
             n,
+            mask,
         }
     }
 
     /// A textured object of `n` corners: ISP, TEX0-2, TSP, the x/y pairs,
     /// z, 1/w (`n` words each), then colour, u, v a corner (26 words for 3,
     /// 33 for 4).
-    fn textured(m: &[u8], at: u32, n: usize) -> Self {
+    fn textured(m: &[u8], at: u32, n: usize, mask: u32) -> Self {
         let w = |k: u32| Gpu::word(m, at + 4 * k);
         let c = n as u32;
-        let v = [0, 1, 2, 3].map(|k: u32| {
+        let v = [0, 1, 2, 3, 4, 5].map(|k: u32| {
             let k = k.min(c - 1);
             V {
                 x: f(w(5 + 2 * k)),
@@ -519,18 +558,22 @@ impl Obj {
             tex: Some([w(1), w(2), w(3)]),
             v,
             n,
+            mask,
         }
     }
 
-    /// Draws its triangles into the tile: `v0 v1 v2`, then for a
-    /// four-corner object `v1 v3 v2` (the strip's second triangle, its
-    /// winding kept; which corner leads, and so the order the model sums
-    /// in, is assumed: our two-triangle form's, `rp-mbx3d` versions 21-23).
+    /// Draws the triangles its mask holds into the tile, each the strip's
+    /// corners `i, i+1, i+2`, odd ones `i, i+2, i+1` (the winding kept: a
+    /// four-corner object `v0 v1 v2`, `v1 v3 v2`; which corner leads, and
+    /// so the order the model sums in, is assumed: our two-triangle
+    /// form's, `rp-mbx3d` versions 21-23).
     fn draw(&self, m: &[u8], t: &mut Tile) {
         let v = self.v;
-        self.triangle(m, t, [v[0], v[1], v[2]]);
-        if self.n == 4 {
-            self.triangle(m, t, [v[1], v[3], v[2]]);
+        for i in 0..self.n - 2 {
+            if self.mask & (0x20 >> i) != 0 {
+                let odd = i & 1;
+                self.triangle(m, t, [v[i], v[i + 1 + odd], v[i + 2 - odd]]);
+            }
         }
     }
 
@@ -838,4 +881,91 @@ fn blend(tsp: u32, s: u32, d: u32) -> u32 {
             v.min(255) << sh
         })
         .fold(0, |a, b| a | b)
+}
+
+#[cfg(test)]
+mod ta_forms {
+    //! The tile accelerator's list forms (R288; Dell's captured frame
+    //! `local/g7-dell-frame.bin`, `rp-tabench` run 4), as the QEMU fork's
+    //! 3D core reads them: the two must agree.
+
+    use super::{Gpu, LocalMem, Mem, SimClock, memory};
+    use rp_drv_blit2d::MBX;
+    use rp_drv_mbx_display::clock::MBXCLK;
+    use rp_drv_mbx3d::{self as m3};
+    use rp_hal_api::RegisterBus;
+
+    const PARAMS: u32 = 0x10_0000;
+    const REGIONS: u32 = 0x30_0000;
+    const TARGET: u32 = 0x40_0000;
+    const STRIDE: u32 = 480 * 4;
+    const RED: u32 = 0xFFFF_0000;
+    const GREEN: u32 = 0xFF00_FF00;
+    const BLUE: u32 = 0xFF00_00FF;
+    const YELLOW: u32 = 0xFFFF_FF00;
+    const PREFILL: u32 = 0x5A5A_5A5A;
+
+    /// A flat six-corner strip (class 1, layout 7) over x 0-16, y 0-16:
+    /// triangles T0-T3 lead with red, green, blue, yellow; listed with only
+    /// T0 and T3 (`0x48E00000`, the form of Dell's frame's `0x48ea7340`),
+    /// tile 0's list reached through a link word, tile 2 empty (bit 25).
+    #[test]
+    fn a_masked_six_corner_strip_through_a_link_and_an_empty_tile() {
+        let shared = memory();
+        let clock = SimClock::default();
+        let mut mem = Mem::new(shared.clone());
+        let f = |v: f32| v.to_bits();
+        let xy = [
+            (0.0, 0.0),
+            (0.0, 16.0),
+            (8.0, 0.0),
+            (8.0, 16.0),
+            (16.0, 0.0),
+            (16.0, 16.0),
+        ];
+        let mut obj = vec![0xE000_0000, 0x2220_0E80];
+        obj.extend(xy.iter().flat_map(|&(x, y)| [f(x), f(y)]));
+        obj.extend([f(1.0); 6]); // z
+        obj.extend([f(1.0); 6]); // 1/w
+        obj.extend([RED, GREEN, BLUE, YELLOW, BLUE, BLUE]);
+        mem.store(PARAMS as usize, &obj);
+        let ptr = 0x48E0_0000;
+        mem.store(0x20_0000, &[0xE000_0000 | 0x20_0100]);
+        mem.store(0x20_0100, &[ptr, 0xF000_0000]);
+        mem.store(0x20_0200, &[ptr, 0xF000_0000]);
+        mem.store(
+            REGIONS as usize,
+            &[
+                0x2000_0000,
+                0x20_0000,
+                0x2000_0001,
+                0x20_0200,
+                0x2000_0002 | 1 << 25 | m3::LAST_REGION,
+                0,
+            ],
+        );
+        mem.fill(TARGET, STRIDE, (0, 0, 24, 16), PREFILL);
+        let mut gpu = Gpu::new(shared, &clock);
+        gpu.write32(MBXCLK, 0x6);
+        gpu.write32(MBX + 0x838, 1);
+        for (off, v) in [
+            (0x608, REGIONS),
+            (0x60C, PARAMS),
+            (0x650, 6),
+            (0x65C, TARGET),
+            (0x660, STRIDE / 4),
+            (0x6DC, 0),
+            (m3::START, 1),
+        ] {
+            gpu.write32(MBX + off, v);
+        }
+        assert!(!gpu.hung());
+        let px = |x, y| mem.px(TARGET, STRIDE, x, y);
+        assert_eq!(px(1, 1), RED, "T0, through the link");
+        assert_eq!(px(6, 14), 0xFFFF_FFFF, "T1 masked out: uncovered");
+        assert_eq!(px(9, 1), 0xFFFF_FFFF, "T2 masked out");
+        assert_eq!(px(14, 14), YELLOW, "T3, its lead corner v3");
+        assert_eq!(px(17, 3), PREFILL, "the empty tile untouched");
+        let _ = (GREEN, BLUE);
+    }
 }

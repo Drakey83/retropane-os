@@ -1031,10 +1031,12 @@ pub(crate) fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String
         }
     }
     // Every way that drew: its reference rendered twice the same, then the
-    // clock refused or a right control after it. The fork doesn't model
-    // the tile accelerator (docs/hw/emulator.md: its TA never says done),
-    // so a TA way may stop at its reference, safely (and G's way 3 is
-    // skipped for want of the TA's object); our own way must always draw.
+    // clock refused or a right control after it. Before rp-v0.32.0 the
+    // fork had no tile accelerator (its TA never said done), so a TA way
+    // could stop at its reference, safely; with it (`mbx-ta`, R288) every
+    // TA scene must say done, and a way may stop only for want of its quad
+    // (below). Our own way must always draw.
+    let ta_modelled = device_has(root, "intel-2700g", "mbx-ta");
     let head = format!("{name} way ");
     let ways = log
         .lines()
@@ -1057,7 +1059,13 @@ pub(crate) fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String
     // drew the quad on the X51v). Judged way by way,
     // so a modelled way losing its quad still fails (R58).
     let no_quad = glesfeat_no_quad(log, name, test)?;
-    // Each way that stopped for want of the TA: its two reference renders.
+    // Each way that stopped for want of the TA: its two reference renders
+    // (none once the fork has the TA).
+    if ta_modelled && ta_silent != 0 {
+        return Err(format!(
+            "glesfeat {name}: the fork's TA never said done for {ta_silent} renders (a scene it refused: its log names why):{log}"
+        ));
+    }
     if (no_ta - no_quad.min(no_ta)) * 2 != ta_silent {
         return Err(format!(
             "glesfeat {name}: {no_ta} references that didn't repeat, {ta_silent} renders the TA never finished:{log}"
@@ -1505,7 +1513,7 @@ pub(crate) fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String
         }
     }
     eprintln!(
-        "    glesfeat {name} OK: {ways} ways, {drew} drew (references repeatable; the TA not modelled: {no_ta}), the clock refused in {refused}, put back in {controls}, back at the loader"
+        "    glesfeat {name} OK: {ways} ways, {drew} drew (references repeatable; no repeatable reference: {no_ta}, {no_quad} of them for want of the quad, as the fork draws the clear's object), the clock refused in {refused}, put back in {controls}, back at the loader"
     );
     Ok(())
 }
@@ -2402,14 +2410,20 @@ pub(crate) fn blend_screen(stage: rp_drv_mbx_display::blendtest::Stage) -> Vec<u
 
 /// The performance gate's P4 test image (rp-tabench): runs under the
 /// loader. With the fork's 3D model the CPU binner's way draws every set
-/// and its frames 2-5 repeat the first; the fork doesn't model the tile
-/// accelerator, so every TA way must run, time out ("TA done 0") and move
-/// on, which is the hang path a device TA hang takes (Q2 A). The clock,
-/// plane and core put back, it returns on a button.
+/// and its frames 2-5 repeat the first; with the fork's tile accelerator
+/// (`mbx-ta`, rp-v0.32.0, R288) every TA way of every set says done all
+/// five frames and draws exactly the binner's picture, frames 2-5 the
+/// first's, as on the X51v (run 9: 30 of 30 ways). The clock, plane and
+/// core put back, it returns on a button.
 pub fn boot_loader_tabench(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-3d") {
         eprintln!("    tabench: skipped (this emulator release doesn't model the MBX 3D core)");
         return Ok(());
+    }
+    if !device_has(root, "intel-2700g", "mbx-ta") {
+        return Err(
+            "tabench: this emulator release has no tile accelerator (mbx-ta, rp-v0.32.0 and later): the TA ways can't be checked".into(),
+        );
     }
     let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
@@ -2435,7 +2449,7 @@ pub fn boot_loader_tabench(root: &Path) -> Result<(), String> {
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-TABENCH: DONE")),
             during: Some(&check),
             then: Some("RPL END"),
-            timeout: Duration::from_secs(3600),
+            timeout: Duration::from_secs(1200),
         },
     )?;
     let log = output
@@ -2462,20 +2476,40 @@ pub fn boot_loader_tabench(root: &Path) -> Result<(), String> {
         .count();
     let binned = log.matches("    binned: ").count();
     let ta = log.lines().filter(|l| l.starts_with("  TA, ")).count();
-    if binner != 6 || repeated != 6 || binned != 6 || ta != 30 || log.contains("render past 2 s") {
+    // Each TA way: done all five frames, the binner's picture exactly,
+    // frames 2-5 the first's (run 9 on the X51v).
+    let ta_right = log
+        .lines()
+        .filter(|l| {
+            l.starts_with("  TA, ")
+                && l.contains(": TA done 5;")
+                && l.contains("frames 2-5 as the first: 4 of 4")
+                && l.ends_with("first frame's words unlike the binner's: 0")
+        })
+        .count();
+    if binner != 6
+        || repeated != 6
+        || binned != 6
+        || ta != 30
+        || ta_right != 30
+        || log.contains("render past 2 s")
+        || !log.contains("0 renders past 2 s, 0 TA frames never done")
+    {
         return Err(format!(
-            "tabench: {binned} sets binned, {binner} binner ways drawn, {repeated} repeatable, {ta} TA ways run (6, 6, 6, 30 wanted, no render past 2 s):{log}"
+            "tabench: {binned} sets binned, {binner} binner ways drawn, {repeated} repeatable, {ta} TA ways run, {ta_right} of them done and drawing the binner's picture (6, 6, 6, 30, 30 wanted, no render past 2 s, every TA frame done):{log}"
         ));
     }
     eprintln!(
-        "    tabench OK: the binner drew all six sets repeatably on the modelled 3D core; all 30 TA ways ran and timed out safely (the fork has no TA); back at the loader on a button press"
+        "    tabench OK: the binner drew all six sets repeatably on the modelled 3D core; all 30 TA ways said done every frame and drew exactly the binner's picture (the fork's TA, as the X51v's run 9); back at the loader on a button press"
     );
     boot_loader_tabench_isolate(root)
 }
 
 /// Run 8 of rp-tabench (`RP_TABENCH_ISOLATE=1`, audit C81: the first render after a set-up): every way's
-/// binner reference draws on the modelled 3D core; every TA frame times
-/// out (the fork has no TA) and the run moves on; it returns on a button.
+/// binner reference draws on the modelled 3D core; every TA frame (the
+/// fork's TA) draws the binner's picture, none hung (the X51v's run 8:
+/// its hangs were a set-up's first frame, which the fork doesn't model);
+/// it returns on a button.
 pub(crate) fn boot_loader_tabench_isolate(root: &Path) -> Result<(), String> {
     let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
@@ -2514,18 +2548,25 @@ pub(crate) fn boot_loader_tabench_isolate(root: &Path) -> Result<(), String> {
         .lines()
         .filter(|l| l.contains(" set-ups, frame 1 hung "))
         .count();
-    let done = "RETROPANE-TABENCH: DONE - run 8: 0 of ";
+    let clean = log
+        .lines()
+        .filter(|l| {
+            l.contains(" set-ups, frame 1 hung 0, frame 2 hung 0; wrong pictures 0 and 0; warm-ups hung 0; set-ups never ready 0;")
+        })
+        .count();
+    let done = "RETROPANE-TABENCH: DONE - run 8: 200 of 200 TA frames like the binner's, 0 renders past 2 s, 0 TA frames never done";
     if !log.contains("the binner's reference: rendered in ")
         || log.contains("the binner's reference: rendered in 0 us")
         || ways != 5
+        || clean != 5
         || !log.contains(done)
     {
         return Err(format!(
-            "tabench run 8: the reference drawn and 5 ways run wanted ({ways} ways), every TA frame timed out:{log}"
+            "tabench run 8: the reference drawn and 5 ways run wanted ({ways} ways, {clean} with no hang or wrong picture), all 200 TA frames the binner's:{log}"
         ));
     }
     eprintln!(
-        "    tabench run 8 OK: the binner's reference drew on the modelled 3D core; all 5 ways ran, every TA warm-up and frame timed out safely (the fork has no TA)"
+        "    tabench run 8 OK: the binner's reference drew on the modelled 3D core; all 5 ways ran, all 200 TA frames drew the binner's picture (the fork's TA), none hung"
     );
     Ok(())
 }

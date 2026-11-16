@@ -187,6 +187,16 @@ the fork's 3D model already draws (the words the TA writes are known from
 `rp-glesfeat` and P4). That is the emulator-tracks-device rule, and it
 also lets every later port's renderer be checked before the X51v.
 
+**Built (R288, 2026-11-16, QEMU fork rp-v0.32.0):** the fork's TA parses
+the stream as fed and writes the X51v's own objects, 16-word list blocks
+and region array (their forms read from Dell's captured frame:
+docs/hw/2700g.md "The TA's output"), which the fork's 3D core then draws
+from `0x608` as the chip does. Strips of up to six corners become one
+object with a per-tile triangle mask, so ref_rp's faces as strips go in
+as the chip takes them. `emu-tabench`'s 30 TA ways now draw exactly the
+binner's pictures, as on the X51v (run 9). Still affine: u, v as fed and
+1/w unused until R289 measures the TA's perspective.
+
 **Step 1b (emulator, 2026-11-16; byte counts are the same on any clock):**
 c1a0's view needs **4,655 KiB of lit surfaces a frame** (16-bit texels at
 the software renderer's mip levels: 203 faces at level 0, 241 at 1, 23 at
