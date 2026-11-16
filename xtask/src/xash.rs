@@ -981,8 +981,19 @@ pub fn modules(
     let dir = root.join("target").join("xash-modules");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // An experiment's switch, not a setting of the port: the engine's own
+    // low-memory builds (1 or 2), to measure what each gives and costs
+    // (docs/reminders.md R277). The port's own build is 0.
+    let low_memory = std::env::var("RETROPANE_XASH_LOW_MEMORY")
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
+        .filter(|m| *m <= 2)
+        .unwrap_or(0);
+    if low_memory != 0 {
+        eprintln!("    an experiment: the engine built with XASH_LOW_MEMORY={low_memory}");
+    }
     let mut files = 0;
-    for part in parts(root, 0) {
+    for part in parts(root, low_memory) {
         files += compile(root, &tc, &libc, &out, &part)?.1;
     }
     let object = |part: &str| out.join(format!("{part}.o"));

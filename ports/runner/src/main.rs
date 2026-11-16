@@ -299,6 +299,33 @@ mod image {
         }
     }
 
+    /// When the loader's run limit was last checked in with (the timer's
+    /// counter).
+    static CHECKED_IN: rt::Global<u32> = rt::Global::new(0);
+    /// A tenth of a second of the OS timer's 3.25 MHz.
+    const CHECK_IN_TICKS: u32 = 325_000;
+
+    /// The program's clock source: the OS timer's counter. A program reads
+    /// its clock in every frame, so this is also where a game that plays
+    /// for minutes without touching the card checks in with the loader's
+    /// run limit and watchdog (the card's transfers do it otherwise), at
+    /// most ten times a second: a game that stops reading its clock is
+    /// hung, and is ended by the limit as any image is.
+    fn ticks() -> u32 {
+        let now = rt::ticks();
+        let due = CHECKED_IN.with(|last| {
+            let due = now.wrapping_sub(*last) >= CHECK_IN_TICKS;
+            if due {
+                *last = now;
+            }
+            due
+        });
+        if due {
+            rt::check_in();
+        }
+        now
+    }
+
     /// Makes loaded bytes fit to run: the data cache's copy written to
     /// RAM and the instruction cache's old lines for those addresses
     /// dropped (a module loaded a second time lies where its first load
@@ -448,7 +475,7 @@ mod image {
 
         // Made straight into its slot: the file table is several KiB, and
         // a copy or two of it on the way would be most of a small stack.
-        let Some(s) = SYSTEM.put_with(|| System::new(files, Serial(uart), heap, rt::ticks)) else {
+        let Some(s) = SYSTEM.put_with(|| System::new(files, Serial(uart), heap, ticks)) else {
             rp_image::fail("the C system was set up twice")
         };
         s.set_modules(Library {

@@ -309,6 +309,20 @@ first time (the artwork, the logo, the eight menu lines, the right way
 up). The pictures are the owner's to judge (R269) and are kept outside
 the repository: they are Valve's artwork.
 
+**The first map (2026-11-15, later still).** A test run can now say what
+the engine should do (`RETROPANE_XASH_ARGS="+map c1a0"`: the runner reads
+`args.txt` from its folder). With the engine's default tables the map
+runs out of memory while loading. With the engine's own low-memory build
+1, **as an experiment and not a setting of the port** (R277: it cuts
+limits that can change the picture; sizing each table to what the game
+needs is to do first), Anomalous Materials loads and plays in the
+emulator: the server spawns it, the client connects, its scripted scenes
+fire, and the frame read back shows the map with its chapter title.
+Memory then: the engine's pools steady at 28 to 29 MiB (the software
+renderer 13.2 MiB), the heap at 32 of 35.1 MiB. No frame time follows from
+the emulator. The port layer now keeps several written files at once (the
+engine holds one open during a map, and nothing else could be saved).
+
 Also fixed on the way: a module's file is found from the card's root
 wherever the program's current folder is; the modules no longer carry the
 building PC's folder names (the engine prints its source files' names:

@@ -110,12 +110,14 @@ enum Slot {
         dir: u64,
         cursor: u64,
     },
-    /// The file being written: its folder, its name, how far the writing
-    /// has got (its bytes are in the table's room).
+    /// A file being written: its folder, its name, where its bytes start
+    /// in the table's room, how far the writing has got and how long it
+    /// is.
     Out {
         dir: u64,
         name: [u16; NAME],
         name_len: usize,
+        start: usize,
         at: usize,
         len: usize,
     },
@@ -123,7 +125,11 @@ enum Slot {
 
 /// The table of open files over one volume: `N` handles, `scratch` for the
 /// file system's sector work (the bigger, the longer its reads in one
-/// command), `room` for the one file being written.
+/// command), `room` for the files being written: each is kept whole
+/// there until it is closed, packed one after another, and one that grows
+/// pushes those after it along (a game keeps a log or a recording open
+/// while it writes a save; the first version took one written file at a
+/// time, and Half-Life's first map could save nothing: 2026-11-15).
 pub struct Files<'a, D: BlockDevice, const N: usize> {
     vol: AnyVolume<D>,
     slots: [Slot; N],
@@ -174,6 +180,42 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
             room,
             current: ROOT,
         }
+    }
+
+    /// Where the written files' bytes end in the room.
+    fn out_end(&self) -> usize {
+        self.slots
+            .iter()
+            .map(|s| match s {
+                Slot::Out { start, len, .. } => start + len,
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Makes the written file in slot `k` `new_len` bytes long (longer or
+    /// shorter): the files after it in the room move with its end.
+    fn resize_out(&mut self, k: usize, new_len: usize) -> Result<(), Error> {
+        let Some(Slot::Out { start, len, .. }) = self.slots.get(k) else {
+            return Err(Error::BadHandle);
+        };
+        let (tail, end) = (start + len, self.out_end());
+        let new_tail = start + new_len;
+        if new_tail > tail && end + (new_tail - tail) > self.room.len() {
+            return Err(Error::NoRoom);
+        }
+        self.room.copy_within(tail..end, new_tail);
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            if let Slot::Out { start, len, .. } = slot {
+                if i == k {
+                    *len = new_len;
+                } else if *start >= tail {
+                    *start = *start - tail + new_tail;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The folder `path` names: the current one for an empty path or `.`,
@@ -287,9 +329,6 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     /// handle left, or the card.
     pub fn create(&mut self, path: &[u8]) -> Result<Fd, Error> {
         let k = self.free_slot()?;
-        if self.slots.iter().any(|s| matches!(s, Slot::Out { .. })) {
-            return Err(Error::NoRoom);
-        }
         let (dir, last) = self.parent(path)?;
         let mut name = [0u16; NAME];
         let name_len = units(last, &mut name).ok_or(Error::BadPath)?;
@@ -300,6 +339,7 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
             dir,
             name,
             name_len,
+            start: self.out_end(),
             at: 0,
             len: 0,
         };
@@ -330,7 +370,7 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
             Ok(()) if node.folder => Err(Error::BadPath),
             Ok(()) => usize::try_from(node.size)
                 .ok()
-                .filter(|n| *n <= self.room.len())
+                .filter(|n| *n <= self.room.len() - self.out_end())
                 .ok_or(Error::NoRoom),
             Err(Error::NotFound) if make => Ok(0),
             Err(e) => Err(e),
@@ -342,12 +382,20 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
                 return Err(e);
             }
         };
+        // Its room first (it is the last in the room: nothing moves).
+        let start = self.out_end();
+        if let Err(e) = self.resize_out(usize::from(fd), size) {
+            self.slots[usize::from(fd)] = Slot::Free;
+            return Err(e);
+        }
         let mut got = 0;
         while got < size {
-            match self
-                .vol
-                .node_read(&node, got as u64, &mut self.room[got..size], self.scratch)
-            {
+            match self.vol.node_read(
+                &node,
+                got as u64,
+                &mut self.room[start + got..start + size],
+                self.scratch,
+            ) {
                 Ok(n) if n > 0 => got += n,
                 Ok(_) => break,
                 Err(e) => {
@@ -356,8 +404,9 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
                 }
             }
         }
-        if let Slot::Out { at, len, .. } = &mut self.slots[usize::from(fd)] {
-            *len = got;
+        // A file that read short is as long as what was read.
+        let _ = self.resize_out(usize::from(fd), got);
+        if let Slot::Out { at, .. } = &mut self.slots[usize::from(fd)] {
             *at = if at_end { got } else { 0 };
         }
         Ok(fd)
@@ -500,9 +549,9 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
             }
             // What was written so far reads back (a save checked before
             // it is closed).
-            Some(Slot::Out { at, len, .. }) => {
+            Some(Slot::Out { start, at, len, .. }) => {
                 let n = buf.len().min(*len - *at);
-                buf[..n].copy_from_slice(&self.room[*at..*at + n]);
+                buf[..n].copy_from_slice(&self.room[*start + *at..*start + *at + n]);
                 *at += n;
                 Ok(n)
             }
@@ -515,16 +564,19 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     /// # Errors
     /// Not the written file's handle, or its room is full (nothing taken).
     pub fn write(&mut self, fd: Fd, data: &[u8]) -> Result<usize, Error> {
-        let Some(Slot::Out { at, len, .. }) = self.slots.get_mut(usize::from(fd)) else {
+        let k = usize::from(fd);
+        let Some(Slot::Out { at, len, .. }) = self.slots.get(k) else {
             return Err(Error::BadHandle);
         };
-        let end = at.checked_add(data.len()).ok_or(Error::NoRoom)?;
-        if end > self.room.len() {
-            return Err(Error::NoRoom);
+        let (from, len) = (*at, *len);
+        let end = from.checked_add(data.len()).ok_or(Error::NoRoom)?;
+        if end > len {
+            self.resize_out(k, end)?;
         }
-        self.room[*at..end].copy_from_slice(data);
-        *at = end;
-        *len = (*len).max(end);
+        if let Some(Slot::Out { start, at, .. }) = self.slots.get_mut(k) {
+            self.room[*start + from..*start + end].copy_from_slice(data);
+            *at = end;
+        }
         Ok(data.len())
     }
 
@@ -601,10 +653,31 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
                 dir,
                 name,
                 name_len,
+                start,
                 len,
                 ..
             } => {
-                let name = &name[..name_len];
+                let put = self.put_out(dir, &name[..name_len], start, len);
+                // Its room goes back to the files after it, put or not.
+                let end = self.out_end().max(start + len);
+                self.room.copy_within(start + len..end, start);
+                for slot in &mut self.slots {
+                    if let Slot::Out { start: other, .. } = slot
+                        && *other >= start + len
+                    {
+                        *other -= len;
+                    }
+                }
+                put
+            }
+        }
+    }
+
+    /// Puts a written file's bytes (`len` of the room from `start`) onto
+    /// the card under `name` in `dir`, whole or not at all.
+    fn put_out(&mut self, dir: u64, name: &[u16], start: usize, len: usize) -> Result<(), Error> {
+        {
+            {
                 let mut r = self.vol.node_reserve(dir, len as u64, self.scratch)?;
                 // In whole sectors (the node layer's rule), the last one
                 // short.
@@ -612,7 +685,7 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
                 let mut at = 0;
                 while at < len {
                     let n = step.min(len - at);
-                    let piece = &self.room[at..at + n];
+                    let piece = &self.room[start + at..start + at + n];
                     if let Err(e) = self.vol.node_write(&mut r, at as u64, piece, self.scratch) {
                         let _ = self.vol.node_abandon(&r);
                         return Err(e.into());
@@ -752,11 +825,6 @@ pub(crate) mod tests {
             // A map written, of a size that ends mid-sector.
             let map = pattern(200_123, 3);
             let w = f.create(b"valve/maps/c1a0.bsp").unwrap();
-            assert_eq!(
-                f.create(b"valve/other.bin"),
-                Err(Error::NoRoom),
-                "one at a time"
-            );
             for piece in map.chunks(7_000) {
                 assert_eq!(f.write(w, piece), Ok(piece.len()));
             }
@@ -845,6 +913,91 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn several_files_are_written_at_once_and_each_reaches_the_card_whole() {
+        each(|vol, kind| {
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0xEEu8; 10_000][..];
+            let mut f: Files<'_, Disk, 6> = Files::new(vol, scratch, room);
+            let whole = |f: &mut Files<'_, Disk, 6>, path: &[u8]| {
+                let r = f.open(path).unwrap();
+                let mut got = vec![0u8; f.size(r).unwrap() as usize];
+                let mut n = 0;
+                while n < got.len() {
+                    n += f.read(r, &mut got[n..]).unwrap();
+                }
+                f.close(r).unwrap();
+                got
+            };
+            let (a_bytes, b_bytes, c_bytes) =
+                (pattern(3_000, 1), pattern(2_500, 2), pattern(700, 3));
+            // A recording, a save and a log, opened one after another and
+            // written in turns, the first growing after the others exist.
+            let a = f.create(b"demo.dem").unwrap();
+            f.write(a, &a_bytes[..100]).unwrap();
+            let b = f.create(b"save.sav").unwrap();
+            let c = f.create(b"log.txt").unwrap();
+            for step in 0..10 {
+                let part = |bytes: &[u8], from: usize| {
+                    let n = (bytes.len() - from) / (10 - step);
+                    (from, from + n)
+                };
+                let (x, y) = part(&b_bytes, f.size(b).unwrap() as usize);
+                assert_eq!(f.write(b, &b_bytes[x..y]), Ok(y - x), "{kind} step {step}");
+                let (x, y) = part(&a_bytes, f.size(a).unwrap() as usize);
+                assert_eq!(f.write(a, &a_bytes[x..y]), Ok(y - x));
+                let (x, y) = part(&c_bytes, f.size(c).unwrap() as usize);
+                assert_eq!(f.write(c, &c_bytes[x..y]), Ok(y - x));
+            }
+            assert_eq!(
+                (f.size(a), f.size(b), f.size(c)),
+                (Ok(3_000), Ok(2_500), Ok(700))
+            );
+            // Each reads back as written before it is closed.
+            f.seek(b, 0, Whence::Start).unwrap();
+            let mut back = vec![0u8; 2_500];
+            assert_eq!(f.read(b, &mut back), Ok(2_500));
+            assert_eq!(back, b_bytes, "{kind}");
+            // The room is what they share: 6,200 of 10,000 are taken, so
+            // 3,800 more fit in any of them and 3,801 in none (nothing
+            // taken, nothing moved).
+            let fill = vec![7u8; 3_801];
+            assert_eq!(f.write(c, &fill), Err(Error::NoRoom));
+            assert_eq!(f.write(a, &fill), Err(Error::NoRoom));
+            assert_eq!(f.size(c), Ok(700));
+            // The middle one closed: on the card whole, and its room is
+            // the others' again.
+            f.close(b).unwrap();
+            assert_eq!(whole(&mut f, b"save.sav"), b_bytes, "{kind}");
+            assert_eq!(f.write(c, &fill[..3_800]), Ok(3_800));
+            let mut c_all = c_bytes.clone();
+            c_all.extend(&fill[..3_800]);
+            // One taken in to be added to while the others are open, and
+            // the first rewritten at its start (it does not grow).
+            f.seek(a, 0, Whence::Start).unwrap();
+            f.write(a, b"HEAD").unwrap();
+            let mut a_all = a_bytes.clone();
+            a_all[..4].copy_from_slice(b"HEAD");
+            let d = f.reopen(b"save.sav", true, false).unwrap();
+            assert_eq!(f.write(d, b"more"), Err(Error::NoRoom), "the room is full");
+            f.close(a).unwrap();
+            assert_eq!(f.write(d, b"more"), Ok(4));
+            f.close(d).unwrap();
+            f.close(c).unwrap();
+            assert_eq!(whole(&mut f, b"demo.dem"), a_all, "{kind}");
+            assert_eq!(whole(&mut f, b"log.txt"), c_all, "{kind}");
+            let mut b_all = b_bytes.clone();
+            b_all.extend(b"more");
+            assert_eq!(whole(&mut f, b"save.sav"), b_all, "{kind}");
+            // Nothing is left in the room: a file of its whole size fits.
+            let big = pattern(10_000, 9);
+            let w = f.create(b"big.bin").unwrap();
+            assert_eq!(f.write(w, &big), Ok(10_000));
+            f.close(w).unwrap();
+            assert_eq!(whole(&mut f, b"big.bin"), big, "{kind}");
+        });
+    }
+
+    #[test]
     fn a_log_is_appended_to_and_a_file_changed_in_place() {
         each(|vol, kind| {
             let scratch = &mut vec![0u8; 4096][..];
@@ -863,8 +1016,6 @@ pub(crate) mod tests {
             let w = f.reopen(b"LOG.TXT", true, false).unwrap();
             assert_eq!(f.size(w), Ok(6));
             f.write(w, b"second\n").unwrap();
-            // One written file at a time, whichever way it was opened.
-            assert_eq!(f.reopen(b"other.txt", true, true), Err(Error::NoRoom));
             f.close(w).unwrap();
             // Changed in place from its start ("r+"): the rest stays.
             let w = f.reopen(b"log.txt", false, false).unwrap();
