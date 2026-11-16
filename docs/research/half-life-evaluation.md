@@ -619,6 +619,28 @@ Found on the way: **an empty file failed to close** with "no room"
 as an entry alone, the old one of its name gone first, and a test holds
 it.
 
+## Run 3 on the X51v (2026-11-16): the engine up at 4 s, the map at 29 s
+
+The kit with folder listings from the kept names and the last sectors
+kept (7c7652b0), run with the owner's "ready" (`port-runner-0003`; log in
+`local/half-life/device-run-3-port-runner-0003.txt`, not in the
+repository). It ended by itself, returned 0, the card log on the CF card.
+
+| | Run 2 | Run 3 | The card busy (run 3) |
+|---|---|---|---|
+| The engine up (step 3) | 67 s, 43,535 read commands | **4 s**, 453 commands | 1.6 s |
+| The map playing (step 4) | 112 s, 66,109 commands | **29 s**, 1,670 commands | 5.0 s |
+| The frame rate in play | 3.1 a second | 3.1 a second (313 ms a frame) | |
+| The longest stretch without a sign of life | 13,255 ms | 16,100 ms (of 30,000) | |
+
+Estimated before the run: about 5 s and about 20 s. The engine was up
+sooner; the map later, because what is left is the CPU's: the map's data
+was in by 11.6 s (the heap at 32 MiB), then 16.5 s of computing while the
+engine drew its first frames at 0.2 to 0.5 a second, with no clock read
+or card transfer for up to 16.1 s, more than half the run limit. What it
+computes there is R285, found with the same tool as the frame's split
+(R282). The card is now 5 s of the 29.
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
