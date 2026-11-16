@@ -346,7 +346,7 @@ ways), then a run on the X51v:**
 | Step | What | Measured by |
 |---|---|---|
 | 4a | Skins in the atlas at load; each stored command as one TA strip or fan from the existing per-vertex numbers (the picture first) | **done:** run 12, 92 ms (10.8 a second); the models in the X51v's picture; the TA's fan proven |
-| 4b | Each vertex projected once, each normal lit once (tables a model a frame) | frame ms, the models' share of the samples |
+| 4b | Each vertex projected once, each normal lit once (tables a model a frame) | **done with 4d's projection:** run 13, 66.5 ms (15.0 a second) |
 | 4c | Sprites, beams, particles, the sky, water and conveyors; 2D (the HUD, the console) as rectangles | the whole frame against the software renderer's picture |
 | 4d | Fixed point for the bones and the projection (one 3 x 4 integer transform a vertex), the emitter's world corners transformed once and their texture coordinates made at map load | frame ms against the 45 a second budget |
 
@@ -379,6 +379,30 @@ the CPU never waiting for it. Samples of the play (58,173): the
 software-float helpers 59%, `RP_EmitFace` 4.4%, `RP_StudioCmd` 3.2%,
 `TransformVector` 1.7%; the models' lighting and projection are still
 done again for every use of a vertex, 4b's to remove.
+
+**4b with 4d's projection built and run (2026-11-16).** Rule 0 in
+`r_emit.c` ("Steps 4b and 4d"): the view's rotation as 2.30 integers once
+a frame, vertices as 16.16 (the world's at map load, a model's from its
+float by bit operations), moved into view space with 64-bit multiply-adds
+and projected with one reciprocal (a 128-entry table and two Newton steps,
+no divide), the TA's floats by `clz` and 1/z's float straight from the
+reciprocal's bits; each world vertex and each model vertex worked once a
+frame into a table the faces and commands index; the world's texture
+coordinates made at map load (24.8 by surfedge); each model normal's
+colour once a part when no local light is on. A corner nearer than a unit
+takes the float path (`rp_fixed 0` takes it everywhere). Checked on the PC
+against the float path over 100,000 random points: at most 0.07 pixel off
+on the screen, 1/z within 8 parts in 100,000, the reciprocal within one
+part in a billion. **Run 13 on the X51v (port-runner-0013, c1a0, 120 s):
+66.5 ms a frame, 15.0 a second** (run 12: 92 ms, 10.8); the end frame's
+picture as run 12's (`local/half-life/run13-frame-gpu.png`); 372 world
+faces a frame by the tables, 95 by floats (brush entities and near
+corners); model vertices 1,199 worked and 2,115 used again a frame. The
+software-float helpers fell from 59% of the play to 46%; what is left of
+them is mostly the models' bones and lighting (`R_StudioDrawPoints`,
+`R_StudioLighting`, `R_LightLambert`) and the client's skeleton
+(`ConcatTransforms`, quaternions): 4d's next part. Render 26.2 ms, the CPU
+feeding 10.0 ms, sound 5.3%.
 
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
