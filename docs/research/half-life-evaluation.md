@@ -703,6 +703,24 @@ hot come before the 2700G renderer. Which functions call the float
 routines most is the next count: those routines reuse the return-address
 register, so a sample does not name their caller (R282).
 
+## Run 5 on the X51v (2026-11-16): the map playing at 12 s
+
+The kit with the dropped-frames loop bounded (61a4a054; `port-runner-0005`;
+log in `local/half-life/device-run-5-port-runner-0005.txt`).
+
+| On the X51v | Run 2 | Run 3 | Run 5 |
+|---|---|---|---|
+| The engine up | 67 s | 4 s | 4 s |
+| The map playing | 112 s | 29 s | **12 s** |
+| The map's start (step 3 to 4) | 45 s | 25 s | **8 s** (5.2 s of it sampled: code that runs with interrupts masked, the card driver's waits, takes no samples) |
+| The longest stretch without a sign of life | 13,255 ms | 16,100 ms | **287 ms** |
+| The frame rate in play | 3.1 a second | 3.1 | 3.1 |
+
+What is left of the start (R286): the engine's own start clears tables
+(`memset` 32% of its 2.3 s), and the map's start uploads textures (17%),
+reads files (9%) and allocates (9%). The frame's 313 ms is R282: six
+tenths software-float routines.
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
