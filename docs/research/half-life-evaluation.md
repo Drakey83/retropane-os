@@ -556,6 +556,69 @@ about 1,230 s on roughly 320,000 read commands, about 4 ms each. The
 costs the same. What the 30,000 are (file data read about two sectors a
 command) is for after run 2 measures them (R281).
 
+## Run 2 on the X51v (2026-11-16): 3.1 frames a second, the start 67 s
+
+The kit with the folders' names kept, run with the owner's "ready"
+(`port-runner-0002`; log in `local/half-life/device-run-2-port-runner-0002.txt`,
+not in the repository). It ended by itself: returned 0, the board as
+found, the card log on the CF card (80 sector writes, none refused).
+
+| | Run 1 | Run 2 |
+|---|---|---|
+| The engine up (step 3) | not reached in 1,200 s | 67 s, after 43,535 read commands for 55,520 sectors |
+| The map playing (step 4) | | 112 s, after 66,109 commands for 100,612 sectors |
+| The frame rate in play | | 3.1 a second (313 to 315 ms a frame; 2.5 at its start) |
+| The longest stretch without a sign of life | 154 ms | 13,255 ms (the loader's limit 30,000) |
+
+**What the frame rate is:** the X51v's CPU running the engine's own
+software renderer on the low-memory experiment build, with the picture
+computed and not shown. A floor, not the port's: the port draws through
+the 2700G (R282 says how the 313 ms is to be split before anything is
+tuned). The 13.3 s stretch came while the map loaded (its first frame
+took 16 s); it is under half the limit, as the kit's check asks of the
+emulator, and is watched in the next run.
+
+**What the start was** (the owner: "two minutes load is way too long"):
+2 s to 64.5 s with the heap standing still, 43,535 read commands,
+about 1.4 ms each. Counted in the emulator by the runner, which now
+says what each file read, each folder entry listed and each look-up
+cost (`-rpreads` writes a line for each):
+
+| Card read commands, emulator | To the engine up | To the map playing |
+|---|---|---|
+| As run 2 had it | 19,691 | 31,310 |
+| Of them folder listings | 18,428 (10,299 entries) | 25,573 |
+| Of them file reads | 326 (855 KiB) | 1,132 (12 MiB) |
+| A remembered folder listed from its names | 1,280 | 5,792 |
+| And the sectors read last kept | **515** | **1,790** |
+
+The engine lists the same folders again and again (10,299 entries before
+it is up, the game has 4,262 files), and the card's code read each
+entry's sector again for every entry. Two answers (rule 0):
+
+- **A folder whose names are kept is listed from them** (`Files::next`
+  over `rp_port::names`), in the names' order; a folder that changes
+  while it is listed goes on after the last name given, never a name
+  twice or one left out, and when the room cannot hold it again a walk of
+  the card finds the next name in the same order (tested both ways).
+- **The single sectors read last are kept under the file system**
+  (`rp_port::recent`, 16 of them, 8 KiB): an operating system keeps a
+  buffer cache of megabytes in front of the card; ours keeps only the
+  sectors that repeat (folder and entry sectors; a file's data comes in
+  longer reads, which pass through), and drops any a write touches, so it
+  can never answer with what the card no longer holds.
+
+What is left is mostly the game's file data. The emulator's card is not
+the X51v's (4 KiB clusters against 32 KiB: R283), so the file reads'
+count is the emulator's. The runner now says the card's own time beside
+its commands (`in N ms`): run 3 splits the start into the card's time
+and the engine's, which no count in the emulator can.
+
+Found on the way: **an empty file failed to close** with "no room"
+(the card's reservation refuses a size of 0); an empty file is now made
+as an entry alone, the old one of its name gone first, and a test holds
+it.
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
