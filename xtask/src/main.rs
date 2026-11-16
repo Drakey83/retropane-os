@@ -37,6 +37,7 @@ mod usb;
 mod usbbench;
 mod userimg;
 mod xash;
+mod xashkit;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -460,6 +461,8 @@ fn main() -> ExitCode {
         | "emu-chello"
         | "xash-eval"
         | "xash-modules"
+        | "xash-kit"
+        | "emu-xash-kit"
         | "emu-xash"
         | "emu-picture"
         | "emu-blend"
@@ -938,6 +941,8 @@ fn run_step(step: &str) -> Result {
         "xash-eval" => xash::eval(&workspace_root()),
         "xash-modules" => xash_modules().map(|_| ()),
         "emu-xash" => emu_xash(),
+        "xash-kit" => xash_kit().map(|_| ()),
+        "emu-xash-kit" => emu_xash_kit(args().nth(2).as_deref() == Some("--cf")),
         "emu-chello" => c_hello().and_then(|()| emu::boot_chello(&workspace_root())),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
@@ -1664,6 +1669,65 @@ fn emu_xash() -> Result {
     let file = root.join("target").join("xash-modules").join("report.txt");
     std::fs::write(&file, report).map_err(|e| format!("{}: {e}", file.display()))?;
     eprintln!("    emu-xash OK; written to {}", file.display());
+    Ok(())
+}
+
+/// The folder that holds the owner's `valve` (`RETROPANE_HL_FILES`):
+/// the kit's background is made from it, and the emulator's card.
+fn hl_files() -> Result<PathBuf> {
+    std::env::var_os(emu::XASH_GAME_ENV)
+        .filter(|g| !g.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            format!(
+                "set {} to the folder that holds the game's `valve` (read only; nothing of it goes into the repository)",
+                emu::XASH_GAME_ENV
+            )
+        })
+}
+
+/// `cargo xtask xash-kit`: the Half-Life port's test run for the X51v
+/// laid out in target/xash-kit (xtask/src/xashkit.rs): the modules and
+/// the runner built as the low-memory experiment, whatever the
+/// environment says, the runner's image and the card's `rp-xash` folder.
+fn xash_kit() -> Result<xashkit::Kit> {
+    let root = workspace_root();
+    let game = hl_files()?;
+    let set = xash::modules_as(&root, &arithmetic()?, &build_runner, xashkit::LOW_MEMORY)?;
+    for line in &set.lines {
+        eprintln!("    {line}");
+    }
+    xashkit::lay_out(
+        &root,
+        &arm_release(&root).join("rp-port-runner"),
+        &set.files,
+        &game,
+    )
+}
+
+/// `cargo xtask emu-xash-kit [--cf]`: the kit built, then its own bytes
+/// run under the loader in the emulator from start to their own end.
+fn emu_xash_kit(cf: bool) -> Result {
+    let root = workspace_root();
+    let game = hl_files()?;
+    // The loader (and every other image) first: the kit's build of the
+    // runner is the last thing to touch the runner's image.
+    cross()?;
+    let kit = xash_kit()?;
+    let found = emu::boot_xash_kit(&root, &kit, &game, cf)?;
+    let mut report = String::new();
+    for line in &found {
+        eprintln!("    {line}");
+        report.push_str(line);
+        report.push('\n');
+    }
+    let file = kit.dir.join(if cf {
+        "emu-report-cf.txt"
+    } else {
+        "emu-report.txt"
+    });
+    std::fs::write(&file, report).map_err(|e| format!("{}: {e}", file.display()))?;
+    eprintln!("    emu-xash-kit OK; written to {}", file.display());
     Ok(())
 }
 

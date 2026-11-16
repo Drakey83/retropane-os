@@ -1327,6 +1327,334 @@ pub fn boot_xash_game(
     ran
 }
 
+/// Every file under `dir` on the card `vol`, folders gone into: each
+/// one's path from the card's root (lower case) and size.
+fn card_tree(
+    vol: &mut rp_fat::AnyVolume<card::Disk>,
+    dir: &str,
+    out: &mut Vec<(String, u64)>,
+) -> Result<(), String> {
+    let mut here = Vec::new();
+    vol.list(dir, &mut |n, folder, size| {
+        here.push((String::from_utf8_lossy(n).into_owned(), folder, size));
+    })
+    .map_err(|e| format!("{dir} on the card: {}", e.name()))?;
+    for (name, folder, size) in here {
+        if name == "." || name == ".." {
+            continue;
+        }
+        let path = if dir.is_empty() {
+            name
+        } else {
+            format!("{dir}/{name}")
+        };
+        if folder {
+            card_tree(vol, &path, out)?;
+        } else {
+            out.push((path.to_lowercase(), size));
+        }
+    }
+    Ok(())
+}
+
+/// After a run of the kit: the card `sd` holds the owner's game
+/// (`game`'s `valve`, under `Ports/valve`) exactly as the PC put it,
+/// every file byte for byte and no file more or fewer, and nothing at
+/// the card's root but `Ports`, the run's own folder, the loader's
+/// `rplog` and its kit file. What was compared, in a line.
+fn xash_card_untouched(sd: &Path, game: &Path) -> Result<String, String> {
+    let data = std::fs::read(sd).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let mut vol = rp_fat::AnyVolume::mount(card::Disk(data), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let mut root_names = Vec::new();
+    vol.list("", &mut |n, _, _| {
+        root_names.push(String::from_utf8_lossy(n).to_lowercase());
+    })
+    .map_err(|e| format!("the card's root: {}", e.name()))?;
+    let ours = ["ports", XASH_FOLDER, "rplog", "retropane.bin"];
+    if let Some(new) = root_names.iter().find(|n| !ours.contains(&n.as_str())) {
+        return Err(format!("the run made `{new}` at the card's root"));
+    }
+    let mut on_card = Vec::new();
+    card_tree(&mut vol, "Ports", &mut on_card)?;
+    on_card.sort();
+    let mut files = Vec::new();
+    files_under(&game.join("valve"), "Ports/valve/", &mut files);
+    let mut want: Vec<String> = files.iter().map(|f| f.0.to_lowercase()).collect();
+    want.sort();
+    let names: Vec<&String> = on_card.iter().map(|f| &f.0).collect();
+    if names != want.iter().collect::<Vec<_>>() {
+        let new = names.iter().find(|n| !want.contains(n));
+        let gone = want.iter().find(|n| !names.contains(n));
+        return Err(format!(
+            "the game's folder on the card has other files than the PC put there (new: {new:?}, gone: {gone:?})"
+        ));
+    }
+    let (mut work, mut room) = (vec![0u8; 64 * 1024], vec![0u8; 16]);
+    let mut card: rp_port::files::Files<'_, card::Disk, 2> =
+        rp_port::files::Files::new(vol, &mut work, &mut room);
+    let mut bytes = 0u64;
+    for (rel, path) in &files {
+        let want = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let fd = card
+            .open(rel.as_bytes())
+            .map_err(|_| format!("{rel} could not be opened on the card"))?;
+        let mut got = vec![0u8; want.len() + 1];
+        let mut n = 0;
+        while n < got.len() {
+            match card.read(fd, &mut got[n..]) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => n += k,
+            }
+        }
+        let _ = card.close(fd);
+        if got[..n] != want[..] {
+            return Err(format!("the run changed {rel} on the card"));
+        }
+        bytes += want.len() as u64;
+    }
+    Ok(format!(
+        "the owner's game on the card is as the PC put it: all {} files ({} MiB) the same byte for byte, none new, none gone; nothing new at the card's root",
+        files.len(),
+        bytes >> 20
+    ))
+}
+
+/// What the kit's run must say, in this order (the loader's copy of the
+/// run log): the runner's banner, its five steps, the program's clean
+/// return.
+const XASH_KIT_LINES: [&str; 8] = [
+    XASH_BANNER,
+    "runner: step 1 of 5",
+    "runner: step 2 of 5",
+    "runner: step 3 of 5",
+    "runner: step 4 of 5",
+    "runner: step 5 of 5",
+    "sound: the codec is down (true), the board as found",
+    "runner: the program returned 0",
+];
+
+/// The frame rates a run's log holds after its step 4 began (`rp-note:
+/// frame rate:|12.3 a second|...`), in tenths of a frame a second.
+fn xash_frame_rates(log: &str) -> Vec<u32> {
+    let played = log
+        .split_once("runner: step 4 of 5")
+        .map_or("", |(_, after)| after);
+    played
+        .lines()
+        .filter_map(|l| l.split_once("rp-note: frame rate:|"))
+        .filter_map(|(_, rest)| {
+            let (whole, tenth) = rest.split_once(" a second")?.0.split_once('.')?;
+            Some(whole.parse::<u32>().ok()? * 10 + tenth.parse::<u32>().ok()?)
+        })
+        .collect()
+}
+
+/// Checks the run log of the kit's run (as the loader sent it): what was
+/// found, in lines.
+fn check_xash_kit(log: &str) -> Result<Vec<String>, String> {
+    if crashed(log) {
+        return Err("emu-xash-kit: the run crashed".into());
+    }
+    for bad in [
+        "[run log full",
+        "[the image did not return",
+        "out of memory",
+        "Xash Error",
+    ] {
+        if log.contains(bad) {
+            return Err(format!("emu-xash-kit: `{bad}` in the run log"));
+        }
+    }
+    let mut from = 0;
+    for want in XASH_KIT_LINES {
+        match log[from..].find(want) {
+            Some(at) => from += at + want.len(),
+            None => {
+                return Err(format!(
+                    "emu-xash-kit: `{want}` is missing from the run log, or out of order"
+                ));
+            }
+        }
+    }
+    let rates = xash_frame_rates(log);
+    // Five seconds a line: the play's time gives its count, less the one
+    // a line's own start can cost.
+    let least = (crate::xashkit::PLAY_SECS / 5).saturating_sub(2) as usize;
+    if rates.len() < least {
+        return Err(format!(
+            "emu-xash-kit: {} frame-rate lines after the map began to play, at least {least} expected in {} s",
+            rates.len(),
+            crate::xashkit::PLAY_SECS
+        ));
+    }
+    if !log.contains("the last, written to /rp-xash/frame.565") {
+        return Err("emu-xash-kit: the last frame was not written".into());
+    }
+    let at = |step: u32| {
+        log.split_once(&format!("runner: step {step} of 5 at "))
+            .and_then(|(_, r)| r.split(' ').next()?.parse::<u32>().ok())
+            .unwrap_or(0)
+    };
+    Ok(vec![
+        format!(
+            "the run's five steps in order, its own end and a clean return; the run log is {} bytes of its 65536",
+            log.len()
+        ),
+        format!(
+            "on the emulated clock: the engine up at {} s, the map playing at {} s, the end at {} s",
+            at(3),
+            at(4),
+            at(5)
+        ),
+        format!(
+            "{} frame-rate lines while the map played (the emulator's frame rate is the PC's and says nothing of the X51v)",
+            rates.len()
+        ),
+    ])
+}
+
+/// `cargo xtask emu-xash-kit`: the kit's own bytes run as the X51v runs
+/// them. The owner's game and the kit's `rp-xash` folder on an emulated
+/// SD card, the loader booted, the kit's image sent to it as `cargo
+/// xtask load` sends it, and the run left to its own end; then the run
+/// log the loader sent back is checked (the steps, the frame-rate lines,
+/// the clean return, no overflow), the last frame the engine wrote is
+/// turned into a picture, and the card is compared with what the PC put
+/// on it. With `cf`, a CompactFlash card is in as well (where the card
+/// log goes while the runner holds the SD controller). What was found.
+///
+/// # Errors
+/// The card could not be made, the run did not come back, or a check
+/// failed (the run log is in the error).
+pub fn boot_xash_kit(
+    root: &Path,
+    kit: &crate::xashkit::Kit,
+    game: &Path,
+    cf: bool,
+) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    files_under(&game.join("valve"), "Ports/valve/", &mut files);
+    if files.is_empty() {
+        return Err(format!(
+            "{}: no `valve` folder with files in it",
+            game.display()
+        ));
+    }
+    let bytes: u64 = files
+        .iter()
+        .map(|f| std::fs::metadata(&f.1).map_or(0, |m| m.len()))
+        .sum();
+    let card_bytes = (bytes + files.len() as u64 * 4096 + (64 << 20)).next_power_of_two();
+    eprintln!(
+        "    a {} MiB card with {} game files ({} MiB) and the kit's {} ...",
+        card_bytes >> 20,
+        files.len(),
+        bytes >> 20,
+        kit.card.len()
+    );
+    let card = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: (card_bytes / 512) as u32,
+        sectors_per_cluster: 8,
+        files: &[],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let mut vol = rp_fat::AnyVolume::mount(card::Disk(card), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let mut work = vec![0u8; 64 * 1024];
+    // The loader's kit file, as every card it runs from has one.
+    vol.put("retropane.bin", b"kit stand-in", &mut work)
+        .map_err(|e| format!("retropane.bin onto the card: {}", e.name()))?;
+    for (rel, path) in &files {
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        vol.put(rel, &data, &mut work)
+            .map_err(|e| format!("{rel} onto the card: {}", e.name()))?;
+    }
+    for (name, bytes) in &kit.card {
+        vol.put(name, bytes, &mut work)
+            .map_err(|e| format!("{name} onto the card: {}", e.name()))?;
+    }
+    let sd = scratch(root, "sd-xash-kit.img")?;
+    std::fs::write(&sd, &vol.device().0).map_err(|e| format!("{}: {e}", sd.display()))?;
+    drop(vol);
+
+    let dir = emu_dir(root)?;
+    let loader = dir.join("rp-loader.bin");
+    crate::sdkit::raw_binary(&crate::arm_release(root).join("rp-loader"), &loader)?;
+    let payload = std::fs::read(&kit.image).map_err(|e| format!("{}: {e}", kit.image.display()))?;
+    // As `cargo xtask load` sends it: the run's name for its card log,
+    // then the image.
+    let mut input = rp_loadproto::control_frame("name port-runner");
+    input.extend(rp_loadproto::frame(&payload));
+    let cf_image = scratch(root, "cf-xash-kit.img")?;
+    let cf_drive = drive_arg(root, "ide", &cf_image)?;
+    let mut extra: Vec<&str> = Vec::new();
+    if cf {
+        let data = rp_fat::format::build(&rp_fat::format::Image {
+            total_sectors: 64 * 1024,
+            sectors_per_cluster: 8,
+            files: &[],
+            blocked_clusters: &[],
+            ballast: 0,
+        });
+        std::fs::write(&cf_image, data).map_err(|e| format!("{}: {e}", cf_image.display()))?;
+        extra.extend(["-drive", &cf_drive]);
+    }
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &extra,
+            input: Some((&input, "RPL END")),
+            during: None,
+            then: None,
+            timeout: Duration::from_secs(u64::from(crate::xashkit::LIMIT_SECS) + 300),
+        },
+    )?;
+    let (_, log) = output
+        .rsplit_once("RPL LOG")
+        .ok_or("emu-xash-kit: the loader sent no run log")?;
+    let log = log.split("RPL END").next().unwrap_or(log);
+    let kept = root.join("target").join("xash-kit").join(if cf {
+        "emu-run-log-cf.txt"
+    } else {
+        "emu-run-log.txt"
+    });
+    std::fs::write(&kept, log).map_err(|e| format!("{}: {e}", kept.display()))?;
+    eprint!("{log}");
+    let mut found = check_xash_kit(log).map_err(|e| format!("{e}:{log}"))?;
+    found.push(format!("the run log: {}", kept.display()));
+    // Where the card log went while the runner held the SD controller.
+    found.push(
+        if log.contains("continuing on the CF card") {
+            "the card log moved to the CF card when the runner took the SD controller: every line of the run is on a card as it ends"
+        } else if log.contains("[card log paused") {
+            "the card log paused when the runner took the SD controller (no CF card): the loader added the rest when the run came back; a reset mid-run would have lost it"
+        } else {
+            "the card log said nothing of moving or pausing"
+        }
+        .to_string(),
+    );
+    let png = root
+        .join("target")
+        .join("xash-kit")
+        .join("emu-last-frame.png");
+    match xash_frame(&sd, &png)? {
+        true => found.push(format!(
+            "the engine's last frame, from the card: {}",
+            png.display()
+        )),
+        false => return Err("emu-xash-kit: no frame on the card".into()),
+    }
+    found.push(xash_card_untouched(&sd, game)?);
+    Ok(found)
+}
+
 /// Boots the module runner with the Half-Life port's modules on its card
 /// (`cargo xtask emu-xash`) and checks what it said over serial. There
 /// are no game files on the card: the engine is expected to start, say
@@ -3844,6 +4172,49 @@ mod tests",
             "{XASH_BANNER}\ncard: mounted\nmodule server.rpm: 983 KiB at 0xA9000000 and 99 KiB zeroed, read and checked in 285 ms\ncheck: server.rpm: 499 names, each found by name and named by address: ok\nmodule engine.rpm: 1943 KiB at 0xA91D1000 and 20868 KiB zeroed, read and checked in 572 ms\n[00:00:00] Console initialized.\n[00:00:00] FS_LoadProgs: filesystem_stdio successfully loaded\nXash Error: Changing directory to /Ports failed: No such file or directory\nrunner: the program returned 1\nstack: deepest 68632 of 2097152 bytes\n"
         );
         assert_eq!(xash_args(""), "-dev 2 -rpmemlist -rpshot");
+        // The kit's run log: the steps in order, the frame rates after
+        // step 4 only, the clean end.
+        let notes: String = (0..24)
+            .map(|i| {
+                format!(
+                    "rp-note: frame rate:|{}.{} a second|8.1 ms a frame|(61 frames in 5000 ms)\n",
+                    12 + i,
+                    i % 10
+                )
+            })
+            .collect();
+        let kit = format!(
+            "{XASH_BANNER}\nrunner: step 1 of 5 at 0 s on the screen's clock\nrunner: step 2 of 5 at 1 s on the screen's clock\nrp-note: frame rate:|99.9 a second|x\nrunner: step 3 of 5 at 70 s on the screen's clock\nrunner: step 4 of 5 at 150 s on the screen's clock\n{notes}runner: step 5 of 5 at 270 s on the screen's clock\nframe 3000, the last, written to /rp-xash/frame.565\nsound: the codec is down (true), the board as found\nrunner: the program returned 0\n"
+        );
+        let rates = xash_frame_rates(&kit);
+        assert_eq!(rates.len(), 24, "the one before step 4 is not the map's");
+        assert_eq!((rates[0], rates[23]), (120, 353));
+        let lines = check_xash_kit(&kit).expect("a good run of the kit");
+        assert!(lines[1].contains("up at 70 s") && lines[1].contains("playing at 150 s"));
+        for (bad, why) in [
+            (
+                kit.replace("runner: step 4 of 5", "runner: step 4 of 6"),
+                "a step missing",
+            ),
+            (kit.replace("returned 0", "returned 1"), "an error's return"),
+            (
+                kit.replace("the last, written", "not written"),
+                "no last frame",
+            ),
+            (kit.replace(&notes, ""), "no frame rate"),
+            (
+                format!("{kit}[run log full: later output dropped]"),
+                "an overflow",
+            ),
+            (format!("{kit}_Mem_Alloc: out of memory"), "out of memory"),
+            (format!("{kit}SETUP-FAIL x"), "a crash"),
+            (
+                kit.replace("codec is down (true)", "codec is down (false)"),
+                "the sound left up",
+            ),
+        ] {
+            assert!(check_xash_kit(&bad).is_err(), "{why}");
+        }
         assert_eq!(
             xash_args(" +map c1a0 -rpfps\n"),
             "-dev 2 -rpmemlist -rpshot +map c1a0 -rpfps"
