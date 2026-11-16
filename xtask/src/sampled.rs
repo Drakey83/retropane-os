@@ -136,6 +136,12 @@ fn helper(function: &str) -> bool {
     // The module's name off, and a path's (`compiler_builtins::float::add::__addsf3`).
     let f = function.rsplit(": ").next().unwrap_or(function);
     let f = f.rsplit("::").next().unwrap_or(f);
+    // Ours (`rp_fadd_asm`, `rp_fmul_rs`; `rp_hal_mem::float::mul_special`).
+    if function.contains("rp_hal_mem::float::")
+        || (f.starts_with("rp_f") && (f.ends_with("_asm") || f.ends_with("_rs")))
+    {
+        return true;
+    }
     f.starts_with("__aeabi_")
         || f.starts_with("__") && ["sf", "df", "si", "di"].iter().any(|t| f.contains(t))
         || ["memcpy", "memset", "memmove", "memcmp", "strlen", "strcmp"].contains(&f)
@@ -379,6 +385,9 @@ mod tests {
             "engine: __aeabi_fmul",
             "client: __addsf3",
             "engine: compiler_builtins::float::mul::__mulsf3",
+            "engine: rp_fadd_asm",
+            "engine: rp_fmul_rs",
+            "engine: rp_hal_mem::float::mul_special",
             "engine: __divdi3",
             "runner: memcpy",
             "engine: memset",

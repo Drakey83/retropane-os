@@ -471,6 +471,14 @@ mod image {
         (f32::from_bits(a) * f32::from_bits(b)).to_bits()
     }
     #[inline(never)]
+    fn generic_div(a: u32, b: u32) -> u32 {
+        (f32::from_bits(a) / f32::from_bits(b)).to_bits()
+    }
+    #[inline(never)]
+    fn rust_div(a: u32, b: u32) -> u32 {
+        rp_hal_mem::float::div(a, b)
+    }
+    #[inline(never)]
     fn nothing(a: u32, b: u32) -> u32 {
         a ^ b
     }
@@ -536,10 +544,11 @@ mod image {
             *p = (one(), one());
         }
         type Op = fn(u32, u32) -> u32;
-        let ops: [(&str, Op, Op, Op); 3] = [
+        let ops: [(&str, Op, Op, Op); 4] = [
             ("add", generic_add, rust_add, rp_hal_mem::asm::add),
             ("sub", generic_sub, rust_sub, rp_hal_mem::asm::sub),
             ("mul", generic_mul, rust_mul, rp_hal_mem::asm::mul),
+            ("div", generic_div, rust_div, rp_hal_mem::asm::div),
         ];
         for (name, generic, rust, asm) in ops {
             let g = cycles_per_call(&pairs, generic);

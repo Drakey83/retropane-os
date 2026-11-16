@@ -13,7 +13,8 @@
 //! subnormal cases; `umull` makes the whole 48-bit product at once; and
 //! nothing on the stack but two registers.
 //!
-//! `rp_fadd_asm(a, b)`, `rp_fsub_asm(a, b)`, `rp_fmul_asm(a, b)`: IEEE
+//! `rp_fadd_asm(a, b)`, `rp_fsub_asm(a, b)`, `rp_fmul_asm(a, b)`,
+//! `rp_fdiv_asm(a, b)`: IEEE
 //! single bits in r0 and r1, the result in r0 (AAPCS, soft-float).
 
 core::arch::global_asm!(
@@ -197,8 +198,150 @@ rp_fmul_asm:
     pop     {{r4, r5}}
     bx      lr
 .Lfmul_special:
-    @ A zero, a subnormal, an infinity or a NaN: rare, in Rust.
-    b       rp_fmul_rs
+    @ A zero times a finite number is the signed zero, here: a game
+    @ multiplies by zero often (run 6 on the X51v: 6.4% of a frame went to
+    @ the rare road for it). The rest (a subnormal, an infinity, a NaN)
+    @ in Rust.
+    mov     r2, r0, lsl #1
+    mov     r3, r1, lsl #1
+    cmp     r2, #0
+    cmpne   r3, #0
+    bne     rp_fmul_rs
+    cmp     r2, #0xFF000000
+    cmplo   r3, #0xFF000000
+    bhs     rp_fmul_rs
+    eor     r0, r0, r1
+    and     r0, r0, #0x80000000
+    bx      lr
     .size rp_fmul_asm, . - rp_fmul_asm
+
+    .global rp_fdiv_asm
+    .type rp_fdiv_asm, %function
+    .p2align 2
+rp_fdiv_asm:
+    @ As `float::div`: the reciprocal of the divisor from a table and two
+    @ Newton steps, the quotient from one multiply, made exact by its
+    @ remainder (the first guess is never more than one off: a test
+    @ checks every divisor significand).
+    mov     r2, r0, lsr #23
+    and     r2, r2, #0xFF               @ ea
+    mov     r3, r1, lsr #23
+    and     r3, r3, #0xFF               @ eb
+    sub     r12, r2, #1
+    cmp     r12, #254
+    bhs     .Lfdiv_special
+    sub     r12, r3, #1
+    cmp     r12, #254
+    bhs     .Lfdiv_special
+    push    {{r4, r5, r6, r7}}
+    eor     r7, r0, r1                  @ the sign at bit 31
+    sub     r2, r2, r3
+    add     r2, r2, #127                @ e
+    mov     r0, r0, lsl #9
+    mov     r0, r0, lsr #9
+    orr     r0, r0, #0x00800000         @ n
+    mov     r1, r1, lsl #9
+    mov     r1, r1, lsr #9
+    orr     r1, r1, #0x00800000         @ d
+    cmp     r0, r1
+    movlo   r0, r0, lsl #1
+    sublo   r2, r2, #1
+    cmp     r1, #0x00800000
+    beq     .Lfdiv_pow2
+    mov     r3, r1, lsl #8              @ D
+    ldr     r12, =RP_FLOAT_RECIP
+    mov     r4, r3, lsr #23
+    and     r4, r4, #0xFF
+    add     r4, r4, r4
+    ldrh    r4, [r12, r4]
+    mov     r4, r4, lsl #16             @ Y, the first guess
+    @ Two Newton steps: Y + Y(1 - DY), 1 - DY in units of 2^-31.
+    umull   r5, r6, r3, r4
+    rsbs    r5, r6, #0x80000000
+    rsbmi   r5, r5, #0
+    umull   r6, r12, r4, r5
+    mov     r12, r12, lsl #1
+    orr     r12, r12, r6, lsr #31
+    addpl   r4, r4, r12
+    submi   r4, r4, r12
+    umull   r5, r6, r3, r4
+    rsbs    r5, r6, #0x80000000
+    rsbmi   r5, r5, #0
+    umull   r6, r12, r4, r5
+    mov     r12, r12, lsl #1
+    orr     r12, r12, r6, lsr #31
+    addpl   r4, r4, r12
+    submi   r4, r4, r12
+    @ q = n * Y / 2^30, then its remainder (n * 2^25 - q * d).
+    umull   r5, r6, r0, r4
+    mov     r6, r6, lsl #2
+    orr     r6, r6, r5, lsr #30
+    mul     r5, r6, r1
+    rsb     r5, r5, r0, lsl #25
+    cmp     r5, #0
+    sublt   r6, r6, #1
+    addlt   r5, r5, r1
+    cmp     r5, r1
+    addge   r6, r6, #1
+    subge   r5, r5, r1
+5:  @ r6: the 26-bit quotient; r5: its remainder (kept as bit 0).
+    cmp     r5, #0
+    mov     r5, r6, lsl #6
+    orrne   r5, r5, #1
+    cmp     r2, #254
+    bgt     .Lfdiv_inf
+    cmp     r2, #1
+    bge     .Lfdiv_round
+    rsb     r3, r2, #1
+    cmp     r3, #32
+    movhs   r5, #1
+    bhs     6f
+    rsb     r1, r3, #32
+    mov     r1, r5, lsl r1
+    mov     r5, r5, lsr r3
+    cmp     r1, #0
+    orrne   r5, r5, #1
+6:  mov     r2, #1
+.Lfdiv_round:
+    and     r1, r7, #0x80000000
+    sub     r2, r2, #1
+    mov     r0, r5, lsr #8
+    add     r0, r0, r2, lsl #23
+    and     r3, r5, #0xFF
+    cmp     r3, #0x80
+    addhi   r0, r0, #1
+    bne     7f
+    tst     r0, #1
+    addne   r0, r0, #1
+7:  orr     r0, r0, r1
+    pop     {{r4, r5, r6, r7}}
+    bx      lr
+.Lfdiv_pow2:
+    mov     r6, r0, lsl #2
+    mov     r5, #0
+    b       5b
+.Lfdiv_inf:
+    and     r0, r7, #0x80000000
+    orr     r0, r0, #0x7F000000
+    orr     r0, r0, #0x00800000
+    pop     {{r4, r5, r6, r7}}
+    bx      lr
+.Lfdiv_special:
+    @ A zero divided by a finite number other than zero is the signed
+    @ zero, here; the rest (subnormals, infinities, NaNs, a zero
+    @ divisor) in Rust.
+    mov     r2, r0, lsl #1
+    mov     r3, r1, lsl #1
+    cmp     r2, #0
+    bne     rp_fdiv_rs
+    cmp     r3, #0
+    beq     rp_fdiv_rs
+    cmp     r3, #0xFF000000
+    bhs     rp_fdiv_rs
+    eor     r0, r0, r1
+    and     r0, r0, #0x80000000
+    bx      lr
+    .ltorg
+    .size rp_fdiv_asm, . - rp_fdiv_asm
 "#
 );

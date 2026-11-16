@@ -206,6 +206,132 @@ fn mul_special(a: u32, b: u32) -> u32 {
     pack_wide(sign, ea + eb + top as i32 - 127, p)
 }
 
+/// The first guess at a reciprocal: for each of 256 slices of a
+/// significand `D` in [2^31, 2^32) (its bits 30-23), `2^15 / v` at the
+/// slice's middle, `v = D / 2^32`: about 9 bits right, which two Newton
+/// steps make about 30 (apps-and-packs.md: "reciprocal tables refined by
+/// Newton-Raphson"; one step is enough where a game needs 16 bits, an
+/// exactly rounded divide needs two).
+#[unsafe(no_mangle)]
+pub static RP_FLOAT_RECIP: [u16; 256] = {
+    let mut t = [0u16; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mid = 513 + 2 * i as u32;
+        t[i] = (((1u32 << 25) + mid / 2) / mid) as u16;
+        i += 1;
+    }
+    t
+};
+
+/// `2^63 / D` for `D` in (2^31, 2^32), about 30 bits right: the table,
+/// then two Newton steps `y + y(1 - Dy)` in fixed point.
+#[inline(always)]
+fn reciprocal(d: u32) -> u32 {
+    let mut y = u64::from(RP_FLOAT_RECIP[((d >> 23) & 0xFF) as usize]) << 16;
+    for _ in 0..2 {
+        let dy = (u64::from(d) * y) >> 32;
+        // 1 - Dy, in units of 2^-31.
+        let e = (1i64 << 31) - dy as i64;
+        let t = (y * e.unsigned_abs()) >> 31;
+        y = if e >= 0 { y + t } else { y - t };
+    }
+    y.min(u64::from(u32::MAX)) as u32
+}
+
+/// `n * 2^25 / d` for `n / d` in [1, 2) (`d` a 24-bit significand, `n`
+/// below 2^25): the 26-bit quotient, and whether a remainder is left.
+#[inline(always)]
+fn quotient(n: u32, d: u32) -> (u32, bool) {
+    if d == ONE {
+        // A power of two: only the exponent changes.
+        return (n << 2, false);
+    }
+    let y = reciprocal(d << 8);
+    // n * 2^55 / d / 2^30, then made exact by the remainder.
+    let mut q = ((u64::from(n) * u64::from(y)) >> 30) as u32;
+    let mut r = (n << 25).wrapping_sub(q.wrapping_mul(d)) as i32;
+    while r < 0 {
+        q -= 1;
+        r += d as i32;
+    }
+    while r >= d as i32 {
+        q += 1;
+        r -= d as i32;
+    }
+    (q, r != 0)
+}
+
+/// `a / b` (IEEE single bits).
+#[inline]
+#[must_use]
+pub fn div(a: u32, b: u32) -> u32 {
+    let sign = (a ^ b) & SIGN;
+    let ea = (a >> 23) & 0xFF;
+    let eb = (b >> 23) & 0xFF;
+    if ea.wrapping_sub(1) >= 0xFE || eb.wrapping_sub(1) >= 0xFE {
+        return div_special(a, b);
+    }
+    div_parts(
+        sign,
+        ea as i32,
+        (a & MANT) | ONE,
+        eb as i32,
+        (b & MANT) | ONE,
+    )
+}
+
+/// The divide of two significands with their leading ones at bit 23 and
+/// their biased exponents, rounded and packed.
+#[inline(always)]
+fn div_parts(sign: u32, ea: i32, n: u32, eb: i32, d: u32) -> u32 {
+    let (n, e) = if n < d {
+        (n << 1, ea - eb + 126)
+    } else {
+        (n, ea - eb + 127)
+    };
+    let (q, rest) = quotient(n, d);
+    // The 26-bit quotient's leading one to bit 47; what is left, bit 0.
+    pack_wide(sign, e, (u64::from(q) << 22) | u64::from(rest))
+}
+
+/// `div` with a zero, a subnormal, an infinity or a NaN.
+#[cold]
+fn div_special(a: u32, b: u32) -> u32 {
+    let sign = (a ^ b) & SIGN;
+    let (aa, ba) = (a & !SIGN, b & !SIGN);
+    if aa > INF {
+        return a | QUIET;
+    }
+    if ba > INF {
+        return b | QUIET;
+    }
+    if aa == INF {
+        return if ba == INF { QNAN } else { sign | INF };
+    }
+    if ba == INF {
+        return sign;
+    }
+    if ba == 0 {
+        return if aa == 0 { QNAN } else { sign | INF };
+    }
+    if aa == 0 {
+        return sign;
+    }
+    let unpack = |v: u32| -> (i32, u32) {
+        let e = (v >> 23) as i32;
+        if e == 0 {
+            let lz = (v & MANT).leading_zeros() - 8;
+            (1 - lz as i32, (v & MANT) << lz)
+        } else {
+            (e, (v & MANT) | ONE)
+        }
+    };
+    let (ea, n) = unpack(aa);
+    let (eb, d) = unpack(ba);
+    div_parts(sign, ea, n, eb, d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,8 +366,14 @@ mod tests {
             mul(a, b),
             (fa * fb).to_bits()
         );
+        assert!(
+            same(div(a, b), fa / fb),
+            "{a:#010x} / {b:#010x}: {:#010x}, want {:#010x}",
+            div(a, b),
+            (fa / fb).to_bits()
+        );
         // Any NaN out is quiet.
-        for r in [add(a, b), sub(a, b), mul(a, b)] {
+        for r in [add(a, b), sub(a, b), mul(a, b), div(a, b)] {
             if f32::from_bits(r).is_nan() {
                 assert!(r & QUIET != 0, "{r:#010x} is a signalling NaN");
             }
@@ -348,6 +480,52 @@ mod tests {
 
     /// Every float against a few others: run by hand in release
     /// (`cargo test -p rp-hal-mem --release -- --ignored`), minutes.
+    #[test]
+    fn the_quotient_s_first_guess_is_never_more_than_one_off() {
+        // What lets the assembly correct it with one step each way: every
+        // divisor significand, dividends across [d, 2d).
+        let mut worst = (0i64, 0u32, 0u32);
+        for m in 1..1u32 << 23 {
+            let d = ONE | m;
+            for n in [
+                d,
+                d + 1,
+                (d * 3) / 2,
+                2 * d - 1,
+                (d + (m.wrapping_mul(2_654_435_761) % d)).min(2 * d - 1),
+            ] {
+                let guess = (u64::from(n) * u64::from(reciprocal(d << 8))) >> 30;
+                let exact = (u64::from(n) << 25) / u64::from(d);
+                let off = guess as i64 - exact as i64;
+                if off.abs() > worst.0.abs() {
+                    worst = (off, n, d);
+                }
+            }
+        }
+        eprintln!("the worst first guess: {worst:?}");
+        assert!(worst.0.abs() <= 1, "{worst:?}");
+    }
+
+    #[test]
+    fn every_divisor_significand_against_some_dividends() {
+        // Every one of the 2^23 significands a divisor can have, the
+        // reciprocal's whole range, against dividends either side of it.
+        for m in (0..1u32 << 23).step_by(7) {
+            let b = 0x3F80_0000 | m;
+            for a in [
+                0x3F80_0000,
+                0x3FFF_FFFF,
+                0x4049_0FDB,
+                0x3F80_0000 | (m ^ 0x55_5555),
+                b,
+                b + 1,
+                b - 1,
+            ] {
+                check(a, b);
+            }
+        }
+    }
+
     #[test]
     #[ignore = "every float: minutes in release"]
     fn every_float_against_some() {

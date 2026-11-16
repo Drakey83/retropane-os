@@ -25,6 +25,7 @@ pub mod asm {
         fn rp_fadd_asm(a: u32, b: u32) -> u32;
         fn rp_fsub_asm(a: u32, b: u32) -> u32;
         fn rp_fmul_asm(a: u32, b: u32) -> u32;
+        fn rp_fdiv_asm(a: u32, b: u32) -> u32;
     }
 
     /// `a + b`, IEEE single bits.
@@ -47,6 +48,20 @@ pub mod asm {
     pub fn mul(a: u32, b: u32) -> u32 {
         // SAFETY: as `add`.
         unsafe { rp_fmul_asm(a, b) }
+    }
+
+    /// `a / b`.
+    #[must_use]
+    pub fn div(a: u32, b: u32) -> u32 {
+        // SAFETY: as `add`; it reads `RP_FLOAT_RECIP`, a static table.
+        unsafe { rp_fdiv_asm(a, b) }
+    }
+
+    /// The rare cases of `rp_fdiv_asm` (a subnormal, an infinity, a NaN,
+    /// a zero divisor), which it hands on here.
+    #[unsafe(no_mangle)]
+    extern "C" fn rp_fdiv_rs(a: u32, b: u32) -> u32 {
+        super::float::div(a, b)
     }
 
     /// The rare cases of `rp_fmul_asm` (a zero, a subnormal, an infinity
@@ -627,6 +642,16 @@ mod float_exports {
     #[unsafe(no_mangle)]
     extern "C" fn __mulsf3(a: u32, b: u32) -> u32 {
         asm::mul(a, b)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fdiv(a: u32, b: u32) -> u32 {
+        asm::div(a, b)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __divsf3(a: u32, b: u32) -> u32 {
+        asm::div(a, b)
     }
 }
 

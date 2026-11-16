@@ -1525,7 +1525,7 @@ fn check_xash_kit(log: &str) -> Result<Vec<String>, String> {
     // the same as the compiler's (R282). The emulator's cycles are not
     // the X51v's; the comparison is the same on both.
     let floats: Vec<&str> = log.lines().filter(|l| l.starts_with("float: ")).collect();
-    for op in ["add", "sub", "mul"] {
+    for op in ["add", "sub", "mul", "div"] {
         let Some(line) = floats
             .iter()
             .find(|l| l.starts_with(&format!("float: {op}: the generic")))
@@ -4284,7 +4284,7 @@ mod tests",
             })
             .collect();
         let kit = format!(
-            "{XASH_BANNER}\nrunner: step 1 of 5 at 0 s on the screen's clock\nrunner: step 2 of 5 at 1 s on the screen's clock\nfloat: add: the generic 23.2 cycles, ours in Rust 16.2, in assembly 13.8; 136320 results compared, 0 differ\nfloat: sub: the generic 23.0 cycles, ours in Rust 16.6, in assembly 13.7; 136320 results compared, 0 differ\nfloat: mul: the generic 21.2 cycles, ours in Rust 9.0, in assembly 6.2; 136320 results compared, 0 differ\nrp-note: frame rate:|99.9 a second|x\nrunner: step 3 of 5 at 70 s on the screen's clock\nrunner: step 4 of 5 at 150 s on the screen's clock\n{notes}runner: step 5 of 5 at 270 s on the screen's clock\nframe 3000, the last, written to /rp-xash/frame.565\nsound: the codec is down (true), the board as found\nrunner: the longest stretch without a sign of life (a card transfer, a clock read, a printed line) was 4100 ms; the loader's run limit is 30000 ms (0: none armed)\nrunner: the program returned 0\n"
+            "{XASH_BANNER}\nrunner: step 1 of 5 at 0 s on the screen's clock\nrunner: step 2 of 5 at 1 s on the screen's clock\nfloat: add: the generic 23.2 cycles, ours in Rust 16.2, in assembly 13.8; 136320 results compared, 0 differ\nfloat: sub: the generic 23.0 cycles, ours in Rust 16.6, in assembly 13.7; 136320 results compared, 0 differ\nfloat: mul: the generic 21.2 cycles, ours in Rust 9.0, in assembly 6.2; 136320 results compared, 0 differ\nfloat: div: the generic 60.0 cycles, ours in Rust 30.0, in assembly 20.0; 136320 results compared, 0 differ\nrp-note: frame rate:|99.9 a second|x\nrunner: step 3 of 5 at 70 s on the screen's clock\nrunner: step 4 of 5 at 150 s on the screen's clock\n{notes}runner: step 5 of 5 at 270 s on the screen's clock\nframe 3000, the last, written to /rp-xash/frame.565\nsound: the codec is down (true), the board as found\nrunner: the longest stretch without a sign of life (a card transfer, a clock read, a printed line) was 4100 ms; the loader's run limit is 30000 ms (0: none armed)\nrunner: the program returned 0\n"
         );
         let rates = xash_frame_rates(&kit);
         assert_eq!(rates.len(), 24, "the one before step 4 is not the map's");
