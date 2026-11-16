@@ -1025,6 +1025,15 @@ fn files_under(dir: &Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
+/// Whether the file at `path` is left off the card: `skip` names parts of
+/// paths, lower case, with commas between.
+fn left_off(path: &str, skip: &str) -> bool {
+    let path = path.to_lowercase();
+    skip.split(',')
+        .map(str::trim)
+        .any(|part| !part.is_empty() && path.contains(part))
+}
+
 /// The owner's own copy of the game for the emulator (never in the
 /// repository, never changed): the folder that holds `valve`.
 pub const XASH_GAME_ENV: &str = "RETROPANE_HL_FILES";
@@ -1032,6 +1041,10 @@ pub const XASH_GAME_ENV: &str = "RETROPANE_HL_FILES";
 /// not stop by itself once it has a game), and for how many seconds.
 const XASH_UNTIL_ENV: &str = "RETROPANE_XASH_UNTIL";
 const XASH_SECS_ENV: &str = "RETROPANE_XASH_SECS";
+/// With [`XASH_GAME_ENV`]: files left off the card, by a part of their
+/// path (several with commas, any case): to see what the engine does
+/// without one, the owner's copy untouched.
+const XASH_SKIP_ENV: &str = "RETROPANE_XASH_SKIP";
 
 /// `cargo xtask emu-xash` with the game's files (`RETROPANE_HL_FILES`):
 /// the modules and the owner's `valve` folder (under `Ports`, as on his
@@ -1050,6 +1063,17 @@ pub fn boot_xash_game(
 ) -> Result<String, String> {
     let mut files = Vec::new();
     files_under(&game.join("valve"), "Ports/valve/", &mut files);
+    let skip = std::env::var(XASH_SKIP_ENV)
+        .unwrap_or_default()
+        .to_lowercase();
+    let before = files.len();
+    files.retain(|f| !left_off(&f.0, &skip));
+    if files.len() != before {
+        eprintln!(
+            "    {} files left off the card ({XASH_SKIP_ENV})",
+            before - files.len()
+        );
+    }
     if files.is_empty() {
         return Err(format!(
             "{}: no `valve` folder with files in it",
@@ -3553,6 +3577,24 @@ mod tests",
         let press = &press[..press.find("};").expect("press end")];
         assert!(!press.contains("sleep"), "press must wait on the screen");
         assert!(body.contains("\"-icount\""), "guest time from instructions");
+    }
+
+    #[test]
+    fn a_game_file_is_left_off_the_card_only_when_named() {
+        let hd = "Ports/valve/resource/HD_BackgroundLayout.txt";
+        // Nothing named: nothing left off, whatever the commas.
+        for none in ["", ",", " , "] {
+            assert!(!left_off(hd, none), "{none:?}");
+        }
+        assert!(left_off(hd, "hd_backgroundlayout"));
+        assert!(left_off(hd, "maps/,hd_background"));
+        assert!(left_off(hd, " resource/hd_ "));
+        // The plain layout is another file.
+        assert!(!left_off(
+            "Ports/valve/resource/BackgroundLayout.txt",
+            "hd_backgroundlayout"
+        ));
+        assert!(!left_off(hd, "maps/,sound/"));
     }
 
     #[test]

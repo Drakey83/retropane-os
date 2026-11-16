@@ -252,9 +252,34 @@ How far it gets, each read from the serial line:
 5. `Time to first frame: 104 seconds`. 100 of them are 494 look-ups of
    menu pictures the Steam copy does not have, about 200 ms each in the
    emulator (R276).
-6. 27 seconds of frames later it stops: `_Mem_Alloc: out of memory` while
-   loading a menu picture (R275). The heap is the 23.9 MiB the modules
+6. 27 seconds later, with no frame in between, it stops: `_Mem_Alloc: out
+   of memory` while loading a menu picture (R275). The heap is the 23.9 MiB the modules
    leave; the deepest stack was 160,784 bytes of 2 MiB.
+
+**Where the memory went (measured the same day, on the owner's "Yes,
+measure first").** The runner now says the heap's size on the serial line
+as it passes each MiB and when it refuses a request, and with `-rpmemlist`
+the engine lists its own memory pools every five seconds and at a fatal
+error (every block of 64 KiB or more with the source line that asked).
+
+| When | Heap in use (of 23.9 MiB) | The engine's pools | The software renderer's pool |
+|---|---|---|---|
+| The first frame | 12 MiB | 10.5 MiB | 2.7 MiB |
+| Out of memory, 27 s later | 23.9 MiB | 22.2 MiB | 14.1 MiB: 70 blocks of 128 KiB and more of the same |
+| The HD layout left off the card: in the menu, steady for 3 minutes | 19 MiB | 17.0 MiB | 9.1 MiB |
+
+The 11.5 MiB that appeared after the first frame are one thing: the
+Steam copy's HD menu background (`resource/HD_BackgroundLayout.txt`, the
+25th-anniversary update's: 105 pieces of 256 x 256, a picture for a 4K
+wide screen). The software renderer keeps each piece at 128 KiB, 13.1 MiB
+in all, and the heap ran out at piece 91. With that one file left off the
+emulated card (`RETROPANE_XASH_SKIP=hd_backgroundlayout`; the owner's
+copy untouched) the menu takes its 800 x 600 background (12 pieces,
+1.5 MiB) and the engine **stays up in its menu**, drawing frames, its
+memory not growing. Memory is not short for the menu; that picture is.
+Which background the port shows is a choice about the picture, and the
+owner's (R275). Not measured: what a map needs (4.9 MiB of heap are free
+at the menu), any frame time.
 
 Also fixed on the way: a module's file is found from the card's root
 wherever the program's current folder is; the modules no longer carry the

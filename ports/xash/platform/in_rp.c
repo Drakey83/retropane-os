@@ -58,9 +58,35 @@ static struct
 	int dx, dy;     // how far it was dragged since the engine last asked
 } in_rp;
 
+/*
+A test image's memory log: with -rpmemlist on the command line the
+engine's own list of its memory pools (its `memlist` command, with every
+block of 64 KiB or more and the source line that asked for it) is printed
+every five seconds. Where a game's memory goes is read from the run's log.
+*/
+static void RP_MemoryLog( void )
+{
+	static int      asked = -1;
+	static uint64_t next;
+	uint64_t        now;
+
+	if( asked < 0 )
+		asked = Sys_CheckParm( "-rpmemlist" ) ? 1 : 0;
+	if( !asked )
+		return;
+
+	now = rp_time_us();
+	if( now < next )
+		return;
+	next = now + 5000000u;
+	Cbuf_AddText( "memlist 64\n" );
+}
+
 void Platform_RunEvents( void )
 {
 	struct rp_event ev;
+
+	RP_MemoryLog();
 
 	if( !in_rp.open )
 	{

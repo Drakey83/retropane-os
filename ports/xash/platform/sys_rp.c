@@ -15,6 +15,7 @@ GNU General Public License for more details.
 
 #include "common.h"
 #include "platform/platform.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <retropane.h>
 
@@ -74,6 +75,25 @@ int wai_getExecutablePath( char *out, int capacity, int *dirname_length )
 int wai_getModulePath( char *out, int capacity, int *dirname_length )
 {
 	return -1;
+}
+
+/*
+The engine's last words on a fatal error. There is no screen call in the
+port layer yet, so they go where the engine's console goes (the serial
+line of a test image); the port proper shows them on the screen before
+Game Mode returns to the session. With -rpmemlist (in_rp.c) the engine's
+memory pools are listed too, as they stand at the failure: an "out of
+memory" then says who held it.
+*/
+void Platform_MessageBox( const char *title, const char *message, qboolean parentMainWindow )
+{
+	fprintf( stderr,
+		"======================================\n"
+		"%s: %s\n"
+		"======================================\n", title, message );
+
+	if( Sys_CheckParm( "-rpmemlist" ))
+		Cmd_ExecuteString( "memlist 64" );
 }
 
 /*

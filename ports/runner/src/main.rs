@@ -94,7 +94,9 @@ mod image {
     const HANDLES: usize = 16;
     /// The program's command line: its name, and the engine's own word for
     /// "say what you are doing" (a test image's log is its result).
-    const ARGS: [&core::ffi::CStr; 3] = [c"xash3d", c"-dev", c"2"];
+    /// `-rpmemlist` (ports/xash/platform/in_rp.c) lists the engine's
+    /// memory pools every five seconds.
+    const ARGS: [&core::ffi::CStr; 4] = [c"xash3d", c"-dev", c"2", c"-rpmemlist"];
 
     type Sd = SdCard<PxaMmc<Mmio, Dma>>;
 

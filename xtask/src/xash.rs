@@ -87,6 +87,9 @@ const ENGINE_DEFINES: &[&str] = &[
     "-DXASH_INPUT=100",
     "-DXASH_TIMER=100",
     "-DXASH_LIB=100",
+    // The engine's last words on a fatal error are ours to show
+    // (sys_rp.c: the serial line today, the screen when the port has one).
+    "-DXASH_MESSAGEBOX=100",
     // The libraries are asked for by their plain names ("server",
     // "menu"): the loader knows where each is (lib_rp.c, ADR-0039).
     "-DXASH_INTERNAL_GAMELIBS=1",

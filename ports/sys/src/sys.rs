@@ -241,7 +241,30 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     }
 
     fn grow(&mut self, by: isize) -> Option<usize> {
-        self.heap.grow(by)
+        let before = self.heap.used();
+        let got = self.heap.grow(by);
+        // The heap's size is said on the console as it passes each MiB,
+        // and when a request is refused: a run's log is where a program's
+        // memory is read from (a game that runs out says only that it did).
+        let now = (self.clock.at((self.ticks)()) / 1_000) as u32;
+        match got {
+            Some(_) if self.heap.used() >> 20 != before >> 20 => {
+                let _ = writeln!(
+                    Line(&mut self.console),
+                    "heap: {} MiB in use at {now} ms",
+                    self.heap.used() >> 20
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    Line(&mut self.console),
+                    "heap: a request for {by} bytes refused with {} KiB in use at {now} ms",
+                    before / 1024
+                );
+            }
+            Some(_) => {}
+        }
+        got
     }
 
     fn stat(&mut self, path: &[u8]) -> Result<FileStat, Errno> {
@@ -584,7 +607,11 @@ mod tests {
             assert_eq!(s.grow(1), None);
             assert_eq!(s.heap_used(), 0x10);
             let (_, _) = s.into_parts();
-            assert_eq!(said.0, b"out\nerr\n");
+            // The refused request is said too (the heap's own line).
+            assert_eq!(
+                said.0,
+                b"out\nerr\nheap: a request for 1 bytes refused with 0 KiB in use at 0 ms\n"
+            );
         });
     }
 
@@ -1010,6 +1037,43 @@ mod tests {
             assert!(
                 text.contains("module server.rpm: 6 KiB at 0xA9001000 and 1 KiB zeroed, read and checked in 0 ms"),
                 "{text}"
+            );
+        });
+    }
+
+    #[test]
+    fn the_heap_says_each_mib_it_passes_and_a_request_it_refuses() {
+        each(|vol, _| {
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0u8; 1000][..];
+            let mut said = Said(Vec::new());
+            let files: Files<'_, Disk, 4> = Files::new(vol, scratch, room);
+            let heap = Break::new(0x10_0000, 0x10_0000 + (3 << 20));
+            // 3,250 ticks a millisecond.
+            let mut s = System::new(files, &mut said, heap, || 6_500);
+            // Small steps say nothing until a MiB is passed.
+            assert!(s.grow(1000).is_some());
+            assert!(s.grow((1 << 20) - 1000 - 1).is_some());
+            assert!(s.grow(1).is_some());
+            assert!(s.grow(1 << 20).is_some());
+            // Given back and taken again: said again (the log shows both).
+            assert!(s.grow(-(1 << 20)).is_some());
+            assert!(s.grow(2 << 20).is_some());
+            // More than is left: refused, nothing moved.
+            assert_eq!(s.grow(1), None);
+            assert_eq!(s.heap_used(), 3 << 20);
+            let _ = s;
+            let text = String::from_utf8_lossy(&said.0).into_owned();
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(
+                lines,
+                [
+                    "heap: 1 MiB in use at 0 ms",
+                    "heap: 2 MiB in use at 0 ms",
+                    "heap: 1 MiB in use at 0 ms",
+                    "heap: 3 MiB in use at 0 ms",
+                    "heap: a request for 1 bytes refused with 3072 KiB in use at 0 ms",
+                ]
             );
         });
     }
