@@ -8,9 +8,10 @@ themselves are not in this repository: they are fetched into
 [docs/research/half-life-evaluation.md](../../docs/research/half-life-evaluation.md).
 
 - `patches/`: the four small changes to the fetched sources (a platform
-  name of our own in the engine, the SDK and the menu, and three places
-  that assumed POSIX), applied by the build and checked against the pinned
-  commits.
+  name of our own in the engine, the SDK and the menu, three places
+  that assumed POSIX, and the client's dropped-frames loop bounded to the
+  frames it can still change: R285, sixteen seconds of the map's start on
+  the X51v), applied by the build and checked against the pinned commits.
 - `mpg123/config.h`: the MP3 decoder's settings (mpg123's fixed-point
   build for an ARM with no FPU; its sources are fetched, not here).
 - `platform/`: RetroPane's platform backend for the engine, over the port

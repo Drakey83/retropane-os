@@ -9,8 +9,9 @@
 //! probes the PC it runs on and wants Python; a port to a new system
 //! usually starts as a fork with the build bent to fit. Ours leaves the
 //! engine's source as fetched but for four small patches kept here
-//! (`ports/xash/patches`: the new platform's name, and three places that
-//! assumed POSIX), lists the sources in this file, and builds them with the
+//! (`ports/xash/patches`: the new platform's name, three places that
+//! assumed POSIX, and one loop bounded that cost the X51v sixteen seconds,
+//! R285), lists the sources in this file, and builds them with the
 //! same compiler, flags and C library as every C program of RetroPane, in
 //! parallel, the same on every PC. The game's logic is built as libraries
 //! of its own and never linked into the engine (Valve's SDK terms and the

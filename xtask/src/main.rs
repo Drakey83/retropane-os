@@ -471,6 +471,7 @@ fn main() -> ExitCode {
         | "xash-modules"
         | "xash-kit"
         | "emu-xash-kit"
+        | "xash-profile"
         | "emu-xash"
         | "emu-picture"
         | "emu-blend"

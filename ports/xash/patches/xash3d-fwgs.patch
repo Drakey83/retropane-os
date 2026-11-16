@@ -14,6 +14,28 @@ index 9581a61..ed3529c 100644
  #endif
  
  #if !XASH_WIN32
+diff --git a/engine/client/parse/cl_parse.c b/engine/client/parse/cl_parse.c
+index 61de1f4..041bb8e 100644
+--- a/engine/client/parse/cl_parse.c
++++ b/engine/client/parse/cl_parse.c
+@@ -1006,8 +1006,15 @@ void CL_ParseClientData( sizebuf_t *msg, connprotocol_t proto )
+ 	// did we drop some frames?
+ 	if( i > cl.last_incoming_sequence + 1 )
+ 	{
+-		// mark as dropped
+-		for( j = cl.last_incoming_sequence + 1; j < i; j++ )
++		// mark as dropped: only the last CL_UPDATE_BACKUP can still be
++		// in the window, and marking is the same however often it is done
++		// (RetroPane, R285: the server's sequence starts at a random number
++		// up to BIT( 27 ), so the first update walked tens of millions of
++		// frames, sixteen seconds on the X51v)
++		j = cl.last_incoming_sequence + 1;
++		if( i - j > CL_UPDATE_BACKUP )
++			j = i - CL_UPDATE_BACKUP;
++		for( ; j < i; j++ )
+ 		{
+ 			if( cl.frames[j & CL_UPDATE_MASK].receivedtime >= 0.0 )
+ 			{
 diff --git a/engine/platform/platform.h b/engine/platform/platform.h
 index 4b1e40c..41d0718 100644
 --- a/engine/platform/platform.h
