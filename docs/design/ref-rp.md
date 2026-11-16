@@ -261,6 +261,64 @@ a result yet.
 - **The sound's mixing** (`S_MixChannelToBuffer`, `S_PaintChannels`,
   `rp_snd_write`) in iWMMXt, or handed to the OS mixer's stream.
 
+## Step 3: the world on the 2700G (design, 2026-11-16)
+
+**Rule 0, written before building.**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| Lit surfaces | `ref_soft`: a 3.2 MB ring in RAM, rebuilt whenever pushed out (run 9: 464 of 467 faces a frame); `ref_gl`: texture and lightmap, two layers of fill; Dell's GLES: one `glTexImage2D` a texture, copied in rows then twiddled by the CPU (`libGLES_CL.dll`, 2700g.md "No row-order texture mode") | each surface lit once into a scratch buffer and written **straight into a twiddled atlas page in video memory** (512 x 512 RGB565, 512 KiB), packed on shelves of whole 8 x 8 squares, the colour conversion and the twiddle done in that one pass (a 64-entry table a square); kept until its light changes; a full atlas drops its least recently drawn page | the view (4,655 KiB) fits in 14 pages (7 MiB), so a still or slowly turning view lights nothing; shelves of whole squares waste only the rounding to 8 texels where powers of two took half again (step 1b's 7,053 KiB); one pass over each texel, no second copy in RAM |
+| Depth | Dell's GLES: z = GL window depth (`1.00029 - 0.96360 / w`, a multiply-add a vertex) compared "less" | z = 1/w itself, compared "greater or equal" (the PowerVR2 and Dreamcast way, now on the MBX) | no work a vertex (the 1/w word is the z word), and a float 1/w keeps its precision far away where window depth crowds it near 1 |
+| The screen | ADR-0034 A: draw off screen, the 2D engine copies the picture in (~5 ms) | the 3D core draws **straight into the visible screen at `0x0`** (ADR-0034 option C, sound at every clock in G21: 20 of 20 where off screen failed above 74.75 / 1) | no copy (5 ms of a 22 ms budget); tearing is the known cost, to be seen on the device and moved behind the scan line later |
+| Landscape | a rotation pass over the picture (the software renderer's rotated blit, 7% of run 7) | the emitter writes each vertex already turned (`x = sy`, `y = 640 - sx`, the input's `RP_TURN_RIGHT`) | the turn costs nothing: two words swapped a vertex |
+| The C face | GL: hundreds of calls, a state machine, a call a vertex | four calls (`rp_gfx_open`, `rp_gfx_frame`, `rp_gfx_wait`, `rp_gfx_close`): the frame's words in one buffer, **checked by the port layer** (only the state block and strips it knows, a strip's corner count in its own word, every texture inside the game's texture memory) before any reaches the TA | one call a frame; a wrong word stops at the check instead of hanging the chip |
+| The frame | Dell: the CPU waits for each render | the render runs while the CPU makes the next frame; the CPU waits only if it is still drawing at the next frame's feed (ADR-0038 G4's first half) | the CPU's and the chip's times overlap instead of adding |
+
+**Built and checked in the emulator (2026-11-16, QEMU fork rp-v0.33.0,
+`emu-xash-kit` with `+rp_emit 2`):** the 2700G drew c1a0's world every
+frame, no frame refused, no TA or render hang. The end shot draws one
+frame both ways (the software renderer's picture and the 2700G's of the
+same view, `target/xash-kit/emu-last-frame.png` and `emu-gpu-frame.png`):
+the 2700G drew 306,297 of 307,200 pixels, **95% of them within a few
+levels of the software renderer's**, the rest the models, sprites and HUD
+step 4 adds (the scientists behind the desk) and texel choices at faces'
+edges. The video-memory cache built 5 surfaces a frame once the view had
+settled (24 in the first seconds), against 464 in step 1: the thrash is
+gone. Words a frame 18,300 (step 1: 69,000-83,000, the models' triangles
+not sent yet). The emulator's frame times are the PC's, not the X51v's.
+
+**Run 11 on the X51v (port-runner-0011, 2026-11-16, c1a0, 120 s of
+play, `+rp_emit 2`): 95 ms a frame, 10.5 a second** (run 7, the software
+renderer: 240 ms, 4.1; run 9, step 1: 154 ms, 6.4). The 2700G's picture
+of the end frame is the world as the software renderer draws it
+(`local/half-life/run11-frame-gpu.png`); no frame refused, no TA or render
+hang in 120 s. The chip's side: the CPU feeding the TA 4.8 ms a frame
+(18,300 words), the TA done 5.5 ms after its start, **a render 24.4 ms**
+(at the loader's 2700G clock, `MBXCLK` 0x5), and **the CPU never waited
+for a render** (0.0 ms): the 2700G is not the frame's limit yet, the CPU
+is. The video-memory cache built 5 surfaces a frame (0.5 ms). Where the
+95 ms go (the play's 58,180 samples): the software-float helpers 59%; the
+models' path (`R_StudioDrawPoints`, `R_SetupFinalVert`, the lighting and
+the triangle interface, with their floats) about a quarter of the frame,
+**for triangles step 3 does not draw yet**; the emitter's world faces with
+their floats about 11%; the doubles in the engine and client, the sound
+(`rp_snd_write` 3.7%) and the game the rest. Read with the 45 a second
+budget: the render's 24.4 ms alone is past 22.2 ms at this clock, so the
+2700G's faster clock (divide 1 at 108.33 MHz, measured 2.17x Windows
+Mobile's) belongs in the plan beside the CPU's lines.
+
+**A correction to step 1b, found here:** the software renderer's cache
+stores a surface's height as its bytes over its width (`D_SCAlloc`:
+twice the rows of 16-bit texels), so step 1b's sums were doubled: **the
+view's lit surfaces are about 2,327 KiB (3,526 KiB as power-of-two
+blocks), not 4,655 (7,053).** Counted now from the width and height
+themselves. The atlas's 7 MiB holds three such views.
+
+What step 3 leaves for later (its own lines in the steps table): models,
+sprites, particles, the sky, water and 2D (step 4); the feed by DMA in
+pieces (P4's fastest way; the CPU's stores first, timed); depth precision
+at the far plane, seen on the device first.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
@@ -310,7 +368,7 @@ a result yet.
 | 1 | ref_rp's CPU side: `ref_soft` with its rasterisers replaced by the emitter writing TA words into RAM (no chip yet) | **done:** run 9, 154 ms; the surface cache's thrash 37% (proven) |
 | 1b | The view's lit surfaces in bytes at their mip levels; choice 2 A (cache in video memory) against 2 B (texture and lightmap) | counts in the emulator, then the frame on the X51v |
 | 2 | The TA in the QEMU fork; the facts above on the X51v | `emu-tabench` drawing; a test image |
-| 3 | The runner's `rp_gfx_*`, the world on the 2700G with the surface cache | the first picture; frame ms |
+| 3 | The runner's `rp_gfx_*`, the world on the 2700G with the surface cache | **done:** run 11, 95 ms (10.5 a second); the picture right on the X51v (models to come) |
 | 4 | Models, sprites, beams, particles, 2D | the whole frame on the 2700G against run 7's picture |
 | 5 | Fixed-point transforms, choice 2's B and C measured, the routes | frame ms per change |
 
