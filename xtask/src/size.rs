@@ -1338,7 +1338,10 @@ pub fn measure(elf: &[u8]) -> Result<Sizes, String> {
 /// tens to over a hundred cycles; hot code uses fixed point, and floats
 /// the 3D core consumes are built from integers or folded at compile
 /// time). Empty: no image needs one (checked 2026-10-15).
-const FLOAT_ALLOWED: &[(&str, &str)] = &[];
+const FLOAT_ALLOWED: &[(&str, &str)] = &[(
+    "rp-port-runner",
+    "times the compiler's generic float routines against ours with `-rpfloat` (R282): the generic ones are what it measures",
+)];
 
 /// Whether `name` is a software floating-point helper (EABI or
 /// compiler-rt names) or float formatting (`core::fmt` printing an `f32`

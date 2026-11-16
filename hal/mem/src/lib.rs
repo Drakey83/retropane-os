@@ -13,6 +13,50 @@
 #![cfg_attr(not(test), no_std)]
 #![no_builtins]
 
+pub mod float;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+mod float_arm;
+
+/// The ARM assembly float routines ([`float_arm`]), for the X51v's
+/// benchmark against [`float`] and the compiler's (`-rpfloat`).
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod asm {
+    unsafe extern "C" {
+        fn rp_fadd_asm(a: u32, b: u32) -> u32;
+        fn rp_fsub_asm(a: u32, b: u32) -> u32;
+        fn rp_fmul_asm(a: u32, b: u32) -> u32;
+    }
+
+    /// `a + b`, IEEE single bits.
+    #[must_use]
+    pub fn add(a: u32, b: u32) -> u32 {
+        // SAFETY: the routine reads its two registers and writes r0, as
+        // the AAPCS says; it touches no memory but its own stack.
+        unsafe { rp_fadd_asm(a, b) }
+    }
+
+    /// `a - b`.
+    #[must_use]
+    pub fn sub(a: u32, b: u32) -> u32 {
+        // SAFETY: as `add`.
+        unsafe { rp_fsub_asm(a, b) }
+    }
+
+    /// `a * b`.
+    #[must_use]
+    pub fn mul(a: u32, b: u32) -> u32 {
+        // SAFETY: as `add`.
+        unsafe { rp_fmul_asm(a, b) }
+    }
+
+    /// The rare cases of `rp_fmul_asm` (a zero, a subnormal, an infinity
+    /// or a NaN), which it hands on here.
+    #[unsafe(no_mangle)]
+    extern "C" fn rp_fmul_rs(a: u32, b: u32) -> u32 {
+        super::float::mul(a, b)
+    }
+}
+
 /// Makes a struct straight into its slot, a field at a time, so no whole
 /// struct is made on the stack and copied (the shell, 8.5 KB: made whole in
 /// `Slot::put_with` it took a 15.8 KB frame and overflowed the X51v's
@@ -537,6 +581,52 @@ unsafe fn set_aligned_32(dst: *mut u32, word: u32, bytes: usize) {
         for i in 0..bytes / 4 {
             *dst.add(i) = word;
         }
+    }
+}
+
+/// The float routines (the ARM assembly ones, [`asm`]) under the C and
+/// ARM EABI names the compiler calls, in place of `compiler_builtins`'
+/// (R282; apps-and-packs.md's layer 2): exported only with the
+/// `float` feature, which the game modules' build turns on (ADR-0039 rule
+/// 6: the arithmetic is linked into each module), so every other image
+/// keeps the routines it was measured with until the X51v says ours win.
+#[cfg(all(target_arch = "arm", target_os = "none", feature = "float"))]
+mod float_exports {
+    use super::asm;
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fadd(a: u32, b: u32) -> u32 {
+        asm::add(a, b)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __addsf3(a: u32, b: u32) -> u32 {
+        asm::add(a, b)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fsub(a: u32, b: u32) -> u32 {
+        asm::sub(a, b)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __subsf3(a: u32, b: u32) -> u32 {
+        asm::sub(a, b)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_frsub(a: u32, b: u32) -> u32 {
+        asm::sub(b, a)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fmul(a: u32, b: u32) -> u32 {
+        asm::mul(a, b)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __mulsf3(a: u32, b: u32) -> u32 {
+        asm::mul(a, b)
     }
 }
 

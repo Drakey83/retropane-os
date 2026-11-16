@@ -121,6 +121,11 @@ mod image {
     /// each of the run's steps 1 to 5 (`u32::MAX`: not reached), then each
     /// sample's two words (where, and the return address).
     const SAMPLE_FILE: &str = "samples.bin";
+    /// A test run's word for timing the float routines before the program
+    /// starts: the compiler's generic ones (this image's) against ours
+    /// (`rp_hal_mem::float`, what the modules link), on numbers of a
+    /// game's range, every result compared (R282).
+    const FLOAT_WORD: &[u8] = b"-rpfloat";
     /// The program's command line as built in: its name alone. What a
     /// run asks of the program is in [`ARGS_FILE`], so a run on the X51v
     /// can be quiet (its run log holds 64 KiB) and the emulator's check
@@ -431,6 +436,167 @@ mod image {
             "runner: step {n} of {of} at {at} s on the screen's clock"
         );
         card_count(format_args!("at step {n}"));
+    }
+
+    /// Pairs the float routines are timed on.
+    const FLOAT_PAIRS: usize = 1024;
+
+    /// The routines timed, called as the compiler calls its own: not
+    /// inlined into the timing loop. Ours in Rust (the reference the PC
+    /// checks against its own IEEE hardware) and in ARM assembly (what the
+    /// game's modules link), and the compiler's generic ones (this image's
+    /// `compiler_builtins`).
+    #[inline(never)]
+    fn rust_add(a: u32, b: u32) -> u32 {
+        rp_hal_mem::float::add(a, b)
+    }
+    #[inline(never)]
+    fn rust_sub(a: u32, b: u32) -> u32 {
+        rp_hal_mem::float::sub(a, b)
+    }
+    #[inline(never)]
+    fn rust_mul(a: u32, b: u32) -> u32 {
+        rp_hal_mem::float::mul(a, b)
+    }
+    #[inline(never)]
+    fn generic_add(a: u32, b: u32) -> u32 {
+        (f32::from_bits(a) + f32::from_bits(b)).to_bits()
+    }
+    #[inline(never)]
+    fn generic_sub(a: u32, b: u32) -> u32 {
+        (f32::from_bits(a) - f32::from_bits(b)).to_bits()
+    }
+    #[inline(never)]
+    fn generic_mul(a: u32, b: u32) -> u32 {
+        (f32::from_bits(a) * f32::from_bits(b)).to_bits()
+    }
+    #[inline(never)]
+    fn nothing(a: u32, b: u32) -> u32 {
+        a ^ b
+    }
+
+    /// Tenths of a core clock cycle for one call of `f`, the loop's own
+    /// cost taken off: the least of five passes over the pairs.
+    fn cycles_per_call(pairs: &[(u32, u32)], f: fn(u32, u32) -> u32) -> u32 {
+        let pass = |f: fn(u32, u32) -> u32| {
+            let t = rt::cycles();
+            let mut sink = 0u32;
+            for &(a, b) in pairs {
+                sink ^= f(core::hint::black_box(a), core::hint::black_box(b));
+            }
+            core::hint::black_box(sink);
+            rt::cycles().wrapping_sub(t)
+        };
+        let best = |f| (0..5).map(|_| pass(f)).min().unwrap_or(0);
+        let base = best(nothing);
+        best(f).saturating_sub(base) * 10 / pairs.len() as u32
+    }
+
+    /// Values at every edge (zeros, the subnormals' and normals' ends,
+    /// one and its neighbours, infinities, NaNs), as the PC's tests.
+    const FLOAT_EDGES: [u32; 20] = [
+        0,
+        1,
+        2,
+        3,
+        0x007F_FFFF,
+        0x0080_0000,
+        0x0080_0001,
+        0x00FF_FFFF,
+        0x3F7F_FFFF,
+        0x3F80_0000,
+        0x3F80_0001,
+        0x3FFF_FFFF,
+        0x4B00_0000,
+        0x4B7F_FFFF,
+        0x7F7F_FFFE,
+        0x7F7F_FFFF,
+        0x7F80_0000,
+        0x7F80_0001,
+        0x7FC0_0000,
+        0x7FFF_FFFF,
+    ];
+
+    /// The float routines timed and compared ([`FLOAT_WORD`]), said in
+    /// the run's log and on the screen.
+    fn float_bench() {
+        panel::note(b"Timing the float|routines: the|generic and ours.");
+        rt::cycle_counter_start();
+        let mut seed = 0x9E37_79B9_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        // A game's range: 1e-5 to 1e4 or so, both signs.
+        let mut pairs = [(0u32, 0u32); FLOAT_PAIRS];
+        for p in &mut pairs {
+            let mut one = || (next() & 0x807F_FFFF) | ((110 + next() % 31) << 23);
+            *p = (one(), one());
+        }
+        type Op = fn(u32, u32) -> u32;
+        let ops: [(&str, Op, Op, Op); 3] = [
+            ("add", generic_add, rust_add, rp_hal_mem::asm::add),
+            ("sub", generic_sub, rust_sub, rp_hal_mem::asm::sub),
+            ("mul", generic_mul, rust_mul, rp_hal_mem::asm::mul),
+        ];
+        for (name, generic, rust, asm) in ops {
+            let g = cycles_per_call(&pairs, generic);
+            let r = cycles_per_call(&pairs, rust);
+            let a = cycles_per_call(&pairs, asm);
+            // Every result of both of ours against the generic one: the
+            // game's range, every edge with every edge in both signs, near
+            // numbers (cancellation, carries, ties) and bits of any kind.
+            let nan = |v: u32| v & 0x7FFF_FFFF > 0x7F80_0000;
+            let mut checked = 0u32;
+            let mut differ = 0u32;
+            let mut first = None;
+            let mut check = |x: u32, y: u32| {
+                let want = generic(x, y);
+                for got in [rust(x, y), asm(x, y)] {
+                    checked += 1;
+                    if got != want && !(nan(got) && nan(want)) {
+                        differ += 1;
+                        first.get_or_insert((x, y, got, want));
+                    }
+                }
+            };
+            for &(x, y) in &pairs {
+                check(x, y);
+            }
+            for &x in &FLOAT_EDGES {
+                for &y in &FLOAT_EDGES {
+                    for (sx, sy) in [(0, 0), (1 << 31, 0), (0, 1 << 31), (1 << 31, 1 << 31)] {
+                        check(x | sx, y | sy);
+                    }
+                }
+            }
+            for _ in 0..32_768 {
+                let x = next();
+                let e = (x >> 23) & 0xFF;
+                let eb = e.saturating_sub(next() % 28).min(254);
+                let y = (next() & 0x8000_0000) | (eb << 23) | ((x ^ (next() & 0xFF)) & 0x007F_FFFF);
+                check(x, y);
+                check(next(), next());
+            }
+            let _ = writeln!(
+                Out,
+                "float: {name}: the generic {}.{} cycles, ours in Rust {}.{}, in assembly {}.{}; {checked} results compared, {differ} differ",
+                g / 10,
+                g % 10,
+                r / 10,
+                r % 10,
+                a / 10,
+                a % 10
+            );
+            if let Some((x, y, got, want)) = first {
+                let _ = writeln!(
+                    Out,
+                    "float: {name}: the first that differs: {x:#010x}, {y:#010x} gave {got:#010x}, the generic {want:#010x}"
+                );
+            }
+        }
     }
 
     /// The samples onto the card ([`SAMPLE_FILE`]), and what they are in
@@ -907,6 +1073,9 @@ mod image {
             STEPS,
             b"The program starts|and reads its files.|This can take|minutes: the clock|below keeps going.",
         );
+        if args[..arg_count].iter().any(|a| a.to_bytes() == FLOAT_WORD) {
+            float_bench();
+        }
         let sampling = args[..arg_count]
             .iter()
             .any(|a| a.to_bytes() == SAMPLE_WORD);

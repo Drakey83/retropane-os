@@ -52,7 +52,7 @@ pub const LOW_MEMORY: u8 = 1;
 #[must_use]
 pub fn args() -> String {
     format!(
-        "+map {MAP} -rpfps -rpend {PLAY_SECS} -rplimit {LIMIT_SECS} -rpendshot -rpsample -rpbase /{FOLDER}/game -rodir /Ports"
+        "+map {MAP} -rpfps -rpend {PLAY_SECS} -rplimit {LIMIT_SECS} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports"
     )
 }
 
@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(after("-rpbase"), Some("/rp-xash/game"));
         assert_eq!(after("-rodir"), Some("/Ports"));
         assert!(words.contains(&"-rpfps") && words.contains(&"-rpendshot"));
-        assert!(words.contains(&"-rpsample"));
+        assert!(words.contains(&"-rpsample") && words.contains(&"-rpfloat"));
         // Nothing that fills the 64 KiB run log, nothing written while
         // frames are timed.
         for loud in ["-dev", "-rpmemlist", "-rpshot", "-log"] {

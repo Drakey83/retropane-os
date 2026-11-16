@@ -7,5 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# The float routines exported in place of compiler_builtins' (R282): the
+# game modules' build only (xtask/src/main.rs, `arithmetic`).
+float = []
+
 [lints]
 workspace = true

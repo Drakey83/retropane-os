@@ -1594,6 +1594,10 @@ fn arithmetic() -> Result<Vec<PathBuf>> {
             "-Zjson-target-spec",
             "-p",
             "rp-hal-mem",
+            // The float routines of apps-and-packs.md's layer 2 in place
+            // of compiler_builtins' (R282): the modules only.
+            "--features",
+            "float",
             "--message-format=json",
         ])
         .env("RP_BUILD_ID", build_id())
