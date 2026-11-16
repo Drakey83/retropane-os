@@ -281,6 +281,34 @@ Which background the port shows is a choice about the picture, and the
 owner's (R275). Not measured: what a map needs (4.9 MiB of heap are free
 at the menu), any frame time.
 
+**The background, done once on the PC (the owner: "do exactly 640 x 480";
+"is there no rule 0 option?").** Two things were found first: the engine
+does not fit a picture to the video mode (it keeps every piece at its
+stored size and stretches it in each frame, so the mode being 640 x 480
+saved nothing), and in this copy the 800 x 600 pieces are all black: the
+artwork is only the HD set. So the PC's preparation of the game's files
+(`xtask/src/hlprep.rs`) makes the background for the screen: the HD
+picture brought to exactly 640 x 480 (an area average in linear light,
+its shape kept, the sides cut off equally as the menu itself would), cut
+to the screen's 16-bit colours by error diffusion (the engine's own cut
+drops the low bits, which bands a dark glow), and written as one plain
+picture file beside the game (`retropane/background.tga`). The menu loads
+that file if it is there; nothing on the device scales or decodes.
+
+| | The engine's own way (HD set) | Prepared on the PC |
+|---|---|---|
+| The renderer's pool in the menu | 14.1 MiB when the heap ran out, 13.1 MiB of it the pieces | 8.7 MiB |
+| All pools / heap in the menu | out of memory | 16.55 MiB / 18 MiB of 23.9 |
+| Read at a start | 105 pieces, 20 MiB | one file, 900 KiB |
+| Work in a frame | every piece stretched | one picture drawn one pixel to one |
+
+The test image can now show a frame: with `-rpshot` the engine writes its
+30th frame to the card and `cargo xtask emu-xash` turns it into
+`target/xash-modules/frame.png`. That is how the menu was seen for the
+first time (the artwork, the logo, the eight menu lines, the right way
+up). The pictures are the owner's to judge (R269) and are kept outside
+the repository: they are Valve's artwork.
+
 Also fixed on the way: a module's file is found from the card's root
 wherever the program's current folder is; the modules no longer carry the
 building PC's folder names (the engine prints its source files' names:

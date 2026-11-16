@@ -95,8 +95,9 @@ mod image {
     /// The program's command line: its name, and the engine's own word for
     /// "say what you are doing" (a test image's log is its result).
     /// `-rpmemlist` (ports/xash/platform/in_rp.c) lists the engine's
-    /// memory pools every five seconds.
-    const ARGS: [&core::ffi::CStr; 4] = [c"xash3d", c"-dev", c"2", c"-rpmemlist"];
+    /// memory pools every five seconds; `-rpshot` (vid_rp.c) writes its
+    /// 30th frame to the card for the PC to look at.
+    const ARGS: [&core::ffi::CStr; 5] = [c"xash3d", c"-dev", c"2", c"-rpmemlist", c"-rpshot"];
 
     type Sd = SdCard<PxaMmc<Mmio, Dma>>;
 

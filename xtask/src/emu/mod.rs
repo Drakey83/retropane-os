@@ -1025,6 +1025,61 @@ fn files_under(dir: &Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
+/// The frame the engine wrote to the card (`-rpshot`, vid_rp.c): where,
+/// and its size in pixels.
+const XASH_FRAME: (&str, u32, u32) = ("rp-xash/frame.565", 640, 480);
+
+/// RGB 5-6-5 words (low byte first) as red, green, blue bytes, each
+/// colour's bits repeated into its low bits (so white is 255, 255, 255).
+fn rgb565_to_rgb(words: &[u8]) -> Vec<u8> {
+    words
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .flat_map(|w| {
+            let v = u16::from_le_bytes([w[0], w[1]]);
+            let (r, g, b) = ((v >> 11) as u8, ((v >> 5) & 63) as u8, (v & 31) as u8);
+            [
+                (r << 3) | (r >> 2),
+                (g << 2) | (g >> 4),
+                (b << 3) | (b >> 2),
+            ]
+        })
+        .collect()
+}
+
+/// The frame the engine wrote to the emulated card `sd`, as a PNG at
+/// `png`; whether there was one.
+fn xash_frame(sd: &Path, png: &Path) -> Result<bool, String> {
+    let data = std::fs::read(sd).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let vol = rp_fat::AnyVolume::mount(card::Disk(data), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let (mut work, mut room) = (vec![0u8; 64 * 1024], vec![0u8; 16]);
+    let mut files: rp_port::files::Files<'_, card::Disk, 2> =
+        rp_port::files::Files::new(vol, &mut work, &mut room);
+    let Ok(fd) = files.open(XASH_FRAME.0.as_bytes()) else {
+        return Ok(false);
+    };
+    let mut words = vec![0u8; (XASH_FRAME.1 * XASH_FRAME.2 * 2) as usize];
+    let mut got = 0;
+    while got < words.len() {
+        match files.read(fd, &mut words[got..]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got += n,
+        }
+    }
+    if got != words.len() {
+        return Err(format!(
+            "{}: {got} bytes on the card, not a whole frame's {}",
+            XASH_FRAME.0,
+            words.len()
+        ));
+    }
+    let picture = crate::ui_preview::png_rgb(XASH_FRAME.1, XASH_FRAME.2, &rgb565_to_rgb(&words));
+    std::fs::write(png, picture).map_err(|e| format!("{}: {e}", png.display()))?;
+    Ok(true)
+}
+
 /// Whether the file at `path` is left off the card: `skip` names parts of
 /// paths, lower case, with commas between.
 fn left_off(path: &str, skip: &str) -> bool {
@@ -1108,6 +1163,30 @@ pub fn boot_xash_game(
         vol.put(&format!("{XASH_FOLDER}/{name}"), bytes, &mut work)
             .map_err(|e| format!("{name} onto the card: {}", e.name()))?;
     }
+    // The PC's preparation of the game's files (xtask/src/hlprep.rs): the
+    // menu's background made for the screen, beside the owner's files.
+    match crate::hlprep::background(&game.join("valve"))? {
+        Some((file, layout)) => {
+            eprintln!(
+                "    the menu's background made for the screen from {layout}: {} KiB",
+                file.len() / 1024
+            );
+            let shown = root
+                .join("target")
+                .join("xash-modules")
+                .join("background.png");
+            if let Some(p) = crate::hlprep::decode_piece(&file) {
+                let _ = std::fs::write(&shown, crate::ui_preview::png_rgb(p.w, p.h, &p.rgb));
+            }
+            vol.put(
+                &format!("Ports/valve/{}", crate::hlprep::BACKGROUND),
+                &file,
+                &mut work,
+            )
+            .map_err(|e| format!("the background onto the card: {}", e.name()))?;
+        }
+        None => eprintln!("    the game has no menu background in pieces"),
+    }
     for (rel, path) in &files {
         let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         vol.put(rel, &data, &mut work)
@@ -1121,7 +1200,7 @@ pub fn boot_xash_game(
         .and_then(|s| s.parse().ok())
         .unwrap_or(300);
     let image = crate::arm_release(root).join("rp-port-runner");
-    boot(
+    let ran = boot(
         root,
         &Boot {
             image: &image,
@@ -1135,7 +1214,16 @@ pub fn boot_xash_game(
             then: None,
             timeout: Duration::from_secs(secs),
         },
-    )
+    );
+    // The frame the engine wrote, whether or not the text asked for came.
+    let png = root.join("target").join("xash-modules").join("frame.png");
+    let _ = std::fs::remove_file(&png);
+    match xash_frame(&sd, &png) {
+        Ok(true) => eprintln!("    the engine's 30th frame: {}", png.display()),
+        Ok(false) => eprintln!("    the engine wrote no frame to the card"),
+        Err(e) => eprintln!("    the engine's frame was not read: {e}"),
+    }
+    ran
 }
 
 /// Boots the module runner with the Half-Life port's modules on its card
@@ -3577,6 +3665,23 @@ mod tests",
         let press = &press[..press.find("};").expect("press end")];
         assert!(!press.contains("sleep"), "press must wait on the screen");
         assert!(body.contains("\"-icount\""), "guest time from instructions");
+    }
+
+    #[test]
+    fn a_frame_s_words_become_red_green_blue() {
+        // Black, white, pure red, green and blue, and a mid grey: low
+        // byte first.
+        let words = [
+            0x00, 0x00, 0xFF, 0xFF, 0x00, 0xF8, 0xE0, 0x07, 0x1F, 0x00, 0x10, 0x84,
+        ];
+        assert_eq!(
+            rgb565_to_rgb(&words),
+            [
+                0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 132, 130, 132
+            ]
+        );
+        // Half a word at the end is not a pixel.
+        assert_eq!(rgb565_to_rgb(&[0xFF, 0xFF, 0xFF]).len(), 3);
     }
 
     #[test]

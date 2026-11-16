@@ -1,3 +1,34 @@
+diff --git a/controls/BackgroundBitmap.cpp b/controls/BackgroundBitmap.cpp
+index 0b087a4..d50f111 100644
+--- a/controls/BackgroundBitmap.cpp
++++ b/controls/BackgroundBitmap.cpp
+@@ -219,6 +219,26 @@ bool CMenuBackgroundBitmap::LoadSteamBackground( bool gamedirOnly )
+ 
+ 	bool loaded = false;
+ 
++#if XASH_RETROPANE
++	// the background the PC's preparation of the game's files made for this
++	// screen (RetroPane's xtask/src/hlprep.rs): one picture of the screen's
++	// size in the screen's own colours, drawn one pixel to one
++	if( EngFuncs::FileExists( "retropane/background.tga", gamedirOnly ))
++	{
++		bimage_t whole;
++
++		if(( whole.hImage = EngFuncs::PIC_Load( "retropane/background.tga" )))
++		{
++			whole.coord.x = whole.coord.y = 0;
++			whole.size.w = EngFuncs::PIC_Width( whole.hImage );
++			whole.size.h = EngFuncs::PIC_Height( whole.hImage );
++			s_SteamBackgroundImageSize = whole.size;
++			s_SteamBackground.AddToTail( whole );
++			return true;
++		}
++	}
++#endif
++
+ 	// try 25'th anniversary update background first
+ 	if( FBitSet( gMenu.m_gameinfo.flags, GFL_HD_BACKGROUND ))
+ 		afile = (char *)EngFuncs::COM_LoadFile( "resource/HD_BackgroundLayout.txt" );
 diff --git a/sdk_includes/public/build.h b/sdk_includes/public/build.h
 index b92c51e..8142856 100644
 --- a/sdk_includes/public/build.h

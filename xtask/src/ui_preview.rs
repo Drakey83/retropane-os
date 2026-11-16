@@ -546,7 +546,7 @@ pub fn run(root: &Path) -> Result<(), String> {
 
 /// A PNG of `w` x `h` 8-bit RGB pixels, zlib-stored (no compression: a
 /// preview, never shipped, needs no encoder dependency).
-fn png_rgb(w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
+pub(crate) fn png_rgb(w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
     let mut raw = Vec::with_capacity((w as usize * 3 + 1) * h as usize);
     for row in rgb.chunks(w as usize * 3).take(h as usize) {
         raw.push(0);

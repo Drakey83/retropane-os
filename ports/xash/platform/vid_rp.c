@@ -129,10 +129,40 @@ void *SW_LockBuffer( void )
 	return vid_rp.buffer;
 }
 
+/*
+A test image's eye: with -rpshot on the command line the 30th finished
+frame is written to the card as it is in the buffer (640 x 480 words of
+RGB 5-6-5, rows from the top), in the runner's folder. The PC turns it
+into a picture (`cargo xtask emu-xash`): until the port layer has a screen
+call, this is how a frame is looked at.
+*/
+#define RP_SHOT_FRAME 30
+#define RP_SHOT_FILE  "/rp-xash/frame.565"
+
+static void RP_Shot( void )
+{
+	FILE *f;
+
+	if( !Sys_CheckParm( "-rpshot" ))
+		return;
+
+	f = fopen( RP_SHOT_FILE, "wb" );
+	if( !f )
+	{
+		Con_Printf( S_ERROR "frame %u not written: %s could not be made\n", vid_rp.frames, RP_SHOT_FILE );
+		return;
+	}
+	fwrite( vid_rp.buffer, sizeof( word ), RP_WIDTH * RP_HEIGHT, f );
+	fclose( f );
+	Con_Printf( "frame %u written to %s\n", vid_rp.frames, RP_SHOT_FILE );
+}
+
 void SW_UnlockBuffer( void )
 {
 	// the frame is whole: where the port layer's screen call will go
 	vid_rp.frames++;
+	if( vid_rp.frames == RP_SHOT_FRAME )
+		RP_Shot();
 }
 
 /*

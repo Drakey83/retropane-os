@@ -15,6 +15,7 @@ mod frames;
 mod g7;
 mod gate;
 mod hl_mockups;
+mod hlprep;
 mod lookcheck;
 mod measure;
 mod module;
@@ -254,7 +255,10 @@ commands:
             with RETROPANE_HL_FILES=<the folder holding valve> the card
             gets the game's files too and the run is shown, not checked
             (RETROPANE_XASH_UNTIL, RETROPANE_XASH_SECS; RETROPANE_XASH_SKIP
-            leaves files off the card by a part of their path)
+            leaves files off the card by a part of their path); the
+            menu's background is made for the screen on the way
+            (xtask/src/hlprep.rs) and the engine's 30th frame comes back
+            as target/xash-modules/frame.png
   emu-chello  the first C program (rp-port-hello: printf, the heap, software
             floats, the maths library, checked by itself) in the emulator
   emu-mbx   only the GPU check (rp-mbx: fills by the emulated MBX 2D
