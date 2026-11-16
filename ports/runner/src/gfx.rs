@@ -393,6 +393,7 @@ const fn warmed(c: Cell) -> Cell {
     Cell { warm: true, ..c }
 }
 
+#[allow(dead_code, reason = "runs 23-26's cells")]
 const fn split(c: Cell, part: Part) -> Cell {
     Cell { part, ..c }
 }
@@ -481,12 +482,18 @@ const BUT_648: [(usize, u32); 7] = dell_but(0x648, 0);
 const BUT_6D8: [(usize, u32); 7] = dell_but(0x6D8, 0x0100_0000);
 #[allow(dead_code, reason = "run 19's cells")]
 const BUT_6DC: [(usize, u32); 7] = dell_but(0x6DC, 0);
+/// Run 27: `0x664`'s per-tile wait (bits 0-3; GC2AT: the binner's tile
+/// race cut 83% at 15, 2.8 us a step a render) against the TA path's
+/// stalls, every other frame.
+const WAIT_15: &[(usize, u32)] = &[(0x664, 15)];
+const WAIT_8: &[(usize, u32)] = &[(0x664, 8)];
+const WAIT_4: &[(usize, u32)] = &[(0x664, 4)];
 const CELLS: [Cell; 6] = [
     cell(P108, &LAY_SDRAM, NONE, "control", 40),
-    split(cell(P136, &LAY_SDRAM, NONE, "tiny model strips (3 x 3 px) out, every other frame", 120), Part::TinyModelStrips),
-    split(cell(P136, &LAY_SDRAM, NONE, "model strips with a sliver (< 1/4 px) out, every other frame", 120), Part::ThinModelStrips),
-    warmed(cell(P136, &LAY_SDRAM, NONE, "a background-only render after each hang", 120)),
-    split(cell(P136, &LAY_SDRAM, NONE, "no model strips, every other frame", 120), Part::NoModelStrips),
+    warmed(cell(P136, &LAY_SDRAM, WAIT_15, "0x664 = 15 every other frame, a warm-up after each hang", 120)),
+    warmed(cell(P136, &LAY_SDRAM, WAIT_8, "0x664 = 8 every other frame, a warm-up after each hang", 120)),
+    warmed(cell(P136, &LAY_SDRAM, WAIT_4, "0x664 = 4 every other frame, a warm-up after each hang", 120)),
+    warmed(cell(P136, &LAY_SDRAM, WAIT_15, "0x664 = 15 again, every other frame, a warm-up after each hang", 120)),
     cell(P108, &LAY_SDRAM, NONE, "control again", 40),
 ];
 /// The ladder starts after this many frames (the map drawn and steady).
@@ -667,6 +674,9 @@ struct Open {
     lay: &'static Lay,
     /// Render words in place of the start table's (R295's cells).
     words: &'static [(usize, u32)],
+    /// Whether this frame's render takes [`Self::words`] (run 27: every
+    /// other frame, the frames between them the control).
+    words_on: bool,
     /// A render past this has hung.
     limit_us: u32,
     /// The render block as the last hang left it, read before the reset.
@@ -919,7 +929,7 @@ impl Chip {
             l.ok,
             core::str::from_utf8(&l.pattern[..shown]).unwrap_or("")
         ));
-        if c.part != Part::All {
+        if c.part != Part::All || !c.words.is_empty() {
             (self.log)(format_args!(
                 "rp-gfx ladder {}: with the change {} hangs of {} frames, without it {} of {} (`h`/`,` the frames with it); {} strips left out by it in all",
                 l.cell + 1,
@@ -1061,7 +1071,8 @@ impl Open {
         regs.write32(MBX + reg::ENABLE, self.en | m3::RENDER_DONE);
         self.rendering = Some(rt::ticks());
         for (off, v) in binner::start_table(&self.lay.from, SCREEN) {
-            let v = self.words.iter().find(|w| w.0 == off).map_or(v, |w| w.1);
+            let words = if self.words_on { self.words } else { NONE };
+            let v = words.iter().find(|w| w.0 == off).map_or(v, |w| w.1);
             regs.write32(MBX + off, v);
         }
     }
@@ -1197,6 +1208,7 @@ impl Screen for Chip {
             cur: if stepped { self.rung } else { None },
             lay: &LAY_SDRAM,
             words: NONE,
+            words_on: true,
             limit_us: RENDER_LIMIT_US,
             hang_block: None,
             marking: false,
@@ -1264,6 +1276,7 @@ impl Screen for Chip {
         // Run 25: a cell's change on every other frame only, the frames
         // between it its control over the same view (the view moves).
         let variant = self.ladder.as_ref().is_some_and(|l| l.n % 2 == 1);
+        o.words_on = variant || self.ladder.is_none();
         let mut split = Split {
             part: if variant { o.part } else { Part::All },
             put: |p| {

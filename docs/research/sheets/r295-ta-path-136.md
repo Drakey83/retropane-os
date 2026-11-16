@@ -244,3 +244,21 @@ background-only render after each hang.
   rule: one decisive run each): the per-tile wait `0x664` swept by value,
   or the region array rewritten in the checker order that cured the
   binner's tile race; each a run.
+
+## Run 27: the per-tile wait `0x664` (the owner's pick, option C): no cure
+
+At 136.50 / 1, the wait on every other frame, a warm-up after each hang;
+hangs on a frame after a good one, with the wait / without:
+
+| `0x664` | with | without |
+|---|---|---|
+| 15 | 3 of 46 | 9 of 50 |
+| 8 | 8 of 44 | 10 of 44 |
+| 4 | 9 of 48 | 7 of 46 |
+| 15 again | 5 of 52 | 6 of 54 |
+
+All four together: 25 of 190 with the wait, 32 of 194 without: no
+difference beyond the noise. The lead is closed (stop rule: one
+decisive run). A render takes ~1 ms longer at 15. The leads left: the
+region array rewritten in the checker order (the binner's tile-race
+cure), and the warm-up's effect at 133.25 / 1 over a long run.
