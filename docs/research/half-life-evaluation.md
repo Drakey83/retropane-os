@@ -338,6 +338,114 @@ their constructors or a single call); the caches after a load cannot be
 seen in the emulator (R271); the comparison with modules relocated at
 load (R272).
 
+## The test run for the X51v, prepared (2026-11-15, evening)
+
+The owner gave his go for a first run on the X51v ("my go on the test
+run", then "Yes, prepare it"; R278): a frame rate with the software
+renderer and the low-memory experiment build, a floor and not the port's.
+Nothing has run on the X51v yet. What was built for it, each piece checked
+in the emulator:
+
+- **The run's text reaches the PC.** The runner printed only to a serial
+  line the X51v has no connector for. Its own lines and all the engine
+  prints now go to the run log when the loader started the image (and
+  from there onto a card, line by line), to the serial line only in the
+  emulator's direct boot. Never both: a byte down the unconnected line is
+  87 us of waiting once its buffer is full, inside the frames being timed.
+- **A quiet command line.** The runner's built-in command line is the
+  program's name; `-dev 2 -rpmemlist -rpshot` are what `cargo xtask
+  emu-xash` writes to `rp-xash/args.txt`. The device run's whole log was
+  5.5 KiB of the run log's 64 in the emulator.
+- **The screen says what is running** (`ports/runner/src/panel.rs`,
+  `rp_port::progress`): a title, `STEP n of 5` in large text with what the
+  step is, the newest frame rate, a clock that goes on every second (from
+  the program's clock reads and from every card read, so it moves while
+  files are read for minutes), and in small print the command line and
+  when the run ends. The engine's platform layer says its own steps in two
+  kinds of plain line (`rp-step: n/5 text`, `rp-note: text`); the runner
+  knows nothing of the game. The steps: 1 the runner starts (card, sound,
+  modules), 2 the engine starts and reads the game's files, 3 the engine
+  is up and loads the map, 4 the map plays, 5 it ends.
+- **The run ends by itself**: `-rpend 120` (two minutes after the map
+  began to play) or `-rplimit 1200` (twenty minutes on the run's clock,
+  whatever the engine is doing), through the engine's own `quit`, so the
+  codec is brought down, the board's bits put back and the log handed to
+  the loader. `-rpendshot` writes the last frame to the card once, at the
+  end.
+- **The kit** (`cargo xtask xash-kit`, needs `RETROPANE_HL_FILES`): builds
+  the runner and the three modules as the low-memory experiment whatever
+  the environment says, and lays out `target/xash-kit`: the runner's image
+  for `cargo xtask load`, the card's files, and `kit.txt` with each file's
+  SHA-256 and the exact commands. **Every file is inside `rp-xash`**: the
+  three modules, `args.txt`, and the menu's prepared background at
+  `rp-xash/game/valve/retropane/background.tga` (the engine looks in its
+  own write folder before the game's, so nothing has to be put beside the
+  owner's files). The run writes only there too (`-rpbase /rp-xash/game
+  -rodir /Ports`).
+- **`cargo xtask emu-xash-kit [--cf]`**: the kit's own bytes run as the
+  X51v runs them: the owner's game and the kit on an emulated SD card, the
+  loader booted, the image sent as `cargo xtask load` sends it, the run
+  left to its own end. Then the run log the loader sent back is checked
+  (the five steps in order, at least 22 frame-rate lines after the map
+  began to play, the last frame written, the codec down, `the program
+  returned 0`, no overflow, no crash), the last frame is turned into a
+  picture, and the whole card is compared with what the PC put on it.
+
+**The emulator's runs of the kit** (three, all passed): without a CF card
+the engine up at 69 s on the emulated clock, the map playing at 218 s, the
+end at 339 s, 24 frame-rate lines, a run log of 5,478 bytes; with a CF
+card in 55 s, 184 s, 304 s, 23 lines; and the kit as it stands (with the
+line below about signs of life, a CF card in) 53 s, 176 s, 296 s, 23
+lines, 5,605 bytes. In each the last frame shows the map (kept outside
+the repository) and **all 4,262 files of the owner's game (509 MiB) are
+the same byte for byte, none new, none gone, nothing new at the card's
+root**. The kit built again gives the same bytes. The emulator's frame
+rate (about 12 a second) is the PC's and says nothing of the X51v.
+
+**Signs of life.** The loader ends a run that does not check in for 30 s.
+The runner checks in at every card transfer, clock read and printed line,
+keeps the longest gap between two of them, and says it in the run's last
+lines; `emu-xash-kit` fails a run whose longest gap is half the limit. In
+the emulator: 2,736 ms.
+
+**The card log while the runner holds the SD controller** (read from
+`hal/x51v/src/cardlog.rs` and `cardsink.rs`, and seen in both emulator
+runs): the runner's first lines go onto the SD card; when it takes the SD
+controller for the game's files the card log **moves to the CF card if
+one is in** (a line says so, and every later line of the run is on that
+card as it ends), and **with no CF card it pauses** (a line says so): the
+rest of the run is in RAM only, and the loader writes it to the SD card
+when the run comes back. So with a CF card in, a reset in the middle of
+the run keeps the log up to its last line; without one, a reset loses
+everything after the runner's first few lines. The rule 0 option (the
+runner, which owns the SD driver for the run, writing the log's sectors
+itself, so no second card is needed) is R279.
+
+**Not known until it runs on the X51v:**
+
+- The frame rate. It will be a floor: the software renderer (the port
+  draws through the 2700G), an experiment build (R277), and the frames are
+  counted, not shown (no screen call yet, so the turn and the copy to the
+  screen are not in the time).
+- How long the start takes. The emulated card needed about a minute for
+  the engine's start (most of it look-ups of files that are not there,
+  R276) and two and a half more for the map; the X51v's card and CPU are
+  not the emulator's.
+- Whether the loader's 30 s run limit is ever reached. A stretch of pure
+  computing longer than 30 s with no card transfer, clock read or printed
+  line would end the run (cleanly: back to the loader with its log and a
+  report). 2.7 s in the emulator; the X51v's CPU is slower than the PC's
+  by an unknown factor here, and the run's last lines will say.
+- What a crash leaves on the board (R12): the runner turns the codec's
+  power and the speaker amplifier on and puts both back at a clean end; a
+  crash or a run the loader ends leaves them on until the next image
+  takes them or the device is reset.
+- Misaligned reads (R280). The emulator is not known to treat them as the
+  PXA270 does, and the runtime leaves the CPU's alignment-fault bit as it
+  finds it; code that reads a word from an odd address would fault or read
+  a rotated word on the X51v and work in the emulator. Not seen, not ruled
+  out.
+
 ## Findings worth the owner's eye
 
 - **Memory, before anything is loaded:** with the default build the engine
