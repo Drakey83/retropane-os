@@ -9,6 +9,11 @@ ports straight on our driver), ADR-0038 (the three game routes), ADR-0039
 the hardware, rule 1), ADR-0022 (the graphics stack). A design, not a
 result: nothing here works until the X51v shows it.
 
+**Ruled by the owner, 2026-11-16: "Yes, as recommended"** (R287): choice 1
+B (grow from the software renderer's scene code), choice 2 A first (the
+surface cache on the 2700G, 2 B and 2 C measured beside it, the faster
+kept), choice 3 (the tile accelerator, modelled in the emulator: R288).
+
 ## Where the frame goes today (run 7 on the X51v, 240 ms, 4.1 a second)
 
 Run 7's play samples (`target/xash-kit/samples.bin`, 58,201 of them),
@@ -131,7 +136,7 @@ the CPU) before step 3. The models' path (15%) is next after that, step
   the 3D stage today (`rp-glesfeat` M; 2700g.md "the second texture
   unit"): open, not ruled out.
 
-**Ours, for the owner's yes (the three choices below):**
+**Ours (the three choices below, ruled by the owner 2026-11-16):**
 
 ### Choice 1: which of Xash's renderers ref_rp grows from
 
@@ -181,6 +186,21 @@ gains the TA: the vertex stream binned into the same objects and lists
 the fork's 3D model already draws (the words the TA writes are known from
 `rp-glesfeat` and P4). That is the emulator-tracks-device rule, and it
 also lets every later port's renderer be checked before the X51v.
+
+**Step 1b (emulator, 2026-11-16; byte counts are the same on any clock):**
+c1a0's view needs **4,655 KiB of lit surfaces a frame** (16-bit texels at
+the software renderer's mip levels: 203 faces at level 0, 241 at 1, 23 at
+2), **7,053 KiB as power-of-two blocks**: half again as much, the blocks'
+waste. The 3.2 MB cache cannot hold one view, which is the thrash. In the
+2700G's 16 MiB beside two 640 x 480 pictures (1.2 MiB), the tile
+accelerator's parameter memory and the models' textures, 4.6 MB fits;
+7 MB is tight, and walking through a map needs room beyond one view. So
+the atlas wants blocks packed tighter than powers of two (rectangles of
+whole twiddled 8 x 8 squares, or shelves of equal heights), and the
+level-0 faces (443 of 467 at levels 0 and 1) are where the bytes are. To
+measure next with the chip: what the bus's 33 MB/s costs when the view
+turns (a new view's 4.6 MB is about 140 ms to send whole; only the newly
+seen surfaces go, spread over frames) against choice 2 B's lightmaps.
 
 ## What ref_rp is
 

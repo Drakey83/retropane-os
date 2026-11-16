@@ -58,11 +58,13 @@ static cvar_t *rp_emit;
 static uint32_t rp_buf[RP_BUF_WORDS];
 static uint32_t rp_n;
 static const void *rp_state; /* what the last state block named */
+static uint32_t rp_lit_bytes, rp_block_bytes; /* this frame's lit surfaces (step 1b) */
 
 /* Counted over the frames since the last report. */
 static struct
 {
 	uint32_t frames, words, faces, tris, verts, states, nearclipped, dropped, built, relit;
+	uint32_t lit_kib, block_kib, mip[4]; /* the view's lit surfaces (step 1b) */
 } rp_count;
 
 void RP_EmitInit( void )
@@ -92,6 +94,9 @@ static void RP_EmitReport( void )
 		rp_count.states / f, rp_count.nearclipped / f, rp_count.dropped, f );
 	fprintf( stderr, "rp-emit: the surface cache built %u surfaces a frame, %u of them relit in place (a light changed), the rest new or pushed out\n",
 		rp_count.built / f, rp_count.relit / f );
+	fprintf( stderr, "rp-emit: the view's lit surfaces %u KiB a frame (in power-of-two blocks %u KiB); faces by mip level 0-3: %u %u %u %u\n",
+		rp_count.lit_kib / f, rp_count.block_kib / f,
+		rp_count.mip[0] / f, rp_count.mip[1] / f, rp_count.mip[2] / f, rp_count.mip[3] / f );
 	memset( &rp_count, 0, sizeof( rp_count ));
 	since = now;
 }
@@ -132,10 +137,13 @@ void RP_EmitFrame( void )
 	{
 		rp_count.frames++;
 		rp_count.words += rp_n;
+		rp_count.lit_kib += rp_lit_bytes >> 10;
+		rp_count.block_kib += rp_block_bytes >> 10;
 		if( rp_n > RP_BUF_WORDS )
 			rp_count.dropped += rp_n - RP_BUF_WORDS;
 	}
 	rp_n = 0;
+	rp_lit_bytes = rp_block_bytes = 0;
 	rp_state = NULL;
 	RP_EmitReport();
 }
@@ -221,6 +229,28 @@ void RP_EmitTriangle( void )
 	RP_Put( RP_TA_END );
 	rp_count.tris++;
 	rp_count.verts += 3;
+}
+
+/* The smallest power of two at least `v` (v > 0). */
+static inline uint32_t RP_Pow2( uint32_t v )
+{
+	return v <= 1 ? 1 : 1u << ( 32 - __builtin_clz( v - 1 ));
+}
+
+/*
+Step 1b: what the view's lit surfaces take at their mip levels, as the
+cache holds them (16-bit texels) and as power-of-two blocks of an atlas
+(docs/design/ref-rp.md choice 2 A: a buddy allocator in 2700G memory),
+summed in bytes and reported in KiB.
+*/
+static void RP_CountLit( const surfcache_t *c, int miplevel )
+{
+	if( c && c->width )
+	{
+		rp_lit_bytes += c->width * c->height * 2;
+		rp_block_bytes += RP_Pow2( c->width ) * RP_Pow2( c->height ) * 2;
+	}
+	rp_count.mip[miplevel & 3]++;
 }
 
 /* A corner in view space, its texture's s and t. */
@@ -317,6 +347,7 @@ void RP_EmitFace( msurface_t *fa )
 	while( 1 << miplevel > gEngfuncs.Mod_SampleSizeForFace( fa ))
 		miplevel--;
 	cache = D_CacheSurface( fa, miplevel );
+	RP_CountLit( cache, miplevel );
 
 	/* the cache's surfaces as pages of an atlas (128 KiB: a 256 x 256 page
 	   of 16-bit texels): faces on one page share a state block */
