@@ -17,6 +17,7 @@ GNU General Public License for more details.
 #include "client.h"
 #include "vid_common.h"
 #include "platform/platform.h"
+#include <retropane.h>
 
 /*
 The X51v's panel is 480 x 640, upright; the game plays in landscape, so it
@@ -131,7 +132,8 @@ void *SW_LockBuffer( void )
 
 /*
 A test image's eye: with -rpshot on the command line the 30th finished
-frame is written to the card as it is in the buffer (640 x 480 words of
+frame, and then the newest one every ten seconds, is written to the card
+(the same file: the last is what the PC reads) as it is in the buffer (640 x 480 words of
 RGB 5-6-5, rows from the top), in the runner's folder. The PC turns it
 into a picture (`cargo xtask emu-xash`): until the port layer has a screen
 call, this is how a frame is looked at.
@@ -161,8 +163,17 @@ void SW_UnlockBuffer( void )
 {
 	// the frame is whole: where the port layer's screen call will go
 	vid_rp.frames++;
-	if( vid_rp.frames == RP_SHOT_FRAME )
-		RP_Shot();
+	if( vid_rp.frames >= RP_SHOT_FRAME )
+	{
+		static uint64_t next;
+		uint64_t        now = rp_time_us();
+
+		if( now >= next )
+		{
+			next = now + 10000000u;
+			RP_Shot();
+		}
+	}
 }
 
 /*

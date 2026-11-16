@@ -1100,6 +1100,9 @@ const XASH_SECS_ENV: &str = "RETROPANE_XASH_SECS";
 /// path (several with commas, any case): to see what the engine does
 /// without one, the owner's copy untouched.
 const XASH_SKIP_ENV: &str = "RETROPANE_XASH_SKIP";
+/// With [`XASH_GAME_ENV`]: more of the engine's command line (`+map
+/// c1a0`), which the runner reads from `args.txt` in its folder.
+const XASH_ARGS_ENV: &str = "RETROPANE_XASH_ARGS";
 
 /// `cargo xtask emu-xash` with the game's files (`RETROPANE_HL_FILES`):
 /// the modules and the owner's `valve` folder (under `Ports`, as on his
@@ -1162,6 +1165,16 @@ pub fn boot_xash_game(
     for (name, bytes) in modules {
         vol.put(&format!("{XASH_FOLDER}/{name}"), bytes, &mut work)
             .map_err(|e| format!("{name} onto the card: {}", e.name()))?;
+    }
+    if let Ok(args) = std::env::var(XASH_ARGS_ENV)
+        && !args.trim().is_empty()
+    {
+        vol.put(
+            &format!("{XASH_FOLDER}/args.txt"),
+            args.trim().as_bytes(),
+            &mut work,
+        )
+        .map_err(|e| format!("args.txt onto the card: {}", e.name()))?;
     }
     // The PC's preparation of the game's files (xtask/src/hlprep.rs): the
     // menu's background made for the screen, beside the owner's files.

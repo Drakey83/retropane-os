@@ -96,8 +96,40 @@ mod image {
     /// "say what you are doing" (a test image's log is its result).
     /// `-rpmemlist` (ports/xash/platform/in_rp.c) lists the engine's
     /// memory pools every five seconds; `-rpshot` (vid_rp.c) writes its
-    /// 30th frame to the card for the PC to look at.
+    /// 30th frame to the card, and one every ten seconds after, for the
+    /// PC to look at.
     const ARGS: [&core::ffi::CStr; 5] = [c"xash3d", c"-dev", c"2", c"-rpmemlist", c"-rpshot"];
+    /// More of the command line, if this file is in the runner's folder:
+    /// words with spaces between (`+map c1a0`). How a test run says what
+    /// the program should do without the image being built again.
+    const ARGS_FILE: &str = "args.txt";
+    /// The most of that file that is read.
+    const ARGS_ROOM: usize = 256;
+    static ARGS_TEXT: rt::Slot<[u8; ARGS_ROOM]> = rt::Slot::new();
+
+    /// The words of `text` (NUL where its spaces and line ends were, by
+    /// [`words`]) added to `args` after its first `have`; how many `args`
+    /// holds then. Words past its room are left off.
+    fn add_words(
+        text: &'static [u8],
+        args: &mut [&'static core::ffi::CStr; rp_hal_cabi::ARGS],
+        mut have: usize,
+    ) -> usize {
+        let mut at = 0;
+        while at < text.len() && have < args.len() {
+            match core::ffi::CStr::from_bytes_until_nul(&text[at..]) {
+                Ok(word) => {
+                    if !word.is_empty() {
+                        args[have] = word;
+                        have += 1;
+                    }
+                    at += word.count_bytes() + 1;
+                }
+                Err(_) => break,
+            }
+        }
+        have
+    }
 
     type Sd = SdCard<PxaMmc<Mmio, Dma>>;
 
@@ -363,6 +395,34 @@ mod image {
             let _ = writeln!(uart, "runner: {FOLDER}/{PROGRAM} is not on the card");
             rp_image::fail("the program's module is not on the card")
         };
+        // The rest of the command line, if the card has one.
+        let mut args = [c""; rp_hal_cabi::ARGS];
+        args[..ARGS.len()].copy_from_slice(&ARGS);
+        let mut arg_count = ARGS.len();
+        let alen = FOLDER.len() + 1 + ARGS_FILE.len();
+        let mut apath = [0u8; 64];
+        apath[..FOLDER.len()].copy_from_slice(FOLDER.as_bytes());
+        apath[FOLDER.len()] = b'/';
+        apath[FOLDER.len() + 1..alen].copy_from_slice(ARGS_FILE.as_bytes());
+        if let Ok(afd) = files.open(&apath[..alen])
+            && let Some(text) = ARGS_TEXT.put_with(|| [0; ARGS_ROOM])
+        {
+            // The last byte stays NUL: the last word ends.
+            let n = files.read(afd, &mut text[..ARGS_ROOM - 1]).unwrap_or(0);
+            let _ = files.close(afd);
+            for b in &mut text[..n] {
+                if b.is_ascii_whitespace() {
+                    *b = 0;
+                }
+            }
+            let text: &'static [u8] = text;
+            arg_count = add_words(&text[..=n], &mut args, arg_count);
+            let _ = write!(uart, "runner: the command line has");
+            for a in &args[ARGS.len()..arg_count] {
+                let _ = write!(uart, " {}", a.to_str().unwrap_or("?"));
+            }
+            let _ = writeln!(uart, " from {ARGS_FILE}");
+        }
         let peeked = Modules::new(&mut *pool, module::POOL, identity)
             .peek(&mut |into| files.read(fd, into).ok());
         let _ = files.close(fd);
@@ -409,7 +469,7 @@ mod image {
         check_libraries(s, &mut uart);
         let sys: &'static mut dyn Sys = s;
         rp_hal_cabi::start(sys, exit);
-        let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &ARGS);
+        let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);
         // The program's end stopped the DMA engine (`Sys::end`): the codec
         // down, the board as it was found.
         if let Some(mut a) = audio {
