@@ -163,7 +163,9 @@ const char *rp_module_error(void);
  *    (16-bit texels, twiddled) lies wholly inside the texture memory;
  *  - a strip: RP_GFX_STRIP(n), then n corners of RP_GFX_CORNER_WORDS
  *    words each (x, y, z, 1/w, colour 0xAARRGGBB, u, v; floats but the
- *    colour), after a state block.
+ *    colour), after a state block;
+ *  - a fan: RP_GFX_FAN(n), then n corners as a strip's (every triangle
+ *    shares the first corner).
  * Anything else refuses the whole frame (EINVAL), nothing of it drawn.
  */
 struct rp_gfx {
@@ -178,6 +180,7 @@ struct rp_gfx {
 
 #define RP_GFX_STATE 0x10000057u
 #define RP_GFX_STRIP(n) (0x40000000u | (uint32_t)(n)) /* 3 to 255 corners */
+#define RP_GFX_FAN(n) (0x50000000u | (uint32_t)(n))   /* 3 to 255 corners */
 #define RP_GFX_CORNER_WORDS 7
 
 /* Takes the screen: 0 with *g filled in, or -1 with errno. */

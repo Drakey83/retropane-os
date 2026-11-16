@@ -10,8 +10,8 @@
 //! frame whose words are the TA's own (no state machine in between), in a
 //! form with one difference: a strip's word carries its corner count, so
 //! the check knows where every primitive ends without a marker that a
-//! vertex word could equal. Only the state block and the strip the port
-//! layer knows pass, and only textures inside the program's own texture
+//! vertex word could equal. Only the state block, the strip and the fan the
+//! port layer knows pass, and only textures inside the program's own texture
 //! memory: a wrong word stops the frame at the check instead of hanging
 //! the chip (the TA hangs on words it does not take: audit C80, R288).
 
@@ -26,6 +26,11 @@ pub const STATE_WORDS: usize = 7;
 /// A strip of `n` corners: this, `| n`. The TA is sent the strip word
 /// without the count.
 pub const STRIP: u32 = 0x4000_0000;
+/// A fan of `n` corners (the first corner shared by every triangle: the
+/// TA's own fan, primitive word `0x5`, as Dell's GLES driver sends it;
+/// docs/design/ref-rp.md step 4): this, `| n`. The TA is sent the fan word
+/// without the count. Its corner counts are the strip's.
+pub const FAN: u32 = 0x5000_0000;
 /// The fewest and the most corners a strip may have (a face of the world
 /// clipped by the near plane has at most its corners plus one: the emitter's
 /// `RP_MAX_CORNERS` + 1).
@@ -77,7 +82,7 @@ pub enum Piece {
 pub struct Counts {
     /// State blocks.
     pub states: u32,
-    /// Strips.
+    /// Strips and fans.
     pub strips: u32,
     /// Corners.
     pub corners: u32,
@@ -95,11 +100,11 @@ pub struct Refused {
 /// See [`Refused`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
-    /// Neither a state block nor a strip.
+    /// Neither a state block, a strip nor a fan.
     Unknown,
-    /// A strip before any state block.
+    /// A strip or fan before any state block.
     NoState,
-    /// A strip's corner count outside [`STRIP_CORNERS`].
+    /// A strip's or fan's corner count outside [`STRIP_CORNERS`].
     Corners,
     /// The frame ends inside a state block or a strip.
     Short,
@@ -173,7 +178,7 @@ fn walk(
                 return Ok(c);
             }
             at += 1 + STATE_WORDS;
-        } else if w & 0xFFFF_FF00 == STRIP {
+        } else if w & 0xFFFF_FF00 == STRIP || w & 0xFFFF_FF00 == FAN {
             if !stated {
                 return refuse(at, Why::NoState);
             }
@@ -187,7 +192,7 @@ fn walk(
             };
             c.strips += 1;
             c.corners += n;
-            if !(put(Piece::Word(STRIP))
+            if !(put(Piece::Word(w & 0xFFFF_FF00))
                 && corners.iter().all(|&v| put(Piece::Word(v)))
                 && put(Piece::End))
             {
@@ -272,6 +277,33 @@ mod tests {
         want.extend((0..21).map(|k| Piece::Word(0xF000_0000 + k)));
         want.push(Piece::End);
         assert_eq!(out, want);
+    }
+
+    #[test]
+    fn a_fan_goes_through_as_the_ta_s_fan_word() {
+        let mut f = state(0x80_0000).to_vec();
+        f.push(FAN | 5);
+        f.extend((0..35).map(|k| 200 + k));
+        f.extend(strip(3, 0));
+        let (r, out) = run(&f);
+        assert_eq!(
+            r,
+            Ok(Counts {
+                states: 1,
+                strips: 2,
+                corners: 8
+            })
+        );
+        assert_eq!(out[8], Piece::Word(FAN));
+        assert_eq!(out[9], Piece::Word(200));
+        assert_eq!(out[43], Piece::Word(234));
+        assert_eq!(out[44], Piece::End);
+        assert_eq!(out[45], Piece::Word(STRIP));
+        // A fan's corner counts are the strip's.
+        let mut g = state(0x80_0000).to_vec();
+        g.push(FAN | 2);
+        g.extend(0..14);
+        assert_eq!(run(&g).0, Err(Refused { at: 8, why: Why::Corners }));
     }
 
     #[test]

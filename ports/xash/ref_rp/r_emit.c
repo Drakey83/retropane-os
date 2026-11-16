@@ -44,8 +44,8 @@ Step 3 (docs/design/ref-rp.md, "Step 3: the world on the 2700G"): with
 video memory: lit once into a scratch buffer, written straight into a
 twiddled atlas page (512 x 512 RGB565) on shelves of whole 8 x 8
 squares, and kept until its light changes; a full atlas drops its least
-recently drawn page. The models, sprites, particles, the sky, water and
-2D are step 4's and not drawn yet.
+recently drawn page. The models are step 4a's (below); sprites,
+particles, the sky, water and 2D are step 4's later sub-steps.
 */
 
 #include <stdio.h>
@@ -70,7 +70,7 @@ int rp_emit_on;
    by the setting `rp_both` 1; 2 once both are written). `rp_gpu` says the
    2700G draws the frames. */
 int rp_both;
-static cvar_t *rp_both_var, *rp_gpu;
+static cvar_t *rp_both_var, *rp_gpu, *rp_fan;
 /* D_CacheSurface lights into the scratch, not the RAM cache (r_surf.c). */
 int rp_scratch;
 
@@ -86,14 +86,17 @@ static struct
 	uint32_t frames, words, faces, tris, verts, states, nearclipped, dropped, built, relit;
 	uint32_t lit_kib, block_kib, mip[4]; /* the view's lit surfaces (step 1b) */
 	uint32_t uploads, upload_kib, evicted, skipped, refused, models; /* step 3 */
+	uint32_t meshes, meshes_skipped, strips, fans, cmds_near, cmds_skipped, wraps; /* step 4a */
 	uint64_t upload_us;
 } rp_count;
+static uint32_t rp_skins_total; /* step 4a: skins written since the start */
 
 void RP_EmitInit( void )
 {
 	rp_emit = gEngfuncs.Cvar_Get( "rp_emit", "0", 0, "ref_rp: 1 the TA's words into RAM, no pixels (step 1); 2 the world drawn by the 2700G (step 3)" );
 	rp_both_var = gEngfuncs.Cvar_Get( "rp_both", "0", 0, "ref_rp: 1 asks for a frame drawn both ways (the test's end shot), 2 once written" );
 	rp_gpu = gEngfuncs.Cvar_Get( "rp_gpu", "0", 0, "ref_rp: 1 while the 2700G draws the frames" );
+	rp_fan = gEngfuncs.Cvar_Get( "rp_fan", "1", 0, "ref_rp: 1 a model's fans as the TA's fans, 0 as strips" );
 }
 
 /* The port layer's clock (ports/include/retropane.h; the runner's). */
@@ -125,6 +128,11 @@ static void RP_EmitReport( void )
 		fprintf( stderr, "rp-emit: video memory: %u surfaces written a frame (%u KiB, %u us), %u pages dropped, %u faces not drawn (no room or too large), %u model triangles not drawn (step 4); %u frames refused by the port layer\n",
 			rp_count.uploads / f, rp_count.upload_kib / f, (uint32_t)( rp_count.upload_us / f ),
 			rp_count.evicted, rp_count.skipped / f, rp_count.models / f, rp_count.refused );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: models a frame: %u meshes drawn, %u not (blended: step 4c), %u strips and %u fans; %u commands not drawn (a corner behind the near plane), %u too long; %u corners wrapped; %u skins written in all (fans as %s)\n",
+			rp_count.meshes / f, rp_count.meshes_skipped / f, rp_count.strips / f, rp_count.fans / f,
+			rp_count.cmds_near / f, rp_count.cmds_skipped, rp_count.wraps / f, rp_skins_total,
+			rp_fan->value != 0.0f ? "the TA's fans" : "strips" );
 	memset( &rp_count, 0, sizeof( rp_count ));
 	since = now;
 }
@@ -369,6 +377,13 @@ Step 3: the lit surfaces in video memory, the world to the 2700G
 #define RP_TEX1( addr ) ( 0x0E000000u | (( addr ) >> 7 ))
 #define RP_TEX2       0x86086610u
 #define RP_CLIP       ( 1u << 29 | 29u << 14 | 39u )
+/* A model's: Gouraud (TSP bit 22, rp-mbx3d run 6); a skin with see-through
+   texels ARGB1555 (format 0) drawn with the alpha test "greater than 0"
+   (ISP bits 31-29 the compare in GL order, 28-21 the reference:
+   rp-glesfeat A). */
+#define RP_TSP_GOURAUD    ( 1u << 22 )
+#define RP_ISP_ALPHA      0x80000000u
+#define RP_TEX0_PAGE_1555 ( 0xA0000000u | 6u << 24 | 6u << 20 | 0u << 13 )
 
 typedef struct
 {
@@ -766,6 +781,310 @@ static void RP_ChipFace( msurface_t *fa )
 	rp_count.faces++;
 	rp_count.tris += m - 2;
 	rp_count.verts += m;
+}
+
+/*
+==============================================================================
+Step 4a: the models on the 2700G (docs/design/ref-rp.md "Step 4")
+==============================================================================
+
+Iterate, don't imitate (rule 0). `ref_soft` hands each of a model's stored
+strips and fans to its triangle interface a vertex at a time and draws
+them as loose triangles (three corners each); `ref_gl` makes a GL call a
+vertex. Here each stored command goes to the TA as one strip or one fan
+(the TA's own fan, primitive word 0x5): a corner a vertex, the triangles
+the chip's. Each skin is written once, at its first use, into the same
+video-memory atlas as the world's lit surfaces (its own size rounded to
+whole 8 x 8 squares, no power-of-two waste, no resampling), RGB565 through
+the renderer's own table; a skin with see-through texels as ARGB1555 drawn
+with the alpha test, the software renderer's skipped texel. The light is
+the vertex colour, Gouraud shaded (TSP bit 22, measured: rp-mbx3d run 6)
+and multiplied into the texel (TEX2, the GLES MODULATE word): the
+lighting's own colour, where the software renderer kept a grey in 32 steps.
+*/
+
+/* The skins in the atlas, found by their texels' address. */
+#define RP_SKINS 512
+
+typedef struct
+{
+	const pixel_t *pixels;
+	uint16_t       w, h;
+	uint8_t        pg, qx, qy, masked;
+	int            gen;
+} rp_skin_t;
+
+static rp_skin_t   rp_skin[RP_SKINS];
+static const void *rp_skin_world; /* the map the table was filled under */
+static const rp_skin_t *rp_cur_skin;
+
+/* `rp_fan` 0 sends a fan as a strip (the TA's fan not trusted: ref-rp.md
+   "What would overturn it"). */
+
+/* A skin's texel to 16 bits: RGB565 through the renderer's table, or
+   ARGB1555 with the see-through texel's alpha 0. */
+static inline uint32_t RP_SkinTexel( pixel_t p, int masked )
+{
+	uint32_t c;
+
+	if( !masked )
+		return vid.screen[p];
+	if( p == TRANSPARENT_COLOR )
+		return 0;
+	c = vid.screen[p];
+	return 0x8000u | ( c >> 1 & 0x7FE0u ) | ( c & 0x1Fu );
+}
+
+/* A skin of `w` x `h` texels written into page `pg` at square (`qx`, `qy`)
+   as RP_Upload writes a lit surface (past its edges the last row and
+   column repeat). */
+static void RP_SkinUpload( const pixel_t *src, int w, int h, int pg, int qx, int qy, int masked )
+{
+	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
+	int       w8 = ( w + 7 ) >> 3, h8 = ( h + 7 ) >> 3;
+
+	for( int sy = 0; sy < h8; sy++ )
+	{
+		for( int sx = 0; sx < w8; sx++ )
+		{
+			uint32_t *dst = page + RP_Interleave( qx + sx, qy + sy ) * 32;
+			int       x0 = sx << 3, y0 = sy << 3;
+
+			for( int k = 0; k < 32; k++ )
+			{
+				uint32_t t[2];
+
+				for( int j = 0; j < 2; j++ )
+				{
+					int c = rp_square[2 * k + j];
+					int x = x0 + ( c & 7 ), y = y0 + ( c >> 3 );
+
+					if( x >= w )
+						x = w - 1;
+					if( y >= h )
+						y = h - 1;
+					t[j] = RP_SkinTexel( src[y * w + x], masked );
+				}
+				dst[k] = t[0] | t[1] << 16;
+			}
+		}
+	}
+}
+
+/*
+The skin the triangle interface has bound (GL_Bind: `r_affinetridesc`) in
+video memory, written there at its first use, and its state block: 1, or
+0 when the mesh is not drawn (a blended render mode: step 4c; no room).
+*/
+int RP_StudioSkin( void )
+{
+	const pixel_t *px = r_affinetridesc.pskin;
+	int            w = r_affinetridesc.skinwidth, h = r_affinetridesc.skinheight;
+	uint32_t       slot;
+	rp_skin_t     *e;
+	const void    *what;
+
+	rp_cur_skin = NULL;
+	if( vid.rendermode != kRenderNormal || !px || w < 1 || h < 1 || w > RP_PAGE_SIDE || h > RP_PAGE_SIDE )
+	{
+		rp_count.meshes_skipped++;
+		return 0;
+	}
+	if( rp_skin_world != WORLDMODEL )
+	{
+		memset( rp_skin, 0, sizeof( rp_skin ));
+		rp_skin_world = WORLDMODEL;
+	}
+	slot = (uint32_t)( (uintptr_t)px >> 4 ) % RP_SKINS;
+	for( int i = 0;; i++ )
+	{
+		e = &rp_skin[( slot + i ) % RP_SKINS];
+		if( !e->pixels || ( e->pixels == px && e->w == w && e->h == h ))
+			break;
+		if( i == RP_SKINS - 1 )
+		{
+			rp_count.meshes_skipped++;
+			return 0;
+		}
+	}
+
+	if( !e->pixels || e->gen != rp_page[e->pg].gen )
+	{
+		int x, y, pg, masked = 0;
+		uint64_t t0 = rp_time_us();
+
+		pg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, &x, &y );
+		if( pg < 0 )
+		{
+			rp_count.meshes_skipped++;
+			return 0;
+		}
+		for( int i = 0; i < w * h && !masked; i++ )
+			masked = px[i] == TRANSPARENT_COLOR;
+		RP_SkinUpload( px, w, h, pg, x, y, masked );
+		e->pixels = px;
+		e->w = (uint16_t)w;
+		e->h = (uint16_t)h;
+		e->pg = (uint8_t)pg;
+		e->qx = (uint8_t)x;
+		e->qy = (uint8_t)y;
+		e->masked = (uint8_t)masked;
+		e->gen = rp_page[pg].gen;
+		rp_skins_total++;
+		rp_count.upload_kib += ( w * h * 2 ) >> 10;
+		rp_count.upload_us += rp_time_us() - t0;
+	}
+	rp_page[e->pg].used = tr.framecount;
+	rp_cur_skin = e;
+
+	/* a model's state block differs from the world's on its page (Gouraud,
+	   the format, the alpha test): its own key beside the page's */
+	what = (const uint8_t *)&rp_page[e->pg] + 1 + e->masked;
+	if( what != rp_state )
+	{
+		rp_state = what;
+		rp_count.states++;
+		RP_Put( RP_GFX_STATE );
+		RP_Put( RP_TSP_WORLD | RP_TSP_GOURAUD );
+		RP_Put( e->masked ? RP_ISP_ALPHA : RP_ISP_ALWAYS );
+		RP_Put( e->masked ? RP_TEX0_PAGE_1555 : RP_TEX0_PAGE );
+		RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)e->pg * RP_PAGE_BYTES ));
+		RP_Put( RP_TEX2 );
+		RP_Put( RP_CLIP );
+		RP_Put( 0 );
+		RP_Whole();
+	}
+	rp_count.meshes++;
+	return 1;
+}
+
+/* The words of `n` (3 to 255) corners from `c`, in the order `idx`. */
+static void RP_StudioWords( uint32_t prim, const uint32_t ( *c )[RP_VERTEX_WORDS], const uint16_t *idx, int n )
+{
+	RP_Put( prim | (uint32_t)n );
+	for( int k = 0; k < n; k++ )
+		for( int j = 0; j < RP_VERTEX_WORDS; j++ )
+			RP_Put( c[idx[k]][j] );
+	RP_Whole();
+}
+
+/*
+One stored command of the bound skin's mesh (`n` corners, a fan if `fan`):
+each corner moved into view space, projected and turned as RP_ChipFace's,
+its light the vertex colour, its texels into the skin's place on its page;
+sent as one TA strip or fan (pieces of 255 corners at most), or not at all
+if a corner is behind the near plane (counted; clipped in a later step).
+*/
+void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
+{
+	static uint32_t c[RP_STUDIO_CMD][RP_VERTEX_WORDS];
+	static uint16_t idx[RP_STUDIO_CMD * 2];
+	const rp_skin_t *e = rp_cur_skin;
+	float u0, v0, kw, kh, smax, tmax;
+	int   m;
+
+	if( !e || n < 3 )
+		return;
+	if( n > RP_STUDIO_CMD )
+	{
+		rp_count.cmds_skipped++;
+		return;
+	}
+	u0 = e->qx * 8 * ( 1.0f / RP_PAGE_SIDE );
+	v0 = e->qy * 8 * ( 1.0f / RP_PAGE_SIDE );
+	kw = 1.0f / RP_PAGE_SIDE;
+	kh = 1.0f / RP_PAGE_SIDE;
+	/* kept a 32nd of a texel inside the skin's far edges, as the world's */
+	smax = e->w - 1.0f / 32.0f;
+	tmax = e->h - 1.0f / 32.0f;
+
+	for( int k = 0; k < n; k++ )
+	{
+		vec3_t local, t;
+		float  zi, sx, sy, s = v[k].s, tt = v[k].t;
+
+		VectorSubtract( v[k].xyz, RI.rvp.vieworigin, local );
+		TransformVector( local, t );
+		if( t[2] < NEAR_CLIP )
+		{
+			rp_count.cmds_near++;
+			return;
+		}
+		zi = 1.0f / t[2];
+		sx = xcenter + xscale * zi * t[0];
+		sy = ycenter - yscale * zi * t[1];
+		/* a skin's texels past its edges wrap (counted: ref-rp.md "What
+		   would overturn it"), kept inside it as the software renderer
+		   keeps each vertex */
+		if( s < 0.0f || s > e->w || tt < 0.0f || tt > e->h )
+		{
+			rp_count.wraps++;
+			s -= e->w * floorf( s / e->w );
+			tt -= e->h * floorf( tt / e->h );
+		}
+		if( s > smax )
+			s = smax;
+		if( tt > tmax )
+			tt = tmax;
+		c[k][0] = RP_Bits( sy );
+		c[k][1] = RP_Bits( (float)RP_GAME_W - sx );
+		c[k][2] = RP_Bits( zi );
+		c[k][3] = RP_Bits( zi );
+		c[k][4] = 0xFF000000u | (uint32_t)v[k].rgb[0] << 16 | (uint32_t)v[k].rgb[1] << 8 | v[k].rgb[2];
+		c[k][5] = RP_Bits( u0 + s * kw );
+		c[k][6] = RP_Bits( v0 + tt * kh );
+	}
+
+	if( !fan )
+	{
+		/* a strip in pieces of 255, each the last two corners again */
+		for( int at = 0; at + 2 < n; at += 253 )
+		{
+			m = n - at < 255 ? n - at : 255;
+			for( int k = 0; k < m; k++ )
+				idx[k] = (uint16_t)( at + k );
+			RP_StudioWords( RP_GFX_STRIP( 0 ), (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx, m );
+		}
+		rp_count.strips++;
+	}
+	else if( rp_fan->value != 0.0f )
+	{
+		/* a fan in pieces of 255, each the first corner and the last again */
+		for( int at = 1; at + 1 < n; at += 253 )
+		{
+			m = n - at < 254 ? n - at : 254;
+			idx[0] = 0;
+			for( int k = 0; k < m; k++ )
+				idx[1 + k] = (uint16_t)( at + k );
+			RP_StudioWords( RP_GFX_FAN( 0 ), (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx, m + 1 );
+		}
+		rp_count.fans++;
+	}
+	else
+	{
+		/* a fan as a strip: 1, 0, 2, 3, 0, 4, 5, 0, 6 ... (each third
+		   triangle the one before again; every fan triangle drawn) */
+		m = 0;
+		idx[m++] = 1;
+		idx[m++] = 0;
+		idx[m++] = 2;
+		for( int i = 3; i < n; i++ )
+		{
+			idx[m++] = (uint16_t)i;
+			if(( i & 1 ) && i + 1 < n )
+				idx[m++] = 0;
+		}
+		for( int at = 0; at + 2 < m; at += 252 )
+		{
+			int p = m - at < 255 ? m - at : 254;
+
+			/* pieces of an even count of triangles keep the pattern */
+			RP_StudioWords( RP_GFX_STRIP( 0 ), (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx + at, p );
+		}
+		rp_count.fans++;
+	}
+	rp_count.tris += n - 2;
+	rp_count.verts += n;
 }
 
 /* The 2700G's picture of the frame drawn both ways, turned back to the
