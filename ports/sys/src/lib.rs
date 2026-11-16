@@ -2,7 +2,8 @@
 //! and the screen ([half-life-readiness.md](../../../docs/design/half-life-readiness.md),
 //! lines 4 and 5): the files ([`files`]), the clock ([`clock`]), sound
 //! ([`sound`]), input ([`input`]), a big program's libraries ([`module`],
-//! ADR-0039) and what answers a C program's library calls over them ([`sys`]).
+//! ADR-0039), a program's progress for a test runner's screen
+//! ([`progress`]) and what answers a C program's library calls over them ([`sys`]).
 //!
 //! Iterate, don't imitate (rule 0). Windows Mobile gives a C program
 //! `CreateFile` over a kernel file cache; Linux and every console port give
@@ -23,5 +24,6 @@ pub mod clock;
 pub mod files;
 pub mod input;
 pub mod module;
+pub mod progress;
 pub mod sound;
 pub mod sys;

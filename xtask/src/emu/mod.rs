@@ -1287,12 +1287,14 @@ pub fn boot_xash_game(
         .and_then(|s| s.parse().ok())
         .unwrap_or(300);
     let image = crate::arm_release(root).join("rp-port-runner");
+    let shot = scratch(root, "xash-game-screen.ppm")?;
+    let _ = std::fs::remove_file(&shot);
     let ran = boot(
         root,
         &Boot {
             image: &image,
             marker: &until,
-            screenshot: None,
+            screenshot: Some(&shot),
             sd_image: Some(&sd),
             steps: &[],
             extra: &[],
@@ -1302,6 +1304,14 @@ pub fn boot_xash_game(
             timeout: Duration::from_secs(secs),
         },
     );
+    // The runner's screen as the text asked for appeared.
+    match xash_screen(root, &shot) {
+        Ok(png) => eprintln!(
+            "    the runner's screen, its panel checked: {}",
+            png.display()
+        ),
+        Err(e) => eprintln!("    THE RUNNER'S SCREEN: {e}"),
+    }
     // The frame the engine wrote, whether or not the text asked for came.
     let png = root.join("target").join("xash-modules").join("frame.png");
     let _ = std::fs::remove_file(&png);
@@ -1350,6 +1360,8 @@ pub fn boot_xash(root: &Path, modules: &[(String, Vec<u8>)]) -> Result<Vec<Strin
     .map_err(|e| format!("args.txt onto the card: {}", e.name()))?;
     let sd = scratch(root, "sd-xash.img")?;
     std::fs::write(&sd, &vol.device().0).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let shot = scratch(root, "xash-screen.ppm")?;
+    let _ = std::fs::remove_file(&shot);
     let output = boot(
         root,
         &Boot {
@@ -1358,7 +1370,7 @@ pub fn boot_xash(root: &Path, modules: &[(String, Vec<u8>)]) -> Result<Vec<Strin
             // report), after the engine stopped: the runner's stack is
             // ports/runner/build.rs's 2 MiB.
             marker: "of 2097152 bytes",
-            screenshot: None,
+            screenshot: Some(&shot),
             sd_image: Some(&sd),
             steps: &[],
             extra: &[],
@@ -1369,7 +1381,30 @@ pub fn boot_xash(root: &Path, modules: &[(String, Vec<u8>)]) -> Result<Vec<Strin
         },
     )?;
     eprint!("{output}");
-    check_xash(&output, modules)
+    let mut found = check_xash(&output, modules)?;
+    // The screen at the end: the runner's panel, saying the run is over.
+    let png = xash_screen(root, &shot).map_err(|e| format!("emu-xash: {e}"))?;
+    found.push(format!(
+        "the screen is the runner's panel (its title, its step line, its clock; nothing else drawn): {}",
+        png.display()
+    ));
+    Ok(found)
+}
+
+/// The emulator's screenshot of the runner (`shot`, a PPM) checked as the
+/// runner's panel ([`crate::screen::check_panel_screen`]) and written as
+/// a picture to look at: where.
+fn xash_screen(root: &Path, shot: &Path) -> Result<std::path::PathBuf, String> {
+    let ppm = std::fs::read(shot).map_err(|_| "no screenshot was taken".to_string())?;
+    let img = crate::screen::parse_ppm(&ppm)?;
+    let png = root.join("target").join("xash-modules").join("screen.png");
+    std::fs::write(
+        &png,
+        crate::ui_preview::png_rgb(img.width, img.height, &img.rgb),
+    )
+    .map_err(|e| format!("{}: {e}", png.display()))?;
+    crate::screen::check_panel_screen(&ppm).map_err(|e| format!("{e} ({})", png.display()))?;
+    Ok(png)
 }
 
 /// Must match `rp_loader::MARKER`.

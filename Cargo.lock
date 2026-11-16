@@ -975,6 +975,7 @@ version = "0.0.0"
 dependencies = [
  "rp-audio-x51v",
  "rp-drv-cpld",
+ "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
  "rp-drv-pxa-keypad",
  "rp-drv-pxa-mmc",

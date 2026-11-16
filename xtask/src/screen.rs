@@ -389,6 +389,93 @@ pub fn check_text_screen(ppm: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The test runner's panel (ports/runner/src/panel.rs): its colours as
+/// RGB 5-6-5 (background, text, the step, the note) and the rows of its
+/// title, its step line and its clock.
+const PANEL_COLOURS: [u16; 4] = [0x0886, 0xE73C, 0xFFE0, 0x07FF];
+const PANEL_TITLE_ROWS: (u32, u32) = (8, 64);
+const PANEL_STEP_ROWS: (u32, u32) = (72, 112);
+const PANEL_CLOCK_ROWS: (u32, u32) = (440, 480);
+
+/// Checks a screenshot of the test runner's panel at 480 x 640: nothing
+/// but the panel's four colours, mostly background, with text in its
+/// title, its step line (in the step's colour: `STEP n of m` or
+/// `FINISHED`) and its clock. A blank screen, a screen left as another
+/// program drew it, or a panel with no step fails.
+pub fn check_panel_screen(ppm: &[u8]) -> Result<(), String> {
+    let img = parse_ppm(ppm)?;
+    if (img.width, img.height) != (480, 640) {
+        return Err(format!(
+            "screen is {}x{}, expected 480x640",
+            img.width, img.height
+        ));
+    }
+    let colours = PANEL_COLOURS.map(from_rgb565);
+    let (mut title, mut step, mut clock, mut paper) = (0usize, 0usize, 0usize, 0usize);
+    for (i, px) in img.rgb.as_chunks::<3>().0.iter().enumerate() {
+        let (x, y) = (i as u32 % img.width, i as u32 / img.width);
+        let Some(which) = colours
+            .iter()
+            .position(|c| *c == (px[0] & 0xF8, px[1] & 0xFC, px[2] & 0xF8))
+        else {
+            return Err(format!(
+                "the runner's panel: a pixel at ({x}, {y}) is none of its colours ({px:?})"
+            ));
+        };
+        let within = |rows: (u32, u32)| (rows.0..rows.1).contains(&y);
+        match which {
+            0 => paper += 1,
+            1 if within(PANEL_TITLE_ROWS) => title += 1,
+            1 if within(PANEL_CLOCK_ROWS) => clock += 1,
+            2 if within(PANEL_STEP_ROWS) => step += 1,
+            _ => {}
+        }
+    }
+    if title < 500 || step < 500 || clock < 300 || paper < 480 * 640 / 2 {
+        return Err(format!(
+            "the runner's panel looks wrong: {title} title, {step} step and {clock} clock pixels, {paper} of background"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn the_runners_panel_is_told_from_other_screens() {
+    let colour = |c: u16| {
+        let (r, g, b) = from_rgb565(c);
+        [r, g, b]
+    };
+    let screen = |fill: u16, marks: &[((u32, u32), u16)]| {
+        let mut ppm = b"P6\n480 640\n255\n".to_vec();
+        for y in 0..640u32 {
+            for x in 0..480u32 {
+                let c = marks
+                    .iter()
+                    .find(|(rows, _)| (rows.0..rows.1).contains(&y) && x < 100 && y % 2 == 0)
+                    .map_or(fill, |(_, c)| *c);
+                ppm.extend_from_slice(&colour(c));
+            }
+        }
+        ppm
+    };
+    let [bg, fg, loud, cool] = PANEL_COLOURS;
+    let panel = [
+        (PANEL_TITLE_ROWS, fg),
+        (PANEL_STEP_ROWS, loud),
+        ((328, 400), cool),
+        (PANEL_CLOCK_ROWS, fg),
+    ];
+    check_panel_screen(&screen(bg, &panel)).expect("the panel");
+    // Blank, no step, the step in the wrong colour, another program's
+    // screen (black, white text).
+    assert!(check_panel_screen(&screen(bg, &[])).is_err());
+    assert!(check_panel_screen(&screen(bg, &[panel[0], panel[3]])).is_err());
+    let plain_step = [panel[0], (PANEL_STEP_ROWS, fg), panel[3]];
+    assert!(check_panel_screen(&screen(bg, &plain_step)).is_err());
+    assert!(check_panel_screen(&screen(0x0000, &[(PANEL_TITLE_ROWS, 0xFFFF)])).is_err());
+    assert!(check_panel_screen(b"P6\n4 4\n255\n").is_err());
+}
+
 /// Expands RGB565 to 8 bits per channel (low bits zero, as QEMU's
 /// screendump produces).
 fn from_rgb565(c: u16) -> (u8, u8, u8) {

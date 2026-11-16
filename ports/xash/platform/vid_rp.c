@@ -18,6 +18,7 @@ GNU General Public License for more details.
 #include "vid_common.h"
 #include "platform/platform.h"
 #include <retropane.h>
+#include <stdio.h>
 
 /*
 The X51v's panel is 480 x 640, upright; the game plays in landscape, so it
@@ -194,17 +195,46 @@ static void RP_FrameRate( void )
 		uint tenths = (uint)(( (uint64_t)n * 10000000u ) / span );
 		uint mean_us = n ? (uint)( span / n ) : 0;
 
-		Con_Printf( "frame rate: %u frames in %u ms: %u.%u a second, %u.%u ms a frame\n",
-			n, (uint)( span / 1000 ), tenths / 10, tenths % 10, mean_us / 1000, ( mean_us % 1000 ) / 100 );
+		// a plain line of its own (the engine's console may be quiet), and a
+		// note for the runner's screen (rp_port::progress: a | is a new
+		// line there)
+		fprintf( stderr, "rp-note: frame rate:|%u.%u a second|%u.%u ms a frame|(%u frames in %u ms)\n",
+			tenths / 10, tenths % 10, mean_us / 1000, ( mean_us % 1000 ) / 100, n, (uint)( span / 1000 ));
 	}
 	since = now;
 	counted = vid_rp.frames;
+}
+
+/*
+A test run's steps, for the runner's screen (rp_port::progress: a line
+`rp-step: n/5 text`, a | is a new line there). The runner says steps 1
+and 2 itself (its start, the program's start); the engine's are 3 (its
+first frame is finished: it is up, and a map asked for on the command
+line loads next), 4 (the map plays) and 5 (it ends: in_rp.c). Said once
+each, in plain lines of their own: the engine's console may be quiet.
+*/
+static void RP_Step( void )
+{
+	static int said;
+
+	if( said < 3 )
+	{
+		said = 3;
+		fprintf( stderr, "rp-step: 3/5 Half-Life is up: the|software renderer%s.|Loading the map can|take minutes. The|game's picture is|not shown in this|test: its frames are|counted, not drawn.\n",
+			XASH_LOW_MEMORY ? ", an|experiment build" : "" );
+	}
+	if( said < 4 && CL_Active( ))
+	{
+		said = 4;
+		fprintf( stderr, "rp-step: 4/5 The map plays.|Its frame rate is|below, new every|5 seconds.\n" );
+	}
 }
 
 void SW_UnlockBuffer( void )
 {
 	// the frame is whole: where the port layer's screen call will go
 	vid_rp.frames++;
+	RP_Step();
 	RP_FrameRate();
 	if( vid_rp.frames >= RP_SHOT_FRAME )
 	{

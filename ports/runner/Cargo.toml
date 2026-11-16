@@ -23,6 +23,7 @@ rp-image = { path = "../../boot/image" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-cabi = { path = "../../hal/cabi" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-hal-api = { path = "../../hal/api" }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-drv-cpld = { path = "../../drivers/cpld" }

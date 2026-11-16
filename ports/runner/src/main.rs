@@ -48,6 +48,9 @@ pub const PROGRAM: &str = "engine.rpm";
 pub const BANNER: &str = "RetroPane: the module runner (a test image: ADR-0039)";
 
 #[cfg(target_os = "none")]
+mod panel;
+
+#[cfg(target_os = "none")]
 mod image {
     use core::cell::RefCell;
     use core::fmt::Write;
@@ -72,10 +75,12 @@ mod image {
     use rp_port::files::Files;
     use rp_port::input::{Input, Pad};
     use rp_port::module::{self, Modules};
+    use rp_port::progress::{Lines, Said, said};
     use rp_port::sound::{Sound, memory_for};
     use rp_port::sys::{Console, Library, System};
     use rp_touch_cal::{Calibration, Sample};
 
+    use super::panel;
     use super::{BANNER, FOLDER, PROGRAM};
 
     rp_image::entry!(main);
@@ -137,6 +142,8 @@ mod image {
 
     impl BlockDevice for Card {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+            // The screen's clock keeps going while files are read.
+            panel::beat(rt::ticks());
             rt::check_in();
             self.0.read_blocks(lba, buf)
         }
@@ -186,7 +193,36 @@ mod image {
     impl Console for Text {
         fn put(&mut self, bytes: &[u8]) {
             say(bytes);
+            // What the program says of its own progress goes on the
+            // screen (`rp_port::progress`), and a step's time into the log.
+            SAID.with(|lines| {
+                lines.feed(bytes, &mut |line| match said(line) {
+                    Some(Said::Step { n, of, text }) => step(n, of, text),
+                    Some(Said::Note(text)) => panel::note(text),
+                    None => {}
+                });
+            });
         }
+    }
+
+    /// The program's output as lines, for [`Text`].
+    static SAID: rt::Global<Lines<LINE>> = rt::Global::new(Lines::new());
+    /// The most of a line that is looked at.
+    const LINE: usize = 200;
+    /// The steps of a run: the runner's two (its own start, the program's
+    /// start) and the three a program under it says (`rp-step: 3/5` to
+    /// `5/5`: it is up, it does what the run is for, it ends).
+    const STEPS: u32 = 5;
+
+    /// Step `n` of `of` on the screen, and when it began in the log (the
+    /// run's timings are read from the log, never asked of who watches).
+    fn step(n: u32, of: u32, text: &[u8]) {
+        panel::step(n, of, text);
+        let at = panel::beat(rt::ticks());
+        let _ = writeln!(
+            Out,
+            "runner: step {n} of {of} at {at} s on the screen's clock"
+        );
     }
 
     static SYSTEM: rt::Slot<System<'static, Card, HANDLES, Text>> = rt::Slot::new();
@@ -249,6 +285,7 @@ mod image {
     /// loader gets the image back either way, and the log says which.
     fn exit(code: i32) -> ! {
         let _ = writeln!(Out, "\nrunner: the program called exit({code})");
+        panel::done(b"The program ended|itself. Back to the|loader.");
         rp_image::finish()
     }
 
@@ -350,6 +387,7 @@ mod image {
         });
         if due {
             rt::check_in();
+            panel::beat(now);
         }
         now
     }
@@ -373,6 +411,15 @@ mod image {
         let mut uart = Out;
         rt::init_mmu();
         let _ = writeln!(uart, "\n{BANNER}");
+        // The screen from the first moment: what this is and its step.
+        if !panel::start("RetroPane test run", "module runner: rp-xash") {
+            let _ = writeln!(uart, "screen: none (the run goes on without it)");
+        }
+        step(
+            1,
+            STEPS,
+            b"Starting: the card,|the sound, the|program's modules.",
+        );
         let mut cpld = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
         let volume = cpld.as_mut().and_then(open_card).and_then(mount);
         // Sound (the audio service, ADR-0032): the codec brought up as the
@@ -481,6 +528,12 @@ mod image {
             }
             let _ = writeln!(uart, " from {ARGS_FILE}");
         }
+        panel::foot(|c| {
+            let _ = write!(c, "Asked:");
+            for a in &args[1..arg_count] {
+                let _ = write!(c, " {}", a.to_str().unwrap_or("?"));
+            }
+        });
         let peeked = Modules::new(&mut *pool, module::POOL, identity)
             .peek(&mut |into| files.read(fd, into).ok());
         let _ = files.close(fd);
@@ -524,6 +577,11 @@ mod image {
             }
         }
         check_libraries(s);
+        step(
+            2,
+            STEPS,
+            b"The program starts|and reads its files.|This can take|minutes: the clock|below keeps going.",
+        );
         let sys: &'static mut dyn Sys = s;
         rp_hal_cabi::start(sys, exit);
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);
@@ -540,6 +598,7 @@ mod image {
         match ran {
             Ok(code) => {
                 let _ = writeln!(uart, "runner: the program returned {code}");
+                panel::done(b"The program ended.|Back to the loader.");
                 rp_image::finish()
             }
             Err(e) => {
