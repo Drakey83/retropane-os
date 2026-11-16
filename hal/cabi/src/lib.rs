@@ -237,6 +237,20 @@ pub mod event {
     pub const TURN_RIGHT: u8 = 2;
 }
 
+/// A module the system loaded (ADR-0039: a big program's library, placed
+/// at build time), as the C boundary needs it to start it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Module {
+    /// Its handle: the address it is loaded at.
+    pub handle: usize,
+    /// The address of its entry, `int (int, char **)`; 0 for a library.
+    pub entry: usize,
+    /// The addresses holding its constructors, one function's address a
+    /// word, from `.0` up to `.1`. Whoever answers [`Sys::module_load`]
+    /// has checked that each is code of the module it loaded.
+    pub constructors: (usize, usize),
+}
+
 /// What the system under a C program does for it. One object answers every
 /// call; the image registers it with `start` before any C code runs.
 pub trait Sys {
@@ -386,6 +400,45 @@ pub trait Sys {
     fn input_poll(&mut self) -> Result<Option<Event>, Errno> {
         Err(Errno::NoSys)
     }
+    /// Loads the module file `name` from the program's own folder
+    /// (`rp_module_load`): read to its address, checked, its zeroed RAM
+    /// zeroed, fit to run. Its constructors are the caller's to run.
+    ///
+    /// # Errors
+    /// No modules here (`ENOSYS`, the default); the file is not there; it
+    /// was refused ([`Self::module_reason`] says why).
+    fn module_load(&mut self, _name: &[u8]) -> Result<Module, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Forgets the loaded module `handle` (`rp_module_free`).
+    ///
+    /// # Errors
+    /// Not a loaded module.
+    fn module_free(&mut self, _handle: usize) -> Result<(), Errno> {
+        Err(Errno::NoSys)
+    }
+    /// The address of the function `name` that the loaded module `handle`
+    /// exports (`rp_module_find`).
+    ///
+    /// # Errors
+    /// Not a loaded module, or no such name.
+    fn module_find(&mut self, _handle: usize, _name: &[u8]) -> Result<usize, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// The address of the name (a NUL-terminated string in the module's
+    /// own memory) of the exported function that starts at `function`
+    /// (`rp_module_name`).
+    ///
+    /// # Errors
+    /// Not a loaded module, or no exported function starts there.
+    fn module_name(&mut self, _handle: usize, _function: usize) -> Result<usize, Errno> {
+        Err(Errno::NoSys)
+    }
+    /// Why the last module was refused, in plain words
+    /// (`rp_module_error`).
+    fn module_reason(&mut self) -> &'static core::ffi::CStr {
+        c"this system loads no modules"
+    }
     /// The program is over (it returned, or called `exit`): stop what it
     /// left running (its sound). Nothing by default.
     fn end(&mut self) {}
@@ -439,7 +492,7 @@ pub const fn split_us(us: u64) -> (i64, i32) {
 
 #[cfg(target_os = "none")]
 mod face {
-    use super::{CStat, Dirent, Errno, Event, NAME_MAX, Sys};
+    use super::{CStat, Dirent, Errno, Event, Module, NAME_MAX, Sys};
     use core::ffi::{CStr, c_char, c_int, c_void};
     use rp_hal_pxa27x::rt::Global;
 
@@ -468,6 +521,157 @@ mod face {
         fn fflush(stream: *mut c_void) -> c_int;
         /// picolibc's standard output stream.
         static stdout: *mut c_void;
+        /// The table of the addresses a runner exports to its modules,
+        /// which the build links into it (xtask/src/module.rs), and its
+        /// end. Only a runner has them, and only a runner asks.
+        static rp_runner_table: [u8; 0];
+        static rp_runner_table_end: [u8; 0];
+    }
+
+    /// The bytes of the table of addresses this image exports to its
+    /// modules (ADR-0039 rule 3: their hash is the runner build's
+    /// identity). Only in an image the build linked the table into.
+    #[must_use]
+    pub fn runner_table() -> &'static [u8] {
+        let start = core::ptr::addr_of!(rp_runner_table).cast::<u8>();
+        let end = core::ptr::addr_of!(rp_runner_table_end).cast::<u8>();
+        // SAFETY: the two symbols bound one object of the image's
+        // read-only data, made by the build with the second right after
+        // the first's last word; it is never written.
+        unsafe { core::slice::from_raw_parts(start, (end as usize).saturating_sub(start as usize)) }
+    }
+
+    /// Loads the module `name` and runs the constructors of its global
+    /// objects.
+    fn load_module(name: &[u8]) -> Result<Module, Errno> {
+        // The lock is let go before any of the module's code runs: a
+        // constructor may call the C library, which comes back here.
+        let module = with(|s| s.module_load(name))?;
+        let mut at = module.constructors.0;
+        while at < module.constructors.1 {
+            // SAFETY: the system that loaded the module checked that these
+            // words lie in its loaded bytes and that each holds the
+            // address of code in the same module, whose check sum held
+            // (`rp_port::module`); the build put there the functions the
+            // compiler made to construct its global objects, which take
+            // and return nothing. The loaded bytes were made fit to run.
+            unsafe {
+                let constructor = (at as *const unsafe extern "C" fn()).read();
+                constructor();
+            }
+            at += core::mem::size_of::<usize>();
+        }
+        Ok(module)
+    }
+
+    /// The most arguments [`run_module`] passes on.
+    pub const ARGS: usize = 8;
+
+    /// Loads the program module `name` and runs it with `args` as its
+    /// command line (the first is the program's own name): its result,
+    /// with what it printed pushed out.
+    ///
+    /// # Errors
+    /// The module was not loaded ([`Sys::module_reason`]), is a library
+    /// with no entry, or there are more than [`ARGS`] arguments.
+    pub fn run_module(name: &[u8], args: &[&'static CStr]) -> Result<i32, Errno> {
+        if args.len() > ARGS {
+            return Err(Errno::Invalid);
+        }
+        // SAFETY: picolibc's own walk of the image's constructor table,
+        // once, before any C code; `start` has registered the system.
+        unsafe { __libc_init_array() };
+        let module = load_module(name)?;
+        if module.entry == 0 {
+            return Err(Errno::Invalid);
+        }
+        // C's argv: the strings' addresses, then a null one.
+        let mut argv = [core::ptr::null::<c_char>(); ARGS + 1];
+        for (slot, arg) in argv.iter_mut().zip(args) {
+            *slot = arg.as_ptr();
+        }
+        // SAFETY: the entry is an address the loader checked to be inside
+        // the module it loaded and checked; the build put the module's
+        // `int entry(int argc, char **argv)` there. `argv` lives until the
+        // call returns and its strings for ever.
+        let code = unsafe {
+            let entry: unsafe extern "C" fn(c_int, *const *const c_char) -> c_int =
+                core::mem::transmute(module.entry);
+            entry(args.len() as c_int, argv.as_ptr())
+        };
+        // SAFETY: as in `run`.
+        unsafe {
+            let _ = fflush(core::ptr::addr_of!(stdout).read());
+        }
+        end();
+        Ok(code)
+    }
+
+    /// `rp_module_load` (`ports/include/retropane.h`): the module's
+    /// handle, or null with `errno`.
+    ///
+    /// # Safety
+    /// `name` is a NUL-terminated string.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rp_module_load(name: *const c_char) -> *mut c_void {
+        if name.is_null() {
+            fail(Errno::Invalid);
+            return core::ptr::null_mut();
+        }
+        // SAFETY: the caller's contract: a NUL-terminated string at `name`.
+        let name = unsafe { CStr::from_ptr(name) }.to_bytes();
+        match load_module(name) {
+            Ok(m) => m.handle as *mut c_void,
+            Err(e) => {
+                fail(e);
+                core::ptr::null_mut()
+            }
+        }
+    }
+
+    /// `rp_module_free`: 0, or -1 with `errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_module_free(module: *mut c_void) -> c_int {
+        match with(|s| s.module_free(module as usize)) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_module_find`: the exported function's address, or null (not an
+    /// error a program need read: `errno` is left alone).
+    ///
+    /// # Safety
+    /// `name` is a NUL-terminated string.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rp_module_find(
+        module: *mut c_void,
+        name: *const c_char,
+    ) -> *mut c_void {
+        if name.is_null() {
+            return core::ptr::null_mut();
+        }
+        // SAFETY: the caller's contract: a NUL-terminated string at `name`.
+        let name = unsafe { CStr::from_ptr(name) }.to_bytes();
+        with(|s| s.module_find(module as usize, name))
+            .map_or(core::ptr::null_mut(), |at| at as *mut c_void)
+    }
+
+    /// `rp_module_name`: the name of the exported function at `function`
+    /// (the module's own string), or null.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_module_name(
+        module: *mut c_void,
+        function: *const c_void,
+    ) -> *const c_char {
+        with(|s| s.module_name(module as usize, function as usize))
+            .map_or(core::ptr::null(), |at| at as *const c_char)
+    }
+
+    /// `rp_module_error`: why the last module was refused.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_module_error() -> *const c_char {
+        with(|s| Ok(s.module_reason())).map_or(c"no system is registered".as_ptr(), CStr::as_ptr)
     }
 
     /// Registers what answers the C library's calls and what `_exit` does.
@@ -959,6 +1163,36 @@ mod face {
         }
     }
 
+    /// `clock_gettime(2)`: every clock is the program's one clock
+    /// ([`rp_time_us`]: it never goes back, which is all `CLOCK_MONOTONIC`
+    /// promises, and the date is not the port layer's to know yet).
+    /// picolibc's `struct timespec` is a 64-bit `time_t` and a `long`, as
+    /// [`Timeval`] is laid out.
+    ///
+    /// # Safety
+    /// `ts` is null or points at a writable `struct timespec`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn clock_gettime(_clock: c_int, ts: *mut Timeval) -> c_int {
+        if ts.is_null() {
+            return fail(Errno::Invalid) as c_int;
+        }
+        match with(|s| Ok(s.now_us())) {
+            Ok(us) => {
+                let (sec, usec) = super::split_us(us);
+                // SAFETY: the caller's contract: a writable `struct
+                // timespec` at `ts`, not null (checked), written whole.
+                unsafe {
+                    ts.write(Timeval {
+                        sec,
+                        usec: usec * 1_000,
+                    });
+                }
+                0
+            }
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
     /// `raise(3)`: there are no signals here. The C library calls it from
     /// `abort()` (a failed `assert`, C++'s pure-virtual trap, `new` out of
     /// memory): the image's end, as a failure (128 plus the signal, the
@@ -980,7 +1214,7 @@ mod face {
 }
 
 #[cfg(target_os = "none")]
-pub use face::{run, start};
+pub use face::{ARGS, run, run_module, runner_table, start};
 
 #[cfg(test)]
 mod tests {

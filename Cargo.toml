@@ -99,6 +99,7 @@ members = [
     "apps/api",
     "ports/sys",
     "ports/hello",
+    "ports/runner",
     "apps/calendar",
     "apps/contacts",
     "apps/tasks",

@@ -970,6 +970,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-port-runner"
+version = "0.0.0"
+dependencies = [
+ "rp-audio-x51v",
+ "rp-drv-cpld",
+ "rp-drv-pxa-gpio",
+ "rp-drv-pxa-keypad",
+ "rp-drv-pxa-mmc",
+ "rp-drv-pxa-ssp",
+ "rp-drv-pxa-uart",
+ "rp-drv-sdcard",
+ "rp-drv-tsc2046",
+ "rp-drv-wm8750",
+ "rp-fat",
+ "rp-hal-api",
+ "rp-hal-cabi",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-image",
+ "rp-port",
+ "rp-touch-cal",
+]
+
+[[package]]
 name = "rp-probe"
 version = "0.0.0"
 dependencies = [

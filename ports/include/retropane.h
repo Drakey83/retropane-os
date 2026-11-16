@@ -127,6 +127,27 @@ int rp_input_open(int turn);
  * -1 with errno (EBADF: not open). The last 32 events are kept. */
 int rp_input_poll(struct rp_event *ev);
 
+/*
+ * Modules: a big program's libraries (ADR-0039). A module is a file the
+ * OS's build linked at the address it runs at, against this runner; it is
+ * named by its file ("server.rpm") and found in the runner's own folder.
+ * Loading one is a read, a check and its constructors: one built for
+ * another runner, or damaged, is refused and never run.
+ */
+/* Loads the module; its handle, or NULL with errno (rp_module_error()
+ * says why in plain words). Loading one that is loaded starts it afresh. */
+void *rp_module_load(const char *name);
+/* Forgets the module (its memory is its own for good: nothing else is
+ * ever placed there). 0, or -1 with errno (EBADF: not a loaded module). */
+int rp_module_free(void *module);
+/* The exported function called `name`, or NULL. */
+void *rp_module_find(void *module, const char *name);
+/* The name of the exported function that starts at `function` (the
+ * module's own string, good while it is loaded), or NULL. */
+const char *rp_module_name(void *module, const void *function);
+/* Why the last rp_module_load() was refused. */
+const char *rp_module_error(void);
+
 #ifdef __cplusplus
 }
 #endif

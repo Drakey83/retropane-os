@@ -14,13 +14,16 @@
 //! written file at a time, no bigger than the room: a game's log and its
 //! settings, not its maps).
 
+use core::fmt::Write as _;
+
 use rp_fat::Error as FatError;
 use rp_hal_api::BlockDevice;
-use rp_hal_cabi::{Break, Errno, Event, FileStat, Sys, flags};
+use rp_hal_cabi::{Break, Errno, Event, FileStat, Module, Sys, flags};
 
 use crate::clock::Micros;
 use crate::files::{Error, Fd, Files, Whence, unix_seconds};
 use crate::input::{Events, Turn};
+use crate::module::{Modules, Refusal};
 use crate::sound::Voice;
 
 /// Where what a C program prints goes (the serial line, the screen's
@@ -45,6 +48,36 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     sound: Option<&'a mut dyn Voice>,
     /// The game's input, where the image has it.
     input: Option<&'a mut dyn Events>,
+    /// The program's modules, where the image is a runner (ADR-0039).
+    library: Option<Library<'a>>,
+    /// Why the last module was refused.
+    refused: Option<Refusal>,
+}
+
+/// What loads a big program's modules (ADR-0039).
+pub struct Library<'a> {
+    /// The loader, over the memory the modules were placed in.
+    pub modules: Modules<'a>,
+    /// The folder the module files are in (the runner's own: part of the
+    /// OS, not of the game's data).
+    pub folder: &'a [u8],
+    /// Makes loaded bytes fit to run: the address and the length of what
+    /// was just written (the CPU's caches hold the bytes that were there
+    /// before; `rp_hal_pxa27x::cpu::clean_invalidate_range`).
+    pub fit: fn(u32, u32),
+}
+
+/// The longest path of a module file (its folder, a slash, its name).
+const MODULE_PATH: usize = 96;
+
+/// A console as a `core::fmt` writer, for a line with numbers in it.
+struct Line<'c, C: Console>(&'c mut C);
+
+impl<C: Console> core::fmt::Write for Line<'_, C> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.0.put(s.as_bytes());
+        Ok(())
+    }
 }
 
 /// A [`Files`] error as the C library's `errno`.
@@ -79,7 +112,21 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
             clock: Micros::starting_at(ticks()),
             sound: None,
             input: None,
+            library: None,
+            refused: None,
         }
+    }
+
+    /// Makes the system a runner's: `rp_module_load` and its kin reach
+    /// `library`.
+    pub fn set_modules(&mut self, library: Library<'a>) {
+        self.library = Some(library);
+    }
+
+    /// The loader, for what a runner asks before any C code runs (where
+    /// the set of modules ends).
+    pub fn modules(&mut self) -> Option<&mut Modules<'a>> {
+        self.library.as_mut().map(|l| &mut l.modules)
     }
 
     /// Gives the system its input (the buttons and the touch chip): what
@@ -280,6 +327,117 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     fn snd_close(&mut self) -> Result<(), Errno> {
         let (v, now) = self.voice()?;
         v.close(now)
+    }
+
+    fn module_load(&mut self, name: &[u8]) -> Result<Module, Errno> {
+        let Self {
+            files,
+            console,
+            library,
+            refused,
+            ticks,
+            clock,
+            ..
+        } = self;
+        let Some(lib) = library.as_mut() else {
+            return Err(Errno::NoSys);
+        };
+        let started = clock.at(ticks());
+        let mut path = [0u8; MODULE_PATH];
+        let len = lib.folder.len() + 1 + name.len();
+        let loaded =
+            if name.is_empty() || name.iter().any(|b| b"/\\:".contains(b)) || len > path.len() {
+                // A module is a file of the runner's own folder, by its name.
+                Err(Refusal::Unread)
+            } else {
+                path[..lib.folder.len()].copy_from_slice(lib.folder);
+                path[lib.folder.len()] = b'/';
+                path[lib.folder.len() + 1..len].copy_from_slice(name);
+                match files.open(&path[..len]) {
+                    Err(_) => Err(Refusal::Unread),
+                    Ok(fd) => {
+                        let got = lib.modules.load(&mut |into| files.read(fd, into).ok());
+                        let _ = files.close(fd);
+                        got
+                    }
+                }
+            };
+        match loaded {
+            Ok(h) => {
+                (lib.fit)(h.base, h.file_len);
+                *refused = None;
+                // Every load says what it took: a run's log is where its
+                // start-up time is read from.
+                console.put(b"module ");
+                console.put(name);
+                let _ = writeln!(
+                    Line(console),
+                    ": {} KiB at 0x{:08X} and {} KiB zeroed, read and checked in {} ms",
+                    h.file_len.div_ceil(1024),
+                    h.base,
+                    (h.mem_len - h.file_len).div_ceil(1024),
+                    (clock.at(ticks()) - started) / 1_000
+                );
+                Ok(Module {
+                    handle: h.base as usize,
+                    entry: h.entry as usize,
+                    constructors: (h.init.0 as usize, h.init.1 as usize),
+                })
+            }
+            Err(r) => {
+                *refused = Some(r);
+                console.put(b"module ");
+                console.put(name);
+                console.put(b" not loaded: ");
+                console.put(r.reason().to_bytes());
+                console.put(b"\n");
+                Err(match r {
+                    Refusal::Unread => Errno::NoEntry,
+                    Refusal::Full => Errno::NoMemory,
+                    _ => Errno::Invalid,
+                })
+            }
+        }
+    }
+
+    fn module_free(&mut self, handle: usize) -> Result<(), Errno> {
+        let lib = self.library.as_mut().ok_or(Errno::NoSys)?;
+        let handle = u32::try_from(handle).map_err(|_| Errno::BadHandle)?;
+        if lib.modules.free(handle) {
+            Ok(())
+        } else {
+            Err(Errno::BadHandle)
+        }
+    }
+
+    fn module_find(&mut self, handle: usize, name: &[u8]) -> Result<usize, Errno> {
+        let lib = self.library.as_ref().ok_or(Errno::NoSys)?;
+        let names = u32::try_from(handle)
+            .ok()
+            .and_then(|h| lib.modules.names(h))
+            .ok_or(Errno::BadHandle)?;
+        names.find(name).map(|at| at as usize).ok_or(Errno::NoEntry)
+    }
+
+    fn module_name(&mut self, handle: usize, function: usize) -> Result<usize, Errno> {
+        let lib = self.library.as_ref().ok_or(Errno::NoSys)?;
+        let names = u32::try_from(handle)
+            .ok()
+            .and_then(|h| lib.modules.names(h))
+            .ok_or(Errno::BadHandle)?;
+        u32::try_from(function)
+            .ok()
+            .and_then(|f| names.name_of(f))
+            .map(|(at, _)| at as usize)
+            .ok_or(Errno::NoEntry)
+    }
+
+    fn module_reason(&mut self) -> &'static core::ffi::CStr {
+        match self.refused {
+            Some(r) => r.reason(),
+            None if self.library.is_some() => c"no module was refused",
+            None => c"this system loads no modules",
+        }
     }
 
     fn end(&mut self) {
@@ -677,6 +835,134 @@ mod tests {
                     ("close", 1_000_000),
                     ("shut", 0),
                 ]
+            );
+        });
+    }
+
+    #[test]
+    fn a_runner_loads_its_modules_by_name_from_its_own_folder() {
+        use crate::module::testing::module;
+        const BASE: u32 = 0xA900_0000;
+        const RUNNER: u64 = 77;
+        static FITTED: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
+        each(|vol, kind| {
+            FITTED.lock().unwrap().clear();
+            let scratch = &mut vec![0u8; 8192][..];
+            let room = &mut vec![0u8; 100_000][..];
+            let pool = &mut vec![0xEEu8; 64 * 1024][..];
+            let mut said = Said(Vec::new());
+            let files: Files<'_, Disk, 4> = Files::new(vol, scratch, room);
+            let mut s = System::new(files, &mut said, Break::new(0x1000, 0x3000), || 0);
+            // Without a loader: not something this system does.
+            assert_eq!(s.module_load(b"server.rpm"), Err(Errno::NoSys));
+            assert_eq!(s.module_find(BASE as usize, b"x"), Err(Errno::NoSys));
+            assert!(s.module_reason().to_bytes().starts_with(b"this system"));
+            // The files, as the build writes them.
+            let good = module(
+                RUNNER,
+                BASE + 0x1000,
+                5000,
+                &[
+                    ("GetEntityAPI", BASE + 0x1050),
+                    ("worldspawn", BASE + 0x1080),
+                ],
+                &[BASE + 0x1060],
+                512,
+            );
+            let other = module(RUNNER + 1, BASE + 0x4000, 100, &[], &[], 0);
+            let mut cut = good.clone();
+            cut.truncate(good.len() - 100);
+            s.files().mkdir(b"rp-game").unwrap();
+            for (name, bytes) in [
+                (&b"rp-game/server.rpm"[..], &good),
+                (b"rp-game/other.rpm", &other),
+                (b"rp-game/cut.rpm", &cut),
+            ] {
+                let w = s.open(name, W).unwrap();
+                assert_eq!(s.write(w, bytes), Ok(bytes.len()), "{kind}");
+                s.close(w).unwrap();
+            }
+            s.set_modules(Library {
+                modules: Modules::new(pool, BASE, RUNNER),
+                folder: b"rp-game",
+                fit: |at, len| FITTED.lock().unwrap().push((at, len)),
+            });
+            assert!(s.modules().is_some());
+            let m = s.module_load(b"server.rpm").expect("loaded");
+            assert_eq!(m.handle, (BASE + 0x1000) as usize);
+            assert_eq!(m.entry, (BASE + 0x1000) as usize + 72);
+            assert_eq!(m.constructors.1 - m.constructors.0, 4);
+            // What was written was made fit to run: the file's bytes.
+            assert_eq!(
+                *FITTED.lock().unwrap(),
+                [(BASE + 0x1000, good.len() as u32)],
+                "{kind}"
+            );
+            assert_eq!(
+                s.module_find(m.handle, b"worldspawn"),
+                Ok((BASE + 0x1080) as usize)
+            );
+            assert_eq!(s.module_find(m.handle, b"nothing"), Err(Errno::NoEntry));
+            assert_eq!(
+                s.module_find(m.handle + 4, b"worldspawn"),
+                Err(Errno::BadHandle)
+            );
+            let name = s
+                .module_name(m.handle, (BASE + 0x1050) as usize)
+                .expect("named");
+            assert!(name > m.handle && name < m.handle + good.len());
+            assert_eq!(
+                s.module_name(m.handle, (BASE + 0x1054) as usize),
+                Err(Errno::NoEntry)
+            );
+            // Refused, each with its reason said on the console too.
+            assert_eq!(s.module_load(b"other.rpm"), Err(Errno::Invalid));
+            assert!(
+                s.module_reason()
+                    .to_bytes()
+                    .starts_with(b"it was built for another")
+            );
+            assert_eq!(s.module_load(b"cut.rpm"), Err(Errno::Invalid));
+            assert!(s.module_reason().to_bytes().starts_with(b"it is damaged"));
+            assert_eq!(s.module_load(b"absent.rpm"), Err(Errno::NoEntry));
+            // A name is a name: no path out of the runner's folder.
+            for name in [
+                &b"../rp-game/server.rpm"[..],
+                b"sub/server.rpm",
+                b"a:server.rpm",
+                b"",
+            ] {
+                assert_eq!(s.module_load(name), Err(Errno::NoEntry), "{name:?}");
+            }
+            // The handles a load used are given back: this system has 4.
+            for _ in 0..6 {
+                assert!(s.module_load(b"server.rpm").is_ok());
+            }
+            assert!(
+                s.module_reason()
+                    .to_bytes()
+                    .starts_with(b"no module was refused")
+            );
+            assert_eq!(s.module_free(m.handle), Ok(()));
+            assert_eq!(s.module_free(m.handle), Err(Errno::BadHandle));
+            assert_eq!(
+                s.module_find(m.handle, b"worldspawn"),
+                Err(Errno::BadHandle)
+            );
+            let _ = s;
+            let text = String::from_utf8_lossy(&said.0).into_owned();
+            assert!(
+                text.contains(
+                    "module other.rpm not loaded: it was built for another build of the runner"
+                ),
+                "{text}"
+            );
+            assert!(text.contains("module cut.rpm not loaded: it is damaged"));
+            assert!(text.contains("module absent.rpm not loaded: its file is not there"));
+            // A load says its size, its place and its time.
+            assert!(
+                text.contains("module server.rpm: 6 KiB at 0xA9001000 and 1 KiB zeroed, read and checked in 0 ms"),
+                "{text}"
             );
         });
     }

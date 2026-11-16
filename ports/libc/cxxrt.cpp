@@ -29,12 +29,17 @@ static void *take(size_t n)
     return p;
 }
 
-void *operator new(size_t n) { return take(n); }
-void *operator new[](size_t n) { return take(n); }
-void operator delete(void *p) noexcept { free(p); }
-void operator delete[](void *p) noexcept { free(p); }
-void operator delete(void *p, size_t) noexcept { free(p); }
-void operator delete[](void *p, size_t) noexcept { free(p); }
+// Weak, as the language has them: a program may bring its own (FreeVGUI
+// does, in the Half-Life client library), and then the program's are the
+// ones linked, not both.
+#define REPLACEABLE __attribute__((weak))
+
+REPLACEABLE void *operator new(size_t n) { return take(n); }
+REPLACEABLE void *operator new[](size_t n) { return take(n); }
+REPLACEABLE void operator delete(void *p) noexcept { free(p); }
+REPLACEABLE void operator delete[](void *p) noexcept { free(p); }
+REPLACEABLE void operator delete(void *p, size_t) noexcept { free(p); }
+REPLACEABLE void operator delete[](void *p, size_t) noexcept { free(p); }
 
 extern "C" {
 

@@ -1,0 +1,42 @@
+[package]
+name = "rp-port-runner"
+description = "The module runner as a test image (ADR-0039; `cargo xtask emu-xash`): the port layer, the C library and the module loader, with nothing of any game in it. It loads a program module from its folder on the card and runs it. A test harness only: the OS starts a port as Game Mode's one program (docs/design/game-mode.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Built only by `cargo xtask` with the C toolchain (xtask/src/cc.rs) and
+# the table of what the modules import (xtask/src/module.rs): the everyday
+# builds (`cross`, `ci`) need no C compiler.
+c = []
+
+[[bin]]
+name = "rp-port-runner"
+path = "src/main.rs"
+required-features = ["c"]
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-image = { path = "../../boot/image" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-cabi = { path = "../../hal/cabi" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-drv-sdcard = { path = "../../drivers/sdcard" }
+rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
+rp-fat = { path = "../../kernel/fat" }
+rp-port = { path = "../sys" }
+rp-audio-x51v = { path = "../../services/audio-x51v" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-wm8750 = { path = "../../drivers/wm8750" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
+rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
+rp-touch-cal = { path = "../../drivers/touch-cal" }
+
+[lints]
+workspace = true

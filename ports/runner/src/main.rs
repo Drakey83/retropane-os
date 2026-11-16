@@ -1,0 +1,434 @@
+//! The module runner, as a test image (ADR-0039; `cargo xtask emu-xash`).
+//!
+//! **A test harness, not how the OS starts a game.** A port runs as Game
+//! Mode's one program under the resident kernel (ADR-0039 rule 1,
+//! docs/design/game-mode.md); until the kernel is what the X51v runs, the
+//! same runner code is tried the way every part of RetroPane is tried
+//! today, as an image the loader starts. This image is never shipped as a
+//! way to start a game.
+//!
+//! What it is: the port layer (`rp_port`: the card's files, the clock,
+//! sound, input), the C library (picolibc, once, here: rule 6) and the
+//! module loader. Nothing of any game is linked into it. It loads the
+//! program module from its folder on the card ([`FOLDER`], [`PROGRAM`]),
+//! runs its constructors and its entry, and the program loads its own
+//! library modules through `rp_module_load`.
+//!
+//! Iterate, don't imitate (rule 0). The Vita and Switch ports of the
+//! engine this was first built for are a main program with a small ELF
+//! loader in it and a hand-kept list of the C library functions the
+//! libraries may call; Linux has the system's dynamic linker. Here the
+//! build finds what the modules import, links a table of exactly those
+//! addresses into this image (which keeps them in it), and links each
+//! module against them at the address it runs at: this image hashes that
+//! table at its start, a module carries the hash of the table it was
+//! linked against, and one that does not match is refused. Loading is a
+//! read, a check sum and a zeroing; a call from a module into the C
+//! library is one branch.
+//!
+//! Memory (boot/link.x, `rp_hal_x51v::devices`): this image below
+//! 0xA80F0000; its zeroed RAM and a 2 MiB stack in the 3 MiB after it;
+//! the modules from the RAM pool's start (0xA9000000) where the build
+//! placed them; the C heap is what the set of modules leaves of the
+//! pool's 48 MiB (each module's header says where the set ends).
+//!
+//! On the host, and in builds without the C toolchain, there is no
+//! program here (the `c` feature).
+
+#![cfg_attr(target_os = "none", no_std, no_main)]
+#![forbid(unsafe_code)]
+
+/// The runner's folder on the card: its module files are here (the base
+/// image's flash once RetroPane is installed: ADR-0039 rule 8). The card
+/// is shared: nothing is written outside it by the runner itself.
+pub const FOLDER: &str = "rp-xash";
+/// The program module the test image starts.
+pub const PROGRAM: &str = "engine.rpm";
+/// Printed first: what this image is.
+pub const BANNER: &str = "RetroPane: the module runner (a test image: ADR-0039)";
+
+#[cfg(target_os = "none")]
+mod image {
+    use core::cell::RefCell;
+    use core::fmt::Write;
+
+    use rp_audio_x51v::{BoardCpld, SharedGpio, found, name, put_back, service};
+    use rp_drv_pxa_gpio::{Gpio, GpioPin};
+    use rp_drv_pxa_keypad::{Keypad, Pressed};
+    use rp_drv_pxa_ssp::Ssp;
+    use rp_drv_tsc2046::Tsc2046;
+    use rp_drv_wm8750::Output;
+
+    use rp_drv_cpld::Cpld;
+    use rp_drv_pxa_mmc::PxaMmc;
+    use rp_drv_pxa_uart::PxaUart;
+    use rp_drv_sdcard::{SdCard, mbr_partitions};
+    use rp_fat::AnyVolume;
+    use rp_hal_api::{BlockDevice, BlockError};
+    use rp_hal_cabi::{Break, Sys};
+    use rp_hal_pxa27x::dma::Dma;
+    use rp_hal_pxa27x::{Mmio, rt};
+    use rp_hal_x51v::devices;
+    use rp_port::files::Files;
+    use rp_port::input::{Input, Pad};
+    use rp_port::module::{self, Modules};
+    use rp_port::sound::{Sound, memory_for};
+    use rp_port::sys::{Console, Library, System};
+    use rp_touch_cal::{Calibration, Sample};
+
+    use super::{BANNER, FOLDER, PROGRAM};
+
+    rp_image::entry!(main);
+
+    /// The touch chip's select and pen lines (docs/hw/touch.md).
+    const TS_CS: u8 = 24;
+    const TS_PENIRQ: u8 = 94;
+    /// The codec's output level, 0-100.
+    const LEVEL: u32 = 60;
+    /// The sound's memory is sized for the largest stream a game opens
+    /// here: 44.1 kHz stereo.
+    const SOUND_FOR: (u32, u8) = (44_100, 2);
+    /// Of the scratch RAM: the file system's sector work.
+    const FAT_WORK: usize = 64 * 1024;
+    /// Files a program may have open at once.
+    const HANDLES: usize = 16;
+    /// The program's command line: its name, and the engine's own word for
+    /// "say what you are doing" (a test image's log is its result).
+    const ARGS: [&core::ffi::CStr; 3] = [c"xash3d", c"-dev", c"2"];
+
+    type Sd = SdCard<PxaMmc<Mmio, Dma>>;
+
+    /// The card, checking in with the run limit at every transfer.
+    struct Card(Sd);
+
+    impl BlockDevice for Card {
+        fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+            rt::check_in();
+            self.0.read_blocks(lba, buf)
+        }
+        fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+            rt::check_in();
+            self.0.write_blocks(lba, buf)
+        }
+    }
+
+    /// The serial line as a C program's console.
+    struct Serial(PxaUart<Mmio>);
+
+    impl Console for Serial {
+        fn put(&mut self, bytes: &[u8]) {
+            for &b in bytes {
+                if b == b'\n' {
+                    self.0.write_byte(b'\r');
+                }
+                self.0.write_byte(b);
+            }
+        }
+    }
+
+    static SYSTEM: rt::Slot<System<'static, Card, HANDLES, Serial>> = rt::Slot::new();
+    static SOUND: rt::Slot<Sound<'static, Dma>> = rt::Slot::new();
+    /// The GPIO block: the audio service, the codec's gate and the touch
+    /// chip's two lines share it for the whole run.
+    static GPIO: rt::Slot<SharedGpio> = rt::Slot::new();
+    static INPUT: rt::Slot<Input<X51vPad>> = rt::Slot::new();
+
+    type Touch = Tsc2046<Ssp<Mmio>, GpioPin<'static, Mmio>, GpioPin<'static, Mmio>>;
+
+    /// The X51v's buttons and touch chip, read when the program asks.
+    struct X51vPad {
+        keypad: Keypad<Mmio>,
+        touch: Touch,
+    }
+
+    impl Pad for X51vPad {
+        fn pressed(&mut self) -> Pressed {
+            self.keypad.scan().held
+        }
+        fn pen(&mut self) -> Option<Sample> {
+            self.touch.sample().map(|t| Sample {
+                x: t.x,
+                y: t.y,
+                z1: t.z1,
+            })
+        }
+    }
+
+    /// The keypad scanning and the touch chip on SSP1, as `rp-hello` sets
+    /// them up; `None` if a part is missing.
+    fn pad(gpio: &'static SharedGpio) -> Option<X51vPad> {
+        let (kp, ssp) = (rt::take_keypad()?, rt::take_ssp1()?);
+        let mut keypad = Keypad::new(kp);
+        keypad.enable();
+        {
+            // Windows Mobile leaves GPIO24 as SSP1's frame signal
+            // (docs/hw/touch.md): a plain GPIO, or the chip is never
+            // selected and every reading is 0.
+            let mut g = gpio.borrow_mut();
+            g.make_output(TS_CS, true);
+            g.set_function(TS_CS, 0);
+            g.make_input(TS_PENIRQ);
+        }
+        let mut ssp = Ssp::new(ssp);
+        ssp.configure_spi(2_600_000);
+        let mut touch = Tsc2046::new(
+            ssp,
+            GpioPin::new(gpio, TS_CS),
+            GpioPin::new(gpio, TS_PENIRQ),
+        );
+        // One reading arms its pen line.
+        let _ = touch.read(rp_drv_tsc2046::channel::X);
+        Some(X51vPad { keypad, touch })
+    }
+
+    /// A C `exit()`: the program's own end, said on the serial line. A
+    /// program that ends with an error has not made the runner fail: the
+    /// loader gets the image back either way, and the log says which.
+    fn exit(code: i32) -> ! {
+        let mut uart = PxaUart::new(rt::emergency_uart());
+        let _ = writeln!(uart, "\nrunner: the program called exit({code})");
+        rp_image::finish()
+    }
+
+    /// The SD card, as the loader starts it (power through the CPLD, then
+    /// the card); `None` if there is none.
+    fn open_card(cpld: &mut BoardCpld) -> Option<Sd> {
+        let (mmc, dma) = (rt::take_mmc()?, rt::take_dma(rp_hal_pxa27x::dma_map::SD)?);
+        cpld.set_sd_power(true);
+        rt::delay_us(10_000);
+        SdCard::try_init(PxaMmc::with_dma(mmc, dma)).ok()
+    }
+
+    /// The card's first partition (or the whole card), mounted.
+    fn mount(mut sd: Sd) -> Option<AnyVolume<Card>> {
+        let mut block = [0u8; rp_drv_sdcard::BLOCK];
+        sd.read(0, &mut block).ok()?;
+        let start = mbr_partitions(&block)
+            .and_then(|p| p[0])
+            .map_or(0, |p| p.start);
+        AnyVolume::mount(Card(sd), start).ok()
+    }
+
+    /// The test image's own check of the library modules beside the
+    /// program (a game's server and client libraries, which the program
+    /// loads only once it has the game's files): each is loaded through
+    /// the same loader, every name it exports is looked up and every
+    /// function named, and it is let go again. Its constructors are not
+    /// run. Not something a runner under Game Mode does.
+    fn check_libraries(s: &mut System<'static, Card, HANDLES, Serial>, uart: &mut PxaUart<Mmio>) {
+        // The names first: the listing holds a handle of its own.
+        let mut found = [([0u8; 32], 0usize); 8];
+        let mut count = 0;
+        let Ok(dir) = s.dir_open(FOLDER.as_bytes()) else {
+            return;
+        };
+        let mut name = [0u8; 64];
+        while let Ok(Some((len, folder))) = s.dir_next(dir, &mut name) {
+            let n = &name[..len];
+            if !folder
+                && len <= 32
+                && count < found.len()
+                && n.len() > 4
+                && n[len - 4..].eq_ignore_ascii_case(b".rpm")
+                && !n.eq_ignore_ascii_case(PROGRAM.as_bytes())
+            {
+                found[count].0[..len].copy_from_slice(n);
+                found[count].1 = len;
+                count += 1;
+            }
+        }
+        let _ = s.close(dir);
+        for (bytes, len) in &found[..count] {
+            let name = &bytes[..*len];
+            let shown = core::str::from_utf8(name).unwrap_or("?");
+            let Ok(m) = s.module_load(name) else {
+                let _ = writeln!(uart, "check: {shown}: FAILED to load");
+                continue;
+            };
+            let checked = u32::try_from(m.handle).ok().and_then(|h| {
+                s.modules()
+                    .and_then(|l| l.names(h).map(|n| (n.len(), n.round_trips())))
+            });
+            let _ = s.module_free(m.handle);
+            match checked {
+                Some((names, true)) => {
+                    let _ = writeln!(
+                        uart,
+                        "check: {shown}: {names} names, each found by name and named by address: ok"
+                    );
+                }
+                _ => {
+                    let _ = writeln!(uart, "check: {shown}: its names FAILED");
+                }
+            }
+        }
+    }
+
+    /// Makes loaded bytes fit to run: the data cache's copy written to
+    /// RAM and the instruction cache's old lines for those addresses
+    /// dropped (a module loaded a second time lies where its first load
+    /// was run from).
+    fn fit(at: u32, len: u32) {
+        rp_hal_pxa27x::cpu::clean_invalidate_range(at, len);
+    }
+
+    fn main() -> ! {
+        let Some(bus) = rt::take_ffuart() else {
+            rp_image::fail("no serial port")
+        };
+        let mut uart = PxaUart::new(bus);
+        uart.init(115_200);
+        rt::init_mmu();
+        let _ = writeln!(uart, "\n{BANNER}");
+        let mut cpld = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
+        let volume = cpld.as_mut().and_then(open_card).and_then(mount);
+        // Sound (the audio service, ADR-0032): the codec brought up as the
+        // service does it; its two board bits are put back at the end.
+        let board_found = found(cpld.as_ref());
+        let Some(gpio) =
+            rt::take_gpio().and_then(|bus| GPIO.put_with(|| RefCell::new(Gpio::new(bus))))
+        else {
+            rp_image::fail("no GPIO block")
+        };
+        let gpio: &'static SharedGpio = gpio;
+        let mut audio = match (rt::take_i2c(), rt::take_i2s()) {
+            (Some(i2c), Some(i2s)) if board_found.is_some() => {
+                Some(service(gpio, cpld, i2c, i2s, LEVEL))
+            }
+            _ => None,
+        };
+        let speaker = audio.as_mut().and_then(|a| match a.up() {
+            Ok(p) => {
+                let _ = writeln!(uart, "sound: the codec is up, to the {}", name(p.output));
+                Some(p.output == Output::Speaker)
+            }
+            Err(e) => {
+                let _ = writeln!(uart, "sound: none ({e:?})");
+                None
+            }
+        });
+        let mut scratch = devices::take_scratch();
+        // The sound's memory first: the scratch RAM starts on a cache line,
+        // as the DMA ring must.
+        let voice = match (
+            speaker,
+            scratch.take(),
+            memory_for(SOUND_FOR.0, SOUND_FOR.1),
+        ) {
+            (Some(speaker), Some(ram), Some(bytes)) => {
+                let (mem, rest) = ram.split_at_mut(bytes.next_multiple_of(32));
+                scratch = Some(rest);
+                rt::take_dma(rp_hal_pxa27x::dma_map::AUDIO)
+                    .and_then(|dma| Sound::new(mem, dma, speaker))
+                    .and_then(|s| SOUND.put_with(move || s))
+            }
+            (_, ram, _) => {
+                scratch = ram;
+                None
+            }
+        };
+        let (Some(vol), Some(ram)) = (volume, scratch) else {
+            rp_image::fail("no card: the program's modules are on the card")
+        };
+        let _ = writeln!(uart, "card: mounted");
+        let (work, room) = ram.split_at_mut(FAT_WORK);
+        let mut files: Files<'static, Card, HANDLES> = Files::new(vol, work, room);
+
+        // The modules' memory and this runner's identity.
+        let Some(pool) = devices::take_ram_pool_bytes() else {
+            rp_image::fail("the RAM pool was taken twice")
+        };
+        if pool.as_ptr().addr() != module::POOL as usize || pool.len() != module::POOL_LEN as usize
+        {
+            rp_image::fail("the RAM pool is not where modules are built for");
+        }
+        let table = rp_hal_cabi::runner_table();
+        let identity = module::runner_identity(table);
+        let _ = writeln!(
+            uart,
+            "runner: {} names kept for modules, identity {identity:016x}",
+            table.len() / 4
+        );
+        // Where the set of modules ends, from the program's own header:
+        // the C heap is the pool from there.
+        let mut path = [0u8; 64];
+        let len = FOLDER.len() + 1 + PROGRAM.len();
+        path[..FOLDER.len()].copy_from_slice(FOLDER.as_bytes());
+        path[FOLDER.len()] = b'/';
+        path[FOLDER.len() + 1..len].copy_from_slice(PROGRAM.as_bytes());
+        let Ok(fd) = files.open(&path[..len]) else {
+            let _ = writeln!(uart, "runner: {FOLDER}/{PROGRAM} is not on the card");
+            rp_image::fail("the program's module is not on the card")
+        };
+        let peeked = Modules::new(&mut *pool, module::POOL, identity)
+            .peek(&mut |into| files.read(fd, into).ok());
+        let _ = files.close(fd);
+        let header = match peeked {
+            Ok(h) => h,
+            Err(r) => {
+                let _ = writeln!(
+                    uart,
+                    "runner: {PROGRAM} not loaded: {}",
+                    r.reason().to_str().unwrap_or("refused")
+                );
+                rp_image::fail("the program's module was refused")
+            }
+        };
+        let (modules, heap) = pool.split_at_mut((header.set_end - module::POOL) as usize);
+        let heap = Break::new(heap.as_ptr().addr(), heap.as_ptr().addr() + heap.len());
+        let _ = writeln!(
+            uart,
+            "runner: modules to 0x{:08X}, the C heap is the {} KiB after",
+            header.set_end,
+            (module::POOL + module::POOL_LEN - header.set_end) / 1024
+        );
+
+        // Made straight into its slot: the file table is several KiB, and
+        // a copy or two of it on the way would be most of a small stack.
+        let Some(s) = SYSTEM.put_with(|| System::new(files, Serial(uart), heap, rt::ticks)) else {
+            rp_image::fail("the C system was set up twice")
+        };
+        s.set_modules(Library {
+            modules: Modules::new(modules, module::POOL, identity),
+            folder: FOLDER.as_bytes(),
+            fit,
+        });
+        if let Some(v) = voice {
+            s.set_sound(v);
+        }
+        let mut uart = PxaUart::new(rt::emergency_uart());
+        match pad(gpio).and_then(|p| INPUT.put_with(|| Input::new(p, Calibration::X51V_DEFAULT))) {
+            Some(i) => s.set_input(i),
+            None => {
+                let _ = writeln!(uart, "input: none (no keypad or SSP1)");
+            }
+        }
+        check_libraries(s, &mut uart);
+        let sys: &'static mut dyn Sys = s;
+        rp_hal_cabi::start(sys, exit);
+        let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &ARGS);
+        // The program's end stopped the DMA engine (`Sys::end`): the codec
+        // down, the board as it was found.
+        if let Some(mut a) = audio {
+            let down = a.down().is_ok();
+            put_back(a.board_mut().cpld.take(), board_found);
+            let _ = writeln!(
+                uart,
+                "sound: the codec is down ({down}), the board as found"
+            );
+        }
+        match ran {
+            Ok(code) => {
+                let _ = writeln!(uart, "runner: the program returned {code}");
+                rp_image::finish()
+            }
+            Err(e) => {
+                let _ = writeln!(uart, "runner: {PROGRAM} was not started ({e:?})");
+                rp_image::fail("the program's module was not started")
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+fn main() {}

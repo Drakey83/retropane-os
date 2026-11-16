@@ -13,7 +13,9 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 */
 
+#include "common.h"
 #include "platform/platform.h"
+#include <stdlib.h>
 #include <retropane.h>
 
 /*
@@ -72,4 +74,23 @@ int wai_getExecutablePath( char *out, int capacity, int *dirname_length )
 int wai_getModulePath( char *out, int capacity, int *dirname_length )
 {
 	return -1;
+}
+
+/*
+The engine's entry as a module (ADR-0039): the runner puts the module in
+place, runs its constructors and calls this with the command line. The
+game's files are the user's own, under Ports at the card's root (the
+owner, 2026-11-15); a runner that knows better says so in XASH3D_BASEDIR.
+The engine's own launcher (launcher.c's main) is not built: a module has
+no main, the runner has.
+*/
+static void RP_ChangeGame( const char *progname )
+{
+	// one game a run: Game Mode starts another
+}
+
+int rp_module_main( int argc, char **argv )
+{
+	setenv( "XASH3D_BASEDIR", "/Ports", 0 );
+	return Host_Main( argc, argv, XASH_GAMEDIR, 0, RP_ChangeGame );
 }

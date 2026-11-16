@@ -1497,7 +1497,7 @@ fn measure_options() -> Result<profile::Options> {
 /// Images holding a C program: built only by their own commands, with the
 /// C toolchain ([`cc`]), never by `cross` (a checkout without the toolchain
 /// builds everything else).
-const C_IMAGES: &[&str] = &["rp-port-hello"];
+const C_IMAGES: &[&str] = &["rp-port-hello", "rp-port-runner"];
 
 /// Builds the first C program's image: the C library, `ports/hello/c` and
 /// the Rust image that starts it.
