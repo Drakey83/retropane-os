@@ -319,6 +319,42 @@ sprites, particles, the sky, water and 2D (step 4); the feed by DMA in
 pieces (P4's fastest way; the CPU's stores first, timed); depth precision
 at the far plane, seen on the device first.
 
+## Step 4: the models on the 2700G (design, 2026-11-16, the owner: "Yes, start step 4")
+
+Run 11's samples put about a quarter of the 95 ms frame in the models'
+path, for triangles step 3 throws away. Read in `ref/soft/r_studio.c`:
+the bones move each vertex once into `g_studio.verts` (world space);
+`R_StudioDrawNormalMesh` then walks the mesh's stored commands (each a
+strip or a fan, `ptricmds`: vertex, normal, s, t) and hands every vertex
+to the triangle interface: `R_StudioSetColorBegin` lights it again for
+every command it is in (`R_LightLambert`, floats), `TriTexCoord2f`,
+`TriVertex3fv`, then `R_SetupFinalVert` projects it, again per use, and
+the triangle rasteriser draws loose triangles.
+
+**Rule 0.**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| Geometry | `ref_gl`: one GL call a vertex, the GPU transforms; `ref_soft`: the triangle interface, one call a vertex, loose triangles (run 9: 9,000 vertices for 3,600 triangles) | each stored command sent as **one TA strip or fan** (the TA's own fan, `0x5`, beside the strip): a vertex word a corner, no call a vertex | about one vertex a triangle instead of three: the words and the projection work roughly a third |
+| Projection | per use, in float (`R_SetupFinalVert`) | each of the model's vertices **projected once a frame** into a table (view space, 1/z, the turn), the commands then only index it | a vertex shared by 4-6 triangles is worked once |
+| Lighting | per command vertex (`R_LightLambert` again for every use) | **once per normal index** a frame (a model's few hundred normals), looked up by the commands | the lighting's floats fall by the ratio of uses to normals |
+| Skins | `ref_soft`: 8-bit skins in RAM read through a palette per pixel; `ref_gl`: uploaded at load as power-of-two textures, resampled | each skin **written once at load into the same video-memory atlas** (its own size rounded to 8 x 8 squares, RGB565 through the palette, twiddled in that pass), the skin's s, t mapped into its page | no resampling (the skin's own texels), no waste to powers of two, the atlas's one allocator; gouraud light from the vertex colour (TSP bit 22) |
+
+**The sub-steps, each checked in the emulator (the end shot drawn both
+ways), then a run on the X51v:**
+
+| Step | What | Measured by |
+|---|---|---|
+| 4a | Skins in the atlas at load; each stored command as one TA strip or fan from the existing per-vertex numbers (the picture first) | the models in the 2700G's picture; frame ms |
+| 4b | Each vertex projected once, each normal lit once (tables a model a frame) | frame ms, the models' share of the samples |
+| 4c | Sprites, beams, particles, the sky, water and conveyors; 2D (the HUD, the console) as rectangles | the whole frame against the software renderer's picture |
+| 4d | Fixed point for the bones and the projection (one 3 x 4 integer transform a vertex), the emitter's world corners transformed once and their texture coordinates made at map load | frame ms against the 45 a second budget |
+
+What would overturn it: a TA fan that does not draw as the strip does
+(then fans go as strips: a fan of n corners is n - 2 triangles either
+way, a few more words); skins that wrap (s, t past the skin: then that
+skin gets a power-of-two texture of its own with wrap).
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
@@ -369,7 +405,7 @@ at the far plane, seen on the device first.
 | 1b | The view's lit surfaces in bytes at their mip levels; choice 2 A (cache in video memory) against 2 B (texture and lightmap) | counts in the emulator, then the frame on the X51v |
 | 2 | The TA in the QEMU fork; the facts above on the X51v | `emu-tabench` drawing; a test image |
 | 3 | The runner's `rp_gfx_*`, the world on the 2700G with the surface cache | **done:** run 11, 95 ms (10.5 a second); the picture right on the X51v (models to come) |
-| 4 | Models, sprites, beams, particles, 2D | the whole frame on the 2700G against run 7's picture |
+| 4 | Models, sprites, beams, particles, 2D (sub-steps 4a-4d above) | the whole frame on the 2700G against run 7's picture |
 | 5 | Fixed-point transforms, choice 2's B and C measured, the routes | frame ms per change |
 
 **The measurement that proves ours wins:** the same map (c1a0), the same
