@@ -202,6 +202,55 @@ measure next with the chip: what the bus's 33 MB/s costs when the view
 turns (a new view's 4.6 MB is about 140 ms to send whole; only the newly
 seen surfaces go, spread over frames) against choice 2 B's lightmaps.
 
+## The 45 a second budget (the owner, 2026-11-16)
+
+"I want us to be clever enough to get at least 45 fps on average": 22.2 ms
+a frame, averaged over the run. Run 8 put the game, the engine and the
+sound at about 16.5 ms, so both sides shrink: ref_rp's CPU work to about
+6 ms (from run 9's ~50 ms once the cache stops thrashing), and the game's
+to about 13 ms, while the 2700G draws the last frame beside them (ADR-0038
+G4: two in flight). Each line is measured on the X51v when built; none is
+a result yet.
+
+**ref_rp's CPU, ~50 ms to ~6:**
+
+- **Nothing a frame that is the same every frame.** A world face's
+  texture coordinates depend only on its corners and its texture's axes:
+  worked out once when the map loads (per mip level), not per frame as the
+  software renderer and step 1 do. A still camera reuses the whole last
+  frame's buffer (no CPU at all).
+- **A vertex transformed once, not once a face.** The world's corners are
+  shared by three or four faces each: transformed once a frame into a
+  table (fixed point, `smull`), the faces then only index it.
+- **Models as the strips they are stored as.** Half-Life's model meshes
+  are already strips and fans; the triangle interface breaks them into
+  loose triangles (run 9: 9,000 vertices for 3,600 triangles). Sent as
+  strips, about one vertex a triangle: the words a frame roughly halve
+  (69,000 to about 35,000, the bus 8.3 ms to about 4).
+- **One matrix a bone, in fixed point.** Each bone's matrix times the
+  view's, once a frame; each vertex then one 3 x 4 integer transform
+  (iWMMXt multiply-adds, layer 3). **Lighting per normal, not per
+  vertex:** a model's vertices share a small set of normals; each is lit
+  once and the vertices look it up.
+- **No call a vertex, no float a vertex:** the perspective divide by a
+  reciprocal table and one Newton step (as `hal/mem/src/float.rs`'s
+  divide), the TA's floats built by `clz`.
+
+**The game's CPU, ~16.5 ms to ~13** (from run 8's samples):
+
+- **The local game skips the network's delta coding.** In single player
+  the server and the client are one program, yet every frame the server
+  delta-codes each entity for the client and the client decodes it
+  (`Delta_CompareField`, `Delta_WriteField`, `CL_DeltaEntity`): handed over
+  as they are when both sides are local (the loopback), exactly the same
+  state.
+- **The player's collision traces** (`PM_RecursiveHullCheck`,
+  `PM_PlayerTraceExt`, `SV_ClipToEntity`) and the doubles (`__adddf3`,
+  `__muldf3`: the engine's and the client's) through layer 2's relaxed
+  float, each checked against the float build.
+- **The sound's mixing** (`S_MixChannelToBuffer`, `S_PaintChannels`,
+  `rp_snd_write`) in iWMMXt, or handed to the OS mixer's stream.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
