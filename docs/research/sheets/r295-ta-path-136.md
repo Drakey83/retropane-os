@@ -181,3 +181,66 @@ log on the loader), but the PC's USB link failed afterwards ("Device
 Descriptor Request Failed"); the loader's copy was lost to the soft
 reset. Its card log is to be read with `cargo xtask cardlog` once the
 link is back, or the run repeated.
+
+**Run 24 read (card log, after the PC restart).** At 136.50 / 1, of 80
+renders: control 25 and 42; the models' fans left out 45; their strips
+left out 11; their alpha test off 17; flat 31. The strips matter, the
+fans do not. But the two controls 25 and 42 show the confound: the view
+moves through the run, so cells run at different moments see different
+scenes. Run 25 alternates each change with its control frame by frame.
+
+## Run 25 (interleaved: each change on every other frame, the frames between it its control)
+
+Hangs on a frame that followed a good one (a hang's own successor
+counted apart, below):
+
+| Change (136.50 / 1) | With it | Without (same cell) |
+|---|---|---|
+| no models | 2 of 45 | 10 of 52 |
+| **no model strips (fans kept)** | **2 of 38** | **15 of 49** |
+| the models' alpha test off | 5 of 51 | 9 of 54 |
+| no model fans | 9 of 50 | 6 of 47 |
+
+On a frame right after a hang: 5/7, 7/10, 4/12 (control frames) and
+5/15, 8/22, 3/10 (with the change) hung again, whatever was drawn: **a
+hang makes the next render likely to hang** (the bursts). Two findings:
+the models' strips start the hangs (fans, alpha test: little or none),
+and the recovery (3D clock cycled, core reset, manager set up) leaves the
+core fragile at 136.50. Run 26: tiny strips and slivers apart, and a
+background-only render after each hang.
+
+## Run 26 and where it stands (2026-11-16)
+
+| Cell (136.50 / 1, interleaved) | Hang after a good frame: with / without | After a hang: with / without |
+|---|---|---|
+| tiny model strips out (372 a frame) | 4 of 47 / 9 of 51 | 4/13 / 4/8 |
+| strips with a sliver out (411 a frame) | 6 of 42 / 16 of 52 | 1/18 / 2/7 |
+| **a background-only render after each hang** (every frame) | 6 of 44 / 14 of 50 | **3/16 / 1/9** |
+| no model strips (repeat of run 25) | 8 of 48 / 10 of 48 | 3/12 / 2/11 |
+
+- **The warm-up render cures the bursts:** after a hang the next render
+  hung 4 times in 25 (16%), against about half in run 25.
+- **No change to the frame cures the fresh hangs.** Less model work
+  lowers the rate (to roughly 10% a render), but run 26's repeat of "no
+  model strips" (8 of 48 against 10 of 48) did not reproduce run 25's
+  2 of 38: the rate follows the amount of work in the frame, not one
+  kind of draw. That is a margin of the core at this clock on the TA's
+  lists, not a word we send wrong.
+- The CPU binner's path is the one proven clean at 136.50 / 1 (GC2DT,
+  1,200 of 1,200 game frames, lists on the die): ports drawn that way
+  get the game step already. The TA path's clean top is 133.25 / 1
+  (1 hang in 240 in runs 18-19, 2 in 100 with Dell's words).
+
+### Options for the owner (results, not a decision)
+
+- **A. The TA path at 133.25 / 1 with the warm-up recovery** (and a
+  shorter hang limit): ~1 render in 200 or fewer stalls, each now one
+  dropped frame instead of a burst. 2.2 ms a render faster than today's
+  108.33.
+- **B. 136.50 / 1 for ports on the CPU binner's path (proven), 133.25 /
+  1 for the TA path**, each its own proven step, as the guard's design
+  already allows.
+- **C. Keep chasing 136.50 on the TA path** with a new lead only (stop
+  rule: one decisive run each): the per-tile wait `0x664` swept by value,
+  or the region array rewritten in the checker order that cured the
+  binner's tile race; each a run.

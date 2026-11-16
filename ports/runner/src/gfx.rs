@@ -170,6 +170,10 @@ struct Cell {
     lmtim: Option<u32>,
     /// What of the frame goes to the chip (run 23).
     part: Part,
+    /// After a hang, one background-only render before the next frame
+    /// (run 26: whether the core's recovery is what makes hangs come in
+    /// bursts).
+    warm: bool,
 }
 
 /// Run 23's split of the frame by kind of work: which path stalls the
@@ -195,6 +199,46 @@ enum Part {
     ModelsNoAlphaTest,
     /// The models flat, not Gouraud (TSP bit 22 cleared).
     ModelsFlat,
+    /// The models' strips whose corners all lie within 3 x 3 pixels left
+    /// out (run 26: distant models' tiny strips).
+    TinyModelStrips,
+    /// The models' strips holding a sliver (a triangle of under a quarter
+    /// of a pixel's area) left out.
+    ThinModelStrips,
+}
+
+/// The most words a strip holds (255 corners of 7 words).
+const STRIP_MOST: usize = 255 * 7;
+
+/// Whether a strip's corners (`c`: 7 words each, x and y first, floats)
+/// should be left out for `part`.
+fn leave_out(part: Part, c: &[u32]) -> bool {
+    let xy = |k: usize| (f32::from_bits(c[7 * k]), f32::from_bits(c[7 * k + 1]));
+    let n = c.len() / 7;
+    if n < 3 {
+        return false;
+    }
+    match part {
+        Part::TinyModelStrips => {
+            let (mut x0, mut y0) = xy(0);
+            let (mut x1, mut y1) = (x0, y0);
+            for k in 1..n {
+                let (x, y) = xy(k);
+                x0 = x0.min(x);
+                x1 = x1.max(x);
+                y0 = y0.min(y);
+                y1 = y1.max(y);
+            }
+            x1 - x0 < 3.0 && y1 - y0 < 3.0
+        }
+        Part::ThinModelStrips => (0..n - 2).any(|k| {
+            let (ax, ay) = xy(k);
+            let (bx, by) = xy(k + 1);
+            let (cx, cy) = xy(k + 2);
+            ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)).abs() < 0.5
+        }),
+        _ => false,
+    }
 }
 
 /// TSP bit 22: Gouraud, which only the models' states carry.
@@ -213,6 +257,12 @@ struct Split<F> {
     dropping: bool,
     /// The last state was a model's.
     model: bool,
+    /// A model strip held back until its end (runs 26's parts): its word
+    /// and corners.
+    held: Option<(u32, usize)>,
+    buf: [u32; STRIP_MOST],
+    /// Strips left out by `leave_out` this frame.
+    left_out: u32,
 }
 
 impl<F: FnMut(Piece) -> bool> Split<F> {
@@ -220,9 +270,25 @@ impl<F: FnMut(Piece) -> bool> Split<F> {
         match p {
             Piece::End => {
                 let drop = self.in_prim.take().unwrap_or(false);
+                if let Some((word, n)) = self.held.take() {
+                    if leave_out(self.part, &self.buf[..n]) {
+                        self.left_out += 1;
+                        return true;
+                    }
+                    return (self.put)(Piece::Word(word))
+                        && self.buf[..n].iter().all(|&v| (self.put)(Piece::Word(v)))
+                        && (self.put)(p);
+                }
                 drop || (self.put)(p)
             }
             Piece::Word(w) => {
+                if let Some((word, n)) = self.held {
+                    if let Some(slot) = self.buf.get_mut(n) {
+                        *slot = w;
+                    }
+                    self.held = Some((word, (n + 1).min(STRIP_MOST)));
+                    return true;
+                }
                 if let Some(drop) = self.in_prim {
                     return drop || (self.put)(p);
                 }
@@ -260,6 +326,13 @@ impl<F: FnMut(Piece) -> bool> Split<F> {
                     || (self.model && self.part == Part::NoModelFans && fan)
                     || (self.model && self.part == Part::NoModelStrips && !fan);
                 self.in_prim = Some(drop);
+                if !drop
+                    && self.model
+                    && matches!(self.part, Part::TinyModelStrips | Part::ThinModelStrips)
+                {
+                    self.held = Some((w, 0));
+                    return true;
+                }
                 drop || (self.put)(p)
             }
         }
@@ -312,7 +385,12 @@ const fn cell(
         frames,
         lmtim: None,
         part: Part::All,
+        warm: false,
     }
+}
+
+const fn warmed(c: Cell) -> Cell {
+    Cell { warm: true, ..c }
 }
 
 const fn split(c: Cell, part: Part) -> Cell {
@@ -403,14 +481,12 @@ const BUT_648: [(usize, u32); 7] = dell_but(0x648, 0);
 const BUT_6D8: [(usize, u32); 7] = dell_but(0x6D8, 0x0100_0000);
 #[allow(dead_code, reason = "run 19's cells")]
 const BUT_6DC: [(usize, u32); 7] = dell_but(0x6DC, 0);
-const CELLS: [Cell; 8] = [
+const CELLS: [Cell; 6] = [
     cell(P108, &LAY_SDRAM, NONE, "control", 40),
-    cell(P136, &LAY_SDRAM, NONE, "control", 80),
-    split(cell(P136, &LAY_SDRAM, NONE, "the models' fans left out", 80), Part::NoModelFans),
-    split(cell(P136, &LAY_SDRAM, NONE, "the models' strips left out", 80), Part::NoModelStrips),
-    split(cell(P136, &LAY_SDRAM, NONE, "the models' alpha test off", 80), Part::ModelsNoAlphaTest),
-    split(cell(P136, &LAY_SDRAM, NONE, "the models flat (no Gouraud)", 80), Part::ModelsFlat),
-    cell(P136, &LAY_SDRAM, NONE, "control again", 80),
+    split(cell(P136, &LAY_SDRAM, NONE, "tiny model strips (3 x 3 px) out, every other frame", 120), Part::TinyModelStrips),
+    split(cell(P136, &LAY_SDRAM, NONE, "model strips with a sliver (< 1/4 px) out, every other frame", 120), Part::ThinModelStrips),
+    warmed(cell(P136, &LAY_SDRAM, NONE, "a background-only render after each hang", 120)),
+    split(cell(P136, &LAY_SDRAM, NONE, "no model strips, every other frame", 120), Part::NoModelStrips),
     cell(P108, &LAY_SDRAM, NONE, "control again", 40),
 ];
 /// The ladder starts after this many frames (the map drawn and steady).
@@ -442,11 +518,15 @@ struct Ladder {
     ok: u32,
     render_us: u32,
     max_us: u32,
-    pattern: [u8; 100],
+    pattern: [u8; 120],
     ok_block: Option<[u32; BLOCK_WORDS]>,
     hang_block: Option<[u32; BLOCK_WORDS]>,
     /// Hangs by which marks the core had drawn over (bit k: `MARKS[k]`).
     marks: [u16; 32],
+    /// Hangs on the frames that had the cell's change (every other one).
+    hangs_b: u32,
+    /// Strips the change left out, all its frames together.
+    left_out: u32,
 }
 
 impl Ladder {
@@ -459,10 +539,12 @@ impl Ladder {
             ok: 0,
             render_us: 0,
             max_us: 0,
-            pattern: [b' '; 100],
+            pattern: [b' '; 120],
             ok_block: None,
             hang_block: None,
             marks: [0; 32],
+            hangs_b: 0,
+            left_out: 0,
         }
     }
 
@@ -595,6 +677,9 @@ struct Open {
     hang_marks: u32,
     /// What of each frame goes to the chip (the ladder's cells).
     part: Part,
+    /// A warm-up render after each hang (the cell's), and one owed.
+    warm: bool,
+    warm_owed: bool,
 }
 
 /// The 2700G as `rp_port`'s [`Screen`].
@@ -781,6 +866,8 @@ impl Chip {
                     Some(c) if ok => c.part,
                     _ => Part::All,
                 };
+                o.warm = ok && CELLS.get(k).is_some_and(|c| c.warm);
+                o.warm_owed = false;
             }
             Err(e) => {
                 log(format_args!("rp-gfx ladder: the TA's set-up in {} refused: {e:?}", lay.name));
@@ -832,6 +919,17 @@ impl Chip {
             l.ok,
             core::str::from_utf8(&l.pattern[..shown]).unwrap_or("")
         ));
+        if c.part != Part::All {
+            (self.log)(format_args!(
+                "rp-gfx ladder {}: with the change {} hangs of {} frames, without it {} of {} (`h`/`,` the frames with it); {} strips left out by it in all",
+                l.cell + 1,
+                l.hangs_b,
+                l.n / 2,
+                l.hangs - l.hangs_b,
+                l.n - l.n / 2,
+                l.left_out
+            ));
+        }
         for (mask, &n) in l.marks.iter().enumerate() {
             if n > 0 {
                 (self.log)(format_args!(
@@ -1104,6 +1202,8 @@ impl Screen for Chip {
             marking: false,
             hang_marks: 0,
             part: Part::All,
+            warm: false,
+            warm_owed: false,
         });
         self.since = rt::ticks();
         Ok(gfx)
@@ -1141,13 +1241,31 @@ impl Screen for Chip {
         if waited.is_err() {
             c.render_hangs += 1;
         }
+        let bg = background();
+        if o.warm_owed {
+            // The background alone through the TA and the core, its
+            // result not counted.
+            o.warm_owed = false;
+            let _ = ta::clear(o.vram, &o.lay.ta);
+            cpu::drain_write_buffer();
+            let mut f = ta::Feed::start(regs, &o.ready, &o.lay.ta, CLOCK, TA_LIMIT_US);
+            let _ = ta::draws(&[&bg]).all(|i| f.put(i));
+            if f.finish().done {
+                o.start_render(regs);
+                let _ = o.wait_render(regs);
+            } else {
+                o.recover(regs);
+            }
+        }
         let _ = ta::clear(o.vram, &o.lay.ta);
         cpu::drain_write_buffer();
-        let bg = background();
         let mut feed = ta::Feed::start(regs, &o.ready, &o.lay.ta, CLOCK, TA_LIMIT_US);
         let _ = ta::draws(&[&bg]).all(|i| feed.put(i));
+        // Run 25: a cell's change on every other frame only, the frames
+        // between it its control over the same view (the view moves).
+        let variant = self.ladder.as_ref().is_some_and(|l| l.n % 2 == 1);
         let mut split = Split {
-            part: o.part,
+            part: if variant { o.part } else { Part::All },
             put: |p| {
                 feed.put(match p {
                     Piece::Word(w) => ta::Item::Word(w),
@@ -1158,8 +1276,12 @@ impl Screen for Chip {
             in_prim: None,
             dropping: false,
             model: false,
+            held: None,
+            buf: [0; STRIP_MOST],
+            left_out: 0,
         };
         send(words, |p| split.put(p));
+        let left_out = split.left_out;
         let fed = feed.finish();
         c.frames += 1;
         c.words += fed.words;
@@ -1185,24 +1307,29 @@ impl Screen for Chip {
         o.start_render(regs);
         self.frame = self.frame.wrapping_add(1);
         if let Some(l) = self.ladder.as_mut() {
+            l.left_out += left_out;
             match o.wait_render(regs) {
                 Ok(us) => {
                     l.ok += 1;
                     l.render_us += us;
                     l.max_us = l.max_us.max(us);
                     l.ok_block = Some(read_block(regs));
-                    l.mark(b'.');
+                    l.mark(if variant { b',' } else { b'.' });
                 }
                 Err(_) => {
                     c.render_hangs += 1;
                     l.hangs += 1;
+                    if variant {
+                        l.hangs_b += 1;
+                    }
                     if let Some(n) = l.marks.get_mut(o.hang_marks as usize & 31) {
                         *n += 1;
                     }
                     if l.hang_block.is_none() {
                         l.hang_block = o.hang_block;
                     }
-                    l.mark(b'H');
+                    l.mark(if variant { b'h' } else { b'H' });
+                    o.warm_owed = o.warm;
                 }
             }
         } else if self.frame.is_multiple_of(TIMED_EVERY) {
