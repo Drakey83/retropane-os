@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::cc::{self, Job, Libc, Toolchain};
+use crate::module::{self, parse_undefined};
 
 /// The pinned sources: (folder under `target/ports-src`, commit, patch; no
 /// patch where the source builds as fetched).
@@ -86,7 +87,9 @@ const ENGINE_DEFINES: &[&str] = &[
     "-DXASH_INPUT=100",
     "-DXASH_TIMER=100",
     "-DXASH_LIB=100",
-    "-DXASH_ENABLE_MAIN=1",
+    // The libraries are asked for by their plain names ("server",
+    // "menu"): the loader knows where each is (lib_rp.c, ADR-0039).
+    "-DXASH_INTERNAL_GAMELIBS=1",
     "-DENGINE_DLL=1",
     "-DXASH_GAMEDIR=\"valve\"",
     "-DXASH_REF_SOFT_ENABLED=1",
@@ -206,6 +209,11 @@ struct Part {
     /// Earlier parts linked into this one (mpg123 into the engine,
     /// FreeVGUI into the client library: BSD, its own static option).
     with: &'static [&'static str],
+    /// Compiled with `-fvisibility=hidden`, as the part's own build does:
+    /// what it exports is then exactly what its source marks for export,
+    /// which is how the module packer finds a library's names (every part
+    /// that is a library, or is linked into one).
+    hidden: bool,
 }
 
 /// The C and C++ sources in `dir` (and below it if `deep`), sorted, without
@@ -337,6 +345,7 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         cxx: false,
         rtti: false,
         with: &["mpg123"],
+        hidden: false,
     };
     engine
         .flags
@@ -368,6 +377,7 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         cxx: true,
         rtti: false,
         with: &[],
+        hidden: true,
     };
     filesystem.sources.extend(public());
     filesystem.sources.push(x.join("3rdparty/miniz/miniz.c"));
@@ -381,6 +391,7 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         cxx: false,
         rtti: false,
         with: &[],
+        hidden: true,
     };
     ref_soft.flags.push("-DREF_DLL=1".into());
     ref_soft.flags.extend(common.iter().cloned());
@@ -412,6 +423,7 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         cxx: true,
         rtti: false,
         with: &[],
+        hidden: true,
     };
     server
         .sources
@@ -442,6 +454,7 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         cxx: true,
         rtti: true,
         with: &["freevgui"],
+        hidden: true,
     };
     client
         .sources
@@ -466,6 +479,7 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         cxx: false,
         rtti: false,
         with: &[],
+        hidden: false,
     };
     mpg123.flags.extend(includes(
         &m,
@@ -485,8 +499,18 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         cxx: true,
         rtti: true,
         with: &[],
+        hidden: true,
     };
-    for d in ["controls", "platform/common", "platform/xash3d-fwgs"] {
+    // Its platform folder as its own build takes it for a system that is
+    // not Windows (`platform/posix`: the clock through `clock_gettime`,
+    // no system fonts), as fetched: nothing of RetroPane's is compiled
+    // into the client library (the SDK's licence).
+    for d in [
+        "controls",
+        "platform/common",
+        "platform/posix",
+        "platform/xash3d-fwgs",
+    ] {
         freevgui.sources.extend(sources(&v.join(d), false, &[]));
     }
     // The engine's side of the glue is the SDK's copy of its headers.
@@ -518,6 +542,7 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         cxx: true,
         rtti: false,
         with: &[],
+        hidden: true,
     };
     for d in [
         "miniutl",
@@ -562,19 +587,6 @@ fn parse_sizes(out: &str) -> Option<Sizes> {
     })
 }
 
-/// The names the linker could not find (its `undefined symbol:` lines),
-/// once each, sorted.
-fn parse_undefined(stderr: &str) -> Vec<String> {
-    let mut out: Vec<String> = stderr
-        .lines()
-        .filter_map(|l| l.split("undefined symbol: ").nth(1))
-        .map(|s| s.trim().to_string())
-        .collect();
-    out.sort();
-    out.dedup();
-    out
-}
-
 /// Who answers a name the C library left undefined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
@@ -609,6 +621,7 @@ const BOUNDARY: &[&str] = &[
     "fsync",
     "getcwd",
     "execve",
+    "clock_gettime",
 ];
 
 fn answer(name: &str) -> Answer {
@@ -634,13 +647,16 @@ struct Built {
     library: usize,
 }
 
-fn build(
+/// Compiles `part` and links its objects (and the parts inside it) into
+/// one object, `<out>/<name>.o`: what a library of its own would hold.
+/// The object and how many files went into it.
+fn compile(
     root: &Path,
     tc: &Toolchain,
     libc: &Libc,
     out: &Path,
     part: &Part,
-) -> Result<Built, String> {
+) -> Result<(PathBuf, usize), String> {
     let cxx_headers = root.join("ports").join("libc").join("cxx");
     let dir = out.join(part.name);
     let _ = std::fs::remove_dir_all(&dir);
@@ -669,9 +685,14 @@ fn build(
                 if part.rtti {
                     cxx.push("-frtti".into());
                 }
+                if part.hidden {
+                    cxx.push("-fvisibility=hidden".into());
+                }
                 cxx
             } else if f.extension().is_some_and(|x| x == "S") {
                 Vec::new()
+            } else if part.hidden {
+                vec!["-std=gnu11".into(), "-fvisibility=hidden".into()]
             } else {
                 vec!["-std=gnu11".into()]
             },
@@ -698,6 +719,17 @@ fn build(
             .arg(&whole)
             .arg(format!("@{}", list.to_string_lossy().replace('\\', "/"))),
     )?;
+    Ok((whole, jobs.len()))
+}
+
+fn build(
+    root: &Path,
+    tc: &Toolchain,
+    libc: &Libc,
+    out: &Path,
+    part: &Part,
+) -> Result<Built, String> {
+    let (whole, files) = compile(root, tc, libc, out, part)?;
     let size = Command::new(tc.tool("llvm-size"))
         .arg(&whole)
         .output()
@@ -719,6 +751,16 @@ fn build(
         "--demangle",
     ]);
     let linked = link.output().map_err(|e| format!("ld.lld: {e}"))?;
+    // A link that stops for another reason (a name defined twice) has not
+    // looked for every undefined name: its count would be too low, and
+    // was, for the client library, until 2026-11-15.
+    if !linked.status.success() {
+        return Err(format!(
+            "{}: the check link failed:\n{}",
+            part.name,
+            String::from_utf8_lossy(&linked.stderr)
+        ));
+    }
     let undefined = parse_undefined(&String::from_utf8_lossy(&linked.stderr));
     let missing: Vec<String> = undefined
         .iter()
@@ -731,7 +773,7 @@ fn build(
         .count();
     Ok(Built {
         name: part.name,
-        files: jobs.len(),
+        files,
         sizes,
         missing,
         library,
@@ -813,6 +855,211 @@ pub fn eval(root: &Path) -> Result<(), String> {
     std::fs::write(&file, report).map_err(|e| format!("{}: {e}", file.display()))?;
     eprintln!("    written to {}", file.display());
     Ok(())
+}
+
+/// One module of the port (ADR-0039 rule 5: what is linked together
+/// follows the licence line, and nothing else splits).
+struct Plan {
+    /// The module's name: its file is `<name>.rpm`, and the engine asks
+    /// for a library by this name.
+    name: &'static str,
+    /// The part that is the module's own.
+    part: &'static str,
+    /// The parts linked inside it, each with the name the engine asks for
+    /// it by (`lib_rp.c` answers those loads from a table in the module).
+    inner: &'static [(&'static str, &'static str)],
+    /// Its entry, if it is the program and not a library.
+    entry: Option<&'static str>,
+}
+
+/// The three modules, in the order they are placed from the RAM pool's
+/// start. The engine is last: its zeroed RAM (21 MiB with the renderer's)
+/// would otherwise sit between the runner and the other modules' code,
+/// out of a plain branch's reach (32 MiB), and every call into the C
+/// library from them would need a veneer.
+const PLAN: [Plan; 3] = [
+    Plan {
+        name: "server",
+        part: "server",
+        inner: &[],
+        entry: None,
+    },
+    Plan {
+        name: "client",
+        part: "client",
+        inner: &[],
+        entry: None,
+    },
+    Plan {
+        name: "engine",
+        part: "engine",
+        inner: &[
+            ("filesystem", "filesystem_stdio"),
+            ("ref_soft", "ref_soft"),
+            ("menu", "menu"),
+        ],
+        entry: Some("rp_module_main"),
+    },
+];
+
+/// The assembly of the table `lib_rp.c` answers the engine's loads of its
+/// own parts from (`rp_inner_libraries`): for each part its name as the
+/// engine asks for it, then each function its source marks for export, by
+/// that name, at the symbol the build renamed it to (`prefix` + name).
+fn inner_asm(libs: &[(&str, String, Vec<String>)]) -> String {
+    let mut s = String::from(
+        "\t.section .rodata.rp_inner_libraries,\"a\",%progbits\n\t.balign 4\n\t.globl rp_inner_libraries\nrp_inner_libraries:\n",
+    );
+    for (i, (_, _, names)) in libs.iter().enumerate() {
+        s.push_str(&format!(
+            "\t.long .Llib{i}, .Lexports{i}, {}\n",
+            names.len()
+        ));
+    }
+    s.push_str("\t.long 0, 0, 0\n");
+    for (i, (_, prefix, names)) in libs.iter().enumerate() {
+        s.push_str(&format!(".Lexports{i}:\n"));
+        for (k, name) in names.iter().enumerate() {
+            s.push_str(&format!("\t.long .Lname{i}_{k}, \"{prefix}{name}\"\n"));
+        }
+    }
+    for (i, (asked, _, names)) in libs.iter().enumerate() {
+        s.push_str(&format!(".Llib{i}:\n\t.asciz \"{asked}\"\n"));
+        for (k, name) in names.iter().enumerate() {
+            s.push_str(&format!(".Lname{i}_{k}:\n\t.asciz \"{name}\"\n"));
+        }
+    }
+    s
+}
+
+/// The port's modules, built.
+pub struct Set {
+    /// Each module's file name and bytes, in the order they are placed.
+    pub files: Vec<(String, Vec<u8>)>,
+    /// What the build found, in plain lines (sizes, counts, addresses).
+    pub lines: Vec<String>,
+}
+
+/// Builds the port's three modules (ADR-0039) against the runner:
+/// compiles every part, finds what each module asks of the runner, has
+/// `build_runner` build the runner keeping exactly that (it is given the
+/// folder of the C libraries, the runner's table among them, and returns
+/// the runner's linked image), then links each module at its address and
+/// packs it. `arithmetic` is the libraries linked into every module (rule
+/// 6: the compiler's arithmetic helpers and the memory routines).
+///
+/// # Errors
+/// As [`eval`]; a name the runner has not; a link that is not a module.
+pub fn modules(
+    root: &Path,
+    arithmetic: &[PathBuf],
+    build_runner: &dyn Fn(&Path) -> Result<PathBuf, String>,
+) -> Result<Set, String> {
+    for (dir, commit, patch) in SOURCES {
+        prepare(root, dir, commit, patch)?;
+    }
+    let (tc, libc) = cc::ready(root)?;
+    cc::program(root, &tc, &libc, "rpcxx", &root.join("ports/libc"))?;
+    let out = root.join("target").join("xash-eval");
+    let dir = root.join("target").join("xash-modules");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut files = 0;
+    for part in parts(root, 0) {
+        files += compile(root, &tc, &libc, &out, &part)?.1;
+    }
+    let object = |part: &str| out.join(format!("{part}.o"));
+    let mut specs = Vec::new();
+    for plan in &PLAN {
+        let mut spec = module::Spec {
+            name: plan.name,
+            objects: Vec::new(),
+            archives: vec![libc.lib_dir.join("librpcxx.a")],
+            entry: plan.entry,
+            exports: Vec::new(),
+        };
+        spec.archives.extend(arithmetic.iter().cloned());
+        if plan.entry.is_some() {
+            // The program: its own part as compiled.
+            spec.objects.push(object(plan.part));
+        } else {
+            let local = dir.join(format!("{}-local.o", plan.part));
+            spec.exports = module::localised(&tc, &object(plan.part), &local, None)?;
+            spec.objects.push(local);
+        }
+        let mut libs = Vec::new();
+        for (part, asked) in plan.inner {
+            let prefix = format!("rp_{part}_");
+            let inner = dir.join(format!("{part}-inner.o"));
+            let names = module::localised(&tc, &object(part), &inner, Some(&prefix))?;
+            if names.is_empty() {
+                return Err(format!(
+                    "{part}: its source marks no function for export: the engine could ask it for nothing"
+                ));
+            }
+            spec.objects.push(inner);
+            libs.push((*asked, prefix, names));
+        }
+        if !libs.is_empty() {
+            spec.objects.push(module::assemble(
+                &tc,
+                &dir,
+                &format!("{}-inner", plan.name),
+                &inner_asm(&libs),
+            )?);
+        }
+        specs.push(spec);
+    }
+    // What each module asks of the runner, and the runner built to keep
+    // exactly that.
+    let mut wanted = Vec::new();
+    for spec in &specs {
+        wanted.push(module::imports(&tc, spec, &dir)?);
+    }
+    let mut all: Vec<String> = wanted.iter().flatten().cloned().collect();
+    all.sort();
+    all.dedup();
+    module::runner_table(&tc, &libc.lib_dir, &all)?;
+    let runner = module::runner_symbols(&tc, &build_runner(&libc.lib_dir)?)?;
+    let identity = rp_port::module::runner_identity(&module::runner_table_bytes(&all, &runner)?);
+    let mut base = module::POOL;
+    let mut linked = Vec::new();
+    for (spec, wanted) in specs.iter().zip(&wanted) {
+        let l = module::link(&tc, spec, &dir, base, wanted, &runner)?;
+        base = module::next_base(l.end);
+        linked.push(l);
+    }
+    let set_end = base;
+    let mut set = Set {
+        files: Vec::new(),
+        lines: vec![format!(
+            "{files} files compiled; the runner keeps {} names for the modules (its identity {identity:016x})",
+            all.len()
+        )],
+    };
+    let kib = |b: u32| b.div_ceil(1024);
+    for ((l, spec), wanted) in linked.iter().zip(&specs).zip(&wanted) {
+        let file = module::seal(l, identity, set_end)?;
+        let name = format!("{}.{}", l.name, module::EXTENSION);
+        let path = dir.join(&name);
+        std::fs::write(&path, &file).map_err(|e| format!("{}: {e}", path.display()))?;
+        set.lines.push(format!(
+            "{name}: {} KiB of file at 0x{:08X}, {} KiB of zeroed RAM after it; {} names exported, {} imported from the runner",
+            kib(file.len() as u32),
+            l.base,
+            kib(l.end - l.base - file.len() as u32),
+            spec.exports.len(),
+            wanted.len()
+        ));
+        set.files.push((name, file));
+    }
+    set.lines.push(format!(
+        "the set ends at 0x{set_end:08X}: {} KiB of the pool's {} are the modules', {} KiB are left for the game's heap",
+        kib(set_end - module::POOL),
+        kib(module::POOL_END - module::POOL),
+        kib(module::POOL_END - set_end)
+    ));
+    Ok(set)
 }
 
 #[cfg(test)]
@@ -921,6 +1168,94 @@ mod tests {
             assert_eq!(commit.len(), 40, "{dir}");
             assert!(patch.is_empty() || patch.ends_with(".patch"), "{dir}");
         }
+    }
+
+    #[test]
+    fn the_modules_follow_the_licence_line_and_the_engine_is_placed_last() {
+        let all = parts(Path::new("nowhere"), 0);
+        let part = |n: &str| all.iter().find(|p| p.name == n);
+        // Three modules: the game's two libraries alone, then the program
+        // with the engine's own parts inside (ADR-0039 rule 5).
+        assert_eq!(PLAN.map(|p| p.name), ["server", "client", "engine"]);
+        assert_eq!(PLAN.map(|p| p.inner.len()), [0, 0, 3]);
+        assert_eq!(PLAN.map(|p| p.entry.is_some()), [false, false, true]);
+        // Every part is in exactly one module, on its own or inside
+        // another part that is.
+        let mut used: Vec<&str> = Vec::new();
+        for plan in &PLAN {
+            used.push(plan.part);
+            used.extend(plan.inner.iter().map(|i| i.0));
+        }
+        for name in used.clone() {
+            let p = part(name).unwrap_or_else(|| panic!("{name} is not a part"));
+            used.extend(p.with);
+        }
+        let mut names: Vec<&str> = all.iter().map(|p| p.name).collect();
+        names.sort_unstable();
+        used.sort_unstable();
+        assert_eq!(used, names);
+        // The SDK's parts never share a module with the engine's.
+        let sdk = ["server", "client", "freevgui"];
+        for plan in &PLAN {
+            let mut inside = vec![plan.part];
+            inside.extend(plan.inner.iter().map(|i| i.0));
+            let of_sdk = inside.iter().filter(|n| sdk.contains(n)).count();
+            assert!(of_sdk == 0 || of_sdk == inside.len(), "{}", plan.name);
+        }
+        // A part whose exports the packer reads is compiled hidden, and so
+        // is what is linked inside it; the program's own part is not.
+        for plan in &PLAN {
+            for (name, _) in plan.inner {
+                assert!(part(name).is_some_and(|p| p.hidden), "{name}");
+            }
+            let own = part(plan.part).expect("a part");
+            assert_eq!(own.hidden, plan.entry.is_none(), "{}", plan.part);
+            for inner in own.with {
+                assert_eq!(part(inner).map(|p| p.hidden), Some(own.hidden), "{inner}");
+            }
+        }
+        // The engine asks for its libraries by their plain names and has
+        // no main of its own: a module's entry is the runner's to call.
+        assert!(ENGINE_DEFINES.contains(&"-DXASH_INTERNAL_GAMELIBS=1"));
+        assert!(
+            !ENGINE_DEFINES
+                .iter()
+                .any(|d| d.contains("XASH_ENABLE_MAIN"))
+        );
+        // FreeVGUI's platform files are its own (BSD), as fetched: nothing
+        // of RetroPane's is compiled into the client library.
+        let vgui = part("freevgui").expect("freevgui");
+        assert!(
+            vgui.flags
+                .iter()
+                .all(|f| !f.contains("ports/xash") && !f.contains("ports\\xash"))
+        );
+    }
+
+    #[test]
+    fn the_inner_table_names_each_part_as_the_engine_asks_for_it() {
+        let s = inner_asm(&[
+            (
+                "filesystem_stdio",
+                "rp_filesystem_".into(),
+                vec!["CreateInterface".into(), "GetFSAPI".into()],
+            ),
+            ("menu", "rp_menu_".into(), vec!["GetMenuAPI".into()]),
+        ]);
+        // The table lib_rp.c walks: a name, its exports, how many; a null
+        // name ends it.
+        assert!(s.contains(
+            "rp_inner_libraries:\n\t.long .Llib0, .Lexports0, 2\n\t.long .Llib1, .Lexports1, 1\n\t.long 0, 0, 0\n"
+        ));
+        // Each export by its name in the source, at its renamed symbol.
+        assert!(s.contains(".Lexports0:\n\t.long .Lname0_0, \"rp_filesystem_CreateInterface\"\n\t.long .Lname0_1, \"rp_filesystem_GetFSAPI\"\n"));
+        assert!(s.contains(".Lexports1:\n\t.long .Lname1_0, \"rp_menu_GetMenuAPI\"\n"));
+        assert!(s.contains(
+            ".Llib0:\n\t.asciz \"filesystem_stdio\"\n.Lname0_0:\n\t.asciz \"CreateInterface\"\n"
+        ));
+        assert!(s.ends_with(".Llib1:\n\t.asciz \"menu\"\n.Lname1_0:\n\t.asciz \"GetMenuAPI\"\n"));
+        // No parts: only the end mark.
+        assert!(inner_asm(&[]).ends_with("rp_inner_libraries:\n\t.long 0, 0, 0\n"));
     }
 
     #[test]

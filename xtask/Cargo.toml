@@ -37,6 +37,7 @@ rp-crypto = { path = "../kernel/crypto" }
 rp-kernel-pe = { path = "../kernel/pe" }
 rp-kernel-trace = { path = "../kernel/trace" }
 rp-hal-pxa27x = { path = "../hal/pxa27x" }
+rp-port = { path = "../ports/sys" }
 
 [lints]
 workspace = true

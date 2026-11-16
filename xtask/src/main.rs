@@ -17,6 +17,7 @@ mod gate;
 mod hl_mockups;
 mod lookcheck;
 mod measure;
+mod module;
 mod mutants;
 mod perf;
 mod policy;
@@ -243,6 +244,10 @@ commands:
             Half-Life SDK (target/ports-src, fetched by hand) compiled
             for the X51v, each part's size and what the port layer
             still lacks (xtask/src/xash.rs)
+  xash-modules  the Half-Life port as it runs (ADR-0039): its three module
+            files linked at their addresses against the module runner
+            (ports/runner), which is built to keep exactly the names
+            they import; sizes and counts (xtask/src/module.rs)
   emu-chello  the first C program (rp-port-hello: printf, the heap, software
             floats, the maths library, checked by itself) in the emulator
   emu-mbx   only the GPU check (rp-mbx: fills by the emulated MBX 2D
@@ -443,6 +448,7 @@ fn main() -> ExitCode {
         | "cc"
         | "emu-chello"
         | "xash-eval"
+        | "xash-modules"
         | "emu-picture"
         | "emu-blend"
         | "emu-blend-scale"
@@ -918,6 +924,7 @@ fn run_step(step: &str) -> Result {
         "emu-apps" => cross().and_then(|()| emu::apps(&workspace_root())),
         "cc" => cc::ready(&workspace_root()).map(|_| ()),
         "xash-eval" => xash::eval(&workspace_root()),
+        "xash-modules" => xash_modules().map(|_| ()),
         "emu-chello" => c_hello().and_then(|()| emu::boot_chello(&workspace_root())),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
@@ -1525,6 +1532,103 @@ fn c_hello() -> Result {
     )
 }
 
+/// The libraries linked into every module (ADR-0039 rule 6: what has no
+/// state and is hot lives in each module, not behind a call into the
+/// runner): the compiler's arithmetic helpers (software floating point,
+/// the integer divides), the memory routines (`rp-hal-mem`: the tuned
+/// ones every image uses) and `core`, which those two call. They are the
+/// very libraries a RetroPane image links, as cargo built them for the
+/// X51v: found from cargo's own report of what it built, not by a guess
+/// at a file name.
+fn arithmetic() -> Result<Vec<PathBuf>> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let out = Command::new(cargo)
+        .args([
+            "build",
+            "--release",
+            "--target",
+            TARGET_SPEC,
+            "-Zbuild-std=core,compiler_builtins",
+            "-Zjson-target-spec",
+            "-p",
+            "rp-hal-mem",
+            "--message-format=json",
+        ])
+        .env("RP_BUILD_ID", build_id())
+        .env(local_input::VAR, local_inputs(&workspace_root()))
+        .current_dir(workspace_root())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| format!("failed to run cargo: {e}"))?;
+    if !out.status.success() {
+        return Err("`cargo build -p rp-hal-mem` for the X51v failed".into());
+    }
+    module_libraries(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The libraries of [`arithmetic`] in cargo's `--message-format=json`
+/// report: the `.rlib` of `rp-hal-mem`, `compiler_builtins` and `core`.
+fn module_libraries(report: &str) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for want in ["rp_hal_mem", "compiler_builtins", "core"] {
+        let lib = report
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|m| m["reason"] == "compiler-artifact" && m["target"]["name"] == want)
+            .find_map(|m| {
+                m["filenames"].as_array().and_then(|f| {
+                    f.iter()
+                        .filter_map(|n| n.as_str())
+                        .find(|n| n.ends_with(".rlib"))
+                        .map(PathBuf::from)
+                })
+            })
+            .ok_or_else(|| format!("cargo's report names no library for `{want}`"))?;
+        found.push(lib);
+    }
+    Ok(found)
+}
+
+/// The module runner's image, built with the C library and the table of
+/// what the modules import (both in `libs`): the linked image.
+fn build_runner(libs: &Path) -> Result<PathBuf> {
+    let mut env = Command::new("");
+    env.env("RP_C_LIBS", libs);
+    cargo_with(
+        &mut env,
+        &[
+            "build",
+            "--release",
+            "--target",
+            TARGET_SPEC,
+            "-Zbuild-std=core,compiler_builtins",
+            "-Zjson-target-spec",
+            "-p",
+            "rp-port-runner",
+            "--features",
+            "c",
+        ],
+    )?;
+    Ok(arm_release(&workspace_root()).join("rp-port-runner"))
+}
+
+/// `cargo xtask xash-modules`: the Half-Life port's three modules and the
+/// runner they are linked against (ADR-0039), with what the build found.
+fn xash_modules() -> Result<xash::Set> {
+    let root = workspace_root();
+    let set = xash::modules(&root, &arithmetic()?, &build_runner)?;
+    for line in &set.lines {
+        eprintln!("    {line}");
+    }
+    let names: Vec<&str> = set.files.iter().map(|f| f.0.as_str()).collect();
+    eprintln!(
+        "    written to {}: {}",
+        root.join("target").join("xash-modules").display(),
+        names.join(", ")
+    );
+    Ok(set)
+}
+
 fn cross() -> Result {
     let crates = workspace_crates()?;
     build_images(&crates, None)?;
@@ -1849,6 +1953,48 @@ mod tests {
             found.is_empty(),
             "image paths outside arm_release: {found:?}"
         );
+    }
+
+    #[test]
+    fn the_modules_arithmetic_is_found_in_cargo_s_report() {
+        let line = |name: &str, files: &str| {
+            format!(
+                "{{\"reason\":\"compiler-artifact\",\"target\":{{\"name\":\"{name}\"}},\"filenames\":[{files}]}}\n"
+            )
+        };
+        let mut report =
+            String::from("warning: not a message\n{\"reason\":\"build-script-executed\"}\n");
+        report += &line(
+            "core",
+            "\"/t/deps/libcore-1a.rlib\",\"/t/deps/libcore-1a.rmeta\"",
+        );
+        report += &line(
+            "compiler_builtins",
+            "\"/t/deps/libcompiler_builtins-2b.rmeta\",\"/t/deps/libcompiler_builtins-2b.rlib\"",
+        );
+        report += &line("rp_hal_api", "\"/t/deps/librp_hal_api-9.rlib\"");
+        report += &line("rp_hal_mem", "\"/t/deps/librp_hal_mem-3c.rlib\"");
+        report += "{\"reason\":\"build-finished\",\"success\":true}\n";
+        // The memory routines first, then the arithmetic, then what both
+        // call: the order the linker reads them in.
+        assert_eq!(
+            super::module_libraries(&report),
+            Ok(vec![
+                super::PathBuf::from("/t/deps/librp_hal_mem-3c.rlib"),
+                super::PathBuf::from("/t/deps/libcompiler_builtins-2b.rlib"),
+                super::PathBuf::from("/t/deps/libcore-1a.rlib"),
+            ])
+        );
+        // One of them missing from the report is an error, not a link
+        // that silently imports the arithmetic from somewhere else.
+        let without: String = report
+            .lines()
+            .filter(|l| !l.contains("compiler_builtins"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let err = super::module_libraries(&without).expect_err("missing");
+        assert!(err.contains("compiler_builtins"));
+        assert!(super::module_libraries("").is_err());
     }
 
     #[test]
