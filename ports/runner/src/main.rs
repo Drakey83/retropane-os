@@ -149,6 +149,36 @@ mod image {
     const END_WORD: &[u8] = b"-rpend";
     const LIMIT_WORD: &[u8] = b"-rplimit";
 
+    /// A test run's word for the 2700G's clock while the program draws:
+    /// four numbers, the core PLL's M, N and P (`13 MHz x M / (N x 2^P)`)
+    /// and the cores' divider, as ADR-0035's ladder writes them
+    /// (`clock::Speed::ladder`: the memory timing rated for that clock,
+    /// CL2). The screen's open steps to it and its close puts Windows
+    /// Mobile's back; a rung past the owner's game step is not taken
+    /// (`gfx::rung_allowed`).
+    const CLOCK_WORD: &[u8] = b"-rpclock";
+
+    /// The rung after [`CLOCK_WORD`] in `args`, if all four numbers are
+    /// there and in the PLL's fields.
+    fn clock_rung(args: &[&core::ffi::CStr]) -> Option<rp_drv_mbx_display::clock::Rung> {
+        let at = args.iter().position(|a| a.to_bytes() == CLOCK_WORD)?;
+        let mut n = [0u32; 4];
+        for (k, v) in n.iter_mut().enumerate() {
+            *v = match number(args.get(at + 1 + k)?.to_bytes())? {
+                (v, []) => v,
+                _ => return None,
+            };
+        }
+        let [m, nn, p, div] = n;
+        if !(1..64).contains(&m) || !(1..8).contains(&nn) || p > 7 || !(1..=4).contains(&div) {
+            return None;
+        }
+        Some(rp_drv_mbx_display::clock::Rung {
+            speed: rp_drv_mbx_display::clock::Speed::ladder(m << 7 | nn << 4 | p << 1 | 1),
+            div,
+        })
+    }
+
     /// The whole number of seconds that follows `word` in `args`.
     fn seconds_after(args: &[&core::ffi::CStr], word: &[u8]) -> Option<u32> {
         let at = args.iter().position(|a| a.to_bytes() == word)?;
@@ -1086,7 +1116,8 @@ mod image {
                 let _ = writeln!(uart, "input: none (no keypad or SSP1)");
             }
         }
-        match CHIP.put_with(|| super::gfx::Chip::new(gfx_log, mbx)) {
+        let rung = clock_rung(&args[..arg_count]);
+        match CHIP.put_with(|| super::gfx::Chip::new(gfx_log, mbx).with_rung(rung)) {
             Some(c) => s.set_screen(c),
             None => {
                 let _ = writeln!(uart, "rp-gfx: none (set up twice)");

@@ -31,7 +31,7 @@ use core::fmt::Arguments;
 use rp_drv_blit2d::{MBX, reg};
 use rp_drv_mbx_display::clock::{self, MBXCLK, with_3d};
 use rp_drv_mbx_display::layers::Layer;
-use rp_drv_mbx_display::{PixelFormat as PlaneFormat, Plane, graphics_set};
+use rp_drv_mbx_display::{PixelFormat as PlaneFormat, Plane, ack_events, graphics_set};
 use rp_drv_mbx3d::{self as m3, ta};
 use rp_hal_api::RegisterBus;
 use rp_hal_cabi::{Errno, Gfx};
@@ -103,6 +103,39 @@ const TIMED_EVERY: u32 = 16;
 /// The background: opaque black.
 const BLACK: u32 = 0xFF00_0000;
 
+/// The display's underrun flag (`DINTRS` bit 4, the graphics stream's
+/// fetch run short), cleared Dell's way; whether it was set (ADR-0035
+/// rule 8: checked after every clock change).
+const GFX_UNDERRUN: u32 = 1 << 4;
+
+fn underrun_take(regs: &mut Mmio) -> bool {
+    ack_events(regs, GFX_UNDERRUN) & GFX_UNDERRUN != 0
+}
+
+/// CS3's bus timing for a clock step (`clock::step`, `clock::put_back`).
+fn set_cs3(c: clock::Cs3) {
+    let _ = rp_hal_pxa27x::diag::set_cs3_vlio(c.0, c.1, c.2);
+}
+
+/// The fastest system clock with the cores at divide 1 a game may run at
+/// on this unit: the owner's game step, 136.50 / 1 (ADR-0035 amendment D,
+/// "The game step", ruled 2026-11-09; 137.80 / 1 the proven ceiling).
+pub const GAME_STEP_KHZ: u32 = 136_500;
+/// ADR-0035's top rung for the system clock at divide 2 (149.50 / 2).
+pub const TOP_KHZ: u32 = 149_500;
+
+/// Whether `rung` is one a test run may ask for: divide 1 up to the game
+/// step, divide 2 up to the ladder's top; never past either.
+#[must_use]
+pub const fn rung_allowed(rung: clock::Rung) -> bool {
+    let khz = rung.speed.khz();
+    match rung.div {
+        1 => khz <= GAME_STEP_KHZ,
+        2 => khz <= TOP_KHZ,
+        _ => false,
+    }
+}
+
 fn us_since(t0: u32) -> u32 {
     rt::ticks().wrapping_sub(t0) / 13 * 4
 }
@@ -164,6 +197,8 @@ struct Open {
     en: u32,
     /// The panel's plane, where the program's picture moved it from.
     moved: Option<Plane>,
+    /// The clock was stepped at the open: put back at the close.
+    stepped: bool,
 }
 
 /// The 2700G as `rp_port`'s [`Screen`].
@@ -175,6 +210,9 @@ pub struct Chip {
     counts: Counts,
     since: u32,
     frame: u32,
+    /// The 2700G's clock while the program draws (a test run's
+    /// `-rpclock`), or the loader's as found.
+    rung: Option<clock::Rung>,
 }
 
 impl Chip {
@@ -200,7 +238,16 @@ impl Chip {
             },
             since: 0,
             frame: 0,
+            rung: None,
         }
+    }
+
+    /// The 2700G's clock while the program has the screen (`None`: the
+    /// loader's, as found); a rung past [`rung_allowed`] is not taken.
+    #[must_use]
+    pub const fn with_rung(mut self, rung: Option<clock::Rung>) -> Self {
+        self.rung = rung;
+        self
     }
 
     /// The counts as one line every five seconds, then counted again.
@@ -318,6 +365,50 @@ impl Screen for Chip {
         let clk0 = regs.read32(MBXCLK);
         clock::restore(regs, with_3d(clk0));
         rt::delay_us(1_000);
+        // The program's clock (ADR-0035's ladder, its own step code: the
+        // long bus timing first, the PLL and memory timing read back and
+        // written again, then the divider and the tier's bus timing).
+        let mut stepped = false;
+        if let Some(rung) = self.rung {
+            if !rung_allowed(rung) {
+                (self.log)(format_args!(
+                    "rp-gfx: clock {} kHz / {} not taken: past the game step (ADR-0035 D)",
+                    rung.speed.khz(),
+                    rung.div
+                ));
+            } else {
+                let before = underrun_take(regs);
+                match clock::step(regs, rung, rt::delay_us, set_cs3) {
+                    Some(a) if a.unwritten == 0 => {
+                        stepped = true;
+                        (self.log)(format_args!(
+                            "rp-gfx: clock stepped to {} kHz / {} (the cores {} kHz): PLL locked in {} us, {} memory-controller writes written again; COREPLL 0x{:x} MBXCLK 0x{:x} LMTIM 0x{:x}; the underrun flag {} before, {} after (cleared)",
+                            rung.speed.khz(),
+                            rung.div,
+                            rung.core_khz(),
+                            a.lock_us,
+                            a.rewrites,
+                            regs.read32(clock::COREPLL),
+                            regs.read32(MBXCLK),
+                            regs.read32(clock::LMTIM),
+                            if before { "set" } else { "clear" },
+                            if underrun_take(regs) { "set" } else { "clear" }
+                        ));
+                    }
+                    other => {
+                        let _ = clock::put_back(regs, rt::delay_us, set_cs3);
+                        clock::restore(regs, with_3d(clk0));
+                        let _ = underrun_take(regs);
+                        (self.log)(format_args!(
+                            "rp-gfx: clock {} kHz / {} not taken ({}): Windows Mobile's put back",
+                            rung.speed.khz(),
+                            rung.div,
+                            if other.is_none() { "the PLL did not lock" } else { "a memory-controller write never held" }
+                        ));
+                    }
+                }
+            }
+        }
         let ready = match ta::set_up(
             regs,
             vram,
@@ -330,6 +421,10 @@ impl Screen for Chip {
             Ok(r) => r,
             Err(e) => {
                 (self.log)(format_args!("rp-gfx: not opened: the TA's set-up: {e:?}"));
+                if stepped {
+                    let _ = clock::put_back(regs, rt::delay_us, set_cs3);
+                    let _ = underrun_take(regs);
+                }
                 clock::restore(regs, clk0);
                 if let Some(p) = moved {
                     graphics_set(regs, &p, Layer::SOLO, false);
@@ -363,6 +458,7 @@ impl Screen for Chip {
             rendering: None,
             en: 0,
             moved,
+            stepped,
         });
         self.since = rt::ticks();
         Ok(gfx)
@@ -454,6 +550,20 @@ impl Screen for Chip {
             return Err(Errno::BadHandle);
         };
         let _ = o.wait_render(regs);
+        if o.stepped {
+            // Windows Mobile's clock and bus timing back (ADR-0035 rule 2),
+            // the underrun flag checked after (rule 8).
+            let a = clock::put_back(regs, rt::delay_us, set_cs3);
+            (self.log)(format_args!(
+                "rp-gfx: clock put back to Windows Mobile's ({}); the underrun flag {} (cleared)",
+                match a {
+                    Some(a) if a.unwritten == 0 => "locked",
+                    Some(_) => "a memory-controller write never held",
+                    None => "the PLL did not lock",
+                },
+                if underrun_take(regs) { "set" } else { "clear" }
+            ));
+        }
         clock::restore(regs, o.clk0);
         if let Some(p) = o.moved {
             graphics_set(regs, &p, Layer::SOLO, false);
