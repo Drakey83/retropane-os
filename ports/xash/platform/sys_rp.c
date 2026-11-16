@@ -16,6 +16,8 @@ GNU General Public License for more details.
 #include "common.h"
 #include "platform/platform.h"
 #include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <retropane.h>
 
@@ -111,6 +113,20 @@ static void RP_ChangeGame( const char *progname )
 
 int rp_module_main( int argc, char **argv )
 {
+	int i;
+
+	// -rpbase <folder>: where the engine writes (its settings, saves, what
+	// it downloads), apart from where the game's files are read from
+	// (the engine's own -rodir <folder>). A test run on a shared card
+	// writes only inside its own folder, the owner's game left as it is.
+	for( i = 1; i + 1 < argc; i++ )
+	{
+		if( !strcmp( argv[i], "-rpbase" ))
+		{
+			mkdir( argv[i + 1], 0777 );
+			setenv( "XASH3D_BASEDIR", argv[i + 1], 1 );
+		}
+	}
 	setenv( "XASH3D_BASEDIR", "/Ports", 0 );
 	return Host_Main( argc, argv, XASH_GAMEDIR, 0, RP_ChangeGame );
 }

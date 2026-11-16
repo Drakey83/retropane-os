@@ -1080,6 +1080,68 @@ fn xash_frame(sd: &Path, png: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Checks that the run left the game's own folder on the card `sd` as the
+/// PC put it: the files at its top (where the engine writes its settings
+/// when nothing tells it otherwise) are the owner's byte for byte, and
+/// there is no name there that was not put there. What was checked, said.
+fn xash_game_untouched(sd: &Path, game: &Path) -> Result<String, String> {
+    let data = std::fs::read(sd).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let mut vol = rp_fat::AnyVolume::mount(card::Disk(data), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let mut on_card = Vec::new();
+    vol.list("Ports/valve", &mut |n, _, _| {
+        on_card.push(String::from_utf8_lossy(n).to_lowercase());
+    })
+    .map_err(|e| format!("Ports/valve on the card: {}", e.name()))?;
+    let mut ours = vec!["retropane".to_string()];
+    let mut files = Vec::new();
+    let top = game.join("valve");
+    for entry in std::fs::read_dir(&top).map_err(|e| format!("{}: {e}", top.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        ours.push(name.to_lowercase());
+        if path.is_file() {
+            files.push((name, path));
+        }
+    }
+    if let Some(new) = on_card.iter().find(|n| !ours.contains(n)) {
+        return Err(format!(
+            "the run made `{new}` in the game's own folder on the card"
+        ));
+    }
+    let (mut work, mut room) = (vec![0u8; 64 * 1024], vec![0u8; 16]);
+    let mut card: rp_port::files::Files<'_, card::Disk, 2> =
+        rp_port::files::Files::new(vol, &mut work, &mut room);
+    for (name, path) in &files {
+        let want = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let fd = card
+            .open(format!("Ports/valve/{name}").as_bytes())
+            .map_err(|_| format!("{name} is gone from the game's folder on the card"))?;
+        let mut got = vec![0u8; want.len() + 1];
+        let mut n = 0;
+        while n < got.len() {
+            match card.read(fd, &mut got[n..]) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => n += k,
+            }
+        }
+        let _ = card.close(fd);
+        if got[..n] != want[..] {
+            return Err(format!(
+                "the run changed {name} in the game's own folder on the card"
+            ));
+        }
+    }
+    Ok(format!(
+        "the game's own folder is as the PC put it: {} files at its top the same byte for byte, no new name",
+        files.len()
+    ))
+}
+
 /// Whether the file at `path` is left off the card: `skip` names parts of
 /// paths, lower case, with commas between.
 fn left_off(path: &str, skip: &str) -> bool {
@@ -1235,6 +1297,10 @@ pub fn boot_xash_game(
         Ok(true) => eprintln!("    the engine's 30th frame: {}", png.display()),
         Ok(false) => eprintln!("    the engine wrote no frame to the card"),
         Err(e) => eprintln!("    the engine's frame was not read: {e}"),
+    }
+    match xash_game_untouched(&sd, game) {
+        Ok(said) => eprintln!("    {said}"),
+        Err(e) => eprintln!("    NOT LEFT ALONE: {e}"),
     }
     ran
 }

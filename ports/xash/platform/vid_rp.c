@@ -159,10 +159,53 @@ static void RP_Shot( void )
 	Con_Printf( "frame %u written to %s\n", vid_rp.frames, RP_SHOT_FILE );
 }
 
+/*
+A test image's stopwatch: with -rpfps on the command line, every five
+seconds one line says how many frames were finished in them, as frames a
+second and as the mean time of one, in whole numbers (the clock is the
+port layer's exact microseconds). On the X51v this is the game's frame
+rate; in the emulator it is the PC's and means nothing.
+*/
+static void RP_FrameRate( void )
+{
+	static int      asked = -1;
+	static uint64_t since;
+	static uint     counted;
+	uint64_t        now, span;
+
+	if( asked < 0 )
+		asked = Sys_CheckParm( "-rpfps" ) ? 1 : 0;
+	if( !asked )
+		return;
+
+	now = rp_time_us();
+	if( !since )
+	{
+		since = now;
+		counted = vid_rp.frames;
+		return;
+	}
+	span = now - since;
+	if( span < 5000000u )
+		return;
+
+	{
+		uint n = vid_rp.frames - counted;
+		uint tenths = (uint)(( (uint64_t)n * 10000000u ) / span );
+		uint mean_us = n ? (uint)( span / n ) : 0;
+
+		Con_Printf( "frame rate: %u frames in %u ms: %u.%u a second, %u.%u ms a frame\n",
+			n, (uint)( span / 1000 ), tenths / 10, tenths % 10, mean_us / 1000, ( mean_us % 1000 ) / 100 );
+	}
+	since = now;
+	counted = vid_rp.frames;
+}
+
 void SW_UnlockBuffer( void )
 {
 	// the frame is whole: where the port layer's screen call will go
 	vid_rp.frames++;
+	RP_FrameRate();
 	if( vid_rp.frames >= RP_SHOT_FRAME )
 	{
 		static uint64_t next;
