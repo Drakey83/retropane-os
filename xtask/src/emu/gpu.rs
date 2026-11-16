@@ -353,10 +353,12 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
 /// Test P (`RP_GLESFEAT_P`, R289): two textured floors with 1/w and z as
 /// Dell's driver sends them, each probe counted against perspective-correct
 /// and affine texels, and flat triangles with corners 600 to 6 million
-/// pixels off the screen. The fork draws u, v affinely (R289 measures the
-/// core first), so every floor's telling probes must read affine and at
-/// least 15 a floor must tell; every far-corner probe must be right (the
-/// fork rasterises in doubles); the image returns.
+/// pixels off the screen. The X51v corrects u, v by 1/w (run 1,
+/// glesfeat-0028: 31 of 31 and 34 of 36 telling probes), and so does the
+/// fork from rp-v0.33.0 (`mbx-3d-persp`): every floor's telling probes must
+/// read the perspective-correct texel (an older fork, affine: the affine
+/// one), at least 15 a floor; every far-corner probe must be right (the
+/// device's 52 of 52 at every reach); the image returns.
 pub(crate) fn boot_loader_glesfeat_p(root: &Path) -> Result<(), String> {
     let loader = raw_image(root, "rp-loader")?;
     let bin = variant_image(root, "rp-glesfeat", ("RP_GLESFEAT_P", "1"))?;
@@ -390,6 +392,7 @@ pub(crate) fn boot_loader_glesfeat_p(root: &Path) -> Result<(), String> {
             "glesfeat P: didn't finish and return cleanly:{log}"
         ));
     }
+    let persp = device_has(root, "intel-2700g", "mbx-3d-persp");
     let floors: Vec<&str> = log
         .lines()
         .filter(|l| l.contains("  P floor to "))
@@ -408,10 +411,14 @@ pub(crate) fn boot_loader_glesfeat_p(root: &Path) -> Result<(), String> {
             .and_then(|h| h.rsplit(", ").next())
             .and_then(|n| n.parse::<u32>().ok())
             .unwrap_or(0);
-        let affine = format!("perspective-correct 0 of {told}, affine {told} of {told}, neither 0");
-        if !l.contains("done true") || told < 15 || !l.contains(&affine) {
+        let want = if persp {
+            format!("perspective-correct {told} of {told}, affine 0 of {told}, neither 0")
+        } else {
+            format!("perspective-correct 0 of {told}, affine {told} of {told}, neither 0")
+        };
+        if !l.contains("done true") || told < 15 || !l.contains(&want) {
             return Err(format!(
-                "glesfeat P: a floor not drawn affinely as the fork models it, or fewer than 15 telling probes: {l}:{log}"
+                "glesfeat P: a floor not drawn as the fork models it (`{want}`), or fewer than 15 telling probes: {l}:{log}"
             ));
         }
     }
@@ -435,7 +442,12 @@ pub(crate) fn boot_loader_glesfeat_p(root: &Path) -> Result<(), String> {
         ));
     }
     eprintln!(
-        "    glesfeat P OK: both floors drawn affinely at every telling probe (the fork's model until R289's device run), every far-corner case right, back at the loader"
+        "    glesfeat P OK: both floors drawn {} at every telling probe, every far-corner case right, back at the loader",
+        if persp {
+            "perspective-correct (as the X51v, run 1)"
+        } else {
+            "affinely (a fork before rp-v0.33.0)"
+        }
     );
     Ok(())
 }

@@ -490,6 +490,32 @@ struct V {
     argb: u32,
     u: f64,
     v: f64,
+    /// 1/w: u and v are corrected by it.
+    rhw: f64,
+}
+
+/// u, v at screen weights `w`, corrected by each corner's 1/w as the X51v
+/// draws (`rp-glesfeat` test P run 1, R289, 2026-11-16: 31 of 31 and 34 of
+/// 36 probes the perspective-correct texel, none the affine one). With the
+/// three 1/w equal (every object before R289 sent 1.0) the affine sum,
+/// taken as such so those pictures stay bit for bit; a 1/w that isn't a
+/// positive finite number falls back to it too (never measured). The QEMU
+/// fork's `m3_tex_uv` is the same.
+fn tex_uv(v: [V; 3], w: [f64; 3]) -> (f64, f64) {
+    let r = w[0] * v[0].rhw + w[1] * v[1].rhw + w[2] * v[2].rhw;
+    let flat = (v[0].rhw == v[1].rhw && v[1].rhw == v[2].rhw)
+        || v.iter().any(|c| !c.rhw.is_finite() || c.rhw <= 0.0)
+        || r == 0.0;
+    if flat {
+        return (
+            w[0] * v[0].u + w[1] * v[1].u + w[2] * v[2].u,
+            w[0] * v[0].v + w[1] * v[1].v + w[2] * v[2].v,
+        );
+    }
+    (
+        (w[0] * v[0].u * v[0].rhw + w[1] * v[1].u * v[1].rhw + w[2] * v[2].u * v[2].rhw) / r,
+        (w[0] * v[0].v * v[0].rhw + w[1] * v[1].v * v[1].rhw + w[2] * v[2].v * v[2].rhw) / r,
+    )
 }
 
 struct Obj {
@@ -520,6 +546,7 @@ impl Obj {
                 x: f(w(2 + 2 * k)),
                 y: f(w(3 + 2 * k)),
                 z: f(w(2 + 2 * c + k)),
+                rhw: f(w(2 + 3 * c + k)),
                 argb: w(2 + 4 * c + k),
                 u: 0.0,
                 v: 0.0,
@@ -547,6 +574,7 @@ impl Obj {
                 x: f(w(5 + 2 * k)),
                 y: f(w(6 + 2 * k)),
                 z: f(w(5 + 2 * c + k)),
+                rhw: f(w(5 + 3 * c + k)),
                 argb: w(5 + 4 * c + 3 * k),
                 u: f(w(6 + 4 * c + 3 * k)),
                 v: f(w(7 + 4 * c + 3 * k)),
@@ -632,8 +660,7 @@ impl Obj {
                     } else {
                         w
                     };
-                    let u = w[0] * v[0].u + w[1] * v[1].u + w[2] * v[2].u;
-                    let vv = w[0] * v[0].v + w[1] * v[1].v + w[2] * v[2].v;
+                    let (u, vv) = tex_uv(v, w);
                     // TEX2 bit 13 (Dell's opaque combine word) makes the
                     // texel's alpha 1 (version 23: texture alpha blended
                     // only with it clear; version 24: a 32-bit texel at
@@ -645,10 +672,7 @@ impl Obj {
                                 let (a, b) = (v[(i + 1) % 3], v[(i + 2) % 3]);
                                 e(a, b, px, py) / area
                             });
-                            (
-                                w[0] * v[0].u + w[1] * v[1].u + w[2] * v[2].u,
-                                w[0] * v[0].v + w[1] * v[1].v + w[2] * v[2].v,
-                            )
+                            tex_uv(v, w)
                         },
                         x,
                         y,
@@ -967,5 +991,80 @@ mod ta_forms {
         assert_eq!(px(14, 14), YELLOW, "T3, its lead corner v3");
         assert_eq!(px(17, 3), PREFILL, "the empty tile untouched");
         let _ = (GREEN, BLUE);
+    }
+
+    /// u, v corrected by 1/w (R289, `rp-glesfeat` test P on the X51v): a
+    /// textured triangle whose right corner lies 16 times deeper samples,
+    /// halfway across the screen, the texel perspective puts there (u =
+    /// 0.0588, texel 0), not the affine one (u = 0.5, texel 4).
+    #[test]
+    fn textures_are_corrected_by_each_corners_1_over_w() {
+        const TEX: u32 = 0x50_0000;
+        let shared = memory();
+        let clock = SimClock::default();
+        let mut mem = Mem::new(shared.clone());
+        // Every texel its own green (RGB565, the stored index as the six
+        // green bits, twiddled order).
+        let words: std::vec::Vec<u32> = (0..32u32)
+            .map(|k| (2 * k) << 5 | (2 * k + 1) << 21)
+            .collect();
+        mem.store(TEX as usize, &words);
+        let mut texw = m3::ta::dell_texture(TEX);
+        texw[0] = m3::tex::tex0(0, m3::tex::RGB565);
+        texw[2] = 0x8608_6610;
+        let v = |x, y, rhw, u| m3::tex::Vertex {
+            x,
+            y,
+            z: 0.5,
+            rhw,
+            argb: 0xFFFF_FFFF,
+            u,
+            v: 0.07,
+        };
+        let tri = m3::tex::triangle(
+            m3::ISP_ALWAYS,
+            texw,
+            m3::ta::TSP_DELL_TEXTURED,
+            &[
+                v(0.0, 0.0, 1.0, 0.0),
+                v(64.0, 0.0, 1.0 / 16.0, 1.0),
+                v(0.0, 16.0, 1.0, 0.0),
+            ],
+        );
+        mem.store(PARAMS as usize, &tri);
+        mem.store(0x20_0000, &[m3::tex::STRIP_GAME, 0xF000_0000]);
+        mem.store(
+            REGIONS as usize,
+            &[0x2000_0004 | m3::LAST_REGION, 0x20_0000],
+        );
+        let mut gpu = Gpu::new(shared, &clock);
+        gpu.write32(MBXCLK, 0x6);
+        gpu.write32(MBX + 0x838, 1);
+        for (off, val) in [
+            (0x608, REGIONS),
+            (0x60C, PARAMS),
+            (0x650, 6),
+            (0x65C, TARGET),
+            (0x660, STRIDE / 4),
+            (0x6DC, 0),
+            (m3::START, 1),
+        ] {
+            gpu.write32(MBX + off, val);
+        }
+        // Pixel (32, 1): screen weights from its centre (32.5, 1.5).
+        let (x, y) = (32.5f64, 1.5f64);
+        let w1 = x / 64.0;
+        let w2 = y / 16.0;
+        let w0 = 1.0 - w1 - w2;
+        let u = w1 / 16.0 / (w0 + w1 / 16.0 + w2);
+        let texel = rp_drv_mbx3d::tex::twiddle((u * 8.0) as u32, 0);
+        let green = |i: u32| (i << 2) | (i >> 4);
+        let got = (mem.px(TARGET, STRIDE, 32, 1) >> 8) & 0xFF;
+        assert_eq!(got, green(texel), "u {u:.4}: the perspective texel");
+        assert_ne!(
+            got,
+            green(rp_drv_mbx3d::tex::twiddle(4, 0)),
+            "not the affine one"
+        );
     }
 }
