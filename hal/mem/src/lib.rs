@@ -14,6 +14,7 @@
 #![no_builtins]
 
 pub mod float;
+pub mod trig;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod float_arm;
 
@@ -652,6 +653,83 @@ mod float_exports {
     #[unsafe(no_mangle)]
     extern "C" fn __divsf3(a: u32, b: u32) -> u32 {
         asm::div(a, b)
+    }
+
+    // The compares (`float::compare`, one integer compare), under the
+    // ARM EABI names (1 if true, 0 if not or unordered) and libgcc's
+    // (a sign; a NaN gives the answer that makes the test false).
+    use core::cmp::Ordering::{Equal, Greater, Less};
+
+    use super::float::compare;
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fcmpeq(a: u32, b: u32) -> i32 {
+        i32::from(compare(a, b) == Some(Equal))
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fcmplt(a: u32, b: u32) -> i32 {
+        i32::from(compare(a, b) == Some(Less))
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fcmple(a: u32, b: u32) -> i32 {
+        i32::from(matches!(compare(a, b), Some(Less | Equal)))
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fcmpgt(a: u32, b: u32) -> i32 {
+        i32::from(compare(a, b) == Some(Greater))
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fcmpge(a: u32, b: u32) -> i32 {
+        i32::from(matches!(compare(a, b), Some(Greater | Equal)))
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __aeabi_fcmpun(a: u32, b: u32) -> i32 {
+        i32::from(compare(a, b).is_none())
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __unordsf2(a: u32, b: u32) -> i32 {
+        i32::from(compare(a, b).is_none())
+    }
+
+    /// libgcc's sign: -1, 0, 1, or `nan` when unordered.
+    fn sign(a: u32, b: u32, nan: i32) -> i32 {
+        compare(a, b).map_or(nan, |o| o as i32)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __eqsf2(a: u32, b: u32) -> i32 {
+        sign(a, b, 1)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __nesf2(a: u32, b: u32) -> i32 {
+        sign(a, b, 1)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __ltsf2(a: u32, b: u32) -> i32 {
+        sign(a, b, 1)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __lesf2(a: u32, b: u32) -> i32 {
+        sign(a, b, 1)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __gtsf2(a: u32, b: u32) -> i32 {
+        sign(a, b, -1)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn __gesf2(a: u32, b: u32) -> i32 {
+        sign(a, b, -1)
     }
 }
 

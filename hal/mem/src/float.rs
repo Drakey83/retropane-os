@@ -332,8 +332,72 @@ fn div_special(a: u32, b: u32) -> u32 {
     div_parts(sign, ea, n, eb, d)
 }
 
+/// The compare's key: the float's bits as a signed integer that orders as
+/// the floats do (a negative's magnitude bits turned over), so a compare
+/// is one integer compare. Both zeros are taken out before it is used.
+#[inline]
+const fn key(x: u32) -> i32 {
+    let s = (x as i32) >> 31;
+    (x ^ ((s as u32) >> 1)) as i32
+}
+
+/// Whether `x` is a NaN.
+#[inline]
+const fn nan(x: u32) -> bool {
+    (x << 1) > (INF << 1)
+}
+
+/// How `a` compares with `b`: `None` if either is a NaN (unordered).
+/// The compiler's generic `__eqsf2` / `__lesf2` work through every case in
+/// turn; here it is two shifts for the NaNs and one signed compare
+/// (iterate, don't imitate: run 15 had `__aeabi_fcmpeq` alone at 1.9% of
+/// Half-Life's play, the player's traces compare floats at every plane).
+#[inline]
+#[must_use]
+pub const fn compare(a: u32, b: u32) -> Option<core::cmp::Ordering> {
+    use core::cmp::Ordering;
+    if nan(a) || nan(b) {
+        return None;
+    }
+    if (a | b) << 1 == 0 {
+        return Some(Ordering::Equal);
+    }
+    let (ka, kb) = (key(a), key(b));
+    Some(if ka < kb {
+        Ordering::Less
+    } else if ka > kb {
+        Ordering::Greater
+    } else {
+        Ordering::Equal
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compare_orders_floats_as_the_pc_does() {
+        let special = [
+            0u32, 0x8000_0000, 1, 0x8000_0001, 0x007F_FFFF, 0x0080_0000, 0x3F80_0000,
+            0xBF80_0000, 0x7F7F_FFFF, 0xFF7F_FFFF, 0x7F80_0000, 0xFF80_0000, 0x7FC0_0000,
+            0x7F80_0001, 0xFFC0_0000,
+        ];
+        let mut x = 0x9E37_79B9u32;
+        let mut vals: Vec<u32> = special.to_vec();
+        for _ in 0..3000 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            vals.push(x);
+            vals.push(x & 0x80FF_FFFF);
+        }
+        for &a in &vals {
+            for &b in &vals {
+                let want = f32::from_bits(a).partial_cmp(&f32::from_bits(b));
+                assert_eq!(super::compare(a, b), want, "{a:08x} {b:08x}");
+            }
+        }
+    }
+
     use super::*;
 
     /// The PC's own IEEE result, any NaN as one.

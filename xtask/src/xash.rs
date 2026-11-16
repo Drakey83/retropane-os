@@ -674,6 +674,13 @@ fn compile(
     let mut common = cc::flag_strings(cc::TARGET_FLAGS);
     // The engine's own code is not ours to make warning-free.
     common.push("-w".into());
+    // A literal like `0.5` is a float, not a double (ref-rp.md "Lever 2"):
+    // the game's sources mix such literals into float maths, and each one
+    // widened every term to a software double on the X51v (no FPU; run 15:
+    // `__muldf3` and `__adddf3` ~9% of the play). No literal in the
+    // sources needs a double's range (checked 2026-11-16: no `DBL_MAX`, no
+    // exponent past a float's); doubles the code declares stay doubles.
+    common.push("-fsingle-precision-constant".into());
     // The engine names its source files in its messages (`__FILE__`):
     // from the source's folder, not this PC's (a module carried the
     // builder's user folder until 2026-11-15), and the same on every PC.

@@ -35,6 +35,7 @@ use rp_drv_mbx_display::{PixelFormat as PlaneFormat, Plane, ack_events, graphics
 use rp_drv_mbx3d::{self as m3, ta};
 use rp_hal_api::RegisterBus;
 use rp_hal_cabi::{Errno, Gfx};
+use rp_hal_mem::{load32_volatile, store32_volatile};
 use rp_hal_pxa27x::{Mmio, cpu, rt};
 use rp_mbx3d_render::{Picture, PixelFormat, Target, binner, fixed};
 use rp_port::gfx::{Piece, Screen, check, send};
@@ -93,6 +94,284 @@ const CLOCK: ta::Clock = ta::Clock {
     now: rt::ticks,
     ticks_per_ms: rt::TICK_HZ / 1000,
 };
+/// Where the TA works and what the 3D stage reads (R295's cells move the
+/// small parts onto the die).
+struct Lay {
+    name: &'static str,
+    ta: ta::Layout,
+    pm: ta::ParamMemory,
+    from: binner::Layout,
+    keep: [(u32, u32); 4],
+}
+
+/// The layout above: everything but the screen in SDRAM.
+const LAY_SDRAM: Lay = Lay {
+    name: "all in SDRAM",
+    ta: TA,
+    pm: TA_PM,
+    from: FROM_TA,
+    keep: KEEP,
+};
+
+/// The screen's bytes: the rest of the safe region (the die) is free
+/// while the program has the screen.
+const SCREEN_BYTES: u32 = W * H * 2;
+/// The region array, (tiles + 1) x 8 bytes.
+const REGION_BYTES: u32 = 0x4B08;
+const DIE_REGIONS: u32 = SCREEN_BYTES;
+const DIE_TABLE: u32 = 0x0009_C000;
+/// 128 KiB aligned, as the TA's tail must be.
+const DIE_TAIL: u32 = 0x000A_0000;
+const _: () = assert!(DIE_REGIONS + REGION_BYTES <= DIE_TABLE && DIE_TAIL + TAIL_BYTES <= SAFE);
+const _: () = assert!(DIE_TAIL.is_multiple_of(0x2_0000) && DIE_TABLE.is_multiple_of(0x4000));
+/// The region array, the manager's block and the tail on the die (R295
+/// cell 5); the lists stay in SDRAM (they are larger than the die).
+#[allow(dead_code, reason = "run 18's cell 5 (no cure); kept for R295's next cells")]
+const LAY_DIE: Lay = Lay {
+    name: "region array, manager block and tail on the die",
+    ta: ta::Layout {
+        tail: DIE_TAIL,
+        tail_bytes: TAIL_BYTES,
+        regions: DIE_REGIONS,
+        width: W,
+        height: H,
+    },
+    pm: ta::ParamMemory {
+        at: PM,
+        size: PM_SIZE,
+        table: DIE_TABLE,
+    },
+    from: binner::Layout {
+        params: PM,
+        params_size: PM_SIZE,
+        regions: DIE_REGIONS,
+        w: W as u16,
+        h: H as u16,
+    },
+    keep: [
+        (0, SCREEN_BYTES),
+        (DIE_TAIL, TAIL_BYTES),
+        (DIE_REGIONS, REGION_BYTES),
+        (TEX_AT, TEX_BYTES),
+    ],
+};
+
+/// R295's diagnostic ladder (`-rpladder`, docs/research/sheets/r295-ta-path-136.md):
+/// one cell's clock, layout and render words.
+struct Cell {
+    /// The core PLL's M, N, P; the cores at divide 1.
+    pll: (u32, u32, u32),
+    lay: &'static Lay,
+    /// Render words put in place of the start table's.
+    words: &'static [(usize, u32)],
+    what: &'static str,
+    frames: u32,
+    /// `LMTIM` in place of the ladder's for the clock (run 22).
+    lmtim: Option<u32>,
+}
+
+impl Cell {
+    const fn rung(&self) -> clock::Rung {
+        let (m, n, p) = self.pll;
+        let mut speed = clock::Speed::ladder(m << 7 | n << 4 | p << 1 | 1);
+        if let Some(t) = self.lmtim {
+            speed.lmtim = t;
+        }
+        clock::Rung { speed, div: 1 }
+    }
+}
+
+const P108: (u32, u32, u32) = (25, 3, 0);
+#[allow(dead_code, reason = "run 18's cell 2 (clean)")]
+const P117: (u32, u32, u32) = (27, 3, 0);
+#[allow(dead_code, reason = "run 19's cells")]
+const P133: (u32, u32, u32) = (41, 4, 0);
+const P136: (u32, u32, u32) = (21, 2, 0);
+/// The render words Dell's GLES driver renders TA scenes with (rp-wmprobe
+/// run 2, docs/hw/2700g.md; GC2F tried them on the binner's wrong pixels
+/// only).
+#[allow(dead_code, reason = "runs 18-19's cells")]
+const DELL_GLES: [(usize, u32); 7] = [
+    (0x610, 0x0003_0001),
+    (0x614, 0x1E3C_E500),
+    (0x618, 0x1E3C_E500),
+    (0x61C, 0x0002_0007),
+    (0x648, 1),
+    (0x6D8, 0x0900_0000),
+    (0x6DC, 0x3F80_0001),
+];
+const NONE: &[(usize, u32)] = &[];
+const fn cell(
+    pll: (u32, u32, u32),
+    lay: &'static Lay,
+    words: &'static [(usize, u32)],
+    what: &'static str,
+    frames: u32,
+) -> Cell {
+    Cell {
+        pll,
+        lay,
+        words,
+        what,
+        frames,
+        lmtim: None,
+    }
+}
+
+const fn timed(c: Cell, lmtim: u32) -> Cell {
+    Cell {
+        lmtim: Some(lmtim),
+        ..c
+    }
+}
+
+/// The TA's parameter memory from the die's first free byte on, running
+/// on into SDRAM (run 22: whether the lists the manager fills first, on
+/// the die, cut the hangs); its tables moved out of its way, below the
+/// texture memory.
+const PMD_AT: u32 = SCREEN_BYTES;
+const PMD_SIZE: u32 = 0x0060_0000 - PMD_AT;
+const PMD_TAIL: u32 = 0x007E_0000;
+const PMD_REGIONS: u32 = 0x007F_0000;
+const PMD_TABLE: u32 = 0x007F_C000;
+const _: () = assert!(PMD_AT + PMD_SIZE <= PMD_TAIL && PMD_REGIONS + REGION_BYTES <= PMD_TABLE);
+const _: () = assert!(PMD_TAIL.is_multiple_of(0x2_0000) && PMD_AT.is_multiple_of(0x1000));
+const LAY_PM_DIE: Lay = Lay {
+    name: "parameter memory from the die on",
+    ta: ta::Layout {
+        tail: PMD_TAIL,
+        tail_bytes: TAIL_BYTES,
+        regions: PMD_REGIONS,
+        width: W,
+        height: H,
+    },
+    pm: ta::ParamMemory {
+        at: PMD_AT,
+        size: PMD_SIZE,
+        table: PMD_TABLE,
+    },
+    from: binner::Layout {
+        params: PMD_AT,
+        params_size: PMD_SIZE,
+        regions: PMD_REGIONS,
+        w: W as u16,
+        h: H as u16,
+    },
+    keep: [
+        (0, SCREEN_BYTES),
+        (PMD_TAIL, TAIL_BYTES),
+        (PMD_REGIONS, REGION_BYTES),
+        (TEX_AT, TEX_BYTES),
+    ],
+};
+
+/// Marker pixels written before each ladder render (magenta, which no
+/// frame of the run draws): which of them the core drew over by the time
+/// a render is called hung says whether it finished and only its done
+/// bit was lost, or how far through the tiles (rows, top first) it got.
+const MARKS: [(u32, u32); 5] = [(0, 0), (478, 160), (0, 320), (478, 480), (478, 639)];
+/// Two magenta pixels (a word: each mark's `x` is even).
+const MARK: u32 = 0xF81F_F81F;
+/// Dell's GLES render words but one (run 19: which of them cut the hangs).
+const fn dell_but(off: usize, keep: u32) -> [(usize, u32); 7] {
+    let mut w = DELL_GLES;
+    let mut k = 0;
+    while k < w.len() {
+        if w[k].0 == off {
+            w[k].1 = keep;
+        }
+        k += 1;
+    }
+    w
+}
+#[allow(dead_code, reason = "run 19's cells")]
+const BUT_610: [(usize, u32); 7] = dell_but(0x610, 0);
+#[allow(dead_code, reason = "run 19's cells")]
+const BUT_614: [(usize, u32); 7] = {
+    let mut w = dell_but(0x614, 0);
+    w[2] = (0x618, 0);
+    w
+};
+#[allow(dead_code, reason = "run 19's cells")]
+const BUT_61C: [(usize, u32); 7] = dell_but(0x61C, 0x0002_0004);
+#[allow(dead_code, reason = "run 19's cells")]
+const BUT_648: [(usize, u32); 7] = dell_but(0x648, 0);
+#[allow(dead_code, reason = "run 19's cells")]
+const BUT_6D8: [(usize, u32); 7] = dell_but(0x6D8, 0x0100_0000);
+#[allow(dead_code, reason = "run 19's cells")]
+const BUT_6DC: [(usize, u32); 7] = dell_but(0x6DC, 0);
+const CELLS: [Cell; 6] = [
+    cell(P108, &LAY_SDRAM, NONE, "control", 40),
+    cell(P136, &LAY_SDRAM, NONE, "control", 100),
+    cell(P136, &LAY_PM_DIE, NONE, "lists from the die on", 100),
+    timed(
+        cell(P136, &LAY_SDRAM, NONE, "memory timing looser (tRP, tRCD 5, tRC 13)", 100),
+        9 << 16 | 5 << 12 | 5 << 8 | 13 << 4 | 2,
+    ),
+    cell(P136, &LAY_SDRAM, NONE, "control again", 100),
+    cell(P108, &LAY_SDRAM, NONE, "control again", 40),
+];
+/// The ladder starts after this many frames (the map drawn and steady).
+const LADDER_FROM: u32 = 32;
+/// A ladder render past this has hung (13.2 ms at 108.33 / 1).
+const LADDER_LIMIT_US: u32 = 50_000;
+/// The render block read at a hang and after a good render.
+const BLOCK_AT: usize = 0x600;
+const BLOCK_WORDS: usize = 64;
+
+fn read_block(regs: &mut Mmio) -> [u32; BLOCK_WORDS] {
+    let mut b = [0u32; BLOCK_WORDS];
+    for (k, v) in b.iter_mut().enumerate() {
+        let off = BLOCK_AT + 4 * k;
+        // The start register is written only.
+        if off != m3::START {
+            *v = regs.read32(MBX + off);
+        }
+    }
+    b
+}
+
+/// One cell's counts.
+struct Ladder {
+    cell: usize,
+    n: u32,
+    hangs: u32,
+    ta_hangs: u32,
+    ok: u32,
+    render_us: u32,
+    max_us: u32,
+    pattern: [u8; 100],
+    ok_block: Option<[u32; BLOCK_WORDS]>,
+    hang_block: Option<[u32; BLOCK_WORDS]>,
+    /// Hangs by which marks the core had drawn over (bit k: `MARKS[k]`).
+    marks: [u16; 32],
+}
+
+impl Ladder {
+    const fn new(cell: usize) -> Self {
+        Self {
+            cell,
+            n: 0,
+            hangs: 0,
+            ta_hangs: 0,
+            ok: 0,
+            render_us: 0,
+            max_us: 0,
+            pattern: [b' '; 100],
+            ok_block: None,
+            hang_block: None,
+            marks: [0; 32],
+        }
+    }
+
+    fn mark(&mut self, c: u8) {
+        if let Some(p) = self.pattern.get_mut(self.n as usize) {
+            *p = c;
+        }
+        self.n += 1;
+    }
+}
+
 /// The TA's time from its start to done, the feeding included (a frame
 /// of c1a0 is ~70,000 words: ~8 ms of bus).
 const TA_LIMIT_US: u32 = 500_000;
@@ -199,6 +478,19 @@ struct Open {
     moved: Option<Plane>,
     /// The clock was stepped at the open: put back at the close.
     stepped: bool,
+    /// The rung the 2700G runs now (`None`: as the loader left it).
+    cur: Option<clock::Rung>,
+    lay: &'static Lay,
+    /// Render words in place of the start table's (R295's cells).
+    words: &'static [(usize, u32)],
+    /// A render past this has hung.
+    limit_us: u32,
+    /// The render block as the last hang left it, read before the reset.
+    hang_block: Option<[u32; BLOCK_WORDS]>,
+    /// Marks written before each render (the ladder's cells).
+    marking: bool,
+    /// Which marks the core had drawn over at the last hang.
+    hang_marks: u32,
 }
 
 /// The 2700G as `rp_port`'s [`Screen`].
@@ -213,6 +505,9 @@ pub struct Chip {
     /// The 2700G's clock while the program draws (a test run's
     /// `-rpclock`), or the loader's as found.
     rung: Option<clock::Rung>,
+    /// R295's diagnostic ladder asked for (`-rpladder`), and where it is.
+    ladder_on: bool,
+    ladder: Option<Ladder>,
 }
 
 impl Chip {
@@ -239,7 +534,17 @@ impl Chip {
             since: 0,
             frame: 0,
             rung: None,
+            ladder_on: false,
+            ladder: None,
         }
+    }
+
+    /// R295's diagnostic ladder (`-rpladder`): from frame [`LADDER_FROM`]
+    /// the [`CELLS`] one after another, then the run's own clock again.
+    #[must_use]
+    pub const fn with_ladder(mut self, on: bool) -> Self {
+        self.ladder_on = on;
+        self
     }
 
     /// The 2700G's clock while the program has the screen (`None`: the
@@ -280,6 +585,196 @@ impl Chip {
     }
 }
 
+impl Chip {
+    /// Before a frame's feed: the ladder's next cell when this one is
+    /// full (its counts logged), the run's own clock and layout after the
+    /// last.
+    fn ladder_before(&mut self) {
+        if !self.ladder_on || self.frame < LADDER_FROM {
+            return;
+        }
+        let next = match &self.ladder {
+            None => 0,
+            Some(l) if l.n >= CELLS[l.cell].frames => {
+                self.ladder_log();
+                l.cell + 1
+            }
+            Some(_) => return,
+        };
+        let ok = self.ladder_switch(next);
+        if next < CELLS.len() && ok {
+            self.ladder = Some(Ladder::new(next));
+        } else {
+            if next < CELLS.len() {
+                // A cell not taken ends the ladder; the run's own clock.
+                let _ = self.ladder_switch(CELLS.len());
+            }
+            self.ladder = None;
+            self.ladder_on = false;
+            (self.log)(format_args!("rp-gfx ladder: over; the run's own clock and layout again"));
+        }
+    }
+
+    /// The cell `k`'s clock and layout (past the last: the run's own),
+    /// the TA set up afresh in it; false if the clock or the set-up was
+    /// not taken.
+    fn ladder_switch(&mut self, k: usize) -> bool {
+        let log = self.log;
+        let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) else {
+            return false;
+        };
+        let _ = o.wait_render(regs);
+        let (rung, lay, words, limit) = match CELLS.get(k) {
+            Some(c) => (Some(c.rung()), c.lay, c.words, LADDER_LIMIT_US),
+            None => (self.rung.filter(|r| rung_allowed(*r)), &LAY_SDRAM, NONE, RENDER_LIMIT_US),
+        };
+        if rung.is_some_and(|r| !rung_allowed(r)) {
+            log(format_args!("rp-gfx ladder: cell {} past the game step, not taken", k + 1));
+            return false;
+        }
+        let mut ok = true;
+        if rung != o.cur {
+            let a = match rung {
+                Some(r) => clock::step(regs, r, rt::delay_us, set_cs3),
+                None => clock::put_back(regs, rt::delay_us, set_cs3),
+            };
+            ok = matches!(a, Some(a) if a.unwritten == 0);
+            if ok {
+                o.cur = rung;
+                o.stepped |= rung.is_some();
+            } else {
+                let _ = clock::put_back(regs, rt::delay_us, set_cs3);
+                o.cur = None;
+            }
+            log(format_args!(
+                "rp-gfx ladder: clock {} ({} kHz / {}): COREPLL 0x{:x} MBXCLK 0x{:x} LMTIM 0x{:x}; the underrun flag {}",
+                if ok { "stepped" } else { "NOT taken, Windows Mobile's put back" },
+                rung.map_or(0, |r| r.speed.khz()),
+                rung.map_or(0, |r| r.div),
+                regs.read32(clock::COREPLL),
+                regs.read32(MBXCLK),
+                regs.read32(clock::LMTIM),
+                if underrun_take(regs) { "set" } else { "clear" }
+            ));
+        }
+        let lay = if ok { lay } else { &LAY_SDRAM };
+        match ta::set_up(
+            regs,
+            o.vram,
+            lay.pm,
+            &lay.keep,
+            rt::delay_us,
+            cpu::drain_write_buffer,
+            CLOCK,
+        ) {
+            Ok(r) => {
+                o.ready = r;
+                o.lay = lay;
+                o.words = if ok { words } else { NONE };
+                o.limit_us = if ok { limit } else { RENDER_LIMIT_US };
+                o.marking = ok && k < CELLS.len();
+            }
+            Err(e) => {
+                log(format_args!("rp-gfx ladder: the TA's set-up in {} refused: {e:?}", lay.name));
+                // Back to the layout the open proved.
+                if let Ok(r) = ta::set_up(
+                    regs,
+                    o.vram,
+                    LAY_SDRAM.pm,
+                    &LAY_SDRAM.keep,
+                    rt::delay_us,
+                    cpu::drain_write_buffer,
+                    CLOCK,
+                ) {
+                    o.ready = r;
+                }
+                o.lay = &LAY_SDRAM;
+                o.words = NONE;
+                o.limit_us = RENDER_LIMIT_US;
+                return false;
+            }
+        }
+        ok
+    }
+
+    /// One cell's line, and its render block at the first hang against
+    /// the last good render's.
+    fn ladder_log(&self) {
+        let Some(l) = &self.ladder else {
+            return;
+        };
+        let c = &CELLS[l.cell];
+        let r = c.rung();
+        let avg = l.render_us / l.ok.max(1);
+        let shown = (l.n as usize).min(l.pattern.len());
+        (self.log)(format_args!(
+            "rp-gfx ladder {}/{}: {} kHz / 1, {}, {}: {} frames, render hangs {}, TA hangs {}; a good render {}.{} ms (most {}.{}) over {}; {}",
+            l.cell + 1,
+            CELLS.len(),
+            r.speed.khz(),
+            c.lay.name,
+            c.what,
+            l.n,
+            l.hangs,
+            l.ta_hangs,
+            avg / 1000,
+            avg % 1000 / 100,
+            l.max_us / 1000,
+            l.max_us % 1000 / 100,
+            l.ok,
+            core::str::from_utf8(&l.pattern[..shown]).unwrap_or("")
+        ));
+        for (mask, &n) in l.marks.iter().enumerate() {
+            if n > 0 {
+                (self.log)(format_args!(
+                    "rp-gfx ladder {}: {n} hangs with the marks drawn over: {} of 5 (mask 0b{mask:05b}: bit 0 the top-left, bit 4 the bottom-right)",
+                    l.cell + 1,
+                    (mask as u32).count_ones()
+                ));
+            }
+        }
+        if l.cell == 0 {
+            if let Some(b) = &l.ok_block {
+                for (k, row) in b.chunks(8).enumerate() {
+                    (self.log)(format_args!(
+                        "rp-gfx ladder: the render block after a good render, 0x{:x}: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                        BLOCK_AT + 32 * k,
+                        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+                    ));
+                }
+            }
+        }
+        if let (Some(h), Some(g)) = (&l.hang_block, &l.ok_block) {
+            let mut any = false;
+            for (k, (hv, gv)) in h.iter().zip(g.iter()).enumerate() {
+                if hv != gv {
+                    any = true;
+                    (self.log)(format_args!(
+                        "rp-gfx ladder {}: at the first hang 0x{:x} = 0x{hv:08x} (a good render left 0x{gv:08x})",
+                        l.cell + 1,
+                        BLOCK_AT + 4 * k
+                    ));
+                }
+            }
+            if !any {
+                (self.log)(format_args!(
+                    "rp-gfx ladder {}: at the first hang the render block read as a good render left it",
+                    l.cell + 1
+                ));
+            }
+        } else if let Some(h) = &l.hang_block {
+            for (k, row) in h.chunks(8).enumerate() {
+                (self.log)(format_args!(
+                    "rp-gfx ladder {}: the render block at the first hang (no good render), 0x{:x}: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                    l.cell + 1,
+                    BLOCK_AT + 32 * k,
+                    row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+                ));
+            }
+        }
+    }
+}
+
 impl Open {
     /// The core reset and the TA's memory manager set up again after a
     /// hang (the driver's one way back).
@@ -305,10 +800,16 @@ impl Open {
             if regs.read32(MBX + reg::STATUS) & m3::RENDER_DONE != 0 {
                 break true;
             }
-            if us_since(t0) > RENDER_LIMIT_US {
+            if us_since(t0) > self.limit_us {
                 break false;
             }
         };
+        if !ok {
+            self.hang_block = Some(read_block(regs));
+            if self.marking {
+                self.hang_marks = self.marks_drawn();
+            }
+        }
         let us = us_since(t0);
         regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
         regs.write32(MBX + reg::ENABLE, self.en);
@@ -320,13 +821,41 @@ impl Open {
         }
     }
 
+    fn mark_at(x: u32, y: u32) -> usize {
+        (y * W + x) as usize * 2
+    }
+
+    /// The marks into the screen (the CPU's stores drained before the
+    /// render starts).
+    fn put_marks(&mut self) {
+        for &(x, y) in &MARKS {
+            let _ = store32_volatile(self.vram, Self::mark_at(x, y), MARK);
+        }
+        cpu::drain_write_buffer();
+    }
+
+    /// Bit k set: `MARKS[k]` no longer reads as the mark.
+    fn marks_drawn(&self) -> u32 {
+        let mut m = 0;
+        for (k, &(x, y)) in MARKS.iter().enumerate() {
+            if load32_volatile(self.vram, Self::mark_at(x, y)).is_some_and(|v| v != MARK) {
+                m |= 1 << k;
+            }
+        }
+        m
+    }
+
     /// Starts the 3D stage on the TA's region array, into the screen.
     fn start_render(&mut self, regs: &mut Mmio) {
+        if self.marking {
+            self.put_marks();
+        }
         self.en = regs.read32(MBX + reg::ENABLE);
         regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
         regs.write32(MBX + reg::ENABLE, self.en | m3::RENDER_DONE);
         self.rendering = Some(rt::ticks());
-        for (off, v) in binner::start_table(&FROM_TA, SCREEN) {
+        for (off, v) in binner::start_table(&self.lay.from, SCREEN) {
+            let v = self.words.iter().find(|w| w.0 == off).map_or(v, |w| w.1);
             regs.write32(MBX + off, v);
         }
     }
@@ -459,13 +988,20 @@ impl Screen for Chip {
             en: 0,
             moved,
             stepped,
+            cur: if stepped { self.rung } else { None },
+            lay: &LAY_SDRAM,
+            words: NONE,
+            limit_us: RENDER_LIMIT_US,
+            hang_block: None,
+            marking: false,
+            hang_marks: 0,
         });
         self.since = rt::ticks();
         Ok(gfx)
     }
 
     fn frame(&mut self, words: &[u32]) -> Result<(), Errno> {
-        let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) else {
+        let (Some(o), true) = (self.open.as_mut(), self.regs.is_some()) else {
             return Err(Errno::BadHandle);
         };
         let c = &mut self.counts;
@@ -485,16 +1021,21 @@ impl Screen for Chip {
                 return Err(Errno::Invalid);
             }
         };
+        self.ladder_before();
+        let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) else {
+            return Err(Errno::BadHandle);
+        };
+        let c = &mut self.counts;
         let t0 = rt::ticks();
         let waited = o.wait_render(regs);
         c.waited_us += us_since(t0);
         if waited.is_err() {
             c.render_hangs += 1;
         }
-        let _ = ta::clear(o.vram, &TA);
+        let _ = ta::clear(o.vram, &o.lay.ta);
         cpu::drain_write_buffer();
         let bg = background();
-        let mut feed = ta::Feed::start(regs, &o.ready, &TA, CLOCK, TA_LIMIT_US);
+        let mut feed = ta::Feed::start(regs, &o.ready, &o.lay.ta, CLOCK, TA_LIMIT_US);
         let _ = ta::draws(&[&bg]).all(|i| feed.put(i));
         send(words, |p| {
             feed.put(match p {
@@ -517,12 +1058,37 @@ impl Screen for Chip {
                 ));
             }
             o.recover(regs);
+            if let Some(l) = self.ladder.as_mut() {
+                l.ta_hangs += 1;
+                l.mark(b'T');
+            }
             self.report();
             return Err(Errno::Io);
         }
         o.start_render(regs);
         self.frame = self.frame.wrapping_add(1);
-        if self.frame.is_multiple_of(TIMED_EVERY) {
+        if let Some(l) = self.ladder.as_mut() {
+            match o.wait_render(regs) {
+                Ok(us) => {
+                    l.ok += 1;
+                    l.render_us += us;
+                    l.max_us = l.max_us.max(us);
+                    l.ok_block = Some(read_block(regs));
+                    l.mark(b'.');
+                }
+                Err(_) => {
+                    c.render_hangs += 1;
+                    l.hangs += 1;
+                    if let Some(n) = l.marks.get_mut(o.hang_marks as usize & 31) {
+                        *n += 1;
+                    }
+                    if l.hang_block.is_none() {
+                        l.hang_block = o.hang_block;
+                    }
+                    l.mark(b'H');
+                }
+            }
+        } else if self.frame.is_multiple_of(TIMED_EVERY) {
             match o.wait_render(regs) {
                 Ok(us) => {
                     c.timed += 1;

@@ -158,6 +158,12 @@ mod image {
     /// (`gfx::rung_allowed`).
     const CLOCK_WORD: &[u8] = b"-rpclock";
 
+    /// A test run's word for R295's diagnostic ladder (`gfx::CELLS`,
+    /// docs/research/sheets/r295-ta-path-136.md): the 2700G's clock and
+    /// the TA path's layout and render words cell by cell, each render
+    /// waited for and counted.
+    const LADDER_WORD: &[u8] = b"-rpladder";
+
     /// The rung after the last [`CLOCK_WORD`] in `args` (an experiment's
     /// words come after the kit's default), if all four numbers are there
     /// and in the PLL's fields.
@@ -1118,7 +1124,12 @@ mod image {
             }
         }
         let rung = clock_rung(&args[..arg_count]);
-        match CHIP.put_with(|| super::gfx::Chip::new(gfx_log, mbx).with_rung(rung)) {
+        let ladder = args[..arg_count].iter().any(|a| a.to_bytes() == LADDER_WORD);
+        match CHIP.put_with(|| {
+            super::gfx::Chip::new(gfx_log, mbx)
+                .with_rung(rung)
+                .with_ladder(ladder)
+        }) {
             Some(c) => s.set_screen(c),
             None => {
                 let _ = writeln!(uart, "rp-gfx: none (set up twice)");

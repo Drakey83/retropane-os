@@ -451,6 +451,40 @@ was never measured (R41). The kit's default is 108.33 / 1 (clean, run 16)
 until the TA path runs 136.50 cleanly (R295, the owner: "we need to make
 it so 136, can be ran cleanly").
 
+**Runs 18 and 19 (R295, the owner: "we need to make it so 136, can be
+ran cleanly"; `-rpladder`, [the sheet](../research/sheets/r295-ta-path-136.md)).**
+One run each, the runner stepping the 2700G's clock and the TA path's
+layout and render words cell by cell, every render waited for and
+counted. **The TA path's edge lies between 133.25 / 1 (1 hang in 240
+renders) and 136.50 / 1 (a third of renders, in bursts that follow the
+view); 108.33 and 117.00 / 1 drew every render.** No lever cured
+136.50: the region array, manager block and tail on the die, Dell's GLES
+render words (all, or all but any one), the parameter fetch's settings
+(`0x61C`). The memory timing word is the same at 133.25 and 136.50; the
+suspect left is the core's reads of the TA's lists in SDRAM (the game
+step was proven with the CPU binner's lists on the die). The clock does
+not set the frame rate today (the CPU's ~55 ms against a 13.2 ms
+render); the options are in the sheet for the owner.
+
+**Levers 2 and 3, the maths and the sound's loops (runs 20 and 21,
+2026-11-16, 108.33 / 1).**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| `sin`, `cos`, `sinf`, `cosf` | musl's (Rust's `libm` in `compiler_builtins`): `sinf` widened to doubles, `sin` correctly rounded doubles, every step a software-float call | `hal/mem/src/trig.rs`: the argument times a 96-bit window of 2/pi's bits (one `u128` product, exact at every exponent), the quarter turn split off in integers, two degree-4 Q30 polynomials fitted offline to this exact evaluation (`tools/numerics/fit_trig.py`, at most 1.2e-9 off before rounding), the other function of the same argument kept for the next call | no software double at all; the game's `sin(a)` then `cos(a)` costs one reduction |
+| Literals | C: `0.5` is a double, so every float expression holding one is widened term by term | `-fsingle-precision-constant` on the game's sources (no literal needs a double's range: checked) | the client's and engine's doubles from literals gone |
+| Float compares | `compiler_builtins`' generic `__eqsf2`/`__lesf2` through every case | `float::compare`: two shifts for the NaNs, one signed compare on the bits (host test: every pair of 6,015 values against the PC's own compare) | a compare is a handful of instructions |
+| The sound's resampling loops (`s_mix.c`) | Xash: a double phase stepped every sample (Quake's own mixer used integers) | a 32-bit phase with one carry a sample, the neighbours blended in Q16; `chan->sample` still advances in doubles once a call, so nothing drifts | no software double a sample |
+
+**Run 20 (sin/cos, literals): 49.7 ms, 20.1 a second** (run 16: 55.0,
+18.2); the end frame 99.97% run 16's (78 pixels: the view's maths now at
+a float's precision). The client's `__muldf3`/`__adddf3` left the
+samples. **Run 21 (+ the sound's loops, the compares): 48.0 ms, 20.8 a
+second**; the engine's `__adddf3` left the top of the samples. Left on
+top (run 21): `rp_fadd_asm` 6.5% (the player's traces, the emitter),
+`RP_ChipFaceFixed` 5.6%, `rp_snd_write` 5.3% (the OS mixer's general
+path for one stream, R296), `rp_fmul_asm` 3.9%, the feed (R292).
+
 **Step 4f, the feed by DMA: designed, not built.** The CPU spends 9.4 ms
 a frame writing 42,900 words into the TA window. `rp-tabench` (P4) moved
 one unbroken list by DMA in pieces the FIFO had room for, the CPU polling

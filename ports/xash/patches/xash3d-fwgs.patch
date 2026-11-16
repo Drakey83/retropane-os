@@ -36,6 +36,109 @@ index 61de1f4..041bb8e 100644
  		{
  			if( cl.frames[j & CL_UPDATE_MASK].receivedtime >= 0.0 )
  			{
+diff --git a/engine/client/sound/s_mix.c b/engine/client/sound/s_mix.c
+index fe5ece4..f35b8f6 100644
+--- a/engine/client/sound/s_mix.c
++++ b/engine/client/sound/s_mix.c
+@@ -41,18 +41,39 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+ 		} \
+ 	} \
+ 
++/*
++RetroPane (docs/design/ref-rp.md "Lever 3"): the resampling loops step a
++32-bit phase with one carry a sample and blend the two neighbours in Q16,
++where these loops stepped a double a sample (a software double add, a
++multiply and two conversions per sample on the X51v, which has no FPU;
++run 20: the engine's __adddf3 2.8% of the play, S_MixChannelToBuffer's
++callers). Quake's own mixer stepped in integers; the phase here keeps 32
++fraction bits, and chan->sample still advances in doubles once a call, so
++nothing drifts.
++*/
++#define RP_PHASE( frac, step ) \
++	uint32_t ph = (uint32_t)( offset_frac * 4294967295.0 ); \
++	const uint64_t st = (uint64_t)( rate_scale * 4294967296.0 ); \
++	const uint32_t st_i = (uint32_t)( st >> 32 ), st_f = (uint32_t)st;
++
++#define RP_ADVANCE( n ) \
++	{ \
++		uint32_t was = ph; \
++		ph += st_f; \
++		sample_idx += ( st_i + ( ph < was )) * ( n ); \
++	}
++
+ #define S_MakeMixMonoPitch( x ) \
+ 	static void S_MixMonoPitch ## x( portable_samplepair_t *pbuf, const int *volume, const void *buf, double offset_frac, double rate_scale, int num_samples ) \
+ 	{ \
+ 		const int##x##_t *data = buf; \
+ 		uint sample_idx = 0; \
++		RP_PHASE( offset_frac, rate_scale ) \
+ 		for( int i = 0; i < num_samples; i++ ) \
+ 		{ \
+ 			pbuf[i].left  += ( data[sample_idx] * volume[0] ) >> ( x - 8 ); \
+ 			pbuf[i].right += ( data[sample_idx] * volume[1] ) >> ( x - 8 ); \
+-			offset_frac += rate_scale; \
+-			sample_idx += (uint)offset_frac; \
+-			offset_frac -= (uint)offset_frac; \
++			RP_ADVANCE( 1 ) \
+ 		} \
+ 	} \
+ 
+@@ -61,13 +82,12 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+ 	{ \
+ 		const int##x##_t *data = buf; \
+ 		uint sample_idx = 0; \
++		RP_PHASE( offset_frac, rate_scale ) \
+ 		for( int i = 0; i < num_samples; i++ ) \
+ 		{ \
+ 			pbuf[i].left  += ( data[sample_idx+0] * volume[0] ) >> ( x - 8 ); \
+ 			pbuf[i].right += ( data[sample_idx+1] * volume[1] ) >> ( x - 8 ); \
+-			offset_frac += rate_scale; \
+-			sample_idx += (uint)offset_frac << 1; \
+-			offset_frac -= (uint)offset_frac; \
++			RP_ADVANCE( 2 ) \
+ 		} \
+ 	} \
+ 
+@@ -76,14 +96,14 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+ 	{ \
+ 		const int##x##_t *data = buf; \
+ 		uint sample_idx = 0; \
++		RP_PHASE( offset_frac, rate_scale ) \
+ 		for( int i = 0; i < num_samples; i++ ) \
+ 		{ \
+-			int s = (int)( data[sample_idx] * ( 1.0 - offset_frac ) + data[sample_idx + 1] * offset_frac ); \
++			int a = data[sample_idx], w = (int)( ph >> 16 ); \
++			int s = a + ((( data[sample_idx + 1] - a ) * w ) >> 16 ); \
+ 			pbuf[i].left  += ( s * volume[0] ) >> ( x - 8 ); \
+ 			pbuf[i].right += ( s * volume[1] ) >> ( x - 8 ); \
+-			offset_frac += rate_scale; \
+-			sample_idx += (uint)offset_frac; \
+-			offset_frac -= (uint)offset_frac; \
++			RP_ADVANCE( 1 ) \
+ 		} \
+ 	} \
+ 
+@@ -92,15 +112,15 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+ 	{ \
+ 		const int##x##_t *data = buf; \
+ 		uint sample_idx = 0; \
++		RP_PHASE( offset_frac, rate_scale ) \
+ 		for( int i = 0; i < num_samples; i++ ) \
+ 		{ \
+-			int sl = (int)( data[sample_idx + 0] * ( 1.0 - offset_frac ) + data[sample_idx + 2] * offset_frac ); \
+-			int sr = (int)( data[sample_idx + 1] * ( 1.0 - offset_frac ) + data[sample_idx + 3] * offset_frac ); \
++			int l = data[sample_idx + 0], r = data[sample_idx + 1], w = (int)( ph >> 16 ); \
++			int sl = l + ((( data[sample_idx + 2] - l ) * w ) >> 16 ); \
++			int sr = r + ((( data[sample_idx + 3] - r ) * w ) >> 16 ); \
+ 			pbuf[i].left  += ( sl * volume[0] ) >> ( x - 8 ); \
+ 			pbuf[i].right += ( sr * volume[1] ) >> ( x - 8 ); \
+-			offset_frac += rate_scale; \
+-			sample_idx += (uint)offset_frac << 1; \
+-			offset_frac -= (uint)offset_frac; \
++			RP_ADVANCE( 2 ) \
+ 		} \
+ 	} \
+ 
 diff --git a/engine/platform/platform.h b/engine/platform/platform.h
 index 4b1e40c..41d0718 100644
 --- a/engine/platform/platform.h
