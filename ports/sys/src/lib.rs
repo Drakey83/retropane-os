@@ -26,5 +26,6 @@ pub mod input;
 pub mod module;
 pub mod names;
 pub mod progress;
+pub mod recent;
 pub mod sound;
 pub mod sys;

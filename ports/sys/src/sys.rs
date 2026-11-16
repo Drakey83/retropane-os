@@ -71,6 +71,15 @@ pub struct Looks {
     pub reads: fn() -> u32,
     /// A path was looked up: found or not, and the read commands it took.
     pub looked: fn(path: &[u8], found: bool, reads: u32),
+    /// A file was opened for reading: its C handle and its path.
+    pub opened: fn(fd: i32, path: &[u8]),
+    /// A file was read: its C handle, where in it, the bytes asked and
+    /// given, and the read commands that took (R281: a start's card time
+    /// after its look-ups is its reads).
+    pub read: fn(fd: i32, at: u64, asked: usize, got: usize, reads: u32),
+    /// A folder's next entry was asked for: its C handle, whether there
+    /// was one, and the read commands that took.
+    pub listed: fn(fd: i32, more: bool, reads: u32),
 }
 
 /// The longest current folder's path.
@@ -232,7 +241,17 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
         match fd {
             // Nothing is ever typed: the end of the input at once.
             0 => Ok(0),
-            _ => self.files.read(file(fd)?, into).map_err(errno),
+            _ => {
+                let f = file(fd)?;
+                let Some(l) = self.looks else {
+                    return self.files.read(f, into).map_err(errno);
+                };
+                let at = self.files.seek(f, 0, Whence::Here).unwrap_or(0);
+                let before = (l.reads)();
+                let got = self.files.read(f, into).map_err(errno)?;
+                (l.read)(fd, at, into.len(), got, (l.reads)().wrapping_sub(before));
+                Ok(got)
+            }
         }
     }
 
@@ -252,7 +271,11 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
                 .reopen(path, how & flags::APPEND != 0, how & flags::CREATE != 0),
         }
         .map_err(errno)?;
-        Ok(i32::from(fd) + FIRST)
+        let fd = i32::from(fd) + FIRST;
+        if let (Some(l), 0) = (self.looks, how & flags::ACCESS) {
+            (l.opened)(fd, path);
+        }
+        Ok(fd)
     }
 
     fn close(&mut self, fd: i32) -> Result<(), Errno> {
@@ -325,7 +348,12 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     }
 
     fn dir_next(&mut self, fd: i32, name: &mut [u8]) -> Result<Option<(usize, bool)>, Errno> {
-        let e = self.files.next(file(fd)?, name).map_err(errno)?;
+        let f = file(fd)?;
+        let before = self.looks.map(|l| (l.reads)());
+        let e = self.files.next(f, name).map_err(errno)?;
+        if let (Some(l), Some(before)) = (self.looks, before) {
+            (l.listed)(fd, e.is_some(), (l.reads)().wrapping_sub(before));
+        }
         Ok(e.map(|e| (e.name_len, e.folder)))
     }
 

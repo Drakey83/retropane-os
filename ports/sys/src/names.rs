@@ -21,6 +21,11 @@
 //! room is the caller's to size: a folder that does not fit is walked
 //! from the card as before, so nothing is ever wrong for want of room.
 //!
+//! A folder remembered is also listed from here, in the names' order
+//! ([`Names::after`]): Half-Life's start lists folders again and again
+//! (10,299 entries before the engine is up, 18,428 of its 19,691 read
+//! commands in the emulator, 2026-11-16, R281), each entry a card read.
+//!
 //! Names compare as the card's own code compares them
 //! ([`rp_fat::node::upcase`], unit by unit); a folder that holds one
 //! name twice (a damaged card) answers with the first, as the walk does.
@@ -250,6 +255,37 @@ impl<'a> Names<'a> {
             .cmp(want.iter().map(|&u| upcase(u)))
     }
 
+    /// The first of `dir`'s names after `last` in the names' order ([`order`]),
+    /// or its first when `last` is `None`: `None` when `dir` is not
+    /// remembered (ask the card), `Some(None)` past its last name.
+    #[must_use]
+    pub fn after(&self, dir: u64, last: Option<&[u16]>) -> Option<Option<Child>> {
+        let f = self.folders[self.folder(dir)?];
+        let i = match last {
+            None => f.first,
+            Some(last) => match self.search(&f, last) {
+                Ok(i) => i + 1,
+                Err(i) => i,
+            },
+        };
+        Some((i < f.first + f.count).then_some(Child(i)))
+    }
+
+    /// `child`'s name and what it is, into `out` (its name, place, size,
+    /// date and whether a folder; nothing else of a card's entry).
+    pub fn fill(&self, child: Child, out: &mut Node) {
+        out.name_len = 0;
+        for (o, u) in out.name.iter_mut().zip(self.name(child.0)) {
+            *o = u;
+            out.name_len += 1;
+        }
+        let b = self.brief(child.0);
+        out.loc = b.loc;
+        out.folder = b.folder;
+        out.size = b.size;
+        out.modified = b.modified;
+    }
+
     /// Where `want` is among the folder's records, or would go.
     fn search(&self, f: &Folder, want: &[u16]) -> Result<usize, usize> {
         let (mut lo, mut hi) = (0, f.count);
@@ -330,11 +366,16 @@ impl<'a> Names<'a> {
         let Ok(i) = self.search(&f, name) else {
             return Some(None);
         };
+        Some(Some(self.brief(i)))
+    }
+
+    /// Record `i` as a [`Brief`].
+    fn brief(&self, i: usize) -> Brief {
         let r = self.at(i);
         let rec = &self.room[r..r + RECORD];
         let flags = rec[26];
         let zone = i16::from_le_bytes(le(rec, 24));
-        Some(Some(Brief {
+        Brief {
             loc: u64::from_le_bytes(le(rec, 0)),
             folder: flags & FOLDER != 0,
             size: u64::from_le_bytes(le(rec, 8)),
@@ -348,8 +389,22 @@ impl<'a> Names<'a> {
                 centis: (rec[23] != NO_CENTIS).then_some(rec[23]),
                 zone: (zone != NO_ZONE).then_some(zone),
             }),
-        }))
+        }
     }
+}
+
+/// One of a remembered folder's names, as [`Names::after`] found it: good
+/// until the names change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Child(usize);
+
+/// Two names in the order a remembered folder lists them: unit by unit,
+/// any case, as the card's own code compares them.
+#[must_use]
+pub fn order(a: &[u16], b: &[u16]) -> Ordering {
+    a.iter()
+        .map(|&u| upcase(u))
+        .cmp(b.iter().map(|&u| upcase(u)))
 }
 
 #[cfg(test)]

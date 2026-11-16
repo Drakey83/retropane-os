@@ -107,10 +107,13 @@ enum Slot {
         node: Node,
         at: u64,
     },
-    /// A folder being listed.
+    /// A folder being listed: from the card in its order (`cursor`), or
+    /// from the names remembered in theirs (`sorted`), after `last`.
     Dir {
         dir: u64,
         cursor: u64,
+        sorted: bool,
+        last: Node,
     },
     /// A file being written: its folder, its name, where its bytes start
     /// in the table's room, how far the writing has got and how long it
@@ -531,9 +534,16 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
                 node: *node,
                 at: *at,
             },
-            Some(Slot::Dir { dir, cursor }) => Slot::Dir {
+            Some(Slot::Dir {
+                dir,
+                cursor,
+                sorted,
+                last,
+            }) => Slot::Dir {
                 dir: *dir,
                 cursor: *cursor,
+                sorted: *sorted,
+                last: *last,
             },
             _ => return Err(Error::BadHandle),
         };
@@ -618,7 +628,12 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     pub fn open_dir(&mut self, path: &[u8]) -> Result<Fd, Error> {
         let k = self.free_slot()?;
         let dir = self.folder(path)?;
-        self.slots[k] = Slot::Dir { dir, cursor: 0 };
+        self.slots[k] = Slot::Dir {
+            dir,
+            cursor: 0,
+            sorted: false,
+            last: Node::default(),
+        };
         Ok(k as Fd)
     }
 
@@ -628,11 +643,42 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     /// # Errors
     /// Not a folder's handle, or the card.
     pub fn next(&mut self, fd: Fd, name: &mut [u8]) -> Result<Option<Entry>, Error> {
-        let Some(Slot::Dir { dir, cursor }) = self.slots.get_mut(usize::from(fd)) else {
+        let k = usize::from(fd);
+        let Some(&Slot::Dir {
+            dir,
+            mut cursor,
+            mut sorted,
+            last,
+        }) = self.slots.get(k)
+        else {
             return Err(Error::BadHandle);
         };
+        // At its start, a folder whose names can be kept is listed from
+        // them: one walk of the card however often it is listed (R281).
+        if cursor == 0 && !sorted && self.list(dir)? {
+            sorted = true;
+        }
         let mut node = Node::default();
-        if !self.vol.node_child(*dir, cursor, &mut node)? {
+        let more = if sorted {
+            let after = (cursor > 0).then(|| last.name());
+            cursor = 1;
+            self.sorted_next(dir, after, &mut node)?
+        } else {
+            self.vol.node_child(dir, &mut cursor, &mut node)?
+        };
+        if let Some(Slot::Dir {
+            cursor: c,
+            sorted: s,
+            last: l,
+            ..
+        }) = self.slots.get_mut(k)
+        {
+            (*c, *s) = (cursor, sorted);
+            if more {
+                *l = node;
+            }
+        }
+        if !more {
             return Ok(None);
         }
         let units = node.name();
@@ -645,6 +691,32 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
             folder: node.folder,
             size: node.size,
         }))
+    }
+
+    /// The first child of `dir` after `last` in the names' order
+    /// ([`crate::names::order`]), into `out`: from the names remembered, or
+    /// when they no longer hold the folder and cannot again (it changed
+    /// while being listed and the room is full), by walking the card for
+    /// it, each entry a whole walk: never a name twice or one left out.
+    fn sorted_next(&mut self, dir: u64, last: Option<&[u16]>, out: &mut Node) -> Result<bool, Error> {
+        if self.list(dir)?
+            && let Some(names) = self.names.as_ref()
+            && let Some(next) = names.after(dir, last)
+        {
+            return Ok(next.is_some_and(|c| {
+                names.fill(c, out);
+                true
+            }));
+        }
+        let (mut cursor, mut node, mut found) = (0, Node::default(), false);
+        while self.vol.node_child(dir, &mut cursor, &mut node)? {
+            let later = last.is_none_or(|l| crate::names::order(node.name(), l).is_gt());
+            if later && (!found || crate::names::order(node.name(), out.name()).is_lt()) {
+                *out = node;
+                found = true;
+            }
+        }
+        Ok(found)
     }
 
     /// Reads into `buf` from where the file is: the bytes read (0 at its
@@ -790,6 +862,17 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
         }
     }
 
+    /// Where the entry of `dir`'s child named `name` (any case) is, if
+    /// there is one, read from the card.
+    fn entry_named(&mut self, dir: u64, name: &[u16]) -> Result<Option<u64>, Error> {
+        let mut node = Node::default();
+        match self.walk(dir, name, &mut node) {
+            Ok(()) => Ok(Some(node.loc)),
+            Err(Error::NotFound) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Puts a written file's bytes (`len` of the room from `start`) onto
     /// the card under `name` in `dir`, whole or not at all.
     fn put_out(&mut self, dir: u64, name: &[u16], start: usize, len: usize) -> Result<(), Error> {
@@ -797,6 +880,18 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
         // reservation's own entry).
         self.forget(dir);
         self.forget(ROOT);
+        // An empty file takes no cluster, and the card's reservation is
+        // for space (it refuses none): made as an entry alone, the old
+        // one of that name gone first (found 2026-11-16: an empty file
+        // written by a program failed to close with "no room").
+        if len == 0 {
+            if let Some(loc) = self.entry_named(dir, name)? {
+                self.vol.node_delete(loc)?;
+            }
+            self.vol
+                .node_create(dir, name, false, false, (None, None), self.scratch)?;
+            return Ok(());
+        }
         {
             {
                 let mut r = self.vol.node_reserve(dir, len as u64, self.scratch)?;
@@ -814,16 +909,7 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
                     at += n;
                 }
                 // The old one of that name, if any, makes way.
-                let mut old = Node::default();
-                let mut cursor = 0;
-                let mut had = None;
-                while self.vol.node_child(dir, &mut cursor, &mut old)? {
-                    if node::same_name(old.name(), name) {
-                        had = Some(old.loc);
-                        break;
-                    }
-                }
-                if let Some(loc) = had {
+                if let Some(loc) = self.entry_named(dir, name)? {
                     self.vol.node_delete(loc)?;
                 }
                 match self
@@ -960,6 +1046,108 @@ pub(crate) mod tests {
             f(volume(Fs::ExFat, 65_536, 4096), &format!("exFAT{how}"));
         }
         NAMES_ROOM.set(0);
+    }
+
+    /// Every name `fd` lists from here to its end.
+    fn names_listed(f: &mut Files<'_, Disk, 8>, fd: Fd, most: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut name = [0u8; 255];
+        while out.len() < most {
+            match f.next(fd, &mut name).unwrap() {
+                Some(e) => out.push(String::from_utf8_lossy(&name[..e.name_len]).into_owned()),
+                None => break,
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_folder_listed_again_costs_no_card_read_and_a_change_while_listing_loses_nothing() {
+        // No names kept; kept; and room to list the folder once but not
+        // again after it changes (the walk that keeps the names' order).
+        for (room, how) in [(0, "card"), (64 * 1024, "names"), (2000, "names, then full")] {
+            for (fs, cluster) in [(Fs::Fat32, 512), (Fs::ExFat, 4096)] {
+                NAMES_ROOM.set(room);
+                let vol = volume(fs, 131_072, cluster);
+                let (scratch, files) = (&mut vec![0u8; 8192][..], &mut vec![0u8; 100_000][..]);
+                let mut f: Files<'_, Disk, 8> = Files::new(vol, scratch, files);
+                NAMES_ROOM.set(0);
+                f.mkdir(b"maps").unwrap();
+                let made: Vec<String> = (0..30).map(|i| format!("file-number-{i:02}.bsp")).collect();
+                for n in &made {
+                    let w = f.create(format!("maps/{n}").as_bytes()).unwrap();
+                    f.close(w).unwrap_or_else(|e| panic!("{how} {fs:?} {n}: {e:?}"));
+                }
+                // Another folder kept: its names hold the room's bytes when
+                // `maps` is forgotten, so `maps` may not fit again.
+                f.mkdir(b"sound").unwrap();
+                for n in ["s0.wav", "s1.wav", "s2.wav"] {
+                    let w = f.create(format!("sound/{n}").as_bytes()).unwrap();
+                    f.write(w, b"x").unwrap();
+                    f.close(w).unwrap();
+                }
+                let d = f.open_dir(b"maps").unwrap();
+                assert_eq!(f.stat(b"sound/s1.wav").unwrap().size, 1);
+                let mut first = names_listed(&mut f, d, usize::MAX);
+                f.close(d).unwrap();
+                first.sort();
+                assert_eq!(first, made, "{how} {fs:?}");
+                // Listed again: from the names, no card read.
+                let before = READS.get();
+                let d = f.open_dir(b"/MAPS").unwrap();
+                let again = names_listed(&mut f, d, usize::MAX);
+                f.close(d).unwrap();
+                if room == 64 * 1024 {
+                    assert_eq!(READS.get() - before, 0, "{fs:?}");
+                }
+                assert_eq!(again.len(), 30, "{how} {fs:?}");
+                // Changed part way: a name before where the listing is, one
+                // after it, and one removed that was not listed yet.
+                let d = f.open_dir(b"maps").unwrap();
+                let mut seen = names_listed(&mut f, d, 10);
+                for n in ["aaa-new.bsp", "zzz-new.bsp"] {
+                    let w = f.create(format!("maps/{n}").as_bytes()).unwrap();
+                    f.close(w).unwrap();
+                }
+                let gone = made
+                    .iter()
+                    .find(|n| !seen.contains(n))
+                    .unwrap()
+                    .clone();
+                f.remove(format!("maps/{gone}").as_bytes()).unwrap();
+                seen.extend(names_listed(&mut f, d, usize::MAX));
+                f.close(d).unwrap();
+                for n in &made {
+                    let times = seen.iter().filter(|s| *s == n).count();
+                    let ok = if *n == gone { times <= 1 } else { times == 1 };
+                    assert!(ok, "{how} {fs:?}: {n} listed {times} times in {seen:?}");
+                }
+                let mut once = seen.clone();
+                once.sort();
+                once.dedup();
+                assert_eq!(once.len(), seen.len(), "{how} {fs:?}: a name twice in {seen:?}");
+                if room != 0 {
+                    // In the names' order a name after the place is listed.
+                    assert!(seen.iter().any(|s| s == "zzz-new.bsp"), "{how} {fs:?}");
+                }
+                if room == 2000 {
+                    // The folder changed with the room too full to list it
+                    // again: the walk in the names' order answered.
+                    assert!(f.remembered().unwrap().refused > 0, "{fs:?}");
+                }
+                // An empty file written over one with bytes: there, empty.
+                let w = f.create(b"maps/aaa-new.bsp").unwrap();
+                f.write(w, b"bytes").unwrap();
+                f.close(w).unwrap();
+                assert_eq!(f.stat(b"maps/aaa-new.bsp").unwrap().size, 5);
+                let w = f.create(b"maps/AAA-NEW.bsp").unwrap();
+                f.close(w).unwrap();
+                assert_eq!(f.stat(b"maps/aaa-new.bsp").unwrap().size, 0, "{how} {fs:?}");
+                let r = f.open(b"maps/aaa-new.bsp").unwrap();
+                assert_eq!(f.read(r, &mut [0u8; 8]), Ok(0));
+                f.close(r).unwrap();
+            }
+        }
     }
 
     #[test]
