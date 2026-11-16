@@ -49,6 +49,7 @@ particles, the sky, water and 2D are step 4's later sub-steps.
 */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <retropane.h>
 #include "r_local.h"
 
@@ -70,7 +71,7 @@ int rp_emit_on;
    by the setting `rp_both` 1; 2 once both are written). `rp_gpu` says the
    2700G draws the frames. */
 int rp_both;
-static cvar_t *rp_both_var, *rp_gpu, *rp_fan;
+static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed;
 /* D_CacheSurface lights into the scratch, not the RAM cache (r_surf.c). */
 int rp_scratch;
 
@@ -87,9 +88,12 @@ static struct
 	uint32_t lit_kib, block_kib, mip[4]; /* the view's lit surfaces (step 1b) */
 	uint32_t uploads, upload_kib, evicted, skipped, refused, models; /* step 3 */
 	uint32_t meshes, meshes_skipped, strips, fans, cmds_near, cmds_skipped, wraps; /* step 4a */
+	uint32_t fixed, mverts, mreuse; /* steps 4b, 4d */
 	uint64_t upload_us;
 } rp_count;
 static uint32_t rp_skins_total; /* step 4a: skins written since the start */
+
+static void RP_FixedInit( void );
 
 void RP_EmitInit( void )
 {
@@ -97,6 +101,8 @@ void RP_EmitInit( void )
 	rp_both_var = gEngfuncs.Cvar_Get( "rp_both", "0", 0, "ref_rp: 1 asks for a frame drawn both ways (the test's end shot), 2 once written" );
 	rp_gpu = gEngfuncs.Cvar_Get( "rp_gpu", "0", 0, "ref_rp: 1 while the 2700G draws the frames" );
 	rp_fan = gEngfuncs.Cvar_Get( "rp_fan", "1", 0, "ref_rp: 1 a model's fans as the TA's fans, 0 as strips" );
+	rp_fixed = gEngfuncs.Cvar_Get( "rp_fixed", "1", 0, "ref_rp: 1 vertices in integers, each worked once a frame (steps 4b, 4d); 0 the float path" );
+	RP_FixedInit();
 }
 
 /* The port layer's clock (ports/include/retropane.h; the runner's). */
@@ -133,6 +139,10 @@ static void RP_EmitReport( void )
 			rp_count.meshes / f, rp_count.meshes_skipped / f, rp_count.strips / f, rp_count.fans / f,
 			rp_count.cmds_near / f, rp_count.cmds_skipped, rp_count.wraps / f, rp_skins_total,
 			rp_fan->value != 0.0f ? "the TA's fans" : "strips" );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: integers (steps 4b, 4d, rp_fixed %d): %u world faces a frame by the tables, %u by floats; model vertices %u worked and %u used again a frame\n",
+			(int)rp_fixed->value, rp_count.fixed / f, ( rp_count.faces - rp_count.fixed ) / f,
+			rp_count.mverts / f, rp_count.mreuse / f );
 	memset( &rp_count, 0, sizeof( rp_count ));
 	since = now;
 }
@@ -349,6 +359,158 @@ typedef struct
 
 /*
 ==============================================================================
+Steps 4b and 4d: vertices in integers, each worked once a frame
+==============================================================================
+
+Iterate, don't imitate (rule 0). `ref_soft` (and step 3 here) transforms
+and projects a world corner in floats for every face it is in, and a model
+vertex for every triangle command it is in; on the PXA270 (no FPU) every
+float is a call into the software-float helpers (run 12: 59% of the frame).
+`ref_gl` hands the floats to a GPU that transforms; the 2700G does not.
+Ours: the view's rotation made once a frame as 2.30 integers, every vertex
+as 16.16 (the world's at map load, a model's from its float with bit
+operations), moved into view space with three 64-bit multiply-adds a row
+(`smull`), and projected with one reciprocal (a 128-entry table and two
+Newton steps of `umull`, no divide); the TA's floats made from the
+integers by `clz` (RP_FixBits) and 1/z's float straight from the
+reciprocal's bits. Each world vertex and each model vertex is worked once
+a frame into a table that the faces and commands then only index; the
+world's texture coordinates are made at map load. A vertex nearer than one
+unit takes the float path (its face clipped at the near plane there).
+*/
+
+/* The game's picture is 640 x 480; the 2700G's is upright, 480 x 640. */
+#define RP_GAME_W 640
+#define RP_GAME_H 480
+#define RP_ONE16 65536
+
+static uint32_t rp_recip_tab[128];
+
+/* 2^63 / zn for zn with its top bit set (zn in [2^31, 2^32)): the table
+   by the top bits, then two Newton steps (y = y (2 - zn y)). */
+static inline uint32_t RP_Recip( uint32_t zn )
+{
+	uint32_t y = rp_recip_tab[( zn >> 24 ) & 127];
+
+	for( int i = 0; i < 2; i++ )
+	{
+		uint64_t d = 0u - (uint64_t)zn * y; /* 2^64 - zn y */
+		uint64_t n = ( (uint64_t)y * (uint32_t)( d >> 32 )) >> 31;
+
+		y = n > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)n;
+	}
+	return y;
+}
+
+static void RP_FixedInit( void )
+{
+	for( int i = 0; i < 128; i++ )
+	{
+		uint64_t n = ( 1ull << 63 ) / ((uint64_t)( 2 * ( 128 + i ) + 1 ) << 23 );
+
+		rp_recip_tab[i] = n > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)n;
+	}
+}
+
+/* A float as 16.16 by its bits (no helper call): |f| below 32768. */
+static inline int32_t RP_Fix16( float f )
+{
+	uint32_t u, m;
+	int      e, v;
+
+	memcpy( &u, &f, sizeof( u ));
+	e = (int)( u >> 23 & 0xFF ) - 127;
+	if( e < -17 )
+		return 0;
+	if( e > 14 )
+		return u >> 31 ? -0x7FFFFFFF : 0x7FFFFFFF;
+	m = ( u & 0x007FFFFFu ) | 0x00800000u;
+	v = (int)( e >= 7 ? m << ( e - 7 ) : m >> ( 7 - e ));
+	return u >> 31 ? -v : v;
+}
+
+/* The view this frame: rows right, up, forward as 2.30, the eye 16.16, the
+   screen's centre and scale 16.16 (the turn and the 640 in RP_Project). */
+static struct
+{
+	int     frame;
+	int32_t m[3][3], o[3];
+	int32_t xc, yc, xs, ys;
+	uint32_t mip[3]; /* d_scalemip / scale_for_mip as float bits */
+} rp_view;
+
+static inline int32_t RP_Fix30( float f )
+{
+	/* |f| <= 1: 2.30 by the same bits as RP_Fix16, 14 more places */
+	uint32_t u, m;
+	int      e, v;
+
+	memcpy( &u, &f, sizeof( u ));
+	e = (int)( u >> 23 & 0xFF ) - 127;
+	if( e < -31 )
+		return 0;
+	if( e >= 1 )
+		return u >> 31 ? -0x40000000 : 0x40000000;
+	m = ( u & 0x007FFFFFu ) | 0x00800000u;
+	v = (int)( e + 7 >= 0 ? m << ( e + 7 ) : m >> -( e + 7 ));
+	return u >> 31 ? -v : v;
+}
+
+static void RP_ViewFixed( void )
+{
+	const float *row[3] = { RI.vright, RI.vup, RI.vforward };
+
+	if( rp_view.frame == tr.framecount )
+		return;
+	rp_view.frame = tr.framecount;
+	for( int i = 0; i < 3; i++ )
+	{
+		for( int j = 0; j < 3; j++ )
+			rp_view.m[i][j] = RP_Fix30( row[i][j] );
+		rp_view.o[i] = RP_Fix16( RI.rvp.vieworigin[i] );
+	}
+	rp_view.xc = RP_Fix16( xcenter );
+	rp_view.yc = RP_Fix16( ycenter );
+	rp_view.xs = RP_Fix16( xscale );
+	rp_view.ys = RP_Fix16( yscale );
+	for( int k = 0; k < 3; k++ )
+		rp_view.mip[k] = RP_Bits( d_scalemip[k] / scale_for_mip );
+}
+
+/* A 16.16 point into view space (16.16). */
+static inline void RP_ViewPoint( const int32_t p[3], int32_t v[3] )
+{
+	int32_t d0 = p[0] - rp_view.o[0], d1 = p[1] - rp_view.o[1], d2 = p[2] - rp_view.o[2];
+
+	for( int i = 0; i < 3; i++ )
+		v[i] = (int32_t)(( (int64_t)rp_view.m[i][0] * d0 + (int64_t)rp_view.m[i][1] * d1
+			+ (int64_t)rp_view.m[i][2] * d2 ) >> 30 );
+}
+
+/*
+A view-space point (z at least one unit) to the TA's x, y (turned into
+the upright picture: x = the game's y, y = 640 - the game's x) and 1/z,
+the words RP_ChipFace's floats make, from integers.
+*/
+static inline void RP_Project( const int32_t v[3], uint32_t w[3] )
+{
+	int      n = __builtin_clz( (uint32_t)v[2] );
+	uint32_t r = RP_Recip( (uint32_t)v[2] << n );
+	/* x / z = x r 2^(n - 63): as 16.16 */
+	int64_t  xz = ( (int64_t)v[0] * r ) >> ( 47 - n );
+	int64_t  yz = ( (int64_t)v[1] * r ) >> ( 47 - n );
+	/* the screen in 28.4 */
+	int32_t  sx = ( rp_view.xc >> 12 ) + (int32_t)(( xz * rp_view.xs ) >> 28 );
+	int32_t  sy = ( rp_view.yc >> 12 ) - (int32_t)(( yz * rp_view.ys ) >> 28 );
+
+	w[0] = RP_FixBits( sy, 4 );
+	w[1] = RP_FixBits(( RP_GAME_W << 4 ) - sx, 4 );
+	/* 1/z = r 2^(n - 47): r has its top bit set, so its float is direct */
+	w[2] = (uint32_t)( n - 16 + 127 ) << 23 | ( r >> 8 & 0x007FFFFFu );
+}
+
+/*
+==============================================================================
 Step 3: the lit surfaces in video memory, the world to the 2700G
 ==============================================================================
 */
@@ -361,9 +523,6 @@ Step 3: the lit surfaces in video memory, the world to the 2700G
 #define RP_PAGE_BYTES   ( RP_PAGE_SIDE * RP_PAGE_SIDE * 2 )
 #define RP_MAX_PAGES    16
 #define RP_MAX_SHELVES  64
-/* The game's picture is 640 x 480; the 2700G's is upright, 480 x 640. */
-#define RP_GAME_W 640
-#define RP_GAME_H 480
 
 /* The 2700G's words for a page's state block (drivers/mbx3d, test P's
    textured draw): TSP Dell's textured one with depth "greater or equal"
@@ -652,6 +811,187 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 }
 
 /*
+The world's tables, made when a map is first drawn: each vertex as 16.16;
+each face corner's s, t (mip 0 texels from the surface's corner, the same
+sums RP_ChipFace's float path makes) as 24.8, by surfedge; each vertex's
+words a frame (`frame` this frame's: `w[2]` 0 when nearer than a unit).
+*/
+typedef struct
+{
+	int      frame;
+	uint32_t w[3];
+} rp_wvert_t;
+
+static const model_t *rp_wmodel;
+static int32_t     ( *rp_wpos )[3];
+static int32_t     ( *rp_wst )[2];
+static rp_wvert_t  *rp_wv;
+
+static int RP_WorldTables( void )
+{
+	const model_t *mod = WORLDMODEL;
+
+	if( mod == rp_wmodel )
+		return rp_wst != NULL;
+	rp_wmodel = mod;
+	free( rp_wpos );
+	free( rp_wst );
+	free( rp_wv );
+	rp_wpos = NULL;
+	rp_wst = NULL;
+	rp_wv = NULL;
+	if( !mod || !mod->numvertexes || !mod->numsurfedges )
+		return 0;
+	rp_wpos = malloc( sizeof( *rp_wpos ) * mod->numvertexes );
+	rp_wv = calloc( mod->numvertexes, sizeof( *rp_wv ));
+	rp_wst = malloc( sizeof( *rp_wst ) * mod->numsurfedges );
+	if( !rp_wpos || !rp_wv || !rp_wst )
+	{
+		free( rp_wpos );
+		free( rp_wv );
+		free( rp_wst );
+		rp_wpos = NULL;
+		rp_wv = NULL;
+		rp_wst = NULL;
+		fprintf( stderr, "rp-emit: no room for the world's tables: the float path\n" );
+		return 0;
+	}
+	for( int i = 0; i < mod->numvertexes; i++ )
+	{
+		rp_wv[i].frame = -1;
+		for( int j = 0; j < 3; j++ )
+			rp_wpos[i][j] = RP_Fix16( mod->vertexes[i].position[j] );
+	}
+	for( int f = 0; f < mod->numsurfaces; f++ )
+	{
+		const msurface_t  *fa = &mod->surfaces[f];
+		const mtexinfo_t  *tex = fa->texinfo;
+		int                luxels;
+		const float       *sv, *tv;
+		float              smin, tmin;
+
+		if( !tex || !fa->info || fa->firstedge < 0 || fa->firstedge + fa->numedges > mod->numsurfedges )
+			continue;
+		luxels = ( tex->flags & TEX_WORLD_LUXELS ) != 0;
+		sv = luxels ? tex->vecs[0] : fa->info->lmvecs[0];
+		tv = luxels ? tex->vecs[1] : fa->info->lmvecs[1];
+		smin = luxels ? fa->texturemins[0] : fa->info->lightmapmins[0];
+		tmin = luxels ? fa->texturemins[1] : fa->info->lightmapmins[1];
+		for( int i = 0; i < fa->numedges; i++ )
+		{
+			int lindex = mod->surfedges[fa->firstedge + i];
+			const medge16_t *e = &mod->edges16[lindex > 0 ? lindex : -lindex];
+			const float *world = mod->vertexes[lindex > 0 ? e->v[0] : e->v[1]].position;
+
+			rp_wst[fa->firstedge + i][0] = (int32_t)(( DotProduct( world, sv ) + sv[3] - smin ) * 256.0f );
+			rp_wst[fa->firstedge + i][1] = (int32_t)(( DotProduct( world, tv ) + tv[3] - tmin ) * 256.0f );
+		}
+	}
+	fprintf( stderr, "rp-emit: the world's tables: %d vertices, %d face corners (%u KiB)\n",
+		mod->numvertexes, mod->numsurfedges,
+		(uint32_t)(( sizeof( *rp_wpos ) + sizeof( *rp_wv )) * mod->numvertexes + sizeof( *rp_wst ) * mod->numsurfedges ) >> 10 );
+	return 1;
+}
+
+/*
+A world face (the world entity's: brush entities turn the view) by the
+tables: each corner's words from its vertex's this frame (worked once), its
+texture coordinates from the corner's s, t, all in integers. 0 if a corner
+is nearer than a unit (the float path clips it).
+*/
+static int RP_ChipFaceFixed( msurface_t *fa )
+{
+	const model_t    *mod = RI.currentmodel;
+	const mtexinfo_t *tex = fa->texinfo;
+	const uint32_t   *cw[RP_MAX_CORNERS];
+	const int32_t    *st[RP_MAX_CORNERS];
+	uint32_t          nearzi = 0;
+	int               n = fa->numedges, miplevel, w, h, qx, qy, pg, luxels, lo, hi, kw, kh;
+
+	for( int i = 0; i < n; i++ )
+	{
+		int         lindex = mod->surfedges[fa->firstedge + i];
+		const medge16_t *e = &mod->edges16[lindex > 0 ? lindex : -lindex];
+		int         vi = lindex > 0 ? e->v[0] : e->v[1];
+		rp_wvert_t *c = &rp_wv[vi];
+
+		if( c->frame != tr.framecount )
+		{
+			int32_t v[3];
+
+			c->frame = tr.framecount;
+			RP_ViewPoint( rp_wpos[vi], v );
+			if( v[2] < RP_ONE16 )
+				c->w[2] = 0;
+			else
+				RP_Project( v, c->w );
+		}
+		if( !c->w[2] )
+			return 0;
+		if( c->w[2] > nearzi )
+			nearzi = c->w[2];
+		cw[i] = c->w;
+		st[i] = rp_wst[fa->firstedge + i];
+	}
+
+	/* the software renderer's mip level for the nearest corner (positive
+	   floats compare as their bits) */
+	luxels = ( tex->flags & TEX_WORLD_LUXELS ) != 0;
+	miplevel = nearzi >= rp_view.mip[0] ? 0 : nearzi >= rp_view.mip[1] ? 1 : nearzi >= rp_view.mip[2] ? 2 : 3;
+	if( miplevel < d_minmip )
+		miplevel = d_minmip;
+	while( 1 << miplevel > gEngfuncs.Mod_SampleSizeForFace( fa ))
+		miplevel--;
+	w = ( luxels ? fa->extents[0] : fa->info->lightextents[0] ) >> miplevel;
+	h = ( luxels ? fa->extents[1] : fa->info->lightextents[1] ) >> miplevel;
+	if( w < 1 || h < 1 || w > RP_PAGE_SIDE || h > RP_PAGE_SIDE || w * h > RP_SCRATCH_TEXELS )
+	{
+		rp_count.skipped++;
+		return 1;
+	}
+	rp_count.mip[miplevel & 3]++;
+	rp_lit_bytes += w * h * 2;
+	rp_block_bytes += RP_Pow2( w ) * RP_Pow2( h ) * 2;
+	pg = RP_SurfacePlace( fa, miplevel, w, h, &qx, &qy );
+	if( pg < 0 )
+	{
+		rp_count.skipped++;
+		return 1;
+	}
+	RP_PageState( pg );
+
+	/* texels at the mip level, a 32nd of a texel inside the far edges:
+	   x (w - 1/32) / w as 0.16 */
+	kw = RP_ONE16 - ( 2048 + ( w >> 1 )) / w;
+	kh = RP_ONE16 - ( 2048 + ( h >> 1 )) / h;
+
+	RP_Put( RP_GFX_STRIP( n ));
+	lo = 1;
+	hi = n - 1;
+	for( int k = 0; k < n; k++ )
+	{
+		int c = k == 0 ? 0 : ( k & 1 ) ? lo++ : hi--;
+		/* page texels as 24.8 */
+		int32_t u = ( qx << 11 ) + (int32_t)(( (int64_t)( st[c][0] >> miplevel ) * kw ) >> 16 );
+		int32_t v = ( qy << 11 ) + (int32_t)(( (int64_t)( st[c][1] >> miplevel ) * kh ) >> 16 );
+
+		RP_Put( cw[c][0] );
+		RP_Put( cw[c][1] );
+		RP_Put( cw[c][2] );
+		RP_Put( cw[c][2] );
+		RP_Put( 0xFFFFFFFFu );
+		RP_Put( RP_FixBits( u, 8 + 9 ));
+		RP_Put( RP_FixBits( v, 8 + 9 ));
+	}
+	RP_Whole();
+	rp_count.faces++;
+	rp_count.fixed++;
+	rp_count.tris += n - 2;
+	rp_count.verts += n;
+	return 1;
+}
+
+/*
 A world (or brush model) face to the 2700G: its corners transformed and
 projected, clipped against the near plane only, its lit surface placed in
 video memory, written as one strip in zigzag order, each corner turned
@@ -671,6 +1011,14 @@ static void RP_ChipFace( msurface_t *fa )
 		return; /* the sky, water and conveyors: step 4 */
 	if( fa->numedges < 3 || fa->numedges > RP_MAX_CORNERS )
 		return;
+	/* the world's own faces by the integer tables (steps 4b, 4d; a brush
+	   entity is a model of its own, its view turned) */
+	if( rp_fixed->value != 0.0f && mod == WORLDMODEL && RP_WorldTables( ))
+	{
+		RP_ViewFixed();
+		if( RP_ChipFaceFixed( fa ))
+			return;
+	}
 
 	luxels = ( tex->flags & TEX_WORLD_LUXELS ) != 0;
 	sv = luxels ? tex->vecs[0] : fa->info->lmvecs[0];
@@ -802,6 +1150,28 @@ the vertex colour, Gouraud shaded (TSP bit 22, measured: rp-mbx3d run 6)
 and multiplied into the texel (TEX2, the GLES MODULATE word): the
 lighting's own colour, where the software renderer kept a grey in 32 steps.
 */
+
+/* Each vertex of the model's part being drawn, worked once (step 4b):
+   `serial` the part's (RP_StudioVerts), `w[2]` 0 when nearer than a unit. */
+typedef struct
+{
+	int      serial;
+	uint32_t w[3];
+} rp_mvert_t;
+
+static rp_mvert_t rp_mv[RP_STUDIO_VERTS];
+static int        rp_studio_serial = 1;
+
+/* A model's part has new vertices (R_StudioDrawPoints moved them). */
+void RP_StudioVerts( void )
+{
+	rp_studio_serial++;
+}
+
+int RP_StudioSerial( void )
+{
+	return rp_studio_serial;
+}
 
 /* The skins in the atlas, found by their texels' address. */
 #define RP_SKINS 512
@@ -980,8 +1350,8 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 	static uint32_t c[RP_STUDIO_CMD][RP_VERTEX_WORDS];
 	static uint16_t idx[RP_STUDIO_CMD * 2];
 	const rp_skin_t *e = rp_cur_skin;
-	float u0, v0, kw, kh, smax, tmax;
-	int   m;
+	int32_t u0, v0, smax, tmax;
+	int     m;
 
 	if( !e || n < 3 )
 		return;
@@ -990,49 +1360,90 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 		rp_count.cmds_skipped++;
 		return;
 	}
-	u0 = e->qx * 8 * ( 1.0f / RP_PAGE_SIDE );
-	v0 = e->qy * 8 * ( 1.0f / RP_PAGE_SIDE );
-	kw = 1.0f / RP_PAGE_SIDE;
-	kh = 1.0f / RP_PAGE_SIDE;
-	/* kept a 32nd of a texel inside the skin's far edges, as the world's */
-	smax = e->w - 1.0f / 32.0f;
-	tmax = e->h - 1.0f / 32.0f;
+	/* page texels as 27.5; kept a 32nd of a texel inside the skin's far
+	   edges, as the world's */
+	u0 = e->qx << 8;
+	v0 = e->qy << 8;
+	smax = ( e->w << 5 ) - 1;
+	tmax = ( e->h << 5 ) - 1;
+	if( rp_fixed->value != 0.0f )
+		RP_ViewFixed();
 
 	for( int k = 0; k < n; k++ )
 	{
-		vec3_t local, t;
-		float  zi, sx, sy, s = v[k].s, tt = v[k].t;
+		int32_t s = v[k].s, tt = v[k].t;
 
-		VectorSubtract( v[k].xyz, RI.rvp.vieworigin, local );
-		TransformVector( local, t );
-		if( t[2] < NEAR_CLIP )
+		if( rp_fixed->value != 0.0f && (unsigned)v[k].idx < RP_STUDIO_VERTS )
 		{
-			rp_count.cmds_near++;
-			return;
+			/* each vertex of the model's part worked once (step 4b) */
+			rp_mvert_t *mv = &rp_mv[v[k].idx];
+
+			if( mv->serial != rp_studio_serial )
+			{
+				int32_t p[3], q[3];
+
+				mv->serial = rp_studio_serial;
+				for( int j = 0; j < 3; j++ )
+					p[j] = RP_Fix16( v[k].xyz[j] );
+				RP_ViewPoint( p, q );
+				if( q[2] < RP_ONE16 )
+					mv->w[2] = 0;
+				else
+					RP_Project( q, mv->w );
+				rp_count.mverts++;
+			}
+			else
+				rp_count.mreuse++;
+			if( !mv->w[2] )
+			{
+				rp_count.cmds_near++;
+				return;
+			}
+			c[k][0] = mv->w[0];
+			c[k][1] = mv->w[1];
+			c[k][2] = mv->w[2];
+			c[k][3] = mv->w[2];
 		}
-		zi = 1.0f / t[2];
-		sx = xcenter + xscale * zi * t[0];
-		sy = ycenter - yscale * zi * t[1];
+		else
+		{
+			vec3_t local, t;
+			float  zi, sx, sy;
+
+			VectorSubtract( v[k].xyz, RI.rvp.vieworigin, local );
+			TransformVector( local, t );
+			if( t[2] < NEAR_CLIP )
+			{
+				rp_count.cmds_near++;
+				return;
+			}
+			zi = 1.0f / t[2];
+			sx = xcenter + xscale * zi * t[0];
+			sy = ycenter - yscale * zi * t[1];
+			c[k][0] = RP_Bits( sy );
+			c[k][1] = RP_Bits( (float)RP_GAME_W - sx );
+			c[k][2] = RP_Bits( zi );
+			c[k][3] = RP_Bits( zi );
+		}
 		/* a skin's texels past its edges wrap (counted: ref-rp.md "What
 		   would overturn it"), kept inside it as the software renderer
 		   keeps each vertex */
-		if( s < 0.0f || s > e->w || tt < 0.0f || tt > e->h )
+		if( s < 0 || s > ( e->w << 5 ) || tt < 0 || tt > ( e->h << 5 ))
 		{
 			rp_count.wraps++;
-			s -= e->w * floorf( s / e->w );
-			tt -= e->h * floorf( tt / e->h );
+			s %= e->w << 5;
+			tt %= e->h << 5;
+			if( s < 0 )
+				s += e->w << 5;
+			if( tt < 0 )
+				tt += e->h << 5;
 		}
 		if( s > smax )
 			s = smax;
 		if( tt > tmax )
 			tt = tmax;
-		c[k][0] = RP_Bits( sy );
-		c[k][1] = RP_Bits( (float)RP_GAME_W - sx );
-		c[k][2] = RP_Bits( zi );
-		c[k][3] = RP_Bits( zi );
 		c[k][4] = 0xFF000000u | (uint32_t)v[k].rgb[0] << 16 | (uint32_t)v[k].rgb[1] << 8 | v[k].rgb[2];
-		c[k][5] = RP_Bits( u0 + s * kw );
-		c[k][6] = RP_Bits( v0 + tt * kh );
+		c[k][5] = RP_FixBits( u0 + s, 5 + 9 );
+		c[k][6] = RP_FixBits( v0 + tt, 5 + 9 );
 	}
 
 	if( !fan )

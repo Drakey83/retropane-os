@@ -124,10 +124,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..986ce2d 100644
+index 1a7efd6..e10053d 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,27 @@ typedef struct
+@@ -992,6 +992,31 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -143,14 +143,18 @@ index 1a7efd6..986ce2d 100644
 +texture_t *R_TextureAnimation( msurface_t *s );
 +// ref_rp step 4a: a model's stored command, a corner a vertex
 +#define RP_STUDIO_CMD 1024
++#define RP_STUDIO_VERTS 1024 // a part's vertices cached (the low-memory build's MAXSTUDIOVERTS)
 +typedef struct
 +{
 +	const float *xyz;  // the vertex in world space (g_studio.verts)
-+	float        s, t; // texels in the skin
++	int          idx;  // its index there
++	int          s, t; // texels in the skin as 27.5
 +	byte         rgb[3];
 +} rp_svert_t;
 +int RP_StudioSkin( void );
 +void RP_StudioCmd( int fan, int n, const rp_svert_t *v );
++void RP_StudioVerts( void );
++int RP_StudioSerial( void );
 +
  
  extern int   r_aliasblendcolor;
@@ -234,10 +238,10 @@ index 621d74f..93f4f53 100644
  	if( fa->flags & ( SURF_DRAWTURB | SURF_TRANSPARENT ))
  	{
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..5d2f1b8 100644
+index 03790d8..72db652 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
-@@ -1675,6 +1675,56 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
+@@ -1675,6 +1675,77 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
  	return 0;
  }
  
@@ -253,7 +257,11 @@ index 03790d8..5d2f1b8 100644
 +static void RP_StudioMesh( short *ptricmds, vec3_t *pstudionorms, qboolean half )
 +{
 +	static rp_svert_t v[RP_STUDIO_CMD];
++	// each normal's colour once a part when no local light is on (step 4b)
++	static byte       ncol[RP_STUDIO_VERTS][3];
++	static int        nser[RP_STUDIO_VERTS];
 +	int               i, n, w = r_affinetridesc.skinwidth, h = r_affinetridesc.skinheight;
++	int               serial = RP_StudioSerial( );
 +
 +	if( !RP_StudioSkin( ))
 +		return;
@@ -268,23 +276,40 @@ index 03790d8..5d2f1b8 100644
 +		}
 +		for( int k = 0; k < n; k++, ptricmds += 4 )
 +		{
++			int    ni = ptricmds[1];
 +			rgba_t color;
 +
-+			R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ptricmds[1]],
-+				(float *)g_studio.lightvalues[ptricmds[1]], color );
-+			v[k].xyz = g_studio.verts[ptricmds[0]];
-+			v[k].rgb[0] = color[0];
-+			v[k].rgb[1] = color[1];
-+			v[k].rgb[2] = color[2];
-+			if( half )
++			if( !g_studio.numlocallights && (unsigned)ni < RP_STUDIO_VERTS )
 +			{
-+				v[k].s = HalfToFloat( ptricmds[2] ) * w;
-+				v[k].t = HalfToFloat( ptricmds[3] ) * h;
++				if( nser[ni] != serial )
++				{
++					nser[ni] = serial;
++					R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ni],
++						(float *)g_studio.lightvalues[ni], ncol[ni] );
++				}
++				v[k].rgb[0] = ncol[ni][0];
++				v[k].rgb[1] = ncol[ni][1];
++				v[k].rgb[2] = ncol[ni][2];
 +			}
 +			else
 +			{
-+				v[k].s = ptricmds[2];
-+				v[k].t = ptricmds[3];
++				R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ni],
++					(float *)g_studio.lightvalues[ni], color );
++				v[k].rgb[0] = color[0];
++				v[k].rgb[1] = color[1];
++				v[k].rgb[2] = color[2];
++			}
++			v[k].xyz = g_studio.verts[ptricmds[0]];
++			v[k].idx = ptricmds[0];
++			if( half )
++			{
++				v[k].s = (int)( HalfToFloat( ptricmds[2] ) * w * 32.0f );
++				v[k].t = (int)( HalfToFloat( ptricmds[3] ) * h * 32.0f );
++			}
++			else
++			{
++				v[k].s = ptricmds[2] << 5;
++				v[k].t = ptricmds[3] << 5;
 +			}
 +		}
 +		RP_StudioCmd( i < 0, n, v );
@@ -294,7 +319,7 @@ index 03790d8..5d2f1b8 100644
  /*
  ===============
  R_StudioDrawNormalMesh
-@@ -1686,6 +1736,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1686,6 +1757,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
  {
  	int   i;
  
@@ -308,7 +333,7 @@ index 03790d8..5d2f1b8 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1719,6 +1776,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+@@ -1719,6 +1797,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
  {
  	int   i;
  
@@ -322,6 +347,16 @@ index 03790d8..5d2f1b8 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
+@@ -1857,6 +1942,9 @@ static void R_StudioDrawPoints( void )
+ 		}
+ 	}
+ 
++	// ref_rp: this part's vertices are new (step 4b's tables)
++	RP_StudioVerts();
++
+ 	// generate shared normals for properly scaling glowing shell
+ 	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
+ 	{
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
 index e47e115..86c7a3a 100644
 --- a/ref/soft/r_surf.c
