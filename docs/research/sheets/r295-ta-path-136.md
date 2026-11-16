@@ -262,3 +262,22 @@ difference beyond the noise. The lead is closed (stop rule: one
 decisive run). A render takes ~1 ms longer at 15. The leads left: the
 region array rewritten in the checker order (the binner's tile-race
 cure), and the warm-up's effect at 133.25 / 1 over a long run.
+
+## Run 28: the region array in the checker order (the owner's pick): no cure
+
+The TA's region array copied by the CPU into the binner's checker order
+(even tiles from the last, then odd; the last-entry bit moved) on every
+other frame, a warm-up after each hang. At 136.50 / 1: **30 of 160
+hangs with the checker order, 32 of 160 in rows**; after a good frame
+16/63 and 6/65 against 12/60 and 13/68. At 108.33 / 1 the checker order
+drew every render (0 of 20). The copy costs 2.9 ms of CPU a frame. Lead
+closed.
+
+Every lever within the frame and the render block is now tried
+(layouts, render words, `0x61C`, `0x664`, memory timing, tile order,
+content), none cures 136.50 on the TA path. What is left differs from
+the proven game step only in where the core reads its lists: the TA's
+linked blocks in SDRAM against the binner's lists on the die, which a
+TA frame's lists are too large for. 133.25 / 1 stays the TA path's
+near-clean top (option A); 136.50 / 1 stands proven for the CPU
+binner's path (GC2DT).

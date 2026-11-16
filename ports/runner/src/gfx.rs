@@ -37,7 +37,7 @@ use rp_hal_api::RegisterBus;
 use rp_hal_cabi::{Errno, Gfx};
 use rp_hal_mem::{load32_volatile, store32_volatile};
 use rp_hal_pxa27x::{Mmio, cpu, rt};
-use rp_mbx3d_render::{Picture, PixelFormat, Target, binner, fixed};
+use rp_mbx3d_render::{Picture, PixelFormat, Target, TileOrder, binner, fixed, order_tile};
 use rp_port::gfx::{Piece, Screen, check, send};
 
 use super::panel;
@@ -174,7 +174,17 @@ struct Cell {
     /// (run 26: whether the core's recovery is what makes hangs come in
     /// bursts).
     warm: bool,
+    /// Run 28: the TA's region array copied in the checker order (the
+    /// binner's tile-race cure, GC2BF) on every other frame.
+    checker: bool,
 }
+
+/// Where the checker-ordered copy of the region array goes (SDRAM, clear
+/// of the TA's own array and of the parameter memory).
+const CHK_REGIONS: u32 = 0x0012_8000;
+const _: () = assert!(CHK_REGIONS >= TA_REGIONS + REGION_BYTES && CHK_REGIONS + REGION_BYTES <= PM);
+/// A region entry's bit: the last.
+const REGION_LAST: u32 = 1 << 31;
 
 /// Run 23's split of the frame by kind of work: which path stalls the
 /// core at 136.50 / 1.
@@ -386,7 +396,12 @@ const fn cell(
         lmtim: None,
         part: Part::All,
         warm: false,
+        checker: false,
     }
+}
+
+const fn checkered(c: Cell) -> Cell {
+    Cell { checker: true, ..c }
 }
 
 const fn warmed(c: Cell) -> Cell {
@@ -485,15 +500,17 @@ const BUT_6DC: [(usize, u32); 7] = dell_but(0x6DC, 0);
 /// Run 27: `0x664`'s per-tile wait (bits 0-3; GC2AT: the binner's tile
 /// race cut 83% at 15, 2.8 us a step a render) against the TA path's
 /// stalls, every other frame.
+#[allow(dead_code, reason = "run 27's cells")]
 const WAIT_15: &[(usize, u32)] = &[(0x664, 15)];
+#[allow(dead_code, reason = "run 27's cells")]
 const WAIT_8: &[(usize, u32)] = &[(0x664, 8)];
+#[allow(dead_code, reason = "run 27's cells")]
 const WAIT_4: &[(usize, u32)] = &[(0x664, 4)];
-const CELLS: [Cell; 6] = [
+const CELLS: [Cell; 5] = [
     cell(P108, &LAY_SDRAM, NONE, "control", 40),
-    warmed(cell(P136, &LAY_SDRAM, WAIT_15, "0x664 = 15 every other frame, a warm-up after each hang", 120)),
-    warmed(cell(P136, &LAY_SDRAM, WAIT_8, "0x664 = 8 every other frame, a warm-up after each hang", 120)),
-    warmed(cell(P136, &LAY_SDRAM, WAIT_4, "0x664 = 4 every other frame, a warm-up after each hang", 120)),
-    warmed(cell(P136, &LAY_SDRAM, WAIT_15, "0x664 = 15 again, every other frame, a warm-up after each hang", 120)),
+    warmed(checkered(cell(P136, &LAY_SDRAM, NONE, "the region array in the checker order every other frame, a warm-up after each hang", 160))),
+    warmed(checkered(cell(P136, &LAY_SDRAM, NONE, "the checker order again, a warm-up after each hang", 160))),
+    checkered(cell(P108, &LAY_SDRAM, NONE, "the checker order at 108.33 (does it draw the same?)", 40)),
     cell(P108, &LAY_SDRAM, NONE, "control again", 40),
 ];
 /// The ladder starts after this many frames (the map drawn and steady).
@@ -525,7 +542,7 @@ struct Ladder {
     ok: u32,
     render_us: u32,
     max_us: u32,
-    pattern: [u8; 120],
+    pattern: [u8; 160],
     ok_block: Option<[u32; BLOCK_WORDS]>,
     hang_block: Option<[u32; BLOCK_WORDS]>,
     /// Hangs by which marks the core had drawn over (bit k: `MARKS[k]`).
@@ -546,7 +563,7 @@ impl Ladder {
             ok: 0,
             render_us: 0,
             max_us: 0,
-            pattern: [b' '; 120],
+            pattern: [b' '; 160],
             ok_block: None,
             hang_block: None,
             marks: [0; 32],
@@ -690,6 +707,12 @@ struct Open {
     /// A warm-up render after each hang (the cell's), and one owed.
     warm: bool,
     warm_owed: bool,
+    /// The cell reorders the region array (run 28), and this frame does.
+    checker: bool,
+    checker_on: bool,
+    /// The copy's time, summed (CPU us), and copies.
+    checker_us: u32,
+    checker_n: u32,
 }
 
 /// The 2700G as `rp_port`'s [`Screen`].
@@ -877,6 +900,7 @@ impl Chip {
                     _ => Part::All,
                 };
                 o.warm = ok && CELLS.get(k).is_some_and(|c| c.warm);
+                o.checker = ok && CELLS.get(k).is_some_and(|c| c.checker);
                 o.warm_owed = false;
             }
             Err(e) => {
@@ -929,7 +953,17 @@ impl Chip {
             l.ok,
             core::str::from_utf8(&l.pattern[..shown]).unwrap_or("")
         ));
-        if c.part != Part::All || !c.words.is_empty() {
+        if c.checker {
+            if let Some(o) = &self.open {
+                (self.log)(format_args!(
+                    "rp-gfx ladder {}: the checker copy {} us a frame on the CPU ({} copies)",
+                    l.cell + 1,
+                    o.checker_us / o.checker_n.max(1),
+                    o.checker_n
+                ));
+            }
+        }
+        if c.part != Part::All || !c.words.is_empty() || c.checker {
             (self.log)(format_args!(
                 "rp-gfx ladder {}: with the change {} hangs of {} frames, without it {} of {} (`h`/`,` the frames with it); {} strips left out by it in all",
                 l.cell + 1,
@@ -1061,6 +1095,31 @@ impl Open {
         m
     }
 
+    /// The TA's region array (raster order) copied to [`CHK_REGIONS`] in
+    /// the checker order: the last entry's bit moved to the new last.
+    fn copy_checker(&mut self) {
+        let (cols, rows) = self.lay.ta.grid();
+        let (cols, rows) = (cols as usize, rows as usize);
+        let src = self.lay.ta.regions as usize;
+        let dst = CHK_REGIONS as usize;
+        let mut out = 0usize;
+        for i in 0..2 * cols * rows {
+            if let Some(t) = order_tile(TileOrder::Checker, i, cols, rows) {
+                let h = load32_volatile(self.vram, src + 8 * t).unwrap_or(0) & !REGION_LAST;
+                let a = load32_volatile(self.vram, src + 8 * t + 4).unwrap_or(0);
+                let _ = store32_volatile(self.vram, dst + 8 * out, h);
+                let _ = store32_volatile(self.vram, dst + 8 * out + 4, a);
+                out += 1;
+            }
+        }
+        if out > 0 {
+            let last = dst + 8 * (out - 1);
+            let h = load32_volatile(self.vram, last).unwrap_or(0);
+            let _ = store32_volatile(self.vram, last, h | REGION_LAST);
+        }
+        cpu::drain_write_buffer();
+    }
+
     /// Starts the 3D stage on the TA's region array, into the screen.
     fn start_render(&mut self, regs: &mut Mmio) {
         if self.marking {
@@ -1069,8 +1128,16 @@ impl Open {
         self.en = regs.read32(MBX + reg::ENABLE);
         regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
         regs.write32(MBX + reg::ENABLE, self.en | m3::RENDER_DONE);
+        let mut from = self.lay.from;
+        if self.checker_on {
+            let t0 = rt::ticks();
+            self.copy_checker();
+            self.checker_us += us_since(t0);
+            self.checker_n += 1;
+            from.regions = CHK_REGIONS;
+        }
         self.rendering = Some(rt::ticks());
-        for (off, v) in binner::start_table(&self.lay.from, SCREEN) {
+        for (off, v) in binner::start_table(&from, SCREEN) {
             let words = if self.words_on { self.words } else { NONE };
             let v = words.iter().find(|w| w.0 == off).map_or(v, |w| w.1);
             regs.write32(MBX + off, v);
@@ -1216,6 +1283,10 @@ impl Screen for Chip {
             part: Part::All,
             warm: false,
             warm_owed: false,
+            checker: false,
+            checker_on: false,
+            checker_us: 0,
+            checker_n: 0,
         });
         self.since = rt::ticks();
         Ok(gfx)
@@ -1277,6 +1348,7 @@ impl Screen for Chip {
         // between it its control over the same view (the view moves).
         let variant = self.ladder.as_ref().is_some_and(|l| l.n % 2 == 1);
         o.words_on = variant || self.ladder.is_none();
+        o.checker_on = o.checker && variant;
         let mut split = Split {
             part: if variant { o.part } else { Part::All },
             put: |p| {
