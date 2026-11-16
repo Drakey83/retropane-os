@@ -360,3 +360,10 @@ What it does not settle: making 125.67 / 1 the TA path's step is the
 owner's ruling (ADR-0035's ladder has no such rung); the walk now
 steers by probe traces, opens doors and seeks the NPCs (the owner's asks
 after this run), for the next long run.
+
+## Run 35: the owner playing at 125.67 / 1 with the frame-rate bar
+
+0 hangs in 3,971 frames (13.9-36.5 frames a second, 21.5 on average);
+the run ended at 3:12 of play when the owner walked into a level change:
+the engine ran out of memory saving the level (R298), not a 2700G fault.
+125.67 / 1 has drawn ~34,000 frames over runs 32-35 without a hang.
