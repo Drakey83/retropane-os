@@ -348,7 +348,8 @@ ways), then a run on the X51v:**
 | 4a | Skins in the atlas at load; each stored command as one TA strip or fan from the existing per-vertex numbers (the picture first) | **done:** run 12, 92 ms (10.8 a second); the models in the X51v's picture; the TA's fan proven |
 | 4b | Each vertex projected once, each normal lit once (tables a model a frame) | **done with 4d's projection:** run 13, 66.5 ms (15.0 a second) |
 | 4c | Sprites, beams, particles, the sky, water and conveyors; 2D (the HUD, the console) as rectangles | the whole frame against the software renderer's picture |
-| 4d | Fixed point for the bones and the projection (one 3 x 4 integer transform a vertex), the emitter's world corners transformed once and their texture coordinates made at map load | frame ms against the 45 a second budget |
+| 4d | Fixed point for the bones and the projection (one 3 x 4 integer transform a vertex), the emitter's world corners transformed once and their texture coordinates made at map load | **done:** projection run 13 (66.5 ms); the bones and model lighting run 14, 62.8 ms (15.9 a second); brush entities by the tables run 15, 56.6 ms (17.7) |
+| 4e | The 2700G's clock while the game draws (ADR-0035's ladder, `-rpclock`) | **108.33 / 1:** run 16, 54.9 ms (18.2 a second), the render 26.2 to 13.2 ms, the end frame pixel for pixel run 15's |
 
 **4a built and run (2026-11-16).** `r_studio.c` hands each mesh to the
 emitter under `rp_emit 2` (`RP_StudioMesh`, the lighting
@@ -403,6 +404,57 @@ them is mostly the models' bones and lighting (`R_StudioDrawPoints`,
 `R_StudioLighting`, `R_LightLambert`) and the client's skeleton
 (`ConcatTransforms`, quaternions): 4d's next part. Render 26.2 ms, the CPU
 feeding 10.0 ms, sound 5.3%.
+
+**4d's rest, brush entities and the clock (2026-11-16, runs 14-16).**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| Bones | `ref_soft`, `ref_gl` (and 4b): each vertex by its bone's float 3 x 4 into world space, then by the view again; on the PXA270 each multiply and add a software-float call | each bone **joined with the view once a part** (`ports/xash/ref_rp/rp_fixed.h`: 4.28 rotation, 16.16 offset in view space), a vertex from the model's file straight to view space in nine `smull` into the table RP_StudioCmd indexes | one integer transform a vertex where there were two float ones, no world space at all |
+| Model light | `R_StudioLighting`: the hemispherical Lambert in floats with a divide, the gamma table, then `R_LightLambert`'s float scale to bytes | an integer dot (2.30 x 4.28), two multiplies by the Lambert's constants, the engine's own gamma table, straight to the colour bytes (no local light; with one, the float path) | no float and no divide a normal |
+| Brush entities | `ref_soft`: a door or lift is a model with the view turned into its space, every corner by floats every face | the world's own tables (a submodel shares the world's vertices and corners), in the entity's view (R_RotateBmodel's rows as 2.30, the eye at `tr.modelorg`), a vertex worked once a view (stamps by view serial) | the 82 brush faces a frame (c1a0) cost what the world's do |
+| The 2700G's clock | Windows Mobile: 99.67 MHz, the cores at divide 2 (49.83 MHz), always | the screen's open steps to a rung of ADR-0035's ladder with its own step code, the close puts Windows Mobile's back, the underrun flag checked both times (rule 8); a rung past the owner's game step (136.50 / 1) is refused | the render's time halves at 108.33 / 1 (2.17 x the cores' clock) |
+
+PC check (gcc, `rp_fixed.h` itself against doubles over 100,000 random
+bones, points and normals): view space within 0.0003 units, the screen
+within 0.008 pixel, the light's gamma index one step off in 3 of 100,000.
+**Run 14 (port-runner-0014): 62.8 ms a frame, 15.9 a second** (run 13:
+66.5). Its samples showed `memcpy` at 1.8%: the build is `-ffreestanding`,
+so the float-to-bits `memcpy` in every fixed-point helper was a call; now
+`__builtin_memcpy` (inline) in all four. They also showed parts with a
+chrome mesh kept on floats; chrome is not drawn on the 2700G until 4c, so
+under the integer path a chrome mesh is skipped and counted with the
+model triangles not drawn. **Run 15 (port-runner-0015): 56.6 ms, 17.7 a
+second**: 454 of 467 world faces a frame by the tables (82 of them brush
+entities'), 13 by floats (corners nearer than a unit); 8 model parts, 67
+bones and 1,806 normals a frame in integers. The software-float helpers
+46% of the play in run 13, 37% now; what is left of them is the player's
+traces (`PM_RecursiveHullCheck`, `PM_PlayerTraceExt`), the client's
+skeleton (`ConcatTransforms`, quaternions), the doubles and the sound.
+**Run 16 (port-runner-0016, `-rpclock 25 3 0 1`): 54.9 ms, 18.2 a
+second**; the 2700G at 108.33 / 1 (the PLL locked at once, no write
+rewritten, the underrun flag clear before and after both changes); **a
+render 13.2 ms** (26.2 at Windows Mobile's), the TA done 9.8 ms after its
+start (10.7), the CPU feeding 9.4 ms (10.0); no frame refused, no TA or
+render hang; the end frame's picture **identical pixel for pixel** to run
+15's at Windows Mobile's clock (one frame: R41's question for the TA path
+at divide 1 is answered for this rung on this frame only). The render is
+now well inside the 22.2 ms budget: the frame is the CPU's.
+
+**Step 4f, the feed by DMA: designed, not built.** The CPU spends 9.4 ms
+a frame writing 42,900 words into the TA window. `rp-tabench` (P4) moved
+one unbroken list by DMA in pieces the FIFO had room for, the CPU polling
+the FIFO between pieces: faster than the CPU's stores but not free. Our
+frame ends every strip with a write to the end window (1,026 a frame), so
+pieces would be one strip long unless the ends ride in a descriptor chain
+(PXA27x DMA: a descriptor for each strip's words, one for its end);
+and a DMA write into a full FIFO holds the shared bus (the CPU's own
+memory then waits), which is why tabench paced by room. The win is the
+CPU free while the chip is fed, which needs the frame's words double
+buffered (the emitter making frame n+1 while frame n is fed) and the feed
+started rather than waited for: ADR-0038 G4's second half. Questions for
+the device before building: whether the TA takes a frame's strips with
+their ends in a chain at the bus's pace without a FIFO check (Dell's GLES
+lets the bus stall), and what the CPU loses to the stalls meanwhile.
 
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
