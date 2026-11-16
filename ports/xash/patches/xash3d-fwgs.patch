@@ -124,10 +124,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..e10053d 100644
+index 1a7efd6..955034f 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,31 @@ typedef struct
+@@ -992,6 +992,37 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -155,6 +155,12 @@ index 1a7efd6..e10053d 100644
 +void RP_StudioCmd( int fan, int n, const rp_svert_t *v );
 +void RP_StudioVerts( void );
 +int RP_StudioSerial( void );
++// 4d's rest: the bones and the lighting in integers (ref_rp/rp_fixed.h)
++int RP_StudioFixedBegin( int numverts );
++void RP_StudioVertFixed( int idx, int bone, const float ( *bm )[4], const float *p );
++void RP_StudioSkipped( int tris );
++void RP_StudioLightBegin( const float *color, float ambient, float shade );
++void RP_StudioLightFixed( int bone, const float *blight, int flags, const float *normal, byte *out );
 +
  
  extern int   r_aliasblendcolor;
@@ -238,13 +244,17 @@ index 621d74f..93f4f53 100644
  	if( fa->flags & ( SURF_DRAWTURB | SURF_TRANSPARENT ))
  	{
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..72db652 100644
+index 03790d8..22a7ead 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
-@@ -1675,6 +1675,77 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
+@@ -1675,6 +1675,88 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
  	return 0;
  }
  
++// ref_rp 4d's rest: this part's normals lit in integers (R_StudioDrawPoints)
++static byte rp_ncol[RP_STUDIO_VERTS][3];
++static int  rp_lit_part;
++
 +/*
 +===============
 +RP_StudioMesh
@@ -257,7 +267,8 @@ index 03790d8..72db652 100644
 +static void RP_StudioMesh( short *ptricmds, vec3_t *pstudionorms, qboolean half )
 +{
 +	static rp_svert_t v[RP_STUDIO_CMD];
-+	// each normal's colour once a part when no local light is on (step 4b)
++	// each normal's colour once a part when no local light is on (step 4b),
++	// or made in integers by R_StudioDrawPoints (4d's rest: rp_lit_part)
 +	static byte       ncol[RP_STUDIO_VERTS][3];
 +	static int        nser[RP_STUDIO_VERTS];
 +	int               i, n, w = r_affinetridesc.skinwidth, h = r_affinetridesc.skinheight;
@@ -279,7 +290,13 @@ index 03790d8..72db652 100644
 +			int    ni = ptricmds[1];
 +			rgba_t color;
 +
-+			if( !g_studio.numlocallights && (unsigned)ni < RP_STUDIO_VERTS )
++			if( rp_lit_part && (unsigned)ni < RP_STUDIO_VERTS )
++			{
++				v[k].rgb[0] = rp_ncol[ni][0];
++				v[k].rgb[1] = rp_ncol[ni][1];
++				v[k].rgb[2] = rp_ncol[ni][2];
++			}
++			else if( !g_studio.numlocallights && (unsigned)ni < RP_STUDIO_VERTS )
 +			{
 +				if( nser[ni] != serial )
 +				{
@@ -319,7 +336,7 @@ index 03790d8..72db652 100644
  /*
  ===============
  R_StudioDrawNormalMesh
-@@ -1686,6 +1757,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1686,6 +1768,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
  {
  	int   i;
  
@@ -333,7 +350,7 @@ index 03790d8..72db652 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1719,6 +1797,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+@@ -1719,6 +1808,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
  {
  	int   i;
  
@@ -347,16 +364,73 @@ index 03790d8..72db652 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1857,6 +1942,9 @@ static void R_StudioDrawPoints( void )
+@@ -1812,6 +1908,7 @@ static void R_StudioDrawPoints( void )
+ 	mstudiomesh_t    *pmesh;
+ 	short            *pskinref;
+ 	float            lv_tmp;
++	int              rp_fix = 0;
+ 
+ 	if( !m_pStudioHeader )
+ 		return;
+@@ -1850,13 +1947,32 @@ static void R_StudioDrawPoints( void )
+ 	}
+ 	else
+ 	{
++		// ref_rp 4d's rest: each vertex through its bone joined with the
++		// view, in integers, straight into the emitter's table (no glowing
++		// shell, which makes its normals from g_studio.verts; chrome meshes
++		// are not drawn on the 2700G yet, step 4c, and skipped below)
++		if( rp_emit_on == 2 && RI.currententity->curstate.renderfx != kRenderFxGlowShell )
++			rp_fix = RP_StudioFixedBegin( m_pSubModel->numverts );
+ 		for( i = 0; i < m_pSubModel->numverts; i++ )
+ 		{
+-			Matrix3x4_VectorTransform( g_studio.bonestransform[pvertbone[i]], pstudioverts[i], g_studio.verts[i] );
+-			R_LightStrength( pvertbone[i], pstudioverts[i], g_studio.lightpos[i] );
++			if( rp_fix )
++				RP_StudioVertFixed( i, pvertbone[i], (const float( * )[4] )g_studio.bonestransform[pvertbone[i]], pstudioverts[i] );
++			else
++				Matrix3x4_VectorTransform( g_studio.bonestransform[pvertbone[i]], pstudioverts[i], g_studio.verts[i] );
++			if( !rp_fix || g_studio.numlocallights )
++				R_LightStrength( pvertbone[i], pstudioverts[i], g_studio.lightpos[i] );
  		}
  	}
  
-+	// ref_rp: this part's vertices are new (step 4b's tables)
-+	RP_StudioVerts();
++	// ref_rp: this part's vertices are new (step 4b's tables; RP_StudioFixedBegin
++	// made them so itself)
++	if( !rp_fix )
++		RP_StudioVerts();
++	rp_lit_part = rp_fix && !g_studio.numlocallights && m_pSubModel->numnorms <= RP_STUDIO_VERTS
++		&& RI.currententity->curstate.rendermode != kRenderTransAdd;
++	if( rp_lit_part )
++		RP_StudioLightBegin( g_studio.lightcolor, g_studio.ambientlight, g_studio.shadelight );
 +
  	// generate shared normals for properly scaling glowing shell
  	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
  	{
+@@ -1890,6 +2006,13 @@ static void R_StudioDrawPoints( void )
+ 		{
+ 			for( i = 0; i < pmesh[j].numnorms; i++, k++, pstudionorms++, pnormbone++ )
+ 			{
++				if( rp_lit_part )
++				{
++					// ref_rp 4d's rest: the colour bytes in integers
++					RP_StudioLightFixed( *pnormbone, g_studio.blightvec[*pnormbone], g_nFaceFlags,
++						(float *)pstudionorms, rp_ncol[k] );
++					continue;
++				}
+ 				if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
+ 					R_StudioLighting( &lv_tmp, -1, g_nFaceFlags, g_studio.norms[k] );
+ 				else
+@@ -1947,6 +2070,9 @@ static void R_StudioDrawPoints( void )
+ 
+ 		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
+ 
++		if( rp_fix && FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
++			RP_StudioSkipped( pmesh->numtris ); // ref_rp: chrome is step 4c's
++		else
+ 		{
+ 			if( FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
+ 				R_StudioDrawChromeMesh( ptricmds, pstudionorms, s, t, shellscale );
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
 index e47e115..86c7a3a 100644
 --- a/ref/soft/r_surf.c

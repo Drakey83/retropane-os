@@ -52,6 +52,7 @@ particles, the sky, water and 2D are step 4's later sub-steps.
 #include <stdlib.h>
 #include <retropane.h>
 #include "r_local.h"
+#include "rp_fixed.h"
 
 /* The TA's words (drivers/mbx3d: `ta::STRIP`, `ta::END`; the state
    block's mask as P4's textured draw, `ta_quads::TEXTURED_MASK`). */
@@ -89,6 +90,8 @@ static struct
 	uint32_t uploads, upload_kib, evicted, skipped, refused, models; /* step 3 */
 	uint32_t meshes, meshes_skipped, strips, fans, cmds_near, cmds_skipped, wraps; /* step 4a */
 	uint32_t fixed, mverts, mreuse; /* steps 4b, 4d */
+	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
+	uint32_t bfixed; /* brush entities' faces by the tables */
 	uint64_t upload_us;
 } rp_count;
 static uint32_t rp_skins_total; /* step 4a: skins written since the start */
@@ -140,9 +143,12 @@ static void RP_EmitReport( void )
 			rp_count.cmds_near / f, rp_count.cmds_skipped, rp_count.wraps / f, rp_skins_total,
 			rp_fan->value != 0.0f ? "the TA's fans" : "strips" );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: integers (steps 4b, 4d, rp_fixed %d): %u world faces a frame by the tables, %u by floats; model vertices %u worked and %u used again a frame\n",
-			(int)rp_fixed->value, rp_count.fixed / f, ( rp_count.faces - rp_count.fixed ) / f,
+		fprintf( stderr, "rp-emit: integers (steps 4b, 4d, rp_fixed %d): %u world faces a frame by the tables (%u of them brush entities'), %u by floats; model vertices %u worked and %u used again a frame\n",
+			(int)rp_fixed->value, rp_count.fixed / f, rp_count.bfixed / f, ( rp_count.faces - rp_count.fixed ) / f,
 			rp_count.mverts / f, rp_count.mreuse / f );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: bones in integers: %u model parts a frame, %u bones joined with the view, %u normals lit\n",
+			rp_count.bparts / f, rp_count.bones / f, rp_count.lit / f );
 	memset( &rp_count, 0, sizeof( rp_count ));
 	since = now;
 }
@@ -249,7 +255,7 @@ static inline uint32_t RP_Bits( float f )
 {
 	uint32_t u;
 
-	memcpy( &u, &f, sizeof( u ));
+	__builtin_memcpy( &u, &f, sizeof( u )); /* inline: the build is -ffreestanding */
 	return u;
 }
 
@@ -418,7 +424,7 @@ static inline int32_t RP_Fix16( float f )
 	uint32_t u, m;
 	int      e, v;
 
-	memcpy( &u, &f, sizeof( u ));
+	__builtin_memcpy( &u, &f, sizeof( u )); /* inline: the build is -ffreestanding */
 	e = (int)( u >> 23 & 0xFF ) - 127;
 	if( e < -17 )
 		return 0;
@@ -433,11 +439,22 @@ static inline int32_t RP_Fix16( float f )
    screen's centre and scale 16.16 (the turn and the 640 in RP_Project). */
 static struct
 {
-	int     frame;
+	int     frame, serial;
 	int32_t m[3][3], o[3];
 	int32_t xc, yc, xs, ys;
 	uint32_t mip[3]; /* d_scalemip / scale_for_mip as float bits */
 } rp_view;
+
+/* Each view the vertex tables are worked in has its own serial: the
+   world's a frame, each brush entity's (its view turned into the entity's
+   own space by R_RotateBmodel, the eye at tr.modelorg) its own. */
+static int rp_vserial;
+static struct
+{
+	int                frame, serial;
+	const cl_entity_t *ent;
+	int32_t            m[3][3], o[3];
+} rp_bview;
 
 static inline int32_t RP_Fix30( float f )
 {
@@ -445,7 +462,7 @@ static inline int32_t RP_Fix30( float f )
 	uint32_t u, m;
 	int      e, v;
 
-	memcpy( &u, &f, sizeof( u ));
+	__builtin_memcpy( &u, &f, sizeof( u )); /* inline: the build is -ffreestanding */
 	e = (int)( u >> 23 & 0xFF ) - 127;
 	if( e < -31 )
 		return 0;
@@ -463,6 +480,7 @@ static void RP_ViewFixed( void )
 	if( rp_view.frame == tr.framecount )
 		return;
 	rp_view.frame = tr.framecount;
+	rp_view.serial = ++rp_vserial;
 	for( int i = 0; i < 3; i++ )
 	{
 		for( int j = 0; j < 3; j++ )
@@ -477,14 +495,34 @@ static void RP_ViewFixed( void )
 		rp_view.mip[k] = RP_Bits( d_scalemip[k] / scale_for_mip );
 }
 
-/* A 16.16 point into view space (16.16). */
-static inline void RP_ViewPoint( const int32_t p[3], int32_t v[3] )
+/* Step 2 of the brief (brush entities by the tables): the current brush
+   entity's view, once an entity a frame: the rows R_RotateBmodel turned
+   into its space, the eye there (tr.modelorg). */
+static void RP_BrushViewFixed( void )
 {
-	int32_t d0 = p[0] - rp_view.o[0], d1 = p[1] - rp_view.o[1], d2 = p[2] - rp_view.o[2];
+	const float *row[3] = { RI.vright, RI.vup, RI.vforward };
+
+	if( rp_bview.frame == tr.framecount && rp_bview.ent == RI.currententity )
+		return;
+	rp_bview.frame = tr.framecount;
+	rp_bview.ent = RI.currententity;
+	rp_bview.serial = ++rp_vserial;
+	for( int i = 0; i < 3; i++ )
+	{
+		for( int j = 0; j < 3; j++ )
+			rp_bview.m[i][j] = RP_Fix30( row[i][j] );
+		rp_bview.o[i] = RP_Fix16( tr.modelorg[i] );
+	}
+}
+
+/* A 16.16 point into view space (16.16) by the rows `m` (2.30), the eye `o`. */
+static inline void RP_ViewPoint( const int32_t m[3][3], const int32_t o[3], const int32_t p[3], int32_t v[3] )
+{
+	int32_t d0 = p[0] - o[0], d1 = p[1] - o[1], d2 = p[2] - o[2];
 
 	for( int i = 0; i < 3; i++ )
-		v[i] = (int32_t)(( (int64_t)rp_view.m[i][0] * d0 + (int64_t)rp_view.m[i][1] * d1
-			+ (int64_t)rp_view.m[i][2] * d2 ) >> 30 );
+		v[i] = (int32_t)(( (int64_t)m[i][0] * d0 + (int64_t)m[i][1] * d1
+			+ (int64_t)m[i][2] * d2 ) >> 30 );
 }
 
 /*
@@ -899,7 +937,7 @@ tables: each corner's words from its vertex's this frame (worked once), its
 texture coordinates from the corner's s, t, all in integers. 0 if a corner
 is nearer than a unit (the float path clips it).
 */
-static int RP_ChipFaceFixed( msurface_t *fa )
+static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_t o[3], int serial )
 {
 	const model_t    *mod = RI.currentmodel;
 	const mtexinfo_t *tex = fa->texinfo;
@@ -915,12 +953,12 @@ static int RP_ChipFaceFixed( msurface_t *fa )
 		int         vi = lindex > 0 ? e->v[0] : e->v[1];
 		rp_wvert_t *c = &rp_wv[vi];
 
-		if( c->frame != tr.framecount )
+		if( c->frame != serial )
 		{
 			int32_t v[3];
 
-			c->frame = tr.framecount;
-			RP_ViewPoint( rp_wpos[vi], v );
+			c->frame = serial;
+			RP_ViewPoint( m, o, rp_wpos[vi], v );
 			if( v[2] < RP_ONE16 )
 				c->w[2] = 0;
 			else
@@ -1011,13 +1049,29 @@ static void RP_ChipFace( msurface_t *fa )
 		return; /* the sky, water and conveyors: step 4 */
 	if( fa->numedges < 3 || fa->numedges > RP_MAX_CORNERS )
 		return;
-	/* the world's own faces by the integer tables (steps 4b, 4d; a brush
-	   entity is a model of its own, its view turned) */
-	if( rp_fixed->value != 0.0f && mod == WORLDMODEL && RP_WorldTables( ))
+	/* the world's faces by the integer tables (steps 4b, 4d), and a brush
+	   entity's (a submodel: the world's own vertices and corners, its view
+	   turned into the entity's space) by the same tables in its own view */
+	if( rp_fixed->value != 0.0f && RP_WorldTables( ))
 	{
-		RP_ViewFixed();
-		if( RP_ChipFaceFixed( fa ))
-			return;
+		if( mod == WORLDMODEL )
+		{
+			RP_ViewFixed();
+			if( RP_ChipFaceFixed( fa, (const int32_t( * )[3] )rp_view.m, rp_view.o, rp_view.serial ))
+				return;
+		}
+		/* (the screen's numbers from the world's view, made unturned
+		   before any entity: R_RotateBmodel turns RI's rows) */
+		else if( rp_view.frame == tr.framecount && mod->vertexes == WORLDMODEL->vertexes && mod->surfedges == WORLDMODEL->surfedges
+			&& mod->edges16 == WORLDMODEL->edges16 && mod->edges16 )
+		{
+			RP_BrushViewFixed();
+			if( RP_ChipFaceFixed( fa, (const int32_t( * )[3] )rp_bview.m, rp_bview.o, rp_bview.serial ))
+			{
+				rp_count.bfixed++;
+				return;
+			}
+		}
 	}
 
 	luxels = ( tex->flags & TEX_WORLD_LUXELS ) != 0;
@@ -1171,6 +1225,110 @@ void RP_StudioVerts( void )
 int RP_StudioSerial( void )
 {
 	return rp_studio_serial;
+}
+
+/*
+4d's rest: the bones and the lighting in integers (rp_fixed.h, its rule 0).
+R_StudioDrawPoints asks RP_StudioFixedBegin for a part; when on, each
+vertex goes from the model's file through its bone joined with the view
+straight into rp_mv (RP_StudioCmd then only indexes it), and each normal is
+lit into its colour bytes by RP_StudioLightFixed. Bones joined at their
+first use in the part, the light vector made integers once a bone.
+*/
+#define RP_BONES 128 /* MAXSTUDIOBONES */
+
+static rp_fbone_t rp_fbone[RP_BONES];
+static int32_t    rp_flight[RP_BONES][3];
+static int        rp_fbone_serial[RP_BONES], rp_flight_serial[RP_BONES];
+static struct
+{
+	int32_t g16[3], a16, s16;
+	int     flat;
+} rp_flit;
+
+int RP_StudioFixedBegin( int numverts )
+{
+	if( rp_emit_on != 2 || rp_both || rp_fixed->value == 0.0f || numverts > RP_STUDIO_VERTS )
+		return 0;
+	RP_ViewFixed();
+	rp_studio_serial++;
+	rp_count.bparts++;
+	return 1;
+}
+
+void RP_StudioVertFixed( int idx, int bone, const float ( *bm )[4], const float *p )
+{
+	rp_mvert_t *mv = &rp_mv[idx];
+	int32_t     a[3], q[3];
+
+	if(( unsigned )bone >= RP_BONES )
+		bone = 0;
+	if( rp_fbone_serial[bone] != rp_studio_serial )
+	{
+		rp_fbone_serial[bone] = rp_studio_serial;
+		rp_bone_join( (const int32_t( * )[3] )rp_view.m, rp_view.o, bm, &rp_fbone[bone] );
+		rp_count.bones++;
+	}
+	for( int j = 0; j < 3; j++ )
+		a[j] = rp_fixq( p[j], 16 );
+	rp_bone_point( &rp_fbone[bone], a, q );
+	mv->serial = rp_studio_serial;
+	if( q[2] < RP_ONE16 )
+		mv->w[2] = 0;
+	else
+		RP_Project( q, mv->w );
+	rp_count.mverts++;
+}
+
+/* A mesh not drawn on the 2700G yet (chrome: step 4c), counted. */
+void RP_StudioSkipped( int tris )
+{
+	rp_count.models += tris;
+}
+
+void RP_StudioLightBegin( const float *color, float ambient, float shade )
+{
+	for( int c = 0; c < 3; c++ )
+		rp_flit.g16[c] = rp_fixq( color[c], 16 ) * 255 / 1023;
+	rp_flit.a16 = rp_fixq( ambient, 16 );
+	rp_flit.s16 = rp_fixq( shade, 16 );
+	/* STUDIO_NF_FLATSHADE: a + s x 0.8 */
+	rp_flit.flat = rp_illum_index( rp_flit.a16 + rp_flit.s16 / 5 * 4 );
+}
+
+void RP_StudioLightFixed( int bone, const float *blight, int flags, const float *normal, byte *out )
+{
+	uint32_t gamma;
+
+	if( FBitSet( flags, STUDIO_NF_FULLBRIGHT ))
+		gamma = 1023;
+	else
+	{
+		int index;
+
+		if( FBitSet( flags, STUDIO_NF_FLATSHADE ))
+			index = rp_flit.flat;
+		else
+		{
+			int32_t n[3];
+
+			if(( unsigned )bone >= RP_BONES )
+				bone = 0;
+			if( rp_flight_serial[bone] != rp_studio_serial )
+			{
+				rp_flight_serial[bone] = rp_studio_serial;
+				for( int j = 0; j < 3; j++ )
+					rp_flight[bone][j] = rp_fixq( blight[j], 28 );
+			}
+			for( int j = 0; j < 3; j++ )
+				n[j] = rp_fixq( normal[j], 30 );
+			index = rp_light_index( rp_dot30( n, rp_flight[bone] ), rp_flit.a16, rp_flit.s16 );
+		}
+		gamma = LightToTexGamma( (uint)index );
+	}
+	for( int c = 0; c < 3; c++ )
+		out[c] = rp_light_byte( rp_flit.g16[c], gamma );
+	rp_count.lit++;
 }
 
 /* The skins in the atlas, found by their texels' address. */
@@ -1385,7 +1543,7 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 				mv->serial = rp_studio_serial;
 				for( int j = 0; j < 3; j++ )
 					p[j] = RP_Fix16( v[k].xyz[j] );
-				RP_ViewPoint( p, q );
+				RP_ViewPoint( (const int32_t( * )[3] )rp_view.m, rp_view.o, p, q );
 				if( q[2] < RP_ONE16 )
 					mv->w[2] = 0;
 				else
