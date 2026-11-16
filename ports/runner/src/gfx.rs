@@ -168,6 +168,102 @@ struct Cell {
     frames: u32,
     /// `LMTIM` in place of the ladder's for the clock (run 22).
     lmtim: Option<u32>,
+    /// What of the frame goes to the chip (run 23).
+    part: Part,
+}
+
+/// Run 23's split of the frame by kind of work: which path stalls the
+/// core at 136.50 / 1.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code, reason = "each run's cells use some")]
+enum Part {
+    /// The frame as the program made it.
+    All,
+    /// Every texture shrunk to 8 x 8 (TEX0's size codes 0): the same
+    /// geometry and states, almost no texel reads.
+    TinyTextures,
+    /// The models' strips and fans left out (a state with Gouraud, TSP bit
+    /// 22, is a model's).
+    NoModels,
+    /// The world's left out (a state without TSP bit 22).
+    NoWorld,
+    /// The models' fans left out (run 24).
+    NoModelFans,
+    /// The models' strips left out, their fans kept.
+    NoModelStrips,
+    /// The models' alpha test made "always" (ISP bits 31-21).
+    ModelsNoAlphaTest,
+    /// The models flat, not Gouraud (TSP bit 22 cleared).
+    ModelsFlat,
+}
+
+/// TSP bit 22: Gouraud, which only the models' states carry.
+const TSP_GOURAUD: u32 = 1 << 22;
+
+/// The words of a checked frame with `part` applied, to `put` (`send`'s
+/// pieces: a state block's eight words, a primitive's words and its end).
+struct Split<F> {
+    part: Part,
+    put: F,
+    /// Words of the state block still to come (TSP is the first).
+    state_left: u8,
+    /// Inside a primitive: dropped or not.
+    in_prim: Option<bool>,
+    /// The primitives after the last state are dropped.
+    dropping: bool,
+    /// The last state was a model's.
+    model: bool,
+}
+
+impl<F: FnMut(Piece) -> bool> Split<F> {
+    fn put(&mut self, p: Piece) -> bool {
+        match p {
+            Piece::End => {
+                let drop = self.in_prim.take().unwrap_or(false);
+                drop || (self.put)(p)
+            }
+            Piece::Word(w) => {
+                if let Some(drop) = self.in_prim {
+                    return drop || (self.put)(p);
+                }
+                if self.state_left > 0 {
+                    let k = 8 - self.state_left;
+                    self.state_left -= 1;
+                    let w = match (k, self.part) {
+                        (1, _) => {
+                            let model = w & TSP_GOURAUD != 0;
+                            self.model = model;
+                            self.dropping = match self.part {
+                                Part::NoModels => model,
+                                Part::NoWorld => !model,
+                                _ => false,
+                            };
+                            if model && self.part == Part::ModelsFlat {
+                                w & !TSP_GOURAUD
+                            } else {
+                                w
+                            }
+                        }
+                        (2, Part::ModelsNoAlphaTest) if self.model => (w & 0x001F_FFFF) | 0xE000_0000,
+                        (3, Part::TinyTextures) => w & !(0xFF << 20),
+                        _ => w,
+                    };
+                    return (self.put)(Piece::Word(w));
+                }
+                if w == rp_port::gfx::STATE {
+                    self.state_left = 7;
+                    return (self.put)(p);
+                }
+                // A strip's or a fan's word.
+                let fan = w == rp_port::gfx::FAN;
+                let drop = self.dropping
+                    || (self.model && self.part == Part::NoModelFans && fan)
+                    || (self.model && self.part == Part::NoModelStrips && !fan);
+                self.in_prim = Some(drop);
+                drop || (self.put)(p)
+            }
+        }
+    }
 }
 
 impl Cell {
@@ -215,9 +311,15 @@ const fn cell(
         what,
         frames,
         lmtim: None,
+        part: Part::All,
     }
 }
 
+const fn split(c: Cell, part: Part) -> Cell {
+    Cell { part, ..c }
+}
+
+#[allow(dead_code, reason = "run 22's cell (no cure)")]
 const fn timed(c: Cell, lmtim: u32) -> Cell {
     Cell {
         lmtim: Some(lmtim),
@@ -236,6 +338,7 @@ const PMD_REGIONS: u32 = 0x007F_0000;
 const PMD_TABLE: u32 = 0x007F_C000;
 const _: () = assert!(PMD_AT + PMD_SIZE <= PMD_TAIL && PMD_REGIONS + REGION_BYTES <= PMD_TABLE);
 const _: () = assert!(PMD_TAIL.is_multiple_of(0x2_0000) && PMD_AT.is_multiple_of(0x1000));
+#[allow(dead_code, reason = "run 22's cell (no cure)")]
 const LAY_PM_DIE: Lay = Lay {
     name: "parameter memory from the die on",
     ta: ta::Layout {
@@ -300,15 +403,14 @@ const BUT_648: [(usize, u32); 7] = dell_but(0x648, 0);
 const BUT_6D8: [(usize, u32); 7] = dell_but(0x6D8, 0x0100_0000);
 #[allow(dead_code, reason = "run 19's cells")]
 const BUT_6DC: [(usize, u32); 7] = dell_but(0x6DC, 0);
-const CELLS: [Cell; 6] = [
+const CELLS: [Cell; 8] = [
     cell(P108, &LAY_SDRAM, NONE, "control", 40),
-    cell(P136, &LAY_SDRAM, NONE, "control", 100),
-    cell(P136, &LAY_PM_DIE, NONE, "lists from the die on", 100),
-    timed(
-        cell(P136, &LAY_SDRAM, NONE, "memory timing looser (tRP, tRCD 5, tRC 13)", 100),
-        9 << 16 | 5 << 12 | 5 << 8 | 13 << 4 | 2,
-    ),
-    cell(P136, &LAY_SDRAM, NONE, "control again", 100),
+    cell(P136, &LAY_SDRAM, NONE, "control", 80),
+    split(cell(P136, &LAY_SDRAM, NONE, "the models' fans left out", 80), Part::NoModelFans),
+    split(cell(P136, &LAY_SDRAM, NONE, "the models' strips left out", 80), Part::NoModelStrips),
+    split(cell(P136, &LAY_SDRAM, NONE, "the models' alpha test off", 80), Part::ModelsNoAlphaTest),
+    split(cell(P136, &LAY_SDRAM, NONE, "the models flat (no Gouraud)", 80), Part::ModelsFlat),
+    cell(P136, &LAY_SDRAM, NONE, "control again", 80),
     cell(P108, &LAY_SDRAM, NONE, "control again", 40),
 ];
 /// The ladder starts after this many frames (the map drawn and steady).
@@ -491,6 +593,8 @@ struct Open {
     marking: bool,
     /// Which marks the core had drawn over at the last hang.
     hang_marks: u32,
+    /// What of each frame goes to the chip (the ladder's cells).
+    part: Part,
 }
 
 /// The 2700G as `rp_port`'s [`Screen`].
@@ -673,6 +777,10 @@ impl Chip {
                 o.words = if ok { words } else { NONE };
                 o.limit_us = if ok { limit } else { RENDER_LIMIT_US };
                 o.marking = ok && k < CELLS.len();
+                o.part = match CELLS.get(k) {
+                    Some(c) if ok => c.part,
+                    _ => Part::All,
+                };
             }
             Err(e) => {
                 log(format_args!("rp-gfx ladder: the TA's set-up in {} refused: {e:?}", lay.name));
@@ -995,6 +1103,7 @@ impl Screen for Chip {
             hang_block: None,
             marking: false,
             hang_marks: 0,
+            part: Part::All,
         });
         self.since = rt::ticks();
         Ok(gfx)
@@ -1037,12 +1146,20 @@ impl Screen for Chip {
         let bg = background();
         let mut feed = ta::Feed::start(regs, &o.ready, &o.lay.ta, CLOCK, TA_LIMIT_US);
         let _ = ta::draws(&[&bg]).all(|i| feed.put(i));
-        send(words, |p| {
-            feed.put(match p {
-                Piece::Word(w) => ta::Item::Word(w),
-                Piece::End => ta::Item::End,
-            })
-        });
+        let mut split = Split {
+            part: o.part,
+            put: |p| {
+                feed.put(match p {
+                    Piece::Word(w) => ta::Item::Word(w),
+                    Piece::End => ta::Item::End,
+                })
+            },
+            state_left: 0,
+            in_prim: None,
+            dropping: false,
+            model: false,
+        };
+        send(words, |p| split.put(p));
         let fed = feed.finish();
         c.frames += 1;
         c.words += fed.words;

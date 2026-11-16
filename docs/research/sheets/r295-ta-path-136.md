@@ -142,3 +142,42 @@ frame. A faster 2700G clock pays only once the CPU's frame is under
   one cell each against the control; if the lists in SDRAM are the
   cause, a full cure may need the frame drawn in two halves (twice the
   TA's work, ~10 ms of CPU) or is not reachable.
+
+## Run 22 (2026-11-16, 3:01 PM): the hangs are real stalls
+
+Marker pixels (magenta words at five places down the screen) written
+before each ladder render and read when a render is called hung: **in
+no hang were all five drawn over**, so the core stops part-way through
+the tiles (rows, top first) and does not finish; the done bit is not
+lost. Where it stops varies (0 to 4 of 5 marks drawn; most often between
+the second and third mark). No cure: the TA's parameter memory from the
+die's first free byte on (38 of 100 against controls 33 and 38), looser
+memory timing at 136.50 (`LMTIM` `0x955D2`: tRP, tRCD 5, tRC 13; 34 of
+100). 108.33 / 1: 0 of 80. Next (run 23): the frame split by kind of work
+(every texture 8 x 8, no models, no world) to find the path that stalls.
+
+## Run 23 (2026-11-16, 3:06 PM): the models stall the core
+
+The same 136.50 / 1 frames with part of the work left out (the runner
+rewriting the checked words on their way to the TA):
+
+| Cell | Hangs |
+|---|---|
+| control | 24 of 80, 34 of 80 |
+| every texture 8 x 8 (almost no texel reads) | 35 of 80 |
+| **no models** | **5 of 80** (every 16th frame exactly: something periodic, not yet named) |
+| no world (models only) | 12 of 80 |
+| 108.33 / 1 | 0 of 40, 0 of 40 |
+
+Texel reads are not the cause. The models are: only they carry Gouraud
+(TSP bit 22), the alpha test (see-through skins, ISP `0x80000000`) and
+the TA's fans. Run 24 splits those.
+
+## Run 24 (2026-11-16, 3:10 PM): the models split — log not yet read
+
+Cells at 136.50 / 1: the models' fans left out, their strips left out,
+their alpha test off, the models flat. The run returned (45,849 bytes of
+log on the loader), but the PC's USB link failed afterwards ("Device
+Descriptor Request Failed"); the loader's copy was lost to the soft
+reset. Its card log is to be read with `cargo xtask cardlog` once the
+link is back, or the run repeated.

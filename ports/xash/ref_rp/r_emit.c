@@ -206,6 +206,9 @@ static int RP_ChipOpen( void )
 	return rp_chip > 0;
 }
 
+/* rp_fixed and rp_fan as read at the frame's start. */
+static int rp_fixed_on, rp_fan_on;
+
 /* A new frame: the last one's words are let go (sent at its end by
    RP_EmitSubmit, or nowhere in step 1). */
 void RP_EmitFrame( void )
@@ -216,6 +219,10 @@ void RP_EmitFrame( void )
 		want = 1;
 	rp_emit_on = want == 1 || want == 2 ? want : 0;
 	rp_both = rp_emit_on == 2 && rp_both_var->value == 1.0f;
+	/* the switches as integers once a frame: read a vertex at a time
+	   they were software-float compares (run 21's __aeabi_fcmpeq) */
+	rp_fixed_on = rp_fixed->value != 0.0f;
+	rp_fan_on = rp_fan->value != 0.0f;
 	if(( rp_emit_on == 2 ) != ( rp_gpu->value == 1.0f ))
 		gEngfuncs.Cvar_SetValue( "rp_gpu", rp_emit_on == 2 ? 1.0f : 0.0f );
 	if( !rp_emit_on )
@@ -1052,7 +1059,7 @@ static void RP_ChipFace( msurface_t *fa )
 	/* the world's faces by the integer tables (steps 4b, 4d), and a brush
 	   entity's (a submodel: the world's own vertices and corners, its view
 	   turned into the entity's space) by the same tables in its own view */
-	if( rp_fixed->value != 0.0f && RP_WorldTables( ))
+	if( rp_fixed_on && RP_WorldTables( ))
 	{
 		if( mod == WORLDMODEL )
 		{
@@ -1248,7 +1255,7 @@ static struct
 
 int RP_StudioFixedBegin( int numverts )
 {
-	if( rp_emit_on != 2 || rp_both || rp_fixed->value == 0.0f || numverts > RP_STUDIO_VERTS )
+	if( rp_emit_on != 2 || rp_both || !rp_fixed_on || numverts > RP_STUDIO_VERTS )
 		return 0;
 	RP_ViewFixed();
 	rp_studio_serial++;
@@ -1524,14 +1531,14 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 	v0 = e->qy << 8;
 	smax = ( e->w << 5 ) - 1;
 	tmax = ( e->h << 5 ) - 1;
-	if( rp_fixed->value != 0.0f )
+	if( rp_fixed_on )
 		RP_ViewFixed();
 
 	for( int k = 0; k < n; k++ )
 	{
 		int32_t s = v[k].s, tt = v[k].t;
 
-		if( rp_fixed->value != 0.0f && (unsigned)v[k].idx < RP_STUDIO_VERTS )
+		if( rp_fixed_on && (unsigned)v[k].idx < RP_STUDIO_VERTS )
 		{
 			/* each vertex of the model's part worked once (step 4b) */
 			rp_mvert_t *mv = &rp_mv[v[k].idx];
@@ -1616,7 +1623,7 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 		}
 		rp_count.strips++;
 	}
-	else if( rp_fan->value != 0.0f )
+	else if( rp_fan_on )
 	{
 		/* a fan in pieces of 255, each the first corner and the last again */
 		for( int at = 1; at + 1 < n; at += 253 )
