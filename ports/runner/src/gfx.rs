@@ -365,10 +365,10 @@ impl Cell {
 }
 
 const P108: (u32, u32, u32) = (25, 3, 0);
-#[allow(dead_code, reason = "run 18's cell 2 (clean)")]
 const P117: (u32, u32, u32) = (27, 3, 0);
 #[allow(dead_code, reason = "run 19's cells")]
 const P133: (u32, u32, u32) = (41, 4, 0);
+#[allow(dead_code, reason = "runs 18-31's cells")]
 const P136: (u32, u32, u32) = (21, 2, 0);
 /// The render words Dell's GLES driver renders TA scenes with (rp-wmprobe
 /// run 2, docs/hw/2700g.md; GC2F tried them on the binner's wrong pixels
@@ -405,6 +405,7 @@ const fn cell(
     }
 }
 
+#[allow(dead_code, reason = "run 31's cells")]
 const fn overlaid(c: Cell) -> Cell {
     Cell { overlay: true, ..c }
 }
@@ -516,12 +517,20 @@ const WAIT_15: &[(usize, u32)] = &[(0x664, 15)];
 const WAIT_8: &[(usize, u32)] = &[(0x664, 8)];
 #[allow(dead_code, reason = "run 27's cells")]
 const WAIT_4: &[(usize, u32)] = &[(0x664, 4)];
-const CELLS: [Cell; 5] = [
+/// Run 32's fine ladder: the rungs between 117.00 (clean in 40, run 18)
+/// and 133.25 / 1 (1 hang in 53 over 10 minutes, run 29), each long
+/// enough to call clean or not; the warm-up after a hang as normal play
+/// has it.
+const P121: (u32, u32, u32) = (28, 3, 0);
+const P125: (u32, u32, u32) = (29, 3, 0);
+const P130: (u32, u32, u32) = (40, 4, 0);
+const CELLS: [Cell; 6] = [
     cell(P108, &LAY_SDRAM, NONE, "control", 40),
-    warmed(overlaid(cell(P136, &LAY_SDRAM, NONE, "the alpha-0 overlay every other frame, a warm-up after each hang", 160))),
-    warmed(overlaid(cell(P136, &LAY_SDRAM, NONE, "the alpha-0 overlay again, a warm-up after each hang", 160))),
-    overlaid(cell(P108, &LAY_SDRAM, NONE, "the alpha-0 overlay at 108.33 (does it draw the same?)", 40)),
-    cell(P108, &LAY_SDRAM, NONE, "control again", 40),
+    warmed(cell(P117, &LAY_SDRAM, NONE, "fine ladder", 1200)),
+    warmed(cell(P121, &LAY_SDRAM, NONE, "fine ladder", 1200)),
+    warmed(cell(P125, &LAY_SDRAM, NONE, "fine ladder", 1200)),
+    warmed(cell(P130, &LAY_SDRAM, NONE, "fine ladder", 1200)),
+    warmed(cell(P117, &LAY_SDRAM, NONE, "fine ladder again, warm (heat)", 400)),
 ];
 /// The ladder starts after this many frames (the map drawn and steady).
 const LADDER_FROM: u32 = 32;

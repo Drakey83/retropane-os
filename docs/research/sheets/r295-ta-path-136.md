@@ -312,3 +312,26 @@ Next for the faster clock: the rungs between 117.00 (clean in 40) and
 133.25 (1 in 53 over 10 minutes) were never tried; the fastest clean one
 for the TA path is found by a fine ladder (121.33, 125.67, 130.00 / 1),
 each several minutes.
+
+## Run 32: the fine ladder (the owner's pick): 125.67 / 1 is clean
+
+Every render waited for, the warm-up after a hang, 1,200 frames a rung
+(card log `local/cardlog/port-runner-0032.txt`):
+
+| Rung | `LMTIM` | Hangs | Render |
+|---|---|---|---|
+| 117.00 / 1 | `0x833A2` | 0 of 1,200 (and 0 of 400 warm, at the end) | 12.3 ms |
+| 121.33 / 1 | `0x844B2` | 0 of 1,200 | 12.1 ms |
+| **125.67 / 1** | `0x844B2` | **0 of 1,200** | **11.7 ms** |
+| 130.00 / 1 | `0x944C2` | 1 of 1,200 | 11.3 ms |
+| 133.25 / 1 (run 29) | `0x944C2` | 1 in 53 over 10 minutes | 11.0 ms |
+| 136.50 / 1 | `0x944C2` | about 1 in 5 | 10.8 ms |
+
+The hangs begin where `Speed::rated`'s memory timing moves from
+`0x844B2` (tRAS 8, tRC 11) to `0x944C2` (tRAS 9, tRC 12): whether the
+TA path's edge follows the timing word rather than the clock is the next
+question (run 22's looser word at 136.50 did not cure, a tighter one was
+never tried; tighter than the SDRAM's rating is a question for the
+owner first, memory "any Axim"). 125.67 / 1 is not one of ADR-0035's
+ruled rungs: making it the TA path's game step is the owner's ruling,
+after a 10-minute run like run 29.
