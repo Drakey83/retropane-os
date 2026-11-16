@@ -22,7 +22,10 @@ rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 [lints]
 workspace = true
 
-# Tests G-G3's words and settings held to the drivers' own (src/main.rs).
-[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+# Test P's probe math (src/persp.rs) uses the driver's texel order on
+# both sides; tests G-G3's words and settings held to the drivers' own.
+[target.'cfg(not(target_os = "none"))'.dependencies]
 rp-drv-mbx3d = { path = "../../drivers/mbx3d" }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }

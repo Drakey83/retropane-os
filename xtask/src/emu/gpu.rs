@@ -264,8 +264,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g19") => return boot_loader_glesfeat_g(root, 19),
         Ok("g20") => return boot_loader_glesfeat_g(root, 20),
         Ok("g21") => return boot_loader_glesfeat_g(root, 21),
+        Ok("p") => return boot_loader_glesfeat_p(root),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g21"));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g, g2-g21 or p"));
         }
         Err(_) => {}
     }
@@ -338,13 +339,105 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         boot_loader_glesfeat_g(root, 1)?;
         boot_loader_glesfeat_g(root, 2)?;
         boot_loader_glesfeat_g(root, 3)?;
-        return boot_loader_glesfeat_g(root, 4);
+        boot_loader_glesfeat_g(root, 4)?;
+        return boot_loader_glesfeat_p(root);
     }
     eprintln!("    glesfeat OK: every case ran and was logged, back at the loader");
     boot_loader_glesfeat_g(root, 1)?;
     boot_loader_glesfeat_g(root, 2)?;
     boot_loader_glesfeat_g(root, 3)?;
-    boot_loader_glesfeat_g(root, 4)
+    boot_loader_glesfeat_g(root, 4)?;
+    boot_loader_glesfeat_p(root)
+}
+
+/// Test P (`RP_GLESFEAT_P`, R289): two textured floors with 1/w and z as
+/// Dell's driver sends them, each probe counted against perspective-correct
+/// and affine texels, and flat triangles with corners 600 to 6 million
+/// pixels off the screen. The fork draws u, v affinely (R289 measures the
+/// core first), so every floor's telling probes must read affine and at
+/// least 15 a floor must tell; every far-corner probe must be right (the
+/// fork rasterises in doubles); the image returns.
+pub(crate) fn boot_loader_glesfeat_p(root: &Path) -> Result<(), String> {
+    let loader = raw_image(root, "rp-loader")?;
+    let bin = variant_image(root, "rp-glesfeat", ("RP_GLESFEAT_P", "1"))?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.query("sendkey ret 200")?;
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-GLESFEAT: ")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(180),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("glesfeat P: never came back to the loader")?;
+    if crashed(log) || log.contains("did not return") || !log.contains("RETROPANE-GLESFEAT: DONE") {
+        return Err(format!(
+            "glesfeat P: didn't finish and return cleanly:{log}"
+        ));
+    }
+    let floors: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("  P floor to "))
+        .collect();
+    // Two floors, then the first again (shown at the end).
+    if floors.len() != 3 {
+        return Err(format!(
+            "glesfeat P: {} floor lines, 3 wanted:{log}",
+            floors.len()
+        ));
+    }
+    for l in &floors {
+        let told = l
+            .split(" where the two models pick texels apart")
+            .next()
+            .and_then(|h| h.rsplit(", ").next())
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0);
+        let affine = format!("perspective-correct 0 of {told}, affine {told} of {told}, neither 0");
+        if !l.contains("done true") || told < 15 || !l.contains(&affine) {
+            return Err(format!(
+                "glesfeat P: a floor not drawn affinely as the fork models it, or fewer than 15 telling probes: {l}:{log}"
+            ));
+        }
+    }
+    let far: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("  P far corners "))
+        .collect();
+    let far_right = far
+        .iter()
+        .filter(|l| {
+            l.contains("done true")
+                && l.rsplit_once("right ")
+                    .and_then(|(_, r)| r.split_once(" of "))
+                    .is_some_and(|(a, b)| a == b.trim() && a != "0")
+        })
+        .count();
+    if far.len() != 5 || far_right != 5 {
+        return Err(format!(
+            "glesfeat P: {} far-corner cases, {far_right} all right (5 and 5 wanted):{log}",
+            far.len()
+        ));
+    }
+    eprintln!(
+        "    glesfeat P OK: both floors drawn affinely at every telling probe (the fork's model until R289's device run), every far-corner case right, back at the loader"
+    );
+    Ok(())
 }
 
 /// Test G (`RP_GLESFEAT_G`, the give-up audit's item 1): Gouraud through

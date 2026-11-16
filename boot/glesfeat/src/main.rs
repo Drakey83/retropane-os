@@ -26,6 +26,7 @@
 #![forbid(unsafe_code)]
 
 pub mod frame;
+pub mod persp;
 
 /// Printed with the verdict.
 pub const MARKER: &str = "RETROPANE-GLESFEAT";
@@ -1165,6 +1166,11 @@ mod image {
     /// control draws 3 of 3 is the recovery the renderer takes; none, and
     /// the start-up's other steps are next (C53 stays open).
     const TEST_M2: bool = option_env!("RP_GLESFEAT_M2").is_some();
+    /// Test P alone instead of A, D, L and M (`RP_GLESFEAT_P=1`, R289; device
+    /// build `RP_GLESFEAT_P=1 cargo xtask codegen-variant rp-glesfeat p`):
+    /// perspective through the 1/w word and corners far off the screen
+    /// (`persp`).
+    const TEST_P: bool = option_env!("RP_GLESFEAT_P").is_some();
     const _: () = assert!(
         !TEST_G21 || cfg!(rp_g7),
         "test G21 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -1883,6 +1889,143 @@ mod image {
                 px(vram, 120, 280)
             );
         }
+    }
+
+    /// Test P's floor (R289): the probe texture at [`TEX`], two textured
+    /// triangles reaching `far`, rendered; each probe counted against the
+    /// perspective-correct and the affine texel.
+    #[inline(never)]
+    fn p_floor(e: &mut Engine<Mmio>, vram: &mut [u8], far: f32) {
+        let bg = background(0.0, TSP_DELL);
+        let mut texw = m3::ta::dell_texture(TEX as u32);
+        texw[0] = m3::tex::tex0(0, 10);
+        texw[2] = 0x8608_6610;
+        let tsp = m3::ta::TSP_DELL_TEXTURED;
+        let fl = super::persp::floor(far);
+        let obj = |t: &[super::persp::Corner; 3]| {
+            let v = |c: &super::persp::Corner| m3::tex::Vertex {
+                x: c.x,
+                y: c.y,
+                z: c.z,
+                rhw: c.rhw,
+                argb: 0xFFFF_FFFF,
+                u: c.u,
+                v: c.v,
+            };
+            m3::tex::triangle(ISP_ALWAYS, texw, tsp, &[v(&t[0]), v(&t[1]), v(&t[2])])
+        };
+        let (a, b) = (obj(&fl[0]), obj(&fl[1]));
+        let t = m3::tex::STRIP_GAME;
+        let done = scene(e, vram, &[(&bg, STRIP), (&a, t), (&b, t)]);
+        let (mut probes, mut told, mut persp, mut affine, mut shown) = (0, 0, 0, 0, 0);
+        let mut wrong = [(0u32, 0u32, 0u32, 0u32, 0u32); 4];
+        for (x, y) in super::persp::probes(far) {
+            let Some((p, a)) = super::persp::expect(&fl, x, y) else {
+                continue;
+            };
+            probes += 1;
+            let (Some(p), Some(a)) = (p, a) else {
+                continue;
+            };
+            if p == a {
+                continue;
+            }
+            told += 1;
+            let got = (px(vram, x, y) >> 8) & 0xFF;
+            persp += u32::from(got == p);
+            affine += u32::from(got == a);
+            if got != p && got != a && shown < wrong.len() {
+                wrong[shown] = (x, y, got, p, a);
+                shown += 1;
+            }
+        }
+        log!(
+            "  P floor to {far}: done {done}; {probes} probes on the floor, {told} where the two models pick texels apart: perspective-correct {persp} of {told}, affine {affine} of {told}, neither {}",
+            told - persp - affine
+        );
+        for &(x, y, got, p, a) in &wrong[..shown] {
+            log!("    ({x},{y}) grey 0x{got:02x}: perspective wants 0x{p:02x}, affine 0x{a:02x}");
+        }
+    }
+
+    /// Test P's far corners (R289): a red flat triangle, one edge across
+    /// the screen, its corners `reach` pixels away; every probe clear of
+    /// the edge counted against the exact half-plane.
+    #[inline(never)]
+    fn p_far(e: &mut Engine<Mmio>, vram: &mut [u8], reach: f32) {
+        const RED: u32 = 0xFFFF_0000;
+        let bg = background(0.0, TSP_DELL);
+        let c = super::persp::far_triangle(reach);
+        let v = |(x, y): (f32, f32)| Vertex {
+            x,
+            y,
+            z: 0.5,
+            rhw: 1.0,
+            argb: RED,
+        };
+        let tri = m3::triangle(ISP_ALWAYS, TSP_DELL, &[v(c[0]), v(c[1]), v(c[2])]);
+        let done = scene(e, vram, &[(&bg, STRIP), (&tri, STRIP)]);
+        let (mut probes, mut right) = (0, 0);
+        let mut first = None;
+        for (x, y) in super::persp::far_probes() {
+            let Some(inside) = super::persp::far_inside(x, y) else {
+                continue;
+            };
+            probes += 1;
+            let got = px(vram, x, y) & 0x00FF_FFFF;
+            let want = if inside { RED } else { GREY } & 0x00FF_FFFF;
+            if got == want {
+                right += 1;
+            } else if first.is_none() {
+                first = Some((x, y, got, want));
+            }
+        }
+        log!("  P far corners {reach}: done {done}; right {right} of {probes}");
+        if let Some((x, y, got, want)) = first {
+            log!("    first wrong ({x},{y}) 0x{got:06x}, wanted 0x{want:06x}");
+        }
+    }
+
+    /// Test P (R289): the floors, then the far corners.
+    fn test_p(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        let tex = super::persp::texture();
+        for (k, q) in tex.chunks_exact(4).enumerate() {
+            let w = u32::from_le_bytes([q[0], q[1], q[2], q[3]]);
+            let _ = store32_volatile(vram, TEX + 4 * k, w);
+        }
+        cpu::drain_write_buffer();
+        say(
+            vram,
+            &["RP-GLESFEAT P", "STEP 2 OF 3", "PERSPECTIVE FLOORS"],
+        );
+        log!(
+            "P: does the 3D core correct u, v by 1/w? Two textured floors from {} units, z and 1/w as Dell's driver sends them (R289)",
+            super::persp::NEAR
+        );
+        for far in super::persp::FLOORS {
+            rt::check_in();
+            p_floor(e, vram, far);
+        }
+        say(
+            vram,
+            &["RP-GLESFEAT P", "STEP 3 OF 3", "CORNERS FAR OFF SCREEN"],
+        );
+        log!("P: a flat triangle's corners far off the screen, one edge across it");
+        for reach in super::persp::FAR_REACH {
+            rt::check_in();
+            p_far(e, vram, reach);
+        }
+        p_floor(e, vram, super::persp::FLOORS[0]);
+        let _ = show(
+            &mut e.regs,
+            Plane {
+                format: PixelFormat::Argb8888,
+                width: W as u16,
+                height: H as u16,
+                offset: TARGET,
+                stride: STRIDE,
+            },
+        );
     }
 
     /// The most list words [`through_ta`] reads from the first tile.
@@ -5499,12 +5642,16 @@ mod image {
             let found = G17_DUMP.with(|d| *d);
             let _ = display_dump(&mut e.regs, "ours (the image's label shown)", Some(&found));
         }
-        let title = if TEST_G {
+        let title = if TEST_P {
+            "RP-GLESFEAT P"
+        } else if TEST_G {
             G_TITLE
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G21 {
+        let first = if TEST_P {
+            "STEP 1 OF 3"
+        } else if TEST_G21 {
             "STEP 1 OF 4"
         } else if TEST_G20 {
             "STEP 1 OF 7"
@@ -5545,7 +5692,9 @@ mod image {
         };
         say(vram, &[title, first, "SETTING UP THE 3D CORE"]);
         let clk0 = e.regs.read32(MBXCLK);
-        if TEST_G {
+        if TEST_P {
+            log!("{MARKER}: test P, perspective and far corners on the 3D core (R289)");
+        } else if TEST_G {
             log!(
                 "{MARKER}: test {G_NAME}, Gouraud at the cores' divide 1 (the give-up audit's item 1)"
             );
@@ -5597,7 +5746,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_M2 {
+        if ready && TEST_P {
+            test_p(&mut e, vram);
+        } else if ready && TEST_M2 {
             say(
                 vram,
                 &["RP-GLESFEAT M2", "STEP 1 OF 1", "C53: AFTER A 3D HANG"],
