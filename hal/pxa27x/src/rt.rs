@@ -1485,6 +1485,102 @@ extern "C" fn rp_fault(kind: u32, addr: u32) -> ! {
 static mut PREEMPT_HOOK: Option<fn()> = None;
 static mut SIGNAL_HOOK: Option<fn(u32)> = None;
 
+/// The sampler ([`start_sampling`]): where its samples go, how many fit,
+/// how many are in, and how many ticks found it full. Touched by main code
+/// only with IRQs masked, by the tick's handler otherwise.
+static mut SAMPLE_BUF: *mut u8 = core::ptr::null_mut();
+static mut SAMPLE_CAP: u32 = 0;
+static mut SAMPLE_N: u32 = 0;
+static mut SAMPLE_FULL: u32 = 0;
+/// Bytes a sample takes: the interrupted instruction, then the return
+/// address, each a little-endian word.
+pub const SAMPLE_BYTES: usize = 8;
+
+/// Samples where the program is, `hz` times a second, into `buf`, whose
+/// every [`SAMPLE_BYTES`] become one sample: the interrupted instruction
+/// and the interrupted mode's return address (for a leaf function, such as
+/// a software-float helper, the place that called it). The tick runs on
+/// the OS timer's channel 1 and IRQs are turned on; what code runs with
+/// IRQs masked is sampled where it unmasks them. Answers where a program's
+/// time goes on the X51v with no change to the program (R285).
+pub fn start_sampling(buf: &'static mut [u8], hz: u32) {
+    irq_disable();
+    // SAFETY: IRQs are masked, so the tick's handler can't run; `buf` is
+    // held here until `stop_sampling` gives it back.
+    unsafe {
+        core::ptr::addr_of_mut!(SAMPLE_CAP).write((buf.len() / SAMPLE_BYTES) as u32);
+        core::ptr::addr_of_mut!(SAMPLE_N).write_volatile(0);
+        core::ptr::addr_of_mut!(SAMPLE_FULL).write(0);
+        core::ptr::addr_of_mut!(SAMPLE_BUF).write(buf.as_mut_ptr());
+    }
+    start_tick(hz);
+}
+
+/// Samples taken so far.
+#[must_use]
+pub fn samples_taken() -> u32 {
+    // SAFETY: a plain read of a word the handler writes whole.
+    unsafe { core::ptr::addr_of!(SAMPLE_N).read_volatile() }
+}
+
+/// Stops the sampler, its tick, and IRQs (as before it started): the
+/// buffer back, the samples in it, and the ticks that found it full.
+/// `None` when it was not running.
+pub fn stop_sampling() -> Option<(&'static mut [u8], u32, u32)> {
+    irq_disable();
+    stop_tick();
+    // SAFETY: IRQs are masked and the tick stopped: nothing else touches
+    // the sampler; the pointer and length are the `&'static mut [u8]`
+    // `start_sampling` was given and kept.
+    unsafe {
+        let buf = core::ptr::addr_of_mut!(SAMPLE_BUF).replace(core::ptr::null_mut());
+        if buf.is_null() {
+            return None;
+        }
+        let cap = core::ptr::addr_of!(SAMPLE_CAP).read() as usize;
+        Some((
+            core::slice::from_raw_parts_mut(buf, cap * SAMPLE_BYTES),
+            core::ptr::addr_of!(SAMPLE_N).read_volatile(),
+            core::ptr::addr_of!(SAMPLE_FULL).read(),
+        ))
+    }
+}
+
+/// One sample from the IRQ entry's `frame`, if the sampler runs.
+fn sample(frame: *const u32) {
+    // SAFETY: in the IRQ handler, IRQs masked: the only writer while the
+    // sampler runs; `frame` is the 18-word frame (r0-r12, user sp, user
+    // lr, svc lr, pc, cpsr); a sample is written inside the buffer's
+    // `SAMPLE_CAP` samples.
+    unsafe {
+        let buf = core::ptr::addr_of!(SAMPLE_BUF).read();
+        if buf.is_null() {
+            return;
+        }
+        let n = core::ptr::addr_of!(SAMPLE_N).read_volatile();
+        if n >= core::ptr::addr_of!(SAMPLE_CAP).read() {
+            let full = core::ptr::addr_of_mut!(SAMPLE_FULL);
+            full.write(full.read().wrapping_add(1));
+            return;
+        }
+        let cpsr = frame.add(17).read();
+        let pc = frame.add(16).read();
+        // Supervisor mode's lr was saved apart; user and system mode's
+        // is the user one.
+        let lr = if cpsr & 0x1F == 0x13 {
+            frame.add(15).read()
+        } else {
+            frame.add(14).read()
+        };
+        let at = buf.add(n as usize * SAMPLE_BYTES);
+        at.cast::<[u8; 4]>().write_unaligned(pc.to_le_bytes());
+        at.add(4)
+            .cast::<[u8; 4]>()
+            .write_unaligned(lr.to_le_bytes());
+        core::ptr::addr_of_mut!(SAMPLE_N).write_volatile(n + 1);
+    }
+}
+
 /// Sets what runs when a claimed interrupt fires (after the first-level
 /// handler masked and recorded it): the kernel's chance to wake the thread
 /// waiting for it, e.g. by setting the event that thread waits on, so an
@@ -1600,6 +1696,7 @@ fn rp_irq(frame: *const u32) {
             let t = core::ptr::addr_of_mut!(TICKS);
             t.write_volatile(t.read_volatile().wrapping_add(1));
         }
+        sample(frame);
     }
     // Everything else: mask and signal its owner, or mask and record it as
     // unclaimed (ADR-0007). No driver code runs here. That includes the

@@ -76,8 +76,8 @@ mod image {
     use rp_port::input::{Input, Pad};
     use rp_port::module::{self, Modules};
     use rp_port::names::Names;
-    use rp_port::recent::Recent;
     use rp_port::progress::{Lines, Said, clock, number, said};
+    use rp_port::recent::Recent;
     use rp_port::sound::{Sound, memory_for};
     use rp_port::sys::{Console, Library, Looks, System};
     use rp_touch_cal::{Calibration, Sample};
@@ -105,6 +105,22 @@ mod image {
     const NAMES_ROOM: usize = 320 * 1024;
     /// Files a program may have open at once.
     const HANDLES: usize = 16;
+    /// Of the scratch RAM: the program-counter samples of a run asked
+    /// for with [`SAMPLE_WORD`] (`rt::start_sampling`): 64 Ki samples, a
+    /// minute at [`SAMPLE_HZ`].
+    const SAMPLE_ROOM: usize = 512 * 1024;
+    /// Samples a second.
+    const SAMPLE_HZ: u32 = 1000;
+    /// A test run's word for sampling where the program is ([`SAMPLE_ROOM`])
+    /// from its start, written at its end to [`SAMPLE_FILE`] in the
+    /// runner's folder (R285: where the X51v's time goes, which no
+    /// emulator can say).
+    const SAMPLE_WORD: &[u8] = b"-rpsample";
+    /// The samples' file: `RPSAMP1\0`, then little-endian words: samples
+    /// a second, samples, ticks that found the room full, the sample at
+    /// each of the run's steps 1 to 5 (`u32::MAX`: not reached), then each
+    /// sample's two words (where, and the return address).
+    const SAMPLE_FILE: &str = "samples.bin";
     /// The program's command line as built in: its name alone. What a
     /// run asks of the program is in [`ARGS_FILE`], so a run on the X51v
     /// can be quiet (its run log holds 64 KiB) and the emulator's check
@@ -257,7 +273,11 @@ mod image {
 
     fn opened(fd: i32, path: &[u8]) {
         if CARD.with(|c| c.each_read) {
-            let _ = writeln!(Out, "open: {fd} {}", core::str::from_utf8(path).unwrap_or("?"));
+            let _ = writeln!(
+                Out,
+                "open: {fd} {}",
+                core::str::from_utf8(path).unwrap_or("?")
+            );
         }
     }
 
@@ -397,7 +417,13 @@ mod image {
 
     /// Step `n` of `of` on the screen, and when it began in the log (the
     /// run's timings are read from the log, never asked of who watches).
+    /// The sample at each step ([`SAMPLE_FILE`]).
+    static SAMPLE_AT: rt::Global<[u32; 5]> = rt::Global::new([u32::MAX; 5]);
+
     fn step(n: u32, of: u32, text: &[u8]) {
+        if let Some(i) = (n as usize).checked_sub(1).filter(|&i| i < 5) {
+            SAMPLE_AT.with(|a| a[i] = rt::samples_taken());
+        }
         panel::step(n, of, text);
         let at = panel::beat(rt::ticks());
         let _ = writeln!(
@@ -405,6 +431,43 @@ mod image {
             "runner: step {n} of {of} at {at} s on the screen's clock"
         );
         card_count(format_args!("at step {n}"));
+    }
+
+    /// The samples onto the card ([`SAMPLE_FILE`]), and what they are in
+    /// the run's log.
+    fn write_samples(buf: &[u8], taken: u32, full: u32) {
+        let at = SAMPLE_AT.with(|a| *a);
+        let mut head = [0u8; 8 + 4 * 8];
+        head[..8].copy_from_slice(b"RPSAMP1\0");
+        for (k, w) in [SAMPLE_HZ, taken, full].iter().chain(at.iter()).enumerate() {
+            head[8 + 4 * k..12 + 4 * k].copy_from_slice(&w.to_le_bytes());
+        }
+        let body = &buf[..taken as usize * rt::SAMPLE_BYTES];
+        // From the root: the program may have moved the current folder.
+        let mut path = [0u8; 64];
+        let len = 1 + FOLDER.len() + 1 + SAMPLE_FILE.len();
+        path[0] = b'/';
+        path[1..=FOLDER.len()].copy_from_slice(FOLDER.as_bytes());
+        path[1 + FOLDER.len()] = b'/';
+        path[2 + FOLDER.len()..len].copy_from_slice(SAMPLE_FILE.as_bytes());
+        // Write only (1), made new.
+        let how = 1 | rp_hal_cabi::flags::CREATE | rp_hal_cabi::flags::TRUNCATE;
+        let put = rp_hal_cabi::with_system(|s| {
+            let fd = s.open(&path[..len], how)?;
+            let wrote = s.write(fd, &head).and_then(|_| s.write(fd, body));
+            let closed = s.close(fd);
+            wrote.and(closed)
+        });
+        let _ = writeln!(
+            Out,
+            "runner: {taken} samples ({full} more found the room full), the steps at samples {:?}: {}",
+            at,
+            match put {
+                Some(Ok(_)) => "written to the card",
+                Some(Err(_)) => "NOT written to the card",
+                None => "NOT written: no system",
+            }
+        );
     }
 
     static SYSTEM: rt::Slot<System<'static, Disk, HANDLES, Text>> = rt::Slot::new();
@@ -683,6 +746,7 @@ mod image {
         let _ = writeln!(uart, "card: mounted");
         let (work, room) = ram.split_at_mut(FAT_WORK);
         let (names, room) = room.split_at_mut(NAMES_ROOM);
+        let (samples, room) = room.split_at_mut(SAMPLE_ROOM);
         let mut files: Files<'static, Disk, HANDLES> = Files::new(vol, work, room);
         files.remember(Names::new(names));
 
@@ -843,9 +907,24 @@ mod image {
             STEPS,
             b"The program starts|and reads its files.|This can take|minutes: the clock|below keeps going.",
         );
+        let sampling = args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == SAMPLE_WORD);
         let sys: &'static mut dyn Sys = s;
         rp_hal_cabi::start(sys, exit);
+        if sampling {
+            let _ = writeln!(
+                uart,
+                "runner: sampling where the program is, {SAMPLE_HZ} a second, {} at most",
+                SAMPLE_ROOM / rt::SAMPLE_BYTES
+            );
+            rt::start_sampling(samples, SAMPLE_HZ);
+        }
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);
+        // Stopped at once: what follows is the runner's, not the program's.
+        if let Some((buf, taken, full)) = rt::stop_sampling() {
+            write_samples(buf, taken, full);
+        }
         // The program's end stopped the DMA engine (`Sys::end`): the codec
         // down, the board as it was found.
         if let Some(mut a) = audio {

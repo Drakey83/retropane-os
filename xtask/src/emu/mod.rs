@@ -1324,6 +1324,21 @@ pub fn boot_xash_game(
         Ok(said) => eprintln!("    {said}"),
         Err(e) => eprintln!("    NOT LEFT ALONE: {e}"),
     }
+    // A run with `-rpsample`: where its time went, named.
+    if let Ok(Some(samples)) = xash_card_file(&sd, "/rp-xash/samples.bin") {
+        let modules = root.join("target").join("xash-modules");
+        let file = modules.join("samples.bin");
+        let _ = std::fs::write(&file, &samples);
+        let runner = crate::arm_release(root).join("rp-port-runner");
+        match crate::sampled::run(&file, &modules, &runner) {
+            Ok(report) => {
+                let text = modules.join("profile.txt");
+                let _ = std::fs::write(&text, &report);
+                eprintln!("    the samples, named: {}", text.display());
+            }
+            Err(e) => eprintln!("    the samples were not named: {e}"),
+        }
+    }
     ran
 }
 
@@ -1669,8 +1684,53 @@ pub fn boot_xash_kit(
         )),
         false => return Err("emu-xash-kit: no frame on the card".into()),
     }
+    // Where the program spent its time (`-rpsample`), named against the
+    // kit's own ELFs: the tool a device run's samples go through.
+    let kit_dir = root.join("target").join("xash-kit");
+    let samples = xash_card_file(&sd, "/rp-xash/samples.bin")?
+        .ok_or("emu-xash-kit: the run wrote no samples (-rpsample)")?;
+    let file = kit_dir.join("emu-samples.bin");
+    std::fs::write(&file, &samples).map_err(|e| format!("{}: {e}", file.display()))?;
+    let elf = kit_dir.join("elf");
+    let report = crate::sampled::run(&file, &elf, &elf.join("rp-port-runner"))?;
+    let named = report.lines().filter(|l| l.contains("engine: ")).count();
+    if named == 0 {
+        return Err(format!(
+            "emu-xash-kit: no sample named in the engine:\n{report}"
+        ));
+    }
+    let text = kit_dir.join("emu-profile.txt");
+    std::fs::write(&text, &report).map_err(|e| format!("{}: {e}", text.display()))?;
+    found.push(format!(
+        "{}; named: {}",
+        report.lines().next().unwrap_or(""),
+        text.display()
+    ));
     found.push(xash_card_untouched(&sd, game)?);
     Ok(found)
+}
+
+/// The file at `path` on the card image `sd`, if it is there.
+fn xash_card_file(sd: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
+    let data = std::fs::read(sd).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let vol = rp_fat::AnyVolume::mount(card::Disk(data), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let (mut work, mut room) = (vec![0u8; 64 * 1024], vec![0u8; 16]);
+    let mut files: rp_port::files::Files<'_, card::Disk, 2> =
+        rp_port::files::Files::new(vol, &mut work, &mut room);
+    let Ok(fd) = files.open(path.as_bytes()) else {
+        return Ok(None);
+    };
+    let mut out = Vec::new();
+    let mut piece = vec![0u8; 64 * 1024];
+    loop {
+        match files.read(fd, &mut piece) {
+            Ok(0) => break,
+            Ok(n) => out.extend_from_slice(&piece[..n]),
+            Err(e) => return Err(format!("{path} on the card image: {e:?}")),
+        }
+    }
+    Ok(Some(out))
 }
 
 /// Boots the module runner with the Half-Life port's modules on its card

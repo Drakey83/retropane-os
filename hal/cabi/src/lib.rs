@@ -695,6 +695,13 @@ mod face {
         EXIT.with(|e| *e = Some(exit));
     }
 
+    /// The system the C calls reach, for its runner after the program
+    /// has ended (a run's own measurements written to the card through
+    /// the program's file table); `None` before [`start`].
+    pub fn with_system<R>(f: impl FnOnce(&mut dyn Sys) -> R) -> Option<R> {
+        SYS.with(|s| s.as_mut().map(|held| f(&mut *held.0)))
+    }
+
     /// Runs the C program's `main` and returns its result, with what it
     /// printed pushed out.
     #[must_use]
@@ -1258,7 +1265,7 @@ mod face {
 }
 
 #[cfg(target_os = "none")]
-pub use face::{ARGS, run, run_module, runner_table, start};
+pub use face::{ARGS, run, run_module, runner_table, start, with_system};
 
 #[cfg(test)]
 mod tests {

@@ -698,7 +698,12 @@ impl<'a, D: BlockDevice, const N: usize> Files<'a, D, N> {
     /// when they no longer hold the folder and cannot again (it changed
     /// while being listed and the room is full), by walking the card for
     /// it, each entry a whole walk: never a name twice or one left out.
-    fn sorted_next(&mut self, dir: u64, last: Option<&[u16]>, out: &mut Node) -> Result<bool, Error> {
+    fn sorted_next(
+        &mut self,
+        dir: u64,
+        last: Option<&[u16]>,
+        out: &mut Node,
+    ) -> Result<bool, Error> {
         if self.list(dir)?
             && let Some(names) = self.names.as_ref()
             && let Some(next) = names.after(dir, last)
@@ -1065,7 +1070,11 @@ pub(crate) mod tests {
     fn a_folder_listed_again_costs_no_card_read_and_a_change_while_listing_loses_nothing() {
         // No names kept; kept; and room to list the folder once but not
         // again after it changes (the walk that keeps the names' order).
-        for (room, how) in [(0, "card"), (64 * 1024, "names"), (2000, "names, then full")] {
+        for (room, how) in [
+            (0, "card"),
+            (64 * 1024, "names"),
+            (2000, "names, then full"),
+        ] {
             for (fs, cluster) in [(Fs::Fat32, 512), (Fs::ExFat, 4096)] {
                 NAMES_ROOM.set(room);
                 let vol = volume(fs, 131_072, cluster);
@@ -1073,10 +1082,12 @@ pub(crate) mod tests {
                 let mut f: Files<'_, Disk, 8> = Files::new(vol, scratch, files);
                 NAMES_ROOM.set(0);
                 f.mkdir(b"maps").unwrap();
-                let made: Vec<String> = (0..30).map(|i| format!("file-number-{i:02}.bsp")).collect();
+                let made: Vec<String> =
+                    (0..30).map(|i| format!("file-number-{i:02}.bsp")).collect();
                 for n in &made {
                     let w = f.create(format!("maps/{n}").as_bytes()).unwrap();
-                    f.close(w).unwrap_or_else(|e| panic!("{how} {fs:?} {n}: {e:?}"));
+                    f.close(w)
+                        .unwrap_or_else(|e| panic!("{how} {fs:?} {n}: {e:?}"));
                 }
                 // Another folder kept: its names hold the room's bytes when
                 // `maps` is forgotten, so `maps` may not fit again.
@@ -1109,11 +1120,7 @@ pub(crate) mod tests {
                     let w = f.create(format!("maps/{n}").as_bytes()).unwrap();
                     f.close(w).unwrap();
                 }
-                let gone = made
-                    .iter()
-                    .find(|n| !seen.contains(n))
-                    .unwrap()
-                    .clone();
+                let gone = made.iter().find(|n| !seen.contains(n)).unwrap().clone();
                 f.remove(format!("maps/{gone}").as_bytes()).unwrap();
                 seen.extend(names_listed(&mut f, d, usize::MAX));
                 f.close(d).unwrap();
@@ -1125,7 +1132,11 @@ pub(crate) mod tests {
                 let mut once = seen.clone();
                 once.sort();
                 once.dedup();
-                assert_eq!(once.len(), seen.len(), "{how} {fs:?}: a name twice in {seen:?}");
+                assert_eq!(
+                    once.len(),
+                    seen.len(),
+                    "{how} {fs:?}: a name twice in {seen:?}"
+                );
                 if room != 0 {
                     // In the names' order a name after the place is listed.
                     assert!(seen.iter().any(|s| s == "zzz-new.bsp"), "{how} {fs:?}");

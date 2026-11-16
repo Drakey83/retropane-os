@@ -84,7 +84,12 @@ impl<D: BlockDevice, const K: usize> BlockDevice for Recent<D, K> {
         self.dev.read_blocks(lba, buf)?;
         // The one used longest ago makes way (an empty one first).
         let k = (0..K)
-            .min_by_key(|&k| (self.lba[k] != EMPTY, now.wrapping_sub(self.used[k]) ^ u32::MAX))
+            .min_by_key(|&k| {
+                (
+                    self.lba[k] != EMPTY,
+                    now.wrapping_sub(self.used[k]) ^ u32::MAX,
+                )
+            })
             .unwrap_or(0);
         self.lba[k] = lba;
         self.used[k] = now;
@@ -120,7 +125,10 @@ mod tests {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
             self.reads += 1;
             let o = lba as usize * SECTOR;
-            let src = self.bytes.get(o..o + buf.len()).ok_or(BlockError::OutOfRange)?;
+            let src = self
+                .bytes
+                .get(o..o + buf.len())
+                .ok_or(BlockError::OutOfRange)?;
             buf.copy_from_slice(src);
             Ok(())
         }
@@ -138,7 +146,9 @@ mod tests {
 
     fn card() -> Card {
         Card {
-            bytes: (0..64 * SECTOR).map(|i| (i / SECTOR * 7 + i % 251) as u8).collect(),
+            bytes: (0..64 * SECTOR)
+                .map(|i| (i / SECTOR * 7 + i % 251) as u8)
+                .collect(),
             reads: 0,
             fail_next_write: false,
         }

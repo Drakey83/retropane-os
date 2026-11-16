@@ -24,6 +24,7 @@ mod perf;
 mod policy;
 mod profile;
 mod reminders;
+mod sampled;
 mod screen;
 mod sdkit;
 mod serve;
@@ -260,6 +261,13 @@ commands:
             menu's background is made for the screen on the way
             (xtask/src/hlprep.rs) and the engine's 30th frame comes back
             as target/xash-modules/frame.png
+  xash-profile [samples.bin] [elf folder]  where a run of the port
+            runner spent its time: the samples it wrote with -rpsample
+            (the kit's run does; `cargo xtask get rp-xash/samples.bin
+            target/xash-kit/samples.bin` after a device run) named against
+            the kit's own ELFs (target/xash-kit/elf), by the run's steps,
+            with the callers of the float and copy helpers
+            (xtask/src/sampled.rs, R285)
   emu-chello  the first C program (rp-port-hello: printf, the heap, software
             floats, the maths library, checked by itself) in the emulator
   emu-mbx   only the GPU check (rp-mbx: fills by the emulated MBX 2D
@@ -943,6 +951,21 @@ fn run_step(step: &str) -> Result {
         "emu-xash" => emu_xash(),
         "xash-kit" => xash_kit().map(|_| ()),
         "emu-xash-kit" => emu_xash_kit(args().nth(2).as_deref() == Some("--cf")),
+        "xash-profile" => {
+            let root = workspace_root();
+            let kit = root.join("target").join("xash-kit");
+            let file = args()
+                .nth(2)
+                .map_or_else(|| kit.join("samples.bin"), PathBuf::from);
+            let elf = args().nth(3).map_or_else(|| kit.join("elf"), PathBuf::from);
+            sampled::run(&file, &elf, &elf.join("rp-port-runner")).and_then(|report| {
+                print!("{report}");
+                let text = file.with_extension("txt");
+                std::fs::write(&text, &report).map_err(|e| format!("{}: {e}", text.display()))?;
+                eprintln!("    written to {}", text.display());
+                Ok(())
+            })
+        }
         "emu-chello" => c_hello().and_then(|()| emu::boot_chello(&workspace_root())),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),

@@ -11,16 +11,16 @@ use std::process::Command;
 
 /// A function symbol: start, size, demangled name.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Symbol {
-    start: u32,
-    size: u32,
-    name: String,
+pub(crate) struct Symbol {
+    pub(crate) start: u32,
+    pub(crate) size: u32,
+    pub(crate) name: String,
 }
 
 /// The code symbols in `llvm-nm -n -S -C --defined-only` output (lines
 /// `<addr> <size> <type> <name>`, or `<addr> <type> <name>` with no size):
 /// text symbols (`t`/`T`) only, by address.
-fn code_symbols(nm: &str) -> Vec<Symbol> {
+pub(crate) fn code_symbols(nm: &str) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = nm
         .lines()
         .filter_map(|l| {
@@ -46,7 +46,7 @@ fn code_symbols(nm: &str) -> Vec<Symbol> {
 /// The function `addr` is in, and how far in: the last symbol starting at or
 /// below it, if `addr` is inside its size (a symbol with no size, as the
 /// assembly entries have, owns everything up to the next one).
-fn function_at(symbols: &[Symbol], addr: u32) -> Option<(&str, u32)> {
+pub(crate) fn function_at(symbols: &[Symbol], addr: u32) -> Option<(&str, u32)> {
     let i = symbols
         .partition_point(|s| s.start <= addr)
         .checked_sub(1)?;
@@ -114,7 +114,7 @@ fn parse_addr(s: &str) -> Option<u32> {
 }
 
 /// One of the toolchain's `llvm-tools`.
-fn llvm_tool(name: &str) -> PathBuf {
+pub(crate) fn llvm_tool(name: &str) -> PathBuf {
     let mut p = crate::sdkit::objcopy();
     p.set_file_name(if cfg!(windows) {
         format!("{name}.exe")

@@ -45,11 +45,14 @@ pub const LOW_MEMORY: u8 = 1;
 /// The run's command line after the program's name, as `args.txt` holds
 /// it: quiet (no `-dev`, no memory lists: the run log holds 64 KiB), the
 /// frame rate every five seconds, its own end, its last frame written
-/// once at that end, and its writes kept in its own folder.
+/// once at that end, where the program is sampled a thousand times a
+/// second for its first minute (`-rpsample`: `samples.bin`, named on the
+/// PC by `cargo xtask xash-profile`, R285), and its writes kept in its
+/// own folder.
 #[must_use]
 pub fn args() -> String {
     format!(
-        "+map {MAP} -rpfps -rpend {PLAY_SECS} -rplimit {LIMIT_SECS} -rpendshot -rpbase /{FOLDER}/game -rodir /Ports"
+        "+map {MAP} -rpfps -rpend {PLAY_SECS} -rplimit {LIMIT_SECS} -rpendshot -rpsample -rpbase /{FOLDER}/game -rodir /Ports"
     )
 }
 
@@ -132,6 +135,10 @@ fn list(image: &[u8], card: &[(String, Vec<u8>)]) -> String {
     text.push_str(&format!(
         "\nThen the run (it ends by itself; the wait is for a slow start):\n\n\
          \x20 RETROPANE_LOG_WAIT_SECS={} cargo xtask load target/xash-kit/rp-port-runner.bin\n\n\
+         Then its samples back from the card and named against the kit's own ELFs\n\
+         (where the X51v spent its time, R285):\n\n\
+         \x20 cargo xtask get rp-xash/samples.bin target/xash-kit/samples.bin\n\
+         \x20 cargo xtask xash-profile target/xash-kit/samples.bin\n\n\
          The run's command line (rp-xash/args.txt):\n  ",
         LIMIT_SECS + 300
     ));
@@ -162,6 +169,20 @@ pub fn lay_out(
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let image = dir.join("rp-port-runner.bin");
     crate::sdkit::raw_binary(runner, &image)?;
+    // The ELFs of exactly what is sent, for naming a run's samples
+    // (`cargo xtask xash-profile`): the modules' folder is rebuilt by
+    // every emulator run.
+    let elf = dir.join("elf");
+    std::fs::create_dir_all(&elf).map_err(|e| format!("{}: {e}", elf.display()))?;
+    let built = root.join("target").join("xash-modules");
+    for (from, to) in [
+        (runner.to_path_buf(), "rp-port-runner"),
+        (built.join("engine.elf"), "engine.elf"),
+        (built.join("client.elf"), "client.elf"),
+        (built.join("server.elf"), "server.elf"),
+    ] {
+        std::fs::copy(&from, elf.join(to)).map_err(|e| format!("{}: {e}", from.display()))?;
+    }
     let background = crate::hlprep::background(&game.join("valve"))?.map(|(file, _)| file);
     if background.is_none() {
         eprintln!("    the game has no menu background in pieces: none in the kit");
@@ -203,6 +224,7 @@ mod tests {
         assert_eq!(after("-rpbase"), Some("/rp-xash/game"));
         assert_eq!(after("-rodir"), Some("/Ports"));
         assert!(words.contains(&"-rpfps") && words.contains(&"-rpendshot"));
+        assert!(words.contains(&"-rpsample"));
         // Nothing that fills the 64 KiB run log, nothing written while
         // frames are timed.
         for loud in ["-dev", "-rpmemlist", "-rpshot", "-log"] {
