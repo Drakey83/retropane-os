@@ -248,6 +248,9 @@ commands:
             files linked at their addresses against the module runner
             (ports/runner), which is built to keep exactly the names
             they import; sizes and counts (xtask/src/module.rs)
+  emu-xash  those modules on a card in the emulator under the runner (a
+            test image): the engine must say its own start-up lines and
+            stop with its own message (the card has no game files)
   emu-chello  the first C program (rp-port-hello: printf, the heap, software
             floats, the maths library, checked by itself) in the emulator
   emu-mbx   only the GPU check (rp-mbx: fills by the emulated MBX 2D
@@ -449,6 +452,7 @@ fn main() -> ExitCode {
         | "emu-chello"
         | "xash-eval"
         | "xash-modules"
+        | "emu-xash"
         | "emu-picture"
         | "emu-blend"
         | "emu-blend-scale"
@@ -925,6 +929,7 @@ fn run_step(step: &str) -> Result {
         "cc" => cc::ready(&workspace_root()).map(|_| ()),
         "xash-eval" => xash::eval(&workspace_root()),
         "xash-modules" => xash_modules().map(|_| ()),
+        "emu-xash" => emu_xash(),
         "emu-chello" => c_hello().and_then(|()| emu::boot_chello(&workspace_root())),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
@@ -1627,6 +1632,26 @@ fn xash_modules() -> Result<xash::Set> {
         names.join(", ")
     );
     Ok(set)
+}
+
+/// `cargo xtask emu-xash`: the modules and the runner built, then booted
+/// in the emulator with the modules on the card.
+fn emu_xash() -> Result {
+    let root = workspace_root();
+    let set = xash_modules()?;
+    let found = emu::boot_xash(&root, &set.files)?;
+    let mut report = String::new();
+    for line in set.lines.iter().chain(&found) {
+        report.push_str(line);
+        report.push('\n');
+    }
+    for line in &found {
+        eprintln!("    {line}");
+    }
+    let file = root.join("target").join("xash-modules").join("report.txt");
+    std::fs::write(&file, report).map_err(|e| format!("{}: {e}", file.display()))?;
+    eprintln!("    emu-xash OK; written to {}", file.display());
+    Ok(())
 }
 
 fn cross() -> Result {

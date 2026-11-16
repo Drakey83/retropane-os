@@ -221,6 +221,21 @@ one gains in size and time.
   elsewhere must load (B).
 - `docs/adr-areas.md` has rows for `ports/xash/`, the runner and the
   module loader since this record was accepted.
+- **Built 2026-11-15 (R267), as a test image in the emulator; no rule
+  changed:** the packer (`xtask/src/module.rs`), the loader
+  (`rp_port::module`), the runner (`ports/runner`), the engine's load
+  calls (`ports/xash/platform/lib_rp.c`), `cargo xtask emu-xash`. How the
+  rules were met: rule 3's identity is a hash of one table of the
+  addresses the modules import, which the build links into the runner
+  (the table also keeps those names in it: rule 7); rule 6's arithmetic
+  and memory routines are the libraries every RetroPane image links
+  (`compiler_builtins`, `rp-hal-mem`), linked into each module, with the
+  C++ run-time; rule 4's two tables are sorted by the build, one in the
+  assembly it generates and one after the link. Measured so far
+  (docs/research/half-life-evaluation.md): module sizes, the size gain of
+  one link for the engine's four parts, load times on the emulator's
+  clock. Still not measured: everything against alternative B, and
+  anything on the X51v (R271, R272).
 
 ## Amendments
 

@@ -17,6 +17,12 @@ themselves are not in this repository: they are fetched into
   layer (`ports/include/retropane.h`): the clock, sound, input, the
   software renderer's buffer, library loading, and the answers for the
   parts of the engine left out of the build (`absent.c`).
+- How it runs (ADR-0039): the build links three **module files** at the
+  addresses they run at (`cargo xtask xash-modules`: the engine with its
+  file system, renderer and menu; the game's server library; its client
+  library with FreeVGUI), and a small runner loads them
+  (`ports/runner`, a test image; `cargo xtask emu-xash` starts the engine
+  in the emulator). `platform/lib_rp.c` answers the engine's load calls.
 - `include/`: headers the C library does not have (sockets that answer "no
   network", the few thread calls the engine names) and stand-ins for two
   libraries left out (bzip2, MultiEmulator).

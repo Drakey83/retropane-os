@@ -922,6 +922,141 @@ pub fn boot_chello(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Must match `rp_port_runner::FOLDER` (ports/runner): the runner's folder
+/// on the card, where its module files are.
+const XASH_FOLDER: &str = "rp-xash";
+/// Must match `rp_port_runner::BANNER`.
+const XASH_BANNER: &str = "RetroPane: the module runner (a test image: ADR-0039)";
+/// The test card for the Half-Life check: room for the three modules
+/// (3.5 MiB) and what the engine may write.
+const XASH_CARD_BYTES: usize = 32 * 1024 * 1024;
+
+/// The engine's own lines the check looks for, in the order it says them:
+/// its console up, its file system loaded (a part inside its module,
+/// answered by `lib_rp.c` from the build's table), its file system
+/// started, and its own plain stop for a card without the game's files.
+const XASH_LINES: [&str; 4] = [
+    "Console initialized.",
+    "FS_LoadProgs: filesystem_stdio successfully loaded",
+    "FS_InitStdio: done",
+    "Xash Error: Couldn't find game directory 'valve'",
+];
+
+/// How long a module took to be read and checked, from the runner's own
+/// line for it (`rp_port::sys`): milliseconds on the emulated clock.
+fn xash_load_ms(output: &str, module: &str) -> Option<u32> {
+    output
+        .lines()
+        .find(|l| l.starts_with(&format!("module {module}: ")))?
+        .rsplit_once("read and checked in ")?
+        .1
+        .trim()
+        .strip_suffix(" ms")?
+        .parse()
+        .ok()
+}
+
+/// What the runner and the engine said (`output`), checked: the runner's
+/// own lines, each library module's whole-table check, the engine's own
+/// start-up lines in order, and its end. The lines to report.
+fn check_xash(output: &str, modules: &[(String, Vec<u8>)]) -> Result<Vec<String>, String> {
+    if !output.contains(XASH_BANNER) {
+        return Err("emu-xash: the runner's first line is missing on serial".into());
+    }
+    if output.contains("FAILED") || output.contains("not loaded") {
+        return Err(
+            "emu-xash: a module was refused or a check failed (see the lines above)".into(),
+        );
+    }
+    let mut lines = Vec::new();
+    for (name, _) in modules {
+        let ms = xash_load_ms(output, name).ok_or_else(|| {
+            format!("emu-xash: `module {name}: ...` missing on serial: it was not loaded")
+        })?;
+        lines.push(format!(
+            "{name}: read, checked and zeroed in {ms} ms of the emulated clock"
+        ));
+    }
+    let program = modules.last().map_or("", |m| m.0.as_str());
+    for (name, _) in modules.iter().filter(|m| m.0 != program) {
+        if !output
+            .lines()
+            .any(|l| l.starts_with(&format!("check: {name}: ")) && l.ends_with(": ok"))
+        {
+            return Err(format!(
+                "emu-xash: `check: {name}: ... ok` missing on serial (every exported name looked up and every function named)"
+            ));
+        }
+    }
+    let mut from = 0;
+    for want in XASH_LINES {
+        match output[from..].find(want) {
+            Some(at) => from += at + want.len(),
+            None => {
+                return Err(format!(
+                    "emu-xash: the engine's own line `{want}` is missing on serial, or out of order"
+                ));
+            }
+        }
+    }
+    if !output[from..].contains("runner: the program returned 1") {
+        return Err("emu-xash: the engine did not come back to the runner with its error".into());
+    }
+    lines.push(
+        "the engine said its own start-up lines, loaded its file system from the table in its module, and stopped with its own message: no game files on this card".into(),
+    );
+    Ok(lines)
+}
+
+/// Boots the module runner with the Half-Life port's modules on its card
+/// (`cargo xtask emu-xash`) and checks what it said over serial. There
+/// are no game files on the card: the engine is expected to start, say
+/// its own start-up lines and stop with its own message. `modules` in the
+/// order they were placed (the program last). What was found, in lines.
+///
+/// # Errors
+/// The card could not be made, the image never reached its end, or a
+/// line the check looks for is missing.
+pub fn boot_xash(root: &Path, modules: &[(String, Vec<u8>)]) -> Result<Vec<String>, String> {
+    let image = crate::arm_release(root).join("rp-port-runner");
+    let card = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: (XASH_CARD_BYTES / 512) as u32,
+        sectors_per_cluster: 8,
+        files: &[],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let mut vol = rp_fat::AnyVolume::mount(card::Disk(card), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let mut work = vec![0u8; 64 * 1024];
+    for (name, bytes) in modules {
+        vol.put(&format!("{XASH_FOLDER}/{name}"), bytes, &mut work)
+            .map_err(|e| format!("{name} onto the card: {}", e.name()))?;
+    }
+    let sd = scratch(root, "sd-xash.img")?;
+    std::fs::write(&sd, &vol.device().0).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            // The end of the image's last line (`rp_image::finish`'s stack
+            // report), after the engine stopped: the runner's stack is
+            // ports/runner/build.rs's 2 MiB.
+            marker: "of 2097152 bytes",
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &[],
+            input: None,
+            during: None,
+            then: None,
+            timeout: Duration::from_secs(180),
+        },
+    )?;
+    eprint!("{output}");
+    check_xash(&output, modules)
+}
+
 /// Must match `rp_loader::MARKER`.
 const LOADER_MARKER: &str = "RPLOAD1 READY";
 
@@ -3312,6 +3447,68 @@ mod tests",
         let press = &press[..press.find("};").expect("press end")];
         assert!(!press.contains("sleep"), "press must wait on the screen");
         assert!(body.contains("\"-icount\""), "guest time from instructions");
+    }
+
+    #[test]
+    fn the_half_life_check_reads_the_runner_s_and_the_engine_s_lines() {
+        let modules = [
+            ("server.rpm".to_string(), Vec::new()),
+            ("engine.rpm".to_string(), Vec::new()),
+        ];
+        let good = format!(
+            "{XASH_BANNER}\ncard: mounted\nmodule server.rpm: 983 KiB at 0xA9000000 and 99 KiB zeroed, read and checked in 285 ms\ncheck: server.rpm: 499 names, each found by name and named by address: ok\nmodule engine.rpm: 1943 KiB at 0xA91D1000 and 20868 KiB zeroed, read and checked in 572 ms\n[00:00:00] Console initialized.\n[00:00:00] FS_LoadProgs: filesystem_stdio successfully loaded\n[00:00:00] FS_InitStdio: done\nXash Error: Couldn't find game directory 'valve'\nrunner: the program returned 1\nstack: deepest 68632 of 2097152 bytes\n"
+        );
+        assert_eq!(xash_load_ms(&good, "engine.rpm"), Some(572));
+        assert_eq!(xash_load_ms(&good, "server.rpm"), Some(285));
+        assert_eq!(xash_load_ms(&good, "client.rpm"), None);
+        let lines = check_xash(&good, &modules).expect("a good run");
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].starts_with("engine.rpm: read, checked and zeroed in 572 ms"));
+        // Each thing the check looks for, taken away or spoiled.
+        let without = |what: &str| good.replace(what, "");
+        for (bad, why) in [
+            (without(XASH_BANNER), "first line"),
+            (without("module engine.rpm: 1943 KiB"), "`module engine.rpm"),
+            (
+                without("check: server.rpm: 499 names"),
+                "`check: server.rpm",
+            ),
+            (without("Console initialized."), "Console initialized"),
+            (without("FS_InitStdio: done"), "FS_InitStdio"),
+            (
+                without("Xash Error: Couldn't find game directory 'valve'"),
+                "Xash Error",
+            ),
+            (
+                without("runner: the program returned 1"),
+                "did not come back",
+            ),
+            (
+                good.replace("address: ok", "address: FAILED"),
+                "refused or a check failed",
+            ),
+            (
+                format!("{good}module client.rpm not loaded: it is damaged\n"),
+                "refused or a check failed",
+            ),
+        ] {
+            let err = check_xash(&bad, &modules).expect_err(why);
+            assert!(err.contains(why), "{why}: {err}");
+        }
+        // The engine's lines in another order are not its start-up.
+        let swapped = good
+            .replace("FS_InitStdio: done", "X")
+            .replace("Console initialized.", "FS_InitStdio: done")
+            .replace("X", "Console initialized.");
+        assert!(check_xash(&swapped, &modules).is_err());
+        // A time that is not a number is not a time.
+        assert_eq!(
+            xash_load_ms(
+                "module engine.rpm: read and checked in soon ms\n",
+                "engine.rpm"
+            ),
+            None
+        );
     }
 
     #[test]

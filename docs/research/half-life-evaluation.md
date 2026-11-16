@@ -134,13 +134,13 @@ submodule (a download: the owner's go) and dropping the stand-in.
 
 In the order they block:
 
-1. **Loading the libraries** (readiness line 6: its ADR is not written).
-   The engine loads its file system, its renderer, the menu and the game's
-   two libraries by name at run time, and the game's logic must stay a
-   library of its own (the licence finding). `ports/xash/platform/lib_rp.c`
-   refuses every load, plainly. The choice the ADR has to make is how the
-   OS's loader gives the engine these five libraries; nothing else below
-   can be tried on a device before it.
+1. ~~Loading the libraries~~ **Built 2026-11-15** (ADR-0039, R267: "The
+   engine's first start" below). The engine loads its file system, its
+   renderer, the menu and the game's two libraries by name at run time,
+   and the game's logic must stay a library of its own (the licence
+   finding): the first three are inside the engine's module and answered
+   from a table the build generates; the game's two are module files the
+   runner's loader puts in place.
 2. ~~Ten calls the port layer's C boundary does not answer~~ **Built
    the same day:** `stat`, `opendir`, `readdir`, `closedir`, `mkdir`,
    `rename`, `fsync`, `dup`, `getcwd` in `hal/cabi` over `rp_port::files`,
@@ -162,8 +162,77 @@ it going") and built in the second run (R264 closed):** FreeVGUI
 MP3 decoder mpg123 (20c59b07), each at the commit its repository pins and
 checked by the build.
 
-Point 1 has its proposal: [ADR-0039](../adr/0039-big-programs-and-their-libraries.md)
-(drafted 2026-11-15, the owner's four votes waiting).
+Point 1 is decided and built: [ADR-0039](../adr/0039-big-programs-and-their-libraries.md)
+(accepted by the owner, 2026-11-15).
+
+## The engine's first start (2026-11-15, `cargo xtask emu-xash`)
+
+**What this is:** the engine started in the emulator, as a test image,
+far enough to say its own start-up lines. **What it is not:** a frame, a
+map, or anything on the X51v. A test image is a harness: the OS starts a
+port as Game Mode's one program (ADR-0039 rule 1).
+
+Run it again with `cargo xtask emu-xash` (about 20 seconds; it writes
+`target/xash-modules/report.txt`). `cargo xtask xash-modules` builds
+without booting.
+
+What is built (third run: 520 files compiled):
+
+| File | Holds | File | Zeroed RAM | Names exported | Names imported from the runner |
+|---|---|---|---|---|---|
+| `server.rpm` at 0xA9000000 | the game's server library (Valve's SDK), alone | 983 KiB | 99 KiB | 499 | 35 |
+| `client.rpm` at 0xA910F000 | its client library with FreeVGUI inside | 553 KiB | 223 KiB | 970 | 43 |
+| `engine.rpm` at 0xA91D1000 | the engine with its file system, software renderer, menu and MP3 decoder | 1,943 KiB | 20,868 KiB | 0 (it is the program) | 92 |
+| the runner (a test image) | the port layer, the C library, the loader; nothing of the game | 251 KiB of code | 2.1 MiB with its 2 MiB stack | 101 names kept for the modules | |
+
+The set ends at 0xAA818000: 24.1 MiB of the 48 MiB pool are the modules'
+(20.7 MiB of that is the engine's and the renderer's zeroed tables at the
+default settings), 23.9 MiB are left for the game's heap. The engine's
+low-memory builds give 7 to 9 MiB of it back (the table at the top).
+
+What the emulator's serial line showed, in order: the runner's own lines
+(its identity, where the modules end); the server and the client module
+loaded through the loader and every one of their names looked up and
+every function named (a check of the test image's own: the engine loads
+them only once it has a game); the engine's module loaded; then the
+engine's own lines: `Console initialized.`, `FS_LoadProgs:
+filesystem_stdio successfully loaded` (the file system, from the table
+inside the module), `FS_InitStdio: done`, and its own stop, `Xash Error:
+Couldn't find game directory 'valve'` (the card has no game files: the
+expected end). It came back to the runner with 1; the deepest stack was
+68,632 bytes of 2 MiB.
+
+Measured in the emulator (its clock is not the X51v's: R271): the
+engine's module read, checked and its RAM zeroed in 572 ms; the server's
+in 285 ms; the client's in 160 ms. The engine's module is 1,943 KiB where
+its four parts alone come to 2,104 KiB: one link drops what nothing
+reaches across all four.
+
+What the work found:
+
+- **The client library's "nothing unanswered" was wrong until now.** The
+  evaluation's check link of the client stopped at a name defined twice
+  (FreeVGUI brings its own `operator new`; so did our C++ run-time) before
+  it had looked for undefined names, and its result was not checked. Four
+  functions were missing: FreeVGUI's platform files (its clock, its mouse
+  arena, its tick, its system font), which its own build takes from its
+  `platform/posix` folder. Fixed: the run-time's `new` and `delete` are
+  weak, as the language has them; `platform/posix` is built as fetched
+  (nothing of RetroPane's is compiled into the client library: the SDK's
+  licence); `clock_gettime` is answered by the C boundary; and a check
+  link that fails now fails the evaluation.
+- **The build refuses what would break on the device:** a name a module
+  asks for that the runner has not (this is how the four above were
+  found), a call that would need a veneer, an import of a Thumb function.
+- The engine asks for its libraries by plain names here
+  (`XASH_INTERNAL_GAMELIBS`: "server", "client", "menu", "ref_soft",
+  "filesystem_stdio"); a module's file is that name with `.rpm`.
+
+Not done, not verified: nothing on the X51v; no map (R273); the server
+and client modules' own code has not run (their names were checked, not
+their constructors or a single call); the caches after a load cannot be
+seen in the emulator (R271); the comparison with modules relocated at
+load (R272).
 
 ## Findings worth the owner's eye
 
