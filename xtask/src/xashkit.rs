@@ -35,6 +35,8 @@ pub const PLAY_SECS: u32 = 120;
 /// three minutes; the X51v's card is not measured yet, so this leaves it
 /// several times that.
 pub const LIMIT_SECS: u32 = 1200;
+// The limit leaves the play its time after a slow start.
+const _: () = assert!(LIMIT_SECS >= PLAY_SECS * 5);
 /// The engine's low-memory build the kit is made with: an experiment's
 /// build, not the port's (docs/reminders.md R277), and said as such on
 /// the run's screen.
@@ -189,8 +191,6 @@ mod tests {
         // The runner's command line holds 32 words with the program's
         // name, its file 511 bytes.
         assert!(words.len() < 32 && args.len() < 512);
-        // The limit leaves the play its time after a slow start.
-        assert!(LIMIT_SECS >= PLAY_SECS * 5);
     }
 
     #[test]

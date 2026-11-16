@@ -1434,6 +1434,10 @@ const XASH_KIT_LINES: [&str; 8] = [
     "runner: the program returned 0",
 ];
 
+/// The loader's run limit (`boot/loader`'s `RUN_LIMIT`): a run that gives
+/// no sign of life for this long is ended as hung.
+const XASH_RUN_LIMIT_MS: u32 = 30_000;
+
 /// The frame rates a run's log holds after its step 4 began (`rp-note:
 /// frame rate:|12.3 a second|...`), in tenths of a frame a second.
 fn xash_frame_rates(log: &str) -> Vec<u32> {
@@ -1491,6 +1495,17 @@ fn check_xash_kit(log: &str) -> Result<Vec<String>, String> {
     if !log.contains("the last, written to /rp-xash/frame.565") {
         return Err("emu-xash-kit: the last frame was not written".into());
     }
+    // The longest stretch without a sign of life, against the loader's
+    // run limit: the run must not have come near being ended as hung.
+    let quiet = log
+        .split_once("printed line) was ")
+        .and_then(|(_, r)| r.split(' ').next()?.parse::<u32>().ok())
+        .ok_or("emu-xash-kit: the runner did not say its longest stretch without a sign of life")?;
+    if quiet >= XASH_RUN_LIMIT_MS / 2 {
+        return Err(format!(
+            "emu-xash-kit: {quiet} ms without a sign of life: more than half the loader's run limit ({XASH_RUN_LIMIT_MS} ms)"
+        ));
+    }
     let at = |step: u32| {
         log.split_once(&format!("runner: step {step} of 5 at "))
             .and_then(|(_, r)| r.split(' ').next()?.parse::<u32>().ok())
@@ -1510,6 +1525,9 @@ fn check_xash_kit(log: &str) -> Result<Vec<String>, String> {
         format!(
             "{} frame-rate lines while the map played (the emulator's frame rate is the PC's and says nothing of the X51v)",
             rates.len()
+        ),
+        format!(
+            "the longest stretch without a sign of life: {quiet} ms on the emulated clock, of the loader's {XASH_RUN_LIMIT_MS} ms run limit"
         ),
     ])
 }
@@ -4184,13 +4202,14 @@ mod tests",
             })
             .collect();
         let kit = format!(
-            "{XASH_BANNER}\nrunner: step 1 of 5 at 0 s on the screen's clock\nrunner: step 2 of 5 at 1 s on the screen's clock\nrp-note: frame rate:|99.9 a second|x\nrunner: step 3 of 5 at 70 s on the screen's clock\nrunner: step 4 of 5 at 150 s on the screen's clock\n{notes}runner: step 5 of 5 at 270 s on the screen's clock\nframe 3000, the last, written to /rp-xash/frame.565\nsound: the codec is down (true), the board as found\nrunner: the program returned 0\n"
+            "{XASH_BANNER}\nrunner: step 1 of 5 at 0 s on the screen's clock\nrunner: step 2 of 5 at 1 s on the screen's clock\nrp-note: frame rate:|99.9 a second|x\nrunner: step 3 of 5 at 70 s on the screen's clock\nrunner: step 4 of 5 at 150 s on the screen's clock\n{notes}runner: step 5 of 5 at 270 s on the screen's clock\nframe 3000, the last, written to /rp-xash/frame.565\nsound: the codec is down (true), the board as found\nrunner: the longest stretch without a sign of life (a card transfer, a clock read, a printed line) was 4100 ms; the loader's run limit is 30000 ms (0: none armed)\nrunner: the program returned 0\n"
         );
         let rates = xash_frame_rates(&kit);
         assert_eq!(rates.len(), 24, "the one before step 4 is not the map's");
         assert_eq!((rates[0], rates[23]), (120, 353));
         let lines = check_xash_kit(&kit).expect("a good run of the kit");
         assert!(lines[1].contains("up at 70 s") && lines[1].contains("playing at 150 s"));
+        assert!(lines[3].contains("4100 ms"));
         for (bad, why) in [
             (
                 kit.replace("runner: step 4 of 5", "runner: step 4 of 6"),
@@ -4211,6 +4230,14 @@ mod tests",
             (
                 kit.replace("codec is down (true)", "codec is down (false)"),
                 "the sound left up",
+            ),
+            (
+                kit.replace("was 4100 ms", "was 15000 ms"),
+                "half the run limit without a sign of life",
+            ),
+            (
+                kit.replace("printed line) was", "printed line) is"),
+                "no longest stretch said",
             ),
         ] {
             assert!(check_xash_kit(&bad).is_err(), "{why}");

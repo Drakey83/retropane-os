@@ -160,12 +160,11 @@ mod image {
     impl BlockDevice for Card {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
             // The screen's clock keeps going while files are read.
-            panel::beat(rt::ticks());
-            rt::check_in();
+            alive(rt::ticks(), true);
             self.0.read_blocks(lba, buf)
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-            rt::check_in();
+            alive(rt::ticks(), true);
             self.0.write_blocks(lba, buf)
         }
     }
@@ -305,6 +304,7 @@ mod image {
     /// loader gets the image back either way, and the log says which.
     fn exit(code: i32) -> ! {
         let _ = writeln!(Out, "\nrunner: the program called exit({code})");
+        longest_quiet();
         panel::done(b"The program ended|itself. Back to the|loader.");
         rp_image::finish()
     }
@@ -385,10 +385,45 @@ mod image {
     }
 
     /// When the loader's run limit was last checked in with (the timer's
-    /// counter).
-    static CHECKED_IN: rt::Global<u32> = rt::Global::new(0);
+    /// counter), and the longest stretch between two check-ins so far.
+    static CHECKED_IN: rt::Global<(u32, u32)> = rt::Global::new((0, 0));
     /// A tenth of a second of the OS timer's 3.25 MHz.
     const CHECK_IN_TICKS: u32 = 325_000;
+    /// The OS timer's ticks in a millisecond.
+    const TICKS_1MS: u32 = 3_250;
+
+    /// A sign of life from the program at `now` (the timer's counter): a
+    /// card transfer (`every_time`), a clock read or a printed line (at
+    /// most ten times a second). The loader's run limit and watchdog hear
+    /// of it, the screen's clock is brought up to date, and the longest
+    /// stretch without one is kept: the loader ends a run that gives none
+    /// for its run limit (30 s), and how near a run came is in its log
+    /// ([`longest_quiet`]).
+    fn alive(now: u32, every_time: bool) {
+        let due = CHECKED_IN.with(|(last, longest)| {
+            let quiet = now.wrapping_sub(*last);
+            if !every_time && quiet < CHECK_IN_TICKS {
+                return false;
+            }
+            *longest = (*longest).max(quiet);
+            *last = now;
+            true
+        });
+        if due {
+            rt::check_in();
+            panel::beat(now);
+        }
+    }
+
+    /// The longest stretch without a sign of life, said at the run's end.
+    fn longest_quiet() {
+        let ms = CHECKED_IN.with(|(_, longest)| *longest) / TICKS_1MS;
+        let limit = rt::run_limit_ms().unwrap_or(0);
+        let _ = writeln!(
+            Out,
+            "runner: the longest stretch without a sign of life (a card transfer, a clock read, a printed line) was {ms} ms; the loader's run limit is {limit} ms (0: none armed)"
+        );
+    }
 
     /// The program's clock source: the OS timer's counter. A program reads
     /// its clock in every frame, so this is also where a game that plays
@@ -398,17 +433,7 @@ mod image {
     /// hung, and is ended by the limit as any image is.
     fn ticks() -> u32 {
         let now = rt::ticks();
-        let due = CHECKED_IN.with(|last| {
-            let due = now.wrapping_sub(*last) >= CHECK_IN_TICKS;
-            if due {
-                *last = now;
-            }
-            due
-        });
-        if due {
-            rt::check_in();
-            panel::beat(now);
-        }
+        alive(now, false);
         now
     }
 
@@ -430,6 +455,8 @@ mod image {
         }
         let mut uart = Out;
         rt::init_mmu();
+        // The stretches between signs of life are counted from here.
+        CHECKED_IN.with(|(last, _)| *last = rt::ticks());
         let _ = writeln!(uart, "\n{BANNER}");
         // The screen from the first moment: what this is and its step.
         if !panel::start("RetroPane test run", "module runner: rp-xash") {
@@ -653,6 +680,7 @@ mod image {
                 "sound: the codec is down ({down}), the board as found"
             );
         }
+        longest_quiet();
         match ran {
             Ok(code) => {
                 let _ = writeln!(uart, "runner: the program returned {code}");
