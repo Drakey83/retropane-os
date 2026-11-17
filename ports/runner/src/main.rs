@@ -132,14 +132,14 @@ mod image {
     /// (`rp_hal_mem::float`, what the modules link), on numbers of a
     /// game's range, every result compared (R282).
     const FLOAT_WORD: &[u8] = b"-rpfloat";
-    /// Write-allocate on the game modules' memory, the default since run
-    /// 52 (R306 item 2: ~13% faster than read-allocate at the same load
-    /// on c1a0's walk, 29.3 fps; the owner's go 2026-11-17):
-    /// [`WALLOC_FROM`]..[`WALLOC_TO`], the server's, client's and engine's
-    /// code, data and tables (kit 53's ELFs: the server's text at
-    /// 0xA8C00048, the engine's bss ending 0xA99F6284). This word turns it
-    /// off: the read-allocate control for an A/B run.
-    const NO_WALLOC_WORD: &[u8] = b"-rpnowalloc";
+    /// A test run's word for write-allocate on the game modules' memory
+    /// (R306 item 2): [`WALLOC_FROM`]..[`WALLOC_TO`], the server's,
+    /// client's and engine's code, data and tables (kit 53's ELFs: the
+    /// server's text at 0xA8C00048, the engine's bss ending 0xA99F6284).
+    /// Off by default: run 53 (sound on in every run) measured it ~8%
+    /// slower than read-allocate at the same load; run 52's "13% faster"
+    /// was a run whose sound never started (R301).
+    const WALLOC_WORD: &[u8] = b"-rpwalloc";
     const WALLOC_FROM: u32 = 0xA8C0_0000;
     /// A test run's word for step 4f's probe (`gfx::Probe`,
     /// docs/design/ref-rp.md "Step 4f's probe before the build"), with the
@@ -1328,16 +1328,11 @@ mod image {
             float_bench();
             div_bench();
         }
-        if args[..arg_count].iter().any(|a| a.to_bytes() == NO_WALLOC_WORD) {
-            let _ = writeln!(
-                uart,
-                "runner: -rpnowalloc: the game's memory read-allocate (the control)"
-            );
-        } else {
+        if args[..arg_count].iter().any(|a| a.to_bytes() == WALLOC_WORD) {
             let n = rt::write_allocate_sections(WALLOC_FROM, WALLOC_TO);
             let _ = writeln!(
                 uart,
-                "runner: {n} MiB of the game's memory write-allocate (0x{WALLOC_FROM:08x}..0x{WALLOC_TO:08x})"
+                "runner: -rpwalloc: {n} MiB of the game's memory write-allocate (0x{WALLOC_FROM:08x}..0x{WALLOC_TO:08x})"
             );
         }
         let sampling = args[..arg_count]

@@ -663,8 +663,29 @@ and free while the chain runs (~65% of its memory speed, all of its
 cached work). On run B's load (~5 ms of feed a frame) that is ~3-4 ms back
 a 34 ms frame: ~29 -> ~32 fps, with write-allocate on.
 
+**Run 52 corrected (2026-11-17, found reading run 53's samples):** run 52 B
+(`-rpwalloc`, 29.3 fps) had **no sound** (`sound: none (LinkRefused)`, the
+run after A's crash: R301), so its engine mixing and the OS mixer (~8-10%
+of the play) were missing. Its "~13% faster" is void.
+
+**Run 53 (2026-11-17, kit 55, sound up in every run, c1a0's walk, lines
+3-25):** N (read-allocate) 37.2 ms a frame at 16,100 words; NB (with
+`-rpchain`) 37.6 ms at 15,700; A and A2 (write-allocate) 40.8 and 40.3 ms
+at 17,500 and 16,400; B and B2 (write-allocate, chain) 38.1 and 39.5 ms.
+**Write-allocate is ~8% slower** (the default again from 2026-11-17, kit
+56); **the chain gains nothing measurable yet** (NB = N within the runs'
+spread): every frame chained (830-2,300 descriptors), no hang, never waited
+for, but its CPU side (the check walk and the descriptors) still ~3% of the
+samples and the TA done ~12 ms after the arm, so the DMA shares the bus
+with the CPU (~65% of its memory speed, run 52 E) for about a third of the
+frame. Next for 4f: the chain's own time measured (when the DMA stops, not
+when a pump looks), fewer and larger descriptors (the strip word kept in
+the frame where the TA can take it, so a state block, its strip and its
+corners are one descriptor), and the check and the build in one walk.
+Kit 55 against kit 54 at the same load: the same within the spread.
+
 **Kit 55 (2026-11-17, the owner: "Yes, do both"): write-allocate the
-default, step 4f built behind `-rpchain`.**
+default (reverted after run 53, above), step 4f built behind `-rpchain`.**
 
 | Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
 |---|---|---|---|
