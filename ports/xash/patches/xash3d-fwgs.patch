@@ -173,7 +173,7 @@ index 95c85f7..4d67425 100644
  		// didn't find anything? The tent list is either full of high-priority tents
  		// or all tents in the list are still due to live for > 10 seconds.
 diff --git a/engine/client/dll_int/cl_pmove.c b/engine/client/dll_int/cl_pmove.c
-index 9ca1f79..3c2550e 100644
+index 9ca1f79..73ac4ea 100644
 --- a/engine/client/dll_int/cl_pmove.c
 +++ b/engine/client/dll_int/cl_pmove.c
 @@ -305,16 +305,24 @@ void CL_ClipPMoveToEntity( physent_t *pe, const vec3_t start, vec3_t mins, vec3_
@@ -214,6 +214,23 @@ index 9ca1f79..3c2550e 100644
  	pe->team = state->team;
  	pe->classnumber = state->playerclass;
  	pe->blooddecal = 0;	// unused in GoldSrc
+@@ -402,6 +410,16 @@ static void CL_AddLinksToPmove( frame_t *frame )
+ 		model_t *model;
+ 		physent_t *pe;
+ 
++		// RetroPane (kit 66, run 63: 136 samples on a state's first load):
++		// the state two on asked for now (a hint only)
++		if( i + 2 < frame->num_entities )
++		{
++			const entity_state_t *next = &cls.packet_entities[(frame->first_entity + i + 2) % cls.num_client_entities];
++
++			__builtin_prefetch( next );
++			__builtin_prefetch( &next->solid );
++		}
++
+ 		if( state->number >= 1 && state->number <= cl.maxclients )
+ 			continue;
+ 
 diff --git a/engine/client/input/input.c b/engine/client/input/input.c
 index 712a86e..bccf97f 100644
 --- a/engine/client/input/input.c
@@ -469,7 +486,7 @@ index bd54e90..48e848c 100644
  	chan->flow[FLOW_OUTGOING].stats[statId].size = MSG_GetNumBytesWritten( &send ) + UDP_HEADER_SIZE;
  	chan->flow[FLOW_OUTGOING].stats[statId].time = host.realtime;
 diff --git a/engine/common/net_encode.c b/engine/common/net_encode.c
-index 64bc35e..c471621 100644
+index 64bc35e..1310e76 100644
 --- a/engine/common/net_encode.c
 +++ b/engine/common/net_encode.c
 @@ -1101,6 +1101,28 @@ static qboolean Delta_CompareField( delta_t *pField, const void *from, const voi
@@ -501,6 +518,28 @@ index 64bc35e..c471621 100644
  	fromF = toF = 0;
  
  	if( pField->flags & DT_BYTE )
+@@ -1968,9 +1990,21 @@ void MSG_WriteDeltaEntity( const entity_state_t *from, const entity_state_t *to,
+ 		Delta_CustomEncode( dt, from, to );
+ 	}
+ 
++	// RetroPane (kit 66, run 63: ~450 samples of Delta_CompareField on
++	// the states' and the field table's first loads): every line of both
++	// states asked for before the walk, the table four fields ahead (hints
++	// only: the same bits written)
++	for( size_t o = 0; o < sizeof( entity_state_t ); o += 32 )
++	{
++		__builtin_prefetch((const byte *)from + o );
++		__builtin_prefetch((const byte *)to + o );
++	}
++
+ 	// process fields
+ 	for( int i = 0; i < dt->numFields; i++, pField++ )
+ 	{
++		if( i + 4 < dt->numFields )
++			__builtin_prefetch( pField + 4 );
+ 		if( Delta_WriteField( msg, pField, from, to, timebase ))
+ 			numChanges++;
+ 	}
 diff --git a/engine/common/pm_trace.c b/engine/common/pm_trace.c
 index b1e8e57..c7dce0d 100644
 --- a/engine/common/pm_trace.c
@@ -851,6 +890,29 @@ index d61e51b..243840c 100644
  extern convar_t		mp_logecho;
  extern convar_t		mp_logfile;
  extern convar_t		sv_log_onefile;
+diff --git a/engine/server/sv_frame.c b/engine/server/sv_frame.c
+index 3ff8edb..9cd2c15 100644
+--- a/engine/server/sv_frame.c
++++ b/engine/server/sv_frame.c
+@@ -93,6 +93,18 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
+ 		qboolean	player;
+ 		entity_state_t	*state;
+ 
++		// RetroPane (kit 66, run 63: 138 samples here and 128 in the game's
++		// AddToFullPack on an edict's first loads): the edict two on, its
++		// effects' and model index's lines asked for now (a hint only)
++		if( e + 2 < svgame.numEntities )
++		{
++			const edict_t *next = ent + 2;
++
++			__builtin_prefetch( next );
++			__builtin_prefetch( &next->v.effects );
++			__builtin_prefetch( &next->v.modelindex );
++		}
++
+ 		// don't double add an entity through portals (in case this already added)
+ 		if( CHECKVISBIT( ents->sended, e ))
+ 			continue;
 diff --git a/engine/server/sv_game.c b/engine/server/sv_game.c
 index 37e79df..f3abaff 100644
 --- a/engine/server/sv_game.c
@@ -923,7 +985,7 @@ index 985e438..b79e8b5 100644
  	Cvar_RegisterVariable( &sv_nat );
  	Cvar_RegisterVariable( &violence_ablood );
 diff --git a/engine/server/sv_phys.c b/engine/server/sv_phys.c
-index bfd679b..fe6bde9 100644
+index bfd679b..d1865bf 100644
 --- a/engine/server/sv_phys.c
 +++ b/engine/server/sv_phys.c
 @@ -1754,20 +1754,38 @@ static void SV_Physics_Entity( edict_t *ent )
@@ -968,7 +1030,7 @@ index bfd679b..fe6bde9 100644
  	}
  }
  
-@@ -1791,6 +1809,18 @@ void SV_Physics( void )
+@@ -1791,6 +1809,22 @@ void SV_Physics( void )
  	{
  		edict_t *ent = SV_EdictNum( i );
  
@@ -982,6 +1044,10 @@ index bfd679b..fe6bde9 100644
 +
 +			__builtin_prefetch( next );
 +			__builtin_prefetch( &next->v.movetype );
++			// kit 66 (run 63: 195 samples on SV_UpdateBaseVelocity's
++			// first load): its flags' and ground entity's lines too
++			__builtin_prefetch( &next->v.flags );
++			__builtin_prefetch( &next->v.groundentity );
 +		}
 +
  		if( !SV_IsValidEdict( ent ))
@@ -1169,7 +1235,7 @@ index 32fa799..c017e24 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..94fd19b 100644
+index dd01c0f..9221e8d 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -1206,7 +1272,20 @@ index dd01c0f..94fd19b 100644
  		int flight = (int)floor( ls[i].time * 10 );
  
  		if( !ls[i].interp || !cl_lightstyle_lerping->value )
-@@ -119,19 +131,33 @@ static void R_MarkLights( const dlight_t *light, int bit, const mnode_t *node, m
+@@ -99,6 +111,12 @@ static void R_MarkLights( const dlight_t *light, int bit, const mnode_t *node, m
+ 	if( !node || node->contents < 0 )
+ 		return;
+ 
++	// RetroPane (kit 66, run 63: ~300 samples on nodes' and planes' first
++	// loads): both children asked for while this node's distance is made
++	// (a hint only; a leaf's line is read by the test above anyway)
++	__builtin_prefetch( node_child( node, 0, model ));
++	__builtin_prefetch( node_child( node, 1, model ));
++
+ 	float dist = PlaneDiff( light->origin, node->plane );
+ 
+ 	if( dist > virtual_radius )
+@@ -119,19 +137,36 @@ static void R_MarkLights( const dlight_t *light, int bit, const mnode_t *node, m
  	int firstsurface = node_firstsurface( node, model );
  	int numsurfaces = node_numsurfaces( node, model );
  
@@ -1229,6 +1308,9 @@ index dd01c0f..94fd19b 100644
  		const mextrasurf_t *info = surf->info;
  
 -		if( surf->plane->type < 3 )
++		if( i + 2 < numsurfaces )
++			__builtin_prefetch( surf + 2 );
++
 +		if( surf->plane != impact_plane )
  		{
 -			VectorCopy( light->origin, impact );
@@ -1245,7 +1327,7 @@ index dd01c0f..94fd19b 100644
  
  		// a1ba: the fix was taken from JoeQuake, which traces back to FitzQuake,
  		// which attributes it to LadyHavoc (Darkplaces author)
-@@ -489,6 +515,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +524,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -1321,7 +1403,7 @@ index dd01c0f..94fd19b 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -520,11 +615,28 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +624,28 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -1351,7 +1433,7 @@ index dd01c0f..94fd19b 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -562,6 +674,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -562,6 +683,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
@@ -1359,7 +1441,7 @@ index dd01c0f..94fd19b 100644
  
  		if( VectorIsNull( lightvec ))
  		{
-@@ -604,6 +717,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -604,6 +726,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -1380,7 +1462,7 @@ index dd01c0f..94fd19b 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +748,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +757,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
@@ -1761,10 +1843,10 @@ index 621d74f..93f4f53 100644
  	if( fa->flags & ( SURF_DRAWTURB | SURF_TRANSPARENT ))
  	{
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..221cc5d 100644
+index 03790d8..da51e69 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
-@@ -1293,11 +1293,13 @@ static void R_StudioEntityLight( alight_t *lightinfo )
+@@ -1293,11 +1293,18 @@ static void R_StudioEntityLight( alight_t *lightinfo )
  	dist2 = 1000000.0f;
  	k = 0;
  
@@ -1775,11 +1857,16 @@ index 03790d8..221cc5d 100644
  		el = &tr.elights[lnum];
  
 -		if( el->die < g_studio.time || el->radius <= 0.0f )
++		// RetroPane (kit 66, run 63: 320 samples on the die time's first
++		// load, nearly every record dead): the record four on asked for
++		if( lnum + 4 < MAX_ELIGHTS )
++			__builtin_prefetch( &tr.elights[lnum + 4].die );
++
 +		if( RP_FloatLess( el->die, time_f ) || el->radius <= 0.0f )
  			continue;
  
  		if(( el->key & 0xFFF ) == ent->index )
-@@ -1675,6 +1677,135 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
+@@ -1675,6 +1682,135 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
  	return 0;
  }
  
@@ -1915,7 +2002,7 @@ index 03790d8..221cc5d 100644
  /*
  ===============
  R_StudioDrawNormalMesh
-@@ -1686,6 +1817,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1686,6 +1822,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
  {
  	int   i;
  
@@ -1929,7 +2016,7 @@ index 03790d8..221cc5d 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1719,6 +1857,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+@@ -1719,6 +1862,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
  {
  	int   i;
  
@@ -1943,7 +2030,7 @@ index 03790d8..221cc5d 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1754,6 +1899,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1754,6 +1904,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
  	qboolean glowShell = ( scale > 0.0f ) ? true : false;
  	vec3_t   vert;
  
@@ -1959,7 +2046,7 @@ index 03790d8..221cc5d 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1812,6 +1966,7 @@ static void R_StudioDrawPoints( void )
+@@ -1812,6 +1971,7 @@ static void R_StudioDrawPoints( void )
  	mstudiomesh_t    *pmesh;
  	short            *pskinref;
  	float            lv_tmp;
@@ -1967,7 +2054,7 @@ index 03790d8..221cc5d 100644
  
  	if( !m_pStudioHeader )
  		return;
-@@ -1850,13 +2005,36 @@ static void R_StudioDrawPoints( void )
+@@ -1850,13 +2010,36 @@ static void R_StudioDrawPoints( void )
  	}
  	else
  	{
@@ -2007,7 +2094,7 @@ index 03790d8..221cc5d 100644
  	// generate shared normals for properly scaling glowing shell
  	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
  	{
-@@ -1886,10 +2064,42 @@ static void R_StudioDrawPoints( void )
+@@ -1886,10 +2069,42 @@ static void R_StudioDrawPoints( void )
  				VectorSet( g_studio.lightvalues[k], tr.blend, tr.blend, tr.blend );
  			}
  		}
@@ -2050,7 +2137,7 @@ index 03790d8..221cc5d 100644
  				if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
  					R_StudioLighting( &lv_tmp, -1, g_nFaceFlags, g_studio.norms[k] );
  				else
-@@ -1947,14 +2157,16 @@ static void R_StudioDrawPoints( void )
+@@ -1947,14 +2162,16 @@ static void R_StudioDrawPoints( void )
  
  		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
  

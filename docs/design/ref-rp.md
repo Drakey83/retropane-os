@@ -857,6 +857,37 @@ first: `RP_StudioCmdLit` 4.4%, `rp_fadd_asm` 4.2%, `RP_ChipFaceFixed`
 3.1%, `RP_StudioCmdSend` 3.0%, `rp_snd_write` 2.8%, `RP_StudioLightMesh`
 2.6%, `rp_fmul_asm` 2.5%, `rp_gfx_frame_parts` 2.2%, `rp_fdot3_asm` 2.0%.
 
+**Kit 66 (2026-11-17, exact, from run 63's hottest single instructions):**
+run 63's samples sit, more than anywhere else in the game, on the first
+use of a load that missed the cache: the PXA270 has no hardware
+prefetcher and its misses cost far more than its maths here. Each lever
+below is a `PLD` hint, nothing read or written changes.
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The server's entity walk (`SV_Physics` -> `SV_UpdateBaseVelocity`) | each edict's flags read when its turn comes (a desktop's prefetcher sees the stride) | kit 61's `PLD` of the edict two on now also takes its flags' line | run 63: 195 samples on the flags' first use |
+| The entities sent to the client (`SV_AddEntitiesToPacket`, the game's `AddToFullPack`) | the same, edict by edict | the edict two on: its first line, its effects' and its model index's lines | run 63: 138 + 128 samples on those first uses |
+| An entity's delta (`MSG_WriteDeltaEntity` -> `Delta_CompareField`) | Xash and GoldSrc: field by field, each field's bytes in both states read as the compare reaches them | every line of both states asked for before the fields are walked, and the field table four entries ahead | run 63: ~450 samples on the states' and the table's first loads |
+| The client's physics entities (`CL_AddLinksToPmove`) | state by state | the state two on asked for | run 63: 136 samples on a state's first use |
+| A model's entity lights (`R_StudioEntityLight`) | all 128 entity-light records (40 bytes each) read for every model drawn, nearly all dead | the record four on asked for as each is tested | run 63: 320 samples on the die time's first use |
+| The flashlight's BSP walk (`R_MarkLights`) | each node's children and each surface read when reached | both children asked for on arrival at a node (while its distance is made), the surface two on in the surface loop | run 63: ~300 samples on nodes' and planes' first loads |
+
+**Run 64 (2026-11-17, kit 66, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **96,296 ms (28.5 fps) against kit 65's 97,389 ms
+(28.2 fps): 1.1% less time**, every 250-frame window faster (by 34-143
+ms) and every one of the
+thirteen marks at the same place; the emulator first (its marks the
+same, the dot's check 0 differ). By spot, run 63 -> run 64 samples:
+`SV_UpdateBaseVelocity` 215 -> 35, `Delta_CompareField` 712 -> 406,
+`R_StudioEntityLight` 468 -> 211, the game's `AddToFullPack` 386 -> 321,
+`SV_AddEntitiesToPacket` 233 -> 166; but `SV_Physics` 694 -> 784 and
+`Delta_WriteField` 244 -> 297 (part of the misses now wait on the hints
+themselves: the PXA270 has four fill buffers), `R_MarkLights` 624 -> 598
+(little), and `CL_SetSolidEntities` (where `CL_AddLinksToPmove` is
+inlined) 382 -> 430: that hint gave nothing and is taken out in the next
+kit (R317). From kit 60: 103,808 -> 96,296 ms (7.2%); 30 fps is ~91,700
+ms, 4.8% still to go.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
