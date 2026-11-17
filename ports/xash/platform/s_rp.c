@@ -166,6 +166,12 @@ void SNDDMA_Submit( void )
 		if( now - s_rp.since >= 60000000u )
 		{
 			fprintf( stderr, "s_rp: the OS's sound asked %d times in the last minute, %d calls saved (kit 51)\n", s_rp.calls, s_rp.saved );
+			/* kit 63's guard on the network's bounded clear (net_chan.c) */
+			{
+				extern uint32_t rp_netsend_short;
+
+				fprintf( stderr, "net: packets past the bounded clear so far: %u (kit 63; 0 expected)\n", (unsigned)rp_netsend_short );
+			}
 			s_rp.calls = s_rp.saved = 0;
 			s_rp.since = now;
 		}

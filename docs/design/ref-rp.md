@@ -797,6 +797,24 @@ vertices both ways, 0 differed. From kit 60: 103,808 -> 100,359 ms (3.3%).
 `rp_gfx_frame_parts` 3.0% (interrupts off), `RP_StudioLightMesh` 2.5%
 (1,531 -> 1,453: its misses, not its maths, are most of what is left).
 
+**Kit 63 (2026-11-17, all exact):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The TA's tail buffer and region array cleared each frame | Dell's driver and `ta::clear`: the CPU zeroes them in the 2700G's memory, ~21,000 single stores across the bus (84,744 bytes), then writes the start table and the background strip | the chain does all of the scene's start: twelve descriptors from a block of zeros in the chain's own memory, nine for the start table's registers, the background strip and its end, then the frame; the CPU only arms the done bit and the chain | the CPU's feed 2.2-3.0 -> ~1.1 ms a frame; the same words in the same order: `-rpchaincheck` fed 32 frames both ways and hashed the pictures, the same 32 of 32 in the emulator and on the X51v (run 59) |
+| The network's send buffer | Xash (and GoldSrc's netchan): a 32 KiB stack buffer zeroed for every packet the client and the server send | zeroed only as far as the packet can reach, bounded before its first write (headers, the reliable and unreliable bits, the pad, a dword of slack); a guard counts any packet past it (0 in every run) | run 59's samples (the sampler's fix below): this memset 1.0% of the play; the bit writer keeps the bits around each field, so zero is needed where it writes and sends, and only there: the same bytes on the wire |
+| The sampler's caller of a helper that uses `lr` as data (`memset`, `__aeabi_memcpy4`) | gprof and perf unwind with frame pointers or DWARF tables the build does not keep | when the interrupted `lr` is not a return address (a word after a `bl`/`blx`), the first one in the stack's top 16 words (`rt::set_sample_window`) | ~3% of the samples had a caller of 0; now named (run 59: `Netchan_TransmitBits` 1.0%, `CL_ProcessPacket` 0.4%, `CL_RunUsercmd` 0.4%, `CL_PredictMovement` 0.4%) |
+
+**Run 60 (2026-11-17, kit 63, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **98,686 ms (27.8 fps) against kit 62's 100,359 ms
+(27.4 fps): 1.7% less time**, every window faster, every mark the same.
+(Run 59, with the chain alone and `-rpchaincheck` on its first frames:
+frames 251-2,750 0.95% faster than kit 62; the check's frames made its
+first 250 slower.) From kit 60: 103,808 -> 98,686 ms (4.9%); 30 fps is
+~91,700 ms, 7.1% still to go. The chain's gain is less than the CPU time
+it frees: the DMA now holds the bus ~2-3 ms longer a frame while the game
+runs.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

@@ -1546,6 +1546,68 @@ pub fn stop_sampling() -> Option<(&'static mut [u8], u32, u32)> {
     }
 }
 
+/// Where the sampler may read memory to name a sample's caller
+/// ([`set_sample_window`]): `[lo, hi)`, empty by default.
+static mut SAMPLE_LO: u32 = 0;
+static mut SAMPLE_HI: u32 = 0;
+
+/// Lets the sampler name the caller of a function that uses `lr` as a
+/// data register (run 57, 2026-11-17: the engine's `memset` and
+/// `__aeabi_memcpy4` fill and copy with `lr` among eight registers, so
+/// ~3% of Half-Life's samples had a caller of 0): when the interrupted
+/// `lr` is not a return address (a word in `[lo, hi)` whose word before is
+/// a `bl` or `blx`), the first return address in the interrupted stack's
+/// 16 top words is taken instead, the frame the function pushed on
+/// entry. `[lo, hi)` must be mapped RAM holding the code and the stacks
+/// (the runner: all of SDRAM). Iterate, don't imitate (rule 0): gprof
+/// and perf unwind with frame pointers or DWARF tables the build does not
+/// keep; the classic stack-scan heuristic (a word after a call) costs a
+/// few reads and needs nothing from the program.
+pub fn set_sample_window(lo: u32, hi: u32) {
+    // SAFETY: set before sampling starts (the tick's handler reads them).
+    unsafe {
+        core::ptr::addr_of_mut!(SAMPLE_LO).write(lo);
+        core::ptr::addr_of_mut!(SAMPLE_HI).write(hi);
+    }
+}
+
+/// `a` a return address: inside the window, after a `bl`, `blx` (either
+/// form) on a word boundary.
+fn is_return(a: u32, lo: u32, hi: u32) -> bool {
+    if a % 4 != 0 || a < lo.saturating_add(4) || a >= hi {
+        return false;
+    }
+    // SAFETY: `a - 4` lies in the window, mapped RAM by the caller of
+    // `set_sample_window`, word-aligned.
+    let w = unsafe { ((a - 4) as *const u32).read_volatile() };
+    (w & 0x0F00_0000 == 0x0B00_0000 && w >> 28 != 0xF)
+        || w >> 25 == 0x7D
+        || w & 0x0FFF_FFF0 == 0x012F_FF30
+}
+
+/// The caller to record for a sample: `lr`, or a return address found on
+/// the stack at `sp` when `lr` is not one (see [`set_sample_window`]).
+fn caller(lr: u32, sp: u32) -> u32 {
+    // SAFETY: plain reads of words set before sampling started.
+    let (lo, hi) = unsafe {
+        (
+            core::ptr::addr_of!(SAMPLE_LO).read(),
+            core::ptr::addr_of!(SAMPLE_HI).read(),
+        )
+    };
+    if lo >= hi || is_return(lr, lo, hi) || sp % 4 != 0 || sp < lo || sp >= hi - 64 {
+        return lr;
+    }
+    for k in 0..16 {
+        // SAFETY: `sp + 4k` is inside the window (checked above), aligned.
+        let w = unsafe { ((sp + 4 * k) as *const u32).read_volatile() };
+        if is_return(w, lo, hi) {
+            return w;
+        }
+    }
+    lr
+}
+
 /// One sample from the IRQ entry's `frame`, if the sampler runs.
 fn sample(frame: *const u32) {
     // SAFETY: in the IRQ handler, IRQs masked: the only writer while the
@@ -1572,6 +1634,15 @@ fn sample(frame: *const u32) {
         } else {
             frame.add(14).read()
         };
+        // The interrupted stack: user and system mode's is the saved user
+        // sp; supervisor mode's is just above the frame (rp_irq_entry
+        // pushed its 72 bytes there).
+        let sp = if cpsr & 0x1F == 0x13 {
+            (frame as u32).wrapping_add(72)
+        } else {
+            frame.add(13).read()
+        };
+        let lr = caller(lr, sp);
         let at = buf.add(n as usize * SAMPLE_BYTES);
         at.cast::<[u8; 4]>().write_unaligned(pc.to_le_bytes());
         at.add(4)

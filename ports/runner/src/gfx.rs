@@ -752,6 +752,11 @@ struct Counts {
     pumped: u32,
     unfit: u32,
     settle_us: u32,
+    /// `-rpchaincheck` (kit 63): frames fed both ways, pictures the same,
+    /// different, and checks that could not finish (a hang).
+    check_same: u32,
+    check_differ: u32,
+    check_failed: u32,
 }
 
 /// The screen while the program has it.
@@ -831,6 +836,10 @@ pub struct Chip {
     probe: Option<Probe>,
     /// Step 4f: the frames fed by one DMA chain each (`None`: by the CPU).
     chain: Option<Chain>,
+    /// `-rpchaincheck`: frames left to feed both ways (the CPU's picture
+    /// hashed, then the chain's, compared; kit 63's check that the chain's
+    /// own clear and scene start draw what the CPU's do).
+    chain_check: u32,
 }
 
 impl Chip {
@@ -859,6 +868,9 @@ impl Chip {
                 pumped: 0,
                 unfit: 0,
                 settle_us: 0,
+                check_same: 0,
+                check_differ: 0,
+                check_failed: 0,
             },
             since: 0,
             frame: 0,
@@ -869,7 +881,15 @@ impl Chip {
             cpu: None,
             probe: None,
             chain: None,
+            chain_check: 0,
         }
+    }
+
+    /// `-rpchaincheck`: the next `frames` frames fed both ways, compared.
+    #[must_use]
+    pub const fn with_chain_check(mut self, frames: u32) -> Self {
+        self.chain_check = frames;
+        self
     }
 
     /// Step 4f: frames fed by a DMA chain ([`Chain`]; `None`: by the CPU).
@@ -991,6 +1011,15 @@ impl Chip {
                 c.descriptors / n,
                 c.pumped,
                 c.unfit
+            ));
+        }
+        if c.check_same + c.check_differ + c.check_failed > 0 {
+            (self.log)(format_args!(
+                "rp-gfx: -rpchaincheck: {} frames fed by the CPU then by the chain: pictures the same {}, different {}, not finished {}",
+                c.check_same + c.check_differ + c.check_failed,
+                c.check_same,
+                c.check_differ,
+                c.check_failed
             ));
         }
         self.counts = Counts::default();
@@ -1620,8 +1649,35 @@ impl Screen for Chip {
             && let Some(ch) = self.chain.as_mut()
         {
             let t1 = rt::ticks();
-            let _ = ta::clear(o.vram, &o.lay.ta);
-            cpu::drain_write_buffer();
+            if self.chain_check > 0 {
+                // the CPU's picture of this frame, then the chain's
+                self.chain_check -= 1;
+                let height = o.lay.ta.height;
+                let fed = probe4f::feed_cpu(o, regs, parts, &bg);
+                let cpu = if fed.done { probe4f::render_hash(o, regs, height) } else { None };
+                if cpu.is_none() {
+                    o.recover(regs);
+                }
+                let chain = match ch.start(regs, &o.lay.ta, &bg, parts) {
+                    Ok(true) => match ch.settle(regs) {
+                        chain::Settled::Done(_) => probe4f::render_hash(o, regs, height),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match (cpu, chain) {
+                    (Some(a), Some(b)) if a == b => c.check_same += 1,
+                    (Some(_), Some(_)) => c.check_differ += 1,
+                    _ => {
+                        c.check_failed += 1;
+                        o.recover(regs);
+                    }
+                }
+                self.frame = self.frame.wrapping_add(1);
+                self.report();
+                return Ok(());
+            }
+            // kit 63: the TA's memory cleared by the chain itself
             match ch.start(regs, &o.lay.ta, &bg, parts) {
                 Ok(true) => {
                     c.frames += 1;

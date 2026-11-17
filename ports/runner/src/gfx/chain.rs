@@ -33,8 +33,24 @@ const REGS_PHYS: u32 = 0x0C00_0000 + rp_hal_x51v::MBX_REG_OFFSET;
 /// on it while the scene's end word goes in.
 const GRID: usize = 0x85C;
 /// Words of the table of constants at the memory's start (a whole number
-/// of cache lines, so the descriptors after it are 16-byte aligned).
+/// of cache lines).
 const TABLE: usize = 16;
+/// Kit 63: the TA's start table's values (at most 16), then the
+/// background strip's words (at most 32), then a block of zeros the
+/// chain clears the TA's tail buffer and region array from; the
+/// descriptors after them (16-byte aligned).
+const T_START: usize = TABLE;
+const T_BG: usize = T_START + 16;
+const BG_MOST: usize = 32;
+const ZERO: usize = T_BG + BG_MOST;
+const ZERO_WORDS: usize = 2048;
+/// Bytes a clear's descriptor moves: whole 32-byte bursts, under
+/// [`MOST`].
+const ZERO_CHUNK: u32 = 8160;
+const DESC: usize = ZERO + ZERO_WORDS;
+const _: () = assert!(DESC % 4 == 0 && ZERO_CHUNK as usize <= 4 * ZERO_WORDS);
+/// The 2700G's local memory as the DMA sees it (CS3 from 0).
+const VRAM_PHYS: u32 = 0x0C00_0000;
 const T_STRIP: usize = 0;
 const T_FAN: usize = 1;
 const T_ONE: usize = 2;
@@ -99,6 +115,9 @@ impl Chain {
         words[T_FAN] = FAN;
         words[T_ONE] = 1;
         words[T_END] = rp_drv_mbx3d::END;
+        words[ZERO..DESC].fill(0);
+        // the zeros reach memory once (never written again)
+        cpu::clean_range(words.as_ptr().addr() as u32 + 4 * ZERO as u32, 4 * ZERO_WORDS as u32);
         Some(Self {
             dma,
             mem: words,
@@ -122,7 +141,7 @@ impl Chain {
     /// One descriptor (linked to the next slot; the last is ended at the
     /// arm). False if the memory is full.
     fn push(&mut self, src: u32, dst: u32, len: u32) -> bool {
-        let slot = TABLE + 4 * self.n;
+        let slot = DESC + 4 * self.n;
         if slot + 8 > self.mem.len() {
             return false;
         }
@@ -159,11 +178,45 @@ impl Chain {
     /// only), after the words the CPU already put at the window offsets
     /// `at` and `ends`, ending with the scene's end. False if it does not
     /// fit (the frame then goes by the CPU).
-    fn build(&mut self, parts: &[&[u32]], at: usize, ends: usize, grid: u32) -> bool {
+    fn build(
+        &mut self,
+        parts: &[&[u32]],
+        table: &[(usize, u32)],
+        bg: &[u32],
+        clears: &[(u32, u32)],
+        grid: u32,
+    ) -> bool {
         self.n = 0;
-        self.at = at;
-        self.ends = ends;
+        self.at = 0;
+        self.ends = 0;
         self.mem[T_GRID] = grid | ta::SCENE_END;
+        if table.len() > 16 || bg.len() > BG_MOST {
+            return false;
+        }
+        // Kit 63: the scene's start in the chain, in the CPU's old order:
+        // the TA's tail buffer and region array cleared (2700G memory),
+        // its start table, the background strip and its end.
+        let zero = self.addr(ZERO);
+        for &(mut at, mut bytes) in clears {
+            while bytes > 0 {
+                let k = bytes.min(ZERO_CHUNK);
+                if !self.push(zero, VRAM_PHYS + at, k) {
+                    return false;
+                }
+                at += k;
+                bytes -= k;
+            }
+        }
+        for (i, &(off, v)) in table.iter().enumerate() {
+            self.mem[T_START + i] = v;
+            if !self.push(self.addr(T_START + i), REGS_PHYS + (MBX + off) as u32, 4) {
+                return false;
+            }
+        }
+        self.mem[T_BG..T_BG + bg.len()].copy_from_slice(bg);
+        if !(self.to_window(self.addr(T_BG), 4 * bg.len() as u32) && self.end()) {
+            return false;
+        }
         for words in parts {
             let base = words.as_ptr().addr() as u32;
             let mut k = 0;
@@ -193,17 +246,20 @@ impl Chain {
             return false;
         }
         // The last descriptor ends the chain.
-        let last = TABLE + 4 * (self.n - 1);
+        let last = DESC + 4 * (self.n - 1);
         self.mem[last] = rp_hal_pxa27x::dma::CHAIN_STOP;
         true
     }
 
-    /// The frame's TA scene started by the CPU (its table, then `bg`, the
-    /// background strip, into the window), the rest of `parts` as one
-    /// chain armed. `Ok(true)`: the frame in flight. `Ok(false)`: the
-    /// chain does not fit, nothing started (the frame goes by the CPU).
-    /// `Err(())`: the DMA refused the chain after the scene started (the
-    /// caller resets the core; the frame is not drawn).
+    /// The whole frame as one chain armed (kit 63): the TA's tail buffer
+    /// and region array cleared in the 2700G's memory, its start table,
+    /// `bg` (the background strip), then `parts`, as `ta::clear`, the
+    /// table's writes and the background did by the CPU before (Dell's
+    /// way: ~21,000 single stores across the bus a frame, ~2.5 ms of
+    /// CPU). `Ok(true)`: the frame in flight. `Ok(false)`: the chain does
+    /// not fit, nothing started (the frame goes by the CPU, which clears
+    /// for itself). `Err(())`: the DMA refused the chain (the caller
+    /// resets the core; the frame is not drawn).
     pub fn start(
         &mut self,
         regs: &mut Mmio,
@@ -213,7 +269,9 @@ impl Chain {
     ) -> Result<bool, ()> {
         let table = l.start_table();
         let grid = table.iter().find(|p| p.0 == GRID).map_or(0, |p| p.1);
-        if !self.build(parts, 4 * bg.len(), 4, grid) {
+        let (cols, rows) = l.grid();
+        let clears = [(l.tail, l.tail_bytes), (l.regions, 8 * (cols * rows + 1))];
+        if !self.build(parts, &table, bg, &clears, grid) {
             return Ok(false);
         }
         // The frame's words reach memory before the DMA reads them, and
@@ -221,24 +279,17 @@ impl Chain {
         for words in parts {
             cpu::clean_range(words.as_ptr().addr() as u32, 4 * words.len() as u32);
         }
-        cpu::clean_range(self.addr(0), 4 * TABLE as u32);
-        // The scene's start as `ta::Feed::start`, the background by the CPU
-        // (the FIFO is empty: its 26 words and end fit).
+        cpu::clean_range(self.addr(0), 4 * ZERO as u32);
+        // The done bit armed by the CPU (its own registers, not the TA's
+        // memory); the rest of the scene's start is the chain's.
         let en = regs.read32(MBX + reg::ENABLE);
         regs.write32(MBX + reg::CLEAR, ta::DONE);
         regs.write32(MBX + reg::ENABLE, en | ta::DONE);
         let t0 = rt::ticks();
-        for &(off, v) in &table {
-            regs.write32(MBX + off, v);
-        }
-        for (k, &w) in bg.iter().enumerate() {
-            regs.write32(ta::PORT + 4 * k, w);
-        }
-        regs.write32(ta::END_PORT, 1);
         let n = 4 * self.n;
         self.last_descriptors = self.n as u32;
         // The arm drains the CPU's writes first (its clean).
-        if !self.dma.arm_chain(&self.mem[TABLE..TABLE + n]) {
+        if !self.dma.arm_chain(&self.mem[DESC..DESC + n]) {
             Self::finish(regs, Flight { t0, dma_done: true, en, grid });
             return Err(());
         }

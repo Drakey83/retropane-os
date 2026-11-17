@@ -376,6 +376,56 @@ index e74a4d2..ced56e1 100644
  		if( fileSamples <= 1 ) return; // no more samples need
  
  		// our max buffer size
+diff --git a/engine/common/net_chan.c b/engine/common/net_chan.c
+index bd54e90..48e848c 100644
+--- a/engine/common/net_chan.c
++++ b/engine/common/net_chan.c
+@@ -1496,6 +1496,9 @@ transmition / retransmition of the reliable messages.
+ A 0 length will still generate a packet and deal with the reliable messages.
+ ================
+ */
++static size_t rp_netsend_zeroed;
++uint32_t rp_netsend_short; // RetroPane: packets past the zeroed bound (kit 63)
++
+ void Netchan_TransmitBits( netchan_t *chan, int length, const byte *data )
+ {
+ 	byte	send_buf[NET_MAX_MESSAGE];
+@@ -1670,7 +1673,22 @@ void Netchan_TransmitBits( netchan_t *chan, int length, const byte *data )
+ 		}
+ 	}
+ 
+-	memset( send_buf, 0, sizeof( send_buf ));
++	// RetroPane (kit 63, run 59: this memset 1.0% of Half-Life's play on
++	// the X51v, 32 KiB zeroed for every packet the client and the server
++	// send, a few hundred bytes each): the bit writer keeps the bits around
++	// each field it writes (it reads and masks whole dwords), so the buffer
++	// must be zero wherever it writes and sends, and only there. All this
++	// packet can hold is bounded now, before the first write: the cookie,
++	// the sequences and the qport (18 bytes), each stream's fragment header
++	// (13), the reliable bits, the unreliable bits and the pad to 16 bytes;
++	// zeroing that and a dword more gives the same bytes on the wire.
++	{
++		size_t bound = 18 + MAX_STREAMS * 13 + 16 + 8
++			+ (size_t)(( send_reliable ? chan->reliable_length : 0 ) + 7 ) / 8 + (size_t)( length + 7 ) / 8;
++
++		rp_netsend_zeroed = bound < sizeof( send_buf ) ? bound : sizeof( send_buf );
++		memset( send_buf, 0, rp_netsend_zeroed );
++	}
+ 	MSG_Init( &send, "NetSend", send_buf, sizeof( send_buf ));
+ 
+ 	// prepare the packet header
+@@ -1766,6 +1784,11 @@ void Netchan_TransmitBits( netchan_t *chan, int length, const byte *data )
+ 		}
+ 	}
+ 
++	// the bound's guard: a packet past what was zeroed is counted (never
++	// seen; one would mean the bound above is short)
++	if( MSG_GetNumBytesWritten( &send ) + 4 > rp_netsend_zeroed )
++		rp_netsend_short++;
++
+ 	uint statId = chan->flow[FLOW_OUTGOING].current & MASK_LATENT;
+ 	chan->flow[FLOW_OUTGOING].stats[statId].size = MSG_GetNumBytesWritten( &send ) + UDP_HEADER_SIZE;
+ 	chan->flow[FLOW_OUTGOING].stats[statId].time = host.realtime;
 diff --git a/engine/common/net_encode.c b/engine/common/net_encode.c
 index 64bc35e..c471621 100644
 --- a/engine/common/net_encode.c

@@ -158,6 +158,11 @@ mod image {
     /// `gfx::CHAIN_BYTES` of the scratch RAM, its DMA channel is the USB
     /// controller's (the runner has no USB device).
     const NO_CHAIN_WORD: &[u8] = b"-rpnochain";
+    /// Kit 63: the first [`CHAIN_CHECK_FRAMES`] frames fed by the CPU and
+    /// then by the chain, both pictures hashed and compared (the chain's
+    /// own clear and scene start against the CPU's).
+    const CHAIN_CHECK_WORD: &[u8] = b"-rpchaincheck";
+    const CHAIN_CHECK_FRAMES: u32 = 32;
     const WALLOC_TO: u32 = 0xA9A0_0000;
     /// The program's command line as built in: its name alone. What a
     /// run asks of the program is in [`ARGS_FILE`], so a run on the X51v
@@ -1314,6 +1319,11 @@ mod image {
                 .with_cpu(cpu_n2)
                 .with_probe(probe)
                 .with_chain(chain)
+                .with_chain_check(if args[..arg_count].iter().any(|a| a.to_bytes() == CHAIN_CHECK_WORD) {
+                    CHAIN_CHECK_FRAMES
+                } else {
+                    0
+                })
         }) {
             Some(c) => s.set_screen(c),
             None => {
@@ -1348,6 +1358,9 @@ mod image {
                 "runner: sampling where the program is, {SAMPLE_HZ} a second, {} at most",
                 SAMPLE_ROOM / rt::SAMPLE_BYTES
             );
+            // the callers of helpers that use lr as data named from the
+            // stack (R314): all of SDRAM, the code and the stacks
+            rt::set_sample_window(0xA800_8000, module::POOL + module::POOL_LEN);
             rt::start_sampling(samples, SAMPLE_HZ);
         }
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);

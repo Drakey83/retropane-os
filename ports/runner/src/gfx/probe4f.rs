@@ -418,7 +418,7 @@ impl Probe {
 }
 
 /// The frame by the CPU, as the runner feeds it.
-fn feed_cpu(o: &mut Open, regs: &mut Mmio, parts: &[&[u32]], bg: &[u32]) -> ta::Fed {
+pub(super) fn feed_cpu(o: &mut Open, regs: &mut Mmio, parts: &[&[u32]], bg: &[u32]) -> ta::Fed {
     let _ = ta::clear(o.vram, &o.lay.ta);
     cpu::drain_write_buffer();
     let mut feed = ta::Feed::start(regs, &o.ready, &o.lay.ta, CLOCK, TA_LIMIT_US);
@@ -437,7 +437,7 @@ fn feed_cpu(o: &mut Open, regs: &mut Mmio, parts: &[&[u32]], bg: &[u32]) -> ta::
 /// The render started and waited for, then the drawn rows (`height`)
 /// hashed (FNV-1a over words); `None` if the render hung (the core then
 /// reset by `wait_render`).
-fn render_hash(o: &mut Open, regs: &mut Mmio, height: u32) -> Option<u32> {
+pub(super) fn render_hash(o: &mut Open, regs: &mut Mmio, height: u32) -> Option<u32> {
     o.start_render(regs);
     o.wait_render(regs).ok()?;
     let bytes = (height * super::W * 2) as usize;
