@@ -150,13 +150,14 @@ mod image {
     /// and its DMA channel is the CompactFlash reads' (the runner reads
     /// no CF card; `dma_map`'s chains are at their budget).
     const PROBE_WORD: &[u8] = b"-rp4f";
-    /// A test run's word for step 4f (`gfx::Chain`, docs/design/ref-rp.md
-    /// "Step 4f"): each frame fed to the TA by one DMA chain while the CPU
-    /// makes the next. Off by default until the X51v has drawn it (its
-    /// first run measures it against the CPU's feed). Its table and
-    /// descriptors take `gfx::CHAIN_BYTES` of the scratch RAM, its DMA
-    /// channel is the USB controller's (the runner has no USB device).
-    const CHAIN_WORD: &[u8] = b"-rpchain";
+    /// Step 4f (`gfx::Chain`, docs/design/ref-rp.md "Step 4f"): each frame
+    /// fed to the TA by one DMA chain while the CPU makes the next, the
+    /// default since run 56 (the fixed-step walk: 6.6% less time than the
+    /// CPU's feed, the same frames; no hang in runs 53-56). This word turns
+    /// it off: the CPU's feed, the control. Its table and descriptors take
+    /// `gfx::CHAIN_BYTES` of the scratch RAM, its DMA channel is the USB
+    /// controller's (the runner has no USB device).
+    const NO_CHAIN_WORD: &[u8] = b"-rpnochain";
     const WALLOC_TO: u32 = 0xA9A0_0000;
     /// The program's command line as built in: its name alone. What a
     /// run asks of the program is in [`ARGS_FILE`], so a run on the X51v
@@ -1288,12 +1289,15 @@ mod image {
             None => (samples, None),
         };
         // Step 4f: the DMA chain, if asked for.
-        let chain = if args[..arg_count].iter().any(|a| a.to_bytes() == CHAIN_WORD) {
+        let chain = if args[..arg_count].iter().any(|a| a.to_bytes() == NO_CHAIN_WORD) {
+            let _ = writeln!(uart, "runner: -rpnochain: the CPU feeds the TA (the control)");
+            None
+        } else {
             let chain = rt::take_dma(rp_hal_pxa27x::dma_map::UDC)
                 .and_then(|dma| super::gfx::Chain::new(dma, chain_mem));
             let _ = writeln!(
                 uart,
-                "runner: -rpchain: step 4f {}",
+                "runner: step 4f {}",
                 if chain.is_some() {
                     "on: each frame fed to the TA by one DMA chain"
                 } else {
@@ -1301,8 +1305,6 @@ mod image {
                 }
             );
             chain
-        } else {
-            None
         };
         match CHIP.put_with(|| {
             super::gfx::Chip::new(gfx_log, mbx)

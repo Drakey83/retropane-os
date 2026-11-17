@@ -737,6 +737,17 @@ HUD, flashlight and sound on):** frames 1-2,750 took **111,156 ms in both**
 at the same place at every mark (and the emulator's). The yardstick for
 every lever from here: kit against kit, window by window.
 
+**Run 56 (2026-11-17, the fixed-step walk, frames 1-2,750, sound on):**
+the CPU's feed 111,156 ms (run 55); **the DMA chain 103,811 ms: 6.6% less
+time, 24.7 -> 26.4 fps**; write-allocate 113,209 ms (1.8% slower: stays
+off). **The chain is the default from kit 60** (`-rpnochain` the control;
+kit 60's default run: 103,808 ms). Run 56's samples with the chain (the
+play): soft floats `rp_fadd` 6.8% and `rp_fmul` 3.7% (from the traces,
+`R_MarkLights` for the flashlight, `R_AddDynamicLights`), `RP_StudioCmdLit`
+4.5%, `RP_ChipFaceFixed` 3.4%, `RP_StudioLightFixed` 3.0%, the OS mixer
+3.0%, `rp_gfx_frame_parts` 2.9%, `RP_StudioCmdSend` 2.9%: the next
+levers, each judged on this walk.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
