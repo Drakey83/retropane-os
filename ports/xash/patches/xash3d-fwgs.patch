@@ -32,6 +32,30 @@ index 9581a61..ed3529c 100644
  #endif
  
  #if !XASH_WIN32
+diff --git a/common/xash3d_types.h b/common/xash3d_types.h
+index 9b98264..4b4f840 100644
+--- a/common/xash3d_types.h
++++ b/common/xash3d_types.h
+@@ -299,9 +299,19 @@ typedef int qboolean;
+ 
+ static inline short UnalignedShort( short *x )
+ {
++#if defined( __retropane__ ) && defined( __arm__ )
++	// RetroPane (kit 67, run 64: ~250 samples of two-byte memcpy calls in
++	// the bones' code): two byte loads in assembly, so never a halfword
++	// load at an odd address (R280) and never a call; the same short
++	unsigned int lo, hi;
++
++	__asm__( "ldrb %0, [%2]\n\tldrb %1, [%2, #1]" : "=&r"( lo ), "=&r"( hi ) : "r"( x ), "m"( *(const char (*)[2])x ));
++	return (short)( lo | hi << 8 );
++#else
+ 	short y;
+ 	memcpy( &y, x, sizeof( y ) );
+ 	return y;
++#endif
+ }
+ 
+ #endif // XASH_TYPES_H
 diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
 index 95c85f7..4d67425 100644
 --- a/engine/client/cl_tent.c
@@ -173,7 +197,7 @@ index 95c85f7..4d67425 100644
  		// didn't find anything? The tent list is either full of high-priority tents
  		// or all tents in the list are still due to live for > 10 seconds.
 diff --git a/engine/client/dll_int/cl_pmove.c b/engine/client/dll_int/cl_pmove.c
-index 9ca1f79..73ac4ea 100644
+index 9ca1f79..3c2550e 100644
 --- a/engine/client/dll_int/cl_pmove.c
 +++ b/engine/client/dll_int/cl_pmove.c
 @@ -305,16 +305,24 @@ void CL_ClipPMoveToEntity( physent_t *pe, const vec3_t start, vec3_t mins, vec3_
@@ -214,23 +238,6 @@ index 9ca1f79..73ac4ea 100644
  	pe->team = state->team;
  	pe->classnumber = state->playerclass;
  	pe->blooddecal = 0;	// unused in GoldSrc
-@@ -402,6 +410,16 @@ static void CL_AddLinksToPmove( frame_t *frame )
- 		model_t *model;
- 		physent_t *pe;
- 
-+		// RetroPane (kit 66, run 63: 136 samples on a state's first load):
-+		// the state two on asked for now (a hint only)
-+		if( i + 2 < frame->num_entities )
-+		{
-+			const entity_state_t *next = &cls.packet_entities[(frame->first_entity + i + 2) % cls.num_client_entities];
-+
-+			__builtin_prefetch( next );
-+			__builtin_prefetch( &next->solid );
-+		}
-+
- 		if( state->number >= 1 && state->number <= cl.maxclients )
- 			continue;
- 
 diff --git a/engine/client/input/input.c b/engine/client/input/input.c
 index 712a86e..bccf97f 100644
 --- a/engine/client/input/input.c
@@ -985,7 +992,7 @@ index 985e438..b79e8b5 100644
  	Cvar_RegisterVariable( &sv_nat );
  	Cvar_RegisterVariable( &violence_ablood );
 diff --git a/engine/server/sv_phys.c b/engine/server/sv_phys.c
-index bfd679b..d1865bf 100644
+index bfd679b..7ce1534 100644
 --- a/engine/server/sv_phys.c
 +++ b/engine/server/sv_phys.c
 @@ -1754,20 +1754,38 @@ static void SV_Physics_Entity( edict_t *ent )
@@ -1045,9 +1052,9 @@ index bfd679b..d1865bf 100644
 +			__builtin_prefetch( next );
 +			__builtin_prefetch( &next->v.movetype );
 +			// kit 66 (run 63: 195 samples on SV_UpdateBaseVelocity's
-+			// first load): its flags' and ground entity's lines too
++			// first load): its flags' line too (kit 67: three hints a
++			// step, the PXA270 has four fill buffers)
 +			__builtin_prefetch( &next->v.flags );
-+			__builtin_prefetch( &next->v.groundentity );
 +		}
 +
  		if( !SV_IsValidEdict( ent ))
@@ -1180,10 +1187,10 @@ index afbc183..e509d67 100644
  #define DotProductPrecise(x,y) ((double)(x)[0]*(double)(y)[0]+(double)(x)[1]*(double)(y)[1]+(double)(x)[2]*(double)(y)[2])
  #define CrossProduct(a,b,c) ((c)[0]=(a)[1]*(b)[2]-(a)[2]*(b)[1],(c)[1]=(a)[2]*(b)[0]-(a)[0]*(b)[2],(c)[2]=(a)[0]*(b)[1]-(a)[1]*(b)[0])
 diff --git a/ref/common/ref_common.h b/ref/common/ref_common.h
-index 32fa799..c017e24 100644
+index 32fa799..541cee7 100644
 --- a/ref/common/ref_common.h
 +++ b/ref/common/ref_common.h
-@@ -100,4 +100,50 @@ extern const int vec_to_st[SKYBOX_MAX_SIDES][3];
+@@ -100,4 +100,52 @@ extern const int vec_to_st[SKYBOX_MAX_SIDES][3];
  int R_SkyboxAxisFromDir( const vec3_t dir );
  qboolean R_SkyboxProject( const vec3_t dir, int axis, float *s, float *t );
  
@@ -1213,7 +1220,7 @@ index 32fa799..c017e24 100644
 +			u--;
 +		else
 +			u++;
-+		memcpy( &f, &u, sizeof( f ));
++		__builtin_memcpy( &f, &u, sizeof( f ));
 +	}
 +	return f;
 +}
@@ -1222,8 +1229,10 @@ index 32fa799..c017e24 100644
 +{
 +	uint32_t ua, ub;
 +
-+	memcpy( &ua, &a, sizeof( ua ));
-+	memcpy( &ub, &b, sizeof( ub ));
++	// kit 67: __builtin_memcpy between aligned locals is a register move;
++	// memcpy is a call in this freestanding build (run 64: 130 samples)
++	__builtin_memcpy( &ua, &a, sizeof( ua ));
++	__builtin_memcpy( &ub, &b, sizeof( ub ));
 +	if(( ua & 0x7FFFFFFFu ) > 0x7F800000u || ( ub & 0x7FFFFFFFu ) > 0x7F800000u )
 +		return false;
 +	if((( ua | ub ) & 0x7FFFFFFFu ) == 0 )

@@ -888,6 +888,33 @@ inlined) 382 -> 430: that hint gave nothing and is taken out in the next
 kit (R317). From kit 60: 103,808 -> 96,296 ms (7.2%); 30 fps is ~91,700
 ms, 4.8% still to go.
 
+**Kit 67 (2026-11-17, exact, from run 64's samples):** the copy routines
+are now the largest cluster (~1,800 samples), and part of it is copies of
+two to twelve bytes made as calls: the game modules are built freestanding
+(kit 58: builtins off, because a hosted build inlined a misaligned word
+load that faulted on the X51v), so every `memcpy` in their source is a
+call to the general routine.
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| A light's die time against the frame's time (`RP_FloatLess`, `RP_TimeCeil`, ours since run 51) | the float's bits read with `memcpy` (the portable C idiom): here a call each, two a light, 128 lights a model | `__builtin_memcpy` between aligned locals: one register move | run 64: 130 samples in `memcpy` from `R_StudioEntityLight` alone; the same bits |
+| An animation value (`UnalignedShort` in the engine, `Unaligned<short>` in the game's client) | Xash's: `memcpy` of two bytes (a call here), safe for a value at an odd address | two byte loads in a line of assembly: never a halfword load (alignment unknown, R280), never a call | run 64: ~250 samples of 2-byte copies (the bones' angles and positions); the same short for any address |
+| The game's vectors into an entity's state (`AddToFullPack`) | the SDK's `memcpy( state->origin, ent->v.origin, 3 * sizeof(float) )`, eight a visible entity | `__builtin_memcpy`: three word moves (both float arrays aligned) | run 64: 201 samples of `memcpy` from it |
+| R317 | kit 66's hints | `CL_AddLinksToPmove`'s hint out (no gain), `SV_Physics` back to three hints a step | run 64: the PXA270's four fill buffers |
+
+**Run 65 (2026-11-17, kit 67, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **95,736 ms (28.7 fps) against kit 66's 96,296 ms
+(28.5 fps): 0.6% less time**, every 250-frame window faster (by 18-88
+ms) and every one of the thirteen marks at the same place; the emulator
+first (the marks the same, no `memcpy` call left in the bones' code or
+`R_StudioEntityLight`). Run 64 -> run 65 samples: `memcpy` 1,288 -> 771;
+part of what it waited on now waits in the callers, where the copies
+are inlined (`AddToFullPack` 321 -> 439, `StudioCalcBoneQuaterion` 365
+-> 476, `StudioCalcBonePosition` 116 -> 149, `R_StudioCalcBones` 204 ->
+234), `R_StudioEntityLight` 211 -> 157, `CL_SetSolidEntities` 430 -> 392,
+`SV_Physics` 784 -> 762: about 340 samples less in all. From kit 60:
+103,808 -> 95,736 ms (7.8%); 30 fps is ~91,700 ms, 4.2% still to go.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

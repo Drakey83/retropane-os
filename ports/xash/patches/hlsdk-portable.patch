@@ -437,6 +437,31 @@ index 441aca8..88c8291 100644
  	matrix[0][0] = 1.0f - 2.0f * quaternion[1] * quaternion[1] - 2.0f * quaternion[2] * quaternion[2];
  	matrix[1][0] = 2.0f * quaternion[0] * quaternion[1] + 2.0f * quaternion[3] * quaternion[2];
  	matrix[2][0] = 2.0f * quaternion[0] * quaternion[2] - 2.0f * quaternion[3] * quaternion[1];
+diff --git a/common/byteswap.h b/common/byteswap.h
+index 1ca2950..735cc31 100644
+--- a/common/byteswap.h
++++ b/common/byteswap.h
+@@ -84,6 +84,20 @@ inline T Unaligned( T& x )
+ 	return y;
+ }
+ 
++#if defined( __retropane__ ) && defined( __arm__ )
++// RetroPane (kit 67, run 64: the bones' two-byte memcpy calls): a short by
++// two byte loads in assembly, never a halfword load at an odd address
++// (R280) and never a call (memcpy is one in this freestanding build)
++template <>
++inline short Unaligned<short>( short& x )
++{
++	unsigned int lo, hi;
++
++	__asm__( "ldrb %0, [%2]\n\tldrb %1, [%2, #1]" : "=&r"( lo ), "=&r"( hi ) : "r"( &x ), "m"( *(const char (*)[2])&x ));
++	return (short)( lo | hi << 8 );
++}
++#endif
++
+ #ifdef XASH_BIG_ENDIAN
+ 	#define LittleToHost( x )   Byteswap( x )
+ 	#define LittleToHostSW( x ) ( x = Byteswap( x ) )
 diff --git a/common/cl_entity.h b/common/cl_entity.h
 index d5323aa..a66849e 100644
 --- a/common/cl_entity.h
@@ -455,6 +480,41 @@ index d5323aa..a66849e 100644
  #define HISTORY_MASK	( HISTORY_MAX - 1 )
  
  #include "entity_state.h"
+diff --git a/dlls/client.cpp b/dlls/client.cpp
+index da2e9e1..f4ea37a 100644
+--- a/dlls/client.cpp
++++ b/dlls/client.cpp
+@@ -1202,14 +1202,14 @@ int AddToFullPack( struct entity_state_s *state, int e, edict_t *ent, edict_t *h
+ 	// Round animtime to nearest millisecond
+ 	state->animtime = (int)( 1000.0f * ent->v.animtime ) / 1000.0f;
+ 
+-	memcpy( state->origin, ent->v.origin, 3 * sizeof(float) );
+-	memcpy( state->angles, ent->v.angles, 3 * sizeof(float) );
+-	memcpy( state->mins, ent->v.mins, 3 * sizeof(float) );
+-	memcpy( state->maxs, ent->v.maxs, 3 * sizeof(float) );
++	__builtin_memcpy( state->origin, ent->v.origin, 3 * sizeof(float) ); // RetroPane kit 67: aligned floats, no call
++	__builtin_memcpy( state->angles, ent->v.angles, 3 * sizeof(float) ); // RetroPane kit 67: aligned floats, no call
++	__builtin_memcpy( state->mins, ent->v.mins, 3 * sizeof(float) ); // RetroPane kit 67: aligned floats, no call
++	__builtin_memcpy( state->maxs, ent->v.maxs, 3 * sizeof(float) ); // RetroPane kit 67: aligned floats, no call
+ 
+-	memcpy( state->startpos, ent->v.startpos, 3 * sizeof(float) );
+-	memcpy( state->endpos, ent->v.endpos, 3 * sizeof(float) );
+-	memcpy( state->velocity, ent->v.velocity, 3 * sizeof(float) );
++	__builtin_memcpy( state->startpos, ent->v.startpos, 3 * sizeof(float) ); // RetroPane kit 67: aligned floats, no call
++	__builtin_memcpy( state->endpos, ent->v.endpos, 3 * sizeof(float) ); // RetroPane kit 67: aligned floats, no call
++	__builtin_memcpy( state->velocity, ent->v.velocity, 3 * sizeof(float) ); // RetroPane kit 67: aligned floats, no call
+ 
+ 	state->impacttime = ent->v.impacttime;
+ 	state->starttime = ent->v.starttime;
+@@ -1292,7 +1292,7 @@ int AddToFullPack( struct entity_state_s *state, int e, edict_t *ent, edict_t *h
+ 	// Special stuff for players only
+ 	if( player )
+ 	{
+-		memcpy( state->basevelocity, ent->v.basevelocity, 3 * sizeof(float) );
++		__builtin_memcpy( state->basevelocity, ent->v.basevelocity, 3 * sizeof(float) ); // RetroPane kit 67: aligned floats, no call
+ 
+ 		state->weaponmodel	= MODEL_INDEX( STRING( ent->v.weaponmodel ) );
+ 		state->gaitsequence	= ent->v.gaitsequence;
 diff --git a/dlls/util.cpp b/dlls/util.cpp
 index 27c7ffe..bd54792 100644
 --- a/dlls/util.cpp
