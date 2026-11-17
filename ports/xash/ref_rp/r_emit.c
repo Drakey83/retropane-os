@@ -1292,6 +1292,7 @@ static struct rp_gfx_part rp_parts[RP_GFX_PARTS];
 static int      rp_nparts;
 static uint32_t rp_seg_from, rp_lm_from; /* the parts not yet listed start here */
 static int      rp_sky_seen; /* a sky face was in the view this frame */
+static int      rp_water_left; /* R309: water cells the frame may still take (RP_WATER_FRAME) */
 static void RP_SkyBox( void );
 static int      rp_lm_page = -1;
 static uint16_t rp_lm_texels[RP_LM_TEXELS];
@@ -1313,6 +1314,7 @@ static void RP_LmFrame( void )
 	rp_nparts = 0;
 	rp_seg_from = rp_lm_from = 0;
 	rp_sky_seen = 0;
+	rp_water_left = 1024; /* RP_WATER_FRAME */
 	if( rp_tex_full )
 	{
 		rp_gfx_wait();
@@ -2353,6 +2355,17 @@ static inline int32_t RP_Wave( int32_t x, int32_t ph )
 static int32_t rp_tsin[256];
 
 #define RP_WATER_CELLS 256
+/*
+Run 51 (c2a5, 33-49 water faces a frame): every face cut at 16 texels made
+5,000-7,400 cells a frame, 60-120 Ki words, past the frame's buffer (its
+end not drawn) and 6-12 fps. A cell's size now follows the face's distance,
+as a texture's mip level does: the warp sampled about every 32 pixels on
+the screen (8 corners a wave where the wave is 256 pixels or more, never
+finer than 16 texels), and the frame holds at most RP_WATER_FRAME cells
+(a face past it cut coarser still).
+*/
+#define RP_WATER_PIXELS 32
+#define RP_WATER_FRAME  1024
 #define RP_WATER_GRID  ( RP_WATER_CELLS * 2 + 64 )
 
 /* the face's edges each grid point is outside of, by bits (st 24.8) */
@@ -2551,6 +2564,34 @@ static void RP_ChipWater( msurface_t *fa )
 	x.iw = (int32_t)(( 1 << 24 ) / tt->width );
 	x.ih = (int32_t)(( 1 << 24 ) / tt->height );
 
+	/* the cell's size from the face's nearest grid corner: c texels
+	   cover about RP_WATER_PIXELS on the screen there */
+	{
+		int32_t zmin = 0x7FFFFFFF, step = 0;
+
+		for( int k = 0; k < 3; k++ )
+		{
+			int32_t a = x.va[k] < 0 ? -x.va[k] : x.va[k], b = x.vb[k] < 0 ? -x.vb[k] : x.vb[k];
+
+			step = a > step ? a : step;
+			step = b > step ? b : step;
+		}
+		for( int k = 0; k < 4; k++ )
+		{
+			int32_t ss = k & 1 ? w->smax : 0, tt8 = k & 2 ? w->tmax : 0;
+			int32_t z = x.vo[2] + (int32_t)( (int64_t)ss * x.va[2] + (int64_t)tt8 * x.vb[2] );
+
+			zmin = z < zmin ? z : zmin;
+		}
+		/* pixels a texel at zmin: step (16.16 units) x xs / zmin */
+		if( zmin > 16 * RP_ONE16 && step > 0 )
+		{
+			int64_t px = ( (int64_t)step * ( rp_view.xs >> 8 )) / ( zmin >> 8 ); /* 16.16 pixels a texel */
+
+			while( c < 1024 && (( px * c ) >> 16 ) < RP_WATER_PIXELS )
+				c <<= 1;
+		}
+	}
 	/* the grid: lines on whole multiples of c texels (absolute: the
 	   cells of two faces of one pool line up) */
 	for( ;; )
@@ -2559,10 +2600,11 @@ static void RP_ChipWater( msurface_t *fa )
 		gt0 = (( w->t0 & ~( c - 1 )) - w->t0 );
 		nx = ( w->smax - gs0 + c - 1 ) / c;
 		ny = ( w->tmax - gt0 + c - 1 ) / c;
-		if( nx * ny <= RP_WATER_CELLS || c >= 1024 )
+		if(( nx * ny <= RP_WATER_CELLS && ( nx * ny <= rp_water_left || nx * ny <= 4 )) || c >= 1024 )
 			break;
 		c <<= 1;
 	}
+	rp_water_left -= nx * ny;
 	if( nx < 1 || ny < 1 || ( nx + 1 ) * ( ny + 1 ) > RP_WATER_GRID )
 	{
 		rp_count.water_missed++;
